@@ -140,15 +140,46 @@ function callOpenAITranscription(audioBuffer, filename) {
 
 // ─── OpenAI TTS API ──────────────────────────────────────────────────────────
 
+// Partir texto en chunks para TTS respetando límites de oraciones
+function splitTextForTTS(text, maxChars) {
+    if (text.length <= maxChars) return [text];
+    const sentences = text.split(/(?<=[.!?])\s+/);
+    const chunks = [];
+    let current = '';
+    for (const sentence of sentences) {
+        if ((current + ' ' + sentence).length > maxChars && current.length > 0) {
+            chunks.push(current.trim());
+            current = sentence;
+        } else {
+            current = current ? current + ' ' + sentence : sentence;
+        }
+    }
+    if (current.trim()) chunks.push(current.trim());
+    // Si algún chunk individual sigue siendo más largo (oración gigante), forzar corte por palabras
+    const result = [];
+    for (const chunk of chunks) {
+        if (chunk.length <= maxChars) { result.push(chunk); continue; }
+        const words = chunk.split(/\s+/);
+        let part = '';
+        for (const word of words) {
+            if ((part + ' ' + word).length > maxChars && part.length > 0) {
+                result.push(part.trim());
+                part = word;
+            } else {
+                part = part ? part + ' ' + word : word;
+            }
+        }
+        if (part.trim()) result.push(part.trim());
+    }
+    return result;
+}
+
 function callOpenAITTS(text) {
     return new Promise((resolve, reject) => {
-        const truncated = text.length > 2000
-            ? text.substring(0, 1950) + "... (respuesta truncada para audio)"
-            : text;
-
+        // OpenAI TTS soporta hasta 4096 chars — NO truncar
         const body = JSON.stringify({
             model: _config.ttsModel,
-            input: truncated,
+            input: text.substring(0, 4096),
             voice: _config.ttsVoice,
             instructions: "Hablás como un porteño de Buenos Aires, con tonada rioplatense auténtica. Usás 'vos' en vez de 'tú', decís 'dale', 'che', 'mirá', 'boludo' cuando viene al caso. El ritmo es el de una charla entre amigos en un bar — pausas naturales, énfasis expresivo, te reís si algo es gracioso. Sos inteligente pero cero formal, como un ingeniero argentino joven explicándole algo a un amigo. Nunca sonás como locutor ni como robot — sonás como un pibe real.",
             response_format: "opus"
@@ -187,12 +218,9 @@ function callOpenAITTS(text) {
 
 function callElevenLabsTTS(text) {
     return new Promise((resolve, reject) => {
-        const truncated = text.length > 2000
-            ? text.substring(0, 1950) + "... (respuesta truncada para audio)"
-            : text;
-
+        // ElevenLabs soporta textos largos — NO truncar
         const body = JSON.stringify({
-            text: truncated,
+            text: text,
             model_id: "eleven_multilingual_v2",
             output_format: "opus_48000_32"
         });
@@ -371,10 +399,18 @@ async function handleVoiceOrAudio(msg) {
         // Asumimos que si el usuario envía audio es porque no puede mirar texto.
         if (isVoice && result.code === 0 && claudeResponse && (_config.elevenlabsApiKey || _config.openaiApiKey)) {
             try {
-                _log("Generando TTS para respuesta (" + claudeResponse.length + " chars)");
-                const audioBuffer = await callTTS(claudeResponse);
-                await _tgApi.sendVoiceMessage(audioBuffer);
-                _log("TTS enviado: " + audioBuffer.length + " bytes");
+                const TTS_CHUNK_SIZE = 3800; // Margen bajo el límite de 4096 de OpenAI
+                const chunks = splitTextForTTS(claudeResponse, TTS_CHUNK_SIZE);
+                _log("Generando TTS para respuesta (" + claudeResponse.length + " chars, " + chunks.length + " parte(s))");
+
+                for (let i = 0; i < chunks.length; i++) {
+                    const chunkText = chunks.length > 1
+                        ? "Parte " + (i + 1) + " de " + chunks.length + ". " + chunks[i]
+                        : chunks[i];
+                    const audioBuffer = await callTTS(chunkText);
+                    await _tgApi.sendVoiceMessage(audioBuffer);
+                    _log("TTS parte " + (i + 1) + "/" + chunks.length + " enviada: " + audioBuffer.length + " bytes");
+                }
             } catch (ttsErr) {
                 _log("Error generando TTS, fallback a texto: " + ttsErr.message);
                 await _cmdContext.sendResult("🎤 Voz", result);
@@ -397,6 +433,7 @@ module.exports = {
     callOpenAITTS,
     callElevenLabsTTS,
     callTTS,
+    splitTextForTTS,
     extractClaudeResponse,
     isDocumentImage,
     handlePhoto,

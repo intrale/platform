@@ -326,4 +326,59 @@ class DeliveryOrderDetailViewModelTest {
         assertNull(viewModel.state.detail?.address)
         assertNotNull(viewModel.state.detail?.businessName)
     }
+
+    @Test
+    fun `detalle cargado tiene datos suficientes para navegacion al comercio`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+
+        val detail = viewModel.state.detail
+        assertNotNull(detail)
+        // Se puede construir la dirección del comercio para navegación
+        val originAddress = "${detail.businessName}, ${detail.neighborhood}"
+        assertEquals("Pizzeria Roma, Centro", originAddress)
+    }
+
+    @Test
+    fun `detalle cargado tiene distancia y ETA para mostrar antes de navegar`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+
+        val detail = viewModel.state.detail
+        assertNotNull(detail)
+        assertNotNull(detail.distance, "La distancia debe estar disponible para mostrar al repartidor")
+        assertNotNull(detail.eta, "El ETA debe estar disponible para mostrar al repartidor")
+        assertEquals("2.5 km", detail.distance)
+        assertEquals("12:00", detail.eta)
+    }
+
+    @Test
+    fun `detalle sin distancia ni ETA sigue siendo valido para navegacion`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val detailSinEstimacion = sampleDetail.copy(distance = null, eta = null)
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(Result.success(detailSinEstimacion)),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+
+        val detail = viewModel.state.detail
+        assertNotNull(detail)
+        assertEquals(DeliveryOrderDetailStatus.Loaded, viewModel.state.status)
+        assertNull(detail.distance)
+        assertNull(detail.eta)
+        // La dirección de destino sigue disponible para navegación
+        assertNotNull(detail.address)
+    }
 }

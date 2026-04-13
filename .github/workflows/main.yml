@@ -12,6 +12,7 @@ on:
       - 'gradle.properties'
       - 'settings.gradle.kts'
   repository_dispatch:
+  workflow_dispatch:
 jobs:
   deploy-lambda:
     runs-on: ubuntu-latest

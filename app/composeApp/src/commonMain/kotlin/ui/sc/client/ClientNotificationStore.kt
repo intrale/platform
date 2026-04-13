@@ -18,24 +18,25 @@ object ClientNotificationStore {
         get() = _notifications.value.count { !it.isRead }
 
     fun updateFromOrders(orders: List<ClientOrder>) {
-        val existing = _notifications.value.associateBy { it.id }.toMutableMap()
-        orders.forEach { order ->
-            val notifId = "${order.id}_${order.status.name}"
-            if (!existing.containsKey(notifId)) {
-                existing[notifId] = ClientNotification(
-                    id = notifId,
-                    orderId = order.id,
-                    shortCode = order.shortCode,
-                    businessName = order.businessName,
-                    eventType = order.status.toNotificationEventType(),
-                    message = "",
-                    timestamp = order.createdAt,
-                    isRead = false
-                )
+        _notifications.update { current ->
+            val existing = current.associateBy { it.id }.toMutableMap()
+            orders.forEach { order ->
+                val notifId = "${order.id}_${order.status.name}"
+                if (!existing.containsKey(notifId)) {
+                    existing[notifId] = ClientNotification(
+                        id = notifId,
+                        orderId = order.id,
+                        shortCode = order.shortCode,
+                        businessName = order.businessName,
+                        eventType = order.status.toNotificationEventType(),
+                        message = "",
+                        timestamp = order.createdAt,
+                        isRead = false
+                    )
+                }
             }
+            existing.values.sortedByDescending { it.timestamp }
         }
-        _notifications.value = existing.values
-            .sortedByDescending { it.timestamp }
     }
 
     fun addBusinessMessage(orderId: String, shortCode: String, businessName: String, message: String, timestamp: String) {
@@ -56,6 +57,13 @@ object ClientNotificationStore {
         }
     }
 
+    fun addFromPush(notification: ClientNotification) {
+        _notifications.update { current ->
+            if (current.any { it.id == notification.id }) return@update current
+            (current + notification).sortedByDescending { it.timestamp }
+        }
+    }
+
     fun markAsRead(id: String) {
         _notifications.update { current ->
             current.map { if (it.id == id) it.copy(isRead = true) else it }
@@ -69,6 +77,6 @@ object ClientNotificationStore {
     }
 
     fun clear() {
-        _notifications.value = emptyList()
+        _notifications.update { emptyList() }
     }
 }

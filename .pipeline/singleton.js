@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const PIPELINE = path.resolve(__dirname);
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 
 /**
  * Busca procesos node.exe que tengan el mismo script en su command line.
@@ -68,6 +68,7 @@ module.exports = function singleton(name) {
     'svc-telegram': 'servicio-telegram.js',
     'svc-github': 'servicio-github.js',
     'svc-drive': 'servicio-drive.js',
+    'svc-emulador': 'servicio-emulador.js',
     'dashboard': 'dashboard-v2.js'
   };
 

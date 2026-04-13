@@ -20,7 +20,7 @@ Tu archivo de trabajo ya fue movido a `trabajando/` por el Pulpo. El path te lle
    - Si el rechazo viene de `build`, leé el log completo: `cat .pipeline/logs/build-<issue>.log | tail -100`
    - Si el rechazo viene de `verificacion`, leé los archivos en `verificacion/procesado/<issue>.*` para ver qué encontraron tester/qa/security
    - **Tu único objetivo es corregir los errores del rechazo**, no reimplementar desde cero
-   - Verificá que compila localmente (`./gradlew check`) antes de marcar como aprobado
+   - Verificá que compila localmente (`./gradlew check --no-daemon`) antes de marcar como aprobado
 3. **Leer el issue de GitHub** — `gh issue view <issue> --json title,body,labels,comments`
 4. **Leer contexto de fases anteriores** — si necesitás saber qué hicieron otros skills, mirá en `procesado/` de la fase anterior
 5. **Verificar pasadas anteriores** — si existen archivos de tu mismo skill en `procesado/` de tu misma fase para el mismo issue, son resultados de una pasada anterior. Leelos para no repetir errores.

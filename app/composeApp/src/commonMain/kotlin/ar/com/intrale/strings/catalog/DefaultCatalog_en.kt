@@ -491,6 +491,9 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_detail_location_open_map to "Open in map",
     MessageKey.delivery_order_detail_location_no_address to "Address not available",
     MessageKey.delivery_order_detail_location_map_placeholder to "Map view (coming soon)",
+    MessageKey.delivery_order_detail_location_navigate to "Navigate",
+    MessageKey.delivery_order_detail_location_navigate_origin to "Navigate to business",
+    MessageKey.delivery_order_detail_location_navigate_destination to "Navigate to destination",
     MessageKey.delivery_order_action_not_delivered to "Could not deliver",
     MessageKey.delivery_order_confirm_title to "Confirm delivery",
     MessageKey.delivery_order_confirm_message to "Confirm delivery of order {label}?",
@@ -570,6 +573,8 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_catalog_add_content_description to "Add to cart",
     MessageKey.client_catalog_added_to_cart to "Added {product} to your cart.",
     MessageKey.client_catalog_search_no_results to "No products found matching your search.",
+    MessageKey.client_catalog_recent_searches to "Recent searches",
+    MessageKey.client_catalog_clear_history to "Clear",
     MessageKey.client_onboarding_welcome_title to "Welcome to Intrale",
     MessageKey.client_onboarding_welcome_subtitle to "Your favorite store, now in your pocket.",
     MessageKey.client_onboarding_discover_title to "Discover products",
@@ -869,6 +874,29 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_notifications_event_order_cancelled to "Order #{code} from {business} cancelled",
     MessageKey.client_notifications_event_business_message to "Message from {business}: {message}",
     MessageKey.client_notifications_push_placeholder to "Push notifications will be activated soon.",
+
+    // Content descriptions for client notification icons
+    MessageKey.client_notifications_icon_order_created to "Order received",
+    MessageKey.client_notifications_icon_order_confirmed to "Order confirmed",
+    MessageKey.client_notifications_icon_order_preparing to "Order being prepared",
+    MessageKey.client_notifications_icon_order_ready to "Order ready",
+    MessageKey.client_notifications_icon_order_delivering to "Order on its way",
+    MessageKey.client_notifications_icon_order_delivered to "Order delivered",
+    MessageKey.client_notifications_icon_order_cancelled to "Order cancelled",
+    MessageKey.client_notifications_icon_business_message to "Business message",
+
+    // Push notification preferences
+    MessageKey.client_push_settings_title to "Push notifications",
+    MessageKey.client_push_settings_enabled to "Enable push notifications",
+    MessageKey.client_push_settings_enabled_description to "Receive alerts when your order status changes",
+    MessageKey.client_push_settings_order_confirmed to "Order accepted by business",
+    MessageKey.client_push_settings_order_delivering to "Delivery person on the way",
+    MessageKey.client_push_settings_order_nearby to "Order arriving soon",
+    MessageKey.client_push_settings_order_delivered to "Order delivered",
+    MessageKey.client_push_settings_saved to "Notification preferences saved",
+    MessageKey.client_push_settings_category_title to "Notification types",
+    MessageKey.client_push_status_active to "Push active",
+    MessageKey.client_push_status_inactive to "Push disabled",
 
     // Available orders (Delivery flavor)
     MessageKey.delivery_available_orders_tab to "Available",

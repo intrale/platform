@@ -65,6 +65,7 @@ import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.client.ClientBottomBar
 import ui.sc.client.ClientTab
+import ui.sc.client.CLIENT_ORDER_DETAIL_PATH
 import ui.sc.client.CLIENT_ORDERS_PATH
 import ui.sc.client.CLIENT_PROFILE_PATH
 import ui.sc.shared.Screen
@@ -125,6 +126,13 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
         LaunchedEffect(Unit) {
             viewModel.loadProducts()
             viewModel.checkBusinessOpen()
+
+            // Manejar deep link desde notificacion push
+            val pendingOrderId = ext.push.PushDeepLinkStore.consumePendingOrderNavigation()
+            if (pendingOrderId != null) {
+                ClientOrderSelectionStore.select(pendingOrderId)
+                navigate(CLIENT_ORDER_DETAIL_PATH)
+            }
         }
 
         LaunchedEffect(addedToCartMessage) {

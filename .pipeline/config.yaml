@@ -16,7 +16,7 @@ pipelines:
     skills_por_fase:
       validacion: [po, ux, guru]
       dev: [backend-dev, android-dev, web-dev]  # Uno solo por historia, según labels
-      build: [build]                             # Script puro, no Claude
+      build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       aprobacion: [review, po, ux]
       entrega: [delivery]
@@ -49,6 +49,11 @@ concurrencia:
   # Commander — singleton
   commander: 1
 
+# Priorización de fases: el Pulpo procesa fases en orden inverso (post-dev primero)
+# Esto garantiza que build/qa/review/delivery tengan slots antes que dev,
+# evitando que el backlog de desarrollo bloquee el avance de issues ya codificados.
+# Orden efectivo: entrega → aprobacion → verificacion → build → dev → validacion
+
 # Intake: qué labels de GitHub disparan la entrada a cada pipeline
 intake:
   definicion:
@@ -75,12 +80,53 @@ prioridad_labels:
   - "priority:medium"    # Default si no tiene label
   - "priority:low"
 
-# Límites de recursos del sistema — bloquea lanzamiento de nuevos agentes si se excede
+# Priorización por features — el pipeline ordena issues por feature priority
+# Issues con feature de mayor prioridad se procesan primero dentro de cada nivel de priority
+feature_priority:
+  # MVP Core — estas features tienen máxima prioridad de entrega
+  critical:
+    - "feature:usuarios-auth"
+    - "feature:catalogo-productos"
+    - "feature:checkout-pagos"
+    - "feature:delivery"
+  # Post-MVP
+  high:
+    - "feature:configuracion-negocio"
+    - "feature:comunicacion"
+  medium:
+    - "feature:stock-inventario"
+    - "feature:dashboard-analitica"
+  low:
+    - "feature:marketing-engagement"
+    - "feature:ia"
+
+# Límites de recursos del sistema — presión graduada en vez de binario
 resource_limits:
-  max_cpu_percent: 70              # No lanzar si CPU >= 70%
-  max_mem_percent: 70              # No lanzar si RAM >= 70%
-  saturation_streak_threshold: 3   # Ciclos consecutivos de sobrecarga antes de buscar zombies
-  zombie_hunt_cooldown_minutes: 5  # Cooldown entre búsquedas de zombies
+  # Umbrales graduados (verde → amarillo → naranja → rojo)
+  green_max_percent: 50            # Debajo de esto: capacidad total, sin restricciones
+  yellow_max_percent: 65           # Moderado: concurrencia reducida al 50%, limpieza suave
+  orange_max_percent: 80           # Alto: solo 1 agente total, limpieza agresiva
+  red_max_percent: 90              # Crítico: bloquear todo, kill de emergencia
+
+  qa_env_max_cpu_percent: 60       # QA env (3 servicios pesados) necesita más margen
+  qa_env_max_mem_percent: 60       # QA env: DynamoDB + Gradle + emulador consumen mucha RAM
+  max_concurrent_devs: 1           # Máximo de desarrolladores simultáneos
+
+  # Limpieza proactiva
+  proactive_cleanup_cycles: 10     # Cada N ciclos del Pulpo, limpiar aunque no haya presión
+  kotlin_daemon_kill: true         # Matar también Kotlin compile daemons huérfanos
+
+  # Priority Windows — ventanas autoexcluyentes QA y Build
+  # Cuando la cola de QA o Build supera el umbral, se activa la ventana correspondiente.
+  # QA > Build > Dev (la etapa más avanzada siempre tiene prioridad).
+  # Solo una ventana puede estar activa a la vez (autoexcluyentes).
+  # Sin timeout fijo: la ventana corre hasta vaciar su cola o desactivación manual.
+  priority_windows_activation_threshold: 3   # Issues acumulados para activar ventana (QA o Build)
+  priority_windows_safety_timeout_hours: 2   # Horas sin completar ningún issue → notifica Telegram (NO cierra)
+
+  # Diagnóstico
+  log_top_consumers: true          # Logear top 5 procesos por RAM antes de actuar
+  diagnostic_on_orange: true       # Diagnóstico completo al entrar en naranja/rojo
 
 # Timeouts
 timeouts:

@@ -50,6 +50,7 @@ const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const ROADMAP_FILE = path.join(REPO_ROOT, "scripts", "roadmap.json");
 const AGENT_METRICS_FILE = path.join(CLAUDE_DIR, "hooks", "agent-metrics.json");
 const AGENT_REGISTRY_FILE = path.join(CLAUDE_DIR, "hooks", "agent-registry.json");
+const DELIVERY_GATE_AUDIT_FILE = path.join(CLAUDE_DIR, "hooks", "delivery-gate-audit.jsonl");
 const ICONS_DIR = path.join(CLAUDE_DIR, "icons");
 
 // Agent Registry — fuente de verdad centralizada (#1642)
@@ -4207,6 +4208,196 @@ function renderHTML(data, theme, section) {
 }
 
 
+// --- Rich agent log builder ---
+// Dado un issueId, reúne sesiones, timeline, gates y resumen estructurado para /api/logs
+function buildRichAgentLog(agentId) {
+  const issueStr = String(agentId);
+
+  // 1. Directorios de sesiones (repo principal + worktrees + archive últimos 5 sprints)
+  const sessionDirs = [SESSIONS_DIR];
+  try {
+    const parentDir = path.resolve(REPO_ROOT, "..");
+    const baseName = path.basename(REPO_ROOT);
+    const siblings = fs.readdirSync(parentDir).filter(d =>
+      d.startsWith(baseName + ".agent-") || d.startsWith(baseName + ".codex-"));
+    for (const s of siblings) {
+      const wt = path.join(parentDir, s, ".claude", "sessions");
+      if (fs.existsSync(wt)) sessionDirs.push(wt);
+    }
+  } catch {}
+  try {
+    if (fs.existsSync(SESSIONS_ARCHIVE_ROOT)) {
+      const subs = fs.readdirSync(SESSIONS_ARCHIVE_ROOT).filter(d => d.startsWith("SPR-"));
+      for (const s of subs.slice(-5)) {
+        const d = path.join(SESSIONS_ARCHIVE_ROOT, s);
+        if (fs.existsSync(d)) sessionDirs.push(d);
+      }
+    }
+  } catch {}
+
+  // 2. Colectar sesiones con branch agent/<id>-* o feature/<id>-* o bugfix/<id>-*
+  const sessions = [];
+  const seenFiles = new Set();
+  for (const dir of sessionDirs) {
+    if (!fs.existsSync(dir)) continue;
+    let files = [];
+    try { files = fs.readdirSync(dir).filter(f => f.endsWith(".json")); } catch { continue; }
+    for (const f of files) {
+      if (seenFiles.has(f)) continue;
+      const sess = readJson(path.join(dir, f));
+      if (!sess) continue;
+      if (sess.type && sess.type !== "parent") continue;
+      const m = (sess.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+      if (!m || m[1] !== issueStr) continue;
+      seenFiles.add(f);
+      sessions.push(sess);
+    }
+  }
+  // Ordenar por started_ts desc (intento más reciente primero)
+  sessions.sort((a, b) => new Date(b.started_ts || 0) - new Date(a.started_ts || 0));
+  const primary = sessions[0] || null;
+
+  // 3. Timeline estructurado desde activity-log.jsonl filtrado por sesión primaria
+  let timeline = [];
+  if (primary) {
+    const shortId = String(primary.id || primary.full_id || "").slice(0, 8);
+    const fullId = String(primary.full_id || primary.id || "");
+    try {
+      if (fs.existsSync(LOG_FILE)) {
+        const raw = fs.readFileSync(LOG_FILE, "utf8").trim().split("\n");
+        for (const line of raw) {
+          try {
+            const j = JSON.parse(line);
+            if (!j || !j.session) continue;
+            if (j.session === shortId || j.session === fullId) timeline.push(j);
+          } catch {}
+        }
+      }
+    } catch {}
+    timeline = timeline.slice(-30).reverse(); // últimos 30 en orden desc
+  }
+
+  // 4. Gates desde delivery-gate-audit.jsonl (último registro para el issue)
+  let gates = null;
+  try {
+    if (fs.existsSync(DELIVERY_GATE_AUDIT_FILE)) {
+      const raw = fs.readFileSync(DELIVERY_GATE_AUDIT_FILE, "utf8").trim().split("\n");
+      let latest = null;
+      for (const line of raw) {
+        try {
+          const j = JSON.parse(line);
+          if (String(j.issue) === issueStr) {
+            if (!latest || new Date(j.ts) > new Date(latest.ts)) latest = j;
+          }
+        } catch {}
+      }
+      if (latest) {
+        const details = latest.details || {};
+        const ev = details.evidence || {};
+        const vid = details.videoEvidence || {};
+        gates = {
+          result: latest.result || null,
+          summary: latest.summary || null,
+          ts: latest.ts || null,
+          tester: ev.tester ? { status: "pass", ts: ev.tester.ts || null, session: ev.tester.session || null } : { status: "pending" },
+          security: ev.security ? { status: "pass", ts: ev.security.ts || null, session: ev.security.session || null } : { status: "pending" },
+          po: ev.po ? { status: "pass", ts: ev.po.ts || null, session: ev.po.session || null } : { status: "pending" },
+          video: {
+            status: vid.hasVideos ? "pass" : (details.videoWarning ? "warn" : "pending"),
+            count: vid.count || 0,
+            warning: details.videoWarning || null,
+          },
+          ci: {
+            status: details.ciWarning ? "warn" : (latest.result === "pass" ? "pass" : "pending"),
+            warning: details.ciWarning || null,
+          },
+        };
+      }
+    }
+  } catch {}
+
+  // 5. Raw tail (compat: últimas líneas de scripts/logs/agente_<id>.log si existe)
+  let rawTail = [];
+  try {
+    const logFile = path.join(REPO_ROOT, "scripts", "logs", "agente_" + issueStr + ".log");
+    if (fs.existsSync(logFile)) {
+      const content = fs.readFileSync(logFile, "utf8").trim();
+      if (content) rawTail = content.split("\n").filter(l => l.trim()).slice(-50);
+    }
+  } catch {}
+
+  // 6. Summary computado (badge de estado priorizado por el job "¿por qué no avanza?")
+  let summary = null;
+  if (primary) {
+    const lastActMs = new Date(primary.last_activity_ts || primary.started_ts).getTime();
+    const elapsed = Date.now() - lastActMs;
+    const STALLED_MS = 10 * 60 * 1000; // 10 min sin actividad = stalled
+    let badge;
+    if (primary.status === "done") {
+      badge = ((primary.action_count || 0) < 5) ? "failed_early" : "done";
+    } else if (elapsed > STALLED_MS) {
+      badge = "stalled";
+    } else {
+      badge = "running";
+    }
+    const tc = primary.tool_counts || {};
+    const topTools = Object.entries(tc).sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([name, count]) => ({ name, count }));
+    const tasks = Array.isArray(primary.current_tasks) ? primary.current_tasks : [];
+    const tasksCompleted = tasks.filter(t => t.status === "completed").length;
+    const tasksInProgress = tasks.find(t => t.status === "in_progress") || null;
+    const mf = Array.isArray(primary.modified_files) ? primary.modified_files : [];
+    summary = {
+      badge,
+      branch: primary.branch || null,
+      session_id: primary.id || primary.full_id || null,
+      agent_name: primary.agent_name || null,
+      started_ts: primary.started_ts || null,
+      last_activity_ts: primary.last_activity_ts || null,
+      last_activity_age: formatAge(primary.last_activity_ts),
+      duration: formatDuration(primary.started_ts, primary.status === "done" ? lastActMs : null),
+      action_count: primary.action_count || 0,
+      sub_count: primary.sub_count || 0,
+      tokens_estimated: primary.tokens_estimated || 0,
+      skills_invoked: Array.isArray(primary.skills_invoked) ? primary.skills_invoked : [],
+      top_tools: topTools,
+      tool_counts: tc,
+      last_tool: primary.last_tool || null,
+      last_target: primary.last_target || null,
+      tasks_total: tasks.length,
+      tasks_completed: tasksCompleted,
+      task_in_progress: tasksInProgress ? {
+        subject: tasksInProgress.subject || tasksInProgress.activeForm || "",
+        steps: (tasksInProgress.metadata && tasksInProgress.metadata.steps) || null,
+        current_step: (tasksInProgress.metadata && tasksInProgress.metadata.current_step) || null,
+        completed_steps: (tasksInProgress.metadata && tasksInProgress.metadata.completed_steps) || null,
+      } : null,
+      modified_files_count: mf.length,
+    };
+  }
+
+  // 7. Intentos (todas las sesiones del issue, metadata liviana)
+  const attempts = sessions.map(s => ({
+    session_id: s.id || s.full_id,
+    started_ts: s.started_ts,
+    last_activity_ts: s.last_activity_ts,
+    status: s.status,
+    action_count: s.action_count || 0,
+    branch: s.branch,
+  }));
+
+  return {
+    agent: issueStr,
+    summary,
+    tasks: primary && Array.isArray(primary.current_tasks) ? primary.current_tasks : [],
+    modified_files: primary && Array.isArray(primary.modified_files) ? primary.modified_files : [],
+    timeline,
+    gates,
+    attempts,
+    rawTail,
+  };
+}
+
 // --- Logs page HTML (#1765) ---
 function renderLogsHTML(theme) {
   const isDark = theme !== 'light';
@@ -4227,21 +4418,63 @@ function renderLogsHTML(theme) {
     'tr:hover td{background:var(--surface2);}',
     'tr.selected td{background:rgba(96,165,250,.1);border-left:2px solid var(--blue);}',
     '.status-active{color:var(--green);font-weight:600;}.status-idle{color:var(--yellow);}.status-done,.status-dead{color:var(--text-muted);}',
-    '.log-container{background:var(--surface2);border:1px solid var(--border);border-radius:6px;flex:1;overflow-y:auto;padding:10px;font-family:monospace;font-size:11px;line-height:1.6;min-height:200px;}',
     '.grid2>.panel{display:flex;flex-direction:column;overflow:hidden;}',
-    '.log-line{padding:1px 0;white-space:pre-wrap;word-break:break-all;}',
-    '.log-line.log-error{color:var(--red);}.log-line.log-warn{color:var(--yellow);}.log-line.log-info{color:var(--blue);}',
-    '.controls{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;}',
+    '.grid2>.panel.rich-wrap{padding:0;}',
     '.btn{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 12px;font-size:11px;color:var(--text-dim);cursor:pointer;}',
     '.btn:hover{border-color:var(--blue);color:var(--blue);}.btn.paused{background:rgba(251,191,36,.1);border-color:var(--yellow);color:var(--yellow);}',
-    '.filter-input{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;color:var(--text);flex:1;min-width:120px;}',
-    '.empty-state{padding:20px;text-align:center;color:var(--text-muted);}',
+    '.empty-state{padding:40px 20px;text-align:center;color:var(--text-muted);font-size:12px;}',
     '@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}',
-    '.dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;display:inline-block;margin-right:6px;}'
+    '.dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;display:inline-block;margin-right:6px;}',
+    /* Rich log panel */
+    '.rich-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;}',
+    '.rich-hdr{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface2);}',
+    '.rich-hdr-title{font-size:14px;font-weight:700;color:var(--white);margin-bottom:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
+    '.rich-hdr-meta{font-size:11px;color:var(--text-muted);font-family:monospace;}',
+    '.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;}',
+    '.badge-running{background:rgba(96,165,250,.15);color:var(--blue);border:1px solid rgba(96,165,250,.4);animation:pulse 2s infinite;}',
+    '.badge-stalled{background:rgba(251,191,36,.15);color:var(--yellow);border:1px solid rgba(251,191,36,.4);}',
+    '.badge-done{background:rgba(52,211,153,.15);color:var(--green);border:1px solid rgba(52,211,153,.4);}',
+    '.badge-failed{background:rgba(248,113,113,.15);color:var(--red);border:1px solid rgba(248,113,113,.4);}',
+    '.badge-queued{background:var(--surface);color:var(--text-muted);border:1px solid var(--border);}',
+    '.rich-alerts{padding:0 16px;}',
+    '.rich-alert{padding:8px 12px;margin-top:10px;border-radius:6px;font-size:11px;font-weight:500;}',
+    '.rich-alert-warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.35);color:var(--yellow);}',
+    '.rich-alert-error{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.35);color:var(--red);}',
+    '.chips-row{display:flex;gap:6px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--border);}',
+    '.chip{background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:3px 10px;font-size:11px;color:var(--text-dim);display:inline-flex;align-items:center;gap:4px;white-space:nowrap;}',
+    '.chip b{color:var(--text);font-weight:700;}',
+    '.chip-skill{background:rgba(96,165,250,.1);border-color:rgba(96,165,250,.3);color:var(--blue);}',
+    '.gates-row{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--border);align-items:center;flex-wrap:wrap;}',
+    '.gate{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:600;background:var(--surface2);border:1px solid var(--border);color:var(--text-muted);}',
+    '.gate-pass{color:var(--green);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.08);}',
+    '.gate-fail{color:var(--red);border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.08);}',
+    '.gate-warn{color:var(--yellow);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08);}',
+    '.tabs-row{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 16px;align-items:center;}',
+    '.tab{padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;text-transform:uppercase;letter-spacing:.05em;user-select:none;}',
+    '.tab:hover{color:var(--text-dim);}',
+    '.tab.active{color:var(--blue);border-bottom-color:var(--blue);}',
+    '.tab-controls{margin-left:auto;display:flex;gap:6px;padding:6px 0;}',
+    '.tab-content{flex:1;overflow-y:auto;padding:14px 16px;min-height:200px;}',
+    '.task-item{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px;color:var(--text);display:flex;align-items:flex-start;gap:6px;}',
+    '.task-item.in-progress{color:var(--blue);font-weight:600;}',
+    '.task-item.completed{color:var(--text-muted);}',
+    '.task-item.completed .task-subject{text-decoration:line-through;}',
+    '.task-icon{flex-shrink:0;font-family:monospace;}',
+    '.task-steps{margin:4px 0 4px 24px;font-size:11px;color:var(--text-dim);line-height:1.6;}',
+    '.timeline-entry{display:grid;grid-template-columns:70px 90px 1fr;gap:10px;padding:5px 0;font-size:11px;border-bottom:1px solid rgba(255,255,255,.04);align-items:start;}',
+    '.timeline-ts{color:var(--text-muted);font-variant-numeric:tabular-nums;font-family:monospace;}',
+    '.timeline-tool{color:var(--blue);font-weight:600;font-family:monospace;}',
+    '.timeline-target{color:var(--text-dim);font-family:monospace;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}',
+    '.file-item{padding:4px 0;font-family:monospace;font-size:11px;color:var(--text-dim);border-bottom:1px solid rgba(255,255,255,.04);}',
+    '.raw-pre{font-family:monospace;font-size:11px;color:var(--text-dim);white-space:pre-wrap;word-break:break-all;line-height:1.5;}',
+    '.raw-pre .raw-err{color:var(--red);}.raw-pre .raw-warn{color:var(--yellow);}',
+    '.attempts-row{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:10px;align-items:center;color:var(--text-muted);}',
+    '.attempt-btn{padding:2px 8px;border-radius:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);cursor:pointer;font-size:10px;}',
+    '.attempt-btn.active{background:rgba(96,165,250,.15);border-color:var(--blue);color:var(--blue);}'
   ].join('');
   const body = [
     '<div class="header">',
-    '  <div style="display:flex;align-items:center;gap:10px;"><div class="dot"></div><div class="header-title">Intrale Monitor &mdash; Logs en vivo</div></div>',
+    '  <div style="display:flex;align-items:center;gap:10px;"><div class="dot"></div><div class="header-title">Intrale Monitor &mdash; Logs por agente</div></div>',
     '  <div style="display:flex;gap:16px;font-size:11px;color:var(--text-muted);align-items:center;">',
     '    <a href="/" style="color:var(--blue);text-decoration:none;">&larr; Overview</a>',
     '    <span id="upd">Cargando...</span>',
@@ -4255,35 +4488,60 @@ function renderLogsHTML(theme) {
     '        <tbody id="agents-body"><tr><td colspan="4" class="empty-state">Cargando...</td></tr></tbody>',
     '      </table>',
     '    </div>',
-    '    <div class="panel">',
-    '      <div class="panel-title" id="log-title">Logs &mdash; seleccion&aacute; un agente</div>',
-    '      <div class="controls">',
-    '        <button class="btn" id="btn-pause" onclick="togglePause()">&#9646;&#9646; Pausar</button>',
-    '        <button class="btn" onclick="clearLogs()">&#128465; Limpiar</button>',
-    '        <button class="btn" onclick="exportLogs()">&#8595; Exportar</button>',
-    '        <input class="filter-input" id="filter-kw" type="text" placeholder="Filtrar..." oninput="applyFilter()"/>',
-    '        <select id="filter-type" class="btn" onchange="applyFilter()" style="padding:4px 8px;"><option value="">Todos</option><option value="error">Errores</option><option value="warn">Warn</option><option value="info">Info</option></select>',
+    '    <div class="panel rich-wrap">',
+    '      <div class="rich-panel" id="rich-panel">',
+    '        <div class="empty-state" id="empty-hint">Seleccion&aacute; un agente o log de sistema<br/><span style="font-size:10px;opacity:.7;">Ver\u00e1s resumen, gates de delivery, tareas, timeline y archivos modificados</span></div>',
+    '        <div id="rich-content" style="display:none;flex-direction:column;flex:1;overflow:hidden;">',
+    '          <div class="rich-hdr" id="rich-hdr"></div>',
+    '          <div class="rich-alerts" id="rich-alerts"></div>',
+    '          <div class="chips-row" id="chips-row"></div>',
+    '          <div class="gates-row" id="gates-row"></div>',
+    '          <div id="attempts-wrap"></div>',
+    '          <div class="tabs-row" id="tabs-row">',
+    '            <div class="tab active" data-tab="progreso" onclick="switchTab(\'progreso\')">Progreso</div>',
+    '            <div class="tab" data-tab="timeline" onclick="switchTab(\'timeline\')">Timeline</div>',
+    '            <div class="tab" data-tab="archivos" onclick="switchTab(\'archivos\')">Archivos</div>',
+    '            <div class="tab" data-tab="raw" onclick="switchTab(\'raw\')">Raw</div>',
+    '            <div class="tab-controls">',
+    '              <button class="btn" id="btn-pause" onclick="togglePause()">&#9208; Pausar</button>',
+    '              <button class="btn" onclick="exportLogs()">&#8595; Exportar</button>',
+    '            </div>',
+    '          </div>',
+    '          <div class="tab-content" id="tab-content"></div>',
+    '        </div>',
     '      </div>',
-    '      <div class="log-container" id="log-box"><div class="empty-state">Seleccion&aacute; un agente</div></div>',
     '    </div>',
     '  </div>',
     '</div>'
   ].join('\n');
   const script = [
-    'var selAgent=null,paused=false,allLines=[];',
-    'function esc(s){return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}',
-    'function togglePause(){paused=!paused;var b=document.getElementById("btn-pause");b.textContent=paused?"\u25b6 Reanudar":"\u23f8 Pausar";b.className=paused?"btn paused":"btn";}',
-    'function clearLogs(){allLines=[];document.getElementById("log-box").innerHTML="";}'  ,
-    'function exportLogs(){var bl=new Blob([allLines.join("\\n")],{type:"text/plain"});var a=document.createElement("a");a.href=URL.createObjectURL(bl);a.download="logs-"+(selAgent||"all")+".txt";a.click();}',
-    'function cls(l){var lo=l.toLowerCase();if(lo.includes("error")||lo.includes("fail"))return "log-error";if(lo.includes("warn"))return "log-warn";if(lo.includes("info")||lo.includes("[cmd")||lo.includes("[done"))return "log-info";return "";}',
-    'function applyFilter(){var kw=(document.getElementById("filter-kw").value||"").toLowerCase();var tf=(document.getElementById("filter-type").value||"").toLowerCase();document.querySelectorAll("#log-box .log-line").forEach(function(el){var t=(el.textContent||"").toLowerCase();el.style.display=((!kw||t.includes(kw))&&(!tf||el.classList.contains("log-"+tf)))?"":"none";});}',
-    'function renderLogs(lines){var b=document.getElementById("log-box");var atBot=b.scrollHeight-b.scrollTop-b.clientHeight<60;if(!lines||!lines.length){b.innerHTML="";return;}var f=document.createDocumentFragment();var kw=(document.getElementById("filter-kw").value||"").toLowerCase();var tf=(document.getElementById("filter-type").value||"").toLowerCase();lines.forEach(function(l){var cc=cls(l);var d=document.createElement("div");d.className="log-line "+cc;d.textContent=l;if((kw&&!l.toLowerCase().includes(kw))||(tf&&!cc.includes(tf)))d.style.display="none";f.appendChild(d);});b.innerHTML="";b.appendChild(f);if(atBot)b.scrollTop=b.scrollHeight;}',
-    'function selA(id){selAgent=id;document.querySelectorAll("#agents-body tr").forEach(function(tr){tr.className=tr.getAttribute("data-id")===id?"selected":"";});var labels={"_commander":"Telegram Commander","_hooks":"Hooks (debug)","_activity":"Activity log","_watcher":"Agent watcher"};document.getElementById("log-title").textContent="Logs: "+(labels[id]||"agente "+id);fetchLogs(id);}',
+    'var selAgent=null,paused=false,currentTab="progreso",richData=null;',
+    'function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}',
+    'function togglePause(){paused=!paused;var b=document.getElementById("btn-pause");if(b){b.innerHTML=paused?"\u25b6 Reanudar":"\u23f8 Pausar";b.className=paused?"btn paused":"btn";}}',
+    'function exportLogs(){var data=richData||{agent:selAgent,note:"sin datos"};var bl=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});var a=document.createElement("a");a.href=URL.createObjectURL(bl);a.download="log-"+(selAgent||"agent")+".json";a.click();}',
+    'function switchTab(name){currentTab=name;document.querySelectorAll("#tabs-row .tab").forEach(function(el){el.className="tab"+(el.getAttribute("data-tab")===name?" active":"");});renderTabContent();}',
+    'function badgeInfo(b){var m={running:["running","badge-running"],stalled:["stalled","badge-stalled"],done:["done","badge-done"],failed_early:["failed","badge-failed"],queued:["en cola","badge-queued"]};return m[b]||["?","badge-queued"];}',
+    'function fmtTokens(n){if(!n)return "0";if(n<1000)return n+"";if(n<1e6)return Math.round(n/1000)+"k";return (n/1e6).toFixed(1)+"M";}',
+    'function relTs(iso){var t=new Date(iso).getTime();if(!t)return "?";var diff=Math.floor((Date.now()-t)/1000);if(diff<60)return "hace "+diff+"s";if(diff<3600)return "hace "+Math.floor(diff/60)+"m";if(diff<86400){var h=Math.floor(diff/3600);var m=Math.floor(diff/60)%60;return "hace "+h+"h"+(m>0?" "+m+"m":"");}return "hace "+Math.floor(diff/86400)+"d";}',
+    'function renderHdr(d){var s=d.summary;var h="";if(!s){var hist=d.gates&&d.gates.result;var blabel=hist?(d.gates.result==="pass"?"hist\u00f3rico":"hist (fail)"):"en cola";var bclass=hist?(d.gates.result==="pass"?"badge-done":"badge-failed"):"badge-queued";var sub=hist?"Sesi\u00f3n archivada \u00b7 gates del audit":"Sin sesi\u00f3n activa ni hist\u00f3rica";h="<div class=\\"rich-hdr-title\\">#"+esc(d.agent)+" <span class=\\"badge "+bclass+"\\">"+blabel+"</span></div><div class=\\"rich-hdr-meta\\">"+sub+"</div>";}else{var bi=badgeInfo(s.badge);h="<div class=\\"rich-hdr-title\\">#"+esc(d.agent)+" "+esc(s.agent_name||"")+" <span class=\\"badge "+bi[1]+"\\">"+bi[0]+"</span></div>";h+="<div class=\\"rich-hdr-meta\\">"+esc(s.branch||"-")+" \u00b7 \u00faltima actividad "+esc(s.last_activity_age||"?")+" atr\u00e1s"+(d.attempts&&d.attempts.length>1?" \u00b7 "+d.attempts.length+" intentos":"")+"</div>";}document.getElementById("rich-hdr").innerHTML=h;}',
+    'function renderAlerts(d){var s=d.summary;var al="";if(s){if(s.badge==="stalled")al+="<div class=\\"rich-alert rich-alert-warn\\">\u26a0 Sin actividad hace "+esc(s.last_activity_age)+" \u2014 posible stall. \u00daltimo tool: "+esc(s.last_tool||"?")+"</div>";if(s.badge==="failed_early")al+="<div class=\\"rich-alert rich-alert-error\\">\u2717 Muerte prematura ("+(s.action_count||0)+" acciones) \u2014 posible fallo de infra</div>";}if(d.gates&&d.gates.result==="fail")al+="<div class=\\"rich-alert rich-alert-error\\">\u2717 Delivery gates fallaron: "+esc(d.gates.summary||"")+"</div>";document.getElementById("rich-alerts").innerHTML=al;}',
+    'function renderChips(d){var s=d.summary;var row=document.getElementById("chips-row");if(!s){row.innerHTML="";row.style.display="none";return;}row.style.display="flex";var c=[];if(s.duration)c.push("<span class=\\"chip\\"><b>\u23f1</b> "+esc(s.duration)+"</span>");if(s.tasks_total)c.push("<span class=\\"chip\\"><b>\u2611</b> "+s.tasks_completed+"/"+s.tasks_total+" tareas</span>");if(s.action_count)c.push("<span class=\\"chip\\"><b>\u26a1</b> "+s.action_count+" acciones</span>");if(s.top_tools&&s.top_tools.length){var tt=s.top_tools.map(function(t){return t.name+" "+t.count;}).join(" \u00b7 ");c.push("<span class=\\"chip\\"><b>\u{1f527}</b> "+esc(tt)+"</span>");}if(s.tokens_estimated)c.push("<span class=\\"chip\\"><b>\u{1f9e0}</b> ~"+fmtTokens(s.tokens_estimated)+" tok</span>");if(s.sub_count)c.push("<span class=\\"chip\\"><b>\u{1f916}</b> "+s.sub_count+" sub-agentes</span>");if(s.skills_invoked&&s.skills_invoked.length){s.skills_invoked.forEach(function(sk){c.push("<span class=\\"chip chip-skill\\">"+esc(sk)+"</span>");});}row.innerHTML=c.join("");}',
+    'function renderGates(d){var g=d.gates;var row=document.getElementById("gates-row");if(!g){row.innerHTML="<span style=\\"font-size:11px;color:var(--text-muted);\\">Sin delivery gates a\u00fan \u2014 agente no pas\u00f3 por /delivery</span>";return;}function cell(name,slot){var st=slot.status||"pending";var cls=st==="pass"?"gate-pass":(st==="fail"?"gate-fail":(st==="warn"?"gate-warn":""));var icon=st==="pass"?"\u2713":(st==="fail"?"\u2717":(st==="warn"?"\u26a0":"\u23f3"));var tip=slot.ts?" title=\\""+esc(slot.ts)+(slot.warning?" \u2014 "+esc(slot.warning):"")+"\\"":"";return "<span class=\\"gate "+cls+"\\""+tip+">"+icon+" "+name+"</span>";}var h=cell("Test",g.tester)+cell("Sec",g.security)+cell("PO",g.po)+cell("Video",g.video)+cell("CI",g.ci);if(g.result)h+="<span style=\\"margin-left:auto;font-size:10px;color:"+(g.result==="pass"?"var(--green)":"var(--red)")+";font-weight:700;text-transform:uppercase;\\">"+esc(g.result)+"</span>";row.innerHTML=h;}',
+    'function renderAttempts(d){var w=document.getElementById("attempts-wrap");if(!d.attempts||d.attempts.length<=1){w.innerHTML="";return;}var total=d.attempts.length;var shown=d.attempts.slice(0,8);var h="<div class=\\"attempts-row\\"><span>Intentos ("+total+"):</span>";shown.forEach(function(a,i){h+="<button class=\\"attempt-btn"+(i===0?" active":"")+"\\" title=\\""+esc(a.session_id)+" \u00b7 "+esc(a.started_ts)+" \u00b7 "+(a.action_count||0)+" acciones\\">#"+(total-i)+" "+esc(a.status||"?")+"</button>";});if(total>8)h+="<span style=\\"color:var(--text-muted);font-size:10px;margin-left:4px;\\">+"+(total-8)+" m\u00e1s</span>";h+="</div>";w.innerHTML=h;}',
+    'function renderProgresoTab(d){var s=d.summary;if(!s)return "<div class=\\"empty-state\\">Sin sesi\u00f3n. Agente en cola o no arranc\u00f3 todav\u00eda.</div>";var tasks=d.tasks||[];var h="";if(s.last_tool){h+="<div style=\\"font-size:11px;color:var(--text-dim);margin-bottom:12px;padding:8px;background:var(--surface2);border-radius:6px;\\"><div style=\\"color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;\\">\u00daltimo tool ejecutado</div><b style=\\"color:var(--blue);\\">"+esc(s.last_tool)+"</b> \u2192 <span style=\\"font-family:monospace;\\">"+esc((s.last_target||"").slice(0,180))+"</span></div>";}if(!tasks.length){h+="<div class=\\"empty-state\\">Sin tareas registradas (el agente no us\u00f3 TaskCreate)</div>";return h;}tasks.forEach(function(t){var st=t.status||"pending";var icon=st==="completed"?"\u2611":(st==="in_progress"?"\u2611\u25b6":"\u2610");var cls=st==="completed"?"completed":(st==="in_progress"?"in-progress":"");h+="<div class=\\"task-item "+cls+"\\"><span class=\\"task-icon\\">"+icon+"</span><span class=\\"task-subject\\">"+esc(t.subject||t.activeForm||t.description||"Tarea")+"</span></div>";var meta=t.metadata||{};if(meta.steps&&st==="in_progress"){var steps=meta.steps;var curr=meta.current_step||0;var done=meta.completed_steps||[];var sh="<div class=\\"task-steps\\">";steps.forEach(function(stp,i){var ok=done.indexOf(stp)>=0;var ic=ok?"\u2713":(i+1===curr?"\u25b6":"\u25cb");sh+="<div>"+ic+" "+esc(stp)+"</div>";});sh+="</div>";h+=sh;}});return h;}',
+    'function renderTimelineTab(d){var tl=d.timeline||[];if(!tl.length)return "<div class=\\"empty-state\\">Sin eventos en activity-log para esta sesi\u00f3n</div>";var h="";tl.forEach(function(e){var target=(e.target||"").slice(0,200);h+="<div class=\\"timeline-entry\\"><div class=\\"timeline-ts\\" title=\\""+esc(e.ts)+"\\">"+relTs(e.ts)+"</div><div class=\\"timeline-tool\\">"+esc(e.tool||"?")+"</div><div class=\\"timeline-target\\">"+esc(target)+"</div></div>";});return h;}',
+    'function renderArchivosTab(d){var mf=d.modified_files||[];if(!mf.length)return "<div class=\\"empty-state\\">Sin archivos modificados registrados</div>";var h="<div style=\\"font-size:11px;color:var(--text-dim);margin-bottom:8px;\\"><b>"+mf.length+"</b> archivos modificados</div>";mf.forEach(function(f){h+="<div class=\\"file-item\\">"+esc(f)+"</div>";});return h;}',
+    'function renderRawTab(d){var lines=(d.rawTail&&d.rawTail.length)?d.rawTail:(d.lines||[]);if(!lines.length)return "<div class=\\"empty-state\\">Sin raw log<br/><span style=\\"font-size:10px;opacity:.7;\\">scripts/logs/agente_"+esc(d.agent||"?")+".log no existe</span></div>";var h="<div class=\\"raw-pre\\">";lines.forEach(function(l){var lo=String(l).toLowerCase();var cls=(lo.indexOf("error")>=0||lo.indexOf("fail")>=0)?"raw-err":(lo.indexOf("warn")>=0?"raw-warn":"");h+="<div class=\\""+cls+"\\">"+esc(l)+"</div>";});h+="</div>";return h;}',
+    'function renderTabContent(){var tc=document.getElementById("tab-content");if(!richData){tc.innerHTML="";return;}if(currentTab==="progreso")tc.innerHTML=renderProgresoTab(richData);else if(currentTab==="timeline")tc.innerHTML=renderTimelineTab(richData);else if(currentTab==="archivos")tc.innerHTML=renderArchivosTab(richData);else if(currentTab==="raw")tc.innerHTML=renderRawTab(richData);}',
+    'function renderSystemLog(d){var labels={"_commander":"Telegram Commander","_hooks":"Hooks (debug)","_activity":"Activity log","_watcher":"Agent watcher","_coordinator":"Agent Coordinator"};document.getElementById("rich-hdr").innerHTML="<div class=\\"rich-hdr-title\\">"+esc(labels[d.agent]||d.agent)+" <span class=\\"badge badge-queued\\">system</span></div><div class=\\"rich-hdr-meta\\">"+esc(d.file||"")+" \u00b7 "+(d.lines||[]).length+" l\u00edneas</div>";document.getElementById("rich-alerts").innerHTML="";document.getElementById("chips-row").innerHTML="";document.getElementById("chips-row").style.display="none";document.getElementById("gates-row").innerHTML="";document.getElementById("gates-row").style.display="none";document.getElementById("attempts-wrap").innerHTML="";switchTab("raw");}',
+    'function renderRich(d){richData=d;document.getElementById("empty-hint").style.display="none";document.getElementById("rich-content").style.display="flex";if(d.isSystem){renderSystemLog(d);return;}document.getElementById("chips-row").style.display="flex";document.getElementById("gates-row").style.display="flex";renderHdr(d);renderAlerts(d);renderChips(d);renderGates(d);renderAttempts(d);renderTabContent();}',
+    'function selA(id){selAgent=id;document.querySelectorAll("#agents-body tr").forEach(function(tr){tr.className=tr.getAttribute("data-id")===id?"selected":"";});fetchLogs(id);}',
     'function fetchAgents(){fetch("/api/logs?agents=1").then(function(r){return r.json();}).then(function(d){var tb=document.getElementById("agents-body");var h="";var sysLogs=d.systemLogs||[];if(sysLogs.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--blue);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">SISTEMA</td></tr>";sysLogs.forEach(function(s){h+="<tr class=\\""+(s.id===selAgent?"selected":"")+"\\" data-id=\\""+esc(s.id)+"\\" onclick=\\"selA(\'"+s.id+"\')\\" style=cursor:pointer>"+"<td>\u2699</td><td>-</td>"+"<td style=font-size:11px;>"+esc(s.label)+"</td>"+"<td><span style=\\"color:var(--blue);\\">system</span></td></tr>";});}if(d.agents&&d.agents.length){var active=d.agents.filter(function(a){return a.status==="active"||a.status==="idle";});var done=d.agents.filter(function(a){return a.status!=="active"&&a.status!=="idle";});if(active.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--green);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">AGENTES ACTIVOS</td></tr>";active.forEach(function(a){h+=agentRow(a);});}if(done.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">COMPLETADOS / HIST\\u00d3RICOS</td></tr>";done.forEach(function(a){h+=agentRow(a);});}}if(!h)h="<tr><td colspan=4 class=empty-state>Sin agentes</td></tr>";tb.innerHTML=h;}).catch(function(){});}',
     'function agentRow(a){var sc=a.status==="active"?"status-active":(a.status==="idle"?"status-idle":"status-done");var issue=a.issue?"<a href=https://github.com/intrale/platform/issues/"+a.issue+" target=_blank style=color:var(--blue);>#"+a.issue+"</a>":"-";return "<tr class=\\""+(a.id===selAgent?"selected":"")+"\\" data-id=\\""+esc(a.id)+"\\" onclick=\\"selA(\'"+a.id+"\')\\" style=cursor:pointer>"+"<td>"+esc(a.numero||a.id)+"</td><td>"+issue+"</td>"+"<td style=font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap title=\\""+esc(a.branch||"")+"\\">"+esc(a.label||a.branch||"-")+"</td>"+"<td><span class=\\""+sc+"\\">"+esc(a.status||"?")+"</span></td></tr>";}',
-    'function fetchLogs(id){if(paused||!id)return;fetch("/api/logs?agent="+encodeURIComponent(id)+"&n=50").then(function(r){return r.json();}).then(function(d){if(d.lines){allLines=d.lines;renderLogs(d.lines);}document.getElementById("upd").textContent="Actualizado "+new Date().toLocaleTimeString("es-AR",{hour12:false});}).catch(function(){});}',
-    'setInterval(function(){fetchAgents();if(selAgent&&!paused)fetchLogs(selAgent);},2000);',
-    'fetchAgents();'
+    'function fetchLogs(id){if(paused||!id)return;fetch("/api/logs?agent="+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){if(d&&!d.error)renderRich(d);document.getElementById("upd").textContent="Actualizado "+new Date().toLocaleTimeString("es-AR",{hour12:false});}).catch(function(){});}',
+    'setInterval(function(){fetchAgents();if(selAgent&&!paused)fetchLogs(selAgent);},3000);',
+    'fetchAgents();',
+    '(function(){var p=new URLSearchParams(location.search);var pre=p.get("select");if(pre){selAgent=pre;fetchLogs(pre);}})();'
   ].join('\n');
   return '<!DOCTYPE html><html lang="es" data-theme="' + (isDark ? 'dark' : 'light') + '">'
     + '<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>'
@@ -4622,7 +4880,7 @@ function handleRequest(req, res) {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       res.end(JSON.stringify({ agents, systemLogs }));
     } else if (agentId) {
-      // Logs de sistema por ID especial
+      // Logs de sistema por ID especial → comportamiento crudo (compat)
       const sysLogMap = {
         '_commander': path.join(REPO_ROOT, '.claude', 'hooks', 'telegram-commander.log'),
         '_hooks': path.join(REPO_ROOT, '.claude', 'hooks', 'hook-debug.log'),
@@ -4630,17 +4888,33 @@ function handleRequest(req, res) {
         '_watcher': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-watcher.log'),
         '_coordinator': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-coordinator.log'),
       };
-      const logsDir = path.join(REPO_ROOT, 'scripts', 'logs');
-      const logFile = path.join(logsDir, 'agente_' + agentId + '.log');
-      const targetFile = sysLogMap[agentId] || (fs.existsSync(logFile) ? logFile : SERVER_LOG_FILE);
-      let lines = [];
-      try {
-        const rawContent = fs.readFileSync(targetFile, 'utf8');
-        const allFileLines = rawContent.split('\n').filter(l => l.trim());
-        lines = allFileLines.slice(Math.max(0, allFileLines.length - lineCount));
-      } catch { lines = ['No se encontro log para agente ' + agentId]; }
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
-      res.end(JSON.stringify({ agent: agentId, lines, file: path.basename(targetFile) }));
+      if (sysLogMap[agentId]) {
+        const targetFile = sysLogMap[agentId];
+        let lines = [];
+        try {
+          const rawContent = fs.readFileSync(targetFile, 'utf8');
+          const allFileLines = rawContent.split('\n').filter(l => l.trim());
+          lines = allFileLines.slice(Math.max(0, allFileLines.length - lineCount));
+        } catch { lines = ['No se encontro log para ' + agentId]; }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+        res.end(JSON.stringify({ agent: agentId, lines, file: path.basename(targetFile), isSystem: true }));
+      } else {
+        // Agente de issue → payload rico (summary, gates, tasks, timeline, files, rawTail)
+        try {
+          const rich = buildRichAgentLog(agentId);
+          // Compat: 'lines' expone rawTail o mensaje si no hay nada
+          const lines = (rich.rawTail && rich.rawTail.length)
+            ? rich.rawTail
+            : (rich.summary ? [] : ['Sin sesion ni log para agente ' + agentId + ' (en cola o aun no arrancó)']);
+          const payload = Object.assign({}, rich, { lines });
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+          res.end(JSON.stringify(payload));
+        } catch (richErr) {
+          try { fs.appendFileSync(SERVER_LOG_FILE, '[' + new Date().toISOString() + '] buildRichAgentLog error: ' + richErr.message + '\n' + richErr.stack + '\n'); } catch {}
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: richErr.message, agent: agentId }));
+        }
+      }
     } else {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Especificar ?agents=1 o ?agent=ID' }));

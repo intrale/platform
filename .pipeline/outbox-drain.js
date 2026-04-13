@@ -9,8 +9,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const PIPELINE = path.resolve(__dirname);
-const ROOT = path.resolve(PIPELINE, "..");
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(PIPELINE, "..");
 const DRAIN_INTERVAL_MS = 3000;
 const PULPO_CHECK_INTERVAL_MS = 15000;
 const PID_FILE = path.join(PIPELINE, "outbox-drain.pid");

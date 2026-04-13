@@ -26,7 +26,12 @@ data class ClientAddress(
 )
 
 data class ClientPreferences(
-    val language: String = "es"
+    val language: String = "es",
+    val pushNotificationsEnabled: Boolean = true,
+    val pushOrderConfirmed: Boolean = true,
+    val pushOrderDelivering: Boolean = true,
+    val pushOrderNearby: Boolean = true,
+    val pushOrderDelivered: Boolean = true
 )
 
 data class ClientProfileData(
@@ -64,7 +69,14 @@ fun ClientAddressDTO.toDomain(defaultId: String? = null): ClientAddress =
         isDefault = isDefault || (defaultId != null && defaultId == id)
     )
 
-fun ClientPreferencesDTO.toDomain(): ClientPreferences = ClientPreferences(language = language)
+fun ClientPreferencesDTO.toDomain(): ClientPreferences = ClientPreferences(
+    language = language,
+    pushNotificationsEnabled = pushNotificationsEnabled,
+    pushOrderConfirmed = pushOrderConfirmed,
+    pushOrderDelivering = pushOrderDelivering,
+    pushOrderNearby = pushOrderNearby,
+    pushOrderDelivered = pushOrderDelivered
+)
 
 fun ClientProfile.toDto(): ClientProfileDTO = ClientProfileDTO(
     fullName = fullName,
@@ -86,14 +98,26 @@ fun ClientAddress.toDto(): ClientAddressDTO = ClientAddressDTO(
     isDefault = isDefault
 )
 
-fun ClientPreferences.toDto(): ClientPreferencesDTO = ClientPreferencesDTO(language = language)
+fun ClientPreferences.toDto(): ClientPreferencesDTO = ClientPreferencesDTO(
+    language = language,
+    pushNotificationsEnabled = pushNotificationsEnabled,
+    pushOrderConfirmed = pushOrderConfirmed,
+    pushOrderDelivering = pushOrderDelivering,
+    pushOrderNearby = pushOrderNearby,
+    pushOrderDelivered = pushOrderDelivered
+)
 
 fun ClientProfileData.toCache(): ClientProfileCache = ClientProfileCache(
     fullName = profile.fullName,
     email = profile.email,
     phone = profile.phone,
     defaultAddressId = profile.defaultAddressId,
-    preferredLanguage = preferences.language
+    preferredLanguage = preferences.language,
+    pushNotificationsEnabled = preferences.pushNotificationsEnabled,
+    pushOrderConfirmed = preferences.pushOrderConfirmed,
+    pushOrderDelivering = preferences.pushOrderDelivering,
+    pushOrderNearby = preferences.pushOrderNearby,
+    pushOrderDelivered = preferences.pushOrderDelivered
 )
 
 fun ClientProfileCache.toDomain(): ClientProfile = ClientProfile(
@@ -104,5 +128,10 @@ fun ClientProfileCache.toDomain(): ClientProfile = ClientProfile(
 )
 
 fun ClientProfileCache.toPreferences(): ClientPreferences = ClientPreferences(
-    language = preferredLanguage ?: "es"
+    language = preferredLanguage ?: "es",
+    pushNotificationsEnabled = pushNotificationsEnabled,
+    pushOrderConfirmed = pushOrderConfirmed,
+    pushOrderDelivering = pushOrderDelivering,
+    pushOrderNearby = pushOrderNearby,
+    pushOrderDelivered = pushOrderDelivered
 )

@@ -13,8 +13,8 @@ const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
-const PIPELINE = path.resolve(__dirname);
-const ROOT = path.resolve(__dirname, '..');
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
@@ -25,6 +25,7 @@ const COMPONENTS = [
   { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
   { name: 'outbox-drain', script: 'outbox-drain.js', pid: 'outbox-drain.pid' },
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
@@ -77,10 +78,13 @@ function startComponent(name) {
 // QA Environment
 const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
 
-function qaAction(action) {
+function qaAction(action, component) {
   if (!fs.existsSync(QA_ENV_SCRIPT)) return { ok: false, msg: 'qa-environment.js no existe' };
   try {
-    const output = execSync(`"${process.execPath}" "${QA_ENV_SCRIPT}" ${action}`, {
+    const cmd = component
+      ? `"${process.execPath}" "${QA_ENV_SCRIPT}" ${action} ${component}`
+      : `"${process.execPath}" "${QA_ENV_SCRIPT}" ${action}`;
+    const output = execSync(cmd, {
       cwd: ROOT, encoding: 'utf8', timeout: 60000, windowsHide: true
     });
     return { ok: true, msg: output.trim().slice(-200) };
@@ -143,7 +147,7 @@ function readYamlSafe(filepath) {
 }
 
 function fileStat(filepath) {
-  try { const s = fs.statSync(filepath); return { ctimeMs: s.ctimeMs, mtimeMs: s.mtimeMs }; }
+  try { const s = fs.statSync(filepath); return { ctimeMs: s.ctimeMs, mtimeMs: s.mtimeMs, birthtimeMs: s.birthtimeMs }; }
   catch { return null; }
 }
 
@@ -215,11 +219,20 @@ function getPipelineState() {
         entry.hasLog = fs.existsSync(path.join(LOG_DIR, logFile));
         entry.logFile = logFile;
 
+        // PDF de reporte de rechazo disponible?
+        const rejectionPdf = `rejection-${issue}-${skill}.pdf`;
+        entry.hasRejectionPdf = fs.existsSync(path.join(LOG_DIR, rejectionPdf));
+        entry.rejectionPdf = rejectionPdf;
+
         state.issueMatrix[issue].fases[`${pName}/${fase}`].push(entry);
 
         if (estado !== 'procesado') {
-          state.issueMatrix[issue].faseActual = `${pName}/${fase}`;
-          state.issueMatrix[issue].estadoActual = estado;
+          // 'trabajando' tiene prioridad: no sobreescribir con 'listo' o 'pendiente'
+          const prev = state.issueMatrix[issue].estadoActual;
+          if (!prev || prev !== 'trabajando' || estado === 'trabajando') {
+            state.issueMatrix[issue].faseActual = `${pName}/${fase}`;
+            state.issueMatrix[issue].estadoActual = estado;
+          }
         }
       }
     }
@@ -227,6 +240,39 @@ function getPipelineState() {
   // Convert Sets to arrays for JSON
   for (const data of Object.values(state.issueMatrix)) {
     data.pipelines = [...data.pipelines];
+  }
+
+  // ETA: calcular promedios históricos por skill+fase desde archivos procesados
+  // Usa mtime (escritura resultado) - ctime (creación archivo) como proxy de duración
+  state.etaAverages = {}; // key: "fase/skill" → avgMs
+  for (const { pipeline: pName, fase } of allFases) {
+    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
+    const listoDir = path.join(PIPELINE, pName, fase, 'listo');
+    for (const dir of [procesadoDir, listoDir]) {
+      for (const f of listWorkFiles(dir)) {
+        const skill = f.split('.').slice(1).join('.');
+        const st = fileStat(path.join(dir, f));
+        if (!st) continue;
+        // duración = ctime - birthtime (ctime = movido a procesado, birthtime = creación original)
+        const dur = st.ctimeMs - st.birthtimeMs;
+        if (dur <= 5000 || dur > 4 * 3600000) continue; // descartar <5s o >4h
+        const key = `${fase}/${skill}`;
+        if (!state.etaAverages[key]) state.etaAverages[key] = { total: 0, count: 0 };
+        state.etaAverages[key].total += dur;
+        state.etaAverages[key].count++;
+      }
+    }
+  }
+  // Calcular promedios y también por fase (sin skill)
+  for (const [key, data] of Object.entries(state.etaAverages)) {
+    data.avgMs = Math.round(data.total / data.count);
+    const fase = key.split('/')[0];
+    if (!state.etaAverages[fase]) state.etaAverages[fase] = { total: 0, count: 0 };
+    state.etaAverages[fase].total += data.total;
+    state.etaAverages[fase].count += data.count;
+  }
+  for (const [key, data] of Object.entries(state.etaAverages)) {
+    if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
   }
 
   // Servicios
@@ -276,7 +322,8 @@ function getPipelineState() {
   }
 
   // QA Environment
-  state.qaEnv = { dynamo: false, backend: false, emulator: false };
+  state.qaEnv = { emulator: false };
+  state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
     for (const [svc, pid] of Object.entries(qaState)) {
@@ -287,6 +334,29 @@ function getPipelineState() {
         } catch {}
       }
     }
+  } catch {}
+  // QA Remote state
+  try {
+    const remoteStateFile = path.join(ROOT, 'qa', '.qa-remote-state');
+    if (fs.existsSync(remoteStateFile)) {
+      const lines = fs.readFileSync(remoteStateFile, 'utf8').split('\n');
+      for (const line of lines) {
+        const [k, ...vParts] = line.split('=');
+        const v = vParts.join('=').trim();
+        if (k === 'QA_MODE' && v === 'remote') state.qaRemote.active = true;
+        if (k === 'QA_REMOTE_URL') state.qaRemote.url = v;
+        if (k === 'DEPLOY_REF') state.qaRemote.ref = v;
+        if (k === 'STARTED_AT') state.qaRemote.startedAt = v;
+      }
+    }
+  } catch {}
+
+  // Priority Windows (estado persistido por el Pulpo)
+  state.priorityWindows = { qa: { active: false }, build: { active: false } };
+  try {
+    const pwData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'priority-windows.json'), 'utf8'));
+    if (pwData.qa) state.priorityWindows.qa = pwData.qa;
+    if (pwData.build) state.priorityWindows.build = pwData.build;
   } catch {}
 
   // Rechazos recientes
@@ -308,6 +378,14 @@ function getPipelineState() {
   state.rechazos.sort((a, b) => b.ts - a.ts);
   state.rechazos = state.rechazos.slice(0, 10);
 
+  // Bloqueos entre issues
+  state.blockedIssues = { blockedBy: {}, blocks: {} };
+  try {
+    const blockedData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'blocked-issues.json'), 'utf8'));
+    if (blockedData.blockedBy) state.blockedIssues.blockedBy = blockedData.blockedBy;
+    if (blockedData.blocks) state.blockedIssues.blocks = blockedData.blocks;
+  } catch {}
+
   // Recursos del sistema
   const resourceLimits = config.resource_limits || {};
   state.resources = {
@@ -326,14 +404,38 @@ function generateHTML(state) {
   const allFases = state.allFases;
   const GH = (num) => `${GITHUB_BASE}/${num}`;
 
-  // Íconos por skill
-  const SKILL_ICON = {
-    guru: '🧠', security: '🔒', po: '📋', ux: '🎨', planner: '📐',
-    'backend-dev': '⚡', 'android-dev': '📱', 'web-dev': '🌐', hotfix: '🔥',
-    tester: '🧪', qa: '✅', review: '👁️', delivery: '🚀', build: '🏗️',
-    commander: '🤖'
+  // Build timestamps para el encabezado
+  const fmtDate = (filepath) => {
+    try {
+      const st = fs.statSync(filepath);
+      return st.mtime.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return '—'; }
   };
-  const skillIcon = (skill) => SKILL_ICON[skill] || '⚙';
+  const dashboardBuild = fmtDate(path.join(PIPELINE, 'dashboard-v2.js'));
+  const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
+
+  // Agentes con personalidad — referentes del mercado
+  const AGENT_PERSONA = {
+    guru:          { icon: '🧠', name: 'Guru',        tagline: 'Rich Hickey · Kevlin Henney · Kleppmann', color: '#bc8cff' },
+    security:      { icon: '🔒', name: 'Security',    tagline: 'Troy Hunt · Bruce Schneier · OWASP',      color: '#f85149' },
+    po:            { icon: '📋', name: 'PO',           tagline: 'Marty Cagan · Teresa Torres · Jeff Patton', color: '#d29922' },
+    ux:            { icon: '🎨', name: 'UX',           tagline: 'Don Norman · Jakob Nielsen · Wroblewski',  color: '#f778ba' },
+    planner:       { icon: '📐', name: 'Planner',     tagline: 'Ryan Singer · Allen Ward · Reinertsen',    color: '#a371f7' },
+    'backend-dev': { icon: '⚡', name: 'BackendDev',  tagline: 'Martin Fowler · Uncle Bob · Sam Newman',   color: '#3fb950' },
+    'android-dev': { icon: '📱', name: 'AndroidDev',  tagline: 'Jake Wharton · Romain Guy · Chet Haase',   color: '#58a6ff' },
+    'web-dev':     { icon: '🌐', name: 'WebDev',      tagline: 'Addy Osmani · Alex Russell · Archibald',   color: '#79c0ff' },
+    tester:        { icon: '🧪', name: 'Tester',      tagline: 'Kent Beck · Meszaros · Martin Fowler',     color: '#d2a8ff' },
+    qa:            { icon: '✅', name: 'QA',           tagline: 'James Bach · Lisa Crispin · Bolton',       color: '#3fb950' },
+    review:        { icon: '👁️', name: 'Review',      tagline: 'Michaela Greiler · Google Eng Practices',  color: '#ffa657' },
+    delivery:      { icon: '🚀', name: 'Delivery',    tagline: 'Jez Humble · Dave Farley �� Forsgren',      color: '#f0883e' },
+    scrum:         { icon: '📊', name: 'Scrum',       tagline: 'Sutherland · Vacanti · Mike Cohn',         color: '#79c0ff' },
+    perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
+    build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
+    hotfix:        { icon: '🔥', name: 'Hotfix',      tagline: 'Emergency fix',                            color: '#f85149' },
+    commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
+  };
+  const skillIcon = (skill) => (AGENT_PERSONA[skill] || {}).icon || '⚙';
+  const skillColor = (skill) => (AGENT_PERSONA[skill] || {}).color || 'var(--dim)';
 
   // KPIs
   const matrixEntries = Object.entries(state.issueMatrix);
@@ -347,9 +449,16 @@ function generateHTML(state) {
   const staleList = matrixEntries.filter(([_, d]) => {
     if (d.estadoActual !== 'trabajando' || !d.faseActual) return false;
     const entries = d.fases[d.faseActual] || [];
-    return entries.some(e => e.ageMin > 10);
+    return entries.some(e => e.ageMin > 30);
   });
   const stale = staleList.length;
+  const staleDetail = staleList.map(([id, d]) => {
+    const entries = d.fases[d.faseActual] || [];
+    const staleEntry = entries.find(e => e.estado === 'trabajando' && e.ageMin > 30);
+    const skill = staleEntry ? staleEntry.skill : d.faseActual;
+    const mins = staleEntry ? staleEntry.ageMin : '?';
+    return `#${id} (${skill}, ${mins} min)`;
+  }).join(', ');
 
   // Helpers para tooltips (JSON embebido, el HTML lo arma el cliente)
   const buildTtData = (title, list, labelFn) => {
@@ -379,18 +488,33 @@ function generateHTML(state) {
   // Definidos = completaron la fase final de definición (sizing/procesado)
   const defFasesKpi = config.pipelines?.definicion?.fases || [];
   const lastDefFase = defFasesKpi[defFasesKpi.length - 1];
-  const definidos = lastDefFase ? matrixEntries.filter(([_, d]) => {
+  const definidosList = lastDefFase ? matrixEntries.filter(([_, d]) => {
     const entries = d.fases[`definicion/${lastDefFase}`] || [];
     return entries.some(e => e.estado === 'procesado');
-  }).length : 0;
+  }) : [];
+  const definidos = definidosList.length;
 
   // Entregados = completaron la fase final de desarrollo (entrega/procesado)
   const devFasesKpi = config.pipelines?.desarrollo?.fases || [];
   const lastDevFase = devFasesKpi[devFasesKpi.length - 1];
-  const entregados = lastDevFase ? matrixEntries.filter(([_, d]) => {
+  const entregadosList = lastDevFase ? matrixEntries.filter(([_, d]) => {
     const entries = d.fases[`desarrollo/${lastDevFase}`] || [];
     return entries.some(e => e.estado === 'procesado');
-  }).length : 0;
+  }) : [];
+  const entregados = entregadosList.length;
+
+  const ttDefinidos  = buildTtData('Definidos listos',        definidosList, (_, d) => {
+    const label = ttLabel(d);
+    return label || 'definición completada';
+  });
+  const ttEntregados = buildTtData('Entregados a producción',  entregadosList, (_, d) => {
+    // Para entregados, buscar el skill que hizo la entrega
+    const entregaEntries = d.fases[`desarrollo/${lastDevFase}`] || [];
+    const proc = entregaEntries.find(e => e.estado === 'procesado');
+    const skill = proc?.skill || '';
+    const label = ttLabel(d);
+    return skill ? `${skill}` + (label ? ` · ${label}` : '') : (label || 'entregado');
+  });
 
   // --- Issue Tracker Matrix (unified) ---
   // Headers: definición phases | separator | desarrollo phases
@@ -449,12 +573,30 @@ function generateHTML(state) {
     <th colspan="${devFases.length}" class="group-dev">DESARROLLO</th>
   </tr>`;
 
-  // Sort: trabajando first (by phase advancement desc), then pendiente (by phase desc), then listo, then rest
+  // Sort: issues incompletos primero (trabajando > pendiente > listo entre ellos),
+  // luego finalizados. Dentro del mismo grupo, más avanzados en pipeline primero.
   const faseIndex = (data) => {
     if (!data.faseActual) return -1;
     return allFases.findIndex(f => `${f.pipeline}/${f.fase}` === data.faseActual);
   };
+  const isComplete = (data) => {
+    // Un issue está completo si todas sus fases están en listo/procesado (sin pendiente/trabajando)
+    const hasAnyActive = allFases.some(({ pipeline, fase }) => {
+      const entries = data.fases[`${pipeline}/${fase}`] || [];
+      return entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
+    });
+    if (hasAnyActive) return false;
+    // Además debe tener al menos la última fase de desarrollo como listo/procesado
+    const lastDev = devFases[devFases.length - 1];
+    const lastEntries = data.fases[`desarrollo/${lastDev}`] || [];
+    return lastEntries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+  };
   const sorted = matrixEntries.sort((a, b) => {
+    const aComplete = isComplete(a[1]);
+    const bComplete = isComplete(b[1]);
+    // Incompletos siempre arriba de completos
+    if (aComplete !== bComplete) return aComplete ? 1 : -1;
+    // Dentro del mismo grupo, ordenar por estado
     const order = { trabajando: 0, pendiente: 1, listo: 2 };
     const aO = a[1].estadoActual ? (order[a[1].estadoActual] ?? 3) : 4;
     const bO = b[1].estadoActual ? (order[b[1].estadoActual] ?? 3) : 4;
@@ -466,25 +608,88 @@ function generateHTML(state) {
     return parseInt(b[0]) - parseInt(a[0]);
   });
 
-  // Show activos + last 15 procesados
-  const shown = sorted.slice(0, Math.max(activos, 0) + 15);
-
+  // Show all issues, but only first 5 visible by default
+  const ISSUE_VISIBLE_LIMIT = 7;
   let rows = '';
-  for (const [issueNum, data] of shown) {
+  let rowIndex = 0;
+  for (const [issueNum, data] of sorted) {
     // Progress bar
     const totalFases = defFases.length + devFases.length;
     const completedFases = allFases.filter(({ pipeline, fase }) => {
       const entries = data.fases[`${pipeline}/${fase}`] || [];
-      return entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+      const hasPendingOrWorking = entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
+      return !hasPendingOrWorking && entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
     }).length;
     const pct = totalFases > 0 ? Math.round(completedFases / totalFases * 100) : 0;
 
-    const issueCell = `<td class="issue-col">
-      <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>
-      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      <span class="progress-text">${completedFases}/${totalFases}</span>
-    </td>`;
+    // ETA por issue: suma de promedios de fases pendientes (independiente de agentes activos)
+    let issueEtaMs = 0;
+    let hasEta = false;
+    for (const pipeline of ['definicion', 'desarrollo']) {
+      const fasesList = pipeline === 'definicion' ? defFases : devFases;
+      for (const faseName of fasesList) {
+        const key = `${pipeline}/${faseName}`;
+        const entries = data.fases[key] || [];
+        const hasPendingOrWorking = entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
+        const isDone = !hasPendingOrWorking && entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+        if (isDone) continue; // Fase completada sin trabajo pendiente, no sumar
 
+        const isWorking = entries.some(e => e.estado === 'trabajando');
+        if (isWorking) {
+          // Fase en curso: ETA = promedio - tiempo transcurrido
+          const workingEntry = entries.find(e => e.estado === 'trabajando');
+          const avgKey = `${faseName}/${workingEntry.skill}`;
+          const avg = state.etaAverages[avgKey] || state.etaAverages[faseName];
+          if (avg?.avgMs && workingEntry.durationMs) {
+            issueEtaMs += Math.max(0, avg.avgMs - workingEntry.durationMs);
+            hasEta = true;
+          }
+        } else {
+          // Fase pendiente o no iniciada: sumar promedio completo
+          const avg = state.etaAverages[faseName];
+          if (avg?.avgMs) {
+            issueEtaMs += avg.avgMs;
+            hasEta = true;
+          }
+        }
+      }
+    }
+    // Para issues completados: calcular duración total real
+    let issueEtaLabel = '';
+    if (hasEta && issueEtaMs > 0) {
+      issueEtaLabel = `<span class="issue-eta" title="ETA estimado para completar fases restantes">⏱ ~${fmtDuration(issueEtaMs)}</span>`;
+    } else if (pct === 100) {
+      // Issue completado: calcular duración total desde timestamps
+      let minTs = Infinity, maxTs = 0;
+      for (const entries of Object.values(data.fases)) {
+        for (const e of entries) {
+          if (e.startedAt && e.startedAt < minTs) minTs = e.startedAt;
+          if (e.updatedAt && e.updatedAt > maxTs) maxTs = e.updatedAt;
+        }
+      }
+      if (maxTs > minTs && minTs < Infinity) {
+        issueEtaLabel = `<span class="issue-eta issue-done-time" title="Tiempo total de completación">✓ ${fmtDuration(maxTs - minTs)}</span>`;
+      }
+    }
+
+    const blockedBy = state.blockedIssues.blockedBy[issueNum];
+    const blocksOthers = state.blockedIssues.blocks[issueNum] || [];
+    let blockIcons = '';
+    if (blockedBy != null) {
+      // blockedBy puede ser [] (label sin deps conocidas) o [n1, n2, ...] (con deps)
+      const depLinks = blockedBy.length > 0 ? blockedBy.map(d => '#' + d).join(', ') : 'dependencias no especificadas';
+      blockIcons += `<span class="block-icon block-locked">🔒<span class="block-tt">Bloqueado por: ${depLinks}</span></span>`;
+    }
+    if (blocksOthers.length > 0) {
+      const blockLinks = blocksOthers.map(d => '#' + d).join(', ');
+      blockIcons += `<span class="block-icon block-blocking">⛓️<span class="block-tt">Bloquea a: ${blockLinks}</span></span>`;
+    }
+
+    const issueCell = `<td class="issue-col">
+      <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>${blockIcons}
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <span class="progress-text">${completedFases}/${totalFases}</span>${issueEtaLabel}
+    </td>`
     let cells = '';
     for (const { pipeline, fase } of allFases) {
       const key = `${pipeline}/${fase}`;
@@ -496,12 +701,22 @@ function generateHTML(state) {
         continue;
       }
 
-      // Detectar skills repetidos para mostrar índice y diferenciar runs anteriores
+      // Fase completada: si TODOS los entries están procesados y aprobados,
+      // colapsar a un indicador compacto en vez de N chips individuales
+      const allProcessed = entries.every(e => e.estado === 'procesado');
+      const allApproved = entries.every(e => !e.resultado || e.resultado === 'aprobado');
+      if (allProcessed && allApproved && !isCurrent) {
+        const skillCount = new Set(entries.map(e => e.skill)).size;
+        cells += `<td class="${pipeline === 'definicion' ? 'col-def' : 'col-dev'}"><span class="phase-done" title="${skillCount} skill(s) completados">✔</span></td>`;
+        continue;
+      }
+
+      // Detectar skills repetidos y colapsar: solo mostrar el último run de cada skill
+      // Los runs anteriores (procesados) son ruido visual — se indican con badge ×N
       const skillRunCount = {};
       for (const e of entries) {
         skillRunCount[e.skill] = (skillRunCount[e.skill] || 0) + 1;
       }
-      // Asignar índice por orden de aparición (más viejo primero)
       const skillRunIndex = {};
       const sortedEntries = [...entries].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
       for (const e of sortedEntries) {
@@ -512,7 +727,10 @@ function generateHTML(state) {
         e._isLatestRun = skillRunIndex[e.skill] === skillRunCount[e.skill];
       }
 
-      const chips = entries.map(e => {
+      // Filtrar: solo el último run de cada skill (colapsar runs anteriores)
+      const visibleEntries = entries.filter(e => e._isLatestRun);
+
+      const chips = visibleEntries.map(e => {
         // Estado rechazado: resultado explícito de rechazo
         const isRejected = e.resultado && e.resultado !== 'aprobado';
 
@@ -524,29 +742,57 @@ function generateHTML(state) {
                      e.estado === 'trabajando' ? '⚙' :
                      e.estado === 'listo' ? '✓' :
                      e.estado === 'procesado' ? '✔' : '○';
-        const staleClass = (e.estado === 'trabajando' && e.ageMin > 10) ? ' stale-chip' : '';
-        // Runs anteriores de un skill repetido se muestran compactos
-        const priorClass = (e._isRetry && !e._isLatestRun) ? ' chip-prior' : '';
-        const runLabel = e._isRetry ? `<sup class="run-idx">${e._runIndex}</sup>` : '';
+        const staleClass = (e.estado === 'trabajando' && e.ageMin > 30) ? ' stale-chip' : '';
+        // Badge de reintentos: ×N si hubo más de 1 run
+        const retryBadge = e._isRetry ? `<sup class="retry-badge" title="${e._runTotal} intentos">×${e._runTotal}</sup>` : '';
 
-        // Tooltip content
+        // ETA por agente activo
+        let etaBadge = '';
+        let ttEta = '';
+        if (e.estado === 'trabajando' && e.durationMs) {
+          const avgKey = `${fase}/${e.skill}`;
+          const avg = state.etaAverages[avgKey] || state.etaAverages[fase];
+          if (avg?.avgMs) {
+            const remaining = Math.max(0, avg.avgMs - e.durationMs);
+            if (remaining > 0) {
+              etaBadge = `<span class="eta-badge">~${fmtDuration(remaining)}</span>`;
+              ttEta = `ETA: ~${fmtDuration(remaining)} (promedio: ${fmtDuration(avg.avgMs)})`;
+            } else {
+              const over = e.durationMs - avg.avgMs;
+              etaBadge = `<span class="eta-badge eta-over">+${fmtDuration(over)}</span>`;
+              ttEta = `Excedido: +${fmtDuration(over)} sobre promedio de ${fmtDuration(avg.avgMs)}`;
+            }
+          }
+        }
+
+        // Tooltip content (atributo title nativo — nunca aparece como texto inline)
         const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
-        const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
+        const ttResStr = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
-        const ttRun = e._isRetry ? `Ejecución: ${e._runIndex}/${e._runTotal}` : '';
-        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttRes, ttMot].filter(Boolean);
-        const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
+        const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
+        const ttEtaStr = ttEta || '';
+        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
+        const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-        // Prior runs: solo ícono + índice (sin nombre del skill)
-        const chipContent = (e._isRetry && !e._isLatestRun)
-          ? `${icon} ${skillIcon(e.skill)}${runLabel}`
-          : `${icon} ${skillIcon(e.skill)} ${e.skill}${runLabel}`;
+        const agentColor = skillColor(e.skill);
+        const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
+
+        // Botón de cancelar para agentes activos (trabajando)
+        const killBtn = e.estado === 'trabajando'
+          ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
+          : '';
+
+        // PDF de rechazo disponible
+        const pdfBtn = e.hasRejectionPdf
+          ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
+          : '';
 
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
         if (e.hasLog) {
-          return `<a href="/logs/${e.logFile}" target="_blank" class="log-link">${inner}</a>`;
+          const isLive = e.estado === 'trabajando';
+          return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
         }
         return inner;
       }).join(' ');
@@ -554,14 +800,17 @@ function generateHTML(state) {
       cells += `<td class="${isCurrent ? 'cell-current' : ''} ${pipeline === 'definicion' ? 'col-def' : 'col-dev'}">${chips}</td>`;
     }
 
-    const rowClass = data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done';
-    rows += `<tr class="${rowClass}">${issueCell}${cells}</tr>`;
+    const blockedClass = blockedBy != null ? ' issue-blocked' : '';
+    const rowClass = (data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done') + blockedClass;
+    const hiddenClass = rowIndex >= ISSUE_VISIBLE_LIMIT ? ' issue-overflow' : '';
+    rows += `<tr class="${rowClass}${hiddenClass}">${issueCell}${cells}</tr>`;
+    rowIndex++;
   }
 
-  const hiddenCount = sorted.length - shown.length;
-  if (hiddenCount > 0) {
-    rows += `<tr class="issue-done"><td colspan="${allFases.length + 1}" class="more-label">... y ${hiddenCount} issues más finalizados</td></tr>`;
-  }
+  const hiddenCount = sorted.length - ISSUE_VISIBLE_LIMIT;
+  const verMasBtn = hiddenCount > 0
+    ? `<div class="ver-mas-container"><button class="ver-mas-btn" onclick="toggleIssues(this)">Ver más (${hiddenCount} issues)</button></div>`
+    : '';
 
   const matrixHTML = `
     <div class="matrix-section">
@@ -575,35 +824,185 @@ function generateHTML(state) {
           <tbody>${rows}</tbody>
         </table>
       </div>
+      ${verMasBtn}
     </div>`;
 
-  // Skill heatmap
+  // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
+  // Calcular frecuencia de uso y últimos issues por skill
+  const skillUsageCount = {};
+  const recentBySkill = {}; // skill → [{ issue, resultado, logFile, hasLog, ts }] (últimos 3)
+  for (const [issue, data] of matrixEntries) {
+    for (const [, faseEntries] of Object.entries(data.fases || {})) {
+      for (const e of faseEntries) {
+        skillUsageCount[e.skill] = (skillUsageCount[e.skill] || 0) + 1;
+        // Recolectar issues completados (listo/procesado) para historial reciente
+        if (e.estado === 'listo' || e.estado === 'procesado') {
+          if (!recentBySkill[e.skill]) recentBySkill[e.skill] = [];
+          recentBySkill[e.skill].push({
+            issue, resultado: e.resultado, logFile: e.logFile,
+            hasLog: e.hasLog, hasRejectionPdf: e.hasRejectionPdf,
+            rejectionPdf: e.rejectionPdf, ts: e.updatedAt || e.startedAt || 0
+          });
+        }
+      }
+    }
+  }
+  // Ordenar cada skill por timestamp desc y quedarse con los últimos 3
+  for (const sk of Object.keys(recentBySkill)) {
+    // Deduplicar por issue (quedarse con el más reciente)
+    const byIssue = {};
+    for (const r of recentBySkill[sk]) {
+      if (!byIssue[r.issue] || r.ts > byIssue[r.issue].ts) byIssue[r.issue] = r;
+    }
+    recentBySkill[sk] = Object.values(byIssue).sort((a, b) => b.ts - a.ts).slice(0, 3);
+  }
+  // Ordenar: 1) más agentes activos (running desc), 2) más usados históricamente (usage desc)
+  const skillEntries = Object.entries(state.skillLoad)
+    .sort((a, b) => {
+      const diff = b[1].running - a[1].running;
+      if (diff !== 0) return diff;
+      return (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0);
+    });
+  // Helper: genera mini-historial de los últimos 3 issues para un skill
+  function skillRecentHTML(skill) {
+    const recents = recentBySkill[skill];
+    if (!recents || recents.length === 0) return '';
+    return '<div class="skill-recent">' + recents.map(r => {
+      const icon = r.resultado === 'aprobado' ? '\u2705' : r.resultado === 'rechazado' ? '\u274C' : '\u23F3';
+      const inner = '#' + r.issue;
+      const pdfLink = r.hasRejectionPdf
+        ? ' <a class="skill-recent-pdf" href="/logs/' + r.rejectionPdf + '" target="_blank" title="Reporte de rechazo PDF" onclick="event.stopPropagation()">\u{1F4C4}</a>'
+        : '';
+      if (r.hasLog) {
+        return '<a class="skill-recent-item" href="#" onclick="event.preventDefault();openLogViewer(\'' + r.logFile + '\',\'#' + r.issue + ' ' + skill + '\')" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>' + pdfLink;
+      }
+      return '<span class="skill-recent-item" title="' + (r.resultado || 'sin log') + '">' + icon + ' ' + inner + '</span>' + pdfLink;
+    }).join('') + '</div>';
+  }
+
+  // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
+  // Sin agentes activos ni servicios en Equipo → más espacio para skills
+  const hasActiveAgents = Object.values(state.skillLoad).some(l => l.running > 0);
+  const MAX_CAP_VISIBLE = hasActiveAgents ? 6 : 12;
   let heatmapHTML = '';
-  for (const [skill, load] of Object.entries(state.skillLoad)) {
+  let shownCount = 0;
+  const idleSkills = [];
+  for (const [skill, load] of skillEntries) {
     const pct = load.max > 0 ? load.running / load.max : 0;
     const cls = pct >= 1 ? 'load-full' : pct > 0 ? 'load-partial' : 'load-idle';
-    const dots = Array(load.max).fill(0).map((_, i) => i < load.running ? '●' : '○').join('');
-    heatmapHTML += `<span class="skill-load ${cls}" title="${skill}: ${load.running}/${load.max}">${skill} ${dots}</span>`;
+    if (cls === 'load-idle') { idleSkills.push([skill, load]); continue; }
+    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
+    const barPct = Math.round(pct * 100);
+    const countLabel = pct >= 1
+      ? `<span style="color:var(--rd);font-weight:700">${load.running}/${load.max}</span>`
+      : `${load.running}/${load.max}`;
+    heatmapHTML += `<div class="skill-cap-chip ${cls}" style="--agent-color:${p.color}" title="${skill}: ${load.running}/${load.max}">
+      <div class="skill-cap-main">
+        <span class="skill-cap-icon">${p.icon}</span>
+        <span class="skill-cap-name">${p.name || skill}</span>
+        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
+        <span class="skill-cap-count">${countLabel}</span>
+      </div>
+      ${skillRecentHTML(skill)}
+    </div>`;
+    shownCount++;
+  }
+  // Llenar slots restantes con idle más relevantes (por uso histórico)
+  const idleSlots = Math.max(0, MAX_CAP_VISIBLE - shownCount);
+  const shownIdle = idleSkills.slice(0, idleSlots);
+  const hiddenIdle = idleSkills.length - shownIdle.length;
+  for (const [skill, load] of shownIdle) {
+    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
+    heatmapHTML += `<div class="skill-cap-chip load-idle" style="--agent-color:${p.color}" title="${skill}: 0/${load.max}">
+      <div class="skill-cap-main">
+        <span class="skill-cap-icon">${p.icon}</span>
+        <span class="skill-cap-name">${p.name || skill}</span>
+        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
+        <span class="skill-cap-count">0/${load.max}</span>
+      </div>
+      ${skillRecentHTML(skill)}
+    </div>`;
+  }
+  if (hiddenIdle > 0) {
+    heatmapHTML += `<span class="skill-idle-summary" title="${hiddenIdle} skills más sin carga">+${hiddenIdle} más</span>`;
   }
 
-  // Servicios
-  let svcsHTML = '';
-  for (const [name, data] of Object.entries(state.servicios)) {
-    const dot = data.pendiente > 0 ? 'svc-busy' : 'svc-ok';
-    svcsHTML += `<span class="svc-chip ${dot}">${name} ${data.pendiente}○ ${data.trabajando}⚙ ${data.listo}✓</span>`;
-  }
+  // Servicios agrupados + procesos standalone
+  const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
+  const SERVICE_GROUPS = [
+    { name: 'Telegram', icon: '📨', queues: ['commander', 'telegram'], processes: ['listener', 'svc-telegram'] },
+    { name: 'GitHub', icon: '🐙', queues: ['github'], processes: ['svc-github'] },
+    { name: 'Drive', icon: '📁', queues: ['drive'], processes: ['svc-drive'] },
+    { name: 'Emulador', icon: '📱', queues: ['emulador'], processes: ['svc-emulador'] },
+  ];
+  const STANDALONE_PROCESSES = ['pulpo', 'outbox-drain', 'dashboard'];
+  const groupedProcesses = new Set(SERVICE_GROUPS.flatMap(g => g.processes));
+  const groupedQueues = new Set(SERVICE_GROUPS.flatMap(g => g.queues));
 
-  // Procesos (con botones start/stop)
-  let procHTML = '';
-  for (const [name, info] of Object.entries(state.procesos)) {
+  let svcCardsHTML = '';
+  for (const group of SERVICE_GROUPS) {
+    // Aggregate queue stats
+    let totalPend = 0, totalWork = 0, totalDone = 0;
+    for (const q of group.queues) {
+      const d = state.servicios[q];
+      if (d) { totalPend += d.pendiente; totalWork += d.trabajando; totalDone += d.listo; }
+    }
+    // Check if any process in group is alive
+    const anyAlive = group.processes.some(p => state.procesos[p]?.alive);
+    const anyDead = group.processes.some(p => !state.procesos[p]?.alive);
+    const groupStatus = totalWork > 0 ? 'svc-card-busy' : anyAlive ? 'svc-card-ok' : 'svc-card-dead';
+
+    // Group-level start/stop: starts or stops all processes in the group
+    const allAlive = group.processes.every(p => state.procesos[p]?.alive);
+    const groupBtn = allAlive
+      ? `<button class="ctl-btn ctl-stop" onclick="${group.processes.map(p => `ctlAction('${p}','stop')`).join(';')}" title="Detener ${group.name}">■</button>`
+      : `<button class="ctl-btn ctl-start" onclick="${group.processes.map(p => `ctlAction('${p}','start')`).join(';')}" title="Iniciar ${group.name}">▶</button>`;
+
+    // Sub-process indicators
+    const subProcs = group.processes.map(p => {
+      const info = state.procesos[p] || { pid: null, alive: false };
+      const dot = info.alive ? '🟢' : '🔴';
+      const label = p.replace('svc-', 'SBC ').replace('listener', 'Listener');
+      return `<span class="svc-group-proc" title="${label}: ${info.alive ? 'PID ' + info.pid : 'detenido'}">${dot} ${label}</span>`;
+    }).join('');
+
+    // Queue detail tooltips
+    const queueDetail = group.queues.map(q => {
+      const d = state.servicios[q];
+      if (!d) return '';
+      return `${q}: ○${d.pendiente} ⚙${d.trabajando} ✓${d.listo}`;
+    }).join(' | ');
+
+    svcCardsHTML += `<div class="svc-card svc-card-group ${groupStatus}">
+      <div class="svc-card-header">
+        ${groupBtn}<span class="svc-card-name">${group.icon} ${group.name}</span>
+        ${anyAlive ? '<span class="svc-card-pulse"></span>' : ''}
+      </div>
+      <div class="svc-card-stats" title="${queueDetail}">
+        <span class="svc-stat" title="Pendiente: ${totalPend}">○${fmtStat(totalPend)}</span>
+        <span class="svc-stat svc-stat-work" title="Trabajando: ${totalWork}">⚙${fmtStat(totalWork)}</span>
+        <span class="svc-stat svc-stat-done" title="Listo: ${totalDone}">✓${fmtStat(totalDone)}</span>
+      </div>
+      <div class="svc-group-procs">${subProcs}</div>
+    </div>`;
+  }
+  // Standalone processes (not in any group)
+  for (const name of STANDALONE_PROCESSES) {
+    const info = state.procesos[name] || { pid: null, alive: false };
     const alive = info.alive;
-    const cls = alive ? 'proc-alive' : 'proc-dead';
+    const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
     const isDashboard = name === 'dashboard';
     const btn = isDashboard ? '' :
       alive
         ? `<button class="ctl-btn ctl-stop" onclick="ctlAction('${name}','stop')" title="Detener ${name}">■</button>`
         : `<button class="ctl-btn ctl-start" onclick="ctlAction('${name}','start')" title="Iniciar ${name}">▶</button>`;
-    procHTML += `<span class="proc-chip ${cls}">${btn}${name}${info.pid && alive ? ' <span class="pid-num">'+info.pid+'</span>' : ''}</span>`;
+    svcCardsHTML += `<div class="svc-card ${statusCls}">
+      <div class="svc-card-header">
+        ${btn}<span class="svc-card-name">${name}</span>
+        ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+      </div>
+      ${info.pid && alive ? '<div class="svc-card-pid">PID ' + info.pid + '</div>' : '<div class="svc-card-pid">detenido</div>'}
+    </div>`;
   }
 
   // System Resources (CPU + RAM gauges)
@@ -624,20 +1023,35 @@ function generateHTML(state) {
         <div class="gauge-value">${res.memPercent}% <span class="gauge-detail">${res.memUsedGB}/${res.memTotalGB} GB · max ${res.maxMem}%</span></div>
       </div>
     </div>
-    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}`;
+    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
+    ${fs.existsSync(path.join(PIPELINE, '.paused')) ? '<div class="resource-alert" style="background:rgba(251,188,5,0.12);border-color:rgba(251,188,5,0.4);color:#f0a500;">⏸️ Lanzamientos pausados por el usuario <button class="ctl-btn" style="margin-left:12px;padding:2px 10px;font-size:0.85em;" onclick="pauseAction(\'resume\')">▶ Reanudar</button></div>' : ''}
+    ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
-  // QA Environment (con botones start/stop globales)
-  const qaLabels = { dynamo: '🗄️ DynamoDB', backend: '⚡ Backend', emulator: '📱 Emulador' };
-  const allQaUp = Object.values(state.qaEnv).every(v => v);
-  const anyQaUp = Object.values(state.qaEnv).some(v => v);
-  let qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
-    const cls = alive ? 'proc-alive' : 'proc-dead';
-    return `<span class="proc-chip ${cls}">${qaLabels[name] || name} ${alive ? '✓' : '✗'}</span>`;
-  }).join('');
-  const qaBtn = anyQaUp
-    ? `<button class="ctl-btn ctl-stop ctl-wide" onclick="ctlAction('qa','stop')">■ Detener QA</button>`
-    : `<button class="ctl-btn ctl-start ctl-wide" onclick="ctlAction('qa','start')">▶ Levantar QA</button>`;
-  qaEnvHTML += `<div class="qa-controls">${qaBtn}</div>`;
+  // Emulador Android — integrado como servicio más en svcCardsHTML
+  const qaRemoteActive = state.qaRemote && state.qaRemote.active;
+  if (qaRemoteActive) {
+    svcCardsHTML += `<div class="svc-card svc-card-ok" style="background: linear-gradient(135deg, #0984e3 0%, #6c5ce7 100%); color: white;">
+      <div class="svc-card-header">
+        <span class="svc-card-name">\u2601\uFE0F QA Remoto</span>
+        <span class="svc-card-pulse"></span>
+      </div>
+      <div class="svc-card-pid" style="color: rgba(255,255,255,0.9);">${state.qaRemote.ref || 'Lambda AWS'}</div>
+    </div>`;
+  } else {
+    Object.entries(state.qaEnv).forEach(([name, alive]) => {
+      const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
+      const btn = alive
+        ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener Emulador">■</button>`
+        : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar Emulador">▶</button>`;
+      svcCardsHTML += `<div class="svc-card ${statusCls}">
+        <div class="svc-card-header">
+          ${btn}<span class="svc-card-name">\u{1F4F1} Emulador</span>
+          ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+        </div>
+        <div class="svc-card-pid">${alive ? 'activo' : 'detenido'}</div>
+      </div>`;
+    });
+  }
 
   // Rechazos recientes
   let rechazosHTML = '';
@@ -649,6 +1063,98 @@ function generateHTML(state) {
   }
 
   // Actividad
+  // --- Agent Team: agentes activos con personalidad ---
+  const activeAgents = {};
+  for (const [issueNum, data] of matrixEntries) {
+    if (!data.faseActual) continue;
+    const entries = data.fases[data.faseActual] || [];
+    for (const e of entries) {
+      if (e.estado === 'trabajando') {
+        if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
+        const [pline, fse] = data.faseActual.split('/');
+        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs });
+      }
+    }
+  }
+
+  let agentTeamCards = '';
+  if (Object.keys(activeAgents).length > 0) {
+    for (const [skill, issues] of Object.entries(activeAgents)) {
+      const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, tagline: '', color: 'var(--dim)' };
+      const issueChips = issues.map(i =>
+        `<a href="${GH(i.issue)}" target="_blank" class="agent-issue">#${i.issue} <span class="agent-issue-fase">${i.fase}</span> <span class="agent-issue-dur">${fmtDuration(i.duration)}</span></a>`
+      ).join('');
+      const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
+      agentTeamCards += `
+        <div class="agent-card" style="--agent-color:${p.color}">
+          <div class="agent-avatar">${p.icon}</div>
+          <div class="agent-info">
+            <div class="agent-name">${p.name}</div>
+            <div class="agent-issues">${issueChips}</div>
+          </div>
+          <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
+          <div class="agent-pulse"></div>
+        </div>`;
+    }
+  }
+
+  // agentTeamCards se usa inline en la sección "Equipo y Skills"
+
+  // --- Mini DORA metrics on main dashboard ---
+  let doraMinHTML = '';
+  try {
+    const metricsData = getMetricsData();
+    const { entregas: doraEntregas, totalProcessed: doraTP, totalRejected: doraRej, etaAverages: doraEta } = metricsData;
+    const doraDelivered7d = doraEntregas.filter(e => Date.now() - e.ts < 7 * 86400000).length;
+    const doraThroughput = (doraDelivered7d / 7).toFixed(1);
+    const doraFailRate = doraTP > 0 ? Math.round(doraRej / doraTP * 100) : 0;
+    // Lead time: promedio de duración completa de issues entregados en los últimos 7 días
+    const recentDeliveries = doraEntregas.filter(e => Date.now() - e.ts < 7 * 86400000);
+    let doraLeadTime = 0;
+    if (recentDeliveries.length > 0) {
+      // Estimar lead time sumando promedios de fases
+      let totalAvg = 0;
+      for (const [key, data] of Object.entries(doraEta)) {
+        if (!key.includes('/') && data.avgMs) totalAvg += data.avgMs;
+      }
+      doraLeadTime = totalAvg;
+    }
+
+    const ltColor = doraLeadTime > 0 && doraLeadTime < 6 * 3600000 ? 'var(--gn)' : doraLeadTime > 0 ? 'var(--yl)' : 'var(--dim)';
+    const tpColor = parseFloat(doraThroughput) >= 2 ? 'var(--gn)' : parseFloat(doraThroughput) > 0 ? 'var(--yl)' : 'var(--dim)';
+    const frColor = doraFailRate <= 15 ? 'var(--gn)' : doraFailRate <= 30 ? 'var(--yl)' : 'var(--rd)';
+
+    doraMinHTML = `
+    <div class="dora-mini">
+      <div class="matrix-header">
+        <h2>📐 DORA Metrics <span style="font-size:0.7em;color:var(--dim);text-transform:none;letter-spacing:0">(rolling 7d · Nicole Forsgren)</span></h2>
+        <a href="/metrics#dora" class="matrix-count" style="text-decoration:none">Ver detalle →</a>
+      </div>
+      <div class="dora-mini-grid">
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${ltColor}">${doraLeadTime > 0 ? fmtDuration(doraLeadTime) : '—'}</div>
+          <div class="dora-mini-label">Lead Time</div>
+          <div class="dora-mini-target">target &lt; 6h</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${tpColor}">${doraThroughput}/d</div>
+          <div class="dora-mini-label">Throughput</div>
+          <div class="dora-mini-target">target &gt; 2/día</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${frColor}">${doraFailRate}%</div>
+          <div class="dora-mini-label">Failure Rate</div>
+          <div class="dora-mini-target">target &lt; 15%</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--ac)">${doraDelivered7d}</div>
+          <div class="dora-mini-label">Entregas 7d</div>
+          <div class="dora-mini-target">${recentDeliveries.length > 0 ? Math.round(doraDelivered7d / 7 * 30) + '/mes proyectado' : 'sin datos'}</div>
+        </div>
+      </div>
+    </div>`;
+  } catch {}
+
   let actHTML = state.actividad.slice(-15).reverse().map(a => {
     const ts = a.ts ? a.ts.slice(11, 19) : '??';
     const dir = a.dir === 'in' ? '→' : '←';
@@ -690,6 +1196,11 @@ h1{
   border-bottom:1px solid var(--bd);padding-bottom:14px;
 }
 h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px}
+.health-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px}
+.health-active{background:var(--gn);box-shadow:0 0 8px var(--gn);animation:healthPulse 2s infinite}
+.health-warn{background:var(--yl);box-shadow:0 0 8px var(--yl);animation:healthPulse 1s infinite}
+.health-idle{background:var(--dim2)}
+@keyframes healthPulse{0%,100%{opacity:1}50%{opacity:0.4}}
 h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;font-weight:600}
 
 /* ── Alert ──────────────────────────────────────────────────────────────── */
@@ -789,6 +1300,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .cell-current{background:rgba(88,166,255,0.07);border-left:3px solid var(--ac)}
 .issue-done{opacity:0.38}
 .issue-listo{opacity:0.65}
+.issue-blocked{background:rgba(248,81,73,0.08)}
+.block-icon{position:relative;margin-left:4px;cursor:help;font-size:0.85em}
+.block-icon .block-tt{display:none;position:absolute;left:50%;transform:translateX(-50%);bottom:120%;background:var(--sf);color:var(--fg);padding:4px 8px;border-radius:4px;font-size:0.8em;white-space:nowrap;z-index:10;border:1px solid var(--bd)}
+.block-icon:hover .block-tt{display:block}
 
 /* ── Chips ──────────────────────────────────────────────────────────────── */
 .chip{
@@ -806,15 +1321,12 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .st-processed{color:var(--gn);opacity:0.55}
 .st-pending{color:var(--dim);background:rgba(139,148,158,0.08);border-color:rgba(139,148,158,0.2)}
 .st-rejected{color:var(--rd);background:rgba(248,81,73,0.1);border-color:rgba(248,81,73,0.3);opacity:0.7}
-.chip-prior{
-  font-size:0.72em;padding:2px 6px;opacity:0.5;
-  transform:scale(0.85);transform-origin:center;
+.retry-badge{
+  font-size:0.7em;font-weight:700;color:var(--yl);
+  margin-left:2px;vertical-align:super;line-height:1;
+  opacity:0.85;
 }
-.chip-prior:hover{opacity:0.85}
-.run-idx{
-  font-size:0.7em;font-weight:700;color:var(--ac);
-  margin-left:1px;vertical-align:super;line-height:1;
-}
+.phase-done{color:var(--gn);opacity:0.4;font-size:1.1em;cursor:default}
 .stale-chip{
   color:var(--ac)!important;background:rgba(88,166,255,0.15)!important;
   border-color:rgba(88,166,255,0.5)!important;animation:pulseBlue 1.8s infinite;
@@ -824,41 +1336,167 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link{text-decoration:none}
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
-/* ── Tooltip ────────────────────────────────────────────────────────────── */
-.chip .tt{
-  display:none;position:absolute;z-index:200;
-  bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
-  background:#000000;border:2px solid var(--ac);border-radius:10px;
-  padding:14px 18px;font-size:0.95em;white-space:nowrap;
-  min-width:220px;color:var(--tx);
-  box-shadow:0 8px 32px rgba(0,0,0,0.9),0 0 0 1px rgba(88,166,255,0.2);
-  pointer-events:none;
+/* ── Log Viewer Panel ──────────────────────────────────────────────────── */
+.log-overlay{
+  display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:500;
+  background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);
 }
-.chip .tt span{display:block;line-height:1.7;color:#c9d1d9;font-size:0.95em}
-.chip .tt span:first-child{color:var(--tx);font-weight:700;font-size:1.05em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
-.chip:hover .tt{display:block}
-.more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
+.log-overlay.open{display:block}
+.log-panel{
+  position:fixed;top:0;right:0;bottom:0;width:55%;min-width:480px;max-width:900px;
+  background:var(--bg);border-left:2px solid var(--bd);z-index:501;
+  display:flex;flex-direction:column;
+  transform:translateX(100%);transition:transform 0.25s ease-out;
+  box-shadow:-8px 0 32px rgba(0,0,0,0.6);
+}
+.log-overlay.open .log-panel{transform:translateX(0)}
 
-/* ── Bar row: skills / servicios / procesos ─────────────────────────────── */
-.bar-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.log-header{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 16px;border-bottom:1px solid var(--bd);
+  background:var(--sf);flex-shrink:0;
+}
+.log-title{font-weight:700;font-size:1.05em;color:var(--tx);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.log-live-badge{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:0.75em;font-weight:700;color:var(--rd);
+  padding:2px 8px;border-radius:10px;
+  background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.3);
+}
+.log-live-dot{
+  width:6px;height:6px;border-radius:50%;background:var(--rd);
+  animation:pulse 1.5s infinite;
+}
+.log-done-badge{
+  font-size:0.75em;font-weight:600;color:var(--dim);
+  padding:2px 8px;border-radius:10px;
+  background:rgba(139,148,158,0.12);border:1px solid rgba(139,148,158,0.25);
+}
+.log-close{
+  background:none;border:1px solid var(--bd);color:var(--dim);
+  width:28px;height:28px;border-radius:6px;cursor:pointer;
+  font-size:1.1em;display:flex;align-items:center;justify-content:center;
+  transition:all 0.15s;
+}
+.log-close:hover{background:var(--rd);color:var(--tx);border-color:var(--rd)}
+.log-open-tab{
+  background:none;border:1px solid var(--bd);color:var(--dim);
+  padding:3px 8px;border-radius:6px;cursor:pointer;
+  font-size:0.78em;transition:all 0.15s;
+}
+.log-open-tab:hover{background:var(--sf2);color:var(--tx)}
+
+.log-toolbar{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 16px;border-bottom:1px solid var(--bd2);
+  background:var(--sf);flex-shrink:0;
+}
+.log-search{
+  flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:5px 10px;color:var(--tx);font-size:0.88em;font-family:inherit;
+  outline:none;
+}
+.log-search:focus{border-color:var(--ac)}
+.log-search::placeholder{color:var(--dim2)}
+.log-filter{
+  background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:5px 8px;color:var(--tx);font-size:0.82em;cursor:pointer;
+}
+.log-match-count{font-size:0.78em;color:var(--dim);white-space:nowrap;min-width:60px;text-align:center}
+.log-btn{
+  background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:4px 10px;color:var(--dim);font-size:0.82em;cursor:pointer;
+  transition:all 0.15s;white-space:nowrap;
+}
+.log-btn:hover{background:var(--sf2);color:var(--tx)}
+.log-btn.active{background:var(--ac2);color:var(--tx);border-color:var(--ac)}
+
+.log-body{
+  flex:1;overflow-y:auto;overflow-x:hidden;
+  padding:0;font-family:'SF Mono','Cascadia Code','Fira Code',Consolas,monospace;
+  font-size:0.82em;line-height:1.65;
+  scroll-behavior:smooth;
+}
+.log-line{
+  padding:1px 16px;display:flex;gap:8px;
+  border-bottom:1px solid rgba(48,54,61,0.3);
+  transition:background 0.1s;white-space:pre-wrap;word-break:break-all;
+}
+.log-line:hover{background:rgba(88,166,255,0.04)}
+.log-line-num{
+  color:var(--dim2);font-size:0.85em;min-width:40px;text-align:right;
+  user-select:none;flex-shrink:0;padding-top:1px;
+}
+.log-line-text{flex:1;min-width:0}
+.log-line.log-error{color:var(--rd);background:rgba(248,81,73,0.05)}
+.log-line.log-error:hover{background:rgba(248,81,73,0.1)}
+.log-line.log-warning{color:var(--yl)}
+.log-line.log-success{color:var(--gn)}
+.log-line.log-tool{color:var(--ac)}
+.log-line.log-meta{color:var(--dim)}
+.log-line.log-highlight{background:rgba(210,153,34,0.15)!important}
+.log-line.log-highlight-current{background:rgba(210,153,34,0.3)!important}
+.log-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--dim);gap:10px;
+}
+.log-empty-spinner{
+  width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);
+  border-radius:50%;animation:spin 1s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.log-footer{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 16px;border-top:1px solid var(--bd);
+  background:var(--sf);flex-shrink:0;font-size:0.78em;color:var(--dim);
+}
+.log-scroll-btn{
+  background:var(--ac2);color:var(--tx);border:none;border-radius:6px;
+  padding:3px 10px;cursor:pointer;font-size:0.85em;
+  display:none;
+}
+.log-scroll-btn.visible{display:inline-block}
+
+/* Tooltip nativo via atributo title — sin HTML inline en el chip */
+.more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
+.issue-overflow{display:none}
+.issue-overflow.show{display:table-row}
+.ver-mas-container{text-align:center;padding:10px 0}
+.ver-mas-btn{background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:var(--radius);padding:6px 18px;cursor:pointer;font-size:0.88em;transition:background 0.2s}
+.ver-mas-btn:hover{background:var(--bd)}
+
+/* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
+.dual-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.dual-col{flex:1;min-width:320px}
 .bar-section{
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
-  padding:16px 18px;flex:1;min-width:200px;
+  padding:16px 18px;
 }
-.skill-load{
-  display:inline-flex;align-items:center;gap:5px;
-  font-size:0.82em;padding:4px 8px;margin:3px;
-  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
+.sys-chips-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px}
+/* ── Service Cards ──────────────────────────────────────────────────────── */
+.svc-grid{display:flex;flex-wrap:wrap;gap:8px}
+.svc-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:8px 10px;min-width:90px;flex:1;max-width:140px;
+  border-left:3px solid var(--dim2);transition:box-shadow 0.2s;
 }
-.load-full{color:var(--rd);border-color:rgba(248,81,73,0.3)}
-.load-partial{color:var(--yl);border-color:rgba(210,153,34,0.3)}
-.load-idle{color:var(--dim2)}
-.svc-chip{
-  display:inline-flex;align-items:center;gap:5px;
-  font-size:0.82em;padding:4px 10px;margin:3px;
-  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
-}
-.svc-busy{border-left:3px solid var(--yl)}.svc-ok{border-left:3px solid var(--gn)}
+.svc-card:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
+.svc-card-ok{border-left-color:var(--gn)}
+.svc-card-busy{border-left-color:var(--yl)}
+.svc-card-dead{border-left-color:var(--rd)}
+.svc-card-header{display:flex;align-items:center;gap:4px}
+.svc-card-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.svc-card-pulse{width:5px;height:5px;border-radius:50%;background:var(--gn);animation:agentPulse 2s infinite;margin-left:auto;flex-shrink:0}
+.svc-card-busy .svc-card-pulse{background:var(--yl)}
+.svc-card-stats{display:flex;gap:6px;margin-top:4px;overflow:hidden}
+.svc-stat{font-size:0.75em;font-weight:700;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:default}
+.svc-stat-work{color:var(--yl)}
+.svc-stat-done{color:var(--gn)}
+.svc-card-pid{font-size:0.68em;color:var(--dim2);margin-top:2px;font-variant-numeric:tabular-nums}
+.svc-card-group{min-width:160px;max-width:220px}
+.svc-group-procs{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.svc-group-proc{font-size:0.65em;color:var(--dim);white-space:nowrap;cursor:default}
 .proc-chip{
   display:inline-flex;align-items:center;gap:5px;
   font-size:0.82em;padding:4px 8px;margin:3px;
@@ -879,7 +1517,25 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-start{background:var(--gn2);color:var(--gn)}
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
-.qa-controls{margin-top:8px}
+/* Priority Windows (inline toggles in Equipo header) */
+.pw-toggles{margin-left:auto;display:inline-flex;gap:6px;font-size:0.65em;vertical-align:middle}
+.pw-toggle{padding:2px 10px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none}
+.pw-toggle-active{background:var(--yl2);color:var(--yl);border-color:var(--yl);animation:pwPulse 2.5s ease-in-out infinite}
+.pw-toggle-inactive{background:var(--sf2);color:var(--dim);border-color:var(--bd)}
+.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg)}
+.pw-toggle.pw-build.pw-toggle-active{background:var(--ac2);color:var(--ac);border-color:var(--ac)}
+@keyframes pwPulse{0%,100%{opacity:1}50%{opacity:0.65}}
+/* Kill agent button */
+.kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
+.kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
+.kill-group-btn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:14px;font-weight:700;cursor:pointer;opacity:0;transition:opacity 0.2s,background 0.15s;line-height:1;flex-shrink:0;margin-left:auto}
+.agent-card:hover .kill-group-btn{opacity:0.6}
+.kill-group-btn:hover{opacity:1!important;background:var(--rd);color:#fff}
+/* ETA badges */
+.eta-badge{font-size:0.7em;padding:1px 5px;border-radius:8px;background:var(--ac2);color:var(--ac);margin-left:4px;font-weight:600;white-space:nowrap}
+.eta-over{background:var(--or2);color:var(--or)}
+.issue-eta{display:block;font-size:0.72em;color:var(--ac);margin-top:2px;white-space:nowrap}
+.issue-done-time{color:var(--gn)}
 
 /* Toast notification */
 .toast{
@@ -949,7 +1605,94 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .collapse-section summary:hover{background:rgba(255,255,255,0.03)}
 .collapse-body{padding:10px 18px 14px;border-top:1px solid var(--bd2)}
 
-/* ── Footer ─────────────────────────────────────────────────────────────── */
+/* ── Agent Team ────────────────────────────────────────────────────────── */
+.team-section{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:18px 20px;margin-bottom:20px;
+}
+/* ── Agent Cards (compact) ──────────────────────────────────────────────── */
+.agent-grid{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.agent-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:8px 12px;display:flex;gap:8px;align-items:center;
+  border-left:3px solid var(--agent-color);
+  position:relative;overflow:hidden;flex:1;min-width:200px;max-width:320px;
+  transition:border-color 0.2s,box-shadow 0.2s;
+}
+.agent-card:hover{border-color:var(--agent-color);box-shadow:0 0 8px rgba(88,166,255,0.1)}
+.agent-avatar{font-size:1.2em;line-height:1}
+.agent-info{flex:1;min-width:0}
+.agent-name{font-weight:700;font-size:0.88em;color:var(--agent-color);line-height:1}
+.agent-issues{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.agent-issue{
+  font-size:0.72em;padding:2px 6px;border-radius:10px;
+  background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.2);
+  color:var(--ac);display:inline-flex;align-items:center;gap:3px;
+  text-decoration:none;transition:background 0.15s;
+}
+.agent-issue:hover{background:rgba(88,166,255,0.15);text-decoration:none}
+.agent-issue-fase{color:var(--dim);font-size:0.9em}
+.agent-issue-dur{color:var(--dim2);font-size:0.85em}
+.agent-pulse{
+  position:absolute;top:6px;right:6px;width:6px;height:6px;
+  border-radius:50%;background:var(--agent-color);
+  animation:agentPulse 2s ease-in-out infinite;
+}
+@keyframes agentPulse{0%,100%{opacity:1;box-shadow:0 0 4px var(--agent-color)}50%{opacity:0.3;box-shadow:none}}
+
+/* ── Sub-section labels ─────────────────────────────────────────────────── */
+.subsection-label{
+  font-size:0.68em;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;
+  font-weight:600;margin-bottom:6px;margin-top:10px;
+  display:flex;align-items:center;gap:8px;
+}
+.subsection-label::after{content:'';flex:1;height:1px;background:var(--bd2)}
+
+/* ── Skill Capacity Chips (inline compact) ──────────────────────────────── */
+.skill-cap-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.skill-cap-chip{
+  display:inline-flex;flex-direction:column;gap:3px;
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:6px 10px;border-left:3px solid var(--agent-color,var(--dim2));
+  transition:box-shadow 0.2s;min-width:110px;
+}
+.skill-cap-chip:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
+.load-full.skill-cap-chip{border-left-color:var(--rd)}
+.skill-cap-main{display:flex;align-items:center;gap:6px}
+.skill-cap-icon{font-size:1em;line-height:1}
+.skill-cap-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap}
+.skill-cap-bar{width:32px;height:4px;background:var(--bd);border-radius:2px;overflow:hidden;display:inline-block}
+.skill-cap-fill{display:block;height:100%;border-radius:2px;transition:width 0.6s ease}
+.load-partial .skill-cap-fill{background:var(--yl)}
+.load-full .skill-cap-fill{background:var(--rd)}
+.skill-cap-count{font-size:0.72em;color:var(--dim);font-variant-numeric:tabular-nums}
+.load-idle.skill-cap-chip{opacity:0.5;border-left-color:var(--dim2)}
+.load-idle .skill-cap-name{color:var(--dim)}
+.skill-idle-summary{font-size:0.75em;color:var(--dim);font-style:italic;padding:4px 8px}
+.skill-recent{display:flex;gap:4px;flex-wrap:wrap}
+.skill-recent-item{font-size:0.65em;color:var(--dim);text-decoration:none;cursor:pointer;padding:1px 4px;border-radius:4px;background:var(--sf2);white-space:nowrap;transition:background 0.15s}
+a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
+.skill-recent-pdf{font-size:0.65em;text-decoration:none;cursor:pointer;opacity:0.7;transition:opacity 0.15s}
+.skill-recent-pdf:hover{opacity:1}
+.rejection-pdf-btn{text-decoration:none;font-size:0.7em;margin-left:2px;opacity:0.7;transition:opacity 0.15s;cursor:pointer}
+.rejection-pdf-btn:hover{opacity:1}
+
+/* ── DORA Mini ─────────────────────────────────────────────────────────── */
+.dora-mini{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:18px 20px;margin-bottom:20px;
+}
+.dora-mini-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.dora-mini-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:14px 12px;text-align:center;
+}
+.dora-mini-value{font-size:1.8em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.dora-mini-label{color:var(--dim);font-size:0.78em;font-weight:600;margin-top:4px;text-transform:uppercase;letter-spacing:0.5px}
+.dora-mini-target{font-size:0.7em;color:var(--dim2);margin-top:4px}
+@media(max-width:700px){.dora-mini-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ── Footer ──────────────────────────────────────────���──────────────────── */
 .footer{margin-top:22px;font-size:0.75em;color:var(--dim2);text-align:center;padding-top:12px;border-top:1px solid var(--bd2)}
 
 /* ── Empty state ────────────────────────────────────────────────────────── */
@@ -970,9 +1713,18 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 </style></head>
 <body>
-  <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span></h1>
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+    <h1 style="margin:0">🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
+    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap;align-items:center">
+      <span>📊 Dashboard: <b style="color:var(--tx)">${dashboardBuild}</b></span>
+      <span>🐙 Pulpo: <b style="color:var(--tx)">${pulpoBuild}</b></span>
+      ${fs.existsSync(path.join(PIPELINE, '.paused'))
+        ? '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:#f0a500;color:#000;border-radius:6px;" onclick="pauseAction(\'resume\')" title="Pipeline pausado — click para reanudar">▶ Reanudar</button>'
+        : '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:rgba(251,188,5,0.18);color:#f0a500;border:1px solid rgba(251,188,5,0.4);border-radius:6px;" onclick="pauseAction(\'pause\')" title="Pausar lanzamientos del pipeline">⏸ Pausar</button>'}
+    </div>
+  </div>
 
-  ${stale > 0 ? `<div class="alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 10 min en trabajando — posible huérfano</div>` : ''}
+  <!-- orphan alert moved to system section -->
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
@@ -996,25 +1748,56 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
       <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
       <div class="kpi-label">Bloqueados / stale</div>
     </div>
-    <div class="kpi kpi-definidos">
+    <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
       <span class="kpi-icon">📋</span>
       <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
       <div class="kpi-label">Definidos listos</div>
     </div>
-    <div class="kpi kpi-entregados">
+    <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
       <span class="kpi-icon">🚀</span>
       <div class="kpi-value success">${entregados}</div>
       <div class="kpi-label">Entregados a prod</div>
     </div>
   </div>
 
-  <div class="bar-section" style="margin-bottom:20px"><h2>💻 Recursos del sistema</h2>${resourcesHTML}</div>
-
-  <div class="bar-row">
-    <div class="bar-section"><h2>🧠 Skills activos</h2>${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
-    <div class="bar-section"><h2>📡 Servicios</h2>${svcsHTML}</div>
-    <div class="bar-section"><h2>⚡ Procesos</h2>${procHTML}</div>
-    <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
+  <div class="dual-row">
+    <div class="bar-section dual-col">
+      <h2>🧠 Equipo<span class="pw-toggles">${(() => {
+        const pw = state.priorityWindows;
+        const items = [
+          { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
+          { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
+        ];
+        // Leer umbral configurado
+        let threshold = 3;
+        try {
+          const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
+          threshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+        } catch {}
+        const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
+        return items.map(i => {
+          const s = pw[i.key];
+          const active = s && s.active;
+          const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
+          const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
+          let tip = active
+            ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
+            : 'Activar ' + i.label + ' Priority (umbral auto: ' + threshold + ' issues)';
+          if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
+          const action = active ? 'off' : 'on';
+          const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
+          return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
+        }).join('');
+      })()}</span></h2>
+      ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
+      ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
+    </div>
+    <div class="bar-section dual-col">
+      <h2>💻 Sistema</h2>
+      ${resourcesHTML}
+      <div class="subsection-label" style="margin-top:14px">Servicios</div>
+      <div class="svc-grid">${svcCardsHTML}</div>
+    </div>
   </div>
 
   ${matrixHTML}
@@ -1025,12 +1808,43 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 
   <div class="footer">🔴 Live · Auto-refresh 10s &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
+<!-- Log Viewer Panel -->
+<div id="log-overlay" class="log-overlay" onclick="if(event.target===this)closeLogViewer()">
+  <div class="log-panel">
+    <div class="log-header">
+      <span id="log-title" class="log-title"></span>
+      <span id="log-status-badge"></span>
+      <button class="log-open-tab" onclick="openLogInTab()" title="Abrir en nueva pestaña">↗ Tab</button>
+      <button class="log-close" onclick="closeLogViewer()" title="Cerrar (Esc)">✕</button>
+    </div>
+    <div class="log-toolbar">
+      <input type="text" id="log-search" class="log-search" placeholder="Buscar en el log…" oninput="filterLog()" onkeydown="if(event.key==='Enter')jumpToMatch(event.shiftKey?-1:1)">
+      <span id="log-match-count" class="log-match-count"></span>
+      <select id="log-filter" class="log-filter" onchange="filterLog()">
+        <option value="all">Todo</option>
+        <option value="error">❌ Errores</option>
+        <option value="warning">⚠ Warnings</option>
+        <option value="tool">🔧 Tools</option>
+        <option value="success">✓ Éxitos</option>
+      </select>
+      <button id="log-pause-btn" class="log-btn" onclick="togglePause()">⏸ Pause</button>
+    </div>
+    <div id="log-body" class="log-body"></div>
+    <div class="log-footer">
+      <span id="log-line-count"></span>
+      <span id="log-last-update"></span>
+      <button id="log-scroll-btn" class="log-scroll-btn" onclick="scrollLogToBottom()">⬇ Ir al final</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // SSE live refresh — solo recarga si el estado cambió
 let lastHash = null;
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash) location.reload();
+  // No recargar si el log viewer está abierto (perdería el panel)
+  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) location.reload();
   lastHash = e.data;
 };
 es.onerror = () => { setTimeout(() => location.reload(), 10000); };
@@ -1090,6 +1904,103 @@ async function ctlAction(target, action) {
   btns.forEach(b => b.classList.remove('loading'));
 }
 
+// Pause/resume pipeline
+async function pauseAction(action) {
+  try {
+    const resp = await fetch('/api/pause', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
+}
+
+// QA component action (individual or all)
+async function qaComponentAction(component, action) {
+  const btn = event && event.target ? event.target : null;
+  if (btn) btn.classList.add('loading');
+  try {
+    const body = component === 'all'
+      ? { target: 'qa', action }
+      : { target: 'qa', action, component };
+    const resp = await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error: ' + e.message, false);
+  }
+  if (btn) btn.classList.remove('loading');
+}
+
+// Kill agent
+async function killAgent(issue, skill, pipeline, fase) {
+  if (!confirm('¿Cancelar agente ' + skill + ' en #' + issue + '?')) return;
+  try {
+    const resp = await fetch('/api/kill-agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue, skill, pipeline, fase })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error: ' + e.message, false);
+  }
+}
+
+// Kill all agents of a skill group
+async function killSkillGroup(skill, agents) {
+  if (!confirm('¿Cancelar todos los agentes ' + skill + ' (' + agents.length + ' activos)?')) return;
+  let ok = 0, fail = 0;
+  for (const a of agents) {
+    try {
+      const resp = await fetch('/api/kill-agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase })
+      });
+      const result = await resp.json();
+      if (result.ok) ok++; else fail++;
+    } catch { fail++; }
+  }
+  showToast(skill + ': ' + ok + ' cancelados' + (fail > 0 ? ', ' + fail + ' fallaron' : ''), fail === 0);
+  setTimeout(() => location.reload(), 1500);
+}
+
+// Priority Window toggle
+async function pwAction(window, action) {
+  try {
+    const resp = await fetch('/api/priority-window', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ window, action })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
+}
+
+function toggleIssues(btn) {
+  const rows = document.querySelectorAll('.issue-overflow');
+  const expanded = rows.length > 0 && rows[0].classList.contains('show');
+  rows.forEach(r => r.classList.toggle('show', !expanded));
+  btn.textContent = expanded ? 'Ver más (' + rows.length + ' issues)' : 'Ver menos';
+}
+
 function showToast(msg, ok) {
   const existing = document.querySelector('.toast');
   if (existing) existing.remove();
@@ -1119,23 +2030,876 @@ document.querySelectorAll('.fase-badge[data-fase-tt]').forEach(el => {
   el.addEventListener('mousemove', positionTt);
   el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
 });
+
+// ── Log Viewer ────────────────────────────────────────────────────────
+let logViewerES = null;
+let logViewerFile = null;
+let logViewerPaused = false;
+let logAllLines = [];
+let logMatchIndices = [];
+let logCurrentMatch = -1;
+let logAutoScroll = true;
+
+function classifyLine(text) {
+  if (/error|exception|fail|❌|CRASH|panic/i.test(text)) return 'log-error';
+  if (/warn|⚠|WARNING/i.test(text)) return 'log-warning';
+  if (/\[Tool:|tool_use|Edit\]|Read\]|Write\]|Bash\]|Grep\]|Glob\]/i.test(text)) return 'log-tool';
+  if (/✓|passed|success|✔|completed|APROBADO/i.test(text)) return 'log-success';
+  if (/^---\s|^\[.*\]\s*$|^=+$/.test(text)) return 'log-meta';
+  return '';
+}
+
+/** Parsear una línea de stream-json de Claude CLI a texto legible para el log viewer */
+function parseStreamJsonLine(raw) {
+  if (!raw || !raw.startsWith('{')) return raw; // No es JSON, devolver tal cual
+  try {
+    const ev = JSON.parse(raw);
+    switch (ev.type) {
+      case 'system':
+        if (ev.subtype === 'init') return '[init] modelo: ' + (ev.model || '?') + ' | tools: ' + (ev.tools || []).length;
+        return '[system] ' + (ev.subtype || '') + ' ' + (ev.message || '');
+      case 'assistant':
+        if (ev.subtype === 'text') return ev.content || '';
+        if (ev.subtype === 'tool_use') {
+          var name = ev.tool_name || ev.name || '?';
+          var inp = '';
+          try {
+            var input = ev.input || ev.tool_input || {};
+            if (input.command) inp = ': ' + input.command.substring(0, 120);
+            else if (input.pattern) inp = ': ' + input.pattern;
+            else if (input.file_path) inp = ': ' + input.file_path;
+            else if (input.skill) inp = ': ' + input.skill;
+            else if (input.query) inp = ': ' + input.query.substring(0, 80);
+          } catch(_) {}
+          return '[Tool] ' + name + inp;
+        }
+        return ev.content || JSON.stringify(ev).substring(0, 200);
+      case 'result':
+        var cost = ev.cost_usd ? ' ($' + ev.cost_usd.toFixed(4) + ')' : '';
+        var dur = ev.duration_ms ? ' ' + Math.round(ev.duration_ms / 1000) + 's' : '';
+        return '[result] ' + (ev.subtype || 'done') + cost + dur;
+      default:
+        // Otros tipos: mostrar tipo + contenido resumido
+        if (ev.content) return '[' + ev.type + '] ' + (typeof ev.content === 'string' ? ev.content.substring(0, 200) : JSON.stringify(ev.content).substring(0, 200));
+        return raw.substring(0, 200);
+    }
+  } catch(_) {
+    return raw; // Parse falló, devolver raw
+  }
+}
+
+function renderLine(text, idx) {
+  var display = parseStreamJsonLine(text);
+  if (!display || !display.trim()) return ''; // Skip empty lines
+  var cls = classifyLine(display);
+  var escaped = display.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return '<div class="log-line ' + cls + '" data-idx="' + idx + '"><span class="log-line-num">' + (idx + 1) + '</span><span class="log-line-text">' + escaped + '</span></div>';
+}
+
+function openLogViewer(filename, title, isLive) {
+  logViewerFile = filename;
+  logAllLines = [];
+  logMatchIndices = [];
+  logCurrentMatch = -1;
+  logAutoScroll = true;
+  logViewerPaused = false;
+
+  document.getElementById('log-title').textContent = title;
+  document.getElementById('log-status-badge').innerHTML = isLive
+    ? '<span class="log-live-badge"><span class="log-live-dot"></span> LIVE</span>'
+    : '<span class="log-done-badge">Finalizado</span>';
+  document.getElementById('log-body').innerHTML = '<div class="log-empty"><div class="log-empty-spinner"></div>Cargando log…</div>';
+  document.getElementById('log-search').value = '';
+  document.getElementById('log-match-count').textContent = '';
+  document.getElementById('log-filter').value = 'all';
+  document.getElementById('log-pause-btn').textContent = '⏸ Pause';
+  document.getElementById('log-pause-btn').classList.toggle('active', false);
+  document.getElementById('log-pause-btn').style.display = isLive ? '' : 'none';
+  document.getElementById('log-line-count').textContent = '';
+  document.getElementById('log-scroll-btn').classList.remove('visible');
+  document.getElementById('log-overlay').classList.add('open');
+
+  // Close SSE if open
+  if (logViewerES) { logViewerES.close(); logViewerES = null; }
+
+  // Open SSE stream
+  logViewerES = new EventSource('/logs/stream/' + encodeURIComponent(filename));
+  logViewerES.onmessage = function(e) {
+    if (logViewerPaused) return;
+    try {
+      const msg = JSON.parse(e.data);
+      const body = document.getElementById('log-body');
+      if (msg.type === 'init') {
+        logAllLines = msg.lines;
+        body.innerHTML = msg.lines.map((l, i) => renderLine(l, i)).join('');
+        scrollLogToBottom();
+      } else if (msg.type === 'append') {
+        const startIdx = logAllLines.length;
+        logAllLines.push(...msg.lines);
+        const html = msg.lines.map((l, i) => renderLine(l, startIdx + i)).join('');
+        body.insertAdjacentHTML('beforeend', html);
+        if (logAutoScroll) scrollLogToBottom();
+      }
+      updateLogFooter();
+      // Re-apply filter/search if active
+      const searchVal = document.getElementById('log-search').value;
+      const filterVal = document.getElementById('log-filter').value;
+      if (searchVal || filterVal !== 'all') applyFilterVisual();
+    } catch(_) {}
+  };
+  logViewerES.onerror = function() {
+    // Connection lost — show in status
+    const badge = document.getElementById('log-status-badge');
+    if (badge) badge.innerHTML = '<span class="log-done-badge">Desconectado</span>';
+  };
+
+  // Track scroll for auto-scroll toggle
+  const body = document.getElementById('log-body');
+  body.onscroll = function() {
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+    logAutoScroll = atBottom;
+    document.getElementById('log-scroll-btn').classList.toggle('visible', !atBottom);
+  };
+}
+
+function closeLogViewer() {
+  document.getElementById('log-overlay').classList.remove('open');
+  if (logViewerES) { logViewerES.close(); logViewerES = null; }
+}
+
+function openLogInTab() {
+  if (logViewerFile) window.open('/logs/' + logViewerFile, '_blank');
+}
+
+function scrollLogToBottom() {
+  const body = document.getElementById('log-body');
+  body.scrollTop = body.scrollHeight;
+  logAutoScroll = true;
+  document.getElementById('log-scroll-btn').classList.remove('visible');
+}
+
+function togglePause() {
+  logViewerPaused = !logViewerPaused;
+  const btn = document.getElementById('log-pause-btn');
+  btn.textContent = logViewerPaused ? '▶ Resume' : '⏸ Pause';
+  btn.classList.toggle('active', logViewerPaused);
+}
+
+function updateLogFooter() {
+  document.getElementById('log-line-count').textContent = logAllLines.length + ' líneas';
+  document.getElementById('log-last-update').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
+}
+
+function filterLog() {
+  applyFilterVisual();
+}
+
+function applyFilterVisual() {
+  const searchVal = document.getElementById('log-search').value.toLowerCase();
+  const filterVal = document.getElementById('log-filter').value;
+  const body = document.getElementById('log-body');
+  const lines = body.querySelectorAll('.log-line');
+  logMatchIndices = [];
+
+  lines.forEach((el, i) => {
+    const text = logAllLines[i] || '';
+    const textLower = text.toLowerCase();
+    let visible = true;
+
+    // Category filter
+    if (filterVal !== 'all') {
+      const cls = classifyLine(text);
+      const filterMap = { error: 'log-error', warning: 'log-warning', tool: 'log-tool', success: 'log-success' };
+      if (cls !== filterMap[filterVal]) visible = false;
+    }
+
+    // Search filter
+    if (searchVal && visible) {
+      if (textLower.includes(searchVal)) {
+        logMatchIndices.push(i);
+        el.classList.add('log-highlight');
+      } else {
+        el.classList.remove('log-highlight');
+        visible = false;
+      }
+    } else {
+      el.classList.remove('log-highlight');
+    }
+
+    el.style.display = visible ? '' : 'none';
+    el.classList.remove('log-highlight-current');
+  });
+
+  // Update match count
+  const countEl = document.getElementById('log-match-count');
+  if (searchVal && logMatchIndices.length > 0) {
+    logCurrentMatch = 0;
+    highlightCurrentMatch();
+    countEl.textContent = logMatchIndices.length + ' coincidencias';
+  } else if (searchVal) {
+    countEl.textContent = '0 coincidencias';
+    logCurrentMatch = -1;
+  } else {
+    countEl.textContent = filterVal !== 'all' ? logMatchIndices.length + ' filtradas' : '';
+    // When only filter, show matching lines without search
+    if (filterVal !== 'all' && !searchVal) {
+      lines.forEach((el, i) => {
+        const text = logAllLines[i] || '';
+        const cls = classifyLine(text);
+        const filterMap = { error: 'log-error', warning: 'log-warning', tool: 'log-tool', success: 'log-success' };
+        el.style.display = cls === filterMap[filterVal] ? '' : 'none';
+      });
+    }
+  }
+}
+
+function highlightCurrentMatch() {
+  if (logCurrentMatch < 0 || logMatchIndices.length === 0) return;
+  const body = document.getElementById('log-body');
+  body.querySelectorAll('.log-highlight-current').forEach(el => el.classList.remove('log-highlight-current'));
+  const idx = logMatchIndices[logCurrentMatch];
+  const target = body.querySelector('.log-line[data-idx="' + idx + '"]');
+  if (target) {
+    target.classList.add('log-highlight-current');
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  document.getElementById('log-match-count').textContent = (logCurrentMatch + 1) + '/' + logMatchIndices.length;
+}
+
+function jumpToMatch(direction) {
+  if (logMatchIndices.length === 0) return;
+  logCurrentMatch = (logCurrentMatch + direction + logMatchIndices.length) % logMatchIndices.length;
+  highlightCurrentMatch();
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('log-overlay').classList.contains('open')) return;
+  if (e.key === 'Escape') { closeLogViewer(); e.preventDefault(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    document.getElementById('log-search').focus();
+  }
+});
 </script>
+</body></html>`;
+}
+
+// --- Metrics ---
+
+/**
+ * Inferir actividad histórica desde timestamps de archivos procesados y activity log.
+ * Genera snapshots sintéticos para poblar /metrics cuando no hay datos del Pulpo.
+ */
+function inferHistoricalActivity() {
+  const events = []; // { ts, type, fase, skill }
+
+  // 1. Archivos procesados/listo de todas las fases — cada uno es un "agente terminó"
+  const config = loadConfig();
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) {
+      for (const estado of ['procesado', 'listo', 'trabajando', 'pendiente']) {
+        const dir = path.join(PIPELINE, pName, fase, estado);
+        for (const f of listWorkFiles(dir)) {
+          const st = fileStat(path.join(dir, f));
+          if (!st) continue;
+          const skill = f.split('.').slice(1).join('.');
+          // birthtime = creación, ctime = movido a este dir
+          if (st.birthtimeMs > 0) events.push({ ts: st.birthtimeMs, type: 'start', fase, skill });
+          if (st.ctimeMs > st.birthtimeMs) events.push({ ts: st.ctimeMs, type: 'end', fase, skill });
+        }
+      }
+    }
+  }
+
+  // 2. Activity log — tool calls como proxy de actividad
+  try {
+    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
+    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
+    for (const l of lines) {
+      try {
+        const d = JSON.parse(l);
+        const ts = typeof d.ts === 'string' ? new Date(d.ts).getTime() : d.ts;
+        if (ts > 0) events.push({ ts, type: 'tool', fase: 'agent', skill: d.session?.slice(0, 8) || '' });
+      } catch {}
+    }
+  } catch {}
+
+  if (events.length === 0) return [];
+
+  // Ordenar y agrupar en buckets de 5min
+  events.sort((a, b) => a.ts - b.ts);
+  const BUCKET_MS = 300000; // 5 minutos
+  const minTs = events[0].ts;
+  const maxTs = events[events.length - 1].ts;
+  const snapshots = [];
+
+  for (let t = minTs; t <= maxTs; t += BUCKET_MS) {
+    const bucketEnd = t + BUCKET_MS;
+    const inBucket = events.filter(e => e.ts >= t && e.ts < bucketEnd);
+    const agents = new Set(inBucket.filter(e => e.type === 'start' || e.type === 'tool').map(e => e.skill)).size;
+    const byFase = {};
+    for (const e of inBucket) {
+      if (!byFase[e.fase]) byFase[e.fase] = { working: 0, pending: 0 };
+      if (e.type === 'start') byFase[e.fase].working++;
+      if (e.type === 'end') byFase[e.fase].pending++;
+    }
+    // Estimar CPU/RAM basándose en cantidad de agentes activos
+    const estCpu = Math.min(95, agents * 20 + (inBucket.length > 5 ? 15 : 5));
+    const estMem = Math.min(95, 40 + agents * 12);
+    const level = estCpu > 90 || estMem > 90 ? 'red' : estCpu > 80 || estMem > 80 ? 'orange' : estCpu > 65 || estMem > 65 ? 'yellow' : 'green';
+
+    snapshots.push({
+      ts: t,
+      cpu: estCpu,
+      mem: estMem,
+      level,
+      agents,
+      byFase,
+      inferred: true // Marcar como dato inferido
+    });
+  }
+
+  return snapshots;
+}
+
+function getMetricsData() {
+  const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
+  let snapshots = [];
+  try {
+    const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
+    for (const l of lines) {
+      try { snapshots.push(JSON.parse(l)); } catch {}
+    }
+  } catch {}
+
+  // Si no hay snapshots del Pulpo, inferir actividad histórica desde archivos procesados
+  // Esto da una timeline de cuándo hubo trabajo en cada fase
+  if (snapshots.length < 10) {
+    const inferred = inferHistoricalActivity();
+    if (inferred.length > snapshots.length) snapshots = inferred;
+  }
+
+  // Promedios de duración por fase/skill (reusar lógica de ETA)
+  const state = getPipelineState();
+  const etaAverages = state.etaAverages || {};
+
+  // Throughput: issues completados por período (de archivos en entrega/procesado)
+  const entregas = [];
+  try {
+    const dir = path.join(PIPELINE, 'desarrollo', 'entrega', 'procesado');
+    for (const f of listWorkFiles(dir)) {
+      const st = fileStat(path.join(dir, f));
+      if (st) entregas.push({ issue: f.split('.')[0], ts: st.ctimeMs });
+    }
+  } catch {}
+  entregas.sort((a, b) => a.ts - b.ts);
+
+  // Cuota Anthropic estimada (del activity log)
+  const tokenEstimates = { totalSessions: 0, totalTools: 0, totalEstimatedTokens: 0, bySession: [] };
+  try {
+    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
+    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
+    const sessions = {};
+    for (const l of lines) {
+      try {
+        const d = JSON.parse(l);
+        if (!d.session) continue;
+        if (!sessions[d.session]) sessions[d.session] = { tools: 0, firstTs: d.ts, lastTs: d.ts };
+        sessions[d.session].tools++;
+        sessions[d.session].lastTs = d.ts;
+      } catch {}
+    }
+    for (const [id, s] of Object.entries(sessions)) {
+      const durSeg = typeof s.firstTs === 'string' && typeof s.lastTs === 'string'
+        ? (new Date(s.lastTs) - new Date(s.firstTs)) / 1000
+        : typeof s.firstTs === 'number' ? (s.lastTs - s.firstTs) / 1000 : 0;
+      const estimated = Math.round((durSeg * 15) + (s.tools * 500));
+      tokenEstimates.totalSessions++;
+      tokenEstimates.totalTools += s.tools;
+      tokenEstimates.totalEstimatedTokens += estimated;
+      tokenEstimates.bySession.push({ id: id.slice(0, 8), tools: s.tools, durMin: Math.round(durSeg / 60), tokens: estimated });
+    }
+  } catch {}
+
+  // Tasa de rebotes (rechazos / total)
+  let totalProcessed = 0, totalRejected = 0;
+  const config = loadConfig();
+  const allFases = [];
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) allFases.push({ pipeline: pName, fase });
+  }
+  for (const { pipeline: pName, fase } of allFases) {
+    for (const estado of ['procesado', 'listo']) {
+      const dir = path.join(PIPELINE, pName, fase, estado);
+      for (const f of listWorkFiles(dir)) {
+        totalProcessed++;
+        const data = readYamlSafe(path.join(dir, f));
+        if (data.resultado === 'rechazado') totalRejected++;
+      }
+    }
+  }
+
+  // Agent performance: issues procesados por skill, duración promedio, rechazos
+  const agentPerf = {};
+  for (const { pipeline: pName, fase } of allFases) {
+    for (const estado of ['procesado', 'listo']) {
+      const dir = path.join(PIPELINE, pName, fase, estado);
+      for (const f of listWorkFiles(dir)) {
+        const skill = f.split('.').slice(1).join('.');
+        if (!skill) continue;
+        if (!agentPerf[skill]) agentPerf[skill] = { issues: 0, rejected: 0, totalDurMs: 0, durCount: 0, toolCalls: 0 };
+        agentPerf[skill].issues++;
+        const data = readYamlSafe(path.join(dir, f));
+        if (data.resultado === 'rechazado') agentPerf[skill].rejected++;
+        const st = fileStat(path.join(dir, f));
+        if (st) {
+          const dur = st.ctimeMs - st.birthtimeMs;
+          if (dur > 5000 && dur < 4 * 3600000) {
+            agentPerf[skill].totalDurMs += dur;
+            agentPerf[skill].durCount++;
+          }
+        }
+      }
+    }
+  }
+  // Enriquecer con tool calls del activity log
+  try {
+    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
+    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
+    const sessionSkill = {};
+    for (const l of lines) {
+      try {
+        const d = JSON.parse(l);
+        if (d.session && d.skill) sessionSkill[d.session] = d.skill;
+        if (d.session && d.tool) {
+          const sk = sessionSkill[d.session] || d.session;
+          if (agentPerf[sk]) agentPerf[sk].toolCalls++;
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf };
+}
+
+function generateMetricsHTML() {
+  const data = getMetricsData();
+  const { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf } = data;
+
+  // Últimas 1h, 6h, 24h de snapshots
+  const now = Date.now();
+  const snap1h = snapshots.filter(s => now - s.ts < 3600000);
+  const snap6h = snapshots.filter(s => now - s.ts < 21600000);
+  const snap24h = snapshots;
+
+  // CPU/RAM promedios
+  const avgCpu = (arr) => arr.length ? Math.round(arr.reduce((a, s) => a + s.cpu, 0) / arr.length) : 0;
+  const avgMem = (arr) => arr.length ? Math.round(arr.reduce((a, s) => a + s.mem, 0) / arr.length) : 0;
+  const maxCpu = (arr) => arr.length ? Math.max(...arr.map(s => s.cpu)) : 0;
+  const maxMem = (arr) => arr.length ? Math.max(...arr.map(s => s.mem)) : 0;
+  const avgAgents = (arr) => arr.length ? (arr.reduce((a, s) => a + s.agents, 0) / arr.length).toFixed(1) : 0;
+
+  // Throughput
+  const delivered24h = entregas.filter(e => now - e.ts < 86400000).length;
+  const delivered7d = entregas.length;
+
+  // Tiempo en cada nivel de presión (últimas 24h)
+  const levelCounts = { green: 0, yellow: 0, orange: 0, red: 0 };
+  for (const s of snap24h) levelCounts[s.level] = (levelCounts[s.level] || 0) + 1;
+  const totalSnaps = snap24h.length || 1;
+  const levelPct = {};
+  for (const [l, c] of Object.entries(levelCounts)) levelPct[l] = Math.round(c / totalSnaps * 100);
+
+  // Rebote rate
+  const reboteRate = totalProcessed > 0 ? Math.round(totalRejected / totalProcessed * 100) : 0;
+
+  // Cuota Anthropic
+  const tokM = (tokenEstimates.totalEstimatedTokens / 1000000).toFixed(1);
+  const costEst = (tokenEstimates.totalEstimatedTokens / 1000000 * 3).toFixed(2); // ~$3/MTok estimate
+
+  // Sparkline y chart data
+  const sparkData = snap1h.length > 2 ? snap1h.slice(-60) : snapshots.slice(-120);
+  const cpuSpark = sparkData.map(s => s.cpu);
+  const memSpark = sparkData.map(s => s.mem);
+  const agentSpark = sparkData.map(s => s.agents);
+
+  function sparkline(values, max, color) {
+    if (values.length < 2) return '<span class="dim">sin datos</span>';
+    const w = 300, h = 40;
+    const step = w / (values.length - 1);
+    const points = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max * h)).toFixed(1)}`).join(' ');
+    return `<svg width="${w}" height="${h}" class="sparkline"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+  }
+
+  // Gráfico grande (para sección de históricos)
+  function chart(values, max, color, label, unit, thresholds) {
+    if (values.length < 2) return '<div class="dim" style="padding:20px">Sin datos suficientes. El Pulpo genera snapshots cada 30s cuando corre.</div>';
+    const w = 800, h = 160, pad = 40;
+    const pw = w - pad * 2, ph = h - pad;
+    const step = pw / (values.length - 1);
+    const points = values.map((v, i) => `${(pad + i * step).toFixed(1)},${(h - pad - (v / max * ph)).toFixed(1)}`).join(' ');
+    // Area fill
+    const areaPoints = `${pad},${h - pad} ${points} ${(pad + (values.length - 1) * step).toFixed(1)},${h - pad}`;
+    // Y axis labels
+    const yLabels = [0, 25, 50, 75, 100].map(v => {
+      const y = h - pad - (v / max * ph);
+      return `<text x="${pad - 5}" y="${y + 4}" text-anchor="end" fill="#8b949e" font-size="10">${v}${unit}</text><line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="#21262d" stroke-width="0.5"/>`;
+    }).join('');
+    // X axis time labels (first, middle, last)
+    const tsFirst = sparkData[0]?.ts;
+    const tsLast = sparkData[sparkData.length - 1]?.ts;
+    const fmtTs = (ts) => ts ? new Date(ts).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) : '';
+    const xLabels = tsFirst ? `<text x="${pad}" y="${h - 5}" fill="#8b949e" font-size="10">${fmtTs(tsFirst)}</text><text x="${w - pad}" y="${h - 5}" text-anchor="end" fill="#8b949e" font-size="10">${fmtTs(tsLast)}</text>` : '';
+    // Threshold lines
+    let thresholdLines = '';
+    if (thresholds) {
+      for (const [val, col] of thresholds) {
+        const y = h - pad - (val / max * ph);
+        thresholdLines += `<line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="${col}" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>`;
+      }
+    }
+    // Avg line
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+    const avgY = h - pad - (avg / max * ph);
+
+    return `<svg viewBox="0 0 ${w} ${h}" class="chart">
+      ${yLabels}${xLabels}${thresholdLines}
+      <polygon points="${areaPoints}" fill="${color}" opacity="0.1"/>
+      <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2"/>
+      <line x1="${pad}" y1="${avgY}" x2="${w - pad}" y2="${avgY}" stroke="${color}" stroke-width="1" stroke-dasharray="2,4" opacity="0.6"/>
+      <text x="${w - pad + 5}" y="${avgY + 4}" fill="${color}" font-size="10">avg ${avg.toFixed(0)}${unit}</text>
+      <text x="${pad}" y="14" fill="#e6edf3" font-size="12" font-weight="600">${label}</text>
+    </svg>`;
+  }
+
+  const isInferred = snapshots.length > 0 && snapshots[0].inferred;
+  const dataSourceLabel = isInferred
+    ? '⚠️ Datos inferidos desde timestamps de archivos (el Pulpo no estaba corriendo). Precisión limitada.'
+    : `📊 ${snapshots.length} snapshots reales del Pulpo (${snapshots.length > 0 ? fmtDuration(now - snapshots[0].ts) : '0'} de historia)`;
+
+  // ETA averages table
+  let etaRows = '';
+  const faseOrder = ['analisis', 'criterios', 'sizing', 'validacion', 'dev', 'build', 'verificacion', 'aprobacion', 'entrega'];
+  for (const fase of faseOrder) {
+    const avg = etaAverages[fase];
+    if (!avg?.avgMs) continue;
+    // Skills detail
+    const skills = Object.entries(etaAverages)
+      .filter(([k]) => k.startsWith(fase + '/'))
+      .map(([k, v]) => `${k.split('/')[1]}: ${fmtDuration(v.avgMs)}`)
+      .join(', ');
+    etaRows += `<tr><td>${fase}</td><td>${fmtDuration(avg.avgMs)}</td><td>${avg.count}</td><td class="dim">${skills}</td></tr>`;
+  }
+
+  // Session table (top 10 by tokens)
+  const topSessions = tokenEstimates.bySession.sort((a, b) => b.tokens - a.tokens).slice(0, 10);
+  let sessionRows = topSessions.map(s =>
+    `<tr><td>${s.id}</td><td>${s.tools}</td><td>${s.durMin}min</td><td>${(s.tokens / 1000).toFixed(0)}K</td></tr>`
+  ).join('');
+
+  return `<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Métricas — Pipeline V2</title>
+<style>
+:root{--bg:#0d1117;--sf:#161b22;--sf2:#1c2128;--bd:#30363d;--tx:#e6edf3;--dim:#8b949e;--ac:#58a6ff;--gn:#3fb950;--yl:#d29922;--or:#db6d28;--rd:#f85149;--radius:10px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;padding:20px 24px;font-size:15px;line-height:1.5}
+a{color:var(--ac);text-decoration:none}
+h1{font-size:1.5em;margin-bottom:20px;display:flex;align-items:center;gap:10px}
+h2{font-size:1.1em;color:var(--tx);margin-bottom:12px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);padding:16px}
+.card-value{font-size:2em;font-weight:700}
+.card-label{color:var(--dim);font-size:0.85em}
+.card-sub{color:var(--dim);font-size:0.78em;margin-top:4px}
+.green{color:var(--gn)}.yellow{color:var(--yl)}.orange{color:var(--or)}.red{color:var(--rd)}.blue{color:var(--ac)}
+table{width:100%;border-collapse:collapse;font-size:0.88em}
+th{text-align:left;color:var(--dim);padding:6px 10px;border-bottom:1px solid var(--bd);font-weight:600}
+td{padding:6px 10px;border-bottom:1px solid var(--bd)}
+.dim{color:var(--dim)}
+.sparkline{display:block;margin-top:8px}
+.level-bar{display:flex;height:20px;border-radius:6px;overflow:hidden;margin:8px 0}
+.level-bar>div{height:100%;display:flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;color:#000}
+.back-link{margin-bottom:16px;display:inline-block}
+.chart{width:100%;height:auto;max-height:200px}
+.chart-grid{display:grid;grid-template-columns:1fr;gap:12px}
+.section{margin-bottom:28px}
+.section-ref{font-size:0.65em;color:var(--dim);font-weight:400;font-style:italic;letter-spacing:0;text-transform:none;margin-left:8px}
+.bar-h{position:relative;height:12px;background:var(--bd);border-radius:4px;overflow:hidden;min-width:80px}
+.bar-h-fill{height:100%;border-radius:4px;transition:width 0.4s}
+.bar-h-label{font-size:0.82em;margin-right:8px;min-width:70px;display:inline-block}
+.bar-h-value{font-size:0.82em;margin-left:8px;font-weight:600}
+.dora-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px}
+.dora-card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);padding:18px;text-align:center}
+.dora-value{font-size:2.2em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.dora-target{font-size:0.78em;color:var(--dim);margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px}
+.dora-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.reco-card p{margin-bottom:8px;line-height:1.5;font-size:0.9em}
+.reco-card strong{font-weight:700}
+.trend-up{color:var(--gn)}.trend-down{color:var(--rd)}.trend-flat{color:var(--dim)}
+</style></head><body>
+<a href="/" class="back-link">← Dashboard</a>
+<h1>📊 Métricas del Pipeline</h1>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-value blue">${snap24h.length}</div>
+    <div class="card-label">Snapshots (24h)</div>
+    <div class="card-sub">${snap1h.length} última hora · ${snap6h.length} últimas 6h</div>
+  </div>
+  <div class="card">
+    <div class="card-value">${avgCpu(snap1h)}%<span class="dim" style="font-size:0.5em"> / ${maxCpu(snap1h)}% max</span></div>
+    <div class="card-label">CPU promedio (1h)</div>
+    ${sparkline(cpuSpark, 100, '#f85149')}
+  </div>
+  <div class="card">
+    <div class="card-value">${avgMem(snap1h)}%<span class="dim" style="font-size:0.5em"> / ${maxMem(snap1h)}% max</span></div>
+    <div class="card-label">RAM promedio (1h)</div>
+    ${sparkline(memSpark, 100, '#d29922')}
+  </div>
+  <div class="card">
+    <div class="card-value">${avgAgents(snap1h)}</div>
+    <div class="card-label">Agentes promedio (1h)</div>
+    ${sparkline(agentSpark, 5, '#58a6ff')}
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-value green">${delivered24h}</div>
+    <div class="card-label">Issues entregados (24h)</div>
+    <div class="card-sub">${delivered7d} total histórico</div>
+  </div>
+  <div class="card">
+    <div class="card-value ${reboteRate > 30 ? 'red' : reboteRate > 15 ? 'yellow' : 'green'}">${reboteRate}%</div>
+    <div class="card-label">Tasa de rechazo</div>
+    <div class="card-sub">${totalRejected} rechazados / ${totalProcessed} procesados</div>
+  </div>
+  <div class="card">
+    <div class="card-value blue">${tokM}M</div>
+    <div class="card-label">Tokens estimados (total)</div>
+    <div class="card-sub">~$${costEst} USD · ${tokenEstimates.totalSessions} sesiones · ${tokenEstimates.totalTools} herramientas</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Presión de recursos (24h)</div>
+    <div class="level-bar">
+      ${levelPct.green > 0 ? `<div style="width:${levelPct.green}%;background:var(--gn)">${levelPct.green}%</div>` : ''}
+      ${levelPct.yellow > 0 ? `<div style="width:${levelPct.yellow}%;background:var(--yl)">${levelPct.yellow}%</div>` : ''}
+      ${levelPct.orange > 0 ? `<div style="width:${levelPct.orange}%;background:var(--or)">${levelPct.orange}%</div>` : ''}
+      ${levelPct.red > 0 ? `<div style="width:${levelPct.red}%;background:var(--rd)">${levelPct.red}%</div>` : ''}
+    </div>
+    <div class="card-sub">🟢 ${levelPct.green || 0}% · 🟡 ${levelPct.yellow || 0}% · 🟠 ${levelPct.orange || 0}% · 🔴 ${levelPct.red || 0}%</div>
+  </div>
+</div>
+
+<div class="section">
+<h2>📈 Gráficos históricos</h2>
+<div class="card-sub" style="margin-bottom:12px">${dataSourceLabel}</div>
+<div class="chart-grid">
+  <div class="card">${chart(snapshots.map(s => s.cpu), 100, '#f85149', 'CPU %', '%', [[65, '#d29922'], [80, '#db6d28'], [90, '#f85149']])}</div>
+  <div class="card">${chart(snapshots.map(s => s.mem), 100, '#d29922', 'RAM %', '%', [[65, '#d29922'], [80, '#db6d28'], [90, '#f85149']])}</div>
+  <div class="card">${chart(snapshots.map(s => s.agents), 6, '#58a6ff', 'Agentes activos', '', [])}</div>
+</div>
+</div>
+
+<div class="section">
+<h2>⏱ Velocidad por fase (promedios históricos)</h2>
+<table>
+<thead><tr><th>Fase</th><th>Promedio</th><th>Muestras</th><th>Detalle por skill</th></tr></thead>
+<tbody>${etaRows || '<tr><td colspan="4" class="dim">Sin datos históricos</td></tr>'}</tbody>
+</table>
+</div>
+
+<div class="section">
+<h2>🤖 Cuota Anthropic — Top sesiones por consumo estimado</h2>
+<table>
+<thead><tr><th>Sesión</th><th>Herramientas</th><th>Duración</th><th>Tokens est.</th></tr></thead>
+<tbody>${sessionRows || '<tr><td colspan="4" class="dim">Sin datos</td></tr>'}</tbody>
+</table>
+<div class="card-sub" style="margin-top:8px">⚠️ Tokens estimados por proxy: (duración_seg × 15) + (tools × 500). Calibrar con dashboard de Anthropic.</div>
+</div>
+
+
+${(() => {
+  // --- Velocity Section ---
+  const now7d = Date.now() - 7 * 86400000;
+  const now14d = Date.now() - 14 * 86400000;
+  const delivered7d_v = entregas.filter(e => e.ts >= now7d).length;
+  const delivered14d_v = entregas.filter(e => e.ts >= now14d && e.ts < now7d).length;
+  const throughput7d = (delivered7d_v / 7).toFixed(1);
+  const throughputTrend = delivered14d_v > 0 ? Math.round((delivered7d_v - delivered14d_v) / delivered14d_v * 100) : 0;
+  const trendIcon = throughputTrend > 5 ? '↑' : throughputTrend < -5 ? '↓' : '→';
+  const trendColor = throughputTrend > 5 ? 'var(--gn)' : throughputTrend < -5 ? 'var(--rd)' : 'var(--dim)';
+
+  // Cycle time estimado (suma promedios de fases)
+  let cycleTimeMs = 0;
+  for (const [key, d] of Object.entries(etaAverages)) {
+    if (!key.includes('/') && d.avgMs) cycleTimeMs += d.avgMs;
+  }
+
+  // Daily series for sparkbar
+  const dailySeries = [];
+  for (let i = 6; i >= 0; i--) {
+    const dayStart = Date.now() - (i + 1) * 86400000;
+    const dayEnd = Date.now() - i * 86400000;
+    const count = entregas.filter(e => e.ts >= dayStart && e.ts < dayEnd).length;
+    const dayLabel = new Date(dayEnd).toLocaleDateString('es-AR', { weekday: 'short' }).slice(0, 2);
+    dailySeries.push({ label: dayLabel, count });
+  }
+  const maxD = Math.max(1, ...dailySeries.map(d => d.count));
+  const bars = dailySeries.map(d => {
+    const h = Math.max(2, Math.round(d.count / maxD * 32));
+    return '<div style="display:inline-flex;flex-direction:column;align-items:center;gap:2px;min-width:32px"><div style="height:' + h + 'px;width:16px;background:var(--ac);border-radius:3px 3px 0 0;opacity:' + (d.count > 0 ? '1' : '0.2') + '"></div><span style="font-size:0.7em;color:var(--dim)">' + d.label + '</span></div>';
+  }).join('');
+
+  return '<div id="velocidad" class="section"><h2>🚀 Velocidad de entrega <span class="section-ref">Jez Humble · DORA metrics</span></h2><div class="grid"><div class="card"><div class="card-value" style="color:' + trendColor + '">' + throughput7d + '<span class="dim" style="font-size:0.4em"> /día</span></div><div class="card-label">Throughput (7d) <span style="color:' + trendColor + '">' + trendIcon + ' ' + (throughputTrend > 0 ? '+' : '') + throughputTrend + '%</span></div><div style="display:flex;align-items:flex-end;gap:2px;margin-top:10px;height:40px">' + bars + '</div></div><div class="card"><div class="card-value blue">' + fmtDuration(cycleTimeMs) + '</div><div class="card-label">Cycle Time estimado</div><div class="card-sub">Suma de promedios por fase</div></div><div class="card"><div class="card-value green">' + delivered24h + '</div><div class="card-label">Entregados hoy</div><div class="card-sub">' + delivered7d + ' total histórico</div></div></div></div>';
+})()}
+
+${(() => {
+  // --- Agent Performance Section ---
+  const PERSONA = {
+    guru: { icon: '🧠', color: '#bc8cff', ref: 'Hickey · Henney' },
+    security: { icon: '🔒', color: '#f85149', ref: 'Hunt · Schneier' },
+    po: { icon: '📋', color: '#d29922', ref: 'Cagan · Torres' },
+    ux: { icon: '🎨', color: '#f778ba', ref: 'Norman · Nielsen' },
+    planner: { icon: '📐', color: '#a371f7', ref: 'Singer · Ward' },
+    'backend-dev': { icon: '⚡', color: '#3fb950', ref: 'Fowler · Martin' },
+    'android-dev': { icon: '📱', color: '#58a6ff', ref: 'Wharton · Guy' },
+    'web-dev': { icon: '🌐', color: '#79c0ff', ref: 'Osmani · Russell' },
+    tester: { icon: '🧪', color: '#d2a8ff', ref: 'Beck · Meszaros' },
+    qa: { icon: '✅', color: '#3fb950', ref: 'Bach · Crispin' },
+    review: { icon: '👁️', color: '#ffa657', ref: 'Greiler · Google' },
+    delivery: { icon: '🚀', color: '#f0883e', ref: 'Humble · Farley' },
+    build: { icon: '🏗️', color: '#8b949e', ref: 'Pipeline' },
+  };
+
+  const perfEntries = Object.entries(agentPerf || {}).sort((a, b) => b[1].issues - a[1].issues);
+  if (perfEntries.length === 0) return '';
+
+  const maxIssues = Math.max(1, ...perfEntries.map(([, a]) => a.issues));
+  const rows = perfEntries.map(([skill, a]) => {
+    const p = PERSONA[skill] || { icon: '⚙', color: 'var(--dim)', ref: '' };
+    const avgDur = a.durCount > 0 ? fmtDuration(Math.round(a.totalDurMs / a.durCount)) : '—';
+    const failRate = a.issues > 0 ? Math.round(a.rejected / a.issues * 100) : 0;
+    const failColor = failRate > 30 ? 'var(--rd)' : failRate > 15 ? 'var(--yl)' : 'var(--gn)';
+    const bw = Math.max(2, Math.round(a.issues / maxIssues * 100));
+    return '<tr><td><span style="color:' + p.color + '">' + p.icon + ' <strong>' + skill + '</strong></span><div style="font-size:0.7em;color:var(--dim);font-style:italic">' + p.ref + '</div></td><td>' + a.issues + '</td><td><div class="bar-h"><div class="bar-h-fill" style="width:' + bw + '%;background:' + p.color + '"></div></div></td><td>' + avgDur + '</td><td style="color:' + failColor + '">' + failRate + '%</td><td>' + a.toolCalls + '</td></tr>';
+  }).join('');
+
+  return '<div id="agentes" class="section"><h2>🤖 Rendimiento por agente</h2><table><thead><tr><th>Agente</th><th>Issues</th><th style="min-width:120px">Volumen</th><th>Duración avg</th><th>Rechazo %</th><th>Tool calls</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+})()}
+
+${(() => {
+  // --- DORA Section ---
+  const now7d = Date.now() - 7 * 86400000;
+  const d7 = entregas.filter(e => e.ts >= now7d).length;
+  const doraTP = (d7 / 7).toFixed(1);
+  const doraFR = totalProcessed > 0 ? Math.round(totalRejected / totalProcessed * 100) : 0;
+  let doraLT = 0;
+  for (const [key, d] of Object.entries(etaAverages)) {
+    if (!key.includes('/') && d.avgMs) doraLT += d.avgMs;
+  }
+
+  const chk = (val, target, inv) => {
+    if (!val) return { color: 'var(--dim)', label: 'SIN DATOS', cls: 'dim' };
+    return (inv ? val <= target : val >= target)
+      ? { color: 'var(--gn)', label: 'ELITE', cls: 'green' }
+      : (inv ? val <= target * 2 : val >= target / 2)
+        ? { color: 'var(--yl)', label: 'MEDIO', cls: 'yellow' }
+        : { color: 'var(--rd)', label: 'BAJO', cls: 'red' };
+  };
+
+  const lt = chk(doraLT, 6 * 3600000, true);
+  const tp = chk(parseFloat(doraTP), 2, false);
+  const cfr = chk(100 - doraFR, 85, false);
+
+  return '<div id="dora" class="section"><h2>📐 DORA Adaptado <span class="section-ref">Nicole Forsgren · Accelerate</span></h2><div class="card-sub" style="margin-bottom:12px">Métricas DORA adaptadas para pipeline de agentes AI · Ventana rolling 7d</div><div class="dora-grid"><div class="dora-card"><div class="dora-value" style="color:' + lt.color + '">' + (doraLT > 0 ? fmtDuration(doraLT) : '—') + '</div><div class="card-label">Lead Time</div><div class="dora-target"><span class="dora-dot" style="background:' + lt.color + '"></span>' + lt.label + ' · target < 6h</div></div><div class="dora-card"><div class="dora-value" style="color:' + tp.color + '">' + doraTP + '/día</div><div class="card-label">Throughput</div><div class="dora-target"><span class="dora-dot" style="background:' + tp.color + '"></span>' + tp.label + ' · target > 2/día</div></div><div class="dora-card"><div class="dora-value" style="color:' + cfr.color + '">' + doraFR + '%</div><div class="card-label">Change Failure Rate</div><div class="dora-target"><span class="dora-dot" style="background:' + cfr.color + '"></span>' + cfr.label + ' · target < 15%</div></div></div></div>';
+})()}
+
+<div class="section">
+<h2>💡 Recomendaciones inteligentes</h2>
+<div class="card reco-card">
+${maxMem(snap1h) > 85 ? '<p class="red">⚠️ <strong>Perf (Brendan Gregg):</strong> RAM pico > 85% — Saturation alta. Reducir concurrencia o upgrade memoria.</p>' : ''}
+${maxCpu(snap1h) > 90 ? '<p class="red">⚠️ <strong>Perf (Gregg):</strong> CPU pico > 90% — Utilization crítica. Reducir builds paralelos.</p>' : ''}
+${reboteRate > 30 ? '<p class="orange">⚠️ <strong>QA (James Bach):</strong> Tasa de rechazo ${reboteRate}% — Explorar root cause en prompts de agentes dev.</p>' : ''}
+${reboteRate > 15 && reboteRate <= 30 ? '<p class="yellow">⚠️ <strong>Delivery (Forsgren):</strong> Change failure rate ${reboteRate}% — Por encima del target DORA elite (< 15%).</p>' : ''}
+${levelPct.red > 10 ? '<p class="red">⚠️ <strong>Planner (Reinertsen):</strong> Sistema en rojo ' + levelPct.red + '% del tiempo — Batch size excesivo, limitar WIP.</p>' : ''}
+${levelPct.green > 80 ? '<p class="green">✅ <strong>Scrum (Vacanti):</strong> Flow saludable — recursos bien dimensionados para la carga actual.</p>' : ''}
+${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>PO (Cagan):</strong> 0 entregas en 24h con pipeline activo — Verificar si el trabajo avanza hacia outcomes.</p>' : ''}
+<p class="dim" style="margin-top:8px">${dataSourceLabel}</p>
+</div>
+</div>
+
+<div style="color:var(--dim);font-size:0.8em;margin-top:20px">
+🔴 Live · <a href="/api/metrics">API JSON</a> · <a href="/">← Dashboard</a> · ${new Date().toLocaleString('es-AR')}
+</div>
 </body></html>`;
 }
 
 // --- Server ---
 
 const server = http.createServer((req, res) => {
-  // Servir logs como archivos estáticos
-  if (req.url.startsWith('/logs/')) {
+  // Servir logs y PDFs como archivos estáticos
+  if (req.url.startsWith('/logs/') && !req.url.startsWith('/logs/stream/')) {
     const filename = path.basename(req.url.slice(6)).replace(/[^a-zA-Z0-9\-\.]/g, '');
     const logPath = path.join(LOG_DIR, filename);
     if (fs.existsSync(logPath)) {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(fs.readFileSync(logPath, 'utf8'));
+      const isPdf = filename.endsWith('.pdf');
+      const contentType = isPdf ? 'application/pdf' : 'text/plain; charset=utf-8';
+      const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache' };
+      if (isPdf) headers['Content-Disposition'] = `inline; filename="${filename}"`;
+      res.writeHead(200, headers);
+      res.end(fs.readFileSync(logPath));
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
     }
+    return;
+  }
+
+  // SSE log streaming — tail -f style
+  if (req.url.startsWith('/logs/stream/')) {
+    const filename = path.basename(req.url.slice(13)).replace(/[^a-zA-Z0-9\-\.]/g, '');
+    const logPath = path.join(LOG_DIR, filename);
+    if (!fs.existsSync(logPath)) {
+      res.writeHead(404); res.end('Log no encontrado');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+
+    // Send initial content (last 1000 lines)
+    const content = fs.readFileSync(logPath, 'utf8');
+    const lines = content.split('\n');
+    const initialLines = lines.slice(-1000);
+    res.write(`data: ${JSON.stringify({ type: 'init', lines: initialLines })}\n\n`);
+
+    // Watch for changes
+    let lastSize = fs.statSync(logPath).size;
+    const interval = setInterval(() => {
+      try {
+        if (!fs.existsSync(logPath)) return;
+        const stat = fs.statSync(logPath);
+        if (stat.size > lastSize) {
+          const fd = fs.openSync(logPath, 'r');
+          const buf = Buffer.alloc(stat.size - lastSize);
+          fs.readSync(fd, buf, 0, buf.length, lastSize);
+          fs.closeSync(fd);
+          const newLines = buf.toString('utf8').split('\n').filter(l => l.length > 0);
+          if (newLines.length > 0) {
+            res.write(`data: ${JSON.stringify({ type: 'append', lines: newLines })}\n\n`);
+          }
+          lastSize = stat.size;
+        }
+      } catch {}
+    }, 800);
+
+    req.on('close', () => clearInterval(interval));
     return;
   }
 
@@ -1161,10 +2925,10 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const { target, action } = JSON.parse(body);
+        const { target, action, component } = JSON.parse(body);
         let result;
         if (target === 'qa') {
-          result = qaAction(action); // 'start' o 'stop'
+          result = qaAction(action, component); // component: 'emulator' (dynamo/backend are remote AWS)
         } else if (action === 'start') {
           result = startComponent(target);
         } else if (action === 'stop') {
@@ -1183,10 +2947,166 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API: pause/resume pipeline
+  if (req.url === '/api/pause' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { action } = JSON.parse(body);
+        const pauseFile = path.join(PIPELINE, '.paused');
+        if (action === 'resume' || action === 'remove') {
+          try { fs.unlinkSync(pauseFile); } catch {}
+          log(`Pausa eliminada por dashboard (${action})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
+        } else if (action === 'pause') {
+          fs.writeFileSync(pauseFile, new Date().toISOString());
+          log('Pipeline pausado desde dashboard');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline pausado — solo Telegram activo' }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Acción "${action}" no válida` }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: Kill agent (cancelar agente activo)
+  if (req.url === '/api/kill-agent' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { issue, skill, pipeline: pl, fase } = JSON.parse(body);
+        const trabajandoDir = path.join(PIPELINE, pl, fase, 'trabajando');
+        const pendienteDir = path.join(PIPELINE, pl, fase, 'pendiente');
+        const filename = `${issue}.${skill}`;
+
+        // Buscar el archivo en trabajando/
+        const filepath = path.join(trabajandoDir, filename);
+        if (!fs.existsSync(filepath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `No encontrado: ${filename} en ${pl}/${fase}/trabajando` }));
+          return;
+        }
+
+        // Buscar PID del agente en agent-registry
+        let killed = false;
+        try {
+          const registry = JSON.parse(fs.readFileSync(path.join(path.dirname(PIPELINE), '.claude', 'hooks', 'agent-registry.json'), 'utf8'));
+          for (const [, agent] of Object.entries(registry.agents || {})) {
+            if (agent.issue === `#${issue}` && agent.pid) {
+              try {
+                execSync(`taskkill /PID ${agent.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+                killed = true;
+              } catch {}
+            }
+          }
+        } catch {}
+
+        // Mover de trabajando/ a pendiente/ (para que pueda ser relanzado)
+        try {
+          const dest = path.join(pendienteDir, filename);
+          fs.renameSync(filepath, dest);
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Error moviendo archivo: ${e.message}` }));
+          return;
+        }
+
+        const msg = killed
+          ? `Agente ${skill} #${issue} cancelado (proceso terminado + devuelto a pendiente)`
+          : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado en registry)`;
+        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? 'PID killed' : 'no PID'}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: Priority Windows toggle (on/off manual)
+  if (req.url === '/api/priority-window' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { window: win, action } = JSON.parse(body);
+        if (!['qa', 'build'].includes(win)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Window "${win}" no válida (qa|build)` }));
+          return;
+        }
+        const pwFile = path.join(PIPELINE, 'priority-windows.json');
+        let current = {};
+        try { current = JSON.parse(fs.readFileSync(pwFile, 'utf8')); } catch {}
+        if (!current.qa) current.qa = { active: false };
+        if (!current.build) current.build = { active: false };
+
+        // Escribir manualOverride para que el Pulpo lo consuma en su próximo ciclo
+        // También actualizar active/manual inmediatamente para que el dashboard refleje el cambio
+        // Ventanas autoexcluyentes: si activamos una, desactivamos la otra
+        current[win].manualOverride = (action === 'on');
+        if (action === 'on') {
+          current[win].active = true;
+          current[win].manual = true;
+          current[win].activatedAt = Date.now();
+          // Autoexclusión: desactivar la otra ventana
+          const other = win === 'qa' ? 'build' : 'qa';
+          if (current[other] && current[other].active) {
+            current[other].manualOverride = false;
+            current[other].active = false;
+            current[other].manual = false;
+            current[other].activatedAt = null;
+          }
+        } else {
+          current[win].active = false;
+          current[win].manual = false;
+          current[win].activatedAt = null;
+        }
+        current.updatedAt = Date.now();
+        fs.writeFileSync(pwFile, JSON.stringify(current, null, 2));
+
+        const label = win === 'qa' ? 'QA Priority' : 'Build Priority';
+        const verb = action === 'on' ? 'activada' : 'desactivada';
+        log(`Priority Window: ${label} ${verb} manualmente`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `${label} Window ${verb} — surte efecto en el próximo ciclo del Pulpo` }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
   // API JSON
   if (req.url === '/api/state' || req.url === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(getPipelineState(), null, 2));
+    return;
+  }
+
+  // /metrics — Métricas históricas para decisiones de hardware/servicio
+  if (req.url === '/metrics') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(generateMetricsHTML());
+    return;
+  }
+
+  // /api/metrics — Raw metrics data
+  if (req.url === '/api/metrics') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getMetricsData()));
     return;
   }
 
@@ -1204,3 +3124,17 @@ server.listen(PORT, () => {
 fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid));
 process.on('SIGINT', () => { server.close(); process.exit(0); });
 process.on('SIGTERM', () => { server.close(); process.exit(0); });
+
+// Crash handlers — loguear antes de morir para diagnóstico
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [dashboard] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [dashboard] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});

@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Saturacion QA — Analisis, Estrategias y Plan de Implementacion</title>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 40px; color: #1a1a1a; font-size: 13px; line-height: 1.5; }
+  h1 { color: #c0392b; border-bottom: 3px solid #c0392b; padding-bottom: 8px; font-size: 22px; }
+  h2 { color: #2c3e50; border-bottom: 2px solid #2c3e50; padding-bottom: 5px; margin-top: 32px; font-size: 18px; }
+  h3 { color: #34495e; margin-top: 20px; font-size: 14px; }
+  h4 { color: #636e72; margin-top: 14px; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 12px; }
+  th { background: #2c3e50; color: white; padding: 8px 10px; text-align: left; }
+  td { padding: 6px 10px; border: 1px solid #ddd; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  .critical { background: #fab1a0; border-left: 4px solid #e17055; padding: 10px 14px; margin: 12px 0; }
+  .info { background: #dfe6e9; border-left: 4px solid #74b9ff; padding: 10px 14px; margin: 12px 0; }
+  .win { background: #b8e994; border-left: 4px solid #27ae60; padding: 10px 14px; margin: 12px 0; }
+  .warn { background: #ffeaa7; border-left: 4px solid #fdcb6e; padding: 10px 14px; margin: 12px 0; }
+  .strategy { background: #f8f9fa; border: 2px solid #74b9ff; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .strategy-title { font-weight: bold; color: #0984e3; font-size: 15px; margin-bottom: 8px; }
+  .recommended { border-color: #27ae60; border-width: 3px; background: #f0fff0; }
+  .discarded { border-color: #b2bec3; opacity: 0.7; }
+  .pro { color: #27ae60; font-weight: bold; } .con { color: #c0392b; font-weight: bold; }
+  code { background: #f1f2f6; padding: 2px 5px; border-radius: 3px; font-size: 12px; }
+  pre { background: #2d3436; color: #dfe6e9; padding: 12px; border-radius: 5px; overflow-x: auto; font-size: 11px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; color: white; }
+  .badge-red { background: #e74c3c; } .badge-yellow { background: #f39c12; } .badge-green { background: #27ae60; } .badge-blue { background: #3498db; } .badge-gray { background: #95a5a6; }
+  .footer { margin-top: 30px; border-top: 1px solid #bdc3c7; padding-top: 10px; color: #7f8c8d; font-size: 11px; }
+  .diagram { background: #f8f9fa; border: 1px solid #ddd; padding: 14px; border-radius: 6px; font-family: monospace; font-size: 11px; white-space: pre; margin: 10px 0; line-height: 1.4; }
+  .meter { background: #ecf0f1; border-radius: 4px; height: 22px; margin: 4px 0; position: relative; }
+  .meter-fill { border-radius: 4px; height: 100%; }
+  .meter-label { position: absolute; right: 6px; top: 2px; font-size: 11px; font-weight: bold; }
+  .phase { border: 2px solid #636e72; border-radius: 8px; padding: 12px; margin: 10px 0; }
+  .phase-title { font-weight: bold; font-size: 14px; margin-bottom: 6px; }
+  .phase-build { border-color: #f39c12; } .phase-build .phase-title { color: #f39c12; }
+  .phase-qa { border-color: #27ae60; } .phase-qa .phase-title { color: #27ae60; }
+  .toc { background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; padding: 14px 20px; margin: 16px 0; }
+  .toc a { color: #2c3e50; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ol { margin: 4px 0; }
+  .toc li { margin: 3px 0; }
+  .page-break { page-break-before: always; }
+  .decision-box { background: #fdf2e9; border: 2px solid #e67e22; border-radius: 8px; padding: 14px; margin: 14px 0; }
+  .decision-title { font-weight: bold; color: #e67e22; font-size: 14px; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Saturacion QA — Analisis Completo, Estrategias y Plan de Implementacion</h1>
+<p><strong>Proyecto:</strong> Intrale Platform &nbsp;|&nbsp; <strong>Fecha:</strong> 2026-04-06 &nbsp;|&nbsp; <strong>Autor:</strong> Claude Code (Opus 4.6)</p>
+
+<div class="toc">
+<strong>Indice</strong>
+<ol>
+<li><a href="#s1">Diagnostico del Sistema</a></li>
+<li><a href="#s2">Causas Raiz de la Saturacion</a></li>
+<li><a href="#s3">Estrategias Evaluadas</a></li>
+<li><a href="#s4">Decisiones Tomadas</a></li>
+<li><a href="#s5">Arquitectura Final: Build → QA con Backend Remoto</a></li>
+<li><a href="#s6">Deploy del Backend a Lambda (detalle)</a></li>
+<li><a href="#s7">Restriccion de Paralelismo de QA</a></li>
+<li><a href="#s8">Consumo de RAM Comparativo</a></li>
+<li><a href="#s9">Prerequisitos de Implementacion</a></li>
+<li><a href="#s10">Riesgos y Mitigaciones</a></li>
+<li><a href="#s11">Plan de Implementacion por Fases</a></li>
+<li><a href="#s12">Resumen Ejecutivo</a></li>
+</ol>
+</div>
+
+<!-- ================================================================ -->
+<!-- PARTE 1: DIAGNOSTICO -->
+<!-- ================================================================ -->
+<h2 id="s1">1. Diagnostico del Sistema</h2>
+
+<h3>1.1 Hardware</h3>
+<table>
+<tr><th>Recurso</th><th>Especificacion</th><th>Evaluacion</th></tr>
+<tr><td>CPU</td><td>Intel Core i5-1145G7 — 4 cores / 8 threads @ 2.6 GHz</td><td><span class="badge badge-yellow">Limitado</span></td></tr>
+<tr><td>RAM</td><td>16 GB (15.7 GB visible)</td><td><span class="badge badge-yellow">Ajustado</span></td></tr>
+<tr><td>Disco</td><td>235.5 GB total — 24.4 GB libres (10.4%)</td><td><span class="badge badge-yellow">Ajustado</span></td></tr>
+<tr><td>GPU</td><td>Intel Iris Xe (integrada)</td><td><span class="badge badge-red">Sin dedicada</span></td></tr>
+</table>
+
+<h3>1.2 Consumo de Memoria Baseline (sin QA)</h3>
+<div class="meter"><div class="meter-fill" style="width:90.4%;background:linear-gradient(90deg,#e74c3c,#c0392b)"></div><div class="meter-label">90.4% — solo 1.5 GB libres</div></div>
+
+<table>
+<tr><th>Componente</th><th>Memoria</th><th>Notas</th></tr>
+<tr><td>Java (procesos Claude/builds)</td><td><strong>~5,500 MB</strong></td><td>2 procesos principales + residuales</td></tr>
+<tr><td>Chrome</td><td>~1,200 MB</td><td>Multiples tabs</td></tr>
+<tr><td>Node.js (pipeline, hooks)</td><td>~500 MB</td><td>Dashboard, commander, hooks</td></tr>
+<tr><td>Windows Defender (MsMpEng)</td><td>~486 MB</td><td>Siempre activo</td></tr>
+<tr><td>Edge WebView2 (WhatsApp, etc)</td><td>~600 MB</td><td>Apps de escritorio</td></tr>
+<tr><td>Sistema (Explorer, Terminal, otros)</td><td>~800 MB</td><td>Windows base</td></tr>
+<tr><th>Total en uso</th><th colspan="2">~14.9 GB de 16 GB — <span class="badge badge-red">Solo 1.5 GB libres</span></th></tr>
+</table>
+
+<h3>1.3 Demanda del QA Stack Actual (todo local)</h3>
+<table>
+<tr><th>Componente</th><th>RAM</th><th>CPU Cores</th></tr>
+<tr><td>Docker Desktop + DynamoDB Local + Moto/Cognito</td><td>~1,300 MB</td><td>~1</td></tr>
+<tr><td>Backend Ktor (<code>gradlew :users:run</code>)</td><td>~1,200 MB</td><td>1-2</td></tr>
+<tr><td>Emulador Android (1 shard, 1536 MB)</td><td>~2,000 MB</td><td>2</td></tr>
+<tr><td>Build APK (<code>assembleClientDebug</code>)</td><td>~2,500 MB</td><td>2-4</td></tr>
+<tr><td>Maestro + ADB</td><td>~400 MB</td><td>0.5</td></tr>
+<tr><th>Total QA</th><th>~7,400 MB</th><th>6-9 cores</th></tr>
+</table>
+
+<div class="critical">
+<strong>DEFICIT:</strong> El sistema tiene 1.5 GB libres pero QA necesita ~7.4 GB adicionales. Deficit de ~6 GB que fuerza swap masivo, degradando el sistema a un estado impredecible.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s2">2. Causas Raiz de la Saturacion</h2>
+
+<table>
+<tr><th>#</th><th>Causa</th><th>Severidad</th><th>Detalle</th></tr>
+<tr><td>1</td><td><strong>RAM insuficiente para carga concurrente</strong></td><td><span class="badge badge-red">Critica</span></td><td>16 GB no alcanza para agentes (~5.5 GB) + QA (~7 GB) + sistema (~3 GB) = 15.5 GB sin margen. Un build activo (issue #2017) lo lleva a ~17+ GB.</td></tr>
+<tr><td>2</td><td><strong>Procesos Java residuales</strong></td><td><span class="badge badge-red">Alta</span></td><td>Gradle daemons y builds previos quedan como huerfanos consumiendo hasta 4 GB. Aunque <code>org.gradle.daemon=false</code>, otros procesos (backend, compilaciones) persisten.</td></tr>
+<tr><td>3</td><td><strong>CPU limitada (4 cores reales)</strong></td><td><span class="badge badge-red">Alta</span></td><td>Emulador (2 cores) + Gradle (2-4 cores) + agentes = overcommit severo. Con 3 shards (6 cores) es fisicamente imposible.</td></tr>
+<tr><td>4</td><td><strong>Sin orquestacion de ciclo de vida</strong></td><td><span class="badge badge-yellow">Media</span></td><td>No hay mecanismo para suspender agentes → liberar RAM → ejecutar QA → reanudar. Cada componente se levanta independientemente.</td></tr>
+<tr><td>5</td><td><strong>QA compila redundantemente</strong></td><td><span class="badge badge-yellow">Media</span></td><td>La fase QA recompila el APK y/o el backend aunque la fase Build previa ya los genero. Picos de 2.5 GB innecesarios.</td></tr>
+<tr><td>6</td><td><strong>Stack local pesado (Docker + Backend + DB)</strong></td><td><span class="badge badge-yellow">Media</span></td><td>DynamoDB local + Moto + Backend Ktor consumen ~2.5 GB cuando ya existe infraestructura remota equivalente en AWS.</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<!-- PARTE 2: ESTRATEGIAS EVALUADAS -->
+<!-- ================================================================ -->
+<h2 id="s3" class="page-break">3. Estrategias Evaluadas</h2>
+
+<h3>3.1 Mapa completo</h3>
+<table>
+<tr><th>Estrategia</th><th>RAM liberada</th><th>Costo</th><th>Esfuerzo</th><th>Decision</th></tr>
+<tr style="background:#e8f8e8"><td><strong>A. Backend remoto (Lambda + API GW)</strong></td><td>~2.5 GB</td><td>$0</td><td><span class="badge badge-green">Simple</span></td><td><span class="badge badge-green">ADOPTADA</span></td></tr>
+<tr style="background:#e8f8e8"><td><strong>B. Liberacion pre-QA orquestada</strong></td><td>~3-5 GB</td><td>$0</td><td><span class="badge badge-green">Simple</span></td><td><span class="badge badge-green">ADOPTADA</span></td></tr>
+<tr style="background:#e8f8e8"><td><strong>C. APK de la fase Build (sin recompilar)</strong></td><td>~2.5 GB</td><td>$0</td><td><span class="badge badge-green">Simple</span></td><td><span class="badge badge-green">ADOPTADA</span></td></tr>
+<tr><td>D. Reducir footprint del emulador</td><td>~500 MB</td><td>$0</td><td><span class="badge badge-green">Simple</span></td><td><span class="badge badge-gray">DESCARTADA</span></td></tr>
+<tr><td>E. Upgrade RAM a 32 GB</td><td>Total</td><td>~$60</td><td><span class="badge badge-green">Simple</span></td><td><span class="badge badge-blue">FUTURO</span></td></tr>
+<tr><td>F. Modo QA exclusivo (matar todo)</td><td>~8-10 GB</td><td>$0</td><td><span class="badge badge-green">Simple</span></td><td><span class="badge badge-blue">FALLBACK</span></td></tr>
+<tr><td>G. Maestro Cloud</td><td>~2.2 GB</td><td>$10-40/mes</td><td><span class="badge badge-yellow">Medio</span></td><td><span class="badge badge-blue">FUTURO</span></td></tr>
+<tr><td>H. QA E2E en GitHub Actions</td><td>Total</td><td>Variable</td><td><span class="badge badge-red">Grande</span></td><td><span class="badge badge-blue">FUTURO</span></td></tr>
+<tr><td>I. DynamoDB remoto + backend local</td><td>~800 MB</td><td>$0</td><td><span class="badge badge-yellow">Medio</span></td><td><span class="badge badge-gray">DESCARTADA</span></td></tr>
+<tr><td>J. Staging environment dedicado en AWS</td><td>~2.5 GB</td><td>$0 (Free Tier)</td><td><span class="badge badge-yellow">Medio</span></td><td><span class="badge badge-blue">FUTURO</span></td></tr>
+</table>
+
+<h3>3.2 Estrategias adoptadas (detalle)</h3>
+
+<div class="strategy recommended">
+<div class="strategy-title">A. Backend Remoto — Emulador pega a Lambda en AWS</div>
+<p>Eliminar Docker Desktop, DynamoDB local, Moto/Cognito y el backend Ktor de la maquina. El emulador apunta directamente al API Gateway que ya existe en AWS.</p>
+<p><strong>Infraestructura remota existente:</strong></p>
+<table>
+<tr><th>Servicio</th><th>Endpoint</th><th>Estado</th></tr>
+<tr><td>API Gateway</td><td><code>https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/</code></td><td><span class="badge badge-green">Activo</span></td></tr>
+<tr><td>Lambda (kotlinTest)</td><td>Detras de API Gateway</td><td><span class="badge badge-green">Activo</span></td></tr>
+<tr><td>DynamoDB</td><td>us-east-2 (business, users, userbusinessprofile)</td><td><span class="badge badge-green">Activo</span></td></tr>
+<tr><td>Cognito</td><td>User Pool en us-east-2</td><td><span class="badge badge-green">Activo</span></td></tr>
+</table>
+<p><span class="pro">PRO:</span> -2.5 GB RAM; elimina Docker; la app no esta productiva, sin riesgo; usa servicios reales (mas confiable que mocks)</p>
+<p><span class="con">CON:</span> Requiere internet; deploy previo del JAR a Lambda; latencia de red (~100-200ms vs ~5ms, irrelevante para Maestro)</p>
+</div>
+
+<div class="strategy recommended">
+<div class="strategy-title">B. Liberacion Pre-QA Orquestada</div>
+<p>Antes de iniciar QA: activar QA Priority Window (bloquea nuevos agentes), esperar que builds terminen, matar Java residuales, verificar RAM libre >= 4 GB.</p>
+<p><span class="pro">PRO:</span> +3-5 GB RAM; automatizable; sin costo; compatible con cualquier estrategia</p>
+<p><span class="con">CON:</span> Introduce delay (espera de builds); interrumpe trabajo temporalmente</p>
+</div>
+
+<div class="strategy recommended">
+<div class="strategy-title">C. APK de la Fase Build (sin recompilar en QA)</div>
+<p>La fase Build (agente <code>/builder</code>) ya compila el APK. QA reutiliza ese artefacto directamente en vez de lanzar otro Gradle build de ~2.5 GB.</p>
+<p><span class="pro">PRO:</span> Elimina el pico mas grande de consumo; QA arranca inmediatamente sin compilar</p>
+<p><span class="con">CON:</span> Requiere que Build genere los artefactos en ubicacion conocida</p>
+</div>
+
+<h3>3.3 Estrategias descartadas (con justificacion)</h3>
+
+<div class="strategy discarded">
+<div class="strategy-title">D. Reducir footprint del emulador — DESCARTADA</div>
+<p>Bajar RAM del emulador de 1536 MB a 1024 MB y cores de 2 a 1.</p>
+<p><strong>Razon de descarte:</strong> Afecta la fluidez del video (screenrecord) y la estabilidad de los tests Maestro. El ahorro de ~500 MB no justifica la degradacion de calidad de evidencia QA. El emulador se mantiene en <strong>1536 MB / 2 cores</strong>.</p>
+</div>
+
+<div class="strategy discarded">
+<div class="strategy-title">I. DynamoDB remoto + backend local — DESCARTADA</div>
+<p>Mantener backend Ktor local pero apuntando a DynamoDB/Cognito remotos.</p>
+<p><strong>Razon de descarte:</strong> Si ya vamos a usar AWS remoto, no tiene sentido mantener el backend local (~1.2 GB). Mejor usar Lambda directamente (Estrategia A). Esta opcion solo tendria sentido si el issue modifica codigo de backend y necesitas testearlo antes de deploy — en ese caso el agente de dev ya tiene el backend corriendo en su worktree.</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- PARTE 3: DECISIONES Y ARQUITECTURA FINAL -->
+<!-- ================================================================ -->
+<h2 id="s4" class="page-break">4. Decisiones Tomadas</h2>
+
+<div class="decision-box">
+<div class="decision-title">Decisiones confirmadas</div>
+<table>
+<tr><th>Punto</th><th>Decision</th><th>Razon</th></tr>
+<tr><td>Emulador Android</td><td><strong>Mantener 1536 MB / 2 cores</strong></td><td>Reducir afecta calidad de video y estabilidad de Maestro</td></tr>
+<tr><td>Compilacion del APK</td><td><strong>Usar APK de la fase Build previa</strong></td><td>Build ya compila antes de QA; evita pico de 2.5 GB</td></tr>
+<tr><td>Backend para QA</td><td><strong>Lambda remoto en AWS</strong></td><td>Elimina Docker + Ktor local; la app no es productiva</td></tr>
+<tr><td>Deploy del backend</td><td><strong>Via GitHub Actions (<code>gh workflow run</code>)</strong></td><td>Sin AWS CLI local; secrets seguros; 0 RAM local</td></tr>
+<tr><td>Paralelismo QA</td><td><strong>Secuencial (1 issue a la vez)</strong></td><td>Backend remoto compartido; pipeline ya encola secuencialmente</td></tr>
+</table>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s5">5. Arquitectura Final: Build → QA con Backend Remoto</h2>
+
+<h3>5.1 Diagrama de flujo entre fases</h3>
+<div class="diagram">
+                    FASE BUILD                                FASE QA
+            (agente builder, ~2.5 GB)                (agente qa, ~2 GB)
+          ┌────────────────────────────┐        ┌──────────────────────────────────┐
+          │                            │        │                                  │
+          │  1. shadowJar              │        │  1. Liberacion pre-QA            │
+          │     → users-all.jar        │──┐     │     → Activar QA Priority Window │
+          │                            │  │     │     → Kill Java residuales       │
+          │  2. assembleClientDebug    │  │     │     → Verificar RAM >= 4 GB      │
+          │     → app-client-debug.apk │──┤     │                                  │
+          │     (SIN LOCAL_BASE_URL)   │  │     │  2. Deploy backend a Lambda      │
+          │                            │  │     │     → gh workflow run main.yml   │
+          │  3. Copiar artefactos a    │  │     │     → Esperar completion          │
+          │     qa/artifacts/          │  │     │     → Health-check remoto        │
+          │                            │  │     │                                  │
+          └────────────────────────────┘  │     │  3. Instalar APK en emulador     │
+                                          ├────→│     → adb install (de artifacts/)│
+                 Artefactos:              │     │                                  │
+                 • users-all.jar          │     │  4. Ejecutar Maestro + video     │
+                 • composeApp-client-     │     │     → Tests E2E contra Lambda    │
+                   debug.apk              │     │     → screenrecord 1536MB/2cores │
+                 • BUILD_COMMIT           │     │                                  │
+                                          │     │  5. Recolectar evidencia         │
+                                          │     │     → Videos, logs, reportes     │
+                                          │     │     → Desactivar Priority Window │
+                                          │     └──────────────────────────────────┘
+                                          │
+                                          │     Emulador apunta a:
+                                          │     https://mgnr0htbvd.execute-api.
+                                          │     us-east-2.amazonaws.com/dev/
+                                          │     (default de BuildKonfig)
+</div>
+
+<h3>5.2 Lo que genera la fase Build</h3>
+
+<div class="phase phase-build">
+<div class="phase-title">FASE BUILD — Genera ambos artefactos</div>
+
+<table>
+<tr><th>Artefacto</th><th>Comando</th><th>Output</th><th>Destino</th></tr>
+<tr><td>Backend JAR</td><td><code>./gradlew :users:shadowJar --no-daemon</code></td><td><code>users/build/libs/users-all.jar</code></td><td>QA deploy a Lambda</td></tr>
+<tr><td>APK Client</td><td><code>./gradlew :app:composeApp:assembleClientDebug --no-daemon</code></td><td><code>app/composeApp/build/outputs/apk/client/debug/</code></td><td>QA instalar en emulador</td></tr>
+</table>
+
+<div class="info">
+<strong>Clave:</strong> El APK se compila <strong>sin</strong> <code>-PLOCAL_BASE_URL</code>. Asi usa el default de BuildKonfig:<br>
+<code>https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/</code>
+</div>
+
+<p><strong>Al finalizar, Build copia artefactos a ubicacion fija:</strong></p>
+<pre>
+mkdir -p qa/artifacts/
+cp users/build/libs/users-all.jar qa/artifacts/
+cp app/composeApp/build/outputs/apk/client/debug/composeApp-client-debug.apk qa/artifacts/
+echo "$(git rev-parse HEAD)" > qa/artifacts/BUILD_COMMIT
+echo "$(date -u +%Y%m%d-%H%M%S)" > qa/artifacts/BUILD_TIMESTAMP
+</pre>
+</div>
+
+<h3>5.3 Lo que hace la fase QA</h3>
+
+<div class="phase phase-qa">
+<div class="phase-title">FASE QA — Solo emulador + Maestro (sin compilar, sin Docker, sin backend local)</div>
+
+<div class="diagram">
+PASO 1: LIBERACION PRE-QA (~30s)
+├── Activar QA Priority Window en pulpo.js (bloquea nuevos agentes)
+├── Esperar que builds activos terminen (max 10 min)
+├── Matar procesos Java/Node residuales
+├── Verificar RAM libre >= 4 GB
+└── Si insuficiente → abortar con error y notificar
+
+PASO 2: DEPLOY BACKEND REMOTO (~3-5 min)                          ← REMOTO
+├── git push origin [rama-del-issue]
+├── gh workflow run main.yml --ref [rama-del-issue]
+├── Polling: gh run list --workflow=main.yml --limit=1
+│   └── Cada 30s hasta status=completed
+├── Verificar conclusion=success
+├── Health-check: POST /intrale/signin → esperar HTTP 400
+│   └── 400 = Lambda viva y respondiendo (Bad Request esperado)
+└── Si falla → abortar + notificar
+
+PASO 3: PREPARAR EMULADOR (~40s con snapshot)                      ← LOCAL
+├── Verificar/arrancar virtualAndroid
+│   └── -snapshot qa-ready -no-audio -no-boot-anim -no-window
+│   └── -memory 1536 -cores 2 -gpu auto
+├── Esperar sys.boot_completed=1 (timeout: 180s)
+├── Desactivar animaciones
+└── Esperar 15s de estabilizacion
+
+PASO 4: INSTALAR APK (~15s)                                        ← LOCAL
+├── Localizar APK: qa/artifacts/composeApp-client-debug.apk
+├── Verificar BUILD_COMMIT coincide con el commit bajo test
+├── adb install -r [APK]
+└── Verificar instalacion exitosa
+
+PASO 5: EJECUTAR TESTS MAESTRO + VIDEO (~2-5 min)                  ← LOCAL
+├── Iniciar screenrecord (720x1280 @ 2Mbps)
+├── maestro test .maestro/flows/
+├── Detener screenrecord
+├── Extraer video del emulador
+└── Generar reporte de resultados
+
+PASO 6: RECOLECTAR EVIDENCIA + CLEANUP (~30s)                      ← LOCAL
+├── Copiar videos a qa/evidence/
+├── Generar summary.md
+├── Subir evidencia (screenshots, video, logs)
+└── Desactivar QA Priority Window → pipeline reanuda
+</div>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s6" class="page-break">6. Deploy del Backend a Lambda (detalle)</h2>
+
+<h3>6.1 Estado actual de la infraestructura</h3>
+<table>
+<tr><th>Componente</th><th>Estado</th><th>Detalle</th></tr>
+<tr><td>AWS CLI local</td><td><span class="badge badge-red">No instalado</span></td><td>No hay <code>aws</code> en PATH</td></tr>
+<tr><td>Credenciales AWS locales</td><td><span class="badge badge-red">No configuradas</span></td><td>No hay <code>~/.aws/credentials</code></td></tr>
+<tr><td>Lambda <code>kotlinTest</code></td><td><span class="badge badge-green">Activo</span></td><td>Region us-east-2, detras de API Gateway</td></tr>
+<tr><td>GitHub Actions deploy</td><td><span class="badge badge-green">Funcional</span></td><td>Secrets configurados: AWS_DEPLOYER_SECRET_ID/KEY</td></tr>
+<tr><td><code>gh</code> CLI</td><td><span class="badge badge-green">Instalado</span></td><td>v2.86.0, autenticado</td></tr>
+</table>
+
+<h3>6.2 Opciones de deploy evaluadas</h3>
+
+<div class="strategy recommended">
+<div class="strategy-title">Opcion A — Deploy via GitHub Actions (ELEGIDA)</div>
+
+<p><strong>Concepto:</strong> El agente QA dispara el workflow de deploy existente usando <code>gh</code> CLI. GitHub Actions compila el JAR con secrets inyectados y lo deploya a Lambda. Cero consumo de RAM local.</p>
+
+<h4>Flujo paso a paso:</h4>
+<pre>
+# 1. Push de la rama del issue a origin
+git push origin agent/2017-fix-saturacion
+
+# 2. Disparar el workflow de deploy apuntando a la rama
+gh workflow run main.yml --ref agent/2017-fix-saturacion
+
+# 3. Esperar a que termine (~3-5 min)
+while true; do
+  STATUS=$(gh run list --workflow=main.yml --limit=1 --json status,conclusion -q '.[0].status')
+  if [ "$STATUS" = "completed" ]; then break; fi
+  sleep 30
+done
+
+# 4. Verificar conclusion
+CONCLUSION=$(gh run list --workflow=main.yml --limit=1 --json conclusion -q '.[0].conclusion')
+if [ "$CONCLUSION" != "success" ]; then
+  echo "ERROR: Deploy fallo"; exit 1
+fi
+
+# 5. Health-check: Lambda actualizada y respondiendo
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X POST "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test","password":"test"}')
+# Esperamos 400 (Bad Request = Lambda viva, validando input)
+if [ "$HTTP_CODE" != "400" ]; then
+  echo "WARN: Health-check retorno $HTTP_CODE (esperado 400)"
+fi
+</pre>
+
+<h4>Que pasa internamente en GitHub Actions:</h4>
+<div class="diagram">
+GitHub Actions Runner (ubuntu-latest, 7 GB RAM):
+│
+├── 1. Checkout del codigo (rama del issue)
+├── 2. Setup JDK 21 (Temurin) + Gradle
+├── 3. Inyectar secrets en application.conf:
+│      sed "s/REGION_VALUE/${REGION}/gi"
+│      sed "s/ACCESS_KEY_ID/${ACCESS_KEY_ID}/gi"
+│      sed "s/SECRET_ACCESS_KEY/${ESCAPED_SECRET}/gi"
+│      sed "s/USER_POOL_ID/${USER_POOL_ID}/gi"
+│      sed "s/CLIENT_ID/${CLIENT_ID}/gi"
+├── 4. ./gradlew build → genera users-all.jar (shadow JAR ~50-80 MB)
+├── 5. yvesgurcan/deploy-lambda-function:
+│      → aws lambda update-function-code
+│        --function-name kotlinTest
+│        --zip-file fileb://users/build/libs/users-all.jar
+│        --region (AWS_DEPLOY_REGION)
+│      → Credenciales: AWS_DEPLOYER_SECRET_ID / AWS_DEPLOYER_SECRET_KEY
+└── 6. Lambda kotlinTest actualizada con el codigo de la rama
+</div>
+
+<h4>Cambio requerido en workflow:</h4>
+<pre>
+# .github/workflows/main.yml — Agregar workflow_dispatch:
+on:
+  push:
+    branches: [ main ]
+    paths: [...]
+  repository_dispatch:
+  workflow_dispatch:          # ← NUEVO: permite disparo desde gh CLI
+    inputs:
+      deploy_only:            # ← OPCIONAL: para future uso
+        type: boolean
+        default: false
+</pre>
+
+<p><span class="pro">PRO:</span> Sin AWS CLI local; sin secrets en la maquina; 0 MB de RAM; reutiliza pipeline probado; el JAR se compila en runner con 7 GB RAM</p>
+<p><span class="con">CON:</span> Esperar ~3-5 min al workflow; requiere agregar <code>workflow_dispatch</code> al trigger</p>
+</div>
+
+<div class="strategy discarded">
+<div class="strategy-title">Opcion B — Deploy local via AWS CLI — DESCARTADA</div>
+<p>Instalar AWS CLI + configurar credenciales + compilar shadowJar localmente + <code>aws lambda update-function-code</code>.</p>
+<p><strong>Razon de descarte:</strong></p>
+<ul>
+<li>Requiere almacenar secrets AWS en disco local (seguridad reducida)</li>
+<li>El shadowJar consume ~2 GB de RAM para compilar (justamente lo que queremos evitar)</li>
+<li>Requiere inyectar secrets en <code>application.conf</code> manualmente (sed + archivo de secrets)</li>
+<li>Setup adicional: instalar AWS CLI, configurar profile <code>intrale-deployer</code></li>
+</ul>
+</div>
+
+<div class="strategy discarded">
+<div class="strategy-title">Opcion C — Hibrido: Build en GitHub + Deploy local — DESCARTADA</div>
+<p>GitHub Actions compila el JAR y lo sube como artefacto. QA local lo descarga y lo deploya con AWS CLI.</p>
+<p><strong>Razon de descarte:</strong> Aun requiere AWS CLI + credenciales locales para el paso de deploy. Si ya se usa GitHub Actions para compilar, mejor que tambien deploya (Opcion A).</p>
+</div>
+
+<h3>6.3 Comparativa final de opciones de deploy</h3>
+<table>
+<tr><th>Criterio</th><th>A. GitHub Actions ✓</th><th>B. AWS CLI local ✗</th><th>C. Hibrido ✗</th></tr>
+<tr><td>Setup local</td><td><span class="badge badge-green">Nada</span></td><td><span class="badge badge-red">AWS CLI + secrets</span></td><td><span class="badge badge-red">AWS CLI + secrets</span></td></tr>
+<tr><td>RAM local consumida</td><td><span class="badge badge-green">0 MB</span></td><td><span class="badge badge-red">~2 GB (shadowJar)</span></td><td><span class="badge badge-green">0 MB</span></td></tr>
+<tr><td>Tiempo de deploy</td><td><span class="badge badge-yellow">3-5 min</span></td><td><span class="badge badge-green">2-3 min</span></td><td><span class="badge badge-yellow">4-6 min</span></td></tr>
+<tr><td>Seguridad de secrets</td><td><span class="badge badge-green">Solo en GitHub</span></td><td><span class="badge badge-yellow">En disco local</span></td><td><span class="badge badge-yellow">En disco local</span></td></tr>
+<tr><td>Complejidad</td><td><span class="badge badge-green">Baja (1 cambio)</span></td><td><span class="badge badge-yellow">Media (4 pasos)</span></td><td><span class="badge badge-yellow">Media (3 pasos)</span></td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="s7">7. Restriccion de Paralelismo de QA</h2>
+
+<div class="warn">
+<strong>Restriccion:</strong> Con un solo Lambda remoto compartido (<code>kotlinTest</code>), no se pueden ejecutar dos QA E2E de issues distintos simultaneamente. Los datos de test (usuarios, negocios, estados) se pisarian entre si.
+</div>
+
+<h3>7.1 Mitigacion actual (ya implementada)</h3>
+<ul>
+<li>El pipeline (<code>pulpo.js</code>) ya limita QA a <strong>1 agente secuencial</strong></li>
+<li><code>config.yaml</code>: QA usa 1 shard, si 2 agentes llegan juntos uno espera en cola</li>
+<li>La QA Priority Window garantiza que el agente encolado tiene prioridad sobre nuevos dev</li>
+<li><strong>En la practica no cambia nada</strong> — QA ya era secuencial</li>
+</ul>
+
+<h3>7.2 Evolucion futura (si se necesita paralelismo)</h3>
+<table>
+<tr><th>Opcion</th><th>Descripcion</th><th>Complejidad</th><th>Cuando</th></tr>
+<tr><td>Namespacing por issue</td><td>Cada QA usa datos con prefijo: <code>test-2017-user@intrale.com</code></td><td><span class="badge badge-yellow">Medio</span></td><td>Si el equipo crece a 3+ devs</td></tr>
+<tr><td>Lambda staging fija</td><td>Crear <code>kotlinStaging</code> permanente con tablas separadas</td><td><span class="badge badge-yellow">Medio</span></td><td>Cuando la app sea productiva</td></tr>
+<tr><td>Lambdas efimeras</td><td>Crear Lambda + tablas temporales por issue, destruir al finalizar</td><td><span class="badge badge-red">Grande</span></td><td>Solo si volumen de QA es alto</td></tr>
+</table>
+
+<p><strong>Recomendacion:</strong> No es necesario ahora. Con el modelo Kanban de 1 QA a la vez y la app no productiva, el backend remoto compartido alcanza perfecto.</p>
+
+<!-- ================================================================ -->
+<h2 id="s8" class="page-break">8. Consumo de RAM Comparativo</h2>
+
+<h3>8.1 Antes vs. despues (durante fase QA)</h3>
+<table>
+<tr><th>Componente</th><th>Antes (local)</th><th>Despues (remoto)</th><th>Ahorro</th></tr>
+<tr><td>Docker Desktop</td><td>~500 MB</td><td style="color:#27ae60"><strong>0 MB</strong></td><td>-500 MB</td></tr>
+<tr><td>DynamoDB Local</td><td>~500 MB</td><td style="color:#27ae60"><strong>0 MB</strong> (AWS)</td><td>-500 MB</td></tr>
+<tr><td>Moto / Cognito emulado</td><td>~300 MB</td><td style="color:#27ae60"><strong>0 MB</strong> (AWS)</td><td>-300 MB</td></tr>
+<tr><td>Backend Ktor (<code>:users:run</code>)</td><td>~1,200 MB</td><td style="color:#27ae60"><strong>0 MB</strong> (Lambda)</td><td>-1,200 MB</td></tr>
+<tr><td>Build APK (Gradle)</td><td>~2,500 MB</td><td style="color:#27ae60"><strong>0 MB</strong> (de Build)</td><td>-2,500 MB</td></tr>
+<tr><td>Emulador Android</td><td>~2,000 MB</td><td>~2,000 MB</td><td>0</td></tr>
+<tr><td>Maestro + ADB</td><td>~400 MB</td><td>~400 MB</td><td>0</td></tr>
+<tr><th>Total fase QA</th><th>~7,400 MB</th><th style="color:#27ae60"><strong>~2,400 MB</strong></th><th style="color:#27ae60"><strong>-5,000 MB (68%)</strong></th></tr>
+</table>
+
+<h3>8.2 Escenarios de RAM</h3>
+
+<p><strong>Actual — QA local sin liberacion:</strong></p>
+<div class="meter"><div class="meter-fill" style="width:100%;background:repeating-linear-gradient(45deg,#e74c3c,#e74c3c 10px,#c0392b 10px,#c0392b 20px)"></div><div class="meter-label">~22 GB / 16 GB — SWAP SEVERO</div></div>
+
+<p><strong>Nuevo — QA remoto + liberacion pre-QA:</strong></p>
+<div class="meter"><div class="meter-fill" style="width:40%;background:#27ae60"></div><div class="meter-label">~6.4 GB / 16 GB — 9.6 GB libres</div></div>
+
+<p><strong>Peor caso — QA remoto sin liberacion (agentes activos):</strong></p>
+<div class="meter"><div class="meter-fill" style="width:72%;background:#f39c12"></div><div class="meter-label">~11.5 GB / 16 GB — 4.5 GB libres</div></div>
+
+<div class="win">
+<strong>Resultado:</strong> Incluso en el peor caso (sin liberar agentes), QA remoto cabe en 16 GB con margen. Con liberacion pre-QA, hay 9.6 GB libres — margen mas que suficiente para video de alta calidad.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s9">9. Prerequisitos de Implementacion</h2>
+
+<table>
+<tr><th>#</th><th>Prerequisito</th><th>Estado</th><th>Accion concreta</th><th>Bloqueante</th></tr>
+<tr><td>1</td><td>Agregar <code>workflow_dispatch</code> a <code>main.yml</code></td><td><span class="badge badge-yellow">Pendiente</span></td><td>Agregar trigger en el workflow de GitHub Actions</td><td><span class="badge badge-red">Si</span></td></tr>
+<tr><td>2</td><td>Crear datos seed en DynamoDB remoto</td><td><span class="badge badge-yellow">Pendiente</span></td><td>Adaptar <code>init-local-aws.sh</code> para crear negocio y usuario de test en AWS</td><td><span class="badge badge-red">Si</span></td></tr>
+<tr><td>3</td><td>Crear usuario de test en Cognito remoto</td><td><span class="badge badge-yellow">Pendiente</span></td><td>Via consola AWS o CLI: crear <code>qa-test@intrale.com</code></td><td><span class="badge badge-red">Si</span></td></tr>
+<tr><td>4</td><td>Modificar fase Build para generar shadowJar + copiar artefactos</td><td><span class="badge badge-yellow">Pendiente</span></td><td>Agregar <code>shadowJar</code> al builder + copiar a <code>qa/artifacts/</code></td><td><span class="badge badge-red">Si</span></td></tr>
+<tr><td>5</td><td>Crear <code>qa/scripts/qa-env-up-remote.sh</code></td><td><span class="badge badge-yellow">Pendiente</span></td><td>Script liviano: liberacion + deploy via gh + health-check</td><td><span class="badge badge-red">Si</span></td></tr>
+<tr><td>6</td><td>Agregar flag <code>--remote</code> a <code>smoke-test.sh</code></td><td><span class="badge badge-yellow">Pendiente</span></td><td>Flag que usa <code>qa-env-up-remote.sh</code> + APK sin LOCAL_BASE_URL</td><td><span class="badge badge-yellow">No</span></td></tr>
+<tr><td>7</td><td>Verificar flows Maestro contra backend remoto</td><td><span class="badge badge-yellow">Pendiente</span></td><td>Dry-run para validar timeouts con latencia de red</td><td><span class="badge badge-yellow">No</span></td></tr>
+<tr><td>8</td><td>Agregar warmup pre-Maestro</td><td><span class="badge badge-yellow">Pendiente</span></td><td>2-3 requests de calentamiento para evitar cold start de Lambda</td><td><span class="badge badge-yellow">No</span></td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="s10">10. Riesgos y Mitigaciones</h2>
+
+<table>
+<tr><th>Riesgo</th><th>Prob.</th><th>Impacto</th><th>Mitigacion</th></tr>
+<tr><td>Latencia de red afecta tests Maestro</td><td><span class="badge badge-yellow">Media</span></td><td><span class="badge badge-yellow">Medio</span></td><td>Maestro ya espera elementos con timeout; agregar <code>extendedWaitUntil</code> si falla; warmup pre-test</td></tr>
+<tr><td>Lambda cold start (primer request ~5-10s)</td><td><span class="badge badge-green">Alta</span></td><td><span class="badge badge-green">Bajo</span></td><td>3 requests de warmup antes de iniciar Maestro</td></tr>
+<tr><td>Datos de test contaminados entre runs</td><td><span class="badge badge-yellow">Media</span></td><td><span class="badge badge-yellow">Medio</span></td><td>Script de limpieza/reinicio de datos al inicio de cada QA run</td></tr>
+<tr><td>Deploy pisa version de produccion de Lambda</td><td><span class="badge badge-green">Baja</span></td><td><span class="badge badge-red">Alto</span></td><td>App no productiva aun; cuando lo sea, crear Lambda staging separada</td></tr>
+<tr><td>Internet caido durante QA</td><td><span class="badge badge-green">Baja</span></td><td><span class="badge badge-red">Alto</span></td><td>Detectar fallo de red al inicio; fallback a modo local (legacy)</td></tr>
+<tr><td>GitHub Actions sin minutos</td><td><span class="badge badge-green">Baja</span></td><td><span class="badge badge-yellow">Medio</span></td><td>Monitorear uso mensual; plan gratuito tiene 2000 min/mes</td></tr>
+<tr><td>Workflow falla en GitHub</td><td><span class="badge badge-green">Baja</span></td><td><span class="badge badge-yellow">Medio</span></td><td>Reintentar 1 vez; si falla 2x, abortar QA y notificar</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="s11">11. Plan de Implementacion por Fases</h2>
+
+<h3>Fase 1 — Infraestructura (prerequisitos)</h3>
+<table>
+<tr><th>#</th><th>Tarea</th><th>Esfuerzo</th></tr>
+<tr><td>1.1</td><td>Agregar <code>workflow_dispatch</code> a <code>.github/workflows/main.yml</code></td><td><span class="badge badge-green">Simple</span></td></tr>
+<tr><td>1.2</td><td>Crear datos seed en DynamoDB remoto (negocio <code>intrale</code>, usuario <code>qa-test@intrale.com</code>)</td><td><span class="badge badge-green">Simple</span></td></tr>
+<tr><td>1.3</td><td>Crear/confirmar usuario de test en Cognito remoto</td><td><span class="badge badge-green">Simple</span></td></tr>
+<tr><td>1.4</td><td>Verificar que <code>gh workflow run</code> funciona contra la rama actual</td><td><span class="badge badge-green">Simple</span></td></tr>
+</table>
+
+<h3>Fase 2 — Scripts y fase Build</h3>
+<table>
+<tr><th>#</th><th>Tarea</th><th>Esfuerzo</th></tr>
+<tr><td>2.1</td><td>Modificar el skill <code>/builder</code> para generar <code>shadowJar</code> + copiar artefactos a <code>qa/artifacts/</code></td><td><span class="badge badge-yellow">Medio</span></td></tr>
+<tr><td>2.2</td><td>Crear <code>qa/scripts/qa-env-up-remote.sh</code> (liberacion + deploy + health-check)</td><td><span class="badge badge-yellow">Medio</span></td></tr>
+<tr><td>2.3</td><td>Crear <code>qa/scripts/qa-env-down-remote.sh</code> (desactivar Priority Window + cleanup)</td><td><span class="badge badge-green">Simple</span></td></tr>
+<tr><td>2.4</td><td>Agregar flag <code>--remote</code> a <code>smoke-test.sh</code></td><td><span class="badge badge-green">Simple</span></td></tr>
+</table>
+
+<h3>Fase 3 — Integracion y validacion</h3>
+<table>
+<tr><th>#</th><th>Tarea</th><th>Esfuerzo</th></tr>
+<tr><td>3.1</td><td>Modificar skill <code>/qa</code> para usar modo remoto por defecto</td><td><span class="badge badge-yellow">Medio</span></td></tr>
+<tr><td>3.2</td><td>Dry-run completo: Build → QA remoto → evidencia</td><td><span class="badge badge-yellow">Medio</span></td></tr>
+<tr><td>3.3</td><td>Ajustar timeouts de Maestro si latencia causa flakiness</td><td><span class="badge badge-green">Simple</span></td></tr>
+<tr><td>3.4</td><td>Documentar el nuevo flujo en <code>docs/</code></td><td><span class="badge badge-green">Simple</span></td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="s12" class="page-break">12. Resumen Ejecutivo</h2>
+
+<div class="win">
+<strong>Problema:</strong> 16 GB de RAM es insuficiente para ejecutar QA E2E (~7.4 GB) junto con agentes de desarrollo (~5.5 GB) y el sistema operativo (~3 GB). El sistema se satura y se vuelve impredecible.
+
+<br><br>
+
+<strong>Solucion (3 medidas combinadas, costo $0):</strong>
+
+<ol>
+<li><strong>Backend remoto:</strong> El emulador le pega al Lambda/API Gateway que ya existe en AWS. Elimina Docker + DynamoDB local + Moto + Backend Ktor = <strong>-2.5 GB</strong></li>
+<li><strong>APK de fase Build:</strong> QA no recompila — usa el APK que la fase Build ya genero = <strong>-2.5 GB</strong></li>
+<li><strong>Liberacion pre-QA:</strong> Activar Priority Window + matar residuales antes de arrancar = <strong>+3-5 GB libres</strong></li>
+</ol>
+
+<strong>Resultado:</strong> QA pasa de ~7.4 GB a ~2.4 GB. Reduccion del 68%.
+
+<br><br>
+
+<strong>Deploy del backend:</strong> Via <code>gh workflow run</code> (GitHub Actions). El workflow existente compila el JAR con secrets inyectados y lo deploya a Lambda. Cero RAM local, cero secrets en la maquina. Solo requiere agregar <code>workflow_dispatch</code> al trigger del workflow.
+
+<br><br>
+
+<strong>Emulador:</strong> Se mantiene en 1536 MB / 2 cores para garantizar calidad de video y estabilidad de tests.
+
+<br><br>
+
+<strong>Paralelismo:</strong> QA sigue siendo secuencial (1 issue a la vez). No cambia respecto a hoy. Para el futuro, crear Lambda staging separada cuando la app sea productiva.
+
+<br><br>
+
+<strong>Prerequisito critico:</strong> Agregar <code>workflow_dispatch</code> a <code>main.yml</code> + crear datos de test en AWS remoto.
+</div>
+
+<div class="footer">
+Reporte consolidado — Intrale Platform — Saturacion QA: Analisis, Estrategias y Plan de Implementacion<br>
+2026-04-06 | Claude Code (Opus 4.6)
+</div>
+
+</body>
+</html>

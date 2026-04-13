@@ -47,6 +47,9 @@ deps_commonMain.txt
 qa/recordings/
 qa/.backend.pid
 
+# QA E2E — artefactos de build (JAR + APK generados por /builder)
+qa/artifacts/
+
 # QA E2E — tests generados (efímeros, se regeneran con /qa validate)
 qa/generated/
 
@@ -66,6 +69,8 @@ qa/evidence/**/*.mp4.tmp
 .claude/hooks/tg-approver-offset.json
 .claude/hooks/tg-commander-offset.json
 .claude/hooks/telegram-commander.lock
+.claude/hooks/telegram-commander.conflict
+.claude/hooks/telegram-messages.json
 .claude/hooks/planner-proposals.json
 .claude/hooks/tg-session-store.json
 .claude/hooks/activity-logger-stale-check.json

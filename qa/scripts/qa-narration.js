@@ -39,15 +39,25 @@ const TTS_INSTRUCTIONS = "Narrás un video de prueba de software. Tu tono es cla
 const HOOKS_DIR = path.resolve(__dirname, "../../.claude/hooks");
 const CONFIG_PATH = path.join(HOOKS_DIR, "telegram-config.json");
 
+const BACKUP_PATH = path.join(os.homedir(), ".intrale-api-keys.json");
+
 function loadOpenAIKey() {
-    // Prioridad: env var > telegram-config.json
+    // Prioridad: env var > telegram-config.json > backup (~/.intrale-api-keys.json)
     if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
     try {
         const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-        return cfg.openai_api_key || cfg.openaiApiKey || null;
-    } catch (e) {
-        return null;
-    }
+        const key = cfg.openai_api_key || cfg.openaiApiKey || null;
+        if (key && key.trim() !== "") return key;
+    } catch (e) { /* config no encontrado */ }
+    try {
+        const backup = JSON.parse(fs.readFileSync(BACKUP_PATH, "utf8"));
+        const key = backup.openai_api_key || backup.openaiApiKey || null;
+        if (key && key.trim() !== "") {
+            console.log("[qa-narration] OpenAI key cargada desde backup (~/.intrale-api-keys.json)");
+            return key;
+        }
+    } catch (e) { /* backup no encontrado */ }
+    return null;
 }
 
 // ─── FFmpeg path discovery ────────────────────────────────────────────────────
@@ -98,13 +108,10 @@ function parseArgs() {
 
 function callOpenAITTS(text, apiKey) {
     return new Promise((resolve, reject) => {
-        const truncated = text.length > 2000
-            ? text.substring(0, 1950) + "... (truncado)"
-            : text;
-
+        // OpenAI TTS soporta hasta 4096 chars — NO truncar
         const body = JSON.stringify({
             model: TTS_MODEL,
-            input: truncated,
+            input: text.substring(0, 4096),
             voice: TTS_VOICE,
             instructions: TTS_INSTRUCTIONS,
             response_format: "opus"

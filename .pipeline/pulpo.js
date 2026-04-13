@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // =============================================================================
 // Pulpo V2 — Proceso central del pipeline
-// Brazos: barrido, lanzamiento, huérfanos (+ intake en F5)
+// Brazos: barrido, lanzamiento, huérfanos, desbloqueo (+ intake en F5)
 // =============================================================================
 
 const fs = require('fs');
@@ -10,8 +10,20 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
+// Crash handlers — loguear y seguir vivo
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [pulpo] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
+  console.error(msg);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [pulpo] CRASH unhandledRejection: ${reason}\n`;
+  try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
+  console.error(msg);
+});
+
 const ROOT = path.resolve(__dirname, '..');
-const PIPELINE = path.resolve(ROOT, '.pipeline');
+const PIPELINE = path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 // Ejecutar claude via Node directo (evita cmd.exe y ventanas visibles)
@@ -19,101 +31,6 @@ const CLAUDE_CLI_JS = path.join(process.env.APPDATA || '', 'npm', 'node_modules'
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const USE_NODE_DIRECT = fs.existsSync(CLAUDE_CLI_JS);
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
-
-// --- Rate Limit (cuota Anthropic) ---
-const RATE_LIMIT_FILE = path.join(PIPELINE, 'rate-limit-pause.json');
-
-function isRateLimited() {
-  try {
-    const data = JSON.parse(fs.readFileSync(RATE_LIMIT_FILE, 'utf8'));
-    if (data.pausedUntil && new Date(data.pausedUntil) > new Date()) {
-      return data;
-    }
-    // Expiró — limpiar
-    fs.unlinkSync(RATE_LIMIT_FILE);
-  } catch {}
-  return null;
-}
-
-function activateRateLimitPause(logContent) {
-  // Extraer hora de reset del mensaje (ej: "resets 1pm", "resets 5pm")
-  const resetMatch = logContent.match(/resets?\s+(\d{1,2})(am|pm)/i);
-  let pausedUntil;
-  if (resetMatch) {
-    let hour = parseInt(resetMatch[1]);
-    if (resetMatch[2].toLowerCase() === 'pm' && hour < 12) hour += 12;
-    if (resetMatch[2].toLowerCase() === 'am' && hour === 12) hour = 0;
-    const now = new Date();
-    pausedUntil = new Date(now);
-    pausedUntil.setHours(hour, 5, 0, 0); // 5 min de margen después del reset
-    // Si la hora ya pasó hoy, es mañana
-    if (pausedUntil <= now) pausedUntil.setDate(pausedUntil.getDate() + 1);
-  } else {
-    // Fallback: pausar 1 hora
-    pausedUntil = new Date(Date.now() + 60 * 60 * 1000);
-  }
-
-  const data = { pausedUntil: pausedUntil.toISOString(), detectedAt: new Date().toISOString(), reason: 'Anthropic rate limit hit' };
-  fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify(data, null, 2));
-  log('rate-limit', `⛔ Cuota de Anthropic agotada — pipeline pausado hasta ${pausedUntil.toISOString()}`);
-  sendTelegram(`⛔ Cuota de Anthropic agotada. Pipeline pausado automáticamente hasta ${pausedUntil.toLocaleString('es-AR', { timeZone: 'America/Buenos_Aires' })}`);
-  return data;
-}
-
-function detectRateLimitInLog(logPath) {
-  try {
-    const content = fs.readFileSync(logPath, 'utf8');
-    return /You've hit your limit|hit your limit|rate.limit|quota.exceeded/i.test(content) ? content : null;
-  } catch { return null; }
-}
-
-// --- Gradle Daemon Cleanup ---
-// Mata daemons de Gradle que quedaron vivos en un worktree específico o globalmente
-function killGradleDaemons(cwd) {
-  // Intentar gradlew --stop primero
-  try {
-    const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-    const cwdUnix = (cwd || ROOT).replace(/\\/g, '/');
-    execSync(`"${bashExe}" -c "cd '${cwdUnix}' && ./gradlew --stop 2>/dev/null || true"`, {
-      cwd: cwd || ROOT, timeout: 30000, windowsHide: true,
-      env: { ...process.env, JAVA_HOME: (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/') }
-    });
-    log('cleanup', `Gradle daemons detenidos (cwd: ${path.basename(cwd || ROOT)})`);
-    return;
-  } catch (e) {
-    log('cleanup', `Gradle --stop falló, intentando taskkill directo: ${e.message.slice(0, 80)}`);
-  }
-  // Fallback: matar daemons directamente vía jps + taskkill
-  try {
-    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    const daemonPids = jpsOut.split('\n')
-      .filter(l => l.includes('GradleDaemon') || l.includes('GradleWrapperMain'))
-      .map(l => l.trim().split(/\s+/)[0])
-      .filter(Boolean);
-    for (const pid of daemonPids) {
-      try {
-        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, windowsHide: true });
-        log('cleanup', `Gradle proceso PID ${pid} eliminado vía taskkill`);
-      } catch {}
-    }
-    if (daemonPids.length > 0) log('cleanup', `${daemonPids.length} proceso(s) Gradle eliminados vía taskkill`);
-  } catch (e) {
-    log('cleanup', `Taskkill fallback también falló: ${e.message.slice(0, 80)}`);
-  }
-}
-
-// Barrido periódico: mata daemons Gradle huérfanos si no hay agentes ni builds activos
-function barridoGradleDaemons() {
-  if (activeProcesses.size > 0) return; // hay agentes/builds corriendo, no tocar
-  try {
-    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    const daemons = jpsOut.split('\n').filter(l => l.includes('GradleDaemon'));
-    if (daemons.length > 0) {
-      log('cleanup', `${daemons.length} Gradle daemon(s) huérfano(s) detectado(s) — limpiando`);
-      killGradleDaemons(ROOT);
-    }
-  } catch {}
-}
 
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
 let lastGhCallTime = 0;
@@ -128,7 +45,57 @@ function ghThrottle() {
   lastGhCallTime = Date.now();
 }
 
+/**
+ * Agregar un comentario a un issue de GitHub (fire-and-forget).
+ */
+function ghCommentOnIssue(issueNumber, body) {
+  try {
+    ghThrottle();
+    execSync(`"${GH_BIN}" issue comment ${issueNumber} --body "${body.replace(/"/g, '\\"')}"`, {
+      encoding: 'utf8', timeout: 15000, windowsHide: true,
+      cwd: path.resolve(__dirname, '..')
+    });
+    log('github', `Comentario en #${issueNumber}: ${body.slice(0, 80)}`);
+  } catch (e) {
+    log('github', `Error comentando #${issueNumber}: ${e.message}`);
+  }
+}
+
 // --- Utilidades ---
+
+// Partir texto en chunks para TTS respetando límites de oraciones
+function splitTextForTTSChunks(text, maxChars) {
+  if (text.length <= maxChars) return [text];
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const chunks = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if ((current + ' ' + sentence).length > maxChars && current.length > 0) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + ' ' + sentence : sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  // Oraciones individuales más largas que maxChars → corte por palabras
+  const result = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= maxChars) { result.push(chunk); continue; }
+    const words = chunk.split(/\s+/);
+    let part = '';
+    for (const word of words) {
+      if ((part + ' ' + word).length > maxChars && part.length > 0) {
+        result.push(part.trim());
+        part = word;
+      } else {
+        part = part ? part + ' ' + word : word;
+      }
+    }
+    if (part.trim()) result.push(part.trim());
+  }
+  return result;
+}
 
 function log(brazo, msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -146,6 +113,7 @@ function readYaml(filepath) {
 }
 
 function writeYaml(filepath, data) {
+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
   fs.writeFileSync(filepath, yaml.dump(data, { lineWidth: -1 }));
 }
 
@@ -170,6 +138,7 @@ function skillFromFile(filename) {
 
 /** Mover archivo entre carpetas (atómico en filesystem) */
 function moveFile(src, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
   const dest = path.join(destDir, path.basename(src));
   fs.renameSync(src, dest);
   return dest;
@@ -255,6 +224,359 @@ function clearCooldown(skill, issue) {
   if (cd[key]) { delete cd[key]; saveCooldowns(cd); }
 }
 
+// --- Perfiles de consumo de recursos por skill ---
+// Promedios históricos de CPU/RAM que consume cada tipo de agente.
+// Se actualizan al terminar cada agente usando los snapshots de metrics-history.
+const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
+
+// Versión del schema de skill-profiles. Incrementar cada vez que cambie la fórmula
+// de aprendizaje de `avgMem` / `avgCpu` — al hacerlo, los perfiles viejos se invalidan
+// automáticamente en el próximo arranque de pulpo. v2 = aprendizaje por DELTA vs baseline.
+const SKILL_PROFILES_SCHEMA_VERSION = 2;
+
+function loadSkillProfiles() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    // Compatibilidad: si el archivo viejo no tiene _schemaVersion (v1), devolver vacío
+    // al próximo save se escribirá con la versión nueva.
+    if (!raw || raw._schemaVersion !== SKILL_PROFILES_SCHEMA_VERSION) return {};
+    const { _schemaVersion, ...profiles } = raw;
+    return profiles;
+  } catch { return {}; }
+}
+
+function saveSkillProfiles(profiles) {
+  const payload = { _schemaVersion: SKILL_PROFILES_SCHEMA_VERSION, ...profiles };
+  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(payload, null, 2));
+}
+
+/**
+ * Migración one-shot: si skill-profiles.json existe pero tiene un schema viejo
+ * (o no tiene schema version), renombrarlo a .bak y empezar de cero con la fórmula
+ * nueva. Se ejecuta una sola vez al arrancar pulpo.
+ */
+function migrateSkillProfilesIfNeeded() {
+  try {
+    if (!fs.existsSync(SKILL_PROFILES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    if (raw && raw._schemaVersion === SKILL_PROFILES_SCHEMA_VERSION) return; // ya migrado
+
+    const bakPath = SKILL_PROFILES_FILE + '.v1.bak';
+    fs.renameSync(SKILL_PROFILES_FILE, bakPath);
+    log('pulpo', `📦 skill-profiles.json migrado a v${SKILL_PROFILES_SCHEMA_VERSION}: backup en ${path.basename(bakPath)}. Los perfiles se reaprenden con la fórmula DELTA.`);
+  } catch (e) {
+    log('pulpo', `Error migrando skill-profiles: ${e.message}`);
+  }
+}
+
+/**
+ * Registrar el consumo de recursos de un agente que terminó.
+ *
+ * Estrategia DELTA (v2): aprender el INCREMENTO que el agente introdujo respecto
+ * a la baseline inmediatamente previa a su lanzamiento, no el promedio absoluto
+ * del sistema durante su vida. Sin esto, infra pesada coexistente (emulador,
+ * Edge, Gradle daemons) se cuela en el perfil y el gate predictivo lo vuelve
+ * a sumar al usage actual → doble conteo → livelock.
+ *
+ * Ver pulpo.js comentario de predictResourceImpact y docs/pipeline/gate-predictivo.md
+ */
+const BASELINE_WINDOW_MS = 60_000; // Ventana de muestras pre-lanzamiento para estimar baseline
+
+function recordSkillResourceUsage(skill, startTime, endTime) {
+  try {
+    const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
+    if (!fs.existsSync(metricsFile)) return;
+
+    const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
+    const parsed = [];
+    for (const line of lines) {
+      try { parsed.push(JSON.parse(line)); } catch {}
+    }
+
+    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s)
+    const baseline = parsed.filter(s => s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
+    // Durante: muestras mientras el agente estuvo vivo
+    const during = parsed.filter(s => s.ts >= startTime && s.ts <= endTime);
+
+    if (baseline.length === 0 || during.length < 2) {
+      // Sin baseline confiable o muy pocas muestras — no aprender (evita corromper el perfil)
+      return;
+    }
+
+    const avgBaselineCpu = baseline.reduce((sum, s) => sum + s.cpu, 0) / baseline.length;
+    const avgBaselineMem = baseline.reduce((sum, s) => sum + s.mem, 0) / baseline.length;
+    const avgDuringCpu = during.reduce((sum, s) => sum + s.cpu, 0) / during.length;
+    const avgDuringMem = during.reduce((sum, s) => sum + s.mem, 0) / during.length;
+
+    // Delta bruto: cuánto subió el sistema respecto al instante previo a lanzarlo
+    const deltaCpu = Math.max(0, avgDuringCpu - avgBaselineCpu);
+    const deltaMem = Math.max(0, avgDuringMem - avgBaselineMem);
+
+    // Si había otros agentes Claude corriendo durante la ventana, atribuirles
+    // parcialmente el delta (50% de atribución conservadora). Así no inflamos
+    // el perfil de este skill con el consumo de los vecinos.
+    const avgDuringAgents = during.reduce((sum, s) => sum + Math.max(1, s.agents || 1), 0) / during.length;
+    const otherAgents = Math.max(0, avgDuringAgents - 1);
+    const shareDenominator = 1 + otherAgents * 0.5;
+    const estCpuPerAgent = deltaCpu / shareDenominator;
+    const estMemPerAgent = deltaMem / shareDenominator;
+
+    const profiles = loadSkillProfiles();
+    const existing = profiles[skill] || { avgCpu: estCpuPerAgent, avgMem: estMemPerAgent, samples: 0 };
+
+    // Rolling average ponderado: más peso a la historia acumulada
+    const n = existing.samples;
+    const weight = Math.min(n, 20); // Cap en 20 para que samples nuevos sigan teniendo efecto
+    profiles[skill] = {
+      avgCpu: Math.round(((existing.avgCpu * weight + estCpuPerAgent) / (weight + 1)) * 10) / 10,
+      avgMem: Math.round(((existing.avgMem * weight + estMemPerAgent) / (weight + 1)) * 10) / 10,
+      samples: n + 1,
+      lastUpdated: new Date().toISOString()
+    };
+
+    saveSkillProfiles(profiles);
+    log('recursos', `📊 Perfil ${skill}: CPU ~${profiles[skill].avgCpu}% MEM ~${profiles[skill].avgMem}% (${profiles[skill].samples} muestras)`);
+  } catch (e) {
+    log('recursos', `Error registrando perfil de ${skill}: ${e.message}`);
+  }
+}
+
+/**
+ * Gate predictivo: verificar si lanzar un agente de este skill
+ * llevaría al sistema por encima de los umbrales seguros.
+ * Retorna { safe: bool, reason: string, predicted: { cpu, mem } }
+ *
+ * Confianza de profiles:
+ * - < MIN_RELIABLE_SAMPLES: blend progresivo hacia defaults (pocas muestras = ruido)
+ * - Cap máximo por agente: ningún proceso Claude usa >25% CPU o >20% MEM realmente
+ * - Profiles >24h sin actualizar: reducir confianza (el sistema puede haber cambiado)
+ */
+const MIN_RELIABLE_SAMPLES = 5;
+const MAX_EST_CPU = 25;  // Cap: ningún agente Claude usa más que esto
+const MAX_EST_MEM = 5;   // Cap: un proceso claude.exe real usa ~250-500MB (~1.6-3% en 16GB).
+                         // Defensa en profundidad contra perfiles mal aprendidos — ver doc
+                         // docs/pipeline/gate-predictivo.md
+const PROFILE_STALE_HOURS = 24;
+
+// Skills cuya infra reservada (emulador Android) debe restarse del baseline del gate.
+// Razón: el emulador existe PORQUE estos skills lo necesitan; cobrarle su RAM al propio
+// skill que lo consume es doble conteo y lleva a livelock (la baseline + el delta del
+// agente nunca cierran bajo el umbral porque el emulador ya está presente en la baseline).
+const QA_INFRA_SKILLS = new Set(['qa', 'security', 'tester']);
+
+function getEstimatedImpact(profile) {
+  const DEFAULT_CPU = 12;
+  const DEFAULT_MEM = 3;  // Proceso claude.exe real ~ 250-500 MB en 16 GB
+
+  if (!profile) return { cpu: DEFAULT_CPU, mem: DEFAULT_MEM };
+
+  const samples = profile.samples || 0;
+  const hoursOld = (Date.now() - new Date(profile.lastUpdated || 0).getTime()) / 3600000;
+
+  // Cap absoluto: nunca estimar más que el máximo razonable
+  let cpu = Math.min(profile.avgCpu, MAX_EST_CPU);
+  let mem = Math.min(profile.avgMem, MAX_EST_MEM);
+
+  // Blend hacia defaults si pocas muestras (confianza progresiva)
+  if (samples < MIN_RELIABLE_SAMPLES) {
+    const confidence = samples / MIN_RELIABLE_SAMPLES; // 0.0 a 1.0
+    cpu = DEFAULT_CPU * (1 - confidence) + cpu * confidence;
+    mem = DEFAULT_MEM * (1 - confidence) + mem * confidence;
+  }
+
+  // Decay si el profile es viejo (>24h sin actualizar)
+  if (hoursOld > PROFILE_STALE_HOURS) {
+    const decayFactor = Math.max(0.5, 1 - (hoursOld - PROFILE_STALE_HOURS) / 72); // decay gradual
+    cpu = DEFAULT_CPU * (1 - decayFactor) + cpu * decayFactor;
+    mem = DEFAULT_MEM * (1 - decayFactor) + mem * decayFactor;
+  }
+
+  return { cpu: Math.round(cpu * 10) / 10, mem: Math.round(mem * 10) / 10 };
+}
+
+/**
+ * Lee la RAM ocupada por qemu-system-x86_64-headless.exe como porcentaje del total
+ * del sistema. Cacheado por 5 segundos para no pagar un `tasklist` en cada llamada.
+ * Devuelve 0 si el emulador no está corriendo o si la medición falla.
+ */
+let _emulatorMemCache = { ts: 0, percent: 0, running: false };
+const EMULATOR_MEM_CACHE_MS = 5000;
+
+function measureEmulatorMemPercent() {
+  const now = Date.now();
+  if (now - _emulatorMemCache.ts < EMULATOR_MEM_CACHE_MS) return _emulatorMemCache;
+
+  let running = false;
+  let percent = 0;
+  try {
+    const out = execSync(
+      'tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    // Formato CSV: "qemu-system-x86_64-headless.exe","1234","Console","1","234,567 KB"
+    const line = out.split('\n').find(l => l.toLowerCase().includes('qemu-system'));
+    if (line) {
+      running = true;
+      const cols = line.split('","').map(c => c.replace(/^"|"$/g, ''));
+      const memKbStr = (cols[4] || '').replace(/[^\d]/g, '');
+      const memKb = parseInt(memKbStr, 10);
+      if (!isNaN(memKb) && memKb > 0) {
+        const totalBytes = os.totalmem();
+        const usedBytes = memKb * 1024;
+        percent = Math.round((usedBytes / totalBytes) * 1000) / 10; // 1 decimal
+      }
+    }
+  } catch { /* sin tasklist o sin qemu — degradar silencioso */ }
+
+  _emulatorMemCache = { ts: now, percent, running };
+  return _emulatorMemCache;
+}
+
+function predictResourceImpact(skill, config, ctx = {}) {
+  const profiles = loadSkillProfiles();
+  const profile = profiles[skill];
+  const usage = getSystemResourceUsage();
+  const limits = config.resource_limits || {};
+  const maxCpu = limits.orange_max_percent || 80;
+  const maxMem = limits.orange_max_percent || 80;
+
+  const est = getEstimatedImpact(profile);
+
+  // Reserva de infra del propio skill: si este skill es QA y el emulador está
+  // corriendo, restarlo del baseline — su RAM es un costo de la ventana QA, no
+  // del agente individual. Ver QA_INFRA_SKILLS arriba.
+  let reservedMem = 0;
+  let reservedReason = null;
+  if (QA_INFRA_SKILLS.has(skill)) {
+    const emu = ctx.emulator || measureEmulatorMemPercent();
+    if (emu.running && emu.percent > 0) {
+      reservedMem = emu.percent;
+      reservedReason = `emulador ${emu.percent}%`;
+    }
+  }
+
+  const effectiveMemBase = Math.max(0, usage.memPercent - reservedMem);
+  const predictedCpu = usage.cpuPercent + est.cpu;
+  const predictedMem = effectiveMemBase + est.mem;
+
+  const cpuSafe = predictedCpu < maxCpu;
+  const memSafe = predictedMem < maxMem;
+
+  if (cpuSafe && memSafe) {
+    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem }, reserved: reservedMem };
+  }
+
+  const reasons = [];
+  if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${est.cpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
+  if (!memSafe) {
+    const memDetail = reservedReason
+      ? `MEM ${usage.memPercent}% − ${reservedReason} + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`
+      : `MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`;
+    reasons.push(memDetail);
+  }
+
+  return {
+    safe: false,
+    reason: reasons.join(' | '),
+    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) },
+    reserved: reservedMem
+  };
+}
+
+// --- Limpieza de Gradle daemons post-agente ---
+
+/**
+ * Limpieza de Gradle daemons — DESACTIVADA en ciclo automatico.
+ * Ahora es no-op. La limpieza real se hace bajo demanda via limpiarDaemonsOnDemand().
+ */
+function killGradleDaemonsForCwd(cwd, label) {
+  // No-op: el taskkill automatico fue eliminado por causar race conditions fatales
+  return 0;
+}
+
+/**
+ * Limpieza bajo demanda de daemons Gradle/Kotlin huerfanos.
+ * Se invoca SOLO desde el comando /limpiar (via Telegram o skill).
+ * Protege daemons de worktrees activos.
+ * Retorna un resumen de lo que hizo.
+ */
+function limpiarDaemonsOnDemand() {
+  const results = [];
+  let totalKilled = 0;
+
+  // Recolectar worktree paths de agentes activos para protegerlos
+  const activeWorktreePaths = new Set();
+  for (const [, info] of activeProcesses) {
+    if (info.worktreePath) {
+      activeWorktreePaths.add(info.worktreePath.replace(/\\/g, '/').toLowerCase());
+    }
+  }
+  activeWorktreePaths.add(ROOT.replace(/\\/g, '/').toLowerCase());
+
+  // 1. Buscar Gradle daemons
+  try {
+    const wmicOut = execSync(
+      'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    for (const line of wmicOut.split('\n')) {
+      if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
+      const parts = line.split(',');
+      const pid = parts[parts.length - 2]?.trim();
+      if (!pid) continue;
+
+      // Proteger por worktree activo
+      const lineLower = line.replace(/\\/g, '/').toLowerCase();
+      let isActive = false;
+      for (const wtPath of activeWorktreePaths) {
+        if (lineLower.includes(wtPath)) { isActive = true; break; }
+      }
+      if (isActive) {
+        results.push('Gradle PID ' + pid + ' PROTEGIDO (worktree activo)');
+        continue;
+      }
+
+      try {
+        execSync('taskkill /PID ' + pid + ' /F /T', { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+        totalKilled++;
+        results.push('Gradle PID ' + pid + ' eliminado');
+      } catch {}
+    }
+  } catch (e) { results.push('Error buscando Gradle: ' + e.message); }
+
+  // 2. Buscar Kotlin compile daemons
+  try {
+    const wmicOut2 = execSync(
+      'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    for (const line of wmicOut2.split('\n')) {
+      if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
+      const match = line.match(/,(\d+)\s*$/);
+      if (!match) continue;
+
+      const lineLower = line.replace(/\\/g, '/').toLowerCase();
+      let isActive = false;
+      for (const wtPath of activeWorktreePaths) {
+        if (lineLower.includes(wtPath)) { isActive = true; break; }
+      }
+      if (isActive) {
+        results.push('Kotlin PID ' + match[1] + ' PROTEGIDO (worktree activo)');
+        continue;
+      }
+
+      try {
+        execSync('taskkill /PID ' + match[1] + ' /F /T', { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+        totalKilled++;
+        results.push('Kotlin PID ' + match[1] + ' eliminado');
+      } catch {}
+    }
+  } catch (e) { results.push('Error buscando Kotlin: ' + e.message); }
+
+  log('limpiar', 'Limpieza bajo demanda: ' + totalKilled + ' proceso(s) eliminados');
+  return { totalKilled, results };
+}
+
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
 
 const activeProcesses = new Map(); // key: "skill:issue" → { pid, startTime }
@@ -287,6 +609,28 @@ function countRunningBySkill(skill) {
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
           if (f.endsWith(`.${skill}`) && !f.startsWith('.')) count++;
+        }
+      } catch {}
+    }
+  }
+  return count;
+}
+
+/** Skills que cuentan como "desarrolladores" para el límite global */
+const DEV_SKILLS = ['backend-dev', 'android-dev', 'web-dev', 'hotfix'];
+
+/** Contar total de devs corriendo en TODAS las fases de TODOS los pipelines */
+function countRunningDevs() {
+  const config = loadConfig();
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) {
+      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      try {
+        for (const f of fs.readdirSync(trabajandoDir)) {
+          if (f.startsWith('.')) continue;
+          const s = f.split('.').pop();
+          if (DEV_SKILLS.includes(s)) count++;
         }
       } catch {}
     }
@@ -334,119 +678,835 @@ function getSystemResourceUsage() {
 }
 
 // =============================================================================
-// Detección de saturación persistente — busca zombies si el sistema está
-// sobrecargado durante varios ciclos consecutivos
+// SISTEMA DE PRESIÓN DE RECURSOS — Graduado (green/yellow/orange/red)
+// En vez de binario "sobrecargado sí/no", responde proporcionalmente.
 // =============================================================================
-let saturationStreak = 0;
-let lastZombieHunt = 0;
 
-function trackSaturation(overloaded, config) {
-  if (overloaded) {
-    saturationStreak++;
-  } else {
-    if (saturationStreak > 0) {
-      log('recursos', `Saturación resuelta tras ${saturationStreak} ciclo(s)`);
-    }
-    saturationStreak = 0;
-    return;
-  }
-
-  const thresholds = config.resource_limits || {};
-  const streakThreshold = thresholds.saturation_streak_threshold || 3;
-  const cooldownMs = (thresholds.zombie_hunt_cooldown_minutes || 5) * 60 * 1000;
-
-  const now = Date.now();
-  if (saturationStreak >= streakThreshold && now - lastZombieHunt > cooldownMs) {
-    lastZombieHunt = now;
-    log('recursos', `⚠️ Saturación persistente (${saturationStreak} ciclos) — buscando procesos zombies…`);
-    huntZombieProcesses(config);
-  }
-}
-
-function huntZombieProcesses(config) {
-  const killed = [];
-
-  try {
-    // 1. Buscar procesos claude/node huérfanos que no están en activeProcesses
-    const activePids = new Set([...activeProcesses.values()].map(p => p.pid));
-    let processList;
-    try {
-      processList = execSync('tasklist /FO CSV /NH', { encoding: 'utf8', timeout: 15000, windowsHide: true });
-    } catch { return; }
-
-    const suspectPatterns = /node\.exe|java\.exe|gradle/i;
-    const lines = processList.split('\n').filter(l => suspectPatterns.test(l));
-
-    // 2. Buscar Gradle daemons huérfanos
-    try {
-      const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-      const daemons = jpsOut.split('\n').filter(l => l.includes('GradleDaemon'));
-      if (daemons.length > 0 && activeProcesses.size === 0) {
-        log('zombie-hunter', `🧟 ${daemons.length} Gradle daemon(s) huérfano(s) sin agentes activos — limpiando`);
-        killGradleDaemons(ROOT);
-        killed.push(`${daemons.length} Gradle daemon(s)`);
-      }
-    } catch {}
-
-    // 3. Buscar archivos en trabajando/ sin proceso vivo correspondiente
-    const pipelines = config.pipelines || {};
-    for (const [pipelineName, pipelineConfig] of Object.entries(pipelines)) {
-      const fases = pipelineConfig.fases || [];
-      for (const fase of fases) {
-        const trabajandoDir = path.join(PIPELINE, pipelineName, fase, 'trabajando');
-        if (!fs.existsSync(trabajandoDir)) continue;
-        const archivos = listWorkFiles(trabajandoDir);
-        for (const archivo of archivos) {
-          const issue = archivo.name.split('.')[0];
-          const skill = skillFromFile(archivo.name);
-          const key = processKey(skill, issue);
-          const entry = activeProcesses.get(key);
-          if (entry && !isProcessAlive(entry.pid)) {
-            log('zombie-hunter', `🧟 Proceso muerto detectado: ${skill}:#${issue} (PID ${entry.pid}) — limpiando registro`);
-            activeProcesses.delete(key);
-            killed.push(`${skill}:#${issue}`);
-          }
-        }
-      }
-    }
-
-    // 4. Reportar hallazgos
-    if (killed.length > 0) {
-      const msg = `🧟 Zombie hunter: limpiados ${killed.length} proceso(s) zombies tras ${saturationStreak} ciclos de saturación:\n${killed.map(k => `  • ${k}`).join('\n')}`;
-      log('zombie-hunter', msg);
-      sendTelegram(msg);
-      saturationStreak = 0; // Reset para dar tiempo a que surta efecto
-    } else {
-      log('zombie-hunter', `No se encontraron zombies — la saturación puede ser carga legítima (${activeProcesses.size} agente(s) activo(s))`);
-    }
-  } catch (e) {
-    log('zombie-hunter', `Error en búsqueda de zombies: ${e.message}`);
-  }
-}
-
-/** Verificar si el sistema está sobrecargado según los thresholds configurados */
+const PRESSURE_LEVELS = { GREEN: 'green', YELLOW: 'yellow', ORANGE: 'orange', RED: 'red' };
 let lastResourceLog = 0;
-function isSystemOverloaded(config) {
-  const thresholds = config.resource_limits || {};
-  const maxCpu = thresholds.max_cpu_percent || 70;
-  const maxMem = thresholds.max_mem_percent || 70;
+let lastPressureLevel = PRESSURE_LEVELS.GREEN;
+let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram en RED
+let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED (solo para logging)
+
+// --- Deadlock breaker: detecta cuando TODOS los candidatos son bloqueados por el gate predictivo ---
+let consecutiveAllBlockedCycles = 0;    // Ciclos consecutivos donde el gate bloqueó TODO
+let lastDeadlockTelegramTs = 0;
+const DEADLOCK_TELEGRAM_COOLDOWN = 600000; // 10 min entre notificaciones de deadlock
+const DEADLOCK_TIER1_CYCLES = 3;        // ~1.5 min: intentar liberar emulador idle
+const DEADLOCK_TIER2_CYCLES = 6;        // ~3 min: forzar lanzamiento del más liviano
+const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de RED
+let proactiveCycleCounter = 0;
+
+/**
+ * Determinar el nivel de presión del sistema basado en CPU y RAM.
+ * Retorna { level, cpuPercent, memPercent, maxOfBoth }
+ */
+function getResourcePressure(config) {
+  const limits = config.resource_limits || {};
+  const greenMax  = limits.green_max_percent  || 50;
+  const yellowMax = limits.yellow_max_percent || 65;
+  const orangeMax = limits.orange_max_percent || 80;
+  // red = todo lo que esté por encima de orange
 
   const { cpuPercent, memPercent } = getSystemResourceUsage();
+  const maxOfBoth = Math.max(cpuPercent, memPercent);
 
-  const overloaded = cpuPercent >= maxCpu || memPercent >= maxMem;
+  let level;
+  if (maxOfBoth < greenMax)       level = PRESSURE_LEVELS.GREEN;
+  else if (maxOfBoth < yellowMax) level = PRESSURE_LEVELS.YELLOW;
+  else if (maxOfBoth < orangeMax) level = PRESSURE_LEVELS.ORANGE;
+  else                            level = PRESSURE_LEVELS.RED;
 
-  // Loguear cada 60s para no spamear
+  return { level, cpuPercent, memPercent, maxOfBoth };
+}
+
+/**
+ * Obtener el multiplicador de concurrencia según la presión.
+ * GREEN=1.0, YELLOW=0.5, ORANGE=solo 1 agente, RED=0
+ */
+function concurrencyMultiplier(level) {
+  switch (level) {
+    case PRESSURE_LEVELS.GREEN:  return 1.0;
+    case PRESSURE_LEVELS.YELLOW: return 0.5;
+    case PRESSURE_LEVELS.ORANGE: return 0;   // Se maneja especial: max 1 total
+    case PRESSURE_LEVELS.RED:    return 0;
+    default: return 1.0;
+  }
+}
+
+/**
+ * Verificar si el sistema permite lanzar un nuevo agente.
+ * Reemplaza isSystemOverloaded() con lógica graduada:
+ * - GREEN: todo OK, capacidad completa
+ * - YELLOW: limpieza suave + concurrencia reducida al 50%
+ * - ORANGE: limpieza agresiva + máximo 1 agente total
+ * - RED: bloqueo total + kill de emergencia
+ */
+function isSystemOverloaded(config) {
+  const pressure = getResourcePressure(config);
+  const { level, cpuPercent, memPercent } = pressure;
+
+  // Transición de nivel → logear y actuar
+  const levelChanged = level !== lastPressureLevel;
+  if (levelChanged) {
+    const emoji = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴' }[level];
+    log('recursos', `${emoji} Presión cambió: ${lastPressureLevel} → ${level} — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+    lastPressureLevel = level;
+  }
+
+  // Acciones según nivel
+  if (level === PRESSURE_LEVELS.GREEN) {
+    consecutiveRedCycles = 0; // Reset si bajamos a green
+    // Loguear cada 60s
+    const now = Date.now();
+    if (now - lastResourceLog > 60000) {
+      log('recursos', `🟢 OK — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastResourceLog = now;
+    }
+    return false;
+  }
+
+  if (level === PRESSURE_LEVELS.YELLOW) {
+    consecutiveRedCycles = 0; // Reset si bajamos a yellow
+    // Limpieza suave: solo Gradle daemons huérfanos
+    const { freed, killed } = tryFreeResources('soft');
+    if (freed) log('recursos', `🟡 Limpieza suave: ${killed.join(', ')}`);
+    // Re-evaluar — si bajó a green, permitir
+    const after = getResourcePressure(config);
+    if (after.level === PRESSURE_LEVELS.GREEN) return false;
+    // Yellow permite lanzar pero con concurrencia reducida (se aplica en brazoLanzamiento)
+    log('recursos', `🟡 YELLOW — CPU: ${cpuPercent}% | RAM: ${memPercent}% — concurrencia reducida`);
+    lastResourceLog = Date.now();
+    return false; // No bloquea, pero brazoLanzamiento reduce slots
+  }
+
+  if (level === PRESSURE_LEVELS.ORANGE) {
+    consecutiveRedCycles = 0; // Reset si bajamos a orange
+    // Diagnóstico: ¿qué está consumiendo?
+    if (config.resource_limits?.diagnostic_on_orange !== false) {
+      logTopConsumers();
+    }
+    // Limpieza agresiva: daemons + kotlin daemons
+    const { freed, killed } = tryFreeResources('aggressive');
+    if (freed) {
+      log('recursos', `🟠 Limpieza agresiva: ${killed.join(', ')}`);
+      // Re-evaluar
+      const after = getResourcePressure(config);
+      if (after.level === PRESSURE_LEVELS.GREEN || after.level === PRESSURE_LEVELS.YELLOW) {
+        return false;
+      }
+    }
+    // Orange: permitir solo si hay menos de 1 agente total
+    const totalRunning = countTotalRunningAgents(config);
+    if (totalRunning >= 1) {
+      log('recursos', `🟠 ORANGE — ${totalRunning} agente(s) corriendo, bloqueando nuevos — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastResourceLog = Date.now();
+      return true;
+    }
+    return false; // Dejar pasar 1 agente
+  }
+
+  // RED: bloqueo total + limpieza de daemons (SIN kill de agentes/procesos Claude)
+  // Estrategia: solo limpiar Gradle/Kotlin huérfanos y esperar a que los procesos
+  // terminen naturalmente. NUNCA matar agentes ni builds en curso.
+  consecutiveRedCycles++;
+
+  // Limpieza agresiva de daemons (NO mata procesos Claude — solo Gradle/Kotlin sin worktree)
+  const { freed, killed } = tryFreeResources('aggressive');
+  if (freed) {
+    log('recursos', `🔴 Limpieza de daemons en RED: ${killed.join(', ')}`);
+  }
+
+  // Loguear cada 60s
   const now = Date.now();
-  if (overloaded || now - lastResourceLog > 60000) {
-    const status = overloaded ? '🔴 SOBRECARGADO' : '🟢 OK';
-    log('recursos', `${status} — CPU: ${cpuPercent}% (max ${maxCpu}%) | RAM: ${memPercent}% (max ${maxMem}%)`);
+  if (now - lastResourceLog > 60000) {
+    log('recursos', `🔴 RED — BLOQUEADO (ciclo ${consecutiveRedCycles}) — CPU: ${cpuPercent}% | RAM: ${memPercent}% — esperando que procesos terminen`);
     lastResourceLog = now;
   }
 
-  // Detección de saturación persistente → buscar zombies
-  trackSaturation(overloaded, config);
+  // Notificar por Telegram UNA vez cada 5 minutos
+  if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+    logTopConsumers();
+    sendTelegram(`🔴 Recursos críticos — CPU: ${cpuPercent}% | RAM: ${memPercent}% — bloqueando nuevos lanzamientos, esperando que los activos terminen (sin kill de emergencia)`);
+    lastEmergencyTelegramTs = now;
+  }
 
-  return overloaded;
+  // Re-evaluar por si la limpieza de daemons bajó la presión
+  if (freed) {
+    const after = getResourcePressure(config);
+    if (after.level !== PRESSURE_LEVELS.RED) {
+      return isSystemOverloaded(config);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Contar total de agentes corriendo en todas las fases (filesystem = fuente de verdad)
+ */
+function countTotalRunningAgents(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) {
+      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      try {
+        for (const f of fs.readdirSync(trabajandoDir)) {
+          if (!f.startsWith('.')) count++;
+        }
+      } catch {}
+    }
+  }
+  return count;
+}
+
+// =============================================================================
+// GATE DE EVIDENCIA QA — Validación automática de evidencia antes de promover
+// Si QA dice "aprobado" pero no hay video real con audio, se fuerza rechazo.
+// =============================================================================
+
+const QA_VIDEO_MIN_SIZE_BYTES = 204800; // 200KB mínimo — swiftshader genera videos chicos pero válidos
+
+/**
+ * Validar que el resultado del QA tiene evidencia real.
+ * Retorna array de problemas encontrados (vacío = OK).
+ */
+function validateQaEvidence(issue, qaData) {
+  const issues = [];
+
+  // 1. Verificar que el YAML tiene los campos obligatorios de evidencia
+  if (!qaData.evidencia) {
+    issues.push('falta campo "evidencia" en resultado QA');
+  }
+  if (!qaData.video_size_kb || qaData.video_size_kb < 200) {
+    issues.push(`video_size_kb ausente o muy chico (${qaData.video_size_kb || 0}KB < 200KB)`);
+  }
+  if (qaData.tiene_audio !== true) {
+    issues.push('falta audio narrado en el video (tiene_audio != true)');
+  }
+
+  // 2. Verificar que el archivo de video existe y tiene tamaño real
+  const videoPath = path.join(PIPELINE, 'logs', 'media', `qa-${issue}.mp4`);
+  try {
+    const stat = fs.statSync(videoPath);
+    if (stat.size < QA_VIDEO_MIN_SIZE_BYTES) {
+      issues.push(`video existe pero pesa ${Math.round(stat.size / 1024)}KB (mínimo 200KB)`);
+    }
+  } catch {
+    issues.push(`video no encontrado en ${videoPath}`);
+  }
+
+  return issues;
+}
+
+// =============================================================================
+// QA PRIORITY WINDOW — Cuando se acumulan issues de verificación sin poder correr,
+// bloquea nuevos lanzamientos dev para liberar recursos y dar prioridad a QA.
+// Puntos 1-3 de la propuesta conversada con Leo (2026-04-02).
+// =============================================================================
+
+let qaPriorityActive = false;
+let qaPriorityActivatedAt = 0;
+let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
+let qaPriorityNotifiedTelegram = false;
+let qaPriorityManual = false;       // true si fue activada manualmente desde el dashboard
+let qaPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
+
+// =============================================================================
+// BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
+// priorización de recursos cuando hay builds en cola.
+// Cuando se acumulan issues esperando build, el Pulpo bloquea nuevos
+// lanzamientos dev para liberar recursos y dar prioridad al build.
+// =============================================================================
+let buildPriorityActive = false;
+let buildPriorityActivatedAt = 0;
+let buildFirstBlockedAt = 0;
+let buildPriorityNotifiedTelegram = false;
+let buildPriorityManual = false;    // true si fue activada manualmente desde el dashboard
+let buildPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
+
+const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
+
+/**
+ * Restaurar el estado de priority windows desde disco al iniciar.
+ * Sin esto, un restart del pulpo pierde la ventana activa y lanza dev
+ * aunque QA/Build estuviera bloqueando.
+ */
+function restorePriorityWindows() {
+  try {
+    if (!fs.existsSync(PRIORITY_WINDOWS_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+    if (data.qa?.active) {
+      qaPriorityActive = true;
+      qaPriorityActivatedAt = data.qa.activatedAt || Date.now();
+      qaPriorityManual = data.qa.manual || false;
+      qaPriorityNotifiedTelegram = true; // Ya se notificó antes del restart
+      log('qa-priority', `♻️ QA Priority Window restaurada desde disco (activada ${new Date(qaPriorityActivatedAt).toISOString()})`);
+    }
+    if (data.build?.active) {
+      buildPriorityActive = true;
+      buildPriorityActivatedAt = data.build.activatedAt || Date.now();
+      buildPriorityManual = data.build.manual || false;
+      buildPriorityNotifiedTelegram = true;
+      log('build-priority', `♻️ Build Priority Window restaurada desde disco (activada ${new Date(buildPriorityActivatedAt).toISOString()})`);
+    }
+  } catch (e) {
+    log('priority', `⚠️ Error restaurando priority windows: ${e.message}`);
+  }
+}
+
+// Restaurar al cargar el módulo
+restorePriorityWindows();
+
+/**
+ * Persistir el estado actual de las priority windows a disco.
+ * El dashboard lee este archivo para mostrar estado y el usuario puede
+ * activar/desactivar ventanas manualmente escribiendo en él.
+ */
+function persistPriorityWindows() {
+  const state = {
+    qa: {
+      active: qaPriorityActive,
+      activatedAt: qaPriorityActivatedAt || null,
+      manual: qaPriorityManual
+    },
+    build: {
+      active: buildPriorityActive,
+      activatedAt: buildPriorityActivatedAt || null,
+      manual: buildPriorityManual
+    },
+    updatedAt: Date.now()
+  };
+  try { fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(state, null, 2)); } catch {}
+}
+
+/**
+ * Leer activaciones/desactivaciones manuales desde el archivo.
+ * El dashboard escribe { qa: { manualOverride: true/false }, build: { manualOverride: true/false } }
+ * y el Pulpo las consume acá.
+ */
+function readManualPriorityOverrides() {
+  try {
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+
+    // QA manual override — al activar manual, AUTOEXCLUIR Build (las ventanas son
+    // mutuamente exclusivas; QA > Build > Dev). Sin esto quedaban las dos activas
+    // a la vez cuando se activaba una manualmente y la otra cruzaba el umbral.
+    if (data.qa?.manualOverride === true && !qaPriorityActive) {
+      qaPriorityActive = true;
+      qaPriorityManual = true;
+      qaPriorityActivatedAt = Date.now();
+      qaPriorityNotifiedTelegram = false;
+      log('qa-priority', '🔧 QA Priority Window ACTIVADA MANUALMENTE desde dashboard');
+      sendTelegram('🔧 QA Priority Window activada manualmente desde el dashboard. Dev y build bloqueados hasta desactivación.');
+      // Autoexcluir Build (incluso si era manual — el último override gana)
+      if (buildPriorityActive) {
+        log('build-priority', '🔄 Build Priority desactivada por activación manual de QA (autoexcluyentes)');
+        buildPriorityActive = false;
+        buildPriorityManual = false;
+        buildPriorityActivatedAt = 0;
+        buildFirstBlockedAt = 0;
+        buildPriorityNotifiedTelegram = false;
+        buildPrioritySafetyNotified = false;
+      }
+      persistPriorityWindows();
+    } else if (data.qa?.manualOverride === false && qaPriorityActive) {
+      qaPriorityActive = false;
+      qaPriorityManual = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      log('qa-priority', '🔧 QA Priority Window DESACTIVADA MANUALMENTE desde dashboard');
+      persistPriorityWindows();
+    }
+
+    // Build manual override — autoexclusión simétrica con QA
+    if (data.build?.manualOverride === true && !buildPriorityActive) {
+      buildPriorityActive = true;
+      buildPriorityManual = true;
+      buildPriorityActivatedAt = Date.now();
+      buildPriorityNotifiedTelegram = false;
+      log('build-priority', '🔧 Build Priority Window ACTIVADA MANUALMENTE desde dashboard');
+      sendTelegram('🔧 Build Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
+      // Autoexcluir QA (incluso si era manual — el último override gana)
+      if (qaPriorityActive) {
+        log('qa-priority', '🔄 QA Priority desactivada por activación manual de Build (autoexcluyentes)');
+        qaPriorityActive = false;
+        qaPriorityManual = false;
+        qaPriorityActivatedAt = 0;
+        qaFirstBlockedAt = 0;
+        qaPriorityNotifiedTelegram = false;
+        qaPrioritySafetyNotified = false;
+      }
+      persistPriorityWindows();
+    } else if (data.build?.manualOverride === false && buildPriorityActive) {
+      buildPriorityActive = false;
+      buildPriorityManual = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      log('build-priority', '🔧 Build Priority Window DESACTIVADA MANUALMENTE desde dashboard');
+      persistPriorityWindows();
+    }
+
+    // Limpiar overrides consumidos
+    if (data.qa?.manualOverride !== undefined || data.build?.manualOverride !== undefined) {
+      delete data.qa?.manualOverride;
+      delete data.build?.manualOverride;
+      fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(data, null, 2));
+    }
+  } catch {}
+}
+
+/**
+ * Contar issues pendientes en fase verificación (todas las pipelines).
+ */
+function countPendingVerificacion(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('verificacion')) continue;
+    const pendDir = path.join(PIPELINE, pName, 'verificacion', 'pendiente');
+    const files = listWorkFiles(pendDir);
+    for (const f of files) {
+      const issue = issueFromFile(f.name);
+      const labels = getIssueLabels(issue);
+      if (!labels.includes('blocked:dependencies')) count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Detectar si hay agentes de dev corriendo (archivos en trabajando/ de fase dev).
+ */
+function countRunningDev(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('dev')) continue;
+    const trabajandoDir = path.join(PIPELINE, pName, 'dev', 'trabajando');
+    count += listWorkFiles(trabajandoDir).length;
+  }
+  return count;
+}
+
+/**
+ * Evaluar si debe activarse/desactivarse la QA Priority Window.
+ * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
+ * - Activación inmediata cuando cola >= umbral configurable
+ * - Sin timeout fijo (corre hasta vaciar cola)
+ * - Timeout de seguridad: notifica Telegram si no completa en N horas (no cierra)
+ * Retorna true si QA Priority está activa (dev y build deben bloquearse).
+ */
+function evaluateQaPriority(config) {
+  const limits = config.resource_limits || {};
+  const threshold = limits.priority_windows_activation_threshold || 3;
+  const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
+  const now = Date.now();
+
+  const pendingQa = countPendingVerificacion(config);
+
+  // ---- Desactivación ----
+  if (qaPriorityActive) {
+    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
+    if (!qaPriorityManual && pendingQa === 0) {
+      log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
+      if (qaPriorityNotifiedTelegram) {
+        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Pipeline en modo normal.');
+      }
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      qaPriorityNotifiedTelegram = false;
+      persistPriorityWindows();
+      return false;
+    }
+    // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
+    const elapsedHours = (now - qaPriorityActivatedAt) / (3600 * 1000);
+    if (elapsedHours >= safetyTimeoutHours && !qaPrioritySafetyNotified) {
+      qaPrioritySafetyNotified = true;
+      log('qa-priority', `⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
+      sendTelegram(`⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingQa} issues pendientes. Verificá desde el dashboard si hay un problema.`);
+    }
+    return true; // Sigue activa — sin timeout fijo
+  }
+
+  // ---- Activación ----
+  // Activación inmediata cuando cola >= umbral (sin esperar N minutos)
+  if (pendingQa >= threshold) {
+    // Respetar override manual de Build: si el operador activó Build a mano,
+    // NO auto-activar QA en paralelo (las ventanas son autoexcluyentes).
+    // QA quedará en espera hasta que Build manual se desactive.
+    if (buildPriorityActive && buildPriorityManual) {
+      if (qaFirstBlockedAt === 0) {
+        qaFirstBlockedAt = now;
+        log('qa-priority', `⏳ QA Priority en espera (${pendingQa} pendientes) — Build manual activa, autoexcluyentes`);
+      }
+      return false;
+    }
+    // QA siempre gana sobre Build automática
+    if (buildPriorityActive && !buildPriorityManual) {
+      log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — ${pendingQa} issues QA pendientes`);
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
+    }
+    qaPriorityActive = true;
+    qaPriorityActivatedAt = now;
+    qaPriorityNotifiedTelegram = true;
+    qaPrioritySafetyNotified = false;
+    log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues en verificación (umbral: ${threshold}). Bloqueando dev y build.`);
+    sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues esperando verificación (umbral: ${threshold}). Dev y build bloqueados hasta vaciar cola.`);
+    persistPriorityWindows();
+    return true;
+  } else {
+    // Si bajó del umbral, resetear
+    if (qaFirstBlockedAt !== 0) {
+      log('qa-priority', `✅ Cola QA bajó a ${pendingQa} (< ${threshold}) — modo normal`);
+      qaFirstBlockedAt = 0;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Contar issues pendientes en fase build (todas las pipelines).
+ */
+function countPendingBuild(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('build')) continue;
+    const pendDir = path.join(PIPELINE, pName, 'build', 'pendiente');
+    const files = listWorkFiles(pendDir);
+    for (const f of files) {
+      const issue = issueFromFile(f.name);
+      const labels = getIssueLabels(issue);
+      if (!labels.includes('blocked:dependencies')) count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Contar builds actualmente en ejecución (archivos en trabajando/ de fase build).
+ */
+function countRunningBuild(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('build')) continue;
+    const trabajandoDir = path.join(PIPELINE, pName, 'build', 'trabajando');
+    count += listWorkFiles(trabajandoDir).length;
+  }
+  return count;
+}
+
+/**
+ * Evaluar si debe activarse/desactivarse la Build Priority Window.
+ * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
+ * - Activación inmediata cuando cola >= umbral configurable
+ * - Sin timeout fijo (corre hasta vaciar cola)
+ * - NO se activa si QA Priority ya está activa (QA > Build)
+ * Retorna true si Build Priority está activa (dev debe bloquearse).
+ */
+function evaluateBuildPriority(config) {
+  const limits = config.resource_limits || {};
+  const threshold = limits.priority_windows_activation_threshold || 3;
+  const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
+  const now = Date.now();
+
+  const pendingBuild = countPendingBuild(config);
+  const runningBuild = countRunningBuild(config);
+
+  // ---- Desactivación ----
+  if (buildPriorityActive) {
+    // Si QA Priority se activó, Build cede (QA > Build) — excepto si fue manual
+    if (qaPriorityActive && !buildPriorityManual) {
+      log('build-priority', '🔄 Build Priority cede ante QA Priority (QA > Build)');
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
+      persistPriorityWindows();
+      return false;
+    }
+    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
+    if (!buildPriorityManual && pendingBuild === 0 && runningBuild === 0) {
+      log('build-priority', '🟢 Build Priority Window desactivada — cola de build vacía');
+      if (buildPriorityNotifiedTelegram) {
+        sendTelegram('✅ Build Priority Window terminó — builds completados. Pipeline en modo normal.');
+      }
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
+      persistPriorityWindows();
+      return false;
+    }
+    // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
+    const elapsedHours = (now - buildPriorityActivatedAt) / (3600 * 1000);
+    if (elapsedHours >= safetyTimeoutHours && !buildPrioritySafetyNotified) {
+      buildPrioritySafetyNotified = true;
+      log('build-priority', `⚠️ Build Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
+      sendTelegram(`⚠️ Build Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingBuild} builds pendientes. Verificá desde el dashboard.`);
+    }
+    return true; // Sigue activa — sin timeout fijo
+  }
+
+  // ---- Activación ----
+  // NO activar si QA Priority ya está activa (QA > Build, autoexcluyentes)
+  if (qaPriorityActive) return false;
+
+  // Activación inmediata cuando cola >= umbral
+  if (pendingBuild >= threshold) {
+    buildPriorityActive = true;
+    buildPriorityActivatedAt = now;
+    buildPriorityNotifiedTelegram = true;
+    buildPrioritySafetyNotified = false;
+    log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues esperando build (umbral: ${threshold}). Bloqueando dev.`);
+    sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build (umbral: ${threshold}). Dev bloqueado hasta vaciar cola.`);
+    persistPriorityWindows();
+    return true;
+  } else {
+    if (buildFirstBlockedAt !== 0) {
+      log('build-priority', `✅ Cola build bajó a ${pendingBuild} (< ${threshold}) — modo normal`);
+      buildFirstBlockedAt = 0;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Logear los top 5 procesos por consumo de RAM.
+ * Esto ayuda a diagnosticar QUÉ está consumiendo antes de actuar a ciegas.
+ */
+function logTopConsumers() {
+  try {
+    const wmicOut = execSync(
+      'wmic process get Name,ProcessId,WorkingSetSize /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    const processes = [];
+    for (const line of wmicOut.split('\n')) {
+      const parts = line.trim().split(',');
+      if (parts.length < 4) continue;
+      const name = parts[1];
+      const pid = parts[2];
+      const memBytes = parseInt(parts[3], 10);
+      if (!name || !memBytes || isNaN(memBytes)) continue;
+      processes.push({ name, pid, memMB: Math.round(memBytes / 1048576) });
+    }
+    processes.sort((a, b) => b.memMB - a.memMB);
+    const top5 = processes.slice(0, 5);
+    const lines = top5.map((p, i) => `  ${i + 1}. ${p.name} (PID ${p.pid}): ${p.memMB}MB`);
+    log('diagnostico', `Top 5 procesos por RAM:\n${lines.join('\n')}`);
+  } catch (e) {
+    log('diagnostico', `Error obteniendo top consumers: ${e.message}`);
+  }
+}
+
+/**
+ * Liberar recursos: solo limpieza del mapa interno de activeProcesses.
+ * El taskkill de Gradle/Kotlin daemons fue ELIMINADO del ciclo automatico.
+ * Motivo: bajo carga alta, las heuristicas (wmic, worktree path, PID tree) fallan
+ * y matan builds/agentes legitimos, causando loops infinitos de rebotes.
+ * La limpieza de daemons ahora es SOLO bajo demanda via comando /limpiar.
+ */
+function tryFreeResources(mode = 'soft') {
+  const killed = [];
+
+  try {
+    // Limpieza de agentes stale del mapa interno (no mata procesos)
+    let staleAgents = 0;
+    for (const [key, info] of activeProcesses) {
+      // Grace period: nunca limpiar agentes registrados hace menos de 30 min
+      const ageMs = Date.now() - (info.startTime || 0);
+      if (ageMs < 30 * 60 * 1000) continue;
+      if (!isProcessAlive(info.pid)) {
+        activeProcesses.delete(key);
+        staleAgents++;
+      }
+    }
+    if (staleAgents > 0) killed.push(staleAgents + ' agente(s) stale');
+
+  } catch (e) {
+    log('free-resources', 'Error durante limpieza (' + mode + '): ' + e.message);
+  }
+
+  if (killed.length > 0) {
+    log('free-resources', '[' + mode + '] Recursos liberados: ' + killed.join(', '));
+  }
+
+  return { freed: killed.length > 0, killed };
+}
+
+/**
+ * Solicitar apagado del emulador QA si no hay nada en fase verificacion/trabajando.
+ * Delega al servicio-emulador via cola (no ejecuta directamente).
+ * Retorna true si encoló el pedido de stop.
+ */
+// Grace period: después de levantar el emulador (boot_completed), no apagarlo
+// durante este tiempo. Evita el loop preflight→start→idle→stop→preflight que
+// corrompía el quickboot. Anclado a qa-env-state.lastStartedAt, que qa-environment.js
+// escribe recién DESPUÉS de confirmar sys.boot_completed=1.
+const EMULATOR_IDLE_GRACE_MS = 3 * 60 * 1000; // 3 minutos de warm-up protegido
+
+function shutdownIdleEmulator(config) {
+  try {
+    // ¿Hay algo en verificacion/trabajando O pendiente?
+    // Si hay QA pendiente encolada, el emulador va a ser necesario inmediatamente.
+    for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+      if (!pConfig.fases.includes('verificacion')) continue;
+      const verifDir = fasePath(pName, 'verificacion');
+      const trabajando = listWorkFiles(path.join(verifDir, 'trabajando'));
+      if (trabajando.length > 0) return false; // Hay agentes QA corriendo
+      const pendiente = listWorkFiles(path.join(verifDir, 'pendiente'));
+      if (pendiente.length > 0) return false; // Hay QA pendiente en cola
+    }
+
+    // ¿Está corriendo el emulador? Verificar state file Y por nombre de proceso
+    let emulatorRunning = false;
+    let lastStartedAt = 0;
+
+    // Check 1: state file
+    const stateFile = path.join(PIPELINE, 'qa-env-state.json');
+    if (fs.existsSync(stateFile)) {
+      try {
+        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        const emulatorPid = state.emulator || state.emulador;
+        if (emulatorPid && isProcessAlive(emulatorPid)) emulatorRunning = true;
+        lastStartedAt = state.lastStartedAt || 0;
+      } catch {}
+    }
+
+    // Check 2: buscar proceso QEMU por nombre (el state puede perder track del PID)
+    if (!emulatorRunning) {
+      try {
+        const out = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+          { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+        if (out.includes('qemu-system')) emulatorRunning = true;
+      } catch {}
+    }
+
+    if (!emulatorRunning) return false;
+
+    // Grace period: no apagar si estamos dentro de la ventana post-boot.
+    // lastStartedAt se actualiza en qa-environment.js DESPUÉS de boot_completed.
+    const ageMs = Date.now() - lastStartedAt;
+    if (lastStartedAt > 0 && ageMs < EMULATOR_IDLE_GRACE_MS) {
+      const remaining = Math.round((EMULATOR_IDLE_GRACE_MS - ageMs) / 1000);
+      log('recursos', `⏳ Emulador dentro de grace period post-boot (${remaining}s restantes) — no apagar`);
+      return false;
+    }
+
+    // Encolar stop al servicio-emulador (no ejecutar directo)
+    log('recursos', '🔌 Encolando stop de emulador idle para liberar ~2.5GB RAM');
+    requestEmulator('stop', 'pulpo-idle', null, 'Cola de verificación vacía, sin agentes QA activos');
+    return true;
+  } catch (e) {
+    log('recursos', `Error verificando emulador idle: ${e.message}`);
+    return false;
+  }
+}
+
+/**
+ * Deadlock breaker: cuando el gate predictivo bloquea TODOS los candidatos durante
+ * varios ciclos consecutivos, escalar progresivamente para salir del deadlock.
+ *
+ * Tier 1 (3 ciclos / ~1.5min): Apagar emulador idle + resetear profiles poco confiables
+ * Tier 2 (6 ciclos / ~3min): Forzar lanzamiento del candidato más liviano con threshold relajado
+ */
+function handleDeadlock(candidates, config) {
+  if (consecutiveAllBlockedCycles < DEADLOCK_TIER1_CYCLES) return null;
+
+  const now = Date.now();
+
+  // --- TIER 1: liberar recursos pasivos ---
+  if (consecutiveAllBlockedCycles === DEADLOCK_TIER1_CYCLES) {
+    log('deadlock', `⚠️ Deadlock detectado: ${consecutiveAllBlockedCycles} ciclos con TODOS los candidatos bloqueados. Tier 1: liberando recursos pasivos.`);
+
+    // Apagar emulador si está idle
+    const emulatorKilled = shutdownIdleEmulator(config);
+    if (emulatorKilled) {
+      log('deadlock', '🔌 Emulador idle apagado — re-evaluando en el próximo ciclo');
+      if (now - lastDeadlockTelegramTs > DEADLOCK_TELEGRAM_COOLDOWN) {
+        sendTelegram('⚠️ Pipeline deadlocked — apagué el emulador idle para liberar RAM. Se re-levanta solo cuando haga falta.');
+        lastDeadlockTelegramTs = now;
+      }
+    }
+
+    // Resetear profiles con pocas muestras (no son confiables)
+    const profiles = loadSkillProfiles();
+    let resetCount = 0;
+    for (const [skill, profile] of Object.entries(profiles)) {
+      if ((profile.samples || 0) < MIN_RELIABLE_SAMPLES) {
+        delete profiles[skill];
+        resetCount++;
+      }
+    }
+    if (resetCount > 0) {
+      saveSkillProfiles(profiles);
+      log('deadlock', `🗑️ Reseteados ${resetCount} profiles con < ${MIN_RELIABLE_SAMPLES} muestras (poco confiables)`);
+    }
+
+    return null; // Dar un ciclo más para que surta efecto
+  }
+
+  // --- TIER 2: forzar lanzamiento del más liviano ---
+  if (consecutiveAllBlockedCycles >= DEADLOCK_TIER2_CYCLES) {
+    // Encontrar el candidato con menor impacto estimado
+    const profiles = loadSkillProfiles();
+    let lightest = null;
+    let lightestImpact = Infinity;
+
+    for (const candidate of candidates) {
+      const skill = skillFromFile(candidate.archivo.name);
+      const est = getEstimatedImpact(profiles[skill]);
+      const impact = est.cpu + est.mem;
+      if (impact < lightestImpact) {
+        lightestImpact = impact;
+        lightest = candidate;
+      }
+    }
+
+    if (lightest) {
+      const skill = skillFromFile(lightest.archivo.name);
+      const issue = issueFromFile(lightest.archivo.name);
+      log('deadlock', `🚀 Tier 2: forzando lanzamiento de ${skill}:#${issue} (el más liviano, impacto estimado: ${Math.round(lightestImpact)}%) tras ${consecutiveAllBlockedCycles} ciclos bloqueados`);
+      if (now - lastDeadlockTelegramTs > DEADLOCK_TELEGRAM_COOLDOWN) {
+        sendTelegram(`🔓 Pipeline deadlocked ${consecutiveAllBlockedCycles} ciclos — forzando ${skill}:#${issue} para desbloquear. El gate predictivo tenía profiles inflados o el sistema tiene procesos externos pesados.`);
+        lastDeadlockTelegramTs = now;
+      }
+      consecutiveAllBlockedCycles = 0; // Reset — le damos tiempo al agente lanzado
+      return lightest;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Limpieza proactiva — se ejecuta cada N ciclos aunque no haya presión.
+ * Mata daemons huérfanos que se acumulan silenciosamente.
+ */
+function proactiveCleanup(config) {
+  const interval = config.resource_limits?.proactive_cleanup_cycles || 10;
+  proactiveCycleCounter++;
+  if (proactiveCycleCounter < interval) return;
+  proactiveCycleCounter = 0;
+
+  const { freed, killed } = tryFreeResources('soft');
+  if (freed) {
+    log('proactivo', `Limpieza periódica: ${killed.join(', ')}`);
+  }
+
+  // Auto-shutdown del emulador si no hay verificación activa — libera ~2.5GB RAM
+  const emulatorKilled = shutdownIdleEmulator(config);
+  if (emulatorKilled) {
+    sendTelegram('🔌 Emulador QA apagado automáticamente (sin verificación activa). Se re-levanta solo cuando haga falta.');
+  }
 }
 
 // Tomar snapshot inicial de CPU al arrancar (el primer delta necesita dos puntos)
@@ -501,17 +1561,50 @@ function brazoBarrido(config) {
           file: a
         }));
 
+        // --- GATE DE EVIDENCIA QA (fase verificacion) ---
+        // Si el QA dice "aprobado" pero no tiene evidencia real, forzar rechazo automático.
+        // Esto evita que issues pasen a aprobación sin video con audio narrado.
+        if (fase === 'verificacion') {
+          const qaResult = resultados.find(r => skillFromFile(r.file.name) === 'qa');
+          if (qaResult && qaResult.resultado === 'aprobado') {
+            const issues = validateQaEvidence(issue, qaResult);
+            if (issues.length > 0) {
+              log('barrido', `⛔ #${issue} QA aprobó SIN evidencia válida: ${issues.join(', ')}`);
+              qaResult.resultado = 'rechazado';
+              qaResult.motivo = `Evidencia QA incompleta: ${issues.join('; ')}`;
+              // Sobrescribir el archivo con el rechazo
+              writeYaml(qaResult.file.path, {
+                ...qaResult,
+                file: undefined,  // No persistir el campo 'file'
+                resultado: 'rechazado',
+                motivo: qaResult.motivo,
+                rechazado_por: 'gate-evidencia-automatico'
+              });
+              sendTelegram(`⛔ #${issue} — QA aprobó sin evidencia válida. Rechazo automático: ${issues.join('; ')}`);
+            }
+          }
+        }
+
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
 
         if (rechazados.length > 0 && faseRechazo) {
-          // Circuit breaker: contar rebotes previos del mismo issue en procesado/
-          const devProcessed = path.join(fasePath(pipelineName, faseRechazo), 'procesado');
+          // Circuit breaker: leer rebote_numero del archivo que originó este ciclo
+          // (puede estar en trabajando/ o pendiente/ de la fase de rechazo, o en el propio resultado)
+          // Buscar el máximo rebote_numero entre los archivos del issue en dev
           let reboteCount = 0;
-          try {
-            for (const f of fs.readdirSync(devProcessed)) {
-              if (f.startsWith(issue + '.')) reboteCount++;
-            }
-          } catch {}
+          for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+            const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
+            try {
+              for (const f of fs.readdirSync(dir)) {
+                if (f.startsWith(issue + '.')) {
+                  const data = readYaml(path.join(dir, f));
+                  if (data.rebote_numero && data.rebote_numero > reboteCount) {
+                    reboteCount = data.rebote_numero;
+                  }
+                }
+              }
+            } catch {}
+          }
 
           const MAX_REBOTES = 3;
           if (reboteCount >= MAX_REBOTES) {
@@ -624,20 +1717,11 @@ function brazoBarrido(config) {
 /** Determinar qué skill de dev corresponde a un issue (por labels de GitHub) */
 function determinarDevSkill(issue, config) {
   const mapping = config.dev_skill_mapping || {};
+  const labels = getIssueLabels(issue);
 
-  // Buscar en archivos procesados de fases anteriores si ya se determinó
-  // Por ahora: intentar leer labels del issue de GitHub
-  try {
-    ghThrottle();
-    const result = execSync(
-      `"${GH_BIN}" issue view ${issue} --json labels --jq ".labels[].name"`,
-      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
-    ).trim().split('\n');
-
-    for (const label of result) {
-      if (mapping[label]) return mapping[label];
-    }
-  } catch { /* ignorar */ }
+  for (const label of labels) {
+    if (mapping[label]) return mapping[label];
+  }
 
   return mapping.default || 'backend-dev';
 }
@@ -646,158 +1730,923 @@ function determinarDevSkill(issue, config) {
 // BRAZO 2: LANZAMIENTO — Detecta trabajo pendiente, lanza agentes
 // =============================================================================
 
-function brazoLanzamiento(config) {
-  // GATE DE RATE LIMIT: no lanzar agentes si estamos pausados por cuota de Anthropic
-  const rl = isRateLimited();
-  if (rl) {
-    const remaining = Math.round((new Date(rl.pausedUntil) - Date.now()) / 60000);
-    if (remaining > 0) {
-      log('rate-limit', `⏸️ Pipeline pausado por cuota — reanuda en ${remaining}min`);
-      return;
+// Cache de labels de issues (evita llamadas repetidas a GitHub API)
+const issueLabelsCache = new Map(); // issueNum → { labels: [...], fetchedAt: timestamp }
+const LABELS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+
+function getIssueLabels(issueNum) {
+  const cached = issueLabelsCache.get(issueNum);
+  if (cached && (Date.now() - cached.fetchedAt) < LABELS_CACHE_TTL_MS) {
+    return cached.labels;
+  }
+  try {
+    ghThrottle();
+    const result = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json labels --jq ".labels[].name"`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    ).trim().split('\n').filter(Boolean);
+    issueLabelsCache.set(issueNum, { labels: result, fetchedAt: Date.now() });
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+/** Calcular score de prioridad para un issue (menor = más prioritario) */
+function calcularPrioridad(issueNum, config) {
+  const labels = getIssueLabels(issueNum);
+  const prioLabels = config.prioridad_labels || [];
+  const featurePrio = config.feature_priority || {};
+
+  // Score base: prioridad directa del label (0=critical, 1=high, 2=medium, 3=low)
+  // Default: priority:medium si no tiene label explícito
+  let prioScore = prioLabels.indexOf('priority:medium');
+  if (prioScore === -1) prioScore = 999;
+  for (let i = 0; i < prioLabels.length; i++) {
+    if (labels.includes(prioLabels[i])) { prioScore = i; break; }
+  }
+
+  // Score de feature: hereda nivel de prioridad según config (critical=0, high=1, etc.)
+  let featureScore = 999;
+  for (const [nivel, featureLabels] of Object.entries(featurePrio)) {
+    const nivelIdx = prioLabels.indexOf(`priority:${nivel}`);
+    if (nivelIdx === -1) continue;
+    for (const fl of featureLabels) {
+      if (labels.includes(fl)) { featureScore = Math.min(featureScore, nivelIdx); break; }
     }
   }
 
-  // GATE DE RECURSOS: no lanzar nuevos agentes si CPU o RAM están sobrecargados
-  if (isSystemOverloaded(config)) return;
+  // Feature priority PUEDE subir la prioridad efectiva (tomar el menor de ambos)
+  const effectivePrio = Math.min(prioScore, featureScore);
 
-  for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
-    for (const fase of pipelineConfig.fases) {
-      const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
-      const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
-      const archivos = listWorkFiles(pendienteDir);
+  // Desempate: si empatan en prioridad efectiva, preferir el que tiene feature explícita
+  const tiebreaker = featureScore < 999 ? 0 : 1;
 
-      for (const archivo of archivos) {
-        const skill = skillFromFile(archivo.name);
-        const issue = issueFromFile(archivo.name);
-        const key = processKey(skill, issue);
+  return effectivePrio * 10 + tiebreaker;
+}
 
-        // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
-        const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
-        if (issueAlreadyWorking) continue;
-
-        // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
-        if (isInCooldown(skill, issue)) continue;
-
-        // 3. Ya hay un proceso activo para este skill+issue en memoria?
-        if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
-          continue;
-        }
-
-        // 4. Verificar concurrencia del rol (se reduce si QA env está activo)
-        const maxConcurrencia = getEffectiveConcurrency(config, skill);
-        const running = countRunningBySkill(skill);
-        if (running >= maxConcurrencia) continue;
-
-        // Mover a trabajando/ (atómico)
-        try {
-          const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-
-          // Pre-requisitos por fase
-          if (fase === 'verificacion') {
-            ensureQaEnvironment();
-          }
-
-          // Lanzar agente
-          if (fase === 'build') {
-            lanzarBuild(issue, trabajandoPath, pipelineName, config);
-          } else {
-            lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
-          }
-        } catch (e) {
-          log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
-        }
-      }
-    }
-  }
+/** Ordenar archivos pendientes por prioridad del issue */
+function sortByPriority(archivos, config) {
+  if (archivos.length <= 1) return archivos;
+  return archivos.sort((a, b) => {
+    const issueA = issueFromFile(a.name);
+    const issueB = issueFromFile(b.name);
+    return calcularPrioridad(issueA, config) - calcularPrioridad(issueB, config);
+  });
 }
 
 /**
- * QA Environment — asíncrono con reserva de recursos.
- * El QA env (DynamoDB + backend + emulador) consume ~2GB RAM + CPU Gradle.
- * Se levanta asíncrono para no bloquear el loop del Pulpo.
- * Mientras está activo, la concurrencia de dev se reduce para no saturar.
+ * Rebotar verificación→build cuando preflight detecta APK faltante.
+ *
+ * Patrón genérico: archiva todos los hermanos de verificacion/pendiente/<issue>.* a
+ * procesado/ con resultado: rechazado, y encola un <issue>.build fresco en build/pendiente/.
+ * Idempotente: si ya hay un build en curso/encolado para el issue, no duplica.
+ * Circuit breaker MAX_REBOTES_APK protege contra loops verificacion↔build.
+ *
+ * Esta función fue extraída del dispatcher para que también la pueda invocar el
+ * deadlock breaker — sin esto, cuando el gate predictivo bloquea preflight (path
+ * normal) o cuando el deadlock breaker fuerza preflight, el rebote no corría y el
+ * issue quedaba atascado eternamente en verificacion/pendiente/.
+ *
+ * Llamada por:
+ *   - dispatcher normal en brazoLanzamiento (path verificacion + apk_missing)
+ *   - deadlock breaker (Tier 2 forzado + apk_missing)
+ *
+ * @returns {boolean} true si rebote ejecutado, false si circuit breaker disparado
+ *                    (en cuyo caso los archivos quedan archivados pero NO se encola build)
  */
-let qaEnvActive = false;
-let qaEnvStarting = false;
-const QA_ENV_RESERVE_DEV_SLOTS = 1; // Reducir concurrencia dev en N cuando QA env activo
-
-function isQaEnvActive() {
-  if (qaEnvActive) {
-    const stateFile = path.join(PIPELINE, 'qa-env-state.json');
-    try {
-      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      for (const [, pid] of Object.entries(state)) {
-        if (pid && isProcessAlive(pid)) return true;
-      }
-    } catch {}
-    qaEnvActive = false;
-  }
-  return qaEnvActive;
-}
-
-function ensureQaEnvironment() {
-  if (qaEnvActive || qaEnvStarting) return;
-
-  const stateFile = path.join(PIPELINE, 'qa-env-state.json');
-  let needsStart = false;
+function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
+  const MAX_REBOTES_APK = 3;
 
   try {
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    for (const [name, pid] of Object.entries(state)) {
-      if (!pid || !isProcessAlive(pid)) {
-        log('qa-env', `${name} no está corriendo (PID: ${pid || 'null'})`);
-        needsStart = true;
-        break;
+    const verPendDir = path.join(fasePath(pipelineName, 'verificacion'), 'pendiente');
+    const verProcDir = path.join(fasePath(pipelineName, 'verificacion'), 'procesado');
+    const buildPendDir = path.join(fasePath(pipelineName, 'build'), 'pendiente');
+    const buildTrabDir = path.join(fasePath(pipelineName, 'build'), 'trabajando');
+    const buildListoDir = path.join(fasePath(pipelineName, 'build'), 'listo');
+    const buildProcDir = path.join(fasePath(pipelineName, 'build'), 'procesado');
+    const buildFileName = `${issue}.build`;
+
+    // Recolectar TODOS los archivos del issue en verificacion/pendiente/
+    const archivosVerificacion = listWorkFiles(verPendDir).filter(f => issueFromFile(f.name) === issue);
+
+    // Calcular rebote_numero: máximo entre archivos actuales y builds previos del issue
+    let reboteCount = 0;
+    for (const f of archivosVerificacion) {
+      const data = readYaml(f.path);
+      if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
+    }
+    for (const estado of ['pendiente', 'trabajando', 'listo', 'procesado']) {
+      const prevBuild = path.join(fasePath(pipelineName, 'build'), estado, buildFileName);
+      if (fs.existsSync(prevBuild)) {
+        const data = readYaml(prevBuild);
+        if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
       }
     }
-  } catch {
-    needsStart = true;
+
+    if (reboteCount >= MAX_REBOTES_APK) {
+      log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Archivando a procesado.`);
+      sendTelegram(`⛔ #${issue} atascado — ${reboteCount} rebotes por APK faltante entre verificacion y build. Requiere intervención manual.`);
+      for (const f of archivosVerificacion) {
+        try { moveFile(f.path, verProcDir); } catch {}
+      }
+      return false;
+    }
+
+    // 1. Marcar rechazados y archivar a procesado/
+    const motivoRechazo = `APK faltante: ${preflightResult?.reason || 'preflight QA no encontró APK del build'}`;
+    for (const f of archivosVerificacion) {
+      try {
+        const data = readYaml(f.path);
+        writeYaml(f.path, {
+          ...data,
+          resultado: 'rechazado',
+          motivo: motivoRechazo,
+          rechazado_en_fase: 'verificacion',
+          rechazado_por: 'preflight-apk',
+          rebote_a: 'build',
+          rebote_numero: reboteCount + 1,
+          rechazado_ts: new Date().toISOString(),
+        });
+        moveFile(f.path, verProcDir);
+      } catch (moverErr) {
+        log('lanzamiento', `⚠️ #${issue}: no se pudo archivar ${f.name}: ${moverErr.message}`);
+      }
+    }
+
+    // 2. Encolar build (idempotente — si ya hay uno en vuelo/encolado, no duplicar)
+    const yaEncolado =
+      fs.existsSync(path.join(buildPendDir, buildFileName)) ||
+      fs.existsSync(path.join(buildTrabDir, buildFileName)) ||
+      fs.existsSync(path.join(buildListoDir, buildFileName));
+
+    if (!yaEncolado) {
+      const payload = {
+        issue: parseInt(issue),
+        fase: 'build',
+        pipeline: pipelineName,
+        motivo: 'APK faltante detectado por preflight QA',
+        rebote: true,
+        rebote_numero: reboteCount + 1,
+        rechazado_en_fase: 'verificacion',
+      };
+      const procFile = path.join(buildProcDir, buildFileName);
+      if (fs.existsSync(procFile)) {
+        writeYaml(procFile, payload);
+        moveFile(procFile, buildPendDir);
+        log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build re-encolado desde procesado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
+      } else {
+        writeYaml(path.join(buildPendDir, buildFileName), payload);
+        log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build nuevo encolado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
+      }
+      ghCommentOnIssue(issue, `⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK.`);
+    } else {
+      log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build ya en curso/encolado`);
+    }
+    return true;
+  } catch (reencolarErr) {
+    log('lanzamiento', `⚠️ #${issue}: no se pudo rebotar verificación→build — ${reencolarErr.message}`);
+    return false;
+  }
+}
+
+function brazoLanzamiento(config) {
+  // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
+  proactiveCleanup(config);
+
+  // Leer activaciones/desactivaciones manuales del dashboard
+  readManualPriorityOverrides();
+
+  // Evaluar Priority Windows ANTES del gate de recursos — para que puedan
+  // desactivarse (cola vacía) incluso cuando el sistema está bajo presión.
+  // Sin esto, una ventana activada durante un pico de carga queda atascada
+  // indefinidamente porque isSystemOverloaded() retorna antes de la evaluación.
+  const qaPriority = evaluateQaPriority(config);
+  const buildPriority = evaluateBuildPriority(config);
+
+  // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
+  if (isSystemOverloaded(config)) return;
+
+  // Calcular multiplicador de concurrencia según presión actual
+  const pressure = getResourcePressure(config);
+  const multiplier = concurrencyMultiplier(pressure.level);
+
+  // Fases bloqueadas según ventana activa (autoexcluyentes: QA > Build > Dev)
+  // QA Priority: bloquea dev + validacion + build (QA necesita recursos exclusivos)
+  // Build Priority: bloquea dev + validacion (build corre, QA sigue si hay)
+  const DEV_PHASES = ['dev', 'validacion'];
+  const QA_BLOCKED_PHASES = ['dev', 'validacion', 'build']; // QA bloquea también build
+
+  // --- PIEZA 2+3: Recolectar TODOS los pendientes de TODAS las fases ---
+  // En vez de iterar fase por fase (que prioriza fases avanzadas),
+  // juntamos todo y ordenamos por: feature priority > fase inversa.
+  const candidates = [];
+
+  for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
+    const fases = pipelineConfig.fases;
+    for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
+      const fase = fases[faseIdx];
+
+      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev
+      if (qaPriority && QA_BLOCKED_PHASES.includes(fase)) continue;
+      if (buildPriority && !qaPriority && DEV_PHASES.includes(fase)) continue;
+
+      const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
+      const archivos = listWorkFiles(pendienteDir);
+
+      for (const archivo of archivos) {
+        candidates.push({
+          archivo,
+          pipelineName,
+          fase,
+          faseIdx,  // Índice original de la fase (para orden inverso)
+          totalFases: fases.length,
+        });
+      }
+    }
   }
 
-  if (!needsStart) {
-    log('qa-env', 'QA environment OK — ya corriendo');
-    qaEnvActive = true;
+  // Ordenar candidatos: feature priority (menor=mejor) > fase inversa (mayor idx=más avanzada=primero)
+  candidates.sort((a, b) => {
+    const issueA = issueFromFile(a.archivo.name);
+    const issueB = issueFromFile(b.archivo.name);
+    const prioA = calcularPrioridad(issueA, config);
+    const prioB = calcularPrioridad(issueB, config);
+
+    // Primer criterio: prioridad de feature (menor = más prioritario)
+    if (prioA !== prioB) return prioA - prioB;
+
+    // Segundo criterio (desempate): fase inversa — fases más avanzadas primero
+    // faseIdx mayor = fase más avanzada = debe procesarse antes
+    return b.faseIdx - a.faseIdx;
+  });
+
+  // --- Procesar candidatos en orden unificado ---
+  let anyLaunched = false;
+  let gateBlockedCount = 0;       // Candidatos bloqueados específicamente por el gate predictivo
+  let eligibleForGateCount = 0;   // Candidatos que llegaron hasta el gate (pasaron dedup/cooldown/concurrencia)
+  const gateBlockedCandidates = []; // Para el deadlock breaker
+
+  for (const candidate of candidates) {
+    const { archivo, pipelineName, fase } = candidate;
+    const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
+    const skill = skillFromFile(archivo.name);
+    const issue = issueFromFile(archivo.name);
+    const key = processKey(skill, issue);
+
+    // 0. Defensa contra archivos evaporados — el procesamiento previo de otro candidate
+    //    del mismo issue (p.ej. rebote por APK faltante que archiva todos los hermanos
+    //    de verificacion/pendiente/ en el primer match) pudo haber movido este archivo.
+    //    Sin este check el siguiente iteration explota al intentar moverlo.
+    if (!fs.existsSync(archivo.path)) continue;
+
+    // 0b. BLOCKED: no lanzar issues con blocked:dependencies
+    const issueLbls = getIssueLabels(issue);
+    if (issueLbls.includes('blocked:dependencies')) {
+      log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      continue;
+    }
+
+    // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
+    const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
+    if (issueAlreadyWorking) continue;
+
+    // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
+    if (isInCooldown(skill, issue)) continue;
+
+    // 3. Ya hay un proceso activo para este skill+issue en memoria?
+    if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
+      continue;
+    }
+
+    // 4. Verificar concurrencia del rol — ADAPTATIVA según presión de recursos
+    const baseMax = (config.concurrencia || {})[skill] || 1;
+    const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
+    const running = countRunningBySkill(skill);
+    if (running >= maxConcurrencia) continue;
+
+    // 5a. Límite de builds bajo presión — en YELLOW solo 1 build simultáneo
+    // Esto previene que múltiples builds saturen la RAM y lleven al sistema a RED
+    if (fase === 'build' && (pressure.level === PRESSURE_LEVELS.YELLOW || pressure.level === PRESSURE_LEVELS.ORANGE)) {
+      const runningBuilds = countRunningBuild(config);
+      if (runningBuilds >= 1) {
+        log('lanzamiento', `⚠️ ${pressure.level.toUpperCase()} — ${runningBuilds} build(s) en curso, postergando build de #${issue} para no saturar`);
+        continue;
+      }
+    }
+
+    // 5b. PIEZA 1: Límite global de devs — si este skill es de desarrollo,
+    // verificar que no se exceda el máximo total de devs simultáneos
+    if (DEV_SKILLS.includes(skill)) {
+      const maxDevs = (config.resource_limits || {}).max_concurrent_devs;
+      if (maxDevs != null) {
+        const totalDevs = countRunningDevs();
+        if (totalDevs >= maxDevs) {
+          log('lanzamiento', `Límite global de devs alcanzado (${totalDevs}/${maxDevs}). Postergando ${archivo.name}`);
+          continue;
+        }
+      }
+    }
+
+    // 6. PRE-FLIGHT CHECKS PARA FASE VERIFICACIÓN — DEBE ir ANTES del gate predictivo.
+    //
+    // Razón: si el gate predictivo bloquea por memoria, hace continue antes de llegar
+    // al preflight, y el rebote APK→build nunca se ejecuta. El issue queda atascado
+    // eternamente en verificacion/pendiente/, pendingQa nunca baja a 0, la ventana QA
+    // no se auto-desactiva y el build (que podría regenerar el APK) está bloqueado por
+    // la propia ventana QA. Deadlock duro.
+    //
+    // El preflight y el rebote son barato (no consumen RAM ni CPU significativos),
+    // así que tiene sentido ejecutarlos ANTES del gate de recursos.
+    let preflightResult = null;
+    if (fase === 'verificacion') {
+      preflightResult = preflightQaChecks(issue);
+      if (!preflightResult.ok) {
+        if (preflightResult.result === 'apk_missing') {
+          reboteVerificacionABuild(issue, pipelineName, preflightResult);
+        } else if (preflightResult.result === 'waiting:emulator') {
+          // Encolar start del emulador al servicio-emulador
+          requestEmulator('start', 'pulpo-preflight', issue, 'QA_MODE=android, emulador necesario para verificación');
+          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (encolado start al servicio-emulador)`);
+        } else {
+          // blocked:infra — mantener en cola, reintentar en próximo ciclo
+          log('lanzamiento', `🚫 #${issue}: pre-flight → ${preflightResult.result}: ${preflightResult.reason}`);
+        }
+        continue; // No mover a trabajando/, no lanzar
+      }
+      // Capa 3: loguear el qaMode asignado
+      log('lanzamiento', `#${issue}: qaMode=${preflightResult.qaMode} (Capa 3 ruteo)`);
+    }
+
+    // 7. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
+    //    (corre DESPUÉS del preflight para que las verificaciones que serían rebotadas
+    //    no inflen el contador de candidatos bloqueados ni paren el deadlock breaker)
+    //
+    //    Pasamos el estado del emulador para que los skills QA puedan restar su RAM
+    //    del baseline — el emulador es infra reservada por la propia ventana QA, no
+    //    un costo del agente individual. Sin esto el cálculo cuenta dos veces el
+    //    emulador y lleva a livelock cuando la baseline ya lo incluye.
+    eligibleForGateCount++;
+    const gateCtx = { emulator: measureEmulatorMemPercent() };
+    const impact = predictResourceImpact(skill, config, gateCtx);
+    if (!impact.safe) {
+      log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
+      gateBlockedCount++;
+      gateBlockedCandidates.push(candidate);
+      continue;
+    }
+
+    // Mover a trabajando/ (atómico)
+    try {
+      const trabajandoPath = moveFile(archivo.path, trabajandoDir);
+
+      // Lanzar agente (todas las fases, incluyendo build)
+      // Capa 3: pasar qaMode al agente QA via extraEnv
+      const extraEnv = {};
+      if (preflightResult && preflightResult.qaMode) {
+        extraEnv.QA_MODE = preflightResult.qaMode;
+        extraEnv.QA_ISSUE = String(issue);
+        extraEnv.QA_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev';
+        if (preflightResult.flavors && preflightResult.flavors.length > 0) {
+          extraEnv.QA_FLAVOR = preflightResult.flavors[0];
+        }
+      }
+      lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
+      anyLaunched = true;
+    } catch (e) {
+      log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
+    }
+  }
+
+  // --- DEADLOCK BREAKER ---
+  // Si había candidatos elegibles pero TODOS fueron bloqueados por el gate predictivo
+  if (eligibleForGateCount > 0 && gateBlockedCount === eligibleForGateCount && !anyLaunched) {
+    consecutiveAllBlockedCycles++;
+
+    const forced = handleDeadlock(gateBlockedCandidates, config);
+    if (forced) {
+      // Forzar lanzamiento del candidato elegido por el breaker
+      const { archivo, pipelineName, fase } = forced;
+      const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
+      try {
+        const skill = skillFromFile(archivo.name);
+        const issue = issueFromFile(archivo.name);
+        // Pre-flight para verificación incluso en deadlock breaker.
+        // Si detecta APK faltante, REBOTAR a build (no abandonar) — sin esto, el
+        // deadlock breaker se queda atascado para siempre haciendo return ciclo tras
+        // ciclo mientras los archivos siguen en verificacion/pendiente/.
+        if (fase === 'verificacion') {
+          const preflight = preflightQaChecks(issue);
+          if (!preflight.ok) {
+            if (preflight.result === 'apk_missing') {
+              log('deadlock', `#${issue}: pre-flight forzado detectó APK faltante → rebote a build`);
+              reboteVerificacionABuild(issue, pipelineName, preflight);
+              consecutiveAllBlockedCycles = 0; // El rebote es progreso real, resetear contador
+            } else {
+              log('deadlock', `#${issue}: pre-flight bloqueó lanzamiento forzado → ${preflight.result}`);
+            }
+            return; // No lanzar — el deadlock breaker no puede forzar sin infra
+          }
+        }
+        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
+        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+      } catch (e) {
+        log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
+      }
+    }
+  } else {
+    // Se lanzó algo o no había candidatos elegibles → reset deadlock counter
+    if (anyLaunched || eligibleForGateCount === 0) {
+      consecutiveAllBlockedCycles = 0;
+    }
+  }
+}
+
+// =============================================================================
+// PRE-FLIGHT CHECKS — Capa 2 + Capa 3 de la estrategia QA
+// Capa 2: Verifica infraestructura ANTES de lanzar agente QA
+// Capa 3: Clasifica qaMode (android/api/structural) para rutear al script correcto
+// =============================================================================
+
+const APP_LABELS = ['app:client', 'app:business', 'app:delivery'];
+const LABEL_TO_FLAVOR = { 'app:client': 'client', 'app:business': 'business', 'app:delivery': 'delivery' };
+const ROUTING_LABELS = [...APP_LABELS, 'area:backend', 'area:infra', 'docs'];
+
+// Keywords para auto-clasificación inteligente de issues sin labels de ruteo
+const AUTO_CLASSIFY_RULES = [
+  // UI / Android — palabras que indican impacto en la interfaz del usuario
+  { keywords: ['pantalla', 'screen', 'ui', 'ux', 'botón', 'button', 'formulario', 'form', 'dialog',
+    'compose', 'viewmodel', 'navegación', 'navigation', 'diseño', 'layout', 'color', 'tema', 'theme',
+    'carrito', 'cart', 'pedido', 'order', 'producto', 'product', 'menú', 'menu', 'login', 'registro',
+    'perfil', 'profile', 'notificación', 'notification', 'lista', 'list', 'detalle', 'detail',
+    'imagen', 'image', 'ícono', 'icon', 'toast', 'snackbar', 'repetir pedido', 'checkout',
+    'splash', 'onboarding', 'search', 'buscar', 'filtro', 'filter', 'animación', 'animation'],
+    label: 'app:client' },
+  // Backend / API
+  { keywords: ['endpoint', 'api', 'lambda', 'cognito', 'dynamodb', 'serverless', 'función backend',
+    'backend function', 'signin', 'signup', 'token', 'jwt', 'cors', 'http', 'request', 'response',
+    'ktor', 'route', 'ruta backend', 'status code', 'migration', 'tabla', 'table', 'index',
+    'secretsmanager', 'ses', 'email', 'sms', 'otp', '2fa', 'mfa', 'auth'],
+    label: 'area:backend' },
+  // Infra / pipeline / hooks
+  { keywords: ['pipeline', 'hook', 'infra', 'ci/cd', 'github action', 'gradle', 'build', 'deploy',
+    'worktree', 'pulpo', 'restart', 'dashboard', 'monitor', 'agent', 'agente', 'config',
+    'yaml', 'json config', 'script', '.pipeline', 'cron', 'scheduler'],
+    label: 'area:infra' },
+  // Documentación
+  { keywords: ['documentación', 'documentation', 'docs/', 'readme', 'spec', 'arquitectura',
+    'architecture', 'manual', 'guía', 'guide', 'changelog'],
+    label: 'docs' }
+];
+
+/**
+ * Auto-clasificar un issue sin labels de ruteo.
+ * Lee título y body del issue, matchea contra keywords, asigna el label en GitHub.
+ * Retorna el label asignado o null si no pudo determinar.
+ */
+function autoClassifyIssue(issueNum) {
+  try {
+    ghThrottle();
+    const issueJson = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json title,body`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    const { title = '', body = '' } = JSON.parse(issueJson);
+    const text = `${title}\n${body}`.toLowerCase();
+
+    // Contar matches por regla
+    const scores = AUTO_CLASSIFY_RULES.map(rule => {
+      const hits = rule.keywords.filter(kw => text.includes(kw.toLowerCase()));
+      return { label: rule.label, hits: hits.length, matched: hits };
+    }).filter(s => s.hits > 0).sort((a, b) => b.hits - a.hits);
+
+    if (scores.length === 0) {
+      log('auto-classify', `#${issueNum}: sin matches — no se puede clasificar automáticamente`);
+      return null;
+    }
+
+    const winner = scores[0];
+    log('auto-classify', `#${issueNum}: clasificado como "${winner.label}" (${winner.hits} hits: ${winner.matched.slice(0, 5).join(', ')})`);
+
+    // Asignar label en GitHub
+    try {
+      ghThrottle();
+      execSync(
+        `"${GH_BIN}" issue edit ${issueNum} --add-label "${winner.label}"`,
+        { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+      log('auto-classify', `#${issueNum}: label "${winner.label}" asignado en GitHub ✓`);
+
+      // Invalidar cache de labels para que el ruteo use el label nuevo
+      issueLabelsCache.delete(issueNum);
+    } catch (e) {
+      log('auto-classify', `#${issueNum}: error asignando label — ${e.message.slice(0, 80)}`);
+    }
+
+    return winner.label;
+  } catch (e) {
+    log('auto-classify', `#${issueNum}: error leyendo issue — ${e.message.slice(0, 80)}`);
+    return null;
+  }
+}
+const QA_ARTIFACTS_DIR = path.join(ROOT, 'qa', 'artifacts');
+const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
+
+// --- Warm-up + retry para backend Lambda (evita falsos blocked:infra por cold start) ---
+const BACKEND_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale';
+const WARMUP_RETRIES = 3;       // Intentos totales (1 warm-up + 2 retries)
+const WARMUP_WAIT_MS = 5000;    // Espera entre intentos (5 segundos)
+// Deduplicación de notificaciones blocked:infra — evita spam en Telegram
+const _lastBlockedNotif = {};   // { issueNumber: timestampMs }
+const BLOCKED_NOTIF_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutos entre notificaciones del mismo issue
+
+/**
+ * Hace un request al backend con warm-up automático.
+ * Si el primer intento falla por timeout/error, espera y reintenta.
+ * Retorna { ok: boolean, httpCode: number|null, error: string|null }
+ */
+function checkBackendWithWarmup(issue) {
+  const backendUrl = `${BACKEND_BASE_URL}/signin`;
+  // NUL en Windows, /dev/null en Unix — execSync usa cmd.exe en Windows
+  const devNull = process.platform === 'win32' ? 'NUL' : '/dev/null';
+
+  for (let attempt = 1; attempt <= WARMUP_RETRIES; attempt++) {
+    try {
+      const curlResult = execSync(
+        `curl -s -o ${devNull} -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+        { encoding: 'utf8', timeout: 25000, windowsHide: true }
+      ).trim();
+      const httpCode = parseInt(curlResult, 10);
+
+      if (httpCode >= 400 && httpCode < 500) {
+        if (attempt > 1) {
+          log('preflight', `#${issue}: backend respondió OK en intento ${attempt}/${WARMUP_RETRIES} (cold start resuelto)`);
+        }
+        return { ok: true, httpCode, error: null };
+      }
+
+      // Respuesta inesperada (5xx, etc) — reintentar
+      log('preflight', `#${issue}: backend HTTP ${httpCode} en intento ${attempt}/${WARMUP_RETRIES} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s...` : 'agotados reintentos'}`);
+    } catch (e) {
+      log('preflight', `#${issue}: backend timeout/error en intento ${attempt}/${WARMUP_RETRIES}: ${e.message.slice(0, 60)} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s (probable cold start)...` : 'agotados reintentos'}`);
+    }
+
+    // Esperar antes del siguiente intento (excepto en el último)
+    // Usamos Atomics.wait como sleep sincrónico portable (funciona en Windows sin shell hacks)
+    if (attempt < WARMUP_RETRIES) {
+      const sharedBuf = new SharedArrayBuffer(4);
+      Atomics.wait(new Int32Array(sharedBuf), 0, 0, WARMUP_WAIT_MS);
+    }
+  }
+
+  return { ok: false, httpCode: null, error: `No respondió tras ${WARMUP_RETRIES} intentos (cold start persistente)` };
+}
+
+/**
+ * Envía notificación de blocked:infra con deduplicación (máximo 1 cada 5 min por issue).
+ */
+function sendBlockedInfraNotif(issue, message) {
+  const now = Date.now();
+  const lastSent = _lastBlockedNotif[issue] || 0;
+  if (now - lastSent < BLOCKED_NOTIF_COOLDOWN_MS) {
+    log('preflight', `#${issue}: blocked:infra notificación suprimida (cooldown ${Math.round((BLOCKED_NOTIF_COOLDOWN_MS - (now - lastSent)) / 1000)}s restantes)`);
+    return;
+  }
+  _lastBlockedNotif[issue] = now;
+  sendTelegram(message);
+}
+
+/**
+ * Pre-flight checks para agentes QA (Capa 2 + Capa 3 ruteo).
+ * Retorna { ok, result, reason, flavors, requiresEmulator, qaMode }
+ *   ok=true  → lanzar agente
+ *   qaMode: 'android' | 'api' | 'structural' (Capa 3)
+ *   ok=false → no lanzar, result indica la acción a tomar
+ */
+// --- Check DynamoDB remoto: verifica que no hay overrides locales ---
+function checkDynamoDbRemote(issue) {
+  const checks = {};
+  let ok = true;
+
+  // 1. Verificar env vars que apuntan a DynamoDB local
+  const dynamoEndpoint = process.env.DYNAMODB_ENDPOINT || '';
+  if (dynamoEndpoint && /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(dynamoEndpoint)) {
+    checks.dynamodb_env = `local:${dynamoEndpoint}`;
+    log('preflight', `#${issue}: FAIL — DYNAMODB_ENDPOINT apunta a local: ${dynamoEndpoint}`);
+    ok = false;
+  } else {
+    checks.dynamodb_env = dynamoEndpoint ? `remote:${dynamoEndpoint}` : 'not-set:aws-default';
+  }
+
+  // 2. Verificar LOCAL_MODE
+  if ((process.env.LOCAL_MODE || '').toLowerCase() === 'true') {
+    checks.local_mode = 'true';
+    log('preflight', `#${issue}: FAIL — LOCAL_MODE=true activo, DynamoDB/Cognito apuntarían a localhost`);
+    ok = false;
+  } else {
+    checks.local_mode = 'off';
+  }
+
+  // 3. Verificar .env.qa no tiene overrides locales
+  const envQaPath = path.join(ROOT, '.env.qa');
+  if (fs.existsSync(envQaPath)) {
+    try {
+      const envContent = fs.readFileSync(envQaPath, 'utf8');
+      if (/DYNAMODB_ENDPOINT=.*localhost|DYNAMODB_ENDPOINT=.*127\.0\.0\.1/.test(envContent)) {
+        checks.env_qa = 'dynamodb-local';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene DYNAMODB_ENDPOINT local`);
+        ok = false;
+      } else if (/LOCAL_MODE=true/.test(envContent)) {
+        checks.env_qa = 'local-mode-true';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene LOCAL_MODE=true`);
+        ok = false;
+      } else {
+        checks.env_qa = 'ok';
+      }
+    } catch (e) {
+      checks.env_qa = `read-error:${e.message.slice(0, 40)}`;
+    }
+  } else {
+    checks.env_qa = 'not-exists';
+  }
+
+  // 4. Verificar que searchBusinesses devuelve datos reales (DynamoDB remoto con data)
+  // Timeouts más generosos para tolerar cold start (el warm-up de signin puede no calentar esta ruta)
+  try {
+    const searchUrl = `${BACKEND_BASE_URL}/searchBusinesses`;
+    const result = execSync(
+      `curl -s -X POST "${searchUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+      { encoding: 'utf8', timeout: 25000, windowsHide: true }
+    ).trim();
+    if (result.includes('"businesses":[') && !result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'ok:has-data';
+      log('preflight', `#${issue}: DynamoDB remoto OK — searchBusinesses devuelve datos reales`);
+    } else if (result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'empty';
+      log('preflight', `#${issue}: WARN — DynamoDB remoto vacío (searchBusinesses sin resultados)`);
+      // No bloquear por datos vacíos, solo advertir
+    } else {
+      checks.dynamodb_data = `unexpected:${result.slice(0, 60)}`;
+      log('preflight', `#${issue}: WARN — DynamoDB respuesta inesperada: ${result.slice(0, 60)}`);
+    }
+  } catch (e) {
+    checks.dynamodb_data = `error:${e.message.slice(0, 60)}`;
+    log('preflight', `#${issue}: FAIL — DynamoDB check falló: ${e.message.slice(0, 60)}`);
+    ok = false;
+  }
+
+  return { ok, checks };
+}
+
+function preflightQaChecks(issue) {
+  const startMs = Date.now();
+  const checks = {};
+
+  // --- Check 1: Clasificar issue (requiere emulador o no) ---
+  let labels = getIssueLabels(issue);
+
+  // Auto-clasificación: si el issue no tiene ningún label de ruteo, inferir y asignar
+  const hasRoutingLabel = labels.some(l => ROUTING_LABELS.includes(l));
+  if (!hasRoutingLabel) {
+    log('preflight', `#${issue}: sin labels de ruteo — intentando auto-clasificar...`);
+    const assignedLabel = autoClassifyIssue(issue);
+    if (assignedLabel) {
+      // Re-leer labels después de la asignación
+      labels = getIssueLabels(issue);
+      sendTelegram(`🏷️ Issue #${issue} auto-clasificado como \`${assignedLabel}\` (no tenía label de ruteo QA).`);
+    } else {
+      log('preflight', `#${issue}: auto-clasificación falló — cae en structural por defecto`);
+    }
+  }
+
+  const appLabels = labels.filter(l => APP_LABELS.includes(l));
+  const requiresEmulator = appLabels.length > 0;
+  const flavors = appLabels.map(l => LABEL_TO_FLAVOR[l]);
+
+  // Capa 3: Clasificación extendida — qaMode determina el ruteo QA
+  // 'android' = necesita emulador + APK + Maestro
+  // 'api'     = necesita backend, NO emulador ni APK
+  // 'structural' = no necesita infra externa (docs, hooks, infra)
+  const hasBackendLabel = labels.includes('area:backend');
+  const qaMode = requiresEmulator ? 'android'
+    : hasBackendLabel ? 'api'
+    : 'structural';
+
+  checks.classify = requiresEmulator ? `ui:${flavors.join(',')}` : `no-ui:${qaMode}`;
+  log('preflight', `#${issue}: check 1 OK (qaMode=${qaMode}${requiresEmulator ? `, flavors: ${flavors.join(', ')}` : ''})`);
+
+  // Si no requiere emulador, verificar backend para QA-API antes de aprobar
+  if (!requiresEmulator) {
+    if (qaMode === 'api') {
+      // QA-API necesita backend vivo — check 3 con warm-up (tolera cold start de Lambda)
+      const warmup = checkBackendWithWarmup(issue);
+      if (warmup.ok) {
+        checks.backend = `ok:${warmup.httpCode}`;
+        log('preflight', `#${issue}: check 3 (QA-API) OK — backend responde HTTP ${warmup.httpCode}`);
+      } else {
+        checks.backend = `error:${warmup.error}`;
+        log('preflight', `#${issue}: check 3 (QA-API) FAIL — ${warmup.error} → blocked:infra`);
+      }
+
+      if (!warmup.ok) {
+        logPreflight(issue, checks, 'blocked:infra', startMs);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
+        return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors: [], requiresEmulator: false, qaMode };
+      }
+
+      // Check DynamoDB remoto (no overrides locales)
+      const dynamoCheck = checkDynamoDbRemote(issue);
+      checks.dynamodb = dynamoCheck.checks;
+      if (!dynamoCheck.ok) {
+        logPreflight(issue, checks, 'blocked:infra', startMs);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+        return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors: [], requiresEmulator: false, qaMode };
+      }
+      log('preflight', `#${issue}: check DynamoDB remoto OK`);
+
+      // Capa 3: Verificar/generar test cases para QA-API
+      const testCasesFile = path.join(ROOT, 'qa', 'test-cases', `${issue}.json`);
+      if (fs.existsSync(testCasesFile)) {
+        checks.testCases = 'exists';
+        log('preflight', `#${issue}: check 5 (test cases) OK — encontrado ${testCasesFile}`);
+      } else {
+        // Fallback: generar test cases automáticamente desde criterios del issue
+        log('preflight', `#${issue}: check 5 (test cases) — no existe, generando fallback...`);
+        try {
+          const genScript = path.join(ROOT, 'qa', 'scripts', 'qa-generate-test-cases.js');
+          const ghPath = fs.existsSync(GH_BIN) ? GH_BIN : 'gh';
+          execSync(`node "${genScript}"`, {
+            encoding: 'utf8',
+            timeout: 20000,
+            windowsHide: true,
+            env: { ...process.env, QA_ISSUE: String(issue), GH_PATH: ghPath }
+          });
+          checks.testCases = 'generated-fallback';
+          log('preflight', `#${issue}: check 5 (test cases) OK — generados como fallback`);
+        } catch (genErr) {
+          // No bloquear si falla la generación — el agente QA puede generar manualmente
+          checks.testCases = `gen-failed:${genErr.message.slice(0, 60)}`;
+          log('preflight', `#${issue}: check 5 (test cases) WARN — generación fallback falló, el agente QA los generará`);
+        }
+      }
+    }
+
+    logPreflight(issue, checks, 'pass', startMs);
+    return { ok: true, result: 'pass', reason: `Issue ${qaMode} — no requiere emulador ni APK`, flavors: [], requiresEmulator: false, qaMode };
+  }
+
+  // --- Check 2: APK disponible (solo si requiere emulador) ---
+  fs.mkdirSync(QA_ARTIFACTS_DIR, { recursive: true });
+  const missingApks = [];
+  for (const flavor of flavors) {
+    const apkName = `${issue}-composeApp-${flavor}-debug.apk`;
+    const apkPath = path.join(QA_ARTIFACTS_DIR, apkName);
+    if (!fs.existsSync(apkPath)) {
+      missingApks.push(apkName);
+    }
+  }
+
+  if (missingApks.length > 0) {
+    checks.apk = `missing:${missingApks.join(',')}`;
+    log('preflight', `#${issue}: check 2 FAIL — APK faltante: ${missingApks.join(', ')} → re-encolar para build`);
+    logPreflight(issue, checks, 'apk_missing', startMs);
+    return { ok: false, result: 'apk_missing', reason: `APK faltante: ${missingApks.join(', ')}`, flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+  checks.apk = 'ok';
+  log('preflight', `#${issue}: check 2 OK (APK encontrado para ${flavors.join(', ')})`);
+
+  // --- Check 3: Backend responde (con warm-up para tolerar cold start de Lambda) ---
+  const warmupAndroid = checkBackendWithWarmup(issue);
+  if (warmupAndroid.ok) {
+    checks.backend = `ok:${warmupAndroid.httpCode}`;
+    log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${warmupAndroid.httpCode})`);
+  } else {
+    checks.backend = `error:${warmupAndroid.error}`;
+    log('preflight', `#${issue}: check 3 FAIL — ${warmupAndroid.error} → blocked:infra`);
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
+    return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  // --- Check 3b: DynamoDB remoto (no overrides locales) ---
+  const dynamoCheckAndroid = checkDynamoDbRemote(issue);
+  checks.dynamodb = dynamoCheckAndroid.checks;
+  if (!dynamoCheckAndroid.ok) {
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+    return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+  log('preflight', `#${issue}: check DynamoDB remoto OK`);
+
+  // --- Check 4: Emulador disponible via ADB + test de screenrecord (Blindaje 2) ---
+  let emulatorReady = false;
+  let emulatorSerial = '';
+  try {
+    const adbOutput = execSync('adb devices', {
+      encoding: 'utf8', timeout: 5000, windowsHide: true
+    }).trim();
+    // Buscar linea con "emulator" y estado "device" (no "offline")
+    const lines = adbOutput.split('\n').filter(l => l.includes('emulator') && l.includes('device'));
+    emulatorReady = lines.length > 0;
+    if (emulatorReady) {
+      emulatorSerial = lines[0].split('\t')[0].trim();
+    }
+  } catch {}
+
+  if (!emulatorReady) {
+    checks.emulator = 'waiting';
+    log('preflight', `#${issue}: check 4 FAIL (emulador no disponible) → waiting:emulator — señalizando ventana QA`);
+    logPreflight(issue, checks, 'waiting:emulator', startMs);
+    return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar.
+  // Con el gating de boot real en qa-environment.waitBootCompleted(), el framework
+  // ya está listo antes de llegar acá, así que un solo intento es suficiente.
+  // Si falla, es ADB realmente inestable y conviene abortar el preflight rápido.
+  let screenrecordOk = false;
+  try {
+    execSync(
+      `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    screenrecordOk = true;
+    log('preflight', `#${issue}: check 4b OK — screenrecord test passed`);
+  } catch (e) {
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord: ${e.message.slice(0, 80)}`);
+  }
+
+  if (!screenrecordOk) {
+    checks.emulator = 'screenrecord-fail';
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona → blocked:infra`);
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
+    return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  checks.emulator = 'ok+screenrecord';
+  log('preflight', `#${issue}: check 4 OK (emulador disponible + screenrecord verificado)`);
+
+  // --- Todos los checks pasaron ---
+  logPreflight(issue, checks, 'pass', startMs);
+  return { ok: true, result: 'pass', reason: 'Todos los pre-flight checks OK', flavors, requiresEmulator: true, qaMode: 'android' };
+}
+
+/** Persistir resultado de pre-flight en log JSONL para análisis */
+function logPreflight(issue, checks, result, startMs) {
+  try {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      issue: String(issue),
+      checks,
+      result,
+      duration_ms: Date.now() - startMs
+    };
+    fs.appendFileSync(PREFLIGHT_LOG_FILE, JSON.stringify(entry) + '\n');
+  } catch {}
+}
+
+/**
+ * Encolar un pedido de start/stop del emulador al servicio-emulador.
+ * El servicio procesa la cola con coalescencia last-write-wins.
+ * Diseño: docs/pipeline/diseno-servicio-emulador.md
+ */
+function requestEmulator(action, requester, issue, reason) {
+  const ts = Date.now();
+  const msg = { action, requester, issue: issue || null, reason: reason || '', timestamp: Math.floor(ts / 1000) };
+  const svcDir = path.join(PIPELINE, 'servicios', 'emulador', 'pendiente');
+  try {
+    fs.mkdirSync(svcDir, { recursive: true });
+    const file = path.join(svcDir, `${ts}-${Math.random().toString(36).slice(2, 6)}.json`);
+    fs.writeFileSync(file, JSON.stringify(msg, null, 2));
+    log('qa-env', `Encolado ${action} emulador (requester: ${requester}, issue: #${issue || '-'})`);
+  } catch (e) {
+    log('qa-env', `Error encolando ${action} emulador: ${e.message}`);
+  }
+}
+
+function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
+  // INVARIANTE CRÍTICO: el skill debe pertenecer a skills_por_fase[fase] de este pipeline.
+  // Ningún agente puede correr en una fase que no es la suya, ni siquiera por excepción
+  // (incidentes previos: project_apk-builder-responsibility, project_build-bypass-agent).
+  // Si esto falla, el archivo se devuelve a pendiente/ y se alerta — NO se lanza.
+  try {
+    const skillsValidos = ((config.pipelines || {})[pipeline] || {}).skills_por_fase || {};
+    const permitidos = skillsValidos[fase] || [];
+    if (!permitidos.includes(skill)) {
+      log('lanzamiento', `⛔ INVARIANTE: skill "${skill}" no pertenece a fase "${fase}" (permitidos: ${permitidos.join(', ') || '∅'}). Archivo: ${path.basename(trabajandoPath)}`);
+      sendTelegram(`⛔ Pipeline bloqueó lanzamiento de ${skill}:#${issue} en fase "${fase}" — skill no autorizado para esa fase. Revisar inmediatamente.`);
+      try {
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        moveFile(trabajandoPath, pendienteDir);
+      } catch {}
+      return;
+    }
+  } catch (invErr) {
+    log('lanzamiento', `⚠️ No se pudo validar invariante skill∈fase para ${skill}:#${issue}: ${invErr.message}`);
     return;
   }
 
-  // Lanzar asíncrono para no bloquear el loop del Pulpo
-  qaEnvStarting = true;
-  log('qa-env', 'Levantando QA environment en background...');
-
-  const child = spawn('node', [path.join(PIPELINE, 'qa-environment.js'), 'start'], {
-    cwd: ROOT, stdio: 'ignore', windowsHide: true
-  });
-
-  child.on('close', (code) => {
-    qaEnvStarting = false;
-    if (code === 0) {
-      qaEnvActive = true;
-      log('qa-env', 'QA environment levantado OK');
-      sendTelegram('🧪 QA Environment levantado (emulador + backend + DynamoDB)');
-    } else {
-      log('qa-env', `Error levantando QA environment (exit code: ${code})`);
-      sendTelegram(`⚠️ Error levantando QA environment (exit code: ${code})`);
-    }
-  });
-
-  child.on('error', (e) => {
-    qaEnvStarting = false;
-    log('qa-env', `Error spawn QA environment: ${e.message}`);
-    sendTelegram('⚠️ Error levantando QA environment: ' + e.message.slice(0, 100));
-  });
-}
-
-/** Concurrencia efectiva: se reduce para dev/build cuando el QA env consume recursos */
-function getEffectiveConcurrency(config, skill) {
-  const base = (config.concurrencia || {})[skill] || 1;
-  const devSkills = ['backend-dev', 'android-dev', 'web-dev', 'build'];
-  if (QA_ENV_RESERVE_DEV_SLOTS > 0 && devSkills.includes(skill) && (isQaEnvActive() || qaEnvStarting)) {
-    return Math.max(1, base - QA_ENV_RESERVE_DEV_SLOTS);
-  }
-  return base;
-}
-
-function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
   const basePrompt = path.join(PIPELINE, 'roles', '_base.md');
   const rolPrompt = path.join(PIPELINE, 'roles', `${skill}.md`);
 
@@ -835,13 +2684,14 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
     userPrompt += `4. Diagnosticá la causa raíz del fallo\n`;
     userPrompt += `5. Corregí el código en tu worktree\n`;
-    userPrompt += `6. Verificá que compila: ./gradlew check\n`;
+    userPrompt += `6. Verificá que compila: ./gradlew check --no-daemon\n`;
     userPrompt += `7. Commiteá y pusheá los fixes\n`;
     userPrompt += `\nNO reimplementes desde cero. Focalizá solo en corregir los errores del rechazo.\n`;
   }
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
+  const useExistingWorktree = (fase === 'build');
   let worktreePath = ROOT;
   let worktreeBranch = null;
 
@@ -851,26 +2701,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
 
       if (!fs.existsSync(worktreePath)) {
-        // Verificar si la rama ya existe (agente previo dejó commits)
-        let branchExists = false;
-        try {
-          execSync(`git rev-parse --verify "${worktreeBranch}"`, { cwd: ROOT, stdio: 'ignore', timeout: 5000, windowsHide: true });
-          branchExists = true;
-        } catch {}
-
-        if (branchExists) {
-          // Reusar rama existente con su trabajo previo
-          execSync(`git worktree add "${worktreePath}" "${worktreeBranch}"`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-          });
-          log('lanzamiento', `Worktree creado (rama existente): ${worktreePath}`);
-        } else {
-          // Crear rama nueva desde origin/main
-          execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-          });
-          log('lanzamiento', `Worktree creado (rama nueva): ${worktreePath}`);
-        }
+        execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main`, {
+          cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
+        });
+        log('lanzamiento', `Worktree creado: ${worktreePath}`);
       }
     } catch (e) {
       log('lanzamiento', `Error creando worktree para #${issue}: ${e.message}`);
@@ -878,9 +2712,28 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       moveFile(trabajandoPath, pendienteDir);
       return;
     }
+  } else if (useExistingWorktree) {
+    // Build: buscar el worktree existente del issue (creado en fase dev)
+    try {
+      const worktreePattern = `platform.agent-${issue}-`;
+      const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+      for (const line of worktrees.split('\n')) {
+        if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
+          worktreePath = line.replace('worktree ', '').trim();
+          break;
+        }
+      }
+      if (worktreePath !== ROOT) {
+        log('lanzamiento', `Build #${issue}: usando worktree existente ${worktreePath}`);
+      } else {
+        log('lanzamiento', `Build #${issue}: no se encontró worktree, usando ROOT`);
+      }
+    } catch (e) {
+      log('lanzamiento', `Build #${issue}: error buscando worktree (${e.message}), usando ROOT`);
+    }
   }
 
-  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
@@ -894,16 +2747,18 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
 
   const child = spawn(spawnCmd, spawnArgs, {
-    cwd: needsWorktree ? worktreePath : ROOT,
+    cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
     detached: false,
     shell: false,
     windowsHide: true,
-    env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase }
+    env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase, ...extraEnv }
   });
 
   child.unref();
-  fs.closeSync(agentLogFd);
+  // NO cerrar agentLogFd aquí — en Windows, cerrar el FD en el padre
+  // mata la herencia y el hijo pierde stdout/stderr.
+  // Se cierra en child.on('exit') para que el log capture todo el output.
 
   activeProcesses.set(processKey(skill, issue), {
     pid: child.pid,
@@ -911,7 +2766,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     trabajandoPath,
     pipeline,
     fase,
-    worktreePath: needsWorktree ? worktreePath : null
+    worktreePath: (needsWorktree || useExistingWorktree) ? worktreePath : null
   });
 
   // Crear canal de contexto para el agente (auto-join)
@@ -939,25 +2794,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
-    const elapsedSec = (Date.now() - launchTime) / 1000;
+    // Cerrar el FD del log ahora que el hijo terminó
+    try { fs.closeSync(agentLogFd); } catch {}
 
-    // Detectar rate limit de Anthropic en el log del agente
-    const rateLimitContent = detectRateLimitInLog(agentLogPath);
-    if (rateLimitContent) {
-      log('rate-limit', `⛔ ${skill}:#${issue} falló por cuota de Anthropic`);
-      activateRateLimitPause(rateLimitContent);
-      // Devolver a pendiente sin registrar como fallo (no es culpa del issue)
-      const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
-      try { moveFile(trabajandoPath, pendienteDir); } catch {}
-      activeProcesses.delete(processKey(skill, issue));
-      if (contextChannelId) {
-        try {
-          const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
-          cm.leaveChannelByType(contextChannelId, 'agent');
-        } catch (e) {}
-      }
-      return;
-    }
+    const elapsedSec = (Date.now() - launchTime) / 1000;
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     if (code !== 0 && elapsedSec < 15) {
@@ -966,6 +2806,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
+      // Matar Gradle daemons incluso en fast-fail
+      killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
       // Salir del canal de contexto
       if (contextChannelId) {
         try {
@@ -974,11 +2816,28 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         } catch (e) {}
       }
       sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
+      // Reporte PDF de muerte prematura (background)
+      try {
+        const reportScript = path.join(PIPELINE, 'rejection-report.js');
+        const reportChild = spawn(process.execPath, [
+          reportScript,
+          '--issue', String(issue), '--skill', skill, '--fase', fase,
+          '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+          '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
+          '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+        ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
+        reportChild.unref();
+      } catch {}
       return;
     }
 
     // Éxito o finalización normal → limpiar cooldown
     if (code === 0) clearCooldown(skill, issue);
+
+    // Registrar consumo de recursos del agente para perfiles predictivos
+    if (elapsedSec > 30) { // Solo si corrió suficiente para tener snapshots
+      recordSkillResourceUsage(skill, launchTime, Date.now());
+    }
 
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
@@ -988,16 +2847,55 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
         writeYaml(trabajandoPath, data);
       }
+
+      // --- VALIDACIÓN ON-EXIT QA ---
+      // Si el agente QA terminó diciendo "aprobado" pero sin evidencia, forzar rechazo
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        const evidenceIssues = validateQaEvidence(issue, data);
+        if (evidenceIssues.length > 0) {
+          log('lanzamiento', `⛔ QA:#${issue} aprobó sin evidencia válida on-exit: ${evidenceIssues.join(', ')}`);
+          data.resultado = 'rechazado';
+          data.motivo = `Evidencia QA incompleta (gate on-exit): ${evidenceIssues.join('; ')}`;
+          data.rechazado_por = 'gate-evidencia-on-exit';
+          writeYaml(trabajandoPath, data);
+          sendTelegram(`⛔ QA:#${issue} — evidencia incompleta al terminar. Rechazo automático: ${evidenceIssues.join('; ')}`);
+        }
+      }
+
       moveFile(trabajandoPath, listoDir);
       log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
+
+      // Generar reporte PDF de rechazo y enviar a Telegram (background, no bloquea)
+      if (data.resultado === 'rechazado') {
+        try {
+          const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          const reportArgs = [
+            reportScript,
+            '--issue', String(issue), '--skill', skill, '--fase', fase,
+            '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+            '--motivo', String(data.motivo || 'Sin motivo'),
+            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+          ];
+          const reportChild = spawn(process.execPath, reportArgs, {
+            cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true
+          });
+          reportChild.unref();
+          log('lanzamiento', `📄 Reporte de rechazo lanzado para ${skill}:#${issue}`);
+        } catch (reportErr) {
+          log('lanzamiento', `⚠️ Error lanzando reporte de rechazo: ${reportErr.message}`);
+        }
+      }
     } catch (e) {
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey(skill, issue));
 
-    // Cleanup: matar Gradle daemons que puedan haber quedado del agente
-    // (los agentes corren ./gradlew check como parte de su flujo)
-    barridoGradleDaemons();
+    // Matar Gradle daemons del worktree para liberar RAM (cada daemon usa hasta 4GB)
+    // Delay de 10s para evitar race condition: si el barrido ya lanzó un build en este
+    // worktree, el guard dentro de killGradleDaemonsForCwd lo protegerá.
+    const cleanupCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
+    const cleanupLabel = `${skill}:#${issue}`;
+    setTimeout(() => killGradleDaemonsForCwd(cleanupCwd, cleanupLabel), 10000);
 
     // Salir del canal de contexto (el canal queda para que otros lo consulten)
     if (contextChannelId) {
@@ -1014,117 +2912,6 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   // stdout/stderr redirigidos al archivo de log via stdio fd
-}
-
-function lanzarBuild(issue, trabajandoPath, pipeline, config) {
-  log('lanzamiento', `BUILD #${issue} — ejecutando gradlew check`);
-
-  // Buscar el worktree del issue
-  const worktreePattern = `platform.agent-${issue}-`;
-  let buildCwd = ROOT;
-
-  try {
-    const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
-    for (const line of worktrees.split('\n')) {
-      if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
-        buildCwd = line.replace('worktree ', '').trim();
-        break;
-      }
-    }
-  } catch { /* usar ROOT */ }
-
-  // Antes de compilar, mergear origin/main para tener los últimos hotfixes
-  if (buildCwd !== ROOT) {
-    try {
-      execSync('git fetch origin main && git merge origin/main --no-edit', {
-        cwd: buildCwd, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('build', `#${issue} worktree actualizado con origin/main`);
-    } catch (e) {
-      log('build', `#${issue} merge main falló (puede haber conflictos): ${e.message.slice(0, 200)}`);
-    }
-  }
-
-  // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
-  const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  // Validar que JAVA_HOME tenga un java.exe válido; si no, usar Temurin 21
-  // IMPORTANTE: solo chequear existencia del directorio no alcanza — IntelliJ JBR puede existir
-  // pero no ser un JDK válido (sin bin/java.exe). Hay que validar el binario.
-  const envJavaHome = process.env.JAVA_HOME;
-  const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
-  const isValidJavaHome = envJavaHome && fs.existsSync(path.join(envJavaHome, 'bin', javaExe));
-  const javaHome = (isValidJavaHome ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
-  const cwdUnix = buildCwd.replace(/\\/g, '/');
-
-  // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
-  const gitUsrBin = 'C:/Program Files/Git/usr/bin';
-  const buildEnv = {
-    ...process.env,
-    JAVA_HOME: javaHome,
-    PATH: `${gitUsrBin}${path.delimiter}${process.env.PATH || ''}`
-  };
-
-  const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
-
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew --no-daemon check`], {
-    cwd: buildCwd,
-    env: buildEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
-    windowsHide: true
-  });
-
-  child.unref();
-
-  // Timeout: matar el build si excede 30 minutos
-  const buildTimer = setTimeout(() => {
-    log('build', `#${issue} TIMEOUT — build excedió ${BUILD_TIMEOUT_MS / 60000} minutos, matando proceso`);
-    try { child.kill('SIGTERM'); } catch {}
-  }, BUILD_TIMEOUT_MS);
-
-  const buildStartTime = Date.now();
-  activeProcesses.set(processKey('build', issue), {
-    pid: child.pid,
-    startTime: buildStartTime,
-    trabajandoPath,
-    pipeline,
-    fase: 'build'
-  });
-
-  let output = '';
-  child.stdout.on('data', (d) => { output += d; });
-  child.stderr.on('data', (d) => { output += d; });
-
-  child.on('exit', (code) => {
-    clearTimeout(buildTimer);
-    const durationMin = ((Date.now() - buildStartTime) / 60000).toFixed(1);
-    const logFile = path.join(LOG_DIR, `build-${issue}.log`);
-    fs.writeFileSync(logFile, output);
-
-    const data = readYaml(trabajandoPath);
-    if (code === 0) {
-      data.resultado = 'aprobado';
-    } else {
-      data.resultado = 'rechazado';
-      // Extraer últimas líneas relevantes del log
-      const lines = output.split('\n');
-      const errorLines = lines.filter(l => /error|FAILED|failure/i.test(l)).slice(0, 5);
-      data.motivo = `Build falló (exit ${code}). ${errorLines.join(' | ')}. Log: .pipeline/logs/build-${issue}.log`;
-    }
-    writeYaml(trabajandoPath, data);
-
-    const listoDir = path.join(fasePath(pipeline, 'build'), 'listo');
-    try {
-      moveFile(trabajandoPath, listoDir);
-      log('build', `#${issue} build ${code === 0 ? '✓' : '✗'} (${durationMin}min) → listo/`);
-    } catch (e) {
-      log('build', `Error moviendo build result #${issue}: ${e.message}`);
-    }
-    activeProcesses.delete(processKey('build', issue));
-
-    // Cleanup: matar Gradle daemons que hayan quedado del build
-    killGradleDaemons(buildCwd);
-  });
 }
 
 // =============================================================================
@@ -1212,8 +2999,14 @@ function saveSession(session) {
 
 // --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
 
-function cmdStatus(config) {
+async function cmdStatus(config) {
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const mins = Math.floor((uptime % 3600) / 60);
+
   const lines = ['📊 *Estado del Pipeline*\n'];
+  lines.push(`🟢 Online · ${hours}h ${mins}m`);
+  lines.push('');
 
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     lines.push(`*${pipelineName.toUpperCase()}*`);
@@ -1270,8 +3063,8 @@ function cmdStatus(config) {
   // Recursos del sistema
   const { cpuPercent, memPercent } = getSystemResourceUsage();
   const thresholds = config.resource_limits || {};
-  const maxCpu = thresholds.max_cpu_percent || 70;
-  const maxMem = thresholds.max_mem_percent || 70;
+  const maxCpu = thresholds.max_cpu_percent || 80;
+  const maxMem = thresholds.max_mem_percent || 80;
   const cpuIcon = cpuPercent >= maxCpu ? '🔴' : cpuPercent >= maxCpu * 0.8 ? '🟡' : '🟢';
   const memIcon = memPercent >= maxMem ? '🔴' : memPercent >= maxMem * 0.8 ? '🟡' : '🟢';
   lines.push(`\n*Recursos del sistema*`);
@@ -1281,10 +3074,71 @@ function cmdStatus(config) {
     lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
+  // PRs mergeados hoy
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+    const prs = JSON.parse(ghOut);
+    if (prs.length > 0) {
+      lines.push(`\n*Entregado hoy (${prs.length} PRs)*`);
+      for (const pr of prs.slice(0, 10)) {
+        lines.push(`  #${pr.number} ${pr.title}`);
+      }
+      if (prs.length > 10) lines.push(`  +${prs.length - 10} más`);
+    }
+  } catch (e) {
+    log('commander', `[status] Error obteniendo PRs del día: ${e.message}`);
+  }
+
   // Estado pausa
   if (paused) lines.push('\n⏸️ *PULPO PAUSADO*');
 
-  return lines.join('\n');
+  const text = lines.join('\n');
+
+  // Audio TTS de la narración
+  try {
+    const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+    const botToken = getTelegramToken();
+    const chatId = getTelegramChatId();
+    if (botToken && chatId) {
+      let narration = `Estado del pipeline. Llevo ${hours} horas y ${mins} minutos online. `;
+      // Agentes activos
+      const aliveCount = [...activeProcesses.values()].filter(i => isProcessAlive(i.pid)).length;
+      narration += aliveCount > 0 ? `${aliveCount} agentes activos. ` : 'Sin agentes activos. ';
+      // Recursos
+      const { cpuPercent: cpu, memPercent: mem } = getSystemResourceUsage();
+      narration += `CPU al ${cpu} por ciento, RAM al ${mem} por ciento. `;
+      if (paused) narration += 'El pulpo está pausado. ';
+      // PRs del día
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+        const prs = JSON.parse(ghOut);
+        if (prs.length > 0) {
+          narration += `Hoy se entregaron ${prs.length} PRs. `;
+          for (const pr of prs.slice(0, 5)) {
+            narration += `PR ${pr.number}, ${pr.title}. `;
+          }
+        }
+      } catch {}
+
+      const statusChunks = splitTextForTTSChunks(narration, 3800);
+      for (let i = 0; i < statusChunks.length; i++) {
+        const chunkText = statusChunks.length > 1
+          ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
+          : statusChunks[i];
+        const audioBuffer = await textToSpeech(chunkText);
+        if (audioBuffer) {
+          await sendVoiceTelegram(audioBuffer, botToken, chatId);
+          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado`);
+        }
+      }
+    }
+  } catch (audioErr) {
+    log('commander', `[status] Error TTS (no fatal): ${audioErr.message}`);
+  }
+
+  return text;
 }
 
 function cmdActividad(args) {
@@ -1419,7 +3273,7 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
   sendTelegram('🔄 Analizando backlog para generar propuestas...');
 
   try {
-    const resultado = await ejecutarClaude(propositorPrompt);
+    const resultado = await ejecutarClaude(propositorPrompt, 'proponer historias');
 
     if (resultado) {
       const proposalFile = path.join(PIPELINE, 'commander-proposals.json');
@@ -1436,7 +3290,79 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
 }
 
 /** Ejecutar Claude async con spawn + stream-json (patrón V1). Retorna el texto de respuesta. */
-function ejecutarClaude(prompt) {
+/**
+ * Genera un acknowledgment contextual basado en lo que el usuario pidió.
+ * @param {string} texto - El mensaje del usuario
+ * @param {boolean} esAudio - Si el mensaje vino de un audio
+ * @returns {string}
+ */
+function generarAck(texto, esAudio = false) {
+  const t = (texto || '').toLowerCase();
+  const icon = esAudio ? '🎙️' : '💬';
+
+  // Detectar intención específica
+  if (/reinici|restart|levant|arranc/.test(t)) return `${icon} Dale, arranco con el reinicio...`;
+  if (/status|estado|tablero|dashboard/.test(t)) return `${icon} Revisando el tablero...`;
+  if (/recurs|cpu|ram|memoria|saturad/.test(t)) return `${icon} Mirando los recursos del sistema...`;
+  if (/error|fall[oó]|roto|crash|bug/.test(t)) return `${icon} Voy a investigar qué pasó...`;
+  if (/test|prueba|verificar|check/.test(t)) return `${icon} Verificando, dame un momento...`;
+  if (/deploy|entreg|merge|push|pr\b/.test(t)) return `${icon} Revisando el delivery...`;
+  if (/propuesta|propon|diseñ|implement|rediseñ/.test(t)) return `${icon} Lo estoy pensando, ya te cuento...`;
+  if (/limpi|clean|kill|mat[aá]/.test(t)) return `${icon} Encargándome de la limpieza...`;
+  if (/\?|terminaste|pudiste|hiciste|cómo|cuánto|qué pas/.test(t)) return `${icon} Buena pregunta, ya te respondo...`;
+
+  // Variantes genéricas (no repetir)
+  const genericas = [
+    `${icon} Ya lo vi, dame un momento...`,
+    `${icon} Recibido, estoy en eso...`,
+    `${icon} Dale, ya me pongo...`,
+    `${icon} Un toque que lo proceso...`,
+    `${icon} Enterado, ya laburo en eso...`,
+  ];
+  return genericas[Math.floor(Math.random() * genericas.length)];
+}
+
+/**
+ * Genera mensajes de progreso contextuales que evolucionan con el tiempo.
+ * @param {number} count - Número de mensaje de progreso (0, 1, 2, ...)
+ * @param {number} elapsedSec - Segundos transcurridos
+ * @param {number} tools - Cantidad de herramientas usadas
+ * @param {string} lastTool - Descripción de la última herramienta
+ * @param {string} textoOriginal - El pedido original del usuario
+ * @returns {string}
+ */
+function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOriginal) {
+  const ctx = lastTool ? lastTool.slice(0, 40) : '';
+  const t = (textoOriginal || '').toLowerCase();
+
+  if (count === 0) {
+    // Primera actualización (~45s) — contextual al pedido, tranquiliza
+    if (/reinici|restart/.test(t)) return `⏳ Reiniciando servicios, lleva un poquito más de lo normal...`;
+    if (/recurs|cpu|ram/.test(t)) return `⏳ Analizando consumo de recursos en detalle...`;
+    if (/error|fall|crash/.test(t)) return `⏳ Revisando logs y estado del sistema, bancame...`;
+    if (/implement|rediseñ|cambi/.test(t)) return `⏳ Trabajando en los cambios, esto tiene varios pasos...`;
+    return `⏳ ${ctx ? `Trabajando en: ${ctx}` : 'Analizando tu pedido, necesito un ratito más'}...`;
+  }
+
+  if (count === 1) {
+    // Segunda (~1.5min) — noción de avance
+    if (tools > 5) return `⚙️ Ya llevo ${tools} operaciones, avanzando bien...`;
+    if (ctx) return `⚙️ Sigo en eso — ahora estoy con: ${ctx}`;
+    return `⚙️ Sigue en marcha, un ratito más...`;
+  }
+
+  // Tercera+ — variaciones naturales
+  const avanzadas = [
+    `🔧 Esto tiene laburo pero ya le falta menos...`,
+    `💪 Bancame un toque más, ya cierro esto...`,
+    `📋 Armando la respuesta con todo lo que encontré...`,
+    `🔍 Últimos detalles, enseguida te cuento...`,
+    `✨ Ya casi termino, un momento más...`,
+  ];
+  return avanzadas[(count - 2) % avanzadas.length];
+}
+
+function ejecutarClaude(prompt, textoOriginal) {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
     const args = [
@@ -1468,7 +3394,37 @@ function ejecutarClaude(prompt) {
     let toolCount = 0;
     let lastToolDesc = '';
     let progressCount = 0;
+    let resolved = false;
     const startTime = Date.now();
+
+    // Límite absoluto: 10 minutos — si Claude no terminó, matar y resolver
+    const HARD_TIMEOUT_MS = 10 * 60 * 1000;
+
+    function finish(code, reason) {
+      if (resolved) return;
+      resolved = true;
+      clearInterval(progressTimer);
+      clearTimeout(hardTimer);
+      rl.close();
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      log('commander', `Claude terminó (${reason}, code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
+      if (finalResult?.result) {
+        resolve(finalResult.result);
+      } else if (lastText) {
+        resolve(lastText);
+      } else {
+        log('commander', `stderr: ${stderr.slice(0, 300)}`);
+        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
+      }
+    }
+
+    function killProc() {
+      try { proc.kill('SIGTERM'); } catch {}
+      // En Windows SIGTERM no siempre funciona — forzar con taskkill /T (tree kill)
+      try {
+        if (proc.pid) execSync(`taskkill /PID ${proc.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+      } catch {}
+    }
 
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
     rl.on('line', (line) => {
@@ -1487,6 +3443,16 @@ function ejecutarClaude(prompt) {
           }
         } else if (evt.type === 'result') {
           finalResult = evt;
+          // WORKAROUND para bug claude-code#25629: CLI no termina después del result event.
+          // Dar 3s de gracia para que el proceso salga solo, si no: matarlo.
+          log('commander', 'Result event recibido — esperando 3s para exit limpio...');
+          setTimeout(() => {
+            if (!resolved) {
+              log('commander', 'Claude no salió tras result — matando proceso (workaround #25629)');
+              killProc();
+              finish(null, 'result+kill');
+            }
+          }, 3000);
         }
       } catch {}
     });
@@ -1494,46 +3460,77 @@ function ejecutarClaude(prompt) {
     let stderr = '';
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-    // Mensajes de progreso cada 45s
-    const templates = [
-      (ctx, stats) => `⏳ ${ctx ? `Estoy en: ${ctx}` : 'Analizando tu pedido'}... ${stats}`,
-      (ctx, stats) => `⚙️ ${stats}. ${ctx ? `Último paso: ${ctx}` : 'Sigo laburando'}`,
-      (ctx, stats) => `🔧 Esto lleva laburo — ${stats}. ${ctx ? `Ahora: ${ctx}` : 'Ya casi'}`,
-      (ctx, stats) => `💪 ${stats}. Bancame que ya cierro esto`,
-      (ctx, stats) => `🔄 Varias cosas que revisar — ${stats}`,
-      (ctx, stats) => `📋 ${stats}. Un toque más`,
-      (ctx, stats) => `🔍 Casi termino — ${stats}`,
-      (ctx, stats) => `✨ Ya lo tengo, dame un segundo más — ${stats}`,
-    ];
+    // Mensajes de progreso contextuales cada 45s
     const progressTimer = setInterval(() => {
+      if (resolved) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      const ctx = lastToolDesc ? lastToolDesc.slice(0, 40) : '';
-      const stats = `${toolCount} pasos en ${elapsed}s`;
-      const msg = templates[progressCount % templates.length](ctx, stats);
+      const msg = generarMensajeProgreso(progressCount, elapsed, toolCount, lastToolDesc, textoOriginal);
       progressCount++;
       sendTelegram(msg);
       log('commander', `Progreso: ${msg}`);
     }, 45000);
 
-    proc.on('exit', (code) => {
-      clearInterval(progressTimer);
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      log('commander', `Claude terminó (code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
-      if (finalResult?.result) {
-        resolve(finalResult.result);
-      } else if (lastText) {
-        resolve(lastText);
-      } else {
-        log('commander', `stderr: ${stderr.slice(0, 300)}`);
-        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
+    // Hard timeout: si nada resolvió en 10 min, forzar finalización
+    const hardTimer = setTimeout(() => {
+      if (!resolved) {
+        log('commander', `HARD TIMEOUT (${HARD_TIMEOUT_MS / 60000}min) — matando Claude`);
+        killProc();
+        finish(null, 'hard-timeout');
       }
-    });
+    }, HARD_TIMEOUT_MS);
+
+    proc.on('exit', (code) => finish(code, 'exit'));
+    proc.on('close', (code) => finish(code, 'close'));
+    proc.stdout.on('end', () => { if (!resolved) finish(proc.exitCode, 'stdout-end'); });
 
     proc.on('error', (e) => {
-      clearInterval(progressTimer);
-      reject(e);
+      if (resolved) return;
+      log('commander', `Error spawning Claude: ${e.message}`);
+      finish(null, 'error');
     });
   });
+}
+
+function cmdLimpiar() {
+  const { totalKilled, results } = limpiarDaemonsOnDemand();
+  if (totalKilled === 0 && results.length === 0) {
+    return '✅ No hay daemons Gradle/Kotlin para limpiar.';
+  }
+  const lines = results.map(r => `  • ${r}`).join('\n');
+  return `🧹 *Limpieza de daemons*\n\n${lines}\n\n*Total eliminados:* ${totalKilled}`;
+}
+
+function cmdRestart(args) {
+  const paused = /pausado|--paused/i.test(args || '');
+  const cmd = paused ? 'cmd.exe /c restart --paused' : 'cmd.exe /c restart';
+  const mode = paused ? 'pausado' : 'completo';
+
+  log('commander', `Restart ${mode} solicitado via Telegram`);
+
+  // Registrar timestamp para protección anti-loop
+  try {
+    fs.writeFileSync(path.join(PIPELINE, 'last-restart.json'),
+      JSON.stringify({ timestamp: new Date().toISOString(), mode, source: 'telegram' }));
+  } catch {}
+
+  // Ejecutar con exec async — cmd.exe nativo para que los hijos sobrevivan al Job Object de Windows
+  const { exec } = require('child_process');
+  exec(cmd, {
+    timeout: 60000,
+    cwd: ROOT,
+    env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
+  }, (error, stdout, stderr) => {
+    if (error) {
+      log('commander', `Error en restart: ${error.message}`);
+      sendTelegram(`❌ Error en reinicio ${mode}:\n\`${error.message.slice(0, 200)}\`\n\nIntentar manualmente: \`cmd.exe /c restart${paused ? ' --paused' : ''}\``);
+      return;
+    }
+    const output = (stdout || '').trim();
+    const tail = output ? output.split('\n').slice(-10).join('\n') : 'Pipeline reiniciado.';
+    sendTelegram(`✅ *Restart ${mode} ejecutado*\n\n\`\`\`\n${tail}\n\`\`\``);
+  });
+
+  return `🔄 Reinicio ${mode} del pipeline en progreso...${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
 }
 
 function cmdHelp() {
@@ -1543,6 +3540,9 @@ function cmdHelp() {
 /actividad [filtro] — Timeline (ej: /actividad 30m, /actividad #732)
 /intake [issue] — Meter trabajo al pipeline
 /proponer — Proponer historias nuevas (vía Claude)
+/restart — Reiniciar pipeline completo
+/restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
+/limpiar — Matar daemons Gradle/Kotlin huérfanos
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
 /costos — Resumen de actividad/costos
@@ -1561,27 +3561,35 @@ function parseCommand(text) {
   const match = trimmed.match(/^\/(\w+)\s*(.*)?$/s);
   if (match) return { cmd: match[1].toLowerCase(), args: (match[2] || '').trim() };
 
-  // Detección de intención por lenguaje natural (para audio transcripto)
+  // Detección de intención por lenguaje natural (solo para mensajes cortos tipo comando)
+  // Si el texto es largo (>80 chars), es conversación libre — delegar a Claude
   const lower = trimmed.toLowerCase();
-  const intentPatterns = [
-    { pattern: /\b(status|estado|tablero|cómo est[áa]|que hay en el pipeline)\b/i, cmd: 'status' },
-    { pattern: /\b(pausar|paus[áa]|fren[áa]|par[áa] el pulpo)\b/i, cmd: 'pausar' },
-    { pattern: /\b(reanudar|reanud[áa]|segui|continu[áa]|arrancá)\b/i, cmd: 'reanudar' },
-    { pattern: /\b(actividad|qué pas[óo]|movimientos|timeline)\b/i, cmd: 'actividad' },
-    { pattern: /\b(costos?|gasto|consumo|tokens?)\b/i, cmd: 'costos' },
-    { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
-    { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa])\b/i, cmd: 'intake' },
-    { pattern: /\b(proponer|propon[eé]|historias nuevas|ideas)\b/i, cmd: 'proponer' },
-    { pattern: /\b(stop|apag[áa]|cerr[áa])\b/i, cmd: 'stop' },
-  ];
+  const isShortMessage = trimmed.length <= 80;
 
-  for (const { pattern, cmd } of intentPatterns) {
-    if (pattern.test(lower)) {
-      // Extraer argumentos: todo lo que no es el keyword
-      const args = lower.replace(pattern, '').trim();
-      log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
-      return { cmd, args };
+  if (isShortMessage) {
+    // Patrones estrictos: solo matchean intenciones claras de comando, no menciones casuales
+    const intentPatterns = [
+      { pattern: /\b(status|estado del pipeline|tablero|que hay en el pipeline)\b/i, cmd: 'status' },
+      { pattern: /\b(pausar|paus[áa] el|fren[áa] el|par[áa] el pulpo)\b/i, cmd: 'pausar' },
+      { pattern: /\b(reanudar|reanud[áa] el|arranc[áa] el pulpo)\b/i, cmd: 'reanudar' },
+      { pattern: /\b(mostrame la actividad|qué pas[óo] en el pipeline|timeline)\b/i, cmd: 'actividad' },
+      { pattern: /\b(mostrame los costos|cuánto gastamos|reporte de costos)\b/i, cmd: 'costos' },
+      { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
+      { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, cmd: 'intake' },
+      { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
+      { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
+      { pattern: /\b(limpi[áa]|limpiar daemons|matar gradle|matar daemons|kill gradle)\b/i, cmd: 'limpiar' },
+    ];
+
+    for (const { pattern, cmd } of intentPatterns) {
+      if (pattern.test(lower)) {
+        const args = lower.replace(pattern, '').trim();
+        log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
+        return { cmd, args };
+      }
     }
+  } else {
+    log('commander', `Texto largo (${trimmed.length} chars) — delegando a Claude como texto libre`);
   }
 
   return null; // Texto libre — delegar a Claude
@@ -1591,10 +3599,9 @@ async function brazoCommander(config) {
   const commanderPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
   const commanderTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
   const commanderListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
-  const archivos = listWorkFiles(commanderPendiente);
 
+  let archivos = listWorkFiles(commanderPendiente);
   log('commander', `${archivos.length} mensaje(s) pendiente(s)`);
-
   if (archivos.length === 0) return;
 
   // Commander es singleton — verificar si ya hay uno corriendo
@@ -1603,8 +3610,21 @@ async function brazoCommander(config) {
     log('commander', 'Ya hay un commander corriendo — skip');
     return;
   }
+  activeProcesses.set(key, { pid: process.pid, startTime: Date.now() });
 
-  // Tomar TODOS los mensajes pendientes
+  try {
+    await _brazoCommanderInner(config, archivos, commanderPendiente, commanderTrabajando, commanderListo, key);
+  } finally {
+    activeProcesses.delete(key);
+  }
+}
+
+/**
+ * Recoger mensajes nuevos de la cola pendiente y moverlos a trabajando.
+ * @returns {Array} mensajes leídos y movidos
+ */
+function recogerMensajes(commanderPendiente, commanderTrabajando) {
+  const archivos = listWorkFiles(commanderPendiente);
   const mensajes = [];
   for (const archivo of archivos) {
     try {
@@ -1616,101 +3636,163 @@ async function brazoCommander(config) {
       log('commander', `Error moviendo ${archivo.name}: ${e.message}`);
     }
   }
+  return mensajes;
+}
+
+async function _brazoCommanderInner(config, archivosIniciales, commanderPendiente, commanderTrabajando, commanderListo, key) {
+  // --- VENTANA DE CONSOLIDACIÓN (5s) ---
+  // Esperar brevemente para capturar mensajes que llegan juntos
+  // (ej: audio 1 + audio 2 enviados con segundos de diferencia)
+  const CONSOLIDATION_MS = 5000;
+  log('commander', `Ventana de consolidación (${CONSOLIDATION_MS}ms)...`);
+  await new Promise(r => setTimeout(r, CONSOLIDATION_MS));
+
+  // Tomar TODOS los mensajes (iniciales + los que llegaron en la ventana)
+  const mensajes = recogerMensajes(commanderPendiente, commanderTrabajando);
+
+  // También mover los iniciales si aún están en pendiente
+  for (const archivo of archivosIniciales) {
+    try {
+      if (fs.existsSync(archivo.path)) {
+        const trabajandoPath = moveFile(archivo.path, commanderTrabajando);
+        const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+        mensajes.push({ ...data, _path: trabajandoPath });
+        log('commander', `Tomado (inicial): ${archivo.name} → trabajando/`);
+      }
+    } catch (e) {}
+  }
 
   if (mensajes.length === 0) return;
+  log('commander', `Total mensajes consolidados: ${mensajes.length}`);
 
   const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
   const botToken = getTelegramToken();
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  // Preprocesar multimedia
   const { preprocessMessage, textToSpeech, sendVoiceTelegram } = require('./multimedia');
-
   const session = loadSession();
 
+  // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
   for (const m of mensajes) {
-    log('commander', `Procesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
+    log('commander', `Preprocesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
     const processed = await preprocessMessage(m, botToken);
-    const textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
-    log('commander', `Preprocesado: "${textoFinal.slice(0, 80)}"`);
+    m._textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
+    m._esAudio = !!(m.voice || m.voice_path);
+    log('commander', `Preprocesado: "${m._textoFinal.slice(0, 80)}"`);
 
     // Registrar entrada en historial
-    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: textoFinal, timestamp: new Date().toISOString() }) + '\n');
+    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: m._textoFinal, timestamp: new Date().toISOString() }) + '\n');
+  }
 
-    let respuesta = null;
-    const parsed = parseCommand(textoFinal);
+  // --- SEPARAR: comandos nativos vs texto libre ---
+  const comandos = [];
+  const textoLibre = [];
 
+  for (const m of mensajes) {
+    const parsed = parseCommand(m._textoFinal);
     if (parsed) {
-      // Handler nativo de comando
-      log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
-      switch (parsed.cmd) {
-        case 'status':
-          respuesta = cmdStatus(config);
-          break;
-        case 'actividad':
-          respuesta = cmdActividad(parsed.args);
-          break;
-        case 'intake':
-          respuesta = cmdIntake(parsed.args, config);
-          break;
-        case 'pausar':
-          respuesta = cmdPausar();
-          break;
-        case 'reanudar':
-          respuesta = cmdReanudar();
-          break;
-        case 'costos':
-          respuesta = cmdCostos();
-          break;
-        case 'help':
-        case 'start':
-          respuesta = cmdHelp();
-          break;
-        case 'stop':
-          respuesta = '🛑 Commander apagándose...';
-          sendTelegram(respuesta);
-          running = false;
-          break;
-        case 'proponer':
-          respuesta = await cmdProponer(parsed.args, config);
-          break;
-        default:
-          // Comando desconocido — delegar a Claude como texto libre
-          respuesta = null;
-          break;
-      }
+      comandos.push({ m, parsed });
+    } else {
+      textoLibre.push(m);
+    }
+  }
 
-      // Guardar contexto del comando nativo en sesión
-      if (respuesta !== null) {
-        session.lastCommand = parsed.cmd;
-        session.lastTimestamp = new Date().toISOString();
-        session.context = `Último comando: /${parsed.cmd}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
-      }
+  // --- PROCESAR COMANDOS NATIVOS (rápidos, uno a uno) ---
+  for (const { m, parsed } of comandos) {
+    log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
+    let respuesta = null;
+    switch (parsed.cmd) {
+      case 'status': respuesta = await cmdStatus(config); break;
+      case 'actividad': respuesta = cmdActividad(parsed.args); break;
+      case 'intake': respuesta = cmdIntake(parsed.args, config); break;
+      case 'pausar': respuesta = cmdPausar(); break;
+      case 'reanudar': respuesta = cmdReanudar(); break;
+      case 'costos': respuesta = cmdCostos(); break;
+      case 'help': case 'start': respuesta = cmdHelp(); break;
+      case 'stop':
+        respuesta = '🛑 Commander apagándose...';
+        sendTelegram(respuesta);
+        running = false;
+        break;
+      case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
+      case 'limpiar': respuesta = cmdLimpiar(); break;
+      case 'restart': respuesta = cmdRestart(parsed.args); break;
+      default: respuesta = null; break;
     }
 
-    // Si no se resolvió con handler nativo → delegar a Claude
-    if (respuesta === null) {
+    if (respuesta !== null) {
+      session.lastCommand = parsed.cmd;
+      session.lastTimestamp = new Date().toISOString();
+      session.context = `Último comando: /${parsed.cmd}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
+      sendTelegram(respuesta);
+      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+    } else {
+      // Comando no reconocido → mover a texto libre
+      textoLibre.push(m);
+    }
+
+    try { moveFile(m._path, commanderListo); } catch {}
+    const logFile = path.join(LOG_DIR, 'commander.log');
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] /${parsed.cmd}\n${respuesta || '(sin respuesta)'}\n---\n`);
+  }
+
+  // --- PROCESAR TEXTO LIBRE CONSOLIDADO (una sola llamada a Claude) ---
+  if (textoLibre.length > 0) {
+    const esAudio = textoLibre.some(m => m._esAudio);
+
+    // Consolidar mensajes en un solo texto para Claude
+    let mensajeConsolidado;
+    if (textoLibre.length === 1) {
+      mensajeConsolidado = textoLibre[0]._textoFinal;
+    } else {
+      // Múltiples mensajes → contexto unificado
+      mensajeConsolidado = textoLibre.map((m, i) =>
+        `[Mensaje ${i + 1}${m._esAudio ? ' (audio)' : ''}]: ${m._textoFinal}`
+      ).join('\n\n');
+      log('commander', `Mensajes consolidados: ${textoLibre.length} → 1 prompt`);
+    }
+
+    // Protección anti-restart encadenado: si el mensaje pide restart y ya hubo
+    // uno reciente (< 2 min), responder directamente sin delegar a Claude
+    const restartPattern = /\b(reinici|restart|levant[aá]|arranc[aá])\b/i;
+    if (restartPattern.test(mensajeConsolidado)) {
       try {
-        let historial = '';
-        try {
-          const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-          const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n')
-            .filter(l => { try { return JSON.parse(l).timestamp >= cutoff24h; } catch { return false; } })
-            .slice(-50); // Cap a 50 entries dentro de las 24hs
-          historial = '\nHistorial reciente (24hs):\n' + lines.join('\n');
-        } catch {}
-
-        // Incluir contexto de sesión para continuidad conversacional
-        let sessionCtx = '';
-        if (session.context && session.lastTimestamp) {
-          const ageMin = (Date.now() - new Date(session.lastTimestamp).getTime()) / 60000;
-          if (ageMin < 30) { // Solo si la sesión es reciente (< 30 min)
-            sessionCtx = `\n\nContexto de sesión: ${session.context}`;
-          }
+        const lastRestart = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8'));
+        const ageSec = (Date.now() - new Date(lastRestart.timestamp).getTime()) / 1000;
+        if (ageSec < 120) {
+          log('commander', `Restart solicitado pero ya hubo uno hace ${Math.round(ageSec)}s — skip`);
+          sendTelegram(`✅ Ya reinicié hace ${Math.round(ageSec)}s, todo debería estar andando. Usá /status para verificar.`);
+          for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+          return;
         }
+      } catch {}
+    }
 
-        const userPrompt = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
+    // ACK contextual
+    sendTelegram(generarAck(mensajeConsolidado, esAudio));
+
+    try {
+      // Construir prompt
+      let historial = '';
+      try {
+        const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n')
+          .filter(l => { try { return JSON.parse(l).timestamp >= cutoff24h; } catch { return false; } })
+          .slice(-50);
+        historial = '\nHistorial reciente (24hs):\n' + lines.join('\n');
+      } catch {}
+
+      let sessionCtx = '';
+      if (session.context && session.lastTimestamp) {
+        const ageMin = (Date.now() - new Date(session.lastTimestamp).getTime()) / 60000;
+        if (ageMin < 30) {
+          sessionCtx = `\n\nContexto de sesión: ${session.context}`;
+        }
+      }
+
+      const from = textoLibre[0].from || 'Leo';
+      const userPrompt = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
 
 REGLAS:
 1. Si el usuario pide una ACCIÓN (revisar, arreglar, validar, verificar, levantar, etc): EJECUTALA primero con las herramientas que tengas, y después reportá qué hiciste y el resultado.
@@ -1724,62 +3806,100 @@ REGLAS:
    - Logs: .pipeline/logs/
    - Procesos: tasklist | grep node
 
-Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
+Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
 
-        sendTelegram('🔄 Recibido, estoy trabajando en tu pedido...');
-        respuesta = await ejecutarClaude(userPrompt);
-        log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
+      let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado);
+      log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
-        // Actualizar sesión con respuesta de Claude
-        session.lastCommand = 'chat';
-        session.lastTimestamp = new Date().toISOString();
-        session.context = `Conversación libre. Último mensaje: "${textoFinal.slice(0, 100)}". Respuesta: "${(respuesta || '').slice(0, 100)}"`;
-      } catch (e) {
-        log('commander', `Error Claude: ${e.message}`);
-        respuesta = '⚠️ Error procesando tu mensaje. Intentá de nuevo.';
-      }
-    }
+      // --- CHECK DE SUPLEMENTOS ---
+      // Mensajes que llegaron MIENTRAS Claude procesaba (ej: segundo audio complementario)
+      const suplementosRaw = recogerMensajes(commanderPendiente, commanderTrabajando);
+      if (suplementosRaw.length > 0) {
+        log('commander', `${suplementosRaw.length} suplemento(s) llegaron durante procesamiento — integrando`);
 
-    // Enviar respuesta
-    if (respuesta) {
-      let enviado = false;
+        // Preprocesar suplementos
+        const suplementosTexto = [];
+        for (const s of suplementosRaw) {
+          const proc = await preprocessMessage(s, botToken);
+          const txt = proc.text + (proc.extras.length > 0 ? ' ' + proc.extras.join(' ') : '');
+          suplementosTexto.push(txt);
+          s._textoFinal = txt;
+          s._esAudio = !!(s.voice || s.voice_path);
+          fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: s.from, text: txt, timestamp: new Date().toISOString() }) + '\n');
+        }
 
-      // Si el mensaje original fue de voz → intentar TTS, siempre con fallback a texto
-      if (m.voice || m.voice_path) {
-        try {
-          const audioBuffer = await textToSpeech(respuesta);
-          if (audioBuffer) {
-            // Guardar audio a disco y enviar via sendVoice directo
-            const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}.ogg`);
-            fs.writeFileSync(audioPath, audioBuffer);
-            enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
-            if (enviado) log('telegram', `Audio TTS enviado (${audioBuffer.length} bytes)`);
-          }
-        } catch (e) {
-          log('commander', `TTS error: ${e.message}`);
+        sendTelegram('💬 Vi tu mensaje adicional, lo integro a la respuesta...');
+
+        // Re-llamar a Claude con contexto completo + suplementos
+        const supplementPrompt = `${userPrompt}
+
+RESPUESTA ANTERIOR (borrador, NO enviada al usuario todavía):
+${respuesta}
+
+Mientras generabas esa respuesta, el usuario envió mensaje(s) complementario(s):
+${suplementosTexto.map((t, i) => `[Complemento ${i + 1}]: ${t}`).join('\n')}
+
+INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA respuesta final unificada que contemple tanto el pedido original como los complementos. No menciones que hubo múltiples mensajes ni que reprocessaste.`;
+
+        respuesta = await ejecutarClaude(supplementPrompt, 'complemento integrado');
+        log('commander', `Claude (suplemento) respondió: ${(respuesta || '').length} chars`);
+
+        // Mover suplementos a listo
+        for (const s of suplementosRaw) {
+          try { moveFile(s._path, commanderListo); } catch {}
         }
       }
 
-      // SIEMPRE encolar texto en servicio-telegram como respaldo
-      // Si TTS funcionó, el usuario ya tiene el audio — el texto es backup
-      // Si TTS falló, el texto es la respuesta principal
-      sendTelegram(respuesta);
-      log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
+      // Actualizar sesión
+      session.lastCommand = 'chat';
+      session.lastTimestamp = new Date().toISOString();
+      session.context = `Conversación libre. Último mensaje: "${mensajeConsolidado.slice(0, 100)}". Respuesta: "${(respuesta || '').slice(0, 100)}"`;
 
-      // Registrar salida en historial
-      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+      // --- ENVIAR RESPUESTA ---
+      if (respuesta) {
+        let enviado = false;
+
+        // Si hubo audio → intentar TTS
+        if (esAudio) {
+          try {
+            const chatChunks = splitTextForTTSChunks(respuesta, 3800);
+            for (let i = 0; i < chatChunks.length; i++) {
+              const chunkText = chatChunks.length > 1
+                ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
+                : chatChunks[i];
+              const audioBuffer = await textToSpeech(chunkText);
+              if (audioBuffer) {
+                const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
+                fs.writeFileSync(audioPath, audioBuffer);
+                enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
+                if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${audioBuffer.length} bytes)`);
+              }
+            }
+          } catch (e) {
+            log('commander', `TTS error: ${e.message}`);
+          }
+        }
+
+        sendTelegram(respuesta);
+        log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
+        fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+      }
+    } catch (e) {
+      log('commander', `Error Claude: ${e.message}`);
+      sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
     }
 
-    // Mover a listo
-    try { moveFile(m._path, commanderListo); } catch {}
+    // Mover todos los mensajes texto-libre a listo
+    for (const m of textoLibre) {
+      try { moveFile(m._path, commanderListo); } catch {}
+    }
 
     const logFile = path.join(LOG_DIR, 'commander.log');
-    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${parsed ? '/' + parsed.cmd : 'TEXT'}\n${respuesta || '(sin respuesta)'}\n---\n`);
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] TEXT (${textoLibre.length} msgs consolidados)\n---\n`);
   }
 
-  // Persistir sesión conversacional
+  // Persistir sesión
   saveSession(session);
-  activeProcesses.delete(key);
 }
 
 function sendTelegram(text) {
@@ -1830,6 +3950,91 @@ function getTelegramChatId() {
 
 let lastIntakeTime = 0;
 
+// Cache de issues qa:dependency abiertos para dedup por contenido
+let depIssuesCache = { issues: [], fetchedAt: 0 };
+
+/**
+ * Dedup por contenido para issues qa:dependency.
+ * Compara el título del issue contra los ya existentes con el mismo label.
+ * Si encuentra un duplicado (similitud alta), cierra el nuevo y retorna true.
+ */
+function dedupDependencyIssue(issue, allIssuesInBatch) {
+  const issueLabels = (issue.labels || []).map(l => l.name);
+  if (!issueLabels.includes('qa:dependency')) return false;
+
+  // Refrescar cache de issues qa:dependency si tiene más de 10 minutos
+  if (Date.now() - depIssuesCache.fetchedAt > 600000) {
+    try {
+      ghThrottle();
+      const raw = execSync(
+        `"${GH_BIN}" issue list --label "qa:dependency" --state open --json number,title --limit 100`,
+        { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+      );
+      depIssuesCache = { issues: JSON.parse(raw || '[]'), fetchedAt: Date.now() };
+    } catch (e) {
+      log('intake', `Error cargando cache qa:dependency: ${e.message}`);
+      return false;  // si falla, no bloquear el intake
+    }
+  }
+
+  const titleNorm = normalizeTitleForDedup(issue.title);
+  const titleWords = extractSignificantWords(issue.title);
+
+  // Buscar duplicado entre issues existentes (no el mismo issue)
+  for (const existing of depIssuesCache.issues) {
+    if (existing.number === issue.number) continue;
+
+    // No comparar contra issues del mismo batch (se procesan juntos)
+    if (allIssuesInBatch.some(i => i.number === existing.number)) continue;
+
+    const existNorm = normalizeTitleForDedup(existing.title);
+    const existWords = extractSignificantWords(existing.title);
+
+    // Similitud: substring match O overlap de palabras significativas >= 60%
+    if (existNorm.includes(titleNorm) || titleNorm.includes(existNorm)) {
+      closeDuplicateIssue(issue.number, existing.number, issue.title);
+      return true;
+    }
+
+    const shared = titleWords.filter(w => existWords.some(ew => ew.includes(w) || w.includes(ew)));
+    const overlapRatio = shared.length / Math.max(Math.min(titleWords.length, existWords.length), 1);
+    if (shared.length >= 2 && overlapRatio >= 0.6) {
+      closeDuplicateIssue(issue.number, existing.number, issue.title);
+      return true;
+    }
+  }
+
+  // Agregar a cache para dedup dentro del mismo batch de intake
+  depIssuesCache.issues.push({ number: issue.number, title: issue.title });
+  return false;
+}
+
+function normalizeTitleForDedup(title) {
+  return (title || '').toLowerCase()
+    .replace(/^(?:fix|feat|infra|bug|dep):\s*/i, '')  // quitar prefijos
+    .replace(/\b(el|la|los|las|un|una|de|del|en|que|con|por|al|se|no|es|a)\b/g, '')
+    .replace(/[—\-:()#\d]/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function extractSignificantWords(title) {
+  return normalizeTitleForDedup(title).split(' ').filter(w => w.length > 3);
+}
+
+function closeDuplicateIssue(dupNum, existingNum, dupTitle) {
+  try {
+    const body = `Duplicado de #${existingNum}. Cerrado automáticamente por el pipeline de definición (dedup por contenido).`;
+    ghThrottle();
+    execSync(
+      `"${GH_BIN}" issue close ${dupNum} --comment "${body.replace(/"/g, '\\"')}" --reason "not planned"`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    log('intake', `#${dupNum} cerrado como duplicado de #${existingNum} — "${dupTitle}"`);
+  } catch (e) {
+    log('intake', `Error cerrando duplicado #${dupNum}: ${e.message}`);
+  }
+}
+
 function brazoIntake(config) {
   const intakeInterval = (config.timeouts?.intake_interval_seconds || 300) * 1000;
   if (Date.now() - lastIntakeTime < intakeInterval) return;
@@ -1854,16 +4059,29 @@ function brazoIntake(config) {
 
       if (issues.length === 0) continue;
 
-      // Ordenar por prioridad
-      const prioLabels = config.prioridad_labels || [];
+      // Cachear labels de los issues recién traídos de GitHub
+      for (const issue of issues) {
+        const labelNames = (issue.labels || []).map(l => l.name);
+        issueLabelsCache.set(String(issue.number), { labels: labelNames, fetchedAt: Date.now() });
+      }
+
+      // Ordenar por prioridad combinada (priority label + feature priority)
       issues.sort((a, b) => {
-        const prioA = prioLabels.findIndex(p => a.labels?.some(l => l.name === p));
-        const prioB = prioLabels.findIndex(p => b.labels?.some(l => l.name === p));
-        return (prioA === -1 ? 999 : prioA) - (prioB === -1 ? 999 : prioB);
+        return calcularPrioridad(String(a.number), config) - calcularPrioridad(String(b.number), config);
       });
 
       for (const issue of issues) {
         const issueNum = String(issue.number);
+
+        // BLOCKED: no procesar issues con label blocked:dependencies
+        const issueLabels = (issue.labels || []).map(l => l.name);
+        if (issueLabels.includes('blocked:dependencies')) {
+          log('intake', `#${issueNum} omitido — tiene label blocked:dependencies`);
+          continue;
+        }
+
+        // Dedup por contenido para issues qa:dependency (cierra duplicados automáticamente)
+        if (dedupDependencyIssue(issue, issues)) continue;
 
         // Deduplicación: verificar que el issue no esté ya activo en este pipeline
         if (issueExistsInPipeline(issueNum, pipelineName)) continue;
@@ -1935,9 +4153,209 @@ function rotateHistory() {
   } catch {}
 }
 
+// --- MÉTRICAS HISTÓRICAS ---
+// Persiste snapshot cada ciclo (30s) a metrics-history.jsonl.
+// El dashboard lee este archivo para /metrics.
+const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
+const METRICS_MAX_ENTRIES = 2880; // ~24h a 30s/ciclo
+let metricsLastRotation = 0;
+
+function persistMetricsSnapshot(config) {
+  try {
+    const pressure = getResourcePressure(config);
+    const totalRunning = countTotalRunningAgents(config);
+
+    // Contar por fase
+    const byFase = {};
+    for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+      for (const fase of pConfig.fases) {
+        const tDir = path.join(PIPELINE, pName, fase, 'trabajando');
+        const pDir = path.join(PIPELINE, pName, fase, 'pendiente');
+        byFase[fase] = {
+          working: (byFase[fase]?.working || 0) + listWorkFiles(tDir).length,
+          pending: (byFase[fase]?.pending || 0) + listWorkFiles(pDir).length
+        };
+      }
+    }
+
+    // Contar por skill (para perfiles de consumo)
+    const bySkill = {};
+    for (const [key] of activeProcesses) {
+      const sk = key.split(':')[0];
+      bySkill[sk] = (bySkill[sk] || 0) + 1;
+    }
+
+    const snapshot = {
+      ts: Date.now(),
+      cpu: pressure.cpuPercent,
+      mem: pressure.memPercent,
+      level: pressure.level,
+      agents: totalRunning,
+      byFase,
+      bySkill,
+      qaPriority: qaPriorityActive,
+      buildPriority: buildPriorityActive
+    };
+
+    fs.appendFileSync(METRICS_FILE, JSON.stringify(snapshot) + '\n');
+
+    // Rotar cada 10min para no crecer indefinidamente
+    const now = Date.now();
+    if (now - metricsLastRotation > 600000) {
+      metricsLastRotation = now;
+      try {
+        const lines = fs.readFileSync(METRICS_FILE, 'utf8').split('\n').filter(Boolean);
+        if (lines.length > METRICS_MAX_ENTRIES) {
+          fs.writeFileSync(METRICS_FILE, lines.slice(-METRICS_MAX_ENTRIES).join('\n') + '\n');
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
+// =============================================================================
+// BRAZO DESBLOQUEO — Revisa issues con blocked:dependencies y desbloquea
+// cuando todas sus dependencias están cerradas.
+// Frecuencia: cada 30 minutos. Basado en datos reales del pipeline:
+//   - P10 de duración de issues: 1.2h, P25: 2.7h, mediana: 141h
+//   - 30 min es generoso (cubre issues rápidos) sin ser innecesariamente frecuente
+// =============================================================================
+let lastUnblockTime = 0;
+const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+
+function brazoDesbloqueo(config) {
+  if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
+  lastUnblockTime = Date.now();
+
+  try {
+    // 1. Buscar issues abiertos con label blocked:dependencies
+    ghThrottle();
+    const result = execSync(
+      `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title --limit 50`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+    );
+    const blockedIssues = JSON.parse(result || '[]');
+    if (blockedIssues.length === 0) {
+      // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
+      try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
+      return;
+    }
+
+    log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
+
+    // Mapeos bidireccionales para el dashboard
+    const blockedBy = {};  // issue → [dependencias]
+    const blocks = {};     // dependencia → [issues que bloquea]
+
+    for (const issue of blockedIssues) {
+      try {
+        // 2. Leer comentarios del issue para encontrar dependencias creadas por el pipeline
+        ghThrottle();
+        const comments = execSync(
+          `"${GH_BIN}" issue view ${issue.number} --json comments --jq ".comments[].body" --repo intrale/platform`,
+          { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+        );
+
+        // Buscar el comentario de dependencias del pipeline
+        const depCommentMatch = comments.match(/Dependencias detectadas por el pipeline[\s\S]*?(?=\n\n|\Z)/);
+        if (!depCommentMatch) {
+          // Issue tiene label blocked:dependencies pero sin comentario de dependencias.
+          // Registrarlo con lista vacía para que el dashboard muestre el icono de bloqueo.
+          log('desbloqueo', `#${issue.number}: label blocked:dependencies sin comentario de dependencias — registrado sin deps`);
+          blockedBy[issue.number] = [];
+          continue;
+        }
+
+        // Extraer números de issues referenciados (#NNN), excluyendo auto-referencia
+        const depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)]
+          .map(m => m[1])
+          .filter(n => n !== String(issue.number));
+        if (depIssueNumbers.length === 0) {
+          log('desbloqueo', `#${issue.number}: no se encontraron issues de dependencia (excluida auto-referencia) — omitido`);
+          continue;
+        }
+
+        // Registrar mapeos bidireccionales
+        blockedBy[issue.number] = depIssueNumbers;
+        for (const dep of depIssueNumbers) {
+          if (!blocks[dep]) blocks[dep] = [];
+          if (!blocks[dep].includes(String(issue.number))) blocks[dep].push(String(issue.number));
+        }
+
+        // 3. Verificar si todas las dependencias están cerradas
+        let allClosed = true;
+        const openDeps = [];
+        for (const depNum of depIssueNumbers) {
+          ghThrottle();
+          try {
+            const depState = execSync(
+              `"${GH_BIN}" issue view ${depNum} --json state --jq ".state" --repo intrale/platform`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+            ).trim();
+            if (depState !== 'CLOSED') {
+              allClosed = false;
+              openDeps.push(depNum);
+            }
+          } catch (e) {
+            // Si no se puede leer el estado, asumir que está abierto
+            allClosed = false;
+            openDeps.push(depNum);
+          }
+        }
+
+        if (allClosed) {
+          // 4. Todas cerradas → desbloquear
+          log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
+
+          // Quitar de los mapeos (ya no está bloqueado)
+          delete blockedBy[issue.number];
+          for (const dep of depIssueNumbers) {
+            if (blocks[dep]) blocks[dep] = blocks[dep].filter(n => n !== String(issue.number));
+            if (blocks[dep] && blocks[dep].length === 0) delete blocks[dep];
+          }
+
+          // Quitar label blocked:dependencies
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue edit ${issue.number} --remove-label "blocked:dependencies" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          // Agregar comentario de desbloqueo
+          const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue comment ${issue.number} --body "${unblockComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+          log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
+        } else {
+          log('desbloqueo', `#${issue.number}: dependencias abiertas: ${openDeps.map(n => '#' + n).join(', ')} — sigue bloqueado`);
+        }
+      } catch (e) {
+        log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
+      }
+    }
+
+    // Persistir mapeos para el dashboard
+    try {
+      fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy, blocks }, null, 2));
+    } catch (e) {
+      log('desbloqueo', `Error persistiendo blocked-issues.json: ${e.message}`);
+    }
+  } catch (e) {
+    log('desbloqueo', `Error en brazo de desbloqueo: ${e.message}`);
+  }
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
+
+  // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
+  migrateSkillProfilesIfNeeded();
 
   while (running) {
     try {
@@ -1945,8 +4363,9 @@ async function mainLoop() {
 
       const config = loadConfig(); // Reload cada ciclo para hot-reload
 
-      // Commander SIEMPRE corre (incluso en pausa) — necesario para /reanudar
-      await brazoCommander(config);
+      // Commander corre ASYNC — no bloquea el loop principal
+      // El singleton check dentro de brazoCommander evita ejecuciones concurrentes
+      brazoCommander(config).catch(e => log('commander', `Error async: ${e.message}`));
 
       // Drain outbox de Telegram (context-relay, notificaciones, etc.)
       try {
@@ -1962,11 +4381,12 @@ async function mainLoop() {
 
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
-        brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
-        brazoBarrido(config);   // Tercero: promover entre fases
-        brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
-        brazoHuerfanos(config); // Quinto: recuperar trabajo trabado
-        barridoGradleDaemons(); // Sexto: limpiar Gradle daemons huérfanos
+        persistMetricsSnapshot(config); // Métricas históricas para /metrics
+        brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
+        brazoDesbloqueo(config);  // Tercero: desbloquear issues cuyas dependencias se resolvieron
+        brazoBarrido(config);     // Cuarto: promover entre fases
+        brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
+        brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
@@ -1983,6 +4403,26 @@ async function mainLoop() {
 // Graceful shutdown
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+
+// --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
+// Uso: PULPO_NO_AUTOSTART=1 node -e "require('./pulpo.js').predictResourceImpact(...)"
+// Útil para tests unitarios y scripts de evidencia del gate predictivo.
+if (process.env.PULPO_NO_AUTOSTART === '1') {
+  module.exports = {
+    predictResourceImpact,
+    getEstimatedImpact,
+    measureEmulatorMemPercent,
+    recordSkillResourceUsage,
+    loadSkillProfiles,
+    saveSkillProfiles,
+    migrateSkillProfilesIfNeeded,
+    SKILL_PROFILES_SCHEMA_VERSION,
+    QA_INFRA_SKILLS,
+    MAX_EST_MEM,
+    MAX_EST_CPU
+  };
+  return; // No arrancar singleton ni mainLoop
+}
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');

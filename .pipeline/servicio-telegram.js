@@ -8,13 +8,14 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE = path.resolve(__dirname);
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
 const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
 const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
 const LISTO = path.join(QUEUE_DIR, 'listo');
 
-const TELEGRAM_CONFIG = path.join(path.resolve(__dirname, '..'), '.claude', 'hooks', 'telegram-config.json');
+const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
+const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
 let BOT_TOKEN, CHAT_ID;
 
 try {
@@ -155,6 +156,21 @@ async function main() {
     await new Promise(r => setTimeout(r, 5000)); // Poll cada 5 seg
   }
 }
+
+// Crash handlers — loguear antes de morir para diagnóstico
+const LOG_DIR = path.join(PIPELINE, 'logs');
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [svc-telegram] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [svc-telegram] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
 
 // --- SINGLETON ---
 require('./singleton')('svc-telegram');
