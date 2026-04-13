@@ -3893,6 +3893,91 @@ function getTelegramChatId() {
 
 let lastIntakeTime = 0;
 
+// Cache de issues qa:dependency abiertos para dedup por contenido
+let depIssuesCache = { issues: [], fetchedAt: 0 };
+
+/**
+ * Dedup por contenido para issues qa:dependency.
+ * Compara el título del issue contra los ya existentes con el mismo label.
+ * Si encuentra un duplicado (similitud alta), cierra el nuevo y retorna true.
+ */
+function dedupDependencyIssue(issue, allIssuesInBatch) {
+  const issueLabels = (issue.labels || []).map(l => l.name);
+  if (!issueLabels.includes('qa:dependency')) return false;
+
+  // Refrescar cache de issues qa:dependency si tiene más de 10 minutos
+  if (Date.now() - depIssuesCache.fetchedAt > 600000) {
+    try {
+      ghThrottle();
+      const raw = execSync(
+        `"${GH_BIN}" issue list --label "qa:dependency" --state open --json number,title --limit 100`,
+        { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+      );
+      depIssuesCache = { issues: JSON.parse(raw || '[]'), fetchedAt: Date.now() };
+    } catch (e) {
+      log('intake', `Error cargando cache qa:dependency: ${e.message}`);
+      return false;  // si falla, no bloquear el intake
+    }
+  }
+
+  const titleNorm = normalizeTitleForDedup(issue.title);
+  const titleWords = extractSignificantWords(issue.title);
+
+  // Buscar duplicado entre issues existentes (no el mismo issue)
+  for (const existing of depIssuesCache.issues) {
+    if (existing.number === issue.number) continue;
+
+    // No comparar contra issues del mismo batch (se procesan juntos)
+    if (allIssuesInBatch.some(i => i.number === existing.number)) continue;
+
+    const existNorm = normalizeTitleForDedup(existing.title);
+    const existWords = extractSignificantWords(existing.title);
+
+    // Similitud: substring match O overlap de palabras significativas >= 60%
+    if (existNorm.includes(titleNorm) || titleNorm.includes(existNorm)) {
+      closeDuplicateIssue(issue.number, existing.number, issue.title);
+      return true;
+    }
+
+    const shared = titleWords.filter(w => existWords.some(ew => ew.includes(w) || w.includes(ew)));
+    const overlapRatio = shared.length / Math.max(Math.min(titleWords.length, existWords.length), 1);
+    if (shared.length >= 2 && overlapRatio >= 0.6) {
+      closeDuplicateIssue(issue.number, existing.number, issue.title);
+      return true;
+    }
+  }
+
+  // Agregar a cache para dedup dentro del mismo batch de intake
+  depIssuesCache.issues.push({ number: issue.number, title: issue.title });
+  return false;
+}
+
+function normalizeTitleForDedup(title) {
+  return (title || '').toLowerCase()
+    .replace(/^(?:fix|feat|infra|bug|dep):\s*/i, '')  // quitar prefijos
+    .replace(/\b(el|la|los|las|un|una|de|del|en|que|con|por|al|se|no|es|a)\b/g, '')
+    .replace(/[—\-:()#\d]/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function extractSignificantWords(title) {
+  return normalizeTitleForDedup(title).split(' ').filter(w => w.length > 3);
+}
+
+function closeDuplicateIssue(dupNum, existingNum, dupTitle) {
+  try {
+    const body = `Duplicado de #${existingNum}. Cerrado automáticamente por el pipeline de definición (dedup por contenido).`;
+    ghThrottle();
+    execSync(
+      `"${GH_BIN}" issue close ${dupNum} --comment "${body.replace(/"/g, '\\"')}" --reason "not planned"`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    log('intake', `#${dupNum} cerrado como duplicado de #${existingNum} — "${dupTitle}"`);
+  } catch (e) {
+    log('intake', `Error cerrando duplicado #${dupNum}: ${e.message}`);
+  }
+}
+
 function brazoIntake(config) {
   const intakeInterval = (config.timeouts?.intake_interval_seconds || 300) * 1000;
   if (Date.now() - lastIntakeTime < intakeInterval) return;
@@ -3937,6 +4022,9 @@ function brazoIntake(config) {
           log('intake', `#${issueNum} omitido — tiene label blocked:dependencies`);
           continue;
         }
+
+        // Dedup por contenido para issues qa:dependency (cierra duplicados automáticamente)
+        if (dedupDependencyIssue(issue, issues)) continue;
 
         // Deduplicación: verificar que el issue no esté ya activo en este pipeline
         if (issueExistsInPipeline(issueNum, pipelineName)) continue;
