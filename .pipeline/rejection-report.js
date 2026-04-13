@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 // Genera un reporte PDF detallado cuando un agente finaliza rechazado/cancelado.
-// Uso: node .pipeline/rejection-report.js --issue 123 --skill qa --fase verificacion \
-//        --code 1 --elapsed 45 --motivo "razón" --log "123-qa.log" --pipeline desarrollo
 //
-// El reporte incluye: info técnica, funcional, contexto, recursos, análisis y sugerencia.
-// Se envía automáticamente a Telegram en PDF.
+// Fase 1 (collect — default):
+//   node .pipeline/rejection-report.js --issue 123 --skill qa --fase verificacion \
+//     --code 1 --elapsed 45 --motivo "razón" --log "123-qa.log" --pipeline desarrollo
+//   Si detecta dependencias externas: persiste contexto + encola create-issue en servicio-github.
+//   Si no: genera PDF + audio directo.
+//
+// Fase 2 (complete — invocada por onComplete del condensador):
+//   node .pipeline/rejection-report.js --phase=complete --context=/path/context.json --results=/path/results.json
+//   Lee contexto + resultados de issues creados, genera PDF + audio, encola comment + label.
 
 const fs = require('fs');
 const path = require('path');
@@ -18,9 +23,7 @@ const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
 const PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 const REPORT_SCRIPT = path.join(ROOT, 'scripts', 'report-to-pdf-telegram.js');
 const GH_CLI = process.env.GH_CLI_PATH || '/c/Workspaces/gh-cli/bin/gh';
-
-// Shared state: issues de dependencia creados por generateReport(), leídos por generateNarration()
-let _autoCreatedDeps = [];
+const GH_QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
 
 // --- Parse args ---
 const args = process.argv.slice(2);
@@ -28,6 +31,16 @@ function getArg(name) {
   const idx = args.indexOf('--' + name);
   return idx >= 0 && args[idx + 1] ? args[idx + 1] : null;
 }
+// Soporte para --name=value
+function getArgEq(name) {
+  const prefix = '--' + name + '=';
+  const found = args.find(a => a.startsWith(prefix));
+  return found ? found.slice(prefix.length) : null;
+}
+
+const phase = getArg('phase') || getArgEq('phase') || 'collect';
+const resultsFile = getArg('results') || getArgEq('results') || null;
+const contextFile = getArg('context') || getArgEq('context') || null;
 
 const issue = getArg('issue') || '?';
 const skill = getArg('skill') || '?';
@@ -83,7 +96,6 @@ function fetchIssueContext(issueNum) {
       { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
     ).toString();
     const data = JSON.parse(raw);
-    // Extraer resumen del body (primeros 3 párrafos no vacíos, sin markdown headers)
     const bodyLines = (data.body || '').split('\n').filter(l => l.trim() && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('-'));
     const summary = bodyLines.slice(0, 3).join(' ').substring(0, 300);
     return {
@@ -125,7 +137,6 @@ function getRejectHistory(issueNum) {
       }
     }
   }
-  // Buscar también PDFs de rechazo previos
   try {
     const pdfFiles = fs.readdirSync(path.join(ROOT, 'docs', 'qa'))
       .filter(f => f.startsWith(`rejection-${issueNum}-`) && f.endsWith('.pdf'));
@@ -158,12 +169,10 @@ function getGateStatus(issueNum) {
 }
 
 // --- Clasificación de causa raíz ---
-// Clasifica en dos dimensiones: tipo técnico + origen (interno al issue vs externo)
 function classifyRootCause(motivo, logTail, exitCode) {
   const motivoLower = (motivo || '').toLowerCase();
   const logLower = (logTail || '').toLowerCase();
 
-  // Infraestructura — SIEMPRE externo al issue
   if (logLower.includes('enotfound') || logLower.includes('econnrefused') || logLower.includes('unable to connect'))
     return { tipo: 'INFRAESTRUCTURA', emoji: '🔌', origen: 'EXTERNO',
       desc: 'El agente no pudo conectarse a internet o a un servicio externo. No tiene nada que ver con el código del issue.',
@@ -181,9 +190,7 @@ function classifyRootCause(motivo, logTail, exitCode) {
       desc: 'El agente no pudo arrancar correctamente (murió en menos de 15 segundos).',
       negocio: 'El proceso de validación falló al iniciar. Es un problema del entorno, no del código.' };
 
-  // QA / Evidencia — puede ser externo (app crashea antes de llegar al feature)
   if (motivoLower.includes('evidencia') || motivoLower.includes('video')) {
-    // Detectar si el log muestra un crash en otra pantalla (blocker externo)
     const hasExternalCrash = logLower.includes('unexpected json') || logLower.includes('crash') ||
       logLower.includes('exception') && !logLower.includes('doxxexception');
     return { tipo: 'QA-EVIDENCIA', emoji: '📹',
@@ -196,31 +203,26 @@ function classifyRootCause(motivo, logTail, exitCode) {
         : 'La prueba se ejecutó pero no se grabó correctamente el video. Puede ser un problema técnico de grabación.' };
   }
 
-  // Compilación — generalmente interno
   if (motivoLower.includes('build') || motivoLower.includes('compilation') || logLower.includes('build failed'))
     return { tipo: 'COMPILACION', emoji: '🔨', origen: 'INTERNO',
       desc: 'El código no compila — errores en el código fuente.',
       negocio: 'Los cambios de código tienen errores que impiden generar la aplicación. El desarrollador debe corregirlos.' };
 
-  // Tests — generalmente interno
   if (motivoLower.includes('test') || logLower.includes('test failed') || logLower.includes('assertion'))
     return { tipo: 'TESTS', emoji: '🧪', origen: 'INTERNO',
       desc: 'Tests automáticos fallaron — posible regresión.',
       negocio: 'Las pruebas automáticas detectaron que algo se rompió. Puede ser un bug nuevo o un test que hay que actualizar.' };
 
-  // Review — interno
   if (motivoLower.includes('review') || motivoLower.includes('bloqueante'))
     return { tipo: 'CODE-REVIEW', emoji: '👁️', origen: 'INTERNO',
       desc: 'El code review encontró problemas bloqueantes en el código.',
       negocio: 'La revisión de código encontró problemas de calidad que deben corregirse antes de continuar.' };
 
-  // Funcional — interno
   if (motivoLower.includes('funcional') || motivoLower.includes('criterio') || motivoLower.includes('acceptance'))
     return { tipo: 'FUNCIONAL', emoji: '❌', origen: 'INTERNO',
       desc: 'El feature no cumple los criterios de aceptación.',
       negocio: 'La funcionalidad no hace lo que se pidió. Hay que revisar los requisitos y corregir la implementación.' };
 
-  // Dependencia externa — cuando el log menciona otro issue o feature faltante
   if (logLower.includes('feature faltante') || logLower.includes('depende de') || logLower.includes('bloqueado por'))
     return { tipo: 'DEPENDENCIA', emoji: '🔗', origen: 'EXTERNO',
       desc: 'El issue depende de otro feature o corrección que aún no existe.',
@@ -231,19 +233,17 @@ function classifyRootCause(motivo, logTail, exitCode) {
     negocio: 'No se pudo determinar automáticamente por qué falló. Requiere revisión manual.' };
 }
 
-// --- Extraer líneas significativas del log (no JSON crudo) ---
+// --- Extraer líneas significativas del log ---
 function extractMeaningfulLog(logTail, maxLines) {
   if (!logTail) return '(log no disponible)';
   const lines = logTail.split('\n');
   const meaningful = [];
   for (const line of lines) {
-    // Intentar parsear JSON del stream
     try {
       const obj = JSON.parse(line);
       if (obj.type === 'assistant' && obj.message && obj.message.content) {
         for (const c of obj.message.content) {
           if (c.type === 'text' && c.text) {
-            // Truncar texto largo
             const txt = c.text.length > 200 ? c.text.substring(0, 200) + '...' : c.text;
             meaningful.push('[Agente] ' + txt);
           }
@@ -257,28 +257,212 @@ function extractMeaningfulLog(logTail, maxLines) {
       }
       continue;
     } catch {}
-    // Línea no-JSON: incluir si es significativa
     if (line.trim() && !line.startsWith('{')) {
       meaningful.push(line);
     }
   }
-  if (meaningful.length === 0) {
-    // Fallback: últimas líneas crudas
-    return lines.slice(-maxLines).join('\n');
-  }
+  if (meaningful.length === 0) return lines.slice(-maxLines).join('\n');
   return meaningful.slice(-maxLines).join('\n');
 }
 
-// --- Build report ---
-function generateReport() {
+// --- Detectar dependencias externas en el log ---
+function detectExternalDependencies(logTail, motivo) {
+  const deps = [];
+  const logLower = (logTail || '').toLowerCase();
+  const motivoLower = (motivo || '').toLowerCase();
+  const combined = logLower + ' ' + motivoLower;
+
+  if (combined.includes('unexpected json') || combined.includes('unknownkeyexception'))
+    deps.push('Bug en parser JSON de otro servicio — la app crashea antes de llegar al feature bajo prueba');
+  if (combined.includes('clientsearchbusinesses') || combined.includes('dashboard') && combined.includes('crash'))
+    deps.push('Bug en el Dashboard / listado de negocios (ClientSearchBusinessesService) que bloquea la navegacion');
+  if (combined.includes('ignoreunknownkeys'))
+    deps.push('Falta ignoreUnknownKeys en un servicio client — el backend devuelve campos que el cliente no conoce');
+
+  const featurePatterns = [
+    /no\s+(?:existe|implementad[oa]|disponible)\s+(?:la?\s+)?(?:pantalla|screen|feature|funcionalidad)\s+(?:de\s+)?(\w[\w\s]{3,30})/gi,
+    /falta\s+(?:implementar|construir|crear)\s+(\w[\w\s]{3,30})/gi,
+    /depende\s+de\s+(?:#(\d+)|(\w[\w\s]{3,30}))/gi,
+    /bloqueado\s+por\s+(?:#(\d+)|(\w[\w\s]{3,30}))/gi,
+  ];
+  for (const pattern of featurePatterns) {
+    let match;
+    while ((match = pattern.exec(logTail || '')) !== null) {
+      const dep = (match[1] || match[2] || match[3] || '').trim();
+      if (dep && dep.length > 3 && !deps.includes(dep)) deps.push(dep);
+    }
+  }
+
+  return deps;
+}
+
+// --- Buscar issues de dependencia creados en GitHub ---
+function fetchDependencyIssues(issueNum) {
+  try {
+    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+    const raw = execSync(
+      `"${ghPath}" issue list --label "qa:dependency" --json number,title,state,url --repo intrale/platform --limit 50`,
+      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).toString();
+    const allDeps = JSON.parse(raw || '[]');
+
+    let isBlocked = false;
+    try {
+      const issueRaw = execSync(
+        `"${ghPath}" issue view ${issueNum} --json labels --repo intrale/platform`,
+        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      ).toString();
+      const issueData = JSON.parse(issueRaw);
+      isBlocked = (issueData.labels || []).some(l => l.name === 'blocked:dependencies');
+    } catch {}
+
+    let linkedDeps = [];
+    try {
+      const commentsRaw = execSync(
+        `"${ghPath}" issue view ${issueNum} --json comments --repo intrale/platform`,
+        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      ).toString();
+      const comments = JSON.parse(commentsRaw).comments || [];
+      for (const c of comments) {
+        const body = c.body || '';
+        const matches = body.match(/#(\d+)/g);
+        if (matches && (body.toLowerCase().includes('dependencia') || body.toLowerCase().includes('bloqueado') || body.toLowerCase().includes('dependency'))) {
+          for (const m of matches) {
+            const num = parseInt(m.slice(1));
+            if (num !== parseInt(issueNum)) {
+              const depInfo = allDeps.find(d => d.number === num);
+              if (depInfo) linkedDeps.push(depInfo);
+              else linkedDeps.push({ number: num, title: `Issue #${num}`, state: 'OPEN', url: '' });
+            }
+          }
+        }
+      }
+    } catch {}
+
+    const seen = new Set();
+    linkedDeps = linkedDeps.filter(d => {
+      if (seen.has(d.number)) return false;
+      seen.add(d.number);
+      return true;
+    });
+
+    return { isBlocked, linkedDeps };
+  } catch {
+    return { isBlocked: false, linkedDeps: [] };
+  }
+}
+
+// --- Análisis automático basado en patrones ---
+function analyzeRejection(code, elapsed, motivo, logTail, avgCpu, avgMem, skill) {
+  const result = { conclusion: '', factors: [], suggestion: '', steps: [], externalDeps: [] };
+  const motivoLower = (motivo || '').toLowerCase();
+  const logLower = (logTail || '').toLowerCase();
+  const elapsedNum = parseFloat(elapsed) || 0;
+  const codeNum = parseInt(code) || -1;
+
+  result.externalDeps = detectExternalDependencies(logTail, motivo);
+
+  if (elapsedNum < 15) {
+    result.conclusion = 'El agente murio en menos de 15 segundos. Esto es un fallo del entorno (servidor, red, recursos), no del codigo del issue. La funcionalidad no fue evaluada.';
+    result.factors.push('Tiempo de ejecucion extremadamente corto (' + elapsed + 's)');
+    if (avgCpu > 80) result.factors.push('CPU en estado critico (' + avgCpu + '%) — la maquina estaba sobrecargada');
+    if (avgMem > 85) result.factors.push('RAM en estado critico (' + avgMem + '%) — no habia memoria suficiente');
+    if (logLower.includes('eaddrinuse')) result.factors.push('Puerto en uso — otro proceso estaba ocupando el recurso');
+    if (logLower.includes('enomem') || logLower.includes('out of memory')) result.factors.push('El sistema se quedo sin memoria');
+    if (logLower.includes('module_not_found') || logLower.includes('cannot find module')) result.factors.push('Falta una dependencia en el entorno de ejecucion');
+    result.suggestion = 'Reintentar cuando el sistema este estable. No requiere cambios en el codigo del issue.';
+    result.steps = ['Esperar a que el sistema baje la carga (CPU < 70%, RAM < 80%)', 'Verificar que no haya procesos zombies consumiendo recursos', 'Reintentar automaticamente — el pipeline lo maneja'];
+    return result;
+  }
+
+  if (motivoLower.includes('evidencia') || motivoLower.includes('video')) {
+    const hasExternalBlocker = logLower.includes('crash') || logLower.includes('unexpected json') ||
+      logLower.includes('exception') && !logLower.includes('el feature');
+    if (hasExternalBlocker) {
+      result.conclusion = 'El agente QA intento probar el feature pero la app tiene un bug en OTRA pantalla que impide llegar a la funcionalidad. El rechazo dice "evidencia incompleta" pero la causa real es que la app crashea antes de poder probar nada.';
+      result.factors.push('La app crashea antes de llegar al feature bajo prueba');
+      result.factors.push('El rechazo por "evidencia incompleta" es un SINTOMA, no la causa');
+      if (logLower.includes('unexpected json')) result.factors.push('Error de parsing JSON: el backend devuelve campos que la app no conoce');
+      result.suggestion = 'Corregir el bug bloqueante en otra parte de la app (ver dependencias externas abajo). Este issue NO necesita cambios.';
+      result.steps = ['Identificar el bug que crashea la app (ver log)', 'Crear un issue separado para corregir ese bug', 'Marcar este issue como bloqueado por el nuevo issue', 'Reintentar QA una vez que el bug bloqueante este corregido'];
+    } else {
+      result.conclusion = 'El agente QA ejecuto la prueba pero no genero evidencia valida (video o audio). Puede ser un problema tecnico de grabacion (emulador, screenrecord, permisos).';
+      result.factors.push('Gate de evidencia on-exit rechazo el resultado');
+      if (motivoLower.includes('video_size')) result.factors.push('Video ausente o demasiado pequeno (<200KB)');
+      if (motivoLower.includes('audio')) result.factors.push('Video sin narracion de audio');
+      if (motivoLower.includes('no encontrado')) result.factors.push('Archivo de video no encontrado en disco');
+      result.suggestion = 'Verificar que el emulador este corriendo y que screenrecord funcione. Reintentar la prueba QA.';
+      result.steps = ['Verificar que el emulador Android este levantado y respondiendo', 'Confirmar que screenrecord tiene permisos y espacio', 'Re-ejecutar la validacion QA'];
+    }
+    return result;
+  }
+
+  if (motivoLower.includes('build') || motivoLower.includes('compilation') || logLower.includes('build failed') || logLower.includes('compilation error')) {
+    result.conclusion = 'El codigo tiene errores de compilacion — no se puede generar la aplicacion. El desarrollador debe revisar y corregir los errores marcados en el log.';
+    result.factors.push('Error de compilacion detectado');
+    if (logLower.includes('unresolved reference')) result.factors.push('Se usa una funcion o variable que no existe (referencia no resuelta)');
+    if (logLower.includes('type mismatch')) result.factors.push('Error de tipos: se pasa un dato incorrecto a una funcion');
+    if (avgMem > 80) result.factors.push('RAM alta (' + avgMem + '%) — Gradle puede haberse quedado sin memoria');
+    result.suggestion = 'El desarrollador debe corregir los errores de compilacion y verificar que el build pase localmente antes de reintentar.';
+    result.steps = ['Leer el log buscando "error:" — ahi estan los errores con archivo y linea', 'Corregir cada error de compilacion', 'Ejecutar ./gradlew check --no-daemon localmente para verificar', 'Re-entregar cuando compile sin errores'];
+    return result;
+  }
+
+  if (motivoLower.includes('test') || logLower.includes('test failed') || logLower.includes('tests failed') || logLower.includes('assertion')) {
+    result.conclusion = 'Las pruebas automaticas fallaron. Esto puede significar que los cambios rompieron algo que funcionaba antes (regresion) o que un test necesita actualizarse para reflejar el nuevo comportamiento.';
+    result.factors.push('Fallos en tests automaticos');
+    if (logLower.includes('timeout')) result.factors.push('Posible timeout: el test tardo demasiado (sistema lento o test inestable)');
+    result.suggestion = 'Identificar que tests fallaron, verificar si es una regresion real o un test desactualizado, y corregir.';
+    result.steps = ['Buscar "FAILED" en el log para ver que tests especificos fallaron', 'Ejecutar esos tests localmente para reproducir', 'Si el test esta correcto: corregir el codigo de produccion', 'Si el test esta desactualizado: actualizar el test'];
+    return result;
+  }
+
+  if (motivoLower.includes('review') || motivoLower.includes('bloqueante')) {
+    result.conclusion = 'La revision de codigo encontro problemas de calidad que deben corregirse. Estos pueden ser violaciones de convenciones del proyecto, problemas de seguridad, o codigo que no sigue los patrones establecidos.';
+    result.factors.push('Code review rechazo el PR');
+    if (motivoLower.includes('string')) result.factors.push('Violacion de convenciones de strings (usar resString en vez de stringResource)');
+    if (motivoLower.includes('logger')) result.factors.push('Falta logger en una clase nueva (obligatorio segun CLAUDE.md)');
+    result.suggestion = 'Aplicar las correcciones bloqueantes del review. Los comentarios del PR detallan que hay que cambiar.';
+    result.steps = ['Leer los comentarios del code review en el PR', 'Aplicar cada correccion bloqueante', 'Verificar que se cumplen las convenciones de CLAUDE.md', 'Re-entregar el PR corregido'];
+    return result;
+  }
+
+  if (avgCpu > 75 || avgMem > 85) {
+    result.conclusion = 'La maquina estaba sobrecargada durante la ejecucion. No es un problema del codigo — es un problema de recursos del servidor. El agente fallo por falta de CPU o memoria, no por un bug.';
+    result.factors.push('CPU promedio: ' + avgCpu + '% (la maquina estaba sobrecargada)');
+    result.factors.push('RAM promedio: ' + avgMem + '% (poca memoria disponible)');
+    if (avgMem > 85) result.factors.push('RAM critica — el sistema puede haber matado procesos por falta de memoria');
+    result.suggestion = 'Esperar a que el servidor se desocupe y reintentar. No requiere cambios en el codigo.';
+    result.steps = ['Esperar a que la carga baje (CPU < 70%, RAM < 80%)', 'Matar Gradle daemons o procesos zombies si los hay', 'El pipeline reintentara automaticamente'];
+    return result;
+  }
+
+  if (parseFloat(elapsed) > 3600) {
+    const mins = Math.round(parseFloat(elapsed) / 60);
+    result.conclusion = 'El agente estuvo corriendo ' + mins + ' minutos sin terminar. Puede haberse trabado en un loop, o el issue es demasiado grande para una sola ejecucion.';
+    result.factors.push('Duracion excesiva: ' + mins + ' minutos');
+    result.suggestion = 'Revisar si el agente se quedo en un loop o si el issue necesita dividirse en partes mas chicas.';
+    result.steps = ['Revisar el log buscando patrones repetitivos', 'Si el issue tiene scope muy grande, dividirlo en sub-issues', 'Reintentar con un scope mas acotado'];
+    return result;
+  }
+
+  result.conclusion = 'El agente termino con un error (codigo ' + code + ') despues de ' + elapsed + ' segundos. El motivo reportado fue: "' + motivo + '". Requiere revision manual del log para determinar la causa exacta.';
+  result.factors.push('Codigo de salida: ' + code + (parseInt(code) !== 0 ? ' (terminacion anormal)' : ''));
+  result.suggestion = 'Revisar el log del agente buscando errores, excepciones o mensajes de rechazo.';
+  result.steps = ['Abrir el log del issue #' + issue + ' en el dashboard', 'Buscar "error", "FAILED", "rechazado" en el log', 'Identificar donde ocurrio el fallo y corregir'];
+  return result;
+}
+
+// =============================================================================
+// collectReportData() — recolecta todos los datos necesarios para el reporte
+// =============================================================================
+function collectReportData() {
   const now = new Date();
   const timestamp = now.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
 
-  // 1. Log del agente (últimas 80 líneas)
   const logPath = path.join(LOG_DIR, logFile);
   const logTail = readLastLines(logPath, 80);
 
-  // 2. Recursos actuales del sistema
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
   const memUsedPct = Math.round(((totalMem - freeMem) / totalMem) * 100);
@@ -286,7 +470,6 @@ function generateReport() {
   const memTotalGB = (totalMem / 1073741824).toFixed(1);
   const cpuCores = os.cpus().length;
 
-  // 3. Métricas recientes (últimos 10 min)
   const recentMetrics = getRecentMetrics(10);
   let avgCpu = 0, avgMem = 0, avgAgents = 0, pressureLevels = {};
   if (recentMetrics.length > 0) {
@@ -298,11 +481,9 @@ function generateReport() {
     }
   }
 
-  // 4. Perfil del skill
   const profiles = readJson(PROFILES_FILE) || {};
   const skillProfile = profiles[skill];
 
-  // 5. YAML del issue (si existe en listo/)
   let yamlData = null;
   const allFases = ['analisis', 'sizing', 'dev', 'build', 'verificacion', 'entrega'];
   for (const f of allFases) {
@@ -316,37 +497,53 @@ function generateReport() {
     }
   }
 
-  // 6. Cooldowns activos
   const cooldowns = readJson(path.join(PIPELINE, 'cooldowns.json')) || {};
   const cooldownKey = `${skill}:${issue}`;
   const cooldownInfo = cooldowns[cooldownKey];
 
-  // 7. Análisis automático
   const analysis = analyzeRejection(exitCode, elapsed, motivo, logTail, avgCpu, avgMem, skill);
-
-  // 8. Contexto del issue (GitHub)
   const issueCtx = fetchIssueContext(issue);
-
-  // 9. Historial de rechazos previos
   const rejectHistory = getRejectHistory(issue);
-
-  // 10. Estado de otros gates
   const otherGates = getGateStatus(issue);
-
-  // 11. Clasificación de causa raíz
   const rootCause = classifyRootCause(motivo, logTail, exitCode);
-
-  // 12. Log legible (no JSON crudo)
   const readableLog = extractMeaningfulLog(logTail, 30);
-
-  // 13. Issues de dependencia creados por QA (V9)
   const depIssues = fetchDependencyIssues(issue);
 
-  // 14. Crear issues de dependencia automáticamente si se detectaron y no existen
-  const autoCreatedDeps = createDependencyIssues(issue, analysis.externalDeps, issueCtx.title);
-  _autoCreatedDeps = autoCreatedDeps; // Compartir con generateNarration()
+  return {
+    // Identifiers
+    issue, skill, fase, exitCode, elapsed, motivo, pipeline, logFile,
+    timestamp, isoDate: now.toISOString().slice(0, 10),
+    // System
+    memUsedPct, memUsedGB, memTotalGB, cpuCores,
+    avgCpu, avgMem, avgAgents, pressureLevels, recentMetrics,
+    // Skill
+    skillProfile, yamlData, cooldownInfo,
+    // Analysis
+    analysis, issueCtx, rejectHistory, otherGates, rootCause,
+    // Logs
+    logTail, readableLog,
+    // Dependencies
+    depIssues,
+    // Auto-created deps (filled in phase 1 direct or phase 2)
+    autoCreatedDeps: [],
+    // Existing deps found during dedup (filled in phase 1)
+    existingDeps: [],
+  };
+}
 
-  // --- HTML ---
+// =============================================================================
+// renderHtml(data) — genera el HTML del reporte a partir de los datos
+// =============================================================================
+function renderHtml(data) {
+  const {
+    issue, skill, fase, exitCode, elapsed, motivo, pipeline, timestamp, isoDate,
+    memUsedPct, memUsedGB, memTotalGB, cpuCores,
+    avgCpu, avgMem, avgAgents, pressureLevels, recentMetrics,
+    skillProfile, yamlData, cooldownInfo,
+    analysis, issueCtx, rejectHistory, otherGates, rootCause,
+    logTail, readableLog, depIssues, autoCreatedDeps,
+  } = data;
+
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
@@ -484,7 +681,7 @@ ${skillProfile ? `
   <h3>${rootCause.origen === 'EXTERNO' ? '⚠️ Este issue NO necesita cambios — el bloqueo es externo' : '🔧 Acciones requeridas en este issue'}</h3>
   <p>${escapeHtml(analysis.suggestion)}</p>
   ${analysis.steps.length > 0 ? '<h3>Pasos concretos</h3><ol>' + analysis.steps.map(s => '<li>' + escapeHtml(s) + '</li>').join('') + '</ol>' : ''}
-  ${autoCreatedDeps.length > 0 ? '<h3>Issues de Dependencia Creados Automaticamente</h3><table><tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>' + autoCreatedDeps.map(d => '<tr><td><strong>#' + d.number + '</strong></td><td>' + escapeHtml(d.title) + '</td><td>' + (d.alreadyExisted ? '<span class="badge badge-yellow">Ya existia</span>' : '<span class="badge badge-blue">Creado ahora</span>') + '</td></tr>').join('') + '</table><p><em>Este issue queda bloqueado (blocked:dependencies) hasta que se resuelvan estos issues.</em></p>' : ''}
+  ${autoCreatedDeps.length > 0 ? '<h3>Issues de Dependencia Creados Automaticamente</h3><table><tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>' + autoCreatedDeps.map(d => '<tr><td><strong>#' + (d.number || '?') + '</strong></td><td>' + escapeHtml(d.title) + '</td><td>' + (d.failed ? '<span class="badge badge-red">Fallo al crear</span>' : d.alreadyExisted ? '<span class="badge badge-yellow">Ya existia</span>' : '<span class="badge badge-blue">Creado ahora</span>') + '</td></tr>').join('') + '</table><p><em>Este issue queda bloqueado (blocked:dependencies) hasta que se resuelvan estos issues.</em></p>' : ''}
   ${analysis.externalDeps && analysis.externalDeps.length > 0 && autoCreatedDeps.length === 0 ? '<h3>Dependencias externas detectadas</h3><ul>' + analysis.externalDeps.map(d => '<li>🔗 ' + escapeHtml(d) + '</li>').join('') + '</ul><p><em>No se pudieron crear issues automaticamente. Crear manualmente antes de reintentar.</em></p>' : ''}
 </div>
 
@@ -513,345 +710,26 @@ ${(depIssues.linkedDeps.length > 0 || depIssues.isBlocked) && autoCreatedDeps.le
 </details>
 
 <div class="footer">
-  Intrale Platform &mdash; Reporte de Rechazo &mdash; v4.2 &mdash; ${escapeHtml(now.toISOString().slice(0, 10))}
+  Intrale Platform &mdash; Reporte de Rechazo &mdash; v5.0 &mdash; ${escapeHtml(isoDate)}
 </div>
 </body></html>`;
 }
 
-// --- Buscar issues de dependencia creados en GitHub ---
-function fetchDependencyIssues(issueNum) {
-  try {
-    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
-    // Buscar issues con label qa:dependency que mencionen este issue
-    const raw = execSync(
-      `"${ghPath}" issue list --label "qa:dependency" --json number,title,state,url --repo intrale/platform --limit 50`,
-      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
-    ).toString();
-    const allDeps = JSON.parse(raw || '[]');
-
-    // También buscar si el issue actual tiene label blocked:dependencies
-    let isBlocked = false;
-    try {
-      const issueRaw = execSync(
-        `"${ghPath}" issue view ${issueNum} --json labels --repo intrale/platform`,
-        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-      ).toString();
-      const issueData = JSON.parse(issueRaw);
-      isBlocked = (issueData.labels || []).some(l => l.name === 'blocked:dependencies');
-    } catch {}
-
-    // Buscar en comentarios del issue cuáles fueron vinculados como dependencia
-    let linkedDeps = [];
-    try {
-      const commentsRaw = execSync(
-        `"${ghPath}" issue view ${issueNum} --json comments --repo intrale/platform`,
-        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-      ).toString();
-      const comments = JSON.parse(commentsRaw).comments || [];
-      for (const c of comments) {
-        const body = c.body || '';
-        // Buscar menciones de issues de dependencia (#NNN)
-        const matches = body.match(/#(\d+)/g);
-        if (matches && (body.toLowerCase().includes('dependencia') || body.toLowerCase().includes('bloqueado') || body.toLowerCase().includes('dependency'))) {
-          for (const m of matches) {
-            const num = parseInt(m.slice(1));
-            if (num !== parseInt(issueNum)) {
-              const depInfo = allDeps.find(d => d.number === num);
-              if (depInfo) linkedDeps.push(depInfo);
-              else linkedDeps.push({ number: num, title: `Issue #${num}`, state: 'OPEN', url: '' });
-            }
-          }
-        }
-      }
-    } catch {}
-
-    // Deduplicar
-    const seen = new Set();
-    linkedDeps = linkedDeps.filter(d => {
-      if (seen.has(d.number)) return false;
-      seen.add(d.number);
-      return true;
-    });
-
-    return { isBlocked, linkedDeps };
-  } catch {
-    return { isBlocked: false, linkedDeps: [] };
-  }
-}
-
-// --- Detectar dependencias externas en el log ---
-function detectExternalDependencies(logTail, motivo) {
-  const deps = [];
-  const logLower = (logTail || '').toLowerCase();
-  const motivoLower = (motivo || '').toLowerCase();
-  const combined = logLower + ' ' + motivoLower;
-
-  // Detectar crashes en pantallas que no son del issue
-  if (combined.includes('unexpected json') || combined.includes('unknownkeyexception'))
-    deps.push('Bug en parser JSON de otro servicio — la app crashea antes de llegar al feature bajo prueba');
-  if (combined.includes('clientsearchbusinesses') || combined.includes('dashboard') && combined.includes('crash'))
-    deps.push('Bug en el Dashboard / listado de negocios (ClientSearchBusinessesService) que bloquea la navegacion');
-  if (combined.includes('ignoreunknownkeys'))
-    deps.push('Falta ignoreUnknownKeys en un servicio client — el backend devuelve campos que el cliente no conoce');
-
-  // Detectar features faltantes mencionadas en el log
-  const featurePatterns = [
-    /no\s+(?:existe|implementad[oa]|disponible)\s+(?:la?\s+)?(?:pantalla|screen|feature|funcionalidad)\s+(?:de\s+)?(\w[\w\s]{3,30})/gi,
-    /falta\s+(?:implementar|construir|crear)\s+(\w[\w\s]{3,30})/gi,
-    /depende\s+de\s+(?:#(\d+)|(\w[\w\s]{3,30}))/gi,
-    /bloqueado\s+por\s+(?:#(\d+)|(\w[\w\s]{3,30}))/gi,
-  ];
-  for (const pattern of featurePatterns) {
-    let match;
-    while ((match = pattern.exec(logTail || '')) !== null) {
-      const dep = (match[1] || match[2] || match[3] || '').trim();
-      if (dep && dep.length > 3 && !deps.includes(dep)) deps.push(dep);
-    }
-  }
-
-  return deps;
-}
-
-// --- Crear issues de dependencia en GitHub automáticamente ---
-// Recibe las dependencias detectadas, crea issues con label qa:dependency,
-// vincula al issue original y devuelve los issues creados con sus números.
-function createDependencyIssues(issueNum, externalDeps, issueTitle) {
-  if (!externalDeps || externalDeps.length === 0) return [];
-
-  const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
-  const created = [];
-
-  for (const dep of externalDeps) {
-    try {
-      // 1. Buscar si ya existe un issue abierto para esta dependencia (evitar duplicados)
-      const searchQuery = dep.length > 60 ? dep.substring(0, 60) : dep;
-      let alreadyExists = false;
-      try {
-        const searchRaw = execSync(
-          `"${ghPath}" issue list --label "qa:dependency" --search "${searchQuery.replace(/"/g, '\\"')}" --json number,title,state --repo intrale/platform --limit 5`,
-          { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
-        ).toString();
-        const existing = JSON.parse(searchRaw || '[]');
-        const openMatch = existing.find(e => e.state === 'OPEN');
-        if (openMatch) {
-          created.push({ number: openMatch.number, title: openMatch.title, state: 'OPEN', alreadyExisted: true });
-          alreadyExists = true;
-        }
-      } catch {}
-
-      if (alreadyExists) continue;
-
-      // 2. Crear el issue de dependencia
-      const depTitle = `dep: ${dep.length > 80 ? dep.substring(0, 80) + '...' : dep}`;
-      const depBody = [
-        '## Contexto',
-        '',
-        `Dependencia detectada automáticamente durante el rechazo del issue #${issueNum} (${issueTitle || ''}).`,
-        '',
-        '## Problema',
-        '',
-        dep,
-        '',
-        '## Origen',
-        '',
-        `El issue #${issueNum} fue rechazado porque depende de una funcionalidad que no existe o tiene un bug que bloquea la ejecución.`,
-        '',
-        '## Criterios de aceptación',
-        '',
-        '- [ ] La funcionalidad descrita arriba está implementada y funcionando',
-        `- [ ] El issue #${issueNum} puede reintentarse sin este bloqueo`,
-        '',
-        '---',
-        `_Issue creado automáticamente por el rejection report del pipeline._`,
-      ].join('\n');
-
-      const createRaw = execSync(
-        `"${ghPath}" issue create --title "${depTitle.replace(/"/g, '\\"')}" --body "${depBody.replace(/"/g, '\\"')}" --label "needs-definition,qa:dependency" --repo intrale/platform`,
-        { timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] }
-      ).toString().trim();
-
-      // gh issue create devuelve la URL del issue, extraer el número
-      const urlMatch = createRaw.match(/\/(\d+)\s*$/);
-      const newNumber = urlMatch ? parseInt(urlMatch[1]) : null;
-
-      if (newNumber) {
-        created.push({ number: newNumber, title: depTitle, state: 'OPEN', alreadyExisted: false });
-        console.log(`[rejection-report] Issue de dependencia creado: #${newNumber} — ${depTitle}`);
-      }
-    } catch (err) {
-      console.error(`[rejection-report] Error creando issue de dependencia: ${err.message}`);
-    }
-  }
-
-  // 3. Si se crearon issues, vincular al issue original con un comentario y agregar label blocked:dependencies
-  if (created.length > 0) {
-    try {
-      const newIssues = created.filter(c => !c.alreadyExisted);
-      const existingIssues = created.filter(c => c.alreadyExisted);
-      const commentParts = ['## 🔗 Dependencias detectadas por el pipeline\n'];
-      if (newIssues.length > 0) {
-        commentParts.push('**Issues creados automáticamente:**');
-        for (const c of newIssues) commentParts.push(`- #${c.number} — ${c.title}`);
-      }
-      if (existingIssues.length > 0) {
-        commentParts.push('\n**Issues existentes vinculados:**');
-        for (const c of existingIssues) commentParts.push(`- #${c.number} — ${c.title}`);
-      }
-      commentParts.push(`\nEste issue queda bloqueado hasta que se resuelvan las dependencias listadas.`);
-
-      const comment = commentParts.join('\n');
-      execSync(
-        `"${ghPath}" issue comment ${issueNum} --body "${comment.replace(/"/g, '\\"')}" --repo intrale/platform`,
-        { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-
-      // Agregar label blocked:dependencies al issue original
-      execSync(
-        `"${ghPath}" issue edit ${issueNum} --add-label "blocked:dependencies" --repo intrale/platform`,
-        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-      console.log(`[rejection-report] Issue #${issueNum} marcado como blocked:dependencies con ${created.length} dependencias`);
-    } catch (err) {
-      console.error(`[rejection-report] Error vinculando dependencias al issue #${issueNum}: ${err.message}`);
-    }
-  }
-
-  return created;
-}
-
-// --- Análisis automático basado en patrones ---
-function analyzeRejection(code, elapsed, motivo, logTail, avgCpu, avgMem, skill) {
-  const result = { conclusion: '', factors: [], suggestion: '', steps: [], externalDeps: [] };
-  const motivoLower = (motivo || '').toLowerCase();
-  const logLower = (logTail || '').toLowerCase();
-  const elapsedNum = parseFloat(elapsed) || 0;
-  const codeNum = parseInt(code) || -1;
-
-  // Detectar dependencias externas para todos los casos
-  result.externalDeps = detectExternalDependencies(logTail, motivo);
-
-  // Muerte prematura (<15s)
-  if (elapsedNum < 15) {
-    result.conclusion = 'El agente murio en menos de 15 segundos. Esto es un fallo del entorno (servidor, red, recursos), no del codigo del issue. La funcionalidad no fue evaluada.';
-    result.factors.push('Tiempo de ejecucion extremadamente corto (' + elapsed + 's)');
-    if (avgCpu > 80) result.factors.push('CPU en estado critico (' + avgCpu + '%) — la maquina estaba sobrecargada');
-    if (avgMem > 85) result.factors.push('RAM en estado critico (' + avgMem + '%) — no habia memoria suficiente');
-    if (logLower.includes('eaddrinuse')) result.factors.push('Puerto en uso — otro proceso estaba ocupando el recurso');
-    if (logLower.includes('enomem') || logLower.includes('out of memory')) result.factors.push('El sistema se quedo sin memoria');
-    if (logLower.includes('module_not_found') || logLower.includes('cannot find module')) result.factors.push('Falta una dependencia en el entorno de ejecucion');
-    result.suggestion = 'Reintentar cuando el sistema este estable. No requiere cambios en el codigo del issue.';
-    result.steps = ['Esperar a que el sistema baje la carga (CPU < 70%, RAM < 80%)', 'Verificar que no haya procesos zombies consumiendo recursos', 'Reintentar automaticamente — el pipeline lo maneja'];
-    return result;
-  }
-
-  // Evidencia QA incompleta
-  if (motivoLower.includes('evidencia') || motivoLower.includes('video')) {
-    // Distinguir: no genero video vs la app crasheo antes de poder probar
-    const hasExternalBlocker = logLower.includes('crash') || logLower.includes('unexpected json') ||
-      logLower.includes('exception') && !logLower.includes('el feature');
-    if (hasExternalBlocker) {
-      result.conclusion = 'El agente QA intento probar el feature pero la app tiene un bug en OTRA pantalla que impide llegar a la funcionalidad. El rechazo dice "evidencia incompleta" pero la causa real es que la app crashea antes de poder probar nada.';
-      result.factors.push('La app crashea antes de llegar al feature bajo prueba');
-      result.factors.push('El rechazo por "evidencia incompleta" es un SINTOMA, no la causa');
-      if (logLower.includes('unexpected json')) result.factors.push('Error de parsing JSON: el backend devuelve campos que la app no conoce');
-      result.suggestion = 'Corregir el bug bloqueante en otra parte de la app (ver dependencias externas abajo). Este issue NO necesita cambios.';
-      result.steps = ['Identificar el bug que crashea la app (ver log)', 'Crear un issue separado para corregir ese bug', 'Marcar este issue como bloqueado por el nuevo issue', 'Reintentar QA una vez que el bug bloqueante este corregido'];
-    } else {
-      result.conclusion = 'El agente QA ejecuto la prueba pero no genero evidencia valida (video o audio). Puede ser un problema tecnico de grabacion (emulador, screenrecord, permisos).';
-      result.factors.push('Gate de evidencia on-exit rechazo el resultado');
-      if (motivoLower.includes('video_size')) result.factors.push('Video ausente o demasiado pequeno (<200KB)');
-      if (motivoLower.includes('audio')) result.factors.push('Video sin narracion de audio');
-      if (motivoLower.includes('no encontrado')) result.factors.push('Archivo de video no encontrado en disco');
-      result.suggestion = 'Verificar que el emulador este corriendo y que screenrecord funcione. Reintentar la prueba QA.';
-      result.steps = ['Verificar que el emulador Android este levantado y respondiendo', 'Confirmar que screenrecord tiene permisos y espacio', 'Re-ejecutar la validacion QA'];
-    }
-    return result;
-  }
-
-  // Errores de compilacion/build
-  if (motivoLower.includes('build') || motivoLower.includes('compilation') || logLower.includes('build failed') || logLower.includes('compilation error')) {
-    result.conclusion = 'El codigo tiene errores de compilacion — no se puede generar la aplicacion. El desarrollador debe revisar y corregir los errores marcados en el log.';
-    result.factors.push('Error de compilacion detectado');
-    if (logLower.includes('unresolved reference')) result.factors.push('Se usa una funcion o variable que no existe (referencia no resuelta)');
-    if (logLower.includes('type mismatch')) result.factors.push('Error de tipos: se pasa un dato incorrecto a una funcion');
-    if (avgMem > 80) result.factors.push('RAM alta (' + avgMem + '%) — Gradle puede haberse quedado sin memoria');
-    result.suggestion = 'El desarrollador debe corregir los errores de compilacion y verificar que el build pase localmente antes de reintentar.';
-    result.steps = ['Leer el log buscando "error:" — ahi estan los errores con archivo y linea', 'Corregir cada error de compilacion', 'Ejecutar ./gradlew check --no-daemon localmente para verificar', 'Re-entregar cuando compile sin errores'];
-    return result;
-  }
-
-  // Tests fallando
-  if (motivoLower.includes('test') || logLower.includes('test failed') || logLower.includes('tests failed') || logLower.includes('assertion')) {
-    result.conclusion = 'Las pruebas automaticas fallaron. Esto puede significar que los cambios rompieron algo que funcionaba antes (regresion) o que un test necesita actualizarse para reflejar el nuevo comportamiento.';
-    result.factors.push('Fallos en tests automaticos');
-    if (logLower.includes('timeout')) result.factors.push('Posible timeout: el test tardo demasiado (sistema lento o test inestable)');
-    result.suggestion = 'Identificar que tests fallaron, verificar si es una regresion real o un test desactualizado, y corregir.';
-    result.steps = ['Buscar "FAILED" en el log para ver que tests especificos fallaron', 'Ejecutar esos tests localmente para reproducir', 'Si el test esta correcto: corregir el codigo de produccion', 'Si el test esta desactualizado: actualizar el test'];
-    return result;
-  }
-
-  // Review rechazado
-  if (motivoLower.includes('review') || motivoLower.includes('bloqueante')) {
-    result.conclusion = 'La revision de codigo encontro problemas de calidad que deben corregirse. Estos pueden ser violaciones de convenciones del proyecto, problemas de seguridad, o codigo que no sigue los patrones establecidos.';
-    result.factors.push('Code review rechazo el PR');
-    if (motivoLower.includes('string')) result.factors.push('Violacion de convenciones de strings (usar resString en vez de stringResource)');
-    if (motivoLower.includes('logger')) result.factors.push('Falta logger en una clase nueva (obligatorio segun CLAUDE.md)');
-    result.suggestion = 'Aplicar las correcciones bloqueantes del review. Los comentarios del PR detallan que hay que cambiar.';
-    result.steps = ['Leer los comentarios del code review en el PR', 'Aplicar cada correccion bloqueante', 'Verificar que se cumplen las convenciones de CLAUDE.md', 'Re-entregar el PR corregido'];
-    return result;
-  }
-
-  // Saturacion de recursos
-  if (avgCpu > 75 || avgMem > 85) {
-    result.conclusion = 'La maquina estaba sobrecargada durante la ejecucion. No es un problema del codigo — es un problema de recursos del servidor. El agente fallo por falta de CPU o memoria, no por un bug.';
-    result.factors.push('CPU promedio: ' + avgCpu + '% (la maquina estaba sobrecargada)');
-    result.factors.push('RAM promedio: ' + avgMem + '% (poca memoria disponible)');
-    if (avgMem > 85) result.factors.push('RAM critica — el sistema puede haber matado procesos por falta de memoria');
-    result.suggestion = 'Esperar a que el servidor se desocupe y reintentar. No requiere cambios en el codigo.';
-    result.steps = ['Esperar a que la carga baje (CPU < 70%, RAM < 80%)', 'Matar Gradle daemons o procesos zombies si los hay', 'El pipeline reintentara automaticamente'];
-    return result;
-  }
-
-  // Timeout / ejecucion larga
-  if (elapsedNum > 3600) {
-    result.conclusion = 'El agente estuvo corriendo ' + Math.round(elapsedNum / 60) + ' minutos sin terminar. Puede haberse trabado en un loop, o el issue es demasiado grande para una sola ejecucion.';
-    result.factors.push('Duracion excesiva: ' + Math.round(elapsedNum / 60) + ' minutos');
-    result.suggestion = 'Revisar si el agente se quedo en un loop o si el issue necesita dividirse en partes mas chicas.';
-    result.steps = ['Revisar el log buscando patrones repetitivos', 'Si el issue tiene scope muy grande, dividirlo en sub-issues', 'Reintentar con un scope mas acotado'];
-    return result;
-  }
-
-  // Genérico — mejorado
-  result.conclusion = 'El agente termino con un error (codigo ' + code + ') despues de ' + elapsed + ' segundos. El motivo reportado fue: "' + motivo + '". Requiere revision manual del log para determinar la causa exacta.';
-  result.factors.push('Codigo de salida: ' + code + (codeNum !== 0 ? ' (terminacion anormal)' : ''));
-  result.suggestion = 'Revisar el log del agente buscando errores, excepciones o mensajes de rechazo.';
-  result.steps = ['Abrir el log del issue #' + issue + ' en el dashboard', 'Buscar "error", "FAILED", "rechazado" en el log', 'Identificar donde ocurrio el fallo y corregir'];
-  return result;
-}
-
-// --- Generar narración en texto plano para TTS ---
-function generateNarration() {
-  const issueCtx = fetchIssueContext(issue);
-  const rootCause = classifyRootCause(motivo, readLastLines(path.join(LOG_DIR, logFile), 80), exitCode);
-  const analysis = analyzeRejection(exitCode, elapsed, motivo, readLastLines(path.join(LOG_DIR, logFile), 80),
-    (() => { const m = getRecentMetrics(10); return m.length > 0 ? Math.round(m.reduce((s, x) => s + x.cpu, 0) / m.length) : 0; })(),
-    (() => { const m = getRecentMetrics(10); return m.length > 0 ? Math.round(m.reduce((s, x) => s + x.mem, 0) / m.length) : 0; })(),
-    skill);
-  const rejectHistory = getRejectHistory(issue);
-  const depIssues = fetchDependencyIssues(issue);
+// =============================================================================
+// generateNarration(data) — narración en texto plano para TTS
+// =============================================================================
+function generateNarration(data) {
+  const {
+    issue, skill, fase, motivo,
+    issueCtx, rootCause, analysis, rejectHistory, depIssues, autoCreatedDeps,
+  } = data;
 
   const parts = [];
 
-  // Intro
   parts.push(`Reporte de rechazo del issue número ${issue}, que estaba en la fase de ${fase} con el agente ${skill}.`);
-
-  // Qué se estaba haciendo
   parts.push(`El issue se llama "${issueCtx.title}". ${issueCtx.summary}`);
-
-  // Qué pasó
   parts.push(`¿Qué pasó? ${rootCause.negocio || rootCause.desc}`);
 
-  // Causa raíz
   const origenTexto = rootCause.origen === 'EXTERNO'
     ? 'El problema es externo, no es culpa de este issue.'
     : rootCause.origen === 'INTERNO'
@@ -859,12 +737,10 @@ function generateNarration() {
     : 'No se pudo determinar automáticamente si es un problema interno o externo.';
   parts.push(`Causa raíz: ${rootCause.desc}. Clasificación: ${rootCause.tipo}. ${origenTexto}`);
 
-  // Historial
   if (rejectHistory.length > 1) {
     parts.push(`Este issue ya fue rechazado ${rejectHistory.length} veces. Los rechazos anteriores fueron por: ${rejectHistory.map(h => h.skill + ' en fase ' + h.fase).join(', ')}.`);
   }
 
-  // Análisis y solución
   parts.push(`Análisis de la situación: ${analysis.conclusion}`);
   if (analysis.factors.length > 0) {
     parts.push(`Factores que contribuyeron: ${analysis.factors.join('. ')}.`);
@@ -874,19 +750,21 @@ function generateNarration() {
     parts.push(`Pasos concretos: ${analysis.steps.map((s, i) => (i + 1) + ', ' + s).join('. ')}.`);
   }
 
-  // Dependencias creadas automáticamente por este reporte
-  if (_autoCreatedDeps.length > 0) {
-    const newOnes = _autoCreatedDeps.filter(d => !d.alreadyExisted);
-    const existingOnes = _autoCreatedDeps.filter(d => d.alreadyExisted);
+  if (autoCreatedDeps && autoCreatedDeps.length > 0) {
+    const newOnes = autoCreatedDeps.filter(d => !d.alreadyExisted && !d.failed);
+    const existingOnes = autoCreatedDeps.filter(d => d.alreadyExisted);
+    const failedOnes = autoCreatedDeps.filter(d => d.failed);
     if (newOnes.length > 0) {
       parts.push(`Se crearon automáticamente ${newOnes.length} issues de dependencia: ${newOnes.map(d => 'número ' + d.number + ', ' + d.title.replace(/^dep:\s*/i, '')).join('. ')}.`);
     }
     if (existingOnes.length > 0) {
       parts.push(`Se vincularon ${existingOnes.length} issues de dependencia que ya existían: ${existingOnes.map(d => 'número ' + d.number).join(', ')}.`);
     }
+    if (failedOnes.length > 0) {
+      parts.push(`No se pudieron crear ${failedOnes.length} issues de dependencia por errores técnicos.`);
+    }
     parts.push(`El issue queda bloqueado hasta que se resuelvan estas dependencias.`);
   } else if (depIssues.isBlocked || depIssues.linkedDeps.length > 0) {
-    // Dependencias previas (ya existían antes de este reporte)
     const openDeps = depIssues.linkedDeps.filter(d => d.state === 'OPEN');
     const closedDeps = depIssues.linkedDeps.filter(d => d.state === 'CLOSED');
     parts.push(`Este issue está bloqueado por dependencias.`);
@@ -903,93 +781,321 @@ function generateNarration() {
   return parts.join(' ');
 }
 
-// --- Main ---
+// =============================================================================
+// sendReport(data) — genera PDF + audio y envía a Telegram
+// =============================================================================
+async function sendReport(data) {
+  const html = renderHtml(data);
+
+  const htmlPath = path.join(LOG_DIR, `rejection-${data.issue}-${data.skill}.html`);
+  fs.writeFileSync(htmlPath, html);
+
+  execSync(`node "${REPORT_SCRIPT}" "${htmlPath}" "Rechazo #${data.issue} ${data.skill} (${data.fase})"`, {
+    cwd: ROOT, stdio: 'inherit', timeout: 120000
+  });
+
+  const pdfName = `rejection-${data.issue}-${data.skill}.pdf`;
+  const pdfDest = path.join(LOG_DIR, pdfName);
+  const possiblePdfPaths = [
+    htmlPath.replace(/\.html$/, '.pdf'),
+    path.join(ROOT, 'docs', 'qa', pdfName),
+  ];
+  for (const src of possiblePdfPaths) {
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, pdfDest);
+      console.log(`[rejection-report] PDF copiado a ${pdfDest}`);
+      if (src !== pdfDest) try { fs.unlinkSync(src); } catch {}
+      break;
+    }
+  }
+
+  try { fs.unlinkSync(htmlPath); } catch {}
+  try { fs.unlinkSync(path.join(ROOT, 'docs', 'qa', `rejection-${data.issue}-${data.skill}.html`)); } catch {}
+
+  console.log(`[rejection-report] Reporte enviado a Telegram para #${data.issue} ${data.skill}`);
+
+  // Audio TTS
+  try {
+    const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+    const TG_CONFIG = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
+    const tgConfig = JSON.parse(fs.readFileSync(TG_CONFIG, 'utf8'));
+
+    const narration = generateNarration(data);
+    console.log(`[rejection-report] Generando audio TTS (${narration.length} chars)...`);
+
+    const MAX_TTS_CHARS = 3800;
+    const chunks = [];
+    if (narration.length <= MAX_TTS_CHARS) {
+      chunks.push(narration);
+    } else {
+      const sentences = narration.split(/(?<=[.!?])\s+/);
+      let current = '';
+      for (const sentence of sentences) {
+        if ((current + ' ' + sentence).length > MAX_TTS_CHARS && current.length > 0) {
+          chunks.push(current.trim());
+          current = sentence;
+        } else {
+          current = current ? current + ' ' + sentence : sentence;
+        }
+      }
+      if (current.trim()) chunks.push(current.trim());
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkText = chunks.length > 1
+        ? `Parte ${i + 1} de ${chunks.length}. ${chunks[i]}`
+        : chunks[i];
+      const audioBuffer = await textToSpeech(chunkText);
+      if (audioBuffer) {
+        const sent = await sendVoiceTelegram(audioBuffer, tgConfig.bot_token, tgConfig.chat_id);
+        console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado: ${sent ? 'OK' : 'FALLO'}`);
+      } else {
+        console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1})`);
+      }
+    }
+  } catch (audioErr) {
+    console.error(`[rejection-report] Error generando audio TTS (no fatal): ${audioErr.message}`);
+  }
+}
+
+// =============================================================================
+// enqueueGitHub(data) — encola un item en servicio-github
+// =============================================================================
+function enqueueGitHub(data) {
+  const filename = `${data.group || 'ungrouped'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
+  const filepath = path.join(GH_QUEUE_DIR, filename);
+  fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
+  console.log(`[rejection-report] Encolado: ${data.action} → ${filename}`);
+  return filename;
+}
+
+// =============================================================================
+// Dedup: buscar si ya existe un issue de dependencia abierto
+// =============================================================================
+function findExistingDepIssue(depText) {
+  try {
+    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+    const searchQuery = depText.length > 60 ? depText.substring(0, 60) : depText;
+    const searchRaw = execSync(
+      `"${ghPath}" issue list --label "qa:dependency" --search "${searchQuery.replace(/"/g, '\\"')}" --json number,title,state --repo intrale/platform --limit 5`,
+      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).toString();
+    const existing = JSON.parse(searchRaw || '[]');
+    return existing.find(e => e.state === 'OPEN') || null;
+  } catch {
+    return null;
+  }
+}
+
+// =============================================================================
+// FASE 1 (collect) — entry point original
+// =============================================================================
+async function phaseCollect() {
+  console.log(`[rejection-report] Fase 1 (collect) para #${issue} ${skill} (${fase})...`);
+  const data = collectReportData();
+
+  const externalDeps = data.analysis.externalDeps;
+
+  // Sin dependencias externas → fast path: generar PDF directo
+  if (!externalDeps || externalDeps.length === 0) {
+    console.log(`[rejection-report] Sin dependencias externas — generando PDF directo`);
+    await sendReport(data);
+    return;
+  }
+
+  // Hay dependencias externas — dedup contra GitHub
+  console.log(`[rejection-report] ${externalDeps.length} dependencias externas detectadas — verificando duplicados...`);
+  const existingDeps = [];
+  const newDeps = [];
+
+  for (const dep of externalDeps) {
+    const existing = findExistingDepIssue(dep);
+    if (existing) {
+      existingDeps.push({ number: existing.number, title: existing.title, state: 'OPEN', alreadyExisted: true });
+      console.log(`[rejection-report] Dependencia ya existe: #${existing.number} — ${existing.title}`);
+    } else {
+      newDeps.push(dep);
+    }
+  }
+
+  // Si todas las dependencias ya existen → no encolar nada, generar PDF directo
+  if (newDeps.length === 0) {
+    console.log(`[rejection-report] Todas las dependencias ya existen — generando PDF directo`);
+    data.autoCreatedDeps = existingDeps;
+    await sendReport(data);
+    // Encolar comment + label (el issue puede no estar bloqueado todavía)
+    enqueueCommentAndLabel(data.issue, existingDeps, data.issueCtx.title);
+    return;
+  }
+
+  // Hay nuevas dependencias — persistir contexto y encolar creación
+  console.log(`[rejection-report] ${newDeps.length} nuevas dependencias a crear — encolando en servicio-github...`);
+
+  // Determinar path del worktree para persistir el contexto
+  const worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
+  const contextDir = fs.existsSync(worktreePath) ? worktreePath : LOG_DIR;
+  const contextPath = path.join(contextDir, `.rejection-context-${issue}-${skill}.json`);
+
+  // Guardar existingDeps en el contexto para mergear en fase 2
+  data.existingDeps = existingDeps;
+  fs.writeFileSync(contextPath, JSON.stringify(data, null, 2));
+  console.log(`[rejection-report] Contexto persistido en ${contextPath}`);
+
+  // Encolar create-issue para cada dependencia nueva
+  const group = `rejection-${issue}-${Date.now()}`;
+  const issueTitle = data.issueCtx.title || '';
+
+  for (const dep of newDeps) {
+    const depTitle = `dep: ${dep.length > 80 ? dep.substring(0, 80) + '...' : dep}`;
+    const depBody = [
+      '## Contexto',
+      '',
+      `Dependencia detectada automáticamente durante el rechazo del issue #${issue} (${issueTitle}).`,
+      '',
+      '## Problema',
+      '',
+      dep,
+      '',
+      '## Origen',
+      '',
+      `El issue #${issue} fue rechazado porque depende de una funcionalidad que no existe o tiene un bug que bloquea la ejecución.`,
+      '',
+      '## Criterios de aceptación',
+      '',
+      '- [ ] La funcionalidad descrita arriba está implementada y funcionando',
+      `- [ ] El issue #${issue} puede reintentarse sin este bloqueo`,
+      '',
+      '---',
+      `_Issue creado automáticamente por el rejection report del pipeline._`,
+    ].join('\n');
+
+    enqueueGitHub({
+      action: 'create-issue',
+      title: depTitle,
+      body: depBody,
+      labels: 'needs-definition,qa:dependency',
+      repo: 'intrale/platform',
+      group,
+      groupSize: newDeps.length,
+      onComplete: {
+        command: `node .pipeline/rejection-report.js --phase complete --context "${contextPath}"`
+      }
+    });
+  }
+
+  console.log(`[rejection-report] ${newDeps.length} items encolados en grupo "${group}" — el PDF se generará cuando se completen`);
+}
+
+// =============================================================================
+// FASE 2 (complete) — invocada por onComplete del condensador
+// =============================================================================
+async function phaseComplete() {
+  console.log(`[rejection-report] Fase 2 (complete) — leyendo contexto y resultados...`);
+
+  // Leer contexto
+  if (!contextFile || !fs.existsSync(contextFile)) {
+    console.error(`[rejection-report] Contexto no encontrado: ${contextFile} — posiblemente el worktree fue limpiado`);
+    process.exit(0);
+  }
+
+  const data = readJson(contextFile);
+  if (!data) {
+    console.error(`[rejection-report] Error leyendo contexto: ${contextFile}`);
+    process.exit(0);
+  }
+
+  // Leer resultados del condensador
+  let results = [];
+  if (resultsFile && fs.existsSync(resultsFile)) {
+    results = readJson(resultsFile) || [];
+  } else {
+    console.error(`[rejection-report] Results no encontrado: ${resultsFile}`);
+  }
+
+  // Mergear: existingDeps + resultados del condensador
+  const autoCreatedDeps = [...(data.existingDeps || [])];
+
+  for (const item of results) {
+    if (item._status === 'failed') {
+      autoCreatedDeps.push({
+        number: null,
+        title: item.title || '(desconocido)',
+        failed: true,
+        error: item.lastError || 'Error desconocido',
+        alreadyExisted: false,
+      });
+    } else if (item.result && item.result.number) {
+      autoCreatedDeps.push({
+        number: item.result.number,
+        title: item.title || '(desconocido)',
+        state: 'OPEN',
+        alreadyExisted: false,
+      });
+    }
+  }
+
+  data.autoCreatedDeps = autoCreatedDeps;
+  console.log(`[rejection-report] ${autoCreatedDeps.length} dependencias totales (${autoCreatedDeps.filter(d => d.failed).length} fallidas)`);
+
+  // Generar PDF + audio
+  await sendReport(data);
+
+  // Encolar comment + label en servicio-github
+  const successDeps = autoCreatedDeps.filter(d => !d.failed);
+  if (successDeps.length > 0) {
+    enqueueCommentAndLabel(data.issue, successDeps, data.issueCtx.title);
+  }
+
+  // Cleanup
+  try { fs.unlinkSync(contextFile); } catch {}
+  try { if (resultsFile) fs.unlinkSync(resultsFile); } catch {}
+  console.log(`[rejection-report] Fase 2 completada para #${data.issue}`);
+}
+
+// =============================================================================
+// Encolar comment + label blocked:dependencies
+// =============================================================================
+function enqueueCommentAndLabel(issueNum, deps, issueTitle) {
+  const newIssues = deps.filter(c => !c.alreadyExisted);
+  const existingIssues = deps.filter(c => c.alreadyExisted);
+  const commentParts = ['## 🔗 Dependencias detectadas por el pipeline\n'];
+  if (newIssues.length > 0) {
+    commentParts.push('**Issues creados automáticamente:**');
+    for (const c of newIssues) commentParts.push(`- #${c.number} — ${c.title}`);
+  }
+  if (existingIssues.length > 0) {
+    commentParts.push('\n**Issues existentes vinculados:**');
+    for (const c of existingIssues) commentParts.push(`- #${c.number} — ${c.title}`);
+  }
+  commentParts.push(`\nEste issue queda bloqueado hasta que se resuelvan las dependencias listadas.`);
+
+  enqueueGitHub({
+    action: 'comment',
+    issue: parseInt(issueNum),
+    body: commentParts.join('\n'),
+  });
+
+  enqueueGitHub({
+    action: 'label',
+    issue: parseInt(issueNum),
+    label: 'blocked:dependencies',
+  });
+
+  console.log(`[rejection-report] Comment + label blocked:dependencies encolados para #${issueNum}`);
+}
+
+// =============================================================================
+// Main
+// =============================================================================
 async function main() {
   try {
-    console.log(`[rejection-report] Generando reporte para #${issue} ${skill} (${fase})...`);
-    const html = generateReport();
-
-    // Escribir HTML temporal
-    const tmpDir = path.join(PIPELINE, 'logs');
-    const htmlPath = path.join(tmpDir, `rejection-${issue}-${skill}.html`);
-    fs.writeFileSync(htmlPath, html);
-
-    // Generar PDF y enviar a Telegram
-    execSync(`node "${REPORT_SCRIPT}" "${htmlPath}" "Rechazo #${issue} ${skill} (${fase})"`, {
-      cwd: ROOT,
-      stdio: 'inherit',
-      timeout: 120000
-    });
-
-    // Copiar el PDF generado a logs/ para que el dashboard pueda servirlo
-    const pdfName = `rejection-${issue}-${skill}.pdf`;
-    const pdfDest = path.join(LOG_DIR, pdfName);
-    const possiblePdfPaths = [
-      htmlPath.replace(/\.html$/, '.pdf'),
-      path.join(ROOT, 'docs', 'qa', pdfName),
-    ];
-    for (const src of possiblePdfPaths) {
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, pdfDest);
-        console.log(`[rejection-report] PDF copiado a ${pdfDest}`);
-        // Limpiar el original si no está en logs/
-        if (src !== pdfDest) try { fs.unlinkSync(src); } catch {}
-        break;
-      }
-    }
-
-    // Limpiar HTML temporal y copia en docs/qa
-    try { fs.unlinkSync(htmlPath); } catch {}
-    try { fs.unlinkSync(path.join(ROOT, 'docs', 'qa', `rejection-${issue}-${skill}.html`)); } catch {}
-
-    console.log(`[rejection-report] Reporte enviado a Telegram para #${issue} ${skill}`);
-
-    // --- Audio TTS del reporte ---
-    try {
-      const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
-      const TG_CONFIG = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
-      const tgConfig = JSON.parse(fs.readFileSync(TG_CONFIG, 'utf8'));
-
-      const narration = generateNarration();
-      console.log(`[rejection-report] Generando audio TTS (${narration.length} chars)...`);
-
-      // TTS tiene limite de ~4096 chars — partir en chunks si es necesario
-      const MAX_TTS_CHARS = 3800;
-      const chunks = [];
-      if (narration.length <= MAX_TTS_CHARS) {
-        chunks.push(narration);
-      } else {
-        // Partir por oraciones, respetando el limite
-        const sentences = narration.split(/(?<=[.!?])\s+/);
-        let current = '';
-        for (const sentence of sentences) {
-          if ((current + ' ' + sentence).length > MAX_TTS_CHARS && current.length > 0) {
-            chunks.push(current.trim());
-            current = sentence;
-          } else {
-            current = current ? current + ' ' + sentence : sentence;
-          }
-        }
-        if (current.trim()) chunks.push(current.trim());
-      }
-
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkText = chunks.length > 1
-          ? `Parte ${i + 1} de ${chunks.length}. ${chunks[i]}`
-          : chunks[i];
-        const audioBuffer = await textToSpeech(chunkText);
-        if (audioBuffer) {
-          const sent = await sendVoiceTelegram(audioBuffer, tgConfig.bot_token, tgConfig.chat_id);
-          console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado: ${sent ? 'OK' : 'FALLO'}`);
-        } else {
-          console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1})`);
-        }
-      }
-    } catch (audioErr) {
-      console.error(`[rejection-report] Error generando audio TTS (no fatal): ${audioErr.message}`);
+    if (phase === 'complete') {
+      await phaseComplete();
+    } else {
+      await phaseCollect();
     }
   } catch (e) {
-    console.error(`[rejection-report] Error: ${e.message}`);
+    console.error(`[rejection-report] Error: ${e.stack || e.message}`);
     process.exit(1);
   }
 }
