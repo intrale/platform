@@ -123,17 +123,51 @@ node /tmp/scan-worktrees-empty.js
 ```
 
 ```bash
-# Worktrees sibling (directorios platform.{codex,agent}-* en el directorio padre)
+# Worktrees sibling (directorios platform.{codex,agent,session}-* en el directorio padre)
+# CRITICO: consulta el pipeline para proteger worktrees con issues activos
 cat > /tmp/scan-worktrees-sibling.js << 'EOF'
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const parentDir = path.resolve('..');
 const baseName = path.basename(process.cwd());
+const pipelineDir = path.join(process.cwd(), '.pipeline');
+
+// Obtener worktrees protegidos por el pipeline (issue activo en pendiente/trabajando/listo)
+function getActivePipelineWorktreeNames() {
+  const names = new Set();
+  const activeStates = ['pendiente', 'trabajando', 'listo'];
+  const pipelines = ['desarrollo', 'definicion'];
+  for (const pl of pipelines) {
+    const plDir = path.join(pipelineDir, pl);
+    if (!fs.existsSync(plDir)) continue;
+    let fases;
+    try { fases = fs.readdirSync(plDir).filter(f => { try { return fs.statSync(path.join(plDir,f)).isDirectory(); } catch(e) { return false; } }); } catch(e) { continue; }
+    for (const fase of fases) {
+      for (const state of activeStates) {
+        const stateDir = path.join(plDir, fase, state);
+        if (!fs.existsSync(stateDir)) continue;
+        let files;
+        try { files = fs.readdirSync(stateDir); } catch(e) { continue; }
+        for (const file of files) {
+          if (file === '.gitkeep') continue;
+          const dotIdx = file.indexOf('.');
+          if (dotIdx <= 0) continue;
+          const issue = file.substring(0, dotIdx);
+          const skill = file.substring(dotIdx + 1);
+          if (issue && skill) names.add(baseName + '.agent-' + issue + '-' + skill);
+        }
+      }
+    }
+  }
+  return names;
+}
+
+const pipelineProtected = getActivePipelineWorktreeNames();
 const siblings = fs.readdirSync(parentDir).filter(d => {
-  return d.startsWith(baseName + '.codex-') || d.startsWith(baseName + '.agent-');
+  return d.startsWith(baseName + '.codex-') || d.startsWith(baseName + '.agent-') || d.startsWith(baseName + '.session-');
 });
-if (siblings.length === 0) { console.log(JSON.stringify({count:0,siblings:[]})); process.exit(0); }
+if (siblings.length === 0) { console.log(JSON.stringify({count:0,siblings:[],pipelineProtected:[]})); process.exit(0); }
 let registered = [];
 try {
   const wt = execSync('git worktree list --porcelain', {encoding:'utf8'});
@@ -144,6 +178,7 @@ let totalSize = 0;
 for (const s of siblings) {
   const fullPath = path.join(parentDir, s);
   const isRegistered = registered.some(r => path.resolve(r) === path.resolve(fullPath));
+  const isPipelineActive = pipelineProtected.has(s);
   let realChanges = 0;
   try {
     const status = execSync('git -C "' + fullPath.replace(/\\/g,'/') + '" status --porcelain', {encoding:'utf8'});
@@ -156,9 +191,9 @@ for (const s of siblings) {
     sizeKB = parseInt(du.split('\t')[0]) || 0;
   } catch(e) {}
   totalSize += sizeKB;
-  result.push({ name: s, registered: isRegistered, realChanges, sizeKB });
+  result.push({ name: s, registered: isRegistered, realChanges, sizeKB, pipelineActive: isPipelineActive });
 }
-console.log(JSON.stringify({count: siblings.length, totalSizeKB: totalSize, siblings: result}));
+console.log(JSON.stringify({count: siblings.length, totalSizeKB: totalSize, siblings: result, pipelineProtected: [...pipelineProtected]}));
 EOF
 node /tmp/scan-worktrees-sibling.js
 ```
@@ -402,12 +437,17 @@ EOF
 node /tmp/cleanup-worktrees-empty.js
 ```
 
-**Worktrees sibling** (`platform.{codex,agent}-*` en directorio padre):
+**Worktrees sibling** (`platform.{codex,agent,session}-*` en directorio padre):
 
-Estos son residuos de ejecuciones previas de agentes. Protocolo de limpieza:
+Estos son residuos de ejecuciones previas de agentes o sesiones manuales. Protocolo de limpieza:
 
-1. Solo eliminar los que tienen `realChanges: 0` (cambios solo en `.claude/` junction)
-2. Para cada worktree a eliminar, usar el protocolo seguro:
+1. **Consultar el pipeline** para obtener worktrees con issues activos (protegidos)
+2. Solo eliminar los que tienen `realChanges: 0` Y NO estan protegidos por el pipeline
+3. Para cada worktree a eliminar, usar el protocolo seguro
+
+**CRITICO — Proteccion de worktrees con issues activos en el pipeline**:
+- Un worktree `platform.agent-{issue}-{skill}` se protege si existe un archivo `{issue}.{skill}` en cualquier estado activo (pendiente/trabajando/listo) de cualquier fase del pipeline
+- Worktrees manuales (session-*, codex-*) NO se protegen por numero de issue — solo los del pipeline
 
 **CRITICO — Orden de eliminacion para worktrees sibling con junction `.claude`**:
 ```bash
@@ -417,8 +457,45 @@ const path = require('path');
 const { execSync } = require('child_process');
 const parentDir = path.resolve('..');
 const baseName = path.basename(process.cwd());
+const pipelineDir = path.join(process.cwd(), '.pipeline');
+
+// Obtener worktrees protegidos por el pipeline
+function getActivePipelineWorktreeNames() {
+  const names = new Set();
+  const activeStates = ['pendiente', 'trabajando', 'listo'];
+  const pipelines = ['desarrollo', 'definicion'];
+  for (const pl of pipelines) {
+    const plDir = path.join(pipelineDir, pl);
+    if (!fs.existsSync(plDir)) continue;
+    let fases;
+    try { fases = fs.readdirSync(plDir).filter(f => { try { return fs.statSync(path.join(plDir,f)).isDirectory(); } catch(e) { return false; } }); } catch(e) { continue; }
+    for (const fase of fases) {
+      for (const state of activeStates) {
+        const stateDir = path.join(plDir, fase, state);
+        if (!fs.existsSync(stateDir)) continue;
+        let files;
+        try { files = fs.readdirSync(stateDir); } catch(e) { continue; }
+        for (const file of files) {
+          if (file === '.gitkeep') continue;
+          const dotIdx = file.indexOf('.');
+          if (dotIdx <= 0) continue;
+          const issue = file.substring(0, dotIdx);
+          const skill = file.substring(dotIdx + 1);
+          if (issue && skill) names.add(baseName + '.agent-' + issue + '-' + skill);
+        }
+      }
+    }
+  }
+  return names;
+}
+
+const pipelineProtected = getActivePipelineWorktreeNames();
+if (pipelineProtected.size > 0) {
+  console.log('Pipeline protege: ' + [...pipelineProtected].join(', '));
+}
+
 const siblings = fs.readdirSync(parentDir).filter(d =>
-  d.startsWith(baseName + '.codex-') || d.startsWith(baseName + '.agent-')
+  d.startsWith(baseName + '.codex-') || d.startsWith(baseName + '.agent-') || d.startsWith(baseName + '.session-')
 );
 if (siblings.length === 0) { console.log('Sin worktrees sibling'); process.exit(0); }
 
@@ -428,12 +505,19 @@ try {
   registered = wt.split('\n').filter(l => l.startsWith('worktree ')).map(l => l.replace('worktree ','').trim());
 } catch(e) {}
 
-let totalFreed = 0, removed = 0;
+let totalFreed = 0, removed = 0, skippedPipeline = 0;
 
 for (const s of siblings) {
   const fullPath = path.join(parentDir, s);
   const winPath = fullPath.replace(/\//g, '\\');
   const isRegistered = registered.some(r => path.resolve(r) === path.resolve(fullPath));
+
+  // Proteccion del pipeline: si este worktree exacto tiene un issue activo, NO borrar
+  if (pipelineProtected.has(s)) {
+    console.log('PROTEGIDO (pipeline): ' + s);
+    skippedPipeline++;
+    continue;
+  }
 
   // Check real changes (exclude .claude/ diffs)
   let realChanges = 0;
@@ -480,7 +564,7 @@ for (const s of siblings) {
 // Prune final
 try { execSync('git worktree prune', {stdio:'ignore'}); } catch(e) {}
 
-console.log('\nWorktrees: ' + removed + ' eliminados, ' + (totalFreed / 1024).toFixed(1) + ' MB liberados');
+console.log('\nWorktrees: ' + removed + ' eliminados, ' + skippedPipeline + ' protegidos por pipeline, ' + (totalFreed / 1024).toFixed(1) + ' MB liberados');
 EOF
 node /tmp/cleanup-worktrees-sibling.js
 ```
@@ -695,8 +779,10 @@ Reglas:
 - Con antiguedad < 1 hora desde `last_activity_ts`
 
 ### NUNCA eliminar worktrees
+- Con un issue activo en el pipeline (archivo en pendiente/trabajando/listo de cualquier fase)
 - Con cambios reales sin commitear (excluyendo diffs de `.claude/` junction)
 - Sin desvincular junction `.claude` primero (usar `cmd /c rmdir` con path Windows nativo)
+- NOTA: la proteccion del pipeline es por nombre EXACTO del worktree (`platform.agent-{issue}-{skill}`), NO por numero de issue. Un worktree manual con el mismo numero de issue (ej: `platform.session-1234-fix`) NO se protege.
 
 ### Verificar PID vivo antes de borrar locks
 - Usar `tasklist /FI "PID eq N"` en Windows
