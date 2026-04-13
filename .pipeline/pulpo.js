@@ -3449,6 +3449,39 @@ function cmdLimpiar() {
   return `🧹 *Limpieza de daemons*\n\n${lines}\n\n*Total eliminados:* ${totalKilled}`;
 }
 
+function cmdRestart(args) {
+  const paused = /pausado|--paused/i.test(args || '');
+  const cmd = paused ? 'cmd.exe /c restart --paused' : 'cmd.exe /c restart';
+  const mode = paused ? 'pausado' : 'completo';
+
+  log('commander', `Restart ${mode} solicitado via Telegram`);
+
+  // Registrar timestamp para protección anti-loop
+  try {
+    fs.writeFileSync(path.join(PIPELINE, 'last-restart.json'),
+      JSON.stringify({ timestamp: new Date().toISOString(), mode, source: 'telegram' }));
+  } catch {}
+
+  // Ejecutar con exec async — cmd.exe nativo para que los hijos sobrevivan al Job Object de Windows
+  const { exec } = require('child_process');
+  exec(cmd, {
+    timeout: 60000,
+    cwd: ROOT,
+    env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
+  }, (error, stdout, stderr) => {
+    if (error) {
+      log('commander', `Error en restart: ${error.message}`);
+      sendTelegram(`❌ Error en reinicio ${mode}:\n\`${error.message.slice(0, 200)}\`\n\nIntentar manualmente: \`cmd.exe /c restart${paused ? ' --paused' : ''}\``);
+      return;
+    }
+    const output = (stdout || '').trim();
+    const tail = output ? output.split('\n').slice(-10).join('\n') : 'Pipeline reiniciado.';
+    sendTelegram(`✅ *Restart ${mode} ejecutado*\n\n\`\`\`\n${tail}\n\`\`\``);
+  });
+
+  return `🔄 Reinicio ${mode} del pipeline en progreso...${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
+}
+
 function cmdHelp() {
   return `🤖 *Comandos del Pipeline V2*
 
@@ -3456,6 +3489,8 @@ function cmdHelp() {
 /actividad [filtro] — Timeline (ej: /actividad 30m, /actividad #732)
 /intake [issue] — Meter trabajo al pipeline
 /proponer — Proponer historias nuevas (vía Claude)
+/restart — Reiniciar pipeline completo
+/restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
 /limpiar — Matar daemons Gradle/Kotlin huérfanos
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
@@ -3631,6 +3666,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         break;
       case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
       case 'limpiar': respuesta = cmdLimpiar(); break;
+      case 'restart': respuesta = cmdRestart(parsed.args); break;
       default: respuesta = null; break;
     }
 
