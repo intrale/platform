@@ -179,7 +179,7 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
                         }
                     }
 
-                    else -> {}
+                    NotificationsStatus.Idle -> {}
                 }
             }
         }
