@@ -65,7 +65,7 @@ private class FakeRepeatOrder(
         RepeatOrderResult(addedItems = emptyList(), skippedItems = emptyList())
     )
 ) : ToDoRepeatOrder {
-    override suspend fun execute(order: ClientOrderDetail): Result<RepeatOrderResult> = result
+    override suspend fun execute(order: ClientOrderDetail, businessId: String?): Result<RepeatOrderResult> = result
 }
 
 class ClientOrdersViewModelTest {

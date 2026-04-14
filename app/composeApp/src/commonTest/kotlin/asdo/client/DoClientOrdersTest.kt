@@ -1,8 +1,11 @@
 package asdo.client
 
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductStatus
 import ar.com.intrale.shared.client.ProductAvailabilityItemDTO
 import ar.com.intrale.shared.client.ProductAvailabilityResponseDTO
 import ar.com.intrale.shared.client.SkipReason
+import asdo.business.ToDoListProducts
 import ext.client.ClientExceptionResponse
 import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
@@ -78,6 +81,60 @@ private fun allAvailableService(vararg ids: String) = FakeProductAvailabilitySer
         )
     )
 )
+
+/**
+ * Fake del servicio de listado de productos para tests de comparación de precios.
+ */
+private class FakeListProducts(
+    private val result: Result<List<ProductDTO>> = Result.success(emptyList())
+) : ToDoListProducts {
+    override suspend fun execute(businessId: String): Result<List<ProductDTO>> = result
+}
+
+/**
+ * Helper para crear un fake de catálogo con precios específicos.
+ */
+private fun catalogWithPrices(vararg items: Pair<String, Double>) = FakeListProducts(
+    result = Result.success(
+        items.map { (id, price) ->
+            ProductDTO(
+                id = id,
+                name = "Producto $id",
+                basePrice = price,
+                unit = "u",
+                categoryId = "cat-1",
+                status = ProductStatus.Published
+            )
+        }
+    )
+)
+
+/**
+ * Helper para crear un fake de catálogo con precios promocionales.
+ */
+private fun catalogWithPromotionPrices(vararg items: Triple<String, Double, Double?>) = FakeListProducts(
+    result = Result.success(
+        items.map { (id, basePrice, promoPrice) ->
+            ProductDTO(
+                id = id,
+                name = "Producto $id",
+                basePrice = basePrice,
+                unit = "u",
+                categoryId = "cat-1",
+                status = ProductStatus.Published,
+                promotionPrice = promoPrice
+            )
+        }
+    )
+)
+
+/** Fake de listado de productos que falla */
+private val failingListProducts = FakeListProducts(
+    result = Result.failure(RuntimeException("Error de catalogo"))
+)
+
+/** Fake de listado vacío (default) */
+private val emptyListProducts = FakeListProducts()
 
 /**
  * Helper para crear un fake con items mixtos.
@@ -209,7 +266,7 @@ class DoRepeatOrderTest {
                 ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
             )
         )
-        val sut = DoRepeatOrder(allAvailableService("item-1", "item-2"))
+        val sut = DoRepeatOrder(allAvailableService("item-1", "item-2"), emptyListProducts)
 
         val result = sut.execute(orderWithAllIds)
 
@@ -223,7 +280,7 @@ class DoRepeatOrderTest {
 
     @Test
     fun `repetir pedido omite items sin ID con motivo UNKNOWN_PRODUCT`() = runTest {
-        val sut = DoRepeatOrder(allAvailableService("item-1", "item-2"))
+        val sut = DoRepeatOrder(allAvailableService("item-1", "item-2"), emptyListProducts)
 
         val result = sut.execute(sampleDeliveredOrder)
 
@@ -243,7 +300,7 @@ class DoRepeatOrderTest {
                 ClientOrderItem(id = null, name = "Sin ID 2", quantity = 2, unitPrice = 20.0, subtotal = 40.0)
             )
         )
-        val sut = DoRepeatOrder(FakeProductAvailabilityService())
+        val sut = DoRepeatOrder(FakeProductAvailabilityService(), emptyListProducts)
 
         val result = sut.execute(orderWithNoIds)
 
@@ -257,7 +314,7 @@ class DoRepeatOrderTest {
     @Test
     fun `repetir pedido vacio retorna listas vacias`() = runTest {
         val emptyOrder = sampleDeliveredOrder.copy(items = emptyList())
-        val sut = DoRepeatOrder(FakeProductAvailabilityService())
+        val sut = DoRepeatOrder(FakeProductAvailabilityService(), emptyListProducts)
 
         val result = sut.execute(emptyOrder)
 
@@ -283,7 +340,8 @@ class DoRepeatOrderTest {
                     "prod-2" to SkipReason.OUT_OF_STOCK,
                     "prod-3" to SkipReason.DISCONTINUED
                 )
-            )
+            ),
+            emptyListProducts
         )
 
         val result = sut.execute(order)
@@ -308,7 +366,7 @@ class DoRepeatOrderTest {
         val failingService = FakeProductAvailabilityService(
             result = Result.failure(RuntimeException("Error de red"))
         )
-        val sut = DoRepeatOrder(failingService)
+        val sut = DoRepeatOrder(failingService, emptyListProducts)
 
         val result = sut.execute(order)
 
@@ -330,7 +388,8 @@ class DoRepeatOrderTest {
             mixedAvailabilityService(
                 available = emptyList(),
                 unavailable = mapOf("prod-1" to SkipReason.UNAVAILABLE)
-            )
+            ),
+            emptyListProducts
         )
 
         val result = sut.execute(order)
@@ -341,6 +400,161 @@ class DoRepeatOrderTest {
         assertEquals(1, repeatResult.skippedItems.size)
         assertEquals(SkipReason.UNAVAILABLE, repeatResult.skippedItems[0].reason)
         assertEquals("No disponible", repeatResult.skippedItems[0].item.name)
+    }
+
+    @Test
+    fun `repetir pedido detecta aumento de precio desde catalogo`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "prod-1", name = "Pizza Grande", quantity = 1, unitPrice = 1200.0, subtotal = 1200.0)
+            )
+        )
+        val sut = DoRepeatOrder(
+            allAvailableService("prod-1"),
+            catalogWithPrices("prod-1" to 1450.0)
+        )
+
+        val result = sut.execute(order, businessId = "biz-1")
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(1, repeatResult.addedItems.size)
+        assertEquals(1, repeatResult.priceChangedItems.size)
+        val change = repeatResult.priceChangedItems[0]
+        assertEquals(1450.0, change.currentPrice)
+        assertEquals(250.0, change.difference)
+        assertEquals("prod-1", change.item.id)
+    }
+
+    @Test
+    fun `repetir pedido detecta descuento de precio`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "prod-1", name = "Coca 1.5L", quantity = 1, unitPrice = 800.0, subtotal = 800.0)
+            )
+        )
+        val sut = DoRepeatOrder(
+            allAvailableService("prod-1"),
+            catalogWithPrices("prod-1" to 750.0)
+        )
+
+        val result = sut.execute(order, businessId = "biz-1")
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(1, repeatResult.priceChangedItems.size)
+        val change = repeatResult.priceChangedItems[0]
+        assertEquals(750.0, change.currentPrice)
+        assertEquals(-50.0, change.difference)
+    }
+
+    @Test
+    fun `repetir pedido sin cambios de precio retorna lista vacia de priceChangedItems`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "prod-1", name = "Producto A", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            )
+        )
+        val sut = DoRepeatOrder(
+            allAvailableService("prod-1"),
+            catalogWithPrices("prod-1" to 50.0)
+        )
+
+        val result = sut.execute(order, businessId = "biz-1")
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertTrue(repeatResult.priceChangedItems.isEmpty())
+    }
+
+    @Test
+    fun `repetir pedido con precios mixtos detecta solo los que cambiaron`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "prod-1", name = "Producto A", quantity = 1, unitPrice = 100.0, subtotal = 100.0),
+                ClientOrderItem(id = "prod-2", name = "Producto B", quantity = 1, unitPrice = 200.0, subtotal = 200.0),
+                ClientOrderItem(id = "prod-3", name = "Producto C", quantity = 1, unitPrice = 300.0, subtotal = 300.0)
+            )
+        )
+        val sut = DoRepeatOrder(
+            allAvailableService("prod-1", "prod-2", "prod-3"),
+            catalogWithPrices("prod-1" to 120.0, "prod-2" to 200.0, "prod-3" to 280.0)
+        )
+
+        val result = sut.execute(order, businessId = "biz-1")
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(3, repeatResult.addedItems.size)
+        assertEquals(2, repeatResult.priceChangedItems.size)
+        // prod-1: 100 -> 120 (+20)
+        assertEquals("prod-1", repeatResult.priceChangedItems[0].item.id)
+        assertEquals(20.0, repeatResult.priceChangedItems[0].difference)
+        // prod-3: 300 -> 280 (-20)
+        assertEquals("prod-3", repeatResult.priceChangedItems[1].item.id)
+        assertEquals(-20.0, repeatResult.priceChangedItems[1].difference)
+    }
+
+    @Test
+    fun `repetir pedido usa promotionPrice si existe en catalogo`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "prod-1", name = "Producto A", quantity = 1, unitPrice = 100.0, subtotal = 100.0)
+            )
+        )
+        val sut = DoRepeatOrder(
+            allAvailableService("prod-1"),
+            catalogWithPromotionPrices(Triple("prod-1", 100.0, 80.0))
+        )
+
+        val result = sut.execute(order, businessId = "biz-1")
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(1, repeatResult.priceChangedItems.size)
+        // Usa promotionPrice (80) en lugar de basePrice (100)
+        assertEquals(80.0, repeatResult.priceChangedItems[0].currentPrice)
+        assertEquals(-20.0, repeatResult.priceChangedItems[0].difference)
+    }
+
+    @Test
+    fun `repetir pedido sin businessId no compara precios`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "prod-1", name = "Producto A", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            )
+        )
+        val sut = DoRepeatOrder(
+            allAvailableService("prod-1"),
+            catalogWithPrices("prod-1" to 100.0)
+        )
+
+        // Sin businessId
+        val result = sut.execute(order, businessId = null)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertTrue(repeatResult.priceChangedItems.isEmpty())
+    }
+
+    @Test
+    fun `repetir pedido con fallo de catalogo no reporta cambios de precio`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "prod-1", name = "Producto A", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            )
+        )
+        val sut = DoRepeatOrder(
+            allAvailableService("prod-1"),
+            failingListProducts
+        )
+
+        val result = sut.execute(order, businessId = "biz-1")
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(1, repeatResult.addedItems.size)
+        assertTrue(repeatResult.priceChangedItems.isEmpty())
     }
 }
 

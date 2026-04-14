@@ -10,7 +10,8 @@ interface ToDoGetClientOrderDetail {
 
 data class RepeatOrderResult(
     val addedItems: List<ClientOrderItem>,
-    val skippedItems: List<SkippedItem>
+    val skippedItems: List<SkippedItem>,
+    val priceChangedItems: List<PriceChange> = emptyList()
 )
 
 /**
@@ -21,8 +22,17 @@ data class SkippedItem(
     val reason: ar.com.intrale.shared.client.SkipReason
 )
 
+/**
+ * Producto cuyo precio cambió respecto al pedido original.
+ */
+data class PriceChange(
+    val item: ClientOrderItem,
+    val currentPrice: Double,
+    val difference: Double
+)
+
 interface ToDoRepeatOrder {
-    suspend fun execute(order: ClientOrderDetail): Result<RepeatOrderResult>
+    suspend fun execute(order: ClientOrderDetail, businessId: String? = null): Result<RepeatOrderResult>
 }
 
 data class CreateClientOrderParams(
