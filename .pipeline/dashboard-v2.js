@@ -489,6 +489,9 @@ function generateHTML(state) {
   };
   const dashboardBuild = fmtDate(path.join(PIPELINE, 'dashboard-v2.js'));
   const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
+  let pulpoUptime = '—';
+  try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
+  const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
 
   // Agentes con personalidad — referentes del mercado
   const AGENT_PERSONA = {
@@ -591,6 +594,10 @@ function generateHTML(state) {
     const label = ttLabel(d);
     return skill ? `${skill}` + (label ? ` · ${label}` : '') : (label || 'entregado');
   });
+  const now24 = Date.now();
+  const entregados24hList = lastDevFase ? matrixEntries.filter(([_, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000); }) : [];
+  const entregados24h = entregados24hList.length;
+  const ttEntregados24h = buildTtData('Entregados 24h', entregados24hList, (_, d) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; const p = ee.find(e => e.estado === 'procesado'); return p ? p.skill || 'entregado' : 'entregado'; });
 
   // --- Issue Tracker Matrix (unified) ---
   // Headers: definición phases | separator | desarrollo phases
@@ -1342,6 +1349,27 @@ h1{
   border-bottom:1px solid var(--bd);padding-bottom:14px;
 }
 h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px}
+.hdr-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 0 8px;margin-bottom:0}
+.hdr-left{display:flex;align-items:center;gap:12px}
+.hdr-title{margin:0;font-size:1.3em;font-weight:700;white-space:nowrap;border-bottom:none;padding-bottom:0}
+.hdr-status-badge{font-size:0.7em;font-weight:700;letter-spacing:1.5px;padding:3px 12px;border-radius:20px;cursor:pointer;border:none;transition:all 0.2s;text-transform:uppercase}
+.badge-running{background:rgba(63,185,80,0.15);color:var(--gn);border:1px solid rgba(63,185,80,0.4)}
+.badge-running:hover{background:rgba(63,185,80,0.25)}
+.badge-paused{background:rgba(240,165,0,0.2);color:#f0a500;border:1px solid rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
+@keyframes pausePulse{0%,100%{opacity:1}50%{opacity:0.6}}
+.hdr-meta{font-size:0.75em;color:var(--dim);white-space:nowrap}
+.hdr-meta-sep{color:var(--bd);margin:0 2px}
+.hdr-uptime{font-size:0.75em;color:var(--dim);font-weight:500;cursor:help;padding:2px 8px;background:var(--sf);border-radius:10px;border:1px solid var(--bd)}
+.hdr-right{display:flex;flex-direction:column;align-items:flex-end;line-height:1}
+.hdr-clock{font-size:1.6em;font-weight:700;font-family:'SF Mono',Consolas,monospace;color:var(--tx);letter-spacing:2px;font-variant-numeric:tabular-nums}
+.hdr-clock .clock-sec{font-size:0.55em;color:var(--dim);vertical-align:super;margin-left:1px}
+.hdr-date{font-size:0.75em;color:var(--dim);margin-top:2px;letter-spacing:0.5px}
+.hdr-status-line{height:2px;margin-bottom:14px;border-radius:1px;transition:background 0.5s}
+.sl-active{background:linear-gradient(90deg,var(--gn),var(--ac),var(--gn));background-size:200% 100%;animation:slSlide 3s linear infinite}
+@keyframes slSlide{0%{background-position:0% 0}100%{background-position:200% 0}}
+.sl-warn{background:linear-gradient(90deg,var(--yl),rgba(210,169,34,0.3))}
+.sl-danger{background:linear-gradient(90deg,var(--rd),var(--or),var(--rd));background-size:200% 100%;animation:slSlide 2s linear infinite}
+.sl-idle{background:var(--bd)}
 .health-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px}
 .health-active{background:var(--gn);box-shadow:0 0 8px var(--gn);animation:healthPulse 2s infinite}
 .health-warn{background:var(--yl);box-shadow:0 0 8px var(--yl);animation:healthPulse 1s infinite}
@@ -1360,7 +1388,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── KPI Grid ───────────────────────────────────────────────────────────── */
 .kpis{
   display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  grid-template-columns:repeat(6,1fr);
   gap:14px;margin-bottom:24px;
 }
 .kpi{
@@ -1391,6 +1419,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .kpi.kpi-blocked{--kpi-accent:var(--rd)}
 .kpi.kpi-definidos{--kpi-accent:var(--pu)}
 .kpi.kpi-entregados{--kpi-accent:var(--gn)}
+.kpi.kpi-throughput{--kpi-accent:var(--ac)}
 
 /* ── Separador de pipeline KPIs ─────────────────────────────────────────── */
 .kpi-divider{
@@ -1759,12 +1788,15 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ic-card.ic-hidden{display:none}
 
 /* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
-.dual-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
-.dual-col{flex:1;min-width:320px}
+.dual-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
+.dual-col{min-width:0}
 .bar-section{
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
-  padding:16px 18px;
+  padding:16px 18px;position:relative;overflow:hidden;
 }
+.bar-section::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--radius) var(--radius) 0 0}
+.bar-section.panel-equipo::before{background:linear-gradient(90deg,var(--ac),var(--pu),var(--gn))}
+.bar-section.panel-sistema::before{background:linear-gradient(90deg,var(--gn),var(--yl),var(--rd))}
 .sys-chips-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px}
 /* ── Service Cards ──────────────────────────────────────────────────────── */
 .svc-grid{display:flex;flex-wrap:wrap;gap:8px}
@@ -1773,7 +1805,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   padding:8px 10px;min-width:90px;flex:1;max-width:140px;
   border-left:3px solid var(--dim2);transition:box-shadow 0.2s;
 }
-.svc-card:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
+.svc-card:hover{box-shadow:0 2px 8px rgba(88,166,255,0.12);transform:translateY(-1px)}
 .svc-card-ok{border-left-color:var(--gn)}
 .svc-card-busy{border-left-color:var(--yl)}
 .svc-card-dead{border-left-color:var(--rd)}
@@ -1855,9 +1887,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   position:absolute;top:-2px;bottom:-2px;width:2px;
   background:var(--rd);opacity:0.6;border-radius:1px;
 }
-.gauge-ok .gauge-fill{background:var(--gn)}
-.gauge-warn .gauge-fill{background:var(--yl)}
-.gauge-danger .gauge-fill{background:var(--rd);animation:pulse 1.8s infinite}
+.gauge-ok .gauge-fill{background:linear-gradient(90deg,var(--gn2),var(--gn))}
+.gauge-warn .gauge-fill{background:linear-gradient(90deg,var(--yl2),var(--yl))}
+.gauge-danger .gauge-fill{background:linear-gradient(90deg,var(--rd2),var(--rd));animation:pulse 1.8s infinite}
+.gauge-danger{box-shadow:inset 0 0 8px rgba(248,81,73,0.15)}
 .gauge-value{
   font-size:0.9em;font-weight:600;margin-top:6px;
   font-variant-numeric:tabular-nums;
@@ -2005,35 +2038,31 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 </style></head>
 <body>
-  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
-    <h1 style="margin:0">🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
-    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap;align-items:center">
-      <span>📊 Dashboard: <b style="color:var(--tx)">${dashboardBuild}</b></span>
-      <span>🐙 Pulpo: <b style="color:var(--tx)">${pulpoBuild}</b></span>
-      ${fs.existsSync(path.join(PIPELINE, '.paused'))
-        ? '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:#f0a500;color:#000;border-radius:6px;" onclick="pauseAction(\'resume\')" title="Pipeline pausado — click para reanudar">▶ Reanudar</button>'
-        : '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:rgba(251,188,5,0.18);color:#f0a500;border:1px solid rgba(251,188,5,0.4);border-radius:6px;" onclick="pauseAction(\'pause\')" title="Pausar lanzamientos del pipeline">⏸ Pausar</button>'}
+  <div class="hdr-bar">
+    <div class="hdr-left">
+      <h1 class="hdr-title">🐙 Pipeline V2</h1>
+      <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
+      <span class="hdr-uptime">UP ${pulpoUptime}</span>
+      <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
+    </div>
+    <div class="hdr-right">
+      <div class="hdr-clock" id="hdr-clock">--:--<span class="clock-sec">--</span></div>
+      <div class="hdr-date" id="hdr-date"></div>
     </div>
   </div>
-
-  <!-- orphan alert moved to system section -->
+  <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
-    <div class="kpi kpi-activos" data-tt='${ttActivos}'>
-      <span class="kpi-icon">🔄</span>
-      <div class="kpi-value">${activos}</div>
-      <div class="kpi-label">Activos en pipeline</div>
-    </div>
     <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
       <span class="kpi-icon">⚙️</span>
       <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
-      <div class="kpi-label">En ejecución ahora</div>
+      <div class="kpi-label">En ejecución</div>
     </div>
     <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
       <span class="kpi-icon">⏳</span>
       <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
-      <div class="kpi-label">Pendientes en cola</div>
+      <div class="kpi-label">En cola</div>
     </div>
     <div class="kpi kpi-blocked" data-tt='${ttStale}'>
       <span class="kpi-icon">🚨</span>
@@ -2043,17 +2072,22 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
       <span class="kpi-icon">📋</span>
       <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
-      <div class="kpi-label">Definidos listos</div>
+      <div class="kpi-label">Definidos</div>
     </div>
     <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
       <span class="kpi-icon">🚀</span>
       <div class="kpi-value success">${entregados}</div>
-      <div class="kpi-label">Entregados a prod</div>
+      <div class="kpi-label">Entregados</div>
+    </div>
+    <div class="kpi kpi-throughput" data-tt='${ttEntregados24h}'>
+      <span class="kpi-icon">📈</span>
+      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
+      <div class="kpi-label">Últimas 24h</div>
     </div>
   </div>
 
   <div class="dual-row">
-    <div class="bar-section dual-col">
+    <div class="bar-section dual-col panel-equipo">
       <h2>🧠 Equipo<span class="pw-toggles">${(() => {
         const pw = state.priorityWindows;
         const items = [
@@ -2084,7 +2118,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
       ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
       ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
     </div>
-    <div class="bar-section dual-col">
+    <div class="bar-section dual-col panel-sistema">
       <h2>💻 Sistema</h2>
       ${resourcesHTML}
       <div class="subsection-label" style="margin-top:14px">Servicios</div>
@@ -2131,6 +2165,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 </div>
 
 <script>
+(function(){var c=document.getElementById('hdr-clock'),d=document.getElementById('hdr-date');if(!c)return;var D=['dom','lun','mar','mi\u00e9','jue','vie','s\u00e1b'],M=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];function t(){var n=new Date(),h=String(n.getHours()).padStart(2,'0'),m=String(n.getMinutes()).padStart(2,'0'),s=String(n.getSeconds()).padStart(2,'0');c.innerHTML=h+':'+m+'<span class="clock-sec">'+s+'</span>';d.textContent=D[n.getDay()]+' '+n.getDate()+' '+M[n.getMonth()]+' '+n.getFullYear()}t();setInterval(t,1000)})();
 // Guardar estado del Issue Tracker en sessionStorage
 let __itRestoring = false;
 function saveIssueTrackerState() {
