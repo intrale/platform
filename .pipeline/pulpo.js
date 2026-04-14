@@ -4258,20 +4258,31 @@ function brazoDesbloqueo(config) {
 
         // Buscar el comentario de dependencias del pipeline
         const depCommentMatch = comments.match(/Dependencias detectadas por el pipeline[\s\S]*?(?=\n\n|\Z)/);
-        if (!depCommentMatch) {
-          // Issue tiene label blocked:dependencies pero sin comentario de dependencias.
-          // Registrarlo con lista vacía para que el dashboard muestre el icono de bloqueo.
-          log('desbloqueo', `#${issue.number}: label blocked:dependencies sin comentario de dependencias — registrado sin deps`);
-          blockedBy[issue.number] = [];
-          continue;
+        let depIssueNumbers = [];
+        if (depCommentMatch) {
+          depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)]
+            .map(m => m[1])
+            .filter(n => n !== String(issue.number));
         }
 
-        // Extraer números de issues referenciados (#NNN), excluyendo auto-referencia
-        const depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)]
-          .map(m => m[1])
-          .filter(n => n !== String(issue.number));
+        // Fallback: si no hay deps en el comentario del pipeline, buscar en body + todos los comentarios
         if (depIssueNumbers.length === 0) {
-          log('desbloqueo', `#${issue.number}: no se encontraron issues de dependencia (excluida auto-referencia) — omitido`);
+          try {
+            ghThrottle();
+            const fullData = execSync(
+              `"${GH_BIN}" issue view ${issue.number} --json body,comments --jq "[.body, .comments[].body] | join(\\"\\\\n\\")" --repo intrale/platform`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+            );
+            const allRefs = [...fullData.matchAll(/#(\d+)/g)]
+              .map(m => m[1])
+              .filter(n => n !== String(issue.number));
+            depIssueNumbers = [...new Set(allRefs)]; // dedup
+          } catch {}
+        }
+
+        if (depIssueNumbers.length === 0) {
+          log('desbloqueo', `#${issue.number}: label blocked:dependencies sin dependencias detectables — registrado sin deps`);
+          blockedBy[issue.number] = [];
           continue;
         }
 

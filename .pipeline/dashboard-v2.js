@@ -800,7 +800,7 @@ function generateHTML(state) {
       if (blockedBy.length > 0) {
         depText = blockedBy.map(d => `#${d}`).join(', ');
       } else {
-        depText = '—';
+        depText = 'sin dependencias especificadas';
       }
       blockIcons += `<span class="block-icon block-locked" title="Bloqueado">🚫<span class="block-tt">Bloqueado por: ${depText}</span></span>`;
     }
