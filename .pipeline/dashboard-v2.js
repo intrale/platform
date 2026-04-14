@@ -30,6 +30,60 @@ const COMPONENTS = [
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
 
+// --- Issue title/label cache (persisted to disk, refreshed via gh CLI) ---
+const TITLE_CACHE_FILE = path.join(PIPELINE, '.issue-title-cache.json');
+const TITLE_CACHE_TTL = 3600000; // 1 hour
+
+function loadIssueTitleCache() {
+  try {
+    const raw = fs.readFileSync(TITLE_CACHE_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch { return {}; }
+}
+
+function saveIssueTitleCache(cache) {
+  try { fs.writeFileSync(TITLE_CACHE_FILE, JSON.stringify(cache, null, 2)); } catch {}
+}
+
+function fetchIssueTitles(issueIds, cache) {
+  const ghPath = process.env.GH_PATH || 'C:/Workspaces/gh-cli/bin/gh';
+  // GraphQL batch: up to 50 issues per query
+  const batches = [];
+  for (let i = 0; i < issueIds.length; i += 50) batches.push(issueIds.slice(i, i + 50));
+  for (const batch of batches) {
+    try {
+      const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title labels(first:10) { nodes { name } } }`).join(' ');
+      const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
+      // Write query to temp file to avoid shell escaping issues on Windows
+      const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
+      fs.writeFileSync(tmpQuery, query);
+      const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
+      const out = execSync(cmd, { encoding: 'utf8', timeout: 30000, windowsHide: true });
+      try { fs.unlinkSync(tmpQuery); } catch {}
+      const data = JSON.parse(out)?.data?.repository || {};
+      for (const val of Object.values(data)) {
+        if (!val?.number) continue;
+        cache[String(val.number)] = {
+          title: val.title,
+          labels: (val.labels?.nodes || []).map(l => l.name),
+          fetchedAt: Date.now()
+        };
+      }
+    } catch (e) {
+      // Fallback: fetch one by one
+      for (const id of batch) {
+        try {
+          const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels`;
+          const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
+          const iss = JSON.parse(out2);
+          cache[id] = { title: iss.title, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
+        } catch {}
+      }
+    }
+  }
+  saveIssueTitleCache(cache);
+}
+
 function isProcessAlive(pid) {
   if (!pid) return false;
   try {
@@ -237,9 +291,31 @@ function getPipelineState() {
       }
     }
   }
-  // Convert Sets to arrays for JSON
-  for (const data of Object.values(state.issueMatrix)) {
+  // Convert Sets to arrays for JSON + enriquecer con títulos/labels
+  const issueIds = Object.keys(state.issueMatrix);
+  const titleCache = loadIssueTitleCache();
+  const missing = issueIds.filter(id => !titleCache[id]);
+  if (missing.length > 0) fetchIssueTitles(missing, titleCache);
+  state.issueTitles = titleCache;
+  for (const [id, data] of Object.entries(state.issueMatrix)) {
     data.pipelines = [...data.pipelines];
+    data.title = titleCache[id]?.title || '';
+    data.labels = titleCache[id]?.labels || [];
+    // Calcular rebotes: contar runs rechazados por fase
+    let bounces = 0;
+    for (const entries of Object.values(data.fases)) {
+      const rejected = entries.filter(e => e.resultado && e.resultado !== 'aprobado');
+      bounces += rejected.length;
+    }
+    data.bounces = bounces;
+    // Calcular stale: minutos desde última actividad en fase activa
+    if (data.estadoActual === 'trabajando') {
+      const currentEntries = data.fases[data.faseActual] || [];
+      const workingEntry = currentEntries.find(e => e.estado === 'trabajando');
+      data.staleMin = workingEntry?.ageMin || 0;
+    } else {
+      data.staleMin = 0;
+    }
   }
 
   // ETA: calcular promedios históricos por skill+fase desde archivos procesados
@@ -413,6 +489,9 @@ function generateHTML(state) {
   };
   const dashboardBuild = fmtDate(path.join(PIPELINE, 'dashboard-v2.js'));
   const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
+  let pulpoUptime = '—';
+  try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
+  const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
 
   // Agentes con personalidad — referentes del mercado
   const AGENT_PERSONA = {
@@ -515,6 +594,10 @@ function generateHTML(state) {
     const label = ttLabel(d);
     return skill ? `${skill}` + (label ? ` · ${label}` : '') : (label || 'entregado');
   });
+  const now24 = Date.now();
+  const entregados24hList = lastDevFase ? matrixEntries.filter(([_, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000); }) : [];
+  const entregados24h = entregados24hList.length;
+  const ttEntregados24h = buildTtData('Entregados 24h', entregados24hList, (_, d) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; const p = ee.find(e => e.estado === 'procesado'); return p ? p.skill || 'entregado' : 'entregado'; });
 
   // --- Issue Tracker Matrix (unified) ---
   // Headers: definición phases | separator | desarrollo phases
@@ -540,39 +623,6 @@ function generateHTML(state) {
     }
   }
 
-  // Generar header con badges y tooltips por fase
-  const faseHeader = (f, pName, thClass) => {
-    const key = `${pName}/${f}`;
-    const c = faseCounts[key] || { pendiente: [], trabajando: [], listo: [] };
-    const total = c.pendiente.length + c.trabajando.length + c.listo.length;
-    if (total === 0) return `<th class="${thClass}">${f}</th>`;
-
-    const badge = (list, icon, cls) => {
-      if (list.length === 0) return '';
-      const ttData = JSON.stringify({ title: `${f} — ${cls}`, items: list.map(id => ({ id })) }).replace(/'/g, '&#39;');
-      return `<span class="fase-badge fase-${cls}" data-fase-tt='${ttData}'>${icon}${list.length}</span>`;
-    };
-
-    const badges = [
-      badge(c.pendiente, '○', 'pendiente'),
-      badge(c.trabajando, '⚙', 'trabajando'),
-      badge(c.listo, '✓', 'listo')
-    ].join('');
-
-    return `<th class="${thClass}">${f}<div class="fase-badges">${badges}</div></th>`;
-  };
-
-  const headerCells = [
-    ...defFases.map(f => faseHeader(f, 'definicion', 'th-def')),
-    ...devFases.map(f => faseHeader(f, 'desarrollo', 'th-dev'))
-  ].join('');
-
-  const groupHeader = `<tr class="group-header">
-    <th></th>
-    <th colspan="${defFases.length}" class="group-def">DEFINICIÓN</th>
-    <th colspan="${devFases.length}" class="group-dev">DESARROLLO</th>
-  </tr>`;
-
   // Sort: issues incompletos primero (trabajando > pendiente > listo entre ellos),
   // luego finalizados. Dentro del mismo grupo, más avanzados en pipeline primero.
   const faseIndex = (data) => {
@@ -580,63 +630,145 @@ function generateHTML(state) {
     return allFases.findIndex(f => `${f.pipeline}/${f.fase}` === data.faseActual);
   };
   const isComplete = (data) => {
-    // Un issue está completo si todas sus fases están en listo/procesado (sin pendiente/trabajando)
     const hasAnyActive = allFases.some(({ pipeline, fase }) => {
       const entries = data.fases[`${pipeline}/${fase}`] || [];
       return entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
     });
     if (hasAnyActive) return false;
-    // Además debe tener al menos la última fase de desarrollo como listo/procesado
     const lastDev = devFases[devFases.length - 1];
     const lastEntries = data.fases[`desarrollo/${lastDev}`] || [];
     return lastEntries.some(e => e.estado === 'listo' || e.estado === 'procesado');
   };
+  // Risk score: issues más problemáticos arriba
+  const riskScore = (data) => {
+    let score = 0;
+    if (data.staleMin > 60) score += 100;
+    else if (data.staleMin > 30) score += 50;
+    score += (data.bounces || 0) * 20;
+    if (data.estadoActual === 'trabajando') score += 10;
+    else if (data.estadoActual === 'pendiente') score += 5;
+    return score;
+  };
   const sorted = matrixEntries.sort((a, b) => {
     const aComplete = isComplete(a[1]);
     const bComplete = isComplete(b[1]);
-    // Incompletos siempre arriba de completos
     if (aComplete !== bComplete) return aComplete ? 1 : -1;
-    // Dentro del mismo grupo, ordenar por estado
-    const order = { trabajando: 0, pendiente: 1, listo: 2 };
-    const aO = a[1].estadoActual ? (order[a[1].estadoActual] ?? 3) : 4;
-    const bO = b[1].estadoActual ? (order[b[1].estadoActual] ?? 3) : 4;
-    if (aO !== bO) return aO - bO;
-    // Dentro del mismo estado, los más avanzados en el pipeline primero
+    // Among active: sort by risk (highest first)
+    const aRisk = riskScore(a[1]);
+    const bRisk = riskScore(b[1]);
+    if (aRisk !== bRisk) return bRisk - aRisk;
+    // Same risk: more advanced in pipeline first
     const aF = faseIndex(a[1]);
     const bF = faseIndex(b[1]);
     if (aF !== bF) return bF - aF;
     return parseInt(b[0]) - parseInt(a[0]);
   });
 
-  // Show all issues, but only first 5 visible by default
-  const ISSUE_VISIBLE_LIMIT = 7;
-  let rows = '';
-  let rowIndex = 0;
+  // Helper: genera chips de un phase entry (reutilizado en detalle expandido)
+  const renderChip = (e, issueNum, fase, pipeline) => {
+    const isRejected = e.resultado && e.resultado !== 'aprobado';
+    const cls = isRejected ? 'st-rejected' :
+                e.estado === 'trabajando' ? 'st-working' :
+                e.estado === 'listo' ? 'st-done' :
+                e.estado === 'procesado' ? 'st-processed' : 'st-pending';
+    const icon = isRejected ? '✗' :
+                 e.estado === 'trabajando' ? '⚙' :
+                 e.estado === 'listo' ? '✓' :
+                 e.estado === 'procesado' ? '✔' : '○';
+    const staleClass = (e.estado === 'trabajando' && e.ageMin > 30) ? ' stale-chip' : '';
+    const retryBadge = e._isRetry ? `<sup class="retry-badge" title="${e._runTotal} intentos">×${e._runTotal}</sup>` : '';
+
+    let etaBadge = '';
+    let ttEta = '';
+    if (e.estado === 'trabajando' && e.durationMs) {
+      const avgKey = `${fase}/${e.skill}`;
+      const avg = state.etaAverages[avgKey] || state.etaAverages[fase];
+      if (avg?.avgMs) {
+        const remaining = Math.max(0, avg.avgMs - e.durationMs);
+        if (remaining > 0) {
+          etaBadge = `<span class="eta-badge">~${fmtDuration(remaining)}</span>`;
+          ttEta = `ETA: ~${fmtDuration(remaining)} (promedio: ${fmtDuration(avg.avgMs)})`;
+        } else {
+          const over = e.durationMs - avg.avgMs;
+          etaBadge = `<span class="eta-badge eta-over">+${fmtDuration(over)}</span>`;
+          ttEta = `Excedido: +${fmtDuration(over)} sobre promedio de ${fmtDuration(avg.avgMs)}`;
+        }
+      }
+    }
+
+    const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
+    const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
+    const ttResStr = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
+    const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
+    const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
+    const ttEtaStr = ttEta || '';
+    const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
+    const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
+    const killBtn = e.estado === 'trabajando'
+      ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
+      : '';
+    const pdfBtn = e.hasRejectionPdf
+      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
+      : '';
+
+    const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
+    if (e.hasLog) {
+      const isLive = e.estado === 'trabajando';
+      return `<a href="/logs/view/${e.logFile}${isLive ? '?live=1' : ''}" class="log-link" target="_blank" onclick="event.stopPropagation()">${inner}</a>`;
+    }
+    return inner;
+  };
+
+  // Helper: preprocesa entries de una fase (colapsa runs repetidos)
+  const preprocessEntries = (entries) => {
+    const skillRunCount = {};
+    for (const e of entries) {
+      skillRunCount[e.skill] = (skillRunCount[e.skill] || 0) + 1;
+    }
+    const skillRunIndex = {};
+    const sortedEntries = [...entries].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+    for (const e of sortedEntries) {
+      skillRunIndex[e.skill] = (skillRunIndex[e.skill] || 0) + 1;
+      e._runIndex = skillRunIndex[e.skill];
+      e._runTotal = skillRunCount[e.skill];
+      e._isRetry = skillRunCount[e.skill] > 1;
+      e._isLatestRun = skillRunIndex[e.skill] === skillRunCount[e.skill];
+    }
+    return entries.filter(e => e._isLatestRun);
+  };
+
+  // --- Card-based Issue Tracker ---
+  const activeIssues = sorted.filter(([, d]) => !isComplete(d));
+  const completedIssues = sorted.filter(([, d]) => isComplete(d));
+
+  let issueCards = '';
   for (const [issueNum, data] of sorted) {
-    // Progress bar
+    const complete = isComplete(data);
+
+    // Progress
     const totalFases = defFases.length + devFases.length;
-    const completedFases = allFases.filter(({ pipeline, fase }) => {
+    const completedFasesCount = allFases.filter(({ pipeline, fase }) => {
       const entries = data.fases[`${pipeline}/${fase}`] || [];
       const hasPendingOrWorking = entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
       return !hasPendingOrWorking && entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
     }).length;
-    const pct = totalFases > 0 ? Math.round(completedFases / totalFases * 100) : 0;
+    const pct = totalFases > 0 ? Math.round(completedFasesCount / totalFases * 100) : 0;
 
-    // ETA por issue: suma de promedios de fases pendientes (independiente de agentes activos)
+    // ETA
     let issueEtaMs = 0;
     let hasEta = false;
-    for (const pipeline of ['definicion', 'desarrollo']) {
-      const fasesList = pipeline === 'definicion' ? defFases : devFases;
+    for (const pl of ['definicion', 'desarrollo']) {
+      const fasesList = pl === 'definicion' ? defFases : devFases;
       for (const faseName of fasesList) {
-        const key = `${pipeline}/${faseName}`;
+        const key = `${pl}/${faseName}`;
         const entries = data.fases[key] || [];
         const hasPendingOrWorking = entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
         const isDone = !hasPendingOrWorking && entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
-        if (isDone) continue; // Fase completada sin trabajo pendiente, no sumar
-
+        if (isDone) continue;
         const isWorking = entries.some(e => e.estado === 'trabajando');
         if (isWorking) {
-          // Fase en curso: ETA = promedio - tiempo transcurrido
           const workingEntry = entries.find(e => e.estado === 'trabajando');
           const avgKey = `${faseName}/${workingEntry.skill}`;
           const avg = state.etaAverages[avgKey] || state.etaAverages[faseName];
@@ -645,21 +777,15 @@ function generateHTML(state) {
             hasEta = true;
           }
         } else {
-          // Fase pendiente o no iniciada: sumar promedio completo
           const avg = state.etaAverages[faseName];
-          if (avg?.avgMs) {
-            issueEtaMs += avg.avgMs;
-            hasEta = true;
-          }
+          if (avg?.avgMs) { issueEtaMs += avg.avgMs; hasEta = true; }
         }
       }
     }
-    // Para issues completados: calcular duración total real
-    let issueEtaLabel = '';
+    let etaHTML = '';
     if (hasEta && issueEtaMs > 0) {
-      issueEtaLabel = `<span class="issue-eta" title="ETA estimado para completar fases restantes">⏱ ~${fmtDuration(issueEtaMs)}</span>`;
+      etaHTML = `<span class="ic-eta" title="ETA estimado">⏱ ~${fmtDuration(issueEtaMs)}</span>`;
     } else if (pct === 100) {
-      // Issue completado: calcular duración total desde timestamps
       let minTs = Infinity, maxTs = 0;
       for (const entries of Object.values(data.fases)) {
         for (const e of entries) {
@@ -668,163 +794,189 @@ function generateHTML(state) {
         }
       }
       if (maxTs > minTs && minTs < Infinity) {
-        issueEtaLabel = `<span class="issue-eta issue-done-time" title="Tiempo total de completación">✓ ${fmtDuration(maxTs - minTs)}</span>`;
+        etaHTML = `<span class="ic-eta ic-done-time" title="Tiempo total">✓ ${fmtDuration(maxTs - minTs)}</span>`;
       }
     }
 
+    // Block icons
     const blockedBy = state.blockedIssues.blockedBy[issueNum];
     const blocksOthers = state.blockedIssues.blocks[issueNum] || [];
     let blockIcons = '';
     if (blockedBy != null) {
-      // blockedBy puede ser [] (label sin deps conocidas) o [n1, n2, ...] (con deps)
-      const depLinks = blockedBy.length > 0 ? blockedBy.map(d => '#' + d).join(', ') : 'dependencias no especificadas';
-      blockIcons += `<span class="block-icon block-locked">🔒<span class="block-tt">Bloqueado por: ${depLinks}</span></span>`;
+      let depText;
+      if (blockedBy.length > 0) {
+        depText = blockedBy.map(d => `#${d}`).join(', ');
+      } else {
+        depText = 'sin dependencias especificadas';
+      }
+      blockIcons += `<span class="block-icon block-locked" title="Bloqueado">🚫<span class="block-tt">Bloqueado por: ${depText}</span></span>`;
     }
     if (blocksOthers.length > 0) {
-      const blockLinks = blocksOthers.map(d => '#' + d).join(', ');
+      const blockLinks = blocksOthers.map(d => {
+        const t = state.issueTitles?.[String(d)]?.title;
+        return t ? `#${d} — ${t}` : `#${d}`;
+      }).join(', ');
       blockIcons += `<span class="block-icon block-blocking">⛓️<span class="block-tt">Bloquea a: ${blockLinks}</span></span>`;
     }
 
-    const issueCell = `<td class="issue-col">
-      <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>${blockIcons}
-      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      <span class="progress-text">${completedFases}/${totalFases}</span>${issueEtaLabel}
-    </td>`
-    let cells = '';
-    for (const { pipeline, fase } of allFases) {
+    // Pipeline stepper — compact dots for each phase
+    let stepperDots = '';
+    let currentSkillLabel = '';
+    for (let i = 0; i < allFases.length; i++) {
+      const { pipeline, fase } = allFases[i];
       const key = `${pipeline}/${fase}`;
-      const entries = data.fases[key] || [];
+      const rawEntries = data.fases[key] || [];
+      const entries = rawEntries.length > 0 ? preprocessEntries(rawEntries) : rawEntries;
       const isCurrent = data.faseActual === key;
 
-      if (entries.length === 0) {
-        cells += `<td class="cell-empty ${pipeline === 'definicion' ? 'col-def' : 'col-dev'}">—</td>`;
-        continue;
-      }
+      let dotCls = 'dot-empty';
+      let dotIcon = '';
+      let dotTitle = fase;
+      if (entries.length > 0) {
+        const hasWorking = entries.some(e => e.estado === 'trabajando');
+        const hasPending = entries.some(e => e.estado === 'pendiente');
+        const hasRejected = entries.some(e => e.resultado && e.resultado !== 'aprobado' && (e.estado !== 'procesado' || isCurrent));
+        const allDone = entries.every(e => e.estado === 'listo' || e.estado === 'procesado');
+        const allApproved = entries.every(e => !e.resultado || e.resultado === 'aprobado');
 
-      // Fase completada: si TODOS los entries están procesados y aprobados,
-      // colapsar a un indicador compacto en vez de N chips individuales
-      const allProcessed = entries.every(e => e.estado === 'procesado');
-      const allApproved = entries.every(e => !e.resultado || e.resultado === 'aprobado');
-      if (allProcessed && allApproved && !isCurrent) {
-        const skillCount = new Set(entries.map(e => e.skill)).size;
-        cells += `<td class="${pipeline === 'definicion' ? 'col-def' : 'col-dev'}"><span class="phase-done" title="${skillCount} skill(s) completados">✔</span></td>`;
-        continue;
-      }
-
-      // Detectar skills repetidos y colapsar: solo mostrar el último run de cada skill
-      // Los runs anteriores (procesados) son ruido visual — se indican con badge ×N
-      const skillRunCount = {};
-      for (const e of entries) {
-        skillRunCount[e.skill] = (skillRunCount[e.skill] || 0) + 1;
-      }
-      const skillRunIndex = {};
-      const sortedEntries = [...entries].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
-      for (const e of sortedEntries) {
-        skillRunIndex[e.skill] = (skillRunIndex[e.skill] || 0) + 1;
-        e._runIndex = skillRunIndex[e.skill];
-        e._runTotal = skillRunCount[e.skill];
-        e._isRetry = skillRunCount[e.skill] > 1;
-        e._isLatestRun = skillRunIndex[e.skill] === skillRunCount[e.skill];
-      }
-
-      // Filtrar: solo el último run de cada skill (colapsar runs anteriores)
-      const visibleEntries = entries.filter(e => e._isLatestRun);
-
-      const chips = visibleEntries.map(e => {
-        // Estado rechazado: resultado explícito de rechazo
-        const isRejected = e.resultado && e.resultado !== 'aprobado';
-
-        const cls = isRejected ? 'st-rejected' :
-                    e.estado === 'trabajando' ? 'st-working' :
-                    e.estado === 'listo' ? 'st-done' :
-                    e.estado === 'procesado' ? 'st-processed' : 'st-pending';
-        const icon = isRejected ? '✗' :
-                     e.estado === 'trabajando' ? '⚙' :
-                     e.estado === 'listo' ? '✓' :
-                     e.estado === 'procesado' ? '✔' : '○';
-        const staleClass = (e.estado === 'trabajando' && e.ageMin > 30) ? ' stale-chip' : '';
-        // Badge de reintentos: ×N si hubo más de 1 run
-        const retryBadge = e._isRetry ? `<sup class="retry-badge" title="${e._runTotal} intentos">×${e._runTotal}</sup>` : '';
-
-        // ETA por agente activo
-        let etaBadge = '';
-        let ttEta = '';
-        if (e.estado === 'trabajando' && e.durationMs) {
-          const avgKey = `${fase}/${e.skill}`;
-          const avg = state.etaAverages[avgKey] || state.etaAverages[fase];
-          if (avg?.avgMs) {
-            const remaining = Math.max(0, avg.avgMs - e.durationMs);
-            if (remaining > 0) {
-              etaBadge = `<span class="eta-badge">~${fmtDuration(remaining)}</span>`;
-              ttEta = `ETA: ~${fmtDuration(remaining)} (promedio: ${fmtDuration(avg.avgMs)})`;
-            } else {
-              const over = e.durationMs - avg.avgMs;
-              etaBadge = `<span class="eta-badge eta-over">+${fmtDuration(over)}</span>`;
-              ttEta = `Excedido: +${fmtDuration(over)} sobre promedio de ${fmtDuration(avg.avgMs)}`;
-            }
-          }
+        if (hasRejected && !hasWorking) {
+          dotCls = 'dot-rejected';
+          dotIcon = '✗';
+        } else if (hasWorking) {
+          dotCls = 'dot-working';
+          dotIcon = '⚙';
+          const ws = entries.filter(e => e.estado === 'trabajando').map(e => e.skill);
+          currentSkillLabel = ws.map(s => `${skillIcon(s)} ${s}`).join(', ');
+        } else if (allDone && allApproved) {
+          dotCls = 'dot-done';
+          dotIcon = '✓';
+        } else if (allDone && !allApproved) {
+          dotCls = 'dot-rejected';
+          dotIcon = '✗';
+        } else if (hasPending) {
+          dotCls = 'dot-pending';
+          dotIcon = '○';
+        } else {
+          dotCls = 'dot-done';
+          dotIcon = '✓';
         }
+        const skills = [...new Set(entries.map(e => e.skill))].join(', ');
+        const retryInfo = entries.some(e => e._isRetry) ? ` (${entries.filter(e => e._isRetry).map(e => e.skill + '×' + e._runTotal).join(', ')})` : '';
+        dotTitle = `${fase}: ${skills}${retryInfo}`;
+      }
 
-        // Tooltip content (atributo title nativo — nunca aparece como texto inline)
-        const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
-        const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
-        const ttResStr = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
-        const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
-        const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
-        const ttEtaStr = ttEta || '';
-        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
-        const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-        const agentColor = skillColor(e.skill);
-        const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
-
-        // Botón de cancelar para agentes activos (trabajando)
-        const killBtn = e.estado === 'trabajando'
-          ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
-          : '';
-
-        // PDF de rechazo disponible
-        const pdfBtn = e.hasRejectionPdf
-          ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
-          : '';
-
-        // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
-        if (e.hasLog) {
-          const isLive = e.estado === 'trabajando';
-          return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
-        }
-        return inner;
-      }).join(' ');
-
-      cells += `<td class="${isCurrent ? 'cell-current' : ''} ${pipeline === 'definicion' ? 'col-def' : 'col-dev'}">${chips}</td>`;
+      const escapedTitle = dotTitle.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      const isDefLast = pipeline === 'definicion' && i === defFases.length - 1;
+      const connector = i < allFases.length - 1
+        ? `<span class="stepper-conn${isDefLast ? ' stepper-conn-sep' : ''}"></span>`
+        : '';
+      stepperDots += `<span class="stepper-dot ${dotCls}${isCurrent ? ' dot-current' : ''}" title="${escapedTitle}">${dotIcon}</span>${connector}`;
     }
 
-    const blockedClass = blockedBy != null ? ' issue-blocked' : '';
-    const rowClass = (data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done') + blockedClass;
-    const hiddenClass = rowIndex >= ISSUE_VISIBLE_LIMIT ? ' issue-overflow' : '';
-    rows += `<tr class="${rowClass}${hiddenClass}">${issueCell}${cells}</tr>`;
-    rowIndex++;
+    // Current phase label for the card
+    let phaseLabel = '';
+    if (data.faseActual) {
+      const faseName = data.faseActual.split('/')[1] || data.faseActual;
+      if (currentSkillLabel) {
+        phaseLabel = `<span class="ic-phase-label">${faseName} · ${currentSkillLabel}</span>`;
+      } else {
+        phaseLabel = `<span class="ic-phase-label">${faseName}</span>`;
+      }
+    } else if (complete) {
+      phaseLabel = `<span class="ic-phase-label ic-phase-done">completado</span>`;
+    }
+
+    // Expanded detail: phase grid (2 columns: DEFINICIÓN | DESARROLLO)
+    const renderPhaseDetail = (pName, fases) => {
+      return fases.map(fase => {
+        const key = `${pName}/${fase}`;
+        const entries = data.fases[key] || [];
+        const isCurrent = data.faseActual === key;
+        if (entries.length === 0) {
+          return `<div class="pd-phase${isCurrent ? ' pd-current' : ''}">
+            <span class="pd-name">${fase}</span><span class="pd-empty">—</span>
+          </div>`;
+        }
+        const allProcessed = entries.every(e => e.estado === 'procesado');
+        const allApproved = entries.every(e => !e.resultado || e.resultado === 'aprobado');
+        const completedClass = allProcessed && allApproved && !isCurrent ? ' pd-completed' : '';
+        const visible = preprocessEntries(entries);
+        const chips = visible.map(e => renderChip(e, issueNum, fase, pName)).join(' ');
+        return `<div class="pd-phase${isCurrent ? ' pd-current' : ''}${completedClass}">
+          <span class="pd-name">${fase}</span><div class="pd-chips">${chips}</div>
+        </div>`;
+      }).join('');
+    };
+
+    const detailHTML = `<div class="ic-detail" id="detail-${issueNum}" aria-hidden="true">
+      <div class="pd-grid">
+        <div class="pd-pipeline">
+          <div class="pd-pipeline-label pd-def-label">DEFINICIÓN</div>
+          ${renderPhaseDetail('definicion', defFases)}
+        </div>
+        <div class="pd-pipeline">
+          <div class="pd-pipeline-label pd-dev-label">DESARROLLO</div>
+          ${renderPhaseDetail('desarrollo', devFases)}
+        </div>
+      </div>
+    </div>`;
+
+    const blockedClass = blockedBy != null ? ' ic-blocked' : '';
+    const completedClass = complete ? ' ic-completed' : '';
+    const workingClass = data.estadoActual === 'trabajando' ? ' ic-working' : '';
+    const staleClass = data.staleMin > 60 ? ' ic-dead' : data.staleMin > 30 ? ' ic-stale' : '';
+
+    // Title (truncated)
+    const titleText = data.title ? data.title.replace(/"/g, '&quot;').replace(/'/g, '&#39;') : '';
+    const titleHTML = titleText ? `<span class="ic-title" title="${titleText}">${titleText.length > 55 ? titleText.substring(0, 52) + '…' : titleText}</span>` : '';
+
+    // Bounce badge
+    const bounceHTML = data.bounces > 0 ? `<span class="ic-bounce${data.bounces >= 2 ? ' ic-bounce-warn' : ''}" title="${data.bounces} rebotes">↺${data.bounces}</span>` : '';
+
+    // Stale indicator
+    const staleHTML = data.staleMin > 60 ? `<span class="ic-stale-badge ic-stale-dead" title="Sin actividad: ${data.staleMin}min">⚠ ${data.staleMin}m</span>`
+                    : data.staleMin > 30 ? `<span class="ic-stale-badge ic-stale-warn" title="Sin actividad: ${data.staleMin}min">⏳ ${data.staleMin}m</span>`
+                    : '';
+
+    // QA label badge for completed issues
+    const qaLabel = data.labels?.find(l => l.startsWith('qa:'));
+    const qaHTML = qaLabel ? `<span class="ic-qa-badge ic-qa-${qaLabel.split(':')[1]}">${qaLabel}</span>` : '';
+
+    issueCards += `
+    <div class="ic-card${completedClass}${blockedClass}${workingClass}${staleClass}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}">
+      <div class="ic-header" role="button" tabindex="0" aria-expanded="false" onclick="toggleIssueDetail('${issueNum}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleIssueDetail('${issueNum}')}">
+        <div class="ic-left">
+          <a href="${GH(issueNum)}" target="_blank" class="ic-issue-link" onclick="event.stopPropagation()">#${issueNum}</a>
+          ${bounceHTML}${blockIcons}${staleHTML}
+          ${titleHTML}
+        </div>
+        <div class="ic-stepper" aria-label="Pipeline progress">${stepperDots}</div>
+        <div class="ic-meta">
+          ${phaseLabel}
+          ${qaHTML}
+          <span class="ic-pct${pct === 100 ? ' ic-pct-done' : ''}">${pct}%</span>
+          ${etaHTML}
+        </div>
+        <span class="ic-expand-btn" id="expand-btn-${issueNum}" aria-hidden="true">▾</span>
+      </div>
+      <div class="ic-progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="ic-progress-fill${data.estadoActual === 'trabajando' ? ' ic-progress-active' : ''}" style="width:${pct}%"></div></div>
+      ${detailHTML}
+    </div>`;
   }
 
-  const hiddenCount = sorted.length - ISSUE_VISIBLE_LIMIT;
-  const verMasBtn = hiddenCount > 0
-    ? `<div class="ver-mas-container"><button class="ver-mas-btn" onclick="toggleIssues(this)">Ver más (${hiddenCount} issues)</button></div>`
-    : '';
-
   const matrixHTML = `
-    <div class="matrix-section">
+    <div class="matrix-section" id="issue-tracker">
       <div class="matrix-header">
         <h2>📊 Issue Tracker</h2>
-        <span class="matrix-count">${activos} activos · ${totalIssues - activos} finalizados</span>
+        <div class="ic-tabs" role="tablist" aria-label="Issue filter">
+          <button class="ic-tab ic-tab-active" role="tab" aria-selected="true" data-filter="active" onclick="filterIssueTab(this,'active')">En progreso <span class="ic-tab-count">${activeIssues.length}</span></button>
+          <button class="ic-tab" role="tab" aria-selected="false" data-filter="completed" onclick="filterIssueTab(this,'completed')">Completados <span class="ic-tab-count">${completedIssues.length}</span></button>
+          <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
+        </div>
       </div>
-      <div class="matrix-scroll">
-        <table class="issue-matrix">
-          <thead>${groupHeader}<tr><th class="th-issue">Issue</th>${headerCells}</tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
+      <div class="ic-list">
+        ${issueCards}
       </div>
-      ${verMasBtn}
     </div>`;
 
   // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
@@ -874,7 +1026,8 @@ function generateHTML(state) {
         ? ' <a class="skill-recent-pdf" href="/logs/' + r.rejectionPdf + '" target="_blank" title="Reporte de rechazo PDF" onclick="event.stopPropagation()">\u{1F4C4}</a>'
         : '';
       if (r.hasLog) {
-        return '<a class="skill-recent-item" href="#" onclick="event.preventDefault();openLogViewer(\'' + r.logFile + '\',\'#' + r.issue + ' ' + skill + '\')" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>' + pdfLink;
+        const isLive = !r.resultado || r.resultado === 'en curso';
+        return '<a class="skill-recent-item" href="/logs/view/' + r.logFile + (isLive ? '?live=1' : '') + '" target="_blank" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>' + pdfLink;
       }
       return '<span class="skill-recent-item" title="' + (r.resultado || 'sin log') + '">' + icon + ' ' + inner + '</span>' + pdfLink;
     }).join('') + '</div>';
@@ -1196,6 +1349,27 @@ h1{
   border-bottom:1px solid var(--bd);padding-bottom:14px;
 }
 h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px}
+.hdr-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 0 8px;margin-bottom:0}
+.hdr-left{display:flex;align-items:center;gap:12px}
+.hdr-title{margin:0;font-size:1.3em;font-weight:700;white-space:nowrap;border-bottom:none;padding-bottom:0}
+.hdr-status-badge{font-size:0.7em;font-weight:700;letter-spacing:1.5px;padding:3px 12px;border-radius:20px;cursor:pointer;border:none;transition:all 0.2s;text-transform:uppercase}
+.badge-running{background:rgba(63,185,80,0.15);color:var(--gn);border:1px solid rgba(63,185,80,0.4)}
+.badge-running:hover{background:rgba(63,185,80,0.25)}
+.badge-paused{background:rgba(240,165,0,0.2);color:#f0a500;border:1px solid rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
+@keyframes pausePulse{0%,100%{opacity:1}50%{opacity:0.6}}
+.hdr-meta{font-size:0.75em;color:var(--dim);white-space:nowrap}
+.hdr-meta-sep{color:var(--bd);margin:0 2px}
+.hdr-uptime{font-size:0.75em;color:var(--dim);font-weight:500;cursor:help;padding:2px 8px;background:var(--sf);border-radius:10px;border:1px solid var(--bd)}
+.hdr-right{display:flex;flex-direction:column;align-items:flex-end;line-height:1}
+.hdr-clock{font-size:1.6em;font-weight:700;font-family:'SF Mono',Consolas,monospace;color:var(--tx);letter-spacing:2px;font-variant-numeric:tabular-nums}
+.hdr-clock .clock-sec{font-size:0.55em;color:var(--dim);vertical-align:super;margin-left:1px}
+.hdr-date{font-size:0.75em;color:var(--dim);margin-top:2px;letter-spacing:0.5px}
+.hdr-status-line{height:2px;margin-bottom:14px;border-radius:1px;transition:background 0.5s}
+.sl-active{background:linear-gradient(90deg,var(--gn),var(--ac),var(--gn));background-size:200% 100%;animation:slSlide 3s linear infinite}
+@keyframes slSlide{0%{background-position:0% 0}100%{background-position:200% 0}}
+.sl-warn{background:linear-gradient(90deg,var(--yl),rgba(210,169,34,0.3))}
+.sl-danger{background:linear-gradient(90deg,var(--rd),var(--or),var(--rd));background-size:200% 100%;animation:slSlide 2s linear infinite}
+.sl-idle{background:var(--bd)}
 .health-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px}
 .health-active{background:var(--gn);box-shadow:0 0 8px var(--gn);animation:healthPulse 2s infinite}
 .health-warn{background:var(--yl);box-shadow:0 0 8px var(--yl);animation:healthPulse 1s infinite}
@@ -1214,7 +1388,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── KPI Grid ───────────────────────────────────────────────────────────── */
 .kpis{
   display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  grid-template-columns:repeat(6,1fr);
   gap:14px;margin-bottom:24px;
 }
 .kpi{
@@ -1245,6 +1419,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .kpi.kpi-blocked{--kpi-accent:var(--rd)}
 .kpi.kpi-definidos{--kpi-accent:var(--pu)}
 .kpi.kpi-entregados{--kpi-accent:var(--gn)}
+.kpi.kpi-throughput{--kpi-accent:var(--ac)}
 
 /* ── Separador de pipeline KPIs ─────────────────────────────────────────── */
 .kpi-divider{
@@ -1263,46 +1438,197 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--bg);border:1px solid var(--bd);border-radius:20px;
   padding:2px 10px;
 }
-.matrix-scroll{overflow-x:visible}
-.issue-matrix{width:100%;border-collapse:collapse;font-size:1em;table-layout:auto}
-.issue-matrix th{
-  padding:10px 12px;color:var(--tx);border-bottom:2px solid var(--bd);
-  font-size:0.9em;text-transform:uppercase;letter-spacing:1px;text-align:left;
-  font-weight:700;
+/* ── Issue Tracker: Tabs ────────────────────────────────────────────────── */
+.ic-tabs{display:flex;gap:4px}
+.ic-tab{
+  background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:4px 14px;color:var(--dim);font-size:0.82em;cursor:pointer;
+  font-weight:500;transition:all 0.15s;display:inline-flex;align-items:center;gap:5px;
 }
-.issue-matrix td{padding:8px 10px;border-bottom:1px solid var(--bd2)}
-.issue-matrix tbody tr:hover{background:rgba(255,255,255,0.03)}
-.th-issue{min-width:110px}
-.group-header th{border-bottom:1px solid var(--bd);font-size:0.85em;letter-spacing:2px;padding:8px 12px;font-weight:700}
-.group-def{color:var(--or);text-align:center;border-right:2px solid var(--bd)}.group-dev{color:var(--ac);text-align:center}
-.th-def:last-of-type,.col-def:last-of-type{border-right:2px solid var(--bd)}
-
-/* ── Fase header badges ────────────────────────────────────────────────── */
-.fase-badges{display:flex;gap:6px;justify-content:left;margin-top:5px}
-.fase-badge{
-  font-size:0.72em;font-weight:600;padding:1px 6px;border-radius:10px;
-  cursor:default;position:relative;letter-spacing:0.5px;
-  display:inline-flex;align-items:center;gap:2px;
+.ic-tab:hover{background:var(--sf2);color:var(--tx)}
+.ic-tab-active{background:var(--ac2);color:var(--tx);border-color:var(--ac);font-weight:600}
+.ic-tab-count{
+  font-size:0.85em;background:rgba(255,255,255,0.1);border-radius:10px;
+  padding:0 6px;min-width:18px;text-align:center;font-weight:700;
 }
-.fase-pendiente{color:var(--dim);background:rgba(139,148,158,0.12);border:1px solid rgba(139,148,158,0.25)}
-.fase-trabajando{color:var(--yl);background:rgba(210,153,34,0.12);border:1px solid rgba(210,153,34,0.3)}
-.fase-listo{color:var(--gn);background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.25)}
 
-/* ── Issue column ───────────────────────────────────────────────────────── */
-.issue-col{min-width:88px}
-.issue-link{color:var(--ac);font-weight:700;font-size:1.05em}
-.progress-bar{height:4px;background:var(--bd);border-radius:3px;margin-top:5px;width:80px}
-.progress-fill{height:100%;background:var(--gn);border-radius:3px;transition:width 0.4s}
-.progress-text{font-size:0.8em;color:var(--dim);margin-top:2px;display:block}
+/* ── Issue Tracker: Card list ──────────────────────────────────────────── */
+.ic-list{display:flex;flex-direction:column;gap:6px}
 
-/* ── Row states ─────────────────────────────────────────────────────────── */
-.cell-empty{color:var(--bd);text-align:center;font-size:0.85em}
-.cell-current{background:rgba(88,166,255,0.07);border-left:3px solid var(--ac)}
-.issue-done{opacity:0.38}
-.issue-listo{opacity:0.65}
-.issue-blocked{background:rgba(248,81,73,0.08)}
-.block-icon{position:relative;margin-left:4px;cursor:help;font-size:0.85em}
-.block-icon .block-tt{display:none;position:absolute;left:50%;transform:translateX(-50%);bottom:120%;background:var(--sf);color:var(--fg);padding:4px 8px;border-radius:4px;font-size:0.8em;white-space:nowrap;z-index:10;border:1px solid var(--bd)}
+/* ── Issue Card ────────────────────────────────────────────────────────── */
+.ic-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:8px;
+  overflow:hidden;transition:border-color 0.2s,opacity 0.3s;
+}
+.ic-card:hover{border-color:var(--bd)}
+.ic-card.ic-completed{opacity:0.45}
+.ic-card.ic-completed:hover{opacity:0.75}
+.ic-card.ic-blocked{border-left:3px solid var(--rd);background:rgba(248,81,73,0.04)}
+.ic-card.ic-working{border-left:3px solid var(--ac)}
+.ic-card.ic-stale{border-left:3px solid var(--yl);background:rgba(210,153,34,0.04)}
+.ic-card.ic-dead{border-left:3px solid var(--rd);background:rgba(248,81,73,0.06);animation:deadPulse 3s infinite}
+@keyframes deadPulse{0%,100%{opacity:1}50%{opacity:0.85}}
+
+/* ── Card header (clickable, grid layout for alignment) ──────────────── */
+.ic-header{
+  display:grid;
+  grid-template-columns:minmax(200px,420px) 1fr minmax(240px,340px) auto;
+  align-items:center;gap:8px;
+  padding:10px 14px;cursor:pointer;transition:background 0.1s;
+  min-height:42px;
+}
+.ic-header:hover{background:rgba(255,255,255,0.02)}
+
+/* ── Left section (issue + badges + title) ──────────────────────────── */
+.ic-left{
+  display:flex;align-items:center;gap:6px;
+  overflow:hidden;min-width:0;
+}
+.ic-issue-link{
+  color:var(--ac);font-weight:700;font-size:1.05em;
+  text-decoration:none;white-space:nowrap;flex-shrink:0;
+}
+.ic-issue-link:hover{text-decoration:underline}
+
+/* ── Title ──────────────────────────────────────────────────────────── */
+.ic-title{
+  font-size:0.82em;color:var(--dim);font-weight:400;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  min-width:0;flex:1;
+}
+
+/* ── Bounce badge ───────────────────────────────────────────────────── */
+.ic-bounce{
+  font-size:0.75em;font-weight:700;color:var(--yl);
+  background:rgba(210,153,34,0.12);border:1px solid rgba(210,153,34,0.3);
+  border-radius:10px;padding:1px 7px;flex-shrink:0;
+}
+.ic-bounce-warn{color:var(--rd);background:rgba(248,81,73,0.12);border-color:rgba(248,81,73,0.3)}
+
+/* ── Stale badge ────────────────────────────────────────────────────── */
+.ic-stale-badge{
+  font-size:0.72em;font-weight:600;padding:1px 6px;border-radius:8px;flex-shrink:0;
+}
+.ic-stale-warn{color:var(--yl);background:rgba(210,153,34,0.1)}
+.ic-stale-dead{color:var(--rd);background:rgba(248,81,73,0.1);animation:pulse 2s infinite}
+
+/* ── QA label badge ─────────────────────────────────────────────────── */
+.ic-qa-badge{font-size:0.7em;font-weight:600;padding:1px 7px;border-radius:8px;flex-shrink:0}
+.ic-qa-passed{color:var(--gn);background:rgba(63,185,80,0.12);border:1px solid rgba(63,185,80,0.25)}
+.ic-qa-skipped{color:var(--dim);background:rgba(139,148,158,0.1);border:1px solid rgba(139,148,158,0.2)}
+.ic-qa-pending{color:var(--yl);background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.25)}
+.ic-qa-failed{color:var(--rd);background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.25)}
+
+/* ── Affordance (hover ya en .ic-header arriba) ────────────────────── */
+
+/* ── Pipeline Stepper (compact dots) ──────────────────────────────────── */
+.ic-stepper{
+  display:flex;align-items:center;gap:0;
+  flex-shrink:0;margin:0 4px;
+}
+.stepper-dot{
+  width:18px;height:18px;border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:0.65em;font-weight:700;cursor:default;
+  border:2px solid var(--bd);background:var(--bg);
+  transition:all 0.2s;flex-shrink:0;
+}
+.stepper-conn{
+  width:8px;height:2px;background:var(--bd2);flex-shrink:0;
+}
+.stepper-conn-sep{
+  background:var(--or);width:10px;height:2px;
+  box-shadow:0 0 4px rgba(210,153,34,0.3);
+}
+.dot-empty{color:var(--dim2);border-color:var(--bd2)}
+.dot-pending{color:var(--dim);border-color:var(--bd);background:rgba(139,148,158,0.08)}
+.dot-working{
+  color:var(--ac);border-color:var(--ac);
+  background:rgba(88,166,255,0.15);
+  animation:pulseBlue 2s infinite;
+  box-shadow:0 0 6px rgba(88,166,255,0.3);
+}
+.dot-done{color:var(--gn);border-color:var(--gn);background:rgba(63,185,80,0.15)}
+.dot-rejected{color:var(--rd);border-color:var(--rd);background:rgba(248,81,73,0.12)}
+.dot-current{transform:scale(1.2);z-index:1}
+
+/* ── Card meta (phase + pct + eta) ────────────────────────────────────── */
+.ic-meta{
+  display:flex;align-items:center;gap:8px;
+  justify-content:flex-end;white-space:nowrap;
+}
+.ic-phase-label{
+  font-size:0.78em;color:var(--dim);font-weight:500;
+  background:rgba(139,148,158,0.08);border-radius:4px;padding:2px 8px;
+  max-width:180px;overflow:hidden;text-overflow:ellipsis;
+}
+.ic-phase-done{color:var(--gn);background:rgba(63,185,80,0.1)}
+.ic-pct{
+  font-size:0.85em;font-weight:700;color:var(--dim);
+  font-variant-numeric:tabular-nums;min-width:32px;text-align:right;
+}
+.ic-pct-done{color:var(--gn)}
+.ic-eta{font-size:0.78em;color:var(--dim);font-weight:500}
+.ic-done-time{color:var(--gn)}
+.ic-expand-btn{
+  font-size:0.85em;color:var(--dim);transition:transform 0.2s;flex-shrink:0;
+  width:20px;text-align:center;
+}
+.ic-expand-btn.expanded{transform:rotate(180deg)}
+
+/* ── Progress track (thin bar under header) ──────────────────────────── */
+.ic-progress-track{
+  height:3px;background:var(--bd2);
+}
+.ic-progress-fill{
+  height:100%;background:var(--gn);border-radius:0 2px 2px 0;
+  transition:width 0.4s;
+}
+.ic-progress-active{
+  background:linear-gradient(90deg,var(--gn),var(--ac));
+  animation:progressPulse 2s infinite;
+}
+@keyframes progressPulse{0%,100%{opacity:1}50%{opacity:0.6}}
+
+/* ── Expanded detail panel ────────────────────────────────────────────── */
+.ic-detail{
+  display:none;padding:0 14px 14px;
+  border-top:1px solid var(--bd2);
+  animation:slideDown 0.2s ease-out;
+}
+.ic-detail.open{display:block}
+@keyframes slideDown{from{opacity:0;max-height:0}to{opacity:1;max-height:500px}}
+
+.pd-grid{
+  display:grid;grid-template-columns:1fr 2fr;gap:12px;
+  margin-top:10px;
+}
+@media(max-width:700px){.pd-grid{grid-template-columns:1fr}}
+
+.pd-pipeline-label{
+  font-size:0.72em;font-weight:700;text-transform:uppercase;
+  letter-spacing:2px;padding:4px 0 6px;
+}
+.pd-def-label{color:var(--or)}
+.pd-dev-label{color:var(--ac)}
+
+.pd-phase{
+  display:flex;align-items:flex-start;gap:8px;
+  padding:5px 8px;border-radius:4px;margin-bottom:2px;
+}
+.pd-phase:hover{background:rgba(255,255,255,0.02)}
+.pd-current{background:rgba(88,166,255,0.07);border-left:3px solid var(--ac)}
+.pd-completed{opacity:0.5}
+.pd-name{
+  font-size:0.82em;font-weight:600;color:var(--dim);
+  min-width:80px;flex-shrink:0;padding-top:3px;
+}
+.pd-empty{color:var(--bd);font-size:0.85em}
+.pd-chips{display:flex;flex-wrap:wrap;gap:4px}
+
+/* ── Block icons (shared) ──────────────────────────────────────────────── */
+.block-icon{position:relative;margin-left:2px;cursor:help;font-size:0.8em;flex-shrink:0}
+.block-icon .block-tt{display:none;position:absolute;left:0;top:calc(100% + 6px);background:var(--sf);color:var(--fg);padding:6px 10px;border-radius:6px;font-size:0.82em;white-space:normal;max-width:320px;z-index:100;border:1px solid var(--bd);box-shadow:0 4px 12px rgba(0,0,0,0.4);pointer-events:none;line-height:1.4}
 .block-icon:hover .block-tt{display:block}
 
 /* ── Chips ──────────────────────────────────────────────────────────────── */
@@ -1458,21 +1784,19 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .log-scroll-btn.visible{display:inline-block}
 
-/* Tooltip nativo via atributo title — sin HTML inline en el chip */
-.more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
-.issue-overflow{display:none}
-.issue-overflow.show{display:table-row}
-.ver-mas-container{text-align:center;padding:10px 0}
-.ver-mas-btn{background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:var(--radius);padding:6px 18px;cursor:pointer;font-size:0.88em;transition:background 0.2s}
-.ver-mas-btn:hover{background:var(--bd)}
+/* ── Issue card visibility by tab filter ────────────────────────────────── */
+.ic-card.ic-hidden{display:none}
 
 /* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
-.dual-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
-.dual-col{flex:1;min-width:320px}
+.dual-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
+.dual-col{min-width:0}
 .bar-section{
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
-  padding:16px 18px;
+  padding:16px 18px;position:relative;overflow:hidden;
 }
+.bar-section::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--radius) var(--radius) 0 0}
+.bar-section.panel-equipo::before{background:linear-gradient(90deg,var(--ac),var(--pu),var(--gn))}
+.bar-section.panel-sistema::before{background:linear-gradient(90deg,var(--gn),var(--yl),var(--rd))}
 .sys-chips-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px}
 /* ── Service Cards ──────────────────────────────────────────────────────── */
 .svc-grid{display:flex;flex-wrap:wrap;gap:8px}
@@ -1481,7 +1805,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   padding:8px 10px;min-width:90px;flex:1;max-width:140px;
   border-left:3px solid var(--dim2);transition:box-shadow 0.2s;
 }
-.svc-card:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
+.svc-card:hover{box-shadow:0 2px 8px rgba(88,166,255,0.12);transform:translateY(-1px)}
 .svc-card-ok{border-left-color:var(--gn)}
 .svc-card-busy{border-left-color:var(--yl)}
 .svc-card-dead{border-left-color:var(--rd)}
@@ -1563,9 +1887,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   position:absolute;top:-2px;bottom:-2px;width:2px;
   background:var(--rd);opacity:0.6;border-radius:1px;
 }
-.gauge-ok .gauge-fill{background:var(--gn)}
-.gauge-warn .gauge-fill{background:var(--yl)}
-.gauge-danger .gauge-fill{background:var(--rd);animation:pulse 1.8s infinite}
+.gauge-ok .gauge-fill{background:linear-gradient(90deg,var(--gn2),var(--gn))}
+.gauge-warn .gauge-fill{background:linear-gradient(90deg,var(--yl2),var(--yl))}
+.gauge-danger .gauge-fill{background:linear-gradient(90deg,var(--rd2),var(--rd));animation:pulse 1.8s infinite}
+.gauge-danger{box-shadow:inset 0 0 8px rgba(248,81,73,0.15)}
 .gauge-value{
   font-size:0.9em;font-weight:600;margin-top:6px;
   font-variant-numeric:tabular-nums;
@@ -1713,35 +2038,31 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 </style></head>
 <body>
-  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
-    <h1 style="margin:0">🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
-    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap;align-items:center">
-      <span>📊 Dashboard: <b style="color:var(--tx)">${dashboardBuild}</b></span>
-      <span>🐙 Pulpo: <b style="color:var(--tx)">${pulpoBuild}</b></span>
-      ${fs.existsSync(path.join(PIPELINE, '.paused'))
-        ? '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:#f0a500;color:#000;border-radius:6px;" onclick="pauseAction(\'resume\')" title="Pipeline pausado — click para reanudar">▶ Reanudar</button>'
-        : '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:rgba(251,188,5,0.18);color:#f0a500;border:1px solid rgba(251,188,5,0.4);border-radius:6px;" onclick="pauseAction(\'pause\')" title="Pausar lanzamientos del pipeline">⏸ Pausar</button>'}
+  <div class="hdr-bar">
+    <div class="hdr-left">
+      <h1 class="hdr-title">🐙 Pipeline V2</h1>
+      <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
+      <span class="hdr-uptime">UP ${pulpoUptime}</span>
+      <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
+    </div>
+    <div class="hdr-right">
+      <div class="hdr-clock" id="hdr-clock">--:--<span class="clock-sec">--</span></div>
+      <div class="hdr-date" id="hdr-date"></div>
     </div>
   </div>
-
-  <!-- orphan alert moved to system section -->
+  <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
-    <div class="kpi kpi-activos" data-tt='${ttActivos}'>
-      <span class="kpi-icon">🔄</span>
-      <div class="kpi-value">${activos}</div>
-      <div class="kpi-label">Activos en pipeline</div>
-    </div>
     <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
       <span class="kpi-icon">⚙️</span>
       <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
-      <div class="kpi-label">En ejecución ahora</div>
+      <div class="kpi-label">En ejecución</div>
     </div>
     <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
       <span class="kpi-icon">⏳</span>
       <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
-      <div class="kpi-label">Pendientes en cola</div>
+      <div class="kpi-label">En cola</div>
     </div>
     <div class="kpi kpi-blocked" data-tt='${ttStale}'>
       <span class="kpi-icon">🚨</span>
@@ -1751,17 +2072,22 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
       <span class="kpi-icon">📋</span>
       <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
-      <div class="kpi-label">Definidos listos</div>
+      <div class="kpi-label">Definidos</div>
     </div>
     <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
       <span class="kpi-icon">🚀</span>
       <div class="kpi-value success">${entregados}</div>
-      <div class="kpi-label">Entregados a prod</div>
+      <div class="kpi-label">Entregados</div>
+    </div>
+    <div class="kpi kpi-throughput" data-tt='${ttEntregados24h}'>
+      <span class="kpi-icon">📈</span>
+      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
+      <div class="kpi-label">Últimas 24h</div>
     </div>
   </div>
 
   <div class="dual-row">
-    <div class="bar-section dual-col">
+    <div class="bar-section dual-col panel-equipo">
       <h2>🧠 Equipo<span class="pw-toggles">${(() => {
         const pw = state.priorityWindows;
         const items = [
@@ -1792,7 +2118,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
       ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
       ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
     </div>
-    <div class="bar-section dual-col">
+    <div class="bar-section dual-col panel-sistema">
       <h2>💻 Sistema</h2>
       ${resourcesHTML}
       <div class="subsection-label" style="margin-top:14px">Servicios</div>
@@ -1839,15 +2165,68 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 </div>
 
 <script>
-// SSE live refresh — solo recarga si el estado cambió
+(function(){var c=document.getElementById('hdr-clock'),d=document.getElementById('hdr-date');if(!c)return;var D=['dom','lun','mar','mi\u00e9','jue','vie','s\u00e1b'],M=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];function t(){var n=new Date(),h=String(n.getHours()).padStart(2,'0'),m=String(n.getMinutes()).padStart(2,'0'),s=String(n.getSeconds()).padStart(2,'0');c.innerHTML=h+':'+m+'<span class="clock-sec">'+s+'</span>';d.textContent=D[n.getDay()]+' '+n.getDate()+' '+M[n.getMonth()]+' '+n.getFullYear()}t();setInterval(t,1000)})();
+// Guardar estado del Issue Tracker en sessionStorage
+let __itRestoring = false;
+function saveIssueTrackerState() {
+  if (__itRestoring) return;
+  try {
+    const expanded = [];
+    document.querySelectorAll('.ic-detail.open').forEach(d => {
+      const m = d.id.match(/detail-(\\d+)/);
+      if (m) expanded.push(m[1]);
+    });
+    const activeTab = document.querySelector('.ic-tab-active');
+    const filter = activeTab ? activeTab.dataset.filter : 'active';
+    const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, filter, scrollY }));
+  } catch(_) {}
+}
+
+// Guardar estado en TODA recarga (F5, SSE, navegación, etc.)
+window.addEventListener('beforeunload', saveIssueTrackerState);
+
+// SSE live refresh
 let lastHash = null;
 const es = new EventSource('/events');
 es.onmessage = e => {
-  // No recargar si el log viewer está abierto (perdería el panel)
-  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) location.reload();
+  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) {
+    saveIssueTrackerState();
+    location.reload();
+  }
   lastHash = e.data;
 };
 es.onerror = () => { setTimeout(() => location.reload(), 10000); };
+
+// Restaurar estado UI — se invoca después de definir las funciones necesarias
+function restoreIssueTrackerState() {
+  try {
+    const saved = sessionStorage.getItem('__it_state');
+    if (!saved) return;
+    const { expanded, filter, scrollY } = JSON.parse(saved);
+    __itRestoring = true;
+    // Restaurar expansiones
+    if (expanded && expanded.length > 0) {
+      expanded.forEach(id => {
+        const detail = document.getElementById('detail-' + id);
+        const btn = document.getElementById('expand-btn-' + id);
+        const header = detail ? detail.closest('.ic-card')?.querySelector('.ic-header') : null;
+        if (detail) { detail.classList.add('open'); detail.setAttribute('aria-hidden', 'false'); }
+        if (btn) { btn.classList.add('expanded'); btn.setAttribute('aria-expanded', 'true'); }
+        if (header) header.setAttribute('aria-expanded', 'true');
+      });
+    }
+    // Restaurar tab activo
+    if (filter && filter !== 'active') {
+      const tab = document.querySelector('.ic-tab[data-filter="' + filter + '"]');
+      if (tab) filterIssueTab(tab, filter);
+    }
+    __itRestoring = false;
+    // Restaurar posición de scroll
+    if (scrollY > 0) requestAnimationFrame(() => window.scrollTo(0, scrollY));
+    // NO borrar de sessionStorage — se sobreescribe en cada interacción
+  } catch(_) { __itRestoring = false; }
+}
 
 // KPI Tooltips
 const tt = document.getElementById('kpi-tooltip');
@@ -1994,11 +2373,38 @@ async function pwAction(window, action) {
   }
 }
 
-function toggleIssues(btn) {
-  const rows = document.querySelectorAll('.issue-overflow');
-  const expanded = rows.length > 0 && rows[0].classList.contains('show');
-  rows.forEach(r => r.classList.toggle('show', !expanded));
-  btn.textContent = expanded ? 'Ver más (' + rows.length + ' issues)' : 'Ver menos';
+function toggleIssueDetail(issueNum) {
+  const detail = document.getElementById('detail-' + issueNum);
+  const btn = document.getElementById('expand-btn-' + issueNum);
+  const header = detail ? detail.closest('.ic-card')?.querySelector('.ic-header') : null;
+  if (!detail) return;
+  const isOpen = detail.classList.contains('open');
+  const nowOpen = !isOpen;
+  detail.classList.toggle('open', nowOpen);
+  detail.setAttribute('aria-hidden', String(!nowOpen));
+  if (btn) { btn.classList.toggle('expanded', nowOpen); btn.setAttribute('aria-expanded', String(nowOpen)); }
+  if (header) header.setAttribute('aria-expanded', String(nowOpen));
+  saveIssueTrackerState();
+}
+
+function filterIssueTab(tabEl, filter) {
+  // Update tab active state + aria
+  document.querySelectorAll('.ic-tab').forEach(t => {
+    t.classList.remove('ic-tab-active');
+    t.setAttribute('aria-selected', 'false');
+  });
+  tabEl.classList.add('ic-tab-active');
+  tabEl.setAttribute('aria-selected', 'true');
+  // Filter cards
+  document.querySelectorAll('.ic-card').forEach(card => {
+    const status = card.dataset.status;
+    if (filter === 'all') {
+      card.classList.remove('ic-hidden');
+    } else {
+      card.classList.toggle('ic-hidden', status !== filter);
+    }
+  });
+  saveIssueTrackerState();
 }
 
 function showToast(msg, ok) {
@@ -2011,25 +2417,8 @@ function showToast(msg, ok) {
   setTimeout(() => el.remove(), 4000);
 }
 
-// Fase badge tooltips (reutiliza el mismo tooltip div)
-document.querySelectorAll('.fase-badge[data-fase-tt]').forEach(el => {
-  el.addEventListener('mouseenter', e => {
-    try {
-      const d = JSON.parse(el.dataset.faseTt);
-      const shown = d.items.slice(0, MAX_TT);
-      const rows = shown.map(it =>
-        '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a></div>'
-      ).join('');
-      const more = d.items.length > MAX_TT
-        ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
-      tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
-      tt.style.display = 'block';
-      positionTt(e);
-    } catch(_) {}
-  });
-  el.addEventListener('mousemove', positionTt);
-  el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
-});
+// ── Restaurar estado del Issue Tracker (tabs, expansiones, scroll) ────
+restoreIssueTrackerState();
 
 // ── Log Viewer ────────────────────────────────────────────────────────
 let logViewerES = null;
@@ -2838,9 +3227,305 @@ ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>P
 </body></html>`;
 }
 
+// --- Log Viewer (standalone page) ---
+
+function generateLogViewerHTML(filename, isLive) {
+  const title = filename.replace('.log', '').replace(/-/g, ' ');
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>${title} — Log Viewer</title>
+<style>
+:root{--bg:#0d1117;--sf:#161b22;--tx:#e6edf3;--dim:#8b949e;--bd:#30363d;--ac:#58a6ff;--gn:#3fb950;--rd:#f85149;--yl:#d29922;--or:#d18616}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font-family:'JetBrains Mono',Consolas,monospace;font-size:13px}
+.header{position:sticky;top:0;z-index:10;background:var(--sf);border-bottom:1px solid var(--bd);padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.title{font-size:1.1em;font-weight:700;color:var(--ac)}
+.badge{font-size:0.78em;padding:2px 10px;border-radius:10px;font-weight:600}
+.badge-live{background:rgba(248,81,73,0.15);color:var(--rd);border:1px solid rgba(248,81,73,0.3);animation:pulse 2s infinite}
+.badge-done{background:rgba(63,185,80,0.12);color:var(--gn);border:1px solid rgba(63,185,80,0.25)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+.controls{display:flex;gap:8px;margin-left:auto;align-items:center}
+.filter-btn{background:var(--bg);border:1px solid var(--bd);color:var(--dim);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:0.82em;font-family:inherit}
+.filter-btn:hover{background:var(--bd);color:var(--tx)}
+.filter-btn.active{background:var(--ac);color:#fff;border-color:var(--ac)}
+input[type=text]{background:var(--bg);border:1px solid var(--bd);color:var(--tx);padding:5px 10px;border-radius:4px;font-size:0.85em;width:200px;font-family:inherit}
+input[type=text]:focus{outline:none;border-color:var(--ac)}
+.stats{font-size:0.78em;color:var(--dim);padding:2px 8px}
+.log-body{padding:4px 0;overflow-y:auto;height:calc(100vh - 54px)}
+.ll{display:flex;padding:1px 16px;min-height:20px;line-height:1.5}
+.ll:hover{background:rgba(255,255,255,0.02)}
+.ll-num{color:var(--dim);min-width:40px;text-align:right;margin-right:12px;user-select:none;font-size:0.85em;padding-top:1px}
+.ll-ts{color:var(--dim);min-width:80px;margin-right:10px;font-size:0.85em;opacity:0.7;padding-top:1px}
+.ll-text{flex:1;white-space:pre-wrap;word-break:break-word}
+.ll-error .ll-text{color:var(--rd)}
+.ll-warning .ll-text{color:var(--yl)}
+.ll-tool .ll-text{color:var(--or)}
+.ll-success .ll-text{color:var(--gn)}
+.ll-meta .ll-text{color:var(--dim);font-style:italic}
+.ll-agent .ll-text{color:var(--ac);font-weight:500}
+.ll-hidden{display:none}
+.highlight{background:rgba(210,153,34,0.3);border-radius:2px;padding:0 1px}
+.scroll-btn{position:fixed;bottom:20px;right:20px;background:var(--ac);color:#fff;border:none;border-radius:20px;padding:8px 16px;cursor:pointer;font-size:0.85em;display:none;z-index:5;box-shadow:0 2px 8px rgba(0,0,0,0.4)}
+.scroll-btn.visible{display:block}
+</style>
+</head><body>
+<div class="header">
+  <span class="title">${title}</span>
+  <span class="badge ${isLive ? 'badge-live' : 'badge-done'}">${isLive ? '● LIVE' : '✓ Finalizado'}</span>
+  <div class="controls">
+    <button class="filter-btn active" data-f="relevant" onclick="setFilter(this,'relevant')">Relevante</button>
+    <button class="filter-btn" data-f="tools" onclick="setFilter(this,'tools')">Tools</button>
+    <button class="filter-btn" data-f="all" onclick="setFilter(this,'all')">Todo</button>
+    <input type="text" id="search" placeholder="Buscar..." oninput="doSearch(this.value)">
+    <span class="stats" id="stats"></span>
+  </div>
+</div>
+<div class="log-body" id="body"></div>
+<button class="scroll-btn" id="scrollBtn" onclick="scrollBottom()">⬇ Ir al final</button>
+<script>
+const body = document.getElementById('body');
+const statsEl = document.getElementById('stats');
+const scrollBtn = document.getElementById('scrollBtn');
+let allLines = [];
+let autoScroll = true;
+let currentFilter = 'relevant';
+let searchTerm = '';
+
+function parseTimestamp(raw) {
+  if (!raw || !raw.startsWith('{')) return '';
+  try {
+    const ev = JSON.parse(raw);
+    // timestamp viene en user events y system events
+    const ts = ev.timestamp || ev.message?.timestamp;
+    if (ts) {
+      const d = new Date(ts);
+      return d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+  } catch(_) {}
+  return '';
+}
+
+function parseLine(raw) {
+  if (!raw || !raw.trim()) return null;
+  if (!raw.startsWith('{')) return { text: raw, cls: classifyText(raw), ts: '', relevance: 'relevant' };
+  try {
+    const ev = JSON.parse(raw);
+    const ts = ev.timestamp || ev.message?.timestamp || '';
+    const fmtTs = ts ? new Date(ts).toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '';
+    switch (ev.type) {
+      case 'system':
+        if (ev.subtype === 'init') return { text: '[init] modelo: ' + (ev.model || '?'), cls: 'meta', ts: fmtTs, relevance: 'all' };
+        if (ev.subtype === 'task_started') return { text: '[task] ' + (ev.description || ''), cls: 'tool', ts: fmtTs, relevance: 'tools' };
+        return { text: '[system] ' + (ev.subtype || ''), cls: 'meta', ts: fmtTs, relevance: 'all' };
+      case 'assistant': {
+        const msg = ev.message;
+        if (!msg || !msg.content) return null;
+        const parts = [];
+        for (const c of msg.content) {
+          if (c.type === 'thinking') {
+            // Solo mostrar el texto de thinking, no la signature
+            const thought = c.thinking || '';
+            if (thought && thought.length < 500) parts.push({ text: '[pensando] ' + thought, cls: 'meta', relevance: 'relevant' });
+            else if (thought) parts.push({ text: '[pensando] ' + thought.substring(0, 300) + '...', cls: 'meta', relevance: 'all' });
+          }
+          if (c.type === 'text' && c.text) parts.push({ text: c.text, cls: 'agent', relevance: 'relevant' });
+          if (c.type === 'tool_use') {
+            const name = c.name || '?';
+            let detail = '';
+            const inp = c.input || {};
+            if (inp.command) detail = inp.command.substring(0, 200);
+            else if (inp.pattern) detail = inp.pattern;
+            else if (inp.file_path) detail = inp.file_path;
+            else if (inp.skill) detail = inp.skill + (inp.args ? ' ' + inp.args : '');
+            else if (inp.query) detail = inp.query.substring(0, 120);
+            else if (inp.prompt) detail = inp.prompt.substring(0, 120);
+            parts.push({ text: '[' + name + '] ' + detail, cls: 'tool', relevance: 'tools' });
+          }
+        }
+        if (parts.length === 0) return null;
+        if (parts.length === 1) return { ...parts[0], ts: fmtTs };
+        return parts.map((p, i) => ({ ...p, ts: i === 0 ? fmtTs : '' }));
+      }
+      case 'user': {
+        // Tool results — extraer solo info útil
+        const msg = ev.message;
+        const fmtTs2 = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '';
+        if (!msg?.content) return null;
+        for (const c of msg.content) {
+          if (c.type === 'tool_result') {
+            const txt = typeof c.content === 'string' ? c.content : '';
+            if (c.is_error) return { text: '[error] ' + txt.substring(0, 300), cls: 'error', ts: fmtTs2, relevance: 'relevant' };
+            // Resumir outputs largos
+            if (txt.length > 400) return { text: '[resultado] ' + txt.substring(0, 200) + '... (' + txt.length + ' chars)', cls: '', ts: fmtTs2, relevance: 'tools' };
+            if (txt.length > 0) return { text: '[resultado] ' + txt.substring(0, 300), cls: '', ts: fmtTs2, relevance: 'tools' };
+          }
+        }
+        return null;
+      }
+      case 'result': {
+        const cost = ev.cost_usd ? ' $' + ev.cost_usd.toFixed(4) : '';
+        const dur = ev.duration_ms ? ' ' + Math.round(ev.duration_ms / 1000) + 's' : '';
+        return { text: '[fin]' + cost + dur, cls: 'success', ts: '', relevance: 'relevant' };
+      }
+      case 'rate_limit_event': return null; // Siempre ocultar
+      default: return null;
+    }
+  } catch(_) { return { text: raw.substring(0, 300), cls: '', ts: '', relevance: 'all' }; }
+}
+
+function classifyText(text) {
+  if (/error|exception|fail|❌|CRASH|panic/i.test(text)) return 'error';
+  if (/warn|⚠|WARNING/i.test(text)) return 'warning';
+  if (/\\[Tool:|tool_use/i.test(text)) return 'tool';
+  if (/✓|passed|success|✔|APROBADO/i.test(text)) return 'success';
+  if (/^---\\s|^\\[.*\\]\\s*$|^=+$/.test(text)) return 'meta';
+  return '';
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderAll() {
+  const html = [];
+  allLines.forEach((l, i) => {
+    const visible = matchesFilter(l) && matchesSearch(l);
+    const cls = 'll' + (l.cls ? ' ll-' + l.cls : '') + (!visible ? ' ll-hidden' : '');
+    const textHtml = searchTerm ? highlightSearch(esc(l.text)) : esc(l.text);
+    html.push('<div class="' + cls + '" data-r="' + l.relevance + '"><span class="ll-num">' + (i+1) + '</span><span class="ll-ts">' + (l.ts||'') + '</span><span class="ll-text">' + textHtml + '</span></div>');
+  });
+  body.innerHTML = html.join('');
+  updateStats();
+  if (autoScroll) scrollBottom();
+}
+
+function appendLines(newParsed) {
+  const start = allLines.length;
+  allLines.push(...newParsed);
+  const frag = document.createDocumentFragment();
+  newParsed.forEach((l, i) => {
+    const idx = start + i;
+    const visible = matchesFilter(l) && matchesSearch(l);
+    const div = document.createElement('div');
+    div.className = 'll' + (l.cls ? ' ll-' + l.cls : '') + (!visible ? ' ll-hidden' : '');
+    div.dataset.r = l.relevance;
+    div.innerHTML = '<span class="ll-num">' + (idx+1) + '</span><span class="ll-ts">' + (l.ts||'') + '</span><span class="ll-text">' + (searchTerm ? highlightSearch(esc(l.text)) : esc(l.text)) + '</span>';
+    frag.appendChild(div);
+  });
+  body.appendChild(frag);
+  updateStats();
+  if (autoScroll) scrollBottom();
+}
+
+function matchesFilter(l) {
+  if (currentFilter === 'all') return true;
+  if (currentFilter === 'relevant') return l.relevance === 'relevant' || l.cls === 'error' || l.cls === 'warning' || l.cls === 'success';
+  if (currentFilter === 'tools') return l.relevance !== 'all';
+  return true;
+}
+
+function matchesSearch(l) {
+  if (!searchTerm) return true;
+  return l.text.toLowerCase().includes(searchTerm.toLowerCase());
+}
+
+function highlightSearch(html) {
+  if (!searchTerm) return html;
+  if (!searchTerm) return html;
+  var idx = html.toLowerCase().indexOf(searchTerm.toLowerCase());
+  if (idx === -1) return html;
+  var result = '';
+  var last = 0;
+  while (idx !== -1 && last < html.length) {
+    result += html.substring(last, idx) + '<span class="highlight">' + html.substring(idx, idx + searchTerm.length) + '</span>';
+    last = idx + searchTerm.length;
+    idx = html.toLowerCase().indexOf(searchTerm.toLowerCase(), last);
+  }
+  result += html.substring(last);
+  return result;
+}
+
+function setFilter(btn, f) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.ll').forEach(el => {
+    const r = el.dataset.r;
+    const l = allLines[parseInt(el.querySelector('.ll-num')?.textContent) - 1];
+    if (l) el.classList.toggle('ll-hidden', !matchesFilter(l) || !matchesSearch(l));
+  });
+  updateStats();
+}
+
+function doSearch(val) {
+  searchTerm = val;
+  renderAll();
+}
+
+function updateStats() {
+  const total = allLines.length;
+  const visible = document.querySelectorAll('.ll:not(.ll-hidden)').length;
+  statsEl.textContent = visible + '/' + total + ' líneas';
+}
+
+function scrollBottom() {
+  body.scrollTop = body.scrollHeight;
+  autoScroll = true;
+  scrollBtn.classList.remove('visible');
+}
+
+body.addEventListener('scroll', () => {
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+  autoScroll = atBottom;
+  scrollBtn.classList.toggle('visible', !atBottom);
+});
+
+function processRawLines(rawLines) {
+  const parsed = [];
+  for (const raw of rawLines) {
+    const result = parseLine(raw);
+    if (!result) continue;
+    if (Array.isArray(result)) parsed.push(...result);
+    else parsed.push(result);
+  }
+  return parsed;
+}
+
+// SSE stream
+const es = new EventSource('/logs/stream/' + encodeURIComponent('${filename}'));
+es.onmessage = function(e) {
+  try {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'init') {
+      allLines = processRawLines(msg.lines);
+      renderAll();
+    } else if (msg.type === 'append') {
+      appendLines(processRawLines(msg.lines));
+    }
+  } catch(_) {}
+};
+es.onerror = function() {
+  document.querySelector('.badge').className = 'badge badge-done';
+  document.querySelector('.badge').textContent = '✓ Desconectado';
+};
+</script>
+</body></html>`;
+}
+
 // --- Server ---
 
 const server = http.createServer((req, res) => {
+  // Log viewer en ventana dedicada
+  if (req.url.startsWith('/logs/view/')) {
+    const parts = req.url.slice(11).split('?');
+    const filename = path.basename(parts[0]).replace(/[^a-zA-Z0-9\-\.]/g, '');
+    const isLive = (parts[1] || '').includes('live=1');
+    const logPath = path.join(LOG_DIR, filename);
+    if (!fs.existsSync(logPath)) { res.writeHead(404); res.end('Log no encontrado'); return; }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(generateLogViewerHTML(filename, isLive));
+    return;
+  }
+
   // Servir logs y PDFs como archivos estáticos
   if (req.url.startsWith('/logs/') && !req.url.startsWith('/logs/stream/')) {
     const filename = path.basename(req.url.slice(6)).replace(/[^a-zA-Z0-9\-\.]/g, '');
