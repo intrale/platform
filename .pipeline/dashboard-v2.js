@@ -2807,7 +2807,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
 
 /* Lane card rica (Opción E + polish) */
-.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;font-size:0.78em;color:var(--tx);transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s;overflow:hidden}
+.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;font-size:0.78em;color:var(--tx);transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s;overflow:hidden;flex-shrink:0}
 .lc-card:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,0.3);border-left-color:var(--ac)}
 .lc-card.lc-running{border-left-color:#2dd4bf}
 .lc-card.lc-failed{border-left-color:var(--rd)}
