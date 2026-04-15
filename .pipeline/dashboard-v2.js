@@ -1420,8 +1420,6 @@ function generateHTML(state) {
         <div class="rgauge-spark" title="Tendencia RAM últimos minutos">${sparklineSVG(memHist, memColor, { w: 220, h: 32, max: 100 })}</div>
       </div>
     </div>
-    ${blocked ? '<div class="resource-alert">\u26D4 Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
-    ${fs.existsSync(path.join(PIPELINE, '.paused')) ? '<div class="resource-alert" style="background:rgba(251,188,5,0.12);border-color:rgba(251,188,5,0.4);color:#f0a500;">\u23F8\uFE0F Lanzamientos pausados por el usuario <button class="ctl-btn" style="margin-left:12px;padding:2px 10px;font-size:0.85em;" onclick="pauseAction(\'resume\')">\u25B6 Reanudar</button></div>' : ''}
     ${stale > 0 ? `<div class="resource-alert">\u26A0\uFE0F ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // Rechazos recientes
@@ -2045,9 +2043,13 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ic-card.ic-hidden{display:none}
 
 /* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
-.dual-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
-.dual-col{min-width:0}
-@media(max-width:1100px){.dual-row{grid-template-columns:1fr}}
+.dual-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px;align-items:start}
+.dual-col{min-width:0;max-height:520px;overflow-y:auto;scroll-behavior:smooth}
+.dual-col::-webkit-scrollbar{width:6px}
+.dual-col::-webkit-scrollbar-track{background:transparent}
+.dual-col::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:3px}
+.dual-col::-webkit-scrollbar-thumb:hover{background:var(--bd)}
+@media(max-width:1100px){.dual-row{grid-template-columns:1fr}.dual-col{max-height:none;overflow-y:visible}}
 
 /* ══ Agent Card v2 (En Ejecución) ════════════════════════════════════ */
 .agent-card{
@@ -2312,14 +2314,31 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-start{background:var(--gn2);color:var(--gn)}
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
-/* Priority Windows (inline toggles in Equipo header) */
-.pw-toggles{margin-left:auto;display:inline-flex;gap:6px;font-size:0.65em;vertical-align:middle}
-.pw-toggle{padding:2px 10px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none}
+/* Priority Windows (inline toggles — used en barra de control global) */
+.pw-toggles{display:inline-flex;gap:8px;vertical-align:middle;align-items:center}
+.pw-toggle{padding:4px 12px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none;font-size:0.85em;min-height:24px;display:inline-flex;align-items:center;line-height:1}
 .pw-toggle-active{background:var(--yl2);color:var(--yl);border-color:var(--yl);animation:pwPulse 2.5s ease-in-out infinite}
 .pw-toggle-inactive{background:var(--sf2);color:var(--dim);border-color:var(--bd)}
 .pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg)}
 .pw-toggle.pw-build.pw-toggle-active{background:var(--ac2);color:var(--ac);border-color:var(--ac)}
 @keyframes pwPulse{0%,100%{opacity:1}50%{opacity:0.65}}
+
+/* ── Pipeline control bar (global status + Priority Windows) ─────────── */
+.pipeline-ctrl-bar{padding:8px 18px;display:flex;align-items:center;gap:14px;font-size:0.85em;border-bottom:1px solid var(--bd);min-height:40px;background:var(--sf);position:sticky;top:56px;z-index:9;transition:background 0.25s,border-color 0.25s,color 0.25s;flex-wrap:wrap}
+.pipeline-ctrl-bar.ctrl-ok{background:var(--sf);color:var(--dim)}
+.pipeline-ctrl-bar.ctrl-priority-qa{background:rgba(210,153,34,0.12);color:var(--yl);border-bottom-color:rgba(210,153,34,0.4)}
+.pipeline-ctrl-bar.ctrl-priority-build{background:rgba(88,166,255,0.10);color:var(--ac);border-bottom-color:rgba(88,166,255,0.4)}
+.pipeline-ctrl-bar.ctrl-paused{background:rgba(251,188,5,0.10);color:#f0a500;border-bottom-color:rgba(251,188,5,0.4)}
+.pipeline-ctrl-bar.ctrl-blocked{background:rgba(248,81,73,0.10);color:var(--rd);border-bottom-color:rgba(248,81,73,0.4);animation:pausePulse 2s infinite}
+.pipeline-ctrl-bar.ctrl-stale{background:rgba(210,153,34,0.08);color:var(--yl);border-bottom-color:rgba(210,153,34,0.3)}
+.ctrl-bar-status{display:inline-flex;align-items:center;gap:8px;font-weight:600;letter-spacing:0.3px}
+.ctrl-bar-status-icon{font-size:1.05em}
+.ctrl-bar-sep{width:1px;height:16px;background:var(--bd);margin:0 2px}
+.ctrl-bar-spacer{margin-left:auto}
+.ctrl-bar-btn{padding:4px 12px;border-radius:10px;cursor:pointer;font-size:0.92em;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-weight:600;min-height:24px;display:inline-flex;align-items:center;gap:4px;transition:background 0.15s,transform 0.1s}
+.ctrl-bar-btn:hover{background:color-mix(in srgb, currentColor 15%, transparent)}
+.ctrl-bar-btn:active{transform:scale(0.96)}
+.ctrl-bar-label{font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:var(--dim);font-weight:600}
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
@@ -2522,6 +2541,76 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     </div>
   </div>
   <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
+  ${(() => {
+    const pw = state.priorityWindows || {};
+    const qaActive = pw.qa && pw.qa.active;
+    const buildActive = pw.build && pw.build.active;
+    const blockedNow = (typeof blocked !== 'undefined') && blocked;
+    let barCls = 'ctrl-ok';
+    if (blockedNow) barCls = 'ctrl-blocked';
+    else if (isPaused) barCls = 'ctrl-paused';
+    else if (qaActive) barCls = 'ctrl-priority-qa';
+    else if (buildActive) barCls = 'ctrl-priority-build';
+    else if (stale > 0) barCls = 'ctrl-stale';
+
+    let statusHtml;
+    if (blockedNow) {
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>BLOQUEADO por saturación de recursos</span>';
+    } else if (isPaused) {
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>PIPELINE PAUSADO por usuario</span>'
+        + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
+    } else if (qaActive) {
+      const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>QA PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo QA puede lanzar</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar QA Priority">\u2715 Desactivar</button>';
+    } else if (buildActive) {
+      const elapsed = pw.build.activatedAt ? Math.round((Date.now() - pw.build.activatedAt) / 60000) : 0;
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>BUILD PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo Build puede lanzar</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar Build Priority">\u2715 Desactivar</button>';
+    } else if (stale > 0) {
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' stale (>30m trabajando)</span>';
+    } else {
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>Sistema OK \u00B7 ' + trabajando + ' en ejecución</span>';
+    }
+
+    // Toggles de Priority Windows (siempre visibles a la derecha, salvo si ya hay una activa en el status)
+    let pwThreshold = 3;
+    try {
+      const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
+      pwThreshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+    } catch {}
+    const items = [
+      { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
+      { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
+    ];
+    const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
+    const togglesHtml = items.map(i => {
+      const s = pw[i.key];
+      const active = s && s.active;
+      const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
+      const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
+      let tip = active
+        ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
+        : 'Activar ' + i.label + ' Priority (umbral auto: ' + pwThreshold + ' issues)';
+      if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
+      const action = active ? 'off' : 'on';
+      const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
+      return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
+    }).join('');
+
+    // Toggle de pausa (solo cuando no está pausado ni bloqueado — si está pausado, ya hay botón Reanudar en el status)
+    const pauseBtnHtml = (!isPaused && !blockedNow)
+      ? '<button class="ctrl-bar-btn" onclick="pauseAction(\'pause\')" title="Pausar todos los lanzamientos">\u23F8 Pausar</button>'
+      : '';
+
+    return '<div class="pipeline-ctrl-bar ' + barCls + '">'
+      + statusHtml
+      + '<span class="ctrl-bar-spacer"></span>'
+      + '<span class="ctrl-bar-label">Priority</span>'
+      + '<span class="pw-toggles">' + togglesHtml + '</span>'
+      + (pauseBtnHtml ? '<span class="ctrl-bar-sep"></span>' + pauseBtnHtml : '')
+      + '</div>';
+  })()}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
@@ -2559,33 +2648,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
   <div class="dual-row">
     <div class="bar-section dual-col panel-equipo">
-      <h2>🧠 Equipo<span class="pw-toggles">${(() => {
-        const pw = state.priorityWindows;
-        const items = [
-          { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
-          { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
-        ];
-        // Leer umbral configurado
-        let threshold = 3;
-        try {
-          const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
-          threshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
-        } catch {}
-        const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
-        return items.map(i => {
-          const s = pw[i.key];
-          const active = s && s.active;
-          const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
-          const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
-          let tip = active
-            ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
-            : 'Activar ' + i.label + ' Priority (umbral auto: ' + threshold + ' issues)';
-          if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
-          const action = active ? 'off' : 'on';
-          const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
-          return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
-        }).join('');
-      })()}</span></h2>
+      <h2>🧠 Equipo</h2>
       ${agentTeamCards ? '<div class="subsection-label">En ejecución</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
       ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Equipo disponible' : 'Equipo disponible') + '</div><div class="persona-stack">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
     </div>
