@@ -574,6 +574,13 @@ const SKILL_CATEGORY = {
   tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
   guru: 'ops', perf: 'ops', build: 'ops', hotfix: 'ops', delivery: 'ops',
 };
+// Etiquetas cortas por fase (2 chars) para mostrar debajo de cada dot
+const FASE_LABEL_SHORT = {
+  analisis: 'An', criterios: 'Cr', sizing: 'Si',
+  validacion: 'Va', dev: 'Dv', build: 'Bd',
+  verificacion: 'Vf', aprobacion: 'Ap', entrega: 'En',
+};
+
 const CATEGORY_META = {
   product:  { label: 'Producto', icon: '🎯', color: '#d29922' },
   dev:      { label: 'Desarrollo', icon: '🛠', color: '#3fb950' },
@@ -825,15 +832,16 @@ function generateHTML(state) {
     const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
     const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-    const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
+    const logIcon = e.hasLog ? `<span class="chip-log-icon" title="Ver logs">📄</span>` : '';
+    const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}${logIcon}`;
     const killBtn = e.estado === 'trabajando'
       ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
       : '';
     const pdfBtn = e.hasRejectionPdf
-      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
+      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📑</a>`
       : '';
 
-    const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
+    const inner = `<span class="chip ${cls}${staleClass}${e.hasLog ? ' chip-has-log' : ''}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
     if (e.hasLog) {
       const isLive = e.estado === 'trabajando';
       return `<a href="/logs/view/${e.logFile}${isLive ? '?live=1' : ''}" class="log-link" target="_blank" onclick="event.stopPropagation()">${inner}</a>`;
@@ -862,6 +870,30 @@ function generateHTML(state) {
   // --- Card-based Issue Tracker ---
   const activeIssues = sorted.filter(([, d]) => !isComplete(d));
   const completedIssues = sorted.filter(([, d]) => isComplete(d));
+
+  // ── Issue Tracker Lanes (Opción E): 3 lanes balanceadas con sub-breakdown ──
+  // Definición (análisis+criterios+sizing) → Desarrollo+Build (val+dev+build) → QA+Entrega (verif+aprob+entrega)
+  function macroLane(d) {
+    if (isComplete(d)) return 'done';
+    const fa = d.faseActual;
+    if (!fa) return 'def';
+    const [pipe, fase] = fa.split('/');
+    if (pipe === 'definicion') return 'def';
+    if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
+    return 'qa'; // verificacion, aprobacion, entrega
+  }
+  const laneMeta = {
+    def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
+    dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
+    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · aprob · entrega',      subFases: ['verificacion', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', aprobacion: 'Aprob', entrega: 'Entrega' } },
+  };
+  const laneCards = { def: [], dev: [], qa: [], done: [] };
+  const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
+  const laneStats = {
+    def: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    dev: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    qa:  { running: 0, failed: 0, stale: 0, subCounts: {} },
+  };
 
   let issueCards = '';
   for (const [issueNum, data] of sorted) {
@@ -990,7 +1022,29 @@ function generateHTML(state) {
       const connector = i < allFases.length - 1
         ? `<span class="stepper-conn${isDefLast ? ' stepper-conn-sep' : ''}"></span>`
         : '';
-      stepperDots += `<span class="stepper-dot ${dotCls}${isCurrent ? ' dot-current' : ''}" title="${escapedTitle}">${dotIcon}</span>${connector}`;
+      // Data para popup solo si la fase tiene entries
+      let popupAttr = '';
+      if (entries.length > 0) {
+        const popupSkills = entries.map(e => ({
+          skill: e.skill,
+          estado: e.estado,
+          resultado: e.resultado || null,
+          dur: e.durationMs ? fmtDuration(e.durationMs) : null,
+          log: e.hasLog ? '/logs/view/' + e.logFile + (e.estado === 'trabajando' ? '?live=1' : '') : null,
+          pdf: e.hasRejectionPdf ? '/logs/' + e.rejectionPdf : null,
+          motivo: e.motivo ? e.motivo.slice(0, 160) : null,
+          retry: e._isRetry ? e._runTotal : null,
+        }));
+        const popupJson = JSON.stringify({ fase, pipeline, issue: issueNum, skills: popupSkills });
+        popupAttr = ` data-popup="${popupJson.replace(/"/g, '&quot;').replace(/'/g, '&#39;')}"`;
+      }
+      const clickable = entries.length > 0 ? ' dot-clickable' : '';
+      const onclick = entries.length > 0 ? ` onclick="event.preventDefault();event.stopPropagation();showDotPopup(event,this)"` : '';
+      const initial = FASE_LABEL_SHORT[fase] || fase.slice(0, 2);
+      stepperDots += `<span class="stepper-cell">`
+        + `<span class="stepper-dot ${dotCls}${isCurrent ? ' dot-current' : ''}${clickable}" title="${escapedTitle}"${popupAttr}${onclick}>${dotIcon}</span>`
+        + `<span class="stepper-initial${isCurrent ? ' stepper-initial-current' : ''}">${initial}</span>`
+        + `</span>${connector}`;
     }
 
     // Current phase label for the card
@@ -1082,20 +1136,176 @@ function generateHTML(state) {
       <div class="ic-progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="ic-progress-fill${data.estadoActual === 'trabajando' ? ' ic-progress-active' : ''}" style="width:${pct}%"></div></div>
       ${detailHTML}
     </div>`;
+
+    // ── Lane card Opción E+polish (3 lanes + rich cards + logs + bloqueos) ──
+    const lane = macroLane(data);
+    const working = data.estadoActual === 'trabajando';
+    const hasRejection = data.labels?.some(l => l === 'qa:failed');
+    const isStale = data.staleMin > 30;
+    const isBlocked = blockedBy != null;
+    const blocksSomething = blocksOthers.length > 0;
+    const laneCardCls = complete ? 'lc-done'
+      : isStale ? 'lc-stale'
+      : hasRejection ? 'lc-failed'
+      : isBlocked ? 'lc-blocked'
+      : working ? 'lc-running' : '';
+    // Sub-fase actual (para filtros y stats)
+    const currentFase = data.faseActual ? data.faseActual.split('/')[1] : '';
+    // Stats agregadas
+    if (lane !== 'done' && laneStats[lane]) {
+      if (working) laneStats[lane].running++;
+      if (hasRejection) laneStats[lane].failed++;
+      if (isStale) laneStats[lane].stale++;
+      if (currentFase) laneStats[lane].subCounts[currentFase] = (laneStats[lane].subCounts[currentFase] || 0) + 1;
+    }
+    const laneElapsedCls = isStale ? 'lc-warn' : working ? 'lc-teal' : '';
+    const laneElapsedTxt = complete ? 'completado'
+      : data.staleMin > 60 ? `${data.staleMin}m 🚩`
+      : data.staleMin > 30 ? `${data.staleMin}m`
+      : working ? `${data.staleMin}m` : '—';
+    // Avatares de skills: prioriza trabajando, fallback al último que ejecutó en la fase actual
+    const currentSkills = [];
+    const currentFaseEntries = (data.faseActual && data.fases[data.faseActual]) || [];
+    for (const e of currentFaseEntries) {
+      if (e.estado === 'trabajando' && !currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+    }
+    let isFallbackAvatar = false;
+    if (currentSkills.length === 0 && currentFaseEntries.length > 0) {
+      // Fallback: último skill que ejecutó (ordenado por updatedAt desc)
+      const sortedEntries = [...currentFaseEntries].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      for (const e of sortedEntries) {
+        if (!currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+        if (currentSkills.length >= 2) break;
+      }
+      isFallbackAvatar = true;
+    }
+    const avatarsHTML = currentSkills.length > 0
+      ? `<div class="lc-avatars${isFallbackAvatar ? ' lc-avatars-dim' : ''}">` + currentSkills.slice(0, 3).map(s => {
+          const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
+          return `<span class="lc-av" style="background:${p.color}" title="${p.name}${isFallbackAvatar ? ' (último ejecutado)' : ''}">${p.icon}</span>`;
+        }).join('') + (currentSkills.length > 3 ? `<span class="lc-av-more">+${currentSkills.length - 3}</span>` : '') + '</div>'
+      : '';
+    const multiSkillTag = currentSkills.length > 1 && !isFallbackAvatar ? ` <span class="lc-pill-x">×${currentSkills.length}</span>` : '';
+    const lanePill = complete
+      ? '<span class="lc-pill lc-pill-done">✓ entregado</span>'
+      : hasRejection
+      ? `<span class="lc-pill lc-pill-fail">qa:failed</span>`
+      : working
+      ? `<span class="lc-pill lc-pill-run">${currentFase}${multiSkillTag}</span>`
+      : `<span class="lc-pill lc-pill-wait">${currentFase || 'pendiente'}</span>`;
+    // Icons de bloqueo: 🚫 (bloqueado) + ⛓ (bloquea a otros)
+    let lcBlockIcons = '';
+    if (isBlocked) {
+      const depTxt = blockedBy.length > 0 ? blockedBy.map(d => `#${d}`).join(', ') : 'dep sin especificar';
+      lcBlockIcons += `<span class="lc-block-icon lc-block-locked" title="Bloqueado por: ${depTxt}" onclick="event.stopPropagation()">🚫</span>`;
+    }
+    if (blocksSomething) {
+      const blockTxt = blocksOthers.map(d => `#${d}`).join(', ');
+      lcBlockIcons += `<span class="lc-block-icon lc-block-blocking" title="Bloquea a: ${blockTxt}" onclick="event.stopPropagation()">⛓</span>`;
+    }
+    const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
+    const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
+    // Data atributos para búsqueda client-side
+    const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
+    // Prioridad para sort: stale (staleMin desc) > failed (bounces desc) > blocked > running > pending
+    let priority;
+    if (isStale) priority = 1000 + (data.staleMin || 0);
+    else if (hasRejection) priority = 700 + (data.bounces || 0);
+    else if (isBlocked) priority = 500;
+    else if (working) priority = 300 - (data.staleMin || 0);
+    else priority = 100 - (data.staleMin || 0);
+    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" title="${laneTitle}">
+      <div class="lc-card-main">
+        <div class="lc-top">
+          <div class="lc-top-left">
+            <span class="lc-num">#${issueNum}</span>
+            ${lcBlockIcons}
+          </div>
+          <div class="lc-top-right">
+            <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
+            <a class="lc-gh" href="${GH(issueNum)}" target="_blank" title="Ver en GitHub" onclick="event.stopPropagation()">↗</a>
+          </div>
+        </div>
+        <div class="lc-title">${flagSpan}${laneTitle}</div>
+        <div class="lc-foot">
+          <div class="lc-foot-left">
+            <span class="lc-ps">${stepperDots}</span>
+            ${lanePill}
+          </div>
+          ${avatarsHTML}
+        </div>
+      </div>
+    </div>`;
+    laneCards[lane].push({ html: cardHTML, priority });
+    laneCounts[lane]++;
   }
+  // Sort dentro de cada lane por criticidad desc
+  for (const k of Object.keys(laneCards)) {
+    laneCards[k].sort((a, b) => b.priority - a.priority);
+    laneCards[k] = laneCards[k].map(x => x.html).join('');
+  }
+
+  // Render 3 lanes (Opción E) con sub-breakdown + cards ricas
+  const laneOrder = ['def', 'dev', 'qa'];
+  const lanesHTML = laneOrder.map(k => {
+    const m = laneMeta[k];
+    const stats = laneStats[k];
+    const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
+    // Sub-breakdown: chips clickeables por sub-fase (filtra cards del lane)
+    const maxSubCount = Math.max(...m.subFases.map(sf => stats.subCounts[sf] || 0), 1);
+    const subBreakdown = '<div class="it-sub-breakdown">' +
+      `<div class="it-sub-chip it-sub-all" data-lane="${k}" data-subfase="" onclick="filterLaneBySubFase('${k}','')" title="Mostrar todos">Todos <b>${laneCounts[k]}</b></div>` +
+      m.subFases.map(sf => {
+        const c = stats.subCounts[sf] || 0;
+        const isHot = c === maxSubCount && c > 0 && m.subFases.some(other => other !== sf && (stats.subCounts[other] || 0) < c);
+        const disabled = c === 0 ? ' it-sub-disabled' : '';
+        return `<div class="it-sub-chip${isHot ? ' hot' : ''}${disabled}" data-lane="${k}" data-subfase="${sf}" onclick="filterLaneBySubFase('${k}','${sf}')" title="Filtrar por ${m.subLabels[sf]}">${m.subLabels[sf]} <b>${c}</b></div>`;
+      }).join('') + '</div>';
+    // Meta: badges
+    const metaBadges = [];
+    if (stats.running > 0) metaBadges.push(`<span class="it-badge run">${stats.running} activo${stats.running > 1 ? 's' : ''}</span>`);
+    if (stats.failed > 0) metaBadges.push(`<span class="it-badge fail">${stats.failed} failed</span>`);
+    if (stats.stale > 0) metaBadges.push(`<span class="it-badge warn">${stats.stale} stale</span>`);
+    return `<div class="it-lane it-lane-${k}" data-lane="${k}" style="--lane-color:${m.color}">
+      <div class="it-lane-head">
+        <span class="it-lane-name"><span class="it-lane-dot"></span>${m.label} <span class="it-lane-sub">${m.sub}</span></span>
+        <div class="it-lane-meta">
+          <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+          ${metaBadges.join('')}
+        </div>
+      </div>
+      ${subBreakdown}
+      <div class="it-lane-cards">${cards}</div>
+    </div>`;
+  }).join('');
+  const doneLaneHTML = laneCounts.done > 0 ? `<details class="it-done-section" data-lane="done">
+    <summary class="it-done-head">
+      <span class="it-done-arrow">▸</span>
+      <span>✓ Completados recientes</span>
+      <span class="it-done-count"><b>${laneCounts.done}</b></span>
+    </summary>
+    <div class="it-done-grid">${laneCards.done}</div>
+  </details>` : '';
 
   const matrixHTML = `
     <div class="matrix-section" id="issue-tracker">
       <div class="matrix-header">
         <h2>📊 Issue Tracker</h2>
+        <div class="it-search-box">
+          <input type="text" class="it-search" id="it-search-input" placeholder="🔍 Buscar por # o título…" oninput="filterIssuesBySearch(this.value)" />
+          <span class="it-search-clear" onclick="clearIssueSearch()" title="Limpiar">×</span>
+        </div>
         <div class="ic-tabs" role="tablist" aria-label="Issue filter">
           <button class="ic-tab ic-tab-active" role="tab" aria-selected="true" data-filter="active" onclick="filterIssueTab(this,'active')">En progreso <span class="ic-tab-count">${activeIssues.length}</span></button>
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="completed" onclick="filterIssueTab(this,'completed')">Completados <span class="ic-tab-count">${completedIssues.length}</span></button>
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
       </div>
-      <div class="ic-list">
-        ${issueCards}
+      <div class="it-lanes">${lanesHTML}</div>
+      ${doneLaneHTML}
+      <div id="dot-popup" class="dot-popup" style="display:none">
+        <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
+        <div class="dp-body"></div>
       </div>
     </div>`;
 
@@ -1755,7 +1965,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:18px 20px;margin-bottom:20px;
 }
-.matrix-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.matrix-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
 .matrix-count{
   font-size:0.8em;color:var(--dim);font-weight:400;
   background:var(--bg);border:1px solid var(--bd);border-radius:20px;
@@ -2596,6 +2806,157 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 
+/* ── Issue Tracker Lanes (Opción E): 3 columnas iguales ─────────────────── */
+.it-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+.it-lane.it-lane-empty-search{opacity:0.35}
+
+/* Search input */
+.it-search-box{position:relative;display:inline-flex;align-items:center;margin-right:auto;margin-left:14px;flex:1;max-width:320px}
+.it-search{width:100%;padding:5px 26px 5px 10px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;font-size:0.82em;color:var(--tx);outline:none;transition:border-color 0.15s}
+.it-search:focus{border-color:var(--ac);box-shadow:0 0 0 1px rgba(88,166,255,0.3)}
+.it-search::placeholder{color:var(--dim)}
+.it-search-clear{position:absolute;right:8px;color:var(--dim);cursor:pointer;font-size:1.1em;padding:0 4px}
+.it-search-clear:hover{color:var(--rd)}
+
+/* Stepper cell (dot + initial) */
+.stepper-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;position:relative}
+.stepper-initial{font-size:0.58em;color:var(--dim);text-transform:uppercase;letter-spacing:0.3px;font-weight:500;line-height:1;margin-top:1px;font-variant-numeric:tabular-nums}
+.stepper-initial-current{color:var(--teal,#2dd4bf);font-weight:700}
+.stepper-dot.dot-clickable{cursor:pointer;transition:transform 0.1s}
+.stepper-dot.dot-clickable:hover{transform:scale(1.25)}
+
+/* Dot popup */
+.dot-popup{background:var(--sf);border:1px solid var(--ac);border-radius:8px;padding:0;min-width:240px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,0.5);z-index:10000;font-size:0.82em}
+.dp-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--bd);background:var(--sf2);border-radius:8px 8px 0 0}
+.dp-title{font-size:0.95em;color:var(--tx);text-transform:capitalize}
+.dp-title b{color:var(--ac);text-transform:capitalize}
+.dp-close{color:var(--dim);cursor:pointer;font-size:1.2em;padding:0 4px;line-height:1}
+.dp-close:hover{color:var(--rd)}
+.dp-body{padding:8px 12px}
+.dp-empty{color:var(--dim);font-style:italic;padding:6px 0;font-size:0.85em;text-align:center}
+.dp-row{padding:6px 0;border-bottom:1px dashed rgba(255,255,255,0.05)}
+.dp-row:last-child{border-bottom:none}
+.dp-row-top{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.dp-state{font-weight:700;font-size:0.95em;min-width:14px;text-align:center}
+.dp-ok .dp-state{color:var(--gn)}
+.dp-fail .dp-state{color:var(--rd)}
+.dp-run .dp-state{color:var(--teal,#2dd4bf)}
+.dp-pending .dp-state{color:var(--dim)}
+.dp-skill{font-weight:700;color:var(--tx);text-transform:capitalize}
+.dp-retry{background:rgba(251,191,36,0.15);color:var(--yl);padding:0 5px;border-radius:4px;font-size:0.82em;font-weight:700}
+.dp-dur{color:var(--dim);font-variant-numeric:tabular-nums;font-size:0.9em;margin-left:auto}
+.dp-motivo{color:var(--rd);font-size:0.85em;line-height:1.3;margin:3px 0 4px 20px;font-style:italic;opacity:0.9}
+.dp-links{display:flex;gap:8px;margin-left:20px;margin-top:3px}
+.dp-log{color:var(--ac);text-decoration:none;font-size:0.85em;padding:1px 0}
+.dp-log:hover{text-decoration:underline}
+.it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 10px 8px 10px;display:flex;flex-direction:column;min-width:0}
+.it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
+.it-lane-name{font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px;color:var(--lane-color);min-width:0}
+.it-lane-dot{width:6px;height:6px;border-radius:50%;background:var(--lane-color);flex-shrink:0}
+.it-lane-sub{font-size:0.78em;color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;margin-left:2px}
+.it-lane-meta{display:flex;gap:5px;align-items:center;font-size:0.7em;flex-wrap:wrap}
+.it-lane-count{background:var(--sf);color:var(--tx);padding:2px 8px;border-radius:10px;font-weight:700}
+.it-lane-count b{color:var(--tx);font-weight:800}
+.it-badge{padding:1px 6px;border-radius:6px;font-weight:700}
+.it-badge.run{color:#2dd4bf;background:rgba(45,212,191,0.12)}
+.it-badge.fail{color:var(--rd);background:rgba(248,113,113,0.12)}
+.it-badge.warn{color:var(--yl);background:rgba(251,191,36,0.12)}
+
+/* Sub-breakdown chips (clickeables) */
+.it-sub-breakdown{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}
+.it-sub-chip{flex:1;padding:4px 8px;background:var(--sf);border-radius:5px;text-align:center;color:var(--dim);font-size:0.68em;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:background 0.15s,border-color 0.15s}
+.it-sub-chip:hover{background:var(--panel);border-color:rgba(109,140,255,0.3)}
+.it-sub-chip b{color:var(--tx);font-weight:800;font-variant-numeric:tabular-nums}
+.it-sub-chip.hot{color:var(--yl);border-color:rgba(251,191,36,0.3)}
+.it-sub-chip.active{background:rgba(109,140,255,0.15);border-color:var(--ac);color:var(--ac)}
+.it-sub-chip.active b{color:var(--ac)}
+.it-sub-chip.it-sub-disabled{opacity:0.45;cursor:default}
+.it-sub-chip.it-sub-disabled:hover{background:var(--sf);border-color:transparent}
+.it-sub-all{flex:0 0 auto;min-width:56px}
+
+.it-lane-cards{display:flex;flex-direction:column;gap:6px;max-height:640px;overflow-y:auto;padding-right:2px}
+.it-lane-cards::-webkit-scrollbar{width:5px}
+.it-lane-cards::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
+
+/* Lane card rica (Opción E + polish) */
+.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;font-size:0.78em;color:var(--tx);transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s;overflow:hidden;flex-shrink:0}
+.lc-card:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,0.3);border-left-color:var(--ac)}
+.lc-card.lc-running{border-left-color:#2dd4bf}
+.lc-card.lc-failed{border-left-color:var(--rd)}
+.lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
+.lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
+.lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
+.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search{display:none}
+.lc-card.lc-expanded{background:var(--sf2);border-left-color:var(--ac)}
+.lc-card-main{padding:8px 10px;cursor:pointer}
+.lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
+.lc-top-left{display:flex;align-items:center;gap:5px;min-width:0}
+.lc-top-right{display:flex;align-items:center;gap:6px}
+.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
+.lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
+.lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
+.lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
+.lc-gh{color:var(--dim);text-decoration:none;font-size:0.9em;padding:1px 4px;border-radius:3px;line-height:1}
+.lc-gh:hover{color:var(--ac);background:rgba(109,140,255,0.1)}
+.lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500;min-height:2.7em}
+.lc-flag{color:var(--yl);margin-right:3px}
+.lc-foot{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+.lc-foot-left{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
+.lc-ps{display:inline-flex;align-items:center;gap:2px;padding:2px 4px;background:rgba(255,255,255,0.02);border-radius:5px;flex-shrink:0}
+.lc-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:0.82em;font-weight:700;letter-spacing:0.2px}
+.lc-pill-run{background:rgba(45,212,191,0.15);color:#2dd4bf;text-transform:lowercase}
+.lc-pill-fail{background:rgba(248,113,113,0.15);color:var(--rd);text-transform:lowercase}
+.lc-pill-wait{background:rgba(251,191,36,0.12);color:var(--yl);text-transform:lowercase}
+.lc-pill-done{background:rgba(52,211,153,0.12);color:var(--gn);text-transform:lowercase}
+.lc-pill-x{opacity:0.6;font-weight:400;margin-left:2px}
+.lc-avatars{display:flex}
+.lc-avatars-dim{opacity:0.55}
+.lc-av{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;line-height:1;color:#fff;border:1.5px solid var(--sf);margin-right:-5px}
+.lc-av:last-child{margin-right:0}
+.lc-av-more{width:18px;height:18px;border-radius:50%;background:var(--sf2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;border:1.5px solid var(--sf);margin-right:0}
+/* Block icons */
+.lc-block-icon{font-size:0.85em;cursor:help;line-height:1}
+.lc-block-locked{color:var(--rd)}
+.lc-block-blocking{color:var(--yl)}
+/* Detail inline (compacto) — expansion dentro de lane card */
+.lc-detail{display:none;padding:8px 10px;border-top:1px solid var(--bd);background:var(--sf2);font-size:1em}
+.lc-detail.lc-detail-open{display:block}
+.lc-detail .pd-grid{display:block !important;margin-top:0;gap:0}
+.lc-detail .pd-pipeline{margin-bottom:8px}
+.lc-detail .pd-pipeline:last-child{margin-bottom:0}
+.lc-detail .pd-pipeline-label{font-size:0.62em;letter-spacing:1.2px;padding:0 0 4px 0;opacity:0.7}
+.lc-detail .pd-phase{gap:6px;padding:2px 4px;margin-bottom:1px;font-size:0.85em;align-items:center}
+.lc-detail .pd-name{min-width:64px;font-size:0.72em;padding-top:0;text-transform:uppercase;letter-spacing:0.4px}
+.lc-detail .pd-chips{gap:3px}
+.lc-detail .chip{padding:2px 6px;font-size:0.78em;gap:3px}
+.lc-detail .pd-current{background:rgba(45,212,191,0.08);border-left:2px solid var(--teal,#2dd4bf)}
+.lc-detail .pd-empty{font-size:0.72em;color:var(--dim)}
+
+/* Chip con log link — indicador visual */
+.chip-log-icon{margin-left:3px;opacity:0.55;font-size:0.78em;line-height:1}
+.log-link{text-decoration:none}
+.log-link:hover .chip-log-icon{opacity:1}
+.log-link:hover .chip.chip-has-log{box-shadow:0 0 0 1px rgba(88,166,255,0.4);cursor:pointer}
+
+/* Completados section — collapsible */
+.it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:8px 12px}
+.it-done-section[open]{padding:10px 12px}
+.it-done-head{display:flex;align-items:center;gap:8px;font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--gn);cursor:pointer;list-style:none;user-select:none}
+.it-done-head::-webkit-details-marker{display:none}
+.it-done-arrow{color:var(--dim);font-size:0.9em;transition:transform 0.2s}
+.it-done-section[open] .it-done-arrow{transform:rotate(90deg)}
+.it-done-count{margin-left:auto;background:rgba(52,211,153,0.15);padding:1px 7px;border-radius:8px;font-size:0.82em}
+.it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px;margin-top:10px}
+.it-done-grid .lc-card{opacity:0.75}
+
+@media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
+
+.ic-hidden{display:none !important}
+
+/* Oculta el legacy ic-list cards (conservamos estilos pero no los usamos en la vista principal) */
+.ic-list{display:none}
+
 /* ── Panel Equipo Option B ─────────────────────────────────────────────── */
 .panel-equipo-full{margin-bottom:20px}
 .eq-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd);gap:14px;flex-wrap:wrap}
@@ -2858,10 +3219,22 @@ function saveIssueTrackerState() {
       const m = d.id.match(/detail-(\\d+)/);
       if (m) expanded.push(m[1]);
     });
+    const laneExpanded = [];
+    document.querySelectorAll('.lc-detail.lc-detail-open').forEach(d => {
+      const m = d.id.match(/lc-detail-(\\d+)/);
+      if (m) laneExpanded.push(m[1]);
+    });
     const activeTab = document.querySelector('.ic-tab-active');
     const filter = activeTab ? activeTab.dataset.filter : 'active';
+    // Sub-chip filters per lane (persist selection after SSE refresh)
+    const subFilters = {};
+    document.querySelectorAll('.it-sub-chip.active').forEach(c => {
+      const lane = c.dataset.lane;
+      const sf = c.dataset.subfase || '';
+      if (lane) subFilters[lane] = sf;
+    });
     const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
-    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, filter, scrollY }));
+    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, laneExpanded, filter, subFilters, scrollY }));
   } catch(_) {}
 }
 
@@ -2885,9 +3258,8 @@ function restoreIssueTrackerState() {
   try {
     const saved = sessionStorage.getItem('__it_state');
     if (!saved) return;
-    const { expanded, filter, scrollY } = JSON.parse(saved);
+    const { expanded, laneExpanded, filter, subFilters, scrollY } = JSON.parse(saved);
     __itRestoring = true;
-    // Restaurar expansiones
     if (expanded && expanded.length > 0) {
       expanded.forEach(id => {
         const detail = document.getElementById('detail-' + id);
@@ -2898,15 +3270,30 @@ function restoreIssueTrackerState() {
         if (header) header.setAttribute('aria-expanded', 'true');
       });
     }
-    // Restaurar tab activo
+    // Restaurar expansiones de lane cards
+    if (laneExpanded && laneExpanded.length > 0) {
+      laneExpanded.forEach(id => {
+        const d = document.getElementById('lc-detail-' + id);
+        if (d) {
+          d.classList.add('lc-detail-open');
+          d.setAttribute('aria-hidden', 'false');
+          const card = d.closest('.lc-card');
+          if (card) card.classList.add('lc-expanded');
+        }
+      });
+    }
     if (filter && filter !== 'active') {
       const tab = document.querySelector('.ic-tab[data-filter="' + filter + '"]');
       if (tab) filterIssueTab(tab, filter);
     }
+    // Restaurar sub-chip filters
+    if (subFilters) {
+      for (const [lane, sf] of Object.entries(subFilters)) {
+        filterLaneBySubFase(lane, sf);
+      }
+    }
     __itRestoring = false;
-    // Restaurar posición de scroll
     if (scrollY > 0) requestAnimationFrame(() => window.scrollTo(0, scrollY));
-    // NO borrar de sessionStorage — se sobreescribe en cada interacción
   } catch(_) { __itRestoring = false; }
 }
 
@@ -3069,22 +3456,111 @@ function toggleIssueDetail(issueNum) {
   saveIssueTrackerState();
 }
 
+function filterLaneBySubFase(laneKey, subFase) {
+  const lane = document.querySelector('.it-lane[data-lane="' + laneKey + '"]');
+  if (!lane) return;
+  lane.querySelectorAll('.it-sub-chip').forEach(c => {
+    c.classList.toggle('active', (c.dataset.subfase || '') === (subFase || ''));
+  });
+  lane.querySelectorAll('.lc-card').forEach(c => {
+    if (!subFase) { c.classList.remove('lc-filtered-out-sub'); return; }
+    const sf = c.dataset.subfase || '';
+    c.classList.toggle('lc-filtered-out-sub', sf !== subFase);
+  });
+  saveIssueTrackerState();
+}
+
+// Búsqueda por # o título en todo el tracker
+function filterIssuesBySearch(query) {
+  const q = (query || '').trim().toLowerCase();
+  document.querySelectorAll('.lc-card').forEach(c => {
+    if (!q) { c.classList.remove('lc-filtered-out-search'); return; }
+    const hay = (c.dataset.search || '').includes(q);
+    c.classList.toggle('lc-filtered-out-search', !hay);
+  });
+  // Ocultar lanes sin matches
+  document.querySelectorAll('.it-lane').forEach(lane => {
+    const visible = lane.querySelectorAll('.lc-card:not(.lc-filtered-out-search):not(.lc-filtered-out-sub)').length;
+    lane.classList.toggle('it-lane-empty-search', q && visible === 0);
+  });
+  saveIssueTrackerState();
+}
+function clearIssueSearch() {
+  const inp = document.getElementById('it-search-input');
+  if (inp) inp.value = '';
+  filterIssuesBySearch('');
+}
+
+// Popup con detalle de la fase al click en un dot
+function showDotPopup(event, dotEl) {
+  let data;
+  try { data = JSON.parse(dotEl.dataset.popup); } catch(_) { return; }
+  const popup = document.getElementById('dot-popup');
+  if (!popup) return;
+  popup.querySelector('.dp-title').innerHTML = '<b>' + data.fase + '</b> · ' + data.pipeline + ' · #' + data.issue;
+  const body = popup.querySelector('.dp-body');
+  if (!data.skills || data.skills.length === 0) {
+    body.innerHTML = '<div class="dp-empty">Sin actividad</div>';
+  } else {
+    body.innerHTML = data.skills.map(function(s){
+      var icon, cls;
+      if (s.resultado === 'aprobado') { icon = '✓'; cls = 'ok'; }
+      else if (s.resultado) { icon = '✗'; cls = 'fail'; }
+      else if (s.estado === 'trabajando') { icon = '▶'; cls = 'run'; }
+      else if (s.estado === 'listo' || s.estado === 'procesado') { icon = '✓'; cls = 'ok'; }
+      else { icon = '○'; cls = 'pending'; }
+      var retry = s.retry ? '<span class="dp-retry">×'+s.retry+'</span>' : '';
+      var dur = s.dur ? '<span class="dp-dur">'+s.dur+'</span>' : '';
+      var log = s.log ? '<a href="'+s.log+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
+      var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
+      var motivo = s.motivo ? '<div class="dp-motivo">' + s.motivo + '</div>' : '';
+      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+s.skill+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
+    }).join('');
+  }
+  const rect = dotEl.getBoundingClientRect();
+  popup.style.display = 'block';
+  popup.style.position = 'fixed';
+  popup.style.left = '0px';
+  popup.style.top = '0px';
+  const pr = popup.getBoundingClientRect();
+  let left = rect.left + rect.width/2 - pr.width/2;
+  let top = rect.bottom + 8;
+  if (left < 8) left = 8;
+  if (left + pr.width > window.innerWidth - 8) left = window.innerWidth - pr.width - 8;
+  if (top + pr.height > window.innerHeight - 8) top = rect.top - pr.height - 8;
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+}
+function closeDotPopup() {
+  const p = document.getElementById('dot-popup');
+  if (p) p.style.display = 'none';
+}
+document.addEventListener('click', function(e){
+  const p = document.getElementById('dot-popup');
+  if (!p || p.style.display === 'none') return;
+  if (!p.contains(e.target) && !e.target.classList.contains('stepper-dot')) {
+    p.style.display = 'none';
+  }
+});
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeDotPopup(); });
+
 function filterIssueTab(tabEl, filter) {
-  // Update tab active state + aria
   document.querySelectorAll('.ic-tab').forEach(t => {
     t.classList.remove('ic-tab-active');
     t.setAttribute('aria-selected', 'false');
   });
   tabEl.classList.add('ic-tab-active');
   tabEl.setAttribute('aria-selected', 'true');
-  // Filter cards
-  document.querySelectorAll('.ic-card').forEach(card => {
+  // Hide/show lanes container and completed section according to tab
+  const lanesEl = document.querySelector('.it-lanes');
+  const doneEl = document.querySelector('.it-done-section');
+  if (lanesEl) lanesEl.classList.toggle('ic-hidden', filter === 'completed');
+  if (doneEl) doneEl.classList.toggle('ic-hidden', filter === 'active');
+  // Also honor legacy ic-card cards (if any remain)
+  document.querySelectorAll('.ic-card, .lc-card').forEach(card => {
     const status = card.dataset.status;
-    if (filter === 'all') {
-      card.classList.remove('ic-hidden');
-    } else {
-      card.classList.toggle('ic-hidden', status !== filter);
-    }
+    if (filter === 'all') card.classList.remove('ic-hidden');
+    else card.classList.toggle('ic-hidden', status !== filter);
   });
   saveIssueTrackerState();
 }
