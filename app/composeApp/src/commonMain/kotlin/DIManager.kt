@@ -184,6 +184,7 @@ import ext.client.ClientOrdersService
 import ext.client.ProductAvailabilityService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
+import ext.client.ClientProductsAvailabilityService
 import ext.client.CommClientOrdersService
 import ext.client.CommProductAvailabilityService
 import ext.client.CommClientProfileService

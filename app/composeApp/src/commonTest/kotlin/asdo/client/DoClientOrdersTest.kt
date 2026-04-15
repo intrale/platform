@@ -3,12 +3,12 @@ package asdo.client
 import ar.com.intrale.shared.client.ProductAvailabilityItemDTO
 import ar.com.intrale.shared.client.ProductAvailabilityResponseDTO
 import ar.com.intrale.shared.client.SkipReason
-import ext.client.ClientExceptionResponse
 import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
 import ar.com.intrale.shared.client.ClientOrderItemDTO
 import ar.com.intrale.shared.client.CreateClientOrderRequestDTO
 import ar.com.intrale.shared.client.CreateClientOrderResponseDTO
+import ext.client.ClientExceptionResponse
 import ext.client.CommClientOrdersService
 import ext.client.CommProductAvailabilityService
 import kotlinx.coroutines.test.runTest
