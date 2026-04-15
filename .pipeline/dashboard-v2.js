@@ -1210,25 +1210,48 @@ function generateHTML(state) {
       </div>
     </div>`;
   }
+  // Heatmap legacy mantenido para compatibilidad (puede eliminarse luego)
   let heatmapHTML = '';
   const catOrder = ['product', 'dev', 'quality', 'ops'];
+
+  // ── Nuevo render: filas horizontales con chips por área ──
+  let eqAreaRowsHTML = '';
+  let eqTotalSlots = 0, eqTotalBusy = 0;
   for (const cat of catOrder) {
     const list = skillsByCategory[cat];
     if (!list || list.length === 0) continue;
     const m = CATEGORY_META[cat];
-    // Dentro de cada categoría, mostrar activos primero
     list.sort((a, b) => b[1].running - a[1].running || (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0));
-    const active = list.filter(([_, l]) => l.running > 0).length;
-    const total = list.reduce((s, [_, l]) => s + l.max, 0);
     const busy = list.reduce((s, [_, l]) => s + l.running, 0);
-    heatmapHTML += `<div class="persona-group persona-group-${cat}">
-      <div class="persona-group-head">
-        <span class="persona-group-icon" style="color:${m.color}">${m.icon}</span>
-        <span class="persona-group-label">${m.label}</span>
-        <span class="persona-group-count">${busy}/${total} ${active > 0 ? '\u00B7 <span class="persona-group-active">' + active + ' activo' + (active > 1 ? 's' : '') + '</span>' : ''}</span>
+    const total = list.reduce((s, [_, l]) => s + l.max, 0);
+    eqTotalBusy += busy; eqTotalSlots += total;
+    const freePct = total > 0 ? Math.round(((total - busy) / total) * 100) : 0;
+    const chips = list.map(([s, l]) => {
+      const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
+      const running = l.running || 0;
+      const stateCls = running > 0 ? 'eq-running' : 'eq-free';
+      const countBadge = running > 1 ? `<span class="eq-count-badge">\u00D7${running}</span>` : '';
+      const usage = skillUsageCount[s] || 0;
+      const tip = running > 0
+        ? `${p.name} \u2014 ${running} issue${running > 1 ? 's' : ''} en ejecución`
+        : `${p.name} \u2014 libre (${usage} runs)`;
+      return `<div class="eq-agent ${stateCls}" title="${tip.replace(/"/g, '&quot;')}">
+        <span class="eq-avatar" style="background:${p.color}">${p.icon}</span>
+        <span class="eq-agent-name">${p.name}</span>
+        ${countBadge}
+        <span class="eq-state-dot"></span>
+      </div>`;
+    }).join('');
+    const activeTxt = busy > 0 ? ` \u00B7 <span class="eq-area-active">${busy} activo${busy > 1 ? 's' : ''}</span>` : '';
+    eqAreaRowsHTML += `<div class="eq-area">
+      <div class="eq-area-head">
+        <div class="eq-area-name"><span class="eq-area-dot" style="background:${m.color}"></span>${m.label}</div>
+        <div class="eq-area-sub"><b>${total - busy}</b> libres${activeTxt}</div>
       </div>
-      <div class="persona-group-grid">
-        ${list.map(([s, l]) => personaCard(s, l)).join('')}
+      <div class="eq-agents">${chips}</div>
+      <div class="eq-area-stats">
+        <span class="eq-count"><b>${total - busy}</b>/${total} libres</span>
+        <div class="eq-bar"><div class="eq-bar-fill${busy >= total && total > 0 ? ' busy' : ''}" style="width:${freePct}%"></div></div>
       </div>
     </div>`;
   }
@@ -1463,44 +1486,32 @@ function generateHTML(state) {
     return { skill, issues, maxDur };
   }).sort((a, b) => b.maxDur - a.maxDur);
 
+  // Strip horizontal con chips de agentes en ejecución (soporta multi-issue)
   let agentTeamCards = '';
+  let activeStripHTML = '';
   if (sortedAgents.length > 0) {
-    for (const { skill, issues } of sortedAgents) {
-      const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, tagline: '', color: 'var(--dim)' };
-      const maxDur = Math.max(...issues.map(i => i.duration || 0));
-      const health = agentHealth(maxDur);
-      const issueRows = issues.map(i => {
-        const ih = agentHealth(i.duration);
-        const title = issueTitle(i.issue);
-        const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
-        return `<a href="${GH(i.issue)}" target="_blank" class="work-item work-${ih.cls}">
-          <span class="work-issue">#${i.issue}</span>
-          <span class="work-title">${title || i.fase}</span>
-          <span class="work-fase">${i.fase}</span>
-          <span class="work-dur">${fmtDuration(i.duration)}</span>
-          <span class="work-progress"><span class="work-progress-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
-        </a>`;
-      }).join('');
+    const chips = sortedAgents.map(({ skill, issues }) => {
+      const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, color: 'var(--dim)' };
+      const count = issues.length;
+      const issueLinks = issues.map(i => `<a href="${GH(i.issue)}" target="_blank" class="eq-issue-link">#${i.issue}</a>`).join(', ');
+      const elapsedTxt = issues.map(i => fmtDuration(i.duration)).join(' \u00B7 ');
+      const badge = count > 1 ? `<span class="eq-active-badge">${count}</span>` : '';
+      const issueCls = count > 1 ? 'eq-issue-multi' : 'eq-issue';
       const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
-      const tagline = (p.tagline || '').split(' · ').slice(0, 3).join(' · ');
-      agentTeamCards += `
-        <div class="agent-card agent-${health.cls}" style="--agent-color:${p.color}">
-          <div class="agent-header">
-            <div class="agent-avatar-xl">${p.icon}</div>
-            <div class="agent-identity">
-              <div class="agent-name-row">
-                <span class="agent-name">${p.name}</span>
-                <span class="agent-health agent-health-${health.cls}">${health.label}</span>
-              </div>
-              <div class="agent-tagline">${tagline}</div>
-            </div>
-            <span class="agent-badge">${issues.length} <span class="agent-badge-lbl">issue${issues.length > 1 ? 's' : ''}</span></span>
-            <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
-          </div>
-          <div class="agent-work">${issueRows}</div>
-          <div class="agent-heartbeat"><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span></div>
-        </div>`;
-    }
+      const tip = `${p.name}${count > 1 ? ' \u2014 ' + count + ' issues en paralelo' : ''}`;
+      return `<span class="eq-active-chip" title="${tip.replace(/"/g, '&quot;')}">
+        <span class="eq-ring"></span>
+        <span class="eq-active-avatar" style="background:${p.color}">${p.icon}${badge}</span>
+        <span class="eq-active-name">${p.name}</span>
+        <span class="${issueCls}">\u00B7 ${issueLinks}</span>
+        <span class="eq-active-elapsed">${elapsedTxt}</span>
+        <span class="eq-active-kill" title="Cancelar agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">\u00D7</span>
+      </span>`;
+    }).join('');
+    activeStripHTML = `<div class="eq-active-strip">
+      <span class="eq-active-lbl">\u25B6 En ejecución</span>
+      ${chips}
+    </div>`;
   }
 
   // agentTeamCards se usa inline en la sección "Equipo y Skills"
@@ -1633,10 +1644,27 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 
 /* ── KPI Grid ───────────────────────────────────────────────────────────── */
+.kpis-row{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;
+  margin-bottom:20px;align-items:stretch;
+}
 .kpis{
   display:grid;
   grid-template-columns:repeat(6,1fr);
   gap:10px;margin-bottom:20px;
+}
+.kpis.kpis-5{
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpi-trend{
+  font-size:0.62em;color:var(--dim);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
+  text-transform:none;letter-spacing:0;font-weight:400;
 }
 .kpi{
   background:linear-gradient(135deg,color-mix(in srgb,var(--kpi-accent,var(--ac)) 10%,var(--sf)) 0%,var(--sf) 60%);
@@ -1662,6 +1690,43 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   font-size:2.1em;font-weight:800;color:var(--kpi-accent,var(--ac));
   font-variant-numeric:tabular-nums;line-height:1;
 }
+
+/* ── Mini Sistema Card (junto a KPIs) ───────────────────────────────────── */
+.sys-mini-card{
+  display:flex;align-items:center;gap:14px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:8px 16px;
+}
+.sys-mini-card.sys-mini-ok{border-color:color-mix(in srgb,var(--gn) 35%,var(--bd))}
+.sys-mini-card.sys-mini-warn{border-color:color-mix(in srgb,var(--yl) 40%,var(--bd))}
+.sys-mini-card.sys-mini-crit{border-color:color-mix(in srgb,var(--rd) 50%,var(--bd));animation:pulse 1.8s infinite}
+.sys-mini-score{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding-right:12px;border-right:1px solid var(--bd);min-width:68px;
+}
+.sys-mini-lbl{font-size:0.6em;color:var(--dim);text-transform:uppercase;letter-spacing:0.8px;font-weight:700}
+.sys-mini-val{font-size:1.6em;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sys-mini-val.sys-mini-ok{color:var(--gn)}
+.sys-mini-val.sys-mini-warn{color:var(--yl)}
+.sys-mini-val.sys-mini-crit{color:var(--rd)}
+.sys-mini-tag{font-size:0.58em;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;line-height:1}
+.sys-mini-tag.sys-mini-ok{color:var(--gn)}
+.sys-mini-tag.sys-mini-warn{color:var(--yl)}
+.sys-mini-tag.sys-mini-crit{color:var(--rd)}
+.sys-mini-gauge{
+  position:relative;width:62px;height:62px;flex-shrink:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+}
+.sys-mini-svg{position:absolute;top:0;left:0;width:62px;height:62px;transform:rotate(-90deg)}
+.sys-mini-track{fill:none;stroke:rgba(255,255,255,0.07);stroke-width:6}
+.sys-mini-fill{fill:none;stroke-width:6;stroke-linecap:round;transition:stroke-dashoffset 0.4s}
+.sys-mini-fill.sys-mini-ok{stroke:var(--gn)}
+.sys-mini-fill.sys-mini-warn{stroke:var(--yl)}
+.sys-mini-fill.sys-mini-danger{stroke:var(--rd)}
+.sys-mini-center{text-align:center;line-height:1;position:relative;z-index:1}
+.sys-mini-center .v{font-size:0.82em;font-weight:800;color:var(--tx);font-variant-numeric:tabular-nums}
+.sys-mini-center .l{font-size:0.58em;color:var(--dim);text-transform:uppercase;letter-spacing:0.4px;margin-top:1px}
+
 .kpi-value.warn{color:var(--yl);--kpi-accent:var(--yl)}
 .kpi-value.danger{color:var(--rd);--kpi-accent:var(--rd)}
 .kpi-value.success{color:var(--gn);--kpi-accent:var(--gn)}
@@ -2527,6 +2592,72 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item{padding:2px 0;color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
+
+/* ── Panel Equipo: rediseño horizontal ─────────────────────────────────── */
+.eq-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:14px;flex-wrap:wrap}
+.eq-title{margin:0;font-size:1.05em;font-weight:700}
+.eq-summary{display:flex;gap:10px;align-items:center;font-size:0.78em;color:var(--dim)}
+.eq-summary b{color:var(--tx);font-weight:700;margin:0 2px}
+.eq-util-bar{width:100px;height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden}
+.eq-util-fill{height:100%;background:linear-gradient(90deg,var(--gn),var(--yl));border-radius:3px;transition:width 0.4s}
+
+/* Strip de activos */
+.eq-active-strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;background:linear-gradient(90deg,rgba(88,166,255,0.08),rgba(88,166,255,0.02));border:1px solid rgba(88,166,255,0.3);border-radius:var(--radius);margin-bottom:12px}
+.eq-active-lbl{font-size:0.64em;text-transform:uppercase;letter-spacing:1px;color:var(--ac);font-weight:700;margin-right:4px}
+.eq-active-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;background:rgba(88,166,255,0.1);border:1px solid rgba(88,166,255,0.35);border-radius:999px;font-size:0.72em;white-space:nowrap}
+.eq-active-avatar{position:relative;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;line-height:1;color:#fff}
+.eq-active-badge{position:absolute;top:-5px;right:-7px;min-width:14px;height:14px;padding:0 3px;background:var(--rd);color:#fff;border-radius:7px;font-size:0.7em;font-weight:800;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--sf)}
+.eq-ring{width:7px;height:7px;border-radius:50%;background:var(--ac);box-shadow:0 0 0 0 rgba(88,166,255,0.6);animation:pulse 1.5s infinite}
+.eq-active-name{font-weight:700;color:var(--tx)}
+.eq-issue{color:var(--dim);font-variant-numeric:tabular-nums}
+.eq-issue-multi{color:var(--ac);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-issue-link{color:inherit;text-decoration:none}
+.eq-issue-link:hover{text-decoration:underline}
+.eq-active-elapsed{color:var(--cy,#22d3ee);font-variant-numeric:tabular-nums;font-weight:700;font-size:0.9em}
+.eq-active-kill{color:var(--dim);cursor:pointer;font-weight:700;padding:0 4px;border-radius:3px}
+.eq-active-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
+
+/* Area rows */
+.eq-area{display:grid;grid-template-columns:130px 1fr auto;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--bd)}
+.eq-area:last-child{border-bottom:none}
+.eq-area-head{display:flex;flex-direction:column;gap:2px;min-width:0}
+.eq-area-name{font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;display:flex;align-items:center;gap:5px;color:var(--tx)}
+.eq-area-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.eq-area-sub{font-size:0.66em;color:var(--dim)}
+.eq-area-sub b{color:var(--tx);font-weight:700}
+.eq-area-active{color:var(--ac);font-weight:700}
+.eq-agents{display:flex;flex-wrap:wrap;gap:4px}
+.eq-agent{position:relative;display:inline-flex;align-items:center;gap:5px;padding:3px 9px 3px 5px;background:var(--sf2);border:1px solid var(--bd);border-radius:999px;font-size:0.7em;cursor:help;transition:border-color 0.15s,transform 0.15s}
+.eq-agent:hover{border-color:var(--ac);transform:translateY(-1px)}
+.eq-avatar{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.82em;line-height:1;color:#fff;flex-shrink:0}
+.eq-agent-name{font-weight:500;color:var(--tx);white-space:nowrap}
+.eq-state-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);flex-shrink:0}
+.eq-free .eq-state-dot{background:var(--gn)}
+.eq-running{border-color:rgba(88,166,255,0.55);background:rgba(88,166,255,0.08)}
+.eq-running .eq-state-dot{background:var(--ac);box-shadow:0 0 0 0 rgba(88,166,255,0.6);animation:pulse 1.5s infinite}
+.eq-running .eq-agent-name{color:var(--ac);font-weight:700}
+.eq-count-badge{min-width:16px;height:16px;padding:0 4px;background:var(--ac);color:#fff;border-radius:8px;font-size:0.68em;font-weight:800;display:inline-flex;align-items:center;justify-content:center;margin-left:-1px}
+.eq-area-stats{display:flex;align-items:center;gap:6px;font-size:0.62em;color:var(--dim);min-width:100px;justify-content:flex-end}
+.eq-count b{color:var(--tx);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-bar{width:40px;height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden}
+.eq-bar-fill{height:100%;background:var(--gn);border-radius:2px;transition:width 0.4s}
+.eq-bar-fill.busy{background:var(--rd)}
+
+/* Servicios dentro de Equipo */
+.eq-svc-block{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)}
+.eq-svc-head{font-size:0.75em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--dim);margin-bottom:8px}
+
+/* Panel Equipo full-width: body en 2 columnas (equipo + servicios) */
+.panel-equipo-full{margin-bottom:20px}
+.panel-equipo-full .eq-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,340px);gap:18px;align-items:start}
+.panel-equipo-full .eq-body-main{min-width:0}
+.panel-equipo-full .eq-body-svc{min-width:0;padding-left:16px;border-left:1px solid var(--bd)}
+.panel-equipo-full .eq-body-svc .eq-svc-head{margin-bottom:10px}
+@media(max-width:900px){
+  .panel-equipo-full .eq-body{grid-template-columns:1fr}
+  .panel-equipo-full .eq-body-svc{padding-left:0;border-left:none;padding-top:12px;border-top:1px solid var(--bd)}
+}
+
 </style></head>
 <body>
   <div class="hdr-bar">
@@ -2558,7 +2689,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     if (blockedNow) {
       statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>BLOQUEADO por saturación de recursos</span>';
     } else if (isPaused) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>PIPELINE PAUSADO por usuario</span>'
+      // El badge del header ya indica PAUSADO — evitamos duplicar el texto acá.
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Lanzamientos detenidos por usuario</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
@@ -2614,50 +2746,73 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   })()}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
-  <div class="kpis">
-    <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
-      <div class="kpi-label">En ejecución</div>
-      <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
-      <span class="kpi-icon">⚙️</span>
+  <div class="kpis-row">
+    <div class="kpis kpis-5">
+      <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
+        <div class="kpi-label">Definidos</div>
+        <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
+        <div class="kpi-trend">backlog total</div>
+      </div>
+      <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
+        <div class="kpi-label">En cola</div>
+        <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
+        <div class="kpi-trend">esperando agente</div>
+      </div>
+      <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
+        <div class="kpi-label">Ejecución</div>
+        <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
+        <div class="kpi-trend">${trabajando > 0 ? 'agentes activos' : 'sin agentes'}</div>
+      </div>
+      <div class="kpi kpi-entregados" data-tt='${ttEntregados24h}'>
+        <div class="kpi-label">Entregados 24h</div>
+        <div class="kpi-value success">${entregados24h}</div>
+        <div class="kpi-trend">últimas 24 horas</div>
+      </div>
+      <div class="kpi kpi-blocked" data-tt='${ttStale}'>
+        <div class="kpi-label">Bloqueados${stale > 0 ? ' \u26A0' : ''}</div>
+        <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
+        <div class="kpi-trend">${stale > 0 ? 'stale >30m' : 'sin stale'}</div>
+      </div>
     </div>
-    <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
-      <div class="kpi-label">En cola</div>
-      <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
-      <span class="kpi-icon">⏳</span>
-    </div>
-    <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-      <div class="kpi-label">Bloqueados / stale</div>
-      <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
-      <span class="kpi-icon">🚨</span>
-    </div>
-    <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
-      <div class="kpi-label">Definidos</div>
-      <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
-      <span class="kpi-icon">📋</span>
-    </div>
-    <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
-      <div class="kpi-label">Entregados</div>
-      <div class="kpi-value success">${entregados}</div>
-      <span class="kpi-icon">🚀</span>
-    </div>
-    <div class="kpi kpi-throughput" data-tt='${ttEntregados24h}'>
-      <div class="kpi-label">Últimas 24h</div>
-      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
-      <span class="kpi-icon">📈</span>
-    </div>
+    ${(() => {
+      const scoreCls = healthScore > 60 ? 'ok' : healthScore > 30 ? 'warn' : 'crit';
+      const circ = 163;
+      const cpuOff = Math.round(circ - (circ * Math.min(100, res.cpuPercent) / 100));
+      const memOff = Math.round(circ - (circ * Math.min(100, res.memPercent) / 100));
+      return `
+      <div class="sys-mini-card sys-mini-${scoreCls}">
+        <div class="sys-mini-score">
+          <div class="sys-mini-lbl">Salud</div>
+          <div class="sys-mini-val sys-mini-${scoreCls}">${healthScore}</div>
+          <div class="sys-mini-tag sys-mini-${scoreCls}">${healthLabel}</div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${cpuStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${cpuOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.cpuPercent}%</div><div class="l">CPU</div></div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${memStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${memOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.memPercent}%</div><div class="l">RAM</div></div>
+        </div>
+      </div>`;
+    })()}
   </div>
 
-  <div class="dual-row">
-    <div class="bar-section dual-col panel-equipo">
-      <h2>🧠 Equipo</h2>
-      ${agentTeamCards ? '<div class="subsection-label">En ejecución</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
-      ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Equipo disponible' : 'Equipo disponible') + '</div><div class="persona-stack">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
+  <div class="bar-section panel-equipo panel-equipo-full">
+    <div class="eq-head">
+      <h2 class="eq-title">🧠 Equipo</h2>
+      <div class="eq-summary">
+        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSlots}</span>
+        <div class="eq-util-bar"><div class="eq-util-fill" style="width:${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%"></div></div>
+        <span>Utilización <b>${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%</b></span>
+      </div>
     </div>
-    <div class="bar-section dual-col panel-sistema">
-      <h2>💻 Sistema</h2>
-      ${resourcesHTML}
-      <div class="subsection-label" style="margin-top:14px">Servicios</div>
-      <div class="svc-grid">${svcCardsHTML}</div>
+    <div class="eq-body">
+      <div class="eq-body-main">
+        ${activeStripHTML}
+        ${eqAreaRowsHTML || '<span class="empty-label">Sin skills configurados</span>'}
+      </div>
+      ${svcCardsHTML ? '<div class="eq-body-svc"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid">' + svcCardsHTML + '</div></div>' : ''}
     </div>
   </div>
 
