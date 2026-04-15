@@ -1214,47 +1214,47 @@ function generateHTML(state) {
   let heatmapHTML = '';
   const catOrder = ['product', 'dev', 'quality', 'ops'];
 
-  // ── Nuevo render: filas horizontales con chips por área ──
-  let eqAreaRowsHTML = '';
-  let eqTotalSlots = 0, eqTotalBusy = 0;
+  // ── Option B: Areas grid 2x2 con chips compactos ──
+  let eqAreaGridHTML = '';
+  let eqTotalSkills = 0, eqTotalBusy = 0;
   for (const cat of catOrder) {
     const list = skillsByCategory[cat];
     if (!list || list.length === 0) continue;
     const m = CATEGORY_META[cat];
     list.sort((a, b) => b[1].running - a[1].running || (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0));
-    const busy = list.reduce((s, [_, l]) => s + l.running, 0);
-    const total = list.reduce((s, [_, l]) => s + l.max, 0);
-    eqTotalBusy += busy; eqTotalSlots += total;
-    const freePct = total > 0 ? Math.round(((total - busy) / total) * 100) : 0;
+    // Contar skills (no slots): busy = skills con al menos 1 running
+    const busySkills = list.filter(([_, l]) => (l.running || 0) > 0).length;
+    const totalSkills = list.length;
+    eqTotalBusy += busySkills; eqTotalSkills += totalSkills;
+    const freeSkills = totalSkills - busySkills;
     const chips = list.map(([s, l]) => {
       const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
       const running = l.running || 0;
-      const stateCls = running > 0 ? 'eq-running' : 'eq-free';
-      const countBadge = running > 1 ? `<span class="eq-count-badge">\u00D7${running}</span>` : '';
+      const stateCls = running > 0 ? 'eq-chip-busy' : '';
+      const countBadge = running > 1 ? `<span class="eq-chip-badge">\u00D7${running}</span>` : '';
       const usage = skillUsageCount[s] || 0;
       const tip = running > 0
-        ? `${p.name} \u2014 ${running} issue${running > 1 ? 's' : ''} en ejecución`
+        ? `${p.name} \u2014 ${running} issue${running > 1 ? 's' : ''} en ejecución (${usage} runs)`
         : `${p.name} \u2014 libre (${usage} runs)`;
-      return `<div class="eq-agent ${stateCls}" title="${tip.replace(/"/g, '&quot;')}">
-        <span class="eq-avatar" style="background:${p.color}">${p.icon}</span>
-        <span class="eq-agent-name">${p.name}</span>
+      return `<span class="eq-chip ${stateCls}" title="${tip.replace(/"/g, '&quot;')}">
+        <span class="eq-chip-avatar" style="background:${p.color}">${p.icon}</span>
+        <span class="eq-chip-name">${p.name}</span>
         ${countBadge}
-        <span class="eq-state-dot"></span>
-      </div>`;
+        <span class="eq-chip-dot"></span>
+      </span>`;
     }).join('');
-    const activeTxt = busy > 0 ? ` \u00B7 <span class="eq-area-active">${busy} activo${busy > 1 ? 's' : ''}</span>` : '';
-    eqAreaRowsHTML += `<div class="eq-area">
-      <div class="eq-area-head">
-        <div class="eq-area-name"><span class="eq-area-dot" style="background:${m.color}"></span>${m.label}</div>
-        <div class="eq-area-sub"><b>${total - busy}</b> libres${activeTxt}</div>
+    const subTxt = busySkills > 0
+      ? `<b>${freeSkills}</b>/${totalSkills} libres \u00B7 <span class="eq-area-card-active">${busySkills} activo${busySkills > 1 ? 's' : ''}</span>`
+      : `<b>${freeSkills}</b> libres`;
+    eqAreaGridHTML += `<div class="eq-area-card">
+      <div class="eq-area-card-head">
+        <span class="eq-area-card-name"><span class="eq-area-card-dot" style="background:${m.color}"></span>${m.label}</span>
+        <span class="eq-area-card-sub">${subTxt}</span>
       </div>
-      <div class="eq-agents">${chips}</div>
-      <div class="eq-area-stats">
-        <span class="eq-count"><b>${total - busy}</b>/${total} libres</span>
-        <div class="eq-bar"><div class="eq-bar-fill${busy >= total && total > 0 ? ' busy' : ''}" style="width:${freePct}%"></div></div>
-      </div>
+      <div class="eq-area-card-chips">${chips}</div>
     </div>`;
   }
+  if (eqAreaGridHTML) eqAreaGridHTML = '<div class="eq-areas-grid">' + eqAreaGridHTML + '</div>';
 
   // ── Servicios agrupados por capa (Intake/Processing/Output) ──
   const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
@@ -1486,32 +1486,35 @@ function generateHTML(state) {
     return { skill, issues, maxDur };
   }).sort((a, b) => b.maxDur - a.maxDur);
 
-  // Strip horizontal con chips de agentes en ejecución (soporta multi-issue)
+  // Option B: Active Cards XL — cada agente activo es una card horizontal con work items (issue + fase + progreso)
   let agentTeamCards = '';
   let activeStripHTML = '';
   if (sortedAgents.length > 0) {
-    const chips = sortedAgents.map(({ skill, issues }) => {
+    const cards = sortedAgents.map(({ skill, issues }) => {
       const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, color: 'var(--dim)' };
       const count = issues.length;
-      const issueLinks = issues.map(i => `<a href="${GH(i.issue)}" target="_blank" class="eq-issue-link">#${i.issue}</a>`).join(', ');
-      const elapsedTxt = issues.map(i => fmtDuration(i.duration)).join(' \u00B7 ');
-      const badge = count > 1 ? `<span class="eq-active-badge">${count}</span>` : '';
-      const issueCls = count > 1 ? 'eq-issue-multi' : 'eq-issue';
+      const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
+      const workItems = issues.map(i => {
+        const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
+        return `<a href="${GH(i.issue)}" target="_blank" class="eq-work-item">
+          <span class="eq-work-issue">#${i.issue}</span>
+          <span class="eq-work-fase">${i.fase}</span>
+          <span class="eq-work-dur">${fmtDuration(i.duration)}</span>
+          <span class="eq-work-bar"><span class="eq-work-bar-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
+        </a>`;
+      }).join('');
       const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
-      const tip = `${p.name}${count > 1 ? ' \u2014 ' + count + ' issues en paralelo' : ''}`;
-      return `<span class="eq-active-chip" title="${tip.replace(/"/g, '&quot;')}">
-        <span class="eq-ring"></span>
-        <span class="eq-active-avatar" style="background:${p.color}">${p.icon}${badge}</span>
-        <span class="eq-active-name">${p.name}</span>
-        <span class="${issueCls}">\u00B7 ${issueLinks}</span>
-        <span class="eq-active-elapsed">${elapsedTxt}</span>
-        <span class="eq-active-kill" title="Cancelar agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">\u00D7</span>
-      </span>`;
+      const subTxt = count > 1 ? ` \u00B7 <span class="eq-card-sub">${count} issues</span>` : '';
+      return `<div class="eq-card">
+        <span class="eq-card-avatar" style="background:${p.color}">${p.icon}${badge}</span>
+        <div class="eq-card-body">
+          <div class="eq-card-name"><span class="eq-card-ring"></span>${p.name}${subTxt}</div>
+          <div class="eq-card-work">${workItems}</div>
+        </div>
+        <span class="eq-card-kill" title="Cancelar agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">\u00D7</span>
+      </div>`;
     }).join('');
-    activeStripHTML = `<div class="eq-active-strip">
-      <span class="eq-active-lbl">\u25B6 En ejecución</span>
-      ${chips}
-    </div>`;
+    activeStripHTML = `<div class="eq-active-cards">${cards}</div>`;
   }
 
   // agentTeamCards se usa inline en la sección "Equipo y Skills"
@@ -2593,70 +2596,61 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 
-/* ── Panel Equipo: rediseño horizontal ─────────────────────────────────── */
-.eq-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:14px;flex-wrap:wrap}
-.eq-title{margin:0;font-size:1.05em;font-weight:700}
-.eq-summary{display:flex;gap:10px;align-items:center;font-size:0.78em;color:var(--dim)}
-.eq-summary b{color:var(--tx);font-weight:700;margin:0 2px}
-.eq-util-bar{width:100px;height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden}
-.eq-util-fill{height:100%;background:linear-gradient(90deg,var(--gn),var(--yl));border-radius:3px;transition:width 0.4s}
-
-/* Strip de activos */
-.eq-active-strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;background:linear-gradient(90deg,rgba(88,166,255,0.08),rgba(88,166,255,0.02));border:1px solid rgba(88,166,255,0.3);border-radius:var(--radius);margin-bottom:12px}
-.eq-active-lbl{font-size:0.64em;text-transform:uppercase;letter-spacing:1px;color:var(--ac);font-weight:700;margin-right:4px}
-.eq-active-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;background:rgba(88,166,255,0.1);border:1px solid rgba(88,166,255,0.35);border-radius:999px;font-size:0.72em;white-space:nowrap}
-.eq-active-avatar{position:relative;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;line-height:1;color:#fff}
-.eq-active-badge{position:absolute;top:-5px;right:-7px;min-width:14px;height:14px;padding:0 3px;background:var(--rd);color:#fff;border-radius:7px;font-size:0.7em;font-weight:800;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--sf)}
-.eq-ring{width:7px;height:7px;border-radius:50%;background:var(--ac);box-shadow:0 0 0 0 rgba(88,166,255,0.6);animation:pulse 1.5s infinite}
-.eq-active-name{font-weight:700;color:var(--tx)}
-.eq-issue{color:var(--dim);font-variant-numeric:tabular-nums}
-.eq-issue-multi{color:var(--ac);font-weight:700;font-variant-numeric:tabular-nums}
-.eq-issue-link{color:inherit;text-decoration:none}
-.eq-issue-link:hover{text-decoration:underline}
-.eq-active-elapsed{color:var(--cy,#22d3ee);font-variant-numeric:tabular-nums;font-weight:700;font-size:0.9em}
-.eq-active-kill{color:var(--dim);cursor:pointer;font-weight:700;padding:0 4px;border-radius:3px}
-.eq-active-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
-
-/* Area rows */
-.eq-area{display:grid;grid-template-columns:130px 1fr auto;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--bd)}
-.eq-area:last-child{border-bottom:none}
-.eq-area-head{display:flex;flex-direction:column;gap:2px;min-width:0}
-.eq-area-name{font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;display:flex;align-items:center;gap:5px;color:var(--tx)}
-.eq-area-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.eq-area-sub{font-size:0.66em;color:var(--dim)}
-.eq-area-sub b{color:var(--tx);font-weight:700}
-.eq-area-active{color:var(--ac);font-weight:700}
-.eq-agents{display:flex;flex-wrap:wrap;gap:4px}
-.eq-agent{position:relative;display:inline-flex;align-items:center;gap:5px;padding:3px 9px 3px 5px;background:var(--sf2);border:1px solid var(--bd);border-radius:999px;font-size:0.7em;cursor:help;transition:border-color 0.15s,transform 0.15s}
-.eq-agent:hover{border-color:var(--ac);transform:translateY(-1px)}
-.eq-avatar{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.82em;line-height:1;color:#fff;flex-shrink:0}
-.eq-agent-name{font-weight:500;color:var(--tx);white-space:nowrap}
-.eq-state-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);flex-shrink:0}
-.eq-free .eq-state-dot{background:var(--gn)}
-.eq-running{border-color:rgba(88,166,255,0.55);background:rgba(88,166,255,0.08)}
-.eq-running .eq-state-dot{background:var(--ac);box-shadow:0 0 0 0 rgba(88,166,255,0.6);animation:pulse 1.5s infinite}
-.eq-running .eq-agent-name{color:var(--ac);font-weight:700}
-.eq-count-badge{min-width:16px;height:16px;padding:0 4px;background:var(--ac);color:#fff;border-radius:8px;font-size:0.68em;font-weight:800;display:inline-flex;align-items:center;justify-content:center;margin-left:-1px}
-.eq-area-stats{display:flex;align-items:center;gap:6px;font-size:0.62em;color:var(--dim);min-width:100px;justify-content:flex-end}
-.eq-count b{color:var(--tx);font-weight:700;font-variant-numeric:tabular-nums}
-.eq-bar{width:40px;height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden}
-.eq-bar-fill{height:100%;background:var(--gn);border-radius:2px;transition:width 0.4s}
-.eq-bar-fill.busy{background:var(--rd)}
-
-/* Servicios dentro de Equipo */
-.eq-svc-block{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)}
-.eq-svc-head{font-size:0.75em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--dim);margin-bottom:8px}
-
-/* Panel Equipo full-width: body en 2 columnas (equipo + servicios) */
+/* ── Panel Equipo Option B ─────────────────────────────────────────────── */
 .panel-equipo-full{margin-bottom:20px}
-.panel-equipo-full .eq-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,340px);gap:18px;align-items:start}
-.panel-equipo-full .eq-body-main{min-width:0}
-.panel-equipo-full .eq-body-svc{min-width:0;padding-left:16px;border-left:1px solid var(--bd)}
-.panel-equipo-full .eq-body-svc .eq-svc-head{margin-bottom:10px}
-@media(max-width:900px){
-  .panel-equipo-full .eq-body{grid-template-columns:1fr}
-  .panel-equipo-full .eq-body-svc{padding-left:0;border-left:none;padding-top:12px;border-top:1px solid var(--bd)}
-}
+.eq-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd);gap:14px;flex-wrap:wrap}
+.eq-title{margin:0;font-size:1.05em;font-weight:700}
+.eq-summary{display:flex;gap:8px;align-items:center;font-size:0.76em;color:var(--dim)}
+.eq-summary b{color:var(--tx);font-weight:700;margin:0 2px}
+
+/* Active Cards XL */
+.eq-active-cards{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.eq-card{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:8px 12px;background:linear-gradient(90deg,rgba(45,212,191,0.08),rgba(45,212,191,0.02));border:1px solid rgba(45,212,191,0.3);border-left:3px solid var(--teal,#2dd4bf);border-radius:var(--radius)}
+.eq-card-avatar{position:relative;width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:1em;line-height:1;color:#fff;flex-shrink:0}
+.eq-card-badge{position:absolute;top:-4px;right:-5px;min-width:14px;height:14px;padding:0 3px;background:var(--rd);color:#fff;border-radius:7px;font-size:0.6em;font-weight:800;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--sf)}
+.eq-card-body{min-width:0}
+.eq-card-name{font-size:0.88em;font-weight:700;color:var(--teal,#2dd4bf);display:flex;align-items:center;gap:6px}
+.eq-card-ring{width:7px;height:7px;border-radius:50%;background:var(--teal,#2dd4bf);box-shadow:0 0 0 0 rgba(45,212,191,0.6);animation:pulse 1.5s infinite}
+.eq-card-sub{font-size:0.85em;color:var(--dim);font-weight:400}
+.eq-card-work{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;font-size:0.72em}
+.eq-work-item{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;background:rgba(45,212,191,0.08);border-radius:5px;color:var(--dim);text-decoration:none;transition:background 0.15s}
+.eq-work-item:hover{background:rgba(45,212,191,0.15)}
+.eq-work-issue{color:var(--ac);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-work-fase{color:var(--dim);font-size:0.85em}
+.eq-work-dur{color:var(--teal,#2dd4bf);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-work-bar{width:40px;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
+.eq-work-bar-fill{height:100%;background:var(--teal,#2dd4bf);border-radius:2px}
+.eq-card-kill{color:var(--dim);cursor:pointer;font-weight:700;font-size:1.2em;padding:4px 8px;border-radius:6px}
+.eq-card-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
+
+/* Areas grid 2×2 */
+.eq-areas-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.eq-area-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);padding:8px 10px}
+.eq-area-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:0.66em;text-transform:uppercase;letter-spacing:0.7px;font-weight:700}
+.eq-area-card-name{display:flex;align-items:center;gap:5px;color:var(--muted,#8b949e)}
+.eq-area-card-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.eq-area-card-sub{font-size:0.92em;color:var(--dim);font-weight:400}
+.eq-area-card-sub b{color:var(--tx);font-weight:700}
+.eq-area-card-active{color:var(--teal,#2dd4bf);font-weight:700}
+.eq-area-card-chips{display:flex;flex-wrap:wrap;gap:3px}
+
+/* Chips compactos */
+.eq-chip{position:relative;display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 3px;background:var(--sf);border:1px solid var(--bd);border-radius:999px;font-size:0.68em;cursor:help;transition:border-color 0.15s,transform 0.15s}
+.eq-chip:hover{border-color:var(--teal,#2dd4bf);transform:translateY(-1px)}
+.eq-chip-avatar{width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.82em;line-height:1;color:#fff;flex-shrink:0}
+.eq-chip-name{font-weight:500;color:var(--tx);white-space:nowrap}
+.eq-chip-dot{width:5px;height:5px;border-radius:50%;background:var(--gn);flex-shrink:0}
+.eq-chip-busy{border-color:rgba(45,212,191,0.5);background:rgba(45,212,191,0.07)}
+.eq-chip-busy .eq-chip-dot{background:var(--teal,#2dd4bf);box-shadow:0 0 0 0 rgba(45,212,191,0.6);animation:pulse 1.5s infinite}
+.eq-chip-busy .eq-chip-name{color:var(--teal,#2dd4bf);font-weight:700}
+.eq-chip-badge{min-width:14px;height:14px;padding:0 3px;background:var(--teal,#2dd4bf);color:#001a1a;border-radius:7px;font-size:0.82em;font-weight:800;display:inline-flex;align-items:center;justify-content:center}
+
+/* Servicios abajo */
+.eq-svc-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)}
+.eq-svc-head{font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--dim);margin-bottom:8px}
+.eq-svc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media(max-width:900px){.eq-svc-grid{grid-template-columns:1fr}}
+@media(max-width:720px){.eq-areas-grid{grid-template-columns:1fr}}
 
 </style></head>
 <body>
@@ -2802,18 +2796,16 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     <div class="eq-head">
       <h2 class="eq-title">🧠 Equipo</h2>
       <div class="eq-summary">
-        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSlots}</span>
-        <div class="eq-util-bar"><div class="eq-util-fill" style="width:${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%"></div></div>
-        <span>Utilización <b>${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%</b></span>
+        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSkills}</span>
+        <span>\u00B7</span>
+        <span>Utilización <b>${eqTotalSkills > 0 ? Math.round(eqTotalBusy / eqTotalSkills * 100) : 0}%</b></span>
+        <span>\u00B7</span>
+        <span>Cola <b>${pendientes}</b></span>
       </div>
     </div>
-    <div class="eq-body">
-      <div class="eq-body-main">
-        ${activeStripHTML}
-        ${eqAreaRowsHTML || '<span class="empty-label">Sin skills configurados</span>'}
-      </div>
-      ${svcCardsHTML ? '<div class="eq-body-svc"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid">' + svcCardsHTML + '</div></div>' : ''}
-    </div>
+    ${activeStripHTML}
+    ${eqAreaGridHTML || '<span class="empty-label">Sin skills configurados</span>'}
+    ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
   </div>
 
   ${matrixHTML}
