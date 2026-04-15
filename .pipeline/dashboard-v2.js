@@ -1633,10 +1633,27 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 
 /* ── KPI Grid ───────────────────────────────────────────────────────────── */
+.kpis-row{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;
+  margin-bottom:20px;align-items:stretch;
+}
 .kpis{
   display:grid;
   grid-template-columns:repeat(6,1fr);
   gap:10px;margin-bottom:20px;
+}
+.kpis.kpis-5{
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpi-trend{
+  font-size:0.62em;color:var(--dim);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
+  text-transform:none;letter-spacing:0;font-weight:400;
 }
 .kpi{
   background:linear-gradient(135deg,color-mix(in srgb,var(--kpi-accent,var(--ac)) 10%,var(--sf)) 0%,var(--sf) 60%);
@@ -1662,6 +1679,43 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   font-size:2.1em;font-weight:800;color:var(--kpi-accent,var(--ac));
   font-variant-numeric:tabular-nums;line-height:1;
 }
+
+/* ── Mini Sistema Card (junto a KPIs) ───────────────────────────────────── */
+.sys-mini-card{
+  display:flex;align-items:center;gap:14px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:8px 16px;
+}
+.sys-mini-card.sys-mini-ok{border-color:color-mix(in srgb,var(--gn) 35%,var(--bd))}
+.sys-mini-card.sys-mini-warn{border-color:color-mix(in srgb,var(--yl) 40%,var(--bd))}
+.sys-mini-card.sys-mini-crit{border-color:color-mix(in srgb,var(--rd) 50%,var(--bd));animation:pulse 1.8s infinite}
+.sys-mini-score{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding-right:12px;border-right:1px solid var(--bd);min-width:68px;
+}
+.sys-mini-lbl{font-size:0.6em;color:var(--dim);text-transform:uppercase;letter-spacing:0.8px;font-weight:700}
+.sys-mini-val{font-size:1.6em;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sys-mini-val.sys-mini-ok{color:var(--gn)}
+.sys-mini-val.sys-mini-warn{color:var(--yl)}
+.sys-mini-val.sys-mini-crit{color:var(--rd)}
+.sys-mini-tag{font-size:0.58em;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;line-height:1}
+.sys-mini-tag.sys-mini-ok{color:var(--gn)}
+.sys-mini-tag.sys-mini-warn{color:var(--yl)}
+.sys-mini-tag.sys-mini-crit{color:var(--rd)}
+.sys-mini-gauge{
+  position:relative;width:62px;height:62px;flex-shrink:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+}
+.sys-mini-svg{position:absolute;top:0;left:0;width:62px;height:62px;transform:rotate(-90deg)}
+.sys-mini-track{fill:none;stroke:rgba(255,255,255,0.07);stroke-width:6}
+.sys-mini-fill{fill:none;stroke-width:6;stroke-linecap:round;transition:stroke-dashoffset 0.4s}
+.sys-mini-fill.sys-mini-ok{stroke:var(--gn)}
+.sys-mini-fill.sys-mini-warn{stroke:var(--yl)}
+.sys-mini-fill.sys-mini-danger{stroke:var(--rd)}
+.sys-mini-center{text-align:center;line-height:1;position:relative;z-index:1}
+.sys-mini-center .v{font-size:0.82em;font-weight:800;color:var(--tx);font-variant-numeric:tabular-nums}
+.sys-mini-center .l{font-size:0.58em;color:var(--dim);text-transform:uppercase;letter-spacing:0.4px;margin-top:1px}
+
 .kpi-value.warn{color:var(--yl);--kpi-accent:var(--yl)}
 .kpi-value.danger{color:var(--rd);--kpi-accent:var(--rd)}
 .kpi-value.success{color:var(--gn);--kpi-accent:var(--gn)}
@@ -2558,7 +2612,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     if (blockedNow) {
       statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>BLOQUEADO por saturación de recursos</span>';
     } else if (isPaused) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>PIPELINE PAUSADO por usuario</span>'
+      // El badge del header ya indica PAUSADO — evitamos duplicar el texto acá.
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Lanzamientos detenidos por usuario</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
@@ -2614,37 +2669,56 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   })()}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
-  <div class="kpis">
-    <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
-      <div class="kpi-label">En ejecución</div>
-      <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
-      <span class="kpi-icon">⚙️</span>
+  <div class="kpis-row">
+    <div class="kpis kpis-5">
+      <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
+        <div class="kpi-label">Definidos</div>
+        <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
+        <div class="kpi-trend">backlog total</div>
+      </div>
+      <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
+        <div class="kpi-label">En cola</div>
+        <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
+        <div class="kpi-trend">esperando agente</div>
+      </div>
+      <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
+        <div class="kpi-label">Ejecución</div>
+        <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
+        <div class="kpi-trend">${trabajando > 0 ? 'agentes activos' : 'sin agentes'}</div>
+      </div>
+      <div class="kpi kpi-entregados" data-tt='${ttEntregados24h}'>
+        <div class="kpi-label">Entregados 24h</div>
+        <div class="kpi-value success">${entregados24h}</div>
+        <div class="kpi-trend">últimas 24 horas</div>
+      </div>
+      <div class="kpi kpi-blocked" data-tt='${ttStale}'>
+        <div class="kpi-label">Bloqueados${stale > 0 ? ' \u26A0' : ''}</div>
+        <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
+        <div class="kpi-trend">${stale > 0 ? 'stale >30m' : 'sin stale'}</div>
+      </div>
     </div>
-    <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
-      <div class="kpi-label">En cola</div>
-      <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
-      <span class="kpi-icon">⏳</span>
-    </div>
-    <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-      <div class="kpi-label">Bloqueados / stale</div>
-      <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
-      <span class="kpi-icon">🚨</span>
-    </div>
-    <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
-      <div class="kpi-label">Definidos</div>
-      <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
-      <span class="kpi-icon">📋</span>
-    </div>
-    <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
-      <div class="kpi-label">Entregados</div>
-      <div class="kpi-value success">${entregados}</div>
-      <span class="kpi-icon">🚀</span>
-    </div>
-    <div class="kpi kpi-throughput" data-tt='${ttEntregados24h}'>
-      <div class="kpi-label">Últimas 24h</div>
-      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
-      <span class="kpi-icon">📈</span>
-    </div>
+    ${(() => {
+      const scoreCls = healthScore > 60 ? 'ok' : healthScore > 30 ? 'warn' : 'crit';
+      const circ = 163;
+      const cpuOff = Math.round(circ - (circ * Math.min(100, res.cpuPercent) / 100));
+      const memOff = Math.round(circ - (circ * Math.min(100, res.memPercent) / 100));
+      return `
+      <div class="sys-mini-card sys-mini-${scoreCls}">
+        <div class="sys-mini-score">
+          <div class="sys-mini-lbl">Salud</div>
+          <div class="sys-mini-val sys-mini-${scoreCls}">${healthScore}</div>
+          <div class="sys-mini-tag sys-mini-${scoreCls}">${healthLabel}</div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${cpuStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${cpuOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.cpuPercent}%</div><div class="l">CPU</div></div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${memStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${memOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.memPercent}%</div><div class="l">RAM</div></div>
+        </div>
+      </div>`;
+    })()}
   </div>
 
   <div class="dual-row">
