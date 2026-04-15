@@ -3216,7 +3216,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
   <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
 
-  <div class="footer">🔴 Live · Auto-refresh 10s &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
+  <div class="footer">🟢 Live · Refresh on-demand (pill azul abajo) &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
 <!-- Log Viewer Panel -->
 <div id="log-overlay" class="log-overlay" onclick="if(event.target===this)closeLogViewer()">
