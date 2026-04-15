@@ -658,6 +658,19 @@ function generateHTML(state) {
     return entries.some(e => e.ageMin > 30);
   });
   const stale = staleList.length;
+  // Bloqueados = issues con blockedBy declarado y aún activos (no completados)
+  const blockedList = matrixEntries.filter(([num, d]) => {
+    return state.blockedIssues.blockedBy[num] != null && d.estadoActual;
+  });
+  const blockedCount = blockedList.length;
+  // IDs de las deps que están bloqueando (issues nuevos de los cuales dependen los bloqueados)
+  const blockingDepsSet = new Set();
+  for (const [num] of blockedList) {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    for (const d of deps) blockingDepsSet.add(String(d));
+  }
+  const blockedIdsJson = JSON.stringify(blockedList.map(([n]) => String(n)));
+  const blockingDepsJson = JSON.stringify(Array.from(blockingDepsSet));
   const staleDetail = staleList.map(([id, d]) => {
     const entries = d.fases[d.faseActual] || [];
     const staleEntry = entries.find(e => e.estado === 'trabajando' && e.ageMin > 30);
@@ -689,7 +702,12 @@ function generateHTML(state) {
   const ttActivos   = buildTtData('Issues activos',       activosList,   (_, d) => ttLabel(d));
   const ttTrabajando= buildTtData('En ejecución',          trabajandoList,(_, d) => ttLabel(d));
   const ttPendientes= buildTtData('En cola',               pendientesList,(_, d) => ttLabel(d));
-  const ttStale     = buildTtData('Bloqueados / stale',    staleList,     (_, d) => ttLabel(d));
+  const ttStale     = buildTtData('Stale >30m',            staleList,     (_, d) => ttLabel(d));
+  const ttBlocked   = buildTtData('Bloqueados por dependencias', blockedList, (num, d) => {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    const depTxt = deps.length > 0 ? 'dep: ' + deps.map(x => '#' + x).join(', ') : 'sin deps declaradas';
+    return depTxt;
+  });
 
   // Definidos = completaron la fase final de definición (sizing/procesado)
   const defFasesKpi = config.pipelines?.definicion?.fases || [];
@@ -1218,12 +1236,11 @@ function generateHTML(state) {
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
-            <span class="lc-num">#${issueNum}</span>
+            <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
             ${lcBlockIcons}
           </div>
           <div class="lc-top-right">
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
-            <a class="lc-gh" href="${GH(issueNum)}" target="_blank" title="Ver en GitHub" onclick="event.stopPropagation()">↗</a>
           </div>
         </div>
         <div class="lc-title">${flagSpan}${laneTitle}</div>
@@ -1671,7 +1688,7 @@ function generateHTML(state) {
       if (e.estado === 'trabajando') {
         if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
         const [pline, fse] = data.faseActual.split('/');
-        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs });
+        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs, hasLog: !!e.hasLog, logFile: e.logFile });
       }
     }
   }
@@ -1706,8 +1723,12 @@ function generateHTML(state) {
       const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
       const workItems = issues.map(i => {
         const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
-        return `<a href="${GH(i.issue)}" target="_blank" class="eq-work-item">
-          <span class="eq-work-issue">#${i.issue}</span>
+        const href = i.hasLog && i.logFile
+          ? `/logs/view/${i.logFile}?live=1`
+          : GH(i.issue);
+        const tip = i.hasLog ? `Ver log en vivo · ${i.skill} · #${i.issue}` : `Ver #${i.issue} en GitHub`;
+        return `<a href="${href}" target="_blank" class="eq-work-item" title="${tip}">
+          <span class="eq-work-issue">#${i.issue}${i.hasLog ? ' 📄' : ' ↗'}</span>
           <span class="eq-work-fase">${i.fase}</span>
           <span class="eq-work-dur">${fmtDuration(i.duration)}</span>
           <span class="eq-work-bar"><span class="eq-work-bar-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
@@ -2887,13 +2908,33 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
 .lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
 .lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
-.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search{display:none}
+.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search,.lc-card.lc-filtered-blocked{display:none}
+.lc-card.lc-hl-blocked{border-left-color:var(--rd) !important;box-shadow:0 0 0 1px rgba(248,113,113,0.5)}
+.lc-card.lc-hl-blocking{border-left-color:var(--yl) !important;box-shadow:0 0 0 1px rgba(251,191,36,0.5)}
+.lc-card.lc-hl-blocking::after{content:'▸ bloquea';display:inline-block;margin-left:6px;font-size:0.6em;background:rgba(251,191,36,0.15);color:var(--yl);padding:1px 5px;border-radius:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px}
+
+/* Refresh pill flotante (cambios pendientes) */
+.refresh-pill{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(135deg,var(--ac),#4a6cf7);color:#fff;border-radius:999px;box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-size:0.85em;font-weight:600;opacity:0;transform:translateY(12px) scale(0.95);pointer-events:none;transition:opacity 0.25s,transform 0.25s}
+.refresh-pill.rp-visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;animation:rp-pulse 2.5s ease-in-out infinite}
+.refresh-pill:hover{box-shadow:0 8px 26px rgba(88,166,255,0.6),0 2px 8px rgba(0,0,0,0.4);transform:translateY(-2px) scale(1.02);animation:none}
+.refresh-pill .rp-icon{font-size:1.1em;line-height:1}
+.refresh-pill .rp-text{white-space:nowrap}
+.refresh-pill .rp-close{margin-left:4px;opacity:0.75;padding:0 4px;border-radius:50%;font-size:1.1em;line-height:1}
+.refresh-pill .rp-close:hover{opacity:1;background:rgba(0,0,0,0.2)}
+@keyframes rp-pulse{0%,100%{box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3)}50%{box-shadow:0 6px 24px rgba(88,166,255,0.7),0 2px 10px rgba(0,0,0,0.4)}}
+
+/* KPI clickeable (filter mode) */
+.kpi-clickable{cursor:pointer;transition:transform 0.15s,box-shadow 0.15s}
+.kpi-clickable:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.kpi.kpi-active-filter{box-shadow:0 0 0 2px var(--rd),0 4px 12px rgba(248,113,113,0.3)}
+.kpi.kpi-active-filter .kpi-trend::after{content:' · activo';color:var(--rd);font-weight:700}
 .lc-card.lc-expanded{background:var(--sf2);border-left-color:var(--ac)}
 .lc-card-main{padding:8px 10px;cursor:pointer}
 .lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
 .lc-top-left{display:flex;align-items:center;gap:5px;min-width:0}
 .lc-top-right{display:flex;align-items:center;gap:6px}
-.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
+.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums;text-decoration:none}
+.lc-num:hover{text-decoration:underline}
 .lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
 .lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
 .lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
@@ -3123,10 +3164,10 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <div class="kpi-value success">${entregados24h}</div>
         <div class="kpi-trend">últimas 24 horas</div>
       </div>
-      <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-        <div class="kpi-label">Bloqueados${stale > 0 ? ' \u26A0' : ''}</div>
-        <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
-        <div class="kpi-trend">${stale > 0 ? 'stale >30m' : 'sin stale'}</div>
+      <div class="kpi kpi-blocked kpi-clickable" data-tt='${ttBlocked}' data-blocked-ids='${blockedIdsJson}' data-blocking-deps='${blockingDepsJson}' onclick="toggleBlockedFilter(this)" title="${blockedCount > 0 ? 'Click para filtrar el Issue Tracker por bloqueados + deps' : 'No hay issues bloqueados'}">
+        <div class="kpi-label">Bloqueados${blockedCount > 0 ? ' \u{1F6AB}' : ''}</div>
+        <div class="kpi-value ${blockedCount > 0 ? 'danger' : 'muted'}">${blockedCount}</div>
+        <div class="kpi-trend">${blockedCount > 0 ? 'click para filtrar' : 'sin bloqueos'}</div>
       </div>
     </div>
     ${(() => {
@@ -3241,17 +3282,105 @@ function saveIssueTrackerState() {
 // Guardar estado en TODA recarga (F5, SSE, navegación, etc.)
 window.addEventListener('beforeunload', saveIssueTrackerState);
 
-// SSE live refresh
+// ── Soft refresh: reemplaza secciones sin recargar la página (evita flash) ──
+let __softRefreshInFlight = false;
+async function softRefresh() {
+  if (__softRefreshInFlight) return;
+  // No refrescar si hay log overlay abierto
+  const logOv = document.getElementById('log-overlay');
+  if (logOv && logOv.classList.contains('open')) return;
+  // Si el foco está en el input de búsqueda, diferimos el refresh — molesta mientras escribe
+  const ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('it-search')) return;
+  __softRefreshInFlight = true;
+  try {
+    // Preservar state actual (scroll, tabs, sub-filters, search, expansiones)
+    saveIssueTrackerState();
+    const searchVal = (document.getElementById('it-search-input') || {}).value || '';
+    // Cerrar popup de dots (puede quedar stale si el DOM cambia)
+    closeDotPopup && closeDotPopup();
+    const res = await fetch(window.location.href, { cache: 'no-store', credentials: 'same-origin' });
+    if (!res.ok) return;
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Reemplazar secciones clave
+    const selectors = [
+      '.hdr-bar',
+      '.hdr-status-line',
+      '.pipeline-ctrl-bar',
+      '.kpis-row',
+      '.panel-equipo-full',
+      '#issue-tracker',
+    ];
+    for (const sel of selectors) {
+      const newEl = doc.querySelector(sel);
+      const oldEl = document.querySelector(sel);
+      if (newEl && oldEl) oldEl.replaceWith(newEl);
+    }
+    // Re-aplicar valor de búsqueda si había
+    const newInp = document.getElementById('it-search-input');
+    if (newInp && searchVal) {
+      newInp.value = searchVal;
+      filterIssuesBySearch(searchVal);
+    }
+    // Rehidratar el resto del estado (tabs, sub-filters, scroll, expansiones legacy)
+    restoreIssueTrackerState();
+    // Re-atachar listeners sobre KPIs nuevos
+    if (typeof attachKpiTooltips === 'function') attachKpiTooltips();
+  } catch (_) { /* silenciar */ }
+  finally { __softRefreshInFlight = false; }
+}
+
+// SSE — ahora NO auto-refresca. Solo cuenta cambios y muestra un pill que el usuario controla.
 let lastHash = null;
+let __pendingChanges = 0;
+let __lastChangeTs = null;
+function showRefreshPill() {
+  let pill = document.getElementById('refresh-pill');
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'refresh-pill';
+    pill.className = 'refresh-pill';
+    pill.innerHTML = '<span class="rp-icon">🔄</span><span class="rp-text"></span><span class="rp-close" title="Descartar" onclick="event.stopPropagation();dismissRefreshPill()">×</span>';
+    pill.onclick = applyPendingRefresh;
+    document.body.appendChild(pill);
+  }
+  const textEl = pill.querySelector('.rp-text');
+  const ago = __lastChangeTs ? Math.max(0, Math.round((Date.now() - __lastChangeTs) / 1000)) : 0;
+  const agoTxt = ago < 60 ? ago + 's' : Math.round(ago / 60) + 'm';
+  textEl.textContent = __pendingChanges === 1
+    ? '1 cambio nuevo · hace ' + agoTxt
+    : __pendingChanges + ' cambios nuevos · último hace ' + agoTxt;
+  pill.classList.add('rp-visible');
+}
+function dismissRefreshPill() {
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+  __pendingChanges = 0;
+}
+async function applyPendingRefresh() {
+  await softRefresh();
+  __pendingChanges = 0;
+  __lastChangeTs = null;
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+}
+// Actualizar el "hace Xs" cada 10s mientras el pill esté visible
+setInterval(() => {
+  const pill = document.getElementById('refresh-pill');
+  if (pill && pill.classList.contains('rp-visible') && __pendingChanges > 0) showRefreshPill();
+}, 10000);
+
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) {
-    saveIssueTrackerState();
-    location.reload();
+  if (lastHash && e.data !== lastHash) {
+    __pendingChanges++;
+    __lastChangeTs = Date.now();
+    showRefreshPill();
   }
   lastHash = e.data;
 };
-es.onerror = () => { setTimeout(() => location.reload(), 10000); };
+es.onerror = () => { /* silent — el usuario decide cuando refrescar */ };
 
 // Restaurar estado UI — se invoca después de definir las funciones necesarias
 function restoreIssueTrackerState() {
@@ -3298,28 +3427,35 @@ function restoreIssueTrackerState() {
 }
 
 // KPI Tooltips
-const tt = document.getElementById('kpi-tooltip');
+let tt = document.getElementById('kpi-tooltip');
 const GH_BASE = 'https://github.com/intrale/platform/issues/';
 const MAX_TT = 20;
-document.querySelectorAll('.kpi[data-tt]').forEach(el => {
-  el.addEventListener('mouseenter', e => {
-    try {
-      const d = JSON.parse(el.dataset.tt);
-      const shown = d.items.slice(0, MAX_TT);
-      const rows = shown.map(it =>
-        '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
-        (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
-      ).join('');
-      const more = d.items.length > MAX_TT
-        ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
-      tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
-      tt.style.display = 'block';
-      positionTt(e);
-    } catch(_) {}
+function attachKpiTooltips() {
+  tt = document.getElementById('kpi-tooltip');
+  if (!tt) return;
+  document.querySelectorAll('.kpi[data-tt]').forEach(el => {
+    if (el.__ttAttached) return;
+    el.__ttAttached = true;
+    el.addEventListener('mouseenter', e => {
+      try {
+        const d = JSON.parse(el.dataset.tt);
+        const shown = d.items.slice(0, MAX_TT);
+        const rows = shown.map(it =>
+          '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
+          (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
+        ).join('');
+        const more = d.items.length > MAX_TT
+          ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
+        tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
+        tt.style.display = 'block';
+        positionTt(e);
+      } catch(_) {}
+    });
+    el.addEventListener('mousemove', positionTt);
+    el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
   });
-  el.addEventListener('mousemove', positionTt);
-  el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
-});
+}
+attachKpiTooltips();
 function positionTt(e) {
   const pad = 14;
   let x = e.clientX + pad, y = e.clientY + pad;
@@ -3468,6 +3604,36 @@ function filterLaneBySubFase(laneKey, subFase) {
     c.classList.toggle('lc-filtered-out-sub', sf !== subFase);
   });
   saveIssueTrackerState();
+}
+
+// Filtro de bloqueados desde el KPI — muestra blocked + sus deps bloqueantes
+function toggleBlockedFilter(kpiEl) {
+  if (!kpiEl) return;
+  let blockedIds, blockingDeps;
+  try {
+    blockedIds = JSON.parse(kpiEl.dataset.blockedIds || '[]');
+    blockingDeps = JSON.parse(kpiEl.dataset.blockingDeps || '[]');
+  } catch (_) { return; }
+  if (blockedIds.length === 0) return;
+  const active = kpiEl.classList.toggle('kpi-active-filter');
+  const relevant = new Set([...blockedIds, ...blockingDeps].map(String));
+  document.querySelectorAll('.lc-card').forEach(c => {
+    if (!active) { c.classList.remove('lc-filtered-blocked'); c.classList.remove('lc-hl-blocked'); c.classList.remove('lc-hl-blocking'); return; }
+    const issue = c.dataset.issue;
+    const isBlocked = blockedIds.includes(issue);
+    const isBlocking = blockingDeps.includes(issue);
+    c.classList.toggle('lc-filtered-blocked', !isBlocked && !isBlocking);
+    c.classList.toggle('lc-hl-blocked', isBlocked);
+    c.classList.toggle('lc-hl-blocking', isBlocking);
+  });
+  document.querySelectorAll('.it-lane').forEach(lane => {
+    const visible = lane.querySelectorAll('.lc-card:not(.lc-filtered-blocked):not(.lc-filtered-out-sub):not(.lc-filtered-out-search)').length;
+    lane.classList.toggle('it-lane-empty-search', active && visible === 0);
+  });
+  if (active) {
+    const tracker = document.getElementById('issue-tracker');
+    if (tracker) tracker.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 // Búsqueda por # o título en todo el tracker
