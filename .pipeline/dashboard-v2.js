@@ -528,15 +528,12 @@ function sparklineSVG(data, color, opts = {}) {
   </svg>`;
 }
 
-// Gauge radial tipo tacómetro (semicírculo 180°)
+// Gauge radial tipo tacómetro (semicírculo 180°) — versión compacta
 function radialGauge(value, max, thresh, color, label, detail) {
   const pct = Math.min(100, Math.max(0, (value / 100) * 100));
   const threshPct = Math.min(100, (thresh / 100) * 100);
-  // Arco semicircular de 180° (π radianes). r = 52, cx=60, cy=60.
-  const r = 52, cx = 60, cy = 60;
-  // Ángulo de inicio 180°, fin 360° (semicircle superior → invertido abajo)
-  // Mejor: arco que va de 180° (izq) a 0° (der) pasando por 270° (top) — medio círculo superior.
-  const ang = (p) => Math.PI + (p / 100) * Math.PI; // 180°→360°
+  const r = 30, cx = 34, cy = 34;
+  const ang = (p) => Math.PI + (p / 100) * Math.PI;
   const polar = (p) => ({ x: cx + r * Math.cos(ang(p)), y: cy + r * Math.sin(ang(p)) });
   const arcPath = (from, to) => {
     const a = polar(from), b = polar(to);
@@ -547,15 +544,15 @@ function radialGauge(value, max, thresh, color, label, detail) {
   const isDanger = value >= thresh;
   const isWarn = value >= thresh * 0.8;
   const valColor = isDanger ? '#f85149' : isWarn ? '#d29922' : '#3fb950';
-  return `<svg class="rgauge" width="120" height="78" viewBox="0 0 120 78">
-    <path d="${arcPath(0, 100)}" fill="none" stroke="#30363d" stroke-width="8" stroke-linecap="round"/>
-    <path d="${arcPath(0, Math.min(65, pct))}" fill="none" stroke="#3fb950" stroke-width="8" stroke-linecap="round" opacity="${pct>0?1:0.3}"/>
-    ${pct > 65 ? `<path d="${arcPath(65, Math.min(85, pct))}" fill="none" stroke="#d29922" stroke-width="8" stroke-linecap="round"/>` : ''}
-    ${pct > 85 ? `<path d="${arcPath(85, pct)}" fill="none" stroke="#f85149" stroke-width="8" stroke-linecap="round"/>` : ''}
-    <line x1="${polar(threshPct).x.toFixed(1)}" y1="${polar(threshPct).y.toFixed(1)}" x2="${(cx + (r+6)*Math.cos(ang(threshPct))).toFixed(1)}" y2="${(cy + (r+6)*Math.sin(ang(threshPct))).toFixed(1)}" stroke="#f85149" stroke-width="2" opacity="0.7"/>
-    <line x1="${cx}" y1="${cy}" x2="${needle.x.toFixed(1)}" y2="${needle.y.toFixed(1)}" stroke="${valColor}" stroke-width="2.5" stroke-linecap="round"/>
-    <circle cx="${cx}" cy="${cy}" r="4" fill="${valColor}"/>
-    <text x="${cx}" y="${cy + 18}" text-anchor="middle" font-size="16" font-weight="800" fill="${valColor}" font-family="monospace">${value}%</text>
+  return `<svg class="rgauge" width="68" height="44" viewBox="0 0 68 44">
+    <path d="${arcPath(0, 100)}" fill="none" stroke="#30363d" stroke-width="5" stroke-linecap="round"/>
+    <path d="${arcPath(0, Math.min(65, pct))}" fill="none" stroke="#3fb950" stroke-width="5" stroke-linecap="round" opacity="${pct>0?1:0.3}"/>
+    ${pct > 65 ? `<path d="${arcPath(65, Math.min(85, pct))}" fill="none" stroke="#d29922" stroke-width="5" stroke-linecap="round"/>` : ''}
+    ${pct > 85 ? `<path d="${arcPath(85, pct)}" fill="none" stroke="#f85149" stroke-width="5" stroke-linecap="round"/>` : ''}
+    <line x1="${polar(threshPct).x.toFixed(1)}" y1="${polar(threshPct).y.toFixed(1)}" x2="${(cx + (r+4)*Math.cos(ang(threshPct))).toFixed(1)}" y2="${(cy + (r+4)*Math.sin(ang(threshPct))).toFixed(1)}" stroke="#f85149" stroke-width="1.5" opacity="0.7"/>
+    <line x1="${cx}" y1="${cy}" x2="${needle.x.toFixed(1)}" y2="${needle.y.toFixed(1)}" stroke="${valColor}" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="${cx}" cy="${cy}" r="2.5" fill="${valColor}"/>
+    <text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="9" font-weight="800" fill="${valColor}" font-family="monospace">${value}%</text>
   </svg>`;
 }
 
@@ -1619,12 +1616,7 @@ h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px
 .hdr-clock{font-size:1.6em;font-weight:700;font-family:'SF Mono',Consolas,monospace;color:var(--tx);letter-spacing:2px;font-variant-numeric:tabular-nums}
 .hdr-clock .clock-sec{font-size:0.55em;color:var(--dim);vertical-align:super;margin-left:1px}
 .hdr-date{font-size:0.75em;color:var(--dim);margin-top:2px;letter-spacing:0.5px}
-.hdr-status-line{height:2px;margin-bottom:14px;border-radius:1px;transition:background 0.5s}
-.sl-active{background:linear-gradient(90deg,var(--gn),var(--ac),var(--gn));background-size:200% 100%;animation:slSlide 3s linear infinite}
-@keyframes slSlide{0%{background-position:0% 0}100%{background-position:200% 0}}
-.sl-warn{background:linear-gradient(90deg,var(--yl),rgba(210,169,34,0.3))}
-.sl-danger{background:linear-gradient(90deg,var(--rd),var(--or),var(--rd));background-size:200% 100%;animation:slSlide 2s linear infinite}
-.sl-idle{background:var(--bd)}
+.hdr-status-line{display:none}
 .health-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px}
 .health-active{background:var(--gn);box-shadow:0 0 8px var(--gn);animation:healthPulse 2s infinite}
 .health-warn{background:var(--yl);box-shadow:0 0 8px var(--yl);animation:healthPulse 1s infinite}
@@ -1644,28 +1636,36 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .kpis{
   display:grid;
   grid-template-columns:repeat(6,1fr);
-  gap:14px;margin-bottom:24px;
+  gap:10px;margin-bottom:20px;
 }
 .kpi{
-  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
-  padding:18px 16px 14px;display:flex;flex-direction:column;align-items:center;
-  gap:6px;position:relative;overflow:hidden;transition:border-color 0.2s;
+  background:linear-gradient(135deg,color-mix(in srgb,var(--kpi-accent,var(--ac)) 10%,var(--sf)) 0%,var(--sf) 60%);
+  border:1px solid var(--bd);
+  border-left:3px solid var(--kpi-accent,var(--ac));
+  border-radius:var(--radius);
+  padding:14px 16px;display:flex;flex-direction:column;align-items:flex-start;
+  gap:0;position:relative;overflow:hidden;
+  transition:border-color 0.2s,box-shadow 0.2s;
 }
-.kpi:hover{border-color:var(--ac)}
-.kpi::before{
-  content:'';position:absolute;top:0;left:0;right:0;height:3px;
-  background:var(--kpi-accent,var(--ac));border-radius:var(--radius) var(--radius) 0 0;
+.kpi:hover{border-color:var(--kpi-accent,var(--ac));box-shadow:0 4px 14px rgba(0,0,0,0.3)}
+.kpi::before{content:none}
+.kpi-icon{
+  position:absolute;top:12px;right:12px;
+  font-size:1.1em;line-height:1;opacity:0.35;
 }
-.kpi-icon{font-size:1.6em;line-height:1;margin-bottom:2px}
+.kpi-label{
+  font-size:0.68em;color:var(--dim);font-weight:700;
+  text-transform:uppercase;letter-spacing:1px;line-height:1;
+  margin-bottom:8px;
+}
 .kpi-value{
-  font-size:2.4em;font-weight:800;color:var(--kpi-accent,var(--ac));
+  font-size:2.1em;font-weight:800;color:var(--kpi-accent,var(--ac));
   font-variant-numeric:tabular-nums;line-height:1;
 }
 .kpi-value.warn{color:var(--yl);--kpi-accent:var(--yl)}
 .kpi-value.danger{color:var(--rd);--kpi-accent:var(--rd)}
 .kpi-value.success{color:var(--gn);--kpi-accent:var(--gn)}
-.kpi-value.muted{color:var(--dim);--kpi-accent:var(--dim2)}
-.kpi-label{font-size:0.78em;color:var(--dim);font-weight:500;text-align:center;line-height:1.2}
+.kpi-value.muted{color:var(--dim2)}
 
 /* ── KPI accent colors per type ─────────────────────────────────────────── */
 .kpi.kpi-activos{--kpi-accent:var(--ac)}
@@ -2045,7 +2045,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
 /* Siempre repartir 50/50 el ancho; sólo apilar en móvil muy angosto. */
 .dual-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-bottom:20px;align-items:start}
-.dual-col{min-width:0;max-height:520px;overflow-y:auto;scroll-behavior:smooth}
+.dual-col{min-width:0;overflow-y:visible}
 .dual-col::-webkit-scrollbar{width:6px}
 .dual-col::-webkit-scrollbar-track{background:transparent}
 .dual-col::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:3px}
@@ -2203,8 +2203,8 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .sys-health-title{font-size:0.82em;font-weight:700;color:var(--tx)}
 .sys-health-sub{font-size:0.72em;color:var(--dim);margin-top:2px}
 .rgauge-cell{
-  flex:1;min-width:260px;background:var(--bg);border:1px solid var(--bd2);
-  border-radius:var(--radius-sm);padding:10px 12px;display:flex;flex-direction:column;gap:6px;
+  flex:1;min-width:0;background:var(--bg);border:1px solid var(--bd2);
+  border-radius:var(--radius-sm);padding:8px 10px;display:flex;flex-direction:column;gap:4px;
   border-left:3px solid var(--gn);
 }
 .rgauge-cell.rgauge-warn{border-left-color:var(--yl)}
@@ -2221,7 +2221,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .rgauge-kpis{display:flex;gap:10px;margin-top:6px;font-size:0.7em;color:var(--dim);font-variant-numeric:tabular-nums}
 .rgauge-kpis b{color:var(--tx);font-weight:700;margin-left:3px}
 .rgauge-spark{margin-top:2px;line-height:0}
-.rgauge-spark svg{display:block;width:100%;height:32px}
+.rgauge-spark svg{display:block;width:100%;height:18px}
 
 /* ══ Service Layer v2 ══════════════════════════════════════════════════ */
 .svc-grid{display:flex;flex-direction:column;gap:10px}
@@ -2365,7 +2365,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 @keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
 
 /* ── Resource Gauges ───────────────────────────────────────────────────── */
-.gauge-row{display:flex;gap:16px;flex-wrap:wrap}
+.gauge-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .gauge{flex:1;min-width:180px}
 .gauge-label{font-size:0.82em;font-weight:700;color:var(--dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
 .gauge-bar{
@@ -2616,34 +2616,34 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
     <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
-      <span class="kpi-icon">⚙️</span>
-      <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
       <div class="kpi-label">En ejecución</div>
+      <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
+      <span class="kpi-icon">⚙️</span>
     </div>
     <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
-      <span class="kpi-icon">⏳</span>
-      <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
       <div class="kpi-label">En cola</div>
+      <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
+      <span class="kpi-icon">⏳</span>
     </div>
     <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-      <span class="kpi-icon">🚨</span>
-      <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
       <div class="kpi-label">Bloqueados / stale</div>
+      <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
+      <span class="kpi-icon">🚨</span>
     </div>
     <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
-      <span class="kpi-icon">📋</span>
-      <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
       <div class="kpi-label">Definidos</div>
+      <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
+      <span class="kpi-icon">📋</span>
     </div>
     <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
-      <span class="kpi-icon">🚀</span>
-      <div class="kpi-value success">${entregados}</div>
       <div class="kpi-label">Entregados</div>
+      <div class="kpi-value success">${entregados}</div>
+      <span class="kpi-icon">🚀</span>
     </div>
     <div class="kpi kpi-throughput" data-tt='${ttEntregados24h}'>
-      <span class="kpi-icon">📈</span>
-      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
       <div class="kpi-label">Últimas 24h</div>
+      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
+      <span class="kpi-icon">📈</span>
     </div>
   </div>
 
