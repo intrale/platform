@@ -134,6 +134,14 @@ timeouts:
   intake_interval_seconds: 300    # Frecuencia de intake (GitHub API, 5 min)
   orphan_timeout_minutes: 10      # Archivo en trabajando/ sin proceso → vuelve a pendiente
 
+  # Timeout efectivo por agente (watchdog en pulpo.js mata al hijo si lo excede)
+  # Si un skill no está en el override, se usa agent_timeout_default_minutes.
+  agent_timeout_default_minutes: 30
+  agent_timeout_overrides:
+    build: 60                     # Gradle check + assemble puede tardar mucho en primer build
+    qa: 45                        # QA E2E con emulador + video
+    tester: 45                    # Cobertura Kover + suite completa
+
 # GitHub
 github:
   owner: "intrale"
