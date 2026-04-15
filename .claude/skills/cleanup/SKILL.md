@@ -716,6 +716,32 @@ try {
   }
 } catch(e) {}
 
+// Java Gradle daemons runaway (RSS > 1 GB) — siempre matar
+// El proyecto solo usa java.exe para builds via Gradle. Cualquier daemon vivo
+// después del build es huérfano y suele comer 2-4 GB de heap.
+try {
+  const out = execSync('wmic process where "name=\'java.exe\'" get ProcessId,WorkingSetSize /FORMAT:CSV', {encoding:'utf8'});
+  for (const line of out.trim().split('\n')) {
+    if (!line.includes('java')) continue;
+    const parts = line.split(',').filter(Boolean);
+    if (parts.length < 3) continue;
+    const pid = parseInt(parts[1]);
+    const rss = parseInt(parts[2]);
+    if (!pid || !rss) continue;
+    const mb = Math.round(rss / 1048576);
+    if (mb > 1024) {
+      try {
+        execSync('taskkill /PID ' + pid + ' /T /F', {stdio:'ignore'});
+        console.log('Terminado: java.exe PID ' + pid + ' (Gradle daemon, ' + mb + ' MB)');
+        killed++;
+      } catch(e) { skipped++; }
+    } else {
+      console.log('Conservado: java.exe PID ' + pid + ' (' + mb + ' MB)');
+      skipped++;
+    }
+  }
+} catch(e) {}
+
 console.log('\nResumen: ' + killed + ' procesos terminados, ' + skipped + ' conservados');
 EOF
 node /tmp/cleanup-procs.js
