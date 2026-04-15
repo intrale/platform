@@ -3245,17 +3245,63 @@ function saveIssueTrackerState() {
 // Guardar estado en TODA recarga (F5, SSE, navegación, etc.)
 window.addEventListener('beforeunload', saveIssueTrackerState);
 
-// SSE live refresh
+// ── Soft refresh: reemplaza secciones sin recargar la página (evita flash) ──
+let __softRefreshInFlight = false;
+async function softRefresh() {
+  if (__softRefreshInFlight) return;
+  // No refrescar si hay log overlay abierto
+  const logOv = document.getElementById('log-overlay');
+  if (logOv && logOv.classList.contains('open')) return;
+  // Si el foco está en el input de búsqueda, diferimos el refresh — molesta mientras escribe
+  const ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('it-search')) return;
+  __softRefreshInFlight = true;
+  try {
+    // Preservar state actual (scroll, tabs, sub-filters, search, expansiones)
+    saveIssueTrackerState();
+    const searchVal = (document.getElementById('it-search-input') || {}).value || '';
+    // Cerrar popup de dots (puede quedar stale si el DOM cambia)
+    closeDotPopup && closeDotPopup();
+    const res = await fetch(window.location.href, { cache: 'no-store', credentials: 'same-origin' });
+    if (!res.ok) return;
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Reemplazar secciones clave
+    const selectors = [
+      '.hdr-bar',
+      '.hdr-status-line',
+      '.pipeline-ctrl-bar',
+      '.kpis-row',
+      '.panel-equipo-full',
+      '#issue-tracker',
+    ];
+    for (const sel of selectors) {
+      const newEl = doc.querySelector(sel);
+      const oldEl = document.querySelector(sel);
+      if (newEl && oldEl) oldEl.replaceWith(newEl);
+    }
+    // Re-aplicar valor de búsqueda si había
+    const newInp = document.getElementById('it-search-input');
+    if (newInp && searchVal) {
+      newInp.value = searchVal;
+      filterIssuesBySearch(searchVal);
+    }
+    // Rehidratar el resto del estado (tabs, sub-filters, scroll, expansiones legacy)
+    restoreIssueTrackerState();
+    // Re-atachar listeners sobre KPIs nuevos
+    if (typeof attachKpiTooltips === 'function') attachKpiTooltips();
+  } catch (_) { /* silenciar */ }
+  finally { __softRefreshInFlight = false; }
+}
+
+// SSE live refresh (soft, sin parpadeo)
 let lastHash = null;
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) {
-    saveIssueTrackerState();
-    location.reload();
-  }
+  if (lastHash && e.data !== lastHash) softRefresh();
   lastHash = e.data;
 };
-es.onerror = () => { setTimeout(() => location.reload(), 10000); };
+es.onerror = () => { setTimeout(softRefresh, 10000); };
 
 // Restaurar estado UI — se invoca después de definir las funciones necesarias
 function restoreIssueTrackerState() {
@@ -3302,28 +3348,35 @@ function restoreIssueTrackerState() {
 }
 
 // KPI Tooltips
-const tt = document.getElementById('kpi-tooltip');
+let tt = document.getElementById('kpi-tooltip');
 const GH_BASE = 'https://github.com/intrale/platform/issues/';
 const MAX_TT = 20;
-document.querySelectorAll('.kpi[data-tt]').forEach(el => {
-  el.addEventListener('mouseenter', e => {
-    try {
-      const d = JSON.parse(el.dataset.tt);
-      const shown = d.items.slice(0, MAX_TT);
-      const rows = shown.map(it =>
-        '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
-        (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
-      ).join('');
-      const more = d.items.length > MAX_TT
-        ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
-      tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
-      tt.style.display = 'block';
-      positionTt(e);
-    } catch(_) {}
+function attachKpiTooltips() {
+  tt = document.getElementById('kpi-tooltip');
+  if (!tt) return;
+  document.querySelectorAll('.kpi[data-tt]').forEach(el => {
+    if (el.__ttAttached) return;
+    el.__ttAttached = true;
+    el.addEventListener('mouseenter', e => {
+      try {
+        const d = JSON.parse(el.dataset.tt);
+        const shown = d.items.slice(0, MAX_TT);
+        const rows = shown.map(it =>
+          '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
+          (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
+        ).join('');
+        const more = d.items.length > MAX_TT
+          ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
+        tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
+        tt.style.display = 'block';
+        positionTt(e);
+      } catch(_) {}
+    });
+    el.addEventListener('mousemove', positionTt);
+    el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
   });
-  el.addEventListener('mousemove', positionTt);
-  el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
-});
+}
+attachKpiTooltips();
 function positionTt(e) {
   const pad = 14;
   let x = e.clientX + pad, y = e.clientY + pad;
