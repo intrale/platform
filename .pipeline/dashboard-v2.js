@@ -825,15 +825,16 @@ function generateHTML(state) {
     const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
     const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-    const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
+    const logIcon = e.hasLog ? `<span class="chip-log-icon" title="Ver logs">📄</span>` : '';
+    const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}${logIcon}`;
     const killBtn = e.estado === 'trabajando'
       ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
       : '';
     const pdfBtn = e.hasRejectionPdf
-      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
+      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📑</a>`
       : '';
 
-    const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
+    const inner = `<span class="chip ${cls}${staleClass}${e.hasLog ? ' chip-has-log' : ''}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
     if (e.hasLog) {
       const isLive = e.estado === 'trabajando';
       return `<a href="/logs/view/${e.logFile}${isLive ? '?live=1' : ''}" class="log-link" target="_blank" onclick="event.stopPropagation()">${inner}</a>`;
@@ -2846,10 +2847,25 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-block-icon{font-size:0.85em;cursor:help;line-height:1}
 .lc-block-locked{color:var(--rd)}
 .lc-block-blocking{color:var(--yl)}
-/* Detail inline (reutiliza .pd-grid existing styles) */
-.lc-detail{display:none;padding:8px 10px 10px 10px;border-top:1px solid var(--bd);background:var(--sf2);font-size:1.05em}
+/* Detail inline (compacto) — expansion dentro de lane card */
+.lc-detail{display:none;padding:8px 10px;border-top:1px solid var(--bd);background:var(--sf2);font-size:1em}
 .lc-detail.lc-detail-open{display:block}
-.lc-detail .pd-grid{gap:6px}
+.lc-detail .pd-grid{display:block !important;margin-top:0;gap:0}
+.lc-detail .pd-pipeline{margin-bottom:8px}
+.lc-detail .pd-pipeline:last-child{margin-bottom:0}
+.lc-detail .pd-pipeline-label{font-size:0.62em;letter-spacing:1.2px;padding:0 0 4px 0;opacity:0.7}
+.lc-detail .pd-phase{gap:6px;padding:2px 4px;margin-bottom:1px;font-size:0.85em;align-items:center}
+.lc-detail .pd-name{min-width:64px;font-size:0.72em;padding-top:0;text-transform:uppercase;letter-spacing:0.4px}
+.lc-detail .pd-chips{gap:3px}
+.lc-detail .chip{padding:2px 6px;font-size:0.78em;gap:3px}
+.lc-detail .pd-current{background:rgba(45,212,191,0.08);border-left:2px solid var(--teal,#2dd4bf)}
+.lc-detail .pd-empty{font-size:0.72em;color:var(--dim)}
+
+/* Chip con log link — indicador visual */
+.chip-log-icon{margin-left:3px;opacity:0.55;font-size:0.78em;line-height:1}
+.log-link{text-decoration:none}
+.log-link:hover .chip-log-icon{opacity:1}
+.log-link:hover .chip.chip-has-log{box-shadow:0 0 0 1px rgba(88,166,255,0.4);cursor:pointer}
 
 /* Completados section — collapsible */
 .it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:8px 12px}
@@ -3131,10 +3147,22 @@ function saveIssueTrackerState() {
       const m = d.id.match(/detail-(\\d+)/);
       if (m) expanded.push(m[1]);
     });
+    const laneExpanded = [];
+    document.querySelectorAll('.lc-detail.lc-detail-open').forEach(d => {
+      const m = d.id.match(/lc-detail-(\\d+)/);
+      if (m) laneExpanded.push(m[1]);
+    });
     const activeTab = document.querySelector('.ic-tab-active');
     const filter = activeTab ? activeTab.dataset.filter : 'active';
+    // Sub-chip filters per lane (persist selection after SSE refresh)
+    const subFilters = {};
+    document.querySelectorAll('.it-sub-chip.active').forEach(c => {
+      const lane = c.dataset.lane;
+      const sf = c.dataset.subfase || '';
+      if (lane) subFilters[lane] = sf;
+    });
     const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
-    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, filter, scrollY }));
+    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, laneExpanded, filter, subFilters, scrollY }));
   } catch(_) {}
 }
 
@@ -3158,9 +3186,8 @@ function restoreIssueTrackerState() {
   try {
     const saved = sessionStorage.getItem('__it_state');
     if (!saved) return;
-    const { expanded, filter, scrollY } = JSON.parse(saved);
+    const { expanded, laneExpanded, filter, subFilters, scrollY } = JSON.parse(saved);
     __itRestoring = true;
-    // Restaurar expansiones
     if (expanded && expanded.length > 0) {
       expanded.forEach(id => {
         const detail = document.getElementById('detail-' + id);
@@ -3171,15 +3198,30 @@ function restoreIssueTrackerState() {
         if (header) header.setAttribute('aria-expanded', 'true');
       });
     }
-    // Restaurar tab activo
+    // Restaurar expansiones de lane cards
+    if (laneExpanded && laneExpanded.length > 0) {
+      laneExpanded.forEach(id => {
+        const d = document.getElementById('lc-detail-' + id);
+        if (d) {
+          d.classList.add('lc-detail-open');
+          d.setAttribute('aria-hidden', 'false');
+          const card = d.closest('.lc-card');
+          if (card) card.classList.add('lc-expanded');
+        }
+      });
+    }
     if (filter && filter !== 'active') {
       const tab = document.querySelector('.ic-tab[data-filter="' + filter + '"]');
       if (tab) filterIssueTab(tab, filter);
     }
+    // Restaurar sub-chip filters
+    if (subFilters) {
+      for (const [lane, sf] of Object.entries(subFilters)) {
+        filterLaneBySubFase(lane, sf);
+      }
+    }
     __itRestoring = false;
-    // Restaurar posición de scroll
     if (scrollY > 0) requestAnimationFrame(() => window.scrollTo(0, scrollY));
-    // NO borrar de sessionStorage — se sobreescribe en cada interacción
   } catch(_) { __itRestoring = false; }
 }
 
@@ -3342,6 +3384,19 @@ function toggleIssueDetail(issueNum) {
   saveIssueTrackerState();
 }
 
+function filterLaneBySubFase(laneKey, subFase) {
+  const lane = document.querySelector('.it-lane[data-lane="' + laneKey + '"]');
+  if (!lane) return;
+  lane.querySelectorAll('.it-sub-chip').forEach(c => {
+    c.classList.toggle('active', (c.dataset.subfase || '') === (subFase || ''));
+  });
+  lane.querySelectorAll('.lc-card').forEach(c => {
+    if (!subFase) { c.classList.remove('lc-filtered-out'); return; }
+    const sf = c.dataset.subfase || '';
+    c.classList.toggle('lc-filtered-out', sf !== subFase);
+  });
+  saveIssueTrackerState();
+}
 function toggleLaneDetail(num) {
   const d = document.getElementById('lc-detail-' + num);
   if (!d) return;
@@ -3349,21 +3404,7 @@ function toggleLaneDetail(num) {
   d.setAttribute('aria-hidden', open ? 'false' : 'true');
   const card = d.closest('.lc-card');
   if (card) card.classList.toggle('lc-expanded', open);
-}
-
-function filterLaneBySubFase(laneKey, subFase) {
-  const lane = document.querySelector('.it-lane[data-lane="' + laneKey + '"]');
-  if (!lane) return;
-  // Toggle chips active state
-  lane.querySelectorAll('.it-sub-chip').forEach(c => {
-    c.classList.toggle('active', c.dataset.subfase === subFase);
-  });
-  // Filter cards
-  lane.querySelectorAll('.lc-card').forEach(c => {
-    if (!subFase) { c.classList.remove('lc-filtered-out'); return; }
-    const sf = c.dataset.subfase || '';
-    c.classList.toggle('lc-filtered-out', sf !== subFase);
-  });
+  saveIssueTrackerState();
 }
 
 function filterIssueTab(tabEl, filter) {
