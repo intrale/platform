@@ -658,6 +658,19 @@ function generateHTML(state) {
     return entries.some(e => e.ageMin > 30);
   });
   const stale = staleList.length;
+  // Bloqueados = issues con blockedBy declarado y aún activos (no completados)
+  const blockedList = matrixEntries.filter(([num, d]) => {
+    return state.blockedIssues.blockedBy[num] != null && d.estadoActual;
+  });
+  const blockedCount = blockedList.length;
+  // IDs de las deps que están bloqueando (issues nuevos de los cuales dependen los bloqueados)
+  const blockingDepsSet = new Set();
+  for (const [num] of blockedList) {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    for (const d of deps) blockingDepsSet.add(String(d));
+  }
+  const blockedIdsJson = JSON.stringify(blockedList.map(([n]) => String(n)));
+  const blockingDepsJson = JSON.stringify(Array.from(blockingDepsSet));
   const staleDetail = staleList.map(([id, d]) => {
     const entries = d.fases[d.faseActual] || [];
     const staleEntry = entries.find(e => e.estado === 'trabajando' && e.ageMin > 30);
@@ -689,7 +702,12 @@ function generateHTML(state) {
   const ttActivos   = buildTtData('Issues activos',       activosList,   (_, d) => ttLabel(d));
   const ttTrabajando= buildTtData('En ejecución',          trabajandoList,(_, d) => ttLabel(d));
   const ttPendientes= buildTtData('En cola',               pendientesList,(_, d) => ttLabel(d));
-  const ttStale     = buildTtData('Bloqueados / stale',    staleList,     (_, d) => ttLabel(d));
+  const ttStale     = buildTtData('Stale >30m',            staleList,     (_, d) => ttLabel(d));
+  const ttBlocked   = buildTtData('Bloqueados por dependencias', blockedList, (num, d) => {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    const depTxt = deps.length > 0 ? 'dep: ' + deps.map(x => '#' + x).join(', ') : 'sin deps declaradas';
+    return depTxt;
+  });
 
   // Definidos = completaron la fase final de definición (sizing/procesado)
   const defFasesKpi = config.pipelines?.definicion?.fases || [];
@@ -2890,7 +2908,16 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
 .lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
 .lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
-.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search{display:none}
+.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search,.lc-card.lc-filtered-blocked{display:none}
+.lc-card.lc-hl-blocked{border-left-color:var(--rd) !important;box-shadow:0 0 0 1px rgba(248,113,113,0.5)}
+.lc-card.lc-hl-blocking{border-left-color:var(--yl) !important;box-shadow:0 0 0 1px rgba(251,191,36,0.5)}
+.lc-card.lc-hl-blocking::after{content:'▸ bloquea';display:inline-block;margin-left:6px;font-size:0.6em;background:rgba(251,191,36,0.15);color:var(--yl);padding:1px 5px;border-radius:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px}
+
+/* KPI clickeable (filter mode) */
+.kpi-clickable{cursor:pointer;transition:transform 0.15s,box-shadow 0.15s}
+.kpi-clickable:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.kpi.kpi-active-filter{box-shadow:0 0 0 2px var(--rd),0 4px 12px rgba(248,113,113,0.3)}
+.kpi.kpi-active-filter .kpi-trend::after{content:' · activo';color:var(--rd);font-weight:700}
 .lc-card.lc-expanded{background:var(--sf2);border-left-color:var(--ac)}
 .lc-card-main{padding:8px 10px;cursor:pointer}
 .lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
@@ -3127,10 +3154,10 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <div class="kpi-value success">${entregados24h}</div>
         <div class="kpi-trend">últimas 24 horas</div>
       </div>
-      <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-        <div class="kpi-label">Bloqueados${stale > 0 ? ' \u26A0' : ''}</div>
-        <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
-        <div class="kpi-trend">${stale > 0 ? 'stale >30m' : 'sin stale'}</div>
+      <div class="kpi kpi-blocked kpi-clickable" data-tt='${ttBlocked}' data-blocked-ids='${blockedIdsJson}' data-blocking-deps='${blockingDepsJson}' onclick="toggleBlockedFilter(this)" title="${blockedCount > 0 ? 'Click para filtrar el Issue Tracker por bloqueados + deps' : 'No hay issues bloqueados'}">
+        <div class="kpi-label">Bloqueados${blockedCount > 0 ? ' \u{1F6AB}' : ''}</div>
+        <div class="kpi-value ${blockedCount > 0 ? 'danger' : 'muted'}">${blockedCount}</div>
+        <div class="kpi-trend">${blockedCount > 0 ? 'click para filtrar' : 'sin bloqueos'}</div>
       </div>
     </div>
     ${(() => {
@@ -3525,6 +3552,36 @@ function filterLaneBySubFase(laneKey, subFase) {
     c.classList.toggle('lc-filtered-out-sub', sf !== subFase);
   });
   saveIssueTrackerState();
+}
+
+// Filtro de bloqueados desde el KPI — muestra blocked + sus deps bloqueantes
+function toggleBlockedFilter(kpiEl) {
+  if (!kpiEl) return;
+  let blockedIds, blockingDeps;
+  try {
+    blockedIds = JSON.parse(kpiEl.dataset.blockedIds || '[]');
+    blockingDeps = JSON.parse(kpiEl.dataset.blockingDeps || '[]');
+  } catch (_) { return; }
+  if (blockedIds.length === 0) return;
+  const active = kpiEl.classList.toggle('kpi-active-filter');
+  const relevant = new Set([...blockedIds, ...blockingDeps].map(String));
+  document.querySelectorAll('.lc-card').forEach(c => {
+    if (!active) { c.classList.remove('lc-filtered-blocked'); c.classList.remove('lc-hl-blocked'); c.classList.remove('lc-hl-blocking'); return; }
+    const issue = c.dataset.issue;
+    const isBlocked = blockedIds.includes(issue);
+    const isBlocking = blockingDeps.includes(issue);
+    c.classList.toggle('lc-filtered-blocked', !isBlocked && !isBlocking);
+    c.classList.toggle('lc-hl-blocked', isBlocked);
+    c.classList.toggle('lc-hl-blocking', isBlocking);
+  });
+  document.querySelectorAll('.it-lane').forEach(lane => {
+    const visible = lane.querySelectorAll('.lc-card:not(.lc-filtered-blocked):not(.lc-filtered-out-sub):not(.lc-filtered-out-search)').length;
+    lane.classList.toggle('it-lane-empty-search', active && visible === 0);
+  });
+  if (active) {
+    const tracker = document.getElementById('issue-tracker');
+    if (tracker) tracker.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 // Búsqueda por # o título en todo el tracker
