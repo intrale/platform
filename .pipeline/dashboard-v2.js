@@ -574,6 +574,13 @@ const SKILL_CATEGORY = {
   tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
   guru: 'ops', perf: 'ops', build: 'ops', hotfix: 'ops', delivery: 'ops',
 };
+// Etiquetas cortas por fase (2 chars) para mostrar debajo de cada dot
+const FASE_LABEL_SHORT = {
+  analisis: 'An', criterios: 'Cr', sizing: 'Si',
+  validacion: 'Va', dev: 'Dv', build: 'Bd',
+  verificacion: 'Vf', aprobacion: 'Ap', entrega: 'En',
+};
+
 const CATEGORY_META = {
   product:  { label: 'Producto', icon: '🎯', color: '#d29922' },
   dev:      { label: 'Desarrollo', icon: '🛠', color: '#3fb950' },
@@ -1015,7 +1022,29 @@ function generateHTML(state) {
       const connector = i < allFases.length - 1
         ? `<span class="stepper-conn${isDefLast ? ' stepper-conn-sep' : ''}"></span>`
         : '';
-      stepperDots += `<span class="stepper-dot ${dotCls}${isCurrent ? ' dot-current' : ''}" title="${escapedTitle}">${dotIcon}</span>${connector}`;
+      // Data para popup solo si la fase tiene entries
+      let popupAttr = '';
+      if (entries.length > 0) {
+        const popupSkills = entries.map(e => ({
+          skill: e.skill,
+          estado: e.estado,
+          resultado: e.resultado || null,
+          dur: e.durationMs ? fmtDuration(e.durationMs) : null,
+          log: e.hasLog ? '/logs/view/' + e.logFile + (e.estado === 'trabajando' ? '?live=1' : '') : null,
+          pdf: e.hasRejectionPdf ? '/logs/' + e.rejectionPdf : null,
+          motivo: e.motivo ? e.motivo.slice(0, 160) : null,
+          retry: e._isRetry ? e._runTotal : null,
+        }));
+        const popupJson = JSON.stringify({ fase, pipeline, issue: issueNum, skills: popupSkills });
+        popupAttr = ` data-popup="${popupJson.replace(/"/g, '&quot;').replace(/'/g, '&#39;')}"`;
+      }
+      const clickable = entries.length > 0 ? ' dot-clickable' : '';
+      const onclick = entries.length > 0 ? ` onclick="event.preventDefault();event.stopPropagation();showDotPopup(event,this)"` : '';
+      const initial = FASE_LABEL_SHORT[fase] || fase.slice(0, 2);
+      stepperDots += `<span class="stepper-cell">`
+        + `<span class="stepper-dot ${dotCls}${isCurrent ? ' dot-current' : ''}${clickable}" title="${escapedTitle}"${popupAttr}${onclick}>${dotIcon}</span>`
+        + `<span class="stepper-initial${isCurrent ? ' stepper-initial-current' : ''}">${initial}</span>`
+        + `</span>${connector}`;
     }
 
     // Current phase label for the card
@@ -1176,13 +1205,8 @@ function generateHTML(state) {
     }
     const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
-    // Detail inline reutilizando renderPhaseDetail (logs, chips por fase)
-    const lcDetailHTML = `<div class="lc-detail" id="lc-detail-${issueNum}" aria-hidden="true" onclick="event.stopPropagation()">
-      <div class="pd-grid">
-        <div class="pd-pipeline"><div class="pd-pipeline-label pd-def-label">DEFINICIÓN</div>${renderPhaseDetail('definicion', defFases)}</div>
-        <div class="pd-pipeline"><div class="pd-pipeline-label pd-dev-label">DESARROLLO</div>${renderPhaseDetail('desarrollo', devFases)}</div>
-      </div>
-    </div>`;
+    // Data atributos para búsqueda client-side
+    const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
     // Prioridad para sort: stale (staleMin desc) > failed (bounces desc) > blocked > running > pending
     let priority;
     if (isStale) priority = 1000 + (data.staleMin || 0);
@@ -1190,8 +1214,8 @@ function generateHTML(state) {
     else if (isBlocked) priority = 500;
     else if (working) priority = 300 - (data.staleMin || 0);
     else priority = 100 - (data.staleMin || 0);
-    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" title="${laneTitle}">
-      <div class="lc-card-main" onclick="toggleLaneDetail('${issueNum}')">
+    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" title="${laneTitle}">
+      <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
             <span class="lc-num">#${issueNum}</span>
@@ -1211,7 +1235,6 @@ function generateHTML(state) {
           ${avatarsHTML}
         </div>
       </div>
-      ${lcDetailHTML}
     </div>`;
     laneCards[lane].push({ html: cardHTML, priority });
     laneCounts[lane]++;
@@ -1268,6 +1291,10 @@ function generateHTML(state) {
     <div class="matrix-section" id="issue-tracker">
       <div class="matrix-header">
         <h2>📊 Issue Tracker</h2>
+        <div class="it-search-box">
+          <input type="text" class="it-search" id="it-search-input" placeholder="🔍 Buscar por # o título…" oninput="filterIssuesBySearch(this.value)" />
+          <span class="it-search-clear" onclick="clearIssueSearch()" title="Limpiar">×</span>
+        </div>
         <div class="ic-tabs" role="tablist" aria-label="Issue filter">
           <button class="ic-tab ic-tab-active" role="tab" aria-selected="true" data-filter="active" onclick="filterIssueTab(this,'active')">En progreso <span class="ic-tab-count">${activeIssues.length}</span></button>
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="completed" onclick="filterIssueTab(this,'completed')">Completados <span class="ic-tab-count">${completedIssues.length}</span></button>
@@ -1276,6 +1303,10 @@ function generateHTML(state) {
       </div>
       <div class="it-lanes">${lanesHTML}</div>
       ${doneLaneHTML}
+      <div id="dot-popup" class="dot-popup" style="display:none">
+        <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
+        <div class="dp-body"></div>
+      </div>
     </div>`;
 
   // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
@@ -1934,7 +1965,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:18px 20px;margin-bottom:20px;
 }
-.matrix-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.matrix-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
 .matrix-count{
   font-size:0.8em;color:var(--dim);font-weight:400;
   background:var(--bg);border:1px solid var(--bd);border-radius:20px;
@@ -2775,8 +2806,49 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 
-/* ── Issue Tracker Lanes (Opción E): 3 lanes balanceadas ─────────────────── */
-.it-lanes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) minmax(0,1.1fr);gap:10px;margin-top:10px}
+/* ── Issue Tracker Lanes (Opción E): 3 columnas iguales ─────────────────── */
+.it-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+.it-lane.it-lane-empty-search{opacity:0.35}
+
+/* Search input */
+.it-search-box{position:relative;display:inline-flex;align-items:center;margin-right:auto;margin-left:14px;flex:1;max-width:320px}
+.it-search{width:100%;padding:5px 26px 5px 10px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;font-size:0.82em;color:var(--tx);outline:none;transition:border-color 0.15s}
+.it-search:focus{border-color:var(--ac);box-shadow:0 0 0 1px rgba(88,166,255,0.3)}
+.it-search::placeholder{color:var(--dim)}
+.it-search-clear{position:absolute;right:8px;color:var(--dim);cursor:pointer;font-size:1.1em;padding:0 4px}
+.it-search-clear:hover{color:var(--rd)}
+
+/* Stepper cell (dot + initial) */
+.stepper-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;position:relative}
+.stepper-initial{font-size:0.58em;color:var(--dim);text-transform:uppercase;letter-spacing:0.3px;font-weight:500;line-height:1;margin-top:1px;font-variant-numeric:tabular-nums}
+.stepper-initial-current{color:var(--teal,#2dd4bf);font-weight:700}
+.stepper-dot.dot-clickable{cursor:pointer;transition:transform 0.1s}
+.stepper-dot.dot-clickable:hover{transform:scale(1.25)}
+
+/* Dot popup */
+.dot-popup{background:var(--sf);border:1px solid var(--ac);border-radius:8px;padding:0;min-width:240px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,0.5);z-index:10000;font-size:0.82em}
+.dp-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--bd);background:var(--sf2);border-radius:8px 8px 0 0}
+.dp-title{font-size:0.95em;color:var(--tx);text-transform:capitalize}
+.dp-title b{color:var(--ac);text-transform:capitalize}
+.dp-close{color:var(--dim);cursor:pointer;font-size:1.2em;padding:0 4px;line-height:1}
+.dp-close:hover{color:var(--rd)}
+.dp-body{padding:8px 12px}
+.dp-empty{color:var(--dim);font-style:italic;padding:6px 0;font-size:0.85em;text-align:center}
+.dp-row{padding:6px 0;border-bottom:1px dashed rgba(255,255,255,0.05)}
+.dp-row:last-child{border-bottom:none}
+.dp-row-top{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.dp-state{font-weight:700;font-size:0.95em;min-width:14px;text-align:center}
+.dp-ok .dp-state{color:var(--gn)}
+.dp-fail .dp-state{color:var(--rd)}
+.dp-run .dp-state{color:var(--teal,#2dd4bf)}
+.dp-pending .dp-state{color:var(--dim)}
+.dp-skill{font-weight:700;color:var(--tx);text-transform:capitalize}
+.dp-retry{background:rgba(251,191,36,0.15);color:var(--yl);padding:0 5px;border-radius:4px;font-size:0.82em;font-weight:700}
+.dp-dur{color:var(--dim);font-variant-numeric:tabular-nums;font-size:0.9em;margin-left:auto}
+.dp-motivo{color:var(--rd);font-size:0.85em;line-height:1.3;margin:3px 0 4px 20px;font-style:italic;opacity:0.9}
+.dp-links{display:flex;gap:8px;margin-left:20px;margin-top:3px}
+.dp-log{color:var(--ac);text-decoration:none;font-size:0.85em;padding:1px 0}
+.dp-log:hover{text-decoration:underline}
 .it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 10px 8px 10px;display:flex;flex-direction:column;min-width:0}
 .it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
 .it-lane-name{font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px;color:var(--lane-color);min-width:0}
@@ -2815,7 +2887,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
 .lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
 .lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
-.lc-card.lc-filtered-out{display:none}
+.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search{display:none}
 .lc-card.lc-expanded{background:var(--sf2);border-left-color:var(--ac)}
 .lc-card-main{padding:8px 10px;cursor:pointer}
 .lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
@@ -3391,21 +3463,86 @@ function filterLaneBySubFase(laneKey, subFase) {
     c.classList.toggle('active', (c.dataset.subfase || '') === (subFase || ''));
   });
   lane.querySelectorAll('.lc-card').forEach(c => {
-    if (!subFase) { c.classList.remove('lc-filtered-out'); return; }
+    if (!subFase) { c.classList.remove('lc-filtered-out-sub'); return; }
     const sf = c.dataset.subfase || '';
-    c.classList.toggle('lc-filtered-out', sf !== subFase);
+    c.classList.toggle('lc-filtered-out-sub', sf !== subFase);
   });
   saveIssueTrackerState();
 }
-function toggleLaneDetail(num) {
-  const d = document.getElementById('lc-detail-' + num);
-  if (!d) return;
-  const open = d.classList.toggle('lc-detail-open');
-  d.setAttribute('aria-hidden', open ? 'false' : 'true');
-  const card = d.closest('.lc-card');
-  if (card) card.classList.toggle('lc-expanded', open);
+
+// Búsqueda por # o título en todo el tracker
+function filterIssuesBySearch(query) {
+  const q = (query || '').trim().toLowerCase();
+  document.querySelectorAll('.lc-card').forEach(c => {
+    if (!q) { c.classList.remove('lc-filtered-out-search'); return; }
+    const hay = (c.dataset.search || '').includes(q);
+    c.classList.toggle('lc-filtered-out-search', !hay);
+  });
+  // Ocultar lanes sin matches
+  document.querySelectorAll('.it-lane').forEach(lane => {
+    const visible = lane.querySelectorAll('.lc-card:not(.lc-filtered-out-search):not(.lc-filtered-out-sub)').length;
+    lane.classList.toggle('it-lane-empty-search', q && visible === 0);
+  });
   saveIssueTrackerState();
 }
+function clearIssueSearch() {
+  const inp = document.getElementById('it-search-input');
+  if (inp) inp.value = '';
+  filterIssuesBySearch('');
+}
+
+// Popup con detalle de la fase al click en un dot
+function showDotPopup(event, dotEl) {
+  let data;
+  try { data = JSON.parse(dotEl.dataset.popup); } catch(_) { return; }
+  const popup = document.getElementById('dot-popup');
+  if (!popup) return;
+  popup.querySelector('.dp-title').innerHTML = '<b>' + data.fase + '</b> · ' + data.pipeline + ' · #' + data.issue;
+  const body = popup.querySelector('.dp-body');
+  if (!data.skills || data.skills.length === 0) {
+    body.innerHTML = '<div class="dp-empty">Sin actividad</div>';
+  } else {
+    body.innerHTML = data.skills.map(function(s){
+      var icon, cls;
+      if (s.resultado === 'aprobado') { icon = '✓'; cls = 'ok'; }
+      else if (s.resultado) { icon = '✗'; cls = 'fail'; }
+      else if (s.estado === 'trabajando') { icon = '▶'; cls = 'run'; }
+      else if (s.estado === 'listo' || s.estado === 'procesado') { icon = '✓'; cls = 'ok'; }
+      else { icon = '○'; cls = 'pending'; }
+      var retry = s.retry ? '<span class="dp-retry">×'+s.retry+'</span>' : '';
+      var dur = s.dur ? '<span class="dp-dur">'+s.dur+'</span>' : '';
+      var log = s.log ? '<a href="'+s.log+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
+      var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
+      var motivo = s.motivo ? '<div class="dp-motivo">' + s.motivo + '</div>' : '';
+      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+s.skill+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
+    }).join('');
+  }
+  const rect = dotEl.getBoundingClientRect();
+  popup.style.display = 'block';
+  popup.style.position = 'fixed';
+  popup.style.left = '0px';
+  popup.style.top = '0px';
+  const pr = popup.getBoundingClientRect();
+  let left = rect.left + rect.width/2 - pr.width/2;
+  let top = rect.bottom + 8;
+  if (left < 8) left = 8;
+  if (left + pr.width > window.innerWidth - 8) left = window.innerWidth - pr.width - 8;
+  if (top + pr.height > window.innerHeight - 8) top = rect.top - pr.height - 8;
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+}
+function closeDotPopup() {
+  const p = document.getElementById('dot-popup');
+  if (p) p.style.display = 'none';
+}
+document.addEventListener('click', function(e){
+  const p = document.getElementById('dot-popup');
+  if (!p || p.style.display === 'none') return;
+  if (!p.contains(e.target) && !e.target.classList.contains('stepper-dot')) {
+    p.style.display = 'none';
+  }
+});
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeDotPopup(); });
 
 function filterIssueTab(tabEl, filter) {
   document.querySelectorAll('.ic-tab').forEach(t => {
