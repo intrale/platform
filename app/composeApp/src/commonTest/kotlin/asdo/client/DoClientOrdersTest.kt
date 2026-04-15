@@ -356,7 +356,7 @@ class DoRepeatOrderTest {
     }
 
     @Test
-    fun `repetir pedido con fallo de servicio agrega todos los items con ID (fallback graceful)`() = runTest {
+    fun `repetir pedido con fallo de servicio agrega todos los items con ID - fallback graceful`() = runTest {
         val order = sampleDeliveredOrder.copy(
             items = listOf(
                 ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),

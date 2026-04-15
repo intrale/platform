@@ -9,7 +9,9 @@ import com.google.gson.Gson
 import io.ktor.http.HttpMethod
 import kotlinx.coroutines.runBlocking
 import org.kodein.di.DI
+import org.kodein.di.direct
 import org.kodein.di.instance
+import org.kodein.di.instanceOrNull
 import org.kodein.type.jvmType
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -69,10 +71,18 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                 val functionPath = requestEvent.pathParameters?.get("function")
                     ?: pathParts.drop(1).joinToString("/")
                 val functionSegments = functionPath.split("/").filter { it.isNotBlank() }
-                val functionKey = when {
-                    functionSegments.size >= 2 -> functionSegments.take(2).joinToString("/")
-                    functionSegments.isNotEmpty() -> functionSegments.first()
-                    else -> null
+                // Intentar bindings de más segmentos a menos hasta encontrar match en Kodein.
+                // Esto soporta endpoints con N segmentos (ej: "client/products/availability").
+                // Intentar bindings de más segmentos a menos hasta encontrar match en Kodein.
+                // Esto soporta endpoints con N segmentos (ej: "client/products/availability").
+                val functionKey = if (functionSegments.isNotEmpty()) {
+                    (functionSegments.size downTo 1).firstNotNullOfOrNull { n ->
+                        val candidate = functionSegments.take(n).joinToString("/")
+                        val found = di.direct.instanceOrNull<Function>(tag = candidate)
+                        if (found != null) candidate else null
+                    }
+                } else {
+                    null
                 }
 
                 logger.info("Function name is $functionPath (key: $functionKey)")
