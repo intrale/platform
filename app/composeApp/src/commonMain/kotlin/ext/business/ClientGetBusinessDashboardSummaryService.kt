@@ -18,7 +18,8 @@ import org.kodein.log.newLogger
 
 class ClientGetBusinessDashboardSummaryService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommGetBusinessDashboardSummaryService {
 
     private val logger = LoggerFactory.default.newLogger<ClientGetBusinessDashboardSummaryService>()
@@ -30,10 +31,10 @@ class ClientGetBusinessDashboardSummaryService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(BusinessDashboardSummaryDTO.serializer(), bodyText)
+                val result = json.decodeFromString(BusinessDashboardSummaryDTO.serializer(), bodyText)
                 Result.success(result)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

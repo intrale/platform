@@ -16,7 +16,7 @@ import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.auth.LoginRequest
 import ar.com.intrale.shared.auth.LoginResponse
 
-class DeliveryLoginService(private val httpClient: HttpClient) : CommLoginService {
+class DeliveryLoginService(private val httpClient: HttpClient, private val json: Json) : CommLoginService {
 
     private val logger = LoggerFactory.default.newLogger<DeliveryLoginService>()
 
@@ -41,11 +41,11 @@ class DeliveryLoginService(private val httpClient: HttpClient) : CommLoginServic
             val bodyText = response.bodyAsText()
 
             if (response.status.isSuccess()) {
-                val loginResponse = Json.decodeFromString(LoginResponse.serializer(), bodyText)
+                val loginResponse = json.decodeFromString(LoginResponse.serializer(), bodyText)
                 logger.info { "[Delivery][Login] Respuesta exitosa para ${BuildKonfig.DELIVERY}" }
                 Result.success(loginResponse)
             } else {
-                val exceptionResponse = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exceptionResponse = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 logger.warning { "[Delivery][Login] Error ${exceptionResponse.statusCode}: ${exceptionResponse.message}" }
                 Result.failure(exceptionResponse)
             }

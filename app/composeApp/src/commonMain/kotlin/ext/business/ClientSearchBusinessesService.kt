@@ -16,7 +16,7 @@ import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.business.SearchBusinessesRequest
 import ar.com.intrale.shared.business.SearchBusinessesResponse
 
-class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSearchBusinessesService {
+class ClientSearchBusinessesService(private val httpClient: HttpClient, private val json: Json) : CommSearchBusinessesService {
 
     private val logger = LoggerFactory.default.newLogger<ClientSearchBusinessesService>()
 
@@ -33,12 +33,12 @@ class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSe
             }
             if (response.status.isSuccess()) {
                 val bodyText = response.bodyAsText()
-                val result = Json.decodeFromString(SearchBusinessesResponse.serializer(), bodyText)
+                val result = json.decodeFromString(SearchBusinessesResponse.serializer(), bodyText)
                 logger.debug { "response body: $result" }
                 Result.success(result)
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 logger.debug { "search business failed with status: $exception" }
                 Result.failure(exception)
             }

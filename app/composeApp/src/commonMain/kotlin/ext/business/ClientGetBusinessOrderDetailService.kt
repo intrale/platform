@@ -18,7 +18,8 @@ import org.kodein.log.newLogger
 
 class ClientGetBusinessOrderDetailService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommGetBusinessOrderDetailService {
 
     private val logger = LoggerFactory.default.newLogger<ClientGetBusinessOrderDetailService>()
@@ -34,7 +35,7 @@ class ClientGetBusinessOrderDetailService(
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
                 val parsed = runCatching {
-                    Json.decodeFromString(BusinessOrderDetailResponseDTO.serializer(), bodyText).order
+                    json.decodeFromString(BusinessOrderDetailResponseDTO.serializer(), bodyText).order
                 }.getOrNull()
                 if (parsed != null) {
                     Result.success(parsed)
@@ -48,7 +49,7 @@ class ClientGetBusinessOrderDetailService(
                 }
             } else {
                 val exception = runCatching {
-                    Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                    json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 }.getOrElse {
                     ExceptionResponse(
                         StatusCodeDTO(response.status.value, response.status.description),

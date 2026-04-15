@@ -19,12 +19,11 @@ import org.kodein.log.newLogger
 
 class ClientToggleDeliveryPersonStatusService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommToggleDeliveryPersonStatusService {
 
     private val logger = LoggerFactory.default.newLogger<ClientToggleDeliveryPersonStatusService>()
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
     override suspend fun toggleStatus(
         businessId: String,
         email: String,

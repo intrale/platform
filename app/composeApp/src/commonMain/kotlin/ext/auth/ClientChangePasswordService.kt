@@ -16,7 +16,7 @@ import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.auth.ChangePasswordRequest
 import ar.com.intrale.shared.auth.ChangePasswordResponse
 
-class ClientChangePasswordService(private val httpClient: HttpClient) : CommChangePasswordService {
+class ClientChangePasswordService(private val httpClient: HttpClient, private val json: Json) : CommChangePasswordService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(oldPassword: String, newPassword: String, token: String): Result<ChangePasswordResponse> {
         return try {
@@ -30,7 +30,7 @@ class ClientChangePasswordService(private val httpClient: HttpClient) : CommChan
                 )
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

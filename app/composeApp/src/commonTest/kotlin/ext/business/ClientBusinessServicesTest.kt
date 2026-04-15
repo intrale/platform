@@ -47,7 +47,7 @@ class ClientRegisterBusinessServiceTest {
 
     @Test
     fun `registro exitoso retorna RegisterBusinessResponse`() = runTest {
-        val service = ClientRegisterBusinessService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientRegisterBusinessService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
 
         val result = service.execute("Negocio", "admin@test.com", "Descripcion")
 
@@ -57,7 +57,7 @@ class ClientRegisterBusinessServiceTest {
     @Test
     fun `registro fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Error"}"""
-        val service = ClientRegisterBusinessService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientRegisterBusinessService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
 
         val result = service.execute("Negocio", "admin@test.com", "Descripcion")
 
@@ -74,7 +74,7 @@ class ClientRequestJoinBusinessServiceTest {
     @Test
     fun `solicitud exitosa retorna RequestJoinBusinessResponse`() = runTest {
         val body = """{"state":"PENDING"}"""
-        val service = ClientRequestJoinBusinessService(mockClient(HttpStatusCode.OK, body))
+        val service = ClientRequestJoinBusinessService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("negocio-1")
 
@@ -85,7 +85,7 @@ class ClientRequestJoinBusinessServiceTest {
     @Test
     fun `solicitud fallida retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":404,"description":"Not Found"},"message":"No encontrado"}"""
-        val service = ClientRequestJoinBusinessService(mockClient(HttpStatusCode.NotFound, body))
+        val service = ClientRequestJoinBusinessService(mockClient(HttpStatusCode.NotFound, body), jsonConfig)
 
         val result = service.execute("negocio-1")
 
@@ -101,7 +101,7 @@ class ClientReviewJoinBusinessServiceTest {
 
     @Test
     fun `revision exitosa retorna ReviewJoinBusinessResponse`() = runTest {
-        val service = ClientReviewJoinBusinessService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientReviewJoinBusinessService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
 
         val result = service.execute("negocio-1", "user@test.com", "approved")
 
@@ -111,7 +111,7 @@ class ClientReviewJoinBusinessServiceTest {
     @Test
     fun `revision fallida retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Error"}"""
-        val service = ClientReviewJoinBusinessService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientReviewJoinBusinessService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
 
         val result = service.execute("negocio-1", "user@test.com", "rejected")
 
@@ -128,7 +128,7 @@ class ClientSearchBusinessesServiceTest {
     @Test
     fun `busqueda exitosa retorna SearchBusinessesResponse`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"businesses":[],"lastKey":null}"""
-        val service = ClientSearchBusinessesService(mockClient(HttpStatusCode.OK, body))
+        val service = ClientSearchBusinessesService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("test")
 
@@ -139,7 +139,7 @@ class ClientSearchBusinessesServiceTest {
     @Test
     fun `busqueda fallida retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":500,"description":"Error"},"message":"Error"}"""
-        val service = ClientSearchBusinessesService(mockClient(HttpStatusCode.InternalServerError, body))
+        val service = ClientSearchBusinessesService(mockClient(HttpStatusCode.InternalServerError, body), jsonConfig)
 
         val result = service.execute("test")
 
@@ -156,7 +156,7 @@ class ClientGetBusinessProductsServiceTest {
     @Test
     fun `obtener productos exitoso retorna BusinessProductsResponse`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"products":[]}"""
-        val service = ClientGetBusinessProductsService(mockClient(HttpStatusCode.OK, body))
+        val service = ClientGetBusinessProductsService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("biz-1", "ALL")
 
@@ -167,7 +167,7 @@ class ClientGetBusinessProductsServiceTest {
     @Test
     fun `obtener productos fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":500,"description":"Error"},"message":"Error"}"""
-        val service = ClientGetBusinessProductsService(mockClient(HttpStatusCode.InternalServerError, body))
+        val service = ClientGetBusinessProductsService(mockClient(HttpStatusCode.InternalServerError, body), jsonConfig)
 
         val result = service.execute("biz-1", "ALL")
 
@@ -185,7 +185,7 @@ class ClientGetBusinessDashboardSummaryServiceTest {
     fun `obtener resumen exitoso retorna DTO`() = runTest {
         val body = """{"productsCount":5,"pendingOrders":2,"activeDrivers":1}"""
         val storage = FakeStorage()
-        val service = ClientGetBusinessDashboardSummaryService(mockClient(HttpStatusCode.OK, body), storage)
+        val service = ClientGetBusinessDashboardSummaryService(mockClient(HttpStatusCode.OK, body), storage, jsonConfig)
 
         val result = service.execute("biz-1")
 
@@ -197,7 +197,7 @@ class ClientGetBusinessDashboardSummaryServiceTest {
     fun `obtener resumen fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":500,"description":"Error"},"message":"Error"}"""
         val storage = FakeStorage()
-        val service = ClientGetBusinessDashboardSummaryService(mockClient(HttpStatusCode.InternalServerError, body), storage)
+        val service = ClientGetBusinessDashboardSummaryService(mockClient(HttpStatusCode.InternalServerError, body), storage, jsonConfig)
 
         val result = service.execute("biz-1")
 
@@ -215,7 +215,7 @@ class ClientCategoryServiceTest {
     fun `listar categorias exitoso retorna lista`() = runTest {
         val body = """{"categories":[{"id":"1","name":"Cat A"}]}"""
         val storage = FakeStorage()
-        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, body), storage)
+        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, body), storage, jsonConfig)
 
         val result = service.listCategories("biz-1")
 
@@ -227,7 +227,7 @@ class ClientCategoryServiceTest {
     fun `crear categoria exitoso retorna CategoryDTO`() = runTest {
         val body = """{"id":"new-1","name":"Nueva"}"""
         val storage = FakeStorage()
-        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, body), storage)
+        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, body), storage, jsonConfig)
 
         val result = service.createCategory("biz-1", CategoryRequest("Nueva"))
 
@@ -238,7 +238,7 @@ class ClientCategoryServiceTest {
     @Test
     fun `eliminar categoria exitoso retorna Unit`() = runTest {
         val storage = FakeStorage()
-        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, "{}"), storage)
+        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, "{}"), storage, jsonConfig)
 
         val result = service.deleteCategory("biz-1", "cat-1")
 
@@ -248,7 +248,7 @@ class ClientCategoryServiceTest {
     @Test
     fun `listar categorias sin token retorna error`() = runTest {
         val storage = FakeStorage(token = null)
-        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, "[]"), storage)
+        val service = ClientCategoryService(mockClient(HttpStatusCode.OK, "[]"), storage, jsonConfig)
 
         val result = service.listCategories("biz-1")
 
@@ -266,7 +266,7 @@ class ClientProductServiceTest {
     fun `listar productos exitoso retorna lista`() = runTest {
         val body = """{"products":[{"id":"1","name":"Prod","basePrice":10.0,"unit":"u","categoryId":"c1","status":"DRAFT"}]}"""
         val storage = FakeStorage()
-        val service = ClientProductService(mockClient(HttpStatusCode.OK, body), storage)
+        val service = ClientProductService(mockClient(HttpStatusCode.OK, body), storage, jsonConfig)
 
         val result = service.listProducts("biz-1")
 
@@ -278,7 +278,7 @@ class ClientProductServiceTest {
     fun `crear producto exitoso retorna ProductDTO`() = runTest {
         val body = """{"id":"new-1","name":"Nuevo","basePrice":5.0,"unit":"kg","categoryId":"c1","status":"DRAFT"}"""
         val storage = FakeStorage()
-        val service = ClientProductService(mockClient(HttpStatusCode.OK, body), storage)
+        val service = ClientProductService(mockClient(HttpStatusCode.OK, body), storage, jsonConfig)
 
         val result = service.createProduct("biz-1", ProductRequest("Nuevo", null, 5.0, "kg", "c1", ProductStatus.Draft))
 
@@ -289,7 +289,7 @@ class ClientProductServiceTest {
     @Test
     fun `eliminar producto exitoso retorna Unit`() = runTest {
         val storage = FakeStorage()
-        val service = ClientProductService(mockClient(HttpStatusCode.OK, "{}"), storage)
+        val service = ClientProductService(mockClient(HttpStatusCode.OK, "{}"), storage, jsonConfig)
 
         val result = service.deleteProduct("biz-1", "prod-1")
 
@@ -299,7 +299,7 @@ class ClientProductServiceTest {
     @Test
     fun `listar productos sin token retorna error`() = runTest {
         val storage = FakeStorage(token = null)
-        val service = ClientProductService(mockClient(HttpStatusCode.OK, "[]"), storage)
+        val service = ClientProductService(mockClient(HttpStatusCode.OK, "[]"), storage, jsonConfig)
 
         val result = service.listProducts("biz-1")
 
@@ -316,7 +316,7 @@ class ClientReviewBusinessRegistrationServiceTest {
     @Test
     fun `revision exitosa retorna RegisterBusinessResponse`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"}}"""
-        val service = ClientReviewBusinessRegistrationService(mockClient(HttpStatusCode.OK, body))
+        val service = ClientReviewBusinessRegistrationService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("pub-1", "approved", "123456", "Bearer tok")
 
@@ -326,7 +326,7 @@ class ClientReviewBusinessRegistrationServiceTest {
     @Test
     fun `revision fallida retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":403,"description":"Forbidden"},"message":"Sin permisos"}"""
-        val service = ClientReviewBusinessRegistrationService(mockClient(HttpStatusCode.Forbidden, body))
+        val service = ClientReviewBusinessRegistrationService(mockClient(HttpStatusCode.Forbidden, body), jsonConfig)
 
         val result = service.execute("pub-1", "rejected", "123456", "Bearer tok")
 

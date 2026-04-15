@@ -24,7 +24,8 @@ import org.kodein.log.newLogger
  */
 class ProductAvailabilityService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommProductAvailabilityService {
 
     private val logger = LoggerFactory.default.newLogger<ProductAvailabilityService>()
@@ -38,11 +39,11 @@ class ProductAvailabilityService(
             ) {
                 authorize()
                 contentType(ContentType.Application.Json)
-                setBody(Json.encodeToString(ProductAvailabilityRequestDTO.serializer(), request))
+                setBody(json.encodeToString(ProductAvailabilityRequestDTO.serializer(), request))
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val parsed = Json.decodeFromString(ProductAvailabilityResponseDTO.serializer(), bodyText)
+                val parsed = json.decodeFromString(ProductAvailabilityResponseDTO.serializer(), bodyText)
                 Result.success(parsed)
             } else {
                 Result.failure(bodyText.toClientException())
@@ -54,7 +55,7 @@ class ProductAvailabilityService(
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

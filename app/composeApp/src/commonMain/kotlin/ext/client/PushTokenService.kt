@@ -11,12 +11,14 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class PushTokenService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommPushTokenService {
 
     private val logger = LoggerFactory.default.newLogger<PushTokenService>()
@@ -66,7 +68,7 @@ class PushTokenService(
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { kotlinx.serialization.json.Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

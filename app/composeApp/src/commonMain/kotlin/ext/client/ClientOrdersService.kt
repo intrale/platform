@@ -27,7 +27,8 @@ import org.kodein.log.newLogger
 
 class ClientOrdersService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommClientOrdersService {
 
     private val logger = LoggerFactory.default.newLogger<ClientOrdersService>()
@@ -63,12 +64,12 @@ class ClientOrdersService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return emptyList()
             val parsedResponse = runCatching {
-                Json.decodeFromString(ClientOrdersResponse.serializer(), bodyText).orders
+                json.decodeFromString(ClientOrdersResponse.serializer(), bodyText).orders
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return Json.decodeFromString(ListSerializer(ClientOrderDTO.serializer()), bodyText)
+            return json.decodeFromString(ListSerializer(ClientOrderDTO.serializer()), bodyText)
         }
         throw bodyText.toClientException()
     }
@@ -78,12 +79,12 @@ class ClientOrdersService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return ClientOrderDetailDTO()
             val parsedResponse = runCatching {
-                Json.decodeFromString(ClientOrderDetailResponse.serializer(), bodyText).order
+                json.decodeFromString(ClientOrderDetailResponse.serializer(), bodyText).order
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return Json.decodeFromString(ClientOrderDetailDTO.serializer(), bodyText)
+            return json.decodeFromString(ClientOrderDetailDTO.serializer(), bodyText)
         }
         throw bodyText.toClientException()
     }
@@ -94,11 +95,11 @@ class ClientOrdersService(
             val response = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/client/orders") {
                 authorize()
                 contentType(ContentType.Application.Json)
-                setBody(Json.encodeToString(CreateClientOrderRequestDTO.serializer(), request))
+                setBody(json.encodeToString(CreateClientOrderRequestDTO.serializer(), request))
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val parsed = Json.decodeFromString(CreateClientOrderResponseDTO.serializer(), bodyText)
+                val parsed = json.decodeFromString(CreateClientOrderResponseDTO.serializer(), bodyText)
                 Result.success(parsed)
             } else {
                 Result.failure(bodyText.toClientException())
@@ -110,7 +111,7 @@ class ClientOrdersService(
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

@@ -19,7 +19,8 @@ import org.kodein.log.newLogger
 
 class DeliveryStateService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommDeliveryStateService {
 
     private val logger = LoggerFactory.default.newLogger<DeliveryStateService>()
@@ -56,6 +57,6 @@ class DeliveryStateService(
         if (bodyText.isBlank()) {
             throw DeliveryExceptionResponse(message = "Respuesta vacía del servidor")
         }
-        return Json.decodeFromString(deserializer, bodyText)
+        return json.decodeFromString(deserializer, bodyText)
     }
 }

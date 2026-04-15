@@ -15,7 +15,7 @@ import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.business.ReviewJoinBusinessRequest
 import ar.com.intrale.shared.business.ReviewJoinBusinessResponse
 
-class ClientReviewJoinBusinessService(private val httpClient: HttpClient) : CommReviewJoinBusinessService {
+class ClientReviewJoinBusinessService(private val httpClient: HttpClient, private val json: Json) : CommReviewJoinBusinessService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(business: String, email: String, decision: String): Result<ReviewJoinBusinessResponse> {
         return try {
@@ -26,7 +26,7 @@ class ClientReviewJoinBusinessService(private val httpClient: HttpClient) : Comm
                 Result.success(ReviewJoinBusinessResponse(StatusCodeDTO(response.status.value, response.status.description)))
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

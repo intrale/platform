@@ -15,7 +15,7 @@ import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.auth.SignUpRequest
 import ar.com.intrale.shared.auth.SignUpResponse
 
-class ClientSignUpDeliveryService(private val httpClient: HttpClient) : CommSignUpDeliveryService {
+class ClientSignUpDeliveryService(private val httpClient: HttpClient, private val json: Json) : CommSignUpDeliveryService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(business: String, email: String): Result<SignUpResponse> {
         return try {
@@ -28,7 +28,7 @@ class ClientSignUpDeliveryService(private val httpClient: HttpClient) : CommSign
                 )
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

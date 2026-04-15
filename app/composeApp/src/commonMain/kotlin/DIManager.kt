@@ -393,10 +393,12 @@ const val LOGIN_PATH = "/login"
 private val infrastructureModule = DI.Module("infrastructure") {
     bindFactory<NavHostController, Router> { navigator -> CommonRouter(navigator) }
 
+    bindSingleton<Json> { Json { ignoreUnknownKeys = true; isLenient = true } }
+
     bindSingleton<HttpClient> {
         HttpClient() {
             install(ContentNegotiation) {
-                json(Json { isLenient = true; ignoreUnknownKeys = true })
+                json(instance())
             }
             install(Logging) {
                 level = LogLevel.ALL
@@ -412,18 +414,18 @@ private val infrastructureModule = DI.Module("infrastructure") {
         }
     }
 
-    bindSingleton<CommKeyValueStorage> { KeyValueStorageService() }
+    bindSingleton<CommKeyValueStorage> { KeyValueStorageService(instance()) }
 }
 
 private val authModule = DI.Module("auth") {
     bindSingleton<CommLoginService> {
-        if (AppRuntimeConfig.isDelivery) DeliveryLoginService(instance())
-        else ClientLoginService(instance())
+        if (AppRuntimeConfig.isDelivery) DeliveryLoginService(instance(), instance())
+        else ClientLoginService(instance(), instance())
     }
-    bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
-    bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
-    bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
-    bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
+    bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance(), instance()) }
+    bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance(), instance()) }
+    bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance(), instance()) }
+    bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance(), instance()) }
 
     bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
     bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
@@ -436,11 +438,11 @@ private val authModule = DI.Module("auth") {
 }
 
 private val signupModule = DI.Module("signup") {
-    bindSingleton<CommSignUpService> { ClientSignUpService(instance()) }
-    bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
-    bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
-    bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance()) }
-    bindSingleton<CommConfirmSignUpService> { ClientConfirmSignUpService(instance()) }
+    bindSingleton<CommSignUpService> { ClientSignUpService(instance(), instance()) }
+    bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance(), instance()) }
+    bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance(), instance()) }
+    bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance(), instance()) }
+    bindSingleton<CommConfirmSignUpService> { ClientConfirmSignUpService(instance(), instance()) }
 
     bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
     bindSingleton<ToDoSignUpPlatformAdmin> { DoSignUpPlatformAdmin(instance()) }
@@ -450,29 +452,29 @@ private val signupModule = DI.Module("signup") {
 }
 
 private val businessModule = DI.Module("business") {
-    bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
-    bindSingleton<CommRegisterBusinessService> { ClientRegisterBusinessService(instance()) }
-    bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
-    bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
-    bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
-    bindSingleton<CommGetBusinessDashboardSummaryService> { ClientGetBusinessDashboardSummaryService(instance(), instance()) }
-    bindSingleton<CommGetBusinessOrdersService> { ClientGetBusinessOrdersService(instance(), instance()) }
-    bindSingleton<CommGetBusinessOrderDetailService> { ClientGetBusinessOrderDetailService(instance(), instance()) }
-    bindSingleton<CommUpdateBusinessOrderStatusService> { ClientUpdateBusinessOrderStatusService(instance(), instance()) }
-    bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
-    bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
-    bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
-    bindSingleton<CommFontsService> { ClientFontsService(instance(), instance()) }
-    bindSingleton<CommBusinessConfigService> { ClientBusinessConfigService(instance(), instance()) }
-    bindSingleton<CommBannerService> { ClientBannerService(instance(), instance()) }
-    bindSingleton<CommAssignOrderDeliveryPersonService> { ClientAssignOrderDeliveryPersonService(instance(), instance()) }
-    bindSingleton<CommGetBusinessDeliveryPeopleService> { ClientGetBusinessDeliveryPeopleService(instance(), instance()) }
-    bindSingleton<CommBusinessSchedulesService> { ClientBusinessSchedulesService(instance(), instance()) }
-    bindSingleton<CommBusinessDeliveryZoneService> { ClientBusinessDeliveryZoneService(instance(), instance()) }
-    bindSingleton<CommListBusinessDeliveryPeopleService> { ClientListBusinessDeliveryPeopleService(instance(), instance()) }
-    bindSingleton<CommToggleDeliveryPersonStatusService> { ClientToggleDeliveryPersonStatusService(instance(), instance()) }
-    bindSingleton<CommInviteDeliveryPersonService> { ClientInviteDeliveryPersonService(instance(), instance()) }
-    bindSingleton<CommBusinessPaymentMethodsService> { ClientBusinessPaymentMethodsService(instance(), instance()) }
+    bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance(), instance()) }
+    bindSingleton<CommRegisterBusinessService> { ClientRegisterBusinessService(instance(), instance()) }
+    bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance(), instance()) }
+    bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance(), instance()) }
+    bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance(), instance()) }
+    bindSingleton<CommGetBusinessDashboardSummaryService> { ClientGetBusinessDashboardSummaryService(instance(), instance(), instance()) }
+    bindSingleton<CommGetBusinessOrdersService> { ClientGetBusinessOrdersService(instance(), instance(), instance()) }
+    bindSingleton<CommGetBusinessOrderDetailService> { ClientGetBusinessOrderDetailService(instance(), instance(), instance()) }
+    bindSingleton<CommUpdateBusinessOrderStatusService> { ClientUpdateBusinessOrderStatusService(instance(), instance(), instance()) }
+    bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance(), instance()) }
+    bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance(), instance()) }
+    bindSingleton<CommProductService> { ClientProductService(instance(), instance(), instance()) }
+    bindSingleton<CommFontsService> { ClientFontsService(instance(), instance(), instance()) }
+    bindSingleton<CommBusinessConfigService> { ClientBusinessConfigService(instance(), instance(), instance()) }
+    bindSingleton<CommBannerService> { ClientBannerService(instance(), instance(), instance()) }
+    bindSingleton<CommAssignOrderDeliveryPersonService> { ClientAssignOrderDeliveryPersonService(instance(), instance(), instance()) }
+    bindSingleton<CommGetBusinessDeliveryPeopleService> { ClientGetBusinessDeliveryPeopleService(instance(), instance(), instance()) }
+    bindSingleton<CommBusinessSchedulesService> { ClientBusinessSchedulesService(instance(), instance(), instance()) }
+    bindSingleton<CommBusinessDeliveryZoneService> { ClientBusinessDeliveryZoneService(instance(), instance(), instance()) }
+    bindSingleton<CommListBusinessDeliveryPeopleService> { ClientListBusinessDeliveryPeopleService(instance(), instance(), instance()) }
+    bindSingleton<CommToggleDeliveryPersonStatusService> { ClientToggleDeliveryPersonStatusService(instance(), instance(), instance()) }
+    bindSingleton<CommInviteDeliveryPersonService> { ClientInviteDeliveryPersonService(instance(), instance(), instance()) }
+    bindSingleton<CommBusinessPaymentMethodsService> { ClientBusinessPaymentMethodsService(instance(), instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -513,11 +515,11 @@ private val businessModule = DI.Module("business") {
 }
 
 private val clientModule = DI.Module("client") {
-    bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
-    bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
-    bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
-    bindSingleton<CommProductAvailabilityService> { ProductAvailabilityService(instance(), instance()) }
-    bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance()) }
+    bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance(), instance()) }
+    bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance(), instance()) }
+    bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance(), instance()) }
+    bindSingleton<CommProductAvailabilityService> { ProductAvailabilityService(instance(), instance(), instance()) }
+    bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance(), instance()) }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -537,17 +539,17 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoCheckBusinessOpen> { DoCheckBusinessOpen(instance()) }
 
     // Push notifications
-    bindSingleton<CommPushTokenService> { PushTokenService(instance(), instance()) }
+    bindSingleton<CommPushTokenService> { PushTokenService(instance(), instance(), instance()) }
     bindSingleton<ToDoRegisterPushToken> { DoRegisterPushToken(instance()) }
     bindSingleton<ToDoUnregisterPushToken> { DoUnregisterPushToken(instance()) }
     bindSingleton<ToDoPushNotificationHandler> { DoPushNotificationHandler() }
 }
 
 private val deliveryModule = DI.Module("delivery") {
-    bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance()) }
-    bindSingleton<CommDeliveryAvailabilityService> { DeliveryAvailabilityService(instance(), instance()) }
-    bindSingleton<CommDeliveryOrdersService> { DeliveryOrdersService(instance(), instance()) }
-    bindSingleton<CommDeliveryStateService> { DeliveryStateService(instance(), instance()) }
+    bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance(), instance()) }
+    bindSingleton<CommDeliveryAvailabilityService> { DeliveryAvailabilityService(instance(), instance(), instance()) }
+    bindSingleton<CommDeliveryOrdersService> { DeliveryOrdersService(instance(), instance(), instance()) }
+    bindSingleton<CommDeliveryStateService> { DeliveryStateService(instance(), instance(), instance()) }
 
     bindSingleton<ToDoGetDeliveryProfile> { DoGetDeliveryProfile(instance()) }
     bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }

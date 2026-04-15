@@ -25,7 +25,8 @@ import org.kodein.log.newLogger
 
 class ClientBannerService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommBannerService {
 
     private val logger = LoggerFactory.default.newLogger<ClientBannerService>()
@@ -90,10 +91,10 @@ class ClientBannerService(
     private suspend fun HttpResponse.toBanner(): BannerDTO {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
-            runCatching { return Json.decodeFromString(BannerDTO.serializer(), bodyText) }
+            runCatching { return json.decodeFromString(BannerDTO.serializer(), bodyText) }
             runCatching {
                 val responseWrapper =
-                    Json.decodeFromString(BannerListResponse.serializer(), bodyText)
+                    json.decodeFromString(BannerListResponse.serializer(), bodyText)
                 responseWrapper.banners.firstOrNull()?.let { return it }
             }
             throw ExceptionResponse(
@@ -108,11 +109,11 @@ class ClientBannerService(
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
             runCatching {
-                return Json.decodeFromString(BannerListResponse.serializer(), bodyText)
+                return json.decodeFromString(BannerListResponse.serializer(), bodyText)
                     .banners
             }
             runCatching {
-                return Json.decodeFromString(
+                return json.decodeFromString(
                     ListSerializer(BannerDTO.serializer()),
                     bodyText
                 )
@@ -123,7 +124,7 @@ class ClientBannerService(
     }
 
     private fun String.toBannerException(): ExceptionResponse =
-        runCatching { Json.decodeFromString(ExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ExceptionResponse.serializer(), this) }
             .getOrElse {
                 logger.error(it) { "No se pudo parsear la respuesta de error" }
                 ExceptionResponse(
