@@ -863,6 +863,30 @@ function generateHTML(state) {
   const activeIssues = sorted.filter(([, d]) => !isComplete(d));
   const completedIssues = sorted.filter(([, d]) => isComplete(d));
 
+  // ── Issue Tracker Lanes (Opción E): 3 lanes balanceadas con sub-breakdown ──
+  // Definición (análisis+criterios+sizing) → Desarrollo+Build (val+dev+build) → QA+Entrega (verif+aprob+entrega)
+  function macroLane(d) {
+    if (isComplete(d)) return 'done';
+    const fa = d.faseActual;
+    if (!fa) return 'def';
+    const [pipe, fase] = fa.split('/');
+    if (pipe === 'definicion') return 'def';
+    if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
+    return 'qa'; // verificacion, aprobacion, entrega
+  }
+  const laneMeta = {
+    def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
+    dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
+    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · aprob · entrega',      subFases: ['verificacion', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', aprobacion: 'Aprob', entrega: 'Entrega' } },
+  };
+  const laneCards = { def: '', dev: '', qa: '', done: '' };
+  const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
+  const laneStats = {
+    def: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    dev: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    qa:  { running: 0, failed: 0, stale: 0, subCounts: {} },
+  };
+
   let issueCards = '';
   for (const [issueNum, data] of sorted) {
     const complete = isComplete(data);
@@ -1082,7 +1106,110 @@ function generateHTML(state) {
       <div class="ic-progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="ic-progress-fill${data.estadoActual === 'trabajando' ? ' ic-progress-active' : ''}" style="width:${pct}%"></div></div>
       ${detailHTML}
     </div>`;
+
+    // ── Lane card Opción E (3 lanes + rich cards) ──
+    const lane = macroLane(data);
+    const working = data.estadoActual === 'trabajando';
+    const hasRejection = data.labels?.some(l => l === 'qa:failed');
+    const isStale = data.staleMin > 30;
+    const laneCardCls = complete ? 'lc-done'
+      : isStale ? 'lc-stale'
+      : hasRejection ? 'lc-failed'
+      : working ? 'lc-running' : '';
+    // Stats agregadas (solo para lanes activas, no done)
+    if (lane !== 'done' && laneStats[lane]) {
+      if (working) laneStats[lane].running++;
+      if (hasRejection) laneStats[lane].failed++;
+      if (isStale) laneStats[lane].stale++;
+      // Sub-fase count
+      if (data.faseActual) {
+        const fa = data.faseActual.split('/')[1];
+        laneStats[lane].subCounts[fa] = (laneStats[lane].subCounts[fa] || 0) + 1;
+      }
+    }
+    const laneElapsedCls = isStale ? 'lc-warn' : working ? 'lc-teal' : '';
+    const laneElapsedTxt = complete ? 'completado'
+      : data.staleMin > 60 ? `${data.staleMin}m 🚩`
+      : data.staleMin > 30 ? `${data.staleMin}m`
+      : working ? `${data.staleMin}m` : '—';
+    // Avatares de skills en ejecución
+    const currentSkills = [];
+    if (data.faseActual && data.fases[data.faseActual]) {
+      for (const e of data.fases[data.faseActual]) {
+        if (e.estado === 'trabajando' && !currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+      }
+    }
+    const avatarsHTML = currentSkills.length > 0
+      ? '<div class="lc-avatars">' + currentSkills.slice(0, 3).map(s => {
+          const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
+          return `<span class="lc-av" style="background:${p.color}" title="${p.name}">${p.icon}</span>`;
+        }).join('') + (currentSkills.length > 3 ? `<span class="lc-av-more">+${currentSkills.length - 3}</span>` : '') + '</div>'
+      : '';
+    const currentFase = data.faseActual ? data.faseActual.split('/')[1] : '';
+    const multiSkillTag = currentSkills.length > 1 ? ` <span class="lc-pill-x">×${currentSkills.length}</span>` : '';
+    const lanePill = complete
+      ? '<span class="lc-pill lc-pill-done">✓ entregado</span>'
+      : hasRejection
+      ? `<span class="lc-pill lc-pill-fail">qa:failed</span>`
+      : working
+      ? `<span class="lc-pill lc-pill-run">${currentFase}${multiSkillTag}</span>`
+      : `<span class="lc-pill lc-pill-wait">${currentFase || 'pendiente'}</span>`;
+    const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
+    const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
+    laneCards[lane] += `<a class="lc-card ${laneCardCls}" href="${GH(issueNum)}" target="_blank" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" title="${laneTitle}">
+      <div class="lc-top">
+        <span class="lc-num">#${issueNum}</span>
+        <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
+      </div>
+      <div class="lc-title">${flagSpan}${laneTitle}</div>
+      <div class="lc-foot">
+        <div class="lc-foot-left">
+          <span class="lc-ps">${stepperDots}</span>
+          ${lanePill}
+        </div>
+        ${avatarsHTML}
+      </div>
+    </a>`;
+    laneCounts[lane]++;
   }
+
+  // Render 3 lanes (Opción E) con sub-breakdown + cards ricas
+  const laneOrder = ['def', 'dev', 'qa'];
+  const lanesHTML = laneOrder.map(k => {
+    const m = laneMeta[k];
+    const stats = laneStats[k];
+    const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
+    // Sub-breakdown: chips por sub-fase con contadores
+    const maxSubCount = Math.max(...m.subFases.map(sf => stats.subCounts[sf] || 0), 1);
+    const subBreakdown = '<div class="it-sub-breakdown">' + m.subFases.map(sf => {
+      const c = stats.subCounts[sf] || 0;
+      const isHot = c === maxSubCount && c > 0 && m.subFases.some(other => other !== sf && (stats.subCounts[other] || 0) < c);
+      return `<div class="it-sub-chip${isHot ? ' hot' : ''}">${m.subLabels[sf]} <b>${c}</b></div>`;
+    }).join('') + '</div>';
+    // Meta: badges
+    const metaBadges = [];
+    if (stats.running > 0) metaBadges.push(`<span class="it-badge run">${stats.running} activo${stats.running > 1 ? 's' : ''}</span>`);
+    if (stats.failed > 0) metaBadges.push(`<span class="it-badge fail">${stats.failed} failed</span>`);
+    if (stats.stale > 0) metaBadges.push(`<span class="it-badge warn">${stats.stale} stale</span>`);
+    return `<div class="it-lane it-lane-${k}" data-lane="${k}" style="--lane-color:${m.color}">
+      <div class="it-lane-head">
+        <span class="it-lane-name"><span class="it-lane-dot"></span>${m.label} <span class="it-lane-sub">${m.sub}</span></span>
+        <div class="it-lane-meta">
+          <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+          ${metaBadges.join('')}
+        </div>
+      </div>
+      ${subBreakdown}
+      <div class="it-lane-cards">${cards}</div>
+    </div>`;
+  }).join('');
+  const doneLaneHTML = laneCounts.done > 0 ? `<div class="it-done-section" data-lane="done">
+    <div class="it-done-head">
+      <span>✓ Completados recientes</span>
+      <span class="it-done-count"><b>${laneCounts.done}</b></span>
+    </div>
+    <div class="it-done-grid">${laneCards.done}</div>
+  </div>` : '';
 
   const matrixHTML = `
     <div class="matrix-section" id="issue-tracker">
@@ -1094,9 +1221,8 @@ function generateHTML(state) {
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
       </div>
-      <div class="ic-list">
-        ${issueCards}
-      </div>
+      <div class="it-lanes">${lanesHTML}</div>
+      ${doneLaneHTML}
     </div>`;
 
   // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
@@ -1210,28 +1336,51 @@ function generateHTML(state) {
       </div>
     </div>`;
   }
+  // Heatmap legacy mantenido para compatibilidad (puede eliminarse luego)
   let heatmapHTML = '';
   const catOrder = ['product', 'dev', 'quality', 'ops'];
+
+  // ── Option B: Areas grid 2x2 con chips compactos ──
+  let eqAreaGridHTML = '';
+  let eqTotalSkills = 0, eqTotalBusy = 0;
   for (const cat of catOrder) {
     const list = skillsByCategory[cat];
     if (!list || list.length === 0) continue;
     const m = CATEGORY_META[cat];
-    // Dentro de cada categoría, mostrar activos primero
     list.sort((a, b) => b[1].running - a[1].running || (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0));
-    const active = list.filter(([_, l]) => l.running > 0).length;
-    const total = list.reduce((s, [_, l]) => s + l.max, 0);
-    const busy = list.reduce((s, [_, l]) => s + l.running, 0);
-    heatmapHTML += `<div class="persona-group persona-group-${cat}">
-      <div class="persona-group-head">
-        <span class="persona-group-icon" style="color:${m.color}">${m.icon}</span>
-        <span class="persona-group-label">${m.label}</span>
-        <span class="persona-group-count">${busy}/${total} ${active > 0 ? '\u00B7 <span class="persona-group-active">' + active + ' activo' + (active > 1 ? 's' : '') + '</span>' : ''}</span>
+    // Contar skills (no slots): busy = skills con al menos 1 running
+    const busySkills = list.filter(([_, l]) => (l.running || 0) > 0).length;
+    const totalSkills = list.length;
+    eqTotalBusy += busySkills; eqTotalSkills += totalSkills;
+    const freeSkills = totalSkills - busySkills;
+    const chips = list.map(([s, l]) => {
+      const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
+      const running = l.running || 0;
+      const stateCls = running > 0 ? 'eq-chip-busy' : '';
+      const countBadge = running > 1 ? `<span class="eq-chip-badge">\u00D7${running}</span>` : '';
+      const usage = skillUsageCount[s] || 0;
+      const tip = running > 0
+        ? `${p.name} \u2014 ${running} issue${running > 1 ? 's' : ''} en ejecución (${usage} runs)`
+        : `${p.name} \u2014 libre (${usage} runs)`;
+      return `<span class="eq-chip ${stateCls}" title="${tip.replace(/"/g, '&quot;')}">
+        <span class="eq-chip-avatar" style="background:${p.color}">${p.icon}</span>
+        <span class="eq-chip-name">${p.name}</span>
+        ${countBadge}
+        <span class="eq-chip-dot"></span>
+      </span>`;
+    }).join('');
+    const subTxt = busySkills > 0
+      ? `<b>${freeSkills}</b>/${totalSkills} libres \u00B7 <span class="eq-area-card-active">${busySkills} activo${busySkills > 1 ? 's' : ''}</span>`
+      : `<b>${freeSkills}</b> libres`;
+    eqAreaGridHTML += `<div class="eq-area-card">
+      <div class="eq-area-card-head">
+        <span class="eq-area-card-name"><span class="eq-area-card-dot" style="background:${m.color}"></span>${m.label}</span>
+        <span class="eq-area-card-sub">${subTxt}</span>
       </div>
-      <div class="persona-group-grid">
-        ${list.map(([s, l]) => personaCard(s, l)).join('')}
-      </div>
+      <div class="eq-area-card-chips">${chips}</div>
     </div>`;
   }
+  if (eqAreaGridHTML) eqAreaGridHTML = '<div class="eq-areas-grid">' + eqAreaGridHTML + '</div>';
 
   // ── Servicios agrupados por capa (Intake/Processing/Output) ──
   const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
@@ -1463,44 +1612,35 @@ function generateHTML(state) {
     return { skill, issues, maxDur };
   }).sort((a, b) => b.maxDur - a.maxDur);
 
+  // Option B: Active Cards XL — cada agente activo es una card horizontal con work items (issue + fase + progreso)
   let agentTeamCards = '';
+  let activeStripHTML = '';
   if (sortedAgents.length > 0) {
-    for (const { skill, issues } of sortedAgents) {
-      const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, tagline: '', color: 'var(--dim)' };
-      const maxDur = Math.max(...issues.map(i => i.duration || 0));
-      const health = agentHealth(maxDur);
-      const issueRows = issues.map(i => {
-        const ih = agentHealth(i.duration);
-        const title = issueTitle(i.issue);
+    const cards = sortedAgents.map(({ skill, issues }) => {
+      const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, color: 'var(--dim)' };
+      const count = issues.length;
+      const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
+      const workItems = issues.map(i => {
         const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
-        return `<a href="${GH(i.issue)}" target="_blank" class="work-item work-${ih.cls}">
-          <span class="work-issue">#${i.issue}</span>
-          <span class="work-title">${title || i.fase}</span>
-          <span class="work-fase">${i.fase}</span>
-          <span class="work-dur">${fmtDuration(i.duration)}</span>
-          <span class="work-progress"><span class="work-progress-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
+        return `<a href="${GH(i.issue)}" target="_blank" class="eq-work-item">
+          <span class="eq-work-issue">#${i.issue}</span>
+          <span class="eq-work-fase">${i.fase}</span>
+          <span class="eq-work-dur">${fmtDuration(i.duration)}</span>
+          <span class="eq-work-bar"><span class="eq-work-bar-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
         </a>`;
       }).join('');
       const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
-      const tagline = (p.tagline || '').split(' · ').slice(0, 3).join(' · ');
-      agentTeamCards += `
-        <div class="agent-card agent-${health.cls}" style="--agent-color:${p.color}">
-          <div class="agent-header">
-            <div class="agent-avatar-xl">${p.icon}</div>
-            <div class="agent-identity">
-              <div class="agent-name-row">
-                <span class="agent-name">${p.name}</span>
-                <span class="agent-health agent-health-${health.cls}">${health.label}</span>
-              </div>
-              <div class="agent-tagline">${tagline}</div>
-            </div>
-            <span class="agent-badge">${issues.length} <span class="agent-badge-lbl">issue${issues.length > 1 ? 's' : ''}</span></span>
-            <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
-          </div>
-          <div class="agent-work">${issueRows}</div>
-          <div class="agent-heartbeat"><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span></div>
-        </div>`;
-    }
+      const subTxt = count > 1 ? ` \u00B7 <span class="eq-card-sub">${count} issues</span>` : '';
+      return `<div class="eq-card">
+        <span class="eq-card-avatar" style="background:${p.color}">${p.icon}${badge}</span>
+        <div class="eq-card-body">
+          <div class="eq-card-name"><span class="eq-card-ring"></span>${p.name}${subTxt}</div>
+          <div class="eq-card-work">${workItems}</div>
+        </div>
+        <span class="eq-card-kill" title="Cancelar agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">\u00D7</span>
+      </div>`;
+    }).join('');
+    activeStripHTML = `<div class="eq-active-cards">${cards}</div>`;
   }
 
   // agentTeamCards se usa inline en la sección "Equipo y Skills"
@@ -1633,10 +1773,27 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 
 /* ── KPI Grid ───────────────────────────────────────────────────────────── */
+.kpis-row{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;
+  margin-bottom:20px;align-items:stretch;
+}
 .kpis{
   display:grid;
   grid-template-columns:repeat(6,1fr);
   gap:10px;margin-bottom:20px;
+}
+.kpis.kpis-5{
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpi-trend{
+  font-size:0.62em;color:var(--dim);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
+  text-transform:none;letter-spacing:0;font-weight:400;
 }
 .kpi{
   background:linear-gradient(135deg,color-mix(in srgb,var(--kpi-accent,var(--ac)) 10%,var(--sf)) 0%,var(--sf) 60%);
@@ -1662,6 +1819,43 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   font-size:2.1em;font-weight:800;color:var(--kpi-accent,var(--ac));
   font-variant-numeric:tabular-nums;line-height:1;
 }
+
+/* ── Mini Sistema Card (junto a KPIs) ───────────────────────────────────── */
+.sys-mini-card{
+  display:flex;align-items:center;gap:14px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:8px 16px;
+}
+.sys-mini-card.sys-mini-ok{border-color:color-mix(in srgb,var(--gn) 35%,var(--bd))}
+.sys-mini-card.sys-mini-warn{border-color:color-mix(in srgb,var(--yl) 40%,var(--bd))}
+.sys-mini-card.sys-mini-crit{border-color:color-mix(in srgb,var(--rd) 50%,var(--bd));animation:pulse 1.8s infinite}
+.sys-mini-score{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding-right:12px;border-right:1px solid var(--bd);min-width:68px;
+}
+.sys-mini-lbl{font-size:0.6em;color:var(--dim);text-transform:uppercase;letter-spacing:0.8px;font-weight:700}
+.sys-mini-val{font-size:1.6em;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sys-mini-val.sys-mini-ok{color:var(--gn)}
+.sys-mini-val.sys-mini-warn{color:var(--yl)}
+.sys-mini-val.sys-mini-crit{color:var(--rd)}
+.sys-mini-tag{font-size:0.58em;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;line-height:1}
+.sys-mini-tag.sys-mini-ok{color:var(--gn)}
+.sys-mini-tag.sys-mini-warn{color:var(--yl)}
+.sys-mini-tag.sys-mini-crit{color:var(--rd)}
+.sys-mini-gauge{
+  position:relative;width:62px;height:62px;flex-shrink:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+}
+.sys-mini-svg{position:absolute;top:0;left:0;width:62px;height:62px;transform:rotate(-90deg)}
+.sys-mini-track{fill:none;stroke:rgba(255,255,255,0.07);stroke-width:6}
+.sys-mini-fill{fill:none;stroke-width:6;stroke-linecap:round;transition:stroke-dashoffset 0.4s}
+.sys-mini-fill.sys-mini-ok{stroke:var(--gn)}
+.sys-mini-fill.sys-mini-warn{stroke:var(--yl)}
+.sys-mini-fill.sys-mini-danger{stroke:var(--rd)}
+.sys-mini-center{text-align:center;line-height:1;position:relative;z-index:1}
+.sys-mini-center .v{font-size:0.82em;font-weight:800;color:var(--tx);font-variant-numeric:tabular-nums}
+.sys-mini-center .l{font-size:0.58em;color:var(--dim);text-transform:uppercase;letter-spacing:0.4px;margin-top:1px}
+
 .kpi-value.warn{color:var(--yl);--kpi-accent:var(--yl)}
 .kpi-value.danger{color:var(--rd);--kpi-accent:var(--rd)}
 .kpi-value.success{color:var(--gn);--kpi-accent:var(--gn)}
@@ -2527,6 +2721,131 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item{padding:2px 0;color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
+
+/* ── Issue Tracker Lanes (Opción E): 3 lanes balanceadas ─────────────────── */
+.it-lanes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) minmax(0,1.1fr);gap:10px;margin-top:10px}
+.it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 10px 8px 10px;display:flex;flex-direction:column;min-width:0}
+.it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
+.it-lane-name{font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px;color:var(--lane-color);min-width:0}
+.it-lane-dot{width:6px;height:6px;border-radius:50%;background:var(--lane-color);flex-shrink:0}
+.it-lane-sub{font-size:0.78em;color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;margin-left:2px}
+.it-lane-meta{display:flex;gap:5px;align-items:center;font-size:0.7em;flex-wrap:wrap}
+.it-lane-count{background:var(--sf);color:var(--tx);padding:2px 8px;border-radius:10px;font-weight:700}
+.it-lane-count b{color:var(--tx);font-weight:800}
+.it-badge{padding:1px 6px;border-radius:6px;font-weight:700}
+.it-badge.run{color:#2dd4bf;background:rgba(45,212,191,0.12)}
+.it-badge.fail{color:var(--rd);background:rgba(248,113,113,0.12)}
+.it-badge.warn{color:var(--yl);background:rgba(251,191,36,0.12)}
+
+/* Sub-breakdown chips */
+.it-sub-breakdown{display:flex;gap:4px;margin-bottom:8px}
+.it-sub-chip{flex:1;padding:4px 8px;background:var(--sf);border-radius:5px;text-align:center;color:var(--dim);font-size:0.68em;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:500}
+.it-sub-chip b{color:var(--tx);font-weight:800;font-variant-numeric:tabular-nums}
+.it-sub-chip.hot{color:var(--yl);border:1px solid rgba(251,191,36,0.3)}
+
+.it-lane-cards{display:flex;flex-direction:column;gap:6px;max-height:640px;overflow-y:auto;padding-right:2px}
+.it-lane-cards::-webkit-scrollbar{width:5px}
+.it-lane-cards::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
+
+/* Lane card rica (Opción E) */
+.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;padding:8px 10px;font-size:0.78em;text-decoration:none;color:var(--tx);cursor:pointer;transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s}
+.lc-card:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,0.3);border-left-color:var(--ac)}
+.lc-card.lc-running{border-left-color:#2dd4bf}
+.lc-card.lc-failed{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.05),var(--sf))}
+.lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.05),var(--sf))}
+.lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
+.lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
+.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
+.lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
+.lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
+.lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
+.lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500}
+.lc-flag{color:var(--yl);margin-right:3px}
+.lc-foot{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+.lc-foot-left{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
+.lc-ps{display:inline-flex;align-items:center;gap:2px;padding:2px 4px;background:rgba(255,255,255,0.02);border-radius:5px;flex-shrink:0}
+.lc-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:0.82em;font-weight:700;letter-spacing:0.2px}
+.lc-pill-run{background:rgba(45,212,191,0.15);color:#2dd4bf;text-transform:lowercase}
+.lc-pill-fail{background:rgba(248,113,113,0.15);color:var(--rd);text-transform:lowercase}
+.lc-pill-wait{background:rgba(251,191,36,0.12);color:var(--yl);text-transform:lowercase}
+.lc-pill-done{background:rgba(52,211,153,0.12);color:var(--gn);text-transform:lowercase}
+.lc-pill-x{opacity:0.6;font-weight:400;margin-left:2px}
+.lc-avatars{display:flex}
+.lc-av{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;line-height:1;color:#fff;border:1.5px solid var(--sf);margin-right:-5px}
+.lc-av:last-child{margin-right:0}
+.lc-av-more{width:18px;height:18px;border-radius:50%;background:var(--sf2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;border:1.5px solid var(--sf);margin-right:0}
+
+/* Completados section */
+.it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:10px 12px}
+.it-done-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--gn)}
+.it-done-count{background:rgba(52,211,153,0.15);padding:1px 7px;border-radius:8px;font-size:0.82em}
+.it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px}
+.it-done-grid .lc-card{opacity:0.75}
+
+@media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
+
+.ic-hidden{display:none !important}
+
+/* Oculta el legacy ic-list cards (conservamos estilos pero no los usamos en la vista principal) */
+.ic-list{display:none}
+
+/* ── Panel Equipo Option B ─────────────────────────────────────────────── */
+.panel-equipo-full{margin-bottom:20px}
+.eq-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd);gap:14px;flex-wrap:wrap}
+.eq-title{margin:0;font-size:1.05em;font-weight:700}
+.eq-summary{display:flex;gap:8px;align-items:center;font-size:0.76em;color:var(--dim)}
+.eq-summary b{color:var(--tx);font-weight:700;margin:0 2px}
+
+/* Active Cards XL */
+.eq-active-cards{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.eq-card{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:8px 12px;background:linear-gradient(90deg,rgba(45,212,191,0.08),rgba(45,212,191,0.02));border:1px solid rgba(45,212,191,0.3);border-left:3px solid var(--teal,#2dd4bf);border-radius:var(--radius)}
+.eq-card-avatar{position:relative;width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:1em;line-height:1;color:#fff;flex-shrink:0}
+.eq-card-badge{position:absolute;top:-4px;right:-5px;min-width:14px;height:14px;padding:0 3px;background:var(--rd);color:#fff;border-radius:7px;font-size:0.6em;font-weight:800;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--sf)}
+.eq-card-body{min-width:0}
+.eq-card-name{font-size:0.88em;font-weight:700;color:var(--teal,#2dd4bf);display:flex;align-items:center;gap:6px}
+.eq-card-ring{width:7px;height:7px;border-radius:50%;background:var(--teal,#2dd4bf);box-shadow:0 0 0 0 rgba(45,212,191,0.6);animation:pulse 1.5s infinite}
+.eq-card-sub{font-size:0.85em;color:var(--dim);font-weight:400}
+.eq-card-work{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;font-size:0.72em}
+.eq-work-item{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;background:rgba(45,212,191,0.08);border-radius:5px;color:var(--dim);text-decoration:none;transition:background 0.15s}
+.eq-work-item:hover{background:rgba(45,212,191,0.15)}
+.eq-work-issue{color:var(--ac);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-work-fase{color:var(--dim);font-size:0.85em}
+.eq-work-dur{color:var(--teal,#2dd4bf);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-work-bar{width:40px;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
+.eq-work-bar-fill{height:100%;background:var(--teal,#2dd4bf);border-radius:2px}
+.eq-card-kill{color:var(--dim);cursor:pointer;font-weight:700;font-size:1.2em;padding:4px 8px;border-radius:6px}
+.eq-card-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
+
+/* Areas grid 2×2 */
+.eq-areas-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.eq-area-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);padding:8px 10px}
+.eq-area-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:0.66em;text-transform:uppercase;letter-spacing:0.7px;font-weight:700}
+.eq-area-card-name{display:flex;align-items:center;gap:5px;color:var(--muted,#8b949e)}
+.eq-area-card-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.eq-area-card-sub{font-size:0.92em;color:var(--dim);font-weight:400}
+.eq-area-card-sub b{color:var(--tx);font-weight:700}
+.eq-area-card-active{color:var(--teal,#2dd4bf);font-weight:700}
+.eq-area-card-chips{display:flex;flex-wrap:wrap;gap:3px}
+
+/* Chips compactos */
+.eq-chip{position:relative;display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 3px;background:var(--sf);border:1px solid var(--bd);border-radius:999px;font-size:0.68em;cursor:help;transition:border-color 0.15s,transform 0.15s}
+.eq-chip:hover{border-color:var(--teal,#2dd4bf);transform:translateY(-1px)}
+.eq-chip-avatar{width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.82em;line-height:1;color:#fff;flex-shrink:0}
+.eq-chip-name{font-weight:500;color:var(--tx);white-space:nowrap}
+.eq-chip-dot{width:5px;height:5px;border-radius:50%;background:var(--gn);flex-shrink:0}
+.eq-chip-busy{border-color:rgba(45,212,191,0.5);background:rgba(45,212,191,0.07)}
+.eq-chip-busy .eq-chip-dot{background:var(--teal,#2dd4bf);box-shadow:0 0 0 0 rgba(45,212,191,0.6);animation:pulse 1.5s infinite}
+.eq-chip-busy .eq-chip-name{color:var(--teal,#2dd4bf);font-weight:700}
+.eq-chip-badge{min-width:14px;height:14px;padding:0 3px;background:var(--teal,#2dd4bf);color:#001a1a;border-radius:7px;font-size:0.82em;font-weight:800;display:inline-flex;align-items:center;justify-content:center}
+
+/* Servicios abajo */
+.eq-svc-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)}
+.eq-svc-head{font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--dim);margin-bottom:8px}
+.eq-svc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media(max-width:900px){.eq-svc-grid{grid-template-columns:1fr}}
+@media(max-width:720px){.eq-areas-grid{grid-template-columns:1fr}}
+
 </style></head>
 <body>
   <div class="hdr-bar">
@@ -2558,7 +2877,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     if (blockedNow) {
       statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>BLOQUEADO por saturación de recursos</span>';
     } else if (isPaused) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>PIPELINE PAUSADO por usuario</span>'
+      // El badge del header ya indica PAUSADO — evitamos duplicar el texto acá.
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Lanzamientos detenidos por usuario</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
@@ -2614,51 +2934,72 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   })()}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
-  <div class="kpis">
-    <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
-      <div class="kpi-label">En ejecución</div>
-      <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
-      <span class="kpi-icon">⚙️</span>
+  <div class="kpis-row">
+    <div class="kpis kpis-5">
+      <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
+        <div class="kpi-label">Definidos</div>
+        <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
+        <div class="kpi-trend">backlog total</div>
+      </div>
+      <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
+        <div class="kpi-label">En cola</div>
+        <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
+        <div class="kpi-trend">esperando agente</div>
+      </div>
+      <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
+        <div class="kpi-label">Ejecución</div>
+        <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
+        <div class="kpi-trend">${trabajando > 0 ? 'agentes activos' : 'sin agentes'}</div>
+      </div>
+      <div class="kpi kpi-entregados" data-tt='${ttEntregados24h}'>
+        <div class="kpi-label">Entregados 24h</div>
+        <div class="kpi-value success">${entregados24h}</div>
+        <div class="kpi-trend">últimas 24 horas</div>
+      </div>
+      <div class="kpi kpi-blocked" data-tt='${ttStale}'>
+        <div class="kpi-label">Bloqueados${stale > 0 ? ' \u26A0' : ''}</div>
+        <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
+        <div class="kpi-trend">${stale > 0 ? 'stale >30m' : 'sin stale'}</div>
+      </div>
     </div>
-    <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
-      <div class="kpi-label">En cola</div>
-      <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
-      <span class="kpi-icon">⏳</span>
-    </div>
-    <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-      <div class="kpi-label">Bloqueados / stale</div>
-      <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
-      <span class="kpi-icon">🚨</span>
-    </div>
-    <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
-      <div class="kpi-label">Definidos</div>
-      <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
-      <span class="kpi-icon">📋</span>
-    </div>
-    <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
-      <div class="kpi-label">Entregados</div>
-      <div class="kpi-value success">${entregados}</div>
-      <span class="kpi-icon">🚀</span>
-    </div>
-    <div class="kpi kpi-throughput" data-tt='${ttEntregados24h}'>
-      <div class="kpi-label">Últimas 24h</div>
-      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
-      <span class="kpi-icon">📈</span>
-    </div>
+    ${(() => {
+      const scoreCls = healthScore > 60 ? 'ok' : healthScore > 30 ? 'warn' : 'crit';
+      const circ = 163;
+      const cpuOff = Math.round(circ - (circ * Math.min(100, res.cpuPercent) / 100));
+      const memOff = Math.round(circ - (circ * Math.min(100, res.memPercent) / 100));
+      return `
+      <div class="sys-mini-card sys-mini-${scoreCls}">
+        <div class="sys-mini-score">
+          <div class="sys-mini-lbl">Salud</div>
+          <div class="sys-mini-val sys-mini-${scoreCls}">${healthScore}</div>
+          <div class="sys-mini-tag sys-mini-${scoreCls}">${healthLabel}</div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${cpuStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${cpuOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.cpuPercent}%</div><div class="l">CPU</div></div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${memStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${memOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.memPercent}%</div><div class="l">RAM</div></div>
+        </div>
+      </div>`;
+    })()}
   </div>
 
-  <div class="dual-row">
-    <div class="bar-section dual-col panel-equipo">
-      <h2>🧠 Equipo</h2>
-      ${agentTeamCards ? '<div class="subsection-label">En ejecución</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
-      ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Equipo disponible' : 'Equipo disponible') + '</div><div class="persona-stack">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
+  <div class="bar-section panel-equipo panel-equipo-full">
+    <div class="eq-head">
+      <h2 class="eq-title">🧠 Equipo</h2>
+      <div class="eq-summary">
+        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSkills}</span>
+        <span>\u00B7</span>
+        <span>Utilización <b>${eqTotalSkills > 0 ? Math.round(eqTotalBusy / eqTotalSkills * 100) : 0}%</b></span>
+        <span>\u00B7</span>
+        <span>Cola <b>${pendientes}</b></span>
+      </div>
     </div>
-    <div class="bar-section dual-col panel-sistema">
-      <h2>💻 Sistema</h2>
-      ${resourcesHTML}
-      <div class="subsection-label" style="margin-top:14px">Servicios</div>
-      <div class="svc-grid">${svcCardsHTML}</div>
-    </div>
+    ${activeStripHTML}
+    ${eqAreaGridHTML || '<span class="empty-label">Sin skills configurados</span>'}
+    ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
   </div>
 
   ${matrixHTML}
@@ -2923,21 +3264,22 @@ function toggleIssueDetail(issueNum) {
 }
 
 function filterIssueTab(tabEl, filter) {
-  // Update tab active state + aria
   document.querySelectorAll('.ic-tab').forEach(t => {
     t.classList.remove('ic-tab-active');
     t.setAttribute('aria-selected', 'false');
   });
   tabEl.classList.add('ic-tab-active');
   tabEl.setAttribute('aria-selected', 'true');
-  // Filter cards
-  document.querySelectorAll('.ic-card').forEach(card => {
+  // Hide/show lanes container and completed section according to tab
+  const lanesEl = document.querySelector('.it-lanes');
+  const doneEl = document.querySelector('.it-done-section');
+  if (lanesEl) lanesEl.classList.toggle('ic-hidden', filter === 'completed');
+  if (doneEl) doneEl.classList.toggle('ic-hidden', filter === 'active');
+  // Also honor legacy ic-card cards (if any remain)
+  document.querySelectorAll('.ic-card, .lc-card').forEach(card => {
     const status = card.dataset.status;
-    if (filter === 'all') {
-      card.classList.remove('ic-hidden');
-    } else {
-      card.classList.toggle('ic-hidden', status !== filter);
-    }
+    if (filter === 'all') card.classList.remove('ic-hidden');
+    else card.classList.toggle('ic-hidden', status !== filter);
   });
   saveIssueTrackerState();
 }
