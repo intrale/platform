@@ -32,6 +32,20 @@ const EMULATOR_ARGS = [
   '-no-snapshot-save',
 ];
 
+// --- Sanitización de PIDs (CA-5 #2160) ---
+// Valida que un PID leído del state file sea un entero positivo antes de
+// interpolarlo en comandos tasklist/taskkill. Previene inyección de comandos
+// si qa-env-state.json es corrupto o manipulado.
+function sanitizePid(pid) {
+  if (pid === null || pid === undefined) return null;
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) {
+    log(`⚠️ PID inválido rechazado: ${JSON.stringify(pid)} — se ignora`);
+    return null;
+  }
+  return n;
+}
+
 // Timeouts del gating de boot
 const BOOT_TIMEOUT_MS = 180000;  // 3 minutos de margen total para boot
 const BOOT_POLL_MS = 1000;       // poll cada segundo
@@ -116,10 +130,11 @@ function loadState() {
 }
 
 function isAlive(pid) {
-  if (!pid) return false;
+  const safePid = sanitizePid(pid);
+  if (!safePid) return false;
   try {
-    const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 5000, windowsHide: true });
-    return r.includes(`"${pid}"`);
+    const r = execSync(`tasklist /FI "PID eq ${safePid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    return r.includes(`"${safePid}"`);
   } catch { return false; }
 }
 
@@ -172,7 +187,8 @@ function startAll() {
 function stopAll() {
   const state = loadState();
 
-  for (const [name, pid] of Object.entries(state)) {
+  for (const [name, rawPid] of Object.entries(state)) {
+    const pid = sanitizePid(rawPid);
     if (pid && isAlive(pid)) {
       try {
         execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
@@ -261,7 +277,7 @@ function startOne(component) {
 
 function stopOne(component) {
   const state = loadState();
-  const pid = state[component];
+  const pid = sanitizePid(state[component]);
   if (pid && isAlive(pid)) {
     try {
       execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
