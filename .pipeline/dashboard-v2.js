@@ -863,28 +863,29 @@ function generateHTML(state) {
   const activeIssues = sorted.filter(([, d]) => !isComplete(d));
   const completedIssues = sorted.filter(([, d]) => isComplete(d));
 
-  // ── Issue Tracker Lanes (Variante 1): 5 lanes macro ──
-  // Definición → Desarrollo (val+dev) → Build → QA (verificación) → Entrega (aprobación+entrega)
+  // ── Issue Tracker Lanes (Opción E): 3 lanes balanceadas con sub-breakdown ──
+  // Definición (análisis+criterios+sizing) → Desarrollo+Build (val+dev+build) → QA+Entrega (verif+aprob+entrega)
   function macroLane(d) {
     if (isComplete(d)) return 'done';
     const fa = d.faseActual;
     if (!fa) return 'def';
     const [pipe, fase] = fa.split('/');
     if (pipe === 'definicion') return 'def';
-    if (fase === 'validacion' || fase === 'dev') return 'dev';
-    if (fase === 'build') return 'build';
-    if (fase === 'verificacion') return 'qa';
-    return 'entrega';
+    if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
+    return 'qa'; // verificacion, aprobacion, entrega
   }
   const laneMeta = {
-    def:     { label: 'Definición',  color: '#bc8cff' },
-    dev:     { label: 'Desarrollo',  color: '#3fb950' },
-    build:   { label: 'Build',       color: '#d29922' },
-    qa:      { label: 'QA',          color: '#2dd4bf' },
-    entrega: { label: 'Entrega',     color: '#f0883e' },
+    def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
+    dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
+    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · aprob · entrega',      subFases: ['verificacion', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', aprobacion: 'Aprob', entrega: 'Entrega' } },
   };
-  const laneCards = { def: '', dev: '', build: '', qa: '', entrega: '', done: '' };
-  const laneCounts = { def: 0, dev: 0, build: 0, qa: 0, entrega: 0, done: 0 };
+  const laneCards = { def: '', dev: '', qa: '', done: '' };
+  const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
+  const laneStats = {
+    def: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    dev: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    qa:  { running: 0, failed: 0, stale: 0, subCounts: {} },
+  };
 
   let issueCards = '';
   for (const [issueNum, data] of sorted) {
@@ -1106,22 +1107,32 @@ function generateHTML(state) {
       ${detailHTML}
     </div>`;
 
-    // ── Compact lane card (Variante 1) ──
+    // ── Lane card Opción E (3 lanes + rich cards) ──
     const lane = macroLane(data);
-    // Estado visual de la card en el lane
     const working = data.estadoActual === 'trabajando';
     const hasRejection = data.labels?.some(l => l === 'qa:failed');
+    const isStale = data.staleMin > 30;
     const laneCardCls = complete ? 'lc-done'
-      : data.staleMin > 30 ? 'lc-stale'
+      : isStale ? 'lc-stale'
       : hasRejection ? 'lc-failed'
       : working ? 'lc-running' : '';
-    // Elapsed label
-    const laneElapsedCls = data.staleMin > 30 ? 'lc-warn' : working ? 'lc-teal' : '';
+    // Stats agregadas (solo para lanes activas, no done)
+    if (lane !== 'done' && laneStats[lane]) {
+      if (working) laneStats[lane].running++;
+      if (hasRejection) laneStats[lane].failed++;
+      if (isStale) laneStats[lane].stale++;
+      // Sub-fase count
+      if (data.faseActual) {
+        const fa = data.faseActual.split('/')[1];
+        laneStats[lane].subCounts[fa] = (laneStats[lane].subCounts[fa] || 0) + 1;
+      }
+    }
+    const laneElapsedCls = isStale ? 'lc-warn' : working ? 'lc-teal' : '';
     const laneElapsedTxt = complete ? 'completado'
       : data.staleMin > 60 ? `${data.staleMin}m 🚩`
       : data.staleMin > 30 ? `${data.staleMin}m`
       : working ? `${data.staleMin}m` : '—';
-    // Avatares de skills actuales (trabajando)
+    // Avatares de skills en ejecución
     const currentSkills = [];
     if (data.faseActual && data.fases[data.faseActual]) {
       for (const e of data.fases[data.faseActual]) {
@@ -1134,7 +1145,6 @@ function generateHTML(state) {
           return `<span class="lc-av" style="background:${p.color}" title="${p.name}">${p.icon}</span>`;
         }).join('') + (currentSkills.length > 3 ? `<span class="lc-av-more">+${currentSkills.length - 3}</span>` : '') + '</div>'
       : '';
-    // Current phase pill (shorter)
     const currentFase = data.faseActual ? data.faseActual.split('/')[1] : '';
     const multiSkillTag = currentSkills.length > 1 ? ` <span class="lc-pill-x">×${currentSkills.length}</span>` : '';
     const lanePill = complete
@@ -1144,33 +1154,52 @@ function generateHTML(state) {
       : working
       ? `<span class="lc-pill lc-pill-run">${currentFase}${multiSkillTag}</span>`
       : `<span class="lc-pill lc-pill-wait">${currentFase || 'pendiente'}</span>`;
-    // Title shorter for lanes
     const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
+    const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
     laneCards[lane] += `<a class="lc-card ${laneCardCls}" href="${GH(issueNum)}" target="_blank" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" title="${laneTitle}">
       <div class="lc-top">
         <span class="lc-num">#${issueNum}</span>
         <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
       </div>
-      <div class="lc-title">${laneTitle}</div>
+      <div class="lc-title">${flagSpan}${laneTitle}</div>
       <div class="lc-foot">
-        <span class="lc-ps">${stepperDots}</span>
-        ${lanePill}
+        <div class="lc-foot-left">
+          <span class="lc-ps">${stepperDots}</span>
+          ${lanePill}
+        </div>
         ${avatarsHTML}
       </div>
     </a>`;
     laneCounts[lane]++;
   }
 
-  // Render 5 lanes (Variante 1) con cards compactas
-  const laneOrder = ['def', 'dev', 'build', 'qa', 'entrega'];
+  // Render 3 lanes (Opción E) con sub-breakdown + cards ricas
+  const laneOrder = ['def', 'dev', 'qa'];
   const lanesHTML = laneOrder.map(k => {
     const m = laneMeta[k];
+    const stats = laneStats[k];
     const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
-    return `<div class="it-lane" data-lane="${k}">
+    // Sub-breakdown: chips por sub-fase con contadores
+    const maxSubCount = Math.max(...m.subFases.map(sf => stats.subCounts[sf] || 0), 1);
+    const subBreakdown = '<div class="it-sub-breakdown">' + m.subFases.map(sf => {
+      const c = stats.subCounts[sf] || 0;
+      const isHot = c === maxSubCount && c > 0 && m.subFases.some(other => other !== sf && (stats.subCounts[other] || 0) < c);
+      return `<div class="it-sub-chip${isHot ? ' hot' : ''}">${m.subLabels[sf]} <b>${c}</b></div>`;
+    }).join('') + '</div>';
+    // Meta: badges
+    const metaBadges = [];
+    if (stats.running > 0) metaBadges.push(`<span class="it-badge run">${stats.running} activo${stats.running > 1 ? 's' : ''}</span>`);
+    if (stats.failed > 0) metaBadges.push(`<span class="it-badge fail">${stats.failed} failed</span>`);
+    if (stats.stale > 0) metaBadges.push(`<span class="it-badge warn">${stats.stale} stale</span>`);
+    return `<div class="it-lane it-lane-${k}" data-lane="${k}" style="--lane-color:${m.color}">
       <div class="it-lane-head">
-        <span class="it-lane-name" style="color:${m.color}"><span class="it-lane-dot" style="background:${m.color}"></span>${m.label}</span>
-        <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+        <span class="it-lane-name"><span class="it-lane-dot"></span>${m.label} <span class="it-lane-sub">${m.sub}</span></span>
+        <div class="it-lane-meta">
+          <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+          ${metaBadges.join('')}
+        </div>
       </div>
+      ${subBreakdown}
       <div class="it-lane-cards">${cards}</div>
     </div>`;
   }).join('');
@@ -2693,42 +2722,59 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 
-/* ── Issue Tracker Lanes (Variante 1) ───────────────────────────────────── */
-.it-lanes{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:10px}
-.it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:8px;display:flex;flex-direction:column;min-width:0}
-.it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
-.it-lane-name{font-size:0.75em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px}
-.it-lane-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.it-lane-count{font-size:0.68em;color:var(--dim);background:var(--sf);padding:1px 7px;border-radius:8px}
-.it-lane-count b{color:var(--tx);font-weight:700}
-.it-lane-cards{display:flex;flex-direction:column;gap:5px;max-height:520px;overflow-y:auto}
-.lane-empty{font-size:0.7em;color:var(--dim);text-align:center;padding:10px 0;font-style:italic}
+/* ── Issue Tracker Lanes (Opción E): 3 lanes balanceadas ─────────────────── */
+.it-lanes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) minmax(0,1.1fr);gap:10px;margin-top:10px}
+.it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 10px 8px 10px;display:flex;flex-direction:column;min-width:0}
+.it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
+.it-lane-name{font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px;color:var(--lane-color);min-width:0}
+.it-lane-dot{width:6px;height:6px;border-radius:50%;background:var(--lane-color);flex-shrink:0}
+.it-lane-sub{font-size:0.78em;color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;margin-left:2px}
+.it-lane-meta{display:flex;gap:5px;align-items:center;font-size:0.7em;flex-wrap:wrap}
+.it-lane-count{background:var(--sf);color:var(--tx);padding:2px 8px;border-radius:10px;font-weight:700}
+.it-lane-count b{color:var(--tx);font-weight:800}
+.it-badge{padding:1px 6px;border-radius:6px;font-weight:700}
+.it-badge.run{color:#2dd4bf;background:rgba(45,212,191,0.12)}
+.it-badge.fail{color:var(--rd);background:rgba(248,113,113,0.12)}
+.it-badge.warn{color:var(--yl);background:rgba(251,191,36,0.12)}
 
-/* Lane card compacta */
-.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:6px;padding:7px 9px;font-size:0.74em;text-decoration:none;color:var(--tx);cursor:pointer;transition:transform 0.15s,border-color 0.15s}
-.lc-card:hover{transform:translateY(-1px);border-left-color:var(--ac)}
+/* Sub-breakdown chips */
+.it-sub-breakdown{display:flex;gap:4px;margin-bottom:8px}
+.it-sub-chip{flex:1;padding:4px 8px;background:var(--sf);border-radius:5px;text-align:center;color:var(--dim);font-size:0.68em;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:500}
+.it-sub-chip b{color:var(--tx);font-weight:800;font-variant-numeric:tabular-nums}
+.it-sub-chip.hot{color:var(--yl);border:1px solid rgba(251,191,36,0.3)}
+
+.it-lane-cards{display:flex;flex-direction:column;gap:6px;max-height:640px;overflow-y:auto;padding-right:2px}
+.it-lane-cards::-webkit-scrollbar{width:5px}
+.it-lane-cards::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
+
+/* Lane card rica (Opción E) */
+.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;padding:8px 10px;font-size:0.78em;text-decoration:none;color:var(--tx);cursor:pointer;transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s}
+.lc-card:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,0.3);border-left-color:var(--ac)}
 .lc-card.lc-running{border-left-color:#2dd4bf}
-.lc-card.lc-failed{border-left-color:var(--rd);background:rgba(248,113,113,0.05)}
-.lc-card.lc-stale{border-left-color:var(--yl);background:rgba(251,191,36,0.04)}
+.lc-card.lc-failed{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.05),var(--sf))}
+.lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.05),var(--sf))}
 .lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
 .lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
 .lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
 .lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
 .lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
 .lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
-.lc-title{font-size:0.92em;line-height:1.3;color:var(--tx);margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.lc-foot{display:flex;justify-content:space-between;align-items:center;gap:5px;flex-wrap:wrap}
-.lc-ps{display:inline-flex;align-items:center;gap:1px;transform:scale(0.75);transform-origin:left center;margin-right:-8px}
-.lc-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:8px;font-size:0.82em;font-weight:700;letter-spacing:0.3px}
+.lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500}
+.lc-flag{color:var(--yl);margin-right:3px}
+.lc-foot{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+.lc-foot-left{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
+.lc-ps{display:inline-flex;align-items:center;gap:2px;padding:2px 4px;background:rgba(255,255,255,0.02);border-radius:5px;flex-shrink:0}
+.lc-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:0.82em;font-weight:700;letter-spacing:0.2px}
 .lc-pill-run{background:rgba(45,212,191,0.15);color:#2dd4bf;text-transform:lowercase}
 .lc-pill-fail{background:rgba(248,113,113,0.15);color:var(--rd);text-transform:lowercase}
 .lc-pill-wait{background:rgba(251,191,36,0.12);color:var(--yl);text-transform:lowercase}
 .lc-pill-done{background:rgba(52,211,153,0.12);color:var(--gn);text-transform:lowercase}
 .lc-pill-x{opacity:0.6;font-weight:400;margin-left:2px}
-.lc-avatars{display:flex;margin-left:auto}
-.lc-av{width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.82em;line-height:1;color:#fff;border:1.5px solid var(--sf);margin-right:-4px}
+.lc-avatars{display:flex}
+.lc-av{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;line-height:1;color:#fff;border:1.5px solid var(--sf);margin-right:-5px}
 .lc-av:last-child{margin-right:0}
-.lc-av-more{width:16px;height:16px;border-radius:50%;background:var(--sf2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;border:1.5px solid var(--sf);margin-right:0}
+.lc-av-more{width:18px;height:18px;border-radius:50%;background:var(--sf2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;border:1.5px solid var(--sf);margin-right:0}
 
 /* Completados section */
 .it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:10px 12px}
@@ -2737,8 +2783,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px}
 .it-done-grid .lc-card{opacity:0.75}
 
-@media(max-width:1100px){.it-lanes{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:720px){.it-lanes{grid-template-columns:1fr}}
+@media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
 
 .ic-hidden{display:none !important}
 
