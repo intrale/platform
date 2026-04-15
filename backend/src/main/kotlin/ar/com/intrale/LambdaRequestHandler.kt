@@ -73,8 +73,6 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                 val functionSegments = functionPath.split("/").filter { it.isNotBlank() }
                 // Intentar bindings de más segmentos a menos hasta encontrar match en Kodein.
                 // Esto soporta endpoints con N segmentos (ej: "client/products/availability").
-                // Intentar bindings de más segmentos a menos hasta encontrar match en Kodein.
-                // Esto soporta endpoints con N segmentos (ej: "client/products/availability").
                 val functionKey = if (functionSegments.isNotEmpty()) {
                     (functionSegments.size downTo 1).firstNotNullOfOrNull { n ->
                         val candidate = functionSegments.take(n).joinToString("/")
