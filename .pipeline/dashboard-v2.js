@@ -879,7 +879,7 @@ function generateHTML(state) {
     dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
     qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · aprob · entrega',      subFases: ['verificacion', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', aprobacion: 'Aprob', entrega: 'Entrega' } },
   };
-  const laneCards = { def: '', dev: '', qa: '', done: '' };
+  const laneCards = { def: [], dev: [], qa: [], done: [] };
   const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
   const laneStats = {
     def: { running: 0, failed: 0, stale: 0, subCounts: {} },
@@ -1107,46 +1107,55 @@ function generateHTML(state) {
       ${detailHTML}
     </div>`;
 
-    // ── Lane card Opción E (3 lanes + rich cards) ──
+    // ── Lane card Opción E+polish (3 lanes + rich cards + logs + bloqueos) ──
     const lane = macroLane(data);
     const working = data.estadoActual === 'trabajando';
     const hasRejection = data.labels?.some(l => l === 'qa:failed');
     const isStale = data.staleMin > 30;
+    const isBlocked = blockedBy != null;
+    const blocksSomething = blocksOthers.length > 0;
     const laneCardCls = complete ? 'lc-done'
       : isStale ? 'lc-stale'
       : hasRejection ? 'lc-failed'
+      : isBlocked ? 'lc-blocked'
       : working ? 'lc-running' : '';
-    // Stats agregadas (solo para lanes activas, no done)
+    // Sub-fase actual (para filtros y stats)
+    const currentFase = data.faseActual ? data.faseActual.split('/')[1] : '';
+    // Stats agregadas
     if (lane !== 'done' && laneStats[lane]) {
       if (working) laneStats[lane].running++;
       if (hasRejection) laneStats[lane].failed++;
       if (isStale) laneStats[lane].stale++;
-      // Sub-fase count
-      if (data.faseActual) {
-        const fa = data.faseActual.split('/')[1];
-        laneStats[lane].subCounts[fa] = (laneStats[lane].subCounts[fa] || 0) + 1;
-      }
+      if (currentFase) laneStats[lane].subCounts[currentFase] = (laneStats[lane].subCounts[currentFase] || 0) + 1;
     }
     const laneElapsedCls = isStale ? 'lc-warn' : working ? 'lc-teal' : '';
     const laneElapsedTxt = complete ? 'completado'
       : data.staleMin > 60 ? `${data.staleMin}m 🚩`
       : data.staleMin > 30 ? `${data.staleMin}m`
       : working ? `${data.staleMin}m` : '—';
-    // Avatares de skills en ejecución
+    // Avatares de skills: prioriza trabajando, fallback al último que ejecutó en la fase actual
     const currentSkills = [];
-    if (data.faseActual && data.fases[data.faseActual]) {
-      for (const e of data.fases[data.faseActual]) {
-        if (e.estado === 'trabajando' && !currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+    const currentFaseEntries = (data.faseActual && data.fases[data.faseActual]) || [];
+    for (const e of currentFaseEntries) {
+      if (e.estado === 'trabajando' && !currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+    }
+    let isFallbackAvatar = false;
+    if (currentSkills.length === 0 && currentFaseEntries.length > 0) {
+      // Fallback: último skill que ejecutó (ordenado por updatedAt desc)
+      const sortedEntries = [...currentFaseEntries].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      for (const e of sortedEntries) {
+        if (!currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+        if (currentSkills.length >= 2) break;
       }
+      isFallbackAvatar = true;
     }
     const avatarsHTML = currentSkills.length > 0
-      ? '<div class="lc-avatars">' + currentSkills.slice(0, 3).map(s => {
+      ? `<div class="lc-avatars${isFallbackAvatar ? ' lc-avatars-dim' : ''}">` + currentSkills.slice(0, 3).map(s => {
           const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
-          return `<span class="lc-av" style="background:${p.color}" title="${p.name}">${p.icon}</span>`;
+          return `<span class="lc-av" style="background:${p.color}" title="${p.name}${isFallbackAvatar ? ' (último ejecutado)' : ''}">${p.icon}</span>`;
         }).join('') + (currentSkills.length > 3 ? `<span class="lc-av-more">+${currentSkills.length - 3}</span>` : '') + '</div>'
       : '';
-    const currentFase = data.faseActual ? data.faseActual.split('/')[1] : '';
-    const multiSkillTag = currentSkills.length > 1 ? ` <span class="lc-pill-x">×${currentSkills.length}</span>` : '';
+    const multiSkillTag = currentSkills.length > 1 && !isFallbackAvatar ? ` <span class="lc-pill-x">×${currentSkills.length}</span>` : '';
     const lanePill = complete
       ? '<span class="lc-pill lc-pill-done">✓ entregado</span>'
       : hasRejection
@@ -1154,23 +1163,62 @@ function generateHTML(state) {
       : working
       ? `<span class="lc-pill lc-pill-run">${currentFase}${multiSkillTag}</span>`
       : `<span class="lc-pill lc-pill-wait">${currentFase || 'pendiente'}</span>`;
+    // Icons de bloqueo: 🚫 (bloqueado) + ⛓ (bloquea a otros)
+    let lcBlockIcons = '';
+    if (isBlocked) {
+      const depTxt = blockedBy.length > 0 ? blockedBy.map(d => `#${d}`).join(', ') : 'dep sin especificar';
+      lcBlockIcons += `<span class="lc-block-icon lc-block-locked" title="Bloqueado por: ${depTxt}" onclick="event.stopPropagation()">🚫</span>`;
+    }
+    if (blocksSomething) {
+      const blockTxt = blocksOthers.map(d => `#${d}`).join(', ');
+      lcBlockIcons += `<span class="lc-block-icon lc-block-blocking" title="Bloquea a: ${blockTxt}" onclick="event.stopPropagation()">⛓</span>`;
+    }
     const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
-    laneCards[lane] += `<a class="lc-card ${laneCardCls}" href="${GH(issueNum)}" target="_blank" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" title="${laneTitle}">
-      <div class="lc-top">
-        <span class="lc-num">#${issueNum}</span>
-        <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
+    // Detail inline reutilizando renderPhaseDetail (logs, chips por fase)
+    const lcDetailHTML = `<div class="lc-detail" id="lc-detail-${issueNum}" aria-hidden="true" onclick="event.stopPropagation()">
+      <div class="pd-grid">
+        <div class="pd-pipeline"><div class="pd-pipeline-label pd-def-label">DEFINICIÓN</div>${renderPhaseDetail('definicion', defFases)}</div>
+        <div class="pd-pipeline"><div class="pd-pipeline-label pd-dev-label">DESARROLLO</div>${renderPhaseDetail('desarrollo', devFases)}</div>
       </div>
-      <div class="lc-title">${flagSpan}${laneTitle}</div>
-      <div class="lc-foot">
-        <div class="lc-foot-left">
-          <span class="lc-ps">${stepperDots}</span>
-          ${lanePill}
+    </div>`;
+    // Prioridad para sort: stale (staleMin desc) > failed (bounces desc) > blocked > running > pending
+    let priority;
+    if (isStale) priority = 1000 + (data.staleMin || 0);
+    else if (hasRejection) priority = 700 + (data.bounces || 0);
+    else if (isBlocked) priority = 500;
+    else if (working) priority = 300 - (data.staleMin || 0);
+    else priority = 100 - (data.staleMin || 0);
+    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" title="${laneTitle}">
+      <div class="lc-card-main" onclick="toggleLaneDetail('${issueNum}')">
+        <div class="lc-top">
+          <div class="lc-top-left">
+            <span class="lc-num">#${issueNum}</span>
+            ${lcBlockIcons}
+          </div>
+          <div class="lc-top-right">
+            <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
+            <a class="lc-gh" href="${GH(issueNum)}" target="_blank" title="Ver en GitHub" onclick="event.stopPropagation()">↗</a>
+          </div>
         </div>
-        ${avatarsHTML}
+        <div class="lc-title">${flagSpan}${laneTitle}</div>
+        <div class="lc-foot">
+          <div class="lc-foot-left">
+            <span class="lc-ps">${stepperDots}</span>
+            ${lanePill}
+          </div>
+          ${avatarsHTML}
+        </div>
       </div>
-    </a>`;
+      ${lcDetailHTML}
+    </div>`;
+    laneCards[lane].push({ html: cardHTML, priority });
     laneCounts[lane]++;
+  }
+  // Sort dentro de cada lane por criticidad desc
+  for (const k of Object.keys(laneCards)) {
+    laneCards[k].sort((a, b) => b.priority - a.priority);
+    laneCards[k] = laneCards[k].map(x => x.html).join('');
   }
 
   // Render 3 lanes (Opción E) con sub-breakdown + cards ricas
@@ -1179,13 +1227,16 @@ function generateHTML(state) {
     const m = laneMeta[k];
     const stats = laneStats[k];
     const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
-    // Sub-breakdown: chips por sub-fase con contadores
+    // Sub-breakdown: chips clickeables por sub-fase (filtra cards del lane)
     const maxSubCount = Math.max(...m.subFases.map(sf => stats.subCounts[sf] || 0), 1);
-    const subBreakdown = '<div class="it-sub-breakdown">' + m.subFases.map(sf => {
-      const c = stats.subCounts[sf] || 0;
-      const isHot = c === maxSubCount && c > 0 && m.subFases.some(other => other !== sf && (stats.subCounts[other] || 0) < c);
-      return `<div class="it-sub-chip${isHot ? ' hot' : ''}">${m.subLabels[sf]} <b>${c}</b></div>`;
-    }).join('') + '</div>';
+    const subBreakdown = '<div class="it-sub-breakdown">' +
+      `<div class="it-sub-chip it-sub-all" data-lane="${k}" data-subfase="" onclick="filterLaneBySubFase('${k}','')" title="Mostrar todos">Todos <b>${laneCounts[k]}</b></div>` +
+      m.subFases.map(sf => {
+        const c = stats.subCounts[sf] || 0;
+        const isHot = c === maxSubCount && c > 0 && m.subFases.some(other => other !== sf && (stats.subCounts[other] || 0) < c);
+        const disabled = c === 0 ? ' it-sub-disabled' : '';
+        return `<div class="it-sub-chip${isHot ? ' hot' : ''}${disabled}" data-lane="${k}" data-subfase="${sf}" onclick="filterLaneBySubFase('${k}','${sf}')" title="Filtrar por ${m.subLabels[sf]}">${m.subLabels[sf]} <b>${c}</b></div>`;
+      }).join('') + '</div>';
     // Meta: badges
     const metaBadges = [];
     if (stats.running > 0) metaBadges.push(`<span class="it-badge run">${stats.running} activo${stats.running > 1 ? 's' : ''}</span>`);
@@ -1203,13 +1254,14 @@ function generateHTML(state) {
       <div class="it-lane-cards">${cards}</div>
     </div>`;
   }).join('');
-  const doneLaneHTML = laneCounts.done > 0 ? `<div class="it-done-section" data-lane="done">
-    <div class="it-done-head">
+  const doneLaneHTML = laneCounts.done > 0 ? `<details class="it-done-section" data-lane="done">
+    <summary class="it-done-head">
+      <span class="it-done-arrow">▸</span>
       <span>✓ Completados recientes</span>
       <span class="it-done-count"><b>${laneCounts.done}</b></span>
-    </div>
+    </summary>
     <div class="it-done-grid">${laneCards.done}</div>
-  </div>` : '';
+  </details>` : '';
 
   const matrixHTML = `
     <div class="matrix-section" id="issue-tracker">
@@ -2737,30 +2789,44 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .it-badge.fail{color:var(--rd);background:rgba(248,113,113,0.12)}
 .it-badge.warn{color:var(--yl);background:rgba(251,191,36,0.12)}
 
-/* Sub-breakdown chips */
-.it-sub-breakdown{display:flex;gap:4px;margin-bottom:8px}
-.it-sub-chip{flex:1;padding:4px 8px;background:var(--sf);border-radius:5px;text-align:center;color:var(--dim);font-size:0.68em;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:500}
+/* Sub-breakdown chips (clickeables) */
+.it-sub-breakdown{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}
+.it-sub-chip{flex:1;padding:4px 8px;background:var(--sf);border-radius:5px;text-align:center;color:var(--dim);font-size:0.68em;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:background 0.15s,border-color 0.15s}
+.it-sub-chip:hover{background:var(--panel);border-color:rgba(109,140,255,0.3)}
 .it-sub-chip b{color:var(--tx);font-weight:800;font-variant-numeric:tabular-nums}
-.it-sub-chip.hot{color:var(--yl);border:1px solid rgba(251,191,36,0.3)}
+.it-sub-chip.hot{color:var(--yl);border-color:rgba(251,191,36,0.3)}
+.it-sub-chip.active{background:rgba(109,140,255,0.15);border-color:var(--ac);color:var(--ac)}
+.it-sub-chip.active b{color:var(--ac)}
+.it-sub-chip.it-sub-disabled{opacity:0.45;cursor:default}
+.it-sub-chip.it-sub-disabled:hover{background:var(--sf);border-color:transparent}
+.it-sub-all{flex:0 0 auto;min-width:56px}
 
 .it-lane-cards{display:flex;flex-direction:column;gap:6px;max-height:640px;overflow-y:auto;padding-right:2px}
 .it-lane-cards::-webkit-scrollbar{width:5px}
 .it-lane-cards::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 .lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
 
-/* Lane card rica (Opción E) */
-.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;padding:8px 10px;font-size:0.78em;text-decoration:none;color:var(--tx);cursor:pointer;transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s}
+/* Lane card rica (Opción E + polish) */
+.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;font-size:0.78em;color:var(--tx);transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s;overflow:hidden}
 .lc-card:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,0.3);border-left-color:var(--ac)}
 .lc-card.lc-running{border-left-color:#2dd4bf}
-.lc-card.lc-failed{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.05),var(--sf))}
-.lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.05),var(--sf))}
+.lc-card.lc-failed{border-left-color:var(--rd)}
+.lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
+.lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
 .lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
+.lc-card.lc-filtered-out{display:none}
+.lc-card.lc-expanded{background:var(--sf2);border-left-color:var(--ac)}
+.lc-card-main{padding:8px 10px;cursor:pointer}
 .lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
+.lc-top-left{display:flex;align-items:center;gap:5px;min-width:0}
+.lc-top-right{display:flex;align-items:center;gap:6px}
 .lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
 .lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
 .lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
 .lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
-.lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500}
+.lc-gh{color:var(--dim);text-decoration:none;font-size:0.9em;padding:1px 4px;border-radius:3px;line-height:1}
+.lc-gh:hover{color:var(--ac);background:rgba(109,140,255,0.1)}
+.lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500;min-height:2.7em}
 .lc-flag{color:var(--yl);margin-right:3px}
 .lc-foot{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
 .lc-foot-left{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
@@ -2772,15 +2838,28 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-pill-done{background:rgba(52,211,153,0.12);color:var(--gn);text-transform:lowercase}
 .lc-pill-x{opacity:0.6;font-weight:400;margin-left:2px}
 .lc-avatars{display:flex}
+.lc-avatars-dim{opacity:0.55}
 .lc-av{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;line-height:1;color:#fff;border:1.5px solid var(--sf);margin-right:-5px}
 .lc-av:last-child{margin-right:0}
 .lc-av-more{width:18px;height:18px;border-radius:50%;background:var(--sf2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;border:1.5px solid var(--sf);margin-right:0}
+/* Block icons */
+.lc-block-icon{font-size:0.85em;cursor:help;line-height:1}
+.lc-block-locked{color:var(--rd)}
+.lc-block-blocking{color:var(--yl)}
+/* Detail inline (reutiliza .pd-grid existing styles) */
+.lc-detail{display:none;padding:8px 10px 10px 10px;border-top:1px solid var(--bd);background:var(--sf2);font-size:1.05em}
+.lc-detail.lc-detail-open{display:block}
+.lc-detail .pd-grid{gap:6px}
 
-/* Completados section */
-.it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:10px 12px}
-.it-done-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--gn)}
-.it-done-count{background:rgba(52,211,153,0.15);padding:1px 7px;border-radius:8px;font-size:0.82em}
-.it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px}
+/* Completados section — collapsible */
+.it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:8px 12px}
+.it-done-section[open]{padding:10px 12px}
+.it-done-head{display:flex;align-items:center;gap:8px;font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--gn);cursor:pointer;list-style:none;user-select:none}
+.it-done-head::-webkit-details-marker{display:none}
+.it-done-arrow{color:var(--dim);font-size:0.9em;transition:transform 0.2s}
+.it-done-section[open] .it-done-arrow{transform:rotate(90deg)}
+.it-done-count{margin-left:auto;background:rgba(52,211,153,0.15);padding:1px 7px;border-radius:8px;font-size:0.82em}
+.it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px;margin-top:10px}
 .it-done-grid .lc-card{opacity:0.75}
 
 @media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
@@ -3261,6 +3340,30 @@ function toggleIssueDetail(issueNum) {
   if (btn) { btn.classList.toggle('expanded', nowOpen); btn.setAttribute('aria-expanded', String(nowOpen)); }
   if (header) header.setAttribute('aria-expanded', String(nowOpen));
   saveIssueTrackerState();
+}
+
+function toggleLaneDetail(num) {
+  const d = document.getElementById('lc-detail-' + num);
+  if (!d) return;
+  const open = d.classList.toggle('lc-detail-open');
+  d.setAttribute('aria-hidden', open ? 'false' : 'true');
+  const card = d.closest('.lc-card');
+  if (card) card.classList.toggle('lc-expanded', open);
+}
+
+function filterLaneBySubFase(laneKey, subFase) {
+  const lane = document.querySelector('.it-lane[data-lane="' + laneKey + '"]');
+  if (!lane) return;
+  // Toggle chips active state
+  lane.querySelectorAll('.it-sub-chip').forEach(c => {
+    c.classList.toggle('active', c.dataset.subfase === subFase);
+  });
+  // Filter cards
+  lane.querySelectorAll('.lc-card').forEach(c => {
+    if (!subFase) { c.classList.remove('lc-filtered-out'); return; }
+    const sf = c.dataset.subfase || '';
+    c.classList.toggle('lc-filtered-out', sf !== subFase);
+  });
 }
 
 function filterIssueTab(tabEl, filter) {
