@@ -1472,7 +1472,7 @@ async function phaseCollect() {
       action: 'create-issue',
       title: depTitle,
       body: depBody,
-      labels: 'needs-definition,qa:dependency',
+      labels: 'needs-definition,qa:dependency,priority:high',
       repo: 'intrale/platform',
       group,
       groupSize: newDeps.length,
