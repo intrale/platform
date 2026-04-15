@@ -2760,13 +2760,38 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // mata la herencia y el hijo pierde stdout/stderr.
   // Se cierra en child.on('exit') para que el log capture todo el output.
 
+  // Watchdog de timeout por skill: mata al hijo si excede el límite configurado.
+  // Razón: sin enforcement, un /builder con OOM repetido puede quedar 1h+ en loop
+  // (incidente #2218). El tope de 30m del rol no se aplica solo — hay que forzarlo.
+  const timeoutOverrides = config.timeouts?.agent_timeout_overrides || {};
+  const timeoutDefault = config.timeouts?.agent_timeout_default_minutes || 30;
+  const timeoutMin = timeoutOverrides[skill] ?? timeoutDefault;
+  const timeoutMs = timeoutMin * 60 * 1000;
+  const watchdog = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      log('lanzamiento', `⏱️ ${skill}:#${issue} excedió ${timeoutMin}min — matando (watchdog)`);
+      try { child.kill('SIGTERM'); } catch {}
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10000);
+      try {
+        const data = readYaml(trabajandoPath);
+        data.resultado = 'rechazado';
+        data.motivo = `Timeout de watchdog: excedió ${timeoutMin} minutos sin terminar`;
+        data.rechazado_por = 'watchdog-timeout';
+        writeYaml(trabajandoPath, data);
+      } catch {}
+      sendTelegram(`⏱️ ${skill}:#${issue} matado por watchdog (${timeoutMin}min). Rebote a pendiente.`);
+    }
+  }, timeoutMs);
+  watchdog.unref?.();
+
   activeProcesses.set(processKey(skill, issue), {
     pid: child.pid,
     startTime: Date.now(),
     trabajandoPath,
     pipeline,
     fase,
-    worktreePath: (needsWorktree || useExistingWorktree) ? worktreePath : null
+    worktreePath: (needsWorktree || useExistingWorktree) ? worktreePath : null,
+    watchdog
   });
 
   // Crear canal de contexto para el agente (auto-join)
@@ -2796,6 +2821,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   child.on('exit', (code) => {
     // Cerrar el FD del log ahora que el hijo terminó
     try { fs.closeSync(agentLogFd); } catch {}
+    // Cancelar watchdog de timeout (ya terminó, por el motivo que sea)
+    clearTimeout(watchdog);
 
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
