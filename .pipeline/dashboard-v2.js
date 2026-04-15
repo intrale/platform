@@ -1218,12 +1218,11 @@ function generateHTML(state) {
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
-            <span class="lc-num">#${issueNum}</span>
+            <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
             ${lcBlockIcons}
           </div>
           <div class="lc-top-right">
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
-            <a class="lc-gh" href="${GH(issueNum)}" target="_blank" title="Ver en GitHub" onclick="event.stopPropagation()">↗</a>
           </div>
         </div>
         <div class="lc-title">${flagSpan}${laneTitle}</div>
@@ -1671,7 +1670,7 @@ function generateHTML(state) {
       if (e.estado === 'trabajando') {
         if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
         const [pline, fse] = data.faseActual.split('/');
-        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs });
+        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs, hasLog: !!e.hasLog, logFile: e.logFile });
       }
     }
   }
@@ -1706,8 +1705,12 @@ function generateHTML(state) {
       const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
       const workItems = issues.map(i => {
         const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
-        return `<a href="${GH(i.issue)}" target="_blank" class="eq-work-item">
-          <span class="eq-work-issue">#${i.issue}</span>
+        const href = i.hasLog && i.logFile
+          ? `/logs/view/${i.logFile}?live=1`
+          : GH(i.issue);
+        const tip = i.hasLog ? `Ver log en vivo · ${i.skill} · #${i.issue}` : `Ver #${i.issue} en GitHub`;
+        return `<a href="${href}" target="_blank" class="eq-work-item" title="${tip}">
+          <span class="eq-work-issue">#${i.issue}${i.hasLog ? ' 📄' : ' ↗'}</span>
           <span class="eq-work-fase">${i.fase}</span>
           <span class="eq-work-dur">${fmtDuration(i.duration)}</span>
           <span class="eq-work-bar"><span class="eq-work-bar-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
@@ -2893,7 +2896,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
 .lc-top-left{display:flex;align-items:center;gap:5px;min-width:0}
 .lc-top-right{display:flex;align-items:center;gap:6px}
-.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
+.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums;text-decoration:none}
+.lc-num:hover{text-decoration:underline}
 .lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
 .lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
 .lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
