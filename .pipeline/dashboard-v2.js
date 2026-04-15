@@ -180,6 +180,28 @@ function getSystemResourceUsage() {
 // Snapshot inicial
 lastCpuSnapshot = cpuSnapshot();
 
+// Ring buffer para sparklines de CPU/RAM (últimas ~10 min a 1 sample/10s = 60 puntos)
+const RESOURCE_HISTORY_MAX = 60;
+const resourceHistory = { cpu: [], mem: [], ts: [] };
+function pushResourceSample(cpu, mem) {
+  resourceHistory.cpu.push(cpu);
+  resourceHistory.mem.push(mem);
+  resourceHistory.ts.push(Date.now());
+  if (resourceHistory.cpu.length > RESOURCE_HISTORY_MAX) {
+    resourceHistory.cpu.shift();
+    resourceHistory.mem.shift();
+    resourceHistory.ts.shift();
+  }
+}
+
+// Uptime de un proceso vía mtime del archivo .pid
+function getProcessUptime(comp) {
+  try {
+    const s = fs.statSync(path.join(PIPELINE, `${comp}.pid`));
+    return Date.now() - s.mtimeMs;
+  } catch { return null; }
+}
+
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [dashboard] ${msg}`);
@@ -391,7 +413,8 @@ function getPipelineState() {
     try {
       const pid = fs.readFileSync(path.join(PIPELINE, `${comp}.pid`), 'utf8').trim();
       const alive = isProcessAlive(pid);
-      state.procesos[comp] = { pid, alive };
+      const uptime = alive ? getProcessUptime(comp) : null;
+      state.procesos[comp] = { pid, alive, uptime };
     } catch {
       state.procesos[comp] = { pid: null, alive: false };
     }
@@ -464,14 +487,114 @@ function getPipelineState() {
 
   // Recursos del sistema
   const resourceLimits = config.resource_limits || {};
+  const sys = getSystemResourceUsage();
+  pushResourceSample(sys.cpuPercent, sys.memPercent);
   state.resources = {
-    ...getSystemResourceUsage(),
+    ...sys,
     maxCpu: resourceLimits.max_cpu_percent || 70,
-    maxMem: resourceLimits.max_mem_percent || 70
+    maxMem: resourceLimits.max_mem_percent || 70,
+    cpuHistory: resourceHistory.cpu.slice(),
+    memHistory: resourceHistory.mem.slice()
   };
 
   return state;
 }
+
+// --- HTML generation helpers ---
+
+// SVG sparkline compacto para series numéricas (0-100)
+function sparklineSVG(data, color, opts = {}) {
+  const w = opts.w || 110, h = opts.h || 28, max = opts.max || 100;
+  if (!data || data.length < 2) {
+    return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><line x1="0" y1="${h/2}" x2="${w}" y2="${h/2}" stroke="${color}" stroke-opacity="0.2" stroke-dasharray="2 2"/></svg>`;
+  }
+  const n = data.length;
+  const stepX = w / (n - 1);
+  const pts = data.map((v, i) => {
+    const y = h - (Math.min(v, max) / max) * (h - 2) - 1;
+    return `${(i * stepX).toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const lastY = h - (Math.min(data[n-1], max) / max) * (h - 2) - 1;
+  const areaPts = `0,${h} ${pts} ${w},${h}`;
+  const gradId = 'grd-' + Math.random().toString(36).slice(2, 8);
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${color}" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <polygon points="${areaPts}" fill="url(#${gradId})"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>
+    <circle cx="${(w).toFixed(1)}" cy="${lastY.toFixed(1)}" r="2" fill="${color}"/>
+  </svg>`;
+}
+
+// Gauge radial tipo tacómetro (semicírculo 180°)
+function radialGauge(value, max, thresh, color, label, detail) {
+  const pct = Math.min(100, Math.max(0, (value / 100) * 100));
+  const threshPct = Math.min(100, (thresh / 100) * 100);
+  // Arco semicircular de 180° (π radianes). r = 52, cx=60, cy=60.
+  const r = 52, cx = 60, cy = 60;
+  // Ángulo de inicio 180°, fin 360° (semicircle superior → invertido abajo)
+  // Mejor: arco que va de 180° (izq) a 0° (der) pasando por 270° (top) — medio círculo superior.
+  const ang = (p) => Math.PI + (p / 100) * Math.PI; // 180°→360°
+  const polar = (p) => ({ x: cx + r * Math.cos(ang(p)), y: cy + r * Math.sin(ang(p)) });
+  const arcPath = (from, to) => {
+    const a = polar(from), b = polar(to);
+    const large = to - from > 50 ? 1 : 0;
+    return `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
+  };
+  const needle = polar(pct);
+  const isDanger = value >= thresh;
+  const isWarn = value >= thresh * 0.8;
+  const valColor = isDanger ? '#f85149' : isWarn ? '#d29922' : '#3fb950';
+  return `<svg class="rgauge" width="120" height="78" viewBox="0 0 120 78">
+    <path d="${arcPath(0, 100)}" fill="none" stroke="#30363d" stroke-width="8" stroke-linecap="round"/>
+    <path d="${arcPath(0, Math.min(65, pct))}" fill="none" stroke="#3fb950" stroke-width="8" stroke-linecap="round" opacity="${pct>0?1:0.3}"/>
+    ${pct > 65 ? `<path d="${arcPath(65, Math.min(85, pct))}" fill="none" stroke="#d29922" stroke-width="8" stroke-linecap="round"/>` : ''}
+    ${pct > 85 ? `<path d="${arcPath(85, pct)}" fill="none" stroke="#f85149" stroke-width="8" stroke-linecap="round"/>` : ''}
+    <line x1="${polar(threshPct).x.toFixed(1)}" y1="${polar(threshPct).y.toFixed(1)}" x2="${(cx + (r+6)*Math.cos(ang(threshPct))).toFixed(1)}" y2="${(cy + (r+6)*Math.sin(ang(threshPct))).toFixed(1)}" stroke="#f85149" stroke-width="2" opacity="0.7"/>
+    <line x1="${cx}" y1="${cy}" x2="${needle.x.toFixed(1)}" y2="${needle.y.toFixed(1)}" stroke="${valColor}" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="${cx}" cy="${cy}" r="4" fill="${valColor}"/>
+    <text x="${cx}" y="${cy + 18}" text-anchor="middle" font-size="16" font-weight="800" fill="${valColor}" font-family="monospace">${value}%</text>
+  </svg>`;
+}
+
+function fmtUptime(ms) {
+  if (!ms || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ' + (m % 60) + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+
+// Categorías semánticas de skills (para agrupación en Equipo Disponible)
+const SKILL_CATEGORY = {
+  po: 'product', ux: 'product', planner: 'product', scrum: 'product',
+  'backend-dev': 'dev', 'android-dev': 'dev', 'web-dev': 'dev',
+  tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
+  guru: 'ops', perf: 'ops', build: 'ops', hotfix: 'ops', delivery: 'ops',
+};
+const CATEGORY_META = {
+  product:  { label: 'Producto', icon: '🎯', color: '#d29922' },
+  dev:      { label: 'Desarrollo', icon: '🛠', color: '#3fb950' },
+  quality:  { label: 'Calidad', icon: '🛡', color: '#d2a8ff' },
+  ops:      { label: 'Operaciones', icon: '⚙', color: '#58a6ff' },
+};
+
+// Capas semánticas de servicios
+const SERVICE_LAYER = {
+  Telegram: 'intake', GitHub: 'intake',
+  Drive: 'output', Emulador: 'output',
+  pulpo: 'processing', 'outbox-drain': 'processing', dashboard: 'processing',
+};
+const LAYER_META = {
+  intake:     { label: 'Ingesta', icon: '📥' },
+  processing: { label: 'Procesamiento', icon: '⚙' },
+  output:    { label: 'Salida', icon: '📤' },
+};
 
 // --- HTML generation ---
 
@@ -1033,178 +1156,273 @@ function generateHTML(state) {
     }).join('') + '</div>';
   }
 
-  // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
-  // Sin agentes activos ni servicios en Equipo → más espacio para skills
-  const hasActiveAgents = Object.values(state.skillLoad).some(l => l.running > 0);
-  const MAX_CAP_VISIBLE = hasActiveAgents ? 6 : 12;
-  let heatmapHTML = '';
-  let shownCount = 0;
-  const idleSkills = [];
+  // ── Equipo disponible: agrupado por categoría (Producto/Dev/Calidad/Ops) ──
+  // Calcular tasa de éxito histórica por skill (para la tarjeta persona)
+  const skillStats = {};
+  for (const [skill, recents] of Object.entries(recentBySkill)) {
+    const ok = recents.filter(r => r.resultado === 'aprobado').length;
+    const bad = recents.filter(r => r.resultado === 'rechazado').length;
+    skillStats[skill] = { ok, bad, total: recents.length };
+  }
+  // Agrupar todas las skills conocidas por categoría
+  const skillsByCategory = { product: [], dev: [], quality: [], ops: [] };
   for (const [skill, load] of skillEntries) {
+    const cat = SKILL_CATEGORY[skill] || 'ops';
+    skillsByCategory[cat].push([skill, load]);
+  }
+  // Mini strip histórico (últimos 5 issues con color)
+  function skillHistoryStrip(skill) {
+    const recents = (recentBySkill[skill] || []).slice(0, 5);
+    if (recents.length === 0) {
+      return '<div class="persona-strip persona-strip-empty" title="Sin historial">—</div>';
+    }
+    const dots = recents.map(r => {
+      const cls = r.resultado === 'aprobado' ? 'ok' : r.resultado === 'rechazado' ? 'bad' : 'live';
+      const icon = r.resultado === 'aprobado' ? '\u2713' : r.resultado === 'rechazado' ? '\u2717' : '\u25CF';
+      const label = (r.resultado || 'en curso') + ' #' + r.issue;
+      const href = r.hasLog ? '/logs/view/' + r.logFile + (r.resultado && r.resultado !== 'en curso' ? '' : '?live=1') : null;
+      const content = `<span class="persona-dot persona-dot-${cls}" title="${label}">${icon}</span>`;
+      return href ? `<a href="${href}" target="_blank" onclick="event.stopPropagation()">${content}</a>` : content;
+    }).join('');
+    return `<div class="persona-strip">${dots}</div>`;
+  }
+  // Render una tarjeta-persona por skill
+  function personaCard(skill, load) {
+    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, tagline: '', color: 'var(--dim2)' };
     const pct = load.max > 0 ? load.running / load.max : 0;
-    const cls = pct >= 1 ? 'load-full' : pct > 0 ? 'load-partial' : 'load-idle';
-    if (cls === 'load-idle') { idleSkills.push([skill, load]); continue; }
-    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
-    const barPct = Math.round(pct * 100);
-    const countLabel = pct >= 1
-      ? `<span style="color:var(--rd);font-weight:700">${load.running}/${load.max}</span>`
-      : `${load.running}/${load.max}`;
-    heatmapHTML += `<div class="skill-cap-chip ${cls}" style="--agent-color:${p.color}" title="${skill}: ${load.running}/${load.max}">
-      <div class="skill-cap-main">
-        <span class="skill-cap-icon">${p.icon}</span>
-        <span class="skill-cap-name">${p.name || skill}</span>
-        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
-        <span class="skill-cap-count">${countLabel}</span>
+    const state = pct >= 1 ? 'full' : pct > 0 ? 'partial' : 'idle';
+    const statusLabel = pct >= 1 ? `${load.running}/${load.max} ocupado` : pct > 0 ? `${load.running}/${load.max} en trabajo` : `${load.max} libre${load.max === 1 ? '' : 's'}`;
+    const stats = skillStats[skill] || { ok: 0, bad: 0, total: 0 };
+    const successRate = stats.total > 0 ? Math.round((stats.ok / stats.total) * 100) : null;
+    const usage = skillUsageCount[skill] || 0;
+    return `<div class="persona-card persona-${state}" style="--agent-color:${p.color}" title="${skill} — ${p.tagline || ''}">
+      <div class="persona-head">
+        <span class="persona-avatar">${p.icon}</span>
+        <div class="persona-id">
+          <div class="persona-name">${p.name || skill}</div>
+          <div class="persona-tagline">${(p.tagline || '').split(' · ').slice(0, 2).join(' · ') || '\u00A0'}</div>
+        </div>
+        <span class="persona-pill persona-pill-${state}">${statusLabel}</span>
       </div>
-      ${skillRecentHTML(skill)}
-    </div>`;
-    shownCount++;
-  }
-  // Llenar slots restantes con idle más relevantes (por uso histórico)
-  const idleSlots = Math.max(0, MAX_CAP_VISIBLE - shownCount);
-  const shownIdle = idleSkills.slice(0, idleSlots);
-  const hiddenIdle = idleSkills.length - shownIdle.length;
-  for (const [skill, load] of shownIdle) {
-    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
-    heatmapHTML += `<div class="skill-cap-chip load-idle" style="--agent-color:${p.color}" title="${skill}: 0/${load.max}">
-      <div class="skill-cap-main">
-        <span class="skill-cap-icon">${p.icon}</span>
-        <span class="skill-cap-name">${p.name || skill}</span>
-        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
-        <span class="skill-cap-count">0/${load.max}</span>
+      <div class="persona-body">
+        ${skillHistoryStrip(skill)}
+        <div class="persona-meta">
+          ${successRate !== null ? `<span class="persona-meta-item" title="Tasa de aprobación histórica">\u2713 ${successRate}%</span>` : ''}
+          <span class="persona-meta-item persona-meta-usage" title="Issues trabajados">\u{1F4C8} ${usage}</span>
+        </div>
       </div>
-      ${skillRecentHTML(skill)}
     </div>`;
   }
-  if (hiddenIdle > 0) {
-    heatmapHTML += `<span class="skill-idle-summary" title="${hiddenIdle} skills más sin carga">+${hiddenIdle} más</span>`;
+  let heatmapHTML = '';
+  const catOrder = ['product', 'dev', 'quality', 'ops'];
+  for (const cat of catOrder) {
+    const list = skillsByCategory[cat];
+    if (!list || list.length === 0) continue;
+    const m = CATEGORY_META[cat];
+    // Dentro de cada categoría, mostrar activos primero
+    list.sort((a, b) => b[1].running - a[1].running || (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0));
+    const active = list.filter(([_, l]) => l.running > 0).length;
+    const total = list.reduce((s, [_, l]) => s + l.max, 0);
+    const busy = list.reduce((s, [_, l]) => s + l.running, 0);
+    heatmapHTML += `<div class="persona-group persona-group-${cat}">
+      <div class="persona-group-head">
+        <span class="persona-group-icon" style="color:${m.color}">${m.icon}</span>
+        <span class="persona-group-label">${m.label}</span>
+        <span class="persona-group-count">${busy}/${total} ${active > 0 ? '\u00B7 <span class="persona-group-active">' + active + ' activo' + (active > 1 ? 's' : '') + '</span>' : ''}</span>
+      </div>
+      <div class="persona-group-grid">
+        ${list.map(([s, l]) => personaCard(s, l)).join('')}
+      </div>
+    </div>`;
   }
 
-  // Servicios agrupados + procesos standalone
+  // ── Servicios agrupados por capa (Intake/Processing/Output) ──
   const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
   const SERVICE_GROUPS = [
-    { name: 'Telegram', icon: '📨', queues: ['commander', 'telegram'], processes: ['listener', 'svc-telegram'] },
-    { name: 'GitHub', icon: '🐙', queues: ['github'], processes: ['svc-github'] },
-    { name: 'Drive', icon: '📁', queues: ['drive'], processes: ['svc-drive'] },
-    { name: 'Emulador', icon: '📱', queues: ['emulador'], processes: ['svc-emulador'] },
+    { name: 'Telegram', icon: '\u{1F4E8}', queues: ['commander', 'telegram'], processes: ['listener', 'svc-telegram'], layer: 'intake' },
+    { name: 'GitHub',   icon: '\u{1F419}', queues: ['github'], processes: ['svc-github'], layer: 'intake' },
+    { name: 'Drive',    icon: '\u{1F4C1}', queues: ['drive'], processes: ['svc-drive'], layer: 'output' },
+    { name: 'Emulador', icon: '\u{1F4F1}', queues: ['emulador'], processes: ['svc-emulador'], layer: 'output' },
   ];
-  const STANDALONE_PROCESSES = ['pulpo', 'outbox-drain', 'dashboard'];
-  const groupedProcesses = new Set(SERVICE_GROUPS.flatMap(g => g.processes));
-  const groupedQueues = new Set(SERVICE_GROUPS.flatMap(g => g.queues));
+  const STANDALONE_PROCESSES = [
+    { name: 'pulpo',        icon: '\u{1F419}', label: 'Pulpo',       layer: 'processing' },
+    { name: 'outbox-drain', icon: '\u{1F4E4}', label: 'Outbox',      layer: 'processing' },
+    { name: 'dashboard',    icon: '\u{1F4CA}', label: 'Dashboard',   layer: 'processing' },
+  ];
 
-  let svcCardsHTML = '';
-  for (const group of SERVICE_GROUPS) {
-    // Aggregate queue stats
+  // Render de una "service pill" compacta
+  function serviceRow({ name, icon, label, queues, processes, isGroup }) {
+    label = label || name;
+    processes = processes || [name];
+    queues = queues || [];
+    const procInfo = processes.map(p => state.procesos[p] || { pid: null, alive: false });
+    const anyAlive = procInfo.some(p => p.alive);
+    const allAlive = procInfo.every(p => p.alive);
+    const anyDead = procInfo.some(p => !p.alive);
+    // Queue stats
     let totalPend = 0, totalWork = 0, totalDone = 0;
-    for (const q of group.queues) {
+    for (const q of queues) {
       const d = state.servicios[q];
       if (d) { totalPend += d.pendiente; totalWork += d.trabajando; totalDone += d.listo; }
     }
-    // Check if any process in group is alive
-    const anyAlive = group.processes.some(p => state.procesos[p]?.alive);
-    const anyDead = group.processes.some(p => !state.procesos[p]?.alive);
-    const groupStatus = totalWork > 0 ? 'svc-card-busy' : anyAlive ? 'svc-card-ok' : 'svc-card-dead';
-
-    // Group-level start/stop: starts or stops all processes in the group
-    const allAlive = group.processes.every(p => state.procesos[p]?.alive);
-    const groupBtn = allAlive
-      ? `<button class="ctl-btn ctl-stop" onclick="${group.processes.map(p => `ctlAction('${p}','stop')`).join(';')}" title="Detener ${group.name}">■</button>`
-      : `<button class="ctl-btn ctl-start" onclick="${group.processes.map(p => `ctlAction('${p}','start')`).join(';')}" title="Iniciar ${group.name}">▶</button>`;
-
-    // Sub-process indicators
-    const subProcs = group.processes.map(p => {
-      const info = state.procesos[p] || { pid: null, alive: false };
-      const dot = info.alive ? '🟢' : '🔴';
-      const label = p.replace('svc-', 'SBC ').replace('listener', 'Listener');
-      return `<span class="svc-group-proc" title="${label}: ${info.alive ? 'PID ' + info.pid : 'detenido'}">${dot} ${label}</span>`;
-    }).join('');
-
-    // Queue detail tooltips
-    const queueDetail = group.queues.map(q => {
-      const d = state.servicios[q];
-      if (!d) return '';
-      return `${q}: ○${d.pendiente} ⚙${d.trabajando} ✓${d.listo}`;
-    }).join(' | ');
-
-    svcCardsHTML += `<div class="svc-card svc-card-group ${groupStatus}">
-      <div class="svc-card-header">
-        ${groupBtn}<span class="svc-card-name">${group.icon} ${group.name}</span>
-        ${anyAlive ? '<span class="svc-card-pulse"></span>' : ''}
-      </div>
-      <div class="svc-card-stats" title="${queueDetail}">
-        <span class="svc-stat" title="Pendiente: ${totalPend}">○${fmtStat(totalPend)}</span>
-        <span class="svc-stat svc-stat-work" title="Trabajando: ${totalWork}">⚙${fmtStat(totalWork)}</span>
-        <span class="svc-stat svc-stat-done" title="Listo: ${totalDone}">✓${fmtStat(totalDone)}</span>
-      </div>
-      <div class="svc-group-procs">${subProcs}</div>
-    </div>`;
-  }
-  // Standalone processes (not in any group)
-  for (const name of STANDALONE_PROCESSES) {
-    const info = state.procesos[name] || { pid: null, alive: false };
-    const alive = info.alive;
-    const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
+    const hasQueue = queues.length > 0;
+    const busy = totalWork > 0;
+    const status = !anyAlive ? 'dead' : anyDead ? 'degraded' : busy ? 'busy' : 'ok';
+    const statusDot = { ok: '#3fb950', busy: '#d29922', degraded: '#f0883e', dead: '#f85149' }[status];
+    const statusLabel = { ok: 'Saludable', busy: 'Procesando', degraded: 'Degradado', dead: 'Detenido' }[status];
+    // Uptime del primero vivo
+    const aliveUptime = procInfo.find(p => p.alive && p.uptime)?.uptime;
+    const uptimeStr = aliveUptime ? fmtUptime(aliveUptime) : (anyAlive ? '—' : 'offline');
+    // Control: si dashboard no; si todos vivos → stop; si alguno muerto → start
     const isDashboard = name === 'dashboard';
-    const btn = isDashboard ? '' :
-      alive
-        ? `<button class="ctl-btn ctl-stop" onclick="ctlAction('${name}','stop')" title="Detener ${name}">■</button>`
-        : `<button class="ctl-btn ctl-start" onclick="ctlAction('${name}','start')" title="Iniciar ${name}">▶</button>`;
-    svcCardsHTML += `<div class="svc-card ${statusCls}">
-      <div class="svc-card-header">
-        ${btn}<span class="svc-card-name">${name}</span>
-        ${alive ? '<span class="svc-card-pulse"></span>' : ''}
-      </div>
-      ${info.pid && alive ? '<div class="svc-card-pid">PID ' + info.pid + '</div>' : '<div class="svc-card-pid">detenido</div>'}
+    let actionBtn = '';
+    if (!isDashboard) {
+      if (allAlive) {
+        actionBtn = `<button class="svc-ctl svc-ctl-stop" onclick="event.stopPropagation();${processes.map(p => `ctlAction('${p}','stop')`).join(';')}" title="Detener ${label}">\u25A0</button>`;
+      } else {
+        actionBtn = `<button class="svc-ctl svc-ctl-start" onclick="event.stopPropagation();${processes.map(p => `ctlAction('${p}','start')`).join(';')}" title="Iniciar ${label}">\u25B6</button>`;
+      }
+    }
+    // Subprocesos en tooltip
+    const procDetail = procInfo.map((p, i) => `${processes[i]}: ${p.alive ? 'PID ' + p.pid : 'off'}`).join('\n');
+    const queueDetail = queues.map(q => {
+      const d = state.servicios[q]; if (!d) return '';
+      return `${q}: \u25CB${d.pendiente} \u2699${d.trabajando} \u2713${d.listo}`;
+    }).filter(Boolean).join('\n');
+    const tooltip = [statusLabel, procDetail, queueDetail].filter(Boolean).join('\n');
+    // Queues inline mini
+    const queueHTML = hasQueue ? `
+      <span class="svc-queue">
+        <span class="svc-q svc-q-pend" title="Pendiente: ${totalPend}">\u25CB ${fmtStat(totalPend)}</span>
+        <span class="svc-q svc-q-work ${busy ? 'svc-q-work-pulse' : ''}" title="Trabajando: ${totalWork}">\u2699 ${fmtStat(totalWork)}</span>
+        <span class="svc-q svc-q-done" title="Listo: ${totalDone}">\u2713 ${fmtStat(totalDone)}</span>
+      </span>` : '<span class="svc-queue svc-queue-none">—</span>';
+    return `<div class="svc-row svc-row-${status}" title="${tooltip.replace(/"/g, '&quot;')}">
+      <span class="svc-status-dot" style="background:${statusDot}${busy || status === 'ok' ? ';animation:svcPulse 2s infinite' : ''}"></span>
+      <span class="svc-icon">${icon}</span>
+      <span class="svc-name">${label}</span>
+      ${queueHTML}
+      <span class="svc-uptime" title="Tiempo en ejecución">${uptimeStr}</span>
+      ${actionBtn}
     </div>`;
   }
 
-  // System Resources (CPU + RAM gauges)
+  // Agrupar todo por capa
+  const layers = { intake: [], processing: [], output: [] };
+  for (const g of SERVICE_GROUPS) {
+    layers[g.layer].push(serviceRow({ name: g.name, icon: g.icon, label: g.name, queues: g.queues, processes: g.processes, isGroup: true }));
+  }
+  for (const s of STANDALONE_PROCESSES) {
+    layers[s.layer].push(serviceRow({ name: s.name, icon: s.icon, label: s.label }));
+  }
+
+  // QA Remote o Emulador local → layer output
+  if (state.qaRemote && state.qaRemote.active) {
+    layers.output.push(`<div class="svc-row svc-row-ok svc-row-cloud" title="QA remoto en Lambda AWS\n${state.qaRemote.ref || ''}">
+      <span class="svc-status-dot" style="background:#3fb950;animation:svcPulse 2s infinite"></span>
+      <span class="svc-icon">\u2601\uFE0F</span>
+      <span class="svc-name">QA Remoto</span>
+      <span class="svc-queue svc-queue-none">Lambda</span>
+      <span class="svc-uptime">${state.qaRemote.ref || 'AWS'}</span>
+    </div>`);
+  } else {
+    for (const [name, alive] of Object.entries(state.qaEnv)) {
+      const statusColor = alive ? '#3fb950' : '#f85149';
+      const btn = alive
+        ? `<button class="svc-ctl svc-ctl-stop" onclick="event.stopPropagation();qaComponentAction('${name}','stop')" title="Detener Emulador">\u25A0</button>`
+        : `<button class="svc-ctl svc-ctl-start" onclick="event.stopPropagation();qaComponentAction('${name}','start')" title="Iniciar Emulador">\u25B6</button>`;
+      layers.output.push(`<div class="svc-row svc-row-${alive ? 'ok' : 'dead'}" title="Emulador Android: ${alive ? 'activo' : 'detenido'}">
+        <span class="svc-status-dot" style="background:${statusColor}${alive ? ';animation:svcPulse 2s infinite' : ''}"></span>
+        <span class="svc-icon">\u{1F4F1}</span>
+        <span class="svc-name">Emulador</span>
+        <span class="svc-queue svc-queue-none">${alive ? 'activo' : 'offline'}</span>
+        <span class="svc-uptime">—</span>
+        ${btn}
+      </div>`);
+    }
+  }
+
+  let svcCardsHTML = '';
+  for (const layerKey of ['intake', 'processing', 'output']) {
+    const rows = layers[layerKey];
+    if (rows.length === 0) continue;
+    const m = LAYER_META[layerKey];
+    svcCardsHTML += `<div class="svc-layer">
+      <div class="svc-layer-head"><span class="svc-layer-icon">${m.icon}</span><span class="svc-layer-label">${m.label}</span></div>
+      <div class="svc-layer-rows">${rows.join('')}</div>
+    </div>`;
+  }
+
+  // ── System Resources: gauges radiales + sparkline trend + headroom ──
   const res = state.resources;
-  const cpuCls = res.cpuPercent >= res.maxCpu ? 'gauge-danger' : res.cpuPercent >= res.maxCpu * 0.8 ? 'gauge-warn' : 'gauge-ok';
-  const memCls = res.memPercent >= res.maxMem ? 'gauge-danger' : res.memPercent >= res.maxMem * 0.8 ? 'gauge-warn' : 'gauge-ok';
+  const cpuHist = res.cpuHistory || [];
+  const memHist = res.memHistory || [];
+  const cpuPeak = cpuHist.length ? Math.max(...cpuHist) : res.cpuPercent;
+  const memPeak = memHist.length ? Math.max(...memHist) : res.memPercent;
+  const cpuAvg = cpuHist.length ? Math.round(cpuHist.reduce((a, b) => a + b, 0) / cpuHist.length) : res.cpuPercent;
+  const memAvg = memHist.length ? Math.round(memHist.reduce((a, b) => a + b, 0) / memHist.length) : res.memPercent;
+  // Trend = delta entre muestra actual y promedio reciente (USE method: saturation proxy)
+  const cpuTrend = cpuHist.length > 3 ? res.cpuPercent - cpuAvg : 0;
+  const memTrend = memHist.length > 3 ? res.memPercent - memAvg : 0;
+  const trendArrow = (t) => t > 5 ? '<span class="trend-up">\u2197</span>' : t < -5 ? '<span class="trend-down">\u2198</span>' : '<span class="trend-flat">\u2192</span>';
+  const cpuHeadroom = Math.max(0, res.maxCpu - res.cpuPercent);
+  const memHeadroom = Math.max(0, res.maxMem - res.memPercent);
+  const cpuStatus = res.cpuPercent >= res.maxCpu ? 'danger' : res.cpuPercent >= res.maxCpu * 0.8 ? 'warn' : 'ok';
+  const memStatus = res.memPercent >= res.maxMem ? 'danger' : res.memPercent >= res.maxMem * 0.8 ? 'warn' : 'ok';
+  const cpuColor = cpuStatus === 'danger' ? '#f85149' : cpuStatus === 'warn' ? '#d29922' : '#3fb950';
+  const memColor = memStatus === 'danger' ? '#f85149' : memStatus === 'warn' ? '#d29922' : '#3fb950';
+  // Health score combinado (0-100, 100 = óptimo)
+  const worstUtil = Math.max(res.cpuPercent / res.maxCpu, res.memPercent / res.maxMem);
+  const healthScore = Math.max(0, Math.round((1 - worstUtil) * 100));
+  const healthLabel = healthScore > 60 ? 'Óptimo' : healthScore > 30 ? 'Presionado' : healthScore > 10 ? 'Crítico' : 'Saturado';
+  const healthColor = healthScore > 60 ? '#3fb950' : healthScore > 30 ? '#d29922' : '#f85149';
   const blocked = res.cpuPercent >= res.maxCpu || res.memPercent >= res.maxMem;
   const resourcesHTML = `
-    <div class="gauge-row">
-      <div class="gauge ${cpuCls}">
-        <div class="gauge-label">CPU</div>
-        <div class="gauge-bar"><div class="gauge-fill" style="width:${Math.min(res.cpuPercent, 100)}%"></div><div class="gauge-threshold" style="left:${res.maxCpu}%"></div></div>
-        <div class="gauge-value">${res.cpuPercent}% <span class="gauge-detail">${res.cpuCores} cores · max ${res.maxCpu}%</span></div>
+    <div class="sys-health">
+      <div class="sys-health-score" style="--hcolor:${healthColor}">
+        <div class="sys-health-value">${healthScore}</div>
+        <div class="sys-health-label">${healthLabel}</div>
       </div>
-      <div class="gauge ${memCls}">
-        <div class="gauge-label">RAM</div>
-        <div class="gauge-bar"><div class="gauge-fill" style="width:${Math.min(res.memPercent, 100)}%"></div><div class="gauge-threshold" style="left:${res.maxMem}%"></div></div>
-        <div class="gauge-value">${res.memPercent}% <span class="gauge-detail">${res.memUsedGB}/${res.memTotalGB} GB · max ${res.maxMem}%</span></div>
+      <div class="sys-health-meta">
+        <div class="sys-health-title">Salud del sistema</div>
+        <div class="sys-health-sub">${state.cpuCores || res.cpuCores} cores \u00B7 ${res.memTotalGB} GB RAM \u00B7 headroom ${Math.min(cpuHeadroom, memHeadroom)}%</div>
       </div>
     </div>
-    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
-    ${fs.existsSync(path.join(PIPELINE, '.paused')) ? '<div class="resource-alert" style="background:rgba(251,188,5,0.12);border-color:rgba(251,188,5,0.4);color:#f0a500;">⏸️ Lanzamientos pausados por el usuario <button class="ctl-btn" style="margin-left:12px;padding:2px 10px;font-size:0.85em;" onclick="pauseAction(\'resume\')">▶ Reanudar</button></div>' : ''}
-    ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
-
-  // Emulador Android — integrado como servicio más en svcCardsHTML
-  const qaRemoteActive = state.qaRemote && state.qaRemote.active;
-  if (qaRemoteActive) {
-    svcCardsHTML += `<div class="svc-card svc-card-ok" style="background: linear-gradient(135deg, #0984e3 0%, #6c5ce7 100%); color: white;">
-      <div class="svc-card-header">
-        <span class="svc-card-name">\u2601\uFE0F QA Remoto</span>
-        <span class="svc-card-pulse"></span>
-      </div>
-      <div class="svc-card-pid" style="color: rgba(255,255,255,0.9);">${state.qaRemote.ref || 'Lambda AWS'}</div>
-    </div>`;
-  } else {
-    Object.entries(state.qaEnv).forEach(([name, alive]) => {
-      const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
-      const btn = alive
-        ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener Emulador">■</button>`
-        : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar Emulador">▶</button>`;
-      svcCardsHTML += `<div class="svc-card ${statusCls}">
-        <div class="svc-card-header">
-          ${btn}<span class="svc-card-name">\u{1F4F1} Emulador</span>
-          ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+    <div class="gauge-row">
+      <div class="rgauge-cell rgauge-${cpuStatus}">
+        <div class="rgauge-top">
+          ${radialGauge(res.cpuPercent, 100, res.maxCpu, cpuColor)}
+          <div class="rgauge-info">
+            <div class="rgauge-title">CPU <span class="rgauge-trend">${trendArrow(cpuTrend)}</span></div>
+            <div class="rgauge-sub">${res.cpuCores} cores \u00B7 límite ${res.maxCpu}%</div>
+            <div class="rgauge-kpis">
+              <span title="Promedio últimos ${cpuHist.length} samples">avg <b>${cpuAvg}%</b></span>
+              <span title="Pico reciente">peak <b>${cpuPeak}%</b></span>
+              <span title="Espacio disponible antes de bloquear">free <b>${cpuHeadroom}%</b></span>
+            </div>
+          </div>
         </div>
-        <div class="svc-card-pid">${alive ? 'activo' : 'detenido'}</div>
-      </div>`;
-    });
-  }
+        <div class="rgauge-spark" title="Tendencia CPU últimos minutos">${sparklineSVG(cpuHist, cpuColor, { w: 220, h: 32, max: 100 })}</div>
+      </div>
+      <div class="rgauge-cell rgauge-${memStatus}">
+        <div class="rgauge-top">
+          ${radialGauge(res.memPercent, 100, res.maxMem, memColor)}
+          <div class="rgauge-info">
+            <div class="rgauge-title">RAM <span class="rgauge-trend">${trendArrow(memTrend)}</span></div>
+            <div class="rgauge-sub">${res.memUsedGB}/${res.memTotalGB} GB \u00B7 límite ${res.maxMem}%</div>
+            <div class="rgauge-kpis">
+              <span title="Promedio">avg <b>${memAvg}%</b></span>
+              <span title="Pico reciente">peak <b>${memPeak}%</b></span>
+              <span title="Espacio disponible">free <b>${memHeadroom}%</b></span>
+            </div>
+          </div>
+        </div>
+        <div class="rgauge-spark" title="Tendencia RAM últimos minutos">${sparklineSVG(memHist, memColor, { w: 220, h: 32, max: 100 })}</div>
+      </div>
+    </div>
+    ${blocked ? '<div class="resource-alert">\u26D4 Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
+    ${fs.existsSync(path.join(PIPELINE, '.paused')) ? '<div class="resource-alert" style="background:rgba(251,188,5,0.12);border-color:rgba(251,188,5,0.4);color:#f0a500;">\u23F8\uFE0F Lanzamientos pausados por el usuario <button class="ctl-btn" style="margin-left:12px;padding:2px 10px;font-size:0.85em;" onclick="pauseAction(\'resume\')">\u25B6 Reanudar</button></div>' : ''}
+    ${stale > 0 ? `<div class="resource-alert">\u26A0\uFE0F ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // Rechazos recientes
   let rechazosHTML = '';
@@ -1230,23 +1448,62 @@ function generateHTML(state) {
     }
   }
 
+  // Título corto del issue (desde issueMatrix si lo tiene)
+  const issueTitle = (num) => {
+    const d = state.issueMatrix[num];
+    const t = d && d.titulo ? d.titulo : '';
+    return t ? t.slice(0, 48) : '';
+  };
+  // Clasificar estado del agente por duración
+  const agentHealth = (ms) => {
+    const min = (ms || 0) / 60000;
+    if (min > 30) return { cls: 'critical', label: '\u26A0 stale >30m' };
+    if (min > 15) return { cls: 'warn',     label: '\u23F1 lento >15m' };
+    if (min < 0.5) return { cls: 'fresh',   label: '\u2728 recién' };
+    return { cls: 'active', label: '\u25CF activo' };
+  };
+  // Ordenar: stale primero, después más lentos, después recientes
+  const sortedAgents = Object.entries(activeAgents).map(([skill, issues]) => {
+    const maxDur = Math.max(...issues.map(i => i.duration || 0));
+    return { skill, issues, maxDur };
+  }).sort((a, b) => b.maxDur - a.maxDur);
+
   let agentTeamCards = '';
-  if (Object.keys(activeAgents).length > 0) {
-    for (const [skill, issues] of Object.entries(activeAgents)) {
-      const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, tagline: '', color: 'var(--dim)' };
-      const issueChips = issues.map(i =>
-        `<a href="${GH(i.issue)}" target="_blank" class="agent-issue">#${i.issue} <span class="agent-issue-fase">${i.fase}</span> <span class="agent-issue-dur">${fmtDuration(i.duration)}</span></a>`
-      ).join('');
+  if (sortedAgents.length > 0) {
+    for (const { skill, issues } of sortedAgents) {
+      const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, tagline: '', color: 'var(--dim)' };
+      const maxDur = Math.max(...issues.map(i => i.duration || 0));
+      const health = agentHealth(maxDur);
+      const issueRows = issues.map(i => {
+        const ih = agentHealth(i.duration);
+        const title = issueTitle(i.issue);
+        const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
+        return `<a href="${GH(i.issue)}" target="_blank" class="work-item work-${ih.cls}">
+          <span class="work-issue">#${i.issue}</span>
+          <span class="work-title">${title || i.fase}</span>
+          <span class="work-fase">${i.fase}</span>
+          <span class="work-dur">${fmtDuration(i.duration)}</span>
+          <span class="work-progress"><span class="work-progress-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
+        </a>`;
+      }).join('');
       const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
+      const tagline = (p.tagline || '').split(' · ').slice(0, 3).join(' · ');
       agentTeamCards += `
-        <div class="agent-card" style="--agent-color:${p.color}">
-          <div class="agent-avatar">${p.icon}</div>
-          <div class="agent-info">
-            <div class="agent-name">${p.name}</div>
-            <div class="agent-issues">${issueChips}</div>
+        <div class="agent-card agent-${health.cls}" style="--agent-color:${p.color}">
+          <div class="agent-header">
+            <div class="agent-avatar-xl">${p.icon}</div>
+            <div class="agent-identity">
+              <div class="agent-name-row">
+                <span class="agent-name">${p.name}</span>
+                <span class="agent-health agent-health-${health.cls}">${health.label}</span>
+              </div>
+              <div class="agent-tagline">${tagline}</div>
+            </div>
+            <span class="agent-badge">${issues.length} <span class="agent-badge-lbl">issue${issues.length > 1 ? 's' : ''}</span></span>
+            <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
           </div>
-          <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
-          <div class="agent-pulse"></div>
+          <div class="agent-work">${issueRows}</div>
+          <div class="agent-heartbeat"><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span></div>
         </div>`;
     }
   }
@@ -1790,6 +2047,220 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
 .dual-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
 .dual-col{min-width:0}
+@media(max-width:1100px){.dual-row{grid-template-columns:1fr}}
+
+/* ══ Agent Card v2 (En Ejecución) ════════════════════════════════════ */
+.agent-card{
+  --card-tint: color-mix(in srgb, var(--agent-color) 14%, transparent);
+  background:linear-gradient(145deg, var(--card-tint) 0%, var(--bg) 55%);
+  border:1px solid var(--bd2);border-radius:var(--radius);
+  border-left:4px solid var(--agent-color);
+  padding:12px 14px;display:flex;flex-direction:column;gap:10px;
+  position:relative;overflow:hidden;flex:1 1 340px;min-width:320px;max-width:520px;
+  transition:transform 0.15s, box-shadow 0.2s, border-color 0.2s;
+  box-shadow:0 1px 0 rgba(255,255,255,0.02) inset;
+}
+.agent-card::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--agent-color) 18%, transparent) 0%, transparent 55%);
+  opacity:0.6;
+}
+.agent-card:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,0.35), 0 0 0 1px var(--agent-color)}
+.agent-card.agent-critical{border-left-color:var(--rd);animation:critPulse 1.8s ease-in-out infinite}
+.agent-card.agent-warn{border-left-color:var(--yl)}
+.agent-card.agent-fresh{border-left-color:var(--gn)}
+@keyframes critPulse{0%,100%{box-shadow:0 0 0 0 rgba(248,81,73,0.35)}50%{box-shadow:0 0 0 6px rgba(248,81,73,0)}}
+.agent-header{display:flex;gap:10px;align-items:center;position:relative;z-index:1}
+.agent-avatar-xl{
+  font-size:1.8em;line-height:1;
+  width:42px;height:42px;display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb, var(--agent-color) 18%, var(--bg));
+  border:1px solid color-mix(in srgb, var(--agent-color) 35%, var(--bd2));
+  border-radius:10px;
+}
+.agent-identity{flex:1;min-width:0}
+.agent-name-row{display:flex;align-items:center;gap:8px}
+.agent-name{font-weight:800;font-size:1em;color:var(--agent-color);letter-spacing:0.2px}
+.agent-health{font-size:0.65em;padding:2px 7px;border-radius:10px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;white-space:nowrap}
+.agent-health-fresh{background:rgba(63,185,80,0.14);color:#3fb950}
+.agent-health-active{background:rgba(88,166,255,0.14);color:#58a6ff}
+.agent-health-warn{background:rgba(210,153,34,0.16);color:#d29922}
+.agent-health-critical{background:rgba(248,81,73,0.18);color:#f85149}
+.agent-tagline{font-size:0.7em;color:var(--dim);margin-top:2px;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-badge{
+  font-size:0.72em;font-weight:700;color:var(--tx);
+  background:var(--sf2);padding:3px 8px;border-radius:10px;
+  border:1px solid var(--bd);white-space:nowrap;
+}
+.agent-badge-lbl{font-weight:500;color:var(--dim);font-size:0.9em}
+.agent-work{display:flex;flex-direction:column;gap:4px;position:relative;z-index:1}
+.work-item{
+  display:grid;grid-template-columns:auto 1fr auto auto;gap:8px;align-items:center;
+  padding:5px 8px;border-radius:var(--radius-sm);
+  background:var(--bg);border:1px solid var(--bd2);
+  text-decoration:none;font-size:0.78em;color:var(--tx);
+  position:relative;transition:background 0.15s, border-color 0.15s;
+}
+.work-item:hover{background:var(--sf2);border-color:var(--agent-color);text-decoration:none}
+.work-issue{font-weight:700;color:var(--ac);font-variant-numeric:tabular-nums}
+.work-title{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-fase{font-size:0.85em;color:var(--dim2);padding:1px 6px;border-radius:6px;background:var(--sf2);white-space:nowrap}
+.work-dur{font-size:0.85em;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.work-progress{
+  grid-column:1 / -1;height:2px;background:var(--bd);border-radius:2px;overflow:hidden;margin-top:3px;
+}
+.work-progress-fill{display:block;height:100%;background:var(--agent-color);transition:width 0.6s ease}
+.work-warn .work-progress-fill{background:var(--yl)}
+.work-critical .work-progress-fill{background:var(--rd)}
+.agent-heartbeat{
+  position:absolute;top:10px;right:42px;display:flex;gap:3px;z-index:1;
+}
+.agent-heartbeat .heartbeat-dot{
+  width:5px;height:5px;border-radius:50%;background:var(--agent-color);
+  animation:heartbeatPulse 1.6s ease-in-out infinite;
+}
+.agent-heartbeat .heartbeat-dot:nth-child(2){animation-delay:0.2s}
+.agent-heartbeat .heartbeat-dot:nth-child(3){animation-delay:0.4s}
+@keyframes heartbeatPulse{0%,100%{opacity:0.25;transform:scale(0.9)}50%{opacity:1;transform:scale(1.15)}}
+
+/* ══ Persona Card (Equipo Disponible) ══════════════════════════════════ */
+.persona-stack{display:flex;flex-direction:column;gap:6px}
+.persona-group{margin-bottom:10px}
+.persona-group:last-child{margin-bottom:0}
+.persona-group-head{
+  display:flex;align-items:center;gap:8px;
+  font-size:0.72em;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;
+  font-weight:700;margin-bottom:8px;
+}
+.persona-group-icon{font-size:1.05em}
+.persona-group-label{color:var(--tx)}
+.persona-group-count{margin-left:auto;color:var(--dim);font-variant-numeric:tabular-nums;text-transform:none;letter-spacing:0}
+.persona-group-active{color:var(--gn);font-weight:700}
+.persona-group-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:8px}
+.persona-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  border-top:2px solid color-mix(in srgb, var(--agent-color) 70%, var(--bd2));
+  padding:8px 10px;display:flex;flex-direction:column;gap:6px;
+  transition:transform 0.15s, border-color 0.15s, box-shadow 0.2s;position:relative;overflow:hidden;
+}
+.persona-card:hover{transform:translateY(-1px);border-color:var(--agent-color);box-shadow:0 3px 10px rgba(0,0,0,0.25)}
+.persona-card.persona-full{border-top-color:var(--rd)}
+.persona-card.persona-partial{border-top-color:var(--yl);box-shadow:0 0 0 1px color-mix(in srgb, var(--agent-color) 25%, transparent) inset}
+.persona-card.persona-idle{opacity:0.62}
+.persona-card.persona-idle:hover{opacity:1}
+.persona-head{display:flex;align-items:center;gap:8px}
+.persona-avatar{
+  font-size:1.25em;width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb, var(--agent-color) 14%, var(--sf2));border-radius:8px;flex-shrink:0;
+}
+.persona-id{flex:1;min-width:0}
+.persona-name{font-size:0.82em;font-weight:700;color:var(--agent-color);line-height:1.1}
+.persona-tagline{font-size:0.62em;color:var(--dim2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.persona-pill{
+  font-size:0.58em;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;
+  padding:2px 6px;border-radius:8px;white-space:nowrap;
+}
+.persona-pill-full{background:rgba(248,81,73,0.15);color:var(--rd)}
+.persona-pill-partial{background:rgba(210,153,34,0.15);color:var(--yl)}
+.persona-pill-idle{background:rgba(63,185,80,0.12);color:var(--gn)}
+.persona-body{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:0.7em}
+.persona-strip{display:flex;gap:3px}
+.persona-strip-empty{color:var(--dim2);font-style:italic}
+.persona-dot{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:14px;height:14px;border-radius:3px;font-size:0.75em;font-weight:700;
+  background:var(--sf2);border:1px solid var(--bd2);line-height:1;
+}
+.persona-dot-ok{background:rgba(63,185,80,0.18);color:var(--gn);border-color:rgba(63,185,80,0.35)}
+.persona-dot-bad{background:rgba(248,81,73,0.18);color:var(--rd);border-color:rgba(248,81,73,0.35)}
+.persona-dot-live{background:rgba(88,166,255,0.18);color:var(--ac);border-color:rgba(88,166,255,0.35);animation:agentPulse 1.4s ease-in-out infinite}
+.persona-strip a{text-decoration:none}
+.persona-meta{display:flex;gap:8px;color:var(--dim);font-variant-numeric:tabular-nums}
+.persona-meta-item{white-space:nowrap}
+.persona-meta-usage{color:var(--dim2)}
+
+/* ══ System Resources v2 ══════════════════════════════════════════════ */
+.sys-health{
+  display:flex;align-items:center;gap:14px;margin-bottom:14px;
+  padding:10px 12px;background:var(--bg);border:1px solid var(--bd2);
+  border-left:3px solid var(--hcolor,var(--gn));border-radius:var(--radius-sm);
+}
+.sys-health-score{
+  --hcolor:var(--gn);
+  width:54px;height:54px;border-radius:50%;
+  background:conic-gradient(var(--hcolor) calc(var(--score,100)*1%), var(--bd) 0);
+  display:flex;align-items:center;justify-content:center;position:relative;
+}
+.sys-health-score::before{
+  content:'';position:absolute;inset:5px;border-radius:50%;background:var(--bg);
+}
+.sys-health-value{position:relative;font-size:1em;font-weight:800;color:var(--hcolor);font-variant-numeric:tabular-nums}
+.sys-health-label{position:absolute;top:100%;left:50%;transform:translate(-50%,4px);font-size:0.6em;color:var(--dim);text-transform:uppercase;letter-spacing:1px;white-space:nowrap}
+.sys-health-meta{flex:1}
+.sys-health-title{font-size:0.82em;font-weight:700;color:var(--tx)}
+.sys-health-sub{font-size:0.72em;color:var(--dim);margin-top:2px}
+.rgauge-cell{
+  flex:1;min-width:260px;background:var(--bg);border:1px solid var(--bd2);
+  border-radius:var(--radius-sm);padding:10px 12px;display:flex;flex-direction:column;gap:6px;
+  border-left:3px solid var(--gn);
+}
+.rgauge-cell.rgauge-warn{border-left-color:var(--yl)}
+.rgauge-cell.rgauge-danger{border-left-color:var(--rd);animation:pulse 1.8s infinite}
+.rgauge-top{display:flex;align-items:center;gap:12px}
+.rgauge{flex-shrink:0}
+.rgauge-info{flex:1;min-width:0}
+.rgauge-title{font-size:0.78em;font-weight:800;color:var(--tx);text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:6px}
+.rgauge-trend{font-size:1.2em;line-height:1}
+.trend-up{color:var(--rd)}
+.trend-down{color:var(--gn)}
+.trend-flat{color:var(--dim)}
+.rgauge-sub{font-size:0.72em;color:var(--dim);margin-top:2px}
+.rgauge-kpis{display:flex;gap:10px;margin-top:6px;font-size:0.7em;color:var(--dim);font-variant-numeric:tabular-nums}
+.rgauge-kpis b{color:var(--tx);font-weight:700;margin-left:3px}
+.rgauge-spark{margin-top:2px;line-height:0}
+.rgauge-spark svg{display:block;width:100%;height:32px}
+
+/* ══ Service Layer v2 ══════════════════════════════════════════════════ */
+.svc-grid{display:flex;flex-direction:column;gap:10px}
+.svc-layer{background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);padding:8px 10px}
+.svc-layer-head{
+  display:flex;align-items:center;gap:6px;
+  font-size:0.65em;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;
+  font-weight:700;margin-bottom:6px;
+}
+.svc-layer-icon{font-size:0.95em}
+.svc-layer-rows{display:flex;flex-direction:column;gap:3px}
+.svc-row{
+  display:grid;grid-template-columns:auto auto 1fr auto auto auto;gap:8px;align-items:center;
+  padding:5px 8px;border-radius:var(--radius-sm);
+  background:var(--sf2);border:1px solid transparent;font-size:0.78em;
+  transition:background 0.15s, border-color 0.15s;cursor:default;
+}
+.svc-row:hover{background:var(--bd2);border-color:var(--bd)}
+.svc-row-dead{opacity:0.6}
+.svc-row-dead .svc-name{color:var(--dim)}
+.svc-row-busy{border-color:rgba(210,153,34,0.25)}
+.svc-row-degraded{border-color:rgba(240,136,62,0.3)}
+.svc-status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+@keyframes svcPulse{0%,100%{box-shadow:0 0 0 0 currentColor;opacity:1}50%{box-shadow:0 0 0 3px currentColor;opacity:0.7}}
+.svc-icon{font-size:1em;line-height:1}
+.svc-name{font-weight:600;color:var(--tx);white-space:nowrap}
+.svc-queue{display:flex;gap:6px;font-variant-numeric:tabular-nums;font-size:0.9em}
+.svc-queue-none{color:var(--dim2);font-style:italic}
+.svc-q{color:var(--dim);white-space:nowrap}
+.svc-q-work{color:var(--yl)}
+.svc-q-work-pulse{animation:svcPulse 1.6s infinite}
+.svc-q-done{color:var(--gn)}
+.svc-uptime{font-size:0.75em;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;padding:1px 6px;border-radius:6px;background:var(--bg)}
+.svc-ctl{
+  border:none;cursor:pointer;border-radius:4px;font-size:0.72em;
+  padding:2px 8px;font-weight:700;line-height:1;transition:transform 0.1s;
+}
+.svc-ctl:hover{transform:scale(1.1)}
+.svc-ctl-start{background:var(--gn2);color:var(--gn)}
+.svc-ctl-stop{background:var(--rd2);color:var(--rd)}
+.svc-row-cloud{background:linear-gradient(90deg, rgba(9,132,227,0.15), rgba(108,92,231,0.1))}
+
 .bar-section{
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:16px 18px;position:relative;overflow:hidden;
@@ -2115,8 +2586,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
           return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
         }).join('');
       })()}</span></h2>
-      ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
-      ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
+      ${agentTeamCards ? '<div class="subsection-label">En ejecución</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
+      ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Equipo disponible' : 'Equipo disponible') + '</div><div class="persona-stack">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
     </div>
     <div class="bar-section dual-col panel-sistema">
       <h2>💻 Sistema</h2>
