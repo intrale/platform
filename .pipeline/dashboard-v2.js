@@ -863,6 +863,29 @@ function generateHTML(state) {
   const activeIssues = sorted.filter(([, d]) => !isComplete(d));
   const completedIssues = sorted.filter(([, d]) => isComplete(d));
 
+  // ── Issue Tracker Lanes (Variante 1): 5 lanes macro ──
+  // Definición → Desarrollo (val+dev) → Build → QA (verificación) → Entrega (aprobación+entrega)
+  function macroLane(d) {
+    if (isComplete(d)) return 'done';
+    const fa = d.faseActual;
+    if (!fa) return 'def';
+    const [pipe, fase] = fa.split('/');
+    if (pipe === 'definicion') return 'def';
+    if (fase === 'validacion' || fase === 'dev') return 'dev';
+    if (fase === 'build') return 'build';
+    if (fase === 'verificacion') return 'qa';
+    return 'entrega';
+  }
+  const laneMeta = {
+    def:     { label: 'Definición',  color: '#bc8cff' },
+    dev:     { label: 'Desarrollo',  color: '#3fb950' },
+    build:   { label: 'Build',       color: '#d29922' },
+    qa:      { label: 'QA',          color: '#2dd4bf' },
+    entrega: { label: 'Entrega',     color: '#f0883e' },
+  };
+  const laneCards = { def: '', dev: '', build: '', qa: '', entrega: '', done: '' };
+  const laneCounts = { def: 0, dev: 0, build: 0, qa: 0, entrega: 0, done: 0 };
+
   let issueCards = '';
   for (const [issueNum, data] of sorted) {
     const complete = isComplete(data);
@@ -1082,7 +1105,82 @@ function generateHTML(state) {
       <div class="ic-progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="ic-progress-fill${data.estadoActual === 'trabajando' ? ' ic-progress-active' : ''}" style="width:${pct}%"></div></div>
       ${detailHTML}
     </div>`;
+
+    // ── Compact lane card (Variante 1) ──
+    const lane = macroLane(data);
+    // Estado visual de la card en el lane
+    const working = data.estadoActual === 'trabajando';
+    const hasRejection = data.labels?.some(l => l === 'qa:failed');
+    const laneCardCls = complete ? 'lc-done'
+      : data.staleMin > 30 ? 'lc-stale'
+      : hasRejection ? 'lc-failed'
+      : working ? 'lc-running' : '';
+    // Elapsed label
+    const laneElapsedCls = data.staleMin > 30 ? 'lc-warn' : working ? 'lc-teal' : '';
+    const laneElapsedTxt = complete ? 'completado'
+      : data.staleMin > 60 ? `${data.staleMin}m 🚩`
+      : data.staleMin > 30 ? `${data.staleMin}m`
+      : working ? `${data.staleMin}m` : '—';
+    // Avatares de skills actuales (trabajando)
+    const currentSkills = [];
+    if (data.faseActual && data.fases[data.faseActual]) {
+      for (const e of data.fases[data.faseActual]) {
+        if (e.estado === 'trabajando' && !currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+      }
+    }
+    const avatarsHTML = currentSkills.length > 0
+      ? '<div class="lc-avatars">' + currentSkills.slice(0, 3).map(s => {
+          const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
+          return `<span class="lc-av" style="background:${p.color}" title="${p.name}">${p.icon}</span>`;
+        }).join('') + (currentSkills.length > 3 ? `<span class="lc-av-more">+${currentSkills.length - 3}</span>` : '') + '</div>'
+      : '';
+    // Current phase pill (shorter)
+    const currentFase = data.faseActual ? data.faseActual.split('/')[1] : '';
+    const multiSkillTag = currentSkills.length > 1 ? ` <span class="lc-pill-x">×${currentSkills.length}</span>` : '';
+    const lanePill = complete
+      ? '<span class="lc-pill lc-pill-done">✓ entregado</span>'
+      : hasRejection
+      ? `<span class="lc-pill lc-pill-fail">qa:failed</span>`
+      : working
+      ? `<span class="lc-pill lc-pill-run">${currentFase}${multiSkillTag}</span>`
+      : `<span class="lc-pill lc-pill-wait">${currentFase || 'pendiente'}</span>`;
+    // Title shorter for lanes
+    const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
+    laneCards[lane] += `<a class="lc-card ${laneCardCls}" href="${GH(issueNum)}" target="_blank" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" title="${laneTitle}">
+      <div class="lc-top">
+        <span class="lc-num">#${issueNum}</span>
+        <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
+      </div>
+      <div class="lc-title">${laneTitle}</div>
+      <div class="lc-foot">
+        <span class="lc-ps">${stepperDots}</span>
+        ${lanePill}
+        ${avatarsHTML}
+      </div>
+    </a>`;
+    laneCounts[lane]++;
   }
+
+  // Render 5 lanes (Variante 1) con cards compactas
+  const laneOrder = ['def', 'dev', 'build', 'qa', 'entrega'];
+  const lanesHTML = laneOrder.map(k => {
+    const m = laneMeta[k];
+    const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
+    return `<div class="it-lane" data-lane="${k}">
+      <div class="it-lane-head">
+        <span class="it-lane-name" style="color:${m.color}"><span class="it-lane-dot" style="background:${m.color}"></span>${m.label}</span>
+        <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+      </div>
+      <div class="it-lane-cards">${cards}</div>
+    </div>`;
+  }).join('');
+  const doneLaneHTML = laneCounts.done > 0 ? `<div class="it-done-section" data-lane="done">
+    <div class="it-done-head">
+      <span>✓ Completados recientes</span>
+      <span class="it-done-count"><b>${laneCounts.done}</b></span>
+    </div>
+    <div class="it-done-grid">${laneCards.done}</div>
+  </div>` : '';
 
   const matrixHTML = `
     <div class="matrix-section" id="issue-tracker">
@@ -1094,9 +1192,8 @@ function generateHTML(state) {
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
       </div>
-      <div class="ic-list">
-        ${issueCards}
-      </div>
+      <div class="it-lanes">${lanesHTML}</div>
+      ${doneLaneHTML}
     </div>`;
 
   // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
@@ -2596,6 +2693,58 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 
+/* ── Issue Tracker Lanes (Variante 1) ───────────────────────────────────── */
+.it-lanes{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:10px}
+.it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:8px;display:flex;flex-direction:column;min-width:0}
+.it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
+.it-lane-name{font-size:0.75em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px}
+.it-lane-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.it-lane-count{font-size:0.68em;color:var(--dim);background:var(--sf);padding:1px 7px;border-radius:8px}
+.it-lane-count b{color:var(--tx);font-weight:700}
+.it-lane-cards{display:flex;flex-direction:column;gap:5px;max-height:520px;overflow-y:auto}
+.lane-empty{font-size:0.7em;color:var(--dim);text-align:center;padding:10px 0;font-style:italic}
+
+/* Lane card compacta */
+.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:6px;padding:7px 9px;font-size:0.74em;text-decoration:none;color:var(--tx);cursor:pointer;transition:transform 0.15s,border-color 0.15s}
+.lc-card:hover{transform:translateY(-1px);border-left-color:var(--ac)}
+.lc-card.lc-running{border-left-color:#2dd4bf}
+.lc-card.lc-failed{border-left-color:var(--rd);background:rgba(248,113,113,0.05)}
+.lc-card.lc-stale{border-left-color:var(--yl);background:rgba(251,191,36,0.04)}
+.lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
+.lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
+.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
+.lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
+.lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
+.lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
+.lc-title{font-size:0.92em;line-height:1.3;color:var(--tx);margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.lc-foot{display:flex;justify-content:space-between;align-items:center;gap:5px;flex-wrap:wrap}
+.lc-ps{display:inline-flex;align-items:center;gap:1px;transform:scale(0.75);transform-origin:left center;margin-right:-8px}
+.lc-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:8px;font-size:0.82em;font-weight:700;letter-spacing:0.3px}
+.lc-pill-run{background:rgba(45,212,191,0.15);color:#2dd4bf;text-transform:lowercase}
+.lc-pill-fail{background:rgba(248,113,113,0.15);color:var(--rd);text-transform:lowercase}
+.lc-pill-wait{background:rgba(251,191,36,0.12);color:var(--yl);text-transform:lowercase}
+.lc-pill-done{background:rgba(52,211,153,0.12);color:var(--gn);text-transform:lowercase}
+.lc-pill-x{opacity:0.6;font-weight:400;margin-left:2px}
+.lc-avatars{display:flex;margin-left:auto}
+.lc-av{width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.82em;line-height:1;color:#fff;border:1.5px solid var(--sf);margin-right:-4px}
+.lc-av:last-child{margin-right:0}
+.lc-av-more{width:16px;height:16px;border-radius:50%;background:var(--sf2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;border:1.5px solid var(--sf);margin-right:0}
+
+/* Completados section */
+.it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:10px 12px}
+.it-done-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--gn)}
+.it-done-count{background:rgba(52,211,153,0.15);padding:1px 7px;border-radius:8px;font-size:0.82em}
+.it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px}
+.it-done-grid .lc-card{opacity:0.75}
+
+@media(max-width:1100px){.it-lanes{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:720px){.it-lanes{grid-template-columns:1fr}}
+
+.ic-hidden{display:none !important}
+
+/* Oculta el legacy ic-list cards (conservamos estilos pero no los usamos en la vista principal) */
+.ic-list{display:none}
+
 /* ── Panel Equipo Option B ─────────────────────────────────────────────── */
 .panel-equipo-full{margin-bottom:20px}
 .eq-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd);gap:14px;flex-wrap:wrap}
@@ -3070,21 +3219,22 @@ function toggleIssueDetail(issueNum) {
 }
 
 function filterIssueTab(tabEl, filter) {
-  // Update tab active state + aria
   document.querySelectorAll('.ic-tab').forEach(t => {
     t.classList.remove('ic-tab-active');
     t.setAttribute('aria-selected', 'false');
   });
   tabEl.classList.add('ic-tab-active');
   tabEl.setAttribute('aria-selected', 'true');
-  // Filter cards
-  document.querySelectorAll('.ic-card').forEach(card => {
+  // Hide/show lanes container and completed section according to tab
+  const lanesEl = document.querySelector('.it-lanes');
+  const doneEl = document.querySelector('.it-done-section');
+  if (lanesEl) lanesEl.classList.toggle('ic-hidden', filter === 'completed');
+  if (doneEl) doneEl.classList.toggle('ic-hidden', filter === 'active');
+  // Also honor legacy ic-card cards (if any remain)
+  document.querySelectorAll('.ic-card, .lc-card').forEach(card => {
     const status = card.dataset.status;
-    if (filter === 'all') {
-      card.classList.remove('ic-hidden');
-    } else {
-      card.classList.toggle('ic-hidden', status !== filter);
-    }
+    if (filter === 'all') card.classList.remove('ic-hidden');
+    else card.classList.toggle('ic-hidden', status !== filter);
   });
   saveIssueTrackerState();
 }
