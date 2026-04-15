@@ -2913,6 +2913,16 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-card.lc-hl-blocking{border-left-color:var(--yl) !important;box-shadow:0 0 0 1px rgba(251,191,36,0.5)}
 .lc-card.lc-hl-blocking::after{content:'▸ bloquea';display:inline-block;margin-left:6px;font-size:0.6em;background:rgba(251,191,36,0.15);color:var(--yl);padding:1px 5px;border-radius:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px}
 
+/* Refresh pill flotante (cambios pendientes) */
+.refresh-pill{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(135deg,var(--ac),#4a6cf7);color:#fff;border-radius:999px;box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-size:0.85em;font-weight:600;opacity:0;transform:translateY(12px) scale(0.95);pointer-events:none;transition:opacity 0.25s,transform 0.25s}
+.refresh-pill.rp-visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;animation:rp-pulse 2.5s ease-in-out infinite}
+.refresh-pill:hover{box-shadow:0 8px 26px rgba(88,166,255,0.6),0 2px 8px rgba(0,0,0,0.4);transform:translateY(-2px) scale(1.02);animation:none}
+.refresh-pill .rp-icon{font-size:1.1em;line-height:1}
+.refresh-pill .rp-text{white-space:nowrap}
+.refresh-pill .rp-close{margin-left:4px;opacity:0.75;padding:0 4px;border-radius:50%;font-size:1.1em;line-height:1}
+.refresh-pill .rp-close:hover{opacity:1;background:rgba(0,0,0,0.2)}
+@keyframes rp-pulse{0%,100%{box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3)}50%{box-shadow:0 6px 24px rgba(88,166,255,0.7),0 2px 10px rgba(0,0,0,0.4)}}
+
 /* KPI clickeable (filter mode) */
 .kpi-clickable{cursor:pointer;transition:transform 0.15s,box-shadow 0.15s}
 .kpi-clickable:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
@@ -3321,14 +3331,56 @@ async function softRefresh() {
   finally { __softRefreshInFlight = false; }
 }
 
-// SSE live refresh (soft, sin parpadeo)
+// SSE — ahora NO auto-refresca. Solo cuenta cambios y muestra un pill que el usuario controla.
 let lastHash = null;
+let __pendingChanges = 0;
+let __lastChangeTs = null;
+function showRefreshPill() {
+  let pill = document.getElementById('refresh-pill');
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'refresh-pill';
+    pill.className = 'refresh-pill';
+    pill.innerHTML = '<span class="rp-icon">🔄</span><span class="rp-text"></span><span class="rp-close" title="Descartar" onclick="event.stopPropagation();dismissRefreshPill()">×</span>';
+    pill.onclick = applyPendingRefresh;
+    document.body.appendChild(pill);
+  }
+  const textEl = pill.querySelector('.rp-text');
+  const ago = __lastChangeTs ? Math.max(0, Math.round((Date.now() - __lastChangeTs) / 1000)) : 0;
+  const agoTxt = ago < 60 ? ago + 's' : Math.round(ago / 60) + 'm';
+  textEl.textContent = __pendingChanges === 1
+    ? '1 cambio nuevo · hace ' + agoTxt
+    : __pendingChanges + ' cambios nuevos · último hace ' + agoTxt;
+  pill.classList.add('rp-visible');
+}
+function dismissRefreshPill() {
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+  __pendingChanges = 0;
+}
+async function applyPendingRefresh() {
+  await softRefresh();
+  __pendingChanges = 0;
+  __lastChangeTs = null;
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+}
+// Actualizar el "hace Xs" cada 10s mientras el pill esté visible
+setInterval(() => {
+  const pill = document.getElementById('refresh-pill');
+  if (pill && pill.classList.contains('rp-visible') && __pendingChanges > 0) showRefreshPill();
+}, 10000);
+
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash) softRefresh();
+  if (lastHash && e.data !== lastHash) {
+    __pendingChanges++;
+    __lastChangeTs = Date.now();
+    showRefreshPill();
+  }
   lastHash = e.data;
 };
-es.onerror = () => { setTimeout(softRefresh, 10000); };
+es.onerror = () => { /* silent — el usuario decide cuando refrescar */ };
 
 // Restaurar estado UI — se invoca después de definir las funciones necesarias
 function restoreIssueTrackerState() {
