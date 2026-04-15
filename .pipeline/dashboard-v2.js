@@ -2043,13 +2043,14 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ic-card.ic-hidden{display:none}
 
 /* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
-.dual-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px;align-items:start}
+/* Siempre repartir 50/50 el ancho; sólo apilar en móvil muy angosto. */
+.dual-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-bottom:20px;align-items:start}
 .dual-col{min-width:0;max-height:520px;overflow-y:auto;scroll-behavior:smooth}
 .dual-col::-webkit-scrollbar{width:6px}
 .dual-col::-webkit-scrollbar-track{background:transparent}
 .dual-col::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:3px}
 .dual-col::-webkit-scrollbar-thumb:hover{background:var(--bd)}
-@media(max-width:1100px){.dual-row{grid-template-columns:1fr}.dual-col{max-height:none;overflow-y:visible}}
+@media(max-width:640px){.dual-row{grid-template-columns:1fr}.dual-col{max-height:none;overflow-y:visible}}
 
 /* ══ Agent Card v2 (En Ejecución) ════════════════════════════════════ */
 .agent-card{
@@ -2058,7 +2059,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   border:1px solid var(--bd2);border-radius:var(--radius);
   border-left:4px solid var(--agent-color);
   padding:12px 14px;display:flex;flex-direction:column;gap:10px;
-  position:relative;overflow:hidden;flex:1 1 340px;min-width:320px;max-width:520px;
+  position:relative;overflow:hidden;flex:1 1 280px;min-width:0;max-width:520px;
   transition:transform 0.15s, box-shadow 0.2s, border-color 0.2s;
   box-shadow:0 1px 0 rgba(255,255,255,0.02) inset;
 }
@@ -2138,7 +2139,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .persona-group-label{color:var(--tx)}
 .persona-group-count{margin-left:auto;color:var(--dim);font-variant-numeric:tabular-nums;text-transform:none;letter-spacing:0}
 .persona-group-active{color:var(--gn);font-weight:700}
-.persona-group-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:8px}
+.persona-group-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(min(180px, 100%), 1fr));gap:8px}
 .persona-card{
   background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
   border-top:2px solid color-mix(in srgb, var(--agent-color) 70%, var(--bd2));
