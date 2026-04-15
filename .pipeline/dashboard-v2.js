@@ -2647,6 +2647,17 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .eq-svc-block{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)}
 .eq-svc-head{font-size:0.75em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--dim);margin-bottom:8px}
 
+/* Panel Equipo full-width: body en 2 columnas (equipo + servicios) */
+.panel-equipo-full{margin-bottom:20px}
+.panel-equipo-full .eq-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,340px);gap:18px;align-items:start}
+.panel-equipo-full .eq-body-main{min-width:0}
+.panel-equipo-full .eq-body-svc{min-width:0;padding-left:16px;border-left:1px solid var(--bd)}
+.panel-equipo-full .eq-body-svc .eq-svc-head{margin-bottom:10px}
+@media(max-width:900px){
+  .panel-equipo-full .eq-body{grid-template-columns:1fr}
+  .panel-equipo-full .eq-body-svc{padding-left:0;border-left:none;padding-top:12px;border-top:1px solid var(--bd)}
+}
+
 </style></head>
 <body>
   <div class="hdr-bar">
@@ -2787,23 +2798,21 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     })()}
   </div>
 
-  <div class="dual-row">
-    <div class="bar-section dual-col panel-equipo">
-      <div class="eq-head">
-        <h2 class="eq-title">🧠 Equipo</h2>
-        <div class="eq-summary">
-          <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSlots}</span>
-          <div class="eq-util-bar"><div class="eq-util-fill" style="width:${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%"></div></div>
-          <span>Utilización <b>${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%</b></span>
-        </div>
+  <div class="bar-section panel-equipo panel-equipo-full">
+    <div class="eq-head">
+      <h2 class="eq-title">🧠 Equipo</h2>
+      <div class="eq-summary">
+        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSlots}</span>
+        <div class="eq-util-bar"><div class="eq-util-fill" style="width:${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%"></div></div>
+        <span>Utilización <b>${eqTotalSlots > 0 ? Math.round(eqTotalBusy / eqTotalSlots * 100) : 0}%</b></span>
       </div>
-      ${activeStripHTML}
-      ${eqAreaRowsHTML || '<span class="empty-label">Sin skills configurados</span>'}
-      ${svcCardsHTML ? '<div class="eq-svc-block"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid">' + svcCardsHTML + '</div></div>' : ''}
     </div>
-    <div class="bar-section dual-col panel-sistema">
-      <h2>💻 Sistema</h2>
-      ${resourcesHTML}
+    <div class="eq-body">
+      <div class="eq-body-main">
+        ${activeStripHTML}
+        ${eqAreaRowsHTML || '<span class="empty-label">Sin skills configurados</span>'}
+      </div>
+      ${svcCardsHTML ? '<div class="eq-body-svc"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid">' + svcCardsHTML + '</div></div>' : ''}
     </div>
   </div>
 
