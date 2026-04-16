@@ -1744,26 +1744,41 @@ function determinarDevSkill(issue, config) {
 // BRAZO 2: LANZAMIENTO — Detecta trabajo pendiente, lanza agentes
 // =============================================================================
 
-// Cache de labels de issues (evita llamadas repetidas a GitHub API)
-const issueLabelsCache = new Map(); // issueNum → { labels: [...], fetchedAt: timestamp }
+// Cache de labels+estado de issues (evita llamadas repetidas a GitHub API)
+const issueLabelsCache = new Map(); // issueNum → { labels: [...], state: string, fetchedAt: timestamp }
 const LABELS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
-function getIssueLabels(issueNum) {
+function getIssueInfo(issueNum) {
   const cached = issueLabelsCache.get(issueNum);
   if (cached && (Date.now() - cached.fetchedAt) < LABELS_CACHE_TTL_MS) {
-    return cached.labels;
+    return cached;
   }
   try {
     ghThrottle();
     const result = execSync(
-      `"${GH_BIN}" issue view ${issueNum} --json labels --jq ".labels[].name"`,
+      `"${GH_BIN}" issue view ${issueNum} --json labels,state`,
       { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
-    ).trim().split('\n').filter(Boolean);
-    issueLabelsCache.set(issueNum, { labels: result, fetchedAt: Date.now() });
-    return result;
+    ).trim();
+    const parsed = JSON.parse(result);
+    const info = {
+      labels: (parsed.labels || []).map(l => l.name),
+      state: parsed.state || 'UNKNOWN',
+      fetchedAt: Date.now()
+    };
+    issueLabelsCache.set(issueNum, info);
+    return info;
   } catch {
-    return [];
+    return { labels: [], state: 'UNKNOWN', fetchedAt: Date.now() };
   }
+}
+
+function getIssueLabels(issueNum) {
+  return getIssueInfo(issueNum).labels;
+}
+
+/** Verifica si un issue está cerrado en GitHub (usa cache) */
+function isIssueClosed(issueNum) {
+  return getIssueInfo(issueNum).state === 'CLOSED';
 }
 
 /** Calcular score de prioridad para un issue (menor = más prioritario) */
@@ -2018,6 +2033,15 @@ function brazoLanzamiento(config) {
     const issueLbls = getIssueLabels(issue);
     if (issueLbls.includes('blocked:dependencies')) {
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      continue;
+    }
+
+    // 0c. CLOSED: no lanzar issues cerrados en GitHub — archivar y seguir
+    if (isIssueClosed(issue)) {
+      log('lanzamiento', `#${issue} omitido — issue cerrado en GitHub, archivando`);
+      const archDir = path.join(fasePath(pipeline, fase), 'archivado');
+      fs.mkdirSync(archDir, { recursive: true });
+      moveFile(archivo.path, archDir);
       continue;
     }
 
@@ -3231,6 +3255,9 @@ function cmdIntake(args, config) {
   if (args) {
     // Intake de un issue específico
     const issueNum = args.replace('#', '').trim();
+    if (isIssueClosed(issueNum)) {
+      return `⚠️ #${issueNum} está cerrado en GitHub — no se puede ingresar al pipeline`;
+    }
     if (issueExistsInPipeline(issueNum, 'desarrollo')) {
       return `⚠️ #${issueNum} ya está activo en el pipeline de desarrollo`;
     }
@@ -4397,10 +4424,10 @@ function brazoIntake(config) {
 
       if (issues.length === 0) continue;
 
-      // Cachear labels de los issues recién traídos de GitHub
+      // Cachear labels+estado de los issues recién traídos de GitHub
       for (const issue of issues) {
         const labelNames = (issue.labels || []).map(l => l.name);
-        issueLabelsCache.set(String(issue.number), { labels: labelNames, fetchedAt: Date.now() });
+        issueLabelsCache.set(String(issue.number), { labels: labelNames, state: 'OPEN', fetchedAt: Date.now() });
       }
 
       // Ordenar por prioridad combinada (priority label + feature priority)
