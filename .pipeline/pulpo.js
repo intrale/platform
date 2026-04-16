@@ -2039,7 +2039,7 @@ function brazoLanzamiento(config) {
     // 0c. CLOSED: no lanzar issues cerrados en GitHub — archivar y seguir
     if (isIssueClosed(issue)) {
       log('lanzamiento', `#${issue} omitido — issue cerrado en GitHub, archivando`);
-      const archDir = path.join(fasePath(pipeline, fase), 'archivado');
+      const archDir = path.join(fasePath(pipelineName, fase), 'archivado');
       fs.mkdirSync(archDir, { recursive: true });
       moveFile(archivo.path, archDir);
       continue;
