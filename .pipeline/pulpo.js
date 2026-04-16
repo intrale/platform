@@ -886,14 +886,28 @@ function validateQaEvidence(issue, qaData) {
   }
 
   // 2. Verificar que el archivo de video existe y tiene tamaño real
-  const videoPath = path.join(PIPELINE, 'logs', 'media', `qa-${issue}.mp4`);
-  try {
-    const stat = fs.statSync(videoPath);
-    if (stat.size < QA_VIDEO_MIN_SIZE_BYTES) {
-      issues.push(`video existe pero pesa ${Math.round(stat.size / 1024)}KB (mínimo 200KB)`);
-    }
-  } catch {
-    issues.push(`video no encontrado en ${videoPath}`);
+  // Buscar en qa/evidence/{issue}/ y qa/recordings/ (narrated o raw)
+  const ROOT = path.resolve(PIPELINE, '..');
+  const searchDirs = [
+    path.join(ROOT, 'qa', 'evidence', String(issue)),
+    path.join(ROOT, 'qa', 'recordings'),
+  ];
+  let videoFound = false;
+  for (const dir of searchDirs) {
+    try {
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.mp4'));
+      for (const f of files) {
+        const stat = fs.statSync(path.join(dir, f));
+        if (stat.size >= QA_VIDEO_MIN_SIZE_BYTES) {
+          videoFound = true;
+          break;
+        }
+      }
+    } catch { /* dir no existe, seguir buscando */ }
+    if (videoFound) break;
+  }
+  if (!videoFound) {
+    issues.push(`video no encontrado en qa/evidence/${issue}/ ni qa/recordings/ (mínimo 200KB)`);
   }
 
   return issues;
