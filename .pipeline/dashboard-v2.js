@@ -3350,7 +3350,7 @@ async function softRefresh() {
 let lastHash = null;
 let __pendingChanges = 0;
 let __lastChangeTs = null;
-let __autoRefresh = false;
+let __autoRefresh = true;
 let __autoRefreshInterval = null;
 const AUTO_REFRESH_SECONDS = 10;
 
@@ -3433,6 +3433,18 @@ es.onmessage = e => {
   lastHash = e.data;
 };
 es.onerror = () => { /* silent */ };
+
+// Auto-activar auto-refresh al cargar la página (default ON)
+if (__autoRefresh) {
+  const arBtn = document.getElementById('autorefresh-btn');
+  if (arBtn) {
+    arBtn.className = 'badge-autorefresh ar-on';
+    arBtn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+    arBtn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+  }
+  updateFooter();
+  __autoRefreshInterval = setInterval(() => softRefresh(), AUTO_REFRESH_SECONDS * 1000);
+}
 
 // Restaurar estado UI — se invoca después de definir las funciones necesarias
 function restoreIssueTrackerState() {
