@@ -7,19 +7,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -31,7 +25,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,13 +39,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderItem
 import asdo.client.ClientOrderStatusEvent
-import asdo.client.PriceChange
 import asdo.client.RepeatOrderResult
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
@@ -98,6 +88,12 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
         val repeatPriceNow = Txt(MessageKey.client_orders_detail_repeat_price_now)
         val repeatItemsUnavailable = Txt(MessageKey.client_orders_detail_repeat_items_unavailable)
         val repeatViewCart = Txt(MessageKey.client_orders_detail_repeat_view_cart)
+        val repeatAddedSection = Txt(MessageKey.client_orders_repeat_added_section)
+        val repeatCloseLabel = Txt(MessageKey.client_orders_repeat_close)
+        val reasonOutOfStock = Txt(MessageKey.client_orders_repeat_reason_out_of_stock)
+        val reasonDiscontinued = Txt(MessageKey.client_orders_repeat_reason_discontinued)
+        val reasonUnavailable = Txt(MessageKey.client_orders_repeat_reason_unavailable)
+        val reasonUnknown = Txt(MessageKey.client_orders_repeat_reason_unknown)
 
         var showRepeatDialog by remember { mutableStateOf<RepeatOrderResult?>(null) }
 
@@ -177,11 +173,21 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
                 priceBeforeLabel = repeatPriceBefore,
                 priceNowLabel = repeatPriceNow,
                 itemsUnavailableLabel = repeatItemsUnavailable,
+                addedLabel = repeatAddedSection,
                 viewCartLabel = repeatViewCart,
+                closeLabel = repeatCloseLabel,
+                reasonOutOfStock = reasonOutOfStock,
+                reasonDiscontinued = reasonDiscontinued,
+                reasonUnavailable = reasonUnavailable,
+                reasonUnknown = reasonUnknown,
                 onViewCart = {
                     showRepeatDialog = null
                     viewModel.clearRepeatOrderResult()
                     navigate(CLIENT_CART_PATH)
+                },
+                onDismiss = {
+                    showRepeatDialog = null
+                    viewModel.clearRepeatOrderResult()
                 }
             )
         }
@@ -663,148 +669,3 @@ private fun OrderItemRow(item: ClientOrderItem) {
     }
 }
 
-/**
- * Diálogo informativo que muestra el resultado de repetir un pedido
- * cuando hay cambios de precio y/o items no disponibles.
- */
-@Composable
-private fun RepeatOrderResultDialog(
-    result: RepeatOrderResult,
-    title: String,
-    priceChangedLabel: String,
-    priceBeforeLabel: String,
-    priceNowLabel: String,
-    itemsUnavailableLabel: String,
-    viewCartLabel: String,
-    onViewCart: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onViewCart,
-        title = {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 400.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
-            ) {
-                // Sección: items agregados
-                if (result.addedItems.isNotEmpty()) {
-                    Text(
-                        text = "${result.addedItems.size} productos agregados",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                // Sección: cambios de precio
-                if (result.priceChangedItems.isNotEmpty()) {
-                    HorizontalDivider()
-                    Text(
-                        text = priceChangedLabel,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    result.priceChangedItems.forEach { priceChange ->
-                        PriceChangeRow(
-                            priceChange = priceChange,
-                            beforeLabel = priceBeforeLabel,
-                            nowLabel = priceNowLabel
-                        )
-                    }
-                }
-
-                // Sección: items no disponibles
-                if (result.skippedItems.isNotEmpty()) {
-                    HorizontalDivider()
-                    Text(
-                        text = "$itemsUnavailableLabel: ${result.skippedItems.size}",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                    result.skippedItems.forEach { skipped ->
-                        Text(
-                            text = skipped.item.name,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = onViewCart) {
-                Text(viewCartLabel)
-            }
-        }
-    )
-}
-
-/**
- * Fila individual de un producto con cambio de precio.
- */
-@Composable
-private fun PriceChangeRow(
-    priceChange: PriceChange,
-    beforeLabel: String,
-    nowLabel: String
-) {
-    val isIncrease = priceChange.difference > 0
-    val changeColor = if (isIncrease) {
-        MaterialTheme.colorScheme.error
-    } else {
-        MaterialTheme.colorScheme.tertiary
-    }
-    val changePrefix = if (isIncrease) "+" else ""
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 1.dp,
-        shape = MaterialTheme.shapes.small
-    ) {
-        Column(
-            modifier = Modifier.padding(MaterialTheme.spacing.x3),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
-        ) {
-            Text(
-                text = priceChange.item.name,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "$beforeLabel: ${formatPrice(priceChange.item.unitPrice)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        textDecoration = TextDecoration.LineThrough,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "$nowLabel: ${formatPrice(priceChange.currentPrice)}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Text(
-                    text = "$changePrefix${formatPrice(priceChange.difference)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = changeColor,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
