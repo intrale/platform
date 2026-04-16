@@ -31,7 +31,8 @@ data class ClientOrdersUiState(
     val detailError: String? = null,
     val repeatOrderLoading: Boolean = false,
     val repeatOrderResult: RepeatOrderResult? = null,
-    val repeatOrderError: String? = null
+    val repeatOrderError: String? = null,
+    val showRepeatResultDialog: Boolean = false
 )
 
 class ClientOrdersViewModel(
@@ -130,7 +131,12 @@ class ClientOrdersViewModel(
                         ClientCartStore.setQuantity(product, item.quantity)
                     }
                 }
-                state = state.copy(repeatOrderLoading = false, repeatOrderResult = result)
+                val shouldShowDialog = result.skippedItems.isNotEmpty()
+                state = state.copy(
+                    repeatOrderLoading = false,
+                    repeatOrderResult = result,
+                    showRepeatResultDialog = shouldShowDialog
+                )
             }
             .onFailure { throwable ->
                 logger.error(throwable) { "Error al repetir pedido ${order.id}" }
@@ -142,6 +148,10 @@ class ClientOrdersViewModel(
     }
 
     fun clearRepeatOrderResult() {
-        state = state.copy(repeatOrderResult = null, repeatOrderError = null)
+        state = state.copy(repeatOrderResult = null, repeatOrderError = null, showRepeatResultDialog = false)
+    }
+
+    fun dismissRepeatResultDialog() {
+        state = state.copy(showRepeatResultDialog = false)
     }
 }

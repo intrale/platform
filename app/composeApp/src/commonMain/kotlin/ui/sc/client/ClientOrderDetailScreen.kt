@@ -121,18 +121,15 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
             }
         }
 
+        // Caso todos disponibles: Snackbar + navegación automática (sin regresión)
         LaunchedEffect(state.repeatOrderResult) {
             state.repeatOrderResult?.let { result ->
-                val message = when {
-                    result.addedItems.isEmpty() -> repeatNoItems
-                    result.skippedItems.isNotEmpty() -> repeatPartial
-                    else -> repeatSuccess
-                }
-                snackbarHostState.showSnackbar(message)
-                viewModel.clearRepeatOrderResult()
-                if (result.addedItems.isNotEmpty()) {
+                if (result.skippedItems.isEmpty() && result.addedItems.isNotEmpty()) {
+                    snackbarHostState.showSnackbar(repeatSuccess)
+                    viewModel.clearRepeatOrderResult()
                     navigate(CLIENT_CART_PATH)
                 }
+                // Casos parcial/ninguno se manejan con el diálogo
             }
         }
 
@@ -141,6 +138,22 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
                 snackbarHostState.showSnackbar(it)
                 viewModel.clearRepeatOrderResult()
             }
+        }
+
+        // Diálogo de resultado para caso parcial o ninguno disponible
+        if (state.showRepeatResultDialog && state.repeatOrderResult != null) {
+            RepeatOrderResultDialog(
+                result = state.repeatOrderResult!!,
+                onDismiss = {
+                    viewModel.dismissRepeatResultDialog()
+                    viewModel.clearRepeatOrderResult()
+                },
+                onGoToCart = {
+                    viewModel.dismissRepeatResultDialog()
+                    viewModel.clearRepeatOrderResult()
+                    navigate(CLIENT_CART_PATH)
+                }
+            )
         }
 
         Scaffold(
