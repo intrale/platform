@@ -31,6 +31,20 @@ const POLL_INTERVAL = 10000; // 10 segundos
 const BOOT_TIMEOUT = 120000; // 2 minutos para boot
 const KILL_TIMEOUT = 15000;  // 15 segundos para kill
 
+// --- Sanitización de PIDs (CA-5 #2160) ---
+// Valida que un PID leído del state file sea un entero positivo antes de
+// interpolarlo en comandos tasklist/taskkill. Previene inyección de comandos
+// si qa-env-state.json es corrupto o manipulado.
+function sanitizePid(pid) {
+  if (pid === null || pid === undefined) return null;
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) {
+    log(`⚠️ PID inválido rechazado: ${JSON.stringify(pid)} — se ignora`);
+    return null;
+  }
+  return n;
+}
+
 // --- Estado interno ---
 // stopped | starting | running | stopping
 let emulatorState = 'stopped';
@@ -67,7 +81,7 @@ function detectEmulatorState() {
   // Check 2: qa-env-state.json + proceso vivo
   try {
     const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    const pid = state.emulator || state.emulador;
+    const pid = sanitizePid(state.emulator || state.emulador);
     if (pid && isProcessAlive(pid)) return 'running'; // proceso vivo pero ADB no responde = starting
   } catch {}
 
@@ -82,11 +96,12 @@ function detectEmulatorState() {
 }
 
 function isProcessAlive(pid) {
-  if (!pid) return false;
+  const safePid = sanitizePid(pid);
+  if (!safePid) return false;
   try {
-    const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`,
+    const r = execSync(`tasklist /FI "PID eq ${safePid}" /NH /FO CSV`,
       { encoding: 'utf8', timeout: 5000, windowsHide: true });
-    return r.includes(`"${pid}"`);
+    return r.includes(`"${safePid}"`);
   } catch { return false; }
 }
 
