@@ -381,27 +381,18 @@ async function main() {
     const videoDuration = getDuration(args.video, ffprobePath) || 60;
     console.log("[qa-narration] Duración del video: " + videoDuration.toFixed(1) + "s");
 
-    // Calcular timestamps: distribuir uniformemente si no hay delay_ms explícito
-    const segmentInterval = videoDuration / (allSegments.length + 1);
-    const timedSegments = allSegments.map((seg, idx) => ({
-        ...seg,
-        startTime: typeof seg.start_ms === "number"
-            ? seg.start_ms / 1000
-            : segmentInterval * (idx + 1) + (seg.delay_ms || 0) / 1000
-    }));
-
     // Crear directorio temporal
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "qa-narration-"));
 
     try {
-        // Generar clips de audio TTS para cada segmento
-        console.log("[qa-narration] Generando " + timedSegments.length + " clip(s) TTS con OpenAI...");
+        // Generar clips de audio TTS primero (sin asignar timestamps todavía)
+        console.log("[qa-narration] Generando " + allSegments.length + " clip(s) TTS con OpenAI...");
         const clipFiles = [];
 
-        for (let i = 0; i < timedSegments.length; i++) {
-            const seg = timedSegments[i];
+        for (let i = 0; i < allSegments.length; i++) {
+            const seg = allSegments[i];
             const clipPath = path.join(tmpDir, "paso_" + (i + 1) + ".opus");
-            const progressLabel = "  Paso " + (i + 1) + "/" + timedSegments.length;
+            const progressLabel = "  Paso " + (i + 1) + "/" + allSegments.length;
 
             try {
                 const audioBuffer = await callOpenAITTS(seg.text, openaiApiKey);
@@ -409,13 +400,46 @@ async function main() {
                 const clipDuration = getDuration(clipPath, ffprobePath) || 3;
                 clipFiles.push({
                     path: clipPath,
-                    startTime: seg.startTime,
-                    duration: clipDuration
+                    duration: clipDuration,
+                    // startTime se asigna abajo en base a la duración acumulada real
+                    explicitStart: typeof seg.start_ms === "number" ? seg.start_ms / 1000 : null,
+                    delayMs: seg.delay_ms || 0
                 });
                 process.stdout.write(progressLabel + " OK (" + clipDuration.toFixed(1) + "s) → " + seg.text.substring(0, 60) + "\n");
             } catch (e) {
                 console.error(progressLabel + " FALLÓ: " + e.message);
                 // Continuar con el siguiente clip
+            }
+        }
+
+        // Asignar startTime SINCRÓNICO con la acción real:
+        // 1) Si el segmento trae start_ms explícito → se usa tal cual.
+        // 2) Si no → se encadena secuencialmente desde el inicio del video,
+        //    acumulando duraciones reales de los clips + una pausa breve.
+        //    Esto evita el desfasaje que producía la distribución uniforme,
+        //    donde la narración quedaba desalineada respecto a lo mostrado.
+        const INTER_CLIP_PAUSE = 0.35; // 350ms entre clips consecutivos
+        let cursor = 0;
+        for (const clip of clipFiles) {
+            if (clip.explicitStart !== null) {
+                clip.startTime = clip.explicitStart + clip.delayMs / 1000;
+                cursor = Math.max(cursor, clip.startTime + clip.duration + INTER_CLIP_PAUSE);
+            } else {
+                clip.startTime = cursor + clip.delayMs / 1000;
+                cursor = clip.startTime + clip.duration + INTER_CLIP_PAUSE;
+            }
+        }
+
+        // Si la narración total excede la duración del video, avisar.
+        // El filtro amix respeta duration=first, por lo que recortará naturalmente,
+        // pero un buffer menor a 2s suele indicar que conviene guiones más cortos.
+        const last = clipFiles[clipFiles.length - 1];
+        if (last) {
+            const end = last.startTime + last.duration;
+            if (end > videoDuration) {
+                console.warn("[qa-narration] Narración (" + end.toFixed(1) + "s) excede video (" + videoDuration.toFixed(1) + "s) — final queda truncado");
+            } else {
+                console.log("[qa-narration] Narración termina a " + end.toFixed(1) + "s / video " + videoDuration.toFixed(1) + "s (buffer " + (videoDuration - end).toFixed(1) + "s)");
             }
         }
 
