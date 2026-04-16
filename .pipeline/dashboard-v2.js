@@ -2620,30 +2620,31 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
 /* Priority Windows (inline toggles — used en barra de control global) */
-.pw-toggles{display:inline-flex;gap:8px;vertical-align:middle;align-items:center}
-.pw-toggle{padding:4px 12px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none;font-size:0.85em;min-height:24px;display:inline-flex;align-items:center;line-height:1}
-.pw-toggle-active{background:var(--yl2);color:var(--yl);border-color:var(--yl);animation:pwPulse 2.5s ease-in-out infinite}
-.pw-toggle-inactive{background:var(--sf2);color:var(--dim);border-color:var(--bd)}
-.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg)}
-.pw-toggle.pw-build.pw-toggle-active{background:var(--ac2);color:var(--ac);border-color:var(--ac)}
+.pw-toggles{display:inline-flex;gap:6px;vertical-align:middle;align-items:center}
+.pw-toggle{padding:3px 11px;border-radius:14px;cursor:pointer;font-weight:600;letter-spacing:0.2px;transition:all 0.2s ease;border:1px solid var(--bd);user-select:none;font-size:0.82em;min-height:24px;display:inline-flex;align-items:center;line-height:1;backdrop-filter:blur(4px)}
+.pw-toggle-active{background:rgba(210,153,34,0.15);color:var(--yl);border-color:rgba(210,153,34,0.5);box-shadow:0 0 8px rgba(210,153,34,0.2);animation:pwPulse 2.5s ease-in-out infinite}
+.pw-toggle-inactive{background:color-mix(in srgb,var(--sf) 80%,transparent);color:var(--dim);border-color:color-mix(in srgb,var(--bd) 60%,transparent)}
+.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg);transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+.pw-toggle.pw-build.pw-toggle-active{background:rgba(88,166,255,0.15);color:var(--ac);border-color:rgba(88,166,255,0.5);box-shadow:0 0 8px rgba(88,166,255,0.2)}
 @keyframes pwPulse{0%,100%{opacity:1}50%{opacity:0.65}}
 
 /* ── Pipeline control bar (global status + Priority Windows) ─────────── */
-.pipeline-ctrl-bar{padding:8px 18px;display:flex;align-items:center;gap:14px;font-size:0.85em;border-bottom:1px solid var(--bd);min-height:40px;background:var(--sf);position:sticky;top:56px;z-index:9;transition:background 0.25s,border-color 0.25s,color 0.25s;flex-wrap:wrap}
-.pipeline-ctrl-bar.ctrl-ok{background:var(--sf);color:var(--dim)}
-.pipeline-ctrl-bar.ctrl-priority-qa{background:rgba(210,153,34,0.12);color:var(--yl);border-bottom-color:rgba(210,153,34,0.4)}
-.pipeline-ctrl-bar.ctrl-priority-build{background:rgba(88,166,255,0.10);color:var(--ac);border-bottom-color:rgba(88,166,255,0.4)}
-.pipeline-ctrl-bar.ctrl-paused{background:rgba(251,188,5,0.10);color:#f0a500;border-bottom-color:rgba(251,188,5,0.4)}
-.pipeline-ctrl-bar.ctrl-blocked{background:rgba(248,81,73,0.10);color:var(--rd);border-bottom-color:rgba(248,81,73,0.4);animation:pausePulse 2s infinite}
-.pipeline-ctrl-bar.ctrl-stale{background:rgba(210,153,34,0.08);color:var(--yl);border-bottom-color:rgba(210,153,34,0.3)}
-.ctrl-bar-status{display:inline-flex;align-items:center;gap:8px;font-weight:600;letter-spacing:0.3px}
-.ctrl-bar-status-icon{font-size:1.05em}
-.ctrl-bar-sep{width:1px;height:16px;background:var(--bd);margin:0 2px}
+.pipeline-ctrl-bar{padding:6px 20px;display:flex;align-items:center;gap:16px;font-size:0.82em;border-bottom:none;min-height:36px;background:linear-gradient(90deg,var(--sf) 0%,color-mix(in srgb,var(--sf) 92%,var(--ac)) 100%);position:sticky;top:56px;z-index:9;transition:all 0.3s ease;flex-wrap:wrap;border-radius:0 0 8px 8px;margin:0 12px;box-shadow:0 2px 8px rgba(0,0,0,0.15)}
+.pipeline-ctrl-bar.ctrl-ok{background:linear-gradient(90deg,var(--sf) 0%,color-mix(in srgb,var(--sf) 88%,var(--gn)) 100%);color:var(--dim)}
+.pipeline-ctrl-bar.ctrl-priority-qa{background:linear-gradient(90deg,rgba(210,153,34,0.08) 0%,rgba(210,153,34,0.18) 100%);color:var(--yl)}
+.pipeline-ctrl-bar.ctrl-priority-build{background:linear-gradient(90deg,rgba(88,166,255,0.06) 0%,rgba(88,166,255,0.16) 100%);color:var(--ac)}
+.pipeline-ctrl-bar.ctrl-paused{background:linear-gradient(90deg,rgba(251,188,5,0.06) 0%,rgba(251,188,5,0.14) 100%);color:#f0a500}
+.pipeline-ctrl-bar.ctrl-blocked{background:linear-gradient(90deg,rgba(248,81,73,0.06) 0%,rgba(248,81,73,0.14) 100%);color:var(--rd);animation:pausePulse 2s infinite}
+.pipeline-ctrl-bar.ctrl-stale{background:linear-gradient(90deg,rgba(210,153,34,0.05) 0%,rgba(210,153,34,0.12) 100%);color:var(--yl)}
+.ctrl-bar-status{display:inline-flex;align-items:center;gap:8px;font-weight:500;letter-spacing:0.2px}
+.ctrl-bar-status-icon{font-size:0.95em;opacity:0.85}
+.ctrl-bar-sep{width:1px;height:14px;background:color-mix(in srgb,currentColor 20%,transparent);margin:0 4px;border-radius:1px}
 .ctrl-bar-spacer{margin-left:auto}
-.ctrl-bar-btn{padding:4px 12px;border-radius:10px;cursor:pointer;font-size:0.92em;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-weight:600;min-height:24px;display:inline-flex;align-items:center;gap:4px;transition:background 0.15s,transform 0.1s}
-.ctrl-bar-btn:hover{background:color-mix(in srgb, currentColor 15%, transparent)}
-.ctrl-bar-btn:active{transform:scale(0.96)}
-.ctrl-bar-label{font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:var(--dim);font-weight:600}
+.ctrl-bar-btn{padding:4px 14px;border-radius:14px;cursor:pointer;font-size:0.88em;border:1px solid color-mix(in srgb,currentColor 40%,transparent);background:color-mix(in srgb,currentColor 8%,transparent);color:inherit;font-family:inherit;font-weight:600;min-height:26px;display:inline-flex;align-items:center;gap:5px;transition:all 0.2s ease;backdrop-filter:blur(4px)}
+.ctrl-bar-btn:hover{background:color-mix(in srgb,currentColor 18%,transparent);border-color:color-mix(in srgb,currentColor 50%,transparent);transform:translateY(-1px);box-shadow:0 2px 6px rgba(0,0,0,0.12)}
+.ctrl-bar-btn:active{transform:scale(0.97) translateY(0)}
+.ctrl-bar-label{font-size:0.72em;text-transform:uppercase;letter-spacing:1.2px;color:color-mix(in srgb,var(--dim) 70%,transparent);font-weight:700}
+.ctrl-bar-spacer{flex:1}
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
@@ -3089,23 +3090,23 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
     let statusHtml;
     if (blockedNow) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>BLOQUEADO por saturación de recursos</span>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>Recursos al l\u00EDmite \u2014 nuevos lanzamientos en espera</span>';
     } else if (isPaused) {
-      // El badge del header ya indica PAUSADO — evitamos duplicar el texto acá.
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Lanzamientos detenidos por usuario</span>'
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Pipeline en pausa</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>QA PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo QA puede lanzar</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar QA Priority">\u2715 Desactivar</button>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F50D}</span>Ventana QA activa \u00B7 ' + elapsed + ' min</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar ventana QA">\u2715 Cerrar</button>';
     } else if (buildActive) {
       const elapsed = pw.build.activatedAt ? Math.round((Date.now() - pw.build.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>BUILD PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo Build puede lanzar</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar Build Priority">\u2715 Desactivar</button>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F528}</span>Ventana Build activa \u00B7 ' + elapsed + ' min</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar ventana Build">\u2715 Cerrar</button>';
     } else if (stale > 0) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' stale (>30m trabajando)</span>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' sin avance (+30 min)</span>';
     } else {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>Sistema OK \u00B7 ' + trabajando + ' en ejecución</span>';
+      const msg = trabajando > 0 ? trabajando + ' agente' + (trabajando > 1 ? 's' : '') + ' trabajando' : 'Sin actividad';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>' + msg + '</span>';
     }
 
     // Toggles de Priority Windows (siempre visibles a la derecha, salvo si ya hay una activa en el status)
