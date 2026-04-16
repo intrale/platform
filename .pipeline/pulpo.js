@@ -3365,6 +3365,8 @@ function generarAck(texto, esAudio = false) {
 
 /**
  * Genera mensajes de progreso contextuales que evolucionan con el tiempo.
+ * Amplio pool (~200 mensajes) para evitar repeticiones, con tono argentino.
+ * En vez de stats de operaciones, muestra porcentaje estimado y ETA cuando corresponde.
  * @param {number} count - Número de mensaje de progreso (0, 1, 2, ...)
  * @param {number} elapsedSec - Segundos transcurridos
  * @param {number} tools - Cantidad de herramientas usadas
@@ -3373,34 +3375,329 @@ function generarAck(texto, esAudio = false) {
  * @returns {string}
  */
 function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOriginal) {
-  const ctx = lastTool ? lastTool.slice(0, 40) : '';
+  const ctx = lastTool ? lastTool.slice(0, 50) : '';
   const t = (textoOriginal || '').toLowerCase();
 
-  if (count === 0) {
-    // Primera actualización (~45s) — contextual al pedido, tranquiliza
-    if (/reinici|restart/.test(t)) return `⏳ Reiniciando servicios, lleva un poquito más de lo normal...`;
-    if (/recurs|cpu|ram/.test(t)) return `⏳ Analizando consumo de recursos en detalle...`;
-    if (/error|fall|crash/.test(t)) return `⏳ Revisando logs y estado del sistema, bancame...`;
-    if (/implement|rediseñ|cambi/.test(t)) return `⏳ Trabajando en los cambios, esto tiene varios pasos...`;
-    return `⏳ ${ctx ? `Trabajando en: ${ctx}` : 'Analizando tu pedido, necesito un ratito más'}...`;
-  }
+  // Detectar categoría del pedido para contextualizar
+  let categoria = 'general';
+  if (/reinici|restart|levantar/.test(t)) categoria = 'restart';
+  else if (/recurs|cpu|ram|memoria|disco/.test(t)) categoria = 'recursos';
+  else if (/error|fall|crash|bug|romp/.test(t)) categoria = 'diagnostico';
+  else if (/implement|rediseñ|cambi|agreg|nuev|código|codigo/.test(t)) categoria = 'implementacion';
+  else if (/revis|analiz|investig|fij|cheque/.test(t)) categoria = 'investigacion';
+  else if (/deploy|merge|pr |pull|entreg|push/.test(t)) categoria = 'delivery';
+  else if (/test|qa|calidad|verificar/.test(t)) categoria = 'testing';
+  else if (/log|monitor|estado|status|dashboard/.test(t)) categoria = 'monitoreo';
+  else if (/clean|limp|orden|borra|elimin/.test(t)) categoria = 'limpieza';
+  else if (/issue|backlog|historia|ticket|label/.test(t)) categoria = 'gestion';
+  else if (/config|setting|hook|permiso/.test(t)) categoria = 'config';
+  else if (/video|drive|subir|upload|archivo/.test(t)) categoria = 'archivos';
 
-  if (count === 1) {
-    // Segunda (~1.5min) — noción de avance
-    if (tools > 5) return `⚙️ Ya llevo ${tools} operaciones, avanzando bien...`;
-    if (ctx) return `⚙️ Sigo en eso — ahora estoy con: ${ctx}`;
-    return `⚙️ Sigue en marcha, un ratito más...`;
-  }
+  // Pool amplio de mensajes por categoría — argentinizados y variados
+  const pools = {
+    restart: [
+      'Reiniciando los servicios, que a veces se ponen caprichosos',
+      'Levantando todo de nuevo, en un toque te confirmo',
+      'Tirando abajo y volviendo a armar, que es la que va',
+      'Re-arrancando servicios, dame un momentito que termine de levantar todo',
+      'Matando procesos y volviendo a lanzar, enseguida',
+      'Bajando y subiendo servicios, los que se cuelgan los reinicio de cero',
+      'Haciendo el restart limpio, no quiero dejar nada zombie',
+      'Arrancando todo fresh, un toque y te confirmo que levantó',
+      'El reinicio va bien, estoy esperando que los servicios respondan',
+      'Reiniciando con paciencia, que si apuro se traban más',
+      'Ahí va levantando todo, algunos servicios tardan un cachito',
+      'Ya maté lo que había que matar, ahora estoy levantando de nuevo',
+      'Va el restart, verificando que cada servicio arranque como corresponde',
+      'Reinicio en marcha, chequeando uno por uno que respondan',
+      'Haciendo el ciclo completo de restart, dame unos minutos',
+    ],
+    recursos: [
+      'Mirando cómo anda la máquina, chequeando CPU y memoria',
+      'Revisando los consumos del sistema, a ver qué está chupando recursos',
+      'Analizando procesos y memoria, enseguida te cuento el panorama',
+      'Midiendo cómo andan los recursos, que a veces algún proceso se zarpa',
+      'Escaneando el estado del sistema en detalle, ya te armo el reporte',
+      'Chequeando qué procesos están comiendo más, dame un toque',
+      'Juntando métricas de CPU, RAM y disco para darte el panorama',
+      'Revisando la salud del sistema, quiero ver si hay algo que se pasó de rosca',
+      'Viendo los consumos en tiempo real, enseguida te reporto qué encontré',
+      'Investigando si hay algún proceso desbocado que esté jodiendo',
+      'Monitoreando la carga del sistema, un toque y te cuento',
+      'Analizando la performance general, quiero darte data precisa',
+      'Chequeando si la máquina anda holgada o apretada de recursos',
+      'Midiendo tiempos de respuesta y consumo, para ver si hay cuello de botella',
+      'Revisando los picos de consumo, dame un ratito que lo proceso',
+    ],
+    diagnostico: [
+      'Revisando los logs a ver qué pasó, bancame un toque',
+      'Investigando el problema, leyendo trazas y estado de los servicios',
+      'Buscando la causa raíz del quilombo, un ratito más',
+      'Metiéndome en los logs para entender qué se rompió',
+      'Analizando el error en detalle, quiero darte un diagnóstico posta',
+      'Siguiendo el rastro del bug, hay varias pistas a chequear',
+      'Leyendo trazas de error para armar la línea de tiempo del problema',
+      'Cruzando datos entre los logs, a ver dónde arrancó el despelote',
+      'Desenredando el error, que a veces uno tapa al otro',
+      'Buscando el punto exacto donde se rompió, ya estoy cerca',
+      'Analizando el stack trace y el contexto, quiero darte la posta',
+      'Revisando qué cambió para que esto falle, no quiero tirar diagnóstico a medias',
+      'Chequeando si el error es puntual o si hay algo de fondo',
+      'Rastreando el bug paso a paso, enseguida te cuento qué encontré',
+      'Investigando si es un error nuevo o algo que ya venía de antes',
+      'Mirando los logs con lupa, quiero entender bien el escenario del fallo',
+    ],
+    implementacion: [
+      'Metido en el código haciendo los cambios, viene bien',
+      'Laburando en la implementación, son varios archivos pero avanzo',
+      'Escribiendo código y testeando, no quiero mandarte cualquier cosa',
+      'Armando los cambios, quiero que quede bien antes de mostrártelo',
+      'La implementación tiene sus vueltas pero sale',
+      'Haciendo las modificaciones, chequeando que cada parte funcione',
+      'Escribiendo el código, me estoy asegurando de no romper nada existente',
+      'Avanzando con los cambios, tocando los archivos que corresponden',
+      'Codeando y probando sobre la marcha, va tomando forma',
+      'Implementando la solución, estoy en la parte más tricky',
+      'Armando todo prolijo, que después no quiero volver a tocar esto',
+      'En pleno desarrollo, ya hice la parte más pesada',
+      'Ajustando los detalles de la implementación, lo grueso ya está',
+      'Picando código, enseguida te cuento qué armé',
+      'Haciendo las modificaciones paso a paso, sin apurar para no meter la pata',
+      'Metiéndole al código, quiero que quede sólido de entrada',
+    ],
+    investigacion: [
+      'Investigando a fondo, leyendo código y logs',
+      'Revisando todo lo relacionado al tema, quiero darte data completa',
+      'Metiéndome en los archivos para entender bien qué pasa',
+      'Analizando el tema en detalle, enseguida te cuento',
+      'Ya tengo algunas pistas pero quiero confirmar antes de hablar',
+      'Leyendo código fuente para entender cómo funciona esto hoy',
+      'Cruzando info de varios archivos, quiero darte un panorama claro',
+      'Revisando el historial de cambios para entender el contexto',
+      'Investigando a fondo, prefiero tardar un poco más y darte la posta',
+      'Siguiendo varias pistas en paralelo, enseguida te cuento',
+      'Chequeando cómo se conectan las piezas, esto tiene varias capas',
+      'Leyendo documentación y código para darte una respuesta completa',
+      'Analizando el tema desde varios ángulos, no quiero dejar nada afuera',
+      'Haciendo la investigación como corresponde, sin atajo',
+      'Juntando toda la info relevante, un ratito más y te cuento',
+      'Rastreando el tema en el código y la config, ya voy entendiendo',
+    ],
+    delivery: [
+      'Preparando todo para entregar, revisando que esté prolijo',
+      'Armando el PR con los cambios, un ratito más',
+      'Verificando que todo compile y pase los checks antes de pushear',
+      'En el proceso de delivery, quiero que salga limpio',
+      'Empaquetando los cambios para el merge, ya casi',
+      'Haciendo el commit y preparando el push, quiero que el PR quede claro',
+      'Revisando el diff final antes de crear el PR',
+      'Armando la descripción del PR con los detalles técnicos',
+      'Pusheando y creando el PR, dame un toque',
+      'Verificando que no falte nada antes del merge',
+      'En la recta final de la entrega, revisando todo una vez más',
+      'Preparando el delivery, quiero que esté todo documentado',
+      'Haciendo las últimas verificaciones antes de entregar',
+      'Armando todo para que el merge sea limpio, sin sorpresas',
+      'Ya estoy en la parte de delivery, falta poco',
+    ],
+    testing: [
+      'Corriendo tests y verificando calidad, esto lleva su rato',
+      'En la fase de testing, quiero asegurarme que no se rompa nada',
+      'Ejecutando las verificaciones, bancame que termine de correr todo',
+      'Testeando los cambios a fondo, mejor prevenir que curar',
+      'Validando que todo funcione como corresponde, un toque más',
+      'Pasando los tests uno por uno, hasta ahora vienen bien',
+      'Corriendo la suite de tests, enseguida te cuento el resultado',
+      'En plena verificación, quiero darte el resultado con confianza',
+      'Testeando edge cases, no quiero que algo raro se cuele',
+      'Ejecutando validaciones, si pasa todo te confirmo al toque',
+      'Revisando que los tests cubran bien los escenarios importantes',
+      'En la etapa de verificación, esto es lo que más vale la pena esperar',
+      'Corriendo checks de calidad, dame unos minutos',
+      'Validando el comportamiento esperado, va bien hasta ahora',
+      'Testeando en todas las configuraciones que corresponden',
+    ],
+    monitoreo: [
+      'Revisando el estado de todo, juntando métricas y datos',
+      'Chequeando cómo andan los servicios, enseguida te reporto',
+      'Mirando el estado del pipeline y los agentes, un momento',
+      'Recopilando info del sistema para darte el panorama completo',
+      'Monitoreando los servicios, en un toque te armo el resumen',
+      'Juntando data de todos los procesos para el reporte',
+      'Consultando el estado de cada servicio, ya te armo el status',
+      'Chequeando qué está corriendo y qué no, enseguida te cuento',
+      'Relevando el estado actual del pipeline, dame un momentito',
+      'Armando el panorama general, quiero que sea preciso',
+      'Mirando las métricas actualizadas, ya te paso el resumen',
+      'Revisando logs recientes y estado de procesos',
+      'Verificando la salud de cada componente del pipeline',
+      'Recopilando el estado de agentes y servicios, un toque',
+      'Consultando todo para darte una foto completa del sistema',
+    ],
+    limpieza: [
+      'Limpiando lo que hay que limpiar, con cuidado de no volar nada importante',
+      'Ordenando el workspace, identificando qué se puede borrar tranqui',
+      'En la limpieza, revisando qué queda y qué sobra',
+      'Haciendo espacio y ordenando, dame un ratito',
+      'Barriendo archivos temporales y procesos huérfanos',
+      'Identificando basura para eliminar sin tocar lo que importa',
+      'Limpiando logs viejos y archivos temporales, con cuidado',
+      'Ordenando la casa, que después se acumula y se complica',
+      'Revisando qué se puede limpiar de forma segura',
+      'Haciendo la limpieza con criterio, no quiero borrar algo que se necesite',
+      'Borrando lo que corresponde, dejando todo prolijo',
+      'En modo limpieza, ya identifiqué lo que sobra',
+      'Sacando la basura digital, dame un toque que termino',
+      'Liberando espacio y matando procesos que ya no sirven',
+      'Haciendo espacio en el disco, limpiando con precaución',
+    ],
+    gestion: [
+      'Revisando los issues y el backlog, organizando prioridades',
+      'Trabajando con los issues en GitHub, acomodando todo',
+      'Analizando el estado del backlog, enseguida te reporto',
+      'Gestionando issues y dependencias, un ratito más',
+      'Ordenando el tablero, quiero darte el panorama limpio',
+      'Revisando labels y asignaciones en GitHub',
+      'Actualizando el estado de los issues, dame un toque',
+      'Cruzando info del backlog para darte un resumen claro',
+      'Organizando las prioridades del tablero, enseguida te cuento',
+      'Chequeando bloqueos y dependencias entre issues',
+      'Gestionando el flujo de trabajo en GitHub, un momento',
+      'Repasando los tickets para ver qué está al día y qué no',
+      'Actualizando el estado de cada issue, quiero que el tablero refleje la realidad',
+      'Ordenando prioridades y moviendo issues donde corresponde',
+      'Revisando el panorama del backlog completo, un ratito',
+    ],
+    config: [
+      'Revisando la configuración, chequeando que todo esté en orden',
+      'Tocando settings, con cuidado de no romper nada',
+      'Ajustando la config, enseguida te confirmo el cambio',
+      'Modificando la configuración pedida, dame un toque',
+      'Revisando hooks y permisos, quiero asegurarme de que esté correcto',
+      'En los archivos de config, haciendo los ajustes necesarios',
+      'Actualizando la configuración del pipeline, un momento',
+      'Chequeando y ajustando settings, ya casi',
+      'Tocando los archivos de configuración, con precaución',
+      'Revisando que la config nueva no genere conflictos',
+      'Haciendo el cambio de configuración, verificando que tome efecto',
+      'Ajustando parámetros, enseguida te confirmo',
+    ],
+    archivos: [
+      'Procesando los archivos, verificando que estén completos',
+      'Preparando el upload, chequeando que todo esté en orden',
+      'Trabajando con los archivos, dame un toque',
+      'Subiendo lo que hay que subir, verificando que llegue bien',
+      'Procesando la tarea de archivos, enseguida te confirmo',
+      'Moviendo archivos y verificando integridad, un ratito',
+      'En el proceso de upload, chequeando que no falle nada',
+      'Revisando y procesando archivos, ya casi termino',
+      'Manejando los archivos necesarios, dame un momento',
+      'Trabajando con el almacenamiento, quiero que quede todo en su lugar',
+      'Procesando uploads pendientes, verificando uno por uno',
+      'Preparando y subiendo archivos, con paciencia para que salga bien',
+    ],
+    general: [
+      'Estoy en eso, bancame un toque que ya te cuento',
+      'Laburando en tu pedido, viene avanzando bien',
+      'Metiéndole pata a esto, enseguida te tengo la respuesta',
+      'Trabajando en lo que me pediste, un ratito más',
+      'Avanzando con esto, ya te tengo novedades en un toque',
+      'Dale que va, estoy terminando de procesar todo',
+      'Sigo en la misma, pero avanzando bien',
+      'En un momento te paso el resultado, viene encaminado',
+      'Acá ando metiéndole, enseguida te cuento',
+      'Dándole forma a lo que me pediste, ya falta menos',
+      'Procesando tu pedido, quiero darte algo concreto',
+      'Laburando con ganas, un toque más y te paso la data',
+      'Avanzando firme, ya te tengo algo en un ratito',
+      'En eso estoy, tranqui que no me olvidé',
+      'Metiéndole, viene saliendo bien la cosa',
+      'Ya estoy bastante avanzado, un poquito más',
+      'No aflojo, estoy en el tema y enseguida te cuento',
+      'Trabajando concentrado en esto, ya te tengo novedades pronto',
+      'Va tomando forma lo que me pediste, dame un toque más',
+      'Sigo en la misma, no te preocupes que viene bien',
+    ],
+  };
 
-  // Tercera+ — variaciones naturales
-  const avanzadas = [
-    `🔧 Esto tiene laburo pero ya le falta menos...`,
-    `💪 Bancame un toque más, ya cierro esto...`,
-    `📋 Armando la respuesta con todo lo que encontré...`,
-    `🔍 Últimos detalles, enseguida te cuento...`,
-    `✨ Ya casi termino, un momento más...`,
+  // Frases de progreso/avance con porcentaje y ETA (variadas para no repetir)
+  const progresoConEstimacion = [
+    (pct, eta) => `Voy por el ${pct}% aprox, calculo que en ${eta} te tengo el resultado`,
+    (pct, eta) => `Llevo como un ${pct}% del laburo, en ${eta} más o menos termino`,
+    (pct, eta) => `Estoy en un ${pct}% de avance, dame ${eta} más y te cuento`,
+    (pct, eta) => `Avancé bastante, ando por el ${pct}%, calculo ${eta} más`,
+    (pct, eta) => `Viene bien, estoy en un ${pct}% — unos ${eta} y lo cierro`,
+    (pct, eta) => `Ya hice como el ${pct}% de lo que necesito, en ${eta} te paso resultado`,
+    (pct, eta) => `Progreso: ${pct}% aprox. Calculo que en ${eta} te tengo todo`,
+    (pct, eta) => `Falta menos de lo que parece, ando en ${pct}% — ${eta} más calculo`,
+    (pct, eta) => `Más de la mitad lista, estoy en ${pct}% — unos ${eta} y listo`,
+    (pct, eta) => `Avanzando al ${pct}%, si todo sale bien en ${eta} te cuento`,
   ];
-  return avanzadas[(count - 2) % avanzadas.length];
+
+  // Frases de progreso SIN porcentaje (para variedad, no siempre tirar número)
+  const progresoGenerico = [
+    'La verdad que viene bastante bien, ya le queda poco',
+    'Estoy más cerca del final que del principio, tranqui',
+    'Avancé un montón, en un ratito te cuento el resultado',
+    'Ya pasé la parte más jodida, lo que queda es más sencillo',
+    'Falta poco para cerrar, estoy en los detalles finales',
+    'Viene encaminado, no debería tardar mucho más',
+    'Ya hice lo más pesado, ahora estoy redondeando',
+    'Estoy terminando, en breve te paso la novedad',
+    'El grueso ya está, me quedan los últimos ajustes',
+    'Esto ya está tomando forma, enseguida te cuento',
+    'Casi listo, dame un toquecito más y te confirmo',
+    'Ya estoy cerrando, no me falta nada',
+  ];
+
+  const pool = pools[categoria] || pools.general;
+
+  // Selección pseudo-aleatoria usando múltiples semillas para mejor distribución
+  const seed1 = count + (textoOriginal || '').length;
+  const seed2 = count * 7 + (textoOriginal || '').charCodeAt(0) || 0;
+  const seed3 = count * 13 + elapsedSec;
+  const idx = (seed1 + seed2) % pool.length;
+  let msg = pool[idx];
+
+  // Para mensajes 2+, agregar info de progreso (porcentaje/ETA o genérico)
+  if (count >= 2) {
+    // Estimar progreso: heurística basada en tiempo y herramientas usadas
+    // Tareas simples ~2min, complejas ~10min
+    const estimatedTotal = tools > 15 ? 600 : tools > 8 ? 420 : tools > 3 ? 240 : 180;
+    const pct = Math.min(95, Math.round((elapsedSec / estimatedTotal) * 100));
+    const remainSec = Math.max(30, estimatedTotal - elapsedSec);
+    const eta = remainSec >= 120 ? `${Math.round(remainSec / 60)} minutos` :
+                remainSec >= 60  ? 'un minuto' : 'unos segundos';
+
+    // Alternar entre: solo mensaje base, con porcentaje, o con progreso genérico
+    const variant = (seed3 + count) % 5;
+    if (variant <= 1 && pct >= 20) {
+      // Con porcentaje y ETA
+      const progIdx = (seed2 + count) % progresoConEstimacion.length;
+      msg = progresoConEstimacion[progIdx](pct, eta);
+    } else if (variant === 2) {
+      // Con progreso genérico (sin número)
+      const genIdx = (seed1 + count) % progresoGenerico.length;
+      msg = `${msg}. ${progresoGenerico[genIdx]}`;
+    }
+    // variant 3-4: solo el mensaje base de categoría (sin aditivos, para variedad)
+  }
+
+  // Si hay contexto de herramienta y es categoría general, inyectar referencia sutil
+  if (ctx && categoria === 'general' && count > 0 && count % 3 === 0) {
+    const referencias = [
+      `Ahora estoy con: ${ctx}`,
+      `En este momento: ${ctx}`,
+      `Metido en: ${ctx}`,
+      `Trabajando sobre: ${ctx}`,
+      `Ahora ando con: ${ctx}`,
+    ];
+    const refIdx = (seed2 + count) % referencias.length;
+    const cierre = progresoGenerico[(seed1 + count) % progresoGenerico.length];
+    msg = `${referencias[refIdx]} — ${cierre.charAt(0).toLowerCase() + cierre.slice(1)}`;
+  }
+
+  return msg;
 }
 
 function ejecutarClaude(prompt, textoOriginal) {
@@ -3501,7 +3798,7 @@ function ejecutarClaude(prompt, textoOriginal) {
     let stderr = '';
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-    // Mensajes de progreso contextuales cada 45s
+    // Mensajes de progreso contextuales cada 2 minutos
     const progressTimer = setInterval(() => {
       if (resolved) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -3509,7 +3806,7 @@ function ejecutarClaude(prompt, textoOriginal) {
       progressCount++;
       sendTelegram(msg);
       log('commander', `Progreso: ${msg}`);
-    }, 45000);
+    }, 120000);
 
     // Hard timeout: si nada resolvió en 10 min, forzar finalización
     const hardTimer = setTimeout(() => {
