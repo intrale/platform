@@ -206,11 +206,14 @@ try {
 } catch (e) {}
 
 function driveAvailable() {
-    // OAuth tiene prioridad sobre Service Account
+    // OAuth tiene prioridad para Drive personal (Service Account no tiene storage quota)
     if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) return true;
-    if (!DRIVE_CREDENTIALS_PATH) return false;
-    const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
-    return fs.existsSync(resolved) && !fs.statSync(resolved).isDirectory();
+    // Fallback: Service Account (funciona con Shared Drives / Workspace)
+    if (DRIVE_CREDENTIALS_PATH) {
+        const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
+        if (fs.existsSync(resolved) && !fs.statSync(resolved).isDirectory()) return true;
+    }
+    return false;
 }
 
 function loadDriveCredentials() {
@@ -269,39 +272,45 @@ function getOAuthAccessToken() {
 
 // Obtener access token via JWT grant (Service Account)
 function getGoogleAccessToken(credentials) {
-    // Prioridad: OAuth refresh token > Service Account JWT
+    // Prioridad: OAuth (Drive personal) > Service Account (Shared Drives / Workspace)
     if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) {
         return getOAuthAccessToken();
     }
-    return new Promise((resolve, reject) => {
-        const jwt = createServiceAccountJWT(credentials);
-        const payload = "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
-            "&assertion=" + encodeURIComponent(jwt);
-        const req = https.request({
-            hostname: "oauth2.googleapis.com",
-            path: "/token",
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Content-Length": Buffer.byteLength(payload),
-            },
-            timeout: 15000,
-        }, (res) => {
-            let d = "";
-            res.on("data", (c) => d += c);
-            res.on("end", () => {
-                try {
-                    const r = JSON.parse(d);
-                    if (r.access_token) resolve(r.access_token);
-                    else reject(new Error("Token error: " + d));
-                } catch (e) { reject(e); }
+    if (credentials && credentials.private_key) {
+        return new Promise((resolve, reject) => {
+            const jwt = createServiceAccountJWT(credentials);
+            const payload = "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
+                "&assertion=" + encodeURIComponent(jwt);
+            const req = https.request({
+                hostname: "oauth2.googleapis.com",
+                path: "/token",
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Length": Buffer.byteLength(payload),
+                },
+                timeout: 15000,
+            }, (res) => {
+                let d = "";
+                res.on("data", (c) => d += c);
+                res.on("end", () => {
+                    try {
+                        const r = JSON.parse(d);
+                        if (r.access_token) resolve(r.access_token);
+                        else reject(new Error("SA token error: " + d));
+                    } catch (e) { reject(e); }
+                });
             });
+            req.on("timeout", () => { req.destroy(); reject(new Error("SA token request timeout")); });
+            req.on("error", reject);
+            req.write(payload);
+            req.end();
         });
-        req.on("timeout", () => { req.destroy(); reject(new Error("token request timeout")); });
-        req.on("error", (e) => reject(e));
-        req.write(payload);
-        req.end();
-    });
+    }
+    if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) {
+        return getOAuthAccessToken();
+    }
+    return Promise.reject(new Error("No credentials available (neither Service Account nor OAuth)"));
 }
 
 // Listar carpetas hijas con un nombre dado dentro de un padre
