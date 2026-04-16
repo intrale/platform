@@ -658,6 +658,19 @@ function generateHTML(state) {
     return entries.some(e => e.ageMin > 30);
   });
   const stale = staleList.length;
+  // Bloqueados = issues con blockedBy declarado y aún activos (no completados)
+  const blockedList = matrixEntries.filter(([num, d]) => {
+    return state.blockedIssues.blockedBy[num] != null && d.estadoActual;
+  });
+  const blockedCount = blockedList.length;
+  // IDs de las deps que están bloqueando (issues nuevos de los cuales dependen los bloqueados)
+  const blockingDepsSet = new Set();
+  for (const [num] of blockedList) {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    for (const d of deps) blockingDepsSet.add(String(d));
+  }
+  const blockedIdsJson = JSON.stringify(blockedList.map(([n]) => String(n)));
+  const blockingDepsJson = JSON.stringify(Array.from(blockingDepsSet));
   const staleDetail = staleList.map(([id, d]) => {
     const entries = d.fases[d.faseActual] || [];
     const staleEntry = entries.find(e => e.estado === 'trabajando' && e.ageMin > 30);
@@ -689,7 +702,12 @@ function generateHTML(state) {
   const ttActivos   = buildTtData('Issues activos',       activosList,   (_, d) => ttLabel(d));
   const ttTrabajando= buildTtData('En ejecución',          trabajandoList,(_, d) => ttLabel(d));
   const ttPendientes= buildTtData('En cola',               pendientesList,(_, d) => ttLabel(d));
-  const ttStale     = buildTtData('Bloqueados / stale',    staleList,     (_, d) => ttLabel(d));
+  const ttStale     = buildTtData('Stale >30m',            staleList,     (_, d) => ttLabel(d));
+  const ttBlocked   = buildTtData('Bloqueados por dependencias', blockedList, (num, d) => {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    const depTxt = deps.length > 0 ? 'dep: ' + deps.map(x => '#' + x).join(', ') : 'sin deps declaradas';
+    return depTxt;
+  });
 
   // Definidos = completaron la fase final de definición (sizing/procesado)
   const defFasesKpi = config.pipelines?.definicion?.fases || [];
@@ -1218,12 +1236,11 @@ function generateHTML(state) {
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
-            <span class="lc-num">#${issueNum}</span>
+            <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
             ${lcBlockIcons}
           </div>
           <div class="lc-top-right">
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
-            <a class="lc-gh" href="${GH(issueNum)}" target="_blank" title="Ver en GitHub" onclick="event.stopPropagation()">↗</a>
           </div>
         </div>
         <div class="lc-title">${flagSpan}${laneTitle}</div>
@@ -1671,7 +1688,7 @@ function generateHTML(state) {
       if (e.estado === 'trabajando') {
         if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
         const [pline, fse] = data.faseActual.split('/');
-        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs });
+        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs, hasLog: !!e.hasLog, logFile: e.logFile });
       }
     }
   }
@@ -1706,8 +1723,12 @@ function generateHTML(state) {
       const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
       const workItems = issues.map(i => {
         const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
-        return `<a href="${GH(i.issue)}" target="_blank" class="eq-work-item">
-          <span class="eq-work-issue">#${i.issue}</span>
+        const href = i.hasLog && i.logFile
+          ? `/logs/view/${i.logFile}?live=1`
+          : GH(i.issue);
+        const tip = i.hasLog ? `Ver log en vivo · ${i.skill} · #${i.issue}` : `Ver #${i.issue} en GitHub`;
+        return `<a href="${href}" target="_blank" class="eq-work-item" title="${tip}">
+          <span class="eq-work-issue">#${i.issue}${i.hasLog ? ' 📄' : ' ↗'}</span>
           <span class="eq-work-fase">${i.fase}</span>
           <span class="eq-work-dur">${fmtDuration(i.duration)}</span>
           <span class="eq-work-bar"><span class="eq-work-bar-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
@@ -1833,6 +1854,11 @@ h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px
 .badge-running:hover{background:rgba(63,185,80,0.25)}
 .badge-paused{background:rgba(240,165,0,0.2);color:#f0a500;border:1px solid rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
 @keyframes pausePulse{0%,100%{opacity:1}50%{opacity:0.6}}
+.badge-autorefresh{font-size:0.7em;font-weight:700;letter-spacing:1px;padding:3px 12px;border-radius:20px;cursor:pointer;border:1px solid var(--bd);transition:all 0.2s;background:var(--sf);color:var(--dim)}
+.badge-autorefresh.ar-on{background:rgba(88,166,255,0.15);color:var(--ac);border-color:rgba(88,166,255,0.4)}
+.badge-autorefresh.ar-on:hover{background:rgba(88,166,255,0.25)}
+.badge-autorefresh.ar-off{background:var(--sf);color:var(--dim);border-color:var(--bd)}
+.badge-autorefresh.ar-off:hover{background:rgba(255,255,255,0.05)}
 .hdr-meta{font-size:0.75em;color:var(--dim);white-space:nowrap}
 .hdr-meta-sep{color:var(--bd);margin:0 2px}
 .hdr-uptime{font-size:0.75em;color:var(--dim);font-weight:500;cursor:help;padding:2px 8px;background:var(--sf);border-radius:10px;border:1px solid var(--bd)}
@@ -2594,30 +2620,31 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
 /* Priority Windows (inline toggles — used en barra de control global) */
-.pw-toggles{display:inline-flex;gap:8px;vertical-align:middle;align-items:center}
-.pw-toggle{padding:4px 12px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none;font-size:0.85em;min-height:24px;display:inline-flex;align-items:center;line-height:1}
-.pw-toggle-active{background:var(--yl2);color:var(--yl);border-color:var(--yl);animation:pwPulse 2.5s ease-in-out infinite}
-.pw-toggle-inactive{background:var(--sf2);color:var(--dim);border-color:var(--bd)}
-.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg)}
-.pw-toggle.pw-build.pw-toggle-active{background:var(--ac2);color:var(--ac);border-color:var(--ac)}
+.pw-toggles{display:inline-flex;gap:6px;vertical-align:middle;align-items:center}
+.pw-toggle{padding:3px 11px;border-radius:14px;cursor:pointer;font-weight:600;letter-spacing:0.2px;transition:all 0.2s ease;border:1px solid var(--bd);user-select:none;font-size:0.82em;min-height:24px;display:inline-flex;align-items:center;line-height:1;backdrop-filter:blur(4px)}
+.pw-toggle-active{background:rgba(210,153,34,0.15);color:var(--yl);border-color:rgba(210,153,34,0.5);box-shadow:0 0 8px rgba(210,153,34,0.2);animation:pwPulse 2.5s ease-in-out infinite}
+.pw-toggle-inactive{background:color-mix(in srgb,var(--sf) 80%,transparent);color:var(--dim);border-color:color-mix(in srgb,var(--bd) 60%,transparent)}
+.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg);transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+.pw-toggle.pw-build.pw-toggle-active{background:rgba(88,166,255,0.15);color:var(--ac);border-color:rgba(88,166,255,0.5);box-shadow:0 0 8px rgba(88,166,255,0.2)}
 @keyframes pwPulse{0%,100%{opacity:1}50%{opacity:0.65}}
 
 /* ── Pipeline control bar (global status + Priority Windows) ─────────── */
-.pipeline-ctrl-bar{padding:8px 18px;display:flex;align-items:center;gap:14px;font-size:0.85em;border-bottom:1px solid var(--bd);min-height:40px;background:var(--sf);position:sticky;top:56px;z-index:9;transition:background 0.25s,border-color 0.25s,color 0.25s;flex-wrap:wrap}
-.pipeline-ctrl-bar.ctrl-ok{background:var(--sf);color:var(--dim)}
-.pipeline-ctrl-bar.ctrl-priority-qa{background:rgba(210,153,34,0.12);color:var(--yl);border-bottom-color:rgba(210,153,34,0.4)}
-.pipeline-ctrl-bar.ctrl-priority-build{background:rgba(88,166,255,0.10);color:var(--ac);border-bottom-color:rgba(88,166,255,0.4)}
-.pipeline-ctrl-bar.ctrl-paused{background:rgba(251,188,5,0.10);color:#f0a500;border-bottom-color:rgba(251,188,5,0.4)}
-.pipeline-ctrl-bar.ctrl-blocked{background:rgba(248,81,73,0.10);color:var(--rd);border-bottom-color:rgba(248,81,73,0.4);animation:pausePulse 2s infinite}
-.pipeline-ctrl-bar.ctrl-stale{background:rgba(210,153,34,0.08);color:var(--yl);border-bottom-color:rgba(210,153,34,0.3)}
-.ctrl-bar-status{display:inline-flex;align-items:center;gap:8px;font-weight:600;letter-spacing:0.3px}
-.ctrl-bar-status-icon{font-size:1.05em}
-.ctrl-bar-sep{width:1px;height:16px;background:var(--bd);margin:0 2px}
+.pipeline-ctrl-bar{padding:6px 20px;display:flex;align-items:center;gap:16px;font-size:0.82em;border-bottom:none;min-height:36px;background:linear-gradient(90deg,var(--sf) 0%,color-mix(in srgb,var(--sf) 92%,var(--ac)) 100%);position:sticky;top:56px;z-index:9;transition:all 0.3s ease;flex-wrap:wrap;border-radius:0 0 8px 8px;margin:0 12px;box-shadow:0 2px 8px rgba(0,0,0,0.15)}
+.pipeline-ctrl-bar.ctrl-ok{background:linear-gradient(90deg,var(--sf) 0%,color-mix(in srgb,var(--sf) 88%,var(--gn)) 100%);color:var(--dim)}
+.pipeline-ctrl-bar.ctrl-priority-qa{background:linear-gradient(90deg,rgba(210,153,34,0.08) 0%,rgba(210,153,34,0.18) 100%);color:var(--yl)}
+.pipeline-ctrl-bar.ctrl-priority-build{background:linear-gradient(90deg,rgba(88,166,255,0.06) 0%,rgba(88,166,255,0.16) 100%);color:var(--ac)}
+.pipeline-ctrl-bar.ctrl-paused{background:linear-gradient(90deg,rgba(251,188,5,0.06) 0%,rgba(251,188,5,0.14) 100%);color:#f0a500}
+.pipeline-ctrl-bar.ctrl-blocked{background:linear-gradient(90deg,rgba(248,81,73,0.06) 0%,rgba(248,81,73,0.14) 100%);color:var(--rd);animation:pausePulse 2s infinite}
+.pipeline-ctrl-bar.ctrl-stale{background:linear-gradient(90deg,rgba(210,153,34,0.05) 0%,rgba(210,153,34,0.12) 100%);color:var(--yl)}
+.ctrl-bar-status{display:inline-flex;align-items:center;gap:8px;font-weight:500;letter-spacing:0.2px}
+.ctrl-bar-status-icon{font-size:0.95em;opacity:0.85}
+.ctrl-bar-sep{width:1px;height:14px;background:color-mix(in srgb,currentColor 20%,transparent);margin:0 4px;border-radius:1px}
 .ctrl-bar-spacer{margin-left:auto}
-.ctrl-bar-btn{padding:4px 12px;border-radius:10px;cursor:pointer;font-size:0.92em;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-weight:600;min-height:24px;display:inline-flex;align-items:center;gap:4px;transition:background 0.15s,transform 0.1s}
-.ctrl-bar-btn:hover{background:color-mix(in srgb, currentColor 15%, transparent)}
-.ctrl-bar-btn:active{transform:scale(0.96)}
-.ctrl-bar-label{font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:var(--dim);font-weight:600}
+.ctrl-bar-btn{padding:4px 14px;border-radius:14px;cursor:pointer;font-size:0.88em;border:1px solid color-mix(in srgb,currentColor 40%,transparent);background:color-mix(in srgb,currentColor 8%,transparent);color:inherit;font-family:inherit;font-weight:600;min-height:26px;display:inline-flex;align-items:center;gap:5px;transition:all 0.2s ease;backdrop-filter:blur(4px)}
+.ctrl-bar-btn:hover{background:color-mix(in srgb,currentColor 18%,transparent);border-color:color-mix(in srgb,currentColor 50%,transparent);transform:translateY(-1px);box-shadow:0 2px 6px rgba(0,0,0,0.12)}
+.ctrl-bar-btn:active{transform:scale(0.97) translateY(0)}
+.ctrl-bar-label{font-size:0.72em;text-transform:uppercase;letter-spacing:1.2px;color:color-mix(in srgb,var(--dim) 70%,transparent);font-weight:700}
+.ctrl-bar-spacer{flex:1}
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
@@ -2887,13 +2914,33 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
 .lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
 .lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
-.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search{display:none}
+.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search,.lc-card.lc-filtered-blocked{display:none}
+.lc-card.lc-hl-blocked{border-left-color:var(--rd) !important;box-shadow:0 0 0 1px rgba(248,113,113,0.5)}
+.lc-card.lc-hl-blocking{border-left-color:var(--yl) !important;box-shadow:0 0 0 1px rgba(251,191,36,0.5)}
+.lc-card.lc-hl-blocking::after{content:'▸ bloquea';display:inline-block;margin-left:6px;font-size:0.6em;background:rgba(251,191,36,0.15);color:var(--yl);padding:1px 5px;border-radius:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px}
+
+/* Refresh pill flotante (cambios pendientes) */
+.refresh-pill{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(135deg,var(--ac),#4a6cf7);color:#fff;border-radius:999px;box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-size:0.85em;font-weight:600;opacity:0;transform:translateY(12px) scale(0.95);pointer-events:none;transition:opacity 0.25s,transform 0.25s}
+.refresh-pill.rp-visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;animation:rp-pulse 2.5s ease-in-out infinite}
+.refresh-pill:hover{box-shadow:0 8px 26px rgba(88,166,255,0.6),0 2px 8px rgba(0,0,0,0.4);transform:translateY(-2px) scale(1.02);animation:none}
+.refresh-pill .rp-icon{font-size:1.1em;line-height:1}
+.refresh-pill .rp-text{white-space:nowrap}
+.refresh-pill .rp-close{margin-left:4px;opacity:0.75;padding:0 4px;border-radius:50%;font-size:1.1em;line-height:1}
+.refresh-pill .rp-close:hover{opacity:1;background:rgba(0,0,0,0.2)}
+@keyframes rp-pulse{0%,100%{box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3)}50%{box-shadow:0 6px 24px rgba(88,166,255,0.7),0 2px 10px rgba(0,0,0,0.4)}}
+
+/* KPI clickeable (filter mode) */
+.kpi-clickable{cursor:pointer;transition:transform 0.15s,box-shadow 0.15s}
+.kpi-clickable:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.kpi.kpi-active-filter{box-shadow:0 0 0 2px var(--rd),0 4px 12px rgba(248,113,113,0.3)}
+.kpi.kpi-active-filter .kpi-trend::after{content:' · activo';color:var(--rd);font-weight:700}
 .lc-card.lc-expanded{background:var(--sf2);border-left-color:var(--ac)}
 .lc-card-main{padding:8px 10px;cursor:pointer}
 .lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
 .lc-top-left{display:flex;align-items:center;gap:5px;min-width:0}
 .lc-top-right{display:flex;align-items:center;gap:6px}
-.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums}
+.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums;text-decoration:none}
+.lc-num:hover{text-decoration:underline}
 .lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
 .lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
 .lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
@@ -3019,6 +3066,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     <div class="hdr-left">
       <h1 class="hdr-title">🐙 Pipeline V2</h1>
       <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
+      <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar">↻ AUTO</button>
       <span class="hdr-uptime">UP ${pulpoUptime}</span>
       <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
     </div>
@@ -3042,23 +3090,23 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
     let statusHtml;
     if (blockedNow) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>BLOQUEADO por saturación de recursos</span>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>Recursos al l\u00EDmite \u2014 nuevos lanzamientos en espera</span>';
     } else if (isPaused) {
-      // El badge del header ya indica PAUSADO — evitamos duplicar el texto acá.
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Lanzamientos detenidos por usuario</span>'
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Pipeline en pausa</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>QA PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo QA puede lanzar</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar QA Priority">\u2715 Desactivar</button>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F50D}</span>Ventana QA activa \u00B7 ' + elapsed + ' min</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar ventana QA">\u2715 Cerrar</button>';
     } else if (buildActive) {
       const elapsed = pw.build.activatedAt ? Math.round((Date.now() - pw.build.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>BUILD PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo Build puede lanzar</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar Build Priority">\u2715 Desactivar</button>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F528}</span>Ventana Build activa \u00B7 ' + elapsed + ' min</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar ventana Build">\u2715 Cerrar</button>';
     } else if (stale > 0) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' stale (>30m trabajando)</span>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' sin avance (+30 min)</span>';
     } else {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>Sistema OK \u00B7 ' + trabajando + ' en ejecución</span>';
+      const msg = trabajando > 0 ? trabajando + ' agente' + (trabajando > 1 ? 's' : '') + ' trabajando' : 'Sin actividad';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>' + msg + '</span>';
     }
 
     // Toggles de Priority Windows (siempre visibles a la derecha, salvo si ya hay una activa en el status)
@@ -3123,10 +3171,10 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <div class="kpi-value success">${entregados24h}</div>
         <div class="kpi-trend">últimas 24 horas</div>
       </div>
-      <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-        <div class="kpi-label">Bloqueados${stale > 0 ? ' \u26A0' : ''}</div>
-        <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
-        <div class="kpi-trend">${stale > 0 ? 'stale >30m' : 'sin stale'}</div>
+      <div class="kpi kpi-blocked kpi-clickable" data-tt='${ttBlocked}' data-blocked-ids='${blockedIdsJson}' data-blocking-deps='${blockingDepsJson}' onclick="toggleBlockedFilter(this)" title="${blockedCount > 0 ? 'Click para filtrar el Issue Tracker por bloqueados + deps' : 'No hay issues bloqueados'}">
+        <div class="kpi-label">Bloqueados${blockedCount > 0 ? ' \u{1F6AB}' : ''}</div>
+        <div class="kpi-value ${blockedCount > 0 ? 'danger' : 'muted'}">${blockedCount}</div>
+        <div class="kpi-trend">${blockedCount > 0 ? 'click para filtrar' : 'sin bloqueos'}</div>
       </div>
     </div>
     ${(() => {
@@ -3175,7 +3223,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
   <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
 
-  <div class="footer">🔴 Live · Auto-refresh 10s &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
+  <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
 <!-- Log Viewer Panel -->
 <div id="log-overlay" class="log-overlay" onclick="if(event.target===this)closeLogViewer()">
@@ -3241,17 +3289,163 @@ function saveIssueTrackerState() {
 // Guardar estado en TODA recarga (F5, SSE, navegación, etc.)
 window.addEventListener('beforeunload', saveIssueTrackerState);
 
-// SSE live refresh
+// ── Soft refresh: reemplaza secciones sin recargar la página (evita flash) ──
+let __softRefreshInFlight = false;
+async function softRefresh() {
+  if (__softRefreshInFlight) return;
+  // No refrescar si hay log overlay abierto
+  const logOv = document.getElementById('log-overlay');
+  if (logOv && logOv.classList.contains('open')) return;
+  // Si el foco está en el input de búsqueda, diferimos el refresh — molesta mientras escribe
+  const ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('it-search')) return;
+  __softRefreshInFlight = true;
+  try {
+    // Preservar state actual (scroll, tabs, sub-filters, search, expansiones)
+    saveIssueTrackerState();
+    const searchVal = (document.getElementById('it-search-input') || {}).value || '';
+    // Cerrar popup de dots (puede quedar stale si el DOM cambia)
+    closeDotPopup && closeDotPopup();
+    const res = await fetch(window.location.href, { cache: 'no-store', credentials: 'same-origin' });
+    if (!res.ok) return;
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Reemplazar secciones clave
+    const selectors = [
+      '.hdr-bar',
+      '.hdr-status-line',
+      '.pipeline-ctrl-bar',
+      '.kpis-row',
+      '.panel-equipo-full',
+      '#issue-tracker',
+    ];
+    for (const sel of selectors) {
+      const newEl = doc.querySelector(sel);
+      const oldEl = document.querySelector(sel);
+      if (newEl && oldEl) oldEl.replaceWith(newEl);
+    }
+    // Re-aplicar valor de búsqueda si había
+    const newInp = document.getElementById('it-search-input');
+    if (newInp && searchVal) {
+      newInp.value = searchVal;
+      filterIssuesBySearch(searchVal);
+    }
+    // Rehidratar el resto del estado (tabs, sub-filters, scroll, expansiones legacy)
+    restoreIssueTrackerState();
+    // Re-atachar listeners sobre KPIs nuevos
+    if (typeof attachKpiTooltips === 'function') attachKpiTooltips();
+    // Restaurar estado del botón auto-refresh (el DOM swap trae el default del server)
+    if (__autoRefresh) {
+      const arBtn = document.getElementById('autorefresh-btn');
+      if (arBtn) {
+        arBtn.className = 'badge-autorefresh ar-on';
+        arBtn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+        arBtn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+      }
+    }
+  } catch (_) { /* silenciar */ }
+  finally { __softRefreshInFlight = false; }
+}
+
+// Auto-refresh toggle + pill on-demand
 let lastHash = null;
+let __pendingChanges = 0;
+let __lastChangeTs = null;
+let __autoRefresh = true;
+let __autoRefreshInterval = null;
+const AUTO_REFRESH_SECONDS = 10;
+
+function toggleAutoRefresh() {
+  __autoRefresh = !__autoRefresh;
+  const btn = document.getElementById('autorefresh-btn');
+  if (__autoRefresh) {
+    btn.className = 'badge-autorefresh ar-on';
+    btn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+    btn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+    dismissRefreshPill();
+    softRefresh();
+    __autoRefreshInterval = setInterval(() => softRefresh(), AUTO_REFRESH_SECONDS * 1000);
+  } else {
+    btn.className = 'badge-autorefresh ar-off';
+    btn.textContent = '↻ AUTO';
+    btn.title = 'Auto-refresh desactivado — click para activar';
+    if (__autoRefreshInterval) { clearInterval(__autoRefreshInterval); __autoRefreshInterval = null; }
+  }
+  updateFooter();
+}
+
+function updateFooter() {
+  const ft = document.getElementById('dash-footer');
+  if (!ft) return;
+  const ts = new Date().toLocaleString('es-AR');
+  ft.innerHTML = __autoRefresh
+    ? '🟢 Live · Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's &nbsp;|&nbsp; ' + ts
+    : '🟢 Live · Refresh on-demand &nbsp;|&nbsp; ' + ts;
+}
+
+function showRefreshPill() {
+  if (__autoRefresh) return;
+  let pill = document.getElementById('refresh-pill');
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'refresh-pill';
+    pill.className = 'refresh-pill';
+    pill.innerHTML = '<span class="rp-icon">🔄</span><span class="rp-text"></span><span class="rp-close" title="Descartar" onclick="event.stopPropagation();dismissRefreshPill()">×</span>';
+    pill.onclick = applyPendingRefresh;
+    document.body.appendChild(pill);
+  }
+  const textEl = pill.querySelector('.rp-text');
+  const ago = __lastChangeTs ? Math.max(0, Math.round((Date.now() - __lastChangeTs) / 1000)) : 0;
+  const agoTxt = ago < 60 ? ago + 's' : Math.round(ago / 60) + 'm';
+  textEl.textContent = __pendingChanges === 1
+    ? '1 cambio nuevo · hace ' + agoTxt
+    : __pendingChanges + ' cambios nuevos · último hace ' + agoTxt;
+  pill.classList.add('rp-visible');
+}
+function dismissRefreshPill() {
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+  __pendingChanges = 0;
+}
+async function applyPendingRefresh() {
+  await softRefresh();
+  __pendingChanges = 0;
+  __lastChangeTs = null;
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+}
+// Actualizar el "hace Xs" cada 10s mientras el pill esté visible
+setInterval(() => {
+  const pill = document.getElementById('refresh-pill');
+  if (pill && pill.classList.contains('rp-visible') && __pendingChanges > 0) showRefreshPill();
+}, 10000);
+
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) {
-    saveIssueTrackerState();
-    location.reload();
+  if (lastHash && e.data !== lastHash) {
+    if (__autoRefresh) {
+      // En modo auto, el interval se encarga — no acumular
+    } else {
+      __pendingChanges++;
+      __lastChangeTs = Date.now();
+      showRefreshPill();
+    }
   }
   lastHash = e.data;
 };
-es.onerror = () => { setTimeout(() => location.reload(), 10000); };
+es.onerror = () => { /* silent */ };
+
+// Auto-activar auto-refresh al cargar la página (default ON)
+if (__autoRefresh) {
+  const arBtn = document.getElementById('autorefresh-btn');
+  if (arBtn) {
+    arBtn.className = 'badge-autorefresh ar-on';
+    arBtn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+    arBtn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+  }
+  updateFooter();
+  __autoRefreshInterval = setInterval(() => softRefresh(), AUTO_REFRESH_SECONDS * 1000);
+}
 
 // Restaurar estado UI — se invoca después de definir las funciones necesarias
 function restoreIssueTrackerState() {
@@ -3298,28 +3492,35 @@ function restoreIssueTrackerState() {
 }
 
 // KPI Tooltips
-const tt = document.getElementById('kpi-tooltip');
+let tt = document.getElementById('kpi-tooltip');
 const GH_BASE = 'https://github.com/intrale/platform/issues/';
 const MAX_TT = 20;
-document.querySelectorAll('.kpi[data-tt]').forEach(el => {
-  el.addEventListener('mouseenter', e => {
-    try {
-      const d = JSON.parse(el.dataset.tt);
-      const shown = d.items.slice(0, MAX_TT);
-      const rows = shown.map(it =>
-        '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
-        (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
-      ).join('');
-      const more = d.items.length > MAX_TT
-        ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
-      tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
-      tt.style.display = 'block';
-      positionTt(e);
-    } catch(_) {}
+function attachKpiTooltips() {
+  tt = document.getElementById('kpi-tooltip');
+  if (!tt) return;
+  document.querySelectorAll('.kpi[data-tt]').forEach(el => {
+    if (el.__ttAttached) return;
+    el.__ttAttached = true;
+    el.addEventListener('mouseenter', e => {
+      try {
+        const d = JSON.parse(el.dataset.tt);
+        const shown = d.items.slice(0, MAX_TT);
+        const rows = shown.map(it =>
+          '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
+          (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
+        ).join('');
+        const more = d.items.length > MAX_TT
+          ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
+        tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
+        tt.style.display = 'block';
+        positionTt(e);
+      } catch(_) {}
+    });
+    el.addEventListener('mousemove', positionTt);
+    el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
   });
-  el.addEventListener('mousemove', positionTt);
-  el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
-});
+}
+attachKpiTooltips();
 function positionTt(e) {
   const pad = 14;
   let x = e.clientX + pad, y = e.clientY + pad;
@@ -3468,6 +3669,36 @@ function filterLaneBySubFase(laneKey, subFase) {
     c.classList.toggle('lc-filtered-out-sub', sf !== subFase);
   });
   saveIssueTrackerState();
+}
+
+// Filtro de bloqueados desde el KPI — muestra blocked + sus deps bloqueantes
+function toggleBlockedFilter(kpiEl) {
+  if (!kpiEl) return;
+  let blockedIds, blockingDeps;
+  try {
+    blockedIds = JSON.parse(kpiEl.dataset.blockedIds || '[]');
+    blockingDeps = JSON.parse(kpiEl.dataset.blockingDeps || '[]');
+  } catch (_) { return; }
+  if (blockedIds.length === 0) return;
+  const active = kpiEl.classList.toggle('kpi-active-filter');
+  const relevant = new Set([...blockedIds, ...blockingDeps].map(String));
+  document.querySelectorAll('.lc-card').forEach(c => {
+    if (!active) { c.classList.remove('lc-filtered-blocked'); c.classList.remove('lc-hl-blocked'); c.classList.remove('lc-hl-blocking'); return; }
+    const issue = c.dataset.issue;
+    const isBlocked = blockedIds.includes(issue);
+    const isBlocking = blockingDeps.includes(issue);
+    c.classList.toggle('lc-filtered-blocked', !isBlocked && !isBlocking);
+    c.classList.toggle('lc-hl-blocked', isBlocked);
+    c.classList.toggle('lc-hl-blocking', isBlocking);
+  });
+  document.querySelectorAll('.it-lane').forEach(lane => {
+    const visible = lane.querySelectorAll('.lc-card:not(.lc-filtered-blocked):not(.lc-filtered-out-sub):not(.lc-filtered-out-search)').length;
+    lane.classList.toggle('it-lane-empty-search', active && visible === 0);
+  });
+  if (active) {
+    const tracker = document.getElementById('issue-tracker');
+    if (tracker) tracker.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 // Búsqueda por # o título en todo el tracker
