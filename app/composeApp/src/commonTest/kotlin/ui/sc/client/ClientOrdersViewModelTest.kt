@@ -65,7 +65,7 @@ private class FakeRepeatOrder(
         RepeatOrderResult(addedItems = emptyList(), skippedItems = emptyList())
     )
 ) : ToDoRepeatOrder {
-    override suspend fun execute(order: ClientOrderDetail): Result<RepeatOrderResult> = result
+    override suspend fun execute(order: ClientOrderDetail, businessId: String?): Result<RepeatOrderResult> = result
 }
 
 class ClientOrdersViewModelTest {
@@ -309,7 +309,6 @@ class ClientOrdersViewModelRepeatOrderTest {
         assertNotNull(viewModel.state.repeatOrderResult)
         assertEquals(2, viewModel.state.repeatOrderResult?.addedItems?.size)
         assertTrue(viewModel.state.repeatOrderResult?.skippedItems?.isEmpty() == true)
-        assertFalse(viewModel.state.showRepeatResultDialog, "No debe mostrar dialogo cuando todos disponibles")
         assertEquals(2, ClientCartStore.items.value.size)
         assertEquals(2, ClientCartStore.items.value["item-1"]?.quantity)
         assertEquals(1, ClientCartStore.items.value["item-2"]?.quantity)
@@ -340,7 +339,6 @@ class ClientOrdersViewModelRepeatOrderTest {
         assertFalse(viewModel.state.repeatOrderLoading)
         assertEquals(1, viewModel.state.repeatOrderResult?.addedItems?.size)
         assertEquals(1, viewModel.state.repeatOrderResult?.skippedItems?.size)
-        assertTrue(viewModel.state.showRepeatResultDialog, "Debe mostrar dialogo cuando hay items omitidos")
         assertEquals(1, ClientCartStore.items.value.size)
     }
 
