@@ -1653,6 +1653,28 @@ function brazoBarrido(config) {
           });
 
           log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseRechazo} (rebote ${reboteCount + 1}/${MAX_REBOTES})`);
+
+          // CLEANUP DOWNSTREAM: limpiar archivos residuales del issue en fases posteriores.
+          // Sin esto, archivos de aprobacion/listo/ de un ciclo anterior sobreviven al rechazo
+          // y el barrido los promueve a entrega — el issue sale a delivery sin QA pasado.
+          // (Incidente #2043: delivery se lanzó con QA rechazado.)
+          for (let downstream = i + 1; downstream < fases.length; downstream++) {
+            const downFase = fases[downstream];
+            for (const estado of ['pendiente', 'trabajando', 'listo']) {
+              const dir = path.join(fasePath(pipelineName, downFase), estado);
+              try {
+                for (const f of fs.readdirSync(dir)) {
+                  if (f.startsWith(issue + '.') && !f.startsWith('.')) {
+                    const src = path.join(dir, f);
+                    const archDir = path.join(fasePath(pipelineName, downFase), 'archivado');
+                    fs.mkdirSync(archDir, { recursive: true });
+                    moveFile(src, archDir);
+                    log('barrido', `#${issue} cleanup downstream: ${downFase}/${estado}/${f} → archivado/`);
+                  }
+                }
+              } catch {}
+            }
+          }
         } else if (i < fases.length - 1) {
           // Todos aprobaron → promover a siguiente fase
           const siguienteFase = fases[i + 1];
