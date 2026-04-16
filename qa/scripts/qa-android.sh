@@ -125,6 +125,85 @@ if ! command -v adb &>/dev/null; then
 fi
 echo "  adb OK"
 
+# ── 1.5. Pre-check defensivo del emulador (issue #2279, CA-2) ─────
+# Si no hay ningún emulador conectado, encolar {action: start} en svc-emulador
+# y esperar el boot antes de continuar. Si ya hay emulador, saltar (la logica
+# existente de reutilizacion en start_avd detecta y reusa en 0s).
+#
+# Mensaje encolado (CA-3, G-UX-1): JSON estricto con {action, requester, issue,
+# timestamp}. action ∈ whitelist {start, stop}. Sin paths absolutos ni secrets.
+echo ""
+echo "[qa-android] Verificando estado del emulador..."
+# shellcheck disable=SC2016
+PRECHECK_SERIAL=$(adb devices 2>/dev/null | awk '$1 ~ /^emulator-/ && $2 == "device" {print $1; exit}')
+if [ -n "$PRECHECK_SERIAL" ]; then
+    echo "[qa-android] Emulador ya corriendo ($PRECHECK_SERIAL) — saltando encolado (idempotente)"
+else
+    echo "[qa-android] adb devices: vacío — encolando arranque"
+    EMU_QUEUE="${PROJECT_ROOT}/.pipeline/servicios/emulador/pendiente"
+    mkdir -p "$EMU_QUEUE"
+    PRECHECK_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    # Epoch en milis para nombre de archivo unico (coalescencia last-write-wins)
+    PRECHECK_EPOCH=$(date +%s)
+    PRECHECK_ISSUE="${QA_ISSUE:-${ISSUE_NUMBER:-0}}"
+    PRECHECK_FILE="${EMU_QUEUE}/qa-android-${PRECHECK_ISSUE}-${PRECHECK_EPOCH}.json"
+
+    # CA-3: whitelist estricta. NO interpolar env vars arbitrarias (sin secrets).
+    printf '{"action":"start","requester":"qa-android","issue":"%s","timestamp":"%s"}\n' \
+        "$PRECHECK_ISSUE" "$PRECHECK_TS" > "$PRECHECK_FILE"
+    echo "[qa-android] Encolado start en svc-emulador ($(basename "$PRECHECK_FILE"))"
+    echo "[qa-android] Esperando boot del emulador (timeout 180s)..."
+
+    PRECHECK_TIMEOUT=180
+    PRECHECK_ELAPSED=0
+    PRECHECK_READY=0
+    PRECHECK_LAST_TICK=0
+    PRECHECK_START_MODE=""
+    while [ $PRECHECK_ELAPSED -lt $PRECHECK_TIMEOUT ]; do
+        # Cualquier emulador listo ('device' state = ADB handshake OK)
+        # shellcheck disable=SC2016
+        PRECHECK_SERIAL=$(adb devices 2>/dev/null | awk '$1 ~ /^emulator-/ && $2 == "device" {print $1; exit}')
+        if [ -n "$PRECHECK_SERIAL" ]; then
+            # Verificar boot completo antes de dar por listo
+            PRECHECK_BOOT=$(adb -s "$PRECHECK_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [ "$PRECHECK_BOOT" = "1" ]; then
+                PRECHECK_READY=1
+                # Informar modo de arranque si hay snapshot (G-UX-1)
+                if [ -d "${HOME}/.android/avd/virtualAndroid.avd/snapshots/${QA_SNAPSHOT}" ]; then
+                    PRECHECK_START_MODE="snapshot ${QA_SNAPSHOT}"
+                else
+                    PRECHECK_START_MODE="cold start"
+                fi
+                break
+            fi
+        fi
+        sleep 5
+        PRECHECK_ELAPSED=$((PRECHECK_ELAPSED + 5))
+        # Tick cada 30s para feedback continuo (G-UX-1)
+        if [ $((PRECHECK_ELAPSED - PRECHECK_LAST_TICK)) -ge 30 ]; then
+            printf "[qa-android] Tick %02d:%02d — aún esperando...\n" \
+                $((PRECHECK_ELAPSED / 60)) $((PRECHECK_ELAPSED % 60))
+            PRECHECK_LAST_TICK=$PRECHECK_ELAPSED
+        fi
+    done
+
+    if [ "$PRECHECK_READY" = "1" ]; then
+        printf "[qa-android] Emulador listo en %02d:%02d (%s, %s)\n" \
+            $((PRECHECK_ELAPSED / 60)) $((PRECHECK_ELAPSED % 60)) \
+            "$PRECHECK_SERIAL" "$PRECHECK_START_MODE"
+    else
+        # G-UX-2: mensaje accionable, no solo "timeout"
+        echo ""
+        echo "[qa-android] ERROR: Emulador no respondió en ${PRECHECK_TIMEOUT}s — verificar:"
+        echo "  1. ¿svc-emulador está corriendo? (ls .pipeline/sesiones/svc-emulador/)"
+        echo "  2. ¿Hay otro AVD bloqueando recursos? (adb devices)"
+        echo "  3. ¿Snapshot qa-ready corrupto? (regenerar con snapshot fresh)"
+        echo "  Log svc-emulador: .pipeline/logs/svc-emulador.log"
+        echo "  Esto es un fallo de INFRAESTRUCTURA, no de QA del código."
+        exit 1
+    fi
+fi
+
 # ── 2. Verificar/arrancar emulador ──────────────────────────
 echo ""
 echo "[2/9] Verificando dispositivo/emulador..."

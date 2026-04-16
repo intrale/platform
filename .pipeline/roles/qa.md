@@ -57,7 +57,55 @@ Verificar: 1) Conectividad de red  2) Estado del deploy en Lambda  3) gh workflo
 ```
 
 Para verificar emulador (solo QA_MODE=android): `node .pipeline/qa-environment.js status`
-Si el emulador no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
+
+**Asegurar emulador listo antes de testear (QA_MODE=android, issue #2279 — CA-1):**
+Antes de empezar a probar criterios, encolar un `start` en el servicio emulador y
+esperar hasta que el emulador esté `running`. Esto garantiza que `adb devices` no
+devuelva vacío cuando arranques los tests E2E.
+
+```bash
+QA_ISSUE_NUM="${QA_ISSUE:-<issue>}"
+EMU_QUEUE=".pipeline/servicios/emulador/pendiente"
+mkdir -p "$EMU_QUEUE"
+TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+FN="qa-${QA_ISSUE_NUM}-$(date +%s).json"
+# CA-3: solo {action, requester, issue, timestamp}, action ∈ {start, stop}.
+# Sin paths absolutos ni secrets.
+printf '{"action":"start","requester":"qa","issue":"%s","timestamp":"%s"}\n' \
+    "$QA_ISSUE_NUM" "$TS" > "$EMU_QUEUE/$FN"
+
+# Esperar hasta 180s que `adb devices` reporte un emulador en estado `device`
+# y con `sys.boot_completed = 1`. Ticks cada 30s para feedback continuo.
+START=$(date +%s)
+DEADLINE=$(( START + 180 ))
+LAST_TICK=0
+READY=0
+while [ "$(date +%s)" -lt $DEADLINE ]; do
+    SERIAL=$(adb devices 2>/dev/null | awk '$1 ~ /^emulator-/ && $2 == "device" {print $1; exit}')
+    if [ -n "$SERIAL" ]; then
+        BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+        if [ "$BOOT" = "1" ]; then READY=1; break; fi
+    fi
+    sleep 5
+    ELAPSED=$(( $(date +%s) - START ))
+    if [ $(( ELAPSED - LAST_TICK )) -ge 30 ]; then
+        printf '[qa] Esperando emulador... (%ds transcurridos)\n' "$ELAPSED"
+        LAST_TICK=$ELAPSED
+    fi
+done
+
+if [ "$READY" != "1" ]; then
+    # CA-1: rechazar con motivo accionable si vence el timeout
+    echo "[qa] Emulador no respondió en 180s — rechazar con motivo claro"
+    # → escribir resultado: rechazado, motivo: "Emulador no respondió en 180s — ..."
+fi
+```
+
+Si el timeout vence sin emulador `running`, rechazar con motivo:
+> Emulador no respondió en 180s — verificar svc-emulador (`ls .pipeline/sesiones/svc-emulador/`), que no haya otro AVD bloqueando recursos, y que el snapshot `qa-ready` no esté corrupto.
+
+NO intentes levantar vos el emulador con `emulator.exe` ni con `qa-environment.js start`
+directamente — usá siempre la cola del `svc-emulador` (es quien gestiona el ciclo de vida).
 
 ---
 
