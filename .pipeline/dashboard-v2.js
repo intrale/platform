@@ -1854,6 +1854,11 @@ h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px
 .badge-running:hover{background:rgba(63,185,80,0.25)}
 .badge-paused{background:rgba(240,165,0,0.2);color:#f0a500;border:1px solid rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
 @keyframes pausePulse{0%,100%{opacity:1}50%{opacity:0.6}}
+.badge-autorefresh{font-size:0.7em;font-weight:700;letter-spacing:1px;padding:3px 12px;border-radius:20px;cursor:pointer;border:1px solid var(--bd);transition:all 0.2s;background:var(--sf);color:var(--dim)}
+.badge-autorefresh.ar-on{background:rgba(88,166,255,0.15);color:var(--ac);border-color:rgba(88,166,255,0.4)}
+.badge-autorefresh.ar-on:hover{background:rgba(88,166,255,0.25)}
+.badge-autorefresh.ar-off{background:var(--sf);color:var(--dim);border-color:var(--bd)}
+.badge-autorefresh.ar-off:hover{background:rgba(255,255,255,0.05)}
 .hdr-meta{font-size:0.75em;color:var(--dim);white-space:nowrap}
 .hdr-meta-sep{color:var(--bd);margin:0 2px}
 .hdr-uptime{font-size:0.75em;color:var(--dim);font-weight:500;cursor:help;padding:2px 8px;background:var(--sf);border-radius:10px;border:1px solid var(--bd)}
@@ -3060,6 +3065,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     <div class="hdr-left">
       <h1 class="hdr-title">🐙 Pipeline V2</h1>
       <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
+      <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar">↻ AUTO</button>
       <span class="hdr-uptime">UP ${pulpoUptime}</span>
       <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
     </div>
@@ -3216,7 +3222,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
   <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
 
-  <div class="footer">🟢 Live · Refresh on-demand (pill azul abajo) &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
+  <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
 <!-- Log Viewer Panel -->
 <div id="log-overlay" class="log-overlay" onclick="if(event.target===this)closeLogViewer()">
@@ -3327,15 +3333,57 @@ async function softRefresh() {
     restoreIssueTrackerState();
     // Re-atachar listeners sobre KPIs nuevos
     if (typeof attachKpiTooltips === 'function') attachKpiTooltips();
+    // Restaurar estado del botón auto-refresh (el DOM swap trae el default del server)
+    if (__autoRefresh) {
+      const arBtn = document.getElementById('autorefresh-btn');
+      if (arBtn) {
+        arBtn.className = 'badge-autorefresh ar-on';
+        arBtn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+        arBtn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+      }
+    }
   } catch (_) { /* silenciar */ }
   finally { __softRefreshInFlight = false; }
 }
 
-// SSE — ahora NO auto-refresca. Solo cuenta cambios y muestra un pill que el usuario controla.
+// Auto-refresh toggle + pill on-demand
 let lastHash = null;
 let __pendingChanges = 0;
 let __lastChangeTs = null;
+let __autoRefresh = false;
+let __autoRefreshInterval = null;
+const AUTO_REFRESH_SECONDS = 10;
+
+function toggleAutoRefresh() {
+  __autoRefresh = !__autoRefresh;
+  const btn = document.getElementById('autorefresh-btn');
+  if (__autoRefresh) {
+    btn.className = 'badge-autorefresh ar-on';
+    btn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+    btn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+    dismissRefreshPill();
+    softRefresh();
+    __autoRefreshInterval = setInterval(() => softRefresh(), AUTO_REFRESH_SECONDS * 1000);
+  } else {
+    btn.className = 'badge-autorefresh ar-off';
+    btn.textContent = '↻ AUTO';
+    btn.title = 'Auto-refresh desactivado — click para activar';
+    if (__autoRefreshInterval) { clearInterval(__autoRefreshInterval); __autoRefreshInterval = null; }
+  }
+  updateFooter();
+}
+
+function updateFooter() {
+  const ft = document.getElementById('dash-footer');
+  if (!ft) return;
+  const ts = new Date().toLocaleString('es-AR');
+  ft.innerHTML = __autoRefresh
+    ? '🟢 Live · Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's &nbsp;|&nbsp; ' + ts
+    : '🟢 Live · Refresh on-demand &nbsp;|&nbsp; ' + ts;
+}
+
 function showRefreshPill() {
+  if (__autoRefresh) return;
   let pill = document.getElementById('refresh-pill');
   if (!pill) {
     pill = document.createElement('div');
@@ -3374,13 +3422,17 @@ setInterval(() => {
 const es = new EventSource('/events');
 es.onmessage = e => {
   if (lastHash && e.data !== lastHash) {
-    __pendingChanges++;
-    __lastChangeTs = Date.now();
-    showRefreshPill();
+    if (__autoRefresh) {
+      // En modo auto, el interval se encarga — no acumular
+    } else {
+      __pendingChanges++;
+      __lastChangeTs = Date.now();
+      showRefreshPill();
+    }
   }
   lastHash = e.data;
 };
-es.onerror = () => { /* silent — el usuario decide cuando refrescar */ };
+es.onerror = () => { /* silent */ };
 
 // Restaurar estado UI — se invoca después de definir las funciones necesarias
 function restoreIssueTrackerState() {
