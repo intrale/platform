@@ -2148,6 +2148,9 @@ function brazoLanzamiento(config) {
         if (preflightResult.flavors && preflightResult.flavors.length > 0) {
           extraEnv.QA_FLAVOR = preflightResult.flavors[0];
         }
+        if (preflightResult.emulatorSerial) {
+          extraEnv.QA_EMULATOR_SERIAL = preflightResult.emulatorSerial;
+        }
       }
       lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       anyLaunched = true;
@@ -2625,9 +2628,79 @@ function preflightQaChecks(issue) {
   checks.emulator = 'ok+screenrecord';
   log('preflight', `#${issue}: check 4 OK (emulador disponible + screenrecord verificado)`);
 
+  // --- Check 5: Pre-warm — instalar APK, abrir app, cerrar diálogos ---
+  // El agente QA pierde minutos valiosos lidiando con ANR dialogs, onboarding,
+  // y permisos del sistema. Este paso deja la app en estado limpio para testear.
+  try {
+    const flavor = flavors[0] || 'client';
+    const apkName = `${issue}-composeApp-${flavor}-debug.apk`;
+    const apkPath = path.join(QA_ARTIFACTS_DIR, apkName);
+
+    // 5a. Instalar APK (replace si ya existía)
+    execSync(`adb -s ${emulatorSerial} install -r -t "${apkPath}"`, {
+      encoding: 'utf8', timeout: 60000, windowsHide: true
+    });
+    log('preflight', `#${issue}: check 5a OK — APK instalado (${flavor})`);
+
+    // 5b. Determinar package name del flavor
+    const FLAVOR_PACKAGES = {
+      client: 'com.intrale.app.client',
+      business: 'com.intrale.app.business',
+      delivery: 'com.intrale.app.delivery',
+    };
+    const pkg = FLAVOR_PACKAGES[flavor] || FLAVOR_PACKAGES.client;
+
+    // 5c. Forzar stop (estado limpio) y lanzar la app
+    execSync(`adb -s ${emulatorSerial} shell am force-stop ${pkg}`, {
+      encoding: 'utf8', timeout: 5000, windowsHide: true
+    });
+    execSync(`adb -s ${emulatorSerial} shell monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`, {
+      encoding: 'utf8', timeout: 10000, windowsHide: true
+    });
+
+    // 5d. Esperar que la app arranque y cerrar diálogos del sistema (ANR, permisos, etc.)
+    // Screenrecord tarda ~3s en estabilizarse, la app ~5s en cold start.
+    const waitMs = 8000;
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < waitMs) {
+      try {
+        // Buscar y cerrar diálogos ANR ("Wait" / "Close app")
+        const uiDump = execSync(
+          `adb -s ${emulatorSerial} shell "uiautomator dump /dev/tty 2>/dev/null"`,
+          { encoding: 'utf8', timeout: 5000, windowsHide: true }
+        );
+        if (uiDump.includes('android:id/aerr_wait') || uiDump.includes("Wait")) {
+          // Tap "Wait" para descartar ANR dialog
+          execSync(`adb -s ${emulatorSerial} shell input keyevent KEYCODE_ENTER`, {
+            encoding: 'utf8', timeout: 3000, windowsHide: true
+          });
+          log('preflight', `#${issue}: check 5d — cerrado diálogo ANR`);
+        } else if (uiDump.includes('Saltar') || uiDump.includes('saltar') || uiDump.includes('Skip')) {
+          // Tap "Saltar" en onboarding — buscar coordenadas del botón
+          execSync(`adb -s ${emulatorSerial} shell input keyevent KEYCODE_TAB && adb -s ${emulatorSerial} shell input keyevent KEYCODE_ENTER`, {
+            encoding: 'utf8', timeout: 3000, windowsHide: true
+          });
+          log('preflight', `#${issue}: check 5d — saltado onboarding`);
+        } else {
+          // Sin diálogos, app cargando normalmente
+          break;
+        }
+      } catch { /* UI dump puede fallar si la app aún no renderizó */ }
+      // Pausa corta entre intentos
+      execSync('ping -n 2 127.0.0.1 > NUL', { timeout: 3000, windowsHide: true });
+    }
+
+    checks.prewarm = 'ok';
+    log('preflight', `#${issue}: check 5 OK — app pre-warmed (${flavor}, pkg: ${pkg})`);
+  } catch (e) {
+    // Pre-warm no es bloqueante — si falla, el agente QA puede hacer el setup él mismo
+    checks.prewarm = `warn:${e.message.slice(0, 60)}`;
+    log('preflight', `#${issue}: check 5 WARN — pre-warm falló (no bloqueante): ${e.message.slice(0, 80)}`);
+  }
+
   // --- Todos los checks pasaron ---
   logPreflight(issue, checks, 'pass', startMs);
-  return { ok: true, result: 'pass', reason: 'Todos los pre-flight checks OK', flavors, requiresEmulator: true, qaMode: 'android' };
+  return { ok: true, result: 'pass', reason: 'Todos los pre-flight checks OK', flavors, requiresEmulator: true, qaMode: 'android', emulatorSerial };
 }
 
 /** Persistir resultado de pre-flight en log JSONL para análisis */
@@ -2780,6 +2853,31 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   fs.writeFileSync(agentLogPath, `--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} ${new Date().toISOString()} ---\n`);
   const agentLogFd = fs.openSync(agentLogPath, 'a');
 
+  // --- RECORDING AUTOMÁTICO: iniciar screenrecord en background para QA android ---
+  // El pipeline graba, no el agente. Así garantizamos que siempre hay video.
+  let qaRecordingProc = null;
+  let qaRecordingPath = null;
+  const qaSerial = extraEnv.QA_EMULATOR_SERIAL;
+  if (skill === 'qa' && fase === 'verificacion' && qaSerial) {
+    try {
+      const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
+      fs.mkdirSync(evidenceDir, { recursive: true });
+      qaRecordingPath = `/sdcard/qa-${issue}-pipeline.mp4`;
+      // screenrecord tiene límite de 3 minutos por defecto. Usamos --time-limit 180
+      // y --bit-rate 6M para balance calidad/tamaño. Si el agente dura más, el video
+      // captura los primeros 3 minutos que es donde ocurre el flujo principal.
+      qaRecordingProc = spawn('adb', [
+        '-s', qaSerial, 'shell',
+        `screenrecord --time-limit 180 --bit-rate 6000000 ${qaRecordingPath}`
+      ], { stdio: 'ignore', detached: true, windowsHide: true });
+      qaRecordingProc.unref();
+      log('lanzamiento', `🎬 Recording iniciado para qa:#${issue} (serial: ${qaSerial})`);
+    } catch (e) {
+      log('lanzamiento', `⚠️ Error iniciando recording para qa:#${issue}: ${e.message.slice(0, 80)}`);
+      qaRecordingProc = null;
+    }
+  }
+
   // Usar Node directo para evitar cmd.exe y ventanas visibles
   const spawnCmd = USE_NODE_DIRECT ? process.execPath : CLAUDE_BIN;
   const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
@@ -2911,6 +3009,46 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
         writeYaml(trabajandoPath, data);
+      }
+
+      // --- STOP RECORDING + PULL VIDEO ---
+      // Parar screenrecord del pipeline y bajar el video al evidence dir
+      if (skill === 'qa' && fase === 'verificacion' && qaRecordingPath && qaSerial) {
+        try {
+          // Matar screenrecord en el emulador (produce el mp4 final)
+          execSync(`adb -s ${qaSerial} shell "pkill -f screenrecord" 2>/dev/null || true`, {
+            encoding: 'utf8', timeout: 5000, windowsHide: true
+          });
+          // Esperar a que el archivo se cierre (screenrecord tarda ~1s en flush)
+          execSync('ping -n 3 127.0.0.1 > NUL', { timeout: 5000, windowsHide: true });
+          // Pull del video
+          const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
+          fs.mkdirSync(evidenceDir, { recursive: true });
+          const localVideo = path.join(evidenceDir, `qa-${issue}-raw.mp4`);
+          execSync(`adb -s ${qaSerial} pull "${qaRecordingPath}" "${localVideo}"`, {
+            encoding: 'utf8', timeout: 30000, windowsHide: true
+          });
+          // Limpiar del emulador
+          execSync(`adb -s ${qaSerial} shell rm -f "${qaRecordingPath}"`, {
+            encoding: 'utf8', timeout: 5000, windowsHide: true
+          });
+          const videoStat = fs.statSync(localVideo);
+          const videoSizeKb = Math.round(videoStat.size / 1024);
+          log('lanzamiento', `🎬 Recording parado para qa:#${issue} — video: ${videoSizeKb}KB → ${localVideo}`);
+          // Inyectar metadata de evidencia en el YAML para que validateQaEvidence lo encuentre
+          if (videoSizeKb >= 200) {
+            data.evidencia = localVideo;
+            data.video_size_kb = videoSizeKb;
+            // Audio narrado no se genera acá (el agente QA lo hace), pero el video crudo sí
+            writeYaml(trabajandoPath, data);
+          }
+        } catch (e) {
+          log('lanzamiento', `⚠️ Error parando/bajando recording qa:#${issue}: ${e.message.slice(0, 80)}`);
+        }
+        // Matar el proceso local si sigue vivo
+        if (qaRecordingProc && qaRecordingProc.exitCode === null) {
+          try { qaRecordingProc.kill(); } catch {}
+        }
       }
 
       // --- VALIDACIÓN ON-EXIT QA ---
