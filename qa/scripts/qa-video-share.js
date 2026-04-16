@@ -210,11 +210,13 @@ function driveAvailable() {
     if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) return true;
     if (!DRIVE_CREDENTIALS_PATH) return false;
     const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
-    return fs.existsSync(resolved);
+    return fs.existsSync(resolved) && !fs.statSync(resolved).isDirectory();
 }
 
 function loadDriveCredentials() {
+    if (!DRIVE_CREDENTIALS_PATH) return null;
     const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
+    if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) return null;
     return JSON.parse(fs.readFileSync(resolved, "utf8"));
 }
 
