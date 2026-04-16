@@ -1750,6 +1750,97 @@ function generateHTML(state) {
 
   // agentTeamCards se usa inline en la sección "Equipo y Skills"
 
+  // --- Historial de ejecuciones de agentes ---
+  const agentHistory = [];
+  for (const [issueNum, data] of matrixEntries) {
+    for (const [faseKey, faseEntries] of Object.entries(data.fases || {})) {
+      for (const e of faseEntries) {
+        // Incluir trabajando (en ejecución) + listo + procesado (finalizados)
+        if (e.estado === 'trabajando' || e.estado === 'listo' || e.estado === 'procesado') {
+          const [pline, fse] = faseKey.split('/');
+          agentHistory.push({
+            issue: issueNum,
+            titulo: data.titulo || '',
+            skill: e.skill,
+            pipeline: pline,
+            fase: fse,
+            estado: e.estado,
+            resultado: e.resultado || null,
+            duration: e.durationMs || 0,
+            startedAt: e.startedAt || 0,
+            finishedAt: (e.estado !== 'trabajando') ? (e.updatedAt || 0) : 0,
+            hasLog: !!e.hasLog,
+            logFile: e.logFile,
+            hasRejectionPdf: !!e.hasRejectionPdf,
+            rejectionPdf: e.rejectionPdf,
+          });
+        }
+      }
+    }
+  }
+  // Ordenar: en ejecución primero, luego por timestamp desc
+  agentHistory.sort((a, b) => {
+    if (a.estado === 'trabajando' && b.estado !== 'trabajando') return -1;
+    if (b.estado === 'trabajando' && a.estado !== 'trabajando') return 1;
+    const tsA = a.estado === 'trabajando' ? a.startedAt : a.finishedAt;
+    const tsB = b.estado === 'trabajando' ? b.startedAt : b.finishedAt;
+    return tsB - tsA;
+  });
+
+  // Generar HTML del historial (máximo 30 entradas visibles, el resto en toggle)
+  const HIST_VISIBLE = 15;
+  let historyHTML = '';
+  if (agentHistory.length > 0) {
+    const renderHistCard = (h, idx) => {
+      const p = AGENT_PERSONA[h.skill] || { icon: '\u2699', name: h.skill, color: 'var(--dim)' };
+      const isRunning = h.estado === 'trabajando';
+      const isOk = h.resultado === 'aprobado';
+      const isFail = h.resultado === 'rechazado';
+      const statusCls = isRunning ? 'ah-running' : isOk ? 'ah-ok' : isFail ? 'ah-fail' : 'ah-neutral';
+      const statusIcon = isRunning ? '\u25CF' : isOk ? '\u2713' : isFail ? '\u2717' : '\u2014';
+      const statusLabel = isRunning ? 'En ejecución' : (h.resultado || 'finalizado');
+      const ts = isRunning ? h.startedAt : h.finishedAt;
+      const timeStr = ts ? new Date(ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+      const durStr = fmtDuration(h.duration);
+      const href = h.hasLog ? `/logs/view/${h.logFile}${isRunning ? '?live=1' : ''}` : GH(h.issue);
+      const tip = h.hasLog ? `Ver log · ${h.skill} · #${h.issue}` : `Ver #${h.issue} en GitHub`;
+      const title = h.titulo ? ` · ${h.titulo.slice(0, 40)}` : '';
+      const pdfLink = h.hasRejectionPdf
+        ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
+        : '';
+      return `<a href="${href}" target="_blank" class="ah-card ${statusCls}" title="${tip}">
+        <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
+        <span class="ah-skill">${p.name}</span>
+        <span class="ah-issue">#${h.issue}${title}</span>
+        <span class="ah-fase">${h.fase}</span>
+        <span class="ah-status">${statusIcon} ${statusLabel}</span>
+        <span class="ah-dur">${durStr}</span>
+        <span class="ah-time">${timeStr}</span>
+        ${pdfLink}
+      </a>`;
+    };
+
+    const visible = agentHistory.slice(0, HIST_VISIBLE).map(renderHistCard).join('');
+    const hidden = agentHistory.length > HIST_VISIBLE
+      ? agentHistory.slice(HIST_VISIBLE, 50).map(renderHistCard).join('')
+      : '';
+    const moreToggle = hidden
+      ? `<details class="ah-more"><summary class="ah-more-btn">Ver ${Math.min(agentHistory.length - HIST_VISIBLE, 35)} más…</summary><div class="ah-more-list">${hidden}</div></details>`
+      : '';
+
+    historyHTML = `
+    <div class="matrix-section" id="agent-history">
+      <div class="matrix-header">
+        <h2>\u{1F4DC} Historial de Ejecuciones</h2>
+        <span class="ah-count">${agentHistory.length} ejecuciones</span>
+      </div>
+      <div class="ah-list">
+        ${visible}
+        ${moreToggle}
+      </div>
+    </div>`;
+  }
+
   // --- Mini DORA metrics on main dashboard ---
   let doraMinHTML = '';
   try {
@@ -3031,6 +3122,36 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .eq-card-kill{color:var(--dim);cursor:pointer;font-weight:700;font-size:1.2em;padding:4px 8px;border-radius:6px}
 .eq-card-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
 
+/* Agent History */
+#agent-history .matrix-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd)}
+#agent-history h2{margin:0;font-size:1.05em;font-weight:700}
+.ah-count{font-size:0.76em;color:var(--dim)}
+.ah-list{display:flex;flex-direction:column;gap:4px}
+.ah-card{display:grid;grid-template-columns:28px 80px 1fr 80px 110px 60px 90px auto;gap:8px;align-items:center;padding:6px 12px;border-radius:var(--radius);border:1px solid var(--bd);border-left:3px solid var(--dim);text-decoration:none;font-size:0.78em;transition:background 0.15s,border-color 0.15s}
+.ah-card:hover{background:rgba(255,255,255,0.04);border-color:var(--ac)}
+.ah-running{border-left-color:var(--teal,#2dd4bf);background:rgba(45,212,191,0.05)}
+.ah-ok{border-left-color:var(--gn,#3fb950)}
+.ah-fail{border-left-color:var(--rd,#f85149)}
+.ah-neutral{border-left-color:var(--dim)}
+.ah-avatar{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.9em;color:#fff;flex-shrink:0}
+.ah-skill{font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ah-issue{color:var(--ac);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ah-fase{color:var(--dim);font-size:0.9em}
+.ah-status{font-weight:600;white-space:nowrap}
+.ah-running .ah-status{color:var(--teal,#2dd4bf)}
+.ah-ok .ah-status{color:var(--gn,#3fb950)}
+.ah-fail .ah-status{color:var(--rd,#f85149)}
+.ah-neutral .ah-status{color:var(--dim)}
+.ah-dur{color:var(--teal,#2dd4bf);font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+.ah-time{color:var(--dim);font-size:0.9em;font-variant-numeric:tabular-nums;text-align:right}
+.ah-pdf{text-decoration:none;font-size:1.1em}
+.ah-more{margin-top:4px}
+.ah-more-btn{font-size:0.78em;color:var(--ac);cursor:pointer;padding:6px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15);list-style:none}
+.ah-more-btn:hover{background:rgba(88,166,255,0.12)}
+.ah-more-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+@media(max-width:900px){.ah-card{grid-template-columns:24px 60px 1fr 70px 50px 70px auto;font-size:0.72em}}
+@media(max-width:600px){.ah-card{grid-template-columns:24px 1fr 80px auto;}.ah-fase,.ah-dur,.ah-time{display:none}}
+
 /* Areas grid 2×2 */
 .eq-areas-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .eq-area-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);padding:8px 10px}
@@ -3219,6 +3340,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
   ${matrixHTML}
 
+  ${historyHTML}
+
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
   <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
@@ -3318,6 +3441,7 @@ async function softRefresh() {
       '.kpis-row',
       '.panel-equipo-full',
       '#issue-tracker',
+      '#agent-history',
     ];
     for (const sel of selectors) {
       const newEl = doc.querySelector(sel);
