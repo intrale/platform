@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // =============================================================================
 // Pulpo V2 — Proceso central del pipeline
-// Brazos: barrido, lanzamiento, huérfanos (+ intake en F5)
+// Brazos: barrido, lanzamiento, huérfanos, desbloqueo (+ intake en F5)
 // =============================================================================
 
 const fs = require('fs');
@@ -45,7 +45,57 @@ function ghThrottle() {
   lastGhCallTime = Date.now();
 }
 
+/**
+ * Agregar un comentario a un issue de GitHub (fire-and-forget).
+ */
+function ghCommentOnIssue(issueNumber, body) {
+  try {
+    ghThrottle();
+    execSync(`"${GH_BIN}" issue comment ${issueNumber} --body "${body.replace(/"/g, '\\"')}"`, {
+      encoding: 'utf8', timeout: 15000, windowsHide: true,
+      cwd: path.resolve(__dirname, '..')
+    });
+    log('github', `Comentario en #${issueNumber}: ${body.slice(0, 80)}`);
+  } catch (e) {
+    log('github', `Error comentando #${issueNumber}: ${e.message}`);
+  }
+}
+
 // --- Utilidades ---
+
+// Partir texto en chunks para TTS respetando límites de oraciones
+function splitTextForTTSChunks(text, maxChars) {
+  if (text.length <= maxChars) return [text];
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const chunks = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if ((current + ' ' + sentence).length > maxChars && current.length > 0) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + ' ' + sentence : sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  // Oraciones individuales más largas que maxChars → corte por palabras
+  const result = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= maxChars) { result.push(chunk); continue; }
+    const words = chunk.split(/\s+/);
+    let part = '';
+    for (const word of words) {
+      if ((part + ' ' + word).length > maxChars && part.length > 0) {
+        result.push(part.trim());
+        part = word;
+      } else {
+        part = part ? part + ' ' + word : word;
+      }
+    }
+    if (part.trim()) result.push(part.trim());
+  }
+  return result;
+}
 
 function log(brazo, msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -179,44 +229,97 @@ function clearCooldown(skill, issue) {
 // Se actualizan al terminar cada agente usando los snapshots de metrics-history.
 const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 
+// Versión del schema de skill-profiles. Incrementar cada vez que cambie la fórmula
+// de aprendizaje de `avgMem` / `avgCpu` — al hacerlo, los perfiles viejos se invalidan
+// automáticamente en el próximo arranque de pulpo. v2 = aprendizaje por DELTA vs baseline.
+const SKILL_PROFILES_SCHEMA_VERSION = 2;
+
 function loadSkillProfiles() {
-  try { return JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8')); } catch { return {}; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    // Compatibilidad: si el archivo viejo no tiene _schemaVersion (v1), devolver vacío
+    // al próximo save se escribirá con la versión nueva.
+    if (!raw || raw._schemaVersion !== SKILL_PROFILES_SCHEMA_VERSION) return {};
+    const { _schemaVersion, ...profiles } = raw;
+    return profiles;
+  } catch { return {}; }
 }
 
 function saveSkillProfiles(profiles) {
-  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(profiles, null, 2));
+  const payload = { _schemaVersion: SKILL_PROFILES_SCHEMA_VERSION, ...profiles };
+  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(payload, null, 2));
+}
+
+/**
+ * Migración one-shot: si skill-profiles.json existe pero tiene un schema viejo
+ * (o no tiene schema version), renombrarlo a .bak y empezar de cero con la fórmula
+ * nueva. Se ejecuta una sola vez al arrancar pulpo.
+ */
+function migrateSkillProfilesIfNeeded() {
+  try {
+    if (!fs.existsSync(SKILL_PROFILES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    if (raw && raw._schemaVersion === SKILL_PROFILES_SCHEMA_VERSION) return; // ya migrado
+
+    const bakPath = SKILL_PROFILES_FILE + '.v1.bak';
+    fs.renameSync(SKILL_PROFILES_FILE, bakPath);
+    log('pulpo', `📦 skill-profiles.json migrado a v${SKILL_PROFILES_SCHEMA_VERSION}: backup en ${path.basename(bakPath)}. Los perfiles se reaprenden con la fórmula DELTA.`);
+  } catch (e) {
+    log('pulpo', `Error migrando skill-profiles: ${e.message}`);
+  }
 }
 
 /**
  * Registrar el consumo de recursos de un agente que terminó.
- * Lee metrics-history.jsonl para el período de ejecución del agente,
- * calcula el promedio de CPU/RAM durante ese período, y actualiza
- * el perfil del skill con un rolling average ponderado.
+ *
+ * Estrategia DELTA (v2): aprender el INCREMENTO que el agente introdujo respecto
+ * a la baseline inmediatamente previa a su lanzamiento, no el promedio absoluto
+ * del sistema durante su vida. Sin esto, infra pesada coexistente (emulador,
+ * Edge, Gradle daemons) se cuela en el perfil y el gate predictivo lo vuelve
+ * a sumar al usage actual → doble conteo → livelock.
+ *
+ * Ver pulpo.js comentario de predictResourceImpact y docs/pipeline/gate-predictivo.md
  */
+const BASELINE_WINDOW_MS = 60_000; // Ventana de muestras pre-lanzamiento para estimar baseline
+
 function recordSkillResourceUsage(skill, startTime, endTime) {
   try {
     const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
     if (!fs.existsSync(metricsFile)) return;
 
     const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
-    const snapshots = [];
+    const parsed = [];
     for (const line of lines) {
-      try {
-        const s = JSON.parse(line);
-        if (s.ts >= startTime && s.ts <= endTime) snapshots.push(s);
-      } catch {}
+      try { parsed.push(JSON.parse(line)); } catch {}
     }
 
-    if (snapshots.length < 2) return; // Necesitamos al menos 2 snapshots para un promedio significativo
+    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s)
+    const baseline = parsed.filter(s => s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
+    // Durante: muestras mientras el agente estuvo vivo
+    const during = parsed.filter(s => s.ts >= startTime && s.ts <= endTime);
 
-    // Promedio de CPU y RAM durante la vida del agente
-    const avgCpu = snapshots.reduce((sum, s) => sum + s.cpu, 0) / snapshots.length;
-    const avgMem = snapshots.reduce((sum, s) => sum + s.mem, 0) / snapshots.length;
-    // Cantidad de agentes promedio corriendo durante el período (para estimar contribución individual)
-    const avgAgents = snapshots.reduce((sum, s) => sum + Math.max(1, s.agents), 0) / snapshots.length;
-    // Estimación de la contribución individual de este agente
-    const estCpuPerAgent = avgCpu / avgAgents;
-    const estMemPerAgent = avgMem / avgAgents;
+    if (baseline.length === 0 || during.length < 2) {
+      // Sin baseline confiable o muy pocas muestras — no aprender (evita corromper el perfil)
+      return;
+    }
+
+    const avgBaselineCpu = baseline.reduce((sum, s) => sum + s.cpu, 0) / baseline.length;
+    const avgBaselineMem = baseline.reduce((sum, s) => sum + s.mem, 0) / baseline.length;
+    const avgDuringCpu = during.reduce((sum, s) => sum + s.cpu, 0) / during.length;
+    const avgDuringMem = during.reduce((sum, s) => sum + s.mem, 0) / during.length;
+
+    // Delta bruto: cuánto subió el sistema respecto al instante previo a lanzarlo
+    const deltaCpu = Math.max(0, avgDuringCpu - avgBaselineCpu);
+    const deltaMem = Math.max(0, avgDuringMem - avgBaselineMem);
+
+    // Si había otros agentes Claude corriendo durante la ventana, atribuirles
+    // parcialmente el delta (50% de atribución conservadora). Así no inflamos
+    // el perfil de este skill con el consumo de los vecinos.
+    const avgDuringAgents = during.reduce((sum, s) => sum + Math.max(1, s.agents || 1), 0) / during.length;
+    const otherAgents = Math.max(0, avgDuringAgents - 1);
+    const shareDenominator = 1 + otherAgents * 0.5;
+    const estCpuPerAgent = deltaCpu / shareDenominator;
+    const estMemPerAgent = deltaMem / shareDenominator;
 
     const profiles = loadSkillProfiles();
     const existing = profiles[skill] || { avgCpu: estCpuPerAgent, avgMem: estMemPerAgent, samples: 0 };
@@ -250,12 +353,20 @@ function recordSkillResourceUsage(skill, startTime, endTime) {
  */
 const MIN_RELIABLE_SAMPLES = 5;
 const MAX_EST_CPU = 25;  // Cap: ningún agente Claude usa más que esto
-const MAX_EST_MEM = 20;  // Cap: un proceso Claude rara vez pasa de 3GB (~20% en 16GB)
+const MAX_EST_MEM = 5;   // Cap: un proceso claude.exe real usa ~250-500MB (~1.6-3% en 16GB).
+                         // Defensa en profundidad contra perfiles mal aprendidos — ver doc
+                         // docs/pipeline/gate-predictivo.md
 const PROFILE_STALE_HOURS = 24;
+
+// Skills cuya infra reservada (emulador Android) debe restarse del baseline del gate.
+// Razón: el emulador existe PORQUE estos skills lo necesitan; cobrarle su RAM al propio
+// skill que lo consume es doble conteo y lleva a livelock (la baseline + el delta del
+// agente nunca cierran bajo el umbral porque el emulador ya está presente en la baseline).
+const QA_INFRA_SKILLS = new Set(['qa', 'security', 'tester']);
 
 function getEstimatedImpact(profile) {
   const DEFAULT_CPU = 12;
-  const DEFAULT_MEM = 8;
+  const DEFAULT_MEM = 3;  // Proceso claude.exe real ~ 250-500 MB en 16 GB
 
   if (!profile) return { cpu: DEFAULT_CPU, mem: DEFAULT_MEM };
 
@@ -283,7 +394,45 @@ function getEstimatedImpact(profile) {
   return { cpu: Math.round(cpu * 10) / 10, mem: Math.round(mem * 10) / 10 };
 }
 
-function predictResourceImpact(skill, config) {
+/**
+ * Lee la RAM ocupada por qemu-system-x86_64-headless.exe como porcentaje del total
+ * del sistema. Cacheado por 5 segundos para no pagar un `tasklist` en cada llamada.
+ * Devuelve 0 si el emulador no está corriendo o si la medición falla.
+ */
+let _emulatorMemCache = { ts: 0, percent: 0, running: false };
+const EMULATOR_MEM_CACHE_MS = 5000;
+
+function measureEmulatorMemPercent() {
+  const now = Date.now();
+  if (now - _emulatorMemCache.ts < EMULATOR_MEM_CACHE_MS) return _emulatorMemCache;
+
+  let running = false;
+  let percent = 0;
+  try {
+    const out = execSync(
+      'tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    // Formato CSV: "qemu-system-x86_64-headless.exe","1234","Console","1","234,567 KB"
+    const line = out.split('\n').find(l => l.toLowerCase().includes('qemu-system'));
+    if (line) {
+      running = true;
+      const cols = line.split('","').map(c => c.replace(/^"|"$/g, ''));
+      const memKbStr = (cols[4] || '').replace(/[^\d]/g, '');
+      const memKb = parseInt(memKbStr, 10);
+      if (!isNaN(memKb) && memKb > 0) {
+        const totalBytes = os.totalmem();
+        const usedBytes = memKb * 1024;
+        percent = Math.round((usedBytes / totalBytes) * 1000) / 10; // 1 decimal
+      }
+    }
+  } catch { /* sin tasklist o sin qemu — degradar silencioso */ }
+
+  _emulatorMemCache = { ts: now, percent, running };
+  return _emulatorMemCache;
+}
+
+function predictResourceImpact(skill, config, ctx = {}) {
   const profiles = loadSkillProfiles();
   const profile = profiles[skill];
   const usage = getSystemResourceUsage();
@@ -293,24 +442,44 @@ function predictResourceImpact(skill, config) {
 
   const est = getEstimatedImpact(profile);
 
+  // Reserva de infra del propio skill: si este skill es QA y el emulador está
+  // corriendo, restarlo del baseline — su RAM es un costo de la ventana QA, no
+  // del agente individual. Ver QA_INFRA_SKILLS arriba.
+  let reservedMem = 0;
+  let reservedReason = null;
+  if (QA_INFRA_SKILLS.has(skill)) {
+    const emu = ctx.emulator || measureEmulatorMemPercent();
+    if (emu.running && emu.percent > 0) {
+      reservedMem = emu.percent;
+      reservedReason = `emulador ${emu.percent}%`;
+    }
+  }
+
+  const effectiveMemBase = Math.max(0, usage.memPercent - reservedMem);
   const predictedCpu = usage.cpuPercent + est.cpu;
-  const predictedMem = usage.memPercent + est.mem;
+  const predictedMem = effectiveMemBase + est.mem;
 
   const cpuSafe = predictedCpu < maxCpu;
   const memSafe = predictedMem < maxMem;
 
   if (cpuSafe && memSafe) {
-    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem } };
+    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem }, reserved: reservedMem };
   }
 
   const reasons = [];
   if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${est.cpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
-  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
+  if (!memSafe) {
+    const memDetail = reservedReason
+      ? `MEM ${usage.memPercent}% − ${reservedReason} + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`
+      : `MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`;
+    reasons.push(memDetail);
+  }
 
   return {
     safe: false,
     reason: reasons.join(' | '),
-    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) }
+    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) },
+    reserved: reservedMem
   };
 }
 
@@ -741,6 +910,7 @@ let qaPriorityActivatedAt = 0;
 let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
 let qaPriorityNotifiedTelegram = false;
 let qaPriorityManual = false;       // true si fue activada manualmente desde el dashboard
+let qaPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
 
 // =============================================================================
 // BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
@@ -753,8 +923,40 @@ let buildPriorityActivatedAt = 0;
 let buildFirstBlockedAt = 0;
 let buildPriorityNotifiedTelegram = false;
 let buildPriorityManual = false;    // true si fue activada manualmente desde el dashboard
+let buildPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
 
 const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
+
+/**
+ * Restaurar el estado de priority windows desde disco al iniciar.
+ * Sin esto, un restart del pulpo pierde la ventana activa y lanza dev
+ * aunque QA/Build estuviera bloqueando.
+ */
+function restorePriorityWindows() {
+  try {
+    if (!fs.existsSync(PRIORITY_WINDOWS_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+    if (data.qa?.active) {
+      qaPriorityActive = true;
+      qaPriorityActivatedAt = data.qa.activatedAt || Date.now();
+      qaPriorityManual = data.qa.manual || false;
+      qaPriorityNotifiedTelegram = true; // Ya se notificó antes del restart
+      log('qa-priority', `♻️ QA Priority Window restaurada desde disco (activada ${new Date(qaPriorityActivatedAt).toISOString()})`);
+    }
+    if (data.build?.active) {
+      buildPriorityActive = true;
+      buildPriorityActivatedAt = data.build.activatedAt || Date.now();
+      buildPriorityManual = data.build.manual || false;
+      buildPriorityNotifiedTelegram = true;
+      log('build-priority', `♻️ Build Priority Window restaurada desde disco (activada ${new Date(buildPriorityActivatedAt).toISOString()})`);
+    }
+  } catch (e) {
+    log('priority', `⚠️ Error restaurando priority windows: ${e.message}`);
+  }
+}
+
+// Restaurar al cargar el módulo
+restorePriorityWindows();
 
 /**
  * Persistir el estado actual de las priority windows a disco.
@@ -787,14 +989,26 @@ function readManualPriorityOverrides() {
   try {
     const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
 
-    // QA manual override
+    // QA manual override — al activar manual, AUTOEXCLUIR Build (las ventanas son
+    // mutuamente exclusivas; QA > Build > Dev). Sin esto quedaban las dos activas
+    // a la vez cuando se activaba una manualmente y la otra cruzaba el umbral.
     if (data.qa?.manualOverride === true && !qaPriorityActive) {
       qaPriorityActive = true;
       qaPriorityManual = true;
       qaPriorityActivatedAt = Date.now();
       qaPriorityNotifiedTelegram = false;
       log('qa-priority', '🔧 QA Priority Window ACTIVADA MANUALMENTE desde dashboard');
-      sendTelegram('🔧 QA Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
+      sendTelegram('🔧 QA Priority Window activada manualmente desde el dashboard. Dev y build bloqueados hasta desactivación.');
+      // Autoexcluir Build (incluso si era manual — el último override gana)
+      if (buildPriorityActive) {
+        log('build-priority', '🔄 Build Priority desactivada por activación manual de QA (autoexcluyentes)');
+        buildPriorityActive = false;
+        buildPriorityManual = false;
+        buildPriorityActivatedAt = 0;
+        buildFirstBlockedAt = 0;
+        buildPriorityNotifiedTelegram = false;
+        buildPrioritySafetyNotified = false;
+      }
       persistPriorityWindows();
     } else if (data.qa?.manualOverride === false && qaPriorityActive) {
       qaPriorityActive = false;
@@ -805,7 +1019,7 @@ function readManualPriorityOverrides() {
       persistPriorityWindows();
     }
 
-    // Build manual override
+    // Build manual override — autoexclusión simétrica con QA
     if (data.build?.manualOverride === true && !buildPriorityActive) {
       buildPriorityActive = true;
       buildPriorityManual = true;
@@ -813,6 +1027,16 @@ function readManualPriorityOverrides() {
       buildPriorityNotifiedTelegram = false;
       log('build-priority', '🔧 Build Priority Window ACTIVADA MANUALMENTE desde dashboard');
       sendTelegram('🔧 Build Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
+      // Autoexcluir QA (incluso si era manual — el último override gana)
+      if (qaPriorityActive) {
+        log('qa-priority', '🔄 QA Priority desactivada por activación manual de Build (autoexcluyentes)');
+        qaPriorityActive = false;
+        qaPriorityManual = false;
+        qaPriorityActivatedAt = 0;
+        qaFirstBlockedAt = 0;
+        qaPriorityNotifiedTelegram = false;
+        qaPrioritySafetyNotified = false;
+      }
       persistPriorityWindows();
     } else if (data.build?.manualOverride === false && buildPriorityActive) {
       buildPriorityActive = false;
@@ -840,7 +1064,12 @@ function countPendingVerificacion(config) {
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('verificacion')) continue;
     const pendDir = path.join(PIPELINE, pName, 'verificacion', 'pendiente');
-    count += listWorkFiles(pendDir).length;
+    const files = listWorkFiles(pendDir);
+    for (const f of files) {
+      const issue = issueFromFile(f.name);
+      const labels = getIssueLabels(issue);
+      if (!labels.includes('blocked:dependencies')) count++;
+    }
   }
   return count;
 }
@@ -860,24 +1089,27 @@ function countRunningDev(config) {
 
 /**
  * Evaluar si debe activarse/desactivarse la QA Priority Window.
- * Retorna true si QA Priority está activa (dev debe bloquearse).
+ * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
+ * - Activación inmediata cuando cola >= umbral configurable
+ * - Sin timeout fijo (corre hasta vaciar cola)
+ * - Timeout de seguridad: notifica Telegram si no completa en N horas (no cierra)
+ * Retorna true si QA Priority está activa (dev y build deben bloquearse).
  */
 function evaluateQaPriority(config) {
   const limits = config.resource_limits || {};
-  const queueThreshold = limits.qa_priority_queue_threshold || 3;
-  const waitMinutes = limits.qa_priority_wait_minutes || 30;
-  const maxDurationMinutes = limits.qa_priority_max_duration_minutes || 15;
+  const threshold = limits.priority_windows_activation_threshold || 3;
+  const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
   const now = Date.now();
 
   const pendingQa = countPendingVerificacion(config);
 
   // ---- Desactivación ----
   if (qaPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
+    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
     if (!qaPriorityManual && pendingQa === 0) {
       log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
       if (qaPriorityNotifiedTelegram) {
-        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Lanzamientos dev reactivados.');
+        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Pipeline en modo normal.');
       }
       qaPriorityActive = false;
       qaPriorityActivatedAt = 0;
@@ -886,44 +1118,50 @@ function evaluateQaPriority(config) {
       persistPriorityWindows();
       return false;
     }
-    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
-    if (now - qaPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
-      log('qa-priority', `⏱️ QA Priority Window expiró después de ${maxDurationMinutes}min — ${pendingQa} issues QA aún pendientes`);
-      if (qaPriorityNotifiedTelegram) {
-        sendTelegram(`⏱️ QA Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingQa} issues de verificación pendientes. Lanzamientos dev reactivados.`);
-      }
-      qaPriorityActive = false;
-      qaPriorityManual = false;
-      qaPriorityActivatedAt = 0;
-      qaFirstBlockedAt = 0;
-      qaPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
-      return false;
+    // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
+    const elapsedHours = (now - qaPriorityActivatedAt) / (3600 * 1000);
+    if (elapsedHours >= safetyTimeoutHours && !qaPrioritySafetyNotified) {
+      qaPrioritySafetyNotified = true;
+      log('qa-priority', `⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
+      sendTelegram(`⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingQa} issues pendientes. Verificá desde el dashboard si hay un problema.`);
     }
-    return true; // Sigue activa
+    return true; // Sigue activa — sin timeout fijo
   }
 
   // ---- Activación ----
-  // Condición: N+ issues QA pendientes Y llevan M+ minutos sin poder correr
-  if (pendingQa >= queueThreshold) {
-    if (qaFirstBlockedAt === 0) {
-      qaFirstBlockedAt = now;
-      log('qa-priority', `⚠️ Acumulación QA detectada: ${pendingQa} issues pendientes en verificación — esperando ${waitMinutes}min antes de activar QA Priority`);
+  // Activación inmediata cuando cola >= umbral (sin esperar N minutos)
+  if (pendingQa >= threshold) {
+    // Respetar override manual de Build: si el operador activó Build a mano,
+    // NO auto-activar QA en paralelo (las ventanas son autoexcluyentes).
+    // QA quedará en espera hasta que Build manual se desactive.
+    if (buildPriorityActive && buildPriorityManual) {
+      if (qaFirstBlockedAt === 0) {
+        qaFirstBlockedAt = now;
+        log('qa-priority', `⏳ QA Priority en espera (${pendingQa} pendientes) — Build manual activa, autoexcluyentes`);
+      }
+      return false;
     }
-    const waitedMs = now - qaFirstBlockedAt;
-    if (waitedMs >= waitMinutes * 60 * 1000) {
-      qaPriorityActive = true;
-      qaPriorityActivatedAt = now;
-      qaPriorityNotifiedTelegram = true;
-      log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min sin verificar. Bloqueando lanzamientos dev.`);
-      sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min esperando verificación. Bloqueando nuevos lanzamientos de dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
-      persistPriorityWindows();
-      return true;
+    // QA siempre gana sobre Build automática
+    if (buildPriorityActive && !buildPriorityManual) {
+      log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — ${pendingQa} issues QA pendientes`);
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
     }
+    qaPriorityActive = true;
+    qaPriorityActivatedAt = now;
+    qaPriorityNotifiedTelegram = true;
+    qaPrioritySafetyNotified = false;
+    log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues en verificación (umbral: ${threshold}). Bloqueando dev y build.`);
+    sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues esperando verificación (umbral: ${threshold}). Dev y build bloqueados hasta vaciar cola.`);
+    persistPriorityWindows();
+    return true;
   } else {
-    // Si bajó del umbral, resetear el timer
+    // Si bajó del umbral, resetear
     if (qaFirstBlockedAt !== 0) {
-      log('qa-priority', `✅ Acumulación QA bajó a ${pendingQa} (< ${queueThreshold}) — timer de QA Priority reseteado`);
+      log('qa-priority', `✅ Cola QA bajó a ${pendingQa} (< ${threshold}) — modo normal`);
       qaFirstBlockedAt = 0;
     }
   }
@@ -939,7 +1177,12 @@ function countPendingBuild(config) {
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('build')) continue;
     const pendDir = path.join(PIPELINE, pName, 'build', 'pendiente');
-    count += listWorkFiles(pendDir).length;
+    const files = listWorkFiles(pendDir);
+    for (const f of files) {
+      const issue = issueFromFile(f.name);
+      const labels = getIssueLabels(issue);
+      if (!labels.includes('blocked:dependencies')) count++;
+    }
   }
   return count;
 }
@@ -959,15 +1202,16 @@ function countRunningBuild(config) {
 
 /**
  * Evaluar si debe activarse/desactivarse la Build Priority Window.
- * Cuando hay builds en cola, bloquea nuevos dev para liberar recursos
- * y evitar saturación del sistema.
+ * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
+ * - Activación inmediata cuando cola >= umbral configurable
+ * - Sin timeout fijo (corre hasta vaciar cola)
+ * - NO se activa si QA Priority ya está activa (QA > Build)
  * Retorna true si Build Priority está activa (dev debe bloquearse).
  */
 function evaluateBuildPriority(config) {
   const limits = config.resource_limits || {};
-  const queueThreshold = limits.build_priority_queue_threshold || 2;
-  const waitMinutes = limits.build_priority_wait_minutes || 5;
-  const maxDurationMinutes = limits.build_priority_max_duration_minutes || 20;
+  const threshold = limits.priority_windows_activation_threshold || 3;
+  const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
   const now = Date.now();
 
   const pendingBuild = countPendingBuild(config);
@@ -975,57 +1219,58 @@ function evaluateBuildPriority(config) {
 
   // ---- Desactivación ----
   if (buildPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
+    // Si QA Priority se activó, Build cede (QA > Build) — excepto si fue manual
+    if (qaPriorityActive && !buildPriorityManual) {
+      log('build-priority', '🔄 Build Priority cede ante QA Priority (QA > Build)');
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
+      persistPriorityWindows();
+      return false;
+    }
+    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
     if (!buildPriorityManual && pendingBuild === 0 && runningBuild === 0) {
       log('build-priority', '🟢 Build Priority Window desactivada — cola de build vacía');
       if (buildPriorityNotifiedTelegram) {
-        sendTelegram('✅ Build Priority Window terminó — builds completados. Lanzamientos dev reactivados.');
+        sendTelegram('✅ Build Priority Window terminó — builds completados. Pipeline en modo normal.');
       }
       buildPriorityActive = false;
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
       buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
       persistPriorityWindows();
       return false;
     }
-    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
-    if (now - buildPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
-      log('build-priority', `⏱️ Build Priority Window expiró después de ${maxDurationMinutes}min — ${pendingBuild} builds pendientes, ${runningBuild} en curso`);
-      if (buildPriorityNotifiedTelegram) {
-        sendTelegram(`⏱️ Build Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingBuild} builds pendientes. Lanzamientos dev reactivados.`);
-      }
-      buildPriorityActive = false;
-      buildPriorityManual = false;
-      buildPriorityActivatedAt = 0;
-      buildFirstBlockedAt = 0;
-      buildPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
-      return false;
+    // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
+    const elapsedHours = (now - buildPriorityActivatedAt) / (3600 * 1000);
+    if (elapsedHours >= safetyTimeoutHours && !buildPrioritySafetyNotified) {
+      buildPrioritySafetyNotified = true;
+      log('build-priority', `⚠️ Build Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
+      sendTelegram(`⚠️ Build Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingBuild} builds pendientes. Verificá desde el dashboard.`);
     }
-    return true; // Sigue activa
+    return true; // Sigue activa — sin timeout fijo
   }
 
   // ---- Activación ----
-  // Condición: N+ builds pendientes Y llevan M+ minutos sin poder correr
-  if (pendingBuild >= queueThreshold) {
-    if (buildFirstBlockedAt === 0) {
-      buildFirstBlockedAt = now;
-      log('build-priority', `⚠️ Acumulación build detectada: ${pendingBuild} issues pendientes en build — esperando ${waitMinutes}min antes de activar Build Priority`);
-    }
-    const waitedMs = now - buildFirstBlockedAt;
-    if (waitedMs >= waitMinutes * 60 * 1000) {
-      buildPriorityActive = true;
-      buildPriorityActivatedAt = now;
-      buildPriorityNotifiedTelegram = true;
-      log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues llevan ${Math.round(waitedMs / 60000)}min sin buildear. Bloqueando lanzamientos dev.`);
-      sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build hace ${Math.round(waitedMs / 60000)}min. Bloqueando nuevos dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
-      persistPriorityWindows();
-      return true;
-    }
+  // NO activar si QA Priority ya está activa (QA > Build, autoexcluyentes)
+  if (qaPriorityActive) return false;
+
+  // Activación inmediata cuando cola >= umbral
+  if (pendingBuild >= threshold) {
+    buildPriorityActive = true;
+    buildPriorityActivatedAt = now;
+    buildPriorityNotifiedTelegram = true;
+    buildPrioritySafetyNotified = false;
+    log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues esperando build (umbral: ${threshold}). Bloqueando dev.`);
+    sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build (umbral: ${threshold}). Dev bloqueado hasta vaciar cola.`);
+    persistPriorityWindows();
+    return true;
   } else {
-    // Si bajó del umbral, resetear el timer
     if (buildFirstBlockedAt !== 0) {
-      log('build-priority', `✅ Acumulación build bajó a ${pendingBuild} (< ${queueThreshold}) — timer de Build Priority reseteado`);
+      log('build-priority', `✅ Cola build bajó a ${pendingBuild} (< ${threshold}) — modo normal`);
       buildFirstBlockedAt = 0;
     }
   }
@@ -1098,22 +1343,32 @@ function tryFreeResources(mode = 'soft') {
 }
 
 /**
- * Apagar el emulador QA si no hay nada en fase verificacion/trabajando.
- * El emulador consume ~2.5GB de RAM y ensureQaEnvironment() lo re-levanta cuando hace falta.
- * Retorna true si mató el emulador.
+ * Solicitar apagado del emulador QA si no hay nada en fase verificacion/trabajando.
+ * Delega al servicio-emulador via cola (no ejecuta directamente).
+ * Retorna true si encoló el pedido de stop.
  */
+// Grace period: después de levantar el emulador (boot_completed), no apagarlo
+// durante este tiempo. Evita el loop preflight→start→idle→stop→preflight que
+// corrompía el quickboot. Anclado a qa-env-state.lastStartedAt, que qa-environment.js
+// escribe recién DESPUÉS de confirmar sys.boot_completed=1.
+const EMULATOR_IDLE_GRACE_MS = 3 * 60 * 1000; // 3 minutos de warm-up protegido
+
 function shutdownIdleEmulator(config) {
   try {
-    // ¿Hay algo en verificacion/trabajando?
+    // ¿Hay algo en verificacion/trabajando O pendiente?
+    // Si hay QA pendiente encolada, el emulador va a ser necesario inmediatamente.
     for (const [pName, pConfig] of Object.entries(config.pipelines)) {
       if (!pConfig.fases.includes('verificacion')) continue;
-      const trabajandoDir = path.join(fasePath(pName, 'verificacion'), 'trabajando');
-      const archivos = listWorkFiles(trabajandoDir);
-      if (archivos.length > 0) return false; // Hay agentes de QA corriendo, no tocar
+      const verifDir = fasePath(pName, 'verificacion');
+      const trabajando = listWorkFiles(path.join(verifDir, 'trabajando'));
+      if (trabajando.length > 0) return false; // Hay agentes QA corriendo
+      const pendiente = listWorkFiles(path.join(verifDir, 'pendiente'));
+      if (pendiente.length > 0) return false; // Hay QA pendiente en cola
     }
 
     // ¿Está corriendo el emulador? Verificar state file Y por nombre de proceso
     let emulatorRunning = false;
+    let lastStartedAt = 0;
 
     // Check 1: state file
     const stateFile = path.join(PIPELINE, 'qa-env-state.json');
@@ -1122,6 +1377,7 @@ function shutdownIdleEmulator(config) {
         const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
         const emulatorPid = state.emulator || state.emulador;
         if (emulatorPid && isProcessAlive(emulatorPid)) emulatorRunning = true;
+        lastStartedAt = state.lastStartedAt || 0;
       } catch {}
     }
 
@@ -1136,30 +1392,18 @@ function shutdownIdleEmulator(config) {
 
     if (!emulatorRunning) return false;
 
-    // Apagar QA environment completo (emulador + backend local + DynamoDB)
-    log('recursos', '🔌 Apagando QA environment idle (emulador + servicios) para liberar ~2.5GB RAM');
-    try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" stop`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-      });
-    } catch (e) {
-      log('recursos', `Error apagando QA env vía script: ${e.message}`);
+    // Grace period: no apagar si estamos dentro de la ventana post-boot.
+    // lastStartedAt se actualiza en qa-environment.js DESPUÉS de boot_completed.
+    const ageMs = Date.now() - lastStartedAt;
+    if (lastStartedAt > 0 && ageMs < EMULATOR_IDLE_GRACE_MS) {
+      const remaining = Math.round((EMULATOR_IDLE_GRACE_MS - ageMs) / 1000);
+      log('recursos', `⏳ Emulador dentro de grace period post-boot (${remaining}s restantes) — no apagar`);
+      return false;
     }
 
-    // Fallback: si QEMU sigue vivo después del stop, matarlo directo por nombre
-    try {
-      const check = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
-        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
-      if (check.includes('qemu-system')) {
-        execSync('taskkill /IM qemu-system-x86_64-headless.exe /F /T',
-          { timeout: 10000, windowsHide: true, stdio: 'ignore' });
-        log('recursos', '🔌 QEMU matado por nombre (fallback — state file había perdido el PID)');
-      }
-    } catch (e) {
-      log('recursos', `Error matando QEMU por nombre: ${e.message}`);
-    }
-    // Reset circuit breaker para que pueda re-levantarse después
-    qaEnvStartFailures = 0;
+    // Encolar stop al servicio-emulador (no ejecutar directo)
+    log('recursos', '🔌 Encolando stop de emulador idle para liberar ~2.5GB RAM');
+    requestEmulator('stop', 'pulpo-idle', null, 'Cola de verificación vacía, sin agentes QA activos');
     return true;
   } catch (e) {
     log('recursos', `Error verificando emulador idle: ${e.message}`);
@@ -1551,6 +1795,121 @@ function sortByPriority(archivos, config) {
   });
 }
 
+/**
+ * Rebotar verificación→build cuando preflight detecta APK faltante.
+ *
+ * Patrón genérico: archiva todos los hermanos de verificacion/pendiente/<issue>.* a
+ * procesado/ con resultado: rechazado, y encola un <issue>.build fresco en build/pendiente/.
+ * Idempotente: si ya hay un build en curso/encolado para el issue, no duplica.
+ * Circuit breaker MAX_REBOTES_APK protege contra loops verificacion↔build.
+ *
+ * Esta función fue extraída del dispatcher para que también la pueda invocar el
+ * deadlock breaker — sin esto, cuando el gate predictivo bloquea preflight (path
+ * normal) o cuando el deadlock breaker fuerza preflight, el rebote no corría y el
+ * issue quedaba atascado eternamente en verificacion/pendiente/.
+ *
+ * Llamada por:
+ *   - dispatcher normal en brazoLanzamiento (path verificacion + apk_missing)
+ *   - deadlock breaker (Tier 2 forzado + apk_missing)
+ *
+ * @returns {boolean} true si rebote ejecutado, false si circuit breaker disparado
+ *                    (en cuyo caso los archivos quedan archivados pero NO se encola build)
+ */
+function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
+  const MAX_REBOTES_APK = 3;
+
+  try {
+    const verPendDir = path.join(fasePath(pipelineName, 'verificacion'), 'pendiente');
+    const verProcDir = path.join(fasePath(pipelineName, 'verificacion'), 'procesado');
+    const buildPendDir = path.join(fasePath(pipelineName, 'build'), 'pendiente');
+    const buildTrabDir = path.join(fasePath(pipelineName, 'build'), 'trabajando');
+    const buildListoDir = path.join(fasePath(pipelineName, 'build'), 'listo');
+    const buildProcDir = path.join(fasePath(pipelineName, 'build'), 'procesado');
+    const buildFileName = `${issue}.build`;
+
+    // Recolectar TODOS los archivos del issue en verificacion/pendiente/
+    const archivosVerificacion = listWorkFiles(verPendDir).filter(f => issueFromFile(f.name) === issue);
+
+    // Calcular rebote_numero: máximo entre archivos actuales y builds previos del issue
+    let reboteCount = 0;
+    for (const f of archivosVerificacion) {
+      const data = readYaml(f.path);
+      if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
+    }
+    for (const estado of ['pendiente', 'trabajando', 'listo', 'procesado']) {
+      const prevBuild = path.join(fasePath(pipelineName, 'build'), estado, buildFileName);
+      if (fs.existsSync(prevBuild)) {
+        const data = readYaml(prevBuild);
+        if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
+      }
+    }
+
+    if (reboteCount >= MAX_REBOTES_APK) {
+      log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Archivando a procesado.`);
+      sendTelegram(`⛔ #${issue} atascado — ${reboteCount} rebotes por APK faltante entre verificacion y build. Requiere intervención manual.`);
+      for (const f of archivosVerificacion) {
+        try { moveFile(f.path, verProcDir); } catch {}
+      }
+      return false;
+    }
+
+    // 1. Marcar rechazados y archivar a procesado/
+    const motivoRechazo = `APK faltante: ${preflightResult?.reason || 'preflight QA no encontró APK del build'}`;
+    for (const f of archivosVerificacion) {
+      try {
+        const data = readYaml(f.path);
+        writeYaml(f.path, {
+          ...data,
+          resultado: 'rechazado',
+          motivo: motivoRechazo,
+          rechazado_en_fase: 'verificacion',
+          rechazado_por: 'preflight-apk',
+          rebote_a: 'build',
+          rebote_numero: reboteCount + 1,
+          rechazado_ts: new Date().toISOString(),
+        });
+        moveFile(f.path, verProcDir);
+      } catch (moverErr) {
+        log('lanzamiento', `⚠️ #${issue}: no se pudo archivar ${f.name}: ${moverErr.message}`);
+      }
+    }
+
+    // 2. Encolar build (idempotente — si ya hay uno en vuelo/encolado, no duplicar)
+    const yaEncolado =
+      fs.existsSync(path.join(buildPendDir, buildFileName)) ||
+      fs.existsSync(path.join(buildTrabDir, buildFileName)) ||
+      fs.existsSync(path.join(buildListoDir, buildFileName));
+
+    if (!yaEncolado) {
+      const payload = {
+        issue: parseInt(issue),
+        fase: 'build',
+        pipeline: pipelineName,
+        motivo: 'APK faltante detectado por preflight QA',
+        rebote: true,
+        rebote_numero: reboteCount + 1,
+        rechazado_en_fase: 'verificacion',
+      };
+      const procFile = path.join(buildProcDir, buildFileName);
+      if (fs.existsSync(procFile)) {
+        writeYaml(procFile, payload);
+        moveFile(procFile, buildPendDir);
+        log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build re-encolado desde procesado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
+      } else {
+        writeYaml(path.join(buildPendDir, buildFileName), payload);
+        log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build nuevo encolado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
+      }
+      ghCommentOnIssue(issue, `⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK.`);
+    } else {
+      log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build ya en curso/encolado`);
+    }
+    return true;
+  } catch (reencolarErr) {
+    log('lanzamiento', `⚠️ #${issue}: no se pudo rebotar verificación→build — ${reencolarErr.message}`);
+    return false;
+  }
+}
+
 function brazoLanzamiento(config) {
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
@@ -1558,21 +1917,25 @@ function brazoLanzamiento(config) {
   // Leer activaciones/desactivaciones manuales del dashboard
   readManualPriorityOverrides();
 
+  // Evaluar Priority Windows ANTES del gate de recursos — para que puedan
+  // desactivarse (cola vacía) incluso cuando el sistema está bajo presión.
+  // Sin esto, una ventana activada durante un pico de carga queda atascada
+  // indefinidamente porque isSystemOverloaded() retorna antes de la evaluación.
+  const qaPriority = evaluateQaPriority(config);
+  const buildPriority = evaluateBuildPriority(config);
+
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
-
-  // Evaluar QA Priority Window — bloquea dev si QA está acumulado
-  const qaPriority = evaluateQaPriority(config);
-
-  // Evaluar Build Priority Window — bloquea dev si builds están acumulados
-  const buildPriority = evaluateBuildPriority(config);
 
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
   const multiplier = concurrencyMultiplier(pressure.level);
 
-  // Fases de desarrollo que se bloquean durante QA/Build Priority
+  // Fases bloqueadas según ventana activa (autoexcluyentes: QA > Build > Dev)
+  // QA Priority: bloquea dev + validacion + build (QA necesita recursos exclusivos)
+  // Build Priority: bloquea dev + validacion (build corre, QA sigue si hay)
   const DEV_PHASES = ['dev', 'validacion'];
+  const QA_BLOCKED_PHASES = ['dev', 'validacion', 'build']; // QA bloquea también build
 
   // --- PIEZA 2+3: Recolectar TODOS los pendientes de TODAS las fases ---
   // En vez de iterar fase por fase (que prioriza fases avanzadas),
@@ -1584,8 +1947,9 @@ function brazoLanzamiento(config) {
     for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
       const fase = fases[faseIdx];
 
-      // QA/BUILD PRIORITY: si alguna ventana está activa, bloquear lanzamientos de fases dev
-      if ((qaPriority || buildPriority) && DEV_PHASES.includes(fase)) continue;
+      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev
+      if (qaPriority && QA_BLOCKED_PHASES.includes(fase)) continue;
+      if (buildPriority && !qaPriority && DEV_PHASES.includes(fase)) continue;
 
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const archivos = listWorkFiles(pendienteDir);
@@ -1630,6 +1994,19 @@ function brazoLanzamiento(config) {
     const issue = issueFromFile(archivo.name);
     const key = processKey(skill, issue);
 
+    // 0. Defensa contra archivos evaporados — el procesamiento previo de otro candidate
+    //    del mismo issue (p.ej. rebote por APK faltante que archiva todos los hermanos
+    //    de verificacion/pendiente/ en el primer match) pudo haber movido este archivo.
+    //    Sin este check el siguiente iteration explota al intentar moverlo.
+    if (!fs.existsSync(archivo.path)) continue;
+
+    // 0b. BLOCKED: no lanzar issues con blocked:dependencies
+    const issueLbls = getIssueLabels(issue);
+    if (issueLbls.includes('blocked:dependencies')) {
+      log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      continue;
+    }
+
     // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
     const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
     if (issueAlreadyWorking) continue;
@@ -1671,9 +2048,47 @@ function brazoLanzamiento(config) {
       }
     }
 
-    // 6. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
+    // 6. PRE-FLIGHT CHECKS PARA FASE VERIFICACIÓN — DEBE ir ANTES del gate predictivo.
+    //
+    // Razón: si el gate predictivo bloquea por memoria, hace continue antes de llegar
+    // al preflight, y el rebote APK→build nunca se ejecuta. El issue queda atascado
+    // eternamente en verificacion/pendiente/, pendingQa nunca baja a 0, la ventana QA
+    // no se auto-desactiva y el build (que podría regenerar el APK) está bloqueado por
+    // la propia ventana QA. Deadlock duro.
+    //
+    // El preflight y el rebote son barato (no consumen RAM ni CPU significativos),
+    // así que tiene sentido ejecutarlos ANTES del gate de recursos.
+    let preflightResult = null;
+    if (fase === 'verificacion') {
+      preflightResult = preflightQaChecks(issue);
+      if (!preflightResult.ok) {
+        if (preflightResult.result === 'apk_missing') {
+          reboteVerificacionABuild(issue, pipelineName, preflightResult);
+        } else if (preflightResult.result === 'waiting:emulator') {
+          // Encolar start del emulador al servicio-emulador
+          requestEmulator('start', 'pulpo-preflight', issue, 'QA_MODE=android, emulador necesario para verificación');
+          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (encolado start al servicio-emulador)`);
+        } else {
+          // blocked:infra — mantener en cola, reintentar en próximo ciclo
+          log('lanzamiento', `🚫 #${issue}: pre-flight → ${preflightResult.result}: ${preflightResult.reason}`);
+        }
+        continue; // No mover a trabajando/, no lanzar
+      }
+      // Capa 3: loguear el qaMode asignado
+      log('lanzamiento', `#${issue}: qaMode=${preflightResult.qaMode} (Capa 3 ruteo)`);
+    }
+
+    // 7. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
+    //    (corre DESPUÉS del preflight para que las verificaciones que serían rebotadas
+    //    no inflen el contador de candidatos bloqueados ni paren el deadlock breaker)
+    //
+    //    Pasamos el estado del emulador para que los skills QA puedan restar su RAM
+    //    del baseline — el emulador es infra reservada por la propia ventana QA, no
+    //    un costo del agente individual. Sin esto el cálculo cuenta dos veces el
+    //    emulador y lleva a livelock cuando la baseline ya lo incluye.
     eligibleForGateCount++;
-    const impact = predictResourceImpact(skill, config);
+    const gateCtx = { emulator: measureEmulatorMemPercent() };
+    const impact = predictResourceImpact(skill, config, gateCtx);
     if (!impact.safe) {
       log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       gateBlockedCount++;
@@ -1685,17 +2100,18 @@ function brazoLanzamiento(config) {
     try {
       const trabajandoPath = moveFile(archivo.path, trabajandoDir);
 
-      // Pre-requisitos por fase
-      if (fase === 'verificacion') {
-        ensureQaEnvironment(config);
+      // Lanzar agente (todas las fases, incluyendo build)
+      // Capa 3: pasar qaMode al agente QA via extraEnv
+      const extraEnv = {};
+      if (preflightResult && preflightResult.qaMode) {
+        extraEnv.QA_MODE = preflightResult.qaMode;
+        extraEnv.QA_ISSUE = String(issue);
+        extraEnv.QA_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev';
+        if (preflightResult.flavors && preflightResult.flavors.length > 0) {
+          extraEnv.QA_FLAVOR = preflightResult.flavors[0];
+        }
       }
-
-      // Lanzar agente
-      if (fase === 'build') {
-        lanzarBuild(issue, trabajandoPath, pipelineName, config);
-      } else {
-        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
-      }
+      lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       anyLaunched = true;
     } catch (e) {
       log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
@@ -1713,15 +2129,27 @@ function brazoLanzamiento(config) {
       const { archivo, pipelineName, fase } = forced;
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
       try {
-        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-        if (fase === 'verificacion') ensureQaEnvironment(config);
         const skill = skillFromFile(archivo.name);
         const issue = issueFromFile(archivo.name);
-        if (fase === 'build') {
-          lanzarBuild(issue, trabajandoPath, pipelineName, config);
-        } else {
-          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+        // Pre-flight para verificación incluso en deadlock breaker.
+        // Si detecta APK faltante, REBOTAR a build (no abandonar) — sin esto, el
+        // deadlock breaker se queda atascado para siempre haciendo return ciclo tras
+        // ciclo mientras los archivos siguen en verificacion/pendiente/.
+        if (fase === 'verificacion') {
+          const preflight = preflightQaChecks(issue);
+          if (!preflight.ok) {
+            if (preflight.result === 'apk_missing') {
+              log('deadlock', `#${issue}: pre-flight forzado detectó APK faltante → rebote a build`);
+              reboteVerificacionABuild(issue, pipelineName, preflight);
+              consecutiveAllBlockedCycles = 0; // El rebote es progreso real, resetear contador
+            } else {
+              log('deadlock', `#${issue}: pre-flight bloqueó lanzamiento forzado → ${preflight.result}`);
+            }
+            return; // No lanzar — el deadlock breaker no puede forzar sin infra
+          }
         }
+        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
+        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -1734,88 +2162,491 @@ function brazoLanzamiento(config) {
   }
 }
 
-/** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
-let lastQaEnvCheck = 0;
-const QA_ENV_CHECK_INTERVAL = 5 * 60 * 1000; // Re-verificar cada 5 minutos (no una sola vez)
-let qaEnvStartFailures = 0;
-const QA_ENV_MAX_FAILURES = 3; // Circuit breaker: después de 3 fallos, dejar de intentar
+// =============================================================================
+// PRE-FLIGHT CHECKS — Capa 2 + Capa 3 de la estrategia QA
+// Capa 2: Verifica infraestructura ANTES de lanzar agente QA
+// Capa 3: Clasifica qaMode (android/api/structural) para rutear al script correcto
+// =============================================================================
 
-function ensureQaEnvironment(config) {
+const APP_LABELS = ['app:client', 'app:business', 'app:delivery'];
+const LABEL_TO_FLAVOR = { 'app:client': 'client', 'app:business': 'business', 'app:delivery': 'delivery' };
+const ROUTING_LABELS = [...APP_LABELS, 'area:backend', 'area:infra', 'docs'];
+
+// Keywords para auto-clasificación inteligente de issues sin labels de ruteo
+const AUTO_CLASSIFY_RULES = [
+  // UI / Android — palabras que indican impacto en la interfaz del usuario
+  { keywords: ['pantalla', 'screen', 'ui', 'ux', 'botón', 'button', 'formulario', 'form', 'dialog',
+    'compose', 'viewmodel', 'navegación', 'navigation', 'diseño', 'layout', 'color', 'tema', 'theme',
+    'carrito', 'cart', 'pedido', 'order', 'producto', 'product', 'menú', 'menu', 'login', 'registro',
+    'perfil', 'profile', 'notificación', 'notification', 'lista', 'list', 'detalle', 'detail',
+    'imagen', 'image', 'ícono', 'icon', 'toast', 'snackbar', 'repetir pedido', 'checkout',
+    'splash', 'onboarding', 'search', 'buscar', 'filtro', 'filter', 'animación', 'animation'],
+    label: 'app:client' },
+  // Backend / API
+  { keywords: ['endpoint', 'api', 'lambda', 'cognito', 'dynamodb', 'serverless', 'función backend',
+    'backend function', 'signin', 'signup', 'token', 'jwt', 'cors', 'http', 'request', 'response',
+    'ktor', 'route', 'ruta backend', 'status code', 'migration', 'tabla', 'table', 'index',
+    'secretsmanager', 'ses', 'email', 'sms', 'otp', '2fa', 'mfa', 'auth'],
+    label: 'area:backend' },
+  // Infra / pipeline / hooks
+  { keywords: ['pipeline', 'hook', 'infra', 'ci/cd', 'github action', 'gradle', 'build', 'deploy',
+    'worktree', 'pulpo', 'restart', 'dashboard', 'monitor', 'agent', 'agente', 'config',
+    'yaml', 'json config', 'script', '.pipeline', 'cron', 'scheduler'],
+    label: 'area:infra' },
+  // Documentación
+  { keywords: ['documentación', 'documentation', 'docs/', 'readme', 'spec', 'arquitectura',
+    'architecture', 'manual', 'guía', 'guide', 'changelog'],
+    label: 'docs' }
+];
+
+/**
+ * Auto-clasificar un issue sin labels de ruteo.
+ * Lee título y body del issue, matchea contra keywords, asigna el label en GitHub.
+ * Retorna el label asignado o null si no pudo determinar.
+ */
+function autoClassifyIssue(issueNum) {
+  try {
+    ghThrottle();
+    const issueJson = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json title,body`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    const { title = '', body = '' } = JSON.parse(issueJson);
+    const text = `${title}\n${body}`.toLowerCase();
+
+    // Contar matches por regla
+    const scores = AUTO_CLASSIFY_RULES.map(rule => {
+      const hits = rule.keywords.filter(kw => text.includes(kw.toLowerCase()));
+      return { label: rule.label, hits: hits.length, matched: hits };
+    }).filter(s => s.hits > 0).sort((a, b) => b.hits - a.hits);
+
+    if (scores.length === 0) {
+      log('auto-classify', `#${issueNum}: sin matches — no se puede clasificar automáticamente`);
+      return null;
+    }
+
+    const winner = scores[0];
+    log('auto-classify', `#${issueNum}: clasificado como "${winner.label}" (${winner.hits} hits: ${winner.matched.slice(0, 5).join(', ')})`);
+
+    // Asignar label en GitHub
+    try {
+      ghThrottle();
+      execSync(
+        `"${GH_BIN}" issue edit ${issueNum} --add-label "${winner.label}"`,
+        { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+      log('auto-classify', `#${issueNum}: label "${winner.label}" asignado en GitHub ✓`);
+
+      // Invalidar cache de labels para que el ruteo use el label nuevo
+      issueLabelsCache.delete(issueNum);
+    } catch (e) {
+      log('auto-classify', `#${issueNum}: error asignando label — ${e.message.slice(0, 80)}`);
+    }
+
+    return winner.label;
+  } catch (e) {
+    log('auto-classify', `#${issueNum}: error leyendo issue — ${e.message.slice(0, 80)}`);
+    return null;
+  }
+}
+const QA_ARTIFACTS_DIR = path.join(ROOT, 'qa', 'artifacts');
+const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
+
+// --- Warm-up + retry para backend Lambda (evita falsos blocked:infra por cold start) ---
+const BACKEND_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale';
+const WARMUP_RETRIES = 3;       // Intentos totales (1 warm-up + 2 retries)
+const WARMUP_WAIT_MS = 5000;    // Espera entre intentos (5 segundos)
+// Deduplicación de notificaciones blocked:infra — evita spam en Telegram
+const _lastBlockedNotif = {};   // { issueNumber: timestampMs }
+const BLOCKED_NOTIF_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutos entre notificaciones del mismo issue
+
+/**
+ * Hace un request al backend con warm-up automático.
+ * Si el primer intento falla por timeout/error, espera y reintenta.
+ * Retorna { ok: boolean, httpCode: number|null, error: string|null }
+ */
+function checkBackendWithWarmup(issue) {
+  const backendUrl = `${BACKEND_BASE_URL}/signin`;
+  // NUL en Windows, /dev/null en Unix — execSync usa cmd.exe en Windows
+  const devNull = process.platform === 'win32' ? 'NUL' : '/dev/null';
+
+  for (let attempt = 1; attempt <= WARMUP_RETRIES; attempt++) {
+    try {
+      const curlResult = execSync(
+        `curl -s -o ${devNull} -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+        { encoding: 'utf8', timeout: 25000, windowsHide: true }
+      ).trim();
+      const httpCode = parseInt(curlResult, 10);
+
+      if (httpCode >= 400 && httpCode < 500) {
+        if (attempt > 1) {
+          log('preflight', `#${issue}: backend respondió OK en intento ${attempt}/${WARMUP_RETRIES} (cold start resuelto)`);
+        }
+        return { ok: true, httpCode, error: null };
+      }
+
+      // Respuesta inesperada (5xx, etc) — reintentar
+      log('preflight', `#${issue}: backend HTTP ${httpCode} en intento ${attempt}/${WARMUP_RETRIES} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s...` : 'agotados reintentos'}`);
+    } catch (e) {
+      log('preflight', `#${issue}: backend timeout/error en intento ${attempt}/${WARMUP_RETRIES}: ${e.message.slice(0, 60)} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s (probable cold start)...` : 'agotados reintentos'}`);
+    }
+
+    // Esperar antes del siguiente intento (excepto en el último)
+    // Usamos Atomics.wait como sleep sincrónico portable (funciona en Windows sin shell hacks)
+    if (attempt < WARMUP_RETRIES) {
+      const sharedBuf = new SharedArrayBuffer(4);
+      Atomics.wait(new Int32Array(sharedBuf), 0, 0, WARMUP_WAIT_MS);
+    }
+  }
+
+  return { ok: false, httpCode: null, error: `No respondió tras ${WARMUP_RETRIES} intentos (cold start persistente)` };
+}
+
+/**
+ * Envía notificación de blocked:infra con deduplicación (máximo 1 cada 5 min por issue).
+ */
+function sendBlockedInfraNotif(issue, message) {
   const now = Date.now();
-
-  // Cooldown entre verificaciones: no bombardear cada tick del loop
-  if (now - lastQaEnvCheck < QA_ENV_CHECK_INTERVAL) return;
-  lastQaEnvCheck = now;
-
-  // Circuit breaker: si falló muchas veces, no seguir intentando
-  if (qaEnvStartFailures >= QA_ENV_MAX_FAILURES) {
-    log('qa-env', `Circuit breaker activo (${qaEnvStartFailures} fallos). No se reintenta levantar QA env.`);
+  const lastSent = _lastBlockedNotif[issue] || 0;
+  if (now - lastSent < BLOCKED_NOTIF_COOLDOWN_MS) {
+    log('preflight', `#${issue}: blocked:infra notificación suprimida (cooldown ${Math.round((BLOCKED_NOTIF_COOLDOWN_MS - (now - lastSent)) / 1000)}s restantes)`);
     return;
   }
+  _lastBlockedNotif[issue] = now;
+  sendTelegram(message);
+}
 
-  // GATE DE RECURSOS: QA env usa umbrales más bajos que agentes porque levanta 3 servicios pesados
-  const limits = config.resource_limits || {};
-  const maxCpu = limits.qa_env_max_cpu_percent || 60;
-  const maxMem = limits.qa_env_max_mem_percent || 60;
+/**
+ * Pre-flight checks para agentes QA (Capa 2 + Capa 3 ruteo).
+ * Retorna { ok, result, reason, flavors, requiresEmulator, qaMode }
+ *   ok=true  → lanzar agente
+ *   qaMode: 'android' | 'api' | 'structural' (Capa 3)
+ *   ok=false → no lanzar, result indica la acción a tomar
+ */
+// --- Check DynamoDB remoto: verifica que no hay overrides locales ---
+function checkDynamoDbRemote(issue) {
+  const checks = {};
+  let ok = true;
 
-  const { cpuPercent, memPercent } = getSystemResourceUsage();
-  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
-    log('qa-env', `Sistema saturado para QA env (CPU: ${cpuPercent}% >= ${maxCpu}% | RAM: ${memPercent}% >= ${maxMem}%). Intentando liberar recursos...`);
-
-    // Intentar limpiar zombies/daemons para destrabar
-    const { freed } = tryFreeResources();
-
-    if (freed) {
-      // Re-chequear después de la limpieza
-      const after = getSystemResourceUsage();
-      if (after.cpuPercent >= maxCpu || after.memPercent >= maxMem) {
-        log('qa-env', `Post-limpieza: aún saturado (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Posponiendo QA environment.`);
-        return;
-      }
-      log('qa-env', `Post-limpieza: recursos liberados (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Continuando con QA environment.`);
-    } else {
-      log('qa-env', `No se encontraron recursos para liberar. Posponiendo QA environment.`);
-      return;
-    }
+  // 1. Verificar env vars que apuntan a DynamoDB local
+  const dynamoEndpoint = process.env.DYNAMODB_ENDPOINT || '';
+  if (dynamoEndpoint && /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(dynamoEndpoint)) {
+    checks.dynamodb_env = `local:${dynamoEndpoint}`;
+    log('preflight', `#${issue}: FAIL — DYNAMODB_ENDPOINT apunta a local: ${dynamoEndpoint}`);
+    ok = false;
+  } else {
+    checks.dynamodb_env = dynamoEndpoint ? `remote:${dynamoEndpoint}` : 'not-set:aws-default';
   }
 
-  const stateFile = path.join(PIPELINE, 'qa-env-state.json');
-  let needsStart = false;
-
-  try {
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    // Verificar si todos los servicios están vivos
-    for (const [name, pid] of Object.entries(state)) {
-      if (!pid || !isProcessAlive(pid)) {
-        log('qa-env', `${name} no está corriendo (PID: ${pid || 'null'})`);
-        needsStart = true;
-        break;
-      }
-    }
-  } catch {
-    needsStart = true;
+  // 2. Verificar LOCAL_MODE
+  if ((process.env.LOCAL_MODE || '').toLowerCase() === 'true') {
+    checks.local_mode = 'true';
+    log('preflight', `#${issue}: FAIL — LOCAL_MODE=true activo, DynamoDB/Cognito apuntarían a localhost`);
+    ok = false;
+  } else {
+    checks.local_mode = 'off';
   }
 
-  if (needsStart) {
-    log('qa-env', 'Levantando QA environment automáticamente...');
+  // 3. Verificar .env.qa no tiene overrides locales
+  const envQaPath = path.join(ROOT, '.env.qa');
+  if (fs.existsSync(envQaPath)) {
     try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" start`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('qa-env', 'QA environment levantado OK');
-      qaEnvStartFailures = 0; // Reset circuit breaker en éxito
-      sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
+      const envContent = fs.readFileSync(envQaPath, 'utf8');
+      if (/DYNAMODB_ENDPOINT=.*localhost|DYNAMODB_ENDPOINT=.*127\.0\.0\.1/.test(envContent)) {
+        checks.env_qa = 'dynamodb-local';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene DYNAMODB_ENDPOINT local`);
+        ok = false;
+      } else if (/LOCAL_MODE=true/.test(envContent)) {
+        checks.env_qa = 'local-mode-true';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene LOCAL_MODE=true`);
+        ok = false;
+      } else {
+        checks.env_qa = 'ok';
+      }
     } catch (e) {
-      qaEnvStartFailures++;
-      log('qa-env', `Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ${e.message}`);
-      sendTelegram(`⚠️ Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ` + e.message.slice(0, 100));
+      checks.env_qa = `read-error:${e.message.slice(0, 40)}`;
     }
   } else {
-    log('qa-env', 'QA environment OK — ya corriendo');
+    checks.env_qa = 'not-exists';
+  }
+
+  // 4. Verificar que searchBusinesses devuelve datos reales (DynamoDB remoto con data)
+  // Timeouts más generosos para tolerar cold start (el warm-up de signin puede no calentar esta ruta)
+  try {
+    const searchUrl = `${BACKEND_BASE_URL}/searchBusinesses`;
+    const result = execSync(
+      `curl -s -X POST "${searchUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+      { encoding: 'utf8', timeout: 25000, windowsHide: true }
+    ).trim();
+    if (result.includes('"businesses":[') && !result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'ok:has-data';
+      log('preflight', `#${issue}: DynamoDB remoto OK — searchBusinesses devuelve datos reales`);
+    } else if (result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'empty';
+      log('preflight', `#${issue}: WARN — DynamoDB remoto vacío (searchBusinesses sin resultados)`);
+      // No bloquear por datos vacíos, solo advertir
+    } else {
+      checks.dynamodb_data = `unexpected:${result.slice(0, 60)}`;
+      log('preflight', `#${issue}: WARN — DynamoDB respuesta inesperada: ${result.slice(0, 60)}`);
+    }
+  } catch (e) {
+    checks.dynamodb_data = `error:${e.message.slice(0, 60)}`;
+    log('preflight', `#${issue}: FAIL — DynamoDB check falló: ${e.message.slice(0, 60)}`);
+    ok = false;
+  }
+
+  return { ok, checks };
+}
+
+function preflightQaChecks(issue) {
+  const startMs = Date.now();
+  const checks = {};
+
+  // --- Check 1: Clasificar issue (requiere emulador o no) ---
+  let labels = getIssueLabels(issue);
+
+  // Auto-clasificación: si el issue no tiene ningún label de ruteo, inferir y asignar
+  const hasRoutingLabel = labels.some(l => ROUTING_LABELS.includes(l));
+  if (!hasRoutingLabel) {
+    log('preflight', `#${issue}: sin labels de ruteo — intentando auto-clasificar...`);
+    const assignedLabel = autoClassifyIssue(issue);
+    if (assignedLabel) {
+      // Re-leer labels después de la asignación
+      labels = getIssueLabels(issue);
+      sendTelegram(`🏷️ Issue #${issue} auto-clasificado como \`${assignedLabel}\` (no tenía label de ruteo QA).`);
+    } else {
+      log('preflight', `#${issue}: auto-clasificación falló — cae en structural por defecto`);
+    }
+  }
+
+  const appLabels = labels.filter(l => APP_LABELS.includes(l));
+  const requiresEmulator = appLabels.length > 0;
+  const flavors = appLabels.map(l => LABEL_TO_FLAVOR[l]);
+
+  // Capa 3: Clasificación extendida — qaMode determina el ruteo QA
+  // 'android' = necesita emulador + APK + Maestro
+  // 'api'     = necesita backend, NO emulador ni APK
+  // 'structural' = no necesita infra externa (docs, hooks, infra)
+  const hasBackendLabel = labels.includes('area:backend');
+  const qaMode = requiresEmulator ? 'android'
+    : hasBackendLabel ? 'api'
+    : 'structural';
+
+  checks.classify = requiresEmulator ? `ui:${flavors.join(',')}` : `no-ui:${qaMode}`;
+  log('preflight', `#${issue}: check 1 OK (qaMode=${qaMode}${requiresEmulator ? `, flavors: ${flavors.join(', ')}` : ''})`);
+
+  // Si no requiere emulador, verificar backend para QA-API antes de aprobar
+  if (!requiresEmulator) {
+    if (qaMode === 'api') {
+      // QA-API necesita backend vivo — check 3 con warm-up (tolera cold start de Lambda)
+      const warmup = checkBackendWithWarmup(issue);
+      if (warmup.ok) {
+        checks.backend = `ok:${warmup.httpCode}`;
+        log('preflight', `#${issue}: check 3 (QA-API) OK — backend responde HTTP ${warmup.httpCode}`);
+      } else {
+        checks.backend = `error:${warmup.error}`;
+        log('preflight', `#${issue}: check 3 (QA-API) FAIL — ${warmup.error} → blocked:infra`);
+      }
+
+      if (!warmup.ok) {
+        logPreflight(issue, checks, 'blocked:infra', startMs);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
+        return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors: [], requiresEmulator: false, qaMode };
+      }
+
+      // Check DynamoDB remoto (no overrides locales)
+      const dynamoCheck = checkDynamoDbRemote(issue);
+      checks.dynamodb = dynamoCheck.checks;
+      if (!dynamoCheck.ok) {
+        logPreflight(issue, checks, 'blocked:infra', startMs);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+        return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors: [], requiresEmulator: false, qaMode };
+      }
+      log('preflight', `#${issue}: check DynamoDB remoto OK`);
+
+      // Capa 3: Verificar/generar test cases para QA-API
+      const testCasesFile = path.join(ROOT, 'qa', 'test-cases', `${issue}.json`);
+      if (fs.existsSync(testCasesFile)) {
+        checks.testCases = 'exists';
+        log('preflight', `#${issue}: check 5 (test cases) OK — encontrado ${testCasesFile}`);
+      } else {
+        // Fallback: generar test cases automáticamente desde criterios del issue
+        log('preflight', `#${issue}: check 5 (test cases) — no existe, generando fallback...`);
+        try {
+          const genScript = path.join(ROOT, 'qa', 'scripts', 'qa-generate-test-cases.js');
+          const ghPath = fs.existsSync(GH_BIN) ? GH_BIN : 'gh';
+          execSync(`node "${genScript}"`, {
+            encoding: 'utf8',
+            timeout: 20000,
+            windowsHide: true,
+            env: { ...process.env, QA_ISSUE: String(issue), GH_PATH: ghPath }
+          });
+          checks.testCases = 'generated-fallback';
+          log('preflight', `#${issue}: check 5 (test cases) OK — generados como fallback`);
+        } catch (genErr) {
+          // No bloquear si falla la generación — el agente QA puede generar manualmente
+          checks.testCases = `gen-failed:${genErr.message.slice(0, 60)}`;
+          log('preflight', `#${issue}: check 5 (test cases) WARN — generación fallback falló, el agente QA los generará`);
+        }
+      }
+    }
+
+    logPreflight(issue, checks, 'pass', startMs);
+    return { ok: true, result: 'pass', reason: `Issue ${qaMode} — no requiere emulador ni APK`, flavors: [], requiresEmulator: false, qaMode };
+  }
+
+  // --- Check 2: APK disponible (solo si requiere emulador) ---
+  fs.mkdirSync(QA_ARTIFACTS_DIR, { recursive: true });
+  const missingApks = [];
+  for (const flavor of flavors) {
+    const apkName = `${issue}-composeApp-${flavor}-debug.apk`;
+    const apkPath = path.join(QA_ARTIFACTS_DIR, apkName);
+    if (!fs.existsSync(apkPath)) {
+      missingApks.push(apkName);
+    }
+  }
+
+  if (missingApks.length > 0) {
+    checks.apk = `missing:${missingApks.join(',')}`;
+    log('preflight', `#${issue}: check 2 FAIL — APK faltante: ${missingApks.join(', ')} → re-encolar para build`);
+    logPreflight(issue, checks, 'apk_missing', startMs);
+    return { ok: false, result: 'apk_missing', reason: `APK faltante: ${missingApks.join(', ')}`, flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+  checks.apk = 'ok';
+  log('preflight', `#${issue}: check 2 OK (APK encontrado para ${flavors.join(', ')})`);
+
+  // --- Check 3: Backend responde (con warm-up para tolerar cold start de Lambda) ---
+  const warmupAndroid = checkBackendWithWarmup(issue);
+  if (warmupAndroid.ok) {
+    checks.backend = `ok:${warmupAndroid.httpCode}`;
+    log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${warmupAndroid.httpCode})`);
+  } else {
+    checks.backend = `error:${warmupAndroid.error}`;
+    log('preflight', `#${issue}: check 3 FAIL — ${warmupAndroid.error} → blocked:infra`);
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
+    return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  // --- Check 3b: DynamoDB remoto (no overrides locales) ---
+  const dynamoCheckAndroid = checkDynamoDbRemote(issue);
+  checks.dynamodb = dynamoCheckAndroid.checks;
+  if (!dynamoCheckAndroid.ok) {
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+    return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+  log('preflight', `#${issue}: check DynamoDB remoto OK`);
+
+  // --- Check 4: Emulador disponible via ADB + test de screenrecord (Blindaje 2) ---
+  let emulatorReady = false;
+  let emulatorSerial = '';
+  try {
+    const adbOutput = execSync('adb devices', {
+      encoding: 'utf8', timeout: 5000, windowsHide: true
+    }).trim();
+    // Buscar linea con "emulator" y estado "device" (no "offline")
+    const lines = adbOutput.split('\n').filter(l => l.includes('emulator') && l.includes('device'));
+    emulatorReady = lines.length > 0;
+    if (emulatorReady) {
+      emulatorSerial = lines[0].split('\t')[0].trim();
+    }
+  } catch {}
+
+  if (!emulatorReady) {
+    checks.emulator = 'waiting';
+    log('preflight', `#${issue}: check 4 FAIL (emulador no disponible) → waiting:emulator — señalizando ventana QA`);
+    logPreflight(issue, checks, 'waiting:emulator', startMs);
+    return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar.
+  // Con el gating de boot real en qa-environment.waitBootCompleted(), el framework
+  // ya está listo antes de llegar acá, así que un solo intento es suficiente.
+  // Si falla, es ADB realmente inestable y conviene abortar el preflight rápido.
+  let screenrecordOk = false;
+  try {
+    execSync(
+      `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    screenrecordOk = true;
+    log('preflight', `#${issue}: check 4b OK — screenrecord test passed`);
+  } catch (e) {
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord: ${e.message.slice(0, 80)}`);
+  }
+
+  if (!screenrecordOk) {
+    checks.emulator = 'screenrecord-fail';
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona → blocked:infra`);
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
+    return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  checks.emulator = 'ok+screenrecord';
+  log('preflight', `#${issue}: check 4 OK (emulador disponible + screenrecord verificado)`);
+
+  // --- Todos los checks pasaron ---
+  logPreflight(issue, checks, 'pass', startMs);
+  return { ok: true, result: 'pass', reason: 'Todos los pre-flight checks OK', flavors, requiresEmulator: true, qaMode: 'android' };
+}
+
+/** Persistir resultado de pre-flight en log JSONL para análisis */
+function logPreflight(issue, checks, result, startMs) {
+  try {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      issue: String(issue),
+      checks,
+      result,
+      duration_ms: Date.now() - startMs
+    };
+    fs.appendFileSync(PREFLIGHT_LOG_FILE, JSON.stringify(entry) + '\n');
+  } catch {}
+}
+
+/**
+ * Encolar un pedido de start/stop del emulador al servicio-emulador.
+ * El servicio procesa la cola con coalescencia last-write-wins.
+ * Diseño: docs/pipeline/diseno-servicio-emulador.md
+ */
+function requestEmulator(action, requester, issue, reason) {
+  const ts = Date.now();
+  const msg = { action, requester, issue: issue || null, reason: reason || '', timestamp: Math.floor(ts / 1000) };
+  const svcDir = path.join(PIPELINE, 'servicios', 'emulador', 'pendiente');
+  try {
+    fs.mkdirSync(svcDir, { recursive: true });
+    const file = path.join(svcDir, `${ts}-${Math.random().toString(36).slice(2, 6)}.json`);
+    fs.writeFileSync(file, JSON.stringify(msg, null, 2));
+    log('qa-env', `Encolado ${action} emulador (requester: ${requester}, issue: #${issue || '-'})`);
+  } catch (e) {
+    log('qa-env', `Error encolando ${action} emulador: ${e.message}`);
   }
 }
 
-function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
+function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
+  // INVARIANTE CRÍTICO: el skill debe pertenecer a skills_por_fase[fase] de este pipeline.
+  // Ningún agente puede correr en una fase que no es la suya, ni siquiera por excepción
+  // (incidentes previos: project_apk-builder-responsibility, project_build-bypass-agent).
+  // Si esto falla, el archivo se devuelve a pendiente/ y se alerta — NO se lanza.
+  try {
+    const skillsValidos = ((config.pipelines || {})[pipeline] || {}).skills_por_fase || {};
+    const permitidos = skillsValidos[fase] || [];
+    if (!permitidos.includes(skill)) {
+      log('lanzamiento', `⛔ INVARIANTE: skill "${skill}" no pertenece a fase "${fase}" (permitidos: ${permitidos.join(', ') || '∅'}). Archivo: ${path.basename(trabajandoPath)}`);
+      sendTelegram(`⛔ Pipeline bloqueó lanzamiento de ${skill}:#${issue} en fase "${fase}" — skill no autorizado para esa fase. Revisar inmediatamente.`);
+      try {
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        moveFile(trabajandoPath, pendienteDir);
+      } catch {}
+      return;
+    }
+  } catch (invErr) {
+    log('lanzamiento', `⚠️ No se pudo validar invariante skill∈fase para ${skill}:#${issue}: ${invErr.message}`);
+    return;
+  }
+
   const basePrompt = path.join(PIPELINE, 'roles', '_base.md');
   const rolPrompt = path.join(PIPELINE, 'roles', `${skill}.md`);
 
@@ -1860,6 +2691,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
+  const useExistingWorktree = (fase === 'build');
   let worktreePath = ROOT;
   let worktreeBranch = null;
 
@@ -1880,9 +2712,28 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       moveFile(trabajandoPath, pendienteDir);
       return;
     }
+  } else if (useExistingWorktree) {
+    // Build: buscar el worktree existente del issue (creado en fase dev)
+    try {
+      const worktreePattern = `platform.agent-${issue}-`;
+      const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+      for (const line of worktrees.split('\n')) {
+        if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
+          worktreePath = line.replace('worktree ', '').trim();
+          break;
+        }
+      }
+      if (worktreePath !== ROOT) {
+        log('lanzamiento', `Build #${issue}: usando worktree existente ${worktreePath}`);
+      } else {
+        log('lanzamiento', `Build #${issue}: no se encontró worktree, usando ROOT`);
+      }
+    } catch (e) {
+      log('lanzamiento', `Build #${issue}: error buscando worktree (${e.message}), usando ROOT`);
+    }
   }
 
-  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
@@ -1896,16 +2747,42 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
 
   const child = spawn(spawnCmd, spawnArgs, {
-    cwd: needsWorktree ? worktreePath : ROOT,
+    cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
     detached: false,
     shell: false,
     windowsHide: true,
-    env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase }
+    env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase, ...extraEnv }
   });
 
   child.unref();
-  fs.closeSync(agentLogFd);
+  // NO cerrar agentLogFd aquí — en Windows, cerrar el FD en el padre
+  // mata la herencia y el hijo pierde stdout/stderr.
+  // Se cierra en child.on('exit') para que el log capture todo el output.
+
+  // Watchdog de timeout por skill: mata al hijo si excede el límite configurado.
+  // Razón: sin enforcement, un /builder con OOM repetido puede quedar 1h+ en loop
+  // (incidente #2218). El tope de 30m del rol no se aplica solo — hay que forzarlo.
+  const timeoutOverrides = config.timeouts?.agent_timeout_overrides || {};
+  const timeoutDefault = config.timeouts?.agent_timeout_default_minutes || 30;
+  const timeoutMin = timeoutOverrides[skill] ?? timeoutDefault;
+  const timeoutMs = timeoutMin * 60 * 1000;
+  const watchdog = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      log('lanzamiento', `⏱️ ${skill}:#${issue} excedió ${timeoutMin}min — matando (watchdog)`);
+      try { child.kill('SIGTERM'); } catch {}
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10000);
+      try {
+        const data = readYaml(trabajandoPath);
+        data.resultado = 'rechazado';
+        data.motivo = `Timeout de watchdog: excedió ${timeoutMin} minutos sin terminar`;
+        data.rechazado_por = 'watchdog-timeout';
+        writeYaml(trabajandoPath, data);
+      } catch {}
+      sendTelegram(`⏱️ ${skill}:#${issue} matado por watchdog (${timeoutMin}min). Rebote a pendiente.`);
+    }
+  }, timeoutMs);
+  watchdog.unref?.();
 
   activeProcesses.set(processKey(skill, issue), {
     pid: child.pid,
@@ -1913,7 +2790,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     trabajandoPath,
     pipeline,
     fase,
-    worktreePath: needsWorktree ? worktreePath : null
+    worktreePath: (needsWorktree || useExistingWorktree) ? worktreePath : null,
+    watchdog
   });
 
   // Crear canal de contexto para el agente (auto-join)
@@ -1941,6 +2819,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
+    // Cerrar el FD del log ahora que el hijo terminó
+    try { fs.closeSync(agentLogFd); } catch {}
+    // Cancelar watchdog de timeout (ya terminó, por el motivo que sea)
+    clearTimeout(watchdog);
+
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
@@ -1951,7 +2834,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
       // Matar Gradle daemons incluso en fast-fail
-      killGradleDaemonsForCwd(needsWorktree ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
+      killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
       // Salir del canal de contexto
       if (contextChannelId) {
         try {
@@ -2037,7 +2920,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // Matar Gradle daemons del worktree para liberar RAM (cada daemon usa hasta 4GB)
     // Delay de 10s para evitar race condition: si el barrido ya lanzó un build en este
     // worktree, el guard dentro de killGradleDaemonsForCwd lo protegerá.
-    const cleanupCwd = needsWorktree ? worktreePath : ROOT;
+    const cleanupCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
     const cleanupLabel = `${skill}:#${issue}`;
     setTimeout(() => killGradleDaemonsForCwd(cleanupCwd, cleanupLabel), 10000);
 
@@ -2056,128 +2939,6 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   // stdout/stderr redirigidos al archivo de log via stdio fd
-}
-
-function lanzarBuild(issue, trabajandoPath, pipeline, config) {
-  log('lanzamiento', `BUILD #${issue} — ejecutando gradlew check`);
-
-  // Buscar el worktree del issue
-  const worktreePattern = `platform.agent-${issue}-`;
-  let buildCwd = ROOT;
-
-  try {
-    const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
-    for (const line of worktrees.split('\n')) {
-      if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
-        buildCwd = line.replace('worktree ', '').trim();
-        break;
-      }
-    }
-  } catch { /* usar ROOT */ }
-
-  // Antes de compilar, mergear origin/main para tener los últimos hotfixes
-  if (buildCwd !== ROOT) {
-    try {
-      execSync('git fetch origin main && git merge origin/main --no-edit', {
-        cwd: buildCwd, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('build', `#${issue} worktree actualizado con origin/main`);
-    } catch (e) {
-      log('build', `#${issue} merge main falló (puede haber conflictos): ${e.message.slice(0, 200)}`);
-    }
-  }
-
-  // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
-  const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  // Validar que JAVA_HOME tenga un java.exe válido; si no, usar Temurin 21
-  // IMPORTANTE: solo chequear existencia del directorio no alcanza — IntelliJ JBR puede existir
-  // pero no ser un JDK válido (sin bin/java.exe). Hay que validar el binario.
-  const envJavaHome = process.env.JAVA_HOME;
-  const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
-  const isValidJavaHome = envJavaHome && fs.existsSync(path.join(envJavaHome, 'bin', javaExe));
-  const javaHome = (isValidJavaHome ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
-  const cwdUnix = buildCwd.replace(/\\/g, '/');
-
-  // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
-  const gitUsrBin = 'C:/Program Files/Git/usr/bin';
-  const buildEnv = {
-    ...process.env,
-    JAVA_HOME: javaHome,
-    PATH: `${gitUsrBin}${path.delimiter}${process.env.PATH || ''}`
-  };
-
-  const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
-
-  // Excluir WasmJs test compilation (causa OOM) y targets iOS (no aplican en CI local)
-  // Mismo criterio que .github/workflows/pr-checks.yml
-  const excludeTasks = [
-    '-x compileTestDevelopmentExecutableKotlinWasmJs',
-    '-x compileTestKotlinIosX64',
-    '-x compileKotlinIosSimulatorArm64',
-    '-x compileTestKotlinIosSimulatorArm64',
-  ].join(' ');
-  buildEnv.GRADLE_OPTS = '-Xmx3g -Dfile.encoding=UTF-8';
-
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon ${excludeTasks}`], {
-    cwd: buildCwd,
-    env: buildEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
-    windowsHide: true
-  });
-
-  child.unref();
-
-  // Timeout: matar el build si excede 30 minutos
-  const buildTimer = setTimeout(() => {
-    log('build', `#${issue} TIMEOUT — build excedió ${BUILD_TIMEOUT_MS / 60000} minutos, matando proceso`);
-    try { child.kill('SIGTERM'); } catch {}
-  }, BUILD_TIMEOUT_MS);
-
-  const buildStartTime = Date.now();
-  activeProcesses.set(processKey('build', issue), {
-    pid: child.pid,
-    startTime: buildStartTime,
-    trabajandoPath,
-    worktreePath: buildCwd,
-    pipeline,
-    fase: 'build'
-  });
-
-  let output = '';
-  child.stdout.on('data', (d) => { output += d; });
-  child.stderr.on('data', (d) => { output += d; });
-
-  child.on('exit', (code) => {
-    clearTimeout(buildTimer);
-    const durationMin = ((Date.now() - buildStartTime) / 60000).toFixed(1);
-    const logFile = path.join(LOG_DIR, `build-${issue}.log`);
-    fs.writeFileSync(logFile, output);
-
-    const data = readYaml(trabajandoPath);
-    if (code === 0) {
-      data.resultado = 'aprobado';
-    } else {
-      data.resultado = 'rechazado';
-      // Extraer últimas líneas relevantes del log
-      const lines = output.split('\n');
-      const errorLines = lines.filter(l => /error|FAILED|failure/i.test(l)).slice(0, 5);
-      data.motivo = `Build falló (exit ${code}). ${errorLines.join(' | ')}. Log: .pipeline/logs/build-${issue}.log`;
-    }
-    writeYaml(trabajandoPath, data);
-
-    const listoDir = path.join(fasePath(pipeline, 'build'), 'listo');
-    try {
-      moveFile(trabajandoPath, listoDir);
-      log('build', `#${issue} build ${code === 0 ? '✓' : '✗'} (${durationMin}min) → listo/`);
-    } catch (e) {
-      log('build', `Error moviendo build result #${issue}: ${e.message}`);
-    }
-    activeProcesses.delete(processKey('build', issue));
-
-    // Matar Gradle daemons del build para liberar RAM
-    killGradleDaemonsForCwd(buildCwd, `build:#${issue}`);
-  });
 }
 
 // =============================================================================
@@ -2265,8 +3026,14 @@ function saveSession(session) {
 
 // --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
 
-function cmdStatus(config) {
+async function cmdStatus(config) {
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const mins = Math.floor((uptime % 3600) / 60);
+
   const lines = ['📊 *Estado del Pipeline*\n'];
+  lines.push(`🟢 Online · ${hours}h ${mins}m`);
+  lines.push('');
 
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     lines.push(`*${pipelineName.toUpperCase()}*`);
@@ -2334,10 +3101,71 @@ function cmdStatus(config) {
     lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
+  // PRs mergeados hoy
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+    const prs = JSON.parse(ghOut);
+    if (prs.length > 0) {
+      lines.push(`\n*Entregado hoy (${prs.length} PRs)*`);
+      for (const pr of prs.slice(0, 10)) {
+        lines.push(`  #${pr.number} ${pr.title}`);
+      }
+      if (prs.length > 10) lines.push(`  +${prs.length - 10} más`);
+    }
+  } catch (e) {
+    log('commander', `[status] Error obteniendo PRs del día: ${e.message}`);
+  }
+
   // Estado pausa
   if (paused) lines.push('\n⏸️ *PULPO PAUSADO*');
 
-  return lines.join('\n');
+  const text = lines.join('\n');
+
+  // Audio TTS de la narración
+  try {
+    const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+    const botToken = getTelegramToken();
+    const chatId = getTelegramChatId();
+    if (botToken && chatId) {
+      let narration = `Estado del pipeline. Llevo ${hours} horas y ${mins} minutos online. `;
+      // Agentes activos
+      const aliveCount = [...activeProcesses.values()].filter(i => isProcessAlive(i.pid)).length;
+      narration += aliveCount > 0 ? `${aliveCount} agentes activos. ` : 'Sin agentes activos. ';
+      // Recursos
+      const { cpuPercent: cpu, memPercent: mem } = getSystemResourceUsage();
+      narration += `CPU al ${cpu} por ciento, RAM al ${mem} por ciento. `;
+      if (paused) narration += 'El pulpo está pausado. ';
+      // PRs del día
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+        const prs = JSON.parse(ghOut);
+        if (prs.length > 0) {
+          narration += `Hoy se entregaron ${prs.length} PRs. `;
+          for (const pr of prs.slice(0, 5)) {
+            narration += `PR ${pr.number}, ${pr.title}. `;
+          }
+        }
+      } catch {}
+
+      const statusChunks = splitTextForTTSChunks(narration, 3800);
+      for (let i = 0; i < statusChunks.length; i++) {
+        const chunkText = statusChunks.length > 1
+          ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
+          : statusChunks[i];
+        const audioBuffer = await textToSpeech(chunkText);
+        if (audioBuffer) {
+          await sendVoiceTelegram(audioBuffer, botToken, chatId);
+          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado`);
+        }
+      }
+    }
+  } catch (audioErr) {
+    log('commander', `[status] Error TTS (no fatal): ${audioErr.message}`);
+  }
+
+  return text;
 }
 
 function cmdActividad(args) {
@@ -2699,6 +3527,39 @@ function cmdLimpiar() {
   return `🧹 *Limpieza de daemons*\n\n${lines}\n\n*Total eliminados:* ${totalKilled}`;
 }
 
+function cmdRestart(args) {
+  const paused = /pausado|--paused/i.test(args || '');
+  const cmd = paused ? 'cmd.exe /c restart --paused' : 'cmd.exe /c restart';
+  const mode = paused ? 'pausado' : 'completo';
+
+  log('commander', `Restart ${mode} solicitado via Telegram`);
+
+  // Registrar timestamp para protección anti-loop
+  try {
+    fs.writeFileSync(path.join(PIPELINE, 'last-restart.json'),
+      JSON.stringify({ timestamp: new Date().toISOString(), mode, source: 'telegram' }));
+  } catch {}
+
+  // Ejecutar con exec async — cmd.exe nativo para que los hijos sobrevivan al Job Object de Windows
+  const { exec } = require('child_process');
+  exec(cmd, {
+    timeout: 60000,
+    cwd: ROOT,
+    env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
+  }, (error, stdout, stderr) => {
+    if (error) {
+      log('commander', `Error en restart: ${error.message}`);
+      sendTelegram(`❌ Error en reinicio ${mode}:\n\`${error.message.slice(0, 200)}\`\n\nIntentar manualmente: \`cmd.exe /c restart${paused ? ' --paused' : ''}\``);
+      return;
+    }
+    const output = (stdout || '').trim();
+    const tail = output ? output.split('\n').slice(-10).join('\n') : 'Pipeline reiniciado.';
+    sendTelegram(`✅ *Restart ${mode} ejecutado*\n\n\`\`\`\n${tail}\n\`\`\``);
+  });
+
+  return `🔄 Reinicio ${mode} del pipeline en progreso...${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
+}
+
 function cmdHelp() {
   return `🤖 *Comandos del Pipeline V2*
 
@@ -2706,6 +3567,8 @@ function cmdHelp() {
 /actividad [filtro] — Timeline (ej: /actividad 30m, /actividad #732)
 /intake [issue] — Meter trabajo al pipeline
 /proponer — Proponer historias nuevas (vía Claude)
+/restart — Reiniciar pipeline completo
+/restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
 /limpiar — Matar daemons Gradle/Kotlin huérfanos
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
@@ -2867,7 +3730,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
     let respuesta = null;
     switch (parsed.cmd) {
-      case 'status': respuesta = cmdStatus(config); break;
+      case 'status': respuesta = await cmdStatus(config); break;
       case 'actividad': respuesta = cmdActividad(parsed.args); break;
       case 'intake': respuesta = cmdIntake(parsed.args, config); break;
       case 'pausar': respuesta = cmdPausar(); break;
@@ -2881,6 +3744,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         break;
       case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
       case 'limpiar': respuesta = cmdLimpiar(); break;
+      case 'restart': respuesta = cmdRestart(parsed.args); break;
       default: respuesta = null; break;
     }
 
@@ -3025,12 +3889,18 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // Si hubo audio → intentar TTS
         if (esAudio) {
           try {
-            const audioBuffer = await textToSpeech(respuesta);
-            if (audioBuffer) {
-              const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}.ogg`);
-              fs.writeFileSync(audioPath, audioBuffer);
-              enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
-              if (enviado) log('telegram', `Audio TTS enviado (${audioBuffer.length} bytes)`);
+            const chatChunks = splitTextForTTSChunks(respuesta, 3800);
+            for (let i = 0; i < chatChunks.length; i++) {
+              const chunkText = chatChunks.length > 1
+                ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
+                : chatChunks[i];
+              const audioBuffer = await textToSpeech(chunkText);
+              if (audioBuffer) {
+                const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
+                fs.writeFileSync(audioPath, audioBuffer);
+                enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
+                if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${audioBuffer.length} bytes)`);
+              }
             }
           } catch (e) {
             log('commander', `TTS error: ${e.message}`);
@@ -3107,6 +3977,91 @@ function getTelegramChatId() {
 
 let lastIntakeTime = 0;
 
+// Cache de issues qa:dependency abiertos para dedup por contenido
+let depIssuesCache = { issues: [], fetchedAt: 0 };
+
+/**
+ * Dedup por contenido para issues qa:dependency.
+ * Compara el título del issue contra los ya existentes con el mismo label.
+ * Si encuentra un duplicado (similitud alta), cierra el nuevo y retorna true.
+ */
+function dedupDependencyIssue(issue, allIssuesInBatch) {
+  const issueLabels = (issue.labels || []).map(l => l.name);
+  if (!issueLabels.includes('qa:dependency')) return false;
+
+  // Refrescar cache de issues qa:dependency si tiene más de 10 minutos
+  if (Date.now() - depIssuesCache.fetchedAt > 600000) {
+    try {
+      ghThrottle();
+      const raw = execSync(
+        `"${GH_BIN}" issue list --label "qa:dependency" --state open --json number,title --limit 100`,
+        { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+      );
+      depIssuesCache = { issues: JSON.parse(raw || '[]'), fetchedAt: Date.now() };
+    } catch (e) {
+      log('intake', `Error cargando cache qa:dependency: ${e.message}`);
+      return false;  // si falla, no bloquear el intake
+    }
+  }
+
+  const titleNorm = normalizeTitleForDedup(issue.title);
+  const titleWords = extractSignificantWords(issue.title);
+
+  // Buscar duplicado entre issues existentes (no el mismo issue)
+  for (const existing of depIssuesCache.issues) {
+    if (existing.number === issue.number) continue;
+
+    // No comparar contra issues del mismo batch (se procesan juntos)
+    if (allIssuesInBatch.some(i => i.number === existing.number)) continue;
+
+    const existNorm = normalizeTitleForDedup(existing.title);
+    const existWords = extractSignificantWords(existing.title);
+
+    // Similitud: substring match O overlap de palabras significativas >= 60%
+    if (existNorm.includes(titleNorm) || titleNorm.includes(existNorm)) {
+      closeDuplicateIssue(issue.number, existing.number, issue.title);
+      return true;
+    }
+
+    const shared = titleWords.filter(w => existWords.some(ew => ew.includes(w) || w.includes(ew)));
+    const overlapRatio = shared.length / Math.max(Math.min(titleWords.length, existWords.length), 1);
+    if (shared.length >= 2 && overlapRatio >= 0.6) {
+      closeDuplicateIssue(issue.number, existing.number, issue.title);
+      return true;
+    }
+  }
+
+  // Agregar a cache para dedup dentro del mismo batch de intake
+  depIssuesCache.issues.push({ number: issue.number, title: issue.title });
+  return false;
+}
+
+function normalizeTitleForDedup(title) {
+  return (title || '').toLowerCase()
+    .replace(/^(?:fix|feat|infra|bug|dep):\s*/i, '')  // quitar prefijos
+    .replace(/\b(el|la|los|las|un|una|de|del|en|que|con|por|al|se|no|es|a)\b/g, '')
+    .replace(/[—\-:()#\d]/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function extractSignificantWords(title) {
+  return normalizeTitleForDedup(title).split(' ').filter(w => w.length > 3);
+}
+
+function closeDuplicateIssue(dupNum, existingNum, dupTitle) {
+  try {
+    const body = `Duplicado de #${existingNum}. Cerrado automáticamente por el pipeline de definición (dedup por contenido).`;
+    ghThrottle();
+    execSync(
+      `"${GH_BIN}" issue close ${dupNum} --comment "${body.replace(/"/g, '\\"')}" --reason "not planned"`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    log('intake', `#${dupNum} cerrado como duplicado de #${existingNum} — "${dupTitle}"`);
+  } catch (e) {
+    log('intake', `Error cerrando duplicado #${dupNum}: ${e.message}`);
+  }
+}
+
 function brazoIntake(config) {
   const intakeInterval = (config.timeouts?.intake_interval_seconds || 300) * 1000;
   if (Date.now() - lastIntakeTime < intakeInterval) return;
@@ -3144,6 +4099,16 @@ function brazoIntake(config) {
 
       for (const issue of issues) {
         const issueNum = String(issue.number);
+
+        // BLOCKED: no procesar issues con label blocked:dependencies
+        const issueLabels = (issue.labels || []).map(l => l.name);
+        if (issueLabels.includes('blocked:dependencies')) {
+          log('intake', `#${issueNum} omitido — tiene label blocked:dependencies`);
+          continue;
+        }
+
+        // Dedup por contenido para issues qa:dependency (cierra duplicados automáticamente)
+        if (dedupDependencyIssue(issue, issues)) continue;
 
         // Deduplicación: verificar que el issue no esté ya activo en este pipeline
         if (issueExistsInPipeline(issueNum, pipelineName)) continue;
@@ -3275,9 +4240,160 @@ function persistMetricsSnapshot(config) {
   } catch {}
 }
 
+// =============================================================================
+// BRAZO DESBLOQUEO — Revisa issues con blocked:dependencies y desbloquea
+// cuando todas sus dependencias están cerradas.
+// Frecuencia: cada 30 minutos. Basado en datos reales del pipeline:
+//   - P10 de duración de issues: 1.2h, P25: 2.7h, mediana: 141h
+//   - 30 min es generoso (cubre issues rápidos) sin ser innecesariamente frecuente
+// =============================================================================
+let lastUnblockTime = 0;
+const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+
+function brazoDesbloqueo(config) {
+  if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
+  lastUnblockTime = Date.now();
+
+  try {
+    // 1. Buscar issues abiertos con label blocked:dependencies
+    ghThrottle();
+    const result = execSync(
+      `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title --limit 50`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+    );
+    const blockedIssues = JSON.parse(result || '[]');
+    if (blockedIssues.length === 0) {
+      // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
+      try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
+      return;
+    }
+
+    log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
+
+    // Mapeos bidireccionales para el dashboard
+    const blockedBy = {};  // issue → [dependencias]
+    const blocks = {};     // dependencia → [issues que bloquea]
+
+    for (const issue of blockedIssues) {
+      try {
+        // 2. Leer comentarios del issue para encontrar dependencias creadas por el pipeline
+        ghThrottle();
+        const comments = execSync(
+          `"${GH_BIN}" issue view ${issue.number} --json comments --jq ".comments[].body" --repo intrale/platform`,
+          { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+        );
+
+        // Buscar el comentario de dependencias del pipeline
+        const depCommentMatch = comments.match(/Dependencias detectadas por el pipeline[\s\S]*?(?=\n\n|\Z)/);
+        let depIssueNumbers = [];
+        if (depCommentMatch) {
+          depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)]
+            .map(m => m[1])
+            .filter(n => n !== String(issue.number));
+        }
+
+        // Fallback: si no hay deps en el comentario del pipeline, buscar en body + todos los comentarios
+        if (depIssueNumbers.length === 0) {
+          try {
+            ghThrottle();
+            const fullData = execSync(
+              `"${GH_BIN}" issue view ${issue.number} --json body,comments --jq "[.body, .comments[].body] | join(\\"\\\\n\\")" --repo intrale/platform`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+            );
+            const allRefs = [...fullData.matchAll(/#(\d+)/g)]
+              .map(m => m[1])
+              .filter(n => n !== String(issue.number));
+            depIssueNumbers = [...new Set(allRefs)]; // dedup
+          } catch {}
+        }
+
+        if (depIssueNumbers.length === 0) {
+          log('desbloqueo', `#${issue.number}: label blocked:dependencies sin dependencias detectables — registrado sin deps`);
+          blockedBy[issue.number] = [];
+          continue;
+        }
+
+        // Registrar mapeos bidireccionales
+        blockedBy[issue.number] = depIssueNumbers;
+        for (const dep of depIssueNumbers) {
+          if (!blocks[dep]) blocks[dep] = [];
+          if (!blocks[dep].includes(String(issue.number))) blocks[dep].push(String(issue.number));
+        }
+
+        // 3. Verificar si todas las dependencias están cerradas
+        let allClosed = true;
+        const openDeps = [];
+        for (const depNum of depIssueNumbers) {
+          ghThrottle();
+          try {
+            const depState = execSync(
+              `"${GH_BIN}" issue view ${depNum} --json state --jq ".state" --repo intrale/platform`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+            ).trim();
+            if (depState !== 'CLOSED') {
+              allClosed = false;
+              openDeps.push(depNum);
+            }
+          } catch (e) {
+            // Si no se puede leer el estado, asumir que está abierto
+            allClosed = false;
+            openDeps.push(depNum);
+          }
+        }
+
+        if (allClosed) {
+          // 4. Todas cerradas → desbloquear
+          log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
+
+          // Quitar de los mapeos (ya no está bloqueado)
+          delete blockedBy[issue.number];
+          for (const dep of depIssueNumbers) {
+            if (blocks[dep]) blocks[dep] = blocks[dep].filter(n => n !== String(issue.number));
+            if (blocks[dep] && blocks[dep].length === 0) delete blocks[dep];
+          }
+
+          // Quitar label blocked:dependencies
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue edit ${issue.number} --remove-label "blocked:dependencies" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          // Agregar comentario de desbloqueo
+          const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue comment ${issue.number} --body "${unblockComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+          log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
+        } else {
+          log('desbloqueo', `#${issue.number}: dependencias abiertas: ${openDeps.map(n => '#' + n).join(', ')} — sigue bloqueado`);
+        }
+      } catch (e) {
+        log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
+      }
+    }
+
+    // Persistir mapeos para el dashboard
+    try {
+      fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy, blocks }, null, 2));
+    } catch (e) {
+      log('desbloqueo', `Error persistiendo blocked-issues.json: ${e.message}`);
+    }
+  } catch (e) {
+    log('desbloqueo', `Error en brazo de desbloqueo: ${e.message}`);
+  }
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
+
+  // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
+  migrateSkillProfilesIfNeeded();
 
   while (running) {
     try {
@@ -3304,10 +4420,11 @@ async function mainLoop() {
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
-        brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
-        brazoBarrido(config);   // Tercero: promover entre fases
-        brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
-        brazoHuerfanos(config); // Quinto: recuperar trabajo trabado
+        brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
+        brazoDesbloqueo(config);  // Tercero: desbloquear issues cuyas dependencias se resolvieron
+        brazoBarrido(config);     // Cuarto: promover entre fases
+        brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
+        brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
@@ -3324,6 +4441,26 @@ async function mainLoop() {
 // Graceful shutdown
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+
+// --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
+// Uso: PULPO_NO_AUTOSTART=1 node -e "require('./pulpo.js').predictResourceImpact(...)"
+// Útil para tests unitarios y scripts de evidencia del gate predictivo.
+if (process.env.PULPO_NO_AUTOSTART === '1') {
+  module.exports = {
+    predictResourceImpact,
+    getEstimatedImpact,
+    measureEmulatorMemPercent,
+    recordSkillResourceUsage,
+    loadSkillProfiles,
+    saveSkillProfiles,
+    migrateSkillProfilesIfNeeded,
+    SKILL_PROFILES_SCHEMA_VERSION,
+    QA_INFRA_SKILLS,
+    MAX_EST_MEM,
+    MAX_EST_CPU
+  };
+  return; // No arrancar singleton ni mainLoop
+}
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');

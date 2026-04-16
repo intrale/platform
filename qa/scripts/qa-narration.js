@@ -108,13 +108,10 @@ function parseArgs() {
 
 function callOpenAITTS(text, apiKey) {
     return new Promise((resolve, reject) => {
-        const truncated = text.length > 2000
-            ? text.substring(0, 1950) + "... (truncado)"
-            : text;
-
+        // OpenAI TTS soporta hasta 4096 chars — NO truncar
         const body = JSON.stringify({
             model: TTS_MODEL,
-            input: truncated,
+            input: text.substring(0, 4096),
             voice: TTS_VOICE,
             instructions: TTS_INSTRUCTIONS,
             response_format: "opus"

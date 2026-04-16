@@ -229,11 +229,10 @@ function textToSpeech(text) {
   if (!apiKey) return Promise.resolve(null);
 
   return new Promise((resolve, reject) => {
-    const truncated = text.length > 2000 ? text.substring(0, 1950) + '... (respuesta truncada)' : text;
-
+    // OpenAI TTS soporta hasta 4096 chars — NO truncar, los callers manejan chunking
     const body = JSON.stringify({
       model: 'gpt-4o-mini-tts',
-      input: truncated,
+      input: text.substring(0, 4096),
       voice: 'ash',
       instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
       response_format: 'opus'
@@ -307,4 +306,37 @@ function sendVoiceTelegram(audioBuffer, botToken, chatId) {
   });
 }
 
-module.exports = { preprocessMessage, transcribeAudio, describeImage, downloadTelegramFile, textToSpeech, sendVoiceTelegram };
+// Partir texto en chunks para TTS respetando límites de oraciones
+function splitTextForTTSChunks(text, maxChars) {
+  if (text.length <= maxChars) return [text];
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const chunks = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if ((current + ' ' + sentence).length > maxChars && current.length > 0) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + ' ' + sentence : sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  const result = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= maxChars) { result.push(chunk); continue; }
+    const words = chunk.split(/\s+/);
+    let part = '';
+    for (const word of words) {
+      if ((part + ' ' + word).length > maxChars && part.length > 0) {
+        result.push(part.trim());
+        part = word;
+      } else {
+        part = part ? part + ' ' + word : word;
+      }
+    }
+    if (part.trim()) result.push(part.trim());
+  }
+  return result;
+}
+
+module.exports = { preprocessMessage, transcribeAudio, describeImage, downloadTelegramFile, textToSpeech, sendVoiceTelegram, splitTextForTTSChunks };

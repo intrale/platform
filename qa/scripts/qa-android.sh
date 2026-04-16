@@ -236,6 +236,95 @@ done
 
 echo "  ✓ Todos los AVDs listos"
 
+# ── 2.6. Blindaje 4: Health check del emulador post-boot ──────────
+# Verificar que cada emulador responde a input táctil, no está en ANR,
+# y tiene RAM libre suficiente. Si falla, reintentar desde snapshot limpio.
+echo ""
+echo "[2.6/9] Health check post-boot (Blindaje 4)..."
+QA_HEALTH_MAX_RETRIES=2
+
+for avd_name in "${AVD_NAMES[@]}"; do
+    port=${AVD_PORTS[$avd_name]}
+    serial="emulator-${port}"
+    HEALTH_OK=false
+
+    for attempt in $(seq 1 $((QA_HEALTH_MAX_RETRIES + 1))); do
+        echo "  $avd_name ($serial): health check intento $attempt..."
+        HEALTH_FAIL=""
+
+        # Test 1: sys.boot_completed sigue siendo 1
+        BOOT_OK=$(adb -s "$serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+        if [ "$BOOT_OK" != "1" ]; then
+            HEALTH_FAIL="boot_completed=$BOOT_OK"
+        fi
+
+        # Test 2: input tap responde (no ANR)
+        if [ -z "$HEALTH_FAIL" ]; then
+            if ! adb -s "$serial" shell "input tap 360 640" 2>/dev/null; then
+                HEALTH_FAIL="input_tap_failed"
+            fi
+        fi
+
+        # Test 3: RAM libre > 100MB (MemAvailable en kB)
+        if [ -z "$HEALTH_FAIL" ]; then
+            MEM_AVAIL_KB=$(adb -s "$serial" shell "cat /proc/meminfo" 2>/dev/null | grep MemAvailable | awk '{print $2}' | tr -d '\r')
+            MEM_AVAIL_MB=$(( ${MEM_AVAIL_KB:-0} / 1024 ))
+            if [ "$MEM_AVAIL_MB" -lt 100 ]; then
+                HEALTH_FAIL="low_ram:${MEM_AVAIL_MB}MB"
+            fi
+        fi
+
+        # Test 4: mini screenrecord de 2s (verifica ADB + video pipeline)
+        if [ -z "$HEALTH_FAIL" ]; then
+            if ! adb -s "$serial" shell "screenrecord --time-limit 2 /sdcard/qa-health-test.mp4" 2>/dev/null; then
+                HEALTH_FAIL="screenrecord_failed"
+            else
+                adb -s "$serial" shell "rm -f /sdcard/qa-health-test.mp4" 2>/dev/null || true
+            fi
+        fi
+
+        if [ -z "$HEALTH_FAIL" ]; then
+            HEALTH_OK=true
+            echo "  ✓ $avd_name: health check OK (RAM: ${MEM_AVAIL_MB}MB libre)"
+            break
+        else
+            echo "  ✗ $avd_name: health check FAIL ($HEALTH_FAIL)"
+
+            if [ "$attempt" -le "$QA_HEALTH_MAX_RETRIES" ]; then
+                echo "  Reintentando: matando emulador y relanzando desde snapshot limpio..."
+                # Matar el emulador
+                adb -s "$serial" emu kill 2>/dev/null || true
+                sleep 3
+
+                # Relanzar desde snapshot limpio
+                start_avd "$avd_name" "$port"
+                sleep 2
+
+                # Esperar boot de nuevo
+                REBOOT_ELAPSED=0
+                while [ $REBOOT_ELAPSED -lt 120 ]; do
+                    REBOOT_STATUS=$(adb -s "$serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+                    if [ "$REBOOT_STATUS" = "1" ]; then
+                        echo "  $avd_name re-arrancado en ${REBOOT_ELAPSED}s"
+                        break
+                    fi
+                    sleep 2
+                    REBOOT_ELAPSED=$((REBOOT_ELAPSED + 2))
+                done
+            fi
+        fi
+    done
+
+    if [ "$HEALTH_OK" != "true" ]; then
+        echo "ERROR: $avd_name falló health check después de $((QA_HEALTH_MAX_RETRIES + 1)) intentos"
+        echo "  Último fallo: $HEALTH_FAIL"
+        echo "  Esto es un fallo de INFRAESTRUCTURA, no de QA del código."
+        exit 1
+    fi
+done
+
+echo "  ✓ Todos los AVDs pasaron health check"
+
 # ── 2.7. Aplicar CPU affinity post-boot si está habilitado ─────
 if [ "$QA_NO_AFFINITY" = "0" ]; then
     echo ""
@@ -291,8 +380,39 @@ done
 wait
 echo "  ✓ APK instalado en todos los AVDs"
 
-# ── 6. Crear directorio de recordings ───────────────────────
+# ── 6. Crear directorio de recordings + cleanup de espacio ──
 mkdir -p "$RECORDINGS_DIR"
+
+# Blindaje 3: Cleanup automatico de videos ya procesados para evitar disco lleno
+echo ""
+echo "[6/9] Limpiando videos anteriores para liberar espacio..."
+DISK_FREE_MB=$(df -m "$RECORDINGS_DIR" 2>/dev/null | awk 'NR==2{print $4}' || echo "0")
+echo "  Espacio libre: ${DISK_FREE_MB}MB"
+if [ "${DISK_FREE_MB:-0}" -lt 500 ] || [ "${QA_FORCE_CLEANUP:-0}" = "1" ]; then
+    echo "  Espacio insuficiente (<500MB) — limpiando videos anteriores..."
+    CLEANED=0
+    # Borrar videos de sesiones anteriores (no los de esta sesion)
+    for old_vid in "$RECORDINGS_DIR"/maestro-shard-*.mp4; do
+        [ -f "$old_vid" ] || continue
+        rm -f "$old_vid"
+        CLEANED=$((CLEANED+1))
+    done
+    # Borrar logs de screenrecord anteriores
+    for old_log in "$RECORDINGS_DIR"/screenrecord-*.log; do
+        [ -f "$old_log" ] || continue
+        rm -f "$old_log"
+    done
+    # Borrar segmentos de grabaciones segmentadas anteriores
+    for old_seg in "$RECORDINGS_DIR"/screenrecord-seg-*.mp4; do
+        [ -f "$old_seg" ] || continue
+        rm -f "$old_seg"
+    done
+    echo "  Limpiados $CLEANED videos anteriores"
+    DISK_FREE_AFTER=$(df -m "$RECORDINGS_DIR" 2>/dev/null | awk 'NR==2{print $4}' || echo "?")
+    echo "  Espacio libre ahora: ${DISK_FREE_AFTER}MB"
+else
+    echo "  Espacio suficiente (${DISK_FREE_MB}MB >= 500MB) — sin limpieza necesaria"
+fi
 
 # ── 6.5. Filtrar flows Maestro por flavor ───────────────────────
 # Solo ejecuta flows cuyo appId coincide con el flavor compilado,
@@ -341,17 +461,29 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Iniciar screenrecord en cada emulador en paralelo antes de ejecutar Maestro
-echo "  Iniciando grabación de video en $QA_SHARDS emulador(es)..."
+# Blindaje 1: Screenrecord segmentado — graba en segmentos de 3 minutos para evitar el
+# limite de screenrecord (180s). Un loop en el device genera segmentos consecutivos que
+# luego se concatenan con ffmpeg en un solo video continuo.
+SCREENRECORD_SEGMENT_SECS=170  # Ligeramente menor a 180s para evitar corte abrupto
+echo "  Iniciando grabación de video SEGMENTADA en $QA_SHARDS emulador(es)..."
+echo "  (segmentos de ${SCREENRECORD_SEGMENT_SECS}s, concatenación con ffmpeg al final)"
 SERIAL_MAIN="emulator-${AVD_PORTS[${AVD_NAMES[0]}]}"
 for avd_name in "${AVD_NAMES[@]}"; do
     port=${AVD_PORTS[$avd_name]}
     serial="emulator-${port}"
-    VIDEO_DEVICE="/sdcard/maestro-shard-${port}.mp4"
 
-    # Iniciar screenrecord en background en cada emulador
-    adb -s "$serial" shell "screenrecord --size 720x1280 --bit-rate 2000000 $VIDEO_DEVICE" \
-        > "$RECORDINGS_DIR/screenrecord-${port}.log" 2>&1 &
+    # Limpiar segmentos anteriores en el device
+    adb -s "$serial" shell "rm -f /sdcard/qa-seg-${port}-*.mp4" 2>/dev/null || true
+
+    # Loop de grabación segmentada en el device (corre hasta que se mate con pkill)
+    # Cada segmento se nombra qa-seg-{port}-{N}.mp4 (N = 0, 1, 2, ...)
+    adb -s "$serial" shell "
+        N=0
+        while true; do
+            screenrecord --size 720x1280 --bit-rate 2000000 --time-limit ${SCREENRECORD_SEGMENT_SECS} /sdcard/qa-seg-${port}-\${N}.mp4
+            N=\$((N+1))
+        done
+    " > "$RECORDINGS_DIR/screenrecord-${port}.log" 2>&1 &
 done
 
 MAESTRO_EXIT=0
@@ -502,39 +634,79 @@ else
     fi
 fi
 
-# Detener grabación en todos los emuladores
+# Detener grabación segmentada en todos los emuladores
 echo ""
-echo "[6.5/9] Deteniendo grabación de video..."
+echo "[6.5/9] Deteniendo grabación de video segmentada..."
 for avd_name in "${AVD_NAMES[@]}"; do
     port=${AVD_PORTS[$avd_name]}
     serial="emulator-${port}"
+    # pkill -INT envía SIGINT al screenrecord activo, y el loop while termina
+    # porque el shell background se mata con el proceso padre
     adb -s "$serial" shell "pkill -INT screenrecord" 2>/dev/null || true
 done
 
-# Esperar a que se complete la escritura de videos
-sleep 2
+# Esperar a que se complete la escritura del ultimo segmento
+sleep 3
 
-# Extraer videos de todos los emuladores
-echo "[7/9] Extrayendo videos de los $QA_SHARDS emulador(es)..."
+# Blindaje 1: Extraer segmentos y concatenar con ffmpeg
+echo "[7/9] Extrayendo y concatenando segmentos de video de $QA_SHARDS emulador(es)..."
 for avd_name in "${AVD_NAMES[@]}"; do
     port=${AVD_PORTS[$avd_name]}
     serial="emulator-${port}"
-    VIDEO_DEVICE="/sdcard/maestro-shard-${port}.mp4"
     VIDEO_LOCAL="${RECORDINGS_DIR}/maestro-shard-${port}.mp4"
+    SEG_DIR="${RECORDINGS_DIR}/segments-${port}"
+    mkdir -p "$SEG_DIR"
 
-    if adb -s "$serial" shell "ls $VIDEO_DEVICE" &>/dev/null; then
-        # Usar exec-out cat en vez de pull para evitar MSYS2 path mangling (/sdcard/ → C:/Program Files/Git/sdcard/)
-        adb -s "$serial" exec-out "cat $VIDEO_DEVICE" > "$VIDEO_LOCAL" 2>/dev/null
-        if [ -s "$VIDEO_LOCAL" ]; then
-            adb -s "$serial" shell "rm $VIDEO_DEVICE" 2>/dev/null || true
-            echo "  ✓ Video shard $port: $(du -h "$VIDEO_LOCAL" | cut -f1)"
-        else
-            rm -f "$VIDEO_LOCAL"
-            echo "  ⚠ Video shard $port: extraccion falló"
-        fi
-    else
-        echo "  ⚠ Video no generado para shard $port"
+    # Listar segmentos disponibles en el device
+    SEGMENTS=$(adb -s "$serial" shell "ls /sdcard/qa-seg-${port}-*.mp4 2>/dev/null" 2>/dev/null | tr -d '\r' | sort -V)
+
+    if [ -z "$SEGMENTS" ]; then
+        echo "  ⚠ Sin segmentos de video para shard $port"
+        continue
     fi
+
+    SEG_COUNT=0
+    CONCAT_LIST="${SEG_DIR}/concat-list.txt"
+    > "$CONCAT_LIST"
+
+    for seg in $SEGMENTS; do
+        seg_name=$(basename "$seg")
+        local_seg="${SEG_DIR}/${seg_name}"
+        # Extraer segmento (exec-out cat para evitar MSYS2 path mangling)
+        adb -s "$serial" exec-out "cat $seg" > "$local_seg" 2>/dev/null
+        if [ -s "$local_seg" ]; then
+            echo "file '${local_seg}'" >> "$CONCAT_LIST"
+            SEG_COUNT=$((SEG_COUNT+1))
+        else
+            rm -f "$local_seg"
+        fi
+    done
+
+    echo "  Shard $port: $SEG_COUNT segmento(s) extraidos"
+
+    if [ "$SEG_COUNT" -eq 0 ]; then
+        echo "  ⚠ Ningun segmento valido para shard $port"
+    elif [ "$SEG_COUNT" -eq 1 ]; then
+        # Solo un segmento — copiar directamente sin ffmpeg
+        SINGLE_SEG=$(head -1 "$CONCAT_LIST" | sed "s/^file '//;s/'$//")
+        cp "$SINGLE_SEG" "$VIDEO_LOCAL"
+        echo "  ✓ Video shard $port (1 segmento): $(du -h "$VIDEO_LOCAL" | cut -f1)"
+    else
+        # Multiples segmentos — concatenar con ffmpeg
+        echo "  Concatenando $SEG_COUNT segmentos con ffmpeg..."
+        if ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" -c copy "$VIDEO_LOCAL" 2>"${SEG_DIR}/ffmpeg.log"; then
+            echo "  ✓ Video shard $port ($SEG_COUNT segmentos → 1 video): $(du -h "$VIDEO_LOCAL" | cut -f1)"
+        else
+            echo "  ⚠ ffmpeg concat falló para shard $port — usando ultimo segmento como fallback"
+            LAST_SEG=$(tail -1 "$CONCAT_LIST" | sed "s/^file '//;s/'$//")
+            cp "$LAST_SEG" "$VIDEO_LOCAL" 2>/dev/null || true
+        fi
+    fi
+
+    # Limpiar segmentos del device
+    adb -s "$serial" shell "rm -f /sdcard/qa-seg-${port}-*.mp4" 2>/dev/null || true
+    # Limpiar segmentos locales (el video concatenado ya queda en VIDEO_LOCAL)
+    rm -rf "$SEG_DIR"
 done
 
 # ── 7.5. Generar narracion de audio TTS para videos ─────────

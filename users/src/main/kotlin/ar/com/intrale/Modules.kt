@@ -254,8 +254,20 @@ val appModule = DI.Module("appModule") {
         singleton { BusinessProducts(instance(), instance(), instance(), instance(), instance(), instance()) }
     }
 
+    bind<ProductPhotoAnalyzer> {
+        singleton { ProductPhotoAnalyzer() }
+    }
+
+    bind<Function> (tag="business/products/analyze-photo") {
+        singleton { AnalyzeProductPhoto(instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="products") {
         singleton { ClientProducts(instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="client/products/availability") {
+        singleton { ClientProductsAvailability(instance(), instance(), instance()) }
     }
 
     bind<SearchHistoryRepository> {

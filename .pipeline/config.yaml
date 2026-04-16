@@ -16,7 +16,7 @@ pipelines:
     skills_por_fase:
       validacion: [po, ux, guru]
       dev: [backend-dev, android-dev, web-dev]  # Uno solo por historia, según labels
-      build: [build]                             # Script puro, no Claude
+      build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       aprobacion: [review, po, ux]
       entrega: [delivery]
@@ -116,18 +116,13 @@ resource_limits:
   proactive_cleanup_cycles: 10     # Cada N ciclos del Pulpo, limpiar aunque no haya presión
   kotlin_daemon_kill: true         # Matar también Kotlin compile daemons huérfanos
 
-  # QA Priority Window — cuando se acumulan issues de verificación sin poder correr,
-  # el Pulpo bloquea nuevos lanzamientos de dev para liberar recursos y dar prioridad a QA.
-  qa_priority_queue_threshold: 3   # Cantidad de issues en verificación pendiente para activar
-  qa_priority_wait_minutes: 30     # Minutos sin poder lanzar QA antes de activar la ventana
-  qa_priority_max_duration_minutes: 15  # Duración máxima de la ventana QA (auto-desactiva)
-
-  # Build Priority Window — cuando se acumulan issues esperando build,
-  # el Pulpo bloquea nuevos lanzamientos de dev para liberar recursos y dar prioridad al build.
-  # Los builds activos están PROTEGIDOS del kill de emergencia (nunca se matan).
-  build_priority_queue_threshold: 2    # Cantidad de issues en build pendiente para activar
-  build_priority_wait_minutes: 5       # Minutos esperando build antes de activar (más agresivo que QA)
-  build_priority_max_duration_minutes: 20  # Duración máxima de la ventana (builds son lentos)
+  # Priority Windows — ventanas autoexcluyentes QA y Build
+  # Cuando la cola de QA o Build supera el umbral, se activa la ventana correspondiente.
+  # QA > Build > Dev (la etapa más avanzada siempre tiene prioridad).
+  # Solo una ventana puede estar activa a la vez (autoexcluyentes).
+  # Sin timeout fijo: la ventana corre hasta vaciar su cola o desactivación manual.
+  priority_windows_activation_threshold: 3   # Issues acumulados para activar ventana (QA o Build)
+  priority_windows_safety_timeout_hours: 2   # Horas sin completar ningún issue → notifica Telegram (NO cierra)
 
   # Diagnóstico
   log_top_consumers: true          # Logear top 5 procesos por RAM antes de actuar
@@ -138,6 +133,14 @@ timeouts:
   poll_interval_seconds: 30       # Frecuencia de barrido/lanzamiento (local)
   intake_interval_seconds: 300    # Frecuencia de intake (GitHub API, 5 min)
   orphan_timeout_minutes: 10      # Archivo en trabajando/ sin proceso → vuelve a pendiente
+
+  # Timeout efectivo por agente (watchdog en pulpo.js mata al hijo si lo excede)
+  # Si un skill no está en el override, se usa agent_timeout_default_minutes.
+  agent_timeout_default_minutes: 30
+  agent_timeout_overrides:
+    build: 60                     # Gradle check + assemble puede tardar mucho en primer build
+    qa: 45                        # QA E2E con emulador + video
+    tester: 45                    # Cobertura Kover + suite completa
 
 # GitHub
 github:
