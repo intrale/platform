@@ -3037,11 +3037,17 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       // --- STOP RECORDING + PULL VIDEO ---
       // Parar screenrecord del pipeline y bajar el video al evidence dir
       if (skill === 'qa' && fase === 'verificacion' && qaRecordingPath && qaSerial) {
+        // pkill puede fallar si screenrecord ya autoterminó por --time-limit;
+        // no debe abortar el pull. Sin sintaxis bash (2>/dev/null || true)
+        // porque execSync usa cmd.exe en Windows.
         try {
-          // Matar screenrecord en el emulador (produce el mp4 final)
-          execSync(`adb -s ${qaSerial} shell "pkill -f screenrecord" 2>/dev/null || true`, {
-            encoding: 'utf8', timeout: 5000, windowsHide: true
+          execSync(`adb -s ${qaSerial} shell pkill -f screenrecord`, {
+            encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: 'ignore'
           });
+        } catch {
+          // Sin proceso vivo: screenrecord ya cerró el mp4 por timeout. OK.
+        }
+        try {
           // Esperar a que el archivo se cierre (screenrecord tarda ~1s en flush)
           execSync('ping -n 3 127.0.0.1 > NUL', { timeout: 5000, windowsHide: true });
           // Pull del video
@@ -3052,9 +3058,13 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             encoding: 'utf8', timeout: 30000, windowsHide: true
           });
           // Limpiar del emulador
-          execSync(`adb -s ${qaSerial} shell rm -f "${qaRecordingPath}"`, {
-            encoding: 'utf8', timeout: 5000, windowsHide: true
-          });
+          try {
+            execSync(`adb -s ${qaSerial} shell rm -f "${qaRecordingPath}"`, {
+              encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: 'ignore'
+            });
+          } catch {
+            // Cleanup best-effort
+          }
           const videoStat = fs.statSync(localVideo);
           const videoSizeKb = Math.round(videoStat.size / 1024);
           log('lanzamiento', `🎬 Recording parado para qa:#${issue} — video: ${videoSizeKb}KB → ${localVideo}`);
@@ -3066,7 +3076,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             writeYaml(trabajandoPath, data);
           }
         } catch (e) {
-          log('lanzamiento', `⚠️ Error parando/bajando recording qa:#${issue}: ${e.message.slice(0, 80)}`);
+          log('lanzamiento', `⚠️ Error bajando recording qa:#${issue}: ${e.message.slice(0, 80)}`);
         }
         // Matar el proceso local si sigue vivo
         if (qaRecordingProc && qaRecordingProc.exitCode === null) {
