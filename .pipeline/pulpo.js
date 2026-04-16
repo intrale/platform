@@ -865,52 +865,55 @@ function countTotalRunningAgents(config) {
 // Si QA dice "aprobado" pero no hay video real con audio, se fuerza rechazo.
 // =============================================================================
 
-const QA_VIDEO_MIN_SIZE_BYTES = 204800; // 200KB mínimo — swiftshader genera videos chicos pero válidos
+const QA_VIDEO_MIN_SIZE_BYTES = 51200;  // 50KB — swiftshader genera mp4s de ~150-200KB; antes usábamos 200KB y rechazaba falsamente.
+const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA para considerar evidencia alternativa válida.
 
 /**
  * Validar que el resultado del QA tiene evidencia real.
  * Retorna array de problemas encontrados (vacío = OK).
+ *
+ * Política: aceptar como evidencia válida CUALQUIERA de estas:
+ *   a) Un .mp4 en qa/evidence/{issue}/ o qa/recordings/ con tamaño ≥ 50KB.
+ *   b) Al menos N frames PNG del agente en qa/evidence/{issue}/ (fallback cuando
+ *      el screenrecord del emulador queda chico por swiftshader).
+ * El campo `video_size_kb` del YAML es solo informativo; si el archivo en disco
+ * cumple el umbral, se acepta.
  */
 function validateQaEvidence(issue, qaData) {
-  const issues = [];
-
-  // 1. Verificar que el YAML tiene los campos obligatorios de evidencia
-  if (!qaData.evidencia) {
-    issues.push('falta campo "evidencia" en resultado QA');
-  }
-  if (!qaData.video_size_kb || qaData.video_size_kb < 200) {
-    issues.push(`video_size_kb ausente o muy chico (${qaData.video_size_kb || 0}KB < 200KB)`);
-  }
-  // Audio narrado es deseable pero no bloqueante si hay video válido del pipeline.
-  // El pipeline graba video crudo (sin audio) automáticamente; el agente QA puede
-  // agregar narración pero no es obligatorio para aprobar.
-  // Solo advertir, no rechazar.
-
-  // 2. Verificar que el archivo de video existe y tiene tamaño real
-  // Buscar en qa/evidence/{issue}/ y qa/recordings/ (narrated o raw)
   const ROOT = path.resolve(PIPELINE, '..');
-  const searchDirs = [
-    path.join(ROOT, 'qa', 'evidence', String(issue)),
-    path.join(ROOT, 'qa', 'recordings'),
-  ];
-  let videoFound = false;
-  for (const dir of searchDirs) {
+  const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
+  const recordingsDir = path.join(ROOT, 'qa', 'recordings');
+
+  let bestVideoKb = 0;
+  let pngFrames = 0;
+
+  for (const dir of [evidenceDir, recordingsDir]) {
     try {
-      const files = fs.readdirSync(dir).filter(f => f.endsWith('.mp4'));
-      for (const f of files) {
-        const stat = fs.statSync(path.join(dir, f));
-        if (stat.size >= QA_VIDEO_MIN_SIZE_BYTES) {
-          videoFound = true;
-          break;
+      for (const f of fs.readdirSync(dir)) {
+        const full = path.join(dir, f);
+        let stat;
+        try { stat = fs.statSync(full); } catch { continue; }
+        if (!stat.isFile()) continue;
+        if (f.endsWith('.mp4') && stat.size > bestVideoKb * 1024) {
+          bestVideoKb = Math.round(stat.size / 1024);
+        } else if (f.endsWith('.png') && dir === evidenceDir && /qa-|frame|nav-/i.test(f)) {
+          pngFrames++;
         }
       }
-    } catch { /* dir no existe, seguir buscando */ }
-    if (videoFound) break;
-  }
-  if (!videoFound) {
-    issues.push(`video no encontrado en qa/evidence/${issue}/ ni qa/recordings/ (mínimo 200KB)`);
+    } catch { /* dir no existe */ }
   }
 
+  const videoOk = bestVideoKb * 1024 >= QA_VIDEO_MIN_SIZE_BYTES;
+  const framesOk = pngFrames >= QA_MIN_FRAME_PNGS;
+
+  if (videoOk || framesOk) return [];
+
+  const issues = [];
+  if (bestVideoKb > 0) {
+    issues.push(`video más grande encontrado es ${bestVideoKb}KB (<${Math.round(QA_VIDEO_MIN_SIZE_BYTES/1024)}KB) y solo ${pngFrames} frame(s) PNG (mínimo ${QA_MIN_FRAME_PNGS})`);
+  } else {
+    issues.push(`sin evidencia: no hay .mp4 en qa/evidence/${issue}/ ni qa/recordings/, ni frames PNG suficientes (${pngFrames}/${QA_MIN_FRAME_PNGS})`);
+  }
   return issues;
 }
 
@@ -3068,8 +3071,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           const videoStat = fs.statSync(localVideo);
           const videoSizeKb = Math.round(videoStat.size / 1024);
           log('lanzamiento', `🎬 Recording parado para qa:#${issue} — video: ${videoSizeKb}KB → ${localVideo}`);
-          // Inyectar metadata de evidencia en el YAML para que validateQaEvidence lo encuentre
-          if (videoSizeKb >= 200) {
+          // Inyectar metadata de evidencia en el YAML (50KB es suficiente con swiftshader).
+          if (videoSizeKb >= 50) {
             data.evidencia = localVideo;
             data.video_size_kb = videoSizeKb;
             // Audio narrado no se genera acá (el agente QA lo hace), pero el video crudo sí
