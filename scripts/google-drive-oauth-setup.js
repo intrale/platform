@@ -4,19 +4,19 @@
 // Uso:
 //   1. Crear OAuth Client ID en Google Cloud Console (tipo Desktop)
 //   2. Ejecutar: node scripts/google-drive-oauth-setup.js <client_id> <client_secret>
-//   3. Abrir la URL que muestra en el browser
-//   4. Autorizar y copiar el code
-//   5. Pegar el code cuando lo pida
-//   6. Guarda refresh_token en .claude/hooks/telegram-config.json
+//   3. Se abre el browser automáticamente
+//   4. Autorizar con tu cuenta Google
+//   5. El script captura el token automáticamente
 //
 // Prerequisitos:
 //   - Proyecto en Google Cloud Console con Drive API habilitada
-//   - OAuth 2.0 Client ID tipo "Desktop app" (no Web, no Service Account)
+//   - OAuth 2.0 Client ID tipo "Desktop app"
 
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
 const https = require("https");
-const readline = require("readline");
+const { exec } = require("child_process");
 
 const CONFIG_PATH = path.resolve(__dirname, "..", ".claude", "hooks", "telegram-config.json");
 
@@ -36,43 +36,43 @@ if (!clientId || !clientSecret) {
 }
 
 const SCOPES = "https://www.googleapis.com/auth/drive.file";
-const REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob";
+const PORT = 18923; // Puerto local para el redirect
+const REDIRECT_URI = "http://localhost:" + PORT;
 
-// Paso 1: Generar URL de autorizacion
-const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" +
-    "client_id=" + encodeURIComponent(clientId) +
-    "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
-    "&response_type=code" +
-    "&scope=" + encodeURIComponent(SCOPES) +
-    "&access_type=offline" +
-    "&prompt=consent";
+// Paso 1: Levantar server HTTP local para capturar el code
+const server = http.createServer(function(req, res) {
+    const url = new URL(req.url, "http://localhost:" + PORT);
+    const code = url.searchParams.get("code");
+    const error = url.searchParams.get("error");
 
-console.log("");
-console.log("=== Google Drive OAuth Setup ===");
-console.log("");
-console.log("1. Abri esta URL en tu browser:");
-console.log("");
-console.log("   " + authUrl);
-console.log("");
-console.log("2. Autorizá con tu cuenta Google");
-console.log("3. Copiá el código que te da");
-console.log("");
+    if (error) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h2>Error: " + error + "</h2><p>Podés cerrar esta ventana.</p>");
+        console.log("\nError de autorizacion: " + error);
+        server.close();
+        process.exit(1);
+        return;
+    }
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    if (!code) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<p>Esperando autorizacion...</p>");
+        return;
+    }
 
-rl.question("4. Pegá el código acá: ", function(code) {
-    rl.close();
-    code = code.trim();
-    if (!code) { console.log("Código vacío. Abortando."); process.exit(1); }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end("<h2>Autorizado correctamente</h2><p>Podés cerrar esta ventana. Volvé a la terminal.</p>");
 
     // Paso 2: Intercambiar code por tokens
+    console.log("\nCode recibido. Intercambiando por tokens...");
+
     const payload = "code=" + encodeURIComponent(code) +
         "&client_id=" + encodeURIComponent(clientId) +
         "&client_secret=" + encodeURIComponent(clientSecret) +
         "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
         "&grant_type=authorization_code";
 
-    const req = https.request({
+    const tokenReq = https.request({
         hostname: "oauth2.googleapis.com",
         path: "/token",
         method: "POST",
@@ -80,19 +80,23 @@ rl.question("4. Pegá el código acá: ", function(code) {
             "Content-Type": "application/x-www-form-urlencoded",
             "Content-Length": Buffer.byteLength(payload),
         },
-    }, function(res) {
+    }, function(tokenRes) {
         var data = "";
-        res.on("data", function(c) { data += c; });
-        res.on("end", function() {
+        tokenRes.on("data", function(c) { data += c; });
+        tokenRes.on("end", function() {
             try {
                 var tokens = JSON.parse(data);
                 if (tokens.error) {
                     console.log("Error: " + tokens.error + " — " + (tokens.error_description || ""));
+                    server.close();
                     process.exit(1);
+                    return;
                 }
                 if (!tokens.refresh_token) {
-                    console.log("No se recibió refresh_token. Intentá de nuevo con prompt=consent.");
+                    console.log("No se recibio refresh_token. Intentá de nuevo.");
+                    server.close();
                     process.exit(1);
+                    return;
                 }
 
                 console.log("");
@@ -112,19 +116,47 @@ rl.question("4. Pegá el código acá: ", function(code) {
                 fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
                 console.log("");
                 console.log("Guardado en " + CONFIG_PATH);
-                console.log("");
-                console.log("Ahora configurá google_drive_folder_id:");
-                console.log("  1. Creá una carpeta 'Intrale QA' en Google Drive");
-                console.log("  2. Copiá el ID de la URL (después de /folders/)");
-                console.log("  3. Agregalo a telegram-config.json como google_drive_folder_id");
+                console.log("Listo — el refresh token no expira si la app esta publicada.");
 
             } catch(e) {
                 console.log("Error parseando respuesta: " + e.message);
                 console.log("Respuesta: " + data);
             }
+            server.close();
+            process.exit(0);
         });
     });
-    req.on("error", function(e) { console.log("Error: " + e.message); });
-    req.write(payload);
-    req.end();
+    tokenReq.on("error", function(e) { console.log("Error: " + e.message); server.close(); });
+    tokenReq.write(payload);
+    tokenReq.end();
 });
+
+server.listen(PORT, function() {
+    // Paso 1b: Construir URL de autorizacion y abrir en browser
+    const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" +
+        "client_id=" + encodeURIComponent(clientId) +
+        "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
+        "&response_type=code" +
+        "&scope=" + encodeURIComponent(SCOPES) +
+        "&access_type=offline" +
+        "&prompt=consent";
+
+    console.log("");
+    console.log("=== Google Drive OAuth Setup ===");
+    console.log("");
+    console.log("Abriendo browser para autorizar...");
+    console.log("Si no se abre, copiá esta URL manualmente:");
+    console.log("");
+    console.log("  " + authUrl);
+    console.log("");
+
+    // Abrir en browser (Windows)
+    exec('start "" "' + authUrl + '"');
+});
+
+// Timeout de 5 minutos
+setTimeout(function() {
+    console.log("\nTimeout — no se recibio autorizacion en 5 minutos.");
+    server.close();
+    process.exit(1);
+}, 300000);
