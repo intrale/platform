@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import asdo.client.ClientOrder
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderStatus
+import asdo.client.PriceChange
 import asdo.client.RepeatOrderResult
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
@@ -17,6 +18,7 @@ import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
+import ui.session.SessionStore
 import ui.util.formatPrice
 
 enum class ClientOrdersStatus { Idle, Loading, Loaded, Empty, Error }
@@ -114,17 +116,22 @@ class ClientOrdersViewModel(
 
     suspend fun repeatOrderFromDetail(order: ClientOrderDetail) {
         state = state.copy(repeatOrderLoading = true, repeatOrderResult = null, repeatOrderError = null)
-        repeatOrder.execute(order)
+        val businessId = SessionStore.sessionState.value.selectedBusinessId
+        repeatOrder.execute(order, businessId)
             .onSuccess { result ->
                 if (result.addedItems.isNotEmpty()) {
+                    // Crear mapa de precios actuales para items con cambio
+                    val currentPriceMap = result.priceChangedItems.associate { it.item.id to it.currentPrice }
                     ClientCartStore.clear()
                     result.addedItems.forEach { item ->
+                        // Usar precio actual del catálogo si cambió (CA-3)
+                        val effectivePrice = currentPriceMap[item.id] ?: item.unitPrice
                         val product = ClientProduct(
                             id = item.id!!,
                             name = item.name,
-                            priceLabel = formatPrice(item.unitPrice),
+                            priceLabel = formatPrice(effectivePrice),
                             emoji = "",
-                            unitPrice = item.unitPrice,
+                            unitPrice = effectivePrice,
                             isAvailable = true
                         )
                         ClientCartStore.setQuantity(product, item.quantity)
