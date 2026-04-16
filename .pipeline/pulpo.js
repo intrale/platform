@@ -2103,9 +2103,11 @@ function brazoLanzamiento(config) {
         if (preflightResult.result === 'apk_missing') {
           reboteVerificacionABuild(issue, pipelineName, preflightResult);
         } else if (preflightResult.result === 'waiting:emulator') {
-          // Encolar start del emulador al servicio-emulador
+          // DEFENSIVO: con #2267 el preflight hace auto-start sincronico, asi que
+          // waiting:emulator no deberia emitirse mas. Si aparece (version legacy),
+          // caer al comportamiento anterior: encolar start y reintentar.
           requestEmulator('start', 'pulpo-preflight', issue, 'QA_MODE=android, emulador necesario para verificación');
-          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (encolado start al servicio-emulador)`);
+          log('lanzamiento', `⏸️ #${issue}: pre-flight legacy → waiting:emulator, encolado start`);
         } else {
           // blocked:infra — mantener en cola, reintentar en próximo ciclo
           log('lanzamiento', `🚫 #${issue}: pre-flight → ${preflightResult.result}: ${preflightResult.reason}`);
@@ -2577,25 +2579,36 @@ function preflightQaChecks(issue) {
   log('preflight', `#${issue}: check DynamoDB remoto OK`);
 
   // --- Check 4: Emulador disponible via ADB + test de screenrecord (Blindaje 2) ---
-  let emulatorReady = false;
-  let emulatorSerial = '';
-  try {
-    const adbOutput = execSync('adb devices', {
-      encoding: 'utf8', timeout: 5000, windowsHide: true
-    }).trim();
-    // Buscar linea con "emulator" y estado "device" (no "offline")
-    const lines = adbOutput.split('\n').filter(l => l.includes('emulator') && l.includes('device'));
-    emulatorReady = lines.length > 0;
-    if (emulatorReady) {
-      emulatorSerial = lines[0].split('\t')[0].trim();
-    }
-  } catch {}
+  //
+  // Auto-start sincronico (issue #2267 CA-1/CA-2/CA-6):
+  //   1. Si el emulador ya esta corriendo y visible por ADB → sin side effects (CA-6)
+  //   2. Si no esta → encolar start al servicio-emulador y esperar boot completion
+  //      con timeout de 180s (CA-2). Si timeout → blocked:infra con mensaje claro.
+  //   3. El servicio-emulador coalesce mensajes (CA-3) y usa el snapshot qa-ready
+  //      para boot rapido ~40s (CA-4).
+  const probe = probeEmulator();
+  let emulatorReady = probe.ready;
+  let emulatorSerial = probe.serial;
 
   if (!emulatorReady) {
-    checks.emulator = 'waiting';
-    log('preflight', `#${issue}: check 4 FAIL (emulador no disponible) → waiting:emulator — señalizando ventana QA`);
-    logPreflight(issue, checks, 'waiting:emulator', startMs);
-    return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
+    // CA-1: encolar start al servicio-emulador
+    log('preflight', `#${issue}: check 4 — emulador no detectado, auto-start via servicio-emulador`);
+    requestEmulator('start', 'pulpo-preflight-autostart', issue, 'Auto-start sincronico por preflight QA (#2267)');
+
+    // CA-2: esperar boot completion con timeout finito
+    const boot = waitForEmulatorBoot(180000);
+    if (!boot.ok) {
+      checks.emulator = `autostart-timeout:${boot.elapsedMs}ms`;
+      log('preflight', `#${issue}: check 4 FAIL — Emulador no pudo completar boot en 180s → blocked:infra`);
+      logPreflight(issue, checks, 'blocked:infra', startMs);
+      sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: Emulador no pudo completar boot en 180s tras auto-start. Verificar servicio-emulador.js y snapshot qa-ready.`);
+      return { ok: false, result: 'blocked:infra', reason: 'Emulador no pudo completar boot en 180s', flavors, requiresEmulator: true, qaMode: 'android' };
+    }
+
+    emulatorReady = true;
+    emulatorSerial = boot.serial;
+    checks.emulator_autostart = `ok:${Math.round(boot.elapsedMs / 1000)}s`;
+    log('preflight', `#${issue}: check 4 — emulador listo tras auto-start en ${Math.round(boot.elapsedMs / 1000)}s (serial: ${emulatorSerial})`);
   }
 
   // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar.
@@ -2642,6 +2655,66 @@ function logPreflight(issue, checks, result, startMs) {
     };
     fs.appendFileSync(PREFLIGHT_LOG_FILE, JSON.stringify(entry) + '\n');
   } catch {}
+}
+
+/**
+ * Detecta si hay un emulador corriendo y visible por ADB.
+ * Devuelve { ready, serial } — si ready=true, serial es el primer emulador.
+ */
+function probeEmulator() {
+  try {
+    const adbOutput = execSync('adb devices', {
+      encoding: 'utf8', timeout: 5000, windowsHide: true
+    }).trim();
+    // Buscar linea con "emulator" y estado "device" (no "offline")
+    const lines = adbOutput.split('\n').filter(l => l.includes('emulator') && l.includes('device'));
+    if (lines.length > 0) {
+      return { ready: true, serial: lines[0].split('\t')[0].trim() };
+    }
+  } catch {}
+  return { ready: false, serial: '' };
+}
+
+/**
+ * Espera sincronica a que el emulador Android complete el boot.
+ * Poll: adb devices + sys.boot_completed=1 + init.svc.bootanim=stopped.
+ * Issue #2267 CA-1/CA-2: bloquea hasta boot completion o timeout finito.
+ *
+ * @param {number} timeoutMs Maximo a esperar en ms (default 180000 = 180s)
+ * @returns {{ok: boolean, serial: string, elapsedMs: number}}
+ */
+function waitForEmulatorBoot(timeoutMs = 180000) {
+  const t0 = Date.now();
+  const deadline = t0 + timeoutMs;
+  const pollMs = 2000;
+
+  while (Date.now() < deadline) {
+    const probe = probeEmulator();
+    if (probe.ready) {
+      // Device conectado — verificar framework listo (boot_completed + bootanim stopped)
+      try {
+        const bootCompleted = execSync(`adb -s ${probe.serial} shell getprop sys.boot_completed`, {
+          encoding: 'utf8', timeout: 5000, windowsHide: true
+        }).trim();
+        const bootAnim = execSync(`adb -s ${probe.serial} shell getprop init.svc.bootanim`, {
+          encoding: 'utf8', timeout: 5000, windowsHide: true
+        }).trim();
+        if (bootCompleted === '1' && bootAnim === 'stopped') {
+          return { ok: true, serial: probe.serial, elapsedMs: Date.now() - t0 };
+        }
+      } catch { /* framework aun no responde — retry */ }
+    }
+
+    // Sleep portable en Windows (no usar comando shell `sleep`, no existe en cmd.exe)
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pollMs);
+    } catch {
+      const end = Date.now() + pollMs;
+      while (Date.now() < end) { /* spin */ }
+    }
+  }
+
+  return { ok: false, serial: '', elapsedMs: Date.now() - t0 };
 }
 
 /**
