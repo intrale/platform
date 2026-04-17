@@ -94,7 +94,7 @@ function escapeHtml(str) {
 // caído" con preflight OK es un falso positivo.
 function checkPreflightOk(issueNum) {
   const logPath = path.join(LOG_DIR, 'pulpo.log');
-  if (!fs.existsSync(logPath)) return { ok: false, reason: 'pulpo.log no disponible' };
+  if (!fs.existsSync(logPath)) return { ok: false, reason: 'pulpo.log no disponible', qaMode: null };
   try {
     const stat = fs.statSync(logPath);
     const size = stat.size;
@@ -109,18 +109,40 @@ function checkPreflightOk(issueNum) {
     const cutoff = Date.now() - 2 * 60 * 60 * 1000;
     const okPattern = new RegExp(`\\[preflight\\] #${issueNum}: check 4 OK`);
     const failPattern = new RegExp(`\\[preflight\\] #${issueNum}:.*(?:FAIL|waiting:emulator)`);
+    // #2322 CA-5: capturar qaMode del último registro de preflight
+    // Formato esperado: `[preflight] #1234: check 1 OK (qaMode=api...)`
+    const qaModePattern = new RegExp(`\\[preflight\\] #${issueNum}:.*qaMode=(android|api|structural)`);
+    let qaMode = null;
+    let ok = false, okLine = null;
+    let failReason = null, failLine = null;
+
     for (const line of lines) {
       const tsMatch = line.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]/);
       if (tsMatch) {
         const ts = Date.parse(tsMatch[1].replace(' ', 'T') + '-03:00');
         if (ts < cutoff) break;
       }
-      if (failPattern.test(line)) return { ok: false, reason: 'preflight FAIL detectado', line };
-      if (okPattern.test(line)) return { ok: true, line };
+      if (qaMode === null) {
+        const m = line.match(qaModePattern);
+        if (m) qaMode = m[1];
+      }
+      if (!ok && !failReason && failPattern.test(line)) {
+        failReason = 'preflight FAIL detectado';
+        failLine = line;
+      }
+      if (!ok && !failReason && okPattern.test(line)) {
+        ok = true;
+        okLine = line;
+      }
+      // Si ya tenemos veredicto Y qaMode, podemos cortar
+      if ((ok || failReason) && qaMode !== null) break;
     }
-    return { ok: false, reason: 'sin registro de preflight en las últimas 2h' };
+
+    if (ok) return { ok: true, line: okLine, qaMode };
+    if (failReason) return { ok: false, reason: failReason, line: failLine, qaMode };
+    return { ok: false, reason: 'sin registro de preflight en las últimas 2h', qaMode };
   } catch (e) {
-    return { ok: false, reason: 'error leyendo pulpo.log: ' + e.message };
+    return { ok: false, reason: 'error leyendo pulpo.log: ' + e.message, qaMode: null };
   }
 }
 
@@ -821,14 +843,23 @@ function detectExternalDependencies(logTail, motivo) {
 function selectPrimaryCause(deps, preflight) {
   if (!Array.isArray(deps) || deps.length === 0) return null;
 
-  // Si preflight pasó, quitar deps de infra de emulador (falso positivo)
+  const emulatorDepRegex = /emulador|emulator|dispositivo android|adb/;
   let filtered = deps;
+
+  // Filtro A: si preflight pasó, quitar deps de infra de emulador (falso positivo)
   if (preflight && preflight.ok) {
-    filtered = deps.filter(d => {
-      const s = (d.summary || '').toLowerCase();
-      return !s.match(/emulador|emulator|dispositivo android|adb/);
-    });
+    filtered = filtered.filter(d => !emulatorDepRegex.test((d.summary || '').toLowerCase()));
   }
+
+  // Filtro B (#2322 CA-5): si qaMode no es android (es api o structural),
+  // el issue no depende del emulador — quitar deps de emulador aunque el
+  // preflight haya fallado. Esto previene falsos positivos como #2322,
+  // donde un rechazo de QA-API (por evidencia faltante) terminaba generando
+  // un issue dep de "Emulador Android no está corriendo".
+  if (preflight && preflight.qaMode && preflight.qaMode !== 'android') {
+    filtered = filtered.filter(d => !emulatorDepRegex.test((d.summary || '').toLowerCase()));
+  }
+
   if (filtered.length === 0) return null;
 
   // Preferir priority:high; dentro de eso, preferir source != 'pattern-match'
@@ -1669,4 +1700,14 @@ async function main() {
   }
 }
 
-main();
+// Exportar helpers para tests unitarios (#2322 CA-5). Sólo ejecutamos main()
+// cuando el archivo se corre como script — no cuando se carga como módulo.
+module.exports = {
+  selectPrimaryCause,
+  detectExternalDependencies,
+  checkPreflightOk,
+};
+
+if (require.main === module) {
+  main();
+}

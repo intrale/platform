@@ -31,6 +31,14 @@ const POLL_INTERVAL = 10000; // 10 segundos
 const BOOT_TIMEOUT = 120000; // 2 minutos para boot
 const KILL_TIMEOUT = 15000;  // 15 segundos para kill
 
+// --- Healthcheck zombi (#2322) ---
+// Ventana de gracia para no pisar un arranque concurrente: si el state file
+// fue escrito hace menos de N ms, no se limpia aunque parezca zombi.
+const ZOMBIE_MTIME_GUARD_MS = 10000;
+// Cada N polls del loop principal se corre el healthcheck de zombi.
+// Con POLL_INTERVAL=10s y factor 3 → healthcheck cada 30s.
+const ZOMBIE_HEALTHCHECK_EVERY_N_POLLS = 3;
+
 // --- Sanitización de PIDs (CA-5 #2160) ---
 // Valida que un PID leído del state file sea un entero positivo antes de
 // interpolarlo en comandos tasklist/taskkill. Previene inyección de comandos
@@ -105,9 +113,122 @@ function isProcessAlive(pid) {
   } catch { return false; }
 }
 
+// --- Zombie state healthcheck (#2322) ---
+// CA-4: escritura atómica del state file. Escribimos a .tmp + rename para que
+// un crash a mitad del write no deje JSON corrupto en qa-env-state.json.
+function atomicWriteJson(targetPath, obj) {
+  const tmpPath = targetPath + '.tmp';
+  const content = JSON.stringify(obj, null, 2);
+  fs.writeFileSync(tmpPath, content, 'utf8');
+  fs.renameSync(tmpPath, targetPath);
+}
+
+// Lee qa-env-state.json de forma tolerante (nunca throw). Si no existe o está
+// corrupto, devuelve null.
+function readStateFileSafe() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  } catch { return null; }
+}
+
+// Chequea si QEMU (el binario del emulador) está vivo por nombre de proceso.
+// Es lo único que podemos usar como confirmación fuera del PID del state file.
+function isQemuProcessAlive() {
+  try {
+    const out = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    return out.includes('qemu-system');
+  } catch { return false; }
+}
+
+// Chequea si ADB reporta algún emulador conectado con estado device.
+function adbHasEmulatorAttached() {
+  try {
+    const adbOutput = execSync(`"${ADB}" devices`, {
+      encoding: 'utf8', timeout: 5000, windowsHide: true
+    }).trim();
+    return adbOutput.split('\n').some(l => l.includes('emulator') && l.includes('device'));
+  } catch { return false; }
+}
+
+// Detecta estado zombi: el state file tiene emulator=<pid> pero el PID no está
+// vivo, ADB está vacío y no hay QEMU corriendo. Protección contra race:
+// el state file debe haber sido modificado hace > ZOMBIE_MTIME_GUARD_MS.
+// Retorna { zombie: boolean, reason, zombiePid }.
+function detectZombieState() {
+  const state = readStateFileSafe();
+  if (!state) return { zombie: false, reason: 'sin state file' };
+  const pid = sanitizePid(state.emulator || state.emulador);
+  if (!pid) return { zombie: false, reason: 'sin PID en state file' };
+
+  // Ventana de gracia: no pisar un arranque concurrente
+  try {
+    const mtimeAge = Date.now() - fs.statSync(STATE_FILE).mtimeMs;
+    if (mtimeAge < ZOMBIE_MTIME_GUARD_MS) {
+      return { zombie: false, reason: `state file recién escrito (${mtimeAge}ms)` };
+    }
+  } catch {}
+
+  // Tres condiciones simultáneas para declarar zombi
+  const pidAlive = isProcessAlive(pid);
+  const adbAttached = adbHasEmulatorAttached();
+  const qemuAlive = isQemuProcessAlive();
+
+  if (pidAlive) return { zombie: false, reason: `PID ${pid} vivo` };
+  if (adbAttached) return { zombie: false, reason: 'ADB reporta emulador conectado' };
+  if (qemuAlive) return { zombie: false, reason: 'QEMU corriendo por nombre de proceso' };
+
+  return { zombie: true, reason: 'PID muerto + ADB vacío + sin QEMU', zombiePid: pid };
+}
+
+// CA-1 / CA-3: si detecta zombi, limpia el campo emulator del state file de
+// forma atómica y loggea + Telegram. Rotamos frases (CA-UX) para evitar spam
+// idéntico en healthchecks recurrentes.
+const ZOMBIE_MESSAGES = [
+  (pid) => `⚠️ Emulador zombi detectado (PID ${pid} muerto)\n→ state file limpiado, reintentando arranque automático\nSi no levanta en 2 min, revisar: tasklist QEMU + adb devices`,
+  (pid) => `🧟 Otro zombi emulador (PID ${pid}) — limpiando state file y continuando`,
+  (pid) => `⚠️ State file desincronizado otra vez (PID ${pid} muerto) — reseteando`,
+];
+let zombieNotifCount = 0;
+
+function cleanupZombieIfNeeded(phase /* 'startup' | 'runtime' */) {
+  const result = detectZombieState();
+  if (!result.zombie) return false;
+
+  const pid = result.zombiePid;
+  try {
+    const state = readStateFileSafe() || {};
+    delete state.emulator;
+    delete state.emulador;
+    state.zombieCleanedAt = new Date().toISOString();
+    atomicWriteJson(STATE_FILE, state);
+  } catch (e) {
+    log(`Error limpiando state file zombi: ${e.message}`);
+    return false;
+  }
+
+  // Log: solo PID y fase, sin paths absolutos ni contenido crudo del state
+  log(`⚠️ Estado zombi detectado (${phase}) — state file limpiado (PID zombi: ${pid})`);
+
+  // Telegram: rotar mensaje para no spamear idéntico
+  const msgFn = ZOMBIE_MESSAGES[zombieNotifCount % ZOMBIE_MESSAGES.length];
+  zombieNotifCount++;
+  sendTelegram(msgFn(pid));
+
+  // Marcar estado interno como stopped para que el próximo start request
+  // efectivamente intente levantar, en vez de creer que ya está running.
+  emulatorState = 'stopped';
+  return true;
+}
+
 // --- Acciones ---
 
 function doStart() {
+  // Si venimos de una limpieza de zombi reciente, esto dejará un mensaje
+  // de recuperación cuando el arranque termine bien (CA-UX cierre de ciclo).
+  const cameFromZombie = zombieNotifCount > 0 && emulatorState === 'stopped';
+
   emulatorState = 'starting';
   log('Levantando emulador Android via qa-environment.js...');
   try {
@@ -116,7 +237,13 @@ function doStart() {
     });
     emulatorState = 'running';
     log('Emulador levantado OK');
-    sendTelegram('🧪 Emulador Android levantado (servicio-emulador)');
+    if (cameFromZombie) {
+      const newPid = sanitizePid((readStateFileSafe() || {}).emulator) || '?';
+      sendTelegram(`✅ Emulador recuperado (PID ${newPid}) — volviendo a operación normal`);
+      zombieNotifCount = 0; // resetear el rotador de mensajes
+    } else {
+      sendTelegram('🧪 Emulador Android levantado (servicio-emulador)');
+    }
     return true;
   } catch (e) {
     log(`Error levantando emulador: ${e.message}`);
@@ -255,14 +382,20 @@ async function processQueue() {
 // --- Main loop ---
 
 async function main() {
-  // Sincronizar estado real al arrancar
-  emulatorState = detectEmulatorState();
-  log(`Servicio Emulador iniciado — estado actual: ${emulatorState}`);
-
   // Asegurar directorios existen
   for (const dir of [PENDIENTE, TRABAJANDO, LISTO]) {
     fs.mkdirSync(dir, { recursive: true });
   }
+
+  // CA-1 (#2322): healthcheck de zombi al arrancar, ANTES de detectar estado.
+  // Si el state file tiene un PID zombi (proceso muerto + ADB vacío + sin
+  // QEMU), lo limpiamos de forma atómica para que detectEmulatorState() no
+  // devuelva 'running' basándose en un PID fantasma.
+  cleanupZombieIfNeeded('startup');
+
+  // Sincronizar estado real al arrancar
+  emulatorState = detectEmulatorState();
+  log(`Servicio Emulador iniciado — estado actual: ${emulatorState}`);
 
   // Limpiar trabajando/ huérfano al arrancar (crash recovery)
   const orphaned = listWorkFiles(TRABAJANDO);
@@ -273,12 +406,23 @@ async function main() {
     }
   }
 
+  let pollCount = 0;
   while (true) {
     try {
       await processQueue();
     } catch (e) {
       log(`Error en processQueue: ${e.message}`);
     }
+
+    // CA-3 (#2322): healthcheck periódico de zombi durante runtime.
+    // Idempotente: si el estado es consistente, no hace nada.
+    pollCount++;
+    if (pollCount % ZOMBIE_HEALTHCHECK_EVERY_N_POLLS === 0) {
+      try { cleanupZombieIfNeeded('runtime'); } catch (e) {
+        log(`Error en cleanupZombieIfNeeded: ${e.message}`);
+      }
+    }
+
     await new Promise(r => setTimeout(r, POLL_INTERVAL));
   }
 }
