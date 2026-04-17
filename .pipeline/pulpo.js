@@ -2189,6 +2189,22 @@ function brazoLanzamiento(config) {
         if (preflightResult.emulatorSerial) {
           extraEnv.QA_EMULATOR_SERIAL = preflightResult.emulatorSerial;
         }
+
+        // Inyectar `modo` al archivo YAML para que gate-evidencia-on-exit lo
+        // respete sin depender de que el agente lo escriba. El preflight ya
+        // sabe el qaMode correcto — esa es la fuente de verdad. Si el agente
+        // QA aprueba pero omite el campo (ocurrió con #2159 structural y
+        // disparó falso rechazo aunque el fix #2345 estuviera activo), el
+        // gate igual lee `modo: structural` desde acá.
+        if (skill === 'qa') {
+          try {
+            const data = readYaml(trabajandoPath) || {};
+            data.modo = preflightResult.qaMode;
+            writeYaml(trabajandoPath, data);
+          } catch (e) {
+            log('lanzamiento', `⚠️ No pude inyectar modo al YAML de ${archivo.name}: ${e.message.slice(0, 80)}`);
+          }
+        }
       }
       lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       anyLaunched = true;
