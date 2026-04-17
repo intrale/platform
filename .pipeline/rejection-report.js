@@ -746,7 +746,16 @@ function detectExternalDependencies(logTail, motivo) {
     }
 
     // Timeout errors (conexión al backend lenta o caída)
-    if (errLower.match(/(?:connect|read|socket|request)\s*timeout|timed?\s*out|deadline\s*exceeded/i) && !errLower.match(/enotfound|econnrefused/)) {
+    //
+    // Guard anti-falsos: descartar si el "error" parece un dump de config/JSON literal
+    // (es común que los agentes loggeen `config.yaml: { timeout_ms: 5000 }` en
+    // tool-output, y antes se clasificaba como "Timeout de conexión al backend"
+    // fantasma). Exigimos marcadores reales de error (stack/exception/fail/cause).
+    const looksLikeConfigDump = /\{\s*"?\w+"?\s*:\s*\d+/.test(err) &&
+      !/exception|stack|caused\s+by|fail(?:ed|ure)?|error(?:code|message|:)|at\s+[\w.]+\(/i.test(err);
+    if (!looksLikeConfigDump &&
+        errLower.match(/(?:connect|read|socket|request)\s*timeout|timed?\s*out|deadline\s*exceeded/i) &&
+        !errLower.match(/enotfound|econnrefused/)) {
       const urlMatch = err.match(/(?:url|host|endpoint)\s*[:=]\s*['"]?(\S+)/i);
       addDep(
         `Timeout de conexion${urlMatch ? ` a ${urlMatch[1]}` : ' al backend'}`,
@@ -774,7 +783,17 @@ function detectExternalDependencies(logTail, motivo) {
     addDep('El APK no se pudo generar', 'El build de Android fallo — el APK no existe. Sin APK no se puede probar en el emulador.', 'pattern-match', 'high');
 
   // Emulator not running pattern
-  if (combined.match(/emulator.*not.*running|no.*(?:emulador|emulator|device)/i))
+  //
+  // Regex restringido: antes era `no.*(?:emulador|emulator|device)` — matcheaba
+  // "no" + cualquier texto + "device", generando falsos positivos en cualquier
+  // log Android que mencionara la palabra "device" o "emulator" en contextos
+  // no-error (descripción del issue, comments, nombres de clase, etc).
+  //
+  // Ahora exige phrasings explícitos de infra caída:
+  //   - "emulator not running/responding/found/available"
+  //   - "no emulator/device/avd available/running/detected"
+  //   - "device offline", "daemon not running"
+  if (combined.match(/\bemulator\s+(?:is\s+)?not\s+(?:running|responding|found|available)\b|\bno\s+(?:hay\s+)?(?:emulador|emulator|device|avd)\s+(?:disponible|available|detected|found|levantado|corriendo|running)\b|\bdevice\s+offline\b|\bdaemon\s+not\s+running\b/i))
     addDep('Emulador Android no esta corriendo', 'Se necesita el emulador Android para ejecutar las pruebas QA. Verificar que el AVD este levantado.', 'pattern-match', 'normal');
 
   // --- 4. Patrones regex en texto crudo (menciones explícitas de dependencias) ---
@@ -1449,6 +1468,18 @@ async function phaseCollect() {
 
   if (data.inconclusive) {
     console.log(`[rejection-report] INCONCLUYENTE — preflight OK, no se crea issue. Revisión humana.`);
+    await sendReport(data);
+    return;
+  }
+
+  // Loop guard: si el issue rechazado YA es un dep auto-generado (qa:dependency),
+  // no debemos crear otro dep a partir de él. Romper el ciclo auto-referente
+  // donde un "Emulador no corriendo" #N se rechaza → rejection-report matchea
+  // "emulador" en el log/body (que literalmente dice "emulador no corriendo")
+  // → crea otro "Emulador no corriendo" #N+1 → loop infinito.
+  const isSelfDep = (data.issueCtx.labels || []).includes('qa:dependency');
+  if (isSelfDep) {
+    console.log(`[rejection-report] LOOP_GUARD — #${issue} ya es qa:dependency, no se crea dep recursivo. PDF directo.`);
     await sendReport(data);
     return;
   }
