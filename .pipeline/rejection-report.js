@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+const dedupLib = require('./dedup-lib');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -800,8 +801,12 @@ function detectExternalDependencies(logTail, motivo) {
 
   // --- 5. Filtrar contradicciones ---
   // Si hay evidencia de que la app corrió (crash, exception, login, navegación),
-  // el emulador SÍ estaba disponible — quitar deps de emulador espurias
-  const appRan = deps.some(d =>
+  // el emulador SÍ estaba disponible — quitar deps de emulador espurias.
+  // Excepción: si el motivo del rechazo es "sin evidencia / sin video", las
+  // menciones en logs pueden ser de intentos previos o contexto — NO asumir
+  // que la app corrió en esta ejecución.
+  const evidenceRejection = /\b(?:sin\s+)?(?:evidencia|video|audio|frames?|screenrecord|\.mp4|grabaci[oó]n)\b/i.test(motivoLower);
+  const appRan = !evidenceRejection && deps.some(d =>
     d.summary.match(/crash|bug|error.*json|dashboard|login|pantalla|navegacion|exception/i)
   );
   const filtered = appRan
@@ -818,7 +823,12 @@ function detectExternalDependencies(logTail, motivo) {
 // Retorna la mejor dep candidata o null si ninguna supera los criterios de
 // estrictez. Filtra contra preflight: si detecta infra de emulador pero el
 // preflight del pulpo pasó, descarta esa dep (falso positivo).
-function selectPrimaryCause(deps, preflight) {
+//
+// El `motivo` del rechazo pesa más que los pattern-matches de log: cuando el
+// rechazo es explícitamente por evidencia (sin video, sin frames), la causa
+// está en la capa de ejecución (infra/emulador/APK), no en un bug funcional
+// que aparezca mencionado incidentalmente en el log.
+function selectPrimaryCause(deps, preflight, motivo) {
   if (!Array.isArray(deps) || deps.length === 0) return null;
 
   // Si preflight pasó, quitar deps de infra de emulador (falso positivo)
@@ -830,6 +840,25 @@ function selectPrimaryCause(deps, preflight) {
     });
   }
   if (filtered.length === 0) return null;
+
+  // Rechazo por evidencia → la causa real está en la capa de ejecución.
+  // Los pattern-matches genéricos de la app (dashboard/crash/exception) son
+  // contexto del log, no la razón del rechazo. Priorizar deps de infra;
+  // caer a non-pattern-match si no hay infra; descartar pattern-match puros.
+  const motivoLower = (motivo || '').toLowerCase();
+  const evidenceRejection = /\b(?:sin\s+)?(?:evidencia|video|audio|frames?|screenrecord|\.mp4|grabaci[oó]n)\b/i.test(motivoLower);
+  if (evidenceRejection) {
+    const infraMatch = /emulador|emulator|apk|build|device|adb|screenrecord|evidencia|video|audio|frames?/i;
+    const infraDeps = filtered.filter(d => infraMatch.test(d.summary || ''));
+    if (infraDeps.length > 0) {
+      filtered = infraDeps;
+    } else {
+      // Sin deps de infra: descartar pattern-match genéricos, dejar solo
+      // deps con origen más confiable (agent-diagnostic, agent-explicit, regex-match).
+      const nonPattern = filtered.filter(d => d.source !== 'pattern-match');
+      if (nonPattern.length > 0) filtered = nonPattern;
+    }
+  }
 
   // Preferir priority:high; dentro de eso, preferir source != 'pattern-match'
   // (los pattern-match son los más susceptibles a falsos positivos)
@@ -902,7 +931,9 @@ function fetchDependencyIssues(issueNum) {
 
 // --- Dedup pre-creación: busca un issue abierto con título similar y label qa:dependency ---
 // Retorna { number, title, url } si encuentra match; null si no.
-// Similitud: overlap de palabras significativas (>3 chars) ≥ 50%.
+// La heurística vive en .pipeline/dedup-lib.js — misma lógica que pulpo.js usa
+// en intake (evita que intake considere único lo que rejection-report vincula,
+// o al revés).
 function findExistingDepIssue(candidateTitle) {
   if (!candidateTitle) return null;
   try {
@@ -912,22 +943,7 @@ function findExistingDepIssue(candidateTitle) {
       { timeout: 20000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
     );
     const open = JSON.parse(raw || '[]');
-    if (open.length === 0) return null;
-    const normalize = (s) => String(s || '').toLowerCase()
-      .replace(/^(?:fix|feat|infra|dep):\s*/i, '')
-      .replace(/[—\-:()"'`,.]/g, ' ')
-      .replace(/\s+/g, ' ').trim();
-    const words = (s) => normalize(s).split(' ').filter(w => w.length > 3);
-    const candidateWords = words(candidateTitle);
-    if (candidateWords.length === 0) return null;
-    for (const it of open) {
-      const itWords = words(it.title);
-      if (itWords.length === 0) continue;
-      const shared = candidateWords.filter(w => itWords.some(iw => iw === w || iw.includes(w) || w.includes(iw)));
-      const overlap = shared.length / Math.min(candidateWords.length, itWords.length);
-      if (overlap >= 0.5) return it;
-    }
-    return null;
+    return dedupLib.findDuplicate(candidateTitle, open);
   } catch {
     return null;
   }
@@ -1134,7 +1150,7 @@ function collectReportData() {
   // NUEVO v6: preflight + evidencia + UNA causa raíz estricta
   const preflight = checkPreflightOk(issue);
   const evidence = collectEvidence(issue, skill, logFile);
-  const primaryCause = selectPrimaryCause(analysis.externalDeps || [], preflight);
+  const primaryCause = selectPrimaryCause(analysis.externalDeps || [], preflight, motivo);
 
   // Veredicto: si la única causa candidata fue filtrada por preflight OK,
   // el rechazo es INCONCLUYENTE — no crear issue, marcar para revisión humana
