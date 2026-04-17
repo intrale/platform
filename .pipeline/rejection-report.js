@@ -87,6 +87,92 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// --- Preflight del pulpo: ¿el emulador estaba OK antes del run actual? ---
+// Lee pulpo.log y busca la última línea `check 4 OK` para el issue en las
+// últimas 2 horas. Si aparece → preflight validó que el emulador estaba
+// disponible + screenrecord funcionando. Un rejection que diga "emulador
+// caído" con preflight OK es un falso positivo.
+function checkPreflightOk(issueNum) {
+  const logPath = path.join(LOG_DIR, 'pulpo.log');
+  if (!fs.existsSync(logPath)) return { ok: false, reason: 'pulpo.log no disponible' };
+  try {
+    const stat = fs.statSync(logPath);
+    const size = stat.size;
+    // Leer solo la cola (últimos 512KB típicamente cubren 2h+)
+    const readSize = Math.min(size, 512 * 1024);
+    const fd = fs.openSync(logPath, 'r');
+    const buf = Buffer.alloc(readSize);
+    fs.readSync(fd, buf, 0, readSize, size - readSize);
+    fs.closeSync(fd);
+    const tail = buf.toString('utf8');
+    const lines = tail.split('\n').reverse();
+    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+    const okPattern = new RegExp(`\\[preflight\\] #${issueNum}: check 4 OK`);
+    const failPattern = new RegExp(`\\[preflight\\] #${issueNum}:.*(?:FAIL|waiting:emulator)`);
+    for (const line of lines) {
+      const tsMatch = line.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]/);
+      if (tsMatch) {
+        const ts = Date.parse(tsMatch[1].replace(' ', 'T') + '-03:00');
+        if (ts < cutoff) break;
+      }
+      if (failPattern.test(line)) return { ok: false, reason: 'preflight FAIL detectado', line };
+      if (okPattern.test(line)) return { ok: true, line };
+    }
+    return { ok: false, reason: 'sin registro de preflight en las últimas 2h' };
+  } catch (e) {
+    return { ok: false, reason: 'error leyendo pulpo.log: ' + e.message };
+  }
+}
+
+// --- Evidencia directa en disco: hash de video, # frames, path del log ---
+function collectEvidence(issueNum, skillName, logFileName) {
+  const evidence = {
+    video: null,
+    videoBytes: 0,
+    videoHash: null,
+    frames: 0,
+    logPath: null,
+    logBytes: 0,
+  };
+  const qaDirs = [
+    path.join(ROOT, 'qa', 'evidence', String(issueNum)),
+    path.join(ROOT, 'qa', 'recordings'),
+    path.join(LOG_DIR),
+  ];
+  for (const dir of qaDirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        const full = path.join(dir, f);
+        if (!fs.statSync(full).isFile()) continue;
+        if (f.endsWith('.mp4') && f.includes(String(issueNum))) {
+          const sz = fs.statSync(full).size;
+          if (sz > evidence.videoBytes) {
+            evidence.video = full;
+            evidence.videoBytes = sz;
+          }
+        } else if (f.endsWith('.png') && f.includes(String(issueNum))) {
+          evidence.frames++;
+        }
+      }
+    } catch {}
+  }
+  if (evidence.video) {
+    try {
+      const crypto = require('crypto');
+      const sample = fs.readFileSync(evidence.video).slice(0, 65536);
+      evidence.videoHash = crypto.createHash('md5').update(sample).digest('hex').slice(0, 12);
+    } catch {}
+  }
+  const logPath = path.join(LOG_DIR, logFileName);
+  if (fs.existsSync(logPath)) {
+    evidence.logPath = logPath;
+    try { evidence.logBytes = fs.statSync(logPath).size; } catch {}
+  }
+  return evidence;
+}
+
 // --- Contexto del issue desde GitHub ---
 function fetchIssueContext(issueNum) {
   const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
@@ -728,6 +814,36 @@ function detectExternalDependencies(logTail, motivo) {
   return filtered;
 }
 
+// --- Selección ESTRICTA de UNA sola causa raíz ---
+// Retorna la mejor dep candidata o null si ninguna supera los criterios de
+// estrictez. Filtra contra preflight: si detecta infra de emulador pero el
+// preflight del pulpo pasó, descarta esa dep (falso positivo).
+function selectPrimaryCause(deps, preflight) {
+  if (!Array.isArray(deps) || deps.length === 0) return null;
+
+  // Si preflight pasó, quitar deps de infra de emulador (falso positivo)
+  let filtered = deps;
+  if (preflight && preflight.ok) {
+    filtered = deps.filter(d => {
+      const s = (d.summary || '').toLowerCase();
+      return !s.match(/emulador|emulator|dispositivo android|adb/);
+    });
+  }
+  if (filtered.length === 0) return null;
+
+  // Preferir priority:high; dentro de eso, preferir source != 'pattern-match'
+  // (los pattern-match son los más susceptibles a falsos positivos)
+  const ranked = filtered.slice().sort((a, b) => {
+    const pA = a.priority === 'high' ? 0 : 1;
+    const pB = b.priority === 'high' ? 0 : 1;
+    if (pA !== pB) return pA - pB;
+    const sA = a.source === 'pattern-match' ? 1 : 0;
+    const sB = b.source === 'pattern-match' ? 1 : 0;
+    return sA - sB;
+  });
+  return ranked[0];
+}
+
 // --- Buscar issues de dependencia creados en GitHub ---
 function fetchDependencyIssues(issueNum) {
   try {
@@ -781,6 +897,39 @@ function fetchDependencyIssues(issueNum) {
     return { isBlocked, linkedDeps };
   } catch {
     return { isBlocked: false, linkedDeps: [] };
+  }
+}
+
+// --- Dedup pre-creación: busca un issue abierto con título similar y label qa:dependency ---
+// Retorna { number, title, url } si encuentra match; null si no.
+// Similitud: overlap de palabras significativas (>3 chars) ≥ 50%.
+function findExistingDepIssue(candidateTitle) {
+  if (!candidateTitle) return null;
+  try {
+    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+    const raw = execSync(
+      `"${ghPath}" issue list --label "qa:dependency" --state open --json number,title,url --repo intrale/platform --limit 100`,
+      { timeout: 20000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+    );
+    const open = JSON.parse(raw || '[]');
+    if (open.length === 0) return null;
+    const normalize = (s) => String(s || '').toLowerCase()
+      .replace(/^(?:fix|feat|infra|dep):\s*/i, '')
+      .replace(/[—\-:()"'`,.]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    const words = (s) => normalize(s).split(' ').filter(w => w.length > 3);
+    const candidateWords = words(candidateTitle);
+    if (candidateWords.length === 0) return null;
+    for (const it of open) {
+      const itWords = words(it.title);
+      if (itWords.length === 0) continue;
+      const shared = candidateWords.filter(w => itWords.some(iw => iw === w || iw.includes(w) || w.includes(iw)));
+      const overlap = shared.length / Math.min(candidateWords.length, itWords.length);
+      if (overlap >= 0.5) return it;
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -982,6 +1131,21 @@ function collectReportData() {
   const readableLog = extractMeaningfulLog(logTail, 30);
   const depIssues = fetchDependencyIssues(issue);
 
+  // NUEVO v6: preflight + evidencia + UNA causa raíz estricta
+  const preflight = checkPreflightOk(issue);
+  const evidence = collectEvidence(issue, skill, logFile);
+  const primaryCause = selectPrimaryCause(analysis.externalDeps || [], preflight);
+
+  // Veredicto: si la única causa candidata fue filtrada por preflight OK,
+  // el rechazo es INCONCLUYENTE — no crear issue, marcar para revisión humana
+  const hasFilteredCandidates = (analysis.externalDeps || []).length > 0;
+  const inconclusive = preflight.ok && hasFilteredCandidates && !primaryCause;
+  const verdict = inconclusive
+    ? 'INCONCLUYENTE'
+    : primaryCause
+    ? 'RECHAZADO_CON_CAUSA'
+    : 'RECHAZADO_SIN_CAUSA';
+
   return {
     // Identifiers
     issue, skill, fase, exitCode, elapsed, motivo, pipeline, logFile,
@@ -1001,21 +1165,57 @@ function collectReportData() {
     autoCreatedDeps: [],
     // Existing deps found during dedup (filled in phase 1)
     existingDeps: [],
+    // NUEVO v6
+    preflight, evidence, primaryCause, verdict, inconclusive,
   };
 }
 
 // =============================================================================
-// renderHtml(data) — genera el HTML del reporte a partir de los datos
+// renderHtml(data) — reporte estricto v6: veredicto + causa única + evidencia
 // =============================================================================
 function renderHtml(data) {
   const {
-    issue, skill, fase, exitCode, elapsed, motivo, pipeline, timestamp, isoDate,
-    memUsedPct, memUsedGB, memTotalGB, cpuCores,
-    avgCpu, avgMem, avgAgents, pressureLevels, recentMetrics,
-    skillProfile, yamlData, cooldownInfo,
-    analysis, issueCtx, rejectHistory, otherGates, rootCause,
+    issue, skill, fase, elapsed, motivo, timestamp, isoDate,
+    issueCtx, rejectHistory,
     logTail, readableLog, depIssues, autoCreatedDeps,
+    preflight, evidence, primaryCause, verdict, inconclusive,
   } = data;
+
+  const verdictLabel = inconclusive
+    ? 'INCONCLUYENTE'
+    : primaryCause
+    ? 'RECHAZADO'
+    : 'RECHAZADO (sin causa identificada)';
+  const verdictClass = inconclusive ? 'badge-yellow' : 'badge-red';
+
+  const causeBlock = inconclusive
+    ? `<p><strong>No se pudo identificar una causa raíz confiable.</strong></p>
+       <p>El agente ${escapeHtml(skill)} declaró rechazo, pero el preflight confirmó que el emulador estaba disponible + screenrecord verificado. Sin evidencia adicional en el log, no se crea issue de dependencia.</p>
+       <p><em>Preflight: ${escapeHtml(preflight.line || 'OK')}</em></p>
+       <p><strong>Acción:</strong> revisión humana del log del agente. Reintento automático en próxima ventana QA.</p>`
+    : primaryCause
+    ? `<p><strong>${escapeHtml(primaryCause.summary)}</strong></p>
+       <p>${escapeHtml(primaryCause.detail || primaryCause.summary)}</p>
+       <p><span class="badge badge-blue">fuente: ${escapeHtml(primaryCause.source || 'auto')}</span>
+          <span class="badge ${primaryCause.priority === 'high' ? 'badge-red' : 'badge-yellow'}">prioridad: ${escapeHtml(primaryCause.priority || 'normal')}</span></p>`
+    : `<p>El agente terminó con código ${escapeHtml(String(data.exitCode))} después de ${escapeHtml(String(elapsed))}s.</p>
+       <p>Motivo registrado: <em>${escapeHtml(motivo)}</em></p>
+       <p>No se detectaron dependencias externas accionables en el log. Revisión humana requerida.</p>`;
+
+  const evidenceBlock = `
+    <table>
+      <tr><th>Video</th><td>${evidence.video
+        ? escapeHtml(path.basename(evidence.video)) + ` &mdash; ${(evidence.videoBytes / 1024).toFixed(0)} KB &mdash; md5:${escapeHtml(evidence.videoHash || 'N/A')}`
+        : '<em>sin video</em>'}</td></tr>
+      <tr><th>Frames PNG</th><td>${evidence.frames}</td></tr>
+      <tr><th>Log del agente</th><td>${evidence.logPath
+        ? escapeHtml(path.basename(evidence.logPath)) + ` &mdash; ${(evidence.logBytes / 1024).toFixed(0)} KB`
+        : '<em>sin log</em>'}</td></tr>
+      <tr><th>Preflight</th><td>${preflight.ok
+        ? '<span class="badge badge-green">OK</span> ' + escapeHtml(preflight.line || '')
+        : '<span class="badge badge-yellow">NO verificado</span> ' + escapeHtml(preflight.reason || '')}</td></tr>
+    </table>
+  `;
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -1051,225 +1251,75 @@ function renderHtml(data) {
 </style>
 </head><body>
 
-<h1>Reporte de Rechazo &mdash; #${escapeHtml(issue)} ${escapeHtml(skill)}</h1>
-<p><span class="badge badge-red">RECHAZADO</span> &nbsp; ${escapeHtml(timestamp)}</p>
+<h1>Rechazo QA &mdash; #${escapeHtml(issue)} ${escapeHtml(skill)}</h1>
+<p><span class="badge ${verdictClass}">${escapeHtml(verdictLabel)}</span> &nbsp; ${escapeHtml(timestamp)} &nbsp; <code>${escapeHtml(fase)}</code></p>
 
-<h2>Que se estaba haciendo</h2>
+<h2>Issue bajo prueba</h2>
 <div class="context-box">
-  <h3>${escapeHtml(issueCtx.title)}</h3>
-  <p>${escapeHtml(issueCtx.summary)}</p>
-  ${issueCtx.labels.length > 0 ? '<p>' + issueCtx.labels.map(l => '<span class="label-tag">' + escapeHtml(l) + '</span>').join(' ') + '</p>' : ''}
+  <h3>#${escapeHtml(issue)} &mdash; ${escapeHtml(issueCtx.title)}</h3>
 </div>
 
-<h2>Que paso (en lenguaje simple)</h2>
-<div class="rootcause-box">
-  <h3>${escapeHtml(rootCause.emoji)} ${escapeHtml(rootCause.negocio || rootCause.desc)}</h3>
-  <p><span class="badge ${rootCause.origen === 'EXTERNO' ? 'badge-yellow' : rootCause.origen === 'INTERNO' ? 'badge-red' : 'badge-blue'}">${escapeHtml(rootCause.origen || 'INDETERMINADO')}: ${rootCause.origen === 'EXTERNO' ? 'No es culpa de este issue' : rootCause.origen === 'INTERNO' ? 'Problema en el codigo de este issue' : 'Requiere revision'}</span></p>
+<h2>Causa identificada</h2>
+<div class="${inconclusive ? 'history-box' : 'rootcause-box'}">
+  ${causeBlock}
 </div>
 
-<h2>Sintoma vs Causa Raiz</h2>
-<table>
-  <tr><th>Sintoma (lo que se vio)</th><td>${escapeHtml(motivo)}</td></tr>
-  <tr><th>Causa raiz (lo que realmente paso)</th><td>${escapeHtml(rootCause.desc)}</td></tr>
-  <tr><th>Clasificacion</th><td><span class="badge ${rootCause.tipo === 'INFRAESTRUCTURA' || rootCause.tipo === 'DEPENDENCIA' ? 'badge-yellow' : 'badge-red'}">${escapeHtml(rootCause.tipo)}</span></td></tr>
-  <tr><th>Origen</th><td>${rootCause.origen === 'EXTERNO' ? '⚠️ El problema NO esta en el codigo de este issue — es un factor externo (infra, dependencia de otro feature, bug en otra pantalla)' : rootCause.origen === 'INTERNO' ? '🔴 El problema esta en los cambios de este issue — requiere correccion del desarrollador' : '🔍 Requiere revision — ver log y factores contribuyentes abajo para mas contexto'}</td></tr>
-</table>
+<h2>Evidencia directa</h2>
+${evidenceBlock}
 
-${otherGates.length > 0 ? `
-<h2>Estado de los Otros Gates</h2>
+${autoCreatedDeps.length > 0 ? `
+<h2>Issues involucrados</h2>
 <table>
-  <tr><th>Gate</th><th>Resultado</th><th>Detalle</th></tr>
-  ${otherGates.map(g => {
-    const cls = g.resultado === 'aprobado' ? 'gate-approved' : g.resultado === 'rechazado' ? 'gate-rejected' : '';
-    const icon = g.resultado === 'aprobado' ? '✅' : g.resultado === 'rechazado' ? '❌' : '⏳';
-    return '<tr><td>' + escapeHtml(g.skill) + '</td><td class="' + cls + '">' + icon + ' ' + escapeHtml(g.resultado) + '</td><td>' + escapeHtml(g.motivo ? g.motivo.substring(0, 120) : '-') + '</td></tr>';
+  <tr><th>Issue</th><th>Título</th><th>Estado</th></tr>
+  ${autoCreatedDeps.map(d => '<tr><td><strong>#' + (d.number || '?') + '</strong></td><td>' + escapeHtml(d.title) + '</td><td>' + (d.failed ? '<span class="badge badge-red">falló al crear</span>' : d.alreadyExisted ? '<span class="badge badge-yellow">existente — evidencia agregada</span>' : '<span class="badge badge-blue">creado</span>') + '</td></tr>').join('')}
+</table>` : ''}
+
+${depIssues.linkedDeps.length > 0 && autoCreatedDeps.length === 0 ? `
+<h2>Dependencias previas</h2>
+<table>
+  <tr><th>Issue</th><th>Título</th><th>Estado</th></tr>
+  ${depIssues.linkedDeps.map(d => {
+    const stateIcon = d.state === 'OPEN' ? '🔴' : d.state === 'CLOSED' ? '✅' : '•';
+    const stateCls = d.state === 'CLOSED' ? 'gate-approved' : 'gate-rejected';
+    return '<tr><td><strong>#' + d.number + '</strong></td><td>' + escapeHtml(d.title) + '</td><td class="' + stateCls + '">' + stateIcon + ' ' + escapeHtml(d.state) + '</td></tr>';
   }).join('')}
 </table>` : ''}
 
 ${rejectHistory.length > 1 ? `
-<h2>Historial de Rechazos (este issue)</h2>
-<div class="history-box">
-  <p>Este issue ha sido rechazado <strong>${rejectHistory.length} veces</strong>:</p>
-  ${rejectHistory.map((h, i) => `
-  <div style="background:#fff3f3; border:1px solid #e0a0a0; border-radius:6px; padding:12px; margin:10px 0;">
-    <p style="margin:0 0 6px 0;"><strong>Rechazo #${i + 1}</strong> — <code>${escapeHtml(h.skill)}</code> en fase <code>${escapeHtml(h.fase)}</code> (por ${escapeHtml(h.rechazadoPor)})</p>
-    <p style="margin:4px 0; white-space:pre-wrap;">${escapeHtml(h.motivo)}</p>
-    ${h.criteriosNoVerificados && h.criteriosNoVerificados.length > 0 ? `
-    <details style="margin-top:8px;"><summary><strong>Criterios no verificados (${h.criteriosNoVerificados.length})</strong></summary>
-    <ul>${h.criteriosNoVerificados.map(c => '<li>' + escapeHtml(c) + '</li>').join('')}</ul>
-    </details>` : ''}
-    ${h.evidenciaParcial && h.evidenciaParcial.length > 0 ? `
-    <details style="margin-top:4px;"><summary><strong>Evidencia parcial</strong></summary>
-    <ul>${h.evidenciaParcial.map(e => '<li>' + escapeHtml(e) + '</li>').join('')}</ul>
-    </details>` : ''}
-  </div>`).join('')}
-</div>` : ''}
+<p><em>Este issue ya fue rechazado ${rejectHistory.length} veces.</em></p>` : ''}
 
-<h2>Informacion del Agente</h2>
-<table>
-  <tr><th>Issue</th><td>#${escapeHtml(issue)}</td><th>Skill</th><td>${escapeHtml(skill)}</td></tr>
-  <tr><th>Fase</th><td>${escapeHtml(fase)}</td><th>Pipeline</th><td>${escapeHtml(pipeline)}</td></tr>
-  <tr><th>Codigo de salida</th><td>${exitCode === '0' ? '<span class="badge badge-green">0 (OK)</span>' : '<span class="badge badge-red">' + escapeHtml(exitCode) + '</span>'}</td><th>Duracion</th><td>${escapeHtml(elapsed)}s</td></tr>
-  <tr><th>Motivo</th><td colspan="3">${escapeHtml(motivo)}</td></tr>
-  ${cooldownInfo ? '<tr><th>Cooldown</th><td colspan="3">Fallo #' + cooldownInfo.failures + ' &mdash; cooldown hasta ' + escapeHtml(cooldownInfo.cooldownUntil || 'N/A') + '</td></tr>' : ''}
-  ${yamlData && yamlData.rebote_numero ? '<tr><th>Rebotes</th><td colspan="3">#' + yamlData.rebote_numero + ' en fase ' + escapeHtml(yamlData.rebote_en_fase || '?') + '</td></tr>' : ''}
-</table>
-
-<h2>Recursos del Sistema</h2>
-<div class="metric-row">
-  <div class="metric-card">
-    <div class="metric-value">${memUsedPct}%</div>
-    <div class="metric-label">RAM (${memUsedGB}/${memTotalGB} GB)</div>
-  </div>
-  <div class="metric-card">
-    <div class="metric-value">${avgCpu}%</div>
-    <div class="metric-label">CPU promedio (10 min)</div>
-  </div>
-  <div class="metric-card">
-    <div class="metric-value">${avgAgents}</div>
-    <div class="metric-label">Agentes promedio</div>
-  </div>
-  <div class="metric-card">
-    <div class="metric-value">${cpuCores}</div>
-    <div class="metric-label">CPU cores</div>
-  </div>
-</div>
-${recentMetrics.length > 0 ? `
-<table>
-  <tr><th>Nivel de presion</th><th>Snapshots</th><th>Proporcion</th></tr>
-  ${Object.entries(pressureLevels).sort((a,b) => b[1] - a[1]).map(([level, count]) => {
-    const pct = Math.round(count / recentMetrics.length * 100);
-    const cls = level === 'red' ? 'badge-red' : level === 'orange' ? 'badge-yellow' : level === 'yellow' ? 'badge-yellow' : 'badge-green';
-    return '<tr><td><span class="badge ' + cls + '">' + level.toUpperCase() + '</span></td><td>' + count + '/' + recentMetrics.length + '</td><td>' + pct + '%</td></tr>';
-  }).join('')}
-</table>` : '<p><em>Sin metricas recientes disponibles</em></p>'}
-
-${skillProfile ? `
-<h2>Perfil Historico del Skill: ${escapeHtml(skill)}</h2>
-<table>
-  <tr><th>CPU promedio</th><td>${skillProfile.avgCpu}%</td><th>RAM promedio</th><td>${skillProfile.avgMem}%</td></tr>
-  <tr><th>Muestras</th><td>${skillProfile.samples}</td><th>Ultima actualizacion</th><td>${escapeHtml(skillProfile.lastUpdated || 'N/A')}</td></tr>
-</table>` : ''}
-
-<h2>Analisis de la Situacion</h2>
-<div class="analysis-box">
-  <h3>Conclusion</h3>
-  <p>${escapeHtml(analysis.conclusion)}</p>
-  ${analysis.factors.length > 0 ? '<h3>Factores contribuyentes</h3><ul>' + analysis.factors.map(f => '<li>' + escapeHtml(f) + '</li>').join('') + '</ul>' : ''}
-</div>
-
-<h2>Que hay que hacer para desbloquearlo</h2>
-<div class="solution-box">
-  <h3>${rootCause.origen === 'EXTERNO' ? '⚠️ Este issue NO necesita cambios — el bloqueo es externo' : '🔧 Acciones requeridas en este issue'}</h3>
-  <p>${escapeHtml(analysis.suggestion)}</p>
-  ${analysis.steps.length > 0 ? '<h3>Pasos concretos</h3><ol>' + analysis.steps.map(s => '<li>' + escapeHtml(s) + '</li>').join('') + '</ol>' : ''}
-  ${autoCreatedDeps.length > 0 ? '<h3>Issues de Dependencia Creados Automaticamente</h3><table><tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>' + autoCreatedDeps.map(d => '<tr><td><strong>#' + (d.number || '?') + '</strong></td><td>' + escapeHtml(d.title) + '</td><td>' + (d.failed ? '<span class="badge badge-red">Fallo al crear</span>' : d.alreadyExisted ? '<span class="badge badge-yellow">Ya existia</span>' : '<span class="badge badge-blue">Creado ahora</span>') + '</td></tr>').join('') + '</table><p><em>Este issue queda bloqueado (blocked:dependencies) hasta que se resuelvan estos issues.</em></p>' : ''}
-  ${analysis.externalDeps && analysis.externalDeps.length > 0 && autoCreatedDeps.length === 0 ? '<h3>Dependencias externas detectadas</h3><table><tr><th>Dependencia</th><th>Detalle</th><th>Fuente</th></tr>' + analysis.externalDeps.map(d => {
-    const summary = typeof d === 'object' ? d.summary : d;
-    const detail = typeof d === 'object' ? (d.detail || '') : '';
-    const source = typeof d === 'object' ? (d.source || 'auto') : 'auto';
-    return '<tr><td><strong>' + escapeHtml(summary) + '</strong></td><td>' + escapeHtml(detail.substring(0, 200)) + '</td><td><span class="badge badge-blue">' + escapeHtml(source) + '</span></td></tr>';
-  }).join('') + '</table><p><em>No se pudieron crear issues automaticamente. Crear manualmente antes de reintentar.</em></p>' : ''}
-</div>
-
-${(depIssues.linkedDeps.length > 0 || depIssues.isBlocked) && autoCreatedDeps.length === 0 ? `
-<h2>Issues de Dependencia Previos</h2>
-<div class="${depIssues.isBlocked ? 'rootcause-box' : 'history-box'}">
-  ${depIssues.isBlocked ? '<p>⛔ <strong>Este issue esta BLOQUEADO</strong> — tiene label <span class="badge badge-red">blocked:dependencies</span>. No se puede avanzar hasta que se resuelvan las dependencias listadas abajo.</p>' : ''}
-  ${depIssues.linkedDeps.length > 0 ? `
-  <p>Issues de dependencia vinculados previamente:</p>
-  <table>
-    <tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>
-    ${depIssues.linkedDeps.map(d => {
-      const stateIcon = d.state === 'OPEN' ? '🔴 Pendiente' : d.state === 'CLOSED' ? '✅ Resuelto' : d.state;
-      const stateCls = d.state === 'CLOSED' ? 'gate-approved' : 'gate-rejected';
-      return '<tr><td><strong>#' + d.number + '</strong></td><td>' + escapeHtml(d.title) + '</td><td class="' + stateCls + '">' + stateIcon + '</td></tr>';
-    }).join('')}
-  </table>
-  <p><em>${depIssues.linkedDeps.filter(d => d.state === 'OPEN').length > 0 ? '⚠️ Hay dependencias pendientes de resolver. Este issue no debe reintentarse hasta que se cierren.' : '✅ Todas las dependencias estan resueltas. Se puede reintentar la validacion.'}</em></p>` : '<p>El issue esta marcado como bloqueado pero no se encontraron issues de dependencia vinculados.</p>'}
-</div>` : ''}
-
-<h2>Log del Agente (resumen legible)</h2>
-<pre><code>${escapeHtml(readableLog)}</code></pre>
-
-<details><summary>Log crudo (ultimas 80 lineas)</summary>
+<details><summary>Log del agente (últimas 80 líneas)</summary>
 <pre><code>${escapeHtml(logTail)}</code></pre>
 </details>
 
 <div class="footer">
-  Intrale Platform &mdash; Reporte de Rechazo &mdash; v5.1 &mdash; ${escapeHtml(isoDate)}
+  Intrale Platform &mdash; Rejection Report &mdash; v6 (estricto) &mdash; ${escapeHtml(isoDate)}
 </div>
 </body></html>`;
 }
 
 // =============================================================================
-// generateNarration(data) — narración en texto plano para TTS
+// generateNarration(data) — narración corta para TTS (20-30s, ~300 chars)
 // =============================================================================
 function generateNarration(data) {
-  const {
-    issue, skill, fase, motivo,
-    issueCtx, rootCause, analysis, rejectHistory, depIssues, autoCreatedDeps,
-  } = data;
+  const { issue, primaryCause, inconclusive, autoCreatedDeps } = data;
 
-  const parts = [];
-
-  parts.push(`Reporte de rechazo del issue número ${issue}, que estaba en la fase de ${fase} con el agente ${skill}.`);
-  parts.push(`El issue se llama "${issueCtx.title}". ${issueCtx.summary}`);
-  parts.push(`¿Qué pasó? ${rootCause.negocio || rootCause.desc}`);
-
-  const origenTexto = rootCause.origen === 'EXTERNO'
-    ? 'El problema es externo, no es culpa de este issue.'
-    : rootCause.origen === 'INTERNO'
-    ? 'El problema está en los cambios de este issue, requiere corrección del desarrollador.'
-    : 'Requiere revisión del log para determinar el origen exacto. Los factores contribuyentes dan más contexto.';
-  parts.push(`Causa raíz: ${rootCause.desc}. Clasificación: ${rootCause.tipo}. ${origenTexto}`);
-
-  if (rejectHistory.length > 1) {
-    parts.push(`Atención: este issue ya fue rechazado ${rejectHistory.length} veces.`);
-    for (const h of rejectHistory.slice(-3)) {
-      const motivoCorto = (h.motivo || '').split('.').slice(0, 2).join('.').substring(0, 200);
-      parts.push(`Rechazo de ${h.skill} en fase ${h.fase}: ${motivoCorto}.`);
-    }
+  if (inconclusive) {
+    return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.`;
   }
 
-  parts.push(`Análisis de la situación: ${analysis.conclusion}`);
-  if (analysis.factors.length > 0) {
-    parts.push(`Factores que contribuyeron: ${analysis.factors.join('. ')}.`);
-  }
-  parts.push(`Para desbloquearlo: ${analysis.suggestion}`);
-  if (analysis.steps.length > 0) {
-    parts.push(`Pasos concretos: ${analysis.steps.map((s, i) => (i + 1) + ', ' + s).join('. ')}.`);
-  }
-
-  if (autoCreatedDeps && autoCreatedDeps.length > 0) {
-    const newOnes = autoCreatedDeps.filter(d => !d.alreadyExisted && !d.failed);
-    const existingOnes = autoCreatedDeps.filter(d => d.alreadyExisted);
-    const failedOnes = autoCreatedDeps.filter(d => d.failed);
-    if (newOnes.length > 0) {
-      parts.push(`Se crearon automáticamente ${newOnes.length} issues de dependencia: ${newOnes.map(d => 'número ' + (d.number || '?') + ', ' + (d.title || '').replace(/^dep:\s*/i, '')).join('. ')}.`);
-    }
-    if (existingOnes.length > 0) {
-      parts.push(`Se vincularon ${existingOnes.length} issues de dependencia que ya existían: ${existingOnes.map(d => 'número ' + d.number).join(', ')}.`);
-    }
-    if (failedOnes.length > 0) {
-      parts.push(`No se pudieron crear ${failedOnes.length} issues de dependencia por errores técnicos.`);
-    }
-    parts.push(`El issue queda bloqueado hasta que se resuelvan estas dependencias.`);
-  } else if (depIssues.isBlocked || depIssues.linkedDeps.length > 0) {
-    const openDeps = depIssues.linkedDeps.filter(d => d.state === 'OPEN');
-    const closedDeps = depIssues.linkedDeps.filter(d => d.state === 'CLOSED');
-    parts.push(`Este issue está bloqueado por dependencias.`);
-    if (depIssues.linkedDeps.length > 0) {
-      parts.push(`Hay ${depIssues.linkedDeps.length} issues de dependencia vinculados: ${depIssues.linkedDeps.map(d => 'número ' + d.number + ', ' + d.title + ', estado ' + (d.state === 'OPEN' ? 'pendiente' : 'resuelto')).join('. ')}.`);
-    }
-    if (openDeps.length > 0) {
-      parts.push(`Hay ${openDeps.length} dependencias pendientes de resolver. No se debe reintentar hasta que se cierren.`);
-    } else if (closedDeps.length > 0) {
-      parts.push(`Todas las dependencias están resueltas. Se puede reintentar la validación.`);
-    }
+  if (primaryCause) {
+    const summary = (primaryCause.summary || '').replace(/^(?:fix|feat|infra|dep):\s*/i, '');
+    const trimmed = summary.length > 120 ? summary.substring(0, 120) + '...' : summary;
+    const created = (autoCreatedDeps || []).filter(d => !d.failed && !d.alreadyExisted).length;
+    const existing = (autoCreatedDeps || []).filter(d => d.alreadyExisted).length;
+    let tail = '';
+    if (created > 0) tail = ` Se creó issue de dependencia.`;
+    else if (existing > 0) tail = ` Dependencia ya existente, se sumó evidencia.`;
+    return `Issue ${issue}: rechazado. Causa: ${trimmed}.${tail}`;
   }
 
-  return parts.join(' ');
+  return `Issue ${issue}: rechazado sin causa identificada. Revisión humana requerida.`;
 }
 
 // =============================================================================
@@ -1373,116 +1423,136 @@ async function phaseCollect() {
   console.log(`[rejection-report] Fase 1 (collect) para #${issue} ${skill} (${fase})...`);
   const data = collectReportData();
 
-  const externalDeps = data.analysis.externalDeps;
+  // ───────────────────────────────────────────────────────────────────────────
+  // Veredicto v6 estricto: 0 ó 1 issue por rejection report (nunca varios).
+  //   - INCONCLUYENTE  → PDF + audio, sin crear nada (revisión humana)
+  //   - SIN CAUSA      → PDF + audio, sin crear nada
+  //   - CON CAUSA + ya existe issue similar → comment con evidencia + PDF
+  //   - CON CAUSA + nueva → encolar 1 create-issue, PDF lo genera fase 2
+  // ───────────────────────────────────────────────────────────────────────────
 
-  // Sin dependencias externas → fast path: generar PDF directo
-  if (!externalDeps || externalDeps.length === 0) {
-    console.log(`[rejection-report] Sin dependencias externas — generando PDF directo`);
+  if (data.inconclusive) {
+    console.log(`[rejection-report] INCONCLUYENTE — preflight OK, no se crea issue. Revisión humana.`);
     await sendReport(data);
     return;
   }
 
-  // Hay dependencias externas — encolar creación con needs-definition
-  // El dedup cross-rejection lo maneja el pipeline de definición (brazoIntake en pulpo.js)
-  console.log(`[rejection-report] ${externalDeps.length} dependencias externas detectadas — encolando en pipeline de definición...`);
-  const newDeps = externalDeps;  // todas van al pipeline, él filtra duplicados
+  const primaryCause = data.primaryCause;
+  if (!primaryCause) {
+    console.log(`[rejection-report] RECHAZADO_SIN_CAUSA — PDF directo, sin crear issue.`);
+    await sendReport(data);
+    return;
+  }
 
-  // Determinar path del worktree para persistir el contexto
-  const worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
-  const contextDir = fs.existsSync(worktreePath) ? worktreePath : LOG_DIR;
-  const contextPath = path.join(contextDir, `.rejection-context-${issue}-${skill}.json`);
-
-  // Persistir contexto para fase 2 (sin existingDeps — dedup delegado al pipeline)
-  data.existingDeps = [];
-  fs.writeFileSync(contextPath, JSON.stringify(data, null, 2));
-  console.log(`[rejection-report] Contexto persistido en ${contextPath}`);
-
-  // Encolar create-issue para cada dependencia nueva
-  const group = `rejection-${issue}-${Date.now()}`;
+  // Una causa raíz: armar título canonical
+  const summary = primaryCause.summary || '';
+  const detail = primaryCause.detail || summary;
+  const source = primaryCause.source || 'auto';
+  const priority = primaryCause.priority || 'normal';
+  const summaryLower = summary.toLowerCase();
+  let prefix = 'fix';
+  if (summaryLower.match(/^(?:falta|pantalla|ruta|requiere|depende)/)) prefix = 'feat';
+  else if (summaryLower.match(/^(?:problema de red|emulador|gradle|timeout)/)) prefix = 'infra';
+  else if (summaryLower.match(/^(?:error|bug|crash|la app)/)) prefix = 'fix';
+  const cleanSummary = summary
+    .replace(/\s*—\s*.{20,}$/, '')
+    .replace(/\s+que bloquea.*$/, '')
+    .substring(0, 80);
+  const depTitle = `${prefix}: ${cleanSummary}`;
   const issueTitle = data.issueCtx.title || '';
 
-  for (const dep of newDeps) {
-    const summary = typeof dep === 'object' ? dep.summary : dep;
-    const detail = typeof dep === 'object' ? dep.detail : dep;
-    const source = typeof dep === 'object' ? (dep.source || 'auto') : 'auto';
-    const priority = typeof dep === 'object' ? (dep.priority || 'normal') : 'normal';
+  // Dedup en el rejection-report (no esperar al pulpo, que con .paused no corre)
+  const existing = findExistingDepIssue(depTitle);
 
-    // Título descriptivo y accionable (no genérico "dep: ...")
-    // Determinar si es bug, infra, feature faltante, etc.
-    const summaryLower = summary.toLowerCase();
-    let prefix = 'fix';
-    if (summaryLower.match(/^(?:falta|pantalla|ruta|requiere|depende)/)) prefix = 'feat';
-    else if (summaryLower.match(/^(?:problema de red|emulador|gradle|timeout)/)) prefix = 'infra';
-    else if (summaryLower.match(/^(?:error|bug|crash|la app)/)) prefix = 'fix';
+  if (existing) {
+    console.log(`[rejection-report] Causa ya cubierta por #${existing.number} — agrego evidencia, no creo duplicado.`);
 
-    // Limpiar summary para título: quitar frases largas de contexto
-    const cleanSummary = summary
-      .replace(/\s*—\s*.{20,}$/, '')  // quitar todo después de " — explicación larga"
-      .replace(/\s+que bloquea.*$/, '')  // quitar "que bloquea la ejecucion..."
-      .substring(0, 80);
-
-    const depTitle = `${prefix}: ${cleanSummary}`;
-
-    // Body rico y accionable
-    const depBody = [
-      '## Contexto',
-      '',
-      `Este problema fue detectado automáticamente al analizar el rechazo del issue #${issue} (**${issueTitle}**).`,
-      '',
+    const evidenceComment = [
+      `## 🔁 Nueva evidencia de rechazo`,
+      ``,
+      `Este problema bloqueó nuevamente al issue **#${issue}** (${issueTitle}) en la fase \`${fase}\`.`,
+      ``,
       `| Campo | Valor |`,
       `|-------|-------|`,
-      `| **Issue bloqueado** | #${issue} |`,
-      `| **Agente que falló** | ${skill} |`,
-      `| **Fase** | ${fase} |`,
-      `| **Prioridad** | ${priority === 'high' ? '🔴 Alta — bloqueo directo' : '🟡 Normal — contribuyente'} |`,
-      `| **Fuente de detección** | ${source} |`,
-      '',
-      '## Problema detectado',
-      '',
-      `### ${summary}`,
-      '',
-      detail,
-      '',
-      '## Por qué es importante',
-      '',
-      `El issue #${issue} (**${issueTitle}**) no puede avanzar mientras este problema exista. ` +
-      `El agente \`${skill}\` intentó ejecutar la fase \`${fase}\` pero falló porque se encontró con este bloqueo.`,
-      '',
-      priority === 'high'
-        ? '**Este es un bloqueo directo**: la funcionalidad del issue #' + issue + ' depende de que esto se resuelva primero.'
-        : 'Este es un factor contribuyente al rechazo. Resolverlo puede permitir que el issue #' + issue + ' avance.',
-      '',
-      '## Criterios de aceptación',
-      '',
-      '- [ ] El problema descrito arriba está corregido',
-      `- [ ] El issue #${issue} puede reintentarse sin este bloqueo`,
-      '- [ ] Se verificó que la corrección no introduce regresiones',
-      '',
-      '## Notas para el desarrollador',
-      '',
-      `- Revisar el [rejection report](../docs/qa/) del issue #${issue} para más contexto`,
-      `- Este issue fue detectado por \`${source}\` analizando los logs del agente`,
-      `- Una vez resuelto, el pipeline reintentará automáticamente el issue #${issue}`,
-      '',
-      '---',
-      `_Issue creado automáticamente por el rejection report del pipeline v5.1._`,
+      `| Issue rechazado | #${issue} |`,
+      `| Agente | ${skill} |`,
+      `| Fecha | ${data.timestamp} |`,
+      `| Fuente de detección | ${source} |`,
+      ``,
+      `**Detalle:** ${detail}`,
+      ``,
+      `_Evidencia agregada automáticamente por el rejection report v6._`,
     ].join('\n');
 
     enqueueGitHub({
-      action: 'create-issue',
-      title: depTitle,
-      body: depBody,
-      labels: 'needs-definition,qa:dependency,priority:high',
-      repo: 'intrale/platform',
-      group,
-      groupSize: newDeps.length,
-      onComplete: {
-        command: `node .pipeline/rejection-report.js --phase complete --context "${contextPath}"`
-      }
+      action: 'comment',
+      issue: existing.number,
+      body: evidenceComment,
     });
+
+    data.autoCreatedDeps = [{
+      number: existing.number,
+      title: existing.title,
+      state: 'OPEN',
+      alreadyExisted: true,
+    }];
+
+    await sendReport(data);
+    enqueueCommentAndLabel(data.issue, data.autoCreatedDeps, issueTitle);
+    return;
   }
 
-  console.log(`[rejection-report] ${newDeps.length} items encolados en grupo "${group}" — el PDF se generará cuando se completen`);
+  // Causa nueva → crear UN issue, diferir PDF a fase 2
+  console.log(`[rejection-report] Causa nueva — encolando 1 create-issue (PDF se genera al completar).`);
+
+  const worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
+  const contextDir = fs.existsSync(worktreePath) ? worktreePath : LOG_DIR;
+  const contextPath = path.join(contextDir, `.rejection-context-${issue}-${skill}.json`);
+  data.existingDeps = [];
+  fs.writeFileSync(contextPath, JSON.stringify(data, null, 2));
+
+  const group = `rejection-${issue}-${Date.now()}`;
+  const depBody = [
+    '## Contexto',
+    '',
+    `Detectado al analizar el rechazo del issue #${issue} (**${issueTitle}**).`,
+    '',
+    `| Campo | Valor |`,
+    `|-------|-------|`,
+    `| **Issue bloqueado** | #${issue} |`,
+    `| **Agente que falló** | ${skill} |`,
+    `| **Fase** | ${fase} |`,
+    `| **Prioridad** | ${priority === 'high' ? '🔴 Alta — bloqueo directo' : '🟡 Normal — contribuyente'} |`,
+    `| **Fuente** | ${source} |`,
+    '',
+    '## Causa raíz',
+    '',
+    `### ${summary}`,
+    '',
+    detail,
+    '',
+    '## Criterios de aceptación',
+    '',
+    '- [ ] El problema descrito está corregido',
+    `- [ ] El issue #${issue} puede reintentarse sin este bloqueo`,
+    '- [ ] No introduce regresiones',
+    '',
+    '---',
+    `_Issue creado automáticamente por el rejection report v6 (estricto, 1 causa por reporte)._`,
+  ].join('\n');
+
+  enqueueGitHub({
+    action: 'create-issue',
+    title: depTitle,
+    body: depBody,
+    labels: 'needs-definition,qa:dependency,priority:high',
+    repo: 'intrale/platform',
+    group,
+    groupSize: 1,
+    onComplete: {
+      command: `node .pipeline/rejection-report.js --phase complete --context "${contextPath}"`
+    }
+  });
 }
 
 // =============================================================================
