@@ -881,6 +881,17 @@ const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA 
  * cumple el umbral, se acepta.
  */
 function validateQaEvidence(issue, qaData) {
+  // El preflight clasifica cada issue en uno de tres modos (qaMode):
+  //   - 'android'    → requiere emulador + APK → debe haber video/frames
+  //   - 'api'        → testing via HTTP, sin UI → no produce video
+  //   - 'structural' → validación syntax+tests → no produce video
+  // El agente QA escribe `modo: <qaMode>` en el YAML. Solo exigir evidencia
+  // visual cuando realmente aplica — antes este gate rechazaba fantasma
+  // issues de backend/infra cuyo QA estructural había aprobado correctamente,
+  // disparando el loop con el rejection-report.
+  const modo = (qaData.modo || '').toString().toLowerCase();
+  if (modo === 'api' || modo === 'structural') return [];
+
   const ROOT = path.resolve(PIPELINE, '..');
   const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
   const recordingsDir = path.join(ROOT, 'qa', 'recordings');
