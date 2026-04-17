@@ -149,6 +149,7 @@ val appModule = DI.Module("appModule") {
         singleton { ClientOrderRepository() }
     }
 
+
     bind<DeliveryProfileRepository> {
         singleton { DeliveryProfileRepository() }
     }
@@ -226,7 +227,7 @@ val appModule = DI.Module("appModule") {
         singleton { ClientAddressesFunction(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="client/orders") {
-        singleton { ClientOrders(instance(), instance(), instance(), instance()) }
+        singleton { ClientOrders(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="client/order-detail") {
         singleton { ClientOrderDetail(instance(), instance(), instance(), instance()) }
@@ -307,6 +308,18 @@ val appModule = DI.Module("appModule") {
 
     bind<Function> (tag="client/payment-methods") {
         singleton { ClientPaymentMethodsFunction(instance(), instance(), instance()) }
+    }
+
+    bind<AnomalyRepository> {
+        singleton { AnomalyRepository() }
+    }
+
+    bind<OrderAnomalyDetectionService> {
+        singleton { OrderAnomalyDetectionService(instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/anomalies") {
+        singleton { OrderAnomalyFunction(instance(), instance(), instance(), instance(), instance(), instance()) }
     }
 
     bind<AiResponseService> {

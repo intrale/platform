@@ -62,6 +62,7 @@ class BusinessOrdersFunction(
     private val gson = Gson()
     companion object {
         private val VALID_TRANSITIONS: Map<String, List<String>> = mapOf(
+            "FLAGGED" to listOf("PENDING", "CANCELLED"),
             "PENDING" to listOf("PREPARING", "CANCELLED"),
             "PREPARING" to listOf("DELIVERING", "CANCELLED"),
             "DELIVERING" to listOf("DELIVERED")
