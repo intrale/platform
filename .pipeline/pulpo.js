@@ -3413,6 +3413,16 @@ async function cmdStatus(config) {
   return text;
 }
 
+function cmdGhostbusters() {
+  try {
+    const gb = require('./ghostbusters');
+    const report = gb.run();
+    return gb.fmtReport(report);
+  } catch (e) {
+    return `⚠️ Ghostbusters falló: ${e.message.slice(0, 200)}`;
+  }
+}
+
 function cmdActividad(args) {
   const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
   let lines = [];
@@ -4115,6 +4125,7 @@ function cmdHelp() {
 /restart — Reiniciar pipeline completo
 /restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
 /limpiar — Matar daemons Gradle/Kotlin huérfanos
+/ghostbusters — Matar fantasmas: gradle zombies + worktrees abandonados + emuladores no sincronizados
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
 /costos — Resumen de actividad/costos
@@ -4277,6 +4288,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     switch (parsed.cmd) {
       case 'status': respuesta = await cmdStatus(config); break;
       case 'actividad': respuesta = cmdActividad(parsed.args); break;
+      case 'ghostbusters': respuesta = cmdGhostbusters(); break;
       case 'intake': respuesta = cmdIntake(parsed.args, config); break;
       case 'pausar': respuesta = cmdPausar(); break;
       case 'reanudar': respuesta = cmdReanudar(); break;
