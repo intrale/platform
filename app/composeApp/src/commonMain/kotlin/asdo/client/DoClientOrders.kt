@@ -38,12 +38,13 @@ class DoGetClientOrderDetail(
 }
 
 class DoRepeatOrder(
-    private val availabilityService: CommProductAvailabilityService
+    private val availabilityService: CommProductAvailabilityService,
+    private val listProducts: asdo.business.ToDoListProducts
 ) : ToDoRepeatOrder {
 
     private val logger = LoggerFactory.default.newLogger<DoRepeatOrder>()
 
-    override suspend fun execute(order: ClientOrderDetail): Result<RepeatOrderResult> = runCatching {
+    override suspend fun execute(order: ClientOrderDetail, businessId: String?): Result<RepeatOrderResult> = runCatching {
         logger.info { "Repitiendo pedido ${order.id} con ${order.items.size} items" }
         val addedItems = mutableListOf<ClientOrderItem>()
         val skippedItems = mutableListOf<SkippedItem>()
@@ -84,8 +85,40 @@ class DoRepeatOrder(
             }
         }
 
-        logger.info { "Pedido repetido: ${addedItems.size} agregados, ${skippedItems.size} omitidos" }
-        RepeatOrderResult(addedItems = addedItems, skippedItems = skippedItems)
+        // Comparar precios con catálogo actual si hay businessId
+        val priceChangedItems = mutableListOf<PriceChange>()
+        if (businessId != null && addedItems.isNotEmpty()) {
+            val catalogResult = listProducts.execute(businessId)
+            if (catalogResult.isSuccess) {
+                val catalogMap = catalogResult.getOrThrow().associateBy { it.id }
+                addedItems.forEach { item ->
+                    val catalogProduct = catalogMap[item.id]
+                    if (catalogProduct != null) {
+                        val currentPrice = catalogProduct.promotionPrice ?: catalogProduct.basePrice
+                        val difference = currentPrice - item.unitPrice
+                        if (kotlin.math.abs(difference) > 0.01) {
+                            logger.info { "Precio cambiado: '${item.name}' ${item.unitPrice} -> $currentPrice" }
+                            priceChangedItems.add(
+                                PriceChange(
+                                    item = item,
+                                    currentPrice = currentPrice,
+                                    difference = difference
+                                )
+                            )
+                        }
+                    }
+                }
+            } else {
+                logger.warning { "No se pudo obtener catálogo para comparar precios" }
+            }
+        }
+
+        logger.info { "Pedido repetido: ${addedItems.size} agregados, ${skippedItems.size} omitidos, ${priceChangedItems.size} con cambio de precio" }
+        RepeatOrderResult(
+            addedItems = addedItems,
+            skippedItems = skippedItems,
+            priceChangedItems = priceChangedItems
+        )
     }.recoverCatching { throwable ->
         logger.error(throwable) { "Fallo al repetir pedido ${order.id}" }
         throw throwable.toClientException()

@@ -10,7 +10,8 @@ class ClientOrders(
     override val config: UsersConfig,
     override val logger: Logger,
     private val repository: ClientOrderRepository,
-    override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
+    override val jwtValidator: JwtValidator = CognitoJwtValidator(config),
+    private val anomalyDetectionService: OrderAnomalyDetectionService? = null
 ) : SecuredFunction(config, logger, jwtValidator) {
 
     private val gson = Gson()
@@ -59,10 +60,32 @@ class ClientOrders(
                     notes = request.notes,
                     businessName = business
                 )
-                val created = repository.createOrder(business, email, payload)
-                CreateClientOrderResponse(
+
+                // Evaluar anomalías antes de crear el pedido
+                val result = anomalyDetectionService?.analyze(business, email, payload)
+                val flagged = result?.flagged == true
+
+                // Si está flaggeado, el pedido se crea con estado FLAGGED (requiere confirmación del negocio)
+                val finalPayload = if (flagged) {
+                    payload.copy(status = "FLAGGED")
+                } else {
+                    payload
+                }
+
+                val created = repository.createOrder(business, email, finalPayload)
+
+                CreateOrderAnomalyResponse(
                     orderId = created.id.orEmpty(),
                     shortCode = created.shortCode.orEmpty(),
+                    flagged = flagged,
+                    anomalies = result?.anomalies?.map { a ->
+                        AnomalyPayload(
+                            type = a.type.name,
+                            severity = a.severity.name,
+                            description = a.description,
+                            score = a.score
+                        )
+                    } ?: emptyList(),
                     status = HttpStatusCode.Created
                 )
             }

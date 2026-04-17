@@ -35,8 +35,6 @@ concurrencia:
   android-dev: 2
   web-dev: 2
 
-  hotfix: 1              # Hotfix secuencial — uno a la vez
-
   # Verificación
   tester: 2
   qa: 1                  # Limitado por hardware (emulador + video)
@@ -70,8 +68,7 @@ dev_skill_mapping:
   "app:business": "android-dev"
   "app:delivery": "android-dev"
   "area:web": "web-dev"
-  "priority:critical": "hotfix"  # Issues críticos van por hotfix
-  default: "backend-dev"         # Si no tiene label de área
+  default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
 
 # Prioridad de intake (orden de procesamiento)
 prioridad_labels:
@@ -133,6 +130,14 @@ timeouts:
   poll_interval_seconds: 30       # Frecuencia de barrido/lanzamiento (local)
   intake_interval_seconds: 300    # Frecuencia de intake (GitHub API, 5 min)
   orphan_timeout_minutes: 10      # Archivo en trabajando/ sin proceso → vuelve a pendiente
+
+  # Timeout efectivo por agente (watchdog en pulpo.js mata al hijo si lo excede)
+  # Si un skill no está en el override, se usa agent_timeout_default_minutes.
+  agent_timeout_default_minutes: 30
+  agent_timeout_overrides:
+    build: 60                     # Gradle check + assemble puede tardar mucho en primer build
+    qa: 45                        # QA E2E con emulador + video
+    tester: 45                    # Cobertura Kover + suite completa
 
 # GitHub
 github:

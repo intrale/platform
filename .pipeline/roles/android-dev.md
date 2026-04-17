@@ -46,5 +46,11 @@ resString(
 private val logger = LoggerFactory.default.newLogger<NombreClase>()
 ```
 
+### Si el issue es `priority:critical` (hotfix)
+- Branch **desde `origin/main`**, nunca desde `develop`
+- **Cambio mínimo**: solo tocar lo necesario para corregir el bug
+- **No refactorizar**: no limpiar código adyacente, no optimizar
+- **Test obligatorio**: al menos un test que reproduzca el bug
+
 ### Resultado
 - `resultado: aprobado` con branch name y último commit hash

@@ -162,7 +162,7 @@ Cada nodo se asigna a una capa fija segun su rol en el pipeline de desarrollo:
 | **0** | Inicio | `Start` |
 | **1** | Agentes raiz | `Agente 1`, `Agente 2`, ... (todo nodo que matchea `/^Agente\s+/i`) |
 | **2** | Discovery y planificacion | `PO`, `UX`, `Guru`, `Doc`, `Planner`, `Historia`, `Refinar`, `Priorizar` |
-| **3** | Desarrollo | `BackendDev`, `AndroidDev`, `WebDev`, `Hotfix`, `Perf` |
+| **3** | Desarrollo | `BackendDev`, `AndroidDev`, `WebDev`, `Perf` |
 | **4** | Gates y validacion | `Tester`, `QA`, `Security`, `Review`, `Auth` |
 | **5** | Delivery y ops | `Delivery`, `DeliveryManager`, `Builder`, `Ops`, `Scrum`, `Checkup`, `Cleanup`, `Monitor`, `Cost` |
 | **6** (terminal) | Resultados | `Done`, `Error` |

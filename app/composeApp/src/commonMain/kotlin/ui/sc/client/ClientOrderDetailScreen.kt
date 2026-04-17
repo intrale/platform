@@ -31,8 +31,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -41,6 +43,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderItem
 import asdo.client.ClientOrderStatusEvent
+import asdo.client.RepeatOrderResult
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -79,6 +82,20 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
         val repeatSuccess = Txt(MessageKey.client_orders_detail_repeat_success)
         val repeatPartial = Txt(MessageKey.client_orders_detail_repeat_partial)
         val repeatNoItems = Txt(MessageKey.client_orders_detail_repeat_no_items)
+        val repeatTitle = Txt(MessageKey.client_orders_detail_repeat_title)
+        val repeatPriceChanged = Txt(MessageKey.client_orders_detail_repeat_price_changed)
+        val repeatPriceBefore = Txt(MessageKey.client_orders_detail_repeat_price_before)
+        val repeatPriceNow = Txt(MessageKey.client_orders_detail_repeat_price_now)
+        val repeatItemsUnavailable = Txt(MessageKey.client_orders_detail_repeat_items_unavailable)
+        val repeatViewCart = Txt(MessageKey.client_orders_detail_repeat_view_cart)
+        val repeatAddedSection = Txt(MessageKey.client_orders_repeat_added_section)
+        val repeatCloseLabel = Txt(MessageKey.client_orders_repeat_close)
+        val reasonOutOfStock = Txt(MessageKey.client_orders_repeat_reason_out_of_stock)
+        val reasonDiscontinued = Txt(MessageKey.client_orders_repeat_reason_discontinued)
+        val reasonUnavailable = Txt(MessageKey.client_orders_repeat_reason_unavailable)
+        val reasonUnknown = Txt(MessageKey.client_orders_repeat_reason_unknown)
+
+        var showRepeatDialog by remember { mutableStateOf<RepeatOrderResult?>(null) }
 
         val statusLabels = remember {
             emptyMap<asdo.client.ClientOrderStatus, String>()
@@ -123,14 +140,18 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
 
         LaunchedEffect(state.repeatOrderResult) {
             state.repeatOrderResult?.let { result ->
-                val message = when {
-                    result.addedItems.isEmpty() -> repeatNoItems
-                    result.skippedItems.isNotEmpty() -> repeatPartial
-                    else -> repeatSuccess
-                }
-                snackbarHostState.showSnackbar(message)
-                viewModel.clearRepeatOrderResult()
-                if (result.addedItems.isNotEmpty()) {
+                val hasChanges = result.skippedItems.isNotEmpty() || result.priceChangedItems.isNotEmpty()
+                if (result.addedItems.isEmpty()) {
+                    // Sin items agregados: snackbar directo
+                    snackbarHostState.showSnackbar(repeatNoItems)
+                    viewModel.clearRepeatOrderResult()
+                } else if (hasChanges) {
+                    // Hay cambios de precio o items excluidos: mostrar diálogo (CA-4, CA-5)
+                    showRepeatDialog = result
+                } else {
+                    // Happy path: todo OK, snackbar y navegar al carrito
+                    snackbarHostState.showSnackbar(repeatSuccess)
+                    viewModel.clearRepeatOrderResult()
                     navigate(CLIENT_CART_PATH)
                 }
             }
@@ -141,6 +162,34 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
                 snackbarHostState.showSnackbar(it)
                 viewModel.clearRepeatOrderResult()
             }
+        }
+
+        // Diálogo de resultado de repetición con cambios de precio / items excluidos
+        showRepeatDialog?.let { result ->
+            RepeatOrderResultDialog(
+                result = result,
+                title = repeatTitle,
+                priceChangedLabel = repeatPriceChanged,
+                priceBeforeLabel = repeatPriceBefore,
+                priceNowLabel = repeatPriceNow,
+                itemsUnavailableLabel = repeatItemsUnavailable,
+                addedLabel = repeatAddedSection,
+                viewCartLabel = repeatViewCart,
+                closeLabel = repeatCloseLabel,
+                reasonOutOfStock = reasonOutOfStock,
+                reasonDiscontinued = reasonDiscontinued,
+                reasonUnavailable = reasonUnavailable,
+                reasonUnknown = reasonUnknown,
+                onViewCart = {
+                    showRepeatDialog = null
+                    viewModel.clearRepeatOrderResult()
+                    navigate(CLIENT_CART_PATH)
+                },
+                onDismiss = {
+                    showRepeatDialog = null
+                    viewModel.clearRepeatOrderResult()
+                }
+            )
         }
 
         Scaffold(
@@ -619,3 +668,4 @@ private fun OrderItemRow(item: ClientOrderItem) {
         }
     }
 }
+

@@ -485,6 +485,28 @@ function getPipelineState() {
     if (blockedData.blocks) state.blockedIssues.blocks = blockedData.blocks;
   } catch {}
 
+  // Salud de Infra — publicado por #2304 (healthcheck+retry) y #2305 (circuit breaker).
+  // CA-11: feature flag implícito — si el archivo no existe, la sección no se renderiza.
+  // CA-8 / Security: lectura defensiva con try/catch + límite de tamaño (10KB) para evitar DoS.
+  state.infraHealth = null;
+  try {
+    const infraPath = path.join(PIPELINE, 'infra-health.json');
+    if (fs.existsSync(infraPath)) {
+      const stat = fs.statSync(infraPath);
+      if (stat.size > 10240) {
+        state.infraHealth = { error: 'file-too-large', mtimeMs: stat.mtimeMs };
+      } else if (stat.size === 0) {
+        state.infraHealth = { error: 'empty', mtimeMs: stat.mtimeMs };
+      } else {
+        const raw = fs.readFileSync(infraPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        state.infraHealth = { data: parsed, mtimeMs: stat.mtimeMs };
+      }
+    }
+  } catch (e) {
+    state.infraHealth = { error: 'invalid-json', mtimeMs: Date.now() };
+  }
+
   // Recursos del sistema
   const resourceLimits = config.resource_limits || {};
   const sys = getSystemResourceUsage();
@@ -572,8 +594,15 @@ const SKILL_CATEGORY = {
   po: 'product', ux: 'product', planner: 'product', scrum: 'product',
   'backend-dev': 'dev', 'android-dev': 'dev', 'web-dev': 'dev',
   tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
-  guru: 'ops', perf: 'ops', build: 'ops', hotfix: 'ops', delivery: 'ops',
+  guru: 'ops', perf: 'ops', build: 'ops', delivery: 'ops',
 };
+// Etiquetas cortas por fase (2 chars) para mostrar debajo de cada dot
+const FASE_LABEL_SHORT = {
+  analisis: 'An', criterios: 'Cr', sizing: 'Si',
+  validacion: 'Va', dev: 'Dv', build: 'Bd',
+  verificacion: 'Vf', aprobacion: 'Ap', entrega: 'En',
+};
+
 const CATEGORY_META = {
   product:  { label: 'Producto', icon: '🎯', color: '#d29922' },
   dev:      { label: 'Desarrollo', icon: '🛠', color: '#3fb950' },
@@ -592,6 +621,231 @@ const LAYER_META = {
   processing: { label: 'Procesamiento', icon: '⚙' },
   output:    { label: 'Salida', icon: '📤' },
 };
+
+// --- Salud de Infra (sección del /monitor, issue #2306) ---
+
+// Escape HTML para datos leídos de .pipeline/infra-health.json antes de inyectar
+// como innerHTML. Defensa en profundidad contra XSS (CA-8 · Security).
+function escInfra(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Formatea un timestamp ISO-8601 como tiempo relativo ("hace 2m", "hace 35s")
+// junto con el timestamp absoluto para tooltip (CA-4 · UX tooltips).
+function formatInfraTs(iso) {
+  if (!iso) return { rel: '—', abs: '', deltaMs: Infinity };
+  const t = new Date(iso).getTime();
+  if (!isFinite(t)) return { rel: '—', abs: '', deltaMs: Infinity };
+  const delta = Date.now() - t;
+  let rel;
+  if (delta < 0) rel = 'ahora';
+  else if (delta < 60000) rel = 'hace ' + Math.floor(delta / 1000) + 's';
+  else if (delta < 3600000) rel = 'hace ' + Math.floor(delta / 60000) + 'm';
+  else if (delta < 86400000) rel = 'hace ' + Math.floor(delta / 3600000) + 'h';
+  else rel = 'hace ' + Math.floor(delta / 86400000) + 'd';
+  return { rel, abs: new Date(iso).toISOString(), deltaMs: delta };
+}
+
+// Determina el semáforo global a partir de los 3 criterios del PO (CA-3).
+function computeInfraHealthLevel(h) {
+  // Stale: sin lastCheck o último healthcheck hace > 5 min (300000 ms)
+  const lastCheck = h && h.dns && h.dns.lastCheck;
+  const dnsAge = lastCheck ? (Date.now() - new Date(lastCheck).getTime()) : Infinity;
+  if (!isFinite(dnsAge) || dnsAge > 300000) return { level: 'stale', label: 'STALE' };
+
+  // Alert (rojo): circuit breaker abierto, DNS FAIL o retries > 20%
+  if (h.circuitBreaker && h.circuitBreaker.state === 'open') return { level: 'alert', label: 'CRITICO' };
+  if (h.dns && h.dns.status === 'FAIL') return { level: 'alert', label: 'CRITICO' };
+  const rate = h.retries && typeof h.retries.ratePercent === 'number' ? h.retries.ratePercent : 0;
+  if (rate > 20) return { level: 'alert', label: 'CRITICO' };
+
+  // Warn (amarillo): retries entre 5% y 20% o latencia DNS > 3s
+  if (rate >= 5) return { level: 'warn', label: 'DEGRADADO' };
+  const lat = h.dns && typeof h.dns.latencyMs === 'number' ? h.dns.latencyMs : 0;
+  if (lat > 3000) return { level: 'warn', label: 'DEGRADADO' };
+
+  return { level: 'ok', label: 'SALUDABLE' };
+}
+
+// Renderiza la sección "Salud de Infra" como HTML. Devuelve '' si no hay
+// datos (feature flag OFF → CA-11).
+function renderInfraHealth(state) {
+  const ih = state.infraHealth;
+  if (!ih) return ''; // archivo no existe → no renderizar
+
+  // Error de lectura/parse o estructura inválida → estado stale, nunca romper el dashboard
+  if (ih.error || !ih.data || typeof ih.data !== 'object') {
+    const errMsg = ih.error === 'file-too-large' ? 'archivo excede 10KB'
+      : ih.error === 'empty' ? 'archivo vacío'
+      : ih.error === 'invalid-json' ? 'JSON inválido'
+      : 'estructura inválida';
+    return `<section class="infra-health infra-stale" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head">
+      <span class="ih-emoji" aria-hidden="true">⚪</span>
+      <span class="ih-title">Salud de Infra</span>
+      <span class="ih-status ih-status-stale">STALE · ${escInfra(errMsg)}</span>
+    </div>
+  </section>`;
+  }
+
+  const h = ih.data;
+
+  // ── CA-8: validaciones defensivas + whitelists estrictas ──
+  const dnsStatusRaw = h.dns && typeof h.dns.status === 'string' ? h.dns.status : null;
+  const dnsStatus = (dnsStatusRaw === 'OK' || dnsStatusRaw === 'FAIL') ? dnsStatusRaw : null;
+
+  const cbStateRaw = h.circuitBreaker && typeof h.circuitBreaker.state === 'string' ? h.circuitBreaker.state : null;
+  const cbState = (cbStateRaw === 'closed' || cbStateRaw === 'open') ? cbStateRaw : null;
+
+  const lastIssueObj = h.circuitBreaker && typeof h.circuitBreaker.lastIssue === 'object' ? h.circuitBreaker.lastIssue : null;
+  const lastIssueNumRaw = lastIssueObj ? lastIssueObj.number : null;
+  const lastIssueNum = Number.isInteger(lastIssueNumRaw) && lastIssueNumRaw > 0 && lastIssueNumRaw < 1000000
+    ? lastIssueNumRaw : null;
+
+  const lastIssueReasonFull = lastIssueObj && typeof lastIssueObj.reason === 'string' ? lastIssueObj.reason : '';
+  // CA-6: truncar a 50 chars — sin stack trace, sin paths, sin IPs
+  const lastIssueReason = lastIssueReasonFull.length > 50
+    ? lastIssueReasonFull.slice(0, 50)
+    : lastIssueReasonFull;
+  const wasTruncated = lastIssueReasonFull.length > 50;
+
+  const consecutiveFailures = h.circuitBreaker && Number.isInteger(h.circuitBreaker.consecutiveFailures)
+    ? h.circuitBreaker.consecutiveFailures : null;
+  const openedAtRaw = h.circuitBreaker && typeof h.circuitBreaker.openedAt === 'string' ? h.circuitBreaker.openedAt : null;
+
+  const retriesLastHour = h.retries && Number.isInteger(h.retries.lastHour) ? h.retries.lastHour : 0;
+  const retriesPreviousHour = h.retries && Number.isInteger(h.retries.previousHour) ? h.retries.previousHour : 0;
+  const retriesRate = h.retries && typeof h.retries.ratePercent === 'number' && isFinite(h.retries.ratePercent)
+    ? h.retries.ratePercent : 0;
+
+  const dnsLatency = h.dns && typeof h.dns.latencyMs === 'number' && isFinite(h.dns.latencyMs)
+    ? h.dns.latencyMs : null;
+
+  // Caso especial: archivo creado pero sin datos todavía (UX punto 5 — Inicializando)
+  const isInitializing = !dnsStatus && !cbState && !h.retries;
+  if (isInitializing) {
+    return `<section class="infra-health infra-init" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head">
+      <span class="ih-emoji" aria-hidden="true">🔄</span>
+      <span class="ih-title">Salud de Infra</span>
+      <span class="ih-status ih-status-init">Inicializando healthchecks…</span>
+    </div>
+  </section>`;
+  }
+
+  // ── Timestamps ──
+  const dnsTs = formatInfraTs(h.dns && h.dns.lastCheck);
+
+  // ── Semáforo global ──
+  const effective = {
+    dns: { status: dnsStatus, lastCheck: h.dns && h.dns.lastCheck, latencyMs: dnsLatency },
+    retries: { ratePercent: retriesRate },
+    circuitBreaker: { state: cbState }
+  };
+  const sem = computeInfraHealthLevel(effective);
+  const emoji = sem.level === 'ok' ? '🟢' : sem.level === 'warn' ? '🟡' : sem.level === 'alert' ? '🔴' : '⚪';
+  const sectionCls = 'infra-' + sem.level;
+
+  // Fila 1 (prioridad alta · CA-2): Circuit breaker
+  let cbEmoji = '⚪';
+  let cbText = 'sin datos';
+  let cbExtra = '';
+  if (cbState === 'closed') {
+    cbEmoji = '🟢';
+    cbText = 'cerrado · lanzamientos habilitados';
+  } else if (cbState === 'open') {
+    cbEmoji = '🔴';
+    // UX punto 9: estructura narrativa del mensaje rojo (qué · por qué · evidencia · cómo salir)
+    const nFailures = consecutiveFailures && consecutiveFailures > 0 ? consecutiveFailures : '?';
+    const ultParte = lastIssueNum
+      ? '<span class="ih-cb-ult">Último: <a href="' + GITHUB_BASE + '/' + lastIssueNum + '" target="_blank" rel="noopener noreferrer">#' + lastIssueNum + '</a>'
+        + (lastIssueReason ? ' · ' + escInfra(lastIssueReason) : '')
+        + (wasTruncated ? '…' : '')
+        + (dnsTs.rel !== '—' ? ' · ' + escInfra(dnsTs.rel) : '')
+        + '</span>'
+      : '';
+    cbText = 'PIPELINE PAUSADO';
+    cbExtra = '<div class="ih-cb-body">'
+      + '<div class="ih-cb-line">' + escInfra(nFailures) + ' issues consecutivos fallaron por red</div>'
+      + (ultParte ? '<div class="ih-cb-line">' + ultParte + '</div>' : '')
+      + '<div class="ih-cb-cta">Reanudar: <code>node .pipeline/restart.js</code>'
+      + ' <button type="button" class="ih-copy" data-copy="node .pipeline/restart.js" title="Copiar comando" aria-label="Copiar comando de reanudación">📋</button>'
+      + '</div>'
+      + '</div>';
+  }
+  const cbTooltipTxt = openedAtRaw ? 'Abierto desde ' + openedAtRaw : '';
+  const cbTitle = cbTooltipTxt ? ' title="' + escInfra(cbTooltipTxt) + '"' : '';
+
+  // Fila 2: DNS
+  let dnsEmoji = '⚪';
+  let dnsText = 'sin datos';
+  if (dnsStatus === 'OK') { dnsEmoji = '🟢'; dnsText = 'OK'; }
+  else if (dnsStatus === 'FAIL') { dnsEmoji = '🔴'; dnsText = 'FAIL'; }
+  // UX punto 4: mostrar latencia solo si > 500ms para evitar ruido en estado sano
+  let dnsExtra = '';
+  if (dnsLatency != null && dnsLatency > 500) {
+    dnsExtra = ' · ' + dnsLatency + 'ms' + (dnsLatency > 3000 ? ' ⚠' : '');
+  }
+  const dnsTitle = dnsTs.abs ? ' title="' + escInfra(dnsTs.abs) + '"' : '';
+
+  // Fila 3: Retries
+  const retriesDelta = retriesLastHour - retriesPreviousHour;
+  const arrow = retriesDelta > 0 ? '↑' : retriesDelta < 0 ? '↓' : '→';
+  const deltaTxt = retriesDelta === 0 ? '=' : (retriesDelta > 0 ? '+' : '') + retriesDelta;
+  const retriesEmoji = retriesRate > 20 ? '🔴' : retriesRate >= 5 ? '🟡' : '🟢';
+  const retriesRateTxt = retriesRate > 0 ? ' (' + retriesRate.toFixed(1) + '%)' : '';
+  const retriesTitle = ' title="Hora actual: ' + retriesLastHour + ' retries · Hora anterior: ' + retriesPreviousHour + '"';
+
+  // Fila 4: Último issue afectado
+  let lastEmoji = '⚪';
+  let lastText = 'sin rebotes registrados';
+  let lastTitle = '';
+  if (lastIssueNum) {
+    lastEmoji = '🔴';
+    const reasonDisplay = lastIssueReason || 'motivo desconocido';
+    lastText = '<a href="' + GITHUB_BASE + '/' + lastIssueNum + '" target="_blank" rel="noopener noreferrer">#' + lastIssueNum + '</a>'
+      + ' · ' + escInfra(reasonDisplay)
+      + (wasTruncated ? '<span class="ih-trunc" aria-hidden="true">…</span>' : '');
+    if (wasTruncated) lastTitle = ' title="' + escInfra(lastIssueReasonFull) + '"';
+  }
+
+  return `<section class="infra-health ${sectionCls}" role="region" aria-label="Salud de Infra" aria-live="polite">
+  <div class="ih-head">
+    <span class="ih-emoji" aria-hidden="true">${emoji}</span>
+    <span class="ih-title">Salud de Infra</span>
+    <span class="ih-status ih-status-${sem.level}">${sem.label}</span>
+    ${dnsTs.rel !== '—' ? '<span class="ih-ts" title="' + escInfra(dnsTs.abs) + '">última señal ' + escInfra(dnsTs.rel) + '</span>' : ''}
+  </div>
+  <div class="ih-rows">
+    <div class="ih-row ih-row-cb"${cbTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${cbEmoji}</span>
+      <span class="ih-row-lbl">Circuit breaker</span>
+      <span class="ih-row-val">${cbText}</span>
+    </div>
+    ${cbExtra}
+    <div class="ih-row ih-row-dns"${dnsTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${dnsEmoji}</span>
+      <span class="ih-row-lbl">DNS</span>
+      <span class="ih-row-val">${dnsText}${dnsExtra} · ${escInfra(dnsTs.rel)}</span>
+    </div>
+    <div class="ih-row ih-row-retries"${retriesTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${retriesEmoji}</span>
+      <span class="ih-row-lbl">Retries (última hora)</span>
+      <span class="ih-row-val">${retriesLastHour} retries · ${arrow} ${deltaTxt} vs hora anterior${retriesRateTxt}</span>
+    </div>
+    <div class="ih-row ih-row-last"${lastTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${lastEmoji}</span>
+      <span class="ih-row-lbl">Último issue afectado</span>
+      <span class="ih-row-val">${lastText}</span>
+    </div>
+  </div>
+</section>`;
+}
 
 // --- HTML generation ---
 
@@ -630,7 +884,6 @@ function generateHTML(state) {
     scrum:         { icon: '📊', name: 'Scrum',       tagline: 'Sutherland · Vacanti · Mike Cohn',         color: '#79c0ff' },
     perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
     build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
-    hotfix:        { icon: '🔥', name: 'Hotfix',      tagline: 'Emergency fix',                            color: '#f85149' },
     commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
   };
   const skillIcon = (skill) => (AGENT_PERSONA[skill] || {}).icon || '⚙';
@@ -651,6 +904,19 @@ function generateHTML(state) {
     return entries.some(e => e.ageMin > 30);
   });
   const stale = staleList.length;
+  // Bloqueados = issues con blockedBy declarado y aún activos (no completados)
+  const blockedList = matrixEntries.filter(([num, d]) => {
+    return state.blockedIssues.blockedBy[num] != null && d.estadoActual;
+  });
+  const blockedCount = blockedList.length;
+  // IDs de las deps que están bloqueando (issues nuevos de los cuales dependen los bloqueados)
+  const blockingDepsSet = new Set();
+  for (const [num] of blockedList) {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    for (const d of deps) blockingDepsSet.add(String(d));
+  }
+  const blockedIdsJson = JSON.stringify(blockedList.map(([n]) => String(n)));
+  const blockingDepsJson = JSON.stringify(Array.from(blockingDepsSet));
   const staleDetail = staleList.map(([id, d]) => {
     const entries = d.fases[d.faseActual] || [];
     const staleEntry = entries.find(e => e.estado === 'trabajando' && e.ageMin > 30);
@@ -682,7 +948,12 @@ function generateHTML(state) {
   const ttActivos   = buildTtData('Issues activos',       activosList,   (_, d) => ttLabel(d));
   const ttTrabajando= buildTtData('En ejecución',          trabajandoList,(_, d) => ttLabel(d));
   const ttPendientes= buildTtData('En cola',               pendientesList,(_, d) => ttLabel(d));
-  const ttStale     = buildTtData('Bloqueados / stale',    staleList,     (_, d) => ttLabel(d));
+  const ttStale     = buildTtData('Stale >30m',            staleList,     (_, d) => ttLabel(d));
+  const ttBlocked   = buildTtData('Bloqueados por dependencias', blockedList, (num, d) => {
+    const deps = state.blockedIssues.blockedBy[num] || [];
+    const depTxt = deps.length > 0 ? 'dep: ' + deps.map(x => '#' + x).join(', ') : 'sin deps declaradas';
+    return depTxt;
+  });
 
   // Definidos = completaron la fase final de definición (sizing/procesado)
   const defFasesKpi = config.pipelines?.definicion?.fases || [];
@@ -769,6 +1040,31 @@ function generateHTML(state) {
     else if (data.estadoActual === 'pendiente') score += 5;
     return score;
   };
+  // Score del pulpo (mirror de calcularPrioridad en pulpo.js:1811)
+  // Menor score = más prioritario de lanzar. Usado para ordenar lane cards
+  // de modo que el primero de cada columna sea el que se está ejecutando
+  // (o el próximo a lanzarse según el pulpo).
+  const pulpoPrioLabels = config.prioridad_labels || [];
+  const pulpoFeaturePrio = config.feature_priority || {};
+  const calcPulpoScore = (labels) => {
+    const ls = labels || [];
+    let prioScore = pulpoPrioLabels.indexOf('priority:medium');
+    if (prioScore === -1) prioScore = 999;
+    for (let i = 0; i < pulpoPrioLabels.length; i++) {
+      if (ls.includes(pulpoPrioLabels[i])) { prioScore = i; break; }
+    }
+    let featureScore = 999;
+    for (const [nivel, featureLabels] of Object.entries(pulpoFeaturePrio)) {
+      const nivelIdx = pulpoPrioLabels.indexOf(`priority:${nivel}`);
+      if (nivelIdx === -1) continue;
+      for (const fl of featureLabels) {
+        if (ls.includes(fl)) { featureScore = Math.min(featureScore, nivelIdx); break; }
+      }
+    }
+    const effectivePrio = Math.min(prioScore, featureScore);
+    const tiebreaker = featureScore < 999 ? 0 : 1;
+    return effectivePrio * 10 + tiebreaker;
+  };
   const sorted = matrixEntries.sort((a, b) => {
     const aComplete = isComplete(a[1]);
     const bComplete = isComplete(b[1]);
@@ -825,15 +1121,16 @@ function generateHTML(state) {
     const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
     const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-    const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
+    const logIcon = e.hasLog ? `<span class="chip-log-icon" title="Ver logs">📄</span>` : '';
+    const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}${logIcon}`;
     const killBtn = e.estado === 'trabajando'
       ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
       : '';
     const pdfBtn = e.hasRejectionPdf
-      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
+      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📑</a>`
       : '';
 
-    const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
+    const inner = `<span class="chip ${cls}${staleClass}${e.hasLog ? ' chip-has-log' : ''}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
     if (e.hasLog) {
       const isLive = e.estado === 'trabajando';
       return `<a href="/logs/view/${e.logFile}${isLive ? '?live=1' : ''}" class="log-link" target="_blank" onclick="event.stopPropagation()">${inner}</a>`;
@@ -862,6 +1159,30 @@ function generateHTML(state) {
   // --- Card-based Issue Tracker ---
   const activeIssues = sorted.filter(([, d]) => !isComplete(d));
   const completedIssues = sorted.filter(([, d]) => isComplete(d));
+
+  // ── Issue Tracker Lanes (Opción E): 3 lanes balanceadas con sub-breakdown ──
+  // Definición (análisis+criterios+sizing) → Desarrollo+Build (val+dev+build) → QA+Entrega (verif+aprob+entrega)
+  function macroLane(d) {
+    if (isComplete(d)) return 'done';
+    const fa = d.faseActual;
+    if (!fa) return 'def';
+    const [pipe, fase] = fa.split('/');
+    if (pipe === 'definicion') return 'def';
+    if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
+    return 'qa'; // verificacion, aprobacion, entrega
+  }
+  const laneMeta = {
+    def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
+    dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
+    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · aprob · entrega',      subFases: ['verificacion', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', aprobacion: 'Aprob', entrega: 'Entrega' } },
+  };
+  const laneCards = { def: [], dev: [], qa: [], done: [] };
+  const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
+  const laneStats = {
+    def: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    dev: { running: 0, failed: 0, stale: 0, subCounts: {} },
+    qa:  { running: 0, failed: 0, stale: 0, subCounts: {} },
+  };
 
   let issueCards = '';
   for (const [issueNum, data] of sorted) {
@@ -990,7 +1311,29 @@ function generateHTML(state) {
       const connector = i < allFases.length - 1
         ? `<span class="stepper-conn${isDefLast ? ' stepper-conn-sep' : ''}"></span>`
         : '';
-      stepperDots += `<span class="stepper-dot ${dotCls}${isCurrent ? ' dot-current' : ''}" title="${escapedTitle}">${dotIcon}</span>${connector}`;
+      // Data para popup solo si la fase tiene entries
+      let popupAttr = '';
+      if (entries.length > 0) {
+        const popupSkills = entries.map(e => ({
+          skill: e.skill,
+          estado: e.estado,
+          resultado: e.resultado || null,
+          dur: e.durationMs ? fmtDuration(e.durationMs) : null,
+          log: e.hasLog ? '/logs/view/' + e.logFile + (e.estado === 'trabajando' ? '?live=1' : '') : null,
+          pdf: e.hasRejectionPdf ? '/logs/' + e.rejectionPdf : null,
+          motivo: e.motivo ? e.motivo.slice(0, 160) : null,
+          retry: e._isRetry ? e._runTotal : null,
+        }));
+        const popupJson = JSON.stringify({ fase, pipeline, issue: issueNum, skills: popupSkills });
+        popupAttr = ` data-popup="${popupJson.replace(/"/g, '&quot;').replace(/'/g, '&#39;')}"`;
+      }
+      const clickable = entries.length > 0 ? ' dot-clickable' : '';
+      const onclick = entries.length > 0 ? ` onclick="event.preventDefault();event.stopPropagation();showDotPopup(event,this)"` : '';
+      const initial = FASE_LABEL_SHORT[fase] || fase.slice(0, 2);
+      stepperDots += `<span class="stepper-cell">`
+        + `<span class="stepper-dot ${dotCls}${isCurrent ? ' dot-current' : ''}${clickable}" title="${escapedTitle}"${popupAttr}${onclick}>${dotIcon}</span>`
+        + `<span class="stepper-initial${isCurrent ? ' stepper-initial-current' : ''}">${initial}</span>`
+        + `</span>${connector}`;
     }
 
     // Current phase label for the card
@@ -1082,20 +1425,186 @@ function generateHTML(state) {
       <div class="ic-progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="ic-progress-fill${data.estadoActual === 'trabajando' ? ' ic-progress-active' : ''}" style="width:${pct}%"></div></div>
       ${detailHTML}
     </div>`;
+
+    // ── Lane card Opción E+polish (3 lanes + rich cards + logs + bloqueos) ──
+    const lane = macroLane(data);
+    const working = data.estadoActual === 'trabajando';
+    const hasRejection = data.labels?.some(l => l === 'qa:failed');
+    const isStale = data.staleMin > 30;
+    const isBlocked = blockedBy != null;
+    const blocksSomething = blocksOthers.length > 0;
+    const laneCardCls = complete ? 'lc-done'
+      : isStale ? 'lc-stale'
+      : hasRejection ? 'lc-failed'
+      : isBlocked ? 'lc-blocked'
+      : working ? 'lc-running' : '';
+    // Sub-fase actual (para filtros y stats)
+    const currentFase = data.faseActual ? data.faseActual.split('/')[1] : '';
+    // Stats agregadas
+    if (lane !== 'done' && laneStats[lane]) {
+      if (working) laneStats[lane].running++;
+      if (hasRejection) laneStats[lane].failed++;
+      if (isStale) laneStats[lane].stale++;
+      if (currentFase) laneStats[lane].subCounts[currentFase] = (laneStats[lane].subCounts[currentFase] || 0) + 1;
+    }
+    const laneElapsedCls = isStale ? 'lc-warn' : working ? 'lc-teal' : '';
+    const laneElapsedTxt = complete ? 'completado'
+      : data.staleMin > 60 ? `${data.staleMin}m 🚩`
+      : data.staleMin > 30 ? `${data.staleMin}m`
+      : working ? `${data.staleMin}m` : '—';
+    // Avatares de skills: prioriza trabajando, fallback al último que ejecutó en la fase actual
+    const currentSkills = [];
+    const currentFaseEntries = (data.faseActual && data.fases[data.faseActual]) || [];
+    for (const e of currentFaseEntries) {
+      if (e.estado === 'trabajando' && !currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+    }
+    let isFallbackAvatar = false;
+    if (currentSkills.length === 0 && currentFaseEntries.length > 0) {
+      // Fallback: último skill que ejecutó (ordenado por updatedAt desc)
+      const sortedEntries = [...currentFaseEntries].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      for (const e of sortedEntries) {
+        if (!currentSkills.includes(e.skill)) currentSkills.push(e.skill);
+        if (currentSkills.length >= 2) break;
+      }
+      isFallbackAvatar = true;
+    }
+    const avatarsHTML = currentSkills.length > 0
+      ? `<div class="lc-avatars${isFallbackAvatar ? ' lc-avatars-dim' : ''}">` + currentSkills.slice(0, 3).map(s => {
+          const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
+          return `<span class="lc-av" style="background:${p.color}" title="${p.name}${isFallbackAvatar ? ' (último ejecutado)' : ''}">${p.icon}</span>`;
+        }).join('') + (currentSkills.length > 3 ? `<span class="lc-av-more">+${currentSkills.length - 3}</span>` : '') + '</div>'
+      : '';
+    const multiSkillTag = currentSkills.length > 1 && !isFallbackAvatar ? ` <span class="lc-pill-x">×${currentSkills.length}</span>` : '';
+    const lanePill = complete
+      ? '<span class="lc-pill lc-pill-done">✓ entregado</span>'
+      : hasRejection
+      ? `<span class="lc-pill lc-pill-fail">qa:failed</span>`
+      : working
+      ? `<span class="lc-pill lc-pill-run">${currentFase}${multiSkillTag}</span>`
+      : `<span class="lc-pill lc-pill-wait">${currentFase || 'pendiente'}</span>`;
+    // Icons de bloqueo: 🚫 (bloqueado) + ⛓ (bloquea a otros)
+    let lcBlockIcons = '';
+    if (isBlocked) {
+      const depTxt = blockedBy.length > 0 ? blockedBy.map(d => `#${d}`).join(', ') : 'dep sin especificar';
+      lcBlockIcons += `<span class="lc-block-icon lc-block-locked" title="Bloqueado por: ${depTxt}" onclick="event.stopPropagation()">🚫</span>`;
+    }
+    if (blocksSomething) {
+      const blockTxt = blocksOthers.map(d => `#${d}`).join(', ');
+      lcBlockIcons += `<span class="lc-block-icon lc-block-blocking" title="Bloquea a: ${blockTxt}" onclick="event.stopPropagation()">⛓</span>`;
+    }
+    const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
+    const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
+    // Data atributos para búsqueda client-side
+    const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
+    // Prioridad para sort (opción B, matchea orden del pulpo):
+    //   Tier 1 (top)    — working: el agente que se está ejecutando
+    //   Tier 2          — pendiente lanzable: próximos según score del pulpo
+    //   Tier 3          — pendiente bloqueado: no lanzables hasta resolver deps
+    //   Tier 4 (fondo)  — stale / failed: hundidos, no son el próximo a lanzar
+    // Dentro de cada tier se desempata por score del pulpo (critical primero).
+    // El sort es `b.priority - a.priority` (desc) → mayor priority = más arriba.
+    const pulpoScore = calcPulpoScore(data.labels);
+    let priority;
+    if (working) {
+      priority = 20000 - pulpoScore;
+    } else if (isStale || hasRejection) {
+      priority = 500 - (data.staleMin || 0);
+    } else if (isBlocked) {
+      priority = 5000 - pulpoScore;
+    } else {
+      priority = 10000 - pulpoScore;
+    }
+    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" title="${laneTitle}">
+      <div class="lc-card-main">
+        <div class="lc-top">
+          <div class="lc-top-left">
+            <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
+            ${lcBlockIcons}
+          </div>
+          <div class="lc-top-right">
+            <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
+          </div>
+        </div>
+        <div class="lc-title">${flagSpan}${laneTitle}</div>
+        <div class="lc-foot">
+          <div class="lc-foot-left">
+            <span class="lc-ps">${stepperDots}</span>
+            ${lanePill}
+          </div>
+          ${avatarsHTML}
+        </div>
+      </div>
+    </div>`;
+    laneCards[lane].push({ html: cardHTML, priority });
+    laneCounts[lane]++;
   }
+  // Sort dentro de cada lane por criticidad desc
+  for (const k of Object.keys(laneCards)) {
+    laneCards[k].sort((a, b) => b.priority - a.priority);
+    laneCards[k] = laneCards[k].map(x => x.html).join('');
+  }
+
+  // Render 3 lanes (Opción E) con sub-breakdown + cards ricas
+  const laneOrder = ['def', 'dev', 'qa'];
+  const lanesHTML = laneOrder.map(k => {
+    const m = laneMeta[k];
+    const stats = laneStats[k];
+    const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
+    // Sub-breakdown: chips clickeables por sub-fase (filtra cards del lane)
+    const maxSubCount = Math.max(...m.subFases.map(sf => stats.subCounts[sf] || 0), 1);
+    const subBreakdown = '<div class="it-sub-breakdown">' +
+      `<div class="it-sub-chip it-sub-all" data-lane="${k}" data-subfase="" onclick="filterLaneBySubFase('${k}','')" title="Mostrar todos">Todos <b>${laneCounts[k]}</b></div>` +
+      m.subFases.map(sf => {
+        const c = stats.subCounts[sf] || 0;
+        const isHot = c === maxSubCount && c > 0 && m.subFases.some(other => other !== sf && (stats.subCounts[other] || 0) < c);
+        const disabled = c === 0 ? ' it-sub-disabled' : '';
+        return `<div class="it-sub-chip${isHot ? ' hot' : ''}${disabled}" data-lane="${k}" data-subfase="${sf}" onclick="filterLaneBySubFase('${k}','${sf}')" title="Filtrar por ${m.subLabels[sf]}">${m.subLabels[sf]} <b>${c}</b></div>`;
+      }).join('') + '</div>';
+    // Meta: badges
+    const metaBadges = [];
+    if (stats.running > 0) metaBadges.push(`<span class="it-badge run">${stats.running} activo${stats.running > 1 ? 's' : ''}</span>`);
+    if (stats.failed > 0) metaBadges.push(`<span class="it-badge fail">${stats.failed} failed</span>`);
+    if (stats.stale > 0) metaBadges.push(`<span class="it-badge warn">${stats.stale} stale</span>`);
+    return `<div class="it-lane it-lane-${k}" data-lane="${k}" style="--lane-color:${m.color}">
+      <div class="it-lane-head">
+        <span class="it-lane-name"><span class="it-lane-dot"></span>${m.label} <span class="it-lane-sub">${m.sub}</span></span>
+        <div class="it-lane-meta">
+          <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+          ${metaBadges.join('')}
+        </div>
+      </div>
+      ${subBreakdown}
+      <div class="it-lane-cards">${cards}</div>
+    </div>`;
+  }).join('');
+  const doneLaneHTML = laneCounts.done > 0 ? `<details class="it-done-section" data-lane="done">
+    <summary class="it-done-head">
+      <span class="it-done-arrow">▸</span>
+      <span>✓ Completados recientes</span>
+      <span class="it-done-count"><b>${laneCounts.done}</b></span>
+    </summary>
+    <div class="it-done-grid">${laneCards.done}</div>
+  </details>` : '';
 
   const matrixHTML = `
     <div class="matrix-section" id="issue-tracker">
       <div class="matrix-header">
         <h2>📊 Issue Tracker</h2>
+        <div class="it-search-box">
+          <input type="text" class="it-search" id="it-search-input" placeholder="🔍 Buscar por # o título…" oninput="filterIssuesBySearch(this.value)" />
+          <span class="it-search-clear" onclick="clearIssueSearch()" title="Limpiar">×</span>
+        </div>
         <div class="ic-tabs" role="tablist" aria-label="Issue filter">
           <button class="ic-tab ic-tab-active" role="tab" aria-selected="true" data-filter="active" onclick="filterIssueTab(this,'active')">En progreso <span class="ic-tab-count">${activeIssues.length}</span></button>
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="completed" onclick="filterIssueTab(this,'completed')">Completados <span class="ic-tab-count">${completedIssues.length}</span></button>
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
       </div>
-      <div class="ic-list">
-        ${issueCards}
+      <div class="it-lanes">${lanesHTML}</div>
+      ${doneLaneHTML}
+      <div id="dot-popup" class="dot-popup" style="display:none">
+        <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
+        <div class="dp-body"></div>
       </div>
     </div>`;
 
@@ -1210,28 +1719,51 @@ function generateHTML(state) {
       </div>
     </div>`;
   }
+  // Heatmap legacy mantenido para compatibilidad (puede eliminarse luego)
   let heatmapHTML = '';
   const catOrder = ['product', 'dev', 'quality', 'ops'];
+
+  // ── Option B: Areas grid 2x2 con chips compactos ──
+  let eqAreaGridHTML = '';
+  let eqTotalSkills = 0, eqTotalBusy = 0;
   for (const cat of catOrder) {
     const list = skillsByCategory[cat];
     if (!list || list.length === 0) continue;
     const m = CATEGORY_META[cat];
-    // Dentro de cada categoría, mostrar activos primero
     list.sort((a, b) => b[1].running - a[1].running || (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0));
-    const active = list.filter(([_, l]) => l.running > 0).length;
-    const total = list.reduce((s, [_, l]) => s + l.max, 0);
-    const busy = list.reduce((s, [_, l]) => s + l.running, 0);
-    heatmapHTML += `<div class="persona-group persona-group-${cat}">
-      <div class="persona-group-head">
-        <span class="persona-group-icon" style="color:${m.color}">${m.icon}</span>
-        <span class="persona-group-label">${m.label}</span>
-        <span class="persona-group-count">${busy}/${total} ${active > 0 ? '\u00B7 <span class="persona-group-active">' + active + ' activo' + (active > 1 ? 's' : '') + '</span>' : ''}</span>
+    // Contar skills (no slots): busy = skills con al menos 1 running
+    const busySkills = list.filter(([_, l]) => (l.running || 0) > 0).length;
+    const totalSkills = list.length;
+    eqTotalBusy += busySkills; eqTotalSkills += totalSkills;
+    const freeSkills = totalSkills - busySkills;
+    const chips = list.map(([s, l]) => {
+      const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
+      const running = l.running || 0;
+      const stateCls = running > 0 ? 'eq-chip-busy' : '';
+      const countBadge = running > 1 ? `<span class="eq-chip-badge">\u00D7${running}</span>` : '';
+      const usage = skillUsageCount[s] || 0;
+      const tip = running > 0
+        ? `${p.name} \u2014 ${running} issue${running > 1 ? 's' : ''} en ejecución (${usage} runs)`
+        : `${p.name} \u2014 libre (${usage} runs)`;
+      return `<span class="eq-chip ${stateCls}" title="${tip.replace(/"/g, '&quot;')}">
+        <span class="eq-chip-avatar" style="background:${p.color}">${p.icon}</span>
+        <span class="eq-chip-name">${p.name}</span>
+        ${countBadge}
+        <span class="eq-chip-dot"></span>
+      </span>`;
+    }).join('');
+    const subTxt = busySkills > 0
+      ? `<b>${freeSkills}</b>/${totalSkills} libres \u00B7 <span class="eq-area-card-active">${busySkills} activo${busySkills > 1 ? 's' : ''}</span>`
+      : `<b>${freeSkills}</b> libres`;
+    eqAreaGridHTML += `<div class="eq-area-card">
+      <div class="eq-area-card-head">
+        <span class="eq-area-card-name"><span class="eq-area-card-dot" style="background:${m.color}"></span>${m.label}</span>
+        <span class="eq-area-card-sub">${subTxt}</span>
       </div>
-      <div class="persona-group-grid">
-        ${list.map(([s, l]) => personaCard(s, l)).join('')}
-      </div>
+      <div class="eq-area-card-chips">${chips}</div>
     </div>`;
   }
+  if (eqAreaGridHTML) eqAreaGridHTML = '<div class="eq-areas-grid">' + eqAreaGridHTML + '</div>';
 
   // ── Servicios agrupados por capa (Intake/Processing/Output) ──
   const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
@@ -1438,7 +1970,7 @@ function generateHTML(state) {
       if (e.estado === 'trabajando') {
         if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
         const [pline, fse] = data.faseActual.split('/');
-        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs });
+        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs, hasLog: !!e.hasLog, logFile: e.logFile });
       }
     }
   }
@@ -1463,47 +1995,133 @@ function generateHTML(state) {
     return { skill, issues, maxDur };
   }).sort((a, b) => b.maxDur - a.maxDur);
 
+  // Option B: Active Cards XL — cada agente activo es una card horizontal con work items (issue + fase + progreso)
   let agentTeamCards = '';
+  let activeStripHTML = '';
   if (sortedAgents.length > 0) {
-    for (const { skill, issues } of sortedAgents) {
-      const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, tagline: '', color: 'var(--dim)' };
-      const maxDur = Math.max(...issues.map(i => i.duration || 0));
-      const health = agentHealth(maxDur);
-      const issueRows = issues.map(i => {
-        const ih = agentHealth(i.duration);
-        const title = issueTitle(i.issue);
+    const cards = sortedAgents.map(({ skill, issues }) => {
+      const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, color: 'var(--dim)' };
+      const count = issues.length;
+      const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
+      const workItems = issues.map(i => {
         const progressPct = Math.min(100, ((i.duration || 0) / (30 * 60 * 1000)) * 100);
-        return `<a href="${GH(i.issue)}" target="_blank" class="work-item work-${ih.cls}">
-          <span class="work-issue">#${i.issue}</span>
-          <span class="work-title">${title || i.fase}</span>
-          <span class="work-fase">${i.fase}</span>
-          <span class="work-dur">${fmtDuration(i.duration)}</span>
-          <span class="work-progress"><span class="work-progress-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
+        const href = i.hasLog && i.logFile
+          ? `/logs/view/${i.logFile}?live=1`
+          : GH(i.issue);
+        const tip = i.hasLog ? `Ver log en vivo · ${i.skill} · #${i.issue}` : `Ver #${i.issue} en GitHub`;
+        return `<a href="${href}" target="_blank" class="eq-work-item" title="${tip}">
+          <span class="eq-work-issue">#${i.issue}${i.hasLog ? ' 📄' : ' ↗'}</span>
+          <span class="eq-work-fase">${i.fase}</span>
+          <span class="eq-work-dur">${fmtDuration(i.duration)}</span>
+          <span class="eq-work-bar"><span class="eq-work-bar-fill" style="width:${progressPct.toFixed(0)}%"></span></span>
         </a>`;
       }).join('');
       const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
-      const tagline = (p.tagline || '').split(' · ').slice(0, 3).join(' · ');
-      agentTeamCards += `
-        <div class="agent-card agent-${health.cls}" style="--agent-color:${p.color}">
-          <div class="agent-header">
-            <div class="agent-avatar-xl">${p.icon}</div>
-            <div class="agent-identity">
-              <div class="agent-name-row">
-                <span class="agent-name">${p.name}</span>
-                <span class="agent-health agent-health-${health.cls}">${health.label}</span>
-              </div>
-              <div class="agent-tagline">${tagline}</div>
-            </div>
-            <span class="agent-badge">${issues.length} <span class="agent-badge-lbl">issue${issues.length > 1 ? 's' : ''}</span></span>
-            <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
-          </div>
-          <div class="agent-work">${issueRows}</div>
-          <div class="agent-heartbeat"><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span><span class="heartbeat-dot"></span></div>
-        </div>`;
-    }
+      const subTxt = count > 1 ? ` \u00B7 <span class="eq-card-sub">${count} issues</span>` : '';
+      return `<div class="eq-card">
+        <span class="eq-card-avatar" style="background:${p.color}">${p.icon}${badge}</span>
+        <div class="eq-card-body">
+          <div class="eq-card-name"><span class="eq-card-ring"></span>${p.name}${subTxt}</div>
+          <div class="eq-card-work">${workItems}</div>
+        </div>
+        <span class="eq-card-kill" title="Cancelar agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">\u00D7</span>
+      </div>`;
+    }).join('');
+    activeStripHTML = `<div class="eq-active-cards">${cards}</div>`;
   }
 
   // agentTeamCards se usa inline en la sección "Equipo y Skills"
+
+  // --- Historial de ejecuciones de agentes ---
+  const agentHistory = [];
+  for (const [issueNum, data] of matrixEntries) {
+    for (const [faseKey, faseEntries] of Object.entries(data.fases || {})) {
+      for (const e of faseEntries) {
+        // Incluir trabajando (en ejecución) + listo + procesado (finalizados)
+        if (e.estado === 'trabajando' || e.estado === 'listo' || e.estado === 'procesado') {
+          const [pline, fse] = faseKey.split('/');
+          agentHistory.push({
+            issue: issueNum,
+            titulo: data.titulo || '',
+            skill: e.skill,
+            pipeline: pline,
+            fase: fse,
+            estado: e.estado,
+            resultado: e.resultado || null,
+            duration: e.durationMs || 0,
+            startedAt: e.startedAt || 0,
+            finishedAt: (e.estado !== 'trabajando') ? (e.updatedAt || 0) : 0,
+            hasLog: !!e.hasLog,
+            logFile: e.logFile,
+            hasRejectionPdf: !!e.hasRejectionPdf,
+            rejectionPdf: e.rejectionPdf,
+          });
+        }
+      }
+    }
+  }
+  // Ordenar: en ejecución primero, luego por timestamp desc
+  agentHistory.sort((a, b) => {
+    if (a.estado === 'trabajando' && b.estado !== 'trabajando') return -1;
+    if (b.estado === 'trabajando' && a.estado !== 'trabajando') return 1;
+    const tsA = a.estado === 'trabajando' ? a.startedAt : a.finishedAt;
+    const tsB = b.estado === 'trabajando' ? b.startedAt : b.finishedAt;
+    return tsB - tsA;
+  });
+
+  // Generar HTML del historial (máximo 30 entradas visibles, el resto en toggle)
+  const HIST_VISIBLE = 15;
+  let historyHTML = '';
+  if (agentHistory.length > 0) {
+    const renderHistCard = (h, idx) => {
+      const p = AGENT_PERSONA[h.skill] || { icon: '\u2699', name: h.skill, color: 'var(--dim)' };
+      const isRunning = h.estado === 'trabajando';
+      const isOk = h.resultado === 'aprobado';
+      const isFail = h.resultado === 'rechazado';
+      const statusCls = isRunning ? 'ah-running' : isOk ? 'ah-ok' : isFail ? 'ah-fail' : 'ah-neutral';
+      const statusIcon = isRunning ? '\u25CF' : isOk ? '\u2713' : isFail ? '\u2717' : '\u2014';
+      const statusLabel = isRunning ? 'En ejecución' : (h.resultado || 'finalizado');
+      const ts = isRunning ? h.startedAt : h.finishedAt;
+      const timeStr = ts ? new Date(ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+      const durStr = fmtDuration(h.duration);
+      const href = h.hasLog ? `/logs/view/${h.logFile}${isRunning ? '?live=1' : ''}` : GH(h.issue);
+      const tip = h.hasLog ? `Ver log · ${h.skill} · #${h.issue}` : `Ver #${h.issue} en GitHub`;
+      const title = h.titulo ? ` · ${h.titulo.slice(0, 40)}` : '';
+      const pdfLink = h.hasRejectionPdf
+        ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
+        : '';
+      return `<a href="${href}" target="_blank" class="ah-card ${statusCls}" title="${tip}">
+        <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
+        <span class="ah-skill">${p.name}</span>
+        <span class="ah-issue">#${h.issue}${title}</span>
+        <span class="ah-fase">${h.fase}</span>
+        <span class="ah-status">${statusIcon} ${statusLabel}</span>
+        <span class="ah-dur">${durStr}</span>
+        <span class="ah-time">${timeStr}</span>
+        ${pdfLink}
+      </a>`;
+    };
+
+    const visible = agentHistory.slice(0, HIST_VISIBLE).map(renderHistCard).join('');
+    const hidden = agentHistory.length > HIST_VISIBLE
+      ? agentHistory.slice(HIST_VISIBLE, 50).map(renderHistCard).join('')
+      : '';
+    const moreToggle = hidden
+      ? `<details class="ah-more"><summary class="ah-more-btn">Ver ${Math.min(agentHistory.length - HIST_VISIBLE, 35)} más…</summary><div class="ah-more-list">${hidden}</div></details>`
+      : '';
+
+    historyHTML = `
+    <div class="matrix-section" id="agent-history">
+      <div class="matrix-header">
+        <h2>\u{1F4DC} Historial de Ejecuciones</h2>
+        <span class="ah-count">${agentHistory.length} ejecuciones</span>
+      </div>
+      <div class="ah-list">
+        ${visible}
+        ${moreToggle}
+      </div>
+    </div>`;
+  }
 
   // --- Mini DORA metrics on main dashboard ---
   let doraMinHTML = '';
@@ -1609,6 +2227,11 @@ h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px
 .badge-running:hover{background:rgba(63,185,80,0.25)}
 .badge-paused{background:rgba(240,165,0,0.2);color:#f0a500;border:1px solid rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
 @keyframes pausePulse{0%,100%{opacity:1}50%{opacity:0.6}}
+.badge-autorefresh{font-size:0.7em;font-weight:700;letter-spacing:1px;padding:3px 12px;border-radius:20px;cursor:pointer;border:1px solid var(--bd);transition:all 0.2s;background:var(--sf);color:var(--dim)}
+.badge-autorefresh.ar-on{background:rgba(88,166,255,0.15);color:var(--ac);border-color:rgba(88,166,255,0.4)}
+.badge-autorefresh.ar-on:hover{background:rgba(88,166,255,0.25)}
+.badge-autorefresh.ar-off{background:var(--sf);color:var(--dim);border-color:var(--bd)}
+.badge-autorefresh.ar-off:hover{background:rgba(255,255,255,0.05)}
 .hdr-meta{font-size:0.75em;color:var(--dim);white-space:nowrap}
 .hdr-meta-sep{color:var(--bd);margin:0 2px}
 .hdr-uptime{font-size:0.75em;color:var(--dim);font-weight:500;cursor:help;padding:2px 8px;background:var(--sf);border-radius:10px;border:1px solid var(--bd)}
@@ -1632,11 +2255,127 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   display:flex;align-items:center;gap:10px;
 }
 
+/* ── Salud de Infra (issue #2306) ───────────────────────────────────────── */
+.infra-health{
+  background:var(--sf);border:1px solid var(--bd);
+  border-left:4px solid var(--bd);border-radius:var(--radius);
+  padding:12px 16px;margin-bottom:16px;
+  transition:border-color 250ms ease,background 250ms ease,box-shadow 250ms ease;
+}
+.infra-health.infra-ok{
+  border-left-color:var(--gn);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--gn) 6%,var(--sf)) 0%,var(--sf) 120px);
+}
+.infra-health.infra-warn{
+  border-left-color:var(--yl);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--yl) 9%,var(--sf)) 0%,var(--sf) 120px);
+}
+.infra-health.infra-alert{
+  border-left:4px solid var(--rd);
+  border-color:color-mix(in srgb,var(--rd) 45%,var(--bd));
+  background:linear-gradient(90deg,color-mix(in srgb,var(--rd) 12%,var(--sf)) 0%,var(--sf) 180px);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--rd) 20%,transparent);
+}
+.infra-health.infra-stale,.infra-health.infra-init{
+  border-left-color:var(--dim2);
+  background:var(--sf);
+}
+.ih-head{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.ih-emoji{font-size:1.15em;line-height:1}
+.ih-title{
+  font-size:0.82em;color:var(--dim);font-weight:700;
+  text-transform:uppercase;letter-spacing:1.5px;
+}
+.ih-status{
+  font-size:0.72em;font-weight:700;letter-spacing:1.5px;
+  padding:2px 10px;border-radius:20px;text-transform:uppercase;
+}
+.ih-status-ok{background:rgba(63,185,80,0.15);color:var(--gn);border:1px solid rgba(63,185,80,0.4)}
+.ih-status-warn{background:rgba(210,153,34,0.15);color:var(--yl);border:1px solid rgba(210,153,34,0.4)}
+.ih-status-alert{background:rgba(248,81,73,0.18);color:var(--rd);border:1px solid rgba(248,81,73,0.5)}
+.ih-status-stale,.ih-status-init{background:rgba(139,148,158,0.12);color:var(--dim);border:1px solid rgba(139,148,158,0.3)}
+.ih-ts{margin-left:auto;font-size:0.72em;color:var(--dim);cursor:help;font-variant-numeric:tabular-nums}
+.ih-rows{
+  display:flex;flex-direction:column;gap:6px;
+  margin-top:10px;
+}
+.ih-row{
+  display:grid;grid-template-columns:22px 180px 1fr;gap:10px;
+  align-items:center;padding:6px 0;
+  border-top:1px solid var(--bd2);
+  font-size:0.9em;
+}
+.ih-row:first-child{border-top:none;padding-top:0}
+.ih-row-emoji{font-size:0.95em;line-height:1;text-align:center}
+.ih-row-lbl{color:var(--dim);font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+.ih-row-val{color:var(--tx);font-variant-numeric:tabular-nums}
+.ih-row-val a{color:var(--ac)}
+.ih-row-val a:hover{text-decoration:underline}
+.ih-row-cb .ih-row-val{font-weight:700}
+.infra-alert .ih-row-cb .ih-row-val{color:var(--rd)}
+.ih-cb-body{
+  grid-column:1/-1;
+  margin:4px 0 2px;padding:10px 12px;
+  background:rgba(248,81,73,0.08);
+  border:1px solid rgba(248,81,73,0.25);
+  border-radius:var(--radius-sm);
+}
+.ih-cb-line{font-size:0.88em;color:var(--tx);margin:2px 0}
+.ih-cb-ult{color:var(--tx)}
+.ih-cb-cta{
+  margin-top:6px;font-size:0.88em;color:var(--dim);
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+}
+.ih-cb-cta code{
+  background:var(--bg);border:1px solid var(--bd);border-radius:4px;
+  padding:2px 8px;font-family:'SF Mono',Consolas,monospace;color:var(--yl);
+  font-size:0.92em;
+}
+.ih-copy{
+  background:var(--bg);border:1px solid var(--bd);border-radius:4px;
+  color:var(--dim);cursor:pointer;padding:2px 6px;
+  font-size:0.95em;line-height:1;transition:all 150ms ease;
+}
+.ih-copy:hover{border-color:var(--ac);color:var(--ac);background:rgba(88,166,255,0.1)}
+.ih-copy:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.ih-copy.ih-copy-ok{border-color:var(--gn);color:var(--gn);background:rgba(63,185,80,0.12)}
+.ih-trunc{color:var(--dim);margin-left:2px}
+@media (max-width:480px){
+  .ih-row{grid-template-columns:22px 1fr;gap:6px}
+  .ih-row-lbl{grid-column:1/-1;padding-left:32px}
+  .ih-row-val{grid-column:1/-1;padding-left:32px}
+  .ih-ts{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .infra-health{transition:none}
+  .infra-health.infra-alert{box-shadow:0 0 0 2px var(--rd)}
+  .ih-copy{transition:none}
+}
+
 /* ── KPI Grid ───────────────────────────────────────────────────────────── */
+.kpis-row{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;
+  margin-bottom:20px;align-items:stretch;
+}
 .kpis{
   display:grid;
   grid-template-columns:repeat(6,1fr);
   gap:10px;margin-bottom:20px;
+}
+.kpis.kpis-5{
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpi-trend{
+  font-size:0.62em;color:var(--dim);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
+  text-transform:none;letter-spacing:0;font-weight:400;
 }
 .kpi{
   background:linear-gradient(135deg,color-mix(in srgb,var(--kpi-accent,var(--ac)) 10%,var(--sf)) 0%,var(--sf) 60%);
@@ -1662,6 +2401,43 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   font-size:2.1em;font-weight:800;color:var(--kpi-accent,var(--ac));
   font-variant-numeric:tabular-nums;line-height:1;
 }
+
+/* ── Mini Sistema Card (junto a KPIs) ───────────────────────────────────── */
+.sys-mini-card{
+  display:flex;align-items:center;gap:14px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:8px 16px;
+}
+.sys-mini-card.sys-mini-ok{border-color:color-mix(in srgb,var(--gn) 35%,var(--bd))}
+.sys-mini-card.sys-mini-warn{border-color:color-mix(in srgb,var(--yl) 40%,var(--bd))}
+.sys-mini-card.sys-mini-crit{border-color:color-mix(in srgb,var(--rd) 50%,var(--bd));animation:pulse 1.8s infinite}
+.sys-mini-score{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding-right:12px;border-right:1px solid var(--bd);min-width:68px;
+}
+.sys-mini-lbl{font-size:0.6em;color:var(--dim);text-transform:uppercase;letter-spacing:0.8px;font-weight:700}
+.sys-mini-val{font-size:1.6em;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sys-mini-val.sys-mini-ok{color:var(--gn)}
+.sys-mini-val.sys-mini-warn{color:var(--yl)}
+.sys-mini-val.sys-mini-crit{color:var(--rd)}
+.sys-mini-tag{font-size:0.58em;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;line-height:1}
+.sys-mini-tag.sys-mini-ok{color:var(--gn)}
+.sys-mini-tag.sys-mini-warn{color:var(--yl)}
+.sys-mini-tag.sys-mini-crit{color:var(--rd)}
+.sys-mini-gauge{
+  position:relative;width:62px;height:62px;flex-shrink:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+}
+.sys-mini-svg{position:absolute;top:0;left:0;width:62px;height:62px;transform:rotate(-90deg)}
+.sys-mini-track{fill:none;stroke:rgba(255,255,255,0.07);stroke-width:6}
+.sys-mini-fill{fill:none;stroke-width:6;stroke-linecap:round;transition:stroke-dashoffset 0.4s}
+.sys-mini-fill.sys-mini-ok{stroke:var(--gn)}
+.sys-mini-fill.sys-mini-warn{stroke:var(--yl)}
+.sys-mini-fill.sys-mini-danger{stroke:var(--rd)}
+.sys-mini-center{text-align:center;line-height:1;position:relative;z-index:1}
+.sys-mini-center .v{font-size:0.82em;font-weight:800;color:var(--tx);font-variant-numeric:tabular-nums}
+.sys-mini-center .l{font-size:0.58em;color:var(--dim);text-transform:uppercase;letter-spacing:0.4px;margin-top:1px}
+
 .kpi-value.warn{color:var(--yl);--kpi-accent:var(--yl)}
 .kpi-value.danger{color:var(--rd);--kpi-accent:var(--rd)}
 .kpi-value.success{color:var(--gn);--kpi-accent:var(--gn)}
@@ -1687,7 +2463,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:18px 20px;margin-bottom:20px;
 }
-.matrix-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.matrix-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
 .matrix-count{
   font-size:0.8em;color:var(--dim);font-weight:400;
   background:var(--bg);border:1px solid var(--bd);border-radius:20px;
@@ -2316,30 +3092,31 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
 /* Priority Windows (inline toggles — used en barra de control global) */
-.pw-toggles{display:inline-flex;gap:8px;vertical-align:middle;align-items:center}
-.pw-toggle{padding:4px 12px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none;font-size:0.85em;min-height:24px;display:inline-flex;align-items:center;line-height:1}
-.pw-toggle-active{background:var(--yl2);color:var(--yl);border-color:var(--yl);animation:pwPulse 2.5s ease-in-out infinite}
-.pw-toggle-inactive{background:var(--sf2);color:var(--dim);border-color:var(--bd)}
-.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg)}
-.pw-toggle.pw-build.pw-toggle-active{background:var(--ac2);color:var(--ac);border-color:var(--ac)}
+.pw-toggles{display:inline-flex;gap:6px;vertical-align:middle;align-items:center}
+.pw-toggle{padding:3px 11px;border-radius:14px;cursor:pointer;font-weight:600;letter-spacing:0.2px;transition:all 0.2s ease;border:1px solid var(--bd);user-select:none;font-size:0.82em;min-height:24px;display:inline-flex;align-items:center;line-height:1;backdrop-filter:blur(4px)}
+.pw-toggle-active{background:rgba(210,153,34,0.15);color:var(--yl);border-color:rgba(210,153,34,0.5);box-shadow:0 0 8px rgba(210,153,34,0.2);animation:pwPulse 2.5s ease-in-out infinite}
+.pw-toggle-inactive{background:color-mix(in srgb,var(--sf) 80%,transparent);color:var(--dim);border-color:color-mix(in srgb,var(--bd) 60%,transparent)}
+.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg);transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+.pw-toggle.pw-build.pw-toggle-active{background:rgba(88,166,255,0.15);color:var(--ac);border-color:rgba(88,166,255,0.5);box-shadow:0 0 8px rgba(88,166,255,0.2)}
 @keyframes pwPulse{0%,100%{opacity:1}50%{opacity:0.65}}
 
 /* ── Pipeline control bar (global status + Priority Windows) ─────────── */
-.pipeline-ctrl-bar{padding:8px 18px;display:flex;align-items:center;gap:14px;font-size:0.85em;border-bottom:1px solid var(--bd);min-height:40px;background:var(--sf);position:sticky;top:56px;z-index:9;transition:background 0.25s,border-color 0.25s,color 0.25s;flex-wrap:wrap}
-.pipeline-ctrl-bar.ctrl-ok{background:var(--sf);color:var(--dim)}
-.pipeline-ctrl-bar.ctrl-priority-qa{background:rgba(210,153,34,0.12);color:var(--yl);border-bottom-color:rgba(210,153,34,0.4)}
-.pipeline-ctrl-bar.ctrl-priority-build{background:rgba(88,166,255,0.10);color:var(--ac);border-bottom-color:rgba(88,166,255,0.4)}
-.pipeline-ctrl-bar.ctrl-paused{background:rgba(251,188,5,0.10);color:#f0a500;border-bottom-color:rgba(251,188,5,0.4)}
-.pipeline-ctrl-bar.ctrl-blocked{background:rgba(248,81,73,0.10);color:var(--rd);border-bottom-color:rgba(248,81,73,0.4);animation:pausePulse 2s infinite}
-.pipeline-ctrl-bar.ctrl-stale{background:rgba(210,153,34,0.08);color:var(--yl);border-bottom-color:rgba(210,153,34,0.3)}
-.ctrl-bar-status{display:inline-flex;align-items:center;gap:8px;font-weight:600;letter-spacing:0.3px}
-.ctrl-bar-status-icon{font-size:1.05em}
-.ctrl-bar-sep{width:1px;height:16px;background:var(--bd);margin:0 2px}
+.pipeline-ctrl-bar{padding:6px 20px;display:flex;align-items:center;gap:16px;font-size:0.82em;border-bottom:none;min-height:36px;background:linear-gradient(90deg,var(--sf) 0%,color-mix(in srgb,var(--sf) 92%,var(--ac)) 100%);position:sticky;top:56px;z-index:9;transition:all 0.3s ease;flex-wrap:wrap;border-radius:0 0 8px 8px;margin:0 12px;box-shadow:0 2px 8px rgba(0,0,0,0.15)}
+.pipeline-ctrl-bar.ctrl-ok{background:linear-gradient(90deg,var(--sf) 0%,color-mix(in srgb,var(--sf) 88%,var(--gn)) 100%);color:var(--dim)}
+.pipeline-ctrl-bar.ctrl-priority-qa{background:linear-gradient(90deg,rgba(210,153,34,0.08) 0%,rgba(210,153,34,0.18) 100%);color:var(--yl)}
+.pipeline-ctrl-bar.ctrl-priority-build{background:linear-gradient(90deg,rgba(88,166,255,0.06) 0%,rgba(88,166,255,0.16) 100%);color:var(--ac)}
+.pipeline-ctrl-bar.ctrl-paused{background:linear-gradient(90deg,rgba(251,188,5,0.06) 0%,rgba(251,188,5,0.14) 100%);color:#f0a500}
+.pipeline-ctrl-bar.ctrl-blocked{background:linear-gradient(90deg,rgba(248,81,73,0.06) 0%,rgba(248,81,73,0.14) 100%);color:var(--rd);animation:pausePulse 2s infinite}
+.pipeline-ctrl-bar.ctrl-stale{background:linear-gradient(90deg,rgba(210,153,34,0.05) 0%,rgba(210,153,34,0.12) 100%);color:var(--yl)}
+.ctrl-bar-status{display:inline-flex;align-items:center;gap:8px;font-weight:500;letter-spacing:0.2px}
+.ctrl-bar-status-icon{font-size:0.95em;opacity:0.85}
+.ctrl-bar-sep{width:1px;height:14px;background:color-mix(in srgb,currentColor 20%,transparent);margin:0 4px;border-radius:1px}
 .ctrl-bar-spacer{margin-left:auto}
-.ctrl-bar-btn{padding:4px 12px;border-radius:10px;cursor:pointer;font-size:0.92em;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-weight:600;min-height:24px;display:inline-flex;align-items:center;gap:4px;transition:background 0.15s,transform 0.1s}
-.ctrl-bar-btn:hover{background:color-mix(in srgb, currentColor 15%, transparent)}
-.ctrl-bar-btn:active{transform:scale(0.96)}
-.ctrl-bar-label{font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:var(--dim);font-weight:600}
+.ctrl-bar-btn{padding:4px 14px;border-radius:14px;cursor:pointer;font-size:0.88em;border:1px solid color-mix(in srgb,currentColor 40%,transparent);background:color-mix(in srgb,currentColor 8%,transparent);color:inherit;font-family:inherit;font-weight:600;min-height:26px;display:inline-flex;align-items:center;gap:5px;transition:all 0.2s ease;backdrop-filter:blur(4px)}
+.ctrl-bar-btn:hover{background:color-mix(in srgb,currentColor 18%,transparent);border-color:color-mix(in srgb,currentColor 50%,transparent);transform:translateY(-1px);box-shadow:0 2px 6px rgba(0,0,0,0.12)}
+.ctrl-bar-btn:active{transform:scale(0.97) translateY(0)}
+.ctrl-bar-label{font-size:0.72em;text-transform:uppercase;letter-spacing:1.2px;color:color-mix(in srgb,var(--dim) 70%,transparent);font-weight:700}
+.ctrl-bar-spacer{flex:1}
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
@@ -2527,12 +3304,271 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-item{padding:2px 0;color:var(--ac)}
 .kpi-tooltip .tt-item a{color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
+
+/* ── Issue Tracker Lanes (Opción E): 3 columnas iguales ─────────────────── */
+.it-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+.it-lane.it-lane-empty-search{opacity:0.35}
+
+/* Search input */
+.it-search-box{position:relative;display:inline-flex;align-items:center;margin-right:auto;margin-left:14px;flex:1;max-width:320px}
+.it-search{width:100%;padding:5px 26px 5px 10px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;font-size:0.82em;color:var(--tx);outline:none;transition:border-color 0.15s}
+.it-search:focus{border-color:var(--ac);box-shadow:0 0 0 1px rgba(88,166,255,0.3)}
+.it-search::placeholder{color:var(--dim)}
+.it-search-clear{position:absolute;right:8px;color:var(--dim);cursor:pointer;font-size:1.1em;padding:0 4px}
+.it-search-clear:hover{color:var(--rd)}
+
+/* Stepper cell (dot + initial) */
+.stepper-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;position:relative}
+.stepper-initial{font-size:0.58em;color:var(--dim);text-transform:uppercase;letter-spacing:0.3px;font-weight:500;line-height:1;margin-top:1px;font-variant-numeric:tabular-nums}
+.stepper-initial-current{color:var(--teal,#2dd4bf);font-weight:700}
+.stepper-dot.dot-clickable{cursor:pointer;transition:transform 0.1s}
+.stepper-dot.dot-clickable:hover{transform:scale(1.25)}
+
+/* Dot popup */
+.dot-popup{background:var(--sf);border:1px solid var(--ac);border-radius:8px;padding:0;min-width:240px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,0.5);z-index:10000;font-size:0.82em}
+.dp-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--bd);background:var(--sf2);border-radius:8px 8px 0 0}
+.dp-title{font-size:0.95em;color:var(--tx);text-transform:capitalize}
+.dp-title b{color:var(--ac);text-transform:capitalize}
+.dp-close{color:var(--dim);cursor:pointer;font-size:1.2em;padding:0 4px;line-height:1}
+.dp-close:hover{color:var(--rd)}
+.dp-body{padding:8px 12px}
+.dp-empty{color:var(--dim);font-style:italic;padding:6px 0;font-size:0.85em;text-align:center}
+.dp-row{padding:6px 0;border-bottom:1px dashed rgba(255,255,255,0.05)}
+.dp-row:last-child{border-bottom:none}
+.dp-row-top{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.dp-state{font-weight:700;font-size:0.95em;min-width:14px;text-align:center}
+.dp-ok .dp-state{color:var(--gn)}
+.dp-fail .dp-state{color:var(--rd)}
+.dp-run .dp-state{color:var(--teal,#2dd4bf)}
+.dp-pending .dp-state{color:var(--dim)}
+.dp-skill{font-weight:700;color:var(--tx);text-transform:capitalize}
+.dp-retry{background:rgba(251,191,36,0.15);color:var(--yl);padding:0 5px;border-radius:4px;font-size:0.82em;font-weight:700}
+.dp-dur{color:var(--dim);font-variant-numeric:tabular-nums;font-size:0.9em;margin-left:auto}
+.dp-motivo{color:var(--rd);font-size:0.85em;line-height:1.3;margin:3px 0 4px 20px;font-style:italic;opacity:0.9}
+.dp-links{display:flex;gap:8px;margin-left:20px;margin-top:3px}
+.dp-log{color:var(--ac);text-decoration:none;font-size:0.85em;padding:1px 0}
+.dp-log:hover{text-decoration:underline}
+.it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 10px 8px 10px;display:flex;flex-direction:column;min-width:0}
+.it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
+.it-lane-name{font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px;color:var(--lane-color);min-width:0}
+.it-lane-dot{width:6px;height:6px;border-radius:50%;background:var(--lane-color);flex-shrink:0}
+.it-lane-sub{font-size:0.78em;color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;margin-left:2px}
+.it-lane-meta{display:flex;gap:5px;align-items:center;font-size:0.7em;flex-wrap:wrap}
+.it-lane-count{background:var(--sf);color:var(--tx);padding:2px 8px;border-radius:10px;font-weight:700}
+.it-lane-count b{color:var(--tx);font-weight:800}
+.it-badge{padding:1px 6px;border-radius:6px;font-weight:700}
+.it-badge.run{color:#2dd4bf;background:rgba(45,212,191,0.12)}
+.it-badge.fail{color:var(--rd);background:rgba(248,113,113,0.12)}
+.it-badge.warn{color:var(--yl);background:rgba(251,191,36,0.12)}
+
+/* Sub-breakdown chips (clickeables) */
+.it-sub-breakdown{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}
+.it-sub-chip{flex:1;padding:4px 8px;background:var(--sf);border-radius:5px;text-align:center;color:var(--dim);font-size:0.68em;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:background 0.15s,border-color 0.15s}
+.it-sub-chip:hover{background:var(--panel);border-color:rgba(109,140,255,0.3)}
+.it-sub-chip b{color:var(--tx);font-weight:800;font-variant-numeric:tabular-nums}
+.it-sub-chip.hot{color:var(--yl);border-color:rgba(251,191,36,0.3)}
+.it-sub-chip.active{background:rgba(109,140,255,0.15);border-color:var(--ac);color:var(--ac)}
+.it-sub-chip.active b{color:var(--ac)}
+.it-sub-chip.it-sub-disabled{opacity:0.45;cursor:default}
+.it-sub-chip.it-sub-disabled:hover{background:var(--sf);border-color:transparent}
+.it-sub-all{flex:0 0 auto;min-width:56px}
+
+.it-lane-cards{display:flex;flex-direction:column;gap:6px;max-height:640px;overflow-y:auto;padding-right:2px}
+.it-lane-cards::-webkit-scrollbar{width:5px}
+.it-lane-cards::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
+
+/* Lane card rica (Opción E + polish) */
+.lc-card{display:block;background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:7px;font-size:0.78em;color:var(--tx);transition:transform 0.15s,border-color 0.15s,box-shadow 0.15s;overflow:hidden;flex-shrink:0}
+.lc-card:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,0.3);border-left-color:var(--ac)}
+.lc-card.lc-running{border-left-color:#2dd4bf}
+.lc-card.lc-failed{border-left-color:var(--rd)}
+.lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
+.lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
+.lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
+.lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search,.lc-card.lc-filtered-blocked{display:none}
+.lc-card.lc-hl-blocked{border-left-color:var(--rd) !important;box-shadow:0 0 0 1px rgba(248,113,113,0.5)}
+.lc-card.lc-hl-blocking{border-left-color:var(--yl) !important;box-shadow:0 0 0 1px rgba(251,191,36,0.5)}
+.lc-card.lc-hl-blocking::after{content:'▸ bloquea';display:inline-block;margin-left:6px;font-size:0.6em;background:rgba(251,191,36,0.15);color:var(--yl);padding:1px 5px;border-radius:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px}
+
+/* Refresh pill flotante (cambios pendientes) */
+.refresh-pill{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(135deg,var(--ac),#4a6cf7);color:#fff;border-radius:999px;box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-size:0.85em;font-weight:600;opacity:0;transform:translateY(12px) scale(0.95);pointer-events:none;transition:opacity 0.25s,transform 0.25s}
+.refresh-pill.rp-visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;animation:rp-pulse 2.5s ease-in-out infinite}
+.refresh-pill:hover{box-shadow:0 8px 26px rgba(88,166,255,0.6),0 2px 8px rgba(0,0,0,0.4);transform:translateY(-2px) scale(1.02);animation:none}
+.refresh-pill .rp-icon{font-size:1.1em;line-height:1}
+.refresh-pill .rp-text{white-space:nowrap}
+.refresh-pill .rp-close{margin-left:4px;opacity:0.75;padding:0 4px;border-radius:50%;font-size:1.1em;line-height:1}
+.refresh-pill .rp-close:hover{opacity:1;background:rgba(0,0,0,0.2)}
+@keyframes rp-pulse{0%,100%{box-shadow:0 6px 20px rgba(88,166,255,0.45),0 2px 8px rgba(0,0,0,0.3)}50%{box-shadow:0 6px 24px rgba(88,166,255,0.7),0 2px 10px rgba(0,0,0,0.4)}}
+
+/* KPI clickeable (filter mode) */
+.kpi-clickable{cursor:pointer;transition:transform 0.15s,box-shadow 0.15s}
+.kpi-clickable:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.kpi.kpi-active-filter{box-shadow:0 0 0 2px var(--rd),0 4px 12px rgba(248,113,113,0.3)}
+.kpi.kpi-active-filter .kpi-trend::after{content:' · activo';color:var(--rd);font-weight:700}
+.lc-card.lc-expanded{background:var(--sf2);border-left-color:var(--ac)}
+.lc-card-main{padding:8px 10px;cursor:pointer}
+.lc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px}
+.lc-top-left{display:flex;align-items:center;gap:5px;min-width:0}
+.lc-top-right{display:flex;align-items:center;gap:6px}
+.lc-num{color:var(--ac);font-weight:700;font-size:0.95em;font-variant-numeric:tabular-nums;text-decoration:none}
+.lc-num:hover{text-decoration:underline}
+.lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
+.lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
+.lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
+.lc-gh{color:var(--dim);text-decoration:none;font-size:0.9em;padding:1px 4px;border-radius:3px;line-height:1}
+.lc-gh:hover{color:var(--ac);background:rgba(109,140,255,0.1)}
+.lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500;min-height:2.7em}
+.lc-flag{color:var(--yl);margin-right:3px}
+.lc-foot{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+.lc-foot-left{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
+.lc-ps{display:inline-flex;align-items:center;gap:2px;padding:2px 4px;background:rgba(255,255,255,0.02);border-radius:5px;flex-shrink:0}
+.lc-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:0.82em;font-weight:700;letter-spacing:0.2px}
+.lc-pill-run{background:rgba(45,212,191,0.15);color:#2dd4bf;text-transform:lowercase}
+.lc-pill-fail{background:rgba(248,113,113,0.15);color:var(--rd);text-transform:lowercase}
+.lc-pill-wait{background:rgba(251,191,36,0.12);color:var(--yl);text-transform:lowercase}
+.lc-pill-done{background:rgba(52,211,153,0.12);color:var(--gn);text-transform:lowercase}
+.lc-pill-x{opacity:0.6;font-weight:400;margin-left:2px}
+.lc-avatars{display:flex}
+.lc-avatars-dim{opacity:0.55}
+.lc-av{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;line-height:1;color:#fff;border:1.5px solid var(--sf);margin-right:-5px}
+.lc-av:last-child{margin-right:0}
+.lc-av-more{width:18px;height:18px;border-radius:50%;background:var(--sf2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;border:1.5px solid var(--sf);margin-right:0}
+/* Block icons */
+.lc-block-icon{font-size:0.85em;cursor:help;line-height:1}
+.lc-block-locked{color:var(--rd)}
+.lc-block-blocking{color:var(--yl)}
+/* Detail inline (compacto) — expansion dentro de lane card */
+.lc-detail{display:none;padding:8px 10px;border-top:1px solid var(--bd);background:var(--sf2);font-size:1em}
+.lc-detail.lc-detail-open{display:block}
+.lc-detail .pd-grid{display:block !important;margin-top:0;gap:0}
+.lc-detail .pd-pipeline{margin-bottom:8px}
+.lc-detail .pd-pipeline:last-child{margin-bottom:0}
+.lc-detail .pd-pipeline-label{font-size:0.62em;letter-spacing:1.2px;padding:0 0 4px 0;opacity:0.7}
+.lc-detail .pd-phase{gap:6px;padding:2px 4px;margin-bottom:1px;font-size:0.85em;align-items:center}
+.lc-detail .pd-name{min-width:64px;font-size:0.72em;padding-top:0;text-transform:uppercase;letter-spacing:0.4px}
+.lc-detail .pd-chips{gap:3px}
+.lc-detail .chip{padding:2px 6px;font-size:0.78em;gap:3px}
+.lc-detail .pd-current{background:rgba(45,212,191,0.08);border-left:2px solid var(--teal,#2dd4bf)}
+.lc-detail .pd-empty{font-size:0.72em;color:var(--dim)}
+
+/* Chip con log link — indicador visual */
+.chip-log-icon{margin-left:3px;opacity:0.55;font-size:0.78em;line-height:1}
+.log-link{text-decoration:none}
+.log-link:hover .chip-log-icon{opacity:1}
+.log-link:hover .chip.chip-has-log{box-shadow:0 0 0 1px rgba(88,166,255,0.4);cursor:pointer}
+
+/* Completados section — collapsible */
+.it-done-section{margin-top:12px;background:var(--sf2);border:1px dashed rgba(52,211,153,0.3);border-radius:8px;padding:8px 12px}
+.it-done-section[open]{padding:10px 12px}
+.it-done-head{display:flex;align-items:center;gap:8px;font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--gn);cursor:pointer;list-style:none;user-select:none}
+.it-done-head::-webkit-details-marker{display:none}
+.it-done-arrow{color:var(--dim);font-size:0.9em;transition:transform 0.2s}
+.it-done-section[open] .it-done-arrow{transform:rotate(90deg)}
+.it-done-count{margin-left:auto;background:rgba(52,211,153,0.15);padding:1px 7px;border-radius:8px;font-size:0.82em}
+.it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px;margin-top:10px}
+.it-done-grid .lc-card{opacity:0.75}
+
+@media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
+
+.ic-hidden{display:none !important}
+
+/* Oculta el legacy ic-list cards (conservamos estilos pero no los usamos en la vista principal) */
+.ic-list{display:none}
+
+/* ── Panel Equipo Option B ─────────────────────────────────────────────── */
+.panel-equipo-full{margin-bottom:20px}
+.eq-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd);gap:14px;flex-wrap:wrap}
+.eq-title{margin:0;font-size:1.05em;font-weight:700}
+.eq-summary{display:flex;gap:8px;align-items:center;font-size:0.76em;color:var(--dim)}
+.eq-summary b{color:var(--tx);font-weight:700;margin:0 2px}
+
+/* Active Cards XL */
+.eq-active-cards{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.eq-card{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:8px 12px;background:linear-gradient(90deg,rgba(45,212,191,0.08),rgba(45,212,191,0.02));border:1px solid rgba(45,212,191,0.3);border-left:3px solid var(--teal,#2dd4bf);border-radius:var(--radius)}
+.eq-card-avatar{position:relative;width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:1em;line-height:1;color:#fff;flex-shrink:0}
+.eq-card-badge{position:absolute;top:-4px;right:-5px;min-width:14px;height:14px;padding:0 3px;background:var(--rd);color:#fff;border-radius:7px;font-size:0.6em;font-weight:800;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--sf)}
+.eq-card-body{min-width:0}
+.eq-card-name{font-size:0.88em;font-weight:700;color:var(--teal,#2dd4bf);display:flex;align-items:center;gap:6px}
+.eq-card-ring{width:7px;height:7px;border-radius:50%;background:var(--teal,#2dd4bf);box-shadow:0 0 0 0 rgba(45,212,191,0.6);animation:pulse 1.5s infinite}
+.eq-card-sub{font-size:0.85em;color:var(--dim);font-weight:400}
+.eq-card-work{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;font-size:0.72em}
+.eq-work-item{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;background:rgba(45,212,191,0.08);border-radius:5px;color:var(--dim);text-decoration:none;transition:background 0.15s}
+.eq-work-item:hover{background:rgba(45,212,191,0.15)}
+.eq-work-issue{color:var(--ac);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-work-fase{color:var(--dim);font-size:0.85em}
+.eq-work-dur{color:var(--teal,#2dd4bf);font-weight:700;font-variant-numeric:tabular-nums}
+.eq-work-bar{width:40px;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
+.eq-work-bar-fill{height:100%;background:var(--teal,#2dd4bf);border-radius:2px}
+.eq-card-kill{color:var(--dim);cursor:pointer;font-weight:700;font-size:1.2em;padding:4px 8px;border-radius:6px}
+.eq-card-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
+
+/* Agent History */
+#agent-history .matrix-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd)}
+#agent-history h2{margin:0;font-size:1.05em;font-weight:700}
+.ah-count{font-size:0.76em;color:var(--dim)}
+.ah-list{display:flex;flex-direction:column;gap:4px}
+.ah-card{display:grid;grid-template-columns:28px 80px 1fr 80px 110px 60px 90px auto;gap:8px;align-items:center;padding:6px 12px;border-radius:var(--radius);border:1px solid var(--bd);border-left:3px solid var(--dim);text-decoration:none;font-size:0.78em;transition:background 0.15s,border-color 0.15s}
+.ah-card:hover{background:rgba(255,255,255,0.04);border-color:var(--ac)}
+.ah-running{border-left-color:var(--teal,#2dd4bf);background:rgba(45,212,191,0.05)}
+.ah-ok{border-left-color:var(--gn,#3fb950)}
+.ah-fail{border-left-color:var(--rd,#f85149)}
+.ah-neutral{border-left-color:var(--dim)}
+.ah-avatar{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.9em;color:#fff;flex-shrink:0}
+.ah-skill{font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ah-issue{color:var(--ac);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ah-fase{color:var(--dim);font-size:0.9em}
+.ah-status{font-weight:600;white-space:nowrap}
+.ah-running .ah-status{color:var(--teal,#2dd4bf)}
+.ah-ok .ah-status{color:var(--gn,#3fb950)}
+.ah-fail .ah-status{color:var(--rd,#f85149)}
+.ah-neutral .ah-status{color:var(--dim)}
+.ah-dur{color:var(--teal,#2dd4bf);font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+.ah-time{color:var(--dim);font-size:0.9em;font-variant-numeric:tabular-nums;text-align:right}
+.ah-pdf{text-decoration:none;font-size:1.1em}
+.ah-more{margin-top:4px}
+.ah-more-btn{font-size:0.78em;color:var(--ac);cursor:pointer;padding:6px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15);list-style:none}
+.ah-more-btn:hover{background:rgba(88,166,255,0.12)}
+.ah-more-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+@media(max-width:900px){.ah-card{grid-template-columns:24px 60px 1fr 70px 50px 70px auto;font-size:0.72em}}
+@media(max-width:600px){.ah-card{grid-template-columns:24px 1fr 80px auto;}.ah-fase,.ah-dur,.ah-time{display:none}}
+
+/* Areas grid 2×2 */
+.eq-areas-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.eq-area-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);padding:8px 10px}
+.eq-area-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:0.66em;text-transform:uppercase;letter-spacing:0.7px;font-weight:700}
+.eq-area-card-name{display:flex;align-items:center;gap:5px;color:var(--muted,#8b949e)}
+.eq-area-card-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.eq-area-card-sub{font-size:0.92em;color:var(--dim);font-weight:400}
+.eq-area-card-sub b{color:var(--tx);font-weight:700}
+.eq-area-card-active{color:var(--teal,#2dd4bf);font-weight:700}
+.eq-area-card-chips{display:flex;flex-wrap:wrap;gap:3px}
+
+/* Chips compactos */
+.eq-chip{position:relative;display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 3px;background:var(--sf);border:1px solid var(--bd);border-radius:999px;font-size:0.68em;cursor:help;transition:border-color 0.15s,transform 0.15s}
+.eq-chip:hover{border-color:var(--teal,#2dd4bf);transform:translateY(-1px)}
+.eq-chip-avatar{width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.82em;line-height:1;color:#fff;flex-shrink:0}
+.eq-chip-name{font-weight:500;color:var(--tx);white-space:nowrap}
+.eq-chip-dot{width:5px;height:5px;border-radius:50%;background:var(--gn);flex-shrink:0}
+.eq-chip-busy{border-color:rgba(45,212,191,0.5);background:rgba(45,212,191,0.07)}
+.eq-chip-busy .eq-chip-dot{background:var(--teal,#2dd4bf);box-shadow:0 0 0 0 rgba(45,212,191,0.6);animation:pulse 1.5s infinite}
+.eq-chip-busy .eq-chip-name{color:var(--teal,#2dd4bf);font-weight:700}
+.eq-chip-badge{min-width:14px;height:14px;padding:0 3px;background:var(--teal,#2dd4bf);color:#001a1a;border-radius:7px;font-size:0.82em;font-weight:800;display:inline-flex;align-items:center;justify-content:center}
+
+/* Servicios abajo */
+.eq-svc-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)}
+.eq-svc-head{font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--dim);margin-bottom:8px}
+.eq-svc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media(max-width:900px){.eq-svc-grid{grid-template-columns:1fr}}
+@media(max-width:720px){.eq-areas-grid{grid-template-columns:1fr}}
+
 </style></head>
 <body>
   <div class="hdr-bar">
     <div class="hdr-left">
       <h1 class="hdr-title">🐙 Pipeline V2</h1>
       <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
+      <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar">↻ AUTO</button>
       <span class="hdr-uptime">UP ${pulpoUptime}</span>
       <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
     </div>
@@ -2556,22 +3592,23 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
     let statusHtml;
     if (blockedNow) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>BLOQUEADO por saturación de recursos</span>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>Recursos al l\u00EDmite \u2014 nuevos lanzamientos en espera</span>';
     } else if (isPaused) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>PIPELINE PAUSADO por usuario</span>'
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Pipeline en pausa</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>QA PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo QA puede lanzar</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar QA Priority">\u2715 Desactivar</button>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F50D}</span>Ventana QA activa \u00B7 ' + elapsed + ' min</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar ventana QA">\u2715 Cerrar</button>';
     } else if (buildActive) {
       const elapsed = pw.build.activatedAt ? Math.round((Date.now() - pw.build.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A1</span>BUILD PRIORITY ACTIVA \u00B7 ' + elapsed + 'm \u00B7 solo Build puede lanzar</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar Build Priority">\u2715 Desactivar</button>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F528}</span>Ventana Build activa \u00B7 ' + elapsed + ' min</span>'
+        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar ventana Build">\u2715 Cerrar</button>';
     } else if (stale > 0) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' stale (>30m trabajando)</span>';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' sin avance (+30 min)</span>';
     } else {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>Sistema OK \u00B7 ' + trabajando + ' en ejecución</span>';
+      const msg = trabajando > 0 ? trabajando + ' agente' + (trabajando > 1 ? 's' : '') + ' trabajando' : 'Sin actividad';
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>' + msg + '</span>';
     }
 
     // Toggles de Priority Windows (siempre visibles a la derecha, salvo si ya hay una activa en el status)
@@ -2613,61 +3650,86 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
       + '</div>';
   })()}
 
+  ${renderInfraHealth(state)}
+
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
-  <div class="kpis">
-    <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
-      <div class="kpi-label">En ejecución</div>
-      <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
-      <span class="kpi-icon">⚙️</span>
+  <div class="kpis-row">
+    <div class="kpis kpis-5">
+      <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
+        <div class="kpi-label">Definidos</div>
+        <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
+        <div class="kpi-trend">backlog total</div>
+      </div>
+      <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
+        <div class="kpi-label">En cola</div>
+        <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
+        <div class="kpi-trend">esperando agente</div>
+      </div>
+      <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
+        <div class="kpi-label">Ejecución</div>
+        <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
+        <div class="kpi-trend">${trabajando > 0 ? 'agentes activos' : 'sin agentes'}</div>
+      </div>
+      <div class="kpi kpi-entregados" data-tt='${ttEntregados24h}'>
+        <div class="kpi-label">Entregados 24h</div>
+        <div class="kpi-value success">${entregados24h}</div>
+        <div class="kpi-trend">últimas 24 horas</div>
+      </div>
+      <div class="kpi kpi-blocked kpi-clickable" data-tt='${ttBlocked}' data-blocked-ids='${blockedIdsJson}' data-blocking-deps='${blockingDepsJson}' onclick="toggleBlockedFilter(this)" title="${blockedCount > 0 ? 'Click para filtrar el Issue Tracker por bloqueados + deps' : 'No hay issues bloqueados'}">
+        <div class="kpi-label">Bloqueados${blockedCount > 0 ? ' \u{1F6AB}' : ''}</div>
+        <div class="kpi-value ${blockedCount > 0 ? 'danger' : 'muted'}">${blockedCount}</div>
+        <div class="kpi-trend">${blockedCount > 0 ? 'click para filtrar' : 'sin bloqueos'}</div>
+      </div>
     </div>
-    <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
-      <div class="kpi-label">En cola</div>
-      <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
-      <span class="kpi-icon">⏳</span>
-    </div>
-    <div class="kpi kpi-blocked" data-tt='${ttStale}'>
-      <div class="kpi-label">Bloqueados / stale</div>
-      <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
-      <span class="kpi-icon">🚨</span>
-    </div>
-    <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
-      <div class="kpi-label">Definidos</div>
-      <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
-      <span class="kpi-icon">📋</span>
-    </div>
-    <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
-      <div class="kpi-label">Entregados</div>
-      <div class="kpi-value success">${entregados}</div>
-      <span class="kpi-icon">🚀</span>
-    </div>
-    <div class="kpi kpi-throughput" data-tt='${ttEntregados24h}'>
-      <div class="kpi-label">Últimas 24h</div>
-      <div class="kpi-value" style="color:var(--ac)">${entregados24h}</div>
-      <span class="kpi-icon">📈</span>
-    </div>
+    ${(() => {
+      const scoreCls = healthScore > 60 ? 'ok' : healthScore > 30 ? 'warn' : 'crit';
+      const circ = 163;
+      const cpuOff = Math.round(circ - (circ * Math.min(100, res.cpuPercent) / 100));
+      const memOff = Math.round(circ - (circ * Math.min(100, res.memPercent) / 100));
+      return `
+      <div class="sys-mini-card sys-mini-${scoreCls}">
+        <div class="sys-mini-score">
+          <div class="sys-mini-lbl">Salud</div>
+          <div class="sys-mini-val sys-mini-${scoreCls}">${healthScore}</div>
+          <div class="sys-mini-tag sys-mini-${scoreCls}">${healthLabel}</div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${cpuStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${cpuOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.cpuPercent}%</div><div class="l">CPU</div></div>
+        </div>
+        <div class="sys-mini-gauge">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg"><circle class="sys-mini-track" cx="31" cy="31" r="26"/><circle class="sys-mini-fill sys-mini-${memStatus}" cx="31" cy="31" r="26" stroke-dasharray="${circ}" stroke-dashoffset="${memOff}"/></svg>
+          <div class="sys-mini-center"><div class="v">${res.memPercent}%</div><div class="l">RAM</div></div>
+        </div>
+      </div>`;
+    })()}
   </div>
 
-  <div class="dual-row">
-    <div class="bar-section dual-col panel-equipo">
-      <h2>🧠 Equipo</h2>
-      ${agentTeamCards ? '<div class="subsection-label">En ejecución</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
-      ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Equipo disponible' : 'Equipo disponible') + '</div><div class="persona-stack">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
+  <div class="bar-section panel-equipo panel-equipo-full">
+    <div class="eq-head">
+      <h2 class="eq-title">🧠 Equipo</h2>
+      <div class="eq-summary">
+        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSkills}</span>
+        <span>\u00B7</span>
+        <span>Utilización <b>${eqTotalSkills > 0 ? Math.round(eqTotalBusy / eqTotalSkills * 100) : 0}%</b></span>
+        <span>\u00B7</span>
+        <span>Cola <b>${pendientes}</b></span>
+      </div>
     </div>
-    <div class="bar-section dual-col panel-sistema">
-      <h2>💻 Sistema</h2>
-      ${resourcesHTML}
-      <div class="subsection-label" style="margin-top:14px">Servicios</div>
-      <div class="svc-grid">${svcCardsHTML}</div>
-    </div>
+    ${activeStripHTML}
+    ${eqAreaGridHTML || '<span class="empty-label">Sin skills configurados</span>'}
+    ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
   </div>
 
   ${matrixHTML}
+
+  ${historyHTML}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
   <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
 
-  <div class="footer">🔴 Live · Auto-refresh 10s &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
+  <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
 <!-- Log Viewer Panel -->
 <div id="log-overlay" class="log-overlay" onclick="if(event.target===this)closeLogViewer()">
@@ -2711,36 +3773,231 @@ function saveIssueTrackerState() {
       const m = d.id.match(/detail-(\\d+)/);
       if (m) expanded.push(m[1]);
     });
+    const laneExpanded = [];
+    document.querySelectorAll('.lc-detail.lc-detail-open').forEach(d => {
+      const m = d.id.match(/lc-detail-(\\d+)/);
+      if (m) laneExpanded.push(m[1]);
+    });
     const activeTab = document.querySelector('.ic-tab-active');
     const filter = activeTab ? activeTab.dataset.filter : 'active';
+    // Sub-chip filters per lane (persist selection after SSE refresh)
+    const subFilters = {};
+    document.querySelectorAll('.it-sub-chip.active').forEach(c => {
+      const lane = c.dataset.lane;
+      const sf = c.dataset.subfase || '';
+      if (lane) subFilters[lane] = sf;
+    });
     const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
-    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, filter, scrollY }));
+    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, laneExpanded, filter, subFilters, scrollY }));
   } catch(_) {}
 }
 
 // Guardar estado en TODA recarga (F5, SSE, navegación, etc.)
 window.addEventListener('beforeunload', saveIssueTrackerState);
 
-// SSE live refresh
+// ── Salud de Infra (#2306): copy-to-clipboard pasivo del CTA de reanudación ──
+// Solo copia texto al portapapeles — NO ejecuta acciones server-side (evita CSRF).
+document.addEventListener('click', function(e) {
+  const btn = e.target && e.target.closest && e.target.closest('.ih-copy');
+  if (!btn) return;
+  const text = btn.getAttribute('data-copy') || '';
+  if (!text) return;
+  const done = () => {
+    const original = btn.textContent;
+    btn.classList.add('ih-copy-ok');
+    btn.textContent = '✓';
+    setTimeout(() => {
+      btn.classList.remove('ih-copy-ok');
+      btn.textContent = original;
+    }, 1500);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        // Fallback legacy
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          done();
+        } catch(_) {}
+      });
+    }
+  } catch(_) {}
+});
+
+// ── Soft refresh: reemplaza secciones sin recargar la página (evita flash) ──
+let __softRefreshInFlight = false;
+async function softRefresh() {
+  if (__softRefreshInFlight) return;
+  // No refrescar si hay log overlay abierto
+  const logOv = document.getElementById('log-overlay');
+  if (logOv && logOv.classList.contains('open')) return;
+  // Si el foco está en el input de búsqueda, diferimos el refresh — molesta mientras escribe
+  const ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('it-search')) return;
+  __softRefreshInFlight = true;
+  try {
+    // Preservar state actual (scroll, tabs, sub-filters, search, expansiones)
+    saveIssueTrackerState();
+    const searchVal = (document.getElementById('it-search-input') || {}).value || '';
+    // Cerrar popup de dots (puede quedar stale si el DOM cambia)
+    closeDotPopup && closeDotPopup();
+    const res = await fetch(window.location.href, { cache: 'no-store', credentials: 'same-origin' });
+    if (!res.ok) return;
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Reemplazar secciones clave
+    const selectors = [
+      '.hdr-bar',
+      '.hdr-status-line',
+      '.pipeline-ctrl-bar',
+      '.infra-health',
+      '.kpis-row',
+      '.panel-equipo-full',
+      '#issue-tracker',
+      '#agent-history',
+    ];
+    for (const sel of selectors) {
+      const newEl = doc.querySelector(sel);
+      const oldEl = document.querySelector(sel);
+      if (newEl && oldEl) oldEl.replaceWith(newEl);
+    }
+    // Re-aplicar valor de búsqueda si había
+    const newInp = document.getElementById('it-search-input');
+    if (newInp && searchVal) {
+      newInp.value = searchVal;
+      filterIssuesBySearch(searchVal);
+    }
+    // Rehidratar el resto del estado (tabs, sub-filters, scroll, expansiones legacy)
+    restoreIssueTrackerState();
+    // Re-atachar listeners sobre KPIs nuevos
+    if (typeof attachKpiTooltips === 'function') attachKpiTooltips();
+    // Restaurar estado del botón auto-refresh (el DOM swap trae el default del server)
+    if (__autoRefresh) {
+      const arBtn = document.getElementById('autorefresh-btn');
+      if (arBtn) {
+        arBtn.className = 'badge-autorefresh ar-on';
+        arBtn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+        arBtn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+      }
+    }
+  } catch (_) { /* silenciar */ }
+  finally { __softRefreshInFlight = false; }
+}
+
+// Auto-refresh toggle + pill on-demand
 let lastHash = null;
+let __pendingChanges = 0;
+let __lastChangeTs = null;
+let __autoRefresh = true;
+let __autoRefreshInterval = null;
+const AUTO_REFRESH_SECONDS = 10;
+
+function toggleAutoRefresh() {
+  __autoRefresh = !__autoRefresh;
+  const btn = document.getElementById('autorefresh-btn');
+  if (__autoRefresh) {
+    btn.className = 'badge-autorefresh ar-on';
+    btn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+    btn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+    dismissRefreshPill();
+    softRefresh();
+    __autoRefreshInterval = setInterval(() => softRefresh(), AUTO_REFRESH_SECONDS * 1000);
+  } else {
+    btn.className = 'badge-autorefresh ar-off';
+    btn.textContent = '↻ AUTO';
+    btn.title = 'Auto-refresh desactivado — click para activar';
+    if (__autoRefreshInterval) { clearInterval(__autoRefreshInterval); __autoRefreshInterval = null; }
+  }
+  updateFooter();
+}
+
+function updateFooter() {
+  const ft = document.getElementById('dash-footer');
+  if (!ft) return;
+  const ts = new Date().toLocaleString('es-AR');
+  ft.innerHTML = __autoRefresh
+    ? '🟢 Live · Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's &nbsp;|&nbsp; ' + ts
+    : '🟢 Live · Refresh on-demand &nbsp;|&nbsp; ' + ts;
+}
+
+function showRefreshPill() {
+  if (__autoRefresh) return;
+  let pill = document.getElementById('refresh-pill');
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'refresh-pill';
+    pill.className = 'refresh-pill';
+    pill.innerHTML = '<span class="rp-icon">🔄</span><span class="rp-text"></span><span class="rp-close" title="Descartar" onclick="event.stopPropagation();dismissRefreshPill()">×</span>';
+    pill.onclick = applyPendingRefresh;
+    document.body.appendChild(pill);
+  }
+  const textEl = pill.querySelector('.rp-text');
+  const ago = __lastChangeTs ? Math.max(0, Math.round((Date.now() - __lastChangeTs) / 1000)) : 0;
+  const agoTxt = ago < 60 ? ago + 's' : Math.round(ago / 60) + 'm';
+  textEl.textContent = __pendingChanges === 1
+    ? '1 cambio nuevo · hace ' + agoTxt
+    : __pendingChanges + ' cambios nuevos · último hace ' + agoTxt;
+  pill.classList.add('rp-visible');
+}
+function dismissRefreshPill() {
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+  __pendingChanges = 0;
+}
+async function applyPendingRefresh() {
+  await softRefresh();
+  __pendingChanges = 0;
+  __lastChangeTs = null;
+  const pill = document.getElementById('refresh-pill');
+  if (pill) pill.classList.remove('rp-visible');
+}
+// Actualizar el "hace Xs" cada 10s mientras el pill esté visible
+setInterval(() => {
+  const pill = document.getElementById('refresh-pill');
+  if (pill && pill.classList.contains('rp-visible') && __pendingChanges > 0) showRefreshPill();
+}, 10000);
+
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) {
-    saveIssueTrackerState();
-    location.reload();
+  if (lastHash && e.data !== lastHash) {
+    if (__autoRefresh) {
+      // En modo auto, el interval se encarga — no acumular
+    } else {
+      __pendingChanges++;
+      __lastChangeTs = Date.now();
+      showRefreshPill();
+    }
   }
   lastHash = e.data;
 };
-es.onerror = () => { setTimeout(() => location.reload(), 10000); };
+es.onerror = () => { /* silent */ };
+
+// Auto-activar auto-refresh al cargar la página (default ON)
+if (__autoRefresh) {
+  const arBtn = document.getElementById('autorefresh-btn');
+  if (arBtn) {
+    arBtn.className = 'badge-autorefresh ar-on';
+    arBtn.textContent = '↻ AUTO ' + AUTO_REFRESH_SECONDS + 's';
+    arBtn.title = 'Auto-refresh cada ' + AUTO_REFRESH_SECONDS + 's — click para desactivar';
+  }
+  updateFooter();
+  __autoRefreshInterval = setInterval(() => softRefresh(), AUTO_REFRESH_SECONDS * 1000);
+}
 
 // Restaurar estado UI — se invoca después de definir las funciones necesarias
 function restoreIssueTrackerState() {
   try {
     const saved = sessionStorage.getItem('__it_state');
     if (!saved) return;
-    const { expanded, filter, scrollY } = JSON.parse(saved);
+    const { expanded, laneExpanded, filter, subFilters, scrollY } = JSON.parse(saved);
     __itRestoring = true;
-    // Restaurar expansiones
     if (expanded && expanded.length > 0) {
       expanded.forEach(id => {
         const detail = document.getElementById('detail-' + id);
@@ -2751,41 +4008,63 @@ function restoreIssueTrackerState() {
         if (header) header.setAttribute('aria-expanded', 'true');
       });
     }
-    // Restaurar tab activo
+    // Restaurar expansiones de lane cards
+    if (laneExpanded && laneExpanded.length > 0) {
+      laneExpanded.forEach(id => {
+        const d = document.getElementById('lc-detail-' + id);
+        if (d) {
+          d.classList.add('lc-detail-open');
+          d.setAttribute('aria-hidden', 'false');
+          const card = d.closest('.lc-card');
+          if (card) card.classList.add('lc-expanded');
+        }
+      });
+    }
     if (filter && filter !== 'active') {
       const tab = document.querySelector('.ic-tab[data-filter="' + filter + '"]');
       if (tab) filterIssueTab(tab, filter);
     }
+    // Restaurar sub-chip filters
+    if (subFilters) {
+      for (const [lane, sf] of Object.entries(subFilters)) {
+        filterLaneBySubFase(lane, sf);
+      }
+    }
     __itRestoring = false;
-    // Restaurar posición de scroll
     if (scrollY > 0) requestAnimationFrame(() => window.scrollTo(0, scrollY));
-    // NO borrar de sessionStorage — se sobreescribe en cada interacción
   } catch(_) { __itRestoring = false; }
 }
 
 // KPI Tooltips
-const tt = document.getElementById('kpi-tooltip');
+let tt = document.getElementById('kpi-tooltip');
 const GH_BASE = 'https://github.com/intrale/platform/issues/';
 const MAX_TT = 20;
-document.querySelectorAll('.kpi[data-tt]').forEach(el => {
-  el.addEventListener('mouseenter', e => {
-    try {
-      const d = JSON.parse(el.dataset.tt);
-      const shown = d.items.slice(0, MAX_TT);
-      const rows = shown.map(it =>
-        '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
-        (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
-      ).join('');
-      const more = d.items.length > MAX_TT
-        ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
-      tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
-      tt.style.display = 'block';
-      positionTt(e);
-    } catch(_) {}
+function attachKpiTooltips() {
+  tt = document.getElementById('kpi-tooltip');
+  if (!tt) return;
+  document.querySelectorAll('.kpi[data-tt]').forEach(el => {
+    if (el.__ttAttached) return;
+    el.__ttAttached = true;
+    el.addEventListener('mouseenter', e => {
+      try {
+        const d = JSON.parse(el.dataset.tt);
+        const shown = d.items.slice(0, MAX_TT);
+        const rows = shown.map(it =>
+          '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
+          (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
+        ).join('');
+        const more = d.items.length > MAX_TT
+          ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
+        tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
+        tt.style.display = 'block';
+        positionTt(e);
+      } catch(_) {}
+    });
+    el.addEventListener('mousemove', positionTt);
+    el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
   });
-  el.addEventListener('mousemove', positionTt);
-  el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
-});
+}
+attachKpiTooltips();
 function positionTt(e) {
   const pad = 14;
   let x = e.clientX + pad, y = e.clientY + pad;
@@ -2922,22 +4201,141 @@ function toggleIssueDetail(issueNum) {
   saveIssueTrackerState();
 }
 
+function filterLaneBySubFase(laneKey, subFase) {
+  const lane = document.querySelector('.it-lane[data-lane="' + laneKey + '"]');
+  if (!lane) return;
+  lane.querySelectorAll('.it-sub-chip').forEach(c => {
+    c.classList.toggle('active', (c.dataset.subfase || '') === (subFase || ''));
+  });
+  lane.querySelectorAll('.lc-card').forEach(c => {
+    if (!subFase) { c.classList.remove('lc-filtered-out-sub'); return; }
+    const sf = c.dataset.subfase || '';
+    c.classList.toggle('lc-filtered-out-sub', sf !== subFase);
+  });
+  saveIssueTrackerState();
+}
+
+// Filtro de bloqueados desde el KPI — muestra blocked + sus deps bloqueantes
+function toggleBlockedFilter(kpiEl) {
+  if (!kpiEl) return;
+  let blockedIds, blockingDeps;
+  try {
+    blockedIds = JSON.parse(kpiEl.dataset.blockedIds || '[]');
+    blockingDeps = JSON.parse(kpiEl.dataset.blockingDeps || '[]');
+  } catch (_) { return; }
+  if (blockedIds.length === 0) return;
+  const active = kpiEl.classList.toggle('kpi-active-filter');
+  const relevant = new Set([...blockedIds, ...blockingDeps].map(String));
+  document.querySelectorAll('.lc-card').forEach(c => {
+    if (!active) { c.classList.remove('lc-filtered-blocked'); c.classList.remove('lc-hl-blocked'); c.classList.remove('lc-hl-blocking'); return; }
+    const issue = c.dataset.issue;
+    const isBlocked = blockedIds.includes(issue);
+    const isBlocking = blockingDeps.includes(issue);
+    c.classList.toggle('lc-filtered-blocked', !isBlocked && !isBlocking);
+    c.classList.toggle('lc-hl-blocked', isBlocked);
+    c.classList.toggle('lc-hl-blocking', isBlocking);
+  });
+  document.querySelectorAll('.it-lane').forEach(lane => {
+    const visible = lane.querySelectorAll('.lc-card:not(.lc-filtered-blocked):not(.lc-filtered-out-sub):not(.lc-filtered-out-search)').length;
+    lane.classList.toggle('it-lane-empty-search', active && visible === 0);
+  });
+  if (active) {
+    const tracker = document.getElementById('issue-tracker');
+    if (tracker) tracker.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+// Búsqueda por # o título en todo el tracker
+function filterIssuesBySearch(query) {
+  const q = (query || '').trim().toLowerCase();
+  document.querySelectorAll('.lc-card').forEach(c => {
+    if (!q) { c.classList.remove('lc-filtered-out-search'); return; }
+    const hay = (c.dataset.search || '').includes(q);
+    c.classList.toggle('lc-filtered-out-search', !hay);
+  });
+  // Ocultar lanes sin matches
+  document.querySelectorAll('.it-lane').forEach(lane => {
+    const visible = lane.querySelectorAll('.lc-card:not(.lc-filtered-out-search):not(.lc-filtered-out-sub)').length;
+    lane.classList.toggle('it-lane-empty-search', q && visible === 0);
+  });
+  saveIssueTrackerState();
+}
+function clearIssueSearch() {
+  const inp = document.getElementById('it-search-input');
+  if (inp) inp.value = '';
+  filterIssuesBySearch('');
+}
+
+// Popup con detalle de la fase al click en un dot
+function showDotPopup(event, dotEl) {
+  let data;
+  try { data = JSON.parse(dotEl.dataset.popup); } catch(_) { return; }
+  const popup = document.getElementById('dot-popup');
+  if (!popup) return;
+  popup.querySelector('.dp-title').innerHTML = '<b>' + data.fase + '</b> · ' + data.pipeline + ' · #' + data.issue;
+  const body = popup.querySelector('.dp-body');
+  if (!data.skills || data.skills.length === 0) {
+    body.innerHTML = '<div class="dp-empty">Sin actividad</div>';
+  } else {
+    body.innerHTML = data.skills.map(function(s){
+      var icon, cls;
+      if (s.resultado === 'aprobado') { icon = '✓'; cls = 'ok'; }
+      else if (s.resultado) { icon = '✗'; cls = 'fail'; }
+      else if (s.estado === 'trabajando') { icon = '▶'; cls = 'run'; }
+      else if (s.estado === 'listo' || s.estado === 'procesado') { icon = '✓'; cls = 'ok'; }
+      else { icon = '○'; cls = 'pending'; }
+      var retry = s.retry ? '<span class="dp-retry">×'+s.retry+'</span>' : '';
+      var dur = s.dur ? '<span class="dp-dur">'+s.dur+'</span>' : '';
+      var log = s.log ? '<a href="'+s.log+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
+      var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
+      var motivo = s.motivo ? '<div class="dp-motivo">' + s.motivo + '</div>' : '';
+      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+s.skill+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
+    }).join('');
+  }
+  const rect = dotEl.getBoundingClientRect();
+  popup.style.display = 'block';
+  popup.style.position = 'fixed';
+  popup.style.left = '0px';
+  popup.style.top = '0px';
+  const pr = popup.getBoundingClientRect();
+  let left = rect.left + rect.width/2 - pr.width/2;
+  let top = rect.bottom + 8;
+  if (left < 8) left = 8;
+  if (left + pr.width > window.innerWidth - 8) left = window.innerWidth - pr.width - 8;
+  if (top + pr.height > window.innerHeight - 8) top = rect.top - pr.height - 8;
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+}
+function closeDotPopup() {
+  const p = document.getElementById('dot-popup');
+  if (p) p.style.display = 'none';
+}
+document.addEventListener('click', function(e){
+  const p = document.getElementById('dot-popup');
+  if (!p || p.style.display === 'none') return;
+  if (!p.contains(e.target) && !e.target.classList.contains('stepper-dot')) {
+    p.style.display = 'none';
+  }
+});
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeDotPopup(); });
+
 function filterIssueTab(tabEl, filter) {
-  // Update tab active state + aria
   document.querySelectorAll('.ic-tab').forEach(t => {
     t.classList.remove('ic-tab-active');
     t.setAttribute('aria-selected', 'false');
   });
   tabEl.classList.add('ic-tab-active');
   tabEl.setAttribute('aria-selected', 'true');
-  // Filter cards
-  document.querySelectorAll('.ic-card').forEach(card => {
+  // Hide/show lanes container and completed section according to tab
+  const lanesEl = document.querySelector('.it-lanes');
+  const doneEl = document.querySelector('.it-done-section');
+  if (lanesEl) lanesEl.classList.toggle('ic-hidden', filter === 'completed');
+  if (doneEl) doneEl.classList.toggle('ic-hidden', filter === 'active');
+  // Also honor legacy ic-card cards (if any remain)
+  document.querySelectorAll('.ic-card, .lc-card').forEach(card => {
     const status = card.dataset.status;
-    if (filter === 'all') {
-      card.classList.remove('ic-hidden');
-    } else {
-      card.classList.toggle('ic-hidden', status !== filter);
-    }
+    if (filter === 'all') card.classList.remove('ic-hidden');
+    else card.classList.toggle('ic-hidden', status !== filter);
   });
   saveIssueTrackerState();
 }
