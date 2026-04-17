@@ -16,10 +16,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -258,10 +261,14 @@ private fun BusinessOrderCard(
     onToggleAssignment: () -> Unit = {},
     onAssign: (String?) -> Unit = {}
 ) {
+    val isFlagged = order.status == BusinessOrderStatus.FLAGGED
     Card(onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = if (isFlagged)
+                MaterialTheme.colorScheme.errorContainer
+            else
+                MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
         Column(
@@ -270,6 +277,9 @@ private fun BusinessOrderCard(
                 .padding(MaterialTheme.spacing.x4),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
         ) {
+            if (isFlagged) {
+                FlaggedOrderBanner()
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -279,11 +289,24 @@ private fun BusinessOrderCard(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-                Text(
-                    text = order.status.toLabel(),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = order.status.toColor()
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isFlagged) {
+                        Icon(
+                            imageVector = Icons.Filled.Warning,
+                            contentDescription = Txt(MessageKey.business_orders_status_flagged),
+                            tint = order.status.toColor()
+                        )
+                    }
+                    Text(
+                        text = order.status.toLabel(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = order.status.toColor(),
+                        fontWeight = if (isFlagged) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
             }
             Text(
                 text = order.clientEmail,
@@ -441,6 +464,7 @@ private fun BusinessOrderStatus.toLabel(): String = when (this) {
     BusinessOrderStatus.DELIVERING -> Txt(MessageKey.business_orders_status_delivering)
     BusinessOrderStatus.DELIVERED -> Txt(MessageKey.business_orders_status_delivered)
     BusinessOrderStatus.CANCELLED -> Txt(MessageKey.business_orders_status_cancelled)
+    BusinessOrderStatus.FLAGGED -> Txt(MessageKey.business_orders_status_flagged)
     BusinessOrderStatus.UNKNOWN -> Txt(MessageKey.business_orders_status_pending)
 }
 
@@ -448,8 +472,38 @@ private fun BusinessOrderStatus.toLabel(): String = when (this) {
 private fun BusinessOrderStatus.toColor() = when (this) {
     BusinessOrderStatus.DELIVERED -> androidx.compose.ui.graphics.Color(0xFF4CAF50)
     BusinessOrderStatus.CANCELLED -> MaterialTheme.colorScheme.error
+    BusinessOrderStatus.FLAGGED -> MaterialTheme.colorScheme.error
     BusinessOrderStatus.PREPARING, BusinessOrderStatus.READY -> androidx.compose.ui.graphics.Color(0xFFFFC107)
     else -> MaterialTheme.colorScheme.primary
+}
+
+@Composable
+private fun FlaggedOrderBanner() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Warning,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5)) {
+            Text(
+                text = Txt(MessageKey.business_orders_flagged_banner),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = Txt(MessageKey.business_orders_flagged_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(MaterialTheme.spacing.x1))
 }
 
 @Suppress("MagicNumber")

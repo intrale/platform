@@ -6,7 +6,7 @@ import ar.com.intrale.shared.business.BusinessOrderItemDTO as SharedBusinessOrde
 import ar.com.intrale.shared.business.BusinessOrderStatusEventDTO as SharedBusinessOrderStatusEventDTO
 
 enum class BusinessOrderStatus {
-    PENDING, CONFIRMED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED, UNKNOWN
+    PENDING, CONFIRMED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED, FLAGGED, UNKNOWN
 }
 
 enum class BusinessOrderDateFilter {
@@ -67,6 +67,7 @@ fun String.toBusinessOrderStatus(): BusinessOrderStatus = when (this.uppercase()
     "DELIVERING" -> BusinessOrderStatus.DELIVERING
     "DELIVERED" -> BusinessOrderStatus.DELIVERED
     "CANCELLED" -> BusinessOrderStatus.CANCELLED
+    "FLAGGED" -> BusinessOrderStatus.FLAGGED
     else -> BusinessOrderStatus.UNKNOWN
 }
 
@@ -119,5 +120,6 @@ fun BusinessOrderStatus.validTransitions(): List<BusinessOrderStatus> = when (th
     BusinessOrderStatus.PENDING -> listOf(BusinessOrderStatus.PREPARING, BusinessOrderStatus.CANCELLED)
     BusinessOrderStatus.PREPARING -> listOf(BusinessOrderStatus.DELIVERING, BusinessOrderStatus.CANCELLED)
     BusinessOrderStatus.DELIVERING -> listOf(BusinessOrderStatus.DELIVERED)
+    BusinessOrderStatus.FLAGGED -> listOf(BusinessOrderStatus.PENDING, BusinessOrderStatus.CANCELLED)
     else -> emptyList()
 }
