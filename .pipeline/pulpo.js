@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
+const dedupLib = require('./dedup-lib');
 
 // Crash handlers — loguear y seguir vivo
 process.on('uncaughtException', (err) => {
@@ -4521,28 +4522,13 @@ function dedupDependencyIssue(issue, allIssuesInBatch) {
     }
   }
 
-  const titleNorm = normalizeTitleForDedup(issue.title);
-  const titleWords = extractSignificantWords(issue.title);
-
-  // Buscar duplicado entre issues existentes (no el mismo issue)
+  // Buscar duplicado entre issues existentes (no el mismo issue).
+  // La heurística de matching vive en .pipeline/dedup-lib.js — misma fuente
+  // para intake (acá) y rejection-report (findExistingDepIssue).
   for (const existing of depIssuesCache.issues) {
     if (existing.number === issue.number) continue;
-
-    // No comparar contra issues del mismo batch (se procesan juntos)
     if (allIssuesInBatch.some(i => i.number === existing.number)) continue;
-
-    const existNorm = normalizeTitleForDedup(existing.title);
-    const existWords = extractSignificantWords(existing.title);
-
-    // Similitud: substring match O overlap de palabras significativas >= 60%
-    if (existNorm.includes(titleNorm) || titleNorm.includes(existNorm)) {
-      closeDuplicateIssue(issue.number, existing.number, issue.title);
-      return true;
-    }
-
-    const shared = titleWords.filter(w => existWords.some(ew => ew.includes(w) || w.includes(ew)));
-    const overlapRatio = shared.length / Math.max(Math.min(titleWords.length, existWords.length), 1);
-    if (shared.length >= 2 && overlapRatio >= 0.6) {
+    if (dedupLib.isDuplicateTitle(issue.title, existing.title)) {
       closeDuplicateIssue(issue.number, existing.number, issue.title);
       return true;
     }
@@ -4551,18 +4537,6 @@ function dedupDependencyIssue(issue, allIssuesInBatch) {
   // Agregar a cache para dedup dentro del mismo batch de intake
   depIssuesCache.issues.push({ number: issue.number, title: issue.title });
   return false;
-}
-
-function normalizeTitleForDedup(title) {
-  return (title || '').toLowerCase()
-    .replace(/^(?:fix|feat|infra|bug|dep):\s*/i, '')  // quitar prefijos
-    .replace(/\b(el|la|los|las|un|una|de|del|en|que|con|por|al|se|no|es|a)\b/g, '')
-    .replace(/[—\-:()#\d]/g, ' ')
-    .replace(/\s+/g, ' ').trim();
-}
-
-function extractSignificantWords(title) {
-  return normalizeTitleForDedup(title).split(' ').filter(w => w.length > 3);
 }
 
 function closeDuplicateIssue(dupNum, existingNum, dupTitle) {
