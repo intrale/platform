@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+const dedupLib = require('./dedup-lib');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -745,7 +746,16 @@ function detectExternalDependencies(logTail, motivo) {
     }
 
     // Timeout errors (conexión al backend lenta o caída)
-    if (errLower.match(/(?:connect|read|socket|request)\s*timeout|timed?\s*out|deadline\s*exceeded/i) && !errLower.match(/enotfound|econnrefused/)) {
+    //
+    // Guard anti-falsos: descartar si el "error" parece un dump de config/JSON literal
+    // (es común que los agentes loggeen `config.yaml: { timeout_ms: 5000 }` en
+    // tool-output, y antes se clasificaba como "Timeout de conexión al backend"
+    // fantasma). Exigimos marcadores reales de error (stack/exception/fail/cause).
+    const looksLikeConfigDump = /\{\s*"?\w+"?\s*:\s*\d+/.test(err) &&
+      !/exception|stack|caused\s+by|fail(?:ed|ure)?|error(?:code|message|:)|at\s+[\w.]+\(/i.test(err);
+    if (!looksLikeConfigDump &&
+        errLower.match(/(?:connect|read|socket|request)\s*timeout|timed?\s*out|deadline\s*exceeded/i) &&
+        !errLower.match(/enotfound|econnrefused/)) {
       const urlMatch = err.match(/(?:url|host|endpoint)\s*[:=]\s*['"]?(\S+)/i);
       addDep(
         `Timeout de conexion${urlMatch ? ` a ${urlMatch[1]}` : ' al backend'}`,
@@ -773,7 +783,17 @@ function detectExternalDependencies(logTail, motivo) {
     addDep('El APK no se pudo generar', 'El build de Android fallo — el APK no existe. Sin APK no se puede probar en el emulador.', 'pattern-match', 'high');
 
   // Emulator not running pattern
-  if (combined.match(/emulator.*not.*running|no.*(?:emulador|emulator|device)/i))
+  //
+  // Regex restringido: antes era `no.*(?:emulador|emulator|device)` — matcheaba
+  // "no" + cualquier texto + "device", generando falsos positivos en cualquier
+  // log Android que mencionara la palabra "device" o "emulator" en contextos
+  // no-error (descripción del issue, comments, nombres de clase, etc).
+  //
+  // Ahora exige phrasings explícitos de infra caída:
+  //   - "emulator not running/responding/found/available"
+  //   - "no emulator/device/avd available/running/detected"
+  //   - "device offline", "daemon not running"
+  if (combined.match(/\bemulator\s+(?:is\s+)?not\s+(?:running|responding|found|available)\b|\bno\s+(?:hay\s+)?(?:emulador|emulator|device|avd)\s+(?:disponible|available|detected|found|levantado|corriendo|running)\b|\bdevice\s+offline\b|\bdaemon\s+not\s+running\b/i))
     addDep('Emulador Android no esta corriendo', 'Se necesita el emulador Android para ejecutar las pruebas QA. Verificar que el AVD este levantado.', 'pattern-match', 'normal');
 
   // --- 4. Patrones regex en texto crudo (menciones explícitas de dependencias) ---
@@ -800,8 +820,12 @@ function detectExternalDependencies(logTail, motivo) {
 
   // --- 5. Filtrar contradicciones ---
   // Si hay evidencia de que la app corrió (crash, exception, login, navegación),
-  // el emulador SÍ estaba disponible — quitar deps de emulador espurias
-  const appRan = deps.some(d =>
+  // el emulador SÍ estaba disponible — quitar deps de emulador espurias.
+  // Excepción: si el motivo del rechazo es "sin evidencia / sin video", las
+  // menciones en logs pueden ser de intentos previos o contexto — NO asumir
+  // que la app corrió en esta ejecución.
+  const evidenceRejection = /\b(?:sin\s+)?(?:evidencia|video|audio|frames?|screenrecord|\.mp4|grabaci[oó]n)\b/i.test(motivoLower);
+  const appRan = !evidenceRejection && deps.some(d =>
     d.summary.match(/crash|bug|error.*json|dashboard|login|pantalla|navegacion|exception/i)
   );
   const filtered = appRan
@@ -818,7 +842,12 @@ function detectExternalDependencies(logTail, motivo) {
 // Retorna la mejor dep candidata o null si ninguna supera los criterios de
 // estrictez. Filtra contra preflight: si detecta infra de emulador pero el
 // preflight del pulpo pasó, descarta esa dep (falso positivo).
-function selectPrimaryCause(deps, preflight) {
+//
+// El `motivo` del rechazo pesa más que los pattern-matches de log: cuando el
+// rechazo es explícitamente por evidencia (sin video, sin frames), la causa
+// está en la capa de ejecución (infra/emulador/APK), no en un bug funcional
+// que aparezca mencionado incidentalmente en el log.
+function selectPrimaryCause(deps, preflight, motivo) {
   if (!Array.isArray(deps) || deps.length === 0) return null;
 
   // Si preflight pasó, quitar deps de infra de emulador (falso positivo)
@@ -830,6 +859,25 @@ function selectPrimaryCause(deps, preflight) {
     });
   }
   if (filtered.length === 0) return null;
+
+  // Rechazo por evidencia → la causa real está en la capa de ejecución.
+  // Los pattern-matches genéricos de la app (dashboard/crash/exception) son
+  // contexto del log, no la razón del rechazo. Priorizar deps de infra;
+  // caer a non-pattern-match si no hay infra; descartar pattern-match puros.
+  const motivoLower = (motivo || '').toLowerCase();
+  const evidenceRejection = /\b(?:sin\s+)?(?:evidencia|video|audio|frames?|screenrecord|\.mp4|grabaci[oó]n)\b/i.test(motivoLower);
+  if (evidenceRejection) {
+    const infraMatch = /emulador|emulator|apk|build|device|adb|screenrecord|evidencia|video|audio|frames?/i;
+    const infraDeps = filtered.filter(d => infraMatch.test(d.summary || ''));
+    if (infraDeps.length > 0) {
+      filtered = infraDeps;
+    } else {
+      // Sin deps de infra: descartar pattern-match genéricos, dejar solo
+      // deps con origen más confiable (agent-diagnostic, agent-explicit, regex-match).
+      const nonPattern = filtered.filter(d => d.source !== 'pattern-match');
+      if (nonPattern.length > 0) filtered = nonPattern;
+    }
+  }
 
   // Preferir priority:high; dentro de eso, preferir source != 'pattern-match'
   // (los pattern-match son los más susceptibles a falsos positivos)
@@ -902,7 +950,9 @@ function fetchDependencyIssues(issueNum) {
 
 // --- Dedup pre-creación: busca un issue abierto con título similar y label qa:dependency ---
 // Retorna { number, title, url } si encuentra match; null si no.
-// Similitud: overlap de palabras significativas (>3 chars) ≥ 50%.
+// La heurística vive en .pipeline/dedup-lib.js — misma lógica que pulpo.js usa
+// en intake (evita que intake considere único lo que rejection-report vincula,
+// o al revés).
 function findExistingDepIssue(candidateTitle) {
   if (!candidateTitle) return null;
   try {
@@ -912,22 +962,7 @@ function findExistingDepIssue(candidateTitle) {
       { timeout: 20000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
     );
     const open = JSON.parse(raw || '[]');
-    if (open.length === 0) return null;
-    const normalize = (s) => String(s || '').toLowerCase()
-      .replace(/^(?:fix|feat|infra|dep):\s*/i, '')
-      .replace(/[—\-:()"'`,.]/g, ' ')
-      .replace(/\s+/g, ' ').trim();
-    const words = (s) => normalize(s).split(' ').filter(w => w.length > 3);
-    const candidateWords = words(candidateTitle);
-    if (candidateWords.length === 0) return null;
-    for (const it of open) {
-      const itWords = words(it.title);
-      if (itWords.length === 0) continue;
-      const shared = candidateWords.filter(w => itWords.some(iw => iw === w || iw.includes(w) || w.includes(iw)));
-      const overlap = shared.length / Math.min(candidateWords.length, itWords.length);
-      if (overlap >= 0.5) return it;
-    }
-    return null;
+    return dedupLib.findDuplicate(candidateTitle, open);
   } catch {
     return null;
   }
@@ -1134,7 +1169,7 @@ function collectReportData() {
   // NUEVO v6: preflight + evidencia + UNA causa raíz estricta
   const preflight = checkPreflightOk(issue);
   const evidence = collectEvidence(issue, skill, logFile);
-  const primaryCause = selectPrimaryCause(analysis.externalDeps || [], preflight);
+  const primaryCause = selectPrimaryCause(analysis.externalDeps || [], preflight, motivo);
 
   // Veredicto: si la única causa candidata fue filtrada por preflight OK,
   // el rechazo es INCONCLUYENTE — no crear issue, marcar para revisión humana
@@ -1433,6 +1468,18 @@ async function phaseCollect() {
 
   if (data.inconclusive) {
     console.log(`[rejection-report] INCONCLUYENTE — preflight OK, no se crea issue. Revisión humana.`);
+    await sendReport(data);
+    return;
+  }
+
+  // Loop guard: si el issue rechazado YA es un dep auto-generado (qa:dependency),
+  // no debemos crear otro dep a partir de él. Romper el ciclo auto-referente
+  // donde un "Emulador no corriendo" #N se rechaza → rejection-report matchea
+  // "emulador" en el log/body (que literalmente dice "emulador no corriendo")
+  // → crea otro "Emulador no corriendo" #N+1 → loop infinito.
+  const isSelfDep = (data.issueCtx.labels || []).includes('qa:dependency');
+  if (isSelfDep) {
+    console.log(`[rejection-report] LOOP_GUARD — #${issue} ya es qa:dependency, no se crea dep recursivo. PDF directo.`);
     await sendReport(data);
     return;
   }
