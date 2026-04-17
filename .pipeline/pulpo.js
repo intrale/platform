@@ -869,6 +869,25 @@ const QA_VIDEO_MIN_SIZE_BYTES = 51200;  // 50KB — swiftshader genera mp4s de ~
 const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA para considerar evidencia alternativa válida.
 
 /**
+ * Derivar el QA_MODE esperado para un issue desde sus labels (sin preflight).
+ * Mirror liviano de la lógica en preflightQaChecks: 'android' si tiene label
+ * app:*, 'api' si es area:backend, 'structural' para el resto (infra, docs, etc).
+ * Retorna 'android' | 'api' | 'structural'.
+ */
+function qaModeForIssue(issueNum) {
+  try {
+    const labels = getIssueLabels(issueNum);
+    const appLabelsList = ['app:client', 'app:business', 'app:delivery'];
+    if (labels.some(l => appLabelsList.includes(l))) return 'android';
+    if (labels.includes('area:backend')) return 'api';
+    return 'structural';
+  } catch {
+    // Si falla (sin gh, sin red, cache vacío), asumir android para no bajar la guardia
+    return 'android';
+  }
+}
+
+/**
  * Validar que el resultado del QA tiene evidencia real.
  * Retorna array de problemas encontrados (vacío = OK).
  *
@@ -876,10 +895,27 @@ const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA 
  *   a) Un .mp4 en qa/evidence/{issue}/ o qa/recordings/ con tamaño ≥ 50KB.
  *   b) Al menos N frames PNG del agente en qa/evidence/{issue}/ (fallback cuando
  *      el screenrecord del emulador queda chico por swiftshader).
+ *   c) QA_MODE != 'android' (issues structural/api no producen video — gate no aplica).
  * El campo `video_size_kb` del YAML es solo informativo; si el archivo en disco
  * cumple el umbral, se acepta.
+ *
+ * Fix #2279: el gate solo aplica a QA_MODE=android. Issues `area:infra`, `docs`
+ * o `area:backend` (QA estructural / QA-API) no generan video narrado y el gate
+ * los rechazaba falsamente aunque el agente QA aprobara correctamente.
  */
 function validateQaEvidence(issue, qaData) {
+  // Respetar QA_MODE: si el agente marcó modo estructural/api, o si los labels
+  // del issue indican que no requiere video, saltar el gate (no hay evidencia a validar).
+  const modoYaml = (qaData && typeof qaData.modo === 'string') ? qaData.modo.toLowerCase() : '';
+  if (modoYaml === 'structural' || modoYaml === 'qa-api' || modoYaml === 'api') {
+    return [];
+  }
+  // Fallback: si el agente no escribió `modo`, derivar desde labels del issue.
+  const qaMode = qaModeForIssue(issue);
+  if (qaMode !== 'android') {
+    return [];
+  }
+
   const ROOT = path.resolve(PIPELINE, '..');
   const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
   const recordingsDir = path.join(ROOT, 'qa', 'recordings');
