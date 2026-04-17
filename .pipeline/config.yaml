@@ -35,8 +35,6 @@ concurrencia:
   android-dev: 2
   web-dev: 2
 
-  hotfix: 1              # Hotfix secuencial — uno a la vez
-
   # Verificación
   tester: 2
   qa: 1                  # Limitado por hardware (emulador + video)
@@ -70,8 +68,7 @@ dev_skill_mapping:
   "app:business": "android-dev"
   "app:delivery": "android-dev"
   "area:web": "web-dev"
-  "priority:critical": "hotfix"  # Issues críticos van por hotfix
-  default: "backend-dev"         # Si no tiene label de área
+  default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
 
 # Prioridad de intake (orden de procesamiento)
 prioridad_labels:

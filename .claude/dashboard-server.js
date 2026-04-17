@@ -96,7 +96,6 @@ const AGENT_ICON_MAP = {
   "Cleanup": loadIconDataUri("clean.svg"),
   "Perf": loadIconDataUri("perf.png"),
   "Cost": loadIconDataUri("cost.png"),
-  "Hotfix": loadIconDataUri("hotfix.png"),
   "Config": loadIconDataUri("config.svg"),
   "Done": loadIconDataUri("done.svg"),
   "Error": loadIconDataUri("failure.svg"),
@@ -140,7 +139,7 @@ const SKILL_TO_AGENT = {
   "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
-  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost", "/hotfix": "Hotfix",
+  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost",
   "/update-config": "Config", "/simplify": "Simplify",
 };
 // Case-insensitive lookup for AGENT_ICON_MAP
@@ -995,7 +994,7 @@ const AGENT_MAP_DASHBOARD = {
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev",
   "/ios-dev": "iOSDev", "/web-dev": "WebDev", "/desktop-dev": "DesktopDev",
   "/branch": "Branch", "/security": "Security", "/cleanup": "Cleanup",
-  "/perf": "Perf", "/cost": "Cost", "/hotfix": "Hotfix", "/config": "Config",
+  "/perf": "Perf", "/cost": "Cost", "/config": "Config",
 };
 
 // Normalizar nombres de skill/agente a nombre canónico (#1542)
@@ -1341,14 +1340,14 @@ const SKILL_NAME_ALIASES = {
   "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
-  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost", "/hotfix": "Hotfix",
+  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost",
   // Lowercase canonical
   "guru": "Guru", "doc": "Doc", "planner": "Planner", "deliverymanager": "DeliveryManager",
   "tester": "Tester", "monitor": "Monitor", "builder": "Builder", "review": "Review",
   "qa": "QA", "auth": "Auth", "ux specialist": "UX Specialist", "scrum master": "Scrum Master",
   "po": "PO", "backenddev": "BackendDev", "androiddev": "AndroidDev", "iosdev": "iOSDev",
   "webdev": "WebDev", "desktopdev": "DesktopDev", "ops": "Ops", "branch": "Branch",
-  "cleanup": "Cleanup", "perf": "Perf", "cost": "Cost", "hotfix": "Hotfix",
+  "cleanup": "Cleanup", "perf": "Perf", "cost": "Cost",
   "security": "Security", "claude": "Claude",
   // Hyphenated / spaced variants
   "backend-dev": "BackendDev", "android-dev": "AndroidDev", "ios-dev": "iOSDev",
@@ -1650,7 +1649,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       // Discovery & planning
       "PO": 2, "UX": 2, "Guru": 2, "Doc": 2, "Planner": 2, "Historia": 2, "Refinar": 2, "Priorizar": 2,
       // Development
-      "BackendDev": 3, "AndroidDev": 3, "WebDev": 3, "Hotfix": 3, "Perf": 3,
+      "BackendDev": 3, "AndroidDev": 3, "WebDev": 3, "Perf": 3,
       // Gates & validation
       "Tester": 4, "QA": 4, "Security": 4, "Review": 4, "Auth": 4,
       // Delivery & ops
@@ -2705,7 +2704,7 @@ function renderHTML(data, theme, section) {
     "Scrum Master": "#2dd4bf", "Ops": "#e7e5e4",
     "BackendDev": "#f87171", "AndroidDev": "#4ade80", "WebDev": "#60a5fa",
     "Branch": "#84cc16", "Cleanup": "#78716c", "Security": "#ef4444",
-    "Perf": "#eab308", "Cost": "#06b6d4", "Hotfix": "#dc2626",
+    "Perf": "#eab308", "Cost": "#06b6d4",
     "Claude": "#9399b2", "Main": "#D4A574", "Config": "#a8a29e",
     "Done": "#34d399", "Error": "#ef4444",
   };
