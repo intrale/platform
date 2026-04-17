@@ -4084,35 +4084,46 @@ function cmdLimpiar() {
 
 function cmdRestart(args) {
   const paused = /pausado|--paused/i.test(args || '');
-  const cmd = paused ? 'cmd.exe /c restart --paused' : 'cmd.exe /c restart';
   const mode = paused ? 'pausado' : 'completo';
 
   log('commander', `Restart ${mode} solicitado via Telegram`);
 
-  // Registrar timestamp para protección anti-loop
+  // Registrar marker para que el nuevo pulpo al arrancar detecte el restart
+  // solicitado desde Telegram y envíe la confirmación — el pulpo actual morirá
+  // a mitad del restart.js (es descendiente y el taskkill /T lo alcanza), así
+  // que el callback de exec() nunca retornaba. El mensaje de confirmación lo
+  // emite el nuevo pulpo desde sí mismo al arrancar.
   try {
     fs.writeFileSync(path.join(PIPELINE, 'last-restart.json'),
-      JSON.stringify({ timestamp: new Date().toISOString(), mode, source: 'telegram' }));
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        mode, source: 'telegram', paused, notified: false,
+      }));
   } catch {}
 
-  // Ejecutar con exec async — cmd.exe nativo para que los hijos sobrevivan al Job Object de Windows
-  const { exec } = require('child_process');
-  exec(cmd, {
-    timeout: 60000,
-    cwd: ROOT,
-    env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
-  }, (error, stdout, stderr) => {
-    if (error) {
-      log('commander', `Error en restart: ${error.message}`);
-      sendTelegram(`❌ Error en reinicio ${mode}:\n\`${error.message.slice(0, 200)}\`\n\nIntentar manualmente: \`cmd.exe /c restart${paused ? ' --paused' : ''}\``);
-      return;
-    }
-    const output = (stdout || '').trim();
-    const tail = output ? output.split('\n').slice(-10).join('\n') : 'Pipeline reiniciado.';
-    sendTelegram(`✅ *Restart ${mode} ejecutado*\n\n\`\`\`\n${tail}\n\`\`\``);
-  });
+  // Lanzar restart.js como proceso COMPLETAMENTE desvinculado del árbol del
+  // pulpo. En Windows, taskkill /T sigue la jerarquía de PPID — un spawn
+  // normal queda como descendiente y muere cuando el pulpo se mata a sí mismo.
+  // `cmd.exe /c start ""` reasigna el parent a conhost.exe, rompiendo la
+  // cadena. Así el restart.js sobrevive al kill del pulpo y completa launchAll.
+  const { spawn } = require('child_process');
+  const pausedArg = paused ? ' --paused' : '';
+  const cmdLine = `start "" /MIN cmd.exe /c restart${pausedArg}`;
+  try {
+    const child = spawn('cmd.exe', ['/c', cmdLine], {
+      cwd: ROOT,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
+    });
+    child.unref();
+  } catch (e) {
+    log('commander', `Error lanzando restart: ${e.message}`);
+    return `❌ No pude lanzar el restart: ${e.message.slice(0, 200)}`;
+  }
 
-  return `🔄 Reinicio ${mode} del pipeline en progreso...${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
+  return `🔄 Reinicio ${mode} del pipeline en progreso...\n_Te aviso cuando termine (~15-30s)._${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
 }
 
 function cmdHelp() {
@@ -4921,6 +4932,27 @@ function brazoDesbloqueo(config) {
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
+
+  // Confirmar restart solicitado desde Telegram. El pulpo anterior murió a
+  // mitad del restart.js (cadena: pulpo → cmd → node restart.js, matada por
+  // /T sobre el pulpo), así que el callback de exec() nunca enviaba el
+  // mensaje de confirmación. Lo emite este nuevo pulpo al arrancar.
+  try {
+    const lastRestartPath = path.join(PIPELINE, 'last-restart.json');
+    if (fs.existsSync(lastRestartPath)) {
+      const data = JSON.parse(fs.readFileSync(lastRestartPath, 'utf8'));
+      const ageMs = Date.now() - new Date(data.timestamp).getTime();
+      const TWO_MINUTES = 2 * 60 * 1000;
+      if (data.source === 'telegram' && !data.notified && ageMs < TWO_MINUTES) {
+        const mode = data.mode || (data.paused ? 'pausado' : 'completo');
+        sendTelegram(`✅ *Pipeline reiniciado* (modo ${mode})\n_Listo para recibir comandos._`);
+        fs.writeFileSync(lastRestartPath, JSON.stringify({ ...data, notified: true }, null, 2));
+        log('pulpo', `Restart ${mode} confirmado via Telegram (solicitado hace ${Math.round(ageMs / 1000)}s)`);
+      }
+    }
+  } catch (e) {
+    log('pulpo', `Warning: no pude verificar last-restart: ${e.message.slice(0, 100)}`);
+  }
 
   // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
   migrateSkillProfilesIfNeeded();
