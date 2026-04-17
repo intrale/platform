@@ -255,8 +255,10 @@ import ext.signup.CommSignUpPlatformAdminService
 import ext.signup.CommSignUpService
 import ext.storage.CommKeyValueStorage
 import ext.storage.KeyValueStorageService
+import ext.http.HttpTimeoutsConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.DefaultRequest
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logger
@@ -399,6 +401,14 @@ private val infrastructureModule = DI.Module("infrastructure") {
         HttpClient() {
             install(ContentNegotiation) {
                 json(Json { isLenient = true; ignoreUnknownKeys = true })
+            }
+            // Issue #2285 — CA-1: timeouts HTTP configurados explicitamente.
+            // Previene UI colgada cuando el backend no responde (cold start Lambda,
+            // red lenta) y evita inconsistencias entre engines de cada plataforma.
+            install(HttpTimeout) {
+                requestTimeoutMillis = HttpTimeoutsConfig.HTTP_REQUEST_TIMEOUT_MS
+                connectTimeoutMillis = HttpTimeoutsConfig.HTTP_CONNECT_TIMEOUT_MS
+                socketTimeoutMillis = HttpTimeoutsConfig.HTTP_SOCKET_TIMEOUT_MS
             }
             install(Logging) {
                 level = LogLevel.ALL
