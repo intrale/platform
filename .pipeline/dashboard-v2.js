@@ -594,7 +594,7 @@ const SKILL_CATEGORY = {
   po: 'product', ux: 'product', planner: 'product', scrum: 'product',
   'backend-dev': 'dev', 'android-dev': 'dev', 'web-dev': 'dev',
   tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
-  guru: 'ops', perf: 'ops', build: 'ops', hotfix: 'ops', delivery: 'ops',
+  guru: 'ops', perf: 'ops', build: 'ops', delivery: 'ops',
 };
 // Etiquetas cortas por fase (2 chars) para mostrar debajo de cada dot
 const FASE_LABEL_SHORT = {
@@ -884,7 +884,6 @@ function generateHTML(state) {
     scrum:         { icon: '📊', name: 'Scrum',       tagline: 'Sutherland · Vacanti · Mike Cohn',         color: '#79c0ff' },
     perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
     build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
-    hotfix:        { icon: '🔥', name: 'Hotfix',      tagline: 'Emergency fix',                            color: '#f85149' },
     commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
   };
   const skillIcon = (skill) => (AGENT_PERSONA[skill] || {}).icon || '⚙';
@@ -1040,6 +1039,31 @@ function generateHTML(state) {
     if (data.estadoActual === 'trabajando') score += 10;
     else if (data.estadoActual === 'pendiente') score += 5;
     return score;
+  };
+  // Score del pulpo (mirror de calcularPrioridad en pulpo.js:1811)
+  // Menor score = más prioritario de lanzar. Usado para ordenar lane cards
+  // de modo que el primero de cada columna sea el que se está ejecutando
+  // (o el próximo a lanzarse según el pulpo).
+  const pulpoPrioLabels = config.prioridad_labels || [];
+  const pulpoFeaturePrio = config.feature_priority || {};
+  const calcPulpoScore = (labels) => {
+    const ls = labels || [];
+    let prioScore = pulpoPrioLabels.indexOf('priority:medium');
+    if (prioScore === -1) prioScore = 999;
+    for (let i = 0; i < pulpoPrioLabels.length; i++) {
+      if (ls.includes(pulpoPrioLabels[i])) { prioScore = i; break; }
+    }
+    let featureScore = 999;
+    for (const [nivel, featureLabels] of Object.entries(pulpoFeaturePrio)) {
+      const nivelIdx = pulpoPrioLabels.indexOf(`priority:${nivel}`);
+      if (nivelIdx === -1) continue;
+      for (const fl of featureLabels) {
+        if (ls.includes(fl)) { featureScore = Math.min(featureScore, nivelIdx); break; }
+      }
+    }
+    const effectivePrio = Math.min(prioScore, featureScore);
+    const tiebreaker = featureScore < 999 ? 0 : 1;
+    return effectivePrio * 10 + tiebreaker;
   };
   const sorted = matrixEntries.sort((a, b) => {
     const aComplete = isComplete(a[1]);
@@ -1472,13 +1496,24 @@ function generateHTML(state) {
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
     // Data atributos para búsqueda client-side
     const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
-    // Prioridad para sort: stale (staleMin desc) > failed (bounces desc) > blocked > running > pending
+    // Prioridad para sort (opción B, matchea orden del pulpo):
+    //   Tier 1 (top)    — working: el agente que se está ejecutando
+    //   Tier 2          — pendiente lanzable: próximos según score del pulpo
+    //   Tier 3          — pendiente bloqueado: no lanzables hasta resolver deps
+    //   Tier 4 (fondo)  — stale / failed: hundidos, no son el próximo a lanzar
+    // Dentro de cada tier se desempata por score del pulpo (critical primero).
+    // El sort es `b.priority - a.priority` (desc) → mayor priority = más arriba.
+    const pulpoScore = calcPulpoScore(data.labels);
     let priority;
-    if (isStale) priority = 1000 + (data.staleMin || 0);
-    else if (hasRejection) priority = 700 + (data.bounces || 0);
-    else if (isBlocked) priority = 500;
-    else if (working) priority = 300 - (data.staleMin || 0);
-    else priority = 100 - (data.staleMin || 0);
+    if (working) {
+      priority = 20000 - pulpoScore;
+    } else if (isStale || hasRejection) {
+      priority = 500 - (data.staleMin || 0);
+    } else if (isBlocked) {
+      priority = 5000 - pulpoScore;
+    } else {
+      priority = 10000 - pulpoScore;
+    }
     const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" title="${laneTitle}">
       <div class="lc-card-main">
         <div class="lc-top">

@@ -21,5 +21,11 @@ Sos el developer web de Intrale (Kotlin/Wasm + Compose for Web).
 ### Reglas de strings (CRITICO)
 - Mismas que android-dev: siempre `resString()`, nunca `stringResource()` directo
 
+### Si el issue es `priority:critical` (hotfix)
+- Branch **desde `origin/main`**, nunca desde `develop`
+- **Cambio mínimo**: solo tocar lo necesario para corregir el bug
+- **No refactorizar**: no limpiar código adyacente, no optimizar
+- **Test obligatorio**: al menos un test que reproduzca el bug
+
 ### Resultado
 - `resultado: aprobado` con branch name y último commit hash

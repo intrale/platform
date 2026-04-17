@@ -617,7 +617,7 @@ function countRunningBySkill(skill) {
 }
 
 /** Skills que cuentan como "desarrolladores" para el límite global */
-const DEV_SKILLS = ['backend-dev', 'android-dev', 'web-dev', 'hotfix'];
+const DEV_SKILLS = ['backend-dev', 'android-dev', 'web-dev'];
 
 /** Contar total de devs corriendo en TODAS las fases de TODOS los pipelines */
 function countRunningDevs() {
