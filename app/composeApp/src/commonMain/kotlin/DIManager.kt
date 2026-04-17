@@ -309,6 +309,7 @@ import ui.sc.client.ClientNotificationsScreen
 import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientOrderDetailScreen
 import ui.sc.client.ClientOrdersScreen
+import ui.sc.client.RepeatOrderDialogShowcaseScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.client.ClientCheckoutScreen
 import ui.sc.client.ClientProductDetailScreen
@@ -344,6 +345,7 @@ public const val CLIENT_CHECKOUT = "clientCheckout"
 public const val CLIENT_ADDRESSES = "clientAddresses"
 public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
 public const val CLIENT_ORDER_DETAIL = "clientOrderDetail"
+public const val CLIENT_REPEAT_ORDER_DIALOG_SHOWCASE = "clientRepeatOrderDialogShowcase"
 public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
 public const val CLIENT_NOTIFICATIONS = "clientNotifications"
 public const val HOME = "home"
@@ -525,7 +527,7 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
-    bindSingleton<ToDoRepeatOrder> { DoRepeatOrder(instance()) }
+    bindSingleton<ToDoRepeatOrder> { DoRepeatOrder(instance(), instance()) }
     bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
 
     bindSingleton<ToDoGetNotifications> { DoGetNotifications() }
@@ -575,6 +577,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_CATALOG) { ClientCatalogScreen() }
     bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
     bindSingleton(tag = CLIENT_ORDER_DETAIL) { ClientOrderDetailScreen() }
+    bindSingleton(tag = CLIENT_REPEAT_ORDER_DIALOG_SHOWCASE) { RepeatOrderDialogShowcaseScreen() }
     bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
     bindSingleton(tag = CLIENT_CHECKOUT) { ClientCheckoutScreen() }
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
@@ -635,6 +638,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_CATALOG))
                     add(instance(tag = CLIENT_ORDERS))
                     add(instance(tag = CLIENT_ORDER_DETAIL))
+                    add(instance(tag = CLIENT_REPEAT_ORDER_DIALOG_SHOWCASE))
                     add(instance(tag = CLIENT_CART))
                     add(instance(tag = CLIENT_CHECKOUT))
                     add(instance(tag = CLIENT_PROFILE))

@@ -206,15 +206,20 @@ try {
 } catch (e) {}
 
 function driveAvailable() {
-    // OAuth tiene prioridad sobre Service Account
+    // OAuth tiene prioridad para Drive personal (Service Account no tiene storage quota)
     if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) return true;
-    if (!DRIVE_CREDENTIALS_PATH) return false;
-    const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
-    return fs.existsSync(resolved);
+    // Fallback: Service Account (funciona con Shared Drives / Workspace)
+    if (DRIVE_CREDENTIALS_PATH) {
+        const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
+        if (fs.existsSync(resolved) && !fs.statSync(resolved).isDirectory()) return true;
+    }
+    return false;
 }
 
 function loadDriveCredentials() {
+    if (!DRIVE_CREDENTIALS_PATH) return null;
     const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
+    if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) return null;
     return JSON.parse(fs.readFileSync(resolved, "utf8"));
 }
 
@@ -267,39 +272,45 @@ function getOAuthAccessToken() {
 
 // Obtener access token via JWT grant (Service Account)
 function getGoogleAccessToken(credentials) {
-    // Prioridad: OAuth refresh token > Service Account JWT
+    // Prioridad: OAuth (Drive personal) > Service Account (Shared Drives / Workspace)
     if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) {
         return getOAuthAccessToken();
     }
-    return new Promise((resolve, reject) => {
-        const jwt = createServiceAccountJWT(credentials);
-        const payload = "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
-            "&assertion=" + encodeURIComponent(jwt);
-        const req = https.request({
-            hostname: "oauth2.googleapis.com",
-            path: "/token",
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Content-Length": Buffer.byteLength(payload),
-            },
-            timeout: 15000,
-        }, (res) => {
-            let d = "";
-            res.on("data", (c) => d += c);
-            res.on("end", () => {
-                try {
-                    const r = JSON.parse(d);
-                    if (r.access_token) resolve(r.access_token);
-                    else reject(new Error("Token error: " + d));
-                } catch (e) { reject(e); }
+    if (credentials && credentials.private_key) {
+        return new Promise((resolve, reject) => {
+            const jwt = createServiceAccountJWT(credentials);
+            const payload = "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
+                "&assertion=" + encodeURIComponent(jwt);
+            const req = https.request({
+                hostname: "oauth2.googleapis.com",
+                path: "/token",
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Length": Buffer.byteLength(payload),
+                },
+                timeout: 15000,
+            }, (res) => {
+                let d = "";
+                res.on("data", (c) => d += c);
+                res.on("end", () => {
+                    try {
+                        const r = JSON.parse(d);
+                        if (r.access_token) resolve(r.access_token);
+                        else reject(new Error("SA token error: " + d));
+                    } catch (e) { reject(e); }
+                });
             });
+            req.on("timeout", () => { req.destroy(); reject(new Error("SA token request timeout")); });
+            req.on("error", reject);
+            req.write(payload);
+            req.end();
         });
-        req.on("timeout", () => { req.destroy(); reject(new Error("token request timeout")); });
-        req.on("error", (e) => reject(e));
-        req.write(payload);
-        req.end();
-    });
+    }
+    if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) {
+        return getOAuthAccessToken();
+    }
+    return Promise.reject(new Error("No credentials available (neither Service Account nor OAuth)"));
 }
 
 // Listar carpetas hijas con un nombre dado dentro de un padre
@@ -488,15 +499,12 @@ async function uploadToDrive(videoBuffer, filename, issueNumber, issueTitle, spr
     // Carpeta raíz configurada (ej. ID de "Intrale QA" en Drive)
     const rootFolderId = DRIVE_FOLDER_ID;
 
-    // Estructura: rootFolderId / SPR-XXXX / #issue-titulo /
-    const sprintFolder = sprintId || "QA";
-    const issueFolder = issueTitle
-        ? "#" + issueNumber + "-" + issueTitle.replace(/[/\\?%*:|"<>]/g, "-").slice(0, 40)
-        : "#" + issueNumber;
+    // Estructura: rootFolderId / #issueNumber /
+    // Una sola carpeta unívoca por issue (sin sprint, sin título, sin doble nivel).
+    const issueFolder = "#" + issueNumber;
 
-    console.log("[qa-video-share] Drive: creando estructura " + sprintFolder + " / " + issueFolder);
-    const sprintFolderId = await driveGetOrCreateFolder(accessToken, sprintFolder, rootFolderId);
-    const issueFolderId = await driveGetOrCreateFolder(accessToken, issueFolder, sprintFolderId);
+    console.log("[qa-video-share] Drive: creando/usando carpeta " + issueFolder);
+    const issueFolderId = await driveGetOrCreateFolder(accessToken, issueFolder, rootFolderId);
 
     console.log("[qa-video-share] Drive: subiendo " + filename + " (" + formatSize(videoBuffer.length) + ")...");
     const uploaded = await driveUploadFile(accessToken, videoBuffer, filename, issueFolderId);
@@ -675,6 +683,24 @@ function formatSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + "MB";
 }
 
+// Nombre descriptivo para el video subido a Drive.
+// Formato: qa-<issue>-<YYYYMMDD>-<HHMM>-<verdict>[-narrated].mp4
+// Ejemplo: qa-2062-20260416-2311-rechazado-narrated.mp4
+function buildDriveFilename(issueNumber, verdict, hasNarration) {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const date = now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate());
+    const time = pad(now.getHours()) + pad(now.getMinutes());
+    const normalized = String(verdict || "DESCONOCIDO")
+        .toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "");
+    const verdictTag = normalized || "desconocido";
+    const suffix = hasNarration ? "-narrated" : "";
+    return "qa-" + issueNumber + "-" + date + "-" + time + "-" + verdictTag + suffix + ".mp4";
+}
+
 // --- Leer sprint activo desde roadmap.json (fallback si no se pasa --sprint) ---
 
 function readActiveSprint() {
@@ -753,12 +779,14 @@ async function main() {
 
         // ── Nivel 1: Google Drive ──────────────────────────────────────────
         if (driveAvailable()) {
-            console.log("[qa-video-share] " + filename + " (" + sizeStr + ") -> Google Drive");
+            // Renombrar para que sea identificable: qa-<issue>-<fecha>-<hora>-<verdict>[-narrated].mp4
+            const driveFilename = buildDriveFilename(data.issue, data.verdict, hasNarration);
+            console.log("[qa-video-share] " + filename + " (" + sizeStr + ") -> Google Drive como " + driveFilename);
             try {
                 const videoBuffer = fs.readFileSync(fullPath);
                 const driveLink = await withRetry(
-                    () => uploadToDrive(videoBuffer, filename, data.issue, data.title, sprintId),
-                    "Drive upload " + filename
+                    () => uploadToDrive(videoBuffer, driveFilename, data.issue, data.title, sprintId),
+                    "Drive upload " + driveFilename
                 );
 
                 // Guardar primer link de Drive para qa-report.json
@@ -779,17 +807,17 @@ async function main() {
                     "\uD83D\uDCCB Reporte: `" + repoReportPath + "`\n" +
                     "\uD83D\uDD52 " + timestamp;
 
-                await withRetry(() => sendTelegramMessage(message), "sendMessage Drive link " + filename);
-                console.log("[qa-video-share] " + filename + " subido a Drive, link enviado OK");
+                await withRetry(() => sendTelegramMessage(message), "sendMessage Drive link " + driveFilename);
+                console.log("[qa-video-share] " + driveFilename + " subido a Drive, link enviado OK");
                 sent++;
             } catch (e) {
-                console.error("[qa-video-share] Drive fallo para " + filename + ": " + e.message);
+                console.error("[qa-video-share] Drive fallo para " + driveFilename + ": " + e.message);
                 console.error("[qa-video-share] ERROR: No se pudo subir evidencia a Drive. Pipeline fallido.");
                 // Notificar el fallo a Telegram
                 try {
                     await sendTelegramMessage(
                         "❌ *Drive Upload FALLIDO* — Issue #" + data.issue + "\n" +
-                        "Video: `" + filename + "` (" + sizeStr + ")\n" +
+                        "Video: `" + driveFilename + "` (" + sizeStr + ")\n" +
                         "Error: " + e.message.substring(0, 200)
                     );
                 } catch (e2) {}

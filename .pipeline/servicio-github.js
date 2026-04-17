@@ -34,7 +34,11 @@ function listWorkFiles(dir) {
 
 // --- Escape para shell ---
 function esc(str) {
-  return (str || '').replace(/"/g, '\\"');
+  return (str || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '');
 }
 
 // --- Recovery: mover orphans de trabajando/ a pendiente/ al arrancar ---
