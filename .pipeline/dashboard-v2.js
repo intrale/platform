@@ -12,7 +12,13 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
+// Lib interna — sanitización y lectura de estado infra (issue #2328)
+const { readInfraStateFromDisk } = require('./lib/blocked-infra-state');
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
+// Bind explícito a loopback (CA5 / security review issue #2328).
+// NO cambiar a 0.0.0.0 / :: sin agregar auth + HTTPS primero.
+const BIND_HOST = process.env.DASHBOARD_BIND_HOST || '127.0.0.1';
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
@@ -483,6 +489,17 @@ function getPipelineState() {
     const blockedData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'blocked-issues.json'), 'utf8'));
     if (blockedData.blockedBy) state.blockedIssues.blockedBy = blockedData.blockedBy;
     if (blockedData.blocks) state.blockedIssues.blocks = blockedData.blocks;
+  } catch {}
+
+  // Estado infra por issue (issue #2328) — distincion visual infra vs codigo.
+  // Productor real: historia hermana #2317 (hoy OPEN). Hasta su integracion,
+  // el consumidor lee este archivo si existe; si no, la UI no renderiza badge.
+  // Toda entry pasa por validateEntry() → campos inválidos se descartan.
+  // TODO(#2317): asegurar que el productor respeta el contrato de lib/blocked-infra-state.js.
+  state.infraBlockedByIssue = {};
+  try {
+    const infraState = readInfraStateFromDisk(PIPELINE);
+    state.infraBlockedByIssue = infraState.issues || {};
   } catch {}
 
   // Salud de Infra — publicado por #2304 (healthcheck+retry) y #2305 (circuit breaker).
@@ -1384,6 +1401,58 @@ function generateHTML(state) {
       </div>
     </div>`;
 
+    // ── Badge infra vs código (issue #2328) ─────────────────────────────
+    // Consume el estado producido por #2317. Si no hay entry, no se renderiza.
+    // Todo valor dinámico pasa por escInfra() antes de inyectarse al HTML
+    // (CA5: NUNCA innerHTML con datos crudos).
+    const infraEntry = state.infraBlockedByIssue?.[String(issueNum)] || null;
+    let infraCardClass = '';
+    let infraBadgeHTML = '';
+    let infraAriaLabel = '';
+    if (infraEntry) {
+      const reason = infraEntry.blocked_reason; // ya validado en reader
+      const endpointEsc = escInfra(infraEntry.endpoint);
+      const tsFmt = formatInfraTs(infraEntry.timestamp);
+      const relEsc = escInfra(tsFmt.rel);
+      const absEsc = escInfra(tsFmt.abs);
+      const parentNum = infraEntry.parent_issue; // entero validado
+      // URL fija construida sólo con entero validado — sin concat de strings crudos.
+      const parentHref = `https://github.com/intrale/platform/issues/${parentNum}`;
+      if (reason === 'infra') {
+        infraCardClass = ' ic-infra-blocked';
+        infraBadgeHTML =
+          `<span class="infra-badge infra-badge-infra" role="status" tabindex="0" ` +
+          `aria-label="Bloqueado por infra, endpoint ${endpointEsc}, ultimo intento ${relEsc}">` +
+          `<span class="infra-badge-icon" aria-hidden="true">&#127760;</span>` +
+          `<span class="infra-badge-label">infra</span>` +
+          `<span class="infra-tooltip" role="tooltip">` +
+            `<span class="infra-tt-title">&#127760; Infra &middot; Sin conexi&oacute;n</span>` +
+            `<span class="infra-tt-sep" aria-hidden="true"></span>` +
+            `<span class="infra-tt-row"><span class="infra-tt-k">Endpoint:</span> <span class="infra-tt-v">${endpointEsc}</span></span>` +
+            `<span class="infra-tt-row"><span class="infra-tt-k">&Uacute;ltima vez:</span> <span class="infra-tt-v">${relEsc} (${absEsc})</span></span>` +
+            `<span class="infra-tt-row"><span class="infra-tt-k">Padre:</span> <a class="infra-tt-parent" href="${parentHref}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" onclick="event.stopPropagation()">#${parentNum} (abrir &#8599;)</a></span>` +
+          `</span>` +
+          `</span>`;
+        infraAriaLabel = `Bloqueado por infra, endpoint ${endpointEsc}, ultimo intento ${relEsc}`;
+      } else if (reason === 'code') {
+        infraCardClass = ' ic-code-blocked';
+        infraBadgeHTML =
+          `<span class="infra-badge infra-badge-code" role="status" tabindex="0" ` +
+          `aria-label="Bloqueado por codigo, ultimo intento ${relEsc}">` +
+          `<span class="infra-badge-icon" aria-hidden="true">&#10060;</span>` +
+          `<span class="infra-badge-label">code</span>` +
+          `<span class="infra-tooltip" role="tooltip">` +
+            `<span class="infra-tt-title">&#10060; C&oacute;digo &middot; Bloqueado</span>` +
+            `<span class="infra-tt-sep" aria-hidden="true"></span>` +
+            `<span class="infra-tt-row"><span class="infra-tt-k">Endpoint:</span> <span class="infra-tt-v">${endpointEsc}</span></span>` +
+            `<span class="infra-tt-row"><span class="infra-tt-k">&Uacute;ltima vez:</span> <span class="infra-tt-v">${relEsc} (${absEsc})</span></span>` +
+            `<span class="infra-tt-row"><span class="infra-tt-k">Padre:</span> <a class="infra-tt-parent" href="${parentHref}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" onclick="event.stopPropagation()">#${parentNum} (abrir &#8599;)</a></span>` +
+          `</span>` +
+          `</span>`;
+        infraAriaLabel = `Bloqueado por codigo, ultimo intento ${relEsc}`;
+      }
+    }
+
     const blockedClass = blockedBy != null ? ' ic-blocked' : '';
     const completedClass = complete ? ' ic-completed' : '';
     const workingClass = data.estadoActual === 'trabajando' ? ' ic-working' : '';
@@ -1406,11 +1475,11 @@ function generateHTML(state) {
     const qaHTML = qaLabel ? `<span class="ic-qa-badge ic-qa-${qaLabel.split(':')[1]}">${qaLabel}</span>` : '';
 
     issueCards += `
-    <div class="ic-card${completedClass}${blockedClass}${workingClass}${staleClass}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}">
+    <div class="ic-card${completedClass}${blockedClass}${infraCardClass}${workingClass}${staleClass}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}"${infraAriaLabel ? ` aria-label="${infraAriaLabel}"` : ''}>
       <div class="ic-header" role="button" tabindex="0" aria-expanded="false" onclick="toggleIssueDetail('${issueNum}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleIssueDetail('${issueNum}')}">
         <div class="ic-left">
           <a href="${GH(issueNum)}" target="_blank" class="ic-issue-link" onclick="event.stopPropagation()">#${issueNum}</a>
-          ${bounceHTML}${blockIcons}${staleHTML}
+          ${bounceHTML}${infraBadgeHTML}${blockIcons}${staleHTML}
           ${titleHTML}
         </div>
         <div class="ic-stepper" aria-label="Pipeline progress">${stepperDots}</div>
@@ -2498,7 +2567,59 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ic-card.ic-working{border-left:3px solid var(--ac)}
 .ic-card.ic-stale{border-left:3px solid var(--yl);background:rgba(210,153,34,0.04)}
 .ic-card.ic-dead{border-left:3px solid var(--rd);background:rgba(248,81,73,0.06);animation:deadPulse 3s infinite}
+/* Infra block (issue #2328): gris neutro, pausa sin urgencia. Rojo code pesa mas visualmente. */
+.ic-card.ic-infra-blocked{border-left:3px solid #9AA0A6;background:rgba(154,160,166,0.05)}
+.ic-card.ic-code-blocked{border-left:3px solid #D93F0B;background:rgba(217,63,11,0.05)}
 @keyframes deadPulse{0%,100%{opacity:1}50%{opacity:0.85}}
+
+/* ── Infra/Code badges (issue #2328, paleta semantica WCAG AA) ─────────── */
+/* Gris #6E7175 para texto chico (ratio > 4.5:1 sobre fondo #0d1117). */
+.infra-badge{
+  position:relative;display:inline-flex;align-items:center;gap:4px;
+  font-size:0.72em;font-weight:600;padding:1px 7px;border-radius:10px;
+  flex-shrink:0;cursor:help;outline:none;
+}
+.infra-badge:focus-visible{outline:2px solid var(--ac);outline-offset:2px;border-radius:10px}
+.infra-badge-infra{color:#6E7175;background:rgba(154,160,166,0.12);border:1px solid rgba(154,160,166,0.35)}
+.infra-badge-code{color:#D93F0B;background:rgba(217,63,11,0.10);border:1px solid rgba(217,63,11,0.30)}
+.infra-badge-icon{font-size:1.0em;line-height:1}
+.infra-badge-label{font-variant:small-caps;letter-spacing:0.03em}
+
+/* Tooltip fijo 4 lineas, aparece con delay para evitar flashes (CA2) */
+.infra-tooltip{
+  position:absolute;left:0;top:calc(100% + 6px);
+  min-width:260px;max-width:380px;
+  background:#1a1f27;color:#e6edf3;
+  border:1px solid rgba(154,160,166,0.35);border-radius:6px;
+  padding:8px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.5);
+  display:flex;flex-direction:column;gap:3px;
+  font-size:0.92em;font-weight:400;line-height:1.35;
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity 180ms ease-in-out, visibility 180ms;
+  transition-delay:0ms;
+  z-index:3000;white-space:normal;
+}
+/* Hover: 300ms delay al aparecer (CA2). Focus: inmediato para keyboard. */
+.infra-badge:hover .infra-tooltip{opacity:1;visibility:visible;transition-delay:300ms 0ms}
+.infra-badge:focus .infra-tooltip,
+.infra-badge:focus-within .infra-tooltip{opacity:1;visibility:visible;transition-delay:0ms}
+.infra-badge.infra-tt-hide .infra-tooltip{opacity:0 !important;visibility:hidden !important}
+.infra-tt-title{font-weight:700}
+.infra-tt-sep{display:block;height:1px;background:rgba(154,160,166,0.25);margin:2px 0}
+.infra-tt-row{display:block}
+.infra-tt-k{color:#9AA0A6;font-weight:600}
+.infra-tt-v{color:#e6edf3;word-break:break-all}
+.infra-tt-parent{color:#58a6ff;text-decoration:none}
+.infra-tt-parent:hover,.infra-tt-parent:focus{text-decoration:underline}
+
+/* Viewport edge: si la card esta pegada al borde derecho, caer a la izquierda. */
+@media (max-width: 900px){ .infra-tooltip{left:auto;right:0} }
+
+/* WCAG 2.3.3: reduced motion desactiva toda transicion/animacion de este badge. */
+@media (prefers-reduced-motion: reduce){
+  .infra-tooltip{transition:none !important;transition-delay:0ms !important}
+  .ic-card.ic-infra-blocked,.ic-card.ic-code-blocked{transition:none !important}
+}
 
 /* ── Card header (clickable, grid layout for alignment) ──────────────── */
 .ic-header{
@@ -4319,6 +4440,23 @@ document.addEventListener('click', function(e){
 });
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeDotPopup(); });
 
+// Infra/Code tooltip: cerrar con Escape sin mover foco (issue #2328, CA2).
+// Agregamos clase infra-tt-hide al badge con foco para ocultar el tooltip
+// mientras mantiene el foco. Al salir del foco se quita.
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'Escape') return;
+  var active = document.activeElement;
+  if (!active || !active.classList || !active.classList.contains('infra-badge')) return;
+  active.classList.add('infra-tt-hide');
+  e.stopPropagation();
+});
+document.addEventListener('focusout', function(e){
+  var t = e.target;
+  if (t && t.classList && t.classList.contains('infra-badge')) {
+    t.classList.remove('infra-tt-hide');
+  }
+}, true);
+
 function filterIssueTab(tabEl, filter) {
   document.querySelectorAll('.ic-tab').forEach(t => {
     t.classList.remove('ic-tab-active');
@@ -5446,7 +5584,42 @@ es.onerror = function() {
 
 // --- Server ---
 
+// ── Security helpers (issue #2328, CA5) ───────────────────────────────────
+// Validación del header `Host` como mitigación de DNS rebinding. Solo se
+// permiten hosts loopback; cualquier otro valor → 403. Efectivo dado que el
+// socket está bindeado a 127.0.0.1, pero defensa en profundidad.
+const ALLOWED_HOSTS_RE = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+
+function isLoopbackHost(hostHeader) {
+  if (!hostHeader) return false;
+  return ALLOWED_HOSTS_RE.test(hostHeader);
+}
+
+// Headers de seguridad mínimos aplicados a TODA respuesta HTML/JSON.
+// - nosniff: evita content-type sniffing.
+// - DENY: evita que el dashboard sea embebible en un iframe (clickjacking).
+// - Cache-Control: no-store para estado dinámico (evita leaks en historial).
+function applySecurityHeaders(res, extra) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) res.setHeader(k, v);
+  }
+}
+
 const server = http.createServer((req, res) => {
+  // ── Host validation (DNS rebinding mitigation) ──────────────────────
+  // Aunque el socket bindeado sólo acepta conexiones loopback, un atacante
+  // que haya engañado al navegador con DNS rebinding puede conectarse a
+  // 127.0.0.1 con Host:attacker.com. Rechazamos early cualquier Host no-loopback.
+  if (!isLoopbackHost(req.headers.host)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Forbidden: Host header invalido');
+    return;
+  }
+
   // Log viewer en ventana dedicada
   if (req.url.startsWith('/logs/view/')) {
     const parts = req.url.slice(11).split('?');
@@ -5730,13 +5903,23 @@ const server = http.createServer((req, res) => {
 
   // HTML dashboard
   const state = getPipelineState();
+  applySecurityHeaders(res);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(generateHTML(state));
 });
 
-server.listen(PORT, () => {
-  log(`Dashboard V2 en http://localhost:${PORT}`);
+// Bind explícito a loopback (issue #2328 · CA5 · security review).
+// Si en el futuro se quiere exponer remoto: requiere auth + HTTPS primero.
+server.listen(PORT, BIND_HOST, () => {
+  const addr = server.address();
+  const bound = addr && typeof addr === 'object' ? addr.address : BIND_HOST;
+  log(`Dashboard V2 en http://${BIND_HOST}:${PORT} (bind efectivo: ${bound})`);
   log(`API: /api/state | Logs: /logs/{file} | SSE: /events`);
+  // Defensa en profundidad: si el bind efectivo no es loopback, abortar.
+  if (bound && bound !== '127.0.0.1' && bound !== '::1') {
+    log(`[SECURITY] Bind inseguro detectado (${bound}) — abortando`);
+    process.exit(2);
+  }
 });
 
 fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid));

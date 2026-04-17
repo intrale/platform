@@ -1,0 +1,6 @@
+{
+  "_comment": "Stub inicial. Productor real: historia hermana #2317 (integrara clasificacion infra vs code). Schema v1 en .pipeline/lib/blocked-infra-state.js — no editar manualmente en produccion.",
+  "version": 1,
+  "updatedAt": "2026-04-17T00:00:00.000Z",
+  "issues": {}
+}
