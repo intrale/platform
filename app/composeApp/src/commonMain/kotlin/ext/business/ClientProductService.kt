@@ -20,7 +20,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -97,10 +97,10 @@ class ClientProductService(
     private suspend fun HttpResponse.toProduct(): ProductDTO {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
-            runCatching { return Json.decodeFromString(ProductDTO.serializer(), bodyText) }
+            runCatching { return IntraleClientJson.decodeFromString(ProductDTO.serializer(), bodyText) }
             runCatching {
                 val responseWrapper =
-                    Json.decodeFromString(ProductListResponse.serializer(), bodyText)
+                    IntraleClientJson.decodeFromString(ProductListResponse.serializer(), bodyText)
                 responseWrapper.products.firstOrNull()?.let { return it }
             }
             throw ExceptionResponse(
@@ -114,15 +114,15 @@ class ClientProductService(
     private suspend fun HttpResponse.toProducts(): List<ProductDTO> {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
-            runCatching { return Json.decodeFromString(ProductListResponse.serializer(), bodyText).products }
-            runCatching { return Json.decodeFromString(ListSerializer(ProductDTO.serializer()), bodyText) }
+            runCatching { return IntraleClientJson.decodeFromString(ProductListResponse.serializer(), bodyText).products }
+            runCatching { return IntraleClientJson.decodeFromString(ListSerializer(ProductDTO.serializer()), bodyText) }
             return emptyList()
         }
         throw bodyText.toProductException()
     }
 
     private fun String.toProductException(): ExceptionResponse =
-        runCatching { Json.decodeFromString(ExceptionResponse.serializer(), this) }
+        runCatching { IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), this) }
             .getOrElse {
                 logger.error(it) { "No se pudo parsear la respuesta de error" }
                 ExceptionResponse(

@@ -8,7 +8,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import ar.com.intrale.shared.ExceptionResponse
 import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.business.RequestJoinBusinessRequest
@@ -23,11 +23,11 @@ class ClientRequestJoinBusinessService(private val httpClient: HttpClient) : Com
             }
             if (response.status.isSuccess()) {
                 val bodyText = response.bodyAsText()
-                val result = Json.decodeFromString(RequestJoinBusinessResponse.serializer(), bodyText)
+                val result = IntraleClientJson.decodeFromString(RequestJoinBusinessResponse.serializer(), bodyText)
                 Result.success(result)
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

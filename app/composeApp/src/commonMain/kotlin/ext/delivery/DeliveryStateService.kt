@@ -13,7 +13,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -56,6 +56,6 @@ class DeliveryStateService(
         if (bodyText.isBlank()) {
             throw DeliveryExceptionResponse(message = "Respuesta vacía del servidor")
         }
-        return Json.decodeFromString(deserializer, bodyText)
+        return IntraleClientJson.decodeFromString(deserializer, bodyText)
     }
 }

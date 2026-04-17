@@ -8,13 +8,13 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
-import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ar.com.intrale.shared.ExceptionResponse
 import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.auth.LoginRequest
 import ar.com.intrale.shared.auth.LoginResponse
+import ext.IntraleClientJson
 
 class DeliveryLoginService(private val httpClient: HttpClient) : CommLoginService {
 
@@ -41,11 +41,11 @@ class DeliveryLoginService(private val httpClient: HttpClient) : CommLoginServic
             val bodyText = response.bodyAsText()
 
             if (response.status.isSuccess()) {
-                val loginResponse = Json.decodeFromString(LoginResponse.serializer(), bodyText)
+                val loginResponse = IntraleClientJson.decodeFromString(LoginResponse.serializer(), bodyText)
                 logger.info { "[Delivery][Login] Respuesta exitosa para ${BuildKonfig.DELIVERY}" }
                 Result.success(loginResponse)
             } else {
-                val exceptionResponse = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exceptionResponse = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 logger.warning { "[Delivery][Login] Error ${exceptionResponse.statusCode}: ${exceptionResponse.message}" }
                 Result.failure(exceptionResponse)
             }

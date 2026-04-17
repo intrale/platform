@@ -9,7 +9,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -29,11 +29,11 @@ class ClientGetBusinessProductsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(BusinessProductsResponse.serializer(), bodyText)
+                val result = IntraleClientJson.decodeFromString(BusinessProductsResponse.serializer(), bodyText)
                 logger.debug { "Productos cargados: ${result.products.size}" }
                 Result.success(result)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
