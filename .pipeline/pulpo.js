@@ -3057,13 +3057,18 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
           fs.mkdirSync(evidenceDir, { recursive: true });
           const localVideo = path.join(evidenceDir, `qa-${issue}-raw.mp4`);
+          // Fix #2281: MSYS_NO_PATHCONV evita que Git Bash convierta "/sdcard/..."
+          // a "C:/Program Files/Git/sdcard/..." cuando lo pasa como argumento top-level
+          // a adb.exe. MSYS2_ARG_CONV_EXCL=* desactiva toda conversión de argumentos.
+          // En entornos no-MSYS (Linux/macOS/CI) estas vars se ignoran silenciosamente.
+          const adbEnv = { ...process.env, MSYS_NO_PATHCONV: '1', MSYS2_ARG_CONV_EXCL: '*' };
           execSync(`adb -s ${qaSerial} pull "${qaRecordingPath}" "${localVideo}"`, {
-            encoding: 'utf8', timeout: 30000, windowsHide: true
+            encoding: 'utf8', timeout: 30000, windowsHide: true, env: adbEnv
           });
           // Limpiar del emulador
           try {
             execSync(`adb -s ${qaSerial} shell rm -f "${qaRecordingPath}"`, {
-              encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: 'ignore'
+              encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: 'ignore', env: adbEnv
             });
           } catch {
             // Cleanup best-effort
