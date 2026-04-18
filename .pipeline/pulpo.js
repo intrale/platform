@@ -4104,20 +4104,35 @@ function cmdRestart(args) {
   // Lanzar restart.js como proceso COMPLETAMENTE desvinculado del árbol del
   // pulpo. En Windows, taskkill /T sigue la jerarquía de PPID — un spawn
   // normal queda como descendiente y muere cuando el pulpo se mata a sí mismo.
-  // `cmd.exe /c start ""` reasigna el parent a conhost.exe, rompiendo la
-  // cadena. Así el restart.js sobrevive al kill del pulpo y completa launchAll.
+  // `start` reasigna el parent a conhost.exe, rompiendo la cadena PPID. Así
+  // el restart.js sobrevive al kill del pulpo y completa launchAll.
+  //
+  // Iteración: el intento previo con `spawn('cmd.exe', ['/c', cadena])` falló
+  // silenciosamente porque cmd.exe trata `""` (título vacío de `start`) como
+  // fin prematuro del string cuando está dentro del `/c`. Ahora:
+  //   - shell:true → Node arma `cmd.exe /d /s /c "..."` escapando bien.
+  //   - Título "restart-bg" (no vacío) → evita el edge case de `""`.
+  //   - stdio redirigido a archivo → si el spawn vuelve a fallar, hay
+  //     evidencia en logs/restart-spawn.log en vez de silencio.
   const { spawn } = require('child_process');
+  const fsMod = require('fs');
   const pausedArg = paused ? ' --paused' : '';
-  const cmdLine = `start "" /MIN cmd.exe /c restart${pausedArg}`;
+  const spawnLogPath = path.join(PIPELINE, 'logs', 'restart-spawn.log');
   try {
-    const child = spawn('cmd.exe', ['/c', cmdLine], {
+    fsMod.writeFileSync(spawnLogPath,
+      `--- restart spawn ${new Date().toISOString()} mode=${mode} ---\n`);
+    const logFd = fsMod.openSync(spawnLogPath, 'a');
+    const child = spawn(`start "restart-bg" /MIN cmd.exe /c restart${pausedArg}`, [], {
       cwd: ROOT,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', logFd, logFd],
+      shell: true,
       windowsHide: true,
       env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
     });
     child.unref();
+    try { fsMod.closeSync(logFd); } catch {}
+    log('commander', `restart spawneado (cmd.exe /d /s /c ... start restart-bg)`);
   } catch (e) {
     log('commander', `Error lanzando restart: ${e.message}`);
     return `❌ No pude lanzar el restart: ${e.message.slice(0, 200)}`;
