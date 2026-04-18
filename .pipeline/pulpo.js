@@ -27,10 +27,38 @@ const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
-// Ejecutar claude via Node directo (evita cmd.exe y ventanas visibles)
-const CLAUDE_CLI_JS = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
-const USE_NODE_DIRECT = fs.existsSync(CLAUDE_CLI_JS);
+// Detector multi-capa del launcher de Claude Code.
+// La estructura del paquete cambió entre versiones (2.1.114 eliminó cli.js
+// y lo reemplazó con bin/claude.exe nativo + cli-wrapper.cjs fallback).
+// Probamos opciones de más a menos preferida; todas evitan cmd.exe cuando es posible.
+function detectClaudeLauncher() {
+  const pkgDir = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code');
+  const cliJsLegacy = path.join(pkgDir, 'cli.js');
+  const binExe = path.join(pkgDir, 'bin', 'claude.exe');
+  const wrapperCjs = path.join(pkgDir, 'cli-wrapper.cjs');
+  const cmdShim = path.join(process.env.APPDATA || '', 'npm', 'claude.cmd');
+
+  // 1. Legacy cli.js → node directo (compatibilidad con versiones viejas)
+  if (fs.existsSync(cliJsLegacy)) {
+    return { kind: 'node-cli-js', cmd: process.execPath, prefixArgs: [cliJsLegacy], shell: false };
+  }
+  // 2. Binario nativo (Claude Code ≥2.1.114) → ruta absoluta, sin shell
+  if (fs.existsSync(binExe)) {
+    return { kind: 'native-exe', cmd: binExe, prefixArgs: [], shell: false };
+  }
+  // 3. cli-wrapper.cjs → node directo (fallback JS del propio paquete)
+  if (fs.existsSync(wrapperCjs)) {
+    return { kind: 'node-wrapper-cjs', cmd: process.execPath, prefixArgs: [wrapperCjs], shell: false };
+  }
+  // 4. .cmd shim con ruta absoluta → shell:true (shims .cmd requieren shell en spawn)
+  if (fs.existsSync(cmdShim)) {
+    return { kind: 'cmd-shim', cmd: cmdShim, prefixArgs: [], shell: true };
+  }
+  // 5. Último recurso: 'claude' en PATH con shell
+  return { kind: 'path-fallback', cmd: process.env.CLAUDE_BIN || 'claude', prefixArgs: [], shell: true };
+}
+
+const CLAUDE_LAUNCHER = detectClaudeLauncher();
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
@@ -2932,15 +2960,15 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  // Usar Node directo para evitar cmd.exe y ventanas visibles
-  const spawnCmd = USE_NODE_DIRECT ? process.execPath : CLAUDE_BIN;
-  const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
+  // Launcher detectado al boot (ver detectClaudeLauncher). Evita cmd.exe cuando es posible.
+  const spawnCmd = CLAUDE_LAUNCHER.cmd;
+  const spawnArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...args];
 
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
     detached: false,
-    shell: false,
+    shell: CLAUDE_LAUNCHER.shell,
     windowsHide: true,
     env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase, ...extraEnv }
   });
@@ -3957,14 +3985,14 @@ function ejecutarClaude(prompt, textoOriginal) {
     const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
     delete cleanEnv.CLAUDECODE;
 
-    const cmdSpawn = USE_NODE_DIRECT ? process.execPath : CLAUDE_BIN;
-    const cmdArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
+    const cmdSpawn = CLAUDE_LAUNCHER.cmd;
+    const cmdArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...args];
 
     const proc = spawn(cmdSpawn, cmdArgs, {
       cwd: ROOT,
       env: cleanEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: !USE_NODE_DIRECT,
+      shell: CLAUDE_LAUNCHER.shell,
       windowsHide: true
     });
 
@@ -4947,6 +4975,7 @@ function brazoDesbloqueo(config) {
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
+  log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
 
   // Confirmar restart solicitado desde Telegram. El pulpo anterior murió a
   // mitad del restart.js (cadena: pulpo → cmd → node restart.js, matada por
