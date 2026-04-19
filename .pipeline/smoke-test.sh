@@ -36,29 +36,49 @@ fail() {
 }
 
 # --- 1) Procesos críticos ---
+# Retry hasta 30s: singleton.js escribe el .pid DESPUÉS de un wmic scan que
+# se pisa con otros wmic de arranque concurrente y puede tardar varios
+# segundos. Con 6+ servicios arrancando en paralelo justo después de un
+# killAll, el one-shot a los 6s post-launch se volvía carrera.
 log "=== SMOKE TEST ==="
 log "1) Verificando procesos críticos..."
 
 CRITICAL=("pulpo.pid" "dashboard.pid" "svc-telegram.pid")
-for pid_file in "${CRITICAL[@]}"; do
-  if [ ! -f "${PIPELINE_DIR}/${pid_file}" ]; then
-    fail "PID file ausente: ${pid_file}" 1
-  fi
-  pid=$(cat "${PIPELINE_DIR}/${pid_file}" 2>/dev/null | tr -d '[:space:]')
-  if [ -z "$pid" ]; then
-    fail "PID file vacío: ${pid_file}" 1
-  fi
-  # Windows/Unix portable process check
+MAX_WAIT_SECONDS=30
+
+check_pid_alive() {
+  local pid="$1"
   if command -v tasklist &>/dev/null; then
-    if ! tasklist //FI "PID eq ${pid}" //NH 2>/dev/null | grep -q "^node"; then
-      fail "Proceso no corre: ${pid_file} (PID ${pid})" 1
-    fi
+    tasklist //FI "PID eq ${pid}" //NH 2>/dev/null | grep -q "^node"
   else
-    if ! ps -p "$pid" &>/dev/null; then
-      fail "Proceso no corre: ${pid_file} (PID ${pid})" 1
-    fi
+    ps -p "$pid" &>/dev/null
   fi
-  log "  OK ${pid_file} (PID ${pid})"
+}
+
+for pid_file in "${CRITICAL[@]}"; do
+  waited=0
+  last_err=""
+  while [ "$waited" -lt "$MAX_WAIT_SECONDS" ]; do
+    if [ ! -f "${PIPELINE_DIR}/${pid_file}" ]; then
+      last_err="PID file ausente"
+    else
+      pid=$(cat "${PIPELINE_DIR}/${pid_file}" 2>/dev/null | tr -d '[:space:]')
+      if [ -z "$pid" ]; then
+        last_err="PID file vacío"
+      elif check_pid_alive "$pid"; then
+        log "  OK ${pid_file} (PID ${pid})"
+        last_err=""
+        break
+      else
+        last_err="proceso no corre (PID ${pid})"
+      fi
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ -n "$last_err" ]; then
+    fail "${pid_file}: ${last_err} tras ${MAX_WAIT_SECONDS}s" 1
+  fi
 done
 
 # --- 2) Dashboard responde ---

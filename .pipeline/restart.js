@@ -268,11 +268,15 @@ function runRollback() {
     return false;
   }
   try {
+    // PARENT_RESTART_PID: rollback.sh usa taskkill //T (tree-kill) sobre
+    // todo node.exe del pipeline; sin este hint se mata a sí mismo al
+    // matar a nuestro proceso node.
     const result = spawnSync('bash', [script, 'pipeline-stable'], {
       cwd: ROOT,
       timeout: 180000,
       encoding: 'utf8',
       windowsHide: true,
+      env: { ...process.env, PARENT_RESTART_PID: String(process.pid) },
     });
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
     if (output) log(output.split('\n').slice(-8).join('\n'));
