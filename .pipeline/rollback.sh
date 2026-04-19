@@ -38,17 +38,31 @@ fail() {
 log "=== ROLLBACK a ${TARGET} ==="
 
 # --- 1) Matar pipeline ---
-log "1) Matando procesos del pipeline..."
+# taskkill //T es tree-kill: si matamos al restart.js padre se lleva
+# puesto a este bash y el rollback muere mid-ejecución. El parent nos
+# pasa su PID en PARENT_RESTART_PID para excluirlo del kill loop.
+PARENT_RESTART_PID="${PARENT_RESTART_PID:-0}"
+MY_PID=$$
+log "1) Matando procesos del pipeline (skip parent=${PARENT_RESTART_PID}, self=${MY_PID})..."
+
 if command -v wmic &>/dev/null; then
   wmic process where "name='node.exe'" get ProcessId,CommandLine /format:csv 2>/dev/null \
     | grep '\.pipeline' \
     | grep -oE '[0-9]+$' \
     | while read -r pid; do
-        [ -n "$pid" ] && taskkill //PID "$pid" //F //T 2>/dev/null && log "  Killed PID $pid"
+        if [ -z "$pid" ]; then continue; fi
+        if [ "$pid" = "$PARENT_RESTART_PID" ]; then
+          log "  Skip PID $pid (parent restart.js)"
+          continue
+        fi
+        if [ "$pid" = "$MY_PID" ]; then continue; fi
+        taskkill //PID "$pid" //F //T 2>/dev/null && log "  Killed PID $pid"
       done || true
 else
   pgrep -f '\.pipeline' 2>/dev/null | while read -r pid; do
-    [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null && log "  Killed PID $pid"
+    if [ -z "$pid" ]; then continue; fi
+    if [ "$pid" = "$PARENT_RESTART_PID" ] || [ "$pid" = "$MY_PID" ]; then continue; fi
+    kill -9 "$pid" 2>/dev/null && log "  Killed PID $pid"
   done || true
 fi
 
