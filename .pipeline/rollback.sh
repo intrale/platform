@@ -39,10 +39,13 @@ log "=== ROLLBACK a ${TARGET} ==="
 
 # --- 1) Matar pipeline ---
 # taskkill //T es tree-kill: si matamos al restart.js padre se lleva
-# puesto a este bash y el rollback muere mid-ejecución. El parent nos
-# pasa su PID en PARENT_RESTART_PID para excluirlo del kill loop.
-PARENT_RESTART_PID="${PARENT_RESTART_PID:-0}"
+# puesto a este bash y el rollback muere mid-ejecución. El parent ideal
+# nos pasa su PID en PARENT_RESTART_PID; si no lo hace (restart.js
+# pre-#2361) caemos a $PPID (el bash siempre tiene el node padre ahí).
+PARENT_RESTART_PID="${PARENT_RESTART_PID:-${PPID:-0}}"
 MY_PID=$$
+# Escribo también a stderr para dejar evidencia aunque tee falle
+echo "[rollback] parent=${PARENT_RESTART_PID} self=${MY_PID}" >&2
 log "1) Matando procesos del pipeline (skip parent=${PARENT_RESTART_PID}, self=${MY_PID})..."
 
 if command -v wmic &>/dev/null; then
