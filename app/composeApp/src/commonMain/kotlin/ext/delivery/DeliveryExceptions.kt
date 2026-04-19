@@ -2,7 +2,7 @@ package ext.delivery
 
 import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 
 @Serializable
 data class DeliveryExceptionResponse(
@@ -16,5 +16,5 @@ fun Throwable.toDeliveryException(): DeliveryExceptionResponse = when (this) {
 }
 
 fun String.toDeliveryException(): DeliveryExceptionResponse =
-    runCatching { Json.decodeFromString(DeliveryExceptionResponse.serializer(), this) }
+    runCatching { IntraleClientJson.decodeFromString(DeliveryExceptionResponse.serializer(), this) }
         .getOrElse { DeliveryExceptionResponse(message = this) }
