@@ -43,15 +43,16 @@ fail() {
 
 # --- 1) Procesos críticos ---
 # Retry GLOBAL (no por-archivo): chequea los 3 pids en cada iteración;
-# sale apenas los 3 están OK. Total max 25s (cabe en spawnSync timeout
-# de 60s con margen). singleton.js escribe el .pid DESPUÉS de un wmic
-# scan que compite con los otros singletons arrancando en paralelo, así
-# que el one-shot a los 6s post-launch se volvía carrera.
+# sale apenas los 3 están OK. Total max 60s (cabe en spawnSync timeout
+# de 120s con margen). singleton.js escribe el .pid DESPUÉS de un wmic
+# scan que compite con los otros singletons arrancando en paralelo. Con
+# 7 componentes spawneados en paralelo los wmic se apilan y 25s no
+# alcanzan en Windows cuando la caja está cargada.
 log "=== SMOKE TEST ==="
 log "1) Verificando procesos críticos..."
 
 CRITICAL=("pulpo.pid" "dashboard.pid" "svc-telegram.pid")
-MAX_WAIT_SECONDS=25
+MAX_WAIT_SECONDS=60
 
 check_pid_alive() {
   local pid="$1"
