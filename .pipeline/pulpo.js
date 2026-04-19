@@ -3086,11 +3086,30 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
-      const data = readYaml(trabajandoPath);
+      // Single source of truth del lifecycle: el Pulpo es el único que mueve el
+      // archivo de trabajando/ a listo/. Si un agente (contrato viejo o custom)
+      // todavía lo movió él mismo, caemos sobre listo/ para no perder su YAML.
+      // Ese caso dispara la carrera que rechazaba falsamente como
+      // "Evidencia QA incompleta" (el readYaml de trabajando/ devolvía {},
+      // el gate perdía `modo: api/structural` y rebotaba con video faltante).
+      const listoPath = path.join(listoDir, path.basename(trabajandoPath));
+      let workingPath;
+      if (fs.existsSync(trabajandoPath)) {
+        workingPath = trabajandoPath;
+      } else if (fs.existsSync(listoPath)) {
+        workingPath = listoPath;
+        log('lanzamiento', `⚠️ ${skill}:#${issue} movió el archivo a listo/ por su cuenta — leyendo desde allí (contrato viejo, debería solo escribir el YAML)`);
+      } else {
+        log('lanzamiento', `⚠️ ${skill}:#${issue} terminó pero el archivo no está en trabajando/ ni en listo/`);
+        activeProcesses.delete(processKey(skill, issue));
+        return;
+      }
+
+      const data = readYaml(workingPath);
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
-        writeYaml(trabajandoPath, data);
+        writeYaml(workingPath, data);
       }
 
       // --- STOP RECORDING + PULL VIDEO ---
@@ -3137,7 +3156,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             data.evidencia = localVideo;
             data.video_size_kb = videoSizeKb;
             // Audio narrado no se genera acá (el agente QA lo hace), pero el video crudo sí
-            writeYaml(trabajandoPath, data);
+            writeYaml(workingPath, data);
           }
         } catch (e) {
           log('lanzamiento', `⚠️ Error bajando recording qa:#${issue}: ${e.message.slice(0, 80)}`);
@@ -3157,12 +3176,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           data.resultado = 'rechazado';
           data.motivo = `Evidencia QA incompleta (gate on-exit): ${evidenceIssues.join('; ')}`;
           data.rechazado_por = 'gate-evidencia-on-exit';
-          writeYaml(trabajandoPath, data);
+          writeYaml(workingPath, data);
           sendTelegram(`⛔ QA:#${issue} — evidencia incompleta al terminar. Rechazo automático: ${evidenceIssues.join('; ')}`);
         }
       }
 
-      moveFile(trabajandoPath, listoDir);
+      // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
+      // (contrato viejo), el move lo completó el agente.
+      if (workingPath === trabajandoPath) {
+        moveFile(trabajandoPath, listoDir);
+      }
       log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
 
       // Generar reporte PDF de rechazo y enviar a Telegram (background, no bloquea)
