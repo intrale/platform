@@ -49,6 +49,12 @@ val logger: Logger = LoggerFactory.getLogger("ar.com.intrale")
 - NUNCA usar `stringResource()` directo, `Res.string.*`, `R.string.*`
 - Siempre usar `resString()` con `fb()` para fallback ASCII-safe
 
+### Si el issue es `priority:critical` (hotfix)
+- Branch **desde `origin/main`**, nunca desde `develop`
+- **Cambio mínimo**: solo tocar lo necesario para corregir el bug
+- **No refactorizar**: no limpiar código adyacente, no optimizar
+- **Test obligatorio**: al menos un test que reproduzca el bug
+
 ### Resultado
 - `resultado: aprobado` cuando el código está commiteado y pusheado
 - Incluir en el archivo: branch name, último commit hash

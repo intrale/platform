@@ -4,6 +4,7 @@ import com.russhwolf.settings.Settings
 import ext.storage.model.ClientProfileCache
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 
 class KeyValueStorageService : CommKeyValueStorage {
     private val settings: Settings by lazy { Settings() }
@@ -20,7 +21,7 @@ class KeyValueStorageService : CommKeyValueStorage {
 
     override var profileCache: ClientProfileCache?
         get() = settings.getStringOrNull(StorageKeys.LOGIN_INFO.key)?.let { raw ->
-            runCatching { Json.decodeFromString(ClientProfileCache.serializer(), raw) }.getOrNull()
+            runCatching { IntraleClientJson.decodeFromString(ClientProfileCache.serializer(), raw) }.getOrNull()
         }
         set(value) {
             if (value == null) {

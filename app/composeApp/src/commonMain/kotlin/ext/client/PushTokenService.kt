@@ -13,6 +13,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ext.IntraleClientJson
 
 class PushTokenService(
     private val httpClient: HttpClient,
@@ -66,7 +67,7 @@ class PushTokenService(
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { kotlinx.serialization.json.Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { IntraleClientJson.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

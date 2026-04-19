@@ -485,6 +485,28 @@ function getPipelineState() {
     if (blockedData.blocks) state.blockedIssues.blocks = blockedData.blocks;
   } catch {}
 
+  // Salud de Infra — publicado por #2304 (healthcheck+retry) y #2305 (circuit breaker).
+  // CA-11: feature flag implícito — si el archivo no existe, la sección no se renderiza.
+  // CA-8 / Security: lectura defensiva con try/catch + límite de tamaño (10KB) para evitar DoS.
+  state.infraHealth = null;
+  try {
+    const infraPath = path.join(PIPELINE, 'infra-health.json');
+    if (fs.existsSync(infraPath)) {
+      const stat = fs.statSync(infraPath);
+      if (stat.size > 10240) {
+        state.infraHealth = { error: 'file-too-large', mtimeMs: stat.mtimeMs };
+      } else if (stat.size === 0) {
+        state.infraHealth = { error: 'empty', mtimeMs: stat.mtimeMs };
+      } else {
+        const raw = fs.readFileSync(infraPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        state.infraHealth = { data: parsed, mtimeMs: stat.mtimeMs };
+      }
+    }
+  } catch (e) {
+    state.infraHealth = { error: 'invalid-json', mtimeMs: Date.now() };
+  }
+
   // Recursos del sistema
   const resourceLimits = config.resource_limits || {};
   const sys = getSystemResourceUsage();
@@ -572,7 +594,7 @@ const SKILL_CATEGORY = {
   po: 'product', ux: 'product', planner: 'product', scrum: 'product',
   'backend-dev': 'dev', 'android-dev': 'dev', 'web-dev': 'dev',
   tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
-  guru: 'ops', perf: 'ops', build: 'ops', hotfix: 'ops', delivery: 'ops',
+  guru: 'ops', perf: 'ops', build: 'ops', delivery: 'ops',
 };
 // Etiquetas cortas por fase (2 chars) para mostrar debajo de cada dot
 const FASE_LABEL_SHORT = {
@@ -599,6 +621,231 @@ const LAYER_META = {
   processing: { label: 'Procesamiento', icon: '⚙' },
   output:    { label: 'Salida', icon: '📤' },
 };
+
+// --- Salud de Infra (sección del /monitor, issue #2306) ---
+
+// Escape HTML para datos leídos de .pipeline/infra-health.json antes de inyectar
+// como innerHTML. Defensa en profundidad contra XSS (CA-8 · Security).
+function escInfra(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Formatea un timestamp ISO-8601 como tiempo relativo ("hace 2m", "hace 35s")
+// junto con el timestamp absoluto para tooltip (CA-4 · UX tooltips).
+function formatInfraTs(iso) {
+  if (!iso) return { rel: '—', abs: '', deltaMs: Infinity };
+  const t = new Date(iso).getTime();
+  if (!isFinite(t)) return { rel: '—', abs: '', deltaMs: Infinity };
+  const delta = Date.now() - t;
+  let rel;
+  if (delta < 0) rel = 'ahora';
+  else if (delta < 60000) rel = 'hace ' + Math.floor(delta / 1000) + 's';
+  else if (delta < 3600000) rel = 'hace ' + Math.floor(delta / 60000) + 'm';
+  else if (delta < 86400000) rel = 'hace ' + Math.floor(delta / 3600000) + 'h';
+  else rel = 'hace ' + Math.floor(delta / 86400000) + 'd';
+  return { rel, abs: new Date(iso).toISOString(), deltaMs: delta };
+}
+
+// Determina el semáforo global a partir de los 3 criterios del PO (CA-3).
+function computeInfraHealthLevel(h) {
+  // Stale: sin lastCheck o último healthcheck hace > 5 min (300000 ms)
+  const lastCheck = h && h.dns && h.dns.lastCheck;
+  const dnsAge = lastCheck ? (Date.now() - new Date(lastCheck).getTime()) : Infinity;
+  if (!isFinite(dnsAge) || dnsAge > 300000) return { level: 'stale', label: 'STALE' };
+
+  // Alert (rojo): circuit breaker abierto, DNS FAIL o retries > 20%
+  if (h.circuitBreaker && h.circuitBreaker.state === 'open') return { level: 'alert', label: 'CRITICO' };
+  if (h.dns && h.dns.status === 'FAIL') return { level: 'alert', label: 'CRITICO' };
+  const rate = h.retries && typeof h.retries.ratePercent === 'number' ? h.retries.ratePercent : 0;
+  if (rate > 20) return { level: 'alert', label: 'CRITICO' };
+
+  // Warn (amarillo): retries entre 5% y 20% o latencia DNS > 3s
+  if (rate >= 5) return { level: 'warn', label: 'DEGRADADO' };
+  const lat = h.dns && typeof h.dns.latencyMs === 'number' ? h.dns.latencyMs : 0;
+  if (lat > 3000) return { level: 'warn', label: 'DEGRADADO' };
+
+  return { level: 'ok', label: 'SALUDABLE' };
+}
+
+// Renderiza la sección "Salud de Infra" como HTML. Devuelve '' si no hay
+// datos (feature flag OFF → CA-11).
+function renderInfraHealth(state) {
+  const ih = state.infraHealth;
+  if (!ih) return ''; // archivo no existe → no renderizar
+
+  // Error de lectura/parse o estructura inválida → estado stale, nunca romper el dashboard
+  if (ih.error || !ih.data || typeof ih.data !== 'object') {
+    const errMsg = ih.error === 'file-too-large' ? 'archivo excede 10KB'
+      : ih.error === 'empty' ? 'archivo vacío'
+      : ih.error === 'invalid-json' ? 'JSON inválido'
+      : 'estructura inválida';
+    return `<section class="infra-health infra-stale" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head">
+      <span class="ih-emoji" aria-hidden="true">⚪</span>
+      <span class="ih-title">Salud de Infra</span>
+      <span class="ih-status ih-status-stale">STALE · ${escInfra(errMsg)}</span>
+    </div>
+  </section>`;
+  }
+
+  const h = ih.data;
+
+  // ── CA-8: validaciones defensivas + whitelists estrictas ──
+  const dnsStatusRaw = h.dns && typeof h.dns.status === 'string' ? h.dns.status : null;
+  const dnsStatus = (dnsStatusRaw === 'OK' || dnsStatusRaw === 'FAIL') ? dnsStatusRaw : null;
+
+  const cbStateRaw = h.circuitBreaker && typeof h.circuitBreaker.state === 'string' ? h.circuitBreaker.state : null;
+  const cbState = (cbStateRaw === 'closed' || cbStateRaw === 'open') ? cbStateRaw : null;
+
+  const lastIssueObj = h.circuitBreaker && typeof h.circuitBreaker.lastIssue === 'object' ? h.circuitBreaker.lastIssue : null;
+  const lastIssueNumRaw = lastIssueObj ? lastIssueObj.number : null;
+  const lastIssueNum = Number.isInteger(lastIssueNumRaw) && lastIssueNumRaw > 0 && lastIssueNumRaw < 1000000
+    ? lastIssueNumRaw : null;
+
+  const lastIssueReasonFull = lastIssueObj && typeof lastIssueObj.reason === 'string' ? lastIssueObj.reason : '';
+  // CA-6: truncar a 50 chars — sin stack trace, sin paths, sin IPs
+  const lastIssueReason = lastIssueReasonFull.length > 50
+    ? lastIssueReasonFull.slice(0, 50)
+    : lastIssueReasonFull;
+  const wasTruncated = lastIssueReasonFull.length > 50;
+
+  const consecutiveFailures = h.circuitBreaker && Number.isInteger(h.circuitBreaker.consecutiveFailures)
+    ? h.circuitBreaker.consecutiveFailures : null;
+  const openedAtRaw = h.circuitBreaker && typeof h.circuitBreaker.openedAt === 'string' ? h.circuitBreaker.openedAt : null;
+
+  const retriesLastHour = h.retries && Number.isInteger(h.retries.lastHour) ? h.retries.lastHour : 0;
+  const retriesPreviousHour = h.retries && Number.isInteger(h.retries.previousHour) ? h.retries.previousHour : 0;
+  const retriesRate = h.retries && typeof h.retries.ratePercent === 'number' && isFinite(h.retries.ratePercent)
+    ? h.retries.ratePercent : 0;
+
+  const dnsLatency = h.dns && typeof h.dns.latencyMs === 'number' && isFinite(h.dns.latencyMs)
+    ? h.dns.latencyMs : null;
+
+  // Caso especial: archivo creado pero sin datos todavía (UX punto 5 — Inicializando)
+  const isInitializing = !dnsStatus && !cbState && !h.retries;
+  if (isInitializing) {
+    return `<section class="infra-health infra-init" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head">
+      <span class="ih-emoji" aria-hidden="true">🔄</span>
+      <span class="ih-title">Salud de Infra</span>
+      <span class="ih-status ih-status-init">Inicializando healthchecks…</span>
+    </div>
+  </section>`;
+  }
+
+  // ── Timestamps ──
+  const dnsTs = formatInfraTs(h.dns && h.dns.lastCheck);
+
+  // ── Semáforo global ──
+  const effective = {
+    dns: { status: dnsStatus, lastCheck: h.dns && h.dns.lastCheck, latencyMs: dnsLatency },
+    retries: { ratePercent: retriesRate },
+    circuitBreaker: { state: cbState }
+  };
+  const sem = computeInfraHealthLevel(effective);
+  const emoji = sem.level === 'ok' ? '🟢' : sem.level === 'warn' ? '🟡' : sem.level === 'alert' ? '🔴' : '⚪';
+  const sectionCls = 'infra-' + sem.level;
+
+  // Fila 1 (prioridad alta · CA-2): Circuit breaker
+  let cbEmoji = '⚪';
+  let cbText = 'sin datos';
+  let cbExtra = '';
+  if (cbState === 'closed') {
+    cbEmoji = '🟢';
+    cbText = 'cerrado · lanzamientos habilitados';
+  } else if (cbState === 'open') {
+    cbEmoji = '🔴';
+    // UX punto 9: estructura narrativa del mensaje rojo (qué · por qué · evidencia · cómo salir)
+    const nFailures = consecutiveFailures && consecutiveFailures > 0 ? consecutiveFailures : '?';
+    const ultParte = lastIssueNum
+      ? '<span class="ih-cb-ult">Último: <a href="' + GITHUB_BASE + '/' + lastIssueNum + '" target="_blank" rel="noopener noreferrer">#' + lastIssueNum + '</a>'
+        + (lastIssueReason ? ' · ' + escInfra(lastIssueReason) : '')
+        + (wasTruncated ? '…' : '')
+        + (dnsTs.rel !== '—' ? ' · ' + escInfra(dnsTs.rel) : '')
+        + '</span>'
+      : '';
+    cbText = 'PIPELINE PAUSADO';
+    cbExtra = '<div class="ih-cb-body">'
+      + '<div class="ih-cb-line">' + escInfra(nFailures) + ' issues consecutivos fallaron por red</div>'
+      + (ultParte ? '<div class="ih-cb-line">' + ultParte + '</div>' : '')
+      + '<div class="ih-cb-cta">Reanudar: <code>node .pipeline/restart.js</code>'
+      + ' <button type="button" class="ih-copy" data-copy="node .pipeline/restart.js" title="Copiar comando" aria-label="Copiar comando de reanudación">📋</button>'
+      + '</div>'
+      + '</div>';
+  }
+  const cbTooltipTxt = openedAtRaw ? 'Abierto desde ' + openedAtRaw : '';
+  const cbTitle = cbTooltipTxt ? ' title="' + escInfra(cbTooltipTxt) + '"' : '';
+
+  // Fila 2: DNS
+  let dnsEmoji = '⚪';
+  let dnsText = 'sin datos';
+  if (dnsStatus === 'OK') { dnsEmoji = '🟢'; dnsText = 'OK'; }
+  else if (dnsStatus === 'FAIL') { dnsEmoji = '🔴'; dnsText = 'FAIL'; }
+  // UX punto 4: mostrar latencia solo si > 500ms para evitar ruido en estado sano
+  let dnsExtra = '';
+  if (dnsLatency != null && dnsLatency > 500) {
+    dnsExtra = ' · ' + dnsLatency + 'ms' + (dnsLatency > 3000 ? ' ⚠' : '');
+  }
+  const dnsTitle = dnsTs.abs ? ' title="' + escInfra(dnsTs.abs) + '"' : '';
+
+  // Fila 3: Retries
+  const retriesDelta = retriesLastHour - retriesPreviousHour;
+  const arrow = retriesDelta > 0 ? '↑' : retriesDelta < 0 ? '↓' : '→';
+  const deltaTxt = retriesDelta === 0 ? '=' : (retriesDelta > 0 ? '+' : '') + retriesDelta;
+  const retriesEmoji = retriesRate > 20 ? '🔴' : retriesRate >= 5 ? '🟡' : '🟢';
+  const retriesRateTxt = retriesRate > 0 ? ' (' + retriesRate.toFixed(1) + '%)' : '';
+  const retriesTitle = ' title="Hora actual: ' + retriesLastHour + ' retries · Hora anterior: ' + retriesPreviousHour + '"';
+
+  // Fila 4: Último issue afectado
+  let lastEmoji = '⚪';
+  let lastText = 'sin rebotes registrados';
+  let lastTitle = '';
+  if (lastIssueNum) {
+    lastEmoji = '🔴';
+    const reasonDisplay = lastIssueReason || 'motivo desconocido';
+    lastText = '<a href="' + GITHUB_BASE + '/' + lastIssueNum + '" target="_blank" rel="noopener noreferrer">#' + lastIssueNum + '</a>'
+      + ' · ' + escInfra(reasonDisplay)
+      + (wasTruncated ? '<span class="ih-trunc" aria-hidden="true">…</span>' : '');
+    if (wasTruncated) lastTitle = ' title="' + escInfra(lastIssueReasonFull) + '"';
+  }
+
+  return `<section class="infra-health ${sectionCls}" role="region" aria-label="Salud de Infra" aria-live="polite">
+  <div class="ih-head">
+    <span class="ih-emoji" aria-hidden="true">${emoji}</span>
+    <span class="ih-title">Salud de Infra</span>
+    <span class="ih-status ih-status-${sem.level}">${sem.label}</span>
+    ${dnsTs.rel !== '—' ? '<span class="ih-ts" title="' + escInfra(dnsTs.abs) + '">última señal ' + escInfra(dnsTs.rel) + '</span>' : ''}
+  </div>
+  <div class="ih-rows">
+    <div class="ih-row ih-row-cb"${cbTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${cbEmoji}</span>
+      <span class="ih-row-lbl">Circuit breaker</span>
+      <span class="ih-row-val">${cbText}</span>
+    </div>
+    ${cbExtra}
+    <div class="ih-row ih-row-dns"${dnsTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${dnsEmoji}</span>
+      <span class="ih-row-lbl">DNS</span>
+      <span class="ih-row-val">${dnsText}${dnsExtra} · ${escInfra(dnsTs.rel)}</span>
+    </div>
+    <div class="ih-row ih-row-retries"${retriesTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${retriesEmoji}</span>
+      <span class="ih-row-lbl">Retries (última hora)</span>
+      <span class="ih-row-val">${retriesLastHour} retries · ${arrow} ${deltaTxt} vs hora anterior${retriesRateTxt}</span>
+    </div>
+    <div class="ih-row ih-row-last"${lastTitle}>
+      <span class="ih-row-emoji" aria-hidden="true">${lastEmoji}</span>
+      <span class="ih-row-lbl">Último issue afectado</span>
+      <span class="ih-row-val">${lastText}</span>
+    </div>
+  </div>
+</section>`;
+}
 
 // --- HTML generation ---
 
@@ -637,7 +884,6 @@ function generateHTML(state) {
     scrum:         { icon: '📊', name: 'Scrum',       tagline: 'Sutherland · Vacanti · Mike Cohn',         color: '#79c0ff' },
     perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
     build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
-    hotfix:        { icon: '🔥', name: 'Hotfix',      tagline: 'Emergency fix',                            color: '#f85149' },
     commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
   };
   const skillIcon = (skill) => (AGENT_PERSONA[skill] || {}).icon || '⚙';
@@ -793,6 +1039,31 @@ function generateHTML(state) {
     if (data.estadoActual === 'trabajando') score += 10;
     else if (data.estadoActual === 'pendiente') score += 5;
     return score;
+  };
+  // Score del pulpo (mirror de calcularPrioridad en pulpo.js:1811)
+  // Menor score = más prioritario de lanzar. Usado para ordenar lane cards
+  // de modo que el primero de cada columna sea el que se está ejecutando
+  // (o el próximo a lanzarse según el pulpo).
+  const pulpoPrioLabels = config.prioridad_labels || [];
+  const pulpoFeaturePrio = config.feature_priority || {};
+  const calcPulpoScore = (labels) => {
+    const ls = labels || [];
+    let prioScore = pulpoPrioLabels.indexOf('priority:medium');
+    if (prioScore === -1) prioScore = 999;
+    for (let i = 0; i < pulpoPrioLabels.length; i++) {
+      if (ls.includes(pulpoPrioLabels[i])) { prioScore = i; break; }
+    }
+    let featureScore = 999;
+    for (const [nivel, featureLabels] of Object.entries(pulpoFeaturePrio)) {
+      const nivelIdx = pulpoPrioLabels.indexOf(`priority:${nivel}`);
+      if (nivelIdx === -1) continue;
+      for (const fl of featureLabels) {
+        if (ls.includes(fl)) { featureScore = Math.min(featureScore, nivelIdx); break; }
+      }
+    }
+    const effectivePrio = Math.min(prioScore, featureScore);
+    const tiebreaker = featureScore < 999 ? 0 : 1;
+    return effectivePrio * 10 + tiebreaker;
   };
   const sorted = matrixEntries.sort((a, b) => {
     const aComplete = isComplete(a[1]);
@@ -1225,13 +1496,24 @@ function generateHTML(state) {
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
     // Data atributos para búsqueda client-side
     const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
-    // Prioridad para sort: stale (staleMin desc) > failed (bounces desc) > blocked > running > pending
+    // Prioridad para sort (opción B, matchea orden del pulpo):
+    //   Tier 1 (top)    — working: el agente que se está ejecutando
+    //   Tier 2          — pendiente lanzable: próximos según score del pulpo
+    //   Tier 3          — pendiente bloqueado: no lanzables hasta resolver deps
+    //   Tier 4 (fondo)  — stale / failed: hundidos, no son el próximo a lanzar
+    // Dentro de cada tier se desempata por score del pulpo (critical primero).
+    // El sort es `b.priority - a.priority` (desc) → mayor priority = más arriba.
+    const pulpoScore = calcPulpoScore(data.labels);
     let priority;
-    if (isStale) priority = 1000 + (data.staleMin || 0);
-    else if (hasRejection) priority = 700 + (data.bounces || 0);
-    else if (isBlocked) priority = 500;
-    else if (working) priority = 300 - (data.staleMin || 0);
-    else priority = 100 - (data.staleMin || 0);
+    if (working) {
+      priority = 20000 - pulpoScore;
+    } else if (isStale || hasRejection) {
+      priority = 500 - (data.staleMin || 0);
+    } else if (isBlocked) {
+      priority = 5000 - pulpoScore;
+    } else {
+      priority = 10000 - pulpoScore;
+    }
     const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" title="${laneTitle}">
       <div class="lc-card-main">
         <div class="lc-top">
@@ -1971,6 +2253,105 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   border-left:4px solid var(--rd);border-radius:var(--radius-sm);
   padding:12px 16px;margin-bottom:20px;color:var(--rd);font-size:0.95em;
   display:flex;align-items:center;gap:10px;
+}
+
+/* ── Salud de Infra (issue #2306) ───────────────────────────────────────── */
+.infra-health{
+  background:var(--sf);border:1px solid var(--bd);
+  border-left:4px solid var(--bd);border-radius:var(--radius);
+  padding:12px 16px;margin-bottom:16px;
+  transition:border-color 250ms ease,background 250ms ease,box-shadow 250ms ease;
+}
+.infra-health.infra-ok{
+  border-left-color:var(--gn);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--gn) 6%,var(--sf)) 0%,var(--sf) 120px);
+}
+.infra-health.infra-warn{
+  border-left-color:var(--yl);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--yl) 9%,var(--sf)) 0%,var(--sf) 120px);
+}
+.infra-health.infra-alert{
+  border-left:4px solid var(--rd);
+  border-color:color-mix(in srgb,var(--rd) 45%,var(--bd));
+  background:linear-gradient(90deg,color-mix(in srgb,var(--rd) 12%,var(--sf)) 0%,var(--sf) 180px);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--rd) 20%,transparent);
+}
+.infra-health.infra-stale,.infra-health.infra-init{
+  border-left-color:var(--dim2);
+  background:var(--sf);
+}
+.ih-head{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.ih-emoji{font-size:1.15em;line-height:1}
+.ih-title{
+  font-size:0.82em;color:var(--dim);font-weight:700;
+  text-transform:uppercase;letter-spacing:1.5px;
+}
+.ih-status{
+  font-size:0.72em;font-weight:700;letter-spacing:1.5px;
+  padding:2px 10px;border-radius:20px;text-transform:uppercase;
+}
+.ih-status-ok{background:rgba(63,185,80,0.15);color:var(--gn);border:1px solid rgba(63,185,80,0.4)}
+.ih-status-warn{background:rgba(210,153,34,0.15);color:var(--yl);border:1px solid rgba(210,153,34,0.4)}
+.ih-status-alert{background:rgba(248,81,73,0.18);color:var(--rd);border:1px solid rgba(248,81,73,0.5)}
+.ih-status-stale,.ih-status-init{background:rgba(139,148,158,0.12);color:var(--dim);border:1px solid rgba(139,148,158,0.3)}
+.ih-ts{margin-left:auto;font-size:0.72em;color:var(--dim);cursor:help;font-variant-numeric:tabular-nums}
+.ih-rows{
+  display:flex;flex-direction:column;gap:6px;
+  margin-top:10px;
+}
+.ih-row{
+  display:grid;grid-template-columns:22px 180px 1fr;gap:10px;
+  align-items:center;padding:6px 0;
+  border-top:1px solid var(--bd2);
+  font-size:0.9em;
+}
+.ih-row:first-child{border-top:none;padding-top:0}
+.ih-row-emoji{font-size:0.95em;line-height:1;text-align:center}
+.ih-row-lbl{color:var(--dim);font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+.ih-row-val{color:var(--tx);font-variant-numeric:tabular-nums}
+.ih-row-val a{color:var(--ac)}
+.ih-row-val a:hover{text-decoration:underline}
+.ih-row-cb .ih-row-val{font-weight:700}
+.infra-alert .ih-row-cb .ih-row-val{color:var(--rd)}
+.ih-cb-body{
+  grid-column:1/-1;
+  margin:4px 0 2px;padding:10px 12px;
+  background:rgba(248,81,73,0.08);
+  border:1px solid rgba(248,81,73,0.25);
+  border-radius:var(--radius-sm);
+}
+.ih-cb-line{font-size:0.88em;color:var(--tx);margin:2px 0}
+.ih-cb-ult{color:var(--tx)}
+.ih-cb-cta{
+  margin-top:6px;font-size:0.88em;color:var(--dim);
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+}
+.ih-cb-cta code{
+  background:var(--bg);border:1px solid var(--bd);border-radius:4px;
+  padding:2px 8px;font-family:'SF Mono',Consolas,monospace;color:var(--yl);
+  font-size:0.92em;
+}
+.ih-copy{
+  background:var(--bg);border:1px solid var(--bd);border-radius:4px;
+  color:var(--dim);cursor:pointer;padding:2px 6px;
+  font-size:0.95em;line-height:1;transition:all 150ms ease;
+}
+.ih-copy:hover{border-color:var(--ac);color:var(--ac);background:rgba(88,166,255,0.1)}
+.ih-copy:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.ih-copy.ih-copy-ok{border-color:var(--gn);color:var(--gn);background:rgba(63,185,80,0.12)}
+.ih-trunc{color:var(--dim);margin-left:2px}
+@media (max-width:480px){
+  .ih-row{grid-template-columns:22px 1fr;gap:6px}
+  .ih-row-lbl{grid-column:1/-1;padding-left:32px}
+  .ih-row-val{grid-column:1/-1;padding-left:32px}
+  .ih-ts{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .infra-health{transition:none}
+  .infra-health.infra-alert{box-shadow:0 0 0 2px var(--rd)}
+  .ih-copy{transition:none}
 }
 
 /* ── KPI Grid ───────────────────────────────────────────────────────────── */
@@ -3269,6 +3650,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
       + '</div>';
   })()}
 
+  ${renderInfraHealth(state)}
+
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis-row">
     <div class="kpis kpis-5">
@@ -3412,6 +3795,42 @@ function saveIssueTrackerState() {
 // Guardar estado en TODA recarga (F5, SSE, navegación, etc.)
 window.addEventListener('beforeunload', saveIssueTrackerState);
 
+// ── Salud de Infra (#2306): copy-to-clipboard pasivo del CTA de reanudación ──
+// Solo copia texto al portapapeles — NO ejecuta acciones server-side (evita CSRF).
+document.addEventListener('click', function(e) {
+  const btn = e.target && e.target.closest && e.target.closest('.ih-copy');
+  if (!btn) return;
+  const text = btn.getAttribute('data-copy') || '';
+  if (!text) return;
+  const done = () => {
+    const original = btn.textContent;
+    btn.classList.add('ih-copy-ok');
+    btn.textContent = '✓';
+    setTimeout(() => {
+      btn.classList.remove('ih-copy-ok');
+      btn.textContent = original;
+    }, 1500);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        // Fallback legacy
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          done();
+        } catch(_) {}
+      });
+    }
+  } catch(_) {}
+});
+
 // ── Soft refresh: reemplaza secciones sin recargar la página (evita flash) ──
 let __softRefreshInFlight = false;
 async function softRefresh() {
@@ -3438,6 +3857,7 @@ async function softRefresh() {
       '.hdr-bar',
       '.hdr-status-line',
       '.pipeline-ctrl-bar',
+      '.infra-health',
       '.kpis-row',
       '.panel-equipo-full',
       '#issue-tracker',

@@ -15,6 +15,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -42,7 +43,7 @@ class ProductAvailabilityService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val parsed = Json.decodeFromString(ProductAvailabilityResponseDTO.serializer(), bodyText)
+                val parsed = IntraleClientJson.decodeFromString(ProductAvailabilityResponseDTO.serializer(), bodyText)
                 Result.success(parsed)
             } else {
                 Result.failure(bodyText.toClientException())
@@ -54,7 +55,7 @@ class ProductAvailabilityService(
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { IntraleClientJson.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

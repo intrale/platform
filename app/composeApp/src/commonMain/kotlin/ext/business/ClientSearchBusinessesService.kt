@@ -8,7 +8,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ar.com.intrale.shared.ExceptionResponse
@@ -33,12 +33,12 @@ class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSe
             }
             if (response.status.isSuccess()) {
                 val bodyText = response.bodyAsText()
-                val result = Json.decodeFromString(SearchBusinessesResponse.serializer(), bodyText)
-                logger.debug { "response body: $result" }
+                val result = IntraleClientJson.decodeFromString(SearchBusinessesResponse.serializer(), bodyText)
+                logger.debug { "search businesses response received with ${result.businesses.size} businesses" }
                 Result.success(result)
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 logger.debug { "search business failed with status: $exception" }
                 Result.failure(exception)
             }
