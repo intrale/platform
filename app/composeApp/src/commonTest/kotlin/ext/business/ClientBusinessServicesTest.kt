@@ -145,6 +145,21 @@ class ClientSearchBusinessesServiceTest {
 
         assertTrue(result.isFailure)
     }
+
+    /**
+     * Regresion #2158: el backend serializa Response con campos extra (responseHeaders).
+     * Sin ignoreUnknownKeys=true la busqueda fallaba y el dashboard quedaba vacio.
+     */
+    @Test
+    fun `busqueda exitosa tolera campos desconocidos del backend (responseHeaders)`() = runTest {
+        val body = """{"statusCode":{"value":200,"description":"OK"},"responseHeaders":{"x-trace-id":"abc"},"businesses":[],"lastKey":null,"extraField":"valor"}"""
+        val service = ClientSearchBusinessesService(mockClient(HttpStatusCode.OK, body))
+
+        val result = service.execute("test")
+
+        assertTrue(result.isSuccess, "La busqueda debe tolerar campos desconocidos del backend")
+        assertEquals(0, result.getOrThrow().businesses.size)
+    }
 }
 
 // endregion

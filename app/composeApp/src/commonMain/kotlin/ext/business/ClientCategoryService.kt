@@ -21,7 +21,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -94,10 +94,10 @@ class ClientCategoryService(
     private suspend fun HttpResponse.toCategory(): CategoryDTO {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
-            runCatching { return Json.decodeFromString(CategoryDTO.serializer(), bodyText) }
+            runCatching { return IntraleClientJson.decodeFromString(CategoryDTO.serializer(), bodyText) }
             runCatching {
                 val responseWrapper =
-                    Json.decodeFromString(CategoryListResponse.serializer(), bodyText)
+                    IntraleClientJson.decodeFromString(CategoryListResponse.serializer(), bodyText)
                 responseWrapper.categories.firstOrNull()?.let { return it }
             }
             throw ExceptionResponse(
@@ -112,11 +112,11 @@ class ClientCategoryService(
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
             runCatching {
-                return Json.decodeFromString(CategoryListResponse.serializer(), bodyText)
+                return IntraleClientJson.decodeFromString(CategoryListResponse.serializer(), bodyText)
                     .categories
             }
             runCatching {
-                return Json.decodeFromString(
+                return IntraleClientJson.decodeFromString(
                     ListSerializer(CategoryDTO.serializer()),
                     bodyText
                 )
@@ -127,7 +127,7 @@ class ClientCategoryService(
     }
 
     private fun String.toCategoryException(): ExceptionResponse =
-        runCatching { Json.decodeFromString(ExceptionResponse.serializer(), this) }
+        runCatching { IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), this) }
             .getOrElse {
                 logger.error(it) { "No se pudo parsear la respuesta de error" }
                 ExceptionResponse(

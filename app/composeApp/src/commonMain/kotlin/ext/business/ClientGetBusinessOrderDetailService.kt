@@ -12,7 +12,7 @@ import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -34,7 +34,7 @@ class ClientGetBusinessOrderDetailService(
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
                 val parsed = runCatching {
-                    Json.decodeFromString(BusinessOrderDetailResponseDTO.serializer(), bodyText).order
+                    IntraleClientJson.decodeFromString(BusinessOrderDetailResponseDTO.serializer(), bodyText).order
                 }.getOrNull()
                 if (parsed != null) {
                     Result.success(parsed)
@@ -48,7 +48,7 @@ class ClientGetBusinessOrderDetailService(
                 }
             } else {
                 val exception = runCatching {
-                    Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                    IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 }.getOrElse {
                     ExceptionResponse(
                         StatusCodeDTO(response.status.value, response.status.description),

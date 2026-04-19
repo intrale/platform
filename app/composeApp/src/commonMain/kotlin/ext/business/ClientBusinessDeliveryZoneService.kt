@@ -17,7 +17,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -35,10 +35,10 @@ class ClientBusinessDeliveryZoneService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(GetBusinessDeliveryZoneResponse.serializer(), bodyText)
+                val result = IntraleClientJson.decodeFromString(GetBusinessDeliveryZoneResponse.serializer(), bodyText)
                 Result.success(result.deliveryZone)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -58,10 +58,10 @@ class ClientBusinessDeliveryZoneService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(UpdateBusinessDeliveryZoneResponse.serializer(), bodyText)
+                val result = IntraleClientJson.decodeFromString(UpdateBusinessDeliveryZoneResponse.serializer(), bodyText)
                 Result.success(result.deliveryZone)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

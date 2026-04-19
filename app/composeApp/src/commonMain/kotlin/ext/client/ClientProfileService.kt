@@ -20,7 +20,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -72,14 +72,14 @@ class ClientProfileService(
             return if (bodyText.isBlank()) {
                 ClientProfileResponse(profile = ClientProfileDTO())
             } else {
-                Json.decodeFromString(ClientProfileResponse.serializer(), bodyText)
+                IntraleClientJson.decodeFromString(ClientProfileResponse.serializer(), bodyText)
             }
         }
         throw bodyText.toClientException()
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { IntraleClientJson.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {
@@ -172,12 +172,12 @@ class ClientAddressesService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return emptyList()
             val parsedResponse = runCatching {
-                Json.decodeFromString(ClientAddressResponse.serializer(), bodyText).addresses
+                IntraleClientJson.decodeFromString(ClientAddressResponse.serializer(), bodyText).addresses
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return Json.decodeFromString(ListSerializer(ClientAddressDTO.serializer()), bodyText)
+            return IntraleClientJson.decodeFromString(ListSerializer(ClientAddressDTO.serializer()), bodyText)
         }
         throw bodyText.toClientException()
     }
@@ -186,13 +186,13 @@ class ClientAddressesService(
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return ClientAddressDTO()
-            return Json.decodeFromString(ClientAddressDTO.serializer(), bodyText)
+            return IntraleClientJson.decodeFromString(ClientAddressDTO.serializer(), bodyText)
         }
         throw bodyText.toClientException()
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { IntraleClientJson.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

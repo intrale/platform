@@ -17,7 +17,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -37,10 +37,10 @@ class ClientBusinessPaymentMethodsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(GetBusinessPaymentMethodsResponse.serializer(), bodyText)
+                val result = IntraleClientJson.decodeFromString(GetBusinessPaymentMethodsResponse.serializer(), bodyText)
                 Result.success(result.paymentMethods)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -62,10 +62,10 @@ class ClientBusinessPaymentMethodsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(UpdateBusinessPaymentMethodsResponse.serializer(), bodyText)
+                val result = IntraleClientJson.decodeFromString(UpdateBusinessPaymentMethodsResponse.serializer(), bodyText)
                 Result.success(result.paymentMethods)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
