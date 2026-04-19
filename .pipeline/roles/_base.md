@@ -25,7 +25,7 @@ Tu archivo de trabajo ya fue movido a `trabajando/` por el Pulpo. El path te lle
 4. **Leer contexto de fases anteriores** — si necesitás saber qué hicieron otros skills, mirá en `procesado/` de la fase anterior
 5. **Verificar pasadas anteriores** — si existen archivos de tu mismo skill en `procesado/` de tu misma fase para el mismo issue, son resultados de una pasada anterior. Leelos para no repetir errores.
 6. **Hacer tu trabajo** — según las instrucciones de tu rol
-6. **Escribir resultado en tu archivo de trabajo**:
+7. **Escribir resultado en tu archivo de trabajo** (que sigue en `trabajando/`):
 
 ```yaml
 issue: 1732
@@ -44,16 +44,14 @@ resultado: rechazado
 motivo: "Descripción clara del problema encontrado"
 ```
 
-7. **Mover tu archivo a `listo/`**:
-```bash
-mv .pipeline/<pipeline>/<fase>/trabajando/<archivo> .pipeline/<pipeline>/<fase>/listo/<archivo>
-```
+8. **Salir con código 0** — el Pulpo detecta tu salida y mueve el archivo de `trabajando/` a `listo/`.
 
 ## Reglas críticas
 
+- **NUNCA** muevas vos el archivo de `trabajando/` a `listo/` — el Pulpo es el único dueño del lifecycle del archivo. Si lo movés, se produce una carrera: el Pulpo on-exit intenta leer `trabajando/` después de que vos ya moviste, encuentra un archivo vacío, pierde tu `resultado` y te rechaza por "evidencia incompleta" aunque hayas aprobado.
 - **NUNCA** modifiques archivos de otros skills o fases
 - **NUNCA** muevas archivos que no son tuyos
-- **SIEMPRE** escribí resultado antes de mover a listo
+- **SIEMPRE** escribí el resultado en `trabajando/` antes de salir
 - Si tu trabajo falla por un error inesperado, escribí `resultado: rechazado` con el motivo
 - El motivo de rechazo debe ser claro y accionable para el developer que lo va a corregir
 

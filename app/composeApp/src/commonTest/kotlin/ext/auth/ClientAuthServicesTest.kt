@@ -61,6 +61,35 @@ class ClientLoginServiceTest {
         val ex = result.exceptionOrNull() as ExceptionResponse
         assertEquals(401, ex.statusCode.value)
     }
+
+    /**
+     * Regresion #2158: el backend serializa Response con campos extra (responseHeaders).
+     * Sin ignoreUnknownKeys=true el login fallaba con
+     * "Unexpected JSON token at offset N: Encountered an unknown key 'responseHeaders'"
+     * y bloqueaba todo el flujo del usuario hacia el dashboard.
+     */
+    @Test
+    fun `login exitoso tolera campos desconocidos del backend (responseHeaders)`() = runTest {
+        val body = """{"statusCode":{"value":200,"description":"OK"},"responseHeaders":{"x-trace-id":"abc"},"idToken":"id","accessToken":"access","refreshToken":"refresh","extraField":"valor"}"""
+        val service = ClientLoginService(mockClient(HttpStatusCode.OK, body))
+
+        val result = service.execute("user@test.com", "pass123")
+
+        assertTrue(result.isSuccess, "Login debe tolerar campos desconocidos del backend")
+        assertEquals("access", result.getOrThrow().accessToken)
+    }
+
+    @Test
+    fun `login fallido tolera campos desconocidos en ExceptionResponse (responseHeaders)`() = runTest {
+        val body = """{"statusCode":{"value":401,"description":"Unauthorized"},"responseHeaders":{"x-trace-id":"abc"},"message":"Credenciales invalidas"}"""
+        val service = ClientLoginService(mockClient(HttpStatusCode.Unauthorized, body))
+
+        val result = service.execute("user@test.com", "wrong")
+
+        assertTrue(result.isFailure, "Error 401 con campos desconocidos debe deserializar como ExceptionResponse")
+        val ex = result.exceptionOrNull() as ExceptionResponse
+        assertEquals(401, ex.statusCode.value)
+    }
 }
 
 // endregion

@@ -9,7 +9,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import ar.com.intrale.shared.ExceptionResponse
 import ar.com.intrale.shared.StatusCodeDTO
 import ar.com.intrale.shared.toExceptionResponse
@@ -33,7 +33,7 @@ class ClientReviewBusinessRegistrationService(private val httpClient: HttpClient
                 Result.success(ReviewBusinessRegistrationResponse(StatusCodeDTO(response.status.value, response.status.description)))
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

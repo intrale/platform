@@ -22,6 +22,7 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -63,12 +64,12 @@ class ClientOrdersService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return emptyList()
             val parsedResponse = runCatching {
-                Json.decodeFromString(ClientOrdersResponse.serializer(), bodyText).orders
+                IntraleClientJson.decodeFromString(ClientOrdersResponse.serializer(), bodyText).orders
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return Json.decodeFromString(ListSerializer(ClientOrderDTO.serializer()), bodyText)
+            return IntraleClientJson.decodeFromString(ListSerializer(ClientOrderDTO.serializer()), bodyText)
         }
         throw bodyText.toClientException()
     }
@@ -78,12 +79,12 @@ class ClientOrdersService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return ClientOrderDetailDTO()
             val parsedResponse = runCatching {
-                Json.decodeFromString(ClientOrderDetailResponse.serializer(), bodyText).order
+                IntraleClientJson.decodeFromString(ClientOrderDetailResponse.serializer(), bodyText).order
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return Json.decodeFromString(ClientOrderDetailDTO.serializer(), bodyText)
+            return IntraleClientJson.decodeFromString(ClientOrderDetailDTO.serializer(), bodyText)
         }
         throw bodyText.toClientException()
     }
@@ -98,7 +99,7 @@ class ClientOrdersService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val parsed = Json.decodeFromString(CreateClientOrderResponseDTO.serializer(), bodyText)
+                val parsed = IntraleClientJson.decodeFromString(CreateClientOrderResponseDTO.serializer(), bodyText)
                 Result.success(parsed)
             } else {
                 Result.failure(bodyText.toClientException())
@@ -110,7 +111,7 @@ class ClientOrdersService(
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { IntraleClientJson.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

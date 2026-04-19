@@ -27,10 +27,38 @@ const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
-// Ejecutar claude via Node directo (evita cmd.exe y ventanas visibles)
-const CLAUDE_CLI_JS = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
-const USE_NODE_DIRECT = fs.existsSync(CLAUDE_CLI_JS);
+// Detector multi-capa del launcher de Claude Code.
+// La estructura del paquete cambió entre versiones (2.1.114 eliminó cli.js
+// y lo reemplazó con bin/claude.exe nativo + cli-wrapper.cjs fallback).
+// Probamos opciones de más a menos preferida; todas evitan cmd.exe cuando es posible.
+function detectClaudeLauncher() {
+  const pkgDir = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code');
+  const cliJsLegacy = path.join(pkgDir, 'cli.js');
+  const binExe = path.join(pkgDir, 'bin', 'claude.exe');
+  const wrapperCjs = path.join(pkgDir, 'cli-wrapper.cjs');
+  const cmdShim = path.join(process.env.APPDATA || '', 'npm', 'claude.cmd');
+
+  // 1. Legacy cli.js → node directo (compatibilidad con versiones viejas)
+  if (fs.existsSync(cliJsLegacy)) {
+    return { kind: 'node-cli-js', cmd: process.execPath, prefixArgs: [cliJsLegacy], shell: false };
+  }
+  // 2. Binario nativo (Claude Code ≥2.1.114) → ruta absoluta, sin shell
+  if (fs.existsSync(binExe)) {
+    return { kind: 'native-exe', cmd: binExe, prefixArgs: [], shell: false };
+  }
+  // 3. cli-wrapper.cjs → node directo (fallback JS del propio paquete)
+  if (fs.existsSync(wrapperCjs)) {
+    return { kind: 'node-wrapper-cjs', cmd: process.execPath, prefixArgs: [wrapperCjs], shell: false };
+  }
+  // 4. .cmd shim con ruta absoluta → shell:true (shims .cmd requieren shell en spawn)
+  if (fs.existsSync(cmdShim)) {
+    return { kind: 'cmd-shim', cmd: cmdShim, prefixArgs: [], shell: true };
+  }
+  // 5. Último recurso: 'claude' en PATH con shell
+  return { kind: 'path-fallback', cmd: process.env.CLAUDE_BIN || 'claude', prefixArgs: [], shell: true };
+}
+
+const CLAUDE_LAUNCHER = detectClaudeLauncher();
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
@@ -1766,11 +1794,26 @@ function brazoBarrido(config) {
   }
 }
 
-/** Determinar qué skill de dev corresponde a un issue (por labels de GitHub) */
+/** Determinar qué skill de dev corresponde a un issue (por labels de GitHub).
+ *
+ * Cuando el issue tiene múltiples labels de dominio (ej. `area:infra` + `app:client`),
+ * se usa `dev_routing_priority` del config para elegir determinísticamente. Sin esto,
+ * el orden dependía del orden en que GitHub devolvía los labels, y un `app:client`
+ * mal puesto ruteaba issues 100% de infra del pipeline a android-dev (ej. #2328).
+ */
 function determinarDevSkill(issue, config) {
   const mapping = config.dev_skill_mapping || {};
   const labels = getIssueLabels(issue);
+  const priority = config.dev_routing_priority || [];
 
+  // 1) Prioridad explícita de dominio: `area:*` gana sobre `app:*` cuando coexisten.
+  for (const priorityLabel of priority) {
+    if (labels.includes(priorityLabel) && mapping[priorityLabel]) {
+      return mapping[priorityLabel];
+    }
+  }
+
+  // 2) Fallback: primer match directo (orden de labels de GitHub)
   for (const label of labels) {
     if (mapping[label]) return mapping[label];
   }
@@ -2932,15 +2975,15 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  // Usar Node directo para evitar cmd.exe y ventanas visibles
-  const spawnCmd = USE_NODE_DIRECT ? process.execPath : CLAUDE_BIN;
-  const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
+  // Launcher detectado al boot (ver detectClaudeLauncher). Evita cmd.exe cuando es posible.
+  const spawnCmd = CLAUDE_LAUNCHER.cmd;
+  const spawnArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...args];
 
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
     detached: false,
-    shell: false,
+    shell: CLAUDE_LAUNCHER.shell,
     windowsHide: true,
     env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase, ...extraEnv }
   });
@@ -3058,11 +3101,30 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
-      const data = readYaml(trabajandoPath);
+      // Single source of truth del lifecycle: el Pulpo es el único que mueve el
+      // archivo de trabajando/ a listo/. Si un agente (contrato viejo o custom)
+      // todavía lo movió él mismo, caemos sobre listo/ para no perder su YAML.
+      // Ese caso dispara la carrera que rechazaba falsamente como
+      // "Evidencia QA incompleta" (el readYaml de trabajando/ devolvía {},
+      // el gate perdía `modo: api/structural` y rebotaba con video faltante).
+      const listoPath = path.join(listoDir, path.basename(trabajandoPath));
+      let workingPath;
+      if (fs.existsSync(trabajandoPath)) {
+        workingPath = trabajandoPath;
+      } else if (fs.existsSync(listoPath)) {
+        workingPath = listoPath;
+        log('lanzamiento', `⚠️ ${skill}:#${issue} movió el archivo a listo/ por su cuenta — leyendo desde allí (contrato viejo, debería solo escribir el YAML)`);
+      } else {
+        log('lanzamiento', `⚠️ ${skill}:#${issue} terminó pero el archivo no está en trabajando/ ni en listo/`);
+        activeProcesses.delete(processKey(skill, issue));
+        return;
+      }
+
+      const data = readYaml(workingPath);
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
-        writeYaml(trabajandoPath, data);
+        writeYaml(workingPath, data);
       }
 
       // --- STOP RECORDING + PULL VIDEO ---
@@ -3109,7 +3171,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             data.evidencia = localVideo;
             data.video_size_kb = videoSizeKb;
             // Audio narrado no se genera acá (el agente QA lo hace), pero el video crudo sí
-            writeYaml(trabajandoPath, data);
+            writeYaml(workingPath, data);
           }
         } catch (e) {
           log('lanzamiento', `⚠️ Error bajando recording qa:#${issue}: ${e.message.slice(0, 80)}`);
@@ -3129,12 +3191,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           data.resultado = 'rechazado';
           data.motivo = `Evidencia QA incompleta (gate on-exit): ${evidenceIssues.join('; ')}`;
           data.rechazado_por = 'gate-evidencia-on-exit';
-          writeYaml(trabajandoPath, data);
+          writeYaml(workingPath, data);
           sendTelegram(`⛔ QA:#${issue} — evidencia incompleta al terminar. Rechazo automático: ${evidenceIssues.join('; ')}`);
         }
       }
 
-      moveFile(trabajandoPath, listoDir);
+      // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
+      // (contrato viejo), el move lo completó el agente.
+      if (workingPath === trabajandoPath) {
+        moveFile(trabajandoPath, listoDir);
+      }
       log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
 
       // Generar reporte PDF de rechazo y enviar a Telegram (background, no bloquea)
@@ -3411,6 +3477,16 @@ async function cmdStatus(config) {
   }
 
   return text;
+}
+
+function cmdGhostbusters() {
+  try {
+    const gb = require('./ghostbusters');
+    const report = gb.run();
+    return gb.fmtReport(report);
+  } catch (e) {
+    return `⚠️ Ghostbusters falló: ${e.message.slice(0, 200)}`;
+  }
 }
 
 function cmdActividad(args) {
@@ -3947,14 +4023,14 @@ function ejecutarClaude(prompt, textoOriginal) {
     const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
     delete cleanEnv.CLAUDECODE;
 
-    const cmdSpawn = USE_NODE_DIRECT ? process.execPath : CLAUDE_BIN;
-    const cmdArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
+    const cmdSpawn = CLAUDE_LAUNCHER.cmd;
+    const cmdArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...args];
 
     const proc = spawn(cmdSpawn, cmdArgs, {
       cwd: ROOT,
       env: cleanEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: !USE_NODE_DIRECT,
+      shell: CLAUDE_LAUNCHER.shell,
       windowsHide: true
     });
 
@@ -4074,35 +4150,61 @@ function cmdLimpiar() {
 
 function cmdRestart(args) {
   const paused = /pausado|--paused/i.test(args || '');
-  const cmd = paused ? 'cmd.exe /c restart --paused' : 'cmd.exe /c restart';
   const mode = paused ? 'pausado' : 'completo';
 
   log('commander', `Restart ${mode} solicitado via Telegram`);
 
-  // Registrar timestamp para protección anti-loop
+  // Registrar marker para que el nuevo pulpo al arrancar detecte el restart
+  // solicitado desde Telegram y envíe la confirmación — el pulpo actual morirá
+  // a mitad del restart.js (es descendiente y el taskkill /T lo alcanza), así
+  // que el callback de exec() nunca retornaba. El mensaje de confirmación lo
+  // emite el nuevo pulpo desde sí mismo al arrancar.
   try {
     fs.writeFileSync(path.join(PIPELINE, 'last-restart.json'),
-      JSON.stringify({ timestamp: new Date().toISOString(), mode, source: 'telegram' }));
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        mode, source: 'telegram', paused, notified: false,
+      }));
   } catch {}
 
-  // Ejecutar con exec async — cmd.exe nativo para que los hijos sobrevivan al Job Object de Windows
-  const { exec } = require('child_process');
-  exec(cmd, {
-    timeout: 60000,
-    cwd: ROOT,
-    env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
-  }, (error, stdout, stderr) => {
-    if (error) {
-      log('commander', `Error en restart: ${error.message}`);
-      sendTelegram(`❌ Error en reinicio ${mode}:\n\`${error.message.slice(0, 200)}\`\n\nIntentar manualmente: \`cmd.exe /c restart${paused ? ' --paused' : ''}\``);
-      return;
-    }
-    const output = (stdout || '').trim();
-    const tail = output ? output.split('\n').slice(-10).join('\n') : 'Pipeline reiniciado.';
-    sendTelegram(`✅ *Restart ${mode} ejecutado*\n\n\`\`\`\n${tail}\n\`\`\``);
-  });
+  // Lanzar restart.js como proceso COMPLETAMENTE desvinculado del árbol del
+  // pulpo. En Windows, taskkill /T sigue la jerarquía de PPID — un spawn
+  // normal queda como descendiente y muere cuando el pulpo se mata a sí mismo.
+  // `start` reasigna el parent a conhost.exe, rompiendo la cadena PPID. Así
+  // el restart.js sobrevive al kill del pulpo y completa launchAll.
+  //
+  // Iteración: el intento previo con `spawn('cmd.exe', ['/c', cadena])` falló
+  // silenciosamente porque cmd.exe trata `""` (título vacío de `start`) como
+  // fin prematuro del string cuando está dentro del `/c`. Ahora:
+  //   - shell:true → Node arma `cmd.exe /d /s /c "..."` escapando bien.
+  //   - Título "restart-bg" (no vacío) → evita el edge case de `""`.
+  //   - stdio redirigido a archivo → si el spawn vuelve a fallar, hay
+  //     evidencia en logs/restart-spawn.log en vez de silencio.
+  const { spawn } = require('child_process');
+  const fsMod = require('fs');
+  const pausedArg = paused ? ' --paused' : '';
+  const spawnLogPath = path.join(PIPELINE, 'logs', 'restart-spawn.log');
+  try {
+    fsMod.writeFileSync(spawnLogPath,
+      `--- restart spawn ${new Date().toISOString()} mode=${mode} ---\n`);
+    const logFd = fsMod.openSync(spawnLogPath, 'a');
+    const child = spawn(`start "restart-bg" /MIN cmd.exe /c restart${pausedArg}`, [], {
+      cwd: ROOT,
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      shell: true,
+      windowsHide: true,
+      env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
+    });
+    child.unref();
+    try { fsMod.closeSync(logFd); } catch {}
+    log('commander', `restart spawneado (cmd.exe /d /s /c ... start restart-bg)`);
+  } catch (e) {
+    log('commander', `Error lanzando restart: ${e.message}`);
+    return `❌ No pude lanzar el restart: ${e.message.slice(0, 200)}`;
+  }
 
-  return `🔄 Reinicio ${mode} del pipeline en progreso...${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
+  return `🔄 Reinicio ${mode} del pipeline en progreso...\n_Te aviso cuando termine (~15-30s)._${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
 }
 
 function cmdHelp() {
@@ -4115,6 +4217,7 @@ function cmdHelp() {
 /restart — Reiniciar pipeline completo
 /restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
 /limpiar — Matar daemons Gradle/Kotlin huérfanos
+/ghostbusters — Matar fantasmas: gradle zombies + worktrees abandonados + emuladores no sincronizados
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
 /costos — Resumen de actividad/costos
@@ -4277,6 +4380,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     switch (parsed.cmd) {
       case 'status': respuesta = await cmdStatus(config); break;
       case 'actividad': respuesta = cmdActividad(parsed.args); break;
+      case 'ghostbusters': respuesta = cmdGhostbusters(); break;
       case 'intake': respuesta = cmdIntake(parsed.args, config); break;
       case 'pausar': respuesta = cmdPausar(); break;
       case 'reanudar': respuesta = cmdReanudar(); break;
@@ -4909,6 +5013,28 @@ function brazoDesbloqueo(config) {
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
+  log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
+
+  // Confirmar restart solicitado desde Telegram. El pulpo anterior murió a
+  // mitad del restart.js (cadena: pulpo → cmd → node restart.js, matada por
+  // /T sobre el pulpo), así que el callback de exec() nunca enviaba el
+  // mensaje de confirmación. Lo emite este nuevo pulpo al arrancar.
+  try {
+    const lastRestartPath = path.join(PIPELINE, 'last-restart.json');
+    if (fs.existsSync(lastRestartPath)) {
+      const data = JSON.parse(fs.readFileSync(lastRestartPath, 'utf8'));
+      const ageMs = Date.now() - new Date(data.timestamp).getTime();
+      const TWO_MINUTES = 2 * 60 * 1000;
+      if (data.source === 'telegram' && !data.notified && ageMs < TWO_MINUTES) {
+        const mode = data.mode || (data.paused ? 'pausado' : 'completo');
+        sendTelegram(`✅ *Pipeline reiniciado* (modo ${mode})\n_Listo para recibir comandos._`);
+        fs.writeFileSync(lastRestartPath, JSON.stringify({ ...data, notified: true }, null, 2));
+        log('pulpo', `Restart ${mode} confirmado via Telegram (solicitado hace ${Math.round(ageMs / 1000)}s)`);
+      }
+    }
+  } catch (e) {
+    log('pulpo', `Warning: no pude verificar last-restart: ${e.message.slice(0, 100)}`);
+  }
 
   // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
   migrateSkillProfilesIfNeeded();
