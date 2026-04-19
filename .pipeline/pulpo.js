@@ -2029,13 +2029,26 @@ function brazoBarrido(config) {
  * se usa `dev_routing_priority` del config para elegir determinísticamente. Sin esto,
  * el orden dependía del orden en que GitHub devolvía los labels, y un `app:client`
  * mal puesto ruteaba issues 100% de infra del pipeline a android-dev (ej. #2328).
+ *
+ * Además, issues etiquetados `area:infra` cuyo título/body mencione archivos del
+ * pipeline Node.js se re-rutean a `pipeline-dev` (stack correcto). Así evitamos
+ * que cambios del pulpo/dashboard caigan en backend-dev (Kotlin/Gradle) que no
+ * puede validarlos.
  */
 function determinarDevSkill(issue, config) {
   const mapping = config.dev_skill_mapping || {};
   const labels = getIssueLabels(issue);
   const priority = config.dev_routing_priority || [];
 
-  // 1) Prioridad explícita de dominio: `area:*` gana sobre `app:*` cuando coexisten.
+  // 0) Override por contenido: area:infra + keywords del pipeline → pipeline-dev
+  if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
+    if (issueMentionsPipelineScope(issue, config)) {
+      log('routing', `#${issue}: area:infra + contenido del pipeline → pipeline-dev (override)`);
+      return mapping['area:pipeline'];
+    }
+  }
+
+  // 1) Prioridad explícita de dominio: `area:pipeline`/`area:*` gana sobre `app:*` cuando coexisten.
   for (const priorityLabel of priority) {
     if (labels.includes(priorityLabel) && mapping[priorityLabel]) {
       return mapping[priorityLabel];
@@ -2048,6 +2061,38 @@ function determinarDevSkill(issue, config) {
   }
 
   return mapping.default || 'backend-dev';
+}
+
+// Cache de títulos/bodies para no golpear GitHub por cada ruteo (TTL corto)
+const issueTextCache = new Map(); // issueNum → { text: string, fetchedAt: timestamp }
+const ISSUE_TEXT_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getIssueText(issueNum) {
+  const cached = issueTextCache.get(issueNum);
+  if (cached && (Date.now() - cached.fetchedAt) < ISSUE_TEXT_CACHE_TTL_MS) {
+    return cached.text;
+  }
+  try {
+    ghThrottle();
+    const raw = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json title,body`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    const { title = '', body = '' } = JSON.parse(raw);
+    const text = `${title}\n${body}`.toLowerCase();
+    issueTextCache.set(issueNum, { text, fetchedAt: Date.now() });
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+function issueMentionsPipelineScope(issueNum, config) {
+  const keywords = config.pipeline_scope_keywords || [];
+  if (keywords.length === 0) return false;
+  const text = getIssueText(issueNum);
+  if (!text) return false;
+  return keywords.some(kw => text.includes(kw.toLowerCase()));
 }
 
 // =============================================================================

@@ -182,6 +182,107 @@ function launchAll() {
   sleep(3000);
 }
 
+// --- SMOKE TEST + TAG pipeline-stable + AUTO-ROLLBACK ---
+
+function runSmokeTest() {
+  const script = path.join(PIPELINE, 'smoke-test.sh');
+  if (!fs.existsSync(script)) {
+    log('Smoke test ausente, se omite');
+    return { ok: true, skipped: true };
+  }
+
+  log('=== SMOKE TEST ===');
+  try {
+    const result = spawnSync('bash', [script], {
+      cwd: ROOT,
+      timeout: 30000,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+    const exitCode = result.status === null ? -1 : result.status;
+    if (exitCode === 0) {
+      log('Smoke test OK');
+      return { ok: true, exitCode, output };
+    }
+    log(`Smoke test FAIL (exit ${exitCode})`);
+    if (output) log(output.split('\n').slice(-5).join('\n'));
+    return { ok: false, exitCode, output };
+  } catch (e) {
+    log(`Smoke test error: ${e.message}`);
+    return { ok: false, exitCode: -1, output: e.message };
+  }
+}
+
+function moveStableTag() {
+  try {
+    execSync('git tag -f pipeline-stable HEAD', { cwd: ROOT, timeout: 5000, windowsHide: true });
+    try {
+      execSync('git push origin --force pipeline-stable', { cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore' });
+      log('Tag pipeline-stable movido y pusheado');
+    } catch (e) {
+      log(`Tag movido local, push falló: ${e.message.slice(0, 100)}`);
+    }
+  } catch (e) {
+    log(`No se pudo mover tag pipeline-stable: ${e.message.slice(0, 100)}`);
+  }
+}
+
+function stablePointsToHead() {
+  try {
+    const head = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).trim();
+    const stable = execSync('git rev-parse pipeline-stable', { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).trim();
+    return head === stable;
+  } catch {
+    return false;
+  }
+}
+
+function hasStableTag() {
+  try {
+    execSync('git rev-parse --verify pipeline-stable', { cwd: ROOT, timeout: 5000, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function enqueueTelegramAlert(text) {
+  const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
+  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  try {
+    if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
+    const filename = `${Date.now()}-restart-alert.json`;
+    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify({ text: msg, parse_mode: 'Markdown' }));
+    log(`Alerta Telegram encolada (${msg.length} chars)`);
+  } catch (e) {
+    log(`No se pudo encolar alerta Telegram: ${e.message}`);
+  }
+}
+
+function runRollback() {
+  log('=== AUTO-ROLLBACK ===');
+  const script = path.join(PIPELINE, 'rollback.sh');
+  if (!fs.existsSync(script)) {
+    log('rollback.sh ausente — abortando rollback');
+    return false;
+  }
+  try {
+    const result = spawnSync('bash', [script, 'pipeline-stable'], {
+      cwd: ROOT,
+      timeout: 180000,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+    if (output) log(output.split('\n').slice(-8).join('\n'));
+    return result.status === 0;
+  } catch (e) {
+    log(`Rollback error: ${e.message}`);
+    return false;
+  }
+}
+
 // --- STATUS ---
 
 function status() {
@@ -212,6 +313,8 @@ function status() {
 
 const action = process.argv[2] || 'restart';
 const flagPaused = process.argv.includes('--paused');
+const flagNoSmokeTest = process.argv.includes('--no-smoke-test');
+const flagNoRollback = process.argv.includes('--no-rollback');
 
 switch (action) {
   case 'stop':
@@ -233,4 +336,29 @@ switch (action) {
     launchAll();
     const ok = status();
     log(ok ? '=== Pipeline V2 operativo ===' : '=== Revisar componentes ===');
+
+    // Smoke test + tag pipeline-stable + auto-rollback
+    // Se omite si --no-smoke-test (caso típico: rollback.sh relanza restart.js).
+    // Se omite si --paused (no todos los componentes están arriba en modo pausado).
+    if (!flagNoSmokeTest && !flagPaused) {
+      sleep(3000);
+      const smoke = runSmokeTest();
+      if (smoke.ok) {
+        if (!stablePointsToHead()) moveStableTag();
+      } else if (flagNoRollback) {
+        log('Smoke test falló pero --no-rollback activo (diagnóstico)');
+        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nModo diagnóstico (--no-rollback), sin rollback automático.`);
+      } else if (!hasStableTag()) {
+        log('Smoke test falló pero no existe tag pipeline-stable — primer deploy, sin rollback');
+        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nNo existe tag \`pipeline-stable\` (primer deploy). Revisar manualmente.`);
+      } else {
+        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ — ejecutando rollback automático*\nSmoke test exit ${smoke.exitCode}.\nVolviendo a \`pipeline-stable\`.`);
+        const rollbackOk = runRollback();
+        if (rollbackOk) {
+          enqueueTelegramAlert(`✅ *Rollback completado.*\nPipeline restaurado a \`pipeline-stable\`.`);
+        } else {
+          enqueueTelegramAlert(`❌ *Rollback FALLÓ.* Intervención manual requerida.\n\`\`\`\nbash .pipeline/rollback.sh\n\`\`\``);
+        }
+      }
+    }
 }
