@@ -269,8 +269,96 @@ function getGateStatus(issueNum) {
   return gates;
 }
 
+// --- Veredicto del agente que rechazó (fuente de verdad por encima del keyword matching) ---
+// Cuando el agente escribe su YAML con `resultado: rechazado` y un `motivo`,
+// ese motivo es la razón real del rechazo. Ningún pattern-match sobre el log
+// debe contradecirlo. Esta función construye un rootCause estructurado a
+// partir del YAML + el skill que rechazó. Devuelve null si no hay veredicto
+// utilizable (el caller cae al keyword matching legacy).
+function buildAgentVerdict(yamlData, skill) {
+  if (!yamlData || typeof yamlData !== 'object') return null;
+  if (yamlData.resultado !== 'rechazado') return null;
+  const motivoReal = (yamlData.motivo || '').trim();
+  if (!motivoReal) return null;
+
+  // Primera oración del motivo (para summary corto) + motivo completo (para detail).
+  const firstSentence = motivoReal.split(/(?<=[.!?])\s+/)[0].trim();
+  const summary = firstSentence.length > 180 ? firstSentence.substring(0, 180) + '...' : firstSentence;
+
+  const byRole = {
+    po: {
+      tipo: 'PO-POLICY', emoji: '🧭', origen: 'DECISION-PRODUCTO',
+      desc: `El Product Owner decidió no aprobar: ${motivoReal}`,
+      negocio: `El responsable de producto revisó el cambio y pidió más evidencia o ajustes antes de aprobarlo. Motivo: ${motivoReal}`,
+      label: 'Product Owner',
+    },
+    qa: {
+      tipo: 'QA-FALLA', emoji: '🧪', origen: 'INTERNO',
+      desc: `El agente QA rechazó: ${motivoReal}`,
+      negocio: `Las pruebas de usuario detectaron un problema. Motivo: ${motivoReal}`,
+      label: 'QA',
+    },
+    review: {
+      tipo: 'CODE-REVIEW', emoji: '👁️', origen: 'INTERNO',
+      desc: `Code review bloqueante: ${motivoReal}`,
+      negocio: `La revisión de código encontró problemas que deben corregirse antes de continuar. Motivo: ${motivoReal}`,
+      label: 'Code review',
+    },
+    tester: {
+      tipo: 'TESTS', emoji: '🧪', origen: 'INTERNO',
+      desc: `Tests automáticos fallaron: ${motivoReal}`,
+      negocio: `Las pruebas automáticas detectaron una regresión. Motivo: ${motivoReal}`,
+      label: 'Tester',
+    },
+    builder: {
+      tipo: 'COMPILACION', emoji: '🔨', origen: 'INTERNO',
+      desc: `Build falló: ${motivoReal}`,
+      negocio: `Los cambios de código tienen errores que impiden generar la aplicación. Motivo: ${motivoReal}`,
+      label: 'Builder',
+    },
+    security: {
+      tipo: 'SEGURIDAD', emoji: '🛡️', origen: 'INTERNO',
+      desc: `Auditoría de seguridad bloqueante: ${motivoReal}`,
+      negocio: `La auditoría de seguridad detectó problemas que deben corregirse. Motivo: ${motivoReal}`,
+      label: 'Security',
+    },
+    guru: {
+      tipo: 'INVESTIGACION', emoji: '📚', origen: 'INTERNO',
+      desc: `Guru reportó un bloqueante: ${motivoReal}`,
+      negocio: `El análisis técnico encontró un problema de fondo. Motivo: ${motivoReal}`,
+      label: 'Guru',
+    },
+    ux: {
+      tipo: 'UX', emoji: '🎨', origen: 'INTERNO',
+      desc: `Revisión UX bloqueante: ${motivoReal}`,
+      negocio: `La revisión de experiencia de usuario pidió ajustes. Motivo: ${motivoReal}`,
+      label: 'UX',
+    },
+  };
+
+  const mapped = byRole[skill] || {
+    tipo: 'AGENTE-RECHAZO', emoji: '📋', origen: 'INTERNO',
+    desc: `El agente ${skill} rechazó: ${motivoReal}`,
+    negocio: `El agente ${skill} dejó un veredicto de rechazo. Motivo: ${motivoReal}`,
+    label: skill || 'agente',
+  };
+
+  return {
+    ...mapped,
+    fromYaml: true,
+    summary,
+    motivoReal,
+    skill: skill || 'agente',
+  };
+}
+
 // --- Clasificación de causa raíz ---
-function classifyRootCause(motivo, logTail, exitCode) {
+function classifyRootCause(motivo, logTail, exitCode, yamlData, skill) {
+  // Fuente de verdad #1: el YAML del agente que rechazó.
+  const agentVerdict = buildAgentVerdict(yamlData, skill);
+  if (agentVerdict) return agentVerdict;
+
+
   const motivoLower = (motivo || '').toLowerCase();
   const logLower = (logTail || '').toLowerCase();
 
@@ -847,7 +935,19 @@ function detectExternalDependencies(logTail, motivo) {
 // rechazo es explícitamente por evidencia (sin video, sin frames), la causa
 // está en la capa de ejecución (infra/emulador/APK), no en un bug funcional
 // que aparezca mencionado incidentalmente en el log.
-function selectPrimaryCause(deps, preflight, motivo) {
+function selectPrimaryCause(deps, preflight, motivo, agentVerdict) {
+  // Override absoluto: si hay veredicto del agente (YAML con resultado:rechazado),
+  // ese es el primaryCause. No hay pattern-match que pueda contradecirlo.
+  if (agentVerdict && agentVerdict.fromYaml) {
+    return {
+      summary: `${agentVerdict.label} rechazó: ${agentVerdict.summary}`,
+      detail: agentVerdict.motivoReal,
+      source: 'agent-verdict',
+      priority: 'high',
+      skill: agentVerdict.skill,
+    };
+  }
+
   if (!Array.isArray(deps) || deps.length === 0) return null;
 
   // Si preflight pasó, quitar deps de infra de emulador (falso positivo)
@@ -1141,16 +1241,21 @@ function collectReportData() {
   const profiles = readJson(PROFILES_FILE) || {};
   const skillProfile = profiles[skill];
 
+  // Buscar el YAML del agente que rechazó en todas las fases y estados.
+  // Incluye 'aprobacion' (donde vive el PO) y 'procesado/' (si el pulpo ya movió).
   let yamlData = null;
-  const allFases = ['analisis', 'sizing', 'dev', 'build', 'verificacion', 'entrega'];
-  for (const f of allFases) {
-    const listoPath = path.join(PIPELINE, pipeline, f, 'listo', `${issue}.${skill}`);
-    if (fs.existsSync(listoPath)) {
-      try {
-        const yaml = require('js-yaml');
-        yamlData = yaml.load(fs.readFileSync(listoPath, 'utf8'));
-      } catch {}
-      break;
+  const allFases = ['analisis', 'sizing', 'dev', 'build', 'verificacion', 'aprobacion', 'entrega'];
+  const allBuckets = ['listo', 'procesado', 'trabajando', 'rechazado'];
+  outer: for (const f of allFases) {
+    for (const b of allBuckets) {
+      const p = path.join(PIPELINE, pipeline, f, b, `${issue}.${skill}`);
+      if (fs.existsSync(p)) {
+        try {
+          const yaml = require('js-yaml');
+          yamlData = yaml.load(fs.readFileSync(p, 'utf8'));
+        } catch {}
+        break outer;
+      }
     }
   }
 
@@ -1162,14 +1267,14 @@ function collectReportData() {
   const issueCtx = fetchIssueContext(issue);
   const rejectHistory = getRejectHistory(issue);
   const otherGates = getGateStatus(issue);
-  const rootCause = classifyRootCause(motivo, logTail, exitCode);
+  const rootCause = classifyRootCause(motivo, logTail, exitCode, yamlData, skill);
   const readableLog = extractMeaningfulLog(logTail, 30);
   const depIssues = fetchDependencyIssues(issue);
 
   // NUEVO v6: preflight + evidencia + UNA causa raíz estricta
   const preflight = checkPreflightOk(issue);
   const evidence = collectEvidence(issue, skill, logFile);
-  const primaryCause = selectPrimaryCause(analysis.externalDeps || [], preflight, motivo);
+  const primaryCause = selectPrimaryCause(analysis.externalDeps || [], preflight, motivo, rootCause && rootCause.fromYaml ? rootCause : null);
 
   // Veredicto: si la única causa candidata fue filtrada por preflight OK,
   // el rechazo es INCONCLUYENTE — no crear issue, marcar para revisión humana
