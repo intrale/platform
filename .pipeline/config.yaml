@@ -63,12 +63,25 @@ intake:
 
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
+  "area:infra": "backend-dev"    # Infra pura del pipeline/Node.js/hooks → backend-dev (no hay skill infra-dev)
   "area:backend": "backend-dev"
   "app:client": "android-dev"
   "app:business": "android-dev"
   "app:delivery": "android-dev"
   "area:web": "web-dev"
   default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
+
+# Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
+# Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
+# Rationale: si alguien tagueó `area:infra`, esa intención manda — issues del pipeline
+# no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
+dev_routing_priority:
+  - "area:infra"
+  - "area:backend"
+  - "area:web"
+  - "app:client"
+  - "app:business"
+  - "app:delivery"
 
 # Prioridad de intake (orden de procesamiento)
 prioridad_labels:
