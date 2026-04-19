@@ -10,12 +10,64 @@ const { spawnSync } = require('child_process');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 
+// Sleep sincrónico reutilizable (mismo patrón que restart.js).
+function sleepMs(ms) {
+  spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${ms})`], { timeout: ms + 1000 });
+}
+
+// Lock file-based para serializar wmic scans en Windows.
+// Cuando restart.js spawnea 7 componentes en paralelo, los 7 singletons
+// ejecutan wmic al mismo tiempo; en Windows eso puede tomar >30s por
+// contención (wmic es lento y no concurrente). Serializamos.
+const WMIC_LOCK_FILE = path.join(PIPELINE, '.wmic-scan.lock');
+const WMIC_LOCK_MAX_WAIT_MS = 45000;
+const WMIC_LOCK_POLL_MS = 200;
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+function acquireWmicLock() {
+  const start = Date.now();
+  while (Date.now() - start < WMIC_LOCK_MAX_WAIT_MS) {
+    try {
+      const fd = fs.openSync(WMIC_LOCK_FILE, 'wx');
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') return false;
+      // Si el dueño del lock murió, lo liberamos.
+      try {
+        const ownerPid = parseInt((fs.readFileSync(WMIC_LOCK_FILE, 'utf8') || '').trim(), 10);
+        if (ownerPid && ownerPid !== process.pid && !pidAlive(ownerPid)) {
+          try { fs.unlinkSync(WMIC_LOCK_FILE); } catch {}
+          continue;
+        }
+      } catch {}
+      sleepMs(WMIC_LOCK_POLL_MS);
+    }
+  }
+  // Si no pudimos obtener el lock, seguimos igual — mejor un scan
+  // concurrente que abortar el arranque del componente.
+  return false;
+}
+
+function releaseWmicLock(held) {
+  if (!held) return;
+  try {
+    const ownerPid = parseInt((fs.readFileSync(WMIC_LOCK_FILE, 'utf8') || '').trim(), 10);
+    if (ownerPid === process.pid) fs.unlinkSync(WMIC_LOCK_FILE);
+  } catch {}
+}
+
 /**
  * Busca procesos node.exe que tengan el mismo script en su command line.
  * Retorna array de PIDs (excluyendo el proceso actual).
  */
 function findSiblings(scriptName) {
   if (process.platform === 'win32') {
+    const held = acquireWmicLock();
     try {
       const r = spawnSync('wmic', [
         'process', 'where', "name='node.exe'",
@@ -36,6 +88,7 @@ function findSiblings(scriptName) {
       }
       return pids;
     } catch { return []; }
+    finally { releaseWmicLock(held); }
   }
 
   // Linux/Mac: usar ps

@@ -193,12 +193,12 @@ function runSmokeTest() {
 
   log('=== SMOKE TEST ===');
   try {
-    // Timeout 60s: smoke-test hace retry de hasta 25s sobre los 3 PID
-    // files + curl 5s + stat checks. 30s previos eran apretados y en
-    // Windows el kill por timeout deja un exit ambiguo (a veces 1).
+    // Timeout 120s: smoke-test hace retry de hasta 60s sobre los 3 PID
+    // files + curl 5s + stat checks. 60s previos se agotaban en Windows
+    // cuando 7 singletons hacían wmic en paralelo post-launchAll.
     const result = spawnSync('bash', [script], {
       cwd: ROOT,
-      timeout: 60000,
+      timeout: 120000,
       encoding: 'utf8',
       windowsHide: true,
     });
