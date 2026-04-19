@@ -1794,11 +1794,26 @@ function brazoBarrido(config) {
   }
 }
 
-/** Determinar qué skill de dev corresponde a un issue (por labels de GitHub) */
+/** Determinar qué skill de dev corresponde a un issue (por labels de GitHub).
+ *
+ * Cuando el issue tiene múltiples labels de dominio (ej. `area:infra` + `app:client`),
+ * se usa `dev_routing_priority` del config para elegir determinísticamente. Sin esto,
+ * el orden dependía del orden en que GitHub devolvía los labels, y un `app:client`
+ * mal puesto ruteaba issues 100% de infra del pipeline a android-dev (ej. #2328).
+ */
 function determinarDevSkill(issue, config) {
   const mapping = config.dev_skill_mapping || {};
   const labels = getIssueLabels(issue);
+  const priority = config.dev_routing_priority || [];
 
+  // 1) Prioridad explícita de dominio: `area:*` gana sobre `app:*` cuando coexisten.
+  for (const priorityLabel of priority) {
+    if (labels.includes(priorityLabel) && mapping[priorityLabel]) {
+      return mapping[priorityLabel];
+    }
+  }
+
+  // 2) Fallback: primer match directo (orden de labels de GitHub)
   for (const label of labels) {
     if (mapping[label]) return mapping[label];
   }
