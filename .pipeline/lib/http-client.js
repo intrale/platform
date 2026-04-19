@@ -203,11 +203,27 @@ const CROSS_ORIGIN_DROP_HEADERS = ['authorization', 'cookie', 'proxy-authorizati
  * @returns {Promise<{statusCode, headers, bodyBuffer, finalUrl}>}
  */
 async function doSingleRequest(parsedUrl, options, logger) {
+    // Precalculo de URL redactada para logs (CA-6/CA-11/CA-17).
+    const redactedUrl = redactUrlLike(parsedUrl.toString());
+
     // Validar SSRF antes de abrir socket (CA-9 + CA-13).
-    const ipList = await Promise.race([
-        ssrfGuard.validateHostname(parsedUrl.hostname, { dnsResolver: options._dnsResolver }),
-        rejectAfter(TIMEOUT_DNS_MS, ERROR_CODES.TIMEOUT_DNS, 'timeout de resolución DNS'),
-    ]);
+    // CA-11 (#2332): si el guard rechaza, logeamos DENIAL estructurado antes de
+    // propagar para que producción deje traza de intentos (URL, host, razón, stack).
+    let ipList;
+    try {
+        ipList = await Promise.race([
+            ssrfGuard.validateHostname(parsedUrl.hostname, { dnsResolver: options._dnsResolver }),
+            rejectAfter(TIMEOUT_DNS_MS, ERROR_CODES.TIMEOUT_DNS, 'timeout de resolución DNS'),
+        ]);
+    } catch (err) {
+        if (err && (err.code === ERROR_CODES.SSRF_BLOCKED || err.code === ERROR_CODES.PROXY_NOT_WHITELISTED)) {
+            const stackLine = err.stack ? err.stack.split('\n').slice(0, 5).join(' | ') : '(sin stack)';
+            logger.error(
+                `DENIAL ${err.code} url=${redactedUrl} host=${parsedUrl.hostname} razon=${err.message} stack=${stackLine}`
+            );
+        }
+        throw err;
+    }
 
     const pickedIp = ipList[0];
     const isHttps = parsedUrl.protocol === 'https:';
@@ -258,7 +274,6 @@ async function doSingleRequest(parsedUrl, options, logger) {
     }
 
     const agentTag = options._agentTag || 'pipeline';
-    const redactedUrl = redactUrlLike(parsedUrl.toString());
     logger.info(`${requestOptions.method} ${redactedUrl} → ${pickedIp.address}`);
 
     const requester = isHttps ? https.request : http.request;
