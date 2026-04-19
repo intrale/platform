@@ -23,11 +23,17 @@ PIPELINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="${PIPELINE_DIR}/logs/smoke-test.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
+# Evidencia a stderr desde el vamos, independiente de tee/LOG_FILE.
+# Si el smoke test falla antes del primer log() (tee roto, CWD raro),
+# restart.js captura esto via spawnSync result.stderr.
+echo "[smoke-test] inicio pid=$$ pipeline_dir=${PIPELINE_DIR}" >&2
+
 log() {
   local msg="$1"
   local ts
   ts="$(date '+%Y-%m-%d %H:%M:%S')"
   echo "[$ts] $msg" | tee -a "$LOG_FILE"
+  echo "[smoke-test] $msg" >&2
 }
 
 fail() {
@@ -36,15 +42,16 @@ fail() {
 }
 
 # --- 1) Procesos críticos ---
-# Retry hasta 30s: singleton.js escribe el .pid DESPUÉS de un wmic scan que
-# se pisa con otros wmic de arranque concurrente y puede tardar varios
-# segundos. Con 6+ servicios arrancando en paralelo justo después de un
-# killAll, el one-shot a los 6s post-launch se volvía carrera.
+# Retry GLOBAL (no por-archivo): chequea los 3 pids en cada iteración;
+# sale apenas los 3 están OK. Total max 25s (cabe en spawnSync timeout
+# de 60s con margen). singleton.js escribe el .pid DESPUÉS de un wmic
+# scan que compite con los otros singletons arrancando en paralelo, así
+# que el one-shot a los 6s post-launch se volvía carrera.
 log "=== SMOKE TEST ==="
 log "1) Verificando procesos críticos..."
 
 CRITICAL=("pulpo.pid" "dashboard.pid" "svc-telegram.pid")
-MAX_WAIT_SECONDS=30
+MAX_WAIT_SECONDS=25
 
 check_pid_alive() {
   local pid="$1"
@@ -55,31 +62,52 @@ check_pid_alive() {
   fi
 }
 
-for pid_file in "${CRITICAL[@]}"; do
-  waited=0
-  last_err=""
-  while [ "$waited" -lt "$MAX_WAIT_SECONDS" ]; do
-    if [ ! -f "${PIPELINE_DIR}/${pid_file}" ]; then
-      last_err="PID file ausente"
-    else
-      pid=$(cat "${PIPELINE_DIR}/${pid_file}" 2>/dev/null | tr -d '[:space:]')
-      if [ -z "$pid" ]; then
-        last_err="PID file vacío"
-      elif check_pid_alive "$pid"; then
-        log "  OK ${pid_file} (PID ${pid})"
-        last_err=""
-        break
-      else
-        last_err="proceso no corre (PID ${pid})"
-      fi
-    fi
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if [ -n "$last_err" ]; then
-    fail "${pid_file}: ${last_err} tras ${MAX_WAIT_SECONDS}s" 1
+# Devuelve 0 si el pid_file está OK (existe, no vacío, proceso vivo).
+# Imprime estado por stdout ("OK PID" | error).
+check_pid_ready() {
+  local pid_file="$1"
+  if [ ! -f "${PIPELINE_DIR}/${pid_file}" ]; then
+    echo "ausente"
+    return 1
   fi
+  local pid
+  pid=$(cat "${PIPELINE_DIR}/${pid_file}" 2>/dev/null | tr -d '[:space:]')
+  if [ -z "$pid" ]; then
+    echo "vacío"
+    return 1
+  fi
+  if check_pid_alive "$pid"; then
+    echo "OK ${pid}"
+    return 0
+  fi
+  echo "muerto(${pid})"
+  return 1
+}
+
+waited=0
+all_ok=0
+pending=""
+while [ "$waited" -lt "$MAX_WAIT_SECONDS" ]; do
+  pending=""
+  declare -a ok_states=()
+  for pid_file in "${CRITICAL[@]}"; do
+    if state=$(check_pid_ready "$pid_file"); then
+      ok_states+=("  ${pid_file}: ${state}")
+    else
+      pending="${pending} ${pid_file}:${state}"
+    fi
+  done
+  if [ -z "$pending" ]; then
+    all_ok=1
+    for line in "${ok_states[@]}"; do log "$line"; done
+    break
+  fi
+  sleep 1
+  waited=$((waited + 1))
 done
+if [ "$all_ok" != 1 ]; then
+  fail "procesos críticos no ready tras ${MAX_WAIT_SECONDS}s:${pending}" 1
+fi
 
 # --- 2) Dashboard responde ---
 log "2) Verificando dashboard HTTP..."

@@ -193,9 +193,12 @@ function runSmokeTest() {
 
   log('=== SMOKE TEST ===');
   try {
+    // Timeout 60s: smoke-test hace retry de hasta 25s sobre los 3 PID
+    // files + curl 5s + stat checks. 30s previos eran apretados y en
+    // Windows el kill por timeout deja un exit ambiguo (a veces 1).
     const result = spawnSync('bash', [script], {
       cwd: ROOT,
-      timeout: 30000,
+      timeout: 60000,
       encoding: 'utf8',
       windowsHide: true,
     });
@@ -205,8 +208,8 @@ function runSmokeTest() {
       log('Smoke test OK');
       return { ok: true, exitCode, output };
     }
-    log(`Smoke test FAIL (exit ${exitCode})`);
-    if (output) log(output.split('\n').slice(-5).join('\n'));
+    log(`Smoke test FAIL (exit ${exitCode}, signal=${result.signal || 'none'})`);
+    if (output) log(output.split('\n').slice(-12).join('\n'));
     return { ok: false, exitCode, output };
   } catch (e) {
     log(`Smoke test error: ${e.message}`);
