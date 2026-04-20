@@ -16,9 +16,16 @@ const precheck = require('./connectivity-precheck');
 // comentarios automáticos que quedan públicos en el issue.
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
 const connectivityState = require('./connectivity-state'); // #2335
+const retryingState = require('./retrying-state');         // #2337 CA7/CA8
+const uxMetrics = require('./ux-metrics');                 // #2337 CA10
+let notifierInfraRecovered = null;                         // #2336 (lazy require)
+try { notifierInfraRecovered = require('./notifier-infra-recovered'); } catch { /* opcional */ }
 const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 const cbInfra = require('./circuit-breaker-infra');
 const { redact } = require('./redact');
+
+// #2337 CA10: cleanup perezoso + startup de metricas UX (REQ-SEC-5)
+try { uxMetrics.cleanup({ force: true }); } catch { /* best-effort */ }
 
 // Crash handlers — loguear y seguir vivo
 process.on('uncaughtException', (err) => {
@@ -192,7 +199,10 @@ async function ejecutarPrecheck(config) {
       }
     } else if (previousOk === false) {
       log('precheck', `🟢 precheck OK — infra recuperada (durationMs=${result.durationMs})`);
-      try { sendTelegram(`🟢 Infra recuperada. Reencolando issues bloqueados por red.`); } catch {}
+      // #2337 CA7: NO enviar Telegram aqui — la choreografia FS-first exige que
+      // el estado `reintentando` se escriba en disco ANTES de encolar cualquier
+      // cmd.json de Telegram. Eso lo hace `reencolarInfraBloqueados` unas lineas
+      // mas abajo en el mismo tick, con orden estricto: FS -> Telegram.
     }
 
     return result;
@@ -296,16 +306,36 @@ function marcarBloqueoInfra(workFilePath, issue, skill, fase, precheckResult) {
 /**
  * Cuando el precheck vuelve a estar OK después de un fallo, recorre las
  * carpetas pendiente/ de todas las fases y re-habilita los archivos marcados
- * con `rebote_tipo: infra` (limpia el flag para que el próximo barrido/launch
- * los tome normalmente). Criterio #7 del issue #2317.
+ * con `rebote_tipo: infra`. Criterio #7 del issue #2317.
+ *
+ * #2337 CA7 — Choreografia temporal FS-first:
+ *
+ *   Orden estricto en el MISMO tick (sin async yield entre fases):
+ *     1. Scan: recolectar issues bloqueados por infra (sin side-effects).
+ *     2. FS-FIRST: escribir `retryingUntil` en `retrying-state.json` (state
+ *        sync visible para el dashboard con ventana anti-parpadeo de 2s).
+ *     3. YAML: limpiar markers de infra en los work files (issues launchable).
+ *     4. Telegram: encolar cmd.json via `notifier-infra-recovered` (fallback
+ *        a `sendTelegram` directo si el notifier no esta disponible).
+ *     5. Cleanup: limpiar `blocked-by-infra.json` + set en memoria.
+ *     6. Metricas: persistir entrada append-only en `.pipeline/metrics/`.
+ *
+ *   Si el proceso crashea entre (2) y (4): el dashboard ya muestra `reintentando`,
+ *   el Telegram no se envio; el siguiente ciclo (tras restart) re-detecta los
+ *   issues con rebote_tipo=infra persistidos y vuelve a correr (REQ-SEC-6).
+ *
+ *   Si crashea entre (4) y (6): metrica perdida pero el efecto ya aplico,
+ *   aceptable porque la captura es best-effort (no afecta la experiencia).
  */
 function reencolarInfraBloqueados(config) {
   if (!precheckOk()) return;
   if (lastInfraBlockedIssues.size === 0) return; // Nada que reencolar
 
+  const tickStartMs = Date.now();
   const pipelines = Object.keys(config.pipelines || {});
-  const reencolados = [];
 
+  // ── Fase 1 — Scan: recolectar archivos candidatos SIN escribir ────────
+  const candidatos = []; // [{ path, data, issue, cleaned }]
   for (const pipelineName of pipelines) {
     const pipelineConfig = config.pipelines[pipelineName];
     for (const fase of pipelineConfig.fases || []) {
@@ -317,8 +347,6 @@ function reencolarInfraBloqueados(config) {
         try { data = readYaml(a.path); } catch { continue; }
         if (data && data.rebote_tipo === 'infra') {
           const issue = issueFromFile(a.name);
-          // Limpiar los markers de infra; preservamos rebote_numero para que
-          // un posible rebote de código (anterior) siga contando normal.
           const cleaned = { ...data };
           delete cleaned.rebote_tipo;
           delete cleaned.bloqueado_por_infra;
@@ -326,30 +354,127 @@ function reencolarInfraBloqueados(config) {
           delete cleaned.infra_motivo;
           delete cleaned.infra_endpoints_fallidos;
           cleaned.infra_reencolado_en = new Date().toISOString();
-          try {
-            writeYaml(a.path, cleaned);
-            reencolados.push(issue);
-          } catch (e) {
-            log('precheck', `Error reencolando #${issue}: ${e.message}`);
-          }
+          candidatos.push({ path: a.path, cleaned, issue });
         }
       }
     }
   }
 
-  if (reencolados.length > 0) {
-    const unicos = Array.from(new Set(reencolados));
-    log('precheck', `🟢 Reencolados por infra recuperada: ${unicos.map(i => `#${i}`).join(', ')}`);
-    for (const issue of unicos) {
-      ghCommentOnIssue(issue, `🟢 Infra #2314 restaurada — reintentando automáticamente.`);
+  if (candidatos.length === 0) {
+    // Aun asi limpiar el set en memoria y blocked-by-infra.json
+    lastInfraBlockedIssues.clear();
+    try {
+      connectivityState.clearBlockedIssues({
+        type: 'connectivity_restored',
+        ts: new Date().toISOString(),
+      });
+    } catch (e) {
+      log('precheck', `No se pudo limpiar blocked-by-infra.json: ${connectivityState.sanitizeForLog(e.message)}`);
+    }
+    return;
+  }
+
+  const issueNumbers = Array.from(new Set(candidatos.map((c) => parseInt(c.issue, 10))))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  // ── Fase 2 — FS-FIRST: marcar estado `reintentando` antes que cualquier Telegram ──
+  let tsDashboardUpdate = tickStartMs;
+  let retryingUntil = tickStartMs + retryingState.DEFAULT_MIN_RETRY_MS;
+  try {
+    const result = retryingState.markRetrying(issueNumbers, {
+      now: tickStartMs,
+      reason: 'connectivity_restored',
+      previousState: 'blocked:infra',
+    });
+    retryingUntil = result.retryingUntil;
+    tsDashboardUpdate = Date.now();
+    log('precheck', `🟡 retrying-state escrito (issues=${issueNumbers.length}, until=+${retryingUntil - tickStartMs}ms) [FS-first]`);
+  } catch (e) {
+    log('precheck', `No se pudo escribir retrying-state: ${connectivityState.sanitizeForLog(e.message)}`);
+  }
+
+  // ── Fase 3 — YAML: limpiar markers de infra en cada archivo ───────────
+  const reencolados = [];
+  for (const c of candidatos) {
+    try {
+      // Anotar la ventana `reintentando` en el propio work file para que otros
+      // consumidores (dashboard, diagnosticos) puedan leerlo sin consultar el
+      // state global. Campo no obligatorio, solo metadata.
+      c.cleaned.retrying_until_ms = retryingUntil;
+      c.cleaned.retrying_since_ms = tickStartMs;
+      writeYaml(c.path, c.cleaned);
+      reencolados.push(c.issue);
+    } catch (e) {
+      log('precheck', `Error reencolando #${c.issue}: ${e.message}`);
     }
   }
 
-  // Limpiar el set de issues notificados (ya los reencolamos)
-  lastInfraBlockedIssues.clear();
+  const unicos = Array.from(new Set(reencolados));
+  log('precheck', `🟢 Reencolados por infra recuperada: ${unicos.map((i) => `#${i}`).join(', ')}`);
 
-  // #2335 — limpiar blocked-by-infra.json con el evento de recuperacion.
-  // El event log ya lo escribio `recordProbeResult` tras la transicion FAIL→OK.
+  // ── Fase 4 — Telegram: encolar cmd.json DESPUES del FS ────────────────
+  //
+  // Prioridad:
+  //   a) notifier-infra-recovered (#2336): mensaje unico consolidado con
+  //      variante rotable, MarkdownV2 escapado, dedup y rate-limit TTS.
+  //   b) sendTelegram simple como fallback (si #2336 no esta disponible).
+  let varianteMensaje = null;
+  let tsTelegramDelivered = null;
+  let rateLimitAlcanzado = null;
+  (async () => {
+    const recoveredEvent = {
+      type: 'connectivity_restored',
+      ts: new Date(tickStartMs).toISOString(),
+      requeued: { count: unicos.length, issues: unicos.map((n) => parseInt(n, 10)) },
+    };
+    try {
+      if (notifierInfraRecovered && typeof notifierInfraRecovered.notify === 'function') {
+        const res = await notifierInfraRecovered.notify(recoveredEvent, {
+          botToken: getTelegramToken(),
+          chatId: getTelegramChatId(),
+        });
+        tsTelegramDelivered = Date.now();
+        if (res && res.sent) {
+          // Extraer id corto del mensaje para la metrica (REQ-SEC-3: nunca el texto).
+          varianteMensaje = res.dedupHash ? `hash:${String(res.dedupHash).slice(0, 8)}` : 'variant:unknown';
+          if (res.rateLimitReason === 'per-issue' || res.rateLimitReason === 'global') {
+            rateLimitAlcanzado = res.rateLimitReason === 'per-issue' ? 'issue' : 'global';
+          }
+        }
+      } else {
+        sendTelegram('🟢 Infra recuperada. Reencolando issues bloqueados por red.');
+        tsTelegramDelivered = Date.now();
+        varianteMensaje = 'fallback:simple';
+      }
+    } catch (e) {
+      log('precheck', `Error notificando recuperacion de infra: ${connectivityState.sanitizeForLog(e.message)}`);
+    }
+
+    // Comentarios por issue via gh CLI (idempotente — solo la 1ra vez por run).
+    for (const issue of unicos) {
+      try { ghCommentOnIssue(issue, `🟢 Infra #2314 restaurada — reintentando automáticamente.`); } catch { /* best-effort */ }
+    }
+
+    // ── Fase 6 — Metricas UX (CA10) append-only ────────────────────────
+    try {
+      uxMetrics.appendMetric({
+        event: 'connectivity_restored',
+        timestamp_event: tickStartMs,
+        timestamp_dashboard_update: tsDashboardUpdate,
+        timestamp_telegram_delivered: tsTelegramDelivered,
+        variante_mensaje: varianteMensaje,
+        issues_reencolados: unicos.length,
+        rate_limit_alcanzado: rateLimitAlcanzado,
+        previous_state: 'blocked:infra',
+        retrying_window_ms: retryingState.DEFAULT_MIN_RETRY_MS,
+      });
+    } catch (e) {
+      log('precheck', `No se pudo escribir metrica UX: ${connectivityState.sanitizeForLog(e.message)}`);
+    }
+  })().catch((err) => log('precheck', `async notify/metrics error: ${err.message}`));
+
+  // ── Fase 5 — Cleanup: memoria + blocked-by-infra.json ─────────────────
+  lastInfraBlockedIssues.clear();
   try {
     connectivityState.clearBlockedIssues({
       type: 'connectivity_restored',
