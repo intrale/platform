@@ -523,3 +523,49 @@ test('CA-11 · request exitoso NO emite DENIAL', withPermissiveSSRF(async () => 
         await srv.close();
     }
 }));
+
+test('CA-11.1 · DENIAL sobre URL de Telegram NO filtra el BOT_TOKEN a stderr', async () => {
+    // Escenario real de takeover: el SSRF guard rechaza api.telegram.org porque
+    // el resolver DNS devuelve una IP privada (DNS rebinding / /etc/hosts
+    // manipulado / proxy mal configurado). El http-client.js emite DENIAL y
+    // loggea la URL. Si `redactUrlLike` no cierra el path `/bot<TOKEN>/...`,
+    // el token se escribe en claro a stderr → takeover total del bot.
+    //
+    // Este test fuerza ese path con un resolver DNS custom que mapea
+    // api.telegram.org → 127.0.0.1 (privada).
+    const FAKE_TOKEN = '1234567890:ABCDefGHIjklMNOpqrsTUVwxyz_sensitive';
+    const telegramUrl = `https://api.telegram.org/bot${FAKE_TOKEN}/sendMessage`;
+    const rebindingResolver = {
+        lookup: async (_host, _opts) => [{ address: '127.0.0.1', family: 4 }],
+    };
+
+    let err = null;
+    const stderr = await captureStderr(async () => {
+        try {
+            await get(telegramUrl, {
+                timeout: 5000,
+                agentTag: 'test-ca11-telegram',
+                _dnsResolver: rebindingResolver,
+            });
+        } catch (e) {
+            err = e;
+        }
+    });
+
+    // El error sigue propagándose (no fail-open).
+    assert.ok(err, 'el request debía fallar');
+    assert.equal(err.code, 'ERR_SSRF_BLOCKED');
+
+    // El DENIAL fue emitido...
+    assert.match(stderr, /DENIAL ERR_SSRF_BLOCKED/, `debió loggear DENIAL: ${stderr}`);
+    assert.match(stderr, /host=api\.telegram\.org/);
+
+    // ...pero el token NO debe aparecer en stderr, en ninguna variante.
+    assert.ok(!stderr.includes(FAKE_TOKEN),
+        `BOT_TOKEN filtrado a stderr: ${stderr}`);
+    assert.ok(!stderr.includes('ABCDefGHIjklMNOpqrsTUVwxyz_sensitive'),
+        `fragmento opaco del token filtrado: ${stderr}`);
+    // Debe aparecer el marker de redacción.
+    assert.match(stderr, /\/bot\[REDACTED\]/,
+        `path del bot debe estar redactado: ${stderr}`);
+});
