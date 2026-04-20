@@ -48,25 +48,38 @@ MY_PID=$$
 echo "[rollback] parent=${PARENT_RESTART_PID} self=${MY_PID}" >&2
 log "1) Matando procesos del pipeline (skip parent=${PARENT_RESTART_PID}, self=${MY_PID})..."
 
-if command -v wmic &>/dev/null; then
-  wmic process where "name='node.exe'" get ProcessId,CommandLine /format:csv 2>/dev/null \
-    | grep '\.pipeline' \
-    | grep -oE '[0-9]+$' \
-    | while read -r pid; do
-        if [ -z "$pid" ]; then continue; fi
-        if [ "$pid" = "$PARENT_RESTART_PID" ]; then
-          log "  Skip PID $pid (parent restart.js)"
-          continue
-        fi
-        if [ "$pid" = "$MY_PID" ]; then continue; fi
-        taskkill //PID "$pid" //F //T 2>/dev/null && log "  Killed PID $pid"
-      done || true
-else
+# Descubrimos los PIDs del pipeline vía pid-discovery.js (OS como fuente
+# de verdad, shell:true + cmd.exe para que el filtro de wmic sobreviva).
+# Fallback: wmic directo (bash históricamente preserva el quoting, pero
+# algunos shells lo cortan — por eso preferimos delegar a node).
+PIDS_RAW=""
+if command -v node &>/dev/null && [ -f "${PIPELINE_DIR}/pid-discovery.js" ]; then
+  PIDS_RAW="$(node -e "
+    const d = require('${PIPELINE_DIR}/pid-discovery.js');
+    for (const p of d.scanNodeProcesses()) {
+      if (p.commandLine && p.commandLine.includes('.pipeline')) console.log(p.pid);
+    }
+  " 2>/dev/null || true)"
+fi
+
+if [ -n "$PIDS_RAW" ]; then
+  printf '%s\n' "$PIDS_RAW" | while read -r pid; do
+    if [ -z "$pid" ]; then continue; fi
+    if [ "$pid" = "$PARENT_RESTART_PID" ]; then
+      log "  Skip PID $pid (parent restart.js)"
+      continue
+    fi
+    if [ "$pid" = "$MY_PID" ]; then continue; fi
+    taskkill //PID "$pid" //F //T 2>/dev/null && log "  Killed PID $pid"
+  done || true
+elif command -v pgrep &>/dev/null; then
   pgrep -f '\.pipeline' 2>/dev/null | while read -r pid; do
     if [ -z "$pid" ]; then continue; fi
     if [ "$pid" = "$PARENT_RESTART_PID" ] || [ "$pid" = "$MY_PID" ]; then continue; fi
     kill -9 "$pid" 2>/dev/null && log "  Killed PID $pid"
   done || true
+else
+  log "  WARN: sin node ni pgrep — no puedo matar procesos del pipeline"
 fi
 
 # Limpiar PIDs
