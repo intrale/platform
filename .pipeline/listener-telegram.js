@@ -199,6 +199,7 @@ async function pollLoop() {
   log(`Chat ID: ${CHAT_ID}`);
 
   await sendMessage('🐙 *Pipeline V2* — Listener activo');
+  try { require('./lib/ready-marker').signalReady('listener', { offset }); } catch {}
 
   while (true) {
     try {

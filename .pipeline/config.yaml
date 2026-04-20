@@ -63,7 +63,8 @@ intake:
 
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
-  "area:infra": "backend-dev"    # Infra pura del pipeline/Node.js/hooks → backend-dev (no hay skill infra-dev)
+  "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)
+  "area:infra": "backend-dev"    # Infra kotlin/gradle/ci-cd (NO pipeline — eso es area:pipeline)
   "area:backend": "backend-dev"
   "app:client": "android-dev"
   "app:business": "android-dev"
@@ -73,15 +74,34 @@ dev_skill_mapping:
 
 # Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
 # Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
-# Rationale: si alguien tagueó `area:infra`, esa intención manda — issues del pipeline
+# Rationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline
 # no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
 dev_routing_priority:
+  - "area:pipeline"
   - "area:infra"
   - "area:backend"
   - "area:web"
   - "app:client"
   - "app:business"
   - "app:delivery"
+
+# Heurística de override por contenido: issues etiquetados `area:infra` pero con
+# referencias fuertes al pipeline Node.js se re-rutean a `pipeline-dev`. Evita que
+# cambios del pulpo/dashboard caigan en backend-dev (stack Kotlin, no valida JS).
+pipeline_scope_keywords:
+  - ".pipeline/"
+  - "pulpo.js"
+  - "dashboard-v2"
+  - "restart.js"
+  - "rollback.sh"
+  - "smoke-test"
+  - "rejection-report"
+  - "listener-telegram"
+  - "servicio-telegram"
+  - "servicio-github"
+  - "servicio-emulador"
+  - "servicio-drive"
+  - ".pipeline/roles/"
 
 # Prioridad de intake (orden de procesamiento)
 prioridad_labels:
@@ -157,3 +177,12 @@ github:
   owner: "intrale"
   repo: "platform"
   project_number: 2               # GitHub Project V2
+
+# Pre-check de conectividad (#2317) — evita lanzar agentes cuando la red está caída
+precheck:
+  timeout_ms: 5000                # Timeout por endpoint (DNS y TLS)
+  max_retries: 3                  # Reintentos por endpoint con backoff exponencial + jitter
+  # endpoints: (opcional; si no se define se usan los de connectivity-precheck.js)
+  # - { category: github,  host: api.github.com,                                 tlsPort: 443 }
+  # - { category: aws,     host: s3.us-east-2.amazonaws.com,                     tlsPort: 443 }
+  # - { category: backend, host: mgnr0htbvd.execute-api.us-east-2.amazonaws.com, tlsPort: 443 }

@@ -10,6 +10,7 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 const dedupLib = require('./dedup-lib');
+const precheck = require('./connectivity-precheck');
 
 // Crash handlers — loguear y seguir vivo
 process.on('uncaughtException', (err) => {
@@ -88,6 +89,204 @@ function ghCommentOnIssue(issueNumber, body) {
   } catch (e) {
     log('github', `Error comentando #${issueNumber}: ${e.message}`);
   }
+}
+
+// =============================================================================
+// CONNECTIVITY PRE-CHECK (#2317) — cache + driver
+//
+// El precheck corre async al inicio de cada ciclo del mainLoop. Su resultado
+// se cachea en `lastPrecheckResult` y lo consumen las fases que requieren red
+// (qa, build, tester, verificacion, entrega) ANTES de spawnear un agente.
+//
+// Si falla, NO se lanza el agente; en su lugar el pulpo marca el archivo de
+// trabajo con `rebote_tipo: infra` y escribe un motivo accionable. Ese tipo
+// de rebote NO cuenta contra el circuit breaker del issue (criterio #2 de #2317).
+//
+// Cuando el precheck vuelve a estar OK después de un fallo, el pulpo detecta
+// los archivos con `rebote_tipo: infra` y los reencola limpios (criterio #7).
+// =============================================================================
+
+// Fases cuyo agente requiere conectividad de red para trabajar.
+// Dev también la usa (git + gh + gradle download), pero dev genera worktree
+// antes del spawn y un fallo de red suele manifestarse mejor como rebote de
+// build/tester que como precheck. Por ahora solo gateamos fases post-dev.
+const NETWORK_REQUIRED_PHASES = new Set(['build', 'verificacion', 'aprobacion', 'entrega']);
+
+// Intervalo mínimo entre prechecks ejecutados (ms). Evita spammear DNS en
+// cada ciclo del pulpo cuando el poll_interval es corto.
+const PRECHECK_MIN_INTERVAL_MS = 30 * 1000;
+
+let lastPrecheckResult = null; // { ok, results, timestamp, durationMs }
+let lastPrecheckAt = 0;
+let lastPrecheckOkStreak = 0;  // Ciclos consecutivos con precheck OK
+let lastInfraBlockedIssues = new Set(); // Issues notificados como bloqueados por infra
+
+/**
+ * Ejecuta el precheck si el cache está vencido. Siempre retorna el último
+ * resultado conocido. Error-tolerante: si falla, asume `ok:false` conservador.
+ */
+async function ejecutarPrecheck(config) {
+  const now = Date.now();
+  if (lastPrecheckResult && (now - lastPrecheckAt) < PRECHECK_MIN_INTERVAL_MS) {
+    return lastPrecheckResult;
+  }
+
+  const precheckCfg = (config && config.precheck) || {};
+  const opts = {
+    timeoutMs: precheckCfg.timeout_ms || 5000,
+    maxRetries: precheckCfg.max_retries || 3,
+  };
+  if (Array.isArray(precheckCfg.endpoints) && precheckCfg.endpoints.length > 0) {
+    opts.endpoints = precheckCfg.endpoints;
+  }
+
+  try {
+    const result = await precheck.runPrecheck(opts);
+    const previousOk = lastPrecheckResult ? lastPrecheckResult.ok : null;
+    lastPrecheckResult = result;
+    lastPrecheckAt = now;
+
+    if (result.ok) {
+      lastPrecheckOkStreak++;
+    } else {
+      lastPrecheckOkStreak = 0;
+    }
+
+    // Persistir infra-health.json para el dashboard
+    try {
+      precheck.writeInfraHealth(result, path.join(PIPELINE, 'infra-health.json'));
+    } catch (e) {
+      log('precheck', `No se pudo escribir infra-health.json: ${e.message}`);
+    }
+
+    if (!result.ok) {
+      const failed = precheck.failedEndpoints(result);
+      const summary = failed.map(f => `${f.phase}:${f.host}(${f.code})`).join(', ');
+      log('precheck', `🔴 precheck FAIL — ${summary}`);
+      // Solo notificamos a Telegram cuando transiciona de OK→FAIL para no spamear
+      if (previousOk === true) {
+        try { sendTelegram(`🔴 Pipeline bloqueado por infra — ${summary}. Agentes en pausa hasta recuperar red.`); } catch {}
+      }
+    } else if (previousOk === false) {
+      log('precheck', `🟢 precheck OK — infra recuperada (durationMs=${result.durationMs})`);
+      try { sendTelegram(`🟢 Infra recuperada. Reencolando issues bloqueados por red.`); } catch {}
+    }
+
+    return result;
+  } catch (err) {
+    log('precheck', `⚠️ Error ejecutando precheck: ${err.message}`);
+    // En caso de error desconocido del precheck mismo, asumimos OK para no
+    // trabar el pipeline por un bug nuestro. Mejor falso negativo que deadlock.
+    const fallback = { ok: true, results: [], timestamp: new Date().toISOString(), durationMs: 0, error: err.message };
+    lastPrecheckResult = fallback;
+    lastPrecheckAt = now;
+    return fallback;
+  }
+}
+
+/** Devuelve true si la última corrida del precheck está OK (o no corrió todavía). */
+function precheckOk() {
+  if (!lastPrecheckResult) return true; // Primer ciclo: no bloquear
+  return lastPrecheckResult.ok === true;
+}
+
+/**
+ * Marca un archivo de trabajo como bloqueado por infra (no mover a trabajando/,
+ * no lanzar agente). Agrega metadatos de diagnóstico al YAML para que la
+ * próxima pasada — o el operador — entiendan por qué.
+ *
+ * @param {string} workFilePath ruta al archivo en pendiente/
+ * @param {number} issue número de issue
+ * @param {string} skill skill
+ * @param {string} fase fase actual
+ * @param {object} precheckResult resultado del precheck con los endpoints fallidos
+ */
+function marcarBloqueoInfra(workFilePath, issue, skill, fase, precheckResult) {
+  try {
+    const data = readYaml(workFilePath);
+    const motivo = precheck.buildInfraReboteMotivo(precheckResult) || '[infra] bloqueo sin detalle';
+    const updated = {
+      ...data,
+      rebote_tipo: 'infra',
+      bloqueado_por_infra: true,
+      infra_ultimo_check: precheckResult.timestamp,
+      infra_motivo: motivo,
+      infra_endpoints_fallidos: precheck.failedEndpoints(precheckResult),
+    };
+    writeYaml(workFilePath, updated);
+
+    log('precheck', `🚫 #${issue} (${skill}/${fase}) NO lanzado — bloqueo infra (${precheck.failedEndpoints(precheckResult).length} endpoints)`);
+
+    // Comentar en GitHub solo una vez por corrida (evita spam).
+    // lastInfraBlockedIssues se resetea cuando precheck vuelve a OK.
+    if (!lastInfraBlockedIssues.has(String(issue))) {
+      lastInfraBlockedIssues.add(String(issue));
+      const firstFail = precheck.failedEndpoints(precheckResult)[0];
+      const detalle = firstFail ? `${firstFail.phase.toUpperCase()} ${firstFail.host} (${firstFail.code})` : 'red/DNS';
+      ghCommentOnIssue(
+        issue,
+        `🚫 Bloqueado por infra #2314 — ${detalle} — se reintentará automáticamente al restaurar conectividad.`,
+      );
+    }
+  } catch (e) {
+    log('precheck', `Error marcando bloqueo infra #${issue}: ${e.message}`);
+  }
+}
+
+/**
+ * Cuando el precheck vuelve a estar OK después de un fallo, recorre las
+ * carpetas pendiente/ de todas las fases y re-habilita los archivos marcados
+ * con `rebote_tipo: infra` (limpia el flag para que el próximo barrido/launch
+ * los tome normalmente). Criterio #7 del issue #2317.
+ */
+function reencolarInfraBloqueados(config) {
+  if (!precheckOk()) return;
+  if (lastInfraBlockedIssues.size === 0) return; // Nada que reencolar
+
+  const pipelines = Object.keys(config.pipelines || {});
+  const reencolados = [];
+
+  for (const pipelineName of pipelines) {
+    const pipelineConfig = config.pipelines[pipelineName];
+    for (const fase of pipelineConfig.fases || []) {
+      const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
+      let archivos;
+      try { archivos = listWorkFiles(pendienteDir); } catch { continue; }
+      for (const a of archivos) {
+        let data;
+        try { data = readYaml(a.path); } catch { continue; }
+        if (data && data.rebote_tipo === 'infra') {
+          const issue = issueFromFile(a.name);
+          // Limpiar los markers de infra; preservamos rebote_numero para que
+          // un posible rebote de código (anterior) siga contando normal.
+          const cleaned = { ...data };
+          delete cleaned.rebote_tipo;
+          delete cleaned.bloqueado_por_infra;
+          delete cleaned.infra_ultimo_check;
+          delete cleaned.infra_motivo;
+          delete cleaned.infra_endpoints_fallidos;
+          cleaned.infra_reencolado_en = new Date().toISOString();
+          try {
+            writeYaml(a.path, cleaned);
+            reencolados.push(issue);
+          } catch (e) {
+            log('precheck', `Error reencolando #${issue}: ${e.message}`);
+          }
+        }
+      }
+    }
+  }
+
+  if (reencolados.length > 0) {
+    const unicos = Array.from(new Set(reencolados));
+    log('precheck', `🟢 Reencolados por infra recuperada: ${unicos.map(i => `#${i}`).join(', ')}`);
+    for (const issue of unicos) {
+      ghCommentOnIssue(issue, `🟢 Infra #2314 restaurada — reintentando automáticamente.`);
+    }
+  }
+
+  // Limpiar el set de issues notificados (ya los reencolamos)
+  lastInfraBlockedIssues.clear();
 }
 
 // --- Utilidades ---
@@ -1646,9 +1845,22 @@ function brazoBarrido(config) {
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
 
         if (rechazados.length > 0 && faseRechazo) {
+          // #2317: clasificar los rechazos por tipo. Si TODOS los motivos
+          // apuntan a infra (ENOTFOUND/ETIMEDOUT/etc) marcamos el rebote como
+          // `rebote_tipo: infra` para que NO cuente contra el circuit breaker.
+          const motivosClasificados = rechazados.map(r => ({
+            skill: skillFromFile(r.file.name),
+            motivo: r.motivo || '',
+            clasificacion: precheck.classifyError(r.motivo || '') || 'codigo',
+          }));
+          const esReboteDeInfra = motivosClasificados.length > 0
+            && motivosClasificados.every(m => m.clasificacion === 'infra');
+
           // Circuit breaker: leer rebote_numero del archivo que originó este ciclo
           // (puede estar en trabajando/ o pendiente/ de la fase de rechazo, o en el propio resultado)
           // Buscar el máximo rebote_numero entre los archivos del issue en dev
+          // IMPORTANTE: solo contamos rebotes de tipo 'codigo'. Los de infra
+          // no consumen el budget de 3 rebotes (criterio #2 de #2317).
           let reboteCount = 0;
           for (const estado of ['pendiente', 'trabajando', 'procesado']) {
             const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
@@ -1656,6 +1868,8 @@ function brazoBarrido(config) {
               for (const f of fs.readdirSync(dir)) {
                 if (f.startsWith(issue + '.')) {
                   const data = readYaml(path.join(dir, f));
+                  const tipoPrevio = data.rebote_tipo || 'codigo';
+                  if (tipoPrevio === 'infra') continue; // no contar
                   if (data.rebote_numero && data.rebote_numero > reboteCount) {
                     reboteCount = data.rebote_numero;
                   }
@@ -1685,17 +1899,32 @@ function brazoBarrido(config) {
           const devSkill = determinarDevSkill(issue, config);
           const devFile = path.join(devPendiente, `${issue}.${devSkill}`);
 
+          // #2317: clasificar el rebote. Si el motivo apunta a infra,
+          // marcarlo como `rebote_tipo: infra` y NO incrementar el contador
+          // efectivo del circuit breaker (se preserva el reboteCount anterior).
+          const reboteTipo = esReboteDeInfra ? 'infra' : 'codigo';
+          const nuevoReboteNumero = esReboteDeInfra ? reboteCount : (reboteCount + 1);
+
           writeYaml(devFile, {
             issue: parseInt(issue),
             fase: faseRechazo,
             pipeline: pipelineName,
             rebote: true,
-            rebote_numero: reboteCount + 1,
+            rebote_numero: nuevoReboteNumero,
+            rebote_tipo: reboteTipo,
             motivo_rechazo: motivos,
             rechazado_en_fase: fase
           });
 
-          log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseRechazo} (rebote ${reboteCount + 1}/${MAX_REBOTES})`);
+          if (esReboteDeInfra) {
+            log('barrido', `#${issue} RECHAZADO en ${fase} por INFRA → devuelto a ${faseRechazo} (rebote infra — no cuenta contra circuit breaker)`);
+            ghCommentOnIssue(
+              issue,
+              `🚫 Bloqueado por infra #2314 — rebote clasificado como infra (no cuenta contra el circuit breaker). Se reintentará al restaurar conectividad.`,
+            );
+          } else {
+            log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseRechazo} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})`);
+          }
 
           // CLEANUP DOWNSTREAM: limpiar archivos residuales del issue en fases posteriores.
           // Sin esto, archivos de aprobacion/listo/ de un ciclo anterior sobreviven al rechazo
@@ -1800,13 +2029,26 @@ function brazoBarrido(config) {
  * se usa `dev_routing_priority` del config para elegir determinísticamente. Sin esto,
  * el orden dependía del orden en que GitHub devolvía los labels, y un `app:client`
  * mal puesto ruteaba issues 100% de infra del pipeline a android-dev (ej. #2328).
+ *
+ * Además, issues etiquetados `area:infra` cuyo título/body mencione archivos del
+ * pipeline Node.js se re-rutean a `pipeline-dev` (stack correcto). Así evitamos
+ * que cambios del pulpo/dashboard caigan en backend-dev (Kotlin/Gradle) que no
+ * puede validarlos.
  */
 function determinarDevSkill(issue, config) {
   const mapping = config.dev_skill_mapping || {};
   const labels = getIssueLabels(issue);
   const priority = config.dev_routing_priority || [];
 
-  // 1) Prioridad explícita de dominio: `area:*` gana sobre `app:*` cuando coexisten.
+  // 0) Override por contenido: area:infra + keywords del pipeline → pipeline-dev
+  if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
+    if (issueMentionsPipelineScope(issue, config)) {
+      log('routing', `#${issue}: area:infra + contenido del pipeline → pipeline-dev (override)`);
+      return mapping['area:pipeline'];
+    }
+  }
+
+  // 1) Prioridad explícita de dominio: `area:pipeline`/`area:*` gana sobre `app:*` cuando coexisten.
   for (const priorityLabel of priority) {
     if (labels.includes(priorityLabel) && mapping[priorityLabel]) {
       return mapping[priorityLabel];
@@ -1819,6 +2061,38 @@ function determinarDevSkill(issue, config) {
   }
 
   return mapping.default || 'backend-dev';
+}
+
+// Cache de títulos/bodies para no golpear GitHub por cada ruteo (TTL corto)
+const issueTextCache = new Map(); // issueNum → { text: string, fetchedAt: timestamp }
+const ISSUE_TEXT_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getIssueText(issueNum) {
+  const cached = issueTextCache.get(issueNum);
+  if (cached && (Date.now() - cached.fetchedAt) < ISSUE_TEXT_CACHE_TTL_MS) {
+    return cached.text;
+  }
+  try {
+    ghThrottle();
+    const raw = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json title,body`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    const { title = '', body = '' } = JSON.parse(raw);
+    const text = `${title}\n${body}`.toLowerCase();
+    issueTextCache.set(issueNum, { text, fetchedAt: Date.now() });
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+function issueMentionsPipelineScope(issueNum, config) {
+  const keywords = config.pipeline_scope_keywords || [];
+  if (keywords.length === 0) return false;
+  const text = getIssueText(issueNum);
+  if (!text) return false;
+  return keywords.some(kw => text.includes(kw.toLowerCase()));
 }
 
 // =============================================================================
@@ -2212,6 +2486,16 @@ function brazoLanzamiento(config) {
       log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       gateBlockedCount++;
       gateBlockedCandidates.push(candidate);
+      continue;
+    }
+
+    // 7b. PRE-CHECK DE CONECTIVIDAD (#2317) — fases que requieren red no se
+    //     lanzan si la infra está caída. El archivo queda en pendiente/
+    //     marcado como `rebote_tipo: infra` para que el reencolado automático
+    //     lo tome cuando se restaure la conectividad. NO cuenta contra el
+    //     circuit breaker del issue (criterio #2).
+    if (NETWORK_REQUIRED_PHASES.has(fase) && !precheckOk()) {
+      marcarBloqueoInfra(archivo.path, issue, skill, fase, lastPrecheckResult);
       continue;
     }
 
@@ -5064,6 +5348,17 @@ async function mainLoop() {
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
+
+        // #2317: precheck de conectividad ANTES de cualquier lanzamiento.
+        // Corre con cache (PRECHECK_MIN_INTERVAL_MS) así no spamea DNS en
+        // cada ciclo. Si transiciona de fail→ok, reencolamos issues
+        // bloqueados por infra inmediatamente.
+        const wasFailing = lastPrecheckResult ? !lastPrecheckResult.ok : false;
+        await ejecutarPrecheck(config);
+        if (wasFailing && precheckOk()) {
+          reencolarInfraBloqueados(config);
+        }
+
         brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
         brazoDesbloqueo(config);  // Tercero: desbloquear issues cuyas dependencias se resolvieron
         brazoBarrido(config);     // Cuarto: promover entre fases
@@ -5101,13 +5396,25 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     SKILL_PROFILES_SCHEMA_VERSION,
     QA_INFRA_SKILLS,
     MAX_EST_MEM,
-    MAX_EST_CPU
+    MAX_EST_CPU,
+    // #2317 — precheck de conectividad
+    NETWORK_REQUIRED_PHASES,
+    ejecutarPrecheck,
+    precheckOk,
+    marcarBloqueoInfra,
+    reencolarInfraBloqueados,
+    _precheckState: () => ({ lastPrecheckResult, lastPrecheckAt, lastInfraBlockedIssues: Array.from(lastInfraBlockedIssues) }),
+    _setPrecheckState: (r) => { lastPrecheckResult = r; lastPrecheckAt = Date.now(); },
+    _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); }
   };
   return; // No arrancar singleton ni mainLoop
 }
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');
+
+// Signal ready — singleton adquirido, mainLoop arranca
+try { require('./lib/ready-marker').signalReady('pulpo'); } catch {}
 
 mainLoop().then(() => {
   log('pulpo', 'Pulpo finalizado');

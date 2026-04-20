@@ -1,0 +1,16 @@
+# CODEOWNERS — Review obligatorio para componentes críticos del pipeline
+#
+# Sintaxis: <pattern> <owner-or-team>
+# Último match gana. Los patrones son glob-style (similar a .gitignore).
+#
+# Rationale:
+#   - .pipeline/ es la infraestructura que orquesta todo el trabajo de agentes
+#     (incluye .pipeline/roles/, contrato de cada agente).
+#     Un cambio roto deja el sistema fuera de servicio. Leo revisa cada PR.
+#   - .github/ y CODEOWNERS mismo: proteger el protocolo de protección.
+
+# Pipeline V2 (orquestador, dashboard, hooks, scripts de restart/rollback, roles/)
+/.pipeline/                 @leitolarreta
+
+# Protocolo de protección (workflows y este archivo)
+/.github/                   @leitolarreta
