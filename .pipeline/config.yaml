@@ -15,7 +15,7 @@ pipelines:
     fase_rechazo: dev   # Los rechazos siempre vuelven a dev
     skills_por_fase:
       validacion: [po, ux, guru]
-      dev: [backend-dev, android-dev, web-dev]  # Uno solo por historia, según labels
+      dev: [backend-dev, android-dev, web-dev, pipeline-dev]  # Uno solo por historia, según labels
       build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       aprobacion: [review, po, ux]
@@ -34,6 +34,7 @@ concurrencia:
   backend-dev: 3
   android-dev: 2
   web-dev: 2
+  pipeline-dev: 2        # Scripts Node.js del pipeline (.pipeline/*.js)
 
   # Verificación
   tester: 2
