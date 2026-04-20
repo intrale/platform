@@ -2017,18 +2017,31 @@ function brazoBarrido(config) {
             const labelSugerido = routingAnalisis.find(m => m.labelSugerido)?.labelSugerido || null;
 
             if (nuevoRoutingBounces > MAX_ROUTING_BOUNCES) {
-              log('routing', `⛔ #${issue} BUDGET AGOTADO — ${nuevoRoutingBounces}/${MAX_ROUTING_BOUNCES} rebotes por routing. Escalando a humano.`);
-              sendTelegram(`⛔ Issue #${issue} — ${nuevoRoutingBounces} rebotes por routing mismatch. Ningún agente encuentra su alcance. Requiere reclasificación manual.\n\nÚltimo motivo:\n${motivosRouting.slice(0, 500)}`);
-              // Encolar en servicio-github: label blocked:routing-manual
-              try {
-                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
-                fs.mkdirSync(ghQueueDir, { recursive: true });
-                const labelFile = path.join(ghQueueDir, `${issue}-blocked-routing-${Date.now()}.json`);
-                fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'blocked:routing-manual' }));
-              } catch (e) {
-                log('routing', `Error encolando label blocked:routing-manual: ${e.message}`);
+              // Deduplicación: sólo loguear/notificar una vez por issue.
+              // Sin esto, cada ciclo del Pulpo (~30s) volvía a leer los archivos rechazados
+              // y re-disparaba el log + sendTelegram → spam infinito en Telegram.
+              const manualFlag = path.join(fasePath(pipelineName, fase), 'procesado', `.${issue}.routing-manual-notified`);
+              const yaNotificado = fs.existsSync(manualFlag);
+              if (!yaNotificado) {
+                log('routing', `⛔ #${issue} BUDGET AGOTADO — ${nuevoRoutingBounces}/${MAX_ROUTING_BOUNCES} rebotes por routing. Escalando a humano.`);
+                sendTelegram(`⛔ Issue #${issue} — ${nuevoRoutingBounces} rebotes por routing mismatch. Ningún agente encuentra su alcance. Requiere reclasificación manual.\n\nÚltimo motivo:\n${motivosRouting.slice(0, 500)}`);
+                // Encolar en servicio-github: label blocked:routing-manual
+                try {
+                  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                  fs.mkdirSync(ghQueueDir, { recursive: true });
+                  const labelFile = path.join(ghQueueDir, `${issue}-blocked-routing-${Date.now()}.json`);
+                  fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'blocked:routing-manual' }));
+                } catch (e) {
+                  log('routing', `Error encolando label blocked:routing-manual: ${e.message}`);
+                }
+                try { fs.mkdirSync(path.dirname(manualFlag), { recursive: true }); fs.writeFileSync(manualFlag, new Date().toISOString()); } catch {}
               }
-              // Archivos actuales se mueven a procesado/ al cerrar el loop — no continuar en pipeline
+              // Mover archivos actuales a procesado/ para sacarlos del loop (antes sólo se hacía
+              // en el circuit breaker de código — faltaba acá y causaba re-detección continua)
+              for (const a of archivos) {
+                const dest = path.join(fasePath(pipelineName, fase), 'procesado');
+                try { moveFile(a.path, dest); } catch {}
+              }
               continue;
             }
 

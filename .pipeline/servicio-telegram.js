@@ -2,11 +2,17 @@
 // =============================================================================
 // Servicio Telegram — Fire-and-forget message sender
 // Procesa cola de servicios/telegram/pendiente/
+//
+// Migrado a http-client seguro (issue #2332):
+//   - SSRF guard sobre api.telegram.org (CA-9/CA-13)
+//   - TLS estricto, timeouts escalonados, body cap, CRLF protect
+//   - Denials loggeados estructuradamente (CA-11)
 // =============================================================================
 
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const httpClient = require('./lib/http-client');
+const { ERROR_CODES } = require('./lib/constants');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
@@ -32,72 +38,93 @@ function log(msg) {
   console.log(`[${ts}] [svc-telegram] ${msg}`);
 }
 
-function telegramSend(method, params) {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify({ chat_id: CHAT_ID, ...params });
-    const options = {
-      hostname: 'api.telegram.org',
-      path: `/bot${BOT_TOKEN}/${method}`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
-    };
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', (c) => body += c);
-      res.on('end', () => resolve(JSON.parse(body)));
-    });
-    req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(data);
-    req.end();
-  });
+// Tag fijo para logs del http-client — permite filtrar denials del servicio.
+const AGENT_TAG = 'svc-telegram';
+
+/**
+ * Logging estructurado de denial SSRF/proxy (CA-11 del #2332).
+ * El http-client ya logea internamente, pero replicamos al log persistente
+ * del servicio para trazabilidad post-mortem (crash-handlers escriben acá).
+ */
+function logDenialIfAny(method, err) {
+  if (!err) return;
+  const code = err.code;
+  if (code === ERROR_CODES.SSRF_BLOCKED || code === ERROR_CODES.PROXY_NOT_WHITELISTED) {
+    log(`DENIAL ${code} method=${method} razon=${err.message}`);
+  }
 }
 
-/** Enviar documento/foto via multipart form-data */
-function telegramSendMultipart(method, fieldName, filePath, extra = {}) {
-  return new Promise((resolve, reject) => {
-    const boundary = '----PipelineV2' + Date.now();
-    const filename = path.basename(filePath);
-    const fileData = fs.readFileSync(filePath);
+/**
+ * Envío JSON a la API de Telegram vía http-client seguro.
+ * POST con `retryable:true` porque sendMessage de Telegram tolera duplicados
+ * con el mismo texto (Telegram de-dupea por chat_id + text cuando llega rápido).
+ */
+async function telegramSend(method, params) {
+  const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
+  const body = { chat_id: CHAT_ID, ...params };
+  try {
+    const res = await httpClient.postJson(url, body, {
+      agentTag: AGENT_TAG,
+      timeout: 30000,
+      retryable: true, // idempotente en la práctica para sendMessage
+    });
+    return res.body;
+  } catch (err) {
+    logDenialIfAny(method, err);
+    throw err;
+  }
+}
 
-    let body = '';
-    // chat_id field
-    body += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${CHAT_ID}\r\n`;
-    // extra fields (caption, parse_mode, etc.)
-    for (const [key, val] of Object.entries(extra)) {
-      body += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
-    }
-    // file field
-    const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
-    const fileFooter = `\r\n--${boundary}--\r\n`;
+/** Enviar documento/foto via multipart form-data usando http-client seguro. */
+async function telegramSendMultipart(method, fieldName, filePath, extra = {}) {
+  const boundary = '----PipelineV2' + Date.now();
+  const filename = path.basename(filePath);
+  const fileData = fs.readFileSync(filePath);
 
-    const bodyBuf = Buffer.concat([
-      Buffer.from(body + fileHeader),
-      fileData,
-      Buffer.from(fileFooter)
-    ]);
+  let prologue = '';
+  // chat_id field
+  prologue += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${CHAT_ID}\r\n`;
+  // extra fields (caption, parse_mode, etc.)
+  for (const [key, val] of Object.entries(extra)) {
+    prologue += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
+  }
+  // file field header
+  const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
+  const fileFooter = `\r\n--${boundary}--\r\n`;
 
-    const options = {
-      hostname: 'api.telegram.org',
-      path: `/bot${BOT_TOKEN}/${method}`,
+  const bodyBuf = Buffer.concat([
+    Buffer.from(prologue + fileHeader),
+    fileData,
+    Buffer.from(fileFooter),
+  ]);
+
+  const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
+  try {
+    const res = await httpClient.request(url, {
       method: 'POST',
+      body: bodyBuf,
       headers: {
         'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': bodyBuf.length
-      }
-    };
-    const req = https.request(options, (res) => {
-      let resp = '';
-      res.on('data', (c) => resp += c);
-      res.on('end', () => {
-        try { resolve(JSON.parse(resp)); } catch { resolve({ ok: false, description: resp }); }
-      });
+      },
+      agentTag: AGENT_TAG,
+      timeout: 60000,
+      // Envíos de archivo NO son idempotentes por lado de Telegram: NO retry automático.
+      // Cap de respuesta por default (10 MB) alcanza para la respuesta JSON del send.
     });
-    req.on('error', reject);
-    req.setTimeout(60000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(bodyBuf);
-    req.end();
-  });
+    // La API devuelve JSON; si el parser del http-client no pudo parsearlo
+    // (p.ej. content-type no json), devolvemos estructura similar al código previo.
+    if (typeof res.body === 'string') {
+      try { return JSON.parse(res.body); } catch { return { ok: false, description: res.body }; }
+    }
+    if (Buffer.isBuffer(res.body)) {
+      const s = res.body.toString('utf8');
+      try { return JSON.parse(s); } catch { return { ok: false, description: s }; }
+    }
+    return res.body;
+  } catch (err) {
+    logDenialIfAny(method, err);
+    throw err;
+  }
 }
 
 function listWorkFiles(dir) {
