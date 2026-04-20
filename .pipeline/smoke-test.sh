@@ -42,47 +42,31 @@ fail() {
 }
 
 # --- 1) Procesos críticos ---
-# Retry GLOBAL (no por-archivo): chequea los 3 pids en cada iteración;
-# sale apenas los 3 están OK. Total max 60s (cabe en spawnSync timeout
-# de 120s con margen). singleton.js escribe el .pid DESPUÉS de un wmic
-# scan que compite con los otros singletons arrancando en paralelo. Con
-# 7 componentes spawneados en paralelo los wmic se apilan y 25s no
-# alcanzan en Windows cuando la caja está cargada.
+# Descubrimos los PIDs al vuelo vía pid-discovery (wmic/ps + netstat).
+# NO leemos archivos .pid: eran la causa raíz del deadlock de restart —
+# si el archivo existía con un PID muerto (watchdog respawneó, o el scan
+# wmic del singleton tomaba 30s), el smoke detectaba procesos inexistentes
+# y disparaba auto-rollback sobre un pipeline que SÍ estaba vivo.
 log "=== SMOKE TEST ==="
 log "1) Verificando procesos críticos..."
 
-CRITICAL=("pulpo.pid" "dashboard.pid" "svc-telegram.pid")
+CRITICAL=("pulpo" "dashboard" "svc-telegram")
 MAX_WAIT_SECONDS=60
 
-check_pid_alive() {
-  local pid="$1"
-  if command -v tasklist &>/dev/null; then
-    tasklist //FI "PID eq ${pid}" //NH 2>/dev/null | grep -q "^node"
-  else
-    ps -p "$pid" &>/dev/null
-  fi
-}
-
-# Devuelve 0 si el pid_file está OK (existe, no vacío, proceso vivo).
-# Imprime estado por stdout ("OK PID" | error).
-check_pid_ready() {
-  local pid_file="$1"
-  if [ ! -f "${PIPELINE_DIR}/${pid_file}" ]; then
-    echo "ausente"
-    return 1
-  fi
-  local pid
-  pid=$(cat "${PIPELINE_DIR}/${pid_file}" 2>/dev/null | tr -d '[:space:]')
-  if [ -z "$pid" ]; then
-    echo "vacío"
-    return 1
-  fi
-  if check_pid_alive "$pid"; then
-    echo "OK ${pid}"
-    return 0
-  fi
-  echo "muerto(${pid})"
-  return 1
+# Node helper: descubre el PID de un componente y devuelve "OK <pid>" si está
+# vivo, o un error. Usa pid-discovery.js (fuente de verdad = SO).
+# require('./pid-discovery') se resuelve desde cwd para evitar problemas con
+# paths Unix-style (/c/...) que Node en Windows no acepta.
+check_component_ready() {
+  local name="$1"
+  ( cd "${PIPELINE_DIR}" && node -e "
+    const { findPidByComponent, pidAlive, invalidateCache } = require('./pid-discovery');
+    invalidateCache();
+    const f = findPidByComponent('${name}');
+    if (!f) { console.log('ausente'); process.exit(1); }
+    if (!pidAlive(f.pid)) { console.log('muerto(' + f.pid + ')'); process.exit(1); }
+    console.log('OK ' + f.pid);
+  " 2>/dev/null )
 }
 
 waited=0
@@ -91,11 +75,11 @@ pending=""
 while [ "$waited" -lt "$MAX_WAIT_SECONDS" ]; do
   pending=""
   declare -a ok_states=()
-  for pid_file in "${CRITICAL[@]}"; do
-    if state=$(check_pid_ready "$pid_file"); then
-      ok_states+=("  ${pid_file}: ${state}")
+  for name in "${CRITICAL[@]}"; do
+    if state=$(check_component_ready "$name"); then
+      ok_states+=("  ${name}: ${state}")
     else
-      pending="${pending} ${pid_file}:${state}"
+      pending="${pending} ${name}:${state:-error}"
     fi
   done
   if [ -z "$pending" ]; then
@@ -103,8 +87,8 @@ while [ "$waited" -lt "$MAX_WAIT_SECONDS" ]; do
     for line in "${ok_states[@]}"; do log "$line"; done
     break
   fi
-  sleep 1
-  waited=$((waited + 1))
+  sleep 2
+  waited=$((waited + 2))
 done
 if [ "$all_ok" != 1 ]; then
   fail "procesos críticos no ready tras ${MAX_WAIT_SECONDS}s:${pending}" 1

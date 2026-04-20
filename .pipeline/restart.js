@@ -14,6 +14,13 @@
 const { execSync, spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const {
+  scanNodeProcesses,
+  findPidByComponent,
+  findPidByPort,
+  pidAlive,
+  invalidateCache,
+} = require('./pid-discovery');
 
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
@@ -27,8 +34,6 @@ const COMPONENTS = [
   { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
   { name: 'dashboard', script: 'dashboard-v2.js', pid: 'dashboard.pid' },
 ];
-
-const SCRIPT_NAMES = COMPONENTS.map(c => c.script);
 
 function log(msg) {
   console.log(`[${new Date().toISOString().replace('T',' ').slice(0,19)}] ${msg}`);
@@ -55,33 +60,24 @@ function syncWithMain() {
 function killAll() {
   log('=== STOP ===');
 
-  // Obtener TODOS los PIDs de node.exe que corren scripts del pipeline
+  // Fuente de verdad: el SO. Descubrimos todos los node.exe del pipeline en
+  // el momento vía pid-discovery.scanNodeProcesses() — NO leemos archivos
+  // .pid (pueden estar desincronizados con la realidad del proceso).
+  invalidateCache();
   const pidsToKill = new Set();
 
-  try {
-    const output = execSync(
-      'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /format:csv',
-      { encoding: 'utf8', timeout: 10000 }
-    );
-    for (const line of output.split('\n')) {
-      if (!line.includes('.pipeline')) continue;
-      const match = line.match(/(\d+)\s*$/);
-      if (!match) continue;
-      const pid = parseInt(match[1]);
-      if (pid === process.pid) continue;
-      pidsToKill.add(pid);
-    }
-  } catch (e) {
-    log(`  Error listando procesos: ${e.message}`);
+  for (const p of scanNodeProcesses()) {
+    if (!p.commandLine || !p.commandLine.includes('.pipeline')) continue;
+    if (p.pid === process.pid) continue;
+    pidsToKill.add(p.pid);
   }
 
-  // También agregar PIDs de los archivos .pid
-  for (const comp of COMPONENTS) {
-    try {
-      const pid = parseInt(fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim());
-      if (pid && pid !== process.pid) pidsToKill.add(pid);
-    } catch {}
-  }
+  // Además, mata lo que escuche en el puerto del dashboard aunque su
+  // commandLine no coincida (casos borde: proceso respawneado por watchdog
+  // entre el scan y el kill).
+  const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+  const dashOwner = findPidByPort(dashPort);
+  if (dashOwner && dashOwner !== process.pid) pidsToKill.add(dashOwner);
 
   if (pidsToKill.size === 0) {
     log('  No hay procesos del pipeline corriendo');
@@ -130,24 +126,20 @@ function killAll() {
 
   sleep(2000);
 
-  // Verificar que no quede nada
-  try {
-    const check = execSync(
-      'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /format:csv',
-      { encoding: 'utf8', timeout: 10000 }
-    );
-    const survivors = check.split('\n').filter(l => l.includes('.pipeline') && !l.includes('restart.js'));
-    if (survivors.length > 0) {
-      log('  Quedan procesos vivos — segundo intento:');
-      for (const line of survivors) {
-        const m = line.match(/(\d+)\s*$/);
-        if (m) {
-          try { execSync(`taskkill /PID ${m[1]} /F /T`, { timeout: 5000, stdio: 'ignore' }); } catch {}
-          log(`    Force killed PID ${m[1]}`);
-        }
-      }
+  // Verificar que no quede nada (discovery fresco, no cache).
+  invalidateCache();
+  const survivors = scanNodeProcesses().filter(p =>
+    p.commandLine && p.commandLine.includes('.pipeline') &&
+    !p.commandLine.includes('restart.js') &&
+    p.pid !== process.pid
+  );
+  if (survivors.length > 0) {
+    log('  Quedan procesos vivos — segundo intento:');
+    for (const p of survivors) {
+      try { execSync(`taskkill /PID ${p.pid} /F /T`, { timeout: 5000, stdio: 'ignore' }); } catch {}
+      log(`    Force killed PID ${p.pid}`);
     }
-  } catch {}
+  }
 }
 
 // --- LAUNCH ---
@@ -296,23 +288,25 @@ function status() {
   log('=== STATUS ===');
   let allOk = true;
 
+  invalidateCache();
   for (const comp of COMPONENTS) {
     if (!fs.existsSync(path.join(PIPELINE, comp.script))) continue;
 
-    try {
-      const pid = fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim();
-      const check = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 5000 });
-      if (check.includes(`"${pid}"`)) {
-        log(`  OK ${comp.name} (PID ${pid})`);
-      } else {
-        log(`  FAIL ${comp.name}`);
-        allOk = false;
-      }
-    } catch {
+    // Descubrir PID al vuelo — el SO es la fuente de verdad.
+    const found = findPidByComponent(comp.name);
+    if (found && pidAlive(found.pid)) {
+      log(`  OK ${comp.name} (PID ${found.pid})`);
+    } else {
       log(`  FAIL ${comp.name}`);
       allOk = false;
     }
   }
+
+  // Sanity extra: el dashboard debe tener el puerto 3200.
+  const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+  const dashOwner = findPidByPort(dashPort);
+  if (dashOwner) log(`  puerto ${dashPort} → PID ${dashOwner}`);
+
   return allOk;
 }
 
