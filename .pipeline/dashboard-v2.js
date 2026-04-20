@@ -17,6 +17,11 @@ const {
   pidAlive,
   invalidateCache,
 } = require('./pid-discovery');
+// #2337 CA8 — estado `reintentando` (anti-parpadeo FS-driven).
+// Best-effort require: si el modulo no existe (pipeline antiguo), degradamos
+// silenciosamente sin el estado `retrying`.
+let retryingState = null;
+try { retryingState = require('./retrying-state'); } catch { /* opcional */ }
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -323,6 +328,24 @@ function getPipelineState() {
   const missing = issueIds.filter(id => !titleCache[id]);
   if (missing.length > 0) fetchIssueTitles(missing, titleCache);
   state.issueTitles = titleCache;
+
+  // #2337 CA8 — snapshot del estado `reintentando` activo en este refresh.
+  // Timestamp absoluto (`retryingUntil`) persiste el anti-parpadeo entre
+  // refreshes consecutivos del dashboard.
+  /**
+   * @typedef {Object} RetryingState
+   * @property {number} retryingUntil  epoch ms hasta mostrar como reintentando (anti-parpadeo 2s)
+   * @property {string} reason         causa del retry: "connectivity_restored" | otros futuros
+   * @property {number} since          epoch ms de inicio del estado
+   * @property {string} [previousState] estado previo para trazabilidad: "blocked:infra" | otros
+   */
+  const retryingMap = (() => {
+    if (!retryingState || typeof retryingState.getActiveRetrying !== 'function') return {};
+    try { return retryingState.getActiveRetrying({ now: Date.now() }); }
+    catch { return {}; }
+  })();
+  state.retrying = retryingMap;
+
   for (const [id, data] of Object.entries(state.issueMatrix)) {
     data.pipelines = [...data.pipelines];
     data.title = titleCache[id]?.title || '';
@@ -341,6 +364,10 @@ function getPipelineState() {
       data.staleMin = workingEntry?.ageMin || 0;
     } else {
       data.staleMin = 0;
+    }
+    // #2337 CA8 — enriquecer con ventana `retrying` si aplica
+    if (retryingMap[id]) {
+      data.retrying = retryingMap[id];
     }
   }
 
@@ -1437,7 +1464,12 @@ function generateHTML(state) {
     const isStale = data.staleMin > 30;
     const isBlocked = blockedBy != null;
     const blocksSomething = blocksOthers.length > 0;
+    // #2337 CA8 — ventana `reintentando` activa: timestamp absoluto compara vs
+    // momento del render. Durante esta ventana el visual override es `lc-retrying`,
+    // aunque el estado real sea `trabajando` (CA7.4 anti-parpadeo).
+    const isRetrying = !!(data.retrying && Number(data.retrying.retryingUntil) > Date.now());
     const laneCardCls = complete ? 'lc-done'
+      : isRetrying ? 'lc-retrying'
       : isStale ? 'lc-stale'
       : hasRejection ? 'lc-failed'
       : isBlocked ? 'lc-blocked'
@@ -1496,6 +1528,19 @@ function generateHTML(state) {
       const blockTxt = blocksOthers.map(d => `#${d}`).join(', ');
       lcBlockIcons += `<span class="lc-block-icon lc-block-blocking" title="Bloquea a: ${blockTxt}" onclick="event.stopPropagation()">⛓</span>`;
     }
+    // #2337 CA8 — icono `🔁` durante la ventana `reintentando`. El estado es
+    // mutuamente excluyente con `blocked`, asi que no aparecen los dos iconos
+    // a la vez. Aria-label con timestamp legible. Escape via textContent-safe
+    // (valores server-generated, sin input de usuario — REQ-SEC-1).
+    let lcRetryingIcon = '';
+    if (isRetrying) {
+      const since = Number(data.retrying.since) || Date.now();
+      const sinceIso = new Date(since).toISOString().slice(11, 19); // HH:MM:SS UTC
+      const ariaLabel = `Reintentando tras recuperacion de red desde ${sinceIso}`;
+      const tooltipText = `Reintentando tras recuperacion de red (desde ${sinceIso})`;
+      lcRetryingIcon = `<span class="lc-retry-icon" role="img" aria-hidden="true">🔁</span>`
+        + `<span class="lc-retry-label" role="status" aria-label="${ariaLabel}" title="${tooltipText}" tabindex="0" onclick="event.stopPropagation()"></span>`;
+    }
     const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
     // Data atributos para búsqueda client-side
@@ -1518,12 +1563,12 @@ function generateHTML(state) {
     } else {
       priority = 10000 - pulpoScore;
     }
-    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" title="${laneTitle}">
+    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite">
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
             <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
-            ${lcBlockIcons}
+            ${lcBlockIcons}${lcRetryingIcon}
           </div>
           <div class="lc-top-right">
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
@@ -2205,6 +2250,11 @@ function generateHTML(state) {
   --rd:#f85149;--rd2:#8b1a14;
   --or:#db6d28;--or2:#7d3410;
   --pu:#bc8cff;
+  /* #2337 CA8 — ambar dorado para estado reintentando.
+   * Diferenciado del amarillo --yl (stale). Contraste >=5.2:1 sobre --sf
+   * (ver analisis guru/UX). Seguro en protanopia/deuteranopia con emoji
+   * flechas circulares como discriminador de forma. */
+  --retry:#F59E0B;
   --radius:10px;--radius-sm:6px;
 }
 /* ── Reset ──────────────────────────────────────────────────────────────── */
@@ -3390,6 +3440,36 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-card.lc-stale{border-left-color:var(--yl);background:linear-gradient(90deg,rgba(251,191,36,0.04),var(--sf) 30%)}
 .lc-card.lc-blocked{border-left-color:var(--rd);background:linear-gradient(90deg,rgba(248,113,113,0.03),var(--sf) 30%)}
 .lc-card.lc-done{border-left-color:var(--gn);opacity:0.75}
+/* #2337 CA8 — estado reintentando. Ambar dorado (--retry), fade 400ms en
+ * transiciones (bloqueado->reintentando y reintentando->en-curso). */
+.lc-card.lc-retrying{
+  border-left-color:var(--retry);
+  background:linear-gradient(90deg,rgba(245,158,11,0.07),var(--sf) 35%);
+  transition:background 400ms ease,border-color 400ms ease;
+}
+.lc-card.lc-retrying .lc-retry-icon{
+  display:inline-block;font-size:0.95em;line-height:1;margin-left:3px;color:var(--retry);
+  animation:retrySpin 1.8s linear infinite;
+  /* Anti-urgencia: no se vuelve opaco ni parpadea — solo rota suave */
+}
+@keyframes retrySpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+/* CA8 — respetar prefers-reduced-motion para usuarios con trastornos
+ * vestibulares o TDAH: fallback estatico con borde punteado. */
+@media (prefers-reduced-motion: reduce){
+  .lc-card.lc-retrying .lc-retry-icon{animation:none}
+  .lc-card.lc-retrying{border-left-style:dashed}
+}
+/* CA8 — label oculto a la vista pero alcanzable por lector de pantalla y
+ * focus por teclado (para tooltip accesible via :focus-visible). */
+.lc-card.lc-retrying .lc-retry-label{
+  display:inline-block;width:0;height:0;overflow:hidden;color:transparent;
+  outline:none;
+}
+.lc-card.lc-retrying .lc-retry-label:focus-visible{
+  width:auto;height:auto;color:var(--retry);outline:2px solid var(--retry);
+  outline-offset:2px;margin-left:4px;padding:0 4px;border-radius:4px;
+  background:rgba(245,158,11,0.1);
+}
 .lc-card.lc-filtered-out-sub,.lc-card.lc-filtered-out-search,.lc-card.lc-filtered-blocked{display:none}
 .lc-card.lc-hl-blocked{border-left-color:var(--rd) !important;box-shadow:0 0 0 1px rgba(248,113,113,0.5)}
 .lc-card.lc-hl-blocking{border-left-color:var(--yl) !important;box-shadow:0 0 0 1px rgba(251,191,36,0.5)}
