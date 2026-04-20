@@ -178,6 +178,7 @@ timeouts:
     build: 60                     # Gradle check + assemble puede tardar mucho en primer build
     qa: 45                        # QA E2E con emulador + video
     tester: 45                    # Cobertura Kover + suite completa
+    delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
 # GitHub
 github:
