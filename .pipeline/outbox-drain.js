@@ -20,10 +20,11 @@ const { spawnSync } = require("child_process");
 
 function findProcess(scriptName) {
   try {
-    const r = spawnSync("wmic", [
-      "process", "where", "name='node.exe'",
-      "get", "ProcessId,CommandLine", "/format:csv"
-    ], { encoding: "utf8", timeout: 10000, windowsHide: true });
+    // shell:true preserva comillas del filtro wmic (mismo motivo que pid-discovery.js).
+    const r = spawnSync(
+      `wmic process where "name='node.exe'" get ProcessId,CommandLine /format:csv 2>NUL`,
+      { encoding: "utf8", timeout: 10000, windowsHide: true, shell: true }
+    );
     const lines = (r.stdout || "").split("\n");
     for (const line of lines) {
       if (line.includes(scriptName) && !line.includes("wmic")) {
