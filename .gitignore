@@ -135,4 +135,7 @@ scripts/planner-plan.json
 .pipeline/infra-health.json
 .pipeline/events/
 .pipeline/tmp/
+# #2337 — estado reintentando + metricas UX rotadas (no comitear)
+.pipeline/retrying-state.json
+.pipeline/metrics/
 !.pipeline/**/.gitkeep
