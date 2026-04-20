@@ -15,6 +15,7 @@ const precheck = require('./connectivity-precheck');
 // rebote persistidos en YAML. Protege contra leak de secretos en logs y
 // comentarios automáticos que quedan públicos en el issue.
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
+const connectivityState = require('./connectivity-state'); // #2335
 const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 
 // Crash handlers — loguear y seguir vivo
@@ -167,10 +168,22 @@ async function ejecutarPrecheck(config) {
       log('precheck', `No se pudo escribir infra-health.json: ${e.message}`);
     }
 
+    // #2335 — registrar resultado del probe en connectivity-state, detectar
+    // transicion FAIL→OK y emitir evento `connectivity_restored` unicamente
+    // como consecuencia del probe real (anti-spoofing CA2).
+    try {
+      const transitionInfo = connectivityState.recordProbeResult(result);
+      if (transitionInfo.transition === 'fail-to-ok') {
+        log('precheck', `📡 connectivity_restored emitido (blocked_duration_ms=${transitionInfo.event && transitionInfo.event.blocked_duration_ms})`);
+      }
+    } catch (e) {
+      log('precheck', `No se pudo actualizar connectivity-state: ${connectivityState.sanitizeForLog(e.message)}`);
+    }
+
     if (!result.ok) {
       const failed = precheck.failedEndpoints(result);
       const summary = failed.map(f => `${f.phase}:${f.host}(${f.code})`).join(', ');
-      log('precheck', `🔴 precheck FAIL — ${summary}`);
+      log('precheck', `🔴 precheck FAIL — ${connectivityState.sanitizeForLog(summary)}`);
       // Solo notificamos a Telegram cuando transiciona de OK→FAIL para no spamear
       if (previousOk === true) {
         try { sendTelegram(`🔴 Pipeline bloqueado por infra — ${summary}. Agentes en pausa hasta recuperar red.`); } catch {}
@@ -199,6 +212,30 @@ function precheckOk() {
 }
 
 /**
+ * #2335 — mapea un resultado de precheck fallido a una categoria del enum
+ * `REASON_CATEGORIES` de connectivity-state. La clasificacion se hace aqui
+ * (pulpo), sobre señales internas verificables, NUNCA confiando en el campo
+ * que un agente haya podido escribir (defensa A01 del analisis de security).
+ */
+function mapPrecheckFailureToReason(precheckResult) {
+  const R = connectivityState.REASON_CATEGORIES;
+  if (!precheckResult) return R.UNKNOWN;
+  const failed = precheck.failedEndpoints(precheckResult) || [];
+  if (failed.length === 0) return R.UNKNOWN;
+  const codes = failed.map(f => String(f.code || '').toUpperCase());
+  if (codes.some(c => c === 'ENOTFOUND' || c === 'ENETUNREACH' || c === 'EHOSTUNREACH' || c === 'EAI_AGAIN')) {
+    return R.NETWORK_UNREACHABLE;
+  }
+  if (codes.some(c => c === 'ETIMEDOUT' || c.includes('TIMEOUT'))) {
+    return R.BACKEND_TIMEOUT;
+  }
+  if (codes.some(c => c === 'ECONNREFUSED' || c === 'ECONNRESET' || c === 'EPIPE')) {
+    return R.BACKEND_5XX;
+  }
+  return R.UNKNOWN;
+}
+
+/**
  * Marca un archivo de trabajo como bloqueado por infra (no mover a trabajando/,
  * no lanzar agente). Agrega metadatos de diagnóstico al YAML para que la
  * próxima pasada — o el operador — entiendan por qué.
@@ -222,6 +259,19 @@ function marcarBloqueoInfra(workFilePath, issue, skill, fase, precheckResult) {
       infra_endpoints_fallidos: precheck.failedEndpoints(precheckResult),
     };
     writeYaml(workFilePath, updated);
+
+    // #2335 — registrar issue en blocked-by-infra.json con categoria
+    // normalizada (UX-1: enum cerrado para que hijas 2/3 mappeen consistente).
+    try {
+      const reason = mapPrecheckFailureToReason(precheckResult);
+      connectivityState.addBlockedIssue({
+        number: parseInt(issue),
+        reason,
+        detail: precheck.failedEndpoints(precheckResult).map(f => `${f.phase}:${f.host}(${f.code})`).join(', '),
+      });
+    } catch (e) {
+      log('precheck', `No se pudo registrar #${issue} en blocked-by-infra: ${connectivityState.sanitizeForLog(e.message)}`);
+    }
 
     log('precheck', `🚫 #${issue} (${skill}/${fase}) NO lanzado — bloqueo infra (${precheck.failedEndpoints(precheckResult).length} endpoints)`);
 
@@ -295,6 +345,17 @@ function reencolarInfraBloqueados(config) {
 
   // Limpiar el set de issues notificados (ya los reencolamos)
   lastInfraBlockedIssues.clear();
+
+  // #2335 — limpiar blocked-by-infra.json con el evento de recuperacion.
+  // El event log ya lo escribio `recordProbeResult` tras la transicion FAIL→OK.
+  try {
+    connectivityState.clearBlockedIssues({
+      type: 'connectivity_restored',
+      ts: new Date().toISOString(),
+    });
+  } catch (e) {
+    log('precheck', `No se pudo limpiar blocked-by-infra.json: ${connectivityState.sanitizeForLog(e.message)}`);
+  }
 }
 
 // --- Utilidades ---
@@ -1879,7 +1940,12 @@ function brazoBarrido(config) {
           // Buscar el máximo rebote_numero entre los archivos del issue en dev
           // IMPORTANTE: solo contamos rebotes de tipo 'codigo'. Los de infra
           // no consumen el budget de 3 rebotes (criterio #2 de #2317).
+          //
+          // #2335 (CA5-CA6) — rebote_numero_infra se lleva en contador separado
+          // con cap duro `MAX_REBOTES_INFRA` (defense-in-depth contra loops
+          // infinitos si la clasificacion infra se rompiera).
           let reboteCount = 0;
+          let reboteInfraCount = 0;
           for (const estado of ['pendiente', 'trabajando', 'procesado']) {
             const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
             try {
@@ -1887,7 +1953,12 @@ function brazoBarrido(config) {
                 if (f.startsWith(issue + '.')) {
                   const data = readYaml(path.join(dir, f));
                   const tipoPrevio = data.rebote_tipo || 'codigo';
-                  if (tipoPrevio === 'infra') continue; // no contar
+                  if (tipoPrevio === 'infra') {
+                    if (data.rebote_numero_infra && data.rebote_numero_infra > reboteInfraCount) {
+                      reboteInfraCount = data.rebote_numero_infra;
+                    }
+                    continue; // NO contar contra el breaker generico
+                  }
                   if (data.rebote_numero && data.rebote_numero > reboteCount) {
                     reboteCount = data.rebote_numero;
                   }
@@ -1897,6 +1968,21 @@ function brazoBarrido(config) {
           }
 
           const MAX_REBOTES = 3;
+          const MAX_REBOTES_INFRA = connectivityState.MAX_REBOTES_INFRA || 20;
+
+          // #2335 CA5 — cap duro sobre infra. Si se supera, el circuit breaker
+          // generico aplica igual (defense-in-depth: si la clasificacion infra
+          // fuera saboteada, el pipeline no queda en loop infinito).
+          if (esReboteDeInfra && reboteInfraCount >= MAX_REBOTES_INFRA) {
+            log('barrido', `⛔ #${issue} CIRCUIT BREAKER INFRA — ${reboteInfraCount} rebotes infra en ${faseRechazo}, se alcanzo cap duro (${MAX_REBOTES_INFRA}). Escalando.`);
+            sendTelegram(`⛔ Issue #${issue} — ${reboteInfraCount} rebotes por infra (cap ${MAX_REBOTES_INFRA}). Requiere intervención manual.`);
+            for (const a of archivos) {
+              const dest = path.join(fasePath(pipelineName, fase), 'procesado');
+              try { moveFile(a.path, dest); } catch {}
+            }
+            continue;
+          }
+
           if (reboteCount >= MAX_REBOTES) {
             log('barrido', `⛔ #${issue} CIRCUIT BREAKER — ${reboteCount} rebotes en ${faseRechazo}, no devolver más. Requiere intervención manual.`);
             sendTelegram(`⛔ Issue #${issue} atascado — ${reboteCount} rebotes entre ${fase} y ${faseRechazo}. Requiere intervención manual.`);
@@ -2046,14 +2132,22 @@ function brazoBarrido(config) {
           // #2317: clasificar el rebote. Si el motivo apunta a infra,
           // marcarlo como `rebote_tipo: infra` y NO incrementar el contador
           // efectivo del circuit breaker (se preserva el reboteCount anterior).
+          //
+          // #2335 CA5-CA6 — la clasificacion se hace aca (sobre `motivosClasificados`
+          // derivados del pre-check y/o motivo del agente via `precheck.classifyError`),
+          // NO se lee `rebote_tipo` escrito por el agente. El contador separado
+          // `rebote_numero_infra` se incrementa solo cuando la clasificacion fue infra.
           const reboteTipo = esReboteDeInfra ? 'infra' : 'codigo';
           const nuevoReboteNumero = esReboteDeInfra ? reboteCount : (reboteCount + 1);
+          const nuevoReboteInfraNumero = esReboteDeInfra ? (reboteInfraCount + 1) : reboteInfraCount;
 
           // #2333: sanitizar el motivo de rechazo antes de persistirlo en
           // el YAML del archivo de trabajo. Esto evita que un log con
           // tokens/JWT/PEM termine en el próximo archivo que se lee y
           // potencialmente viaja a comentarios del issue.
-          writeYaml(devFile, {
+          // #2335: contador separado `rebote_numero_infra` se escribe solo
+          // cuando hubo al menos un rebote infra clasificado.
+          const yamlOut = {
             issue: parseInt(issue),
             fase: faseRechazo,
             pipeline: pipelineName,
@@ -2061,11 +2155,15 @@ function brazoBarrido(config) {
             rebote_numero: nuevoReboteNumero,
             rebote_tipo: reboteTipo,
             motivo_rechazo: sanitizePipelineText(motivos),
-            rechazado_en_fase: fase
-          });
+            rechazado_en_fase: fase,
+          };
+          if (nuevoReboteInfraNumero > 0) {
+            yamlOut.rebote_numero_infra = nuevoReboteInfraNumero;
+          }
+          writeYaml(devFile, yamlOut);
 
           if (esReboteDeInfra) {
-            log('barrido', `#${issue} RECHAZADO en ${fase} por INFRA → devuelto a ${faseRechazo} (rebote infra — no cuenta contra circuit breaker)`);
+            log('barrido', `#${issue} RECHAZADO en ${fase} por INFRA → devuelto a ${faseRechazo} (rebote_numero_infra=${nuevoReboteInfraNumero}/${MAX_REBOTES_INFRA} — NO cuenta contra circuit breaker generico)`);
             ghCommentOnIssue(
               issue,
               `🚫 Bloqueado por infra #2314 — rebote clasificado como infra (no cuenta contra el circuit breaker). Se reintentará al restaurar conectividad.`,
@@ -5551,6 +5649,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     precheckOk,
     marcarBloqueoInfra,
     reencolarInfraBloqueados,
+    // #2335 — connectivity-state + clasificacion de reason
+    mapPrecheckFailureToReason,
+    connectivityState,
     _precheckState: () => ({ lastPrecheckResult, lastPrecheckAt, lastInfraBlockedIssues: Array.from(lastInfraBlockedIssues) }),
     _setPrecheckState: (r) => { lastPrecheckResult = r; lastPrecheckAt = Date.now(); },
     _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); }
