@@ -19,6 +19,7 @@ const connectivityState = require('./connectivity-state'); // #2335
 const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 const cbInfra = require('./circuit-breaker-infra');
 const { redact } = require('./redact');
+const qaEvidenceGate = require('./lib/qa-evidence-gate');
 
 // Crash handlers — loguear y seguir vivo
 process.on('uncaughtException', (err) => {
@@ -880,6 +881,13 @@ function limpiarDaemonsOnDemand() {
 
 const activeProcesses = new Map(); // key: "skill:issue" → { pid, startTime }
 
+// Cache en memoria del qaMode resuelto por el preflight para cada issue.
+// Issue #2351 — R1: el `modo` que emite el agente en el YAML no es fuente de
+// verdad (puede sobrescribirlo). La fuente de verdad es la clasificación del
+// preflight (`preflightQaChecks`). Este cache vive mientras corre el pulpo;
+// si se reinicia, caemos al YAML como fallback (comportamiento antiguo).
+const qaModeByIssue = new Map(); // key: issueNumber → 'android' | 'api' | 'structural'
+
 function processKey(skill, issue) { return `${skill}:${issue}`; }
 
 function isProcessAlive(pid) {
@@ -1178,17 +1186,34 @@ const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA 
  * El campo `video_size_kb` del YAML es solo informativo; si el archivo en disco
  * cumple el umbral, se acepta.
  */
-function validateQaEvidence(issue, qaData) {
+function validateQaEvidence(issue, qaData, authoritativeQaMode = null) {
   // El preflight clasifica cada issue en uno de tres modos (qaMode):
   //   - 'android'    → requiere emulador + APK → debe haber video/frames
   //   - 'api'        → testing via HTTP, sin UI → no produce video
   //   - 'structural' → validación syntax+tests → no produce video
-  // El agente QA escribe `modo: <qaMode>` en el YAML. Solo exigir evidencia
-  // visual cuando realmente aplica — antes este gate rechazaba fantasma
-  // issues de backend/infra cuyo QA estructural había aprobado correctamente,
-  // disparando el loop con el rejection-report.
-  const modo = (qaData.modo || '').toString().toLowerCase();
-  if (modo === 'api' || modo === 'structural') return [];
+  //
+  // R1 (auditoría seguridad #2351): NUNCA inferimos el modo por ausencia de
+  // labels `app:*`. Exigimos whitelist explícita: sólo 'api' o 'structural'
+  // saltean la evidencia. El modo autoritativo viene del preflight del Pulpo
+  // (parámetro `authoritativeQaMode`); si falta, caemos al YAML del agente
+  // como fallback defensivo. Un agente QA no puede bypassear el gate
+  // inventando un `modo` falso si el preflight ya determinó 'android'.
+  //
+  // R3 (CA-3): cada bypass emite un log estructurado para auditoría.
+  const resolution = qaEvidenceGate.resolveQaMode({
+    authoritative: authoritativeQaMode,
+    yamlMode: qaData && qaData.modo,
+  });
+  if (qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode)) {
+    const evt = qaEvidenceGate.buildBypassEvent({
+      issue,
+      qaMode: resolution.mode,
+      source: resolution.source,
+      labels: Array.isArray(qaData && qaData.labels) ? qaData.labels : [],
+    });
+    log('gate-bypass', qaEvidenceGate.formatBypassLogLine(evt));
+    return [];
+  }
 
   const ROOT = path.resolve(PIPELINE, '..');
   const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
@@ -1892,10 +1917,12 @@ function brazoBarrido(config) {
         // --- GATE DE EVIDENCIA QA (fase verificacion) ---
         // Si el QA dice "aprobado" pero no tiene evidencia real, forzar rechazo automático.
         // Esto evita que issues pasen a aprobación sin video con audio narrado.
+        // R1 (#2351): el qaMode autoritativo viene del cache del preflight, no del YAML.
         if (fase === 'verificacion') {
           const qaResult = resultados.find(r => skillFromFile(r.file.name) === 'qa');
           if (qaResult && qaResult.resultado === 'aprobado') {
-            const issues = validateQaEvidence(issue, qaResult);
+            const authoritativeQaMode = qaModeByIssue.get(String(issue)) || null;
+            const issues = validateQaEvidence(issue, qaResult, authoritativeQaMode);
             if (issues.length > 0) {
               log('barrido', `⛔ #${issue} QA aprobó SIN evidencia válida: ${issues.join(', ')}`);
               qaResult.resultado = 'rechazado';
@@ -3236,6 +3263,13 @@ function preflightQaChecks(issue) {
     : hasBackendLabel ? 'api'
     : 'structural';
 
+  // R1 (#2351): cachear la clasificación autoritativa para que el gate
+  // de evidencia no tenga que depender del `modo` del YAML (manipulable
+  // por el agente). Se setea ni bien determinamos el modo, sin importar
+  // si los checks posteriores pasan o fallan — el modo se conoce desde
+  // el primer momento.
+  qaModeByIssue.set(String(issue), qaMode);
+
   checks.classify = requiresEmulator ? `ui:${flavors.join(',')}` : `no-ui:${qaMode}`;
   log('preflight', `#${issue}: check 1 OK (qaMode=${qaMode}${requiresEmulator ? `, flavors: ${flavors.join(', ')}` : ''})`);
 
@@ -3849,9 +3883,14 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       }
 
       // --- VALIDACIÓN ON-EXIT QA ---
-      // Si el agente QA terminó diciendo "aprobado" pero sin evidencia, forzar rechazo
+      // Si el agente QA terminó diciendo "aprobado" pero sin evidencia, forzar rechazo.
+      // R1 (issue #2351): pasamos `extraEnv.QA_MODE` como fuente de verdad autoritativa
+      // (lo inyectó el preflight del Pulpo antes de lanzar al agente). El agente no
+      // puede bypassear el gate inventando un `modo: api` falso en el YAML si el
+      // preflight había determinado 'android'.
       if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
-        const evidenceIssues = validateQaEvidence(issue, data);
+        const authoritativeQaMode = extraEnv && extraEnv.QA_MODE ? extraEnv.QA_MODE : null;
+        const evidenceIssues = validateQaEvidence(issue, data, authoritativeQaMode);
         if (evidenceIssues.length > 0) {
           log('lanzamiento', `⛔ QA:#${issue} aprobó sin evidencia válida on-exit: ${evidenceIssues.join(', ')}`);
           data.resultado = 'rechazado';

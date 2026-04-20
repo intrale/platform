@@ -20,6 +20,10 @@ const dedupLib = require('./dedup-lib');
 // reporte con secretos crudos (tokens, JWT, PEM, etc.) que luego viaja a
 // Telegram/Drive.
 const { sanitize: sanitizeReportText } = require('./sanitizer');
+// #2351: el match "APK no se pudo generar" era falso positivo cuando fallaban
+// sólo tasks Release (bug AGP+KMP) mientras los APKs Debug se generaban bien.
+// Este helper nos da extract-failure-lines + checkDebugApksFresh + dismiss log.
+const apkFreshness = require('./lib/apk-freshness');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -871,8 +875,36 @@ function detectExternalDependencies(logTail, motivo) {
     addDep('Problema de red/DNS — no hay conexion a internet', 'El agente no pudo conectarse a internet o a servicios externos. Es un problema de infraestructura, no de codigo. No se evaluo nada.', 'infra', 'normal');
 
   // APK build failure pattern
-  if (combined.match(/assemble.*fail|build.*apk.*fail|apk.*not\s*(?:found|generated)/i))
-    addDep('El APK no se pudo generar', 'El build de Android fallo — el APK no existe. Sin APK no se puede probar en el emulador.', 'pattern-match', 'high');
+  //
+  // #2351 — Historial: este pattern venía disparando el issue fantasma
+  // "El APK no se pudo generar" cuando en realidad fallaba sólo una task
+  // Release (bug conocido de AGP + Kotlin MP en
+  // `bundle<Flavor>ReleaseClassesToRuntimeJar`) y los APKs Debug se generaban
+  // bien. Endurecimos el match con:
+  //   R5 — sólo aplicar el regex a líneas de falla real (FAILURE:/Task FAILED),
+  //        nunca al buffer crudo que incluye paths, comentarios, etc.
+  //   R2 — si el regex matchea, verificar APKs Debug en disco y considerarlos
+  //        válidos sólo cuando `mtime > buildStartTime` (un APK stale de hace
+  //        3 días no puede enmascarar un build actual roto).
+  //   R3 — loguear JSON inline cuando descartamos el match, para auditoría.
+  if (apkFreshness.matchesApkFailureInFailureLines(combined)) {
+    const buildStartTimeMs = apkFreshness.estimateBuildStartTimeMs({ elapsedSec: elapsed });
+    const apkStatus = apkFreshness.checkDebugApksFresh({
+      rootDir: ROOT,
+      buildStartTimeMs,
+    });
+    if (apkStatus.anyFresh) {
+      const dismissEvt = apkFreshness.buildDismissEvent({
+        issue,
+        pattern: 'apk_not_generated',
+        reason: 'APK(s) debug frescos presentes — la falla probable es sólo de tasks Release (bug AGP+KMP)',
+        apkStatus,
+      });
+      try { console.error(`[rejection-report] match-dismissed ${JSON.stringify(dismissEvt)}`); } catch {}
+    } else {
+      addDep('El APK no se pudo generar', 'El build de Android fallo — el APK no existe. Sin APK no se puede probar en el emulador.', 'pattern-match', 'high');
+    }
+  }
 
   // Emulator not running pattern
   //
