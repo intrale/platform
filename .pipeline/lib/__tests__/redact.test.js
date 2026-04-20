@@ -147,6 +147,42 @@ test('SEC-3 · URL con userinfo se strippea antes de loguear', () => {
     assert.ok(out.includes(`${REDACTION_MARKER}@`));
 });
 
+test('CA-11.1 · URL de Telegram con /bot<TOKEN> redacta el path (no fuga en DENIAL)', () => {
+    // Reproduce el caso real del DENIAL de http-client.js cuando el SSRF guard
+    // rechaza api.telegram.org: el path lleva el BOT_TOKEN completo. Si
+    // `redactUrlLike` solo redactaba userinfo+query, el token se escribía
+    // literal a stderr → takeover total del bot (#2332 rebote).
+    const url = 'https://api.telegram.org/bot1234567890:ABCDefGHIjklMNOpqrsTUVwxyz/sendMessage';
+    const out = redactUrlLike(url);
+    assert.ok(out.includes(REDACTION_MARKER), `esperaba marker en: ${out}`);
+    assert.ok(!out.includes('1234567890:ABCDefGHIjklMNOpqrsTUVwxyz'),
+        `token no debe estar en claro: ${out}`);
+    assert.ok(!out.includes('ABCDefGHIjklMNOpqrsTUVwxyz'),
+        `segmento del token no debe filtrarse: ${out}`);
+    // Debe preservar host + método para que el log siga siendo contextual.
+    assert.ok(out.includes('api.telegram.org'));
+    assert.ok(out.includes('/sendMessage'));
+});
+
+test('CA-11.1 · /bot<TOKEN> en distintas posiciones y query', () => {
+    // Path + query: el path debe redactarse Y los query params sensibles también.
+    const url1 = 'https://api.telegram.org/bot987654321:XYZabcDEF123ghiJKLmno/getUpdates?offset=5';
+    const out1 = redactUrlLike(url1);
+    assert.ok(!out1.includes('XYZabcDEF123ghiJKLmno'));
+    assert.ok(out1.includes('/bot[REDACTED]'));
+    assert.ok(out1.includes('offset=5'), 'offset no es sensible, debe sobrevivir');
+
+    // Token corto (<20) no matchea — evita falsos positivos tipo /bot/list.
+    const url2 = 'https://example.com/bot/list';
+    const out2 = redactUrlLike(url2);
+    assert.equal(out2, url2, 'path /bot/list sin token no debe tocarse');
+
+    // Case insensitive (Telegram acepta /Bot también).
+    const url3 = 'https://api.telegram.org/Bot1234567890:ABCDefGHIjklMNOpqrsTUVwxyz/sendMessage';
+    const out3 = redactUrlLike(url3);
+    assert.ok(!out3.includes('ABCDefGHIjklMNOpqrsTUVwxyz'));
+});
+
 test('redactSensitive · ciclos no revientan', () => {
     const a = { password: 'x' };
     a.self = a;

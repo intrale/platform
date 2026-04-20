@@ -101,7 +101,9 @@ function redactEmailsInText(text) {
 /**
  * Enmascara query strings sensibles dentro de una URL como texto plano
  * (CA-17). Mantiene el resto de los params intactos. También strippea
- * userinfo (user:pass@host) antes de loguear (CA-18 / SEC-3).
+ * userinfo (user:pass@host) antes de loguear (CA-18 / SEC-3) y redacta
+ * secretos embebidos en el path (ej: `/bot<TOKEN>/sendMessage` del
+ * API de Telegram — CA-11.1 / #2332).
  *
  * No usa `URL` para evitar excepciones con strings inválidos (URLs en
  * error.message pueden estar truncadas).
@@ -125,6 +127,13 @@ function redactUrlLike(urlText) {
         }
         return m;
     });
+
+    // 3) Redactar secretos embebidos como path segments (CA-11.1 / #2332).
+    //    El API de Telegram usa /bot<TOKEN>/metodo — si este path se loggea
+    //    dentro de un DENIAL (SSRF guard rechazando por DNS rebind o proxy
+    //    mal configurado) el BOT_TOKEN se filtra a stderr. Redactamos todo
+    //    segmento que empieza con `/bot` seguido de 20+ chars opacos.
+    out = out.replace(/\/bot[^\/?#\s]{20,}/gi, `/bot${REDACTION_MARKER}`);
 
     return out;
 }
