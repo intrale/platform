@@ -16,6 +16,10 @@ const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
 const dedupLib = require('./dedup-lib');
+// #2333: sanitizador write-time antes de generar PDF. Nunca persistimos un
+// reporte con secretos crudos (tokens, JWT, PEM, etc.) que luego viaja a
+// Telegram/Drive.
+const { sanitize: sanitizeReportText } = require('./sanitizer');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -1466,7 +1470,11 @@ function generateNarration(data) {
 // sendReport(data) — genera PDF + audio y envía a Telegram
 // =============================================================================
 async function sendReport(data) {
-  const html = renderHtml(data);
+  const htmlRaw = renderHtml(data);
+  // #2333: sanitizar write-time (NFC → sanitizeSecrets → sanitizeUtf8).
+  // No tocamos el `normalize` usado para fuzzy-matching en otros lugares;
+  // esto sólo envuelve el HTML que va a PDF/Telegram.
+  const html = sanitizeReportText(htmlRaw);
 
   const htmlPath = path.join(LOG_DIR, `rejection-${data.issue}-${data.skill}.html`);
   fs.writeFileSync(htmlPath, html);

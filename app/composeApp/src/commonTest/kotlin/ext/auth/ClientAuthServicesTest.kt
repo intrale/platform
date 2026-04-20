@@ -69,7 +69,7 @@ class ClientLoginServiceTest {
      * y bloqueaba todo el flujo del usuario hacia el dashboard.
      */
     @Test
-    fun `login exitoso tolera campos desconocidos del backend (responseHeaders)`() = runTest {
+    fun `login exitoso tolera campos desconocidos del backend responseHeaders`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"responseHeaders":{"x-trace-id":"abc"},"idToken":"id","accessToken":"access","refreshToken":"refresh","extraField":"valor"}"""
         val service = ClientLoginService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
@@ -80,7 +80,7 @@ class ClientLoginServiceTest {
     }
 
     @Test
-    fun `login fallido tolera campos desconocidos en ExceptionResponse (responseHeaders)`() = runTest {
+    fun `login fallido tolera campos desconocidos en ExceptionResponse responseHeaders`() = runTest {
         val body = """{"statusCode":{"value":401,"description":"Unauthorized"},"responseHeaders":{"x-trace-id":"abc"},"message":"Credenciales invalidas"}"""
         val service = ClientLoginService(mockClient(HttpStatusCode.Unauthorized, body), jsonConfig)
 
