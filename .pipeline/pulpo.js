@@ -17,6 +17,8 @@ const precheck = require('./connectivity-precheck');
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
 const connectivityState = require('./connectivity-state'); // #2335
 const { classifyRoutingMismatch } = require('./lib/routing-classifier');
+const cbInfra = require('./circuit-breaker-infra');
+const { redact } = require('./redact');
 
 // Crash handlers — loguear y seguir vivo
 process.on('uncaughtException', (err) => {
@@ -2195,6 +2197,8 @@ function brazoBarrido(config) {
           }
         } else if (i < fases.length - 1) {
           // Todos aprobaron → promover a siguiente fase
+          // (#2305) Cualquier éxito = la red funciona: resetear contador del CB de infra.
+          resetInfraCounterOnSuccess();
           const siguienteFase = fases[i + 1];
           const siguientePendiente = path.join(fasePath(pipelineName, siguienteFase), 'pendiente');
           const siguienteSkills = pipelineConfig.skills_por_fase[siguienteFase] || [];
@@ -2225,6 +2229,8 @@ function brazoBarrido(config) {
           log('barrido', `#${issue} ${fase} ✓ → promovido a ${siguienteFase}`);
         } else {
           // Última fase completada — historia terminada
+          // (#2305) Éxito end-to-end: resetear contador del CB de infra.
+          resetInfraCounterOnSuccess();
           log('barrido', `#${issue} COMPLETADO — salió del pipeline ${pipelineName}`);
 
           // Si es pipeline de definición → agregar label "ready" para que desarrollo lo tome
@@ -2541,6 +2547,12 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
 }
 
 function brazoLanzamiento(config) {
+  // Circuit breaker de infra (#2305): si está abierto, no tomar nuevos issues.
+  // Se reabre manualmente con `node .pipeline/resume.js` una vez validada la red.
+  if (cbInfra.isOpen()) {
+    return;
+  }
+
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
 
@@ -2938,6 +2950,9 @@ function checkBackendWithWarmup(issue) {
   // NUL en Windows, /dev/null en Unix — execSync usa cmd.exe en Windows
   const devNull = process.platform === 'win32' ? 'NUL' : '/dev/null';
 
+  let lastStderr = '';
+  let lastHttpCode = null;
+
   for (let attempt = 1; attempt <= WARMUP_RETRIES; attempt++) {
     try {
       const curlResult = execSync(
@@ -2945,18 +2960,22 @@ function checkBackendWithWarmup(issue) {
         { encoding: 'utf8', timeout: 25000, windowsHide: true }
       ).trim();
       const httpCode = parseInt(curlResult, 10);
+      lastHttpCode = httpCode;
 
       if (httpCode >= 400 && httpCode < 500) {
         if (attempt > 1) {
           log('preflight', `#${issue}: backend respondió OK en intento ${attempt}/${WARMUP_RETRIES} (cold start resuelto)`);
         }
+        // El backend respondió algo → la red está bien. Cualquier contador acumulado se resetea.
+        resetInfraCounterOnSuccess();
         return { ok: true, httpCode, error: null };
       }
 
       // Respuesta inesperada (5xx, etc) — reintentar
       log('preflight', `#${issue}: backend HTTP ${httpCode} en intento ${attempt}/${WARMUP_RETRIES} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s...` : 'agotados reintentos'}`);
     } catch (e) {
-      log('preflight', `#${issue}: backend timeout/error en intento ${attempt}/${WARMUP_RETRIES}: ${e.message.slice(0, 60)} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s (probable cold start)...` : 'agotados reintentos'}`);
+      lastStderr = (e && (e.stderr || e.message)) || '';
+      log('preflight', `#${issue}: backend timeout/error en intento ${attempt}/${WARMUP_RETRIES}: ${String(lastStderr).slice(0, 60)} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s (probable cold start)...` : 'agotados reintentos'}`);
     }
 
     // Esperar antes del siguiente intento (excepto en el último)
@@ -2967,7 +2986,16 @@ function checkBackendWithWarmup(issue) {
     }
   }
 
-  return { ok: false, httpCode: null, error: `No respondió tras ${WARMUP_RETRIES} intentos (cold start persistente)` };
+  // Todos los intentos fallaron — determinar si es red (infra) o backend con 5xx.
+  // Si nunca obtuvimos httpCode → fallo de red puro → contar hacia el circuit breaker.
+  // Si httpCode venía en 5xx → backend responde pero mal → NO contar (AC-1: sólo códigos de red).
+  if (lastHttpCode === null) {
+    const code = classifyNetworkError(lastStderr) || 'ETIMEDOUT';
+    const host = hostnameFromUrl(BACKEND_BASE_URL);
+    registerInfraFailureAndMaybeAlert(issue, code, host);
+  }
+
+  return { ok: false, httpCode: lastHttpCode, error: `No respondió tras ${WARMUP_RETRIES} intentos (cold start persistente)` };
 }
 
 /**
@@ -2982,6 +3010,114 @@ function sendBlockedInfraNotif(issue, message) {
   }
   _lastBlockedNotif[issue] = now;
   sendTelegram(message);
+}
+
+// =============================================================================
+// CIRCUIT BREAKER DE INFRA (issue #2305)
+// Cuenta fallos de red consecutivos entre issues. A la 3ra falla seguida,
+// abre el CB, pausa el pipeline y notifica a Leo vía Telegram.
+// Un éxito de CUALQUIER issue resetea el contador (la red volvió a andar).
+// =============================================================================
+
+/**
+ * Extrae el código de error de red a partir de un mensaje arbitrario
+ * (stderr de curl, e.message de fetch, etc). Si no reconoce ninguno,
+ * devuelve `TIMEOUT` como fallback conservador (todavía cuenta como infra).
+ */
+function classifyNetworkError(errMessage) {
+  if (!errMessage) return null;
+  const msg = String(errMessage);
+
+  // Tokens explícitos que aparecen en stack traces de Node y mensajes de error
+  const codeMatch = msg.match(/\b(ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH)\b/);
+  if (codeMatch) return codeMatch[1];
+
+  // Traducción de mensajes curl/friendly a códigos canónicos
+  if (/could not resolve host|name or service not known|dns/i.test(msg)) return 'ENOTFOUND';
+  if (/connection refused/i.test(msg)) return 'ECONNREFUSED';
+  if (/timed out|timeout|operation timed out/i.test(msg)) return 'ETIMEDOUT';
+  if (/connection reset/i.test(msg)) return 'ECONNRESET';
+
+  return null;
+}
+
+/**
+ * Extrae el hostname de una URL (para mostrar `ENOTFOUND api.amazonaws.com`
+ * en lugar de sólo el código, como pide la UX).
+ */
+function hostnameFromUrl(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encolar mensaje Telegram de apertura del circuit breaker.
+ * Formato fijo siguiendo la UX del issue #2305 (copy natural en español,
+ * comando en code-block copiable, emoji 🔴 de estado).
+ *
+ * Pasa por redact() para eliminar tokens, paths absolutos y stack traces.
+ */
+function notifyInfraCircuitBreakerOpen(issue, errorCode, hostname) {
+  const code = redact(errorCode || 'ETIMEDOUT');
+  const host = hostname ? ` ${redact(hostname)}` : '';
+  const issueRef = issue ? `#${parseInt(issue, 10)}` : 'desconocido';
+
+  const msg = [
+    '🔴 Pipeline pausado por infra',
+    '',
+    'Se agotaron 3 intentos consecutivos por problemas de red.',
+    '',
+    `Último issue afectado: ${issueRef}`,
+    `Error: ${code}${host}`,
+    '',
+    'Para reanudar, una vez verificada la red:',
+    '`node .pipeline/resume.js`',
+  ].join('\n');
+
+  sendTelegram(msg);
+}
+
+/**
+ * Registrar una falla de infra detectada por el pipeline.
+ * Si el CB pasa a `open` en esta llamada, envía UN SOLO mensaje Telegram
+ * (rate-limit via flag `alert_sent` del archivo de estado).
+ *
+ * @param {number|string} issue
+ * @param {string} errorCode — ENOTFOUND, ETIMEDOUT, etc
+ * @param {string|null} hostname — opcional, para enriquecer el mensaje
+ */
+function registerInfraFailureAndMaybeAlert(issue, errorCode, hostname = null) {
+  try {
+    const code = errorCode || 'ETIMEDOUT';
+    const { opened, state } = cbInfra.registerInfraFailure(issue, code);
+    log('circuit-breaker-infra',
+      `fallo de red #${issue} ${code}${hostname ? ` (${hostname})` : ''} — contador ${state.consecutive_failures}/${cbInfra.CONSECUTIVE_THRESHOLD}${opened ? ' → CB OPEN' : ''}`);
+    if (opened && !state.alert_sent) {
+      notifyInfraCircuitBreakerOpen(issue, code, hostname);
+      cbInfra.markAlertSent();
+    }
+  } catch (e) {
+    // Nunca propagar errores del CB — el pipeline debe seguir vivo.
+    log('circuit-breaker-infra', `error registrando fallo: ${redact(e.message || String(e))}`);
+  }
+}
+
+/**
+ * Cualquier éxito del pipeline indica que la red funciona: resetear contador.
+ * Llamado desde brazoBarrido cuando una fase completa OK.
+ */
+function resetInfraCounterOnSuccess() {
+  try {
+    const next = cbInfra.resetOnSuccess();
+    if (next) {
+      log('circuit-breaker-infra', 'éxito detectado → contador reseteado a 0');
+    }
+  } catch (e) {
+    log('circuit-breaker-infra', `error reseteando contador: ${redact(e.message || String(e))}`);
+  }
 }
 
 /**

@@ -115,6 +115,8 @@ scripts/planner-plan.json
 .pipeline/commander-history.jsonl
 .pipeline/node_modules/
 .pipeline/package-lock.json
+.pipeline/circuit-breaker-infra.json
+.pipeline/circuit-breaker-infra.json.tmp
 .pipeline/definicion/*/pendiente/*
 .pipeline/definicion/*/trabajando/*
 .pipeline/definicion/*/listo/*
