@@ -20,17 +20,19 @@ const { spawnSync } = require("child_process");
 
 function findProcess(scriptName) {
   try {
-    // shell:true preserva comillas del filtro wmic (mismo motivo que pid-discovery.js).
+    // Sin WHERE: cmd.exe /c (shell:true) quita las comillas envolventes y el
+    // filtro "name='node.exe'" llega a wmic sin quoting, tirando "No se
+    // reconoce el filtro de búsqueda" en loop. Filtramos Name=node.exe en JS.
     const r = spawnSync(
-      `wmic process where "name='node.exe'" get ProcessId,CommandLine /format:csv 2>NUL`,
-      { encoding: "utf8", timeout: 10000, windowsHide: true, shell: true }
+      'wmic process get Name,ProcessId,CommandLine /format:csv',
+      { encoding: "utf8", timeout: 15000, windowsHide: true, shell: true }
     );
     const lines = (r.stdout || "").split("\n");
     for (const line of lines) {
-      if (line.includes(scriptName) && !line.includes("wmic")) {
-        const match = line.match(/(\d+)\s*$/);
-        if (match && parseInt(match[1]) !== process.pid) return parseInt(match[1]);
-      }
+      if (!line.toLowerCase().includes('node.exe')) continue;
+      if (!line.includes(scriptName) || line.includes("wmic")) continue;
+      const match = line.match(/(\d+)\s*$/);
+      if (match && parseInt(match[1]) !== process.pid) return parseInt(match[1]);
     }
   } catch {}
   return null;

@@ -38,26 +38,29 @@ function scanNodeProcesses() {
   const processes = [];
   if (process.platform === 'win32') {
     try {
-      // shell:true → cmd.exe preserva las comillas del WHERE; sin esto el
-      // filtro llega a wmic como name=node.exe y tira "No se reconoce
-      // el filtro de búsqueda" en loop, spameando el log del caller.
-      // 2>NUL descarta errores residuales (no queremos forwardear).
+      // Sin WHERE. Cuando el comando se pasa con shell:true, Node lanza
+      // cmd.exe /d /s /c "<cmd>"; cmd.exe /c quita las comillas externas y
+      // el filtro "name='node.exe'" llega a wmic sin comillas (name=node.exe),
+      // disparando "No se reconoce el filtro de búsqueda" en loop.
+      // Solución: traer todos los procesos y filtrar Name=node.exe en JS.
       const r = spawnSync(
-        `wmic process where "name='node.exe'" get ProcessId,CommandLine,CreationDate /format:csv 2>NUL`,
-        { encoding: 'utf8', timeout: 10000, windowsHide: true, shell: true }
+        'wmic process get Name,ProcessId,CommandLine,CreationDate /format:csv',
+        { encoding: 'utf8', timeout: 15000, windowsHide: true, shell: true }
       );
       const lines = (r.stdout || '').split('\n');
       for (const line of lines) {
         const t = line.trim();
         if (!t || !t.includes(',')) continue;
-        // header: Node,CommandLine,CreationDate,ProcessId
+        // header: Node,CommandLine,CreationDate,Name,ProcessId
         if (/^Node,/i.test(t)) continue;
         const parts = t.split(',');
-        if (parts.length < 4) continue;
+        if (parts.length < 5) continue;
         const pid = parseInt(parts[parts.length - 1], 10);
         if (!pid || Number.isNaN(pid)) continue;
-        const creationDate = parts[parts.length - 2] || '';
-        const commandLine = parts.slice(1, -2).join(',');
+        const name = (parts[parts.length - 2] || '').trim();
+        if (name.toLowerCase() !== 'node.exe') continue;
+        const creationDate = parts[parts.length - 3] || '';
+        const commandLine = parts.slice(1, -3).join(',');
         processes.push({ pid, commandLine, creationDate });
       }
     } catch {}
