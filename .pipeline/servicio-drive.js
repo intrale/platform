@@ -8,6 +8,10 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+// #2334: sanitización write-time.
+require('./lib/sanitize-console').install();
+const { sanitize } = require('./sanitizer');
+const { sanitizeDrivePayload, sanitizeDriveFilename, filenameHasSecret } = require('./lib/sanitize-payload');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const PROJECT_ROOT = path.resolve(PIPELINE, '..');
@@ -135,7 +139,11 @@ async function processJob(file) {
   try { fs.renameSync(file.path, trabajandoPath); } catch { return; }
 
   try {
-    const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+    const rawData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+    // #2334: sanitizar description/title/caption ANTES del upload.
+    // Esos campos van como CLI args a qa-video-share.js y terminan en
+    // metadata de Drive + mensajes de Telegram.
+    const data = sanitizeDrivePayload(rawData);
     const issue = extractIssue(data, file.name);
     const title = extractTitle(data);
     const videoFile = data.file || '';
@@ -155,13 +163,39 @@ async function processJob(file) {
       return;
     }
 
-    log(`Subiendo video: ${resolvedPath} (issue #${issue})`);
+    // #2334 CA7: validar que el basename NO contenga patrones de secretos
+    // (tokens, JWT, etc). Si matchea, copiamos a un path con nombre
+    // truncado + hash (no placeholder, que rompería la trazabilidad). El
+    // contenido del video NO se toca — es binario y el sanitizer sólo
+    // opera sobre texto.
+    let uploadPath = resolvedPath;
+    const originalBasename = path.basename(resolvedPath);
+    if (filenameHasSecret(originalBasename)) {
+      const safeBasename = sanitizeDriveFilename(originalBasename);
+      const safeDir = path.join(path.dirname(resolvedPath), '.sanitized');
+      try {
+        fs.mkdirSync(safeDir, { recursive: true });
+      } catch {}
+      const safePath = path.join(safeDir, safeBasename);
+      try {
+        fs.copyFileSync(resolvedPath, safePath);
+        uploadPath = safePath;
+        log(`Filename sanitizado: basename original contenía patrón de secreto, subiendo como ${safeBasename}`);
+      } catch (e) {
+        log(`Error copiando a nombre saneado (${e.message}); se omite upload para evitar leak`);
+        ensureDir(FALLIDO);
+        fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+        return;
+      }
+    }
+
+    log(`Subiendo video: ${uploadPath} (issue #${issue})`);
 
     // Reintentar hasta MAX_RETRIES veces
     let lastErr;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        await runVideoShare(resolvedPath, issue, title);
+        await runVideoShare(uploadPath, issue, title);
         log(`Upload exitoso: ${file.name} (intento ${attempt})`);
         fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
         return;
@@ -237,13 +271,14 @@ process.on('SIGTERM', () => process.exit(0));
 // Crash handlers — loguear antes de morir para diagnóstico
 const LOG_DIR = path.join(PIPELINE, 'logs');
 process.on('uncaughtException', (err) => {
-  const msg = `[${new Date().toISOString()}] [svc-drive] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  // #2334: sanitizar antes de persistir stack a disco.
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH uncaughtException: ${err.stack || err.message}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  const msg = `[${new Date().toISOString()}] [svc-drive] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);
