@@ -146,9 +146,15 @@ async function retryWithBackoff(fn, {
 
 /**
  * Resuelve DNS del host con timeout explícito.
+ *
+ * Usa `dns.lookup` (getaddrinfo del OS) en vez de `dns.resolve4` (c-ares).
+ * Why: en Windows/entornos donde los DNS servers de Node quedan en 127.0.0.1
+ * sin resolver local, c-ares devuelve ECONNREFUSED aunque la red funcione.
+ * getaddrinfo respeta la resolución del sistema — misma fuente que curl/nslookup.
+ *
  * @param {string} host
  * @param {number} timeoutMs
- * @returns {Promise<string[]>} lista de IPs
+ * @returns {Promise<string[]>} lista de IPs v4
  */
 function resolveDnsWithTimeout(host, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -161,11 +167,18 @@ function resolveDnsWithTimeout(host, timeoutMs) {
       reject(e);
     }, timeoutMs);
 
-    dns.resolve4(host)
-      .then((addrs) => {
+    dns.lookup(host, { all: true, family: 4 })
+      .then((entries) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        const addrs = (entries || []).map((e) => e.address).filter(Boolean);
+        if (addrs.length === 0) {
+          const e = new Error(`DNS lookup returned no A records for ${host}`);
+          e.code = 'ENOTFOUND';
+          reject(e);
+          return;
+        }
         resolve(addrs);
       })
       .catch((err) => {
