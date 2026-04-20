@@ -127,4 +127,10 @@ scripts/planner-plan.json
 .pipeline/servicios/*/trabajando/*
 .pipeline/servicios/*/listo/*
 .pipeline/servicios/*/procesado/*
+# #2335 — estado operativo del connectivity-state (no comitear)
+.pipeline/connectivity-state.json
+.pipeline/blocked-by-infra.json
+.pipeline/infra-health.json
+.pipeline/events/
+.pipeline/tmp/
 !.pipeline/**/.gitkeep
