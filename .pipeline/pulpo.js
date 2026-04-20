@@ -24,18 +24,24 @@ const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 const cbInfra = require('./circuit-breaker-infra');
 const { redact } = require('./redact');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+// #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
+const { createLogFileWriter } = require('./lib/sanitize-log-stream');
+// #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
+// (archivo `logs/pulpo.log` que hereda stdout/stderr vía fd).
+require('./lib/sanitize-console').install();
 
 // #2337 CA10: cleanup perezoso + startup de metricas UX (REQ-SEC-5)
 try { uxMetrics.cleanup({ force: true }); } catch { /* best-effort */ }
 
 // Crash handlers — loguear y seguir vivo
 process.on('uncaughtException', (err) => {
-  const msg = `[${new Date().toISOString()}] [pulpo] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  // #2334: sanitizar antes de persistir stack del crash.
+  const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH uncaughtException: ${err.stack || err.message}\n`);
   try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
   console.error(msg);
 });
 process.on('unhandledRejection', (reason) => {
-  const msg = `[${new Date().toISOString()}] [pulpo] CRASH unhandledRejection: ${reason}\n`;
+  const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH unhandledRejection: ${reason}\n`);
   try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
   console.error(msg);
 });
@@ -3770,10 +3776,17 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
-  // Log de agente: redirigir stdout/stderr directamente al archivo
+  // Log de agente: stdout/stderr pasan por un `createSanitizeStream`
+  // antes de escribirse a disco (#2334 / CA6). El contenido original
+  // NUNCA llega al archivo, ni siquiera transitoriamente.
+  //
+  // Nota: el header "--- skill:#issue ... ---" es texto controlado por el
+  // pulpo (no viene del agente), así que lo escribimos directo antes de
+  // abrir el stream sanitizado; igualmente pasa por `sanitizePipelineText`
+  // por consistencia.
   const agentLogPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
-  fs.writeFileSync(agentLogPath, `--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} ${new Date().toISOString()} ---\n`);
-  const agentLogFd = fs.openSync(agentLogPath, 'a');
+  fs.writeFileSync(agentLogPath, sanitizePipelineText(`--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} ${new Date().toISOString()} ---\n`));
+  const agentLogWriter = createLogFileWriter(agentLogPath);
 
   // --- RECORDING AUTOMÁTICO: iniciar screenrecord en background para QA android ---
   // El pipeline graba, no el agente. Así garantizamos que siempre hay video.
@@ -3806,17 +3819,26 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
-    stdio: ['ignore', agentLogFd, agentLogFd],
+    stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
     shell: CLAUDE_LAUNCHER.shell,
     windowsHide: true,
     env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase, ...extraEnv }
   });
 
+  // #2334 / CA6: piping stdout/stderr → sanitizeStream → file.
+  // Montamos un único writer compartido para preservar el orden
+  // aproximado entre stdout y stderr (mismo archivo, mismo stream).
+  // Si el spawn falló (child.stdout null), el try/catch evita tirar
+  // el pulpo; en ese caso la salida del hijo se descarta (el exit code
+  // sigue llegando vía child.on('exit')).
+  try {
+    if (child.stdout) child.stdout.pipe(agentLogWriter.writable, { end: false });
+    if (child.stderr) child.stderr.pipe(agentLogWriter.writable, { end: false });
+  } catch (e) {
+    log('lanzamiento', `⚠️ No se pudo pipear stdio del agente ${skill}:#${issue}: ${e.message}`);
+  }
   child.unref();
-  // NO cerrar agentLogFd aquí — en Windows, cerrar el FD en el padre
-  // mata la herencia y el hijo pierde stdout/stderr.
-  // Se cierra en child.on('exit') para que el log capture todo el output.
 
   // Watchdog de timeout por skill: mata al hijo si excede el límite configurado.
   // Razón: sin enforcement, un /builder con OOM repetido puede quedar 1h+ en loop
@@ -3877,8 +3899,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
-    // Cerrar el FD del log ahora que el hijo terminó
-    try { fs.closeSync(agentLogFd); } catch {}
+    // #2334: cerrar el writer sanitizado del log (flush + close).
+    // Lo hacemos async pero no bloqueamos el resto del handler.
+    try { agentLogWriter.close().catch(() => {}); } catch {}
     // Cancelar watchdog de timeout (ya terminó, por el motivo que sea)
     clearTimeout(watchdog);
 
