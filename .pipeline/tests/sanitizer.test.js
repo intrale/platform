@@ -116,6 +116,75 @@ test('TELEGRAM_BOT_TOKEN negativo: muy corto', () => {
     assert.ok(!out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'));
 });
 
+// CA-11.1 (#2332 / rebote #2333): el formato real de URL de Telegram es
+// `https://api.telegram.org/bot<TOKEN>/<metodo>`. Sin lookbehind tolerante,
+// el `\b` entre "bot" y el primer dígito del token no matcheaba y el token
+// quedaba expuesto en rejection reports y logs del pulpo.
+
+test('TELEGRAM_BOT_TOKEN positivo: prefijo "bot" concatenado sin separador', () => {
+    const realishToken = '1234567890:AAEhBOweik9ai9RQDRkUH8s9w1aKf5MYZxs';
+    const out = sanitize(`bot${realishToken}`);
+    assert.ok(out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+    assert.ok(!out.includes(realishToken), `fuga detectada: out=${out}`);
+});
+
+test('TELEGRAM_BOT_TOKEN positivo: URL completa api.telegram.org/bot<TOKEN>/sendMessage', () => {
+    const realishToken = '1234567890:AAEhBOweik9ai9RQDRkUH8s9w1aKf5MYZxs';
+    const url = `https://api.telegram.org/bot${realishToken}/sendMessage`;
+    const out = sanitize(url);
+    assert.ok(out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+    assert.ok(!out.includes(realishToken), `fuga detectada: out=${out}`);
+    // La URL debe seguir siendo legible (preservamos prefijo y path)
+    assert.ok(out.includes('api.telegram.org'), `out=${out}`);
+    assert.ok(out.includes('/sendMessage'), `out=${out}`);
+});
+
+test('TELEGRAM_BOT_TOKEN positivo: URL con query /bot<TOKEN>/getUpdates?offset=5', () => {
+    const realishToken = '9876543210:BBFiCPxflj0bj0SRESlVI9t0x2bLg6NZayt';
+    const url = `/bot${realishToken}/getUpdates?offset=5`;
+    const out = sanitize(url);
+    assert.ok(out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+    assert.ok(!out.includes(realishToken), `fuga detectada: out=${out}`);
+    assert.ok(out.includes('getUpdates?offset=5'), `out=${out}`);
+});
+
+test('TELEGRAM_BOT_TOKEN negativo: /bot/list sin token no se redacta', () => {
+    const out = sanitize('GET /bot/list HTTP/1.1');
+    assert.ok(!out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+});
+
+test('TELEGRAM_BOT_TOKEN positivo: case-insensitive /Bot<TOKEN>/', () => {
+    const realishToken = '1122334455:CCGjDQygmk1ck1TSFTmWJ0u1y3cMh7OAbzu';
+    const url = `/Bot${realishToken}/sendPhoto`;
+    const out = sanitize(url);
+    assert.ok(out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+    assert.ok(!out.includes(realishToken), `fuga detectada: out=${out}`);
+});
+
+test('TELEGRAM_BOT_TOKEN positivo: /BOT<TOKEN>/ (uppercase)', () => {
+    const realishToken = '5566778899:DDHkERzhnl2dl2UTGUnXK1v2z4dNi8PBcav';
+    const out = sanitize(`https://api.telegram.org/BOT${realishToken}/getMe`);
+    assert.ok(out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+    assert.ok(!out.includes(realishToken), `fuga detectada: out=${out}`);
+});
+
+test('TELEGRAM_BOT_TOKEN positivo: token bare al inicio de linea', () => {
+    // Caso original: el token suelto debe seguir siendo redactado.
+    const out = sanitize(FAKE_TG_BOT);
+    assert.ok(out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+});
+
+test('TELEGRAM_BOT_TOKEN negativo: bot embebido en palabra no matchea (abcdbot1234:...)', () => {
+    // Si "bot" viene pegado a letras previas (no es word boundary), NO
+    // queremos matchear — seria falso positivo en strings aleatorios.
+    const realishToken = '1234567890:AAEhBOweik9ai9RQDRkUH8s9w1aKf5MYZxs';
+    const out = sanitize(`abcdbot${realishToken}`);
+    // En este caso el token NO se redacta porque está pegado a "abcdbot"
+    // y no hay boundary claro. Es aceptable — el caso real de leak es URL
+    // donde siempre hay `/` antes.
+    assert.ok(!out.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'), `out=${out}`);
+});
+
 test('GOOGLE_API_KEY positivo: AIza...', () => {
     const out = sanitize(`apiKey=${FAKE_GOOGLE_API}`);
     // puede aplicar CONF_STRUCTURED o GOOGLE_API_KEY

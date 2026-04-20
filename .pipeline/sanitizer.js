@@ -201,10 +201,22 @@ const PATTERNS = [
     },
 
     // Telegram bot token: <digits>:<35 chars base64url-ish>.
+    //
+    // NOTA CA-11.1 (#2332 / rebote #2333): el formato real de URL de Telegram
+    // es `https://api.telegram.org/bot<TOKEN>/<metodo>`. El `\b` de un patrón
+    // tipo `\b\d+:...\b` NO matchea cuando el token viene precedido por "bot"
+    // (no hay word boundary entre la 't' y el primer dígito: ambos son \w).
+    // Por eso el patrón:
+    //   - usa un lookbehind `(?<=^|[^A-Za-z0-9_-])` que sí cruza el salto
+    //     entre "bot" y el dígito (ambos son [A-Za-z0-9_-], el lookbehind
+    //     requiere que lo que haya ANTES de "bot"/el token NO sea word-char).
+    //   - captura opcionalmente el prefijo "bot" para preservarlo en el
+    //     output (la URL sigue siendo legible como `/bot[REDACTED:...]`).
+    //   - flag `i` para cubrir "Bot", "BOT", etc.
     {
         name: 'TELEGRAM_BOT_TOKEN',
-        re: /\b\d{6,}:[A-Za-z0-9_-]{35,}\b/g,
-        replace: () => P.TELEGRAM_BOT_TOKEN,
+        re: /(?<=^|[^A-Za-z0-9_-])(bot)?(\d{6,}:[A-Za-z0-9_-]{35,})(?=$|[^A-Za-z0-9_-])/gi,
+        replace: (_m, bot) => `${bot || ''}${P.TELEGRAM_BOT_TOKEN}`,
     },
 
     // Google API key.
