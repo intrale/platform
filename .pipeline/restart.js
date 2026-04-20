@@ -21,6 +21,7 @@ const {
   pidAlive,
   invalidateCache,
 } = require('./pid-discovery');
+const { clearAllMarkers } = require('./lib/ready-marker');
 
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
@@ -95,6 +96,12 @@ function killAll() {
   for (const comp of COMPONENTS) {
     try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
   }
+
+  // Limpiar ready markers — cada componente debe reescribir el suyo
+  // al completar su init tras el relaunch. Si no aparecen, el smoke
+  // los reporta como "missing" (booting o crasheado).
+  const cleared = clearAllMarkers();
+  if (cleared > 0) log(`  ${cleared} ready marker(s) limpiados`);
 
   // Mover archivos de trabajando/ Y pendiente/ a listo/ en commander
   // IMPORTANTE: limpiar AMBAS colas — si hay un mensaje de restart pendiente
@@ -177,7 +184,7 @@ function launchAll() {
 // --- SMOKE TEST + TAG pipeline-stable + AUTO-ROLLBACK ---
 
 function runSmokeTest() {
-  const script = path.join(PIPELINE, 'smoke-test.sh');
+  const script = path.join(PIPELINE, 'smoke-test.js');
   if (!fs.existsSync(script)) {
     log('Smoke test ausente, se omite');
     return { ok: true, skipped: true };
@@ -185,12 +192,13 @@ function runSmokeTest() {
 
   log('=== SMOKE TEST ===');
   try {
-    // Timeout 120s: smoke-test hace retry de hasta 60s sobre los 3 PID
-    // files + curl 5s + stat checks. 60s previos se agotaban en Windows
-    // cuando 7 singletons hacían wmic en paralelo post-launchAll.
-    const result = spawnSync('bash', [script], {
+    // smoke-test.js es Node puro: lee ready markers + chequea HTTP en
+    // :3200. No usa wmic ni bash. Timeout holgado (90s) porque el smoke
+    // internamente hace polling hasta 60s a que los 7 componentes
+    // escriban sus markers.
+    const result = spawnSync(process.execPath, [script], {
       cwd: ROOT,
-      timeout: 120000,
+      timeout: 90000,
       encoding: 'utf8',
       windowsHide: true,
     });
@@ -255,31 +263,40 @@ function enqueueTelegramAlert(text) {
   }
 }
 
-function runRollback() {
-  log('=== AUTO-ROLLBACK ===');
-  const script = path.join(PIPELINE, 'rollback.sh');
+function launchRollbackOrphan() {
+  // Estrategia detached-orphan: el rollback corre independiente de restart.js.
+  // Problema anterior: cuando rollback.sh hacía `taskkill /T` sobre procesos
+  // del pipeline, se comía a restart.js (su parent) y moría mid-ejecución.
+  //
+  // Solución: restart.js spawnea rollback.js con detached+stdio:ignore+unref,
+  // sale de inmediato, y el rollback orphan es libre de matar lo que
+  // quiera — nuestro proceso ya no existe. No hay loop de self-kill.
+  log('=== AUTO-ROLLBACK (orphan detached) ===');
+  const script = path.join(PIPELINE, 'rollback.js');
   if (!fs.existsSync(script)) {
-    log('rollback.sh ausente — abortando rollback');
+    log('rollback.js ausente — no se puede ejecutar rollback');
     return false;
   }
-  try {
-    // PARENT_RESTART_PID: rollback.sh usa taskkill //T (tree-kill) sobre
-    // todo node.exe del pipeline; sin este hint se mata a sí mismo al
-    // matar a nuestro proceso node.
-    const result = spawnSync('bash', [script, 'pipeline-stable'], {
-      cwd: ROOT,
-      timeout: 180000,
-      encoding: 'utf8',
-      windowsHide: true,
-      env: { ...process.env, PARENT_RESTART_PID: String(process.pid) },
-    });
-    const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
-    if (output) log(output.split('\n').slice(-8).join('\n'));
-    return result.status === 0;
-  } catch (e) {
-    log(`Rollback error: ${e.message}`);
-    return false;
-  }
+
+  const logsDir = path.join(PIPELINE, 'logs');
+  if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+  const logPath = path.join(logsDir, 'rollback.log');
+  const logFd = fs.openSync(logPath, 'a');
+  try { fs.writeSync(logFd, `\n--- orphan rollback launch ${new Date().toISOString()} ---\n`); } catch {}
+
+  const child = spawn(process.execPath, [script, 'pipeline-stable'], {
+    cwd: ROOT,
+    stdio: ['ignore', logFd, logFd],
+    detached: true,
+    windowsHide: true,
+    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') },
+  });
+  child.unref();
+  fs.closeSync(logFd);
+
+  log(`  Rollback lanzado como orphan PID ${child.pid}`);
+  log(`  Seguir progreso: tail -f .pipeline/logs/rollback.log`);
+  return true;
 }
 
 // --- STATUS ---
@@ -353,13 +370,10 @@ switch (action) {
         log('Smoke test falló pero no existe tag pipeline-stable — primer deploy, sin rollback');
         enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nNo existe tag \`pipeline-stable\` (primer deploy). Revisar manualmente.`);
       } else {
-        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ — ejecutando rollback automático*\nSmoke test exit ${smoke.exitCode}.\nVolviendo a \`pipeline-stable\`.`);
-        const rollbackOk = runRollback();
-        if (rollbackOk) {
-          enqueueTelegramAlert(`✅ *Rollback completado.*\nPipeline restaurado a \`pipeline-stable\`.`);
-        } else {
-          enqueueTelegramAlert(`❌ *Rollback FALLÓ.* Intervención manual requerida.\n\`\`\`\nbash .pipeline/rollback.sh\n\`\`\``);
-        }
+        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ — lanzando rollback orphan*\nSmoke test exit ${smoke.exitCode}.\nVolviendo a \`pipeline-stable\`. Progreso en \`logs/rollback.log\`.`);
+        // Lanzamos rollback como orphan detached y salimos. El rollback
+        // notifica por Telegram cuando termina (OK o FAIL).
+        launchRollbackOrphan();
       }
     }
 }

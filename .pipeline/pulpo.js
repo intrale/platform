@@ -5413,6 +5413,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
 // --- SINGLETON ---
 require('./singleton')('pulpo');
 
+// Signal ready — singleton adquirido, mainLoop arranca
+try { require('./lib/ready-marker').signalReady('pulpo'); } catch {}
+
 mainLoop().then(() => {
   log('pulpo', 'Pulpo finalizado');
   process.exit(0);

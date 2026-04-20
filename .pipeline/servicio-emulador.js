@@ -273,6 +273,8 @@ async function main() {
     }
   }
 
+  try { require('./lib/ready-marker').signalReady('svc-emulador'); } catch {}
+
   while (true) {
     try {
       await processQueue();
