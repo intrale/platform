@@ -38,10 +38,14 @@ function scanNodeProcesses() {
   const processes = [];
   if (process.platform === 'win32') {
     try {
-      const r = spawnSync('wmic', [
-        'process', 'where', "name='node.exe'",
-        'get', 'ProcessId,CommandLine,CreationDate', '/format:csv'
-      ], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      // shell:true → cmd.exe preserva las comillas del WHERE; sin esto el
+      // filtro llega a wmic como name=node.exe y tira "No se reconoce
+      // el filtro de búsqueda" en loop, spameando el log del caller.
+      // 2>NUL descarta errores residuales (no queremos forwardear).
+      const r = spawnSync(
+        `wmic process where "name='node.exe'" get ProcessId,CommandLine,CreationDate /format:csv 2>NUL`,
+        { encoding: 'utf8', timeout: 10000, windowsHide: true, shell: true }
+      );
       const lines = (r.stdout || '').split('\n');
       for (const line of lines) {
         const t = line.trim();
