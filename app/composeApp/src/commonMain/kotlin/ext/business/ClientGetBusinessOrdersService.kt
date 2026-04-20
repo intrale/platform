@@ -12,13 +12,14 @@ import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientGetBusinessOrdersService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommGetBusinessOrdersService {
 
     private val logger = LoggerFactory.default.newLogger<ClientGetBusinessOrdersService>()
@@ -32,12 +33,12 @@ class ClientGetBusinessOrdersService(
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
                 val parsed = runCatching {
-                    IntraleClientJson.decodeFromString(BusinessOrdersListResponseDTO.serializer(), bodyText).orders ?: emptyList()
+                    json.decodeFromString(BusinessOrdersListResponseDTO.serializer(), bodyText).orders ?: emptyList()
                 }.getOrElse { emptyList() }
                 Result.success(parsed)
             } else {
                 val exception = runCatching {
-                    IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                    json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 }.getOrElse { ExceptionResponse(StatusCodeDTO(response.status.value, response.status.description), bodyText) }
                 Result.failure(exception)
             }

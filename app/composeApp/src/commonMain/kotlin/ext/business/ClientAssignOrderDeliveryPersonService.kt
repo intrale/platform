@@ -20,12 +20,11 @@ import org.kodein.log.newLogger
 
 class ClientAssignOrderDeliveryPersonService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommAssignOrderDeliveryPersonService {
 
     private val logger = LoggerFactory.default.newLogger<ClientAssignOrderDeliveryPersonService>()
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
     override suspend fun assignDeliveryPerson(
         businessId: String,
         orderId: String,

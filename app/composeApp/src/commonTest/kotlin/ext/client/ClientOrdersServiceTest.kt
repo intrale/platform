@@ -21,6 +21,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+private val jsonConfig = Json { ignoreUnknownKeys = true; isLenient = true }
 private val ordersJsonHeaders = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
 
 private fun ordersMockClient(status: HttpStatusCode, body: String): HttpClient {
@@ -44,7 +45,7 @@ class ClientOrdersServiceTest {
     @Test
     fun `listOrders exitoso con response envolvente retorna lista`() = runTest {
         val body = """{"orders":[{"id":"ord-1","publicId":"PUB-001","shortCode":"SC01","businessName":"Tienda","status":"PENDING","createdAt":"2025-01-01","total":150.0,"itemCount":3}]}"""
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, body), OrdersFakeStorage())
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, body), OrdersFakeStorage(), jsonConfig)
 
         val result = service.listOrders()
 
@@ -55,7 +56,7 @@ class ClientOrdersServiceTest {
 
     @Test
     fun `listOrders con body vacio retorna lista vacia`() = runTest {
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, ""), OrdersFakeStorage())
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, ""), OrdersFakeStorage(), jsonConfig)
 
         val result = service.listOrders()
 
@@ -66,7 +67,7 @@ class ClientOrdersServiceTest {
     @Test
     fun `listOrders con lista JSON directa retorna lista`() = runTest {
         val body = """[{"id":"ord-1","publicId":"PUB-001","shortCode":"SC01","businessName":"Tienda","status":"PENDING","createdAt":"2025-01-01","total":100.0,"itemCount":2}]"""
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, body), OrdersFakeStorage())
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, body), OrdersFakeStorage(), jsonConfig)
 
         val result = service.listOrders()
 
@@ -76,7 +77,7 @@ class ClientOrdersServiceTest {
 
     @Test
     fun `listOrders sin token retorna error 401`() = runTest {
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, "{}"), OrdersFakeStorage(token = null))
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, "{}"), OrdersFakeStorage(token = null), jsonConfig)
 
         val result = service.listOrders()
 
@@ -89,7 +90,7 @@ class ClientOrdersServiceTest {
     @Test
     fun `listOrders error servidor retorna failure`() = runTest {
         val body = """{"statusCode":{"code":500,"description":"Internal Server Error"},"message":"Error interno"}"""
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.InternalServerError, body), OrdersFakeStorage())
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.InternalServerError, body), OrdersFakeStorage(), jsonConfig)
 
         val result = service.listOrders()
 
@@ -104,7 +105,7 @@ class ClientOrdersServiceTest {
     @Test
     fun `fetchOrderDetail exitoso con response envolvente retorna detalle`() = runTest {
         val body = """{"order":{"id":"ord-1","publicId":"PUB-001","shortCode":"SC01","businessName":"Tienda","status":"DELIVERED","createdAt":"2025-01-01","total":250.0,"itemCount":2,"items":[{"id":"item-1","name":"Producto A","quantity":2,"unitPrice":125.0,"subtotal":250.0}]}}"""
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, body), OrdersFakeStorage())
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, body), OrdersFakeStorage(), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-1")
 
@@ -117,7 +118,7 @@ class ClientOrdersServiceTest {
 
     @Test
     fun `fetchOrderDetail con body vacio retorna DTO default`() = runTest {
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, ""), OrdersFakeStorage())
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, ""), OrdersFakeStorage(), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-1")
 
@@ -127,7 +128,7 @@ class ClientOrdersServiceTest {
 
     @Test
     fun `fetchOrderDetail sin token retorna error 401`() = runTest {
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, "{}"), OrdersFakeStorage(token = null))
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.OK, "{}"), OrdersFakeStorage(token = null), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-1")
 
@@ -140,7 +141,7 @@ class ClientOrdersServiceTest {
     @Test
     fun `fetchOrderDetail error servidor 404 retorna failure`() = runTest {
         val body = """{"statusCode":{"code":404,"description":"Not Found"},"message":"Pedido no encontrado"}"""
-        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.NotFound, body), OrdersFakeStorage())
+        val service = ClientOrdersService(ordersMockClient(HttpStatusCode.NotFound, body), OrdersFakeStorage(), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-inexistente")
 

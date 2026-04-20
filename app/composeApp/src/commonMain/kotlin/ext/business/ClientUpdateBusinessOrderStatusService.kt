@@ -16,13 +16,13 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.serialization.json.Json
-import ext.IntraleClientJson
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientUpdateBusinessOrderStatusService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommUpdateBusinessOrderStatusService {
 
     private val logger = LoggerFactory.default.newLogger<ClientUpdateBusinessOrderStatusService>()
@@ -35,7 +35,7 @@ class ClientUpdateBusinessOrderStatusService(
     ): Result<BusinessOrderStatusUpdateResponseDTO> {
         return try {
             logger.info { "Actualizando estado del pedido $orderId a $newStatus" }
-            val requestBody = Json.encodeToString(
+            val requestBody = json.encodeToString(
                 BusinessOrderStatusUpdateRequestDTO.serializer(),
                 BusinessOrderStatusUpdateRequestDTO(
                     orderId = orderId,
@@ -53,7 +53,7 @@ class ClientUpdateBusinessOrderStatusService(
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
                 val parsed = runCatching {
-                    IntraleClientJson.decodeFromString(BusinessOrderStatusUpdateResponseDTO.serializer(), bodyText)
+                    json.decodeFromString(BusinessOrderStatusUpdateResponseDTO.serializer(), bodyText)
                 }.getOrElse {
                     BusinessOrderStatusUpdateResponseDTO(
                         orderId = orderId,
@@ -64,7 +64,7 @@ class ClientUpdateBusinessOrderStatusService(
                 Result.success(parsed)
             } else {
                 val exception = runCatching {
-                    IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                    json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 }.getOrElse {
                     ExceptionResponse(
                         StatusCodeDTO(response.status.value, response.status.description),

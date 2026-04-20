@@ -11,6 +11,12 @@ const path = require('path');
 const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
+const {
+  findPidByComponent,
+  findPidByPort,
+  pidAlive,
+  invalidateCache,
+} = require('./pid-discovery');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -85,24 +91,21 @@ function fetchIssueTitles(issueIds, cache) {
 }
 
 function isProcessAlive(pid) {
-  if (!pid) return false;
-  try {
-    const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
-    return r.includes(`"${pid}"`);
-  } catch { return false; }
+  return pidAlive(pid);
 }
 
+// Descubrimos el PID al vuelo desde el SO — el archivo .pid es sólo hint.
 function getComponentPid(comp) {
-  try {
-    return parseInt(fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim()) || null;
-  } catch { return null; }
+  const found = findPidByComponent(comp.name);
+  return found ? found.pid : null;
 }
 
 function stopComponent(name) {
   const comp = COMPONENTS.find(c => c.name === name);
   if (!comp) return { ok: false, msg: `Componente "${name}" no encontrado` };
+  invalidateCache();
   const pid = getComponentPid(comp);
-  if (!pid || !isProcessAlive(pid)) return { ok: true, msg: `${name} no estaba corriendo` };
+  if (!pid) return { ok: true, msg: `${name} no estaba corriendo` };
   try {
     execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true });
     try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
@@ -113,8 +116,9 @@ function stopComponent(name) {
 function startComponent(name) {
   const comp = COMPONENTS.find(c => c.name === name);
   if (!comp) return { ok: false, msg: `Componente "${name}" no encontrado` };
+  invalidateCache();
   const pid = getComponentPid(comp);
-  if (pid && isProcessAlive(pid)) return { ok: true, msg: `${name} ya está corriendo (PID ${pid})` };
+  if (pid) return { ok: true, msg: `${name} ya está corriendo (PID ${pid})` };
   const scriptPath = path.join(PIPELINE, comp.script);
   if (!fs.existsSync(scriptPath)) return { ok: false, msg: `Script ${comp.script} no existe` };
   try {
@@ -407,15 +411,15 @@ function getPipelineState() {
     }
   } catch {}
 
-  // Procesos
+  // Procesos — descubiertos al vuelo desde el SO, no desde archivos .pid.
   state.procesos = {};
+  invalidateCache();
   for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'outbox-drain', 'dashboard']) {
-    try {
-      const pid = fs.readFileSync(path.join(PIPELINE, `${comp}.pid`), 'utf8').trim();
-      const alive = isProcessAlive(pid);
-      const uptime = alive ? getProcessUptime(comp) : null;
-      state.procesos[comp] = { pid, alive, uptime };
-    } catch {
+    const found = findPidByComponent(comp);
+    if (found && pidAlive(found.pid)) {
+      const uptime = getProcessUptime(comp);
+      state.procesos[comp] = { pid: String(found.pid), alive: true, uptime };
+    } else {
       state.procesos[comp] = { pid: null, alive: false };
     }
   }
@@ -5737,9 +5741,13 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   log(`Dashboard V2 en http://localhost:${PORT}`);
   log(`API: /api/state | Logs: /logs/{file} | SSE: /events`);
+  try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT }); } catch {}
 });
 
-fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid));
+// dashboard.pid se mantiene como hint informativo (útil para mtime →
+// uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard
+// descubre sus peers vía pid-discovery.
+try { fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid)); } catch {}
 process.on('SIGINT', () => { server.close(); process.exit(0); });
 process.on('SIGTERM', () => { server.close(); process.exit(0); });
 

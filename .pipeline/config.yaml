@@ -52,6 +52,13 @@ concurrencia:
 # evitando que el backlog de desarrollo bloquee el avance de issues ya codificados.
 # Orden efectivo: entrega → aprobacion → verificacion → build → dev → validacion
 
+# Routing mismatch: cuántas veces puede un issue volver a definición por
+# "fuera de alcance" antes de escalar a humano. Evita bucles en casos raros
+# donde ningún agente encuentra su alcance. Al superar el budget se aplica
+# label `blocked:routing-manual` y se notifica por Telegram.
+routing:
+  max_bounces: 2
+
 # Intake: qué labels de GitHub disparan la entrada a cada pipeline
 intake:
   definicion:
@@ -63,7 +70,8 @@ intake:
 
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
-  "area:infra": "backend-dev"    # Infra pura del pipeline/Node.js/hooks → backend-dev (no hay skill infra-dev)
+  "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)
+  "area:infra": "backend-dev"    # Infra kotlin/gradle/ci-cd (NO pipeline — eso es area:pipeline)
   "area:backend": "backend-dev"
   "app:client": "android-dev"
   "app:business": "android-dev"
@@ -73,15 +81,34 @@ dev_skill_mapping:
 
 # Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
 # Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
-# Rationale: si alguien tagueó `area:infra`, esa intención manda — issues del pipeline
+# Rationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline
 # no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
 dev_routing_priority:
+  - "area:pipeline"
   - "area:infra"
   - "area:backend"
   - "area:web"
   - "app:client"
   - "app:business"
   - "app:delivery"
+
+# Heurística de override por contenido: issues etiquetados `area:infra` pero con
+# referencias fuertes al pipeline Node.js se re-rutean a `pipeline-dev`. Evita que
+# cambios del pulpo/dashboard caigan en backend-dev (stack Kotlin, no valida JS).
+pipeline_scope_keywords:
+  - ".pipeline/"
+  - "pulpo.js"
+  - "dashboard-v2"
+  - "restart.js"
+  - "rollback.sh"
+  - "smoke-test"
+  - "rejection-report"
+  - "listener-telegram"
+  - "servicio-telegram"
+  - "servicio-github"
+  - "servicio-emulador"
+  - "servicio-drive"
+  - ".pipeline/roles/"
 
 # Prioridad de intake (orden de procesamiento)
 prioridad_labels:
@@ -151,6 +178,7 @@ timeouts:
     build: 60                     # Gradle check + assemble puede tardar mucho en primer build
     qa: 45                        # QA E2E con emulador + video
     tester: 45                    # Cobertura Kover + suite completa
+    delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
 # GitHub
 github:

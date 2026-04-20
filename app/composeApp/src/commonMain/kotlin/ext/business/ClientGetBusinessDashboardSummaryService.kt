@@ -12,13 +12,14 @@ import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientGetBusinessDashboardSummaryService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommGetBusinessDashboardSummaryService {
 
     private val logger = LoggerFactory.default.newLogger<ClientGetBusinessDashboardSummaryService>()
@@ -30,10 +31,10 @@ class ClientGetBusinessDashboardSummaryService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = IntraleClientJson.decodeFromString(BusinessDashboardSummaryDTO.serializer(), bodyText)
+                val result = json.decodeFromString(BusinessDashboardSummaryDTO.serializer(), bodyText)
                 Result.success(result)
             } else {
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

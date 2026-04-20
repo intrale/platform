@@ -8,7 +8,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import ar.com.intrale.shared.ExceptionResponse
 import ar.com.intrale.shared.StatusCodeDTO
 import ar.com.intrale.shared.toExceptionResponse
@@ -16,7 +16,7 @@ import ar.com.intrale.shared.auth.PasswordRecoveryRequest
 import ar.com.intrale.shared.auth.ConfirmPasswordRecoveryRequest
 import ar.com.intrale.shared.auth.PasswordRecoveryResponse
 
-class ClientPasswordRecoveryService(private val httpClient: HttpClient) : CommPasswordRecoveryService {
+class ClientPasswordRecoveryService(private val httpClient: HttpClient, private val json: Json) : CommPasswordRecoveryService {
     @OptIn(InternalAPI::class)
     override suspend fun recovery(email: String): Result<PasswordRecoveryResponse> {
         return try {
@@ -29,7 +29,7 @@ class ClientPasswordRecoveryService(private val httpClient: HttpClient) : CommPa
                 )
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -49,7 +49,7 @@ class ClientPasswordRecoveryService(private val httpClient: HttpClient) : CommPa
                 )
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

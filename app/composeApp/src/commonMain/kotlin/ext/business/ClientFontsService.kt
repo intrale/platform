@@ -16,13 +16,14 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientFontsService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommFontsService {
 
     private val logger = LoggerFactory.default.newLogger<ClientFontsService>()
@@ -56,15 +57,15 @@ class ClientFontsService(
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
             runCatching {
-                val wrapper = IntraleClientJson.decodeFromString(FontsResponse.serializer(), bodyText)
+                val wrapper = json.decodeFromString(FontsResponse.serializer(), bodyText)
                 return FontsDTO(fonts = wrapper.fonts)
             }
             runCatching {
-                return IntraleClientJson.decodeFromString(FontsDTO.serializer(), bodyText)
+                return json.decodeFromString(FontsDTO.serializer(), bodyText)
             }
             return FontsDTO()
         }
-        throw runCatching { IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText) }
+        throw runCatching { json.decodeFromString(ExceptionResponse.serializer(), bodyText) }
             .getOrElse {
                 logger.error(it) { "No se pudo parsear la respuesta de error" }
                 ExceptionResponse(

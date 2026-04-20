@@ -29,11 +29,13 @@ private fun mockClient(status: HttpStatusCode, body: String): HttpClient {
 
 // region ClientSignUpService
 
+private val jsonConfig = Json { ignoreUnknownKeys = true; isLenient = true }
+
 class ClientSignUpServiceTest {
 
     @Test
     fun `signup exitoso retorna SignUpResponse`() = runTest {
-        val service = ClientSignUpService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientSignUpService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
         val result = service.execute("user@test.com")
         assertTrue(result.isSuccess)
     }
@@ -41,7 +43,7 @@ class ClientSignUpServiceTest {
     @Test
     fun `signup fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":409,"description":"Conflict"},"message":"Email ya registrado"}"""
-        val service = ClientSignUpService(mockClient(HttpStatusCode.Conflict, body))
+        val service = ClientSignUpService(mockClient(HttpStatusCode.Conflict, body), jsonConfig)
         val result = service.execute("user@test.com")
         assertTrue(result.isFailure)
     }
@@ -55,7 +57,7 @@ class ClientSignUpDeliveryServiceTest {
 
     @Test
     fun `signup delivery exitoso retorna SignUpResponse`() = runTest {
-        val service = ClientSignUpDeliveryService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientSignUpDeliveryService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
         val result = service.execute("negocio-1", "driver@test.com")
         assertTrue(result.isSuccess)
     }
@@ -63,7 +65,7 @@ class ClientSignUpDeliveryServiceTest {
     @Test
     fun `signup delivery fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Error"}"""
-        val service = ClientSignUpDeliveryService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientSignUpDeliveryService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
         val result = service.execute("negocio-1", "driver@test.com")
         assertTrue(result.isFailure)
     }
@@ -77,7 +79,7 @@ class ClientSignUpPlatformAdminServiceTest {
 
     @Test
     fun `signup admin exitoso retorna SignUpResponse`() = runTest {
-        val service = ClientSignUpPlatformAdminService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientSignUpPlatformAdminService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
         val result = service.execute("admin@test.com")
         assertTrue(result.isSuccess)
     }
@@ -85,7 +87,7 @@ class ClientSignUpPlatformAdminServiceTest {
     @Test
     fun `signup admin fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":403,"description":"Forbidden"},"message":"Sin permisos"}"""
-        val service = ClientSignUpPlatformAdminService(mockClient(HttpStatusCode.Forbidden, body))
+        val service = ClientSignUpPlatformAdminService(mockClient(HttpStatusCode.Forbidden, body), jsonConfig)
         val result = service.execute("admin@test.com")
         assertTrue(result.isFailure)
     }
@@ -99,7 +101,7 @@ class ClientRegisterSalerServiceTest {
 
     @Test
     fun `registro saler exitoso retorna RegisterSalerResponse`() = runTest {
-        val service = ClientRegisterSalerService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientRegisterSalerService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
         val result = service.execute("saler@test.com", "Bearer tok")
         assertTrue(result.isSuccess)
     }
@@ -107,7 +109,7 @@ class ClientRegisterSalerServiceTest {
     @Test
     fun `registro saler fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Error"}"""
-        val service = ClientRegisterSalerService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientRegisterSalerService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
         val result = service.execute("saler@test.com", "Bearer tok")
         assertTrue(result.isFailure)
     }
@@ -121,7 +123,7 @@ class ClientConfirmSignUpServiceTest {
 
     @Test
     fun `confirmacion exitosa retorna ConfirmSignUpResponse`() = runTest {
-        val service = ClientConfirmSignUpService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientConfirmSignUpService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
         val result = service.execute("user@test.com", "123456")
         assertTrue(result.isSuccess)
     }
@@ -129,7 +131,7 @@ class ClientConfirmSignUpServiceTest {
     @Test
     fun `confirmacion fallida retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Codigo invalido"}"""
-        val service = ClientConfirmSignUpService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientConfirmSignUpService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
         val result = service.execute("user@test.com", "wrong")
         assertTrue(result.isFailure)
     }
