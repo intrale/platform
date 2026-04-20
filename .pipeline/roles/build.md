@@ -42,7 +42,22 @@ Si el issue **NO tiene ningún label `app:*`** (`HAS_APP_LABEL=0`), corré con e
   -x compileTestKotlinIosSimulatorArm64 \
   -x compileClientReleaseKotlinAndroid \
   -x compileBusinessReleaseKotlinAndroid \
-  -x compileDeliveryReleaseKotlinAndroid
+  -x compileDeliveryReleaseKotlinAndroid \
+  -x bundleClientReleaseClassesToRuntimeJar \
+  -x bundleClientReleaseClassesToCompileJar \
+  -x bundleBusinessReleaseClassesToRuntimeJar \
+  -x bundleBusinessReleaseClassesToCompileJar \
+  -x bundleDeliveryReleaseClassesToRuntimeJar \
+  -x bundleDeliveryReleaseClassesToCompileJar \
+  -x kspClientReleaseUnitTestKotlinAndroid \
+  -x kspBusinessReleaseUnitTestKotlinAndroid \
+  -x kspDeliveryReleaseUnitTestKotlinAndroid \
+  -x compileClientReleaseUnitTestKotlinAndroid \
+  -x compileBusinessReleaseUnitTestKotlinAndroid \
+  -x compileDeliveryReleaseUnitTestKotlinAndroid \
+  -x testClientReleaseUnitTest \
+  -x testBusinessReleaseUnitTest \
+  -x testDeliveryReleaseUnitTest
 ```
 
 Si el issue **tiene algún label `app:*`** (`HAS_APP_LABEL>0`), corré sin exclusiones de Release Android (se necesitan para el APK del paso 4):
@@ -55,7 +70,15 @@ Si el issue **tiene algún label `app:*`** (`HAS_APP_LABEL>0`), corré sin exclu
   -x compileTestKotlinIosSimulatorArm64
 ```
 
-Las exclusiones permanentes (`WasmJs` test y iOS) son siempre obligatorias. Las de `compile*ReleaseKotlinAndroid` se aplican solo cuando no hay cambios que afecten a Android, para evitar OOM y tiempos de build largos en cambios de backend puros.
+Las exclusiones permanentes (`WasmJs` test y iOS) son siempre obligatorias. Las de `compile*ReleaseKotlinAndroid` (y toda la cadena Release Android Unit Test) se aplican solo cuando no hay cambios que afecten a Android, para evitar OOM y tiempos de build largos en cambios de backend puros.
+
+> Importante — cadena de dependencias Release: cuando excluís `compile<Flavor>ReleaseKotlinAndroid` para ahorrar RAM, Gradle 8.13 no permite query del provider mapeado antes de que la tarea productora complete. Eso rompe la cadena completa de tareas que leen esos outputs:
+> 1. `bundle<Flavor>ReleaseClassesToRuntimeJar` / `ToCompileJar` (consumen el .jar del compile)
+> 2. `ksp<Flavor>ReleaseUnitTestKotlinAndroid` (transform del classes.jar del bundle ToCompileJar)
+> 3. `compile<Flavor>ReleaseUnitTestKotlinAndroid` (depende del KSP)
+> 4. `test<Flavor>ReleaseUnitTest` (depende del compile unit test)
+>
+> Por eso hay que excluir TODA la cadena Release UnitTest, no solo el compile raíz. El síntoma típico es `Querying the mapped value of provider(java.util.Set) before task [...] has completed is not supported` o `Failed to transform classes.jar`.
 
 Si el build falla, saltar directamente al paso 5 (reportar rechazado).
 
