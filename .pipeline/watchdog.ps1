@@ -1,13 +1,18 @@
 # Watchdog V2 — Vigila servicios del pipeline
 # Se ejecuta cada 2 minutos via Windows Task Scheduler
 # Todo corre desde platform/ (repo principal, siempre en main)
+#
+# Fuente de verdad: el SO (Get-CimInstance Win32_Process filtrando por
+# CommandLine). NO leemos archivos .pid — pueden estar desincronizados de
+# la realidad (proceso muerto pero archivo intacto, o viceversa).
+# Eso provocaba re-spawns mientras un restart estaba en curso → EADDRINUSE
+# en el puerto 3200.
 
 $RepoRoot = 'C:\Workspaces\Intrale\platform'
 $PipelineDir = "$RepoRoot\.pipeline"
 $LogDir = "$PipelineDir\logs"
 $LogFile = "$LogDir\watchdog.log"
 
-# Crear directorio de logs si no existe
 if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
 
 function Write-Log($Message) {
@@ -15,48 +20,66 @@ function Write-Log($Message) {
     "[$ts] $Message" | Out-File -Append -FilePath $LogFile -Encoding utf8
 }
 
-function Test-ProcessAlive($PidFile) {
-    if (-not (Test-Path $PidFile)) { return $false }
-    $pidStr = Get-Content $PidFile -ErrorAction SilentlyContinue
-    if (-not $pidStr -or $pidStr.Trim() -eq '') { return $false }
-    $procId = [int]$pidStr.Trim()
-    if ($procId -eq 0) { return $false }
-    try {
-        $proc = Get-Process -Id $procId -ErrorAction Stop
-        return ($proc.ProcessName -eq 'node')
-    } catch {
-        return $false
+# Si hay un restart en curso (lock o last-restart.json muy reciente), no
+# tocar nada — el restart mata todo y relanza, y un spawn nuestro acá
+# genera la carrera "watchdog respawnea el mismo puerto que restart va a usar".
+$LastRestartFile = "$PipelineDir\last-restart.json"
+if (Test-Path $LastRestartFile) {
+    $mtime = (Get-Item $LastRestartFile).LastWriteTime
+    $ageSeconds = (Get-Date) - $mtime
+    if ($ageSeconds.TotalSeconds -lt 90) {
+        Write-Log "Restart reciente ($([int]$ageSeconds.TotalSeconds)s) — watchdog en stand-by"
+        exit 0
     }
 }
 
-# Servicios criticos — PIDs en el mismo directorio donde corren
+# Servicios críticos: nombre del componente → script file que lo identifica
+# en la command line del proceso node.exe.
 $Services = @(
-    @{ Name = 'pulpo';         Pid = "$PipelineDir\pulpo.pid" },
-    @{ Name = 'listener';      Pid = "$PipelineDir\listener.pid" },
-    @{ Name = 'svc-telegram';  Pid = "$PipelineDir\svc-telegram.pid" },
-    @{ Name = 'svc-github';    Pid = "$PipelineDir\svc-github.pid" },
-    @{ Name = 'svc-drive';     Pid = "$PipelineDir\svc-drive.pid" },
-    @{ Name = 'dashboard';     Pid = "$PipelineDir\dashboard.pid" }
+    @{ Name = 'pulpo';         Script = 'pulpo.js' },
+    @{ Name = 'listener';      Script = 'listener-telegram.js' },
+    @{ Name = 'svc-telegram';  Script = 'servicio-telegram.js' },
+    @{ Name = 'svc-github';    Script = 'servicio-github.js' },
+    @{ Name = 'svc-drive';     Script = 'servicio-drive.js' },
+    @{ Name = 'dashboard';     Script = 'dashboard-v2.js' }
 )
 
-# Verificar cada servicio
+# Un único scan del SO, reutilizado para todos los componentes.
+try {
+    $allNodeProcs = Get-CimInstance -ClassName Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop
+} catch {
+    Write-Log "ERROR al listar procesos node.exe: $_"
+    exit 1
+}
+
+function Test-ServiceAlive($Script) {
+    foreach ($p in $allNodeProcs) {
+        if ($p.CommandLine -and $p.CommandLine -like "*$Script*") {
+            # Validar que el proceso siga vivo (Win32_Process puede tener entradas stale
+            # dentro de la misma ventana de query, aunque raro).
+            try {
+                $proc = Get-Process -Id $p.ProcessId -ErrorAction Stop
+                if ($proc.ProcessName -eq 'node') { return $true }
+            } catch {}
+        }
+    }
+    return $false
+}
+
 $dead = @()
 foreach ($svc in $Services) {
-    if (-not (Test-ProcessAlive $svc.Pid)) {
+    if (-not (Test-ServiceAlive $svc.Script)) {
         $dead += $svc.Name
     }
 }
 
 if ($dead.Count -eq 0) {
-    # Todo vivo, no loguear para no llenar el log
     exit 0
 }
 
-# Hay servicios caidos — levantar individualmente
 $deadList = $dead -join ', '
 Write-Log "Servicios caidos detectados: $deadList"
 
-# Mapeo de servicio a script
 $ScriptMap = @{
     'pulpo'        = 'pulpo.js'
     'listener'     = 'listener-telegram.js'
@@ -82,6 +105,15 @@ foreach ($svcName in $dead) {
         Write-Log "  $svcName : script no encontrado ($scriptPath)"
         continue
     }
+
+    # Double-check justo antes de spawnear: el primer scan podría ser stale
+    # de 1-2s y el servicio puede haber arrancado en ese ínterin (por ejemplo,
+    # restart.js que largó los procesos entre que hicimos el scan y ahora).
+    if (Test-ServiceAlive $script) {
+        Write-Log "  $svcName : ya arrancó entre el scan y el spawn, skip"
+        continue
+    }
+
     try {
         $cmd = "set `"NODE_PATH=$NodeModules`" && node `"$scriptPath`""
         $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $cmd `
