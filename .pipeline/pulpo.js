@@ -11,6 +11,10 @@ const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 const dedupLib = require('./dedup-lib');
 const precheck = require('./connectivity-precheck');
+// #2333: sanitizador write-time para comentarios a GitHub y motivos de
+// rebote persistidos en YAML. Protege contra leak de secretos en logs y
+// comentarios automáticos que quedan públicos en el issue.
+const { sanitize: sanitizePipelineText } = require('./sanitizer');
 const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 
 // Crash handlers — loguear y seguir vivo
@@ -81,12 +85,15 @@ function ghThrottle() {
  */
 function ghCommentOnIssue(issueNumber, body) {
   try {
+    // #2333: sanitizar write-time — NUNCA publicar un comentario público
+    // con secretos crudos (tokens, JWT, PEM, headers con Authorization).
+    const safeBody = sanitizePipelineText(body);
     ghThrottle();
-    execSync(`"${GH_BIN}" issue comment ${issueNumber} --body "${body.replace(/"/g, '\\"')}"`, {
+    execSync(`"${GH_BIN}" issue comment ${issueNumber} --body "${safeBody.replace(/"/g, '\\"')}"`, {
       encoding: 'utf8', timeout: 15000, windowsHide: true,
       cwd: path.resolve(__dirname, '..')
     });
-    log('github', `Comentario en #${issueNumber}: ${body.slice(0, 80)}`);
+    log('github', `Comentario en #${issueNumber}: ${safeBody.slice(0, 80)}`);
   } catch (e) {
     log('github', `Error comentando #${issueNumber}: ${e.message}`);
   }
@@ -2042,6 +2049,10 @@ function brazoBarrido(config) {
           const reboteTipo = esReboteDeInfra ? 'infra' : 'codigo';
           const nuevoReboteNumero = esReboteDeInfra ? reboteCount : (reboteCount + 1);
 
+          // #2333: sanitizar el motivo de rechazo antes de persistirlo en
+          // el YAML del archivo de trabajo. Esto evita que un log con
+          // tokens/JWT/PEM termine en el próximo archivo que se lee y
+          // potencialmente viaja a comentarios del issue.
           writeYaml(devFile, {
             issue: parseInt(issue),
             fase: faseRechazo,
@@ -2049,7 +2060,7 @@ function brazoBarrido(config) {
             rebote: true,
             rebote_numero: nuevoReboteNumero,
             rebote_tipo: reboteTipo,
-            motivo_rechazo: motivos,
+            motivo_rechazo: sanitizePipelineText(motivos),
             rechazado_en_fase: fase
           });
 
