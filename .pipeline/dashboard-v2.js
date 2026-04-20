@@ -5741,6 +5741,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   log(`Dashboard V2 en http://localhost:${PORT}`);
   log(`API: /api/state | Logs: /logs/{file} | SSE: /events`);
+  try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT }); } catch {}
 });
 
 // dashboard.pid se mantiene como hint informativo (útil para mtime →

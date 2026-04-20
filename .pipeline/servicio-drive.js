@@ -224,6 +224,7 @@ function main() {
     process.exit(1);
   }
 
+  try { require('./lib/ready-marker').signalReady('svc-drive'); } catch {}
   setInterval(() => {
     processQueue().catch(e => log(`Error en processQueue: ${e.message}`));
   }, 10000);
