@@ -151,7 +151,7 @@ class ClientSearchBusinessesServiceTest {
      * Sin ignoreUnknownKeys=true la busqueda fallaba y el dashboard quedaba vacio.
      */
     @Test
-    fun `busqueda exitosa tolera campos desconocidos del backend (responseHeaders)`() = runTest {
+    fun `busqueda exitosa tolera campos desconocidos del backend responseHeaders`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"responseHeaders":{"x-trace-id":"abc"},"businesses":[],"lastKey":null,"extraField":"valor"}"""
         val service = ClientSearchBusinessesService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
