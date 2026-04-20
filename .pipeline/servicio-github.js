@@ -7,6 +7,10 @@
 const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+// #2334: sanitización write-time.
+require('./lib/sanitize-console').install();
+const { sanitize } = require('./sanitizer');
+const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
@@ -237,7 +241,10 @@ function processQueue() {
 
     let data;
     try {
-      data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      const rawData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      // #2334: sanitizar body/title/label ANTES del execSync a `gh`.
+      // El body viaja a la API pública de GitHub, visible por cualquiera.
+      data = sanitizeGithubPayload(rawData);
 
       switch (data.action) {
         case 'comment':
@@ -331,13 +338,14 @@ process.on('SIGTERM', () => process.exit(0));
 
 // Crash handlers
 process.on('uncaughtException', (err) => {
-  const msg = `[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  // #2334: sanitizar antes de persistir stack a disco.
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  const msg = `[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);

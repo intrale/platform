@@ -13,6 +13,16 @@ const fs = require('fs');
 const path = require('path');
 const httpClient = require('./lib/http-client');
 const { ERROR_CODES } = require('./lib/constants');
+// #2334 / CA6: patch console.* para que NUNCA se escriba un secreto al
+// archivo de log del servicio (los servicios escriben via fd inherited,
+// por eso interceptamos dentro del proceso).
+require('./lib/sanitize-console').install();
+// #2334: sanitización write-time antes de llamar al API de Telegram.
+// Aunque el archivo en disco ya venga sanitizado por el productor (pulpo /
+// rejection-report), defendemos el último hop: el payload que realmente
+// viaja al API externo DEBE ir sanitizado.
+const { sanitize } = require('./sanitizer');
+const { sanitizeTelegramPayload } = require('./lib/sanitize-payload');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
@@ -146,7 +156,9 @@ async function processQueue() {
     } catch { continue; } // otro proceso lo tomó
 
     try {
-      const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      const rawData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      // #2334: sanitizar text/caption ANTES de llegar al API de Telegram.
+      const data = sanitizeTelegramPayload(rawData);
 
       if (data.document && fs.existsSync(data.document)) {
         // Enviar documento real via multipart
@@ -188,13 +200,14 @@ async function main() {
 // Crash handlers — loguear antes de morir para diagnóstico
 const LOG_DIR = path.join(PIPELINE, 'logs');
 process.on('uncaughtException', (err) => {
-  const msg = `[${new Date().toISOString()}] [svc-telegram] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  // #2334: sanitizar antes de persistir el stack a disco (CA6/CA7).
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH uncaughtException: ${err.stack || err.message}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  const msg = `[${new Date().toISOString()}] [svc-telegram] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);
