@@ -11,6 +11,7 @@ const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 const dedupLib = require('./dedup-lib');
 const precheck = require('./connectivity-precheck');
+const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 
 // Crash handlers — loguear y seguir vivo
 process.on('uncaughtException', (err) => {
@@ -1856,6 +1857,16 @@ function brazoBarrido(config) {
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
 
+          // Routing mismatch: si el agente rechazó por "fuera de alcance",
+          // devolver el issue a definición con observaciones — el ruteo se
+          // reevalúa allá (Guru/PO/UX clasifican y aplican labels). NO consume
+          // budget del circuit breaker de dev (el defecto está en la clasificación
+          // inicial, no en el código). Usa budget separado `max_routing_bounces`.
+          const routingAnalisis = motivosClasificados
+            .map(m => ({ skill: m.skill, motivo: m.motivo, ...classifyRoutingMismatch(m.motivo) }))
+            .filter(m => m.isRouting);
+          const esRoutingMismatch = !esReboteDeInfra && routingAnalisis.length > 0;
+
           // Circuit breaker: leer rebote_numero del archivo que originó este ciclo
           // (puede estar en trabajando/ o pendiente/ de la fase de rechazo, o en el propio resultado)
           // Buscar el máximo rebote_numero entre los archivos del issue en dev
@@ -1887,6 +1898,119 @@ function brazoBarrido(config) {
               const dest = path.join(fasePath(pipelineName, fase), 'procesado');
               try { moveFile(a.path, dest); } catch {}
             }
+            continue;
+          }
+
+          // --- ROUTING MISMATCH: devolver a definición en vez de reencolar aquí ---
+          if (esRoutingMismatch) {
+            // Contar rebotes previos de routing (separados del contador de código)
+            let routingBounces = 0;
+            const defFases = (config.pipelines && config.pipelines.definicion && config.pipelines.definicion.fases) || [];
+            for (const dFase of defFases) {
+              for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+                const dir = path.join(fasePath('definicion', dFase), estado);
+                try {
+                  for (const f of fs.readdirSync(dir)) {
+                    if (f.startsWith(issue + '.')) {
+                      const data = readYaml(path.join(dir, f));
+                      if (data && data.rebote_tipo === 'routing' && data.rebote_routing_numero > routingBounces) {
+                        routingBounces = data.rebote_routing_numero;
+                      }
+                    }
+                  }
+                } catch {}
+              }
+            }
+
+            const MAX_ROUTING_BOUNCES = (config.routing && config.routing.max_bounces) || 2;
+            const nuevoRoutingBounces = routingBounces + 1;
+
+            // Consolidar motivo + sugerencias del agente
+            const motivosRouting = routingAnalisis.map(m => `[${m.skill}] ${m.motivo}`).join('\n');
+            const skillSugerido = routingAnalisis.find(m => m.skillSugerido)?.skillSugerido || null;
+            const labelSugerido = routingAnalisis.find(m => m.labelSugerido)?.labelSugerido || null;
+
+            if (nuevoRoutingBounces > MAX_ROUTING_BOUNCES) {
+              log('routing', `⛔ #${issue} BUDGET AGOTADO — ${nuevoRoutingBounces}/${MAX_ROUTING_BOUNCES} rebotes por routing. Escalando a humano.`);
+              sendTelegram(`⛔ Issue #${issue} — ${nuevoRoutingBounces} rebotes por routing mismatch. Ningún agente encuentra su alcance. Requiere reclasificación manual.\n\nÚltimo motivo:\n${motivosRouting.slice(0, 500)}`);
+              // Encolar en servicio-github: label blocked:routing-manual
+              try {
+                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                fs.mkdirSync(ghQueueDir, { recursive: true });
+                const labelFile = path.join(ghQueueDir, `${issue}-blocked-routing-${Date.now()}.json`);
+                fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'blocked:routing-manual' }));
+              } catch (e) {
+                log('routing', `Error encolando label blocked:routing-manual: ${e.message}`);
+              }
+              // Archivos actuales se mueven a procesado/ al cerrar el loop — no continuar en pipeline
+              continue;
+            }
+
+            // Mover issue a definicion/analisis/pendiente para que Guru/Security reanalicen.
+            // Los skills de la fase `analisis` los define config.yaml.
+            const analisisPendiente = path.join(fasePath('definicion', 'analisis'), 'pendiente');
+            fs.mkdirSync(analisisPendiente, { recursive: true });
+            const analisisSkills = (config.pipelines.definicion.skills_por_fase || {}).analisis || ['guru'];
+            for (const skill of analisisSkills) {
+              const dst = path.join(analisisPendiente, `${issue}.${skill}`);
+              writeYaml(dst, {
+                issue: parseInt(issue),
+                fase: 'analisis',
+                pipeline: 'definicion',
+                rebote: true,
+                rebote_tipo: 'routing',
+                rebote_routing_numero: nuevoRoutingBounces,
+                motivo_rechazo: motivosRouting,
+                skill_sugerido: skillSugerido,
+                label_sugerido: labelSugerido,
+                rechazado_desde_pipeline: pipelineName,
+                rechazado_desde_fase: fase,
+                rechazado_por: routingAnalisis.map(m => m.skill).join(','),
+              });
+            }
+
+            log('routing', `#${issue} RECHAZO por routing mismatch en ${pipelineName}/${fase} → devuelto a definicion/analisis (bounce ${nuevoRoutingBounces}/${MAX_ROUTING_BOUNCES}${skillSugerido ? `, skill sugerido: ${skillSugerido}` : ''}${labelSugerido ? `, label sugerido: ${labelSugerido}` : ''})`);
+
+            // Cleanup: archivar archivos del issue en TODAS las fases del pipeline origen
+            // (no solo las posteriores — también las anteriores, porque el issue ya no pertenece a este pipeline).
+            for (const otraFase of fases) {
+              if (otraFase === fase) continue; // los de la fase actual los mueve el loop al final
+              for (const estado of ['pendiente', 'trabajando', 'listo']) {
+                const dir = path.join(fasePath(pipelineName, otraFase), estado);
+                try {
+                  for (const f of fs.readdirSync(dir)) {
+                    if (f.startsWith(issue + '.') && !f.startsWith('.')) {
+                      const src = path.join(dir, f);
+                      const archDir = path.join(fasePath(pipelineName, otraFase), 'archivado');
+                      fs.mkdirSync(archDir, { recursive: true });
+                      moveFile(src, archDir);
+                      log('routing', `#${issue} cleanup: ${otraFase}/${estado}/${f} → archivado/`);
+                    }
+                  }
+                } catch {}
+              }
+            }
+
+            // Comentario en GitHub para auditoría
+            const bodyAuditoria = [
+              `🔀 **Reclasificación automática** — ${routingAnalisis[0].skill} en \`${pipelineName}/${fase}\` reportó que este issue está fuera de su alcance.`,
+              '',
+              `Se devolvió a \`definicion/analisis\` para re-triaje por Guru${analisisSkills.includes('security') ? '/Security' : ''} (bounce ${nuevoRoutingBounces}/${MAX_ROUTING_BOUNCES}).`,
+              '',
+              skillSugerido ? `**Skill sugerido por el agente:** \`${skillSugerido}\`` : null,
+              labelSugerido ? `**Label sugerido:** \`${labelSugerido}\`` : null,
+              '',
+              '<details><summary>Motivo completo del rechazo</summary>',
+              '',
+              '```',
+              motivosRouting.slice(0, 1500),
+              '```',
+              '</details>',
+              '',
+              `_Este rebote NO consume budget del circuit breaker de código._`,
+            ].filter(x => x !== null).join('\n');
+            ghCommentOnIssue(issue, bodyAuditoria);
+
             continue;
           }
 

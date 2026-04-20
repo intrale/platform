@@ -52,6 +52,13 @@ concurrencia:
 # evitando que el backlog de desarrollo bloquee el avance de issues ya codificados.
 # Orden efectivo: entrega → aprobacion → verificacion → build → dev → validacion
 
+# Routing mismatch: cuántas veces puede un issue volver a definición por
+# "fuera de alcance" antes de escalar a humano. Evita bucles en casos raros
+# donde ningún agente encuentra su alcance. Al superar el budget se aplica
+# label `blocked:routing-manual` y se notifica por Telegram.
+routing:
+  max_bounces: 2
+
 # Intake: qué labels de GitHub disparan la entrada a cada pipeline
 intake:
   definicion:
