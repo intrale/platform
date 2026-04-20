@@ -17,13 +17,14 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientBusinessDeliveryZoneService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommBusinessDeliveryZoneService {
 
     private val logger = LoggerFactory.default.newLogger<ClientBusinessDeliveryZoneService>()
@@ -35,10 +36,10 @@ class ClientBusinessDeliveryZoneService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = IntraleClientJson.decodeFromString(GetBusinessDeliveryZoneResponse.serializer(), bodyText)
+                val result = json.decodeFromString(GetBusinessDeliveryZoneResponse.serializer(), bodyText)
                 Result.success(result.deliveryZone)
             } else {
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -58,10 +59,10 @@ class ClientBusinessDeliveryZoneService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = IntraleClientJson.decodeFromString(UpdateBusinessDeliveryZoneResponse.serializer(), bodyText)
+                val result = json.decodeFromString(UpdateBusinessDeliveryZoneResponse.serializer(), bodyText)
                 Result.success(result.deliveryZone)
             } else {
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

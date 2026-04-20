@@ -8,14 +8,14 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import ar.com.intrale.shared.ExceptionResponse
 import ar.com.intrale.shared.StatusCodeDTO
 import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.auth.SignUpRequest
 import ar.com.intrale.shared.auth.SignUpResponse
 
-class ClientSignUpDeliveryService(private val httpClient: HttpClient) : CommSignUpDeliveryService {
+class ClientSignUpDeliveryService(private val httpClient: HttpClient, private val json: Json) : CommSignUpDeliveryService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(business: String, email: String): Result<SignUpResponse> {
         return try {
@@ -28,7 +28,7 @@ class ClientSignUpDeliveryService(private val httpClient: HttpClient) : CommSign
                 )
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

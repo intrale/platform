@@ -20,13 +20,14 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientProductService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommProductService {
 
     private val logger = LoggerFactory.default.newLogger<ClientProductService>()
@@ -97,10 +98,10 @@ class ClientProductService(
     private suspend fun HttpResponse.toProduct(): ProductDTO {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
-            runCatching { return IntraleClientJson.decodeFromString(ProductDTO.serializer(), bodyText) }
+            runCatching { return json.decodeFromString(ProductDTO.serializer(), bodyText) }
             runCatching {
                 val responseWrapper =
-                    IntraleClientJson.decodeFromString(ProductListResponse.serializer(), bodyText)
+                    json.decodeFromString(ProductListResponse.serializer(), bodyText)
                 responseWrapper.products.firstOrNull()?.let { return it }
             }
             throw ExceptionResponse(
@@ -114,15 +115,15 @@ class ClientProductService(
     private suspend fun HttpResponse.toProducts(): List<ProductDTO> {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
-            runCatching { return IntraleClientJson.decodeFromString(ProductListResponse.serializer(), bodyText).products }
-            runCatching { return IntraleClientJson.decodeFromString(ListSerializer(ProductDTO.serializer()), bodyText) }
+            runCatching { return json.decodeFromString(ProductListResponse.serializer(), bodyText).products }
+            runCatching { return json.decodeFromString(ListSerializer(ProductDTO.serializer()), bodyText) }
             return emptyList()
         }
         throw bodyText.toProductException()
     }
 
     private fun String.toProductException(): ExceptionResponse =
-        runCatching { IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ExceptionResponse.serializer(), this) }
             .getOrElse {
                 logger.error(it) { "No se pudo parsear la respuesta de error" }
                 ExceptionResponse(

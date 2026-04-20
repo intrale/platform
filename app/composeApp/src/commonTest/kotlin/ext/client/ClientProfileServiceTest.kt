@@ -33,6 +33,8 @@ private fun mockClient(status: HttpStatusCode, body: String): HttpClient {
     }
 }
 
+private val jsonConfig = Json { ignoreUnknownKeys = true; isLenient = true }
+
 private class FakeStorage(override var token: String? = "Bearer tok") : CommKeyValueStorage {
     override var profileCache: ClientProfileCache? = null
     override var preferredLanguage: String? = null
@@ -46,7 +48,7 @@ class ClientProfileServiceTest {
     @Test
     fun `fetchProfile exitoso retorna ClientProfileResponse`() = runTest {
         val body = """{"profile":{"fullName":"Test","email":"test@test.com"},"preferences":{"language":"es"}}"""
-        val service = ClientProfileService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = ClientProfileService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchProfile()
 
@@ -56,7 +58,7 @@ class ClientProfileServiceTest {
 
     @Test
     fun `fetchProfile con body vacio retorna perfil default`() = runTest {
-        val service = ClientProfileService(mockClient(HttpStatusCode.OK, ""), FakeStorage())
+        val service = ClientProfileService(mockClient(HttpStatusCode.OK, ""), FakeStorage(), jsonConfig)
 
         val result = service.fetchProfile()
 
@@ -65,7 +67,7 @@ class ClientProfileServiceTest {
 
     @Test
     fun `fetchProfile sin token retorna error`() = runTest {
-        val service = ClientProfileService(mockClient(HttpStatusCode.OK, "{}"), FakeStorage(token = null))
+        val service = ClientProfileService(mockClient(HttpStatusCode.OK, "{}"), FakeStorage(token = null), jsonConfig)
 
         val result = service.fetchProfile()
 
@@ -75,7 +77,7 @@ class ClientProfileServiceTest {
 
     @Test
     fun `updateProfile sin token retorna error`() = runTest {
-        val service = ClientProfileService(mockClient(HttpStatusCode.OK, "{}"), FakeStorage(token = null))
+        val service = ClientProfileService(mockClient(HttpStatusCode.OK, "{}"), FakeStorage(token = null), jsonConfig)
 
         val result = service.updateProfile(ClientProfileDTO(fullName = "Updated"), ClientPreferencesDTO())
 
@@ -93,7 +95,7 @@ class ClientAddressesServiceTest {
     @Test
     fun `listAddresses exitoso retorna lista`() = runTest {
         val body = """{"addresses":[{"id":"addr-1","label":"Casa","street":"Calle 1","number":"100","city":"CABA"}]}"""
-        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.listAddresses()
 
@@ -104,7 +106,7 @@ class ClientAddressesServiceTest {
     @Test
     fun `createAddress exitoso retorna DTO`() = runTest {
         val body = """{"id":"new-1","label":"Casa","street":"Calle 1","number":"100","city":"CABA"}"""
-        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.createAddress(ClientAddressDTO(label = "Casa", street = "Calle 1", number = "100", city = "CABA"))
 
@@ -114,7 +116,7 @@ class ClientAddressesServiceTest {
 
     @Test
     fun `deleteAddress exitoso retorna Unit`() = runTest {
-        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, ""), FakeStorage())
+        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, ""), FakeStorage(), jsonConfig)
 
         val result = service.deleteAddress("addr-1")
 
@@ -124,7 +126,7 @@ class ClientAddressesServiceTest {
     @Test
     fun `markDefault exitoso retorna DTO`() = runTest {
         val body = """{"id":"addr-1","isDefault":true}"""
-        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = ClientAddressesService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.markDefault("addr-1")
 

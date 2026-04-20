@@ -17,13 +17,14 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientBusinessPaymentMethodsService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommBusinessPaymentMethodsService {
 
     private val logger = LoggerFactory.default.newLogger<ClientBusinessPaymentMethodsService>()
@@ -37,10 +38,10 @@ class ClientBusinessPaymentMethodsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = IntraleClientJson.decodeFromString(GetBusinessPaymentMethodsResponse.serializer(), bodyText)
+                val result = json.decodeFromString(GetBusinessPaymentMethodsResponse.serializer(), bodyText)
                 Result.success(result.paymentMethods)
             } else {
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -62,10 +63,10 @@ class ClientBusinessPaymentMethodsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = IntraleClientJson.decodeFromString(UpdateBusinessPaymentMethodsResponse.serializer(), bodyText)
+                val result = json.decodeFromString(UpdateBusinessPaymentMethodsResponse.serializer(), bodyText)
                 Result.success(result.paymentMethods)
             } else {
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

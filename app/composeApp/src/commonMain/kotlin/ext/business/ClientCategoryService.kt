@@ -21,13 +21,14 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class ClientCategoryService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommCategoryService {
 
     private val logger = LoggerFactory.default.newLogger<ClientCategoryService>()
@@ -94,10 +95,10 @@ class ClientCategoryService(
     private suspend fun HttpResponse.toCategory(): CategoryDTO {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
-            runCatching { return IntraleClientJson.decodeFromString(CategoryDTO.serializer(), bodyText) }
+            runCatching { return json.decodeFromString(CategoryDTO.serializer(), bodyText) }
             runCatching {
                 val responseWrapper =
-                    IntraleClientJson.decodeFromString(CategoryListResponse.serializer(), bodyText)
+                    json.decodeFromString(CategoryListResponse.serializer(), bodyText)
                 responseWrapper.categories.firstOrNull()?.let { return it }
             }
             throw ExceptionResponse(
@@ -112,11 +113,11 @@ class ClientCategoryService(
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
             runCatching {
-                return IntraleClientJson.decodeFromString(CategoryListResponse.serializer(), bodyText)
+                return json.decodeFromString(CategoryListResponse.serializer(), bodyText)
                     .categories
             }
             runCatching {
-                return IntraleClientJson.decodeFromString(
+                return json.decodeFromString(
                     ListSerializer(CategoryDTO.serializer()),
                     bodyText
                 )
@@ -127,7 +128,7 @@ class ClientCategoryService(
     }
 
     private fun String.toCategoryException(): ExceptionResponse =
-        runCatching { IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ExceptionResponse.serializer(), this) }
             .getOrElse {
                 logger.error(it) { "No se pudo parsear la respuesta de error" }
                 ExceptionResponse(

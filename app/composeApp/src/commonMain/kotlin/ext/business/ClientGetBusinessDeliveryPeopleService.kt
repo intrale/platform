@@ -18,12 +18,11 @@ import org.kodein.log.newLogger
 
 class ClientGetBusinessDeliveryPeopleService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommGetBusinessDeliveryPeopleService {
 
     private val logger = LoggerFactory.default.newLogger<ClientGetBusinessDeliveryPeopleService>()
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
     override suspend fun listDeliveryPeople(businessId: String): Result<List<DeliveryPersonSummaryDTO>> {
         return try {
             logger.info { "Listando repartidores del negocio $businessId" }

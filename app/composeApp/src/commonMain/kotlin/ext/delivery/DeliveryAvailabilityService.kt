@@ -13,17 +13,17 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class DeliveryAvailabilityService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommDeliveryAvailabilityService {
 
     private val logger = LoggerFactory.default.newLogger<DeliveryAvailabilityService>()
-    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-
     override suspend fun fetchAvailability(): Result<DeliveryAvailabilityDTO> = runCatching {
         logger.info { "[Delivery][Disponibilidad] Consultando disponibilidad del repartidor" }
         val response = httpClient.get("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/profile/availability") {

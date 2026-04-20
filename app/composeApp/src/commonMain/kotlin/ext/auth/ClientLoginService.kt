@@ -10,13 +10,13 @@ import org.kodein.log.newLogger
 import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.isSuccess
+import kotlinx.serialization.json.Json
 import ar.com.intrale.shared.ExceptionResponse
 import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.auth.LoginRequest
 import ar.com.intrale.shared.auth.LoginResponse
-import ext.IntraleClientJson
 
-class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
+class ClientLoginService(val httpClient: HttpClient, private val json: Json) : CommLoginService {
 
     private val logger = LoggerFactory.default.newLogger<ClientLoginService>()
 
@@ -39,11 +39,11 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
             val bodyText = response.bodyAsText()
 
             if (response.status.isSuccess()) {
-                val loginResponse = IntraleClientJson.decodeFromString(LoginResponse.serializer(), bodyText)
-                logger.debug { "login response received with status ${loginResponse.statusCode.value}" }
+                val loginResponse = json.decodeFromString(LoginResponse.serializer(), bodyText)
+                logger.debug { "response body: $loginResponse" }
                 Result.success(loginResponse)
             } else {
-                val exceptionResponse = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exceptionResponse = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 logger.debug { "login failed with status: $exceptionResponse" }
                 Result.failure(exceptionResponse)
             }

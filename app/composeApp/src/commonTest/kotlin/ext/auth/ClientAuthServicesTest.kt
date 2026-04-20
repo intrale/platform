@@ -42,7 +42,7 @@ class ClientLoginServiceTest {
     @Test
     fun `login exitoso retorna LoginResponse`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"idToken":"id","accessToken":"access","refreshToken":"refresh"}"""
-        val service = ClientLoginService(mockClient(HttpStatusCode.OK, body))
+        val service = ClientLoginService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("user@test.com", "pass123")
 
@@ -53,7 +53,7 @@ class ClientLoginServiceTest {
     @Test
     fun `login fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":401,"description":"Unauthorized"},"message":"Credenciales invalidas"}"""
-        val service = ClientLoginService(mockClient(HttpStatusCode.Unauthorized, body))
+        val service = ClientLoginService(mockClient(HttpStatusCode.Unauthorized, body), jsonConfig)
 
         val result = service.execute("user@test.com", "wrong")
 
@@ -71,7 +71,7 @@ class ClientLoginServiceTest {
     @Test
     fun `login exitoso tolera campos desconocidos del backend (responseHeaders)`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"responseHeaders":{"x-trace-id":"abc"},"idToken":"id","accessToken":"access","refreshToken":"refresh","extraField":"valor"}"""
-        val service = ClientLoginService(mockClient(HttpStatusCode.OK, body))
+        val service = ClientLoginService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("user@test.com", "pass123")
 
@@ -82,7 +82,7 @@ class ClientLoginServiceTest {
     @Test
     fun `login fallido tolera campos desconocidos en ExceptionResponse (responseHeaders)`() = runTest {
         val body = """{"statusCode":{"value":401,"description":"Unauthorized"},"responseHeaders":{"x-trace-id":"abc"},"message":"Credenciales invalidas"}"""
-        val service = ClientLoginService(mockClient(HttpStatusCode.Unauthorized, body))
+        val service = ClientLoginService(mockClient(HttpStatusCode.Unauthorized, body), jsonConfig)
 
         val result = service.execute("user@test.com", "wrong")
 
@@ -100,7 +100,7 @@ class ClientChangePasswordServiceTest {
 
     @Test
     fun `cambio exitoso retorna ChangePasswordResponse`() = runTest {
-        val service = ClientChangePasswordService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientChangePasswordService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
 
         val result = service.execute("old", "new", "Bearer tok")
 
@@ -111,7 +111,7 @@ class ClientChangePasswordServiceTest {
     @Test
     fun `cambio fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Error"}"""
-        val service = ClientChangePasswordService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientChangePasswordService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
 
         val result = service.execute("old", "new", "Bearer tok")
 
@@ -128,7 +128,7 @@ class ClientPasswordRecoveryServiceTest {
 
     @Test
     fun `recovery exitoso retorna PasswordRecoveryResponse`() = runTest {
-        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
 
         val result = service.recovery("test@test.com")
 
@@ -139,7 +139,7 @@ class ClientPasswordRecoveryServiceTest {
     @Test
     fun `recovery fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":404,"description":"Not Found"},"message":"Email no encontrado"}"""
-        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.NotFound, body))
+        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.NotFound, body), jsonConfig)
 
         val result = service.recovery("test@test.com")
 
@@ -148,7 +148,7 @@ class ClientPasswordRecoveryServiceTest {
 
     @Test
     fun `confirm exitoso retorna PasswordRecoveryResponse`() = runTest {
-        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
 
         val result = service.confirm("test@test.com", "123456", "newpass")
 
@@ -158,7 +158,7 @@ class ClientPasswordRecoveryServiceTest {
     @Test
     fun `confirm fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Codigo invalido"}"""
-        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientPasswordRecoveryService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
 
         val result = service.confirm("test@test.com", "wrong", "newpass")
 
@@ -175,7 +175,7 @@ class ClientTwoFactorSetupServiceTest {
     @Test
     fun `setup exitoso retorna TwoFactorSetupResponse`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"otpAuthUri":"otpauth://totp/test"}"""
-        val service = ClientTwoFactorSetupService(mockClient(HttpStatusCode.OK, body))
+        val service = ClientTwoFactorSetupService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("Bearer tok")
 
@@ -186,7 +186,7 @@ class ClientTwoFactorSetupServiceTest {
     @Test
     fun `setup fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":500,"description":"Error"},"message":"Fallo"}"""
-        val service = ClientTwoFactorSetupService(mockClient(HttpStatusCode.InternalServerError, body))
+        val service = ClientTwoFactorSetupService(mockClient(HttpStatusCode.InternalServerError, body), jsonConfig)
 
         val result = service.execute("Bearer tok")
 
@@ -202,7 +202,7 @@ class ClientTwoFactorVerifyServiceTest {
 
     @Test
     fun `verificacion exitosa retorna TwoFactorVerifyResponse`() = runTest {
-        val service = ClientTwoFactorVerifyService(mockClient(HttpStatusCode.OK, "{}"))
+        val service = ClientTwoFactorVerifyService(mockClient(HttpStatusCode.OK, "{}"), jsonConfig)
 
         val result = service.execute("123456", "Bearer tok")
 
@@ -213,7 +213,7 @@ class ClientTwoFactorVerifyServiceTest {
     @Test
     fun `verificacion fallida retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Codigo incorrecto"}"""
-        val service = ClientTwoFactorVerifyService(mockClient(HttpStatusCode.BadRequest, body))
+        val service = ClientTwoFactorVerifyService(mockClient(HttpStatusCode.BadRequest, body), jsonConfig)
 
         val result = service.execute("wrong", "Bearer tok")
 
@@ -230,7 +230,7 @@ class DeliveryLoginServiceTest {
     @Test
     fun `login delivery exitoso retorna LoginResponse`() = runTest {
         val body = """{"statusCode":{"value":200,"description":"OK"},"idToken":"id","accessToken":"access","refreshToken":"refresh"}"""
-        val service = DeliveryLoginService(mockClient(HttpStatusCode.OK, body))
+        val service = DeliveryLoginService(mockClient(HttpStatusCode.OK, body), jsonConfig)
 
         val result = service.execute("driver@test.com", "pass123")
 
@@ -241,7 +241,7 @@ class DeliveryLoginServiceTest {
     @Test
     fun `login delivery fallido retorna ExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":401,"description":"Unauthorized"},"message":"Error"}"""
-        val service = DeliveryLoginService(mockClient(HttpStatusCode.Unauthorized, body))
+        val service = DeliveryLoginService(mockClient(HttpStatusCode.Unauthorized, body), jsonConfig)
 
         val result = service.execute("driver@test.com", "wrong")
 

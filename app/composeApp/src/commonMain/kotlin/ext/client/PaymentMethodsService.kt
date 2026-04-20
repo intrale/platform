@@ -13,13 +13,14 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
 class PaymentMethodsService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommPaymentMethodsService {
 
     private val logger = LoggerFactory.default.newLogger<PaymentMethodsService>()
@@ -44,18 +45,18 @@ class PaymentMethodsService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return emptyList()
             val parsedResponse = runCatching {
-                IntraleClientJson.decodeFromString(PaymentMethodsResponse.serializer(), bodyText).paymentMethods
+                json.decodeFromString(PaymentMethodsResponse.serializer(), bodyText).paymentMethods
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return IntraleClientJson.decodeFromString(ListSerializer(PaymentMethodDTO.serializer()), bodyText)
+            return json.decodeFromString(ListSerializer(PaymentMethodDTO.serializer()), bodyText)
         }
         throw bodyText.toClientException()
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { IntraleClientJson.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

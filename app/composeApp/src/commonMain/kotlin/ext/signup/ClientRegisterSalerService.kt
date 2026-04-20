@@ -9,14 +9,14 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import ext.IntraleClientJson
+import kotlinx.serialization.json.Json
 import ar.com.intrale.shared.ExceptionResponse
 import ar.com.intrale.shared.StatusCodeDTO
 import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.auth.RegisterSalerRequest
 import ar.com.intrale.shared.auth.RegisterSalerResponse
 
-class ClientRegisterSalerService(private val httpClient: HttpClient) : CommRegisterSalerService {
+class ClientRegisterSalerService(private val httpClient: HttpClient, private val json: Json) : CommRegisterSalerService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(email: String, token: String): Result<RegisterSalerResponse> {
         return try {
@@ -30,7 +30,7 @@ class ClientRegisterSalerService(private val httpClient: HttpClient) : CommRegis
                 )
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = IntraleClientJson.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

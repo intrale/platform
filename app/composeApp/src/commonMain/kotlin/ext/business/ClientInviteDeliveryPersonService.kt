@@ -19,12 +19,11 @@ import org.kodein.log.newLogger
 
 class ClientInviteDeliveryPersonService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommInviteDeliveryPersonService {
 
     private val logger = LoggerFactory.default.newLogger<ClientInviteDeliveryPersonService>()
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
     override suspend fun invite(businessId: String, email: String): Result<InviteDeliveryPersonResponseDTO> {
         return try {
             logger.info { "Invitando repartidor $email al negocio $businessId" }
