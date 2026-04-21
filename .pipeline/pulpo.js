@@ -5745,7 +5745,7 @@ function brazoDesbloqueo(config) {
     // 1. Buscar issues abiertos con label blocked:dependencies
     ghThrottle();
     const result = execSync(
-      `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title --limit 50`,
+      `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title,labels --limit 50`,
       { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
     );
     const blockedIssues = JSON.parse(result || '[]');
@@ -5829,8 +5829,9 @@ function brazoDesbloqueo(config) {
         }
 
         if (allClosed) {
-          // 4. Todas cerradas → desbloquear
-          log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
+          // 4. Todas cerradas → desbloquear (o auto-cerrar si es paraguas `split`)
+          const issueLabelNames = (issue.labels || []).map(l => l.name);
+          const isSplitParent = issueLabelNames.includes('split');
 
           // Quitar de los mapeos (ya no está bloqueado)
           delete blockedBy[issue.number];
@@ -5839,23 +5840,42 @@ function brazoDesbloqueo(config) {
             if (blocks[dep] && blocks[dep].length === 0) delete blocks[dep];
           }
 
-          // Quitar label blocked:dependencies
-          ghThrottle();
-          execSync(
-            `"${GH_BIN}" issue edit ${issue.number} --remove-label "blocked:dependencies" --repo intrale/platform`,
-            { cwd: ROOT, timeout: 10000, windowsHide: true }
-          );
+          if (isSplitParent) {
+            // Paraguas: las hijas cubren el scope, se cierra el padre sin reingresar al pipeline
+            log('desbloqueo', `#${issue.number}: paraguas split con todas las hijas cerradas (${depIssueNumbers.join(', ')}) → auto-cerrando`);
+            const closeComment = `## ✅ Paraguas resuelto\n\nEste issue era un paraguas (label \`split\`) y todas sus historias hijas fueron cerradas (${depIssueNumbers.map(n => '#' + n).join(', ')}). El scope queda cubierto por las hijas, no requiere desarrollo adicional.\n\n_Cerrado automáticamente por el brazo de desbloqueo del pipeline._`;
+            ghThrottle();
+            try {
+              execSync(
+                `"${GH_BIN}" issue close ${issue.number} --reason completed --comment "${closeComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
+                { cwd: ROOT, timeout: 10000, windowsHide: true }
+              );
+              sendTelegram(`🟢 Paraguas #${issue.number} cerrado automáticamente — todas las hijas del split (${depIssueNumbers.map(n => '#' + n).join(', ')}) resueltas.`);
+              log('desbloqueo', `#${issue.number} paraguas cerrado exitosamente`);
+            } catch (e) {
+              log('desbloqueo', `Error cerrando paraguas #${issue.number}: ${e.message}`);
+            }
+          } else {
+            log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
 
-          // Agregar comentario de desbloqueo
-          const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
-          ghThrottle();
-          execSync(
-            `"${GH_BIN}" issue comment ${issue.number} --body "${unblockComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
-            { cwd: ROOT, timeout: 10000, windowsHide: true }
-          );
+            // Quitar label blocked:dependencies
+            ghThrottle();
+            execSync(
+              `"${GH_BIN}" issue edit ${issue.number} --remove-label "blocked:dependencies" --repo intrale/platform`,
+              { cwd: ROOT, timeout: 10000, windowsHide: true }
+            );
 
-          sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
-          log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
+            // Agregar comentario de desbloqueo
+            const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
+            ghThrottle();
+            execSync(
+              `"${GH_BIN}" issue comment ${issue.number} --body "${unblockComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
+              { cwd: ROOT, timeout: 10000, windowsHide: true }
+            );
+
+            sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+            log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
+          }
         } else {
           log('desbloqueo', `#${issue.number}: dependencias abiertas: ${openDeps.map(n => '#' + n).join(', ')} — sigue bloqueado`);
         }
