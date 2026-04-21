@@ -57,7 +57,13 @@ Si el issue **NO tiene ningún label `app:*`** (`HAS_APP_LABEL=0`), corré con e
   -x compileDeliveryReleaseUnitTestKotlinAndroid \
   -x testClientReleaseUnitTest \
   -x testBusinessReleaseUnitTest \
-  -x testDeliveryReleaseUnitTest
+  -x testDeliveryReleaseUnitTest \
+  -x lintVitalClientRelease \
+  -x lintVitalBusinessRelease \
+  -x lintVitalDeliveryRelease \
+  -x lintClientRelease \
+  -x lintBusinessRelease \
+  -x lintDeliveryRelease
 ```
 
 Si el issue **tiene algún label `app:*`** (`HAS_APP_LABEL>0`), corré sin exclusiones de Release Android (se necesitan para el APK del paso 4):
@@ -70,15 +76,20 @@ Si el issue **tiene algún label `app:*`** (`HAS_APP_LABEL>0`), corré sin exclu
   -x compileTestKotlinIosSimulatorArm64
 ```
 
-Las exclusiones permanentes (`WasmJs` test y iOS) son siempre obligatorias. Las de `compile*ReleaseKotlinAndroid` (y toda la cadena Release Android Unit Test) se aplican solo cuando no hay cambios que afecten a Android, para evitar OOM y tiempos de build largos en cambios de backend puros.
+Las exclusiones permanentes (`WasmJs` test y iOS) son siempre obligatorias. Las de `compile*ReleaseKotlinAndroid` (y toda la cadena Release Android Unit Test + lint) se aplican solo cuando no hay cambios que afecten a Android, para evitar OOM y tiempos de build largos en cambios de backend puros.
+
+> **Alcance de las exclusiones Android Release.** Las exclusiones `compile*Release*`, `bundle*Release*`, `ksp*Release*`, `test*ReleaseUnitTest`, `lint*Release` y `lintVital*Release` se aplican **únicamente al gate por-issue del pipeline cuando el issue no tiene label `app:*`**. El workflow de GitHub Actions en push a `main` (`.github/workflows/**`) no usa este rol — corre el build completo sin estas exclusiones como gate final antes de deploy a Lambda.
 
 > Importante — cadena de dependencias Release: cuando excluís `compile<Flavor>ReleaseKotlinAndroid` para ahorrar RAM, Gradle 8.13 no permite query del provider mapeado antes de que la tarea productora complete. Eso rompe la cadena completa de tareas que leen esos outputs:
 > 1. `bundle<Flavor>ReleaseClassesToRuntimeJar` / `ToCompileJar` (consumen el .jar del compile)
 > 2. `ksp<Flavor>ReleaseUnitTestKotlinAndroid` (transform del classes.jar del bundle ToCompileJar)
 > 3. `compile<Flavor>ReleaseUnitTestKotlinAndroid` (depende del KSP)
 > 4. `test<Flavor>ReleaseUnitTest` (depende del compile unit test)
+> 5. `lint<Flavor>Release` / `lintVital<Flavor>Release` (consumen el jar del bundle via `AndroidLintAnalysisTask`)
 >
-> Por eso hay que excluir TODA la cadena Release UnitTest, no solo el compile raíz. El síntoma típico es `Querying the mapped value of provider(java.util.Set) before task [...] has completed is not supported` o `Failed to transform classes.jar`.
+> Por eso hay que excluir TODA la cadena Release (compile + bundle + ksp unit test + compile unit test + test unit test + lint + lintVital), no solo el compile raíz. El síntoma típico es `Querying the mapped value of provider(java.util.Set) before task [...] has completed is not supported` o `Failed to transform classes.jar`.
+>
+> Referencias del bug upstream: [gradle/gradle#21290](https://github.com/gradle/gradle/issues/21290) (Gradle) y [b/244354876](https://issuetracker.google.com/issues/244354876) (Android Gradle Plugin).
 
 Si el build falla, saltar directamente al paso 5 (reportar rechazado).
 
