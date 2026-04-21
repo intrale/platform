@@ -76,6 +76,10 @@ function normalizeJavaHome(opts = {}) {
     const previousOk = isValidJavaHome(previous);
 
     if (previousOk) {
+        // Propagamos PIPELINE_JAVA_HOME con el valor validado para que los roles
+        // bash (build.md, tester.md) lo usen como fallback garantizado sin
+        // hardcodear rutas machine-specific.
+        process.env.PIPELINE_JAVA_HOME = previous;
         return { changed: false, previous, current: previous, reason: 'valid' };
     }
 
@@ -86,6 +90,9 @@ function normalizeJavaHome(opts = {}) {
     }
 
     process.env.JAVA_HOME = chosen;
+    // Propagamos PIPELINE_JAVA_HOME con el valor efectivamente normalizado — los
+    // roles bash lo leen como fallback cuando necesitan reconstruir el entorno.
+    process.env.PIPELINE_JAVA_HOME = chosen;
 
     // Reforzar el PATH para que `java`/`javac` también resuelvan al nuevo JDK.
     // Agregamos el bin/ al FRENTE del PATH (idempotente — no duplicamos si ya estaba).

@@ -28,7 +28,27 @@ HAS_APP_LABEL=$(gh issue view <ISSUE_NUMBER> --json labels --jq '[.labels[].name
 Exportá las variables de entorno (alineadas con `gradle.properties`, no override a la baja):
 
 ```bash
-export JAVA_HOME="C:/Users/Administrator/.jdks/temurin-21.0.7"
+# JAVA_HOME ya fue normalizado por el pulpo via .pipeline/lib/java-home-normalizer.js
+# antes de spawnear este agente (incidente 2026-04-21: herencia de JBR de IntelliJ
+# stale). Si por algún motivo el valor heredado no existe, aplicamos fallback a las
+# ubicaciones conocidas de Temurin 21 antes de invocar gradlew.
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ] && [ ! -x "$JAVA_HOME/bin/java.exe" ]; then
+    for candidate in \
+        "${PIPELINE_JAVA_HOME:-}" \
+        "${JAVA_HOME_21:-}" \
+        "$HOME/.jdks/temurin-21.0.7" \
+        "/c/Users/Administrator/.jdks/temurin-21.0.7" \
+        "/c/Program Files/Eclipse Adoptium/jdk-21"*; do
+        if [ -n "$candidate" ] && { [ -x "$candidate/bin/java" ] || [ -x "$candidate/bin/java.exe" ]; }; then
+            export JAVA_HOME="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "${JAVA_HOME:-}" ] || { [ ! -x "$JAVA_HOME/bin/java" ] && [ ! -x "$JAVA_HOME/bin/java.exe" ]; }; then
+    echo "ERROR: no se encontró un JDK Temurin 21 válido. Abortando build." >&2
+    exit 1
+fi
 export GRADLE_OPTS="-Xmx6g -XX:+UseG1GC -Dfile.encoding=UTF-8"
 ```
 
@@ -107,8 +127,7 @@ Si el issue **no tiene ningún label `app:*`**, saltar al paso 5 directamente. N
 Por cada flavor requerido (según los labels del paso 3):
 
 ```bash
-export JAVA_HOME="C:/Users/Administrator/.jdks/temurin-21.0.7"
-export GRADLE_OPTS="-Xmx6g -XX:+UseG1GC -Dfile.encoding=UTF-8"
+# JAVA_HOME y GRADLE_OPTS ya están exportados en el paso 2 (con fallback robusto).
 
 ./gradlew :app:composeApp:assemble<Flavor>Debug --no-daemon \
   -x compileTestDevelopmentExecutableKotlinWasmJs \

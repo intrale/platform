@@ -8,7 +8,25 @@ Sos el tester del proyecto Intrale. Verificás calidad de código y cobertura.
 1. Leé el issue y los cambios del PR asociado
 2. Configurá el entorno y limpiá daemons previos (el build anterior puede dejar locks):
    ```bash
-   export JAVA_HOME="C:/Users/Administrator/.jdks/temurin-21.0.7"
+   # JAVA_HOME ya fue normalizado por el pulpo via .pipeline/lib/java-home-normalizer.js
+   # (incidente 2026-04-21). Aplicamos fallback si el heredado no existe.
+   if [ -z "${JAVA_HOME:-}" ] || { [ ! -x "$JAVA_HOME/bin/java" ] && [ ! -x "$JAVA_HOME/bin/java.exe" ]; }; then
+       for candidate in \
+           "${PIPELINE_JAVA_HOME:-}" \
+           "${JAVA_HOME_21:-}" \
+           "$HOME/.jdks/temurin-21.0.7" \
+           "/c/Users/Administrator/.jdks/temurin-21.0.7" \
+           "/c/Program Files/Eclipse Adoptium/jdk-21"*; do
+           if [ -n "$candidate" ] && { [ -x "$candidate/bin/java" ] || [ -x "$candidate/bin/java.exe" ]; }; then
+               export JAVA_HOME="$candidate"
+               break
+           fi
+       done
+   fi
+   if [ -z "${JAVA_HOME:-}" ] || { [ ! -x "$JAVA_HOME/bin/java" ] && [ ! -x "$JAVA_HOME/bin/java.exe" ]; }; then
+       echo "ERROR: no se encontró un JDK Temurin 21 válido. Abortando tester." >&2
+       exit 1
+   fi
    export GRADLE_OPTS="-Xmx6g -XX:+UseG1GC -Dfile.encoding=UTF-8"
    ./gradlew --stop 2>/dev/null || true
    ```

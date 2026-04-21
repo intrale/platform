@@ -139,5 +139,27 @@ if [ -d "$ORPHAN_DIR" ]; then
   fi
 fi
 
+# --- 4) JAVA_HOME resoluble desde el normalizer ---
+# Incidente 2026-04-21: pulpo heredó JAVA_HOME apuntando a JBR de IntelliJ viejo
+# y gradlew aborta antes de arrancar. El lib/java-home-normalizer corrige el
+# env del pulpo; acá validamos que, corriendo desde el mismo entorno que el
+# pulpo hereda, seguimos pudiendo resolver un Temurin 21 válido.
+log "4) Verificando JAVA_HOME resoluble (lib/java-home-normalizer)..."
+jh_probe=$(cd "${PIPELINE_DIR}" && node -e "
+  const { normalizeJavaHome, isValidJavaHome } = require('./lib/java-home-normalizer');
+  const r = normalizeJavaHome();
+  if (!isValidJavaHome(r.current)) {
+    console.log('NO-TEMURIN');
+    process.exit(1);
+  }
+  console.log(r.current);
+" 2>&1)
+if [ $? -ne 0 ] || [ -z "$jh_probe" ] || [ "$jh_probe" = "NO-TEMURIN" ]; then
+  log "  WARN no se pudo resolver Temurin 21 vía normalizer: ${jh_probe}"
+  # No falla el smoke (puede tener un JAVA_HOME válido externo), solo advierte.
+else
+  log "  OK JAVA_HOME resoluble: ${jh_probe}"
+fi
+
 log "=== SMOKE TEST OK ==="
 exit 0
