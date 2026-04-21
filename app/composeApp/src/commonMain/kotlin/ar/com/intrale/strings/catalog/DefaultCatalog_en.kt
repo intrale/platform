@@ -932,4 +932,21 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_take_already_taken to "This order is no longer available",
     MessageKey.delivery_order_take_error to "Error taking the order. Please try again.",
     MessageKey.delivery_order_distance_placeholder to "-- km",
+
+    // Smart delivery time estimation (issue #1931)
+    MessageKey.delivery_estimation_title to "Estimated delivery time",
+    MessageKey.delivery_estimation_loading to "Calculating estimate...",
+    MessageKey.delivery_estimation_error to "We could not calculate the estimate right now",
+    MessageKey.delivery_estimation_retry to "Retry",
+    MessageKey.delivery_estimation_unavailable to "Estimate unavailable",
+    MessageKey.delivery_estimation_minutes to "~{minutes} min",
+    MessageKey.delivery_estimation_minutes_range to "Between {min} and {max} min",
+    MessageKey.delivery_estimation_factor_active_orders to "{count} active orders in queue",
+    MessageKey.delivery_estimation_factor_distance to "Distance: {km} km",
+    MessageKey.delivery_estimation_factor_peak_hour to "Peak hour: higher demand",
+    MessageKey.delivery_estimation_factor_historical to "Historical average: {minutes} min",
+    MessageKey.delivery_estimation_progress_preparing to "Preparing order",
+    MessageKey.delivery_estimation_progress_on_the_way to "On the way",
+    MessageKey.delivery_estimation_progress_delivered to "Delivered",
+    MessageKey.delivery_estimation_delayed_notice to "Your order is taking longer than expected. We will notify you when it is on its way.",
 )

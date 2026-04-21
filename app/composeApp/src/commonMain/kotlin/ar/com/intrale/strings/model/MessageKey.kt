@@ -921,4 +921,21 @@ enum class MessageKey {
     client_checkout_business_closed_title,
     client_checkout_business_closed_message,
     client_checkout_business_closed_next,
+
+    // Estimacion inteligente de tiempo de entrega (issue #1931)
+    delivery_estimation_title,
+    delivery_estimation_loading,
+    delivery_estimation_error,
+    delivery_estimation_retry,
+    delivery_estimation_unavailable,
+    delivery_estimation_minutes,
+    delivery_estimation_minutes_range,
+    delivery_estimation_factor_active_orders,
+    delivery_estimation_factor_distance,
+    delivery_estimation_factor_peak_hour,
+    delivery_estimation_factor_historical,
+    delivery_estimation_progress_preparing,
+    delivery_estimation_progress_on_the_way,
+    delivery_estimation_progress_delivered,
+    delivery_estimation_delayed_notice,
 }

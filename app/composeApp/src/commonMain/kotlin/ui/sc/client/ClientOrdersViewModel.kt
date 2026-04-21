@@ -7,10 +7,12 @@ import androidx.compose.runtime.setValue
 import asdo.client.ClientOrder
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderStatus
+import asdo.client.DeliveryTimeEstimation
 import asdo.client.PriceChange
 import asdo.client.RepeatOrderResult
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
+import asdo.client.ToDoGetDeliveryTimeEstimation
 import asdo.client.ToDoRepeatOrder
 import ext.client.toClientException
 import org.kodein.di.direct
@@ -33,13 +35,19 @@ data class ClientOrdersUiState(
     val detailError: String? = null,
     val repeatOrderLoading: Boolean = false,
     val repeatOrderResult: RepeatOrderResult? = null,
-    val repeatOrderError: String? = null
+    val repeatOrderError: String? = null,
+    // Estimacion inteligente de tiempo de entrega (issue #1931)
+    val deliveryEstimation: DeliveryTimeEstimation? = null,
+    val estimationLoading: Boolean = false,
+    val estimationError: String? = null,
+    val estimationDelayed: Boolean = false
 )
 
 class ClientOrdersViewModel(
     private val getClientOrders: ToDoGetClientOrders = DIManager.di.direct.instance(),
     private val getClientOrderDetail: ToDoGetClientOrderDetail = DIManager.di.direct.instance(),
     private val repeatOrder: ToDoRepeatOrder = DIManager.di.direct.instance(),
+    private val getDeliveryEstimation: ToDoGetDeliveryTimeEstimation = DIManager.di.direct.instance(),
     loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
@@ -106,8 +114,51 @@ class ClientOrdersViewModel(
             }
     }
 
+    /**
+     * True si el pedido sigue activo (pendiente, en preparacion, en camino, etc.).
+     * Usado por la UI para decidir si pedir la estimacion de tiempo.
+     */
+    fun isActiveOrder(status: ClientOrderStatus): Boolean =
+        status != ClientOrderStatus.DELIVERED &&
+            status != ClientOrderStatus.CANCELLED &&
+            status != ClientOrderStatus.UNKNOWN
+
+    suspend fun loadDeliveryEstimation(orderId: String) {
+        state = state.copy(estimationLoading = true, estimationError = null)
+        getDeliveryEstimation.execute(orderId)
+            .onSuccess { estimation ->
+                val delayed = isDelayed(estimation)
+                state = state.copy(
+                    deliveryEstimation = estimation,
+                    estimationLoading = false,
+                    estimationDelayed = delayed
+                )
+            }
+            .onFailure { throwable ->
+                logger.error(throwable) { "Error al cargar estimacion de tiempo para $orderId" }
+                state = state.copy(
+                    estimationLoading = false,
+                    estimationError = throwable.message ?: "Error al cargar estimacion"
+                )
+            }
+    }
+
+    private fun isDelayed(estimation: DeliveryTimeEstimation): Boolean {
+        val historical = estimation.factors.historicalAvgMinutes ?: return false
+        // Demorado si la estimacion supera en 25% o mas el historico (con minimo 5 min)
+        val threshold = historical * 1.25
+        return estimation.estimatedMinutes >= (historical + 5) &&
+            estimation.estimatedMinutes >= threshold
+    }
+
     fun clearSelectedOrder() {
-        state = state.copy(selectedOrder = null, detailError = null)
+        state = state.copy(
+            selectedOrder = null,
+            detailError = null,
+            deliveryEstimation = null,
+            estimationError = null,
+            estimationDelayed = false
+        )
     }
 
     fun clearError() {

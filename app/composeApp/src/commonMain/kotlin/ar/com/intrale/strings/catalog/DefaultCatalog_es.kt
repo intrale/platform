@@ -932,4 +932,21 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_take_already_taken to "Este pedido ya no esta disponible",
     MessageKey.delivery_order_take_error to "Error al tomar el pedido. Intenta de nuevo.",
     MessageKey.delivery_order_distance_placeholder to "-- km",
+
+    // Estimacion inteligente de tiempo de entrega (issue #1931)
+    MessageKey.delivery_estimation_title to "Tiempo estimado de entrega",
+    MessageKey.delivery_estimation_loading to "Calculando el tiempo estimado...",
+    MessageKey.delivery_estimation_error to "No pudimos calcular la estimacion en este momento",
+    MessageKey.delivery_estimation_retry to "Reintentar",
+    MessageKey.delivery_estimation_unavailable to "Estimacion no disponible",
+    MessageKey.delivery_estimation_minutes to "~{minutes} min",
+    MessageKey.delivery_estimation_minutes_range to "Entre {min} y {max} min",
+    MessageKey.delivery_estimation_factor_active_orders to "{count} pedidos activos en cola",
+    MessageKey.delivery_estimation_factor_distance to "Distancia: {km} km",
+    MessageKey.delivery_estimation_factor_peak_hour to "Hora pico: mayor demanda",
+    MessageKey.delivery_estimation_factor_historical to "Promedio historico: {minutes} min",
+    MessageKey.delivery_estimation_progress_preparing to "Preparando pedido",
+    MessageKey.delivery_estimation_progress_on_the_way to "En camino",
+    MessageKey.delivery_estimation_progress_delivered to "Entregado",
+    MessageKey.delivery_estimation_delayed_notice to "Tu pedido se esta demorando mas de lo esperado. Te avisaremos cuando este en camino.",
 )

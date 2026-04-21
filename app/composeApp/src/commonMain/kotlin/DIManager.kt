@@ -16,11 +16,14 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
+import asdo.client.DoCalculateDeliveryTimeEstimation
 import asdo.client.DoCheckBusinessOpen
 import asdo.client.DoCreateClientOrder
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
 import asdo.client.DoGetClientProfile
+import asdo.client.DoGetDeliveryTimeEstimation
+import asdo.client.DoRecordActualDeliveryTime
 import asdo.client.DoGetPaymentMethods
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
@@ -29,12 +32,15 @@ import asdo.client.DoGetNotifications
 import asdo.client.DoGetPushPreferences
 import asdo.client.DoMarkNotificationRead
 import asdo.client.DoMarkAllNotificationsRead
+import asdo.client.ToDoCalculateDeliveryTimeEstimation
 import asdo.client.ToDoCheckBusinessOpen
 import asdo.client.DoUpdatePushPreferences
 import asdo.client.ToDoCreateClientOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoGetDeliveryTimeEstimation
+import asdo.client.ToDoRecordActualDeliveryTime
 import asdo.client.ToDoRepeatOrder
 import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
@@ -180,11 +186,13 @@ import ext.auth.CommPasswordRecoveryService
 import ext.auth.CommTwoFactorSetupService
 import ext.auth.CommTwoFactorVerifyService
 import ext.client.ClientAddressesService
+import ext.client.ClientDeliveryTimeEstimationService
 import ext.client.ClientOrdersService
 import ext.client.ProductAvailabilityService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientOrdersService
+import ext.client.CommDeliveryTimeEstimationService
 import ext.client.CommProductAvailabilityService
 import ext.client.CommClientProfileService
 import ext.client.CommPaymentMethodsService
@@ -522,6 +530,10 @@ private val clientModule = DI.Module("client") {
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance(), instance()) }
     bindSingleton<CommProductAvailabilityService> { ProductAvailabilityService(instance(), instance(), instance()) }
     bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance(), instance()) }
+    // Estimacion inteligente de tiempo de entrega (issue #1931)
+    bindSingleton<CommDeliveryTimeEstimationService> {
+        ClientDeliveryTimeEstimationService(instance(), instance(), instance())
+    }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -539,6 +551,11 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoUpdatePushPreferences> { DoUpdatePushPreferences(instance()) }
     bindSingleton<ToDoCreateClientOrder> { DoCreateClientOrder(instance()) }
     bindSingleton<ToDoCheckBusinessOpen> { DoCheckBusinessOpen(instance()) }
+
+    // Estimacion inteligente de tiempo de entrega (issue #1931)
+    bindSingleton<ToDoGetDeliveryTimeEstimation> { DoGetDeliveryTimeEstimation(instance()) }
+    bindSingleton<ToDoCalculateDeliveryTimeEstimation> { DoCalculateDeliveryTimeEstimation(instance()) }
+    bindSingleton<ToDoRecordActualDeliveryTime> { DoRecordActualDeliveryTime(instance()) }
 
     // Push notifications
     bindSingleton<CommPushTokenService> { PushTokenService(instance(), instance(), instance()) }

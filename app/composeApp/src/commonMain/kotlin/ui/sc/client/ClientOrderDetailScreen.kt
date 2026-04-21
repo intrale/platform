@@ -42,8 +42,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderItem
+import asdo.client.ClientOrderStatus
 import asdo.client.ClientOrderStatusEvent
+import asdo.client.DeliveryTimeEstimation
 import asdo.client.RepeatOrderResult
+import ui.cp.delivery.DeliveryEstimationCard
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -129,6 +132,16 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
             selectedOrderId?.let { orderId ->
                 logger.info { "Cargando detalle del pedido $orderId" }
                 viewModel.loadOrderDetail(orderId)
+            }
+        }
+
+        // Cuando se carga el detalle y el pedido esta activo, solicitar la
+        // estimacion inteligente de tiempo de entrega (issue #1931).
+        val selectedDetail = state.selectedOrder
+        LaunchedEffect(selectedDetail?.id, selectedDetail?.status) {
+            val currentDetail = selectedDetail ?: return@LaunchedEffect
+            if (viewModel.isActiveOrder(currentDetail.status)) {
+                viewModel.loadDeliveryEstimation(currentDetail.id)
             }
         }
 
@@ -260,6 +273,15 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
                         statusLabels = resolvedStatusLabels,
                         padding = padding,
                         repeatOrderLoading = state.repeatOrderLoading,
+                        deliveryEstimation = state.deliveryEstimation,
+                        estimationLoading = state.estimationLoading,
+                        estimationError = state.estimationError,
+                        estimationDelayed = state.estimationDelayed,
+                        onRetryEstimation = {
+                            coroutineScope.launch {
+                                viewModel.loadDeliveryEstimation(detail.id)
+                            }
+                        },
                         onBackClick = { goBack() },
                         onRepeatOrder = {
                             coroutineScope.launch {
@@ -293,6 +315,11 @@ private fun OrderDetailContent(
     statusLabels: Map<asdo.client.ClientOrderStatus, String>,
     padding: PaddingValues,
     repeatOrderLoading: Boolean,
+    deliveryEstimation: DeliveryTimeEstimation?,
+    estimationLoading: Boolean,
+    estimationError: String?,
+    estimationDelayed: Boolean,
+    onRetryEstimation: () -> Unit,
     onBackClick: () -> Unit,
     onRepeatOrder: () -> Unit
 ) {
@@ -386,6 +413,23 @@ private fun OrderDetailContent(
                         )
                     }
                 }
+            }
+        }
+
+        // Estimacion inteligente de tiempo de entrega (issue #1931).
+        // Solo mostramos la tarjeta para pedidos activos.
+        val isActiveOrder = detail.status != ClientOrderStatus.DELIVERED &&
+            detail.status != ClientOrderStatus.CANCELLED
+        if (isActiveOrder) {
+            item {
+                DeliveryEstimationCard(
+                    estimation = deliveryEstimation,
+                    isLoading = estimationLoading,
+                    errorMessage = estimationError,
+                    orderStatus = detail.status,
+                    isDelayed = estimationDelayed,
+                    onRetry = onRetryEstimation
+                )
             }
         }
 
