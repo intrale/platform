@@ -23,6 +23,10 @@ try { notifierInfraRecovered = require('./notifier-infra-recovered'); } catch { 
 const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 const cbInfra = require('./circuit-breaker-infra');
 const { redact } = require('./redact');
+// #2404 — Detección de logs stale + reset seguro del circuit breaker.
+// Evita rebotar al developer con contexto obsoleto (log del build de hace >24h)
+// y en su lugar re-encola el issue a `build` con YAML limpio.
+const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
@@ -2295,6 +2299,132 @@ function brazoBarrido(config) {
           // Hay rechazo → devolver a fase de rechazo
           const motivos = rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || 'sin motivo'}`).join('\n');
 
+          // #2404 — Stale-log interception: si el motivo de rechazo referencia
+          // el build-log del issue y ese log tiene mtime > umbral (default 24h),
+          // NO rebotar al developer con contexto obsoleto. En su lugar:
+          //   1) Limpiar `motivo_rechazo` + `rebote*` del YAML.
+          //   2) Resetear el contador del circuit breaker (el error pudo haber
+          //      sido de un ciclo anterior ya corregido — ej. JAVA_HOME stale).
+          //   3) Re-encolar a `build` para que el builder re-ejecute con
+          //      entorno actualizado.
+          //   4) Auditar en JSONL + notificar a Telegram.
+          //   5) Tope duro `max_resets_per_issue` (default 5) para evitar bypass
+          //      del breaker por logs que se mantienen stale indefinidamente.
+          //
+          // El flujo clase `codigo` con log fresco (<=24h) sigue idéntico.
+          // El flujo `infra` (bloqueo por red) tiene su propio circuit breaker
+          // y NO es afectado por esta lógica (la clasificación stale depende
+          // solo del build-log, no del tipo de rebote).
+          const pipelineFases = ((config.pipelines || {})[pipelineName] || {}).fases || fases;
+          const pipelineTieneBuild = Array.isArray(pipelineFases) && pipelineFases.includes('build');
+          const puedeHaceStale = pipelineTieneBuild
+            && staleness.isValidIssueNumber(issue)
+            && staleness.motivoReferencesBuildLog(motivos, issue);
+
+          if (puedeHaceStale) {
+            const { ms: stalenessMs, hours: stalenessHrsEffective, clamped }
+              = staleness.getStalenessThresholdMs(config);
+            if (clamped) {
+              log('barrido', `⚠️ #${issue} staleness threshold inválido en config — elevado a mínimo (5min). Valor efectivo: ${stalenessHrsEffective}h`);
+            }
+            const info = staleness.inspectBuildLog(issue, stalenessMs);
+            if (info.exists && info.stale) {
+              const resetsPrev = staleness.getStaleResetCount(issue);
+              const maxResets = staleness.getMaxResetsPerIssue(config);
+
+              if (resetsPrev >= maxResets) {
+                // Tope duro superado — NO seguir reseteando. Escalar.
+                log('barrido', `⛔ #${issue} STALE-LOG: ya tuvo ${resetsPrev} resets por log stale (tope ${maxResets}). Escalando — requiere intervención manual.`);
+                staleness.appendAuditReset({
+                  ts: new Date().toISOString(),
+                  event: 'circuit_breaker_reset_refused',
+                  issue: parseInt(issue),
+                  reason: 'stale_log_cap_exceeded',
+                  log_mtime: new Date(info.mtimeMs).toISOString(),
+                  log_age_hours: Number(info.ageHours.toFixed(2)),
+                  threshold_hours: Number(stalenessHrsEffective.toFixed(2)),
+                  resets_count: resetsPrev,
+                  max_resets: maxResets,
+                });
+                sendTelegram(staleness.buildTelegramEscalationMessage(issue, resetsPrev, maxResets, info.path));
+                // Mover archivos actuales a procesado/ para sacarlos del loop.
+                for (const a of archivos) {
+                  const dest = path.join(fasePath(pipelineName, fase), 'procesado');
+                  try { moveFile(a.path, dest); } catch {}
+                }
+                continue;
+              }
+
+              // STALE confirmado dentro del tope → reset + re-encolar a build.
+              const resetsNuevo = resetsPrev + 1;
+              const buildPendiente = path.join(fasePath(pipelineName, 'build'), 'pendiente');
+              const buildSkills = pipelineConfig.skills_por_fase?.build || ['build'];
+              const buildSkill = buildSkills[0] || 'build';
+
+              // Tomar el YAML del primer archivo del issue (todos los skills de
+              // la fase actual reciben el mismo contenido) y limpiarlo.
+              let baseYaml = { issue: parseInt(issue), pipeline: pipelineName };
+              try {
+                if (archivos.length > 0) {
+                  baseYaml = readYaml(archivos[0].path);
+                }
+              } catch {}
+              const cleanYaml = staleness.cleanYamlForRebuild(baseYaml);
+              cleanYaml.issue = parseInt(issue);
+              cleanYaml.pipeline = pipelineName;
+              cleanYaml.fase = 'build';
+
+              const buildFile = path.join(buildPendiente, `${issue}.${buildSkill}`);
+              writeYaml(buildFile, cleanYaml);
+
+              // Audit estructurado (UX §3).
+              staleness.appendAuditReset({
+                ts: new Date().toISOString(),
+                event: 'circuit_breaker_reset',
+                issue: parseInt(issue),
+                reason: 'stale_log',
+                log_mtime: new Date(info.mtimeMs).toISOString(),
+                log_age_hours: Number(info.ageHours.toFixed(2)),
+                threshold_hours: Number(stalenessHrsEffective.toFixed(2)),
+                resets_count: resetsNuevo,
+                max_resets: maxResets,
+                rechazado_en_fase: fase,
+              });
+
+              // Telegram natural (UX §2).
+              sendTelegram(staleness.buildTelegramStaleMessage(
+                issue, info.ageHours, info.path, resetsNuevo, maxResets,
+              ));
+
+              log('barrido', `♻️ #${issue} STALE-LOG: build-log ${info.ageHours.toFixed(1)}h (umbral ${stalenessHrsEffective.toFixed(1)}h). Reset circuit breaker + re-encolado a build (reset ${resetsNuevo}/${maxResets}). YAML limpio sin motivo_rechazo.`);
+
+              // Cleanup: limpiar archivos residuales del issue en fases posteriores a la actual.
+              for (let downstream = i + 1; downstream < fases.length; downstream++) {
+                const downFase = fases[downstream];
+                for (const estado of ['pendiente', 'trabajando', 'listo']) {
+                  const dir = path.join(fasePath(pipelineName, downFase), estado);
+                  try {
+                    for (const f of fs.readdirSync(dir)) {
+                      if (f.startsWith(issue + '.') && !f.startsWith('.')) {
+                        const src = path.join(dir, f);
+                        const archDir = path.join(fasePath(pipelineName, downFase), 'archivado');
+                        fs.mkdirSync(archDir, { recursive: true });
+                        moveFile(src, archDir);
+                      }
+                    }
+                  } catch {}
+                }
+              }
+
+              // Archivos actuales (que disparaban el rebote) → procesado
+              for (const a of archivos) {
+                const dest = path.join(fasePath(pipelineName, fase), 'procesado');
+                try { moveFile(a.path, dest); } catch {}
+              }
+              continue;
+            }
+          }
+
           const devPendiente = path.join(fasePath(pipelineName, faseRechazo), 'pendiente');
 
           // Determinar qué skill de dev corresponde
@@ -3723,6 +3853,67 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     const motivo = workData.motivo_rechazo || 'sin motivo especificado';
     const buildLog = path.join(LOG_DIR, `build-${issue}.log`);
     const buildLogExists = fs.existsSync(buildLog);
+
+    // #2404 — Defense-in-depth: si el YAML del pendiente llegó acá con un
+    // motivo_rechazo que referencia el build-log y ese log es stale, no
+    // queremos inyectarlo al prompt del developer (context pollution). En
+    // ese caso redirigimos el issue a `build` y NO lanzamos al agente.
+    // Esto cubre el caso donde el barrido no alcanzó a hacer el reset
+    // (ej. restart del pulpo entre ciclos).
+    try {
+      const pipelineFases = ((loadConfig().pipelines || {})[pipeline] || {}).fases || [];
+      if (pipelineFases.includes('build')
+        && staleness.isValidIssueNumber(issue)
+        && staleness.motivoReferencesBuildLog(motivo, issue)) {
+        const cfg = loadConfig();
+        const { ms: stalenessMs, hours: stalenessHrsEff } = staleness.getStalenessThresholdMs(cfg);
+        const info = staleness.inspectBuildLog(issue, stalenessMs);
+        if (info.exists && info.stale) {
+          const resetsPrev = staleness.getStaleResetCount(issue);
+          const maxResets = staleness.getMaxResetsPerIssue(cfg);
+          if (resetsPrev < maxResets) {
+            const resetsNuevo = resetsPrev + 1;
+            const buildPendiente = path.join(fasePath(pipeline, 'build'), 'pendiente');
+            const buildSkill = ((cfg.pipelines || {})[pipeline] || {}).skills_por_fase?.build?.[0] || 'build';
+            const cleanYaml = staleness.cleanYamlForRebuild(workData);
+            cleanYaml.issue = parseInt(issue);
+            cleanYaml.pipeline = pipeline;
+            cleanYaml.fase = 'build';
+            const buildFile = path.join(buildPendiente, `${issue}.${buildSkill}`);
+            writeYaml(buildFile, cleanYaml);
+
+            staleness.appendAuditReset({
+              ts: new Date().toISOString(),
+              event: 'circuit_breaker_reset',
+              issue: parseInt(issue),
+              reason: 'stale_log',
+              log_mtime: new Date(info.mtimeMs).toISOString(),
+              log_age_hours: Number(info.ageHours.toFixed(2)),
+              threshold_hours: Number(stalenessHrsEff.toFixed(2)),
+              resets_count: resetsNuevo,
+              max_resets: maxResets,
+              detected_at: 'lanzamiento',
+            });
+            sendTelegram(staleness.buildTelegramStaleMessage(
+              issue, info.ageHours, info.path, resetsNuevo, maxResets,
+            ));
+            log('lanzamiento', `♻️ #${issue} STALE-LOG en launch: build-log ${info.ageHours.toFixed(1)}h. Redirigido a build en lugar de lanzar ${skill}. (reset ${resetsNuevo}/${maxResets})`);
+
+            // Archivar el archivo de trabajo actual — el issue se re-procesará desde build
+            try {
+              const archDir = path.join(fasePath(pipeline, fase), 'archivado');
+              fs.mkdirSync(archDir, { recursive: true });
+              moveFile(trabajandoPath, archDir);
+            } catch {}
+            return;
+          }
+          // Superó el tope → no redirigir; el barrido siguiente escalará.
+          log('lanzamiento', `⚠️ #${issue} STALE-LOG en launch pero ya superó tope resets (${resetsPrev}/${maxResets}). Sigo flujo normal — el barrido escalará.`);
+        }
+      }
+    } catch (e) {
+      log('lanzamiento', `⚠️ #${issue} stale-check falló: ${e.message} — continúo con rebote normal`);
+    }
 
     userPrompt += `\n\n⚠️ REBOTE — Este issue fue RECHAZADO en la fase "${rechazadoEn}" y vuelve a vos para corrección.\n`;
     userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
@@ -6020,6 +6211,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #2335 — connectivity-state + clasificacion de reason
     mapPrecheckFailureToReason,
     connectivityState,
+    // #2404 — exponer utilidades de staleness al test de integración.
+    staleness,
     _precheckState: () => ({ lastPrecheckResult, lastPrecheckAt, lastInfraBlockedIssues: Array.from(lastInfraBlockedIssues) }),
     _setPrecheckState: (r) => { lastPrecheckResult = r; lastPrecheckAt = Date.now(); },
     _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); }
