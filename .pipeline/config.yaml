@@ -176,6 +176,10 @@ timeouts:
   # Si un skill no está en el override, se usa agent_timeout_default_minutes.
   agent_timeout_default_minutes: 30
   agent_timeout_overrides:
+    backend-dev: 60               # Dev mínimo 60min: historias grandes necesitan tiempo
+    android-dev: 60               # Dev mínimo 60min: historias grandes necesitan tiempo
+    web-dev: 60                   # Dev mínimo 60min: historias grandes necesitan tiempo
+    pipeline-dev: 60              # Dev mínimo 60min: historias grandes necesitan tiempo
     build: 60                     # Gradle check + assemble puede tardar mucho en primer build
     qa: 45                        # QA E2E con emulador + video
     tester: 45                    # Cobertura Kover + suite completa
