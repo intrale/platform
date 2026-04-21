@@ -9,6 +9,11 @@ const fs = require('fs');
 const path = require('path');
 // #2334: sanitización write-time.
 require('./lib/sanitize-console').install();
+// Saneado global de JAVA_HOME — este servicio spawnea agentes Claude que
+// pueden invocar gradle; hereda y propaga el valor a sus hijos.
+require('./lib/java-home-normalizer').normalizeJavaHome({
+  log: (msg) => console.error(msg),
+});
 const { sanitize } = require('./sanitizer');
 const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 
