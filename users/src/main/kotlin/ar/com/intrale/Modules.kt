@@ -158,6 +158,14 @@ val appModule = DI.Module("appModule") {
         singleton { DeliveryOrderRepository() }
     }
 
+    bind<DeliveryTimeEstimationRepository> {
+        singleton { DeliveryTimeEstimationRepository() }
+    }
+
+    bind<DeliveryTimeEstimationService> {
+        singleton { DeliveryTimeEstimationService(instance(), instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="signup") {
         singleton  { SignUp(instance(), instance(), instance(), instance()) }
     }
@@ -237,6 +245,10 @@ val appModule = DI.Module("appModule") {
     }
     bind<Function> (tag="delivery/orders") {
         singleton { DeliveryOrdersFunction(instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="delivery/time-estimation") {
+        singleton { DeliveryTimeEstimationFunction(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="business/fonts") {
         singleton { BusinessFontsFunction(instance(), instance(), instance(), instance(), instance()) }
