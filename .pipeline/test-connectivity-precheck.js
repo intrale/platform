@@ -275,6 +275,85 @@ async function test(name, fn) {
     assert.strictEqual(pulpo.precheckOk(), false);
   });
 
+  // #2404 — T14: classifyError reconoce errores de toolchain (JAVA_HOME/JDK/uname/tools.jar) como infra
+  await test('T14: classifyError reconoce patterns toolchain como infra (#2404)', () => {
+    // Los 5 patterns del criterio A1 del PO
+    assert.strictEqual(precheck.classifyError('ERROR: JAVA_HOME is set to an invalid directory: C:/Program Files/Java/jdk-17'), 'infra');
+    assert.strictEqual(precheck.classifyError('JAVA_HOME /usr/lib/jvm/jbr not found'), 'infra');
+    assert.strictEqual(precheck.classifyError('uname: command not found'), 'infra');
+    assert.strictEqual(precheck.classifyError('ERROR: Could not find tools.jar. Please check that C:\\jdk contains a valid JDK installation.'), 'infra');
+    assert.strictEqual(precheck.classifyError('Cannot find a JDK at C:\\jdk. Please set JAVA_HOME.'), 'infra');
+
+    // También sobre objetos Error
+    const jvmErr = new Error('JAVA_HOME is set to an invalid directory');
+    assert.strictEqual(precheck.classifyError(jvmErr), 'infra');
+  });
+
+  // #2404 — T15: stacktrace JVM con substring toolchain se clasifica como codigo (Security §5, PO A4)
+  await test('T15: stacktrace JVM que contiene literal de toolchain sigue siendo codigo (#2404)', () => {
+    // Caso raro pero posible: un test que mockea shell y escupe el string dentro de un stacktrace JVM.
+    // El classifyError debe preferir "codigo" porque el error real proviene de código de app, no de infra.
+    const stacktrace = [
+      'java.lang.RuntimeException: fake shell failure',
+      '\tat com.intrale.FakeShell.run(FakeShell.kt:42)',
+      '\tat com.intrale.BuildTest.testUname(BuildTest.kt:15)',
+      '\tCaused by: uname: command not found',
+    ].join('\n');
+    assert.strictEqual(precheck.classifyError(stacktrace), 'codigo');
+
+    // Idem con JAVA_HOME dentro de un stacktrace JVM (raro pero posible)
+    const stacktrace2 = [
+      'kotlin.AssertionError: expected mock to respond',
+      '\tat com.intrale.TestFoo.setup(TestFoo.kt:10)',
+      '\tat com.intrale.TestFoo.test(TestFoo.kt:20)',
+      'Actual message: JAVA_HOME is set to an invalid directory',
+    ].join('\n');
+    assert.strictEqual(precheck.classifyError(stacktrace2), 'codigo');
+  });
+
+  // #2404 — T16: hasJvmStacktrace detecta stacktrace JVM correctamente
+  await test('T16: hasJvmStacktrace detecta stacktrace JVM (#2404)', () => {
+    assert.strictEqual(
+      precheck.hasJvmStacktrace('\tat com.intrale.Foo.bar(Foo.kt:10)'),
+      true,
+      'línea con "\\tat <fqn>(" debe detectarse como stacktrace'
+    );
+    assert.strictEqual(
+      precheck.hasJvmStacktrace('Exception in thread "main" java.lang.RuntimeException: boom\n    at com.intrale.App.main(App.kt:5)'),
+      true,
+      'multilinea con stacktrace debe detectarse'
+    );
+    assert.strictEqual(
+      precheck.hasJvmStacktrace('JAVA_HOME is set to an invalid directory'),
+      false,
+      'mensaje plano sin stacktrace no debe matchear'
+    );
+    assert.strictEqual(
+      precheck.hasJvmStacktrace('uname: command not found'),
+      false,
+      'mensaje plano sin stacktrace no debe matchear'
+    );
+    assert.strictEqual(precheck.hasJvmStacktrace(null), false);
+    assert.strictEqual(precheck.hasJvmStacktrace(undefined), false);
+    assert.strictEqual(precheck.hasJvmStacktrace(''), false);
+  });
+
+  // #2404 — T17: TOOLCHAIN_INFRA_PATTERNS expuesto como constante auditable
+  await test('T17: TOOLCHAIN_INFRA_PATTERNS exportado y separado de INFRA_MESSAGE_PATTERNS (#2404)', () => {
+    assert.ok(Array.isArray(precheck.TOOLCHAIN_INFRA_PATTERNS), 'TOOLCHAIN_INFRA_PATTERNS debe ser array');
+    assert.strictEqual(precheck.TOOLCHAIN_INFRA_PATTERNS.length, 5, 'deben ser exactamente 5 patterns');
+    // Verificar que todos son RegExp
+    for (const p of precheck.TOOLCHAIN_INFRA_PATTERNS) {
+      assert.ok(p instanceof RegExp, `pattern toolchain debe ser RegExp, recibí ${typeof p}`);
+    }
+    // Verificar que NO están duplicados en INFRA_MESSAGE_PATTERNS (separación limpia)
+    const toolchainSrcs = precheck.TOOLCHAIN_INFRA_PATTERNS.map((p) => p.source);
+    const infraSrcs = (precheck.INFRA_MESSAGE_PATTERNS || []).map((p) => p.source);
+    for (const src of toolchainSrcs) {
+      assert.ok(!infraSrcs.includes(src), `pattern "${src}" no debe estar en ambos arrays`);
+    }
+  });
+
   // T13 — test e2e: simula bloqueo + restauración + reencolado
   await test('T13: e2e — marcarBloqueoInfra + reencolarInfraBloqueados restauran el archivo', () => {
     process.env.PULPO_NO_AUTOSTART = '1';

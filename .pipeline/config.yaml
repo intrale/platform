@@ -176,10 +176,20 @@ timeouts:
   # Si un skill no está en el override, se usa agent_timeout_default_minutes.
   agent_timeout_default_minutes: 30
   agent_timeout_overrides:
+    backend-dev: 60               # Dev mínimo 60min: historias grandes necesitan tiempo
+    android-dev: 60               # Dev mínimo 60min: historias grandes necesitan tiempo
+    web-dev: 60                   # Dev mínimo 60min: historias grandes necesitan tiempo
+    pipeline-dev: 60              # Dev mínimo 60min: historias grandes necesitan tiempo
     build: 60                     # Gradle check + assemble puede tardar mucho en primer build
     qa: 45                        # QA E2E con emulador + video
     tester: 45                    # Cobertura Kover + suite completa
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
+    # Dev agents: features complejas que implementan ToDo/Do/Comm/Client + ViewModel +
+    # pantalla Compose + tests + build de verificación local. 30min es insuficiente
+    # (incidente #1931: android-dev timeout en feature IA con scope grande). Ver #2400.
+    android-dev: 60
+    backend-dev: 60
+    web-dev: 60
 
 # GitHub
 github:
@@ -195,3 +205,15 @@ precheck:
   # - { category: github,  host: api.github.com,                                 tlsPort: 443 }
   # - { category: aws,     host: s3.us-east-2.amazonaws.com,                     tlsPort: 443 }
   # - { category: backend, host: mgnr0htbvd.execute-api.us-east-2.amazonaws.com, tlsPort: 443 }
+
+# Staleness (#2404) — evita rebotar a dev con `motivo_rechazo` que referencia un
+# build-log obsoleto. Si el log tiene mtime > umbral, NO se rebota al developer:
+# se resetea el contador del circuit breaker y se re-encola a `build` para que
+# el builder vuelva a correr con el entorno actualizado.
+# Override por env: PIPELINE_STALENESS_HOURS (horas, decimal OK).
+# Clamp mínimo hardcoded de 5 minutos (300s) — valores menores se elevan a este
+# mínimo con warning en log. Protege contra bypass del circuit breaker
+# por config maliciosa/errónea (ej. staleness: 0).
+staleness:
+  build_log_max_age_hours: 24     # Default — logs de build más viejos se consideran stale
+  max_resets_per_issue: 5         # Tope duro: más de 5 resets por stale-log → escalar, no resetear

@@ -58,6 +58,41 @@ const INFRA_MESSAGE_PATTERNS = [
   /dns/i,
 ];
 
+// #2404 — Patrones de toolchain (JDK/JAVA_HOME/gradle) que también son `infra`.
+// Los tenemos separados de INFRA_MESSAGE_PATTERNS por dos razones:
+//   1) Auditabilidad: permite testearlos aislados (T14) sin contaminar los
+//      tests de red (T1/T2). Recomendación Guru §2.
+//   2) Protección contra falsos positivos: si el mensaje de error ES un
+//      stacktrace JVM que menciona uno de estos strings (ej. un test que
+//      mockea shell y escupe "uname: command not found" adentro de un
+//      "at com.intrale..."), NO queremos clasificarlo como infra — eso sería
+//      un error de código real que debe contar contra el circuit breaker
+//      (Security §5, PO A4). Por eso `classifyError` aplica estos patterns
+//      SOLO cuando `hasJvmStacktrace(msg) === false`.
+//
+// Sin ReDoS — los patterns son literales o `.*` simple sin backtracking
+// anidado. Guru §2 + Security §4 lo confirman.
+const TOOLCHAIN_INFRA_PATTERNS = [
+  /JAVA_HOME is set to an invalid directory/i,
+  /JAVA_HOME .* not found/i,
+  /uname: command not found/i,
+  /Could not find tools\.jar/i,
+  /Cannot find a JDK/i,
+];
+
+// Heurística para detectar un stacktrace de JVM dentro de un mensaje.
+// Busca líneas que empiecen con espacios + `at ` + identificador Java típico.
+// Se usa en `classifyError` para NO clasificar como infra un mensaje que
+// claramente viene de código JVM aunque contenga literalmente alguno de los
+// strings toolchain (falso positivo — el error real es de código).
+const JVM_STACKTRACE_RE = /(^|\n)\s+at [a-zA-Z_$][a-zA-Z0-9_$.]*[(\s]/;
+
+/** Devuelve true si el mensaje aparenta contener un stacktrace de JVM. */
+function hasJvmStacktrace(msg) {
+  if (msg === null || msg === undefined) return false;
+  return JVM_STACKTRACE_RE.test(String(msg));
+}
+
 /**
  * Clasifica un error como 'infra' (red/DNS/conectividad) o 'codigo' (otro).
  * Usado para distinguir fallos que NO deben contar contra el circuit breaker
@@ -78,6 +113,12 @@ function classifyError(err) {
     for (const pat of INFRA_MESSAGE_PATTERNS) {
       if (pat.test(err)) return 'infra';
     }
+    // #2404 — Toolchain: solo si NO parece un stacktrace JVM.
+    if (!hasJvmStacktrace(err)) {
+      for (const pat of TOOLCHAIN_INFRA_PATTERNS) {
+        if (pat.test(err)) return 'infra';
+      }
+    }
     return 'codigo';
   }
 
@@ -87,6 +128,12 @@ function classifyError(err) {
   const msg = String(err.message || err || '');
   for (const pat of INFRA_MESSAGE_PATTERNS) {
     if (pat.test(msg)) return 'infra';
+  }
+  // #2404 — Toolchain: solo si NO parece un stacktrace JVM.
+  if (!hasJvmStacktrace(msg)) {
+    for (const pat of TOOLCHAIN_INFRA_PATTERNS) {
+      if (pat.test(msg)) return 'infra';
+    }
   }
 
   return 'codigo';
@@ -474,8 +521,11 @@ module.exports = {
   failedEndpoints,
   resolveDnsWithTimeout,
   tlsHandshakeWithTimeout,
+  hasJvmStacktrace,
   DEFAULT_ENDPOINTS,
   INFRA_ERROR_CODES,
+  INFRA_MESSAGE_PATTERNS,
+  TOOLCHAIN_INFRA_PATTERNS,
 };
 
 // --- CLI smoke test ---
