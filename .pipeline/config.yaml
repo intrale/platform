@@ -205,3 +205,15 @@ precheck:
   # - { category: github,  host: api.github.com,                                 tlsPort: 443 }
   # - { category: aws,     host: s3.us-east-2.amazonaws.com,                     tlsPort: 443 }
   # - { category: backend, host: mgnr0htbvd.execute-api.us-east-2.amazonaws.com, tlsPort: 443 }
+
+# Staleness (#2404) — evita rebotar a dev con `motivo_rechazo` que referencia un
+# build-log obsoleto. Si el log tiene mtime > umbral, NO se rebota al developer:
+# se resetea el contador del circuit breaker y se re-encola a `build` para que
+# el builder vuelva a correr con el entorno actualizado.
+# Override por env: PIPELINE_STALENESS_HOURS (horas, decimal OK).
+# Clamp mínimo hardcoded de 5 minutos (300s) — valores menores se elevan a este
+# mínimo con warning en log. Protege contra bypass del circuit breaker
+# por config maliciosa/errónea (ej. staleness: 0).
+staleness:
+  build_log_max_age_hours: 24     # Default — logs de build más viejos se consideran stale
+  max_resets_per_issue: 5         # Tope duro: más de 5 resets por stale-log → escalar, no resetear
