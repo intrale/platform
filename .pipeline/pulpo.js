@@ -29,6 +29,18 @@ const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
 // (archivo `logs/pulpo.log` que hereda stdout/stderr vía fd).
 require('./lib/sanitize-console').install();
+// Saneado global de JAVA_HOME — si el pulpo heredó una ruta stale (ej. JBR de
+// una versión vieja de IntelliJ), la corregimos acá antes de spawnear agentes,
+// así todos los hijos (builder, tester, qa, etc.) reciben un JDK válido.
+// Incidente 2026-04-21: gradlew abortaba con "JAVA_HOME is set to an invalid
+// directory" y el log quedaba sin error real, confundiendo al rebote como si
+// fuera falla de código.
+require('./lib/java-home-normalizer').normalizeJavaHome({
+  log: (msg) => {
+    try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+    console.error(msg);
+  },
+});
 
 // #2337 CA10: cleanup perezoso + startup de metricas UX (REQ-SEC-5)
 try { uxMetrics.cleanup({ force: true }); } catch { /* best-effort */ }

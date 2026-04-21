@@ -23,6 +23,13 @@ const {
 } = require('./pid-discovery');
 const { clearAllMarkers } = require('./lib/ready-marker');
 
+// Saneado global de JAVA_HOME — si restart.js heredó una ruta stale (ej. JBR
+// de IntelliJ obsoleto), la corregimos antes de spawnear pulpo/servicios, así
+// todos los hijos reciben un JDK válido. Incidente 2026-04-21.
+require('./lib/java-home-normalizer').normalizeJavaHome({
+  log: (msg) => console.error(msg),
+});
+
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
 

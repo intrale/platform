@@ -14,6 +14,13 @@ const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// Saneado global de JAVA_HOME — qa-environment se ejecuta standalone y como
+// hijo de svc-emulador; en ambos casos hay que asegurar JDK válido para los
+// scripts de QA Android que disparan gradle. Incidente 2026-04-21.
+require('./lib/java-home-normalizer').normalizeJavaHome({
+  log: (msg) => console.error(msg),
+});
+
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(PIPELINE, '..');
 const STATE_FILE = path.join(PIPELINE, 'qa-env-state.json');
