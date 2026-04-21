@@ -921,4 +921,18 @@ enum class MessageKey {
     client_checkout_business_closed_title,
     client_checkout_business_closed_message,
     client_checkout_business_closed_next,
+
+    // Chatbot WhatsApp conversations (Business flavor)
+    business_chatbot_title,
+    business_chatbot_description,
+    business_chatbot_access_denied,
+    business_chatbot_missing_business,
+    business_chatbot_empty,
+    business_chatbot_error,
+    business_chatbot_retry,
+    business_chatbot_coming_soon,
+    business_chatbot_conversation_bot_badge,
+    business_chatbot_conversation_human_badge,
+    business_chatbot_takeover_action,
+    business_chatbot_loading,
 }

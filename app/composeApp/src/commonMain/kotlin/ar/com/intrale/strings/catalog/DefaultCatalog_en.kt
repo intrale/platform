@@ -932,4 +932,18 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_take_already_taken to "This order is no longer available",
     MessageKey.delivery_order_take_error to "Error taking the order. Please try again.",
     MessageKey.delivery_order_distance_placeholder to "-- km",
+
+    // Chatbot WhatsApp (Business flavor)
+    MessageKey.business_chatbot_title to "WhatsApp conversations",
+    MessageKey.business_chatbot_description to "See the conversations handled by the bot on WhatsApp and take over whenever you need to.",
+    MessageKey.business_chatbot_access_denied to "You do not have permission to view the bot's conversations.",
+    MessageKey.business_chatbot_missing_business to "Select a business to see its conversations.",
+    MessageKey.business_chatbot_empty to "There are no conversations to show yet.",
+    MessageKey.business_chatbot_error to "We couldn't load the conversations. Please try again.",
+    MessageKey.business_chatbot_retry to "Retry",
+    MessageKey.business_chatbot_coming_soon to "Coming soon: here you will see every conversation handled by the WhatsApp bot.",
+    MessageKey.business_chatbot_conversation_bot_badge to "Bot",
+    MessageKey.business_chatbot_conversation_human_badge to "Human",
+    MessageKey.business_chatbot_takeover_action to "Take over conversation",
+    MessageKey.business_chatbot_loading to "Loading conversations...",
 )

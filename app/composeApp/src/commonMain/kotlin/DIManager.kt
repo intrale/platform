@@ -283,6 +283,7 @@ import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.BannerFormScreen
 import ui.sc.business.BannerListScreen
+import ui.sc.business.ChatbotConversationsScreen
 import ui.sc.business.BusinessSchedulesScreen
 import ui.sc.business.BusinessDeliveryZoneScreen
 import ui.sc.business.BusinessDeliveryPeopleScreen
@@ -389,6 +390,7 @@ public const val BUSINESS_SCHEDULES = "businessSchedules"
 public const val BUSINESS_DELIVERY_ZONE = "businessDeliveryZone"
 public const val BUSINESS_DELIVERY_PEOPLE = "businessDeliveryPeople"
 public const val BUSINESS_PAYMENT_METHODS = "businessPaymentMethods"
+public const val BUSINESS_CHATBOT = "businessChatbot"
 
 const val LOGIN_PATH = "/login"
 
@@ -627,6 +629,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_SCHEDULES) { BusinessSchedulesScreen() }
     bindSingleton(tag = BUSINESS_DELIVERY_ZONE) { BusinessDeliveryZoneScreen() }
     bindSingleton(tag = BUSINESS_DELIVERY_PEOPLE) { BusinessDeliveryPeopleScreen() }
+    bindSingleton(tag = BUSINESS_CHATBOT) { ChatbotConversationsScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -709,6 +712,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_SCHEDULES))
                     add(instance(tag = BUSINESS_DELIVERY_ZONE))
                     add(instance(tag = BUSINESS_DELIVERY_PEOPLE))
+                    add(instance(tag = BUSINESS_CHATBOT))
                     add(instance(tag = TWO_FACTOR_SETUP))
                     add(instance(tag = TWO_FACTOR_VERIFY))
                 }
@@ -744,6 +748,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_SCHEDULES))
                     add(instance(tag = BUSINESS_DELIVERY_ZONE))
                     add(instance(tag = BUSINESS_DELIVERY_PEOPLE))
+                    add(instance(tag = BUSINESS_CHATBOT))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))
