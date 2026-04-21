@@ -3859,11 +3859,24 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const timeoutDefault = config.timeouts?.agent_timeout_default_minutes || 30;
   const timeoutMin = timeoutOverrides[skill] ?? timeoutDefault;
   const timeoutMs = timeoutMin * 60 * 1000;
+  // #2400: log del origen del timeout (override vs default) para debug de DevEx.
+  const timeoutOrigin = (skill in timeoutOverrides) ? 'override' : 'default';
   const watchdog = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
-      log('lanzamiento', `⏱️ ${skill}:#${issue} excedió ${timeoutMin}min — matando (watchdog)`);
+      log('lanzamiento', `⏱️ ${skill}:#${issue} excedió ${timeoutMin}min (${timeoutOrigin}) — matando (watchdog)`);
       try { child.kill('SIGTERM'); } catch {}
       setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10000);
+      // #2400: paridad con fast-fail — limpiar Gradle daemons huérfanos tras el kill.
+      // Delay 15s para dejar que SIGTERM→SIGKILL cierren el proceso primero.
+      const cleanupCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
+      setTimeout(() => {
+        try {
+          const killed = killGradleDaemonsForCwd(cleanupCwd, `${skill}:#${issue} (watchdog)`);
+          log('lanzamiento', `🧹 cleanup post-watchdog ${skill}:#${issue}: ${killed || 0} daemons Gradle terminados`);
+        } catch (e) {
+          log('lanzamiento', `⚠️ cleanup post-watchdog ${skill}:#${issue} falló: ${e.message}`);
+        }
+      }, 15000);
       try {
         const data = readYaml(trabajandoPath);
         data.resultado = 'rechazado';
