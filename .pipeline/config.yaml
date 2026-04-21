@@ -180,6 +180,12 @@ timeouts:
     qa: 45                        # QA E2E con emulador + video
     tester: 45                    # Cobertura Kover + suite completa
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
+    # Dev agents: features complejas que implementan ToDo/Do/Comm/Client + ViewModel +
+    # pantalla Compose + tests + build de verificación local. 30min es insuficiente
+    # (incidente #1931: android-dev timeout en feature IA con scope grande). Ver #2400.
+    android-dev: 60
+    backend-dev: 60
+    web-dev: 60
 
 # GitHub
 github:
