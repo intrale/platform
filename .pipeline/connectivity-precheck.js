@@ -56,6 +56,13 @@ const INFRA_MESSAGE_PATTERNS = [
   /ECONNRESET/i,
   /network is unreachable/i,
   /dns/i,
+  // #2405 CA-1 — JAVA_HOME drift es un problema de entorno (host), no de código.
+  // El helper `validate-java-home.js` falla con exit 78 y escribe este patrón
+  // en el motivo. `sysexits(3)` define 78 como EX_CONFIG → clasifica infra.
+  /JAVA_HOME\s+(?:invalido|no\s+esta\s+en\s+la\s+allowlist)/i,
+  /\bexit\s+(?:code\s+)?78\b/i,
+  /\bEX_CONFIG\b/,
+  /FATAL:\s*JAVA_HOME/i,
 ];
 
 // #2404 — Patrones de toolchain (JDK/JAVA_HOME/gradle) que también son `infra`.
