@@ -185,6 +185,25 @@ timeouts:
     tester: 45                    # Cobertura Kover + suite completa
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Build (#2405 CA-1) — Allowlist de JAVA_HOME para el rol build
+# Se compara normalizando separadores (C:/Users/... y C:\Users\...), case-insensitive.
+# Paths con `..` o whitespace embebido son rechazados.
+# Agregar un JDK nuevo: appendear una entrada y commitear.
+# Ver docs/operacion-pipeline.md para el flujo completo.
+build:
+  java_home_allowlist:
+    - "C:/Users/Administrator/.jdks/temurin-21.0.7"
+    - "C:/Users/Administrator/.jdks/temurin-21.0.8"
+
+# Circuit breaker de infra (#2405 CA-4)
+# Cuando un issue acumula N rebotes infra consecutivos sin recuperación, el Pulpo
+# aplica label `needs-human`, comenta en GitHub con estructura UX, y lo saca de la
+# cola de intake hasta que un humano quite el label. Arranca en 5 (conservador) y
+# se puede bajar a 3 tras una semana de observación. Distinto de MAX_REBOTES_INFRA
+# (cap duro antisabotaje, default 20) — este es el threshold "escalar a humano".
+circuit_breaker:
+  infra_escalate_threshold: 5
+
 # GitHub
 github:
   owner: "intrale"

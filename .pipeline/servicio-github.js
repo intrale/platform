@@ -210,6 +210,7 @@ const LABEL_COLORS = {
   'qa:dependency': 'D93F0B',
   'blocked:dependencies': 'B60205',
   'needs-definition': 'ededed',
+  'needs-human': 'B60205',   // #2405 CA-4 — circuit breaker infra escalado a humano
 };
 
 function ensureLabels(labelsStr) {
