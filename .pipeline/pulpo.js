@@ -4128,29 +4128,31 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  // #2476 — builder determinístico: si el skill es builder y existe el script
-  // `.pipeline/skills-deterministicos/builder.js`, bypass del LLM y correr Node puro.
-  // El script implementa el mismo contrato (marker, heartbeat, eventos V3) y
-  // emite exit code 0 = aprobado / 1 = rebote, por lo que el resto del flujo
+  // #2476 / #2482 — bypass al LLM para skills determinísticos: si el skill tiene
+  // un script Node en `.pipeline/skills-deterministicos/<skill>.js`, lo corremos
+  // con Node puro (cero tokens). El script implementa el mismo contrato (marker,
+  // heartbeat, eventos V3, exit 0=aprobado/1=rebote) por lo que el resto del flujo
   // (watchdog, on-exit, mover a listo/) funciona sin cambios.
-  const deterministicBuilder = path.join(PIPELINE, 'skills-deterministicos', 'builder.js');
-  const useDeterministicBuilder = (skill === 'builder' && fs.existsSync(deterministicBuilder));
+  // Rollout reversible: borrar el archivo → fallback automático al agente LLM.
+  const DETERMINISTIC_SKILLS = new Set(['builder', 'tester']);
+  const deterministicScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
+  const useDeterministicSkill = (DETERMINISTIC_SKILLS.has(skill) && fs.existsSync(deterministicScript));
 
   // Launcher detectado al boot (ver detectClaudeLauncher). Evita cmd.exe cuando es posible.
-  const spawnCmd = useDeterministicBuilder ? process.execPath : CLAUDE_LAUNCHER.cmd;
-  const spawnArgs = useDeterministicBuilder
-    ? [deterministicBuilder, String(issue), `--trabajando=${trabajandoPath}`]
+  const spawnCmd = useDeterministicSkill ? process.execPath : CLAUDE_LAUNCHER.cmd;
+  const spawnArgs = useDeterministicSkill
+    ? [deterministicScript, String(issue), `--trabajando=${trabajandoPath}`]
     : [...CLAUDE_LAUNCHER.prefixArgs, ...args];
 
-  if (useDeterministicBuilder) {
-    log('lanzamiento', `⚡ builder:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
+  if (useDeterministicSkill) {
+    log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
   }
 
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
-    shell: useDeterministicBuilder ? false : CLAUDE_LAUNCHER.shell,
+    shell: useDeterministicSkill ? false : CLAUDE_LAUNCHER.shell,
     windowsHide: true,
     env: {
       ...process.env,
