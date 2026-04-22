@@ -2146,6 +2146,111 @@ function brazoBarrido(config) {
           const MAX_REBOTES = 3;
           const MAX_REBOTES_INFRA = connectivityState.MAX_REBOTES_INFRA || 20;
 
+          // #2405 CA-4: threshold blando que escala a humano con label `needs-human`
+          // ANTES de alcanzar el cap duro. Arranca en 5, configurable vía config.yaml.
+          const INFRA_ESCALATE_THRESHOLD = Math.max(
+            1,
+            (config.circuit_breaker && config.circuit_breaker.infra_escalate_threshold) || 5,
+          );
+
+          // #2405 CA-4 — escalado a humano cuando se acumulan N rebotes infra
+          // consecutivos sin recuperación. Aplica label `needs-human`, comenta
+          // en GitHub con estructura UX, y mueve los archivos a procesado/ para
+          // sacarlo de la cola hasta que un humano quite el label.
+          if (esReboteDeInfra
+              && reboteInfraCount + 1 >= INFRA_ESCALATE_THRESHOLD
+              && reboteInfraCount < MAX_REBOTES_INFRA) {
+            // Deduplicar: sólo escalamos una vez por issue (archivo flag).
+            const needsHumanFlag = path.join(
+              fasePath(pipelineName, fase),
+              'procesado',
+              `.${issue}.needs-human-notified`,
+            );
+            const yaEscalado = fs.existsSync(needsHumanFlag);
+            if (!yaEscalado) {
+              log('barrido', `⚠️ #${issue} ESCALANDO a needs-human — ${reboteInfraCount + 1} rebotes infra (threshold ${INFRA_ESCALATE_THRESHOLD})`);
+              // Motivo sanitizado (redact → sin paths internos, sin tokens).
+              const motivoRedactado = sanitizePipelineText(
+                rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || ''}`).join('\n'),
+              ).slice(0, 1500);
+              // Encolar creación de label + add-label + comentario en servicio-github.
+              try {
+                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                fs.mkdirSync(ghQueueDir, { recursive: true });
+                // Aplicar label `needs-human`. El servicio-github auto-crea el
+                // label si no existe (ver LABEL_COLORS, color #B60205).
+                fs.writeFileSync(
+                  path.join(ghQueueDir, `${issue}-needs-human-apply-${Date.now()}.json`),
+                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }),
+                );
+                // 3) comentario estructurado (plantilla UX — una frase + <details> + 3 acciones)
+                const body = [
+                  `## Pipeline escaló este issue a intervención humana`,
+                  '',
+                  `El pipeline intentó procesar este issue ${reboteInfraCount + 1} veces y falló por un problema de infraestructura que no puede resolver automáticamente.`,
+                  '',
+                  `### Qué pasó`,
+                  `El agente \`${rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'desconocido'}\` falló en la fase \`${fase}\` por una causa clasificada como infra persistente (threshold: ${INFRA_ESCALATE_THRESHOLD} rebotes).`,
+                  '',
+                  `### Causa raíz`,
+                  `<details><summary>Motivo del último rechazo (redactado)</summary>`,
+                  '',
+                  '```',
+                  motivoRedactado,
+                  '```',
+                  '',
+                  `</details>`,
+                  '',
+                  `### Qué podés hacer`,
+                  `1. **Si es un problema del entorno** — revisá \`.pipeline/logs/${issue}-*.log\` y confirmá que el JDK/dependencia/variable esté presente en el host.`,
+                  `2. **Si es un problema del issue** — reabrí la definición o dividilo en partes más chicas; al quitar el label \`needs-human\` el issue reentra a la cola.`,
+                  `3. **Si no estás seguro** — preguntá antes de quitar el label; el contador de rebotes infra se resetea al removerlo.`,
+                  '',
+                  `Al quitar el label \`needs-human\`, el issue reentra a la cola automáticamente en el próximo ciclo de intake (~5 min) y el contador de rebotes se resetea.`,
+                  '',
+                  `📎 Log del agente: \`.pipeline/logs/${issue}-${rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'skill'}.log\``,
+                  `📎 Audit trail: \`.pipeline/logs/audit-${issue}.log\``,
+                ].join('\n');
+                fs.writeFileSync(
+                  path.join(ghQueueDir, `${issue}-needs-human-comment-${Date.now()}.json`),
+                  JSON.stringify({ action: 'comment', issue: parseInt(issue), body }),
+                );
+              } catch (e) {
+                log('barrido', `Error encolando needs-human para #${issue}: ${e.message}`);
+              }
+              sendTelegram(`🚨 Issue #${issue} escalado a needs-human — ${reboteInfraCount + 1} rebotes por infra. Requiere intervención humana (quitá el label para reintentar).`);
+              // Flag de dedup
+              try {
+                fs.mkdirSync(path.dirname(needsHumanFlag), { recursive: true });
+                fs.writeFileSync(needsHumanFlag, new Date().toISOString());
+              } catch {}
+            }
+            // #2405 CA-4 — Mover archivos actuales a `archivado/` (no procesado/).
+            // Al quitar el label `needs-human`, el intake crea un archivo fresco
+            // en pendiente/ y el contador de rebotes infra se resetea naturalmente
+            // (no hay archivos en pendiente/trabajando/procesado para sumar).
+            for (const a of archivos) {
+              const dest = path.join(fasePath(pipelineName, fase), 'archivado');
+              try { fs.mkdirSync(dest, { recursive: true }); moveFile(a.path, dest); } catch {}
+            }
+            // Archivar también los archivos acumulados en la fase de rechazo
+            // para que el próximo ciclo no los lea como rebote previo.
+            for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+              const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
+              try {
+                for (const f of fs.readdirSync(dir)) {
+                  if (f.startsWith(issue + '.') && !f.startsWith('.')) {
+                    const src = path.join(dir, f);
+                    const archDir = path.join(fasePath(pipelineName, faseRechazo), 'archivado');
+                    fs.mkdirSync(archDir, { recursive: true });
+                    try { moveFile(src, archDir); } catch {}
+                  }
+                }
+              } catch {}
+            }
+            continue;
+          }
+
           // #2335 CA5 — cap duro sobre infra. Si se supera, el circuit breaker
           // generico aplica igual (defense-in-depth: si la clasificacion infra
           // fuera saboteada, el pipeline no queda en loop infinito).
@@ -3918,6 +4023,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     userPrompt += `\n\n⚠️ REBOTE — Este issue fue RECHAZADO en la fase "${rechazadoEn}" y vuelve a vos para corrección.\n`;
     userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
     userPrompt += `INSTRUCCIONES OBLIGATORIAS:\n`;
+    // #2405 CA-2: backup tag automático antes del merge destructivo sobre agent/*.
+    // Si hay commits locales no pusheados, el helper crea un tag local
+    // `backup/agent-<issue>-<skill>-<timestamp>-<rand4>` antes del merge.
+    // Los tags tienen TTL 30 días (cleanBackupTags del mismo helper).
+    userPrompt += `0. Crear backup tag por si hay commits no pusheados: node .pipeline/backup-agent-branch.js --issue ${issue} --skill ${skill}\n`;
     userPrompt += `1. Actualizá tu rama con main: git fetch origin main && git merge origin/main --no-edit\n`;
     userPrompt += `2. Leé el motivo de rechazo arriba con atención\n`;
     if (buildLogExists) {
@@ -5768,9 +5878,11 @@ function brazoIntake(config) {
 
     try {
       // Consultar GitHub por issues con el label
+      // #2405 CA-4: excluir issues con label `needs-human` — el circuit breaker
+      // de infra los saca de la cola de intake hasta que un humano quite el label.
       ghThrottle();
       const result = execSync(
-        `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50`,
+        `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
         { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
       );
       const issues = JSON.parse(result || '[]');
