@@ -1,0 +1,25 @@
+Starting a Gradle Daemon (subsequent builds will be faster)
+> Task :buildSrc:compileKotlin UP-TO-DATE
+> Task :buildSrc:compileJava NO-SOURCE
+> Task :buildSrc:pluginDescriptors UP-TO-DATE
+> Task :buildSrc:processResources UP-TO-DATE
+> Task :buildSrc:classes UP-TO-DATE
+> Task :buildSrc:jar UP-TO-DATE
+> Task :backend:compileKotlin
+> Task :backend:compileJava NO-SOURCE
+> Task :backend:processResources
+> Task :backend:classes
+> Task :backend:test
+> Task :backend:check
+> Task :users:compileKotlin
+> Task :users:compileJava NO-SOURCE
+> Task :users:processResources
+> Task :users:classes
+> Task :users:test
+> Task :users:check
+> Task :app:composeApp:verifyNoLegacyStrings
+> Task :app:composeApp:validateComposeResources
+> Task :app:composeApp:scanNonAsciiFallbacks
+
+BUILD SUCCESSFUL in 1m 23s
+47 actionable tasks: 12 executed, 30 up-to-date, 5 from cache
