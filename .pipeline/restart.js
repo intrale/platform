@@ -20,6 +20,7 @@ const {
   findPidByPort,
   pidAlive,
   invalidateCache,
+  SCRIPT_MAP,
 } = require('./pid-discovery');
 const { clearAllMarkers } = require('./lib/ready-marker');
 
@@ -74,9 +75,18 @@ function killAll() {
   invalidateCache();
   const pidsToKill = new Set();
 
+  // Procesos lanzados con `Start-Process -WorkingDirectory .pipeline` tienen
+  // CommandLine = `node pulpo.js` sin `.pipeline` visible — el workdir no
+  // aparece en la CommandLine. Por eso matcheamos por CUALQUIERA de: path
+  // `.pipeline` en la CommandLine, o nombre de script conocido del pipeline.
+  const scriptNames = new Set(Object.values(SCRIPT_MAP));
   for (const p of scanNodeProcesses()) {
-    if (!p.commandLine || !p.commandLine.includes('.pipeline')) continue;
+    if (!p.commandLine) continue;
     if (p.pid === process.pid) continue;
+    const cmd = p.commandLine;
+    const matchByPath = cmd.includes('.pipeline');
+    const matchByScript = [...scriptNames].some(s => cmd.includes(s));
+    if (!matchByPath && !matchByScript) continue;
     pidsToKill.add(p.pid);
   }
 
@@ -340,6 +350,7 @@ const action = process.argv[2] || 'restart';
 const flagPaused = process.argv.includes('--paused');
 const flagNoSmokeTest = process.argv.includes('--no-smoke-test');
 const flagNoRollback = process.argv.includes('--no-rollback');
+const flagNoSync = process.argv.includes('--no-sync');
 
 switch (action) {
   case 'stop':
@@ -351,7 +362,8 @@ switch (action) {
     break;
   default:
     killAll();
-    syncWithMain();
+    if (!flagNoSync) syncWithMain();
+    else log('Saltando sync con origin/main (--no-sync)');
     if (flagPaused) {
       fs.writeFileSync(path.join(PIPELINE, '.paused'), new Date().toISOString());
       log('Modo PAUSADO — solo Telegram + dashboard activos (intake/lanzamiento deshabilitados)');
@@ -367,7 +379,20 @@ switch (action) {
     // Se omite si --paused (no todos los componentes están arriba en modo pausado).
     if (!flagNoSmokeTest && !flagPaused) {
       sleep(3000);
-      const smoke = runSmokeTest();
+      let smoke = runSmokeTest();
+      // Retry antes de disparar rollback destructivo: el smoke-test puede fallar
+      // por bug del singleton (procesos viejos que no fueron matados + respawn
+      // aborta sin escribir marker, ver issue #2450). Reintentamos matando
+      // stragglers y relanzando componentes missing. Solo si el segundo smoke
+      // también falla → rollback.
+      if (!smoke.ok && !flagNoRollback) {
+        log('Primer smoke test FAIL — reintento tras limpieza de stragglers');
+        killAll();
+        launchAll();
+        sleep(5000);
+        smoke = runSmokeTest();
+        if (smoke.ok) log('Segundo smoke test OK tras retry — pipeline recuperado sin rollback');
+      }
       if (smoke.ok) {
         if (!stablePointsToHead()) moveStableTag();
       } else if (flagNoRollback) {
@@ -377,7 +402,7 @@ switch (action) {
         log('Smoke test falló pero no existe tag pipeline-stable — primer deploy, sin rollback');
         enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nNo existe tag \`pipeline-stable\` (primer deploy). Revisar manualmente.`);
       } else {
-        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ — lanzando rollback orphan*\nSmoke test exit ${smoke.exitCode}.\nVolviendo a \`pipeline-stable\`. Progreso en \`logs/rollback.log\`.`);
+        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ tras retry — lanzando rollback orphan*\nSmoke test exit ${smoke.exitCode}.\nVolviendo a \`pipeline-stable\`. Progreso en \`logs/rollback.log\`.`);
         // Lanzamos rollback como orphan detached y salimos. El rollback
         // notifica por Telegram cuando termina (OK o FAIL).
         launchRollbackOrphan();
