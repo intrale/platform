@@ -4128,13 +4128,13 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  // #2476 / #2482 — bypass al LLM para skills determinísticos: si el skill tiene
-  // un script Node en `.pipeline/skills-deterministicos/<skill>.js`, lo corremos
+  // #2476 / #2482 / #2484 — bypass al LLM para skills determinísticos: si el skill
+  // tiene un script Node en `.pipeline/skills-deterministicos/<skill>.js`, lo corremos
   // con Node puro (cero tokens). El script implementa el mismo contrato (marker,
   // heartbeat, eventos V3, exit 0=aprobado/1=rebote) por lo que el resto del flujo
   // (watchdog, on-exit, mover a listo/) funciona sin cambios.
   // Rollout reversible: borrar el archivo → fallback automático al agente LLM.
-  const DETERMINISTIC_SKILLS = new Set(['builder', 'tester']);
+  const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery']);
   const deterministicScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
   const useDeterministicSkill = (DETERMINISTIC_SKILLS.has(skill) && fs.existsSync(deterministicScript));
 
