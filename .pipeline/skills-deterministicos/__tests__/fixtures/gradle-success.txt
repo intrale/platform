@@ -1,0 +1,22 @@
+> Task :backend:compileKotlin
+> Task :backend:compileJava NO-SOURCE
+> Task :backend:processResources
+> Task :backend:classes
+> Task :backend:jar
+> Task :backend:compileTestKotlin
+> Task :backend:compileTestJava NO-SOURCE
+> Task :backend:processTestResources NO-SOURCE
+> Task :backend:testClasses
+> Task :backend:test
+> Task :backend:check
+> Task :users:compileKotlin
+> Task :users:compileJava NO-SOURCE
+> Task :users:processResources
+> Task :users:classes
+> Task :users:jar
+> Task :users:compileTestKotlin
+> Task :users:test
+> Task :users:check
+
+BUILD SUCCESSFUL in 2m 14s
+56 actionable tasks: 56 executed

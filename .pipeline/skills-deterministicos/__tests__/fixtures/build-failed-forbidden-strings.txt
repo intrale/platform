@@ -1,0 +1,19 @@
+> Task :app:composeApp:verifyNoLegacyStrings FAILED
+
+FAILURE: Build failed with an exception.
+
+* Where:
+Build file '/c/Workspaces/Intrale/platform/app/composeApp/build.gradle.kts' line: 87
+
+* What went wrong:
+Execution failed for task ':app:composeApp:verifyNoLegacyStrings'.
+> forbidden-strings-processor detected legacy string usage:
+  - app/composeApp/src/commonMain/kotlin/ar/com/intrale/ui/sc/login/LoginScreen.kt:42 — stringResource(Res.string.login_title)
+  - app/composeApp/src/commonMain/kotlin/ar/com/intrale/ui/sc/home/HomeScreen.kt:78 — Res.string.welcome
+  Use resString() helper instead — see docs/engineering/strings.md
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+
+BUILD FAILED in 12s
+8 actionable tasks: 2 executed, 6 up-to-date
