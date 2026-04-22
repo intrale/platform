@@ -23,6 +23,11 @@ const {
 let retryingState = null;
 try { retryingState = require('./retrying-state'); } catch { /* opcional */ }
 
+// V3 — Métricas extendidas (issue #2477). Best-effort require por si el
+// módulo todavía no existe en pipelines antiguos.
+let v3Aggregator = null;
+try { v3Aggregator = require('./metrics/aggregator'); } catch { /* V3 no disponible */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -897,6 +902,18 @@ function generateHTML(state) {
   let pulpoUptime = '—';
   try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
   const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
+
+  // V3 detection: workers determinísticos en .pipeline/workers/*.js
+  let v3Workers = [];
+  try {
+    const workersDir = path.join(PIPELINE, 'workers');
+    if (fs.existsSync(workersDir)) {
+      v3Workers = fs.readdirSync(workersDir)
+        .filter(f => f.endsWith('.js'))
+        .map(f => f.replace(/\.js$/, ''));
+    }
+  } catch {}
+  const v3Active = v3Workers.length > 0;
 
   // Agentes con personalidad — referentes del mercado
   const AGENT_PERSONA = {
@@ -2289,6 +2306,7 @@ h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px
 .hdr-meta{font-size:0.75em;color:var(--dim);white-space:nowrap}
 .hdr-meta-sep{color:var(--bd);margin:0 2px}
 .hdr-uptime{font-size:0.75em;color:var(--dim);font-weight:500;cursor:help;padding:2px 8px;background:var(--sf);border-radius:10px;border:1px solid var(--bd)}
+.hdr-v3-badge{font-size:0.7em;font-weight:700;letter-spacing:1.2px;padding:3px 10px;border-radius:20px;background:linear-gradient(90deg,rgba(45,212,191,0.18),rgba(88,166,255,0.18));color:var(--teal,#2dd4bf);border:1px solid rgba(45,212,191,0.45);text-transform:uppercase;cursor:help}
 .hdr-right{display:flex;flex-direction:column;align-items:flex-end;line-height:1}
 .hdr-clock{font-size:1.6em;font-weight:700;font-family:'SF Mono',Consolas,monospace;color:var(--tx);letter-spacing:2px;font-variant-numeric:tabular-nums}
 .hdr-clock .clock-sec{font-size:0.55em;color:var(--dim);vertical-align:super;margin-left:1px}
@@ -3650,7 +3668,9 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 <body>
   <div class="hdr-bar">
     <div class="hdr-left">
-      <h1 class="hdr-title">🐙 Pipeline V2</h1>
+      <h1 class="hdr-title">🐙 Pipeline ${v3Active ? 'V2+V3' : 'V2'}</h1>
+      ${v3Active ? `<span class="hdr-v3-badge" title="V3 activo · workers determinísticos: ${v3Workers.join(', ')}">⚙ V3 (${v3Workers.length})</span>` : ''}
+      <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">📊 Consumo</a>
       <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
       <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar">↻ AUTO</button>
       <span class="hdr-uptime">UP ${pulpoUptime}</span>
@@ -5244,6 +5264,249 @@ ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>P
 </body></html>`;
 }
 
+// ---------------------------------------------------------------------------
+// V3 — /consumo: página con 3 tabs (Por agente | Por fase | Por issue)
+// Contrato: issue #2477. Datos vienen de /metrics/* (buildSnapshot).
+// ---------------------------------------------------------------------------
+function renderConsumoHtml() {
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Consumo V3 — Pipeline Intrale</title>
+<style>
+  :root {
+    --bg: #0a0e27; --fg: #e0e6ed; --card: #141b3a; --border: #2a3560;
+    --accent: #4a9eff; --dim: #8592a8; --danger: #ff5a5a; --ok: #5aff8a;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 20px; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .subtitle { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .controls label { color: var(--dim); font-size: 12px; }
+  .controls select { background: var(--card); color: var(--fg); border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; }
+  .controls button { background: var(--accent); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 16px; }
+  .tab { padding: 10px 18px; cursor: pointer; background: transparent; color: var(--dim); border: none; font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+  .tab.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .kpi { background: var(--card); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+  .kpi .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .kpi .value { font-size: 19px; font-weight: 700; color: var(--accent); margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+  th { background: #1a2246; text-align: left; padding: 10px 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim); border-bottom: 1px solid var(--border); }
+  td { padding: 9px 12px; border-bottom: 1px solid #1a2246; font-size: 13px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.usd { text-align: right; font-weight: 600; color: var(--ok); font-variant-numeric: tabular-nums; }
+  td.skill, td.issue, td.phase { font-weight: 600; color: var(--accent); }
+  tr:hover td { background: #1a2246; cursor: pointer; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .drilldown { margin-top: 14px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 14px; display: none; }
+  .drilldown.open { display: block; }
+  .drilldown h3 { margin-top: 0; color: var(--accent); }
+  .timeline-row { display: grid; grid-template-columns: 160px 120px 110px 1fr 100px 90px; gap: 10px; padding: 6px 0; border-bottom: 1px solid #1a2246; font-size: 12px; }
+  .timeline-row:last-child { border-bottom: none; }
+  .timeline-row .t-ts { color: var(--dim); }
+  .timeline-row .t-skill { font-weight: 600; color: var(--accent); }
+  .empty { color: var(--dim); padding: 20px; text-align: center; }
+  .footer { color: var(--dim); font-size: 11px; margin-top: 24px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>📊 Consumo V3 — Pipeline</h1>
+  <div class="subtitle">Métricas extendidas (tokens, duración, TTS) por agente, fase e issue. Contrato issue #2477.</div>
+
+  <div class="controls">
+    <label>Ventana:</label>
+    <select id="window">
+      <option value="1h">Última hora</option>
+      <option value="24h" selected>Últimas 24h</option>
+      <option value="7d">Últimos 7 días</option>
+      <option value="all">Histórico</option>
+    </select>
+    <button onclick="refresh()">Actualizar</button>
+    <span id="last-refresh" style="color: var(--dim); font-size: 12px;"></span>
+    <a href="/" style="color: var(--accent); font-size: 12px; margin-left: auto;">← Dashboard</a>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="tabs">
+    <button class="tab active" data-panel="agents">Por agente</button>
+    <button class="tab" data-panel="phases">Por fase</button>
+    <button class="tab" data-panel="issues">Por issue</button>
+  </div>
+
+  <div class="panel active" id="panel-agents">
+    <table>
+      <thead><tr><th>Skill</th><th class="num">Sesiones</th><th class="num">Tokens in+out</th><th class="num">Cache</th><th class="num">Dur. prom</th><th class="num">TTS chars</th><th class="num">TTS audio</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-agents"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="panel-phases">
+    <table>
+      <thead><tr><th>Fase</th><th class="num">Sesiones</th><th class="num">Tokens in+out</th><th class="num">Cache</th><th class="num">Dur. prom</th><th class="num">TTS audio</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-phases"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="panel-issues">
+    <table>
+      <thead><tr><th>Issue</th><th class="num">Sesiones</th><th class="num">Tokens in+out</th><th class="num">Dur. total</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-issues"><tr><td colspan="5" class="empty">Cargando…</td></tr></tbody>
+    </table>
+    <div class="drilldown" id="drilldown">
+      <h3 id="dd-title">Timeline</h3>
+      <div id="dd-body"></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Schema V3 definido en <a href="https://github.com/intrale/platform/issues/2477" target="_blank">#2477</a>.
+    Endpoints JSON: <a href="/metrics/agents">/metrics/agents</a> · <a href="/metrics/phases">/metrics/phases</a> · <a href="/metrics/issues">/metrics/issues</a> · <a href="/metrics/tts">/metrics/tts</a> · <a href="/metrics/snapshot">/metrics/snapshot</a>
+  </div>
+
+<script>
+function fmtNum(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return String(Math.round(n));
+}
+function fmtDur(ms) {
+  ms = Number(ms || 0);
+  const s = Math.round(ms/1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s/60);
+  const rem = s % 60;
+  if (m < 60) return m + 'm ' + rem + 's';
+  const h = Math.floor(m/60);
+  return h + 'h ' + (m%60) + 'm';
+}
+function fmtUsd(n) { return '$' + Number(n || 0).toFixed(4); }
+function fmtAudio(sec) {
+  sec = Number(sec || 0);
+  if (sec < 60) return sec.toFixed(1) + 's';
+  return (sec/60).toFixed(1) + 'min';
+}
+
+function renderKpis(totals) {
+  const el = document.getElementById('kpis');
+  const cache = Number(totals.cache_read || 0) + Number(totals.cache_write || 0);
+  el.innerHTML = [
+    ['Sesiones', fmtNum(totals.sessions), ''],
+    ['Tokens in+out', fmtNum(Number(totals.tokens_in||0) + Number(totals.tokens_out||0)), 'Cache: ' + fmtNum(cache)],
+    ['Costo estimado', fmtUsd(totals.cost_usd), ''],
+    ['TTS chars', fmtNum(totals.tts_chars), 'Audio: ' + fmtAudio(totals.tts_audio_seconds)],
+    ['TTS costo', fmtUsd(totals.tts_cost_usd), ''],
+    ['Eventos V3', fmtNum(totals.v3_events), 'log: ' + fmtNum(totals.total_log_lines)],
+  ].map(([l,v,s]) => '<div class="kpi"><div class="label">'+l+'</div><div class="value">'+v+'</div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>').join('');
+}
+
+function renderAgents(rows) {
+  const body = document.getElementById('tbody-agents');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="8" class="empty">Sin datos en la ventana seleccionada</td></tr>'; return; }
+  body.innerHTML = rows.map(a => {
+    const cache = Number(a.cache_read||0)+Number(a.cache_write||0);
+    return '<tr><td class="skill">'+(a.skill||'—')+'</td>'
+      +'<td class="num">'+fmtNum(a.sessions)+'</td>'
+      +'<td class="num">'+fmtNum(Number(a.tokens_in||0)+Number(a.tokens_out||0))+'</td>'
+      +'<td class="num">'+fmtNum(cache)+'</td>'
+      +'<td class="num">'+fmtDur(a.avg_duration_ms)+'</td>'
+      +'<td class="num">'+fmtNum(a.tts_chars)+'</td>'
+      +'<td class="num">'+fmtAudio(a.tts_audio_seconds)+'</td>'
+      +'<td class="usd">'+fmtUsd(a.cost_usd)+'</td></tr>';
+  }).join('');
+}
+
+function renderPhases(rows) {
+  const body = document.getElementById('tbody-phases');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">Sin datos en la ventana seleccionada</td></tr>'; return; }
+  body.innerHTML = rows.map(p => {
+    const cache = Number(p.cache_read||0)+Number(p.cache_write||0);
+    return '<tr><td class="phase">'+(p.phase||'—')+'</td>'
+      +'<td class="num">'+fmtNum(p.sessions)+'</td>'
+      +'<td class="num">'+fmtNum(Number(p.tokens_in||0)+Number(p.tokens_out||0))+'</td>'
+      +'<td class="num">'+fmtNum(cache)+'</td>'
+      +'<td class="num">'+fmtDur(p.avg_duration_ms)+'</td>'
+      +'<td class="num">'+fmtAudio(p.tts_audio_seconds)+'</td>'
+      +'<td class="usd">'+fmtUsd(p.cost_usd)+'</td></tr>';
+  }).join('');
+}
+
+function renderIssues(rows) {
+  const body = document.getElementById('tbody-issues');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="5" class="empty">Sin issues con eventos V3 en la ventana</td></tr>'; return; }
+  body.innerHTML = rows.map(i =>
+    '<tr onclick="showTimeline('+i.issue+')"><td class="issue">#'+i.issue+'</td>'
+    +'<td class="num">'+fmtNum(i.sessions)+'</td>'
+    +'<td class="num">'+fmtNum(Number(i.tokens_in||0)+Number(i.tokens_out||0))+'</td>'
+    +'<td class="num">'+fmtDur(i.duration_ms)+'</td>'
+    +'<td class="usd">'+fmtUsd(i.cost_usd)+'</td></tr>'
+  ).join('');
+}
+
+let lastSnapshot = null;
+
+async function refresh() {
+  const w = document.getElementById('window').value;
+  try {
+    const r = await fetch('/metrics/snapshot?window='+encodeURIComponent(w));
+    const snap = await r.json();
+    lastSnapshot = snap;
+    renderKpis(snap.totals || {});
+    renderAgents(snap.agents || []);
+    renderPhases(snap.phases || []);
+    renderIssues(snap.issues || []);
+    document.getElementById('last-refresh').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
+  } catch (e) {
+    document.getElementById('last-refresh').textContent = 'Error: ' + e.message;
+  }
+}
+
+function showTimeline(issueNumber) {
+  const issue = (lastSnapshot && lastSnapshot.issues || []).find(i => Number(i.issue) === Number(issueNumber));
+  const dd = document.getElementById('drilldown');
+  const title = document.getElementById('dd-title');
+  const body = document.getElementById('dd-body');
+  if (!issue || !issue.timeline || !issue.timeline.length) {
+    title.textContent = 'Timeline de #' + issueNumber;
+    body.innerHTML = '<div class="empty">Sin eventos para este issue en la ventana.</div>';
+  } else {
+    title.textContent = 'Timeline de #' + issue.issue + ' · ' + issue.sessions + ' sesiones · ' + fmtUsd(issue.cost_usd);
+    body.innerHTML = '<div class="timeline-row" style="font-weight:600;color:var(--dim);"><div>Fecha</div><div>Skill</div><div>Fase</div><div>Evento</div><div class="num">Duración</div><div class="usd">Costo</div></div>'
+      + issue.timeline.map(t =>
+        '<div class="timeline-row"><div class="t-ts">'+(t.ts||'').replace('T',' ').slice(0,19)+'</div>'
+        +'<div class="t-skill">'+(t.skill||'—')+'</div>'
+        +'<div>'+(t.phase||'—')+'</div>'
+        +'<div>'+t.event+(t.tts_chars!=null?' · '+fmtNum(t.tts_chars)+' chars':'')+'</div>'
+        +'<div class="num">'+(t.duration_ms!=null?fmtDur(t.duration_ms):'—')+'</div>'
+        +'<div class="usd">'+fmtUsd(t.cost_usd)+'</div></div>'
+      ).join('');
+  }
+  dd.classList.add('open');
+  dd.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById('panel-' + t.dataset.panel).classList.add('active');
+}));
+
+document.getElementById('window').addEventListener('change', refresh);
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body></html>`;
+}
+
 // --- Log Viewer (standalone page) ---
 
 function generateLogViewerHTML(filename, isLive) {
@@ -5809,6 +6072,62 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/metrics') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(getMetricsData()));
+    return;
+  }
+
+  // ===========================================================================
+  // V3 — Endpoints de métricas extendidas (issue #2477)
+  // ===========================================================================
+  if (req.url.startsWith('/metrics/') || req.url === '/consumo') {
+    if (!v3Aggregator) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'V3 aggregator no disponible. Verificar .pipeline/metrics/aggregator.js' }));
+      return;
+    }
+
+    // /consumo → página HTML con las 3 tabs
+    if (req.url === '/consumo') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderConsumoHtml());
+      return;
+    }
+
+    // Endpoints JSON: extraer ventana de querystring
+    const u = new URL(req.url, 'http://localhost');
+    const windowParam = u.searchParams.get('window') || 'all';
+
+    const respond = (data) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data, null, 2));
+    };
+    const fail = (err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || String(err) }));
+    };
+
+    v3Aggregator.buildSnapshot({ window: windowParam }).then(snap => {
+      const baseMeta = { window: windowParam, generated_at: snap.generated_at };
+
+      if (u.pathname === '/metrics/agents') return respond(Object.assign({}, baseMeta, { agents: snap.agents || [] }));
+      if (u.pathname === '/metrics/phases') return respond(Object.assign({}, baseMeta, { phases: snap.phases || [] }));
+      if (u.pathname === '/metrics/tts')    return respond(Object.assign({}, baseMeta, { tts: snap.tts || {} }));
+      if (u.pathname === '/metrics/snapshot') return respond(snap);
+      if (u.pathname === '/metrics/totals')  return respond(Object.assign({}, baseMeta, { totals: snap.totals || {} }));
+
+      const issueMatch = u.pathname.match(/^\/metrics\/issues\/(\d+)\/?$/);
+      if (issueMatch) {
+        const n = Number(issueMatch[1]);
+        const issue = (snap.issues || []).find(i => Number(i.issue) === n);
+        if (!issue) return respond(Object.assign({}, baseMeta, { issue: n, not_found: true, timeline: [] }));
+        return respond(Object.assign({}, baseMeta, issue));
+      }
+      if (u.pathname === '/metrics/issues' || u.pathname === '/metrics/issues/') {
+        return respond(Object.assign({}, baseMeta, { issues: snap.issues || [] }));
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'endpoint no reconocido', valid: ['/metrics/agents', '/metrics/phases', '/metrics/issues', '/metrics/issues/:n', '/metrics/tts', '/metrics/totals', '/metrics/snapshot', '/consumo'] }));
+    }).catch(fail);
     return;
   }
 
