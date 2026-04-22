@@ -140,6 +140,35 @@ function killAll() {
     }
   } catch {}
 
+  // Devolver agentes huérfanos de desarrollo/<fase>/trabajando/ y
+  // definicion/<fase>/trabajando/ a pendiente/. Al matar todos los procesos
+  // los archivos de agentes que estaban corriendo quedan en trabajando/ sin
+  // dueño; sin esta limpieza, el mecanismo [huerfanos] del Pulpo tarda hasta
+  // `orphan_timeout_minutes` (10min default) en moverlos — dejando el
+  // dashboard mostrando "activos" agentes que ya no existen.
+  // Formato de archivo de agente: `<issueId>.<skill>` (ej. 1915.qa, 2441.guru).
+  // Filtramos `.gitkeep` y cualquier otro archivo sin ese patrón.
+  const agenteFileRegex = /^\d+\.[a-z][a-z0-9-]*$/;
+  let orphansMoved = 0;
+  for (const pipeline of ['desarrollo', 'definicion']) {
+    const pipeDir = path.join(PIPELINE, pipeline);
+    if (!fs.existsSync(pipeDir)) continue;
+    for (const fase of fs.readdirSync(pipeDir)) {
+      const trabajando = path.join(pipeDir, fase, 'trabajando');
+      const pendiente = path.join(pipeDir, fase, 'pendiente');
+      if (!fs.existsSync(trabajando)) continue;
+      try {
+        if (!fs.existsSync(pendiente)) fs.mkdirSync(pendiente, { recursive: true });
+        for (const f of fs.readdirSync(trabajando)) {
+          if (!agenteFileRegex.test(f)) continue;
+          fs.renameSync(path.join(trabajando, f), path.join(pendiente, f));
+          orphansMoved++;
+        }
+      } catch {}
+    }
+  }
+  if (orphansMoved > 0) log(`  ${orphansMoved} agente(s) huérfano(s) de fases → pendiente/`);
+
   // Escribir timestamp de último restart para evitar restarts encadenados
   try {
     fs.writeFileSync(
