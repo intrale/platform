@@ -6003,19 +6003,25 @@ const server = http.createServer((req, res) => {
           return;
         }
 
-        // Buscar PID del agente en agent-registry
+        // #2486 — descubrimiento dinámico del PID vía pid-discovery.
+        // Reemplaza la lectura de agent-registry.json (fuente duplicada con race conditions
+        // y PIDs stale). pid-discovery cruza scan de procesos vivos por cmdline +
+        // heartbeat reciente, con verificación cruzada antes de matar.
         let killed = false;
+        let pidsKilled = [];
         try {
-          const registry = JSON.parse(fs.readFileSync(path.join(path.dirname(PIPELINE), '.claude', 'hooks', 'agent-registry.json'), 'utf8'));
-          for (const [, agent] of Object.entries(registry.agents || {})) {
-            if (agent.issue === `#${issue}` && agent.pid) {
-              try {
-                execSync(`taskkill /PID ${agent.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-                killed = true;
-              } catch {}
-            }
+          const { discoverAgentPids } = require('./skills-deterministicos/lib/pid-discovery');
+          const matches = discoverAgentPids({ issue, skill });
+          for (const match of matches) {
+            try {
+              execSync(`taskkill /PID ${match.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+              killed = true;
+              pidsKilled.push(`${match.pid}(${match.source})`);
+            } catch {}
           }
-        } catch {}
+        } catch (e) {
+          log(`pid-discovery error: ${e.message}`);
+        }
 
         // Mover de trabajando/ a pendiente/ (para que pueda ser relanzado)
         try {
@@ -6028,9 +6034,9 @@ const server = http.createServer((req, res) => {
         }
 
         const msg = killed
-          ? `Agente ${skill} #${issue} cancelado (proceso terminado + devuelto a pendiente)`
-          : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado en registry)`;
-        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? 'PID killed' : 'no PID'}`);
+          ? `Agente ${skill} #${issue} cancelado (PIDs ${pidsKilled.join(', ')} + devuelto a pendiente)`
+          : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado — ya terminó o nunca arrancó)`;
+        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? `killed ${pidsKilled.join(',')}` : 'no PID'}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, msg }));
       } catch (e) {
