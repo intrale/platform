@@ -409,6 +409,23 @@ function getPipelineState() {
     if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
   }
 
+  // V3 — Bloqueados esperando humano (issue #2478)
+  state.bloqueados = [];
+  try {
+    const humanBlock = require('./lib/human-block');
+    state.bloqueados = humanBlock.listBlockedIssues().map(b => ({
+      issue: b.issue,
+      skill: b.skill,
+      phase: b.phase,
+      pipeline: b.pipeline,
+      reason: b.reason,
+      question: b.question,
+      blocked_at: b.blocked_at,
+      age_hours: b.age_hours,
+      title: titleCache[String(b.issue)]?.title || '',
+    }));
+  } catch {}
+
   // Servicios
   state.servicios = {};
   try {
@@ -1652,7 +1669,32 @@ function generateHTML(state) {
     <div class="it-done-grid">${laneCards.done}</div>
   </details>` : '';
 
+  // V3 — Bloqueados esperando humano (issue #2478)
+  const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
+  const escHtml = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const bloqueadosHTML = bloqueados.length === 0 ? '' : `
+    <div class="matrix-section" id="bloqueados-humano" style="border-left:4px solid #FBCA04;background:rgba(251,202,4,0.06);padding:12px 16px;margin-bottom:14px;border-radius:6px">
+      <h2 style="margin:0 0 8px 0">🚧 Esperando intervención humana <span style="font-size:0.6em;color:var(--dim);font-weight:normal">(${bloqueados.length} · V3)</span></h2>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${bloqueados.map(b => {
+          const ageStr = b.age_hours < 1 ? Math.round(b.age_hours * 60) + 'min' : b.age_hours + 'h';
+          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${escHtml(b.title)}</span>` : '';
+          return `<div style="font-size:0.92em">
+            <b>#${b.issue}</b>${titleHtml}
+            <span style="color:var(--dim)"> · ${escHtml(b.skill)} en ${escHtml(b.phase)} · hace ${ageStr}</span>
+            ${b.question ? `<div style="margin:2px 0 0 14px;color:#FBCA04">❓ ${escHtml(b.question)}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:8px;font-size:0.82em;color:var(--dim)">
+        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code>
+      </div>
+    </div>`;
+
   const matrixHTML = `
+    ${bloqueadosHTML}
     <div class="matrix-section" id="issue-tracker">
       <div class="matrix-header">
         <h2>📊 Issue Tracker</h2>

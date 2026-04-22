@@ -615,7 +615,9 @@ function issueExistsInPipeline(issueNum, pipelineName) {
     if (!pConfig) continue;
     for (const fase of pConfig.fases) {
       // Solo buscar en estados activos — procesado significa que ya terminó esa fase
-      for (const estado of ['pendiente', 'trabajando', 'listo']) {
+      // bloqueado-humano cuenta como activo: el issue está pausado pero ocupando slot conceptual,
+      // no debe re-intakearse ni relanzarse hasta que /unblock lo desbloquee (issue #2478)
+      for (const estado of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano']) {
         const dir = path.join(PIPELINE, pName, fase, estado);
         try {
           for (const f of fs.readdirSync(dir)) {
@@ -5386,6 +5388,77 @@ function cmdRestart(args) {
   return `🔄 Reinicio ${mode} del pipeline en progreso...\n_Te aviso cuando termine (~15-30s)._${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
 }
 
+function cmdBloqueados() {
+  let humanBlock;
+  try { humanBlock = require('./lib/human-block'); }
+  catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
+
+  const list = humanBlock.listBlockedIssues();
+  if (!list.length) return '✅ No hay issues bloqueados esperando intervención humana.';
+
+  const lines = [`🚧 *Issues bloqueados esperando humano* (${list.length})\n`];
+  for (const b of list) {
+    const ageStr = b.age_hours < 1
+      ? `${Math.round(b.age_hours * 60)}min`
+      : `${b.age_hours}h`;
+    lines.push(`*#${b.issue}* — ${b.skill} en ${b.phase} _(hace ${ageStr})_`);
+    if (b.question) lines.push(`  ❓ ${b.question}`);
+    else if (b.reason) lines.push(`  📝 ${b.reason.slice(0, 140)}`);
+    lines.push('');
+  }
+  lines.push('_Usá_ `/unblock <issue> <orientación>` _para desbloquear._');
+  return lines.join('\n');
+}
+
+function cmdUnblock(args) {
+  const trimmed = (args || '').trim();
+  if (!trimmed) {
+    return '❌ Uso: `/unblock <issue> <orientación>`\nEj: `/unblock 2480 usar la API REST en lugar de gRPC`';
+  }
+
+  const m = trimmed.match(/^#?(\d+)\s+(.+)$/s);
+  if (!m) {
+    return '❌ Formato inválido. Usá: `/unblock <número de issue> <orientación>`';
+  }
+  const issue = Number(m[1]);
+  const guidance = m[2].trim();
+  if (!guidance) return '❌ La orientación no puede estar vacía.';
+
+  let humanBlock;
+  try { humanBlock = require('./lib/human-block'); }
+  catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
+
+  let result;
+  try { result = humanBlock.unblockIssue({ issue, guidance, unlocker: 'commander:telegram' }); }
+  catch (e) { return `❌ Error desbloqueando #${issue}: ${e.message}`; }
+
+  if (!result.ok) return `⚠️ ${result.error}`;
+
+  // Best-effort: quitar label needs:human del issue en GitHub
+  try {
+    const ghBin = process.env.GH_BIN || 'gh';
+    require('child_process').execSync(
+      `"${ghBin}" issue edit ${issue} --remove-label "needs:human" --repo intrale/platform`,
+      { stdio: 'ignore', timeout: 15000 }
+    );
+  } catch {}
+
+  // Best-effort: comentar en el issue con la orientación
+  try {
+    const ghBin = process.env.GH_BIN || 'gh';
+    const body = `## ✅ Desbloqueado por humano\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\n**Orientación:**\n\n> ${guidance.replace(/\n/g, '\n> ')}\n\n_Vuelve a la cola del pipeline._`;
+    const tmpFile = path.join(PIPELINE, `.unblock-comment-${issue}-${Date.now()}.md`);
+    fs.writeFileSync(tmpFile, body);
+    require('child_process').execSync(
+      `"${ghBin}" issue comment ${issue} --body-file "${tmpFile}" --repo intrale/platform`,
+      { stdio: 'ignore', timeout: 15000 }
+    );
+    try { fs.unlinkSync(tmpFile); } catch {}
+  } catch {}
+
+  return `✅ Issue *#${issue}* desbloqueado.\n*Skill:* \`${result.skill}\` · *Fase:* \`${result.from_phase}\` → \`${result.to_phase}\`\n*Orientación guardada* para que el próximo agente la lea al arrancar.`;
+}
+
 function cmdHelp() {
   return `🤖 *Comandos del Pipeline V2*
 
@@ -5400,6 +5473,8 @@ function cmdHelp() {
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
 /costos — Resumen de actividad/costos
+/bloqueados — Listar issues bloqueados esperando intervención humana (V3)
+/unblock <issue> <orientación> — Desbloquear un issue con orientación para el skill (V3)
 /help — Esta ayuda
 /stop — Apagar el Commander
 
@@ -5433,6 +5508,7 @@ function parseCommand(text) {
       { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
       { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
       { pattern: /\b(limpi[áa]|limpiar daemons|matar gradle|matar daemons|kill gradle)\b/i, cmd: 'limpiar' },
+      { pattern: /\b(bloqueados|qu[eé] est[áa] bloqueado|que necesita humano|necesitan intervenci[óo]n)\b/i, cmd: 'bloqueados' },
     ];
 
     for (const { pattern, cmd } of intentPatterns) {
@@ -5573,6 +5649,8 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
       case 'limpiar': respuesta = cmdLimpiar(); break;
       case 'restart': respuesta = cmdRestart(parsed.args); break;
+      case 'bloqueados': respuesta = cmdBloqueados(); break;
+      case 'unblock': respuesta = cmdUnblock(parsed.args); break;
       default: respuesta = null; break;
     }
 
