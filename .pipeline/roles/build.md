@@ -8,6 +8,22 @@ El Pulpo te lanza en el worktree del issue (creado en la fase dev). Si no hay wo
 
 ## Pasos obligatorios
 
+### 0. Fail-fast JAVA_HOME (allowlist de `config.yaml`)
+
+**Antes** de cualquier otro paso, validar que `$JAVA_HOME` heredado del entorno esté en la allowlist parametrizada. Si no coincide, fallar con exit **78** — el Pulpo lo clasifica como `rebote_tipo: infra` automáticamente (no cuenta contra el circuit breaker del código).
+
+```bash
+# Helper que compara $JAVA_HOME contra build.java_home_allowlist de config.yaml,
+# normalizando separadores (/ vs \), case-insensitive y resolviendo symlinks.
+node .pipeline/validate-java-home.js || exit 78
+```
+
+Si el helper devuelve exit 78:
+
+- Loggea el valor actual de `$JAVA_HOME` y la allowlist esperada.
+- El issue reencola con `rebote_tipo: infra` sin penalizar el budget de código.
+- Para agregar un JDK nuevo a la allowlist, editar `.pipeline/config.yaml` bajo `build.java_home_allowlist` y commitear. Ver `docs/operacion-pipeline.md#allowlist-jdk`.
+
 ### 1. Actualizar con main
 
 ```bash

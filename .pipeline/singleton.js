@@ -12,6 +12,7 @@ const path = require('path');
 const { findPidByScript, SCRIPT_MAP, invalidateCache } = require('./pid-discovery');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+const READY_DIR = path.join(PIPELINE, 'ready');
 
 /**
  * Garantiza singleton. Si ya hay una instancia viva del mismo script (según
@@ -31,6 +32,24 @@ module.exports = function singleton(name) {
   const existing = findPidByScript(scriptName);
 
   if (existing && existing.pid !== process.pid) {
+    // Antes de abortar, refrescar el marker ready con el PID de la instancia
+    // viva. Motivo: si el marker no existe o tiene un PID stale, smoke-test
+    // reporta MISSING/STALE a pesar de que el proceso correcto está corriendo
+    // (ver issue #2450). Al abortar silenciosamente, el proceso original
+    // nunca reescribe su marker. Lo hacemos acá en su lugar, usando el PID
+    // que el SO nos reporta como vivo. No-op si falla (best-effort).
+    try {
+      if (!fs.existsSync(READY_DIR)) fs.mkdirSync(READY_DIR, { recursive: true });
+      const markerPath = path.join(READY_DIR, `${name}.ready`);
+      const now = new Date().toISOString();
+      fs.writeFileSync(markerPath, JSON.stringify({
+        name,
+        pid: existing.pid,
+        startedAt: existing.creationDate || now,
+        readyAt: now,
+        meta: { refreshedBy: 'singleton-abort', abortedPid: process.pid },
+      }, null, 2));
+    } catch {}
     console.error(`[FATAL] Ya hay una instancia de ${name} corriendo (PID ${existing.pid}). Abortando.`);
     process.exit(1);
   }
