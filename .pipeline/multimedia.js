@@ -5,6 +5,8 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
@@ -221,21 +223,60 @@ async function preprocessMessage(msg, botToken) {
   return result;
 }
 
+// --- TTS config (priorización dinámica) ---
+
+const TTS_CONFIG_PATH = path.join(ROOT, '.pipeline', 'tts-config.json');
+
+function loadTtsConfig() {
+  const defaults = {
+    primary: 'openai',
+    fallback: 'edge',
+    providers: {
+      openai: {
+        model: 'gpt-4o-mini-tts',
+        voice: 'ash',
+        instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
+        response_format: 'opus'
+      },
+      edge: {
+        voice: 'es-AR-TomasNeural',
+        rate: '+0%',
+        pitch: '+0Hz'
+      }
+    }
+  };
+  try {
+    const raw = JSON.parse(fs.readFileSync(TTS_CONFIG_PATH, 'utf8'));
+    return {
+      primary: raw.primary || defaults.primary,
+      fallback: raw.fallback === null ? null : (raw.fallback || defaults.fallback),
+      providers: {
+        openai: { ...defaults.providers.openai, ...(raw.providers && raw.providers.openai) },
+        edge: { ...defaults.providers.edge, ...(raw.providers && raw.providers.edge) }
+      }
+    };
+  } catch {
+    return defaults;
+  }
+}
+
 // --- OpenAI TTS ---
 
-function textToSpeech(text) {
+function textToSpeechOpenAI(text) {
   const config = loadConfig();
   const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
-  if (!apiKey) return Promise.resolve(null);
+  if (!apiKey) { log('TTS[openai]: falta openai_api_key'); return Promise.resolve(null); }
 
-  return new Promise((resolve, reject) => {
+  const ttsCfg = loadTtsConfig().providers.openai;
+
+  return new Promise((resolve) => {
     // OpenAI TTS soporta hasta 4096 chars — NO truncar, los callers manejan chunking
     const body = JSON.stringify({
-      model: 'gpt-4o-mini-tts',
+      model: ttsCfg.model,
       input: text.substring(0, 4096),
-      voice: 'ash',
-      instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
-      response_format: 'opus'
+      voice: ttsCfg.voice,
+      instructions: ttsCfg.instructions,
+      response_format: ttsCfg.response_format || 'opus'
     });
 
     const req = https.request({
@@ -254,19 +295,156 @@ function textToSpeech(text) {
       res.on('end', () => {
         const buffer = Buffer.concat(chunks);
         if (res.statusCode === 200 && buffer.length > 100) {
-          log(`TTS generado: ${buffer.length} bytes`);
+          log(`TTS[openai] generado: ${buffer.length} bytes`);
           resolve(buffer);
         } else {
-          log(`TTS error: status=${res.statusCode}, size=${buffer.length}`);
+          log(`TTS[openai] error: status=${res.statusCode}, size=${buffer.length}`);
           resolve(null);
         }
       });
     });
-    req.on('error', (e) => { log(`TTS error: ${e.message}`); resolve(null); });
-    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', (e) => { log(`TTS[openai] error: ${e.message}`); resolve(null); });
+    req.on('timeout', () => { req.destroy(); log('TTS[openai] timeout'); resolve(null); });
     req.write(body);
     req.end();
   });
+}
+
+// --- Edge TTS (Microsoft, gratis) ---
+
+function findEdgeTtsExe() {
+  // Permite override por env
+  if (process.env.EDGE_TTS_BIN && fs.existsSync(process.env.EDGE_TTS_BIN)) return process.env.EDGE_TTS_BIN;
+  const candidates = [];
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    for (const v of ['Python314', 'Python313', 'Python312', 'Python311', 'Python310']) {
+      candidates.push(path.join(appData, 'Python', v, 'Scripts', 'edge-tts.exe'));
+    }
+    candidates.push('C:\\Python314\\Scripts\\edge-tts.exe');
+    candidates.push('C:\\Python313\\Scripts\\edge-tts.exe');
+    candidates.push('C:\\Python312\\Scripts\\edge-tts.exe');
+  } else {
+    candidates.push('/usr/local/bin/edge-tts', '/usr/bin/edge-tts');
+  }
+  for (const c of candidates) { if (fs.existsSync(c)) return c; }
+  return 'edge-tts'; // último recurso: que lo busque en PATH
+}
+
+function findFfmpegExe() {
+  if (process.env.FFMPEG_BIN && fs.existsSync(process.env.FFMPEG_BIN)) return process.env.FFMPEG_BIN;
+  // En Windows el which puede ser lento, probamos comunes primero
+  if (process.platform === 'win32') {
+    const wingetBase = path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages');
+    try {
+      if (fs.existsSync(wingetBase)) {
+        const entries = fs.readdirSync(wingetBase);
+        const ff = entries.find(e => e.toLowerCase().startsWith('gyan.ffmpeg'));
+        if (ff) {
+          const pkgDir = path.join(wingetBase, ff);
+          const sub = fs.readdirSync(pkgDir).find(e => e.toLowerCase().startsWith('ffmpeg-'));
+          if (sub) {
+            const bin = path.join(pkgDir, sub, 'bin', 'ffmpeg.exe');
+            if (fs.existsSync(bin)) return bin;
+          }
+        }
+      }
+    } catch {}
+  }
+  return 'ffmpeg'; // lo busca en PATH
+}
+
+function mp3ToOpus(mp3Path) {
+  return new Promise((resolve) => {
+    const oggPath = mp3Path.replace(/\.mp3$/i, '.ogg');
+    const ff = findFfmpegExe();
+    const args = ['-y', '-loglevel', 'error', '-i', mp3Path, '-c:a', 'libopus', '-b:a', '48k', '-vbr', 'on', oggPath];
+    const proc = spawn(ff, args, { windowsHide: true });
+    let stderr = '';
+    proc.stderr.on('data', d => stderr += d.toString());
+    proc.on('error', (e) => { log(`TTS[edge] ffmpeg error: ${e.message}`); resolve(null); });
+    proc.on('close', (code) => {
+      if (code === 0 && fs.existsSync(oggPath)) {
+        try { const buf = fs.readFileSync(oggPath); fs.unlinkSync(oggPath); resolve(buf); }
+        catch { resolve(null); }
+      } else {
+        log(`TTS[edge] ffmpeg exit=${code} ${stderr.slice(0, 200)}`);
+        resolve(null);
+      }
+    });
+  });
+}
+
+function textToSpeechEdge(text) {
+  const ttsCfg = loadTtsConfig().providers.edge;
+  const tmpDir = path.join(os.tmpdir(), 'intrale-edge-tts');
+  try { fs.mkdirSync(tmpDir, { recursive: true }); } catch {}
+  const mp3Path = path.join(tmpDir, `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp3`);
+  const bin = findEdgeTtsExe();
+  const input = text.substring(0, 5000);
+
+  return new Promise((resolve) => {
+    const args = [
+      '--voice', ttsCfg.voice,
+      '--rate', ttsCfg.rate || '+0%',
+      '--pitch', ttsCfg.pitch || '+0Hz',
+      '--text', input,
+      '--write-media', mp3Path
+    ];
+    const proc = spawn(bin, args, { windowsHide: true });
+    let stderr = '';
+    proc.stderr.on('data', d => stderr += d.toString());
+    proc.on('error', (e) => { log(`TTS[edge] error spawn: ${e.message}`); resolve(null); });
+    proc.on('close', async (code) => {
+      if (code !== 0 || !fs.existsSync(mp3Path)) {
+        log(`TTS[edge] exit=${code} ${stderr.slice(0, 200)}`);
+        resolve(null);
+        return;
+      }
+      // Convertir mp3 → opus ogg (Telegram voice message)
+      const opusBuf = await mp3ToOpus(mp3Path);
+      try { fs.unlinkSync(mp3Path); } catch {}
+      if (opusBuf && opusBuf.length > 100) {
+        log(`TTS[edge] generado: ${opusBuf.length} bytes (voz=${ttsCfg.voice})`);
+        resolve(opusBuf);
+      } else {
+        log(`TTS[edge] conversion fallida`);
+        resolve(null);
+      }
+    });
+  });
+}
+
+// --- TTS con priorización dinámica + fallback ---
+
+async function textToSpeechByProvider(provider, text) {
+  if (provider === 'openai') return textToSpeechOpenAI(text);
+  if (provider === 'edge') return textToSpeechEdge(text);
+  log(`TTS: provider desconocido '${provider}'`);
+  return null;
+}
+
+async function textToSpeech(text) {
+  const cfg = loadTtsConfig();
+  // Forzado opcional por env (útil para tests)
+  const forced = process.env.TTS_PROVIDER;
+  if (forced) {
+    log(`TTS forzado por env: ${forced}`);
+    return await textToSpeechByProvider(forced, text);
+  }
+
+  const primary = cfg.primary || 'openai';
+  log(`TTS: intentando primary=${primary}`);
+  const buf = await textToSpeechByProvider(primary, text);
+  if (buf) return buf;
+
+  const fallback = cfg.fallback;
+  if (!fallback || fallback === primary) {
+    log(`TTS: primary fallo y no hay fallback distinto`);
+    return null;
+  }
+  log(`TTS: primary fallo, probando fallback=${fallback}`);
+  return await textToSpeechByProvider(fallback, text);
 }
 
 // --- Enviar audio por Telegram ---
@@ -339,4 +517,15 @@ function splitTextForTTSChunks(text, maxChars) {
   return result;
 }
 
-module.exports = { preprocessMessage, transcribeAudio, describeImage, downloadTelegramFile, textToSpeech, sendVoiceTelegram, splitTextForTTSChunks };
+module.exports = {
+  preprocessMessage,
+  transcribeAudio,
+  describeImage,
+  downloadTelegramFile,
+  textToSpeech,
+  textToSpeechOpenAI,
+  textToSpeechEdge,
+  loadTtsConfig,
+  sendVoiceTelegram,
+  splitTextForTTSChunks
+};
