@@ -5381,6 +5381,9 @@ function renderConsumoHtml() {
     <button class="tab active" data-panel="agents">Por agente</button>
     <button class="tab" data-panel="phases">Por fase</button>
     <button class="tab" data-panel="issues">Por issue</button>
+    <button class="tab" data-panel="projections">Proyecciones</button>
+    <button class="tab" data-panel="llmvsdet">LLM vs Determinístico</button>
+    <button class="tab" data-panel="ttsissues">TTS por issue</button>
   </div>
 
   <div class="panel active" id="panel-agents">
@@ -5408,9 +5411,37 @@ function renderConsumoHtml() {
     </div>
   </div>
 
+  <div class="panel" id="panel-projections">
+    <div id="proj-cards"><div class="empty">Cargando…</div></div>
+  </div>
+
+  <div class="panel" id="panel-llmvsdet">
+    <div class="card-sub" style="color:var(--dim);font-size:12px;margin-bottom:8px;">
+      Comparativa por skill entre ejecución LLM (Claude) y determinística (Node puro). "Ahorro estimado" = sesiones_det × costo_promedio_llm.
+    </div>
+    <table>
+      <thead><tr><th>Skill</th><th class="num">LLM sesiones</th><th class="num">LLM costo</th><th class="num">LLM prom/sesión</th><th class="num">Det sesiones</th><th class="num">Det costo</th><th class="num">Ahorro estimado</th><th>Estado</th></tr></thead>
+      <tbody id="tbody-llmvsdet"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="panel-ttsissues">
+    <div class="card-sub" style="color:var(--dim);font-size:12px;margin-bottom:8px;">
+      Consumo de TTS (caracteres, audio, costo) desglosado por issue. Click en una fila para ver los providers usados.
+    </div>
+    <table>
+      <thead><tr><th>Issue</th><th class="num">TTS count</th><th class="num">Caracteres</th><th class="num">Audio</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-ttsissues"><tr><td colspan="5" class="empty">Cargando…</td></tr></tbody>
+    </table>
+    <div class="drilldown" id="tts-drilldown">
+      <h3 id="tts-dd-title">Providers</h3>
+      <div id="tts-dd-body"></div>
+    </div>
+  </div>
+
   <div class="footer">
-    Schema V3 definido en <a href="https://github.com/intrale/platform/issues/2477" target="_blank">#2477</a>.
-    Endpoints JSON: <a href="/metrics/agents">/metrics/agents</a> · <a href="/metrics/phases">/metrics/phases</a> · <a href="/metrics/issues">/metrics/issues</a> · <a href="/metrics/tts">/metrics/tts</a> · <a href="/metrics/snapshot">/metrics/snapshot</a>
+    Schema V3 definido en <a href="https://github.com/intrale/platform/issues/2477" target="_blank">#2477</a> · Extensiones en <a href="https://github.com/intrale/platform/issues/2488" target="_blank">#2488</a>.<br>
+    Endpoints JSON: <a href="/metrics/agents">/agents</a> · <a href="/metrics/phases">/phases</a> · <a href="/metrics/issues">/issues</a> · <a href="/metrics/tts">/tts</a> · <a href="/metrics/projections">/projections</a> · <a href="/metrics/llm-vs-deterministic">/llm-vs-deterministic</a> · <a href="/metrics/daily">/daily</a> · <a href="/metrics/snapshot">/snapshot</a>
   </div>
 
 <script>
@@ -5493,6 +5524,110 @@ function renderIssues(rows) {
   ).join('');
 }
 
+function projCard(title, dim) {
+  if (!dim) return '';
+  const q = dim.quota || {};
+  const status = q.status || 'ok';
+  const color = status === 'over' ? 'var(--rd, #f85149)' : (status === 'warning' ? 'var(--yl, #d29922)' : 'var(--gn, #3fb950)');
+  const ratioPct = q.ratio != null ? Math.round(q.ratio * 100) + '%' : '—';
+  const alert = q.alert ? '<div style="margin-top:8px;padding:8px;background:rgba(248,81,73,0.10);border-left:3px solid '+color+';font-size:12px;">⚠️ '+q.alert+'</div>' : '';
+  const secondary = [];
+  if (dim.dimension === 'tts') {
+    if (dim.tts_chars_monthly_projection != null) secondary.push(['Caracteres/mes (proyectado)', fmtNum(dim.tts_chars_monthly_projection)]);
+    if (dim.tts_audio_seconds_monthly_projection != null) secondary.push(['Audio/mes (proyectado)', fmtAudio(dim.tts_audio_seconds_monthly_projection)]);
+    if (dim.tts_chars_month_to_date != null) secondary.push(['Caracteres MTD', fmtNum(dim.tts_chars_month_to_date)]);
+  } else {
+    if (dim.sessions_monthly_projection != null) secondary.push(['Sesiones/mes (proyectado)', fmtNum(dim.sessions_monthly_projection)]);
+    if (dim.sessions_month_to_date != null) secondary.push(['Sesiones MTD', fmtNum(dim.sessions_month_to_date)]);
+  }
+  const secHtml = secondary.length ? '<div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;color:var(--dim);">'
+    + secondary.map(([l,v]) => '<div>'+l+': <span style="color:var(--fg);font-weight:600;">'+v+'</span></div>').join('') + '</div>' : '';
+  return '<div class="kpi" style="border-left:3px solid '+color+';padding:14px;">'
+    +'<div class="label" style="font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">'+title+'</div>'
+    +'<div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;">'
+      +'<div><div style="color:var(--dim);font-size:11px;">Promedio diario</div><div style="font-weight:600;">'+fmtUsd(dim.daily_avg_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Proyección semanal</div><div style="font-weight:600;">'+fmtUsd(dim.weekly_projection_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Mes hasta hoy</div><div style="font-weight:600;">'+fmtUsd(dim.month_to_date_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Proyección fin de mes</div><div style="font-weight:600;color:'+color+';">'+fmtUsd(dim.monthly_forecast_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Cuota mensual</div><div style="font-weight:600;">'+fmtUsd(q.monthly_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">% de cuota</div><div style="font-weight:600;color:'+color+';">'+ratioPct+'</div></div>'
+    +'</div>'
+    + secHtml
+    + alert
+    +'<div style="margin-top:8px;font-size:11px;color:var(--dim);">Basado en últimos '+(dim.samples||0)+' días · '+dim.days_remaining_this_month+' días restantes del mes</div>'
+  +'</div>';
+}
+
+function renderProjections(projections) {
+  const el = document.getElementById('proj-cards');
+  if (!projections || (!projections.tokens && !projections.tts)) {
+    el.innerHTML = '<div class="empty">Sin datos suficientes para proyectar.</div>';
+    return;
+  }
+  el.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">'
+    + projCard('Tokens (LLM)', projections.tokens)
+    + projCard('TTS (audio)', projections.tts)
+    + '</div>';
+}
+
+function renderLlmVsDet(rows) {
+  const body = document.getElementById('tbody-llmvsdet');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="8" class="empty">Sin sesiones registradas para comparar</td></tr>'; return; }
+  body.innerHTML = rows.map(r => {
+    const status = r.migrated
+      ? '<span style="color:var(--gn, #3fb950);">✓ Migrado</span>'
+      : '<span style="color:var(--dim);">— Solo LLM</span>';
+    const savings = r.estimated_savings_usd > 0
+      ? '<span style="color:var(--gn, #3fb950);font-weight:600;">'+fmtUsd(r.estimated_savings_usd)+'</span>'
+      : fmtUsd(r.estimated_savings_usd);
+    return '<tr><td class="skill">'+(r.skill||'—')+'</td>'
+      +'<td class="num">'+fmtNum(r.llm_sessions)+'</td>'
+      +'<td class="usd">'+fmtUsd(r.llm_cost_usd)+'</td>'
+      +'<td class="usd">'+fmtUsd(r.llm_avg_cost_per_session)+'</td>'
+      +'<td class="num">'+fmtNum(r.deterministic_sessions)+'</td>'
+      +'<td class="usd">'+fmtUsd(r.deterministic_cost_usd)+'</td>'
+      +'<td class="usd">'+savings+'</td>'
+      +'<td>'+status+'</td></tr>';
+  }).join('');
+}
+
+function renderTtsByIssue(rows) {
+  const body = document.getElementById('tbody-ttsissues');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="5" class="empty">Sin TTS registrado en la ventana</td></tr>'; return; }
+  body.innerHTML = rows.map(r =>
+    '<tr onclick="showTtsProviders('+r.issue+')"><td class="issue">#'+r.issue+'</td>'
+    +'<td class="num">'+fmtNum(r.tts_count)+'</td>'
+    +'<td class="num">'+fmtNum(r.tts_chars)+'</td>'
+    +'<td class="num">'+fmtAudio(r.tts_audio_seconds)+'</td>'
+    +'<td class="usd">'+fmtUsd(r.tts_cost_usd)+'</td></tr>'
+  ).join('');
+}
+
+function showTtsProviders(issueNumber) {
+  const list = (lastSnapshot && lastSnapshot.tts && lastSnapshot.tts.by_issue) || [];
+  const issue = list.find(i => Number(i.issue) === Number(issueNumber));
+  const dd = document.getElementById('tts-drilldown');
+  const title = document.getElementById('tts-dd-title');
+  const body = document.getElementById('tts-dd-body');
+  if (!issue || !issue.by_provider || !issue.by_provider.length) {
+    title.textContent = 'Providers TTS de #' + issueNumber;
+    body.innerHTML = '<div class="empty">Sin breakdown por provider para este issue.</div>';
+  } else {
+    title.textContent = 'Providers TTS de #' + issue.issue + ' · ' + fmtNum(issue.tts_count) + ' generaciones · ' + fmtUsd(issue.tts_cost_usd);
+    body.innerHTML = '<table style="width:100%;margin-top:6px;"><thead><tr><th>Provider</th><th class="num">Eventos</th><th class="num">Caracteres</th><th class="num">Audio</th><th class="usd">Costo</th></tr></thead><tbody>'
+      + issue.by_provider.map(p =>
+        '<tr><td>'+(p.provider||'—')+'</td>'
+        +'<td class="num">'+fmtNum(p.tts_count)+'</td>'
+        +'<td class="num">'+fmtNum(p.tts_chars)+'</td>'
+        +'<td class="num">'+fmtAudio(p.tts_audio_seconds)+'</td>'
+        +'<td class="usd">'+fmtUsd(p.tts_cost_usd)+'</td></tr>'
+      ).join('')
+      + '</tbody></table>';
+  }
+  dd.classList.add('open');
+  dd.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 let lastSnapshot = null;
 
 async function refresh() {
@@ -5505,6 +5640,9 @@ async function refresh() {
     renderAgents(snap.agents || []);
     renderPhases(snap.phases || []);
     renderIssues(snap.issues || []);
+    renderProjections(snap.projections || null);
+    renderLlmVsDet(snap.llm_vs_deterministic || []);
+    renderTtsByIssue((snap.tts && snap.tts.by_issue) || []);
     document.getElementById('last-refresh').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
   } catch (e) {
     document.getElementById('last-refresh').textContent = 'Error: ' + e.message;
@@ -6126,15 +6264,15 @@ const server = http.createServer((req, res) => {
   // ===========================================================================
   // V3 — Endpoints de métricas extendidas (issue #2477)
   // ===========================================================================
-  if (req.url.startsWith('/metrics/') || req.url === '/consumo') {
+  if (req.url.startsWith('/metrics/') || req.url === '/consumo' || req.url === '/metrics-v3' || req.url === '/metrics-v3/') {
     if (!v3Aggregator) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'V3 aggregator no disponible. Verificar .pipeline/metrics/aggregator.js' }));
       return;
     }
 
-    // /consumo → página HTML con las 3 tabs
-    if (req.url === '/consumo') {
+    // /consumo o /metrics-v3 → página HTML con tabs (#2488: alias /metrics-v3 más descriptivo)
+    if (req.url === '/consumo' || req.url === '/metrics-v3' || req.url === '/metrics-v3/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderConsumoHtml());
       return;
@@ -6161,6 +6299,10 @@ const server = http.createServer((req, res) => {
       if (u.pathname === '/metrics/tts')    return respond(Object.assign({}, baseMeta, { tts: snap.tts || {} }));
       if (u.pathname === '/metrics/snapshot') return respond(snap);
       if (u.pathname === '/metrics/totals')  return respond(Object.assign({}, baseMeta, { totals: snap.totals || {} }));
+      // #2488 — nuevos endpoints
+      if (u.pathname === '/metrics/projections') return respond(Object.assign({}, baseMeta, { projections: snap.projections || {} }));
+      if (u.pathname === '/metrics/llm-vs-deterministic') return respond(Object.assign({}, baseMeta, { llm_vs_deterministic: snap.llm_vs_deterministic || [] }));
+      if (u.pathname === '/metrics/daily') return respond(Object.assign({}, baseMeta, { daily: snap.daily || [] }));
 
       const issueMatch = u.pathname.match(/^\/metrics\/issues\/(\d+)\/?$/);
       if (issueMatch) {
@@ -6174,7 +6316,7 @@ const server = http.createServer((req, res) => {
       }
 
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'endpoint no reconocido', valid: ['/metrics/agents', '/metrics/phases', '/metrics/issues', '/metrics/issues/:n', '/metrics/tts', '/metrics/totals', '/metrics/snapshot', '/consumo'] }));
+      res.end(JSON.stringify({ error: 'endpoint no reconocido', valid: ['/metrics/agents', '/metrics/phases', '/metrics/issues', '/metrics/issues/:n', '/metrics/tts', '/metrics/totals', '/metrics/snapshot', '/metrics/projections', '/metrics/llm-vs-deterministic', '/metrics/daily', '/consumo', '/metrics-v3'] }));
     }).catch(fail);
     return;
   }
