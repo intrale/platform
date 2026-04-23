@@ -6,12 +6,18 @@
       "model": "gpt-4o-mini-tts",
       "voice": "ash",
       "instructions": "Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.",
-      "response_format": "opus"
+      "response_format": "opus",
+      "character_name": "Claudito"
     },
     "edge": {
       "voice": "es-AR-TomasNeural",
       "rate": "+0%",
-      "pitch": "+0Hz"
+      "pitch": "+0Hz",
+      "character_name": "Tomás"
     }
+  },
+  "intros": {
+    "openai_from_edge": "Hola Leo, volvió Claudito. Gracias a Tomás por cubrir mientras me tomé la licencia.",
+    "edge_from_openai": "Hola Leo, soy Tomás. Claudito se tomó una licencia, lo cubro yo mientras vuelve."
   }
 }

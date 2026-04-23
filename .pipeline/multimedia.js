@@ -236,13 +236,19 @@ function loadTtsConfig() {
         model: 'gpt-4o-mini-tts',
         voice: 'ash',
         instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
-        response_format: 'opus'
+        response_format: 'opus',
+        character_name: 'Claudito'
       },
       edge: {
         voice: 'es-AR-TomasNeural',
         rate: '+0%',
-        pitch: '+0Hz'
+        pitch: '+0Hz',
+        character_name: 'Tomás'
       }
+    },
+    intros: {
+      openai_from_edge: 'Hola Leo, volvió Claudito. Gracias a Tomás por cubrir mientras me tomé la licencia.',
+      edge_from_openai: 'Hola Leo, soy Tomás. Claudito se tomó una licencia, lo cubro yo mientras vuelve.'
     }
   };
   try {
@@ -253,11 +259,33 @@ function loadTtsConfig() {
       providers: {
         openai: { ...defaults.providers.openai, ...(raw.providers && raw.providers.openai) },
         edge: { ...defaults.providers.edge, ...(raw.providers && raw.providers.edge) }
-      }
+      },
+      intros: { ...defaults.intros, ...(raw.intros || {}) }
     };
   } catch {
     return defaults;
   }
+}
+
+// Estado persistente: último provider usado (para detectar transiciones)
+const TTS_STATE_PATH = path.join(ROOT, '.pipeline', '.tts-state.json');
+
+function loadTtsState() {
+  try { return JSON.parse(fs.readFileSync(TTS_STATE_PATH, 'utf8')); }
+  catch { return { lastProvider: null }; }
+}
+
+function saveTtsState(state) {
+  try { fs.writeFileSync(TTS_STATE_PATH, JSON.stringify(state, null, 2)); }
+  catch (e) { log(`TTS state save error: ${e.message}`); }
+}
+
+function getTransitionIntro(newProvider, prevProvider) {
+  if (!prevProvider || prevProvider === newProvider) return null;
+  const cfg = loadTtsConfig();
+  if (newProvider === 'openai' && prevProvider === 'edge') return cfg.intros?.openai_from_edge || null;
+  if (newProvider === 'edge' && prevProvider === 'openai') return cfg.intros?.edge_from_openai || null;
+  return null;
 }
 
 // --- OpenAI TTS ---
@@ -424,19 +452,21 @@ async function textToSpeechByProvider(provider, text) {
   return null;
 }
 
-async function textToSpeech(text) {
+// Retorna { buffer, provider } donde provider es el que efectivamente generó el audio.
+// Null si ambos fallaron.
+async function textToSpeechWithMeta(text) {
   const cfg = loadTtsConfig();
-  // Forzado opcional por env (útil para tests)
   const forced = process.env.TTS_PROVIDER;
   if (forced) {
     log(`TTS forzado por env: ${forced}`);
-    return await textToSpeechByProvider(forced, text);
+    const buf = await textToSpeechByProvider(forced, text);
+    return buf ? { buffer: buf, provider: forced } : null;
   }
 
   const primary = cfg.primary || 'openai';
   log(`TTS: intentando primary=${primary}`);
-  const buf = await textToSpeechByProvider(primary, text);
-  if (buf) return buf;
+  const bufPrimary = await textToSpeechByProvider(primary, text);
+  if (bufPrimary) return { buffer: bufPrimary, provider: primary };
 
   const fallback = cfg.fallback;
   if (!fallback || fallback === primary) {
@@ -444,7 +474,14 @@ async function textToSpeech(text) {
     return null;
   }
   log(`TTS: primary fallo, probando fallback=${fallback}`);
-  return await textToSpeechByProvider(fallback, text);
+  const bufFallback = await textToSpeechByProvider(fallback, text);
+  return bufFallback ? { buffer: bufFallback, provider: fallback } : null;
+}
+
+// Compat: signature histórica que retorna solo el buffer.
+async function textToSpeech(text) {
+  const meta = await textToSpeechWithMeta(text);
+  return meta ? meta.buffer : null;
 }
 
 // --- Enviar audio por Telegram ---
@@ -523,9 +560,13 @@ module.exports = {
   describeImage,
   downloadTelegramFile,
   textToSpeech,
+  textToSpeechWithMeta,
   textToSpeechOpenAI,
   textToSpeechEdge,
   loadTtsConfig,
+  loadTtsState,
+  saveTtsState,
+  getTransitionIntro,
   sendVoiceTelegram,
   splitTextForTTSChunks
 };
