@@ -28,6 +28,8 @@ const { redact } = require('./redact');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+// #2490 — Pausa parcial con allowlist explícita de issues
+const partialPause = require('./lib/partial-pause');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -3049,6 +3051,16 @@ function brazoLanzamiento(config) {
     //    Sin este check el siguiente iteration explota al intentar moverlo.
     if (!fs.existsSync(archivo.path)) continue;
 
+    // 0a. PARTIAL PAUSE (#2490): si hay allowlist activa, saltar issues fuera de ella.
+    // El archivo se queda en pendiente/ — no se archiva ni penaliza.
+    if (!partialPause.isIssueAllowed(issue)) {
+      const mode = partialPause.getPipelineMode();
+      if (mode.mode === 'partial_pause') {
+        log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
+      }
+      continue;
+    }
+
     // 0b. BLOCKED: no lanzar issues con blocked:dependencies
     const issueLbls = getIssueLabels(issue);
     if (issueLbls.includes('blocked:dependencies')) {
@@ -4633,8 +4645,16 @@ async function cmdStatus(config) {
     log('commander', `[status] Error obteniendo PRs del día: ${e.message}`);
   }
 
-  // Estado pausa
-  if (paused) lines.push('\n⏸️ *PULPO PAUSADO*');
+  // Estado pausa (completa o parcial — #2490)
+  if (paused) {
+    lines.push('\n⏸️ *PULPO PAUSADO*');
+  } else {
+    const ppMode = partialPause.getPipelineMode();
+    if (ppMode.mode === 'partial_pause') {
+      const list = ppMode.allowedIssues.map(i => `#${i}`).join(', ');
+      lines.push(`\n⏸️ *PULPO EN PAUSA PARCIAL*\nIssues permitidos: ${list}`);
+    }
+  }
 
   const text = lines.join('\n');
 
@@ -4651,7 +4671,14 @@ async function cmdStatus(config) {
       // Recursos
       const { cpuPercent: cpu, memPercent: mem } = getSystemResourceUsage();
       narration += `CPU al ${cpu} por ciento, RAM al ${mem} por ciento. `;
-      if (paused) narration += 'El pulpo está pausado. ';
+      if (paused) {
+        narration += 'El pulpo está pausado. ';
+      } else {
+        const ppMode = partialPause.getPipelineMode();
+        if (ppMode.mode === 'partial_pause') {
+          narration += `Pipeline en pausa parcial, procesando solo ${ppMode.allowedIssues.length} ${ppMode.allowedIssues.length === 1 ? 'issue' : 'issues'}. `;
+        }
+      }
       // PRs del día
       try {
         const today = new Date().toISOString().slice(0, 10);
@@ -4774,9 +4801,31 @@ function cmdPausar() {
 }
 
 function cmdReanudar() {
-  try { fs.unlinkSync(PAUSE_FILE); } catch {}
+  // #2490 — /reanudar limpia tanto pausa completa como parcial.
+  const { removedFull, removedPartial } = partialPause.resumeAll();
   paused = false;
-  return '▶️ Pulpo REANUDADO. Procesamiento activo.';
+  const parts = [];
+  if (removedFull) parts.push('pausa completa');
+  if (removedPartial) parts.push('pausa parcial');
+  const cleared = parts.length > 0 ? ` (${parts.join(' + ')} eliminada)` : '';
+  return `▶️ Pulpo REANUDADO${cleared}. Procesamiento activo.`;
+}
+
+// #2490 — Pausa parcial con allowlist de issues.
+// Uso: /pause-partial 2490 2491  → procesa solo esos issues, pausa el resto.
+function cmdPausaParcial(args) {
+  const nums = String(args || '').match(/\d+/g) || [];
+  if (nums.length === 0) {
+    const state = partialPause.getPipelineMode();
+    if (state.mode === 'partial_pause') {
+      return `⏸️ *Pausa parcial activa*\nIssues permitidos: ${state.allowedIssues.map(i => `#${i}`).join(', ')}\nDesde: ${state.createdAt || '?'}\n\n_Usar /reanudar para desactivar._`;
+    }
+    return '⚠️ Uso: `/pause-partial 2490 2491`\n\nActiva pausa parcial con los issues indicados. El pipeline sigue corriendo solo para esos números, el resto queda pausado.';
+  }
+  const issues = nums.map(n => parseInt(n, 10));
+  const result = partialPause.setPartialPause(issues, { source: 'telegram' });
+  const list = result.allowedIssues.map(i => `#${i}`).join(', ');
+  return `⏸️ *Pausa parcial activa*\nIssues permitidos: ${list}\n\n_Todo el resto del pipeline queda pausado hasta que hagas /reanudar._`;
 }
 
 function cmdCostos() {
@@ -5494,8 +5543,9 @@ function cmdHelp() {
 /restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
 /limpiar — Matar daemons Gradle/Kotlin huérfanos
 /ghostbusters — Matar fantasmas: gradle zombies + worktrees abandonados + emuladores no sincronizados
-/pausar — Pausar el Pulpo
-/reanudar — Reanudar el Pulpo
+/pausar — Pausar el Pulpo (completo)
+/pause-partial 2490 2491 — Pausa parcial: solo esos issues siguen activos
+/reanudar — Reanudar el Pulpo (levanta pausa completa o parcial)
 /costos — Resumen de actividad/costos
 /bloqueados — Listar issues bloqueados esperando intervención humana (V3)
 /unblock <issue> <orientación> — Desbloquear un issue con orientación para el skill (V3)
@@ -5510,8 +5560,8 @@ function parseCommand(text) {
   if (!text || typeof text !== 'string') return null;
   const trimmed = text.trim();
 
-  // Comando explícito /xxx
-  const match = trimmed.match(/^\/(\w+)\s*(.*)?$/s);
+  // Comando explícito /xxx (admite guiones para /pause-partial, /chat-gpt, etc.)
+  const match = trimmed.match(/^\/([\w-]+)\s*(.*)?$/s);
   if (match) return { cmd: match[1].toLowerCase(), args: (match[2] || '').trim() };
 
   // Detección de intención por lenguaje natural (solo para mensajes cortos tipo comando)
@@ -5661,8 +5711,10 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       case 'actividad': respuesta = cmdActividad(parsed.args); break;
       case 'ghostbusters': respuesta = cmdGhostbusters(); break;
       case 'intake': respuesta = cmdIntake(parsed.args, config); break;
-      case 'pausar': respuesta = cmdPausar(); break;
-      case 'reanudar': respuesta = cmdReanudar(); break;
+      case 'pausar': case 'pause': respuesta = cmdPausar(); break;
+      case 'reanudar': case 'resume': respuesta = cmdReanudar(); break;
+      case 'pause-partial': case 'pause_partial': case 'pausarparcial':
+        respuesta = cmdPausaParcial(parsed.args); break;
       case 'costos': respuesta = cmdCostos(); break;
       case 'help': case 'start': respuesta = cmdHelp(); break;
       case 'stop':
