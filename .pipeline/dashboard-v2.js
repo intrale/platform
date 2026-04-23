@@ -920,6 +920,14 @@ function generateHTML(state) {
   try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
   const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
 
+  // #2490 — Pausa parcial (allowlist de issues)
+  let partialPauseState = { mode: 'running', allowedIssues: [] };
+  try {
+    const pp = require('./lib/partial-pause');
+    partialPauseState = pp.getPipelineMode();
+  } catch {}
+  const isPartialPause = partialPauseState.mode === 'partial_pause';
+
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
   let v3Workers = [];
   try {
@@ -3713,7 +3721,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
       <h1 class="hdr-title">🐙 Pipeline ${v3Active ? 'V2+V3' : 'V2'}</h1>
       ${v3Active ? `<span class="hdr-v3-badge" title="V3 activo · workers determinísticos: ${v3Workers.join(', ')}">⚙ V3 (${v3Workers.length})</span>` : ''}
       <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">📊 Consumo</a>
-      <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
+      <button class="hdr-status-badge ${isPaused ? 'badge-paused' : isPartialPause ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? 'Pausa parcial — click para reanudar completo' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : isPartialPause ? `⏸ PARCIAL (${partialPauseState.allowedIssues.length})` : '▶ RUNNING'}</button>
+      ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:rgba(240,165,0,0.15);color:#f0a500;border-color:rgba(240,165,0,0.4);">🎯 ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
       <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar">↻ AUTO</button>
       <span class="hdr-uptime">UP ${pulpoUptime}</span>
       <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
@@ -3742,6 +3751,10 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     } else if (isPaused) {
       statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Pipeline en pausa</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
+    } else if (isPartialPause) {
+      const allowedList = partialPauseState.allowedIssues.map(i => '#' + i).join(', ');
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F3AF}</span>Pausa parcial \u00B7 allowed: ' + allowedList + '</span>'
+        + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Desactivar pausa parcial y reanudar todo">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
       statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F50D}</span>Ventana QA activa \u00B7 ' + elapsed + ' min</span>'
@@ -6101,7 +6114,12 @@ const server = http.createServer((req, res) => {
         const { action } = JSON.parse(body);
         const pauseFile = path.join(PIPELINE, '.paused');
         if (action === 'resume' || action === 'remove') {
+          // #2490 — resume limpia tanto pausa completa como parcial
           try { fs.unlinkSync(pauseFile); } catch {}
+          try {
+            const { resumeAll } = require('./lib/partial-pause');
+            resumeAll();
+          } catch {}
           log(`Pausa eliminada por dashboard (${action})`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
@@ -6114,6 +6132,40 @@ const server = http.createServer((req, res) => {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, msg: `Acción "${action}" no válida` }));
         }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: #2490 — Pausa parcial con allowlist de issues
+  if (req.url === '/api/pause-partial' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { issues } = JSON.parse(body || '{}');
+        const { setPartialPause, clearPartialPause, getPipelineMode } = require('./lib/partial-pause');
+        const list = Array.isArray(issues) ? issues : [];
+        if (list.length === 0) {
+          clearPartialPause();
+          log('Pausa parcial eliminada desde dashboard');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pausa parcial desactivada', mode: 'running' }));
+          return;
+        }
+        const result = setPartialPause(list, { source: 'dashboard' });
+        const state = getPipelineMode();
+        log(`Pausa parcial activada desde dashboard (${result.allowedIssues.join(',')})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          msg: result.msg,
+          mode: state.mode,
+          allowedIssues: state.allowedIssues,
+        }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
