@@ -4660,7 +4660,7 @@ async function cmdStatus(config) {
 
   // Audio TTS de la narración
   try {
-    const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+    const { textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro } = require('./multimedia');
     const botToken = getTelegramToken();
     const chatId = getTelegramChatId();
     if (botToken && chatId) {
@@ -4693,14 +4693,29 @@ async function cmdStatus(config) {
       } catch {}
 
       const statusChunks = splitTextForTTSChunks(narration, 3800);
+      let prevProviderStatus = loadTtsState().lastProvider;
       for (let i = 0; i < statusChunks.length; i++) {
-        const chunkText = statusChunks.length > 1
+        let chunkText = statusChunks.length > 1
           ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
           : statusChunks[i];
-        const audioBuffer = await textToSpeech(chunkText);
-        if (audioBuffer) {
-          await sendVoiceTelegram(audioBuffer, botToken, chatId);
-          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado`);
+        const meta = await textToSpeechWithMeta(chunkText);
+        if (meta && meta.buffer) {
+          const intro = i === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
+          if (intro) {
+            // Reenviar el primer chunk con el preámbulo de transición
+            const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`);
+            if (reMeta && reMeta.buffer) {
+              await sendVoiceTelegram(reMeta.buffer, botToken, chatId);
+              log('commander', `[status] Audio TTS parte 1/${statusChunks.length} enviado con intro (provider=${reMeta.provider})`);
+              saveTtsState({ lastProvider: reMeta.provider });
+              prevProviderStatus = reMeta.provider;
+              continue;
+            }
+          }
+          await sendVoiceTelegram(meta.buffer, botToken, chatId);
+          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado (provider=${meta.provider})`);
+          saveTtsState({ lastProvider: meta.provider });
+          prevProviderStatus = meta.provider;
         }
       }
     }
@@ -5674,7 +5689,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  const { preprocessMessage, textToSpeech, sendVoiceTelegram } = require('./multimedia');
+  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro } = require('./multimedia');
   const session = loadSession();
 
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
@@ -5872,17 +5887,32 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         if (esAudio) {
           try {
             const chatChunks = splitTextForTTSChunks(respuesta, 3800);
+            let prevProvider = loadTtsState().lastProvider;
             for (let i = 0; i < chatChunks.length; i++) {
-              const chunkText = chatChunks.length > 1
+              const baseChunk = chatChunks.length > 1
                 ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
                 : chatChunks[i];
-              const audioBuffer = await textToSpeech(chunkText);
-              if (audioBuffer) {
-                const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
-                fs.writeFileSync(audioPath, audioBuffer);
-                enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
-                if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${audioBuffer.length} bytes)`);
+              // Primero probamos a ver qué provider gana para este chunk
+              const meta = await textToSpeechWithMeta(baseChunk);
+              if (!meta || !meta.buffer) continue;
+
+              const intro = i === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
+              let finalBuffer = meta.buffer;
+              let finalProvider = meta.provider;
+              if (intro) {
+                const reMeta = await textToSpeechWithMeta(`${intro} ${baseChunk}`);
+                if (reMeta && reMeta.buffer) {
+                  finalBuffer = reMeta.buffer;
+                  finalProvider = reMeta.provider;
+                }
               }
+
+              const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
+              fs.writeFileSync(audioPath, finalBuffer);
+              enviado = await sendVoiceTelegram(finalBuffer, botToken, chatId);
+              if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${finalBuffer.length} bytes, provider=${finalProvider}${intro ? ', con intro' : ''})`);
+              saveTtsState({ lastProvider: finalProvider });
+              prevProvider = finalProvider;
             }
           } catch (e) {
             log('commander', `TTS error: ${e.message}`);
