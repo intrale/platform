@@ -58,3 +58,13 @@ val logger: Logger = LoggerFactory.getLogger("ar.com.intrale")
 ### Resultado
 - `resultado: aprobado` cuando el código está commiteado y pusheado
 - Incluir en el archivo: branch name, último commit hash
+
+### Delegación al UX para assets visuales (CRÍTICO)
+
+**No sos diseñador visual.** Aunque backend es mayormente lógica pura, si algún endpoint sirve recursos visuales (PDFs con branding, emails HTML con layout específico, respuestas con imágenes generadas/referenciadas), **los assets los produce el UX**, no vos.
+
+- Si un endpoint requiere templates HTML estilizados, layouts de PDF con branding, o imágenes embebidas: los produce el UX en la fase `criterios` y los commitea en `backend/src/main/resources/templates/` o el path que corresponda.
+- Vos consumís esos assets desde código: los cargás, parametrizás, servís.
+- Si necesitás assets y el UX no los entregó → `resultado: rechazado, motivo: "Requiere assets visuales que UX debe entregar: <lista>"`.
+
+**No inventes** HTML con CSS tuyo, ni busques imágenes stock, ni improvises branding. Rechazá pidiendo que UX produzca.

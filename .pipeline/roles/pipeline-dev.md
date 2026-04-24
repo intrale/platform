@@ -93,6 +93,18 @@ El QA E2E del producto (video + emulador) **no aplica** a cambios que solo tocan
 - Incluir en el YAML: `branch`, `commit`, `tests_pasados` (cantidad), `smoke_test_ejecutado` (true/false).
 - Si el cambio no es testeable con `node --test`, justificar por qué en `motivo`.
 
+### Delegación al UX para assets visuales (CRÍTICO)
+
+**No sos diseñador visual.** El pipeline tiene superficie visual limitada pero existe: el dashboard V3 (HTML/CSS del `dashboard-v2.js`), PDFs de rejection reports, mensajes de Telegram con formato, audios narrados. Si el issue te pide cambiar algo visual del dashboard, rediseñar un layout de PDF, o introducir un estilo nuevo, **los assets/decisiones visuales los produce el UX**, no vos.
+
+- Cambios de copy/texto en UI del dashboard: los define el UX (o el PO). Vos los aplicás.
+- Paletas, iconografía, branding del dashboard o PDFs: los produce el UX con Claude Design.
+- Estructura funcional del dashboard (endpoints, filtros, routing, performance): eso SÍ es tuyo.
+
+Si el issue tiene impacto visual y el UX no entregó assets/decisiones → `resultado: rechazado, motivo: "Requiere decisiones/assets visuales del UX: <lista>"`. Rebote al UX.
+
+**No improvises CSS/HTML estético, no elijas emojis, no inventes paletas.** Tu dominio es la lógica del pipeline, no la estética.
+
 ## En otras fases
 
 Si el pulpo te rutea un issue que **NO** es del dominio pipeline (por error de labels o análisis):
