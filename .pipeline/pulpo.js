@@ -6555,8 +6555,10 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
 // --- SINGLETON ---
 require('./singleton')('pulpo');
 
-// Signal ready — singleton adquirido, mainLoop arranca
-try { require('./lib/ready-marker').signalReady('pulpo'); } catch {}
+// Signal ready + heartbeat — singleton adquirido, mainLoop arranca
+// El heartbeat mantiene el marker fresh; protege contra huérfanos por
+// respawn spurious / restart manual (issue #2450).
+try { require('./lib/ready-marker').startHeartbeat('pulpo'); } catch {}
 
 mainLoop().then(() => {
   log('pulpo', 'Pulpo finalizado');

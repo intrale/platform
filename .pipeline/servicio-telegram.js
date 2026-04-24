@@ -190,7 +190,8 @@ async function processQueue() {
 // Main loop
 async function main() {
   log('Servicio Telegram iniciado');
-  try { require('./lib/ready-marker').signalReady('svc-telegram'); } catch {}
+  // Heartbeat mantiene el marker fresh (issue #2450).
+  try { require('./lib/ready-marker').startHeartbeat('svc-telegram'); } catch {}
   while (true) {
     try { await processQueue(); } catch (e) { log(`Error: ${e.message}`); }
     await new Promise(r => setTimeout(r, 5000)); // Poll cada 5 seg

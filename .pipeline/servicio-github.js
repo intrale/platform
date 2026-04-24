@@ -332,7 +332,8 @@ function main() {
   retryFailedOnCompletes();
 
   log('Servicio GitHub iniciado');
-  try { require('./lib/ready-marker').signalReady('svc-github'); } catch {}
+  // Heartbeat mantiene el marker fresh (issue #2450).
+  try { require('./lib/ready-marker').startHeartbeat('svc-github'); } catch {}
   setInterval(() => {
     try { processQueue(); } catch (e) { log(`Error: ${e.message}`); }
   }, 10000);

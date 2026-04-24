@@ -199,7 +199,8 @@ async function pollLoop() {
   log(`Chat ID: ${CHAT_ID}`);
 
   await sendMessage('🐙 *Pipeline V2* — Listener activo');
-  try { require('./lib/ready-marker').signalReady('listener', { offset }); } catch {}
+  // Heartbeat para mantener el marker fresh (issue #2450).
+  try { require('./lib/ready-marker').startHeartbeat('listener', { offset }); } catch {}
 
   while (true) {
     try {

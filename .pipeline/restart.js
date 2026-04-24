@@ -239,12 +239,12 @@ function runSmokeTest() {
   log('=== SMOKE TEST ===');
   try {
     // smoke-test.js es Node puro: lee ready markers + chequea HTTP en
-    // :3200. No usa wmic ni bash. Timeout holgado (90s) porque el smoke
-    // internamente hace polling hasta 60s a que los 7 componentes
-    // escriban sus markers.
+    // :3200. No usa wmic ni bash. Timeout holgado (120s): el smoke hace
+    // 60s de espera de markers + ~32s de verificación de freshness del
+    // heartbeat (HEARTBEAT_MS + 2s, ver issue #2450).
     const result = spawnSync(process.execPath, [script], {
       cwd: ROOT,
-      timeout: 90000,
+      timeout: 120000,
       encoding: 'utf8',
       windowsHide: true,
     });

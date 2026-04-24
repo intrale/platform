@@ -96,8 +96,12 @@ async function main() {
   log(`Esperando marker ready de: ${components.join(', ')} (timeout ${args.timeoutMs / 1000}s)`);
 
   // 1) Componentes listos — polling sobre los markers.
+  // Durante el bootstrap ignoramos el chequeo de freshness del heartbeat
+  // (staleMs: 0): un servicio que arrancó hace 10s todavía no tuvo tiempo
+  // de emitir un heartbeat nuevo, y no queremos marcarlo stale-heartbeat
+  // por eso. El chequeo real de freshness ocurre en la segunda fase (abajo).
   const start = Date.now();
-  const res = await waitForMarkers(components, args.timeoutMs, 1000);
+  const res = await waitForMarkers(components, args.timeoutMs, 1000, { staleMs: 0 });
   const waitedSec = Math.round((Date.now() - start) / 1000);
 
   // Log del estado final componente por componente.
@@ -115,6 +119,40 @@ async function main() {
   if (!res.ok) {
     const bad = components.filter(n => res.results[n]?.state !== 'ready');
     fail(`Componentes no-ready tras ${waitedSec}s: ${bad.join(', ')}`, 1);
+  }
+
+  // 1b) Chequeo de freshness del heartbeat (issue #2450).
+  // Si un servicio escribió su marker pero no está emitiendo heartbeats
+  // (colgado, loop bloqueado, handler sincrónico largo, etc.) el readyAt
+  // envejece. Re-consultamos después de esperar más que HEARTBEAT_MS para
+  // que cualquier heartbeat en vuelo se materialice.
+  //
+  // Esperamos ~HEARTBEAT_MS+2s antes del chequeo de freshness, pero solo
+  // si el timeout del smoke-test lo permite (skip en modo rápido).
+  const { HEARTBEAT_MS, componentState } = require('./lib/ready-marker');
+  if (args.timeoutMs >= HEARTBEAT_MS + 5000) {
+    const waitBeforeCheck = Math.min(HEARTBEAT_MS + 2000, 35000);
+    log(`Verificando freshness del heartbeat (esperando ${Math.round(waitBeforeCheck/1000)}s)...`);
+    await new Promise(r => setTimeout(r, waitBeforeCheck));
+    const stale = [];
+    for (const name of components) {
+      const st = componentState(name);
+      if (st.state === 'stale-heartbeat') {
+        stale.push({ name, ageMs: st.ageMs, pid: st.marker?.pid });
+        log(`  STALE-HEARTBEAT ${name} (PID ${st.marker?.pid || '?'}, readyAt hace ${Math.round((st.ageMs || 0)/1000)}s — servicio vivo pero sin heartbeat)`);
+      } else if (st.state !== 'ready') {
+        // Cambio de estado: pasó a stale/missing entre el primer check y ahora.
+        log(`  REGRESIÓN ${name}: ${st.state} (inesperado tras ready inicial)`);
+        stale.push({ name, regression: st.state });
+      } else {
+        log(`  OK ${name} heartbeat fresh`);
+      }
+    }
+    if (stale.length > 0) {
+      fail(`Componentes con heartbeat stale: ${stale.map(s => s.name).join(', ')}`, 1);
+    }
+  } else {
+    log(`  SKIP freshness check (timeout ${args.timeoutMs/1000}s < heartbeat ${HEARTBEAT_MS/1000}s+5)`);
   }
 
   // 2) Dashboard HTTP.

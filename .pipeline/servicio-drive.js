@@ -258,7 +258,8 @@ function main() {
     process.exit(1);
   }
 
-  try { require('./lib/ready-marker').signalReady('svc-drive'); } catch {}
+  // Heartbeat mantiene el marker fresh (issue #2450).
+  try { require('./lib/ready-marker').startHeartbeat('svc-drive'); } catch {}
   setInterval(() => {
     processQueue().catch(e => log(`Error en processQueue: ${e.message}`));
   }, 10000);

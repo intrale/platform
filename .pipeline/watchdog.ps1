@@ -66,9 +66,52 @@ function Test-ServiceAlive($Script) {
     return $false
 }
 
+# Segunda fuente de verdad: el marker ready. El servicio (si está vivo) hace
+# heartbeat cada 30s reescribiendo .pipeline/ready/<name>.ready con su PID
+# y readyAt actual (ver issue #2450). Si el marker es fresh y el PID del
+# marker está vivo, preferimos confiar en él antes que respawnear.
+#
+# Motivo: Test-ServiceAlive puede dar falso negativo en casos raros (Win32
+# query stale en la misma ventana, CommandLine corrompido, etc.). Respawnear
+# en esas condiciones dispara el loop singleton-abort → marker stale, que
+# es exactamente el bug que arrastramos acá.
+function Test-MarkerFresh($Name, [int]$StaleSeconds = 120) {
+    $markerPath = "$PipelineDir\ready\$Name.ready"
+    if (-not (Test-Path $markerPath)) { return $false }
+    try {
+        $raw = Get-Content -Path $markerPath -Raw -ErrorAction Stop
+        $data = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    if (-not $data.pid -or -not $data.readyAt) { return $false }
+    # ¿PID del marker sigue vivo?
+    try {
+        $null = Get-Process -Id $data.pid -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    # ¿readyAt es fresh?
+    try {
+        $readyAt = [datetime]::Parse($data.readyAt)
+        $ageSec = ((Get-Date).ToUniversalTime() - $readyAt.ToUniversalTime()).TotalSeconds
+        if ($ageSec -gt $StaleSeconds) { return $false }
+    } catch {
+        return $false
+    }
+    return $true
+}
+
 $dead = @()
 foreach ($svc in $Services) {
     if (-not (Test-ServiceAlive $svc.Script)) {
+        # Antes de marcar dead: segunda opinión desde el marker ready.
+        # Si el marker dice que hay un PID vivo con heartbeat reciente,
+        # confiamos en él (issue #2450).
+        if (Test-MarkerFresh $svc.Name) {
+            Write-Log "  $($svc.Name) : Test-ServiceAlive=false pero marker fresh con PID vivo — no respawn"
+            continue
+        }
         $dead += $svc.Name
     }
 }
@@ -111,6 +154,12 @@ foreach ($svcName in $dead) {
     # restart.js que largó los procesos entre que hicimos el scan y ahora).
     if (Test-ServiceAlive $script) {
         Write-Log "  $svcName : ya arrancó entre el scan y el spawn, skip"
+        continue
+    }
+    # Segunda verificación: marker fresh + PID vivo. Mismo racional que el
+    # filtro inicial — evitar respawns spurious por detecciones ambiguas.
+    if (Test-MarkerFresh $svcName) {
+        Write-Log "  $svcName : marker fresh con PID vivo entre scan y spawn, skip"
         continue
     }
 

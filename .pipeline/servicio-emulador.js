@@ -279,7 +279,8 @@ async function main() {
     }
   }
 
-  try { require('./lib/ready-marker').signalReady('svc-emulador'); } catch {}
+  // Heartbeat mantiene el marker fresh (issue #2450).
+  try { require('./lib/ready-marker').startHeartbeat('svc-emulador'); } catch {}
 
   while (true) {
     try {
