@@ -153,7 +153,7 @@ function ghCommentOnIssue(issueNumber, body) {
 // Dev también la usa (git + gh + gradle download), pero dev genera worktree
 // antes del spawn y un fallo de red suele manifestarse mejor como rebote de
 // build/tester que como precheck. Por ahora solo gateamos fases post-dev.
-const NETWORK_REQUIRED_PHASES = new Set(['build', 'verificacion', 'aprobacion', 'entrega']);
+const NETWORK_REQUIRED_PHASES = new Set(['build', 'verificacion', 'linteo', 'aprobacion', 'entrega']);
 
 // Intervalo mínimo entre prechecks ejecutados (ms). Evita spammear DNS en
 // cada ciclo del pulpo cuando el poll_interval es corto.
@@ -4146,7 +4146,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // heartbeat, eventos V3, exit 0=aprobado/1=rebote) por lo que el resto del flujo
   // (watchdog, on-exit, mover a listo/) funciona sin cambios.
   // Rollout reversible: borrar el archivo → fallback automático al agente LLM.
-  const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery']);
+  const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
   const deterministicScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
   const useDeterministicSkill = (DETERMINISTIC_SKILLS.has(skill) && fs.existsSync(deterministicScript));
 

@@ -11,13 +11,14 @@ pipelines:
       sizing: [planner]
 
   desarrollo:
-    fases: [validacion, dev, build, verificacion, aprobacion, entrega]
+    fases: [validacion, dev, build, verificacion, linteo, aprobacion, entrega]
     fase_rechazo: dev   # Los rechazos siempre vuelven a dev
     skills_por_fase:
       validacion: [po, ux, guru]
       dev: [backend-dev, android-dev, web-dev, pipeline-dev]  # Uno solo por historia, según labels
       build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
+      linteo: [linter]                           # Determinístico (Node, #2491) — chequeos mecánicos antes del LLM
       aprobacion: [review, po, ux]
       entrega: [delivery]
 
@@ -39,6 +40,7 @@ concurrencia:
   # Verificación
   tester: 2
   qa: 1                  # Limitado por hardware (emulador + video)
+  linter: 3              # Determinístico, Node puro — cero tokens, puede correr en paralelo
   review: 2
 
   # Entrega — secuencial
@@ -51,7 +53,7 @@ concurrencia:
 # Priorización de fases: el Pulpo procesa fases en orden inverso (post-dev primero)
 # Esto garantiza que build/qa/review/delivery tengan slots antes que dev,
 # evitando que el backlog de desarrollo bloquee el avance de issues ya codificados.
-# Orden efectivo: entrega → aprobacion → verificacion → build → dev → validacion
+# Orden efectivo: entrega → aprobacion → linteo → verificacion → build → dev → validacion
 
 # Routing mismatch: cuántas veces puede un issue volver a definición por
 # "fuera de alcance" antes de escalar a humano. Evita bucles en casos raros
@@ -183,6 +185,7 @@ timeouts:
     build: 60                     # Gradle check + assemble puede tardar mucho en primer build
     qa: 45                        # QA E2E con emulador + video
     tester: 45                    # Cobertura Kover + suite completa
+    linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
 # Build (#2405 CA-1) — Allowlist de JAVA_HOME para el rol build
