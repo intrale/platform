@@ -34,6 +34,40 @@ const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
+// V3 — Sistema visual unificado (issue #2523).
+// Los assets viven en .pipeline/assets/ y son producidos por el agente UX.
+// Lazy-load con cache: el dashboard renderiza muchas veces por minuto y
+// queremos evitar I/O repetido. Si el archivo cambia hace falta restart
+// (mismo modelo que dashboard-v2.js mismo).
+const ASSETS_DIR = path.join(__dirname, 'assets');
+let _designTokensCache = null;
+let _iconSpriteCache = null;
+function loadDesignTokens() {
+  if (_designTokensCache !== null) return _designTokensCache;
+  try {
+    _designTokensCache = fs.readFileSync(path.join(ASSETS_DIR, 'design-tokens.css'), 'utf8');
+  } catch {
+    _designTokensCache = ''; // degradacion silenciosa: dashboard sigue con paleta legacy inline
+  }
+  return _designTokensCache;
+}
+function loadIconSprite() {
+  if (_iconSpriteCache !== null) return _iconSpriteCache;
+  try {
+    _iconSpriteCache = fs.readFileSync(path.join(ASSETS_DIR, 'icons', 'sprite.svg'), 'utf8');
+  } catch {
+    _iconSpriteCache = '';
+  }
+  return _iconSpriteCache;
+}
+// Helper para inyectar un icono del sprite con aria-label.
+// Uso: ${ic('fase-dev', 'fase: desarrollo')}
+function ic(name, ariaLabel, extraClass) {
+  const cls = 'pl-ic' + (extraClass ? ' ' + extraClass : '');
+  const aria = ariaLabel ? ` role="img" aria-label="${String(ariaLabel).replace(/"/g, '&quot;')}"` : ' aria-hidden="true"';
+  return `<svg class="${cls}"${aria}><use href="#ic-${name}"/></svg>`;
+}
+
 // --- Componentes gestionables (start/stop) ---
 const COMPONENTS = [
   { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
@@ -385,6 +419,24 @@ function getPipelineState() {
     if (retryingMap[id]) {
       data.retrying = retryingMap[id];
     }
+    // #2523 CA-5 — detectar cross-phase rebote leyendo el primer YAML pendiente
+    // que tenga `rebote_tipo: crossphase`. Best-effort: si no hay nada, queda false.
+    data.hasCrossphase = false;
+    data.crossphaseCount = 0;
+    try {
+      for (const [faseKey, entries] of Object.entries(data.fases)) {
+        for (const e of entries) {
+          if (e.estado !== 'pendiente') continue;
+          const [pName, fName] = faseKey.split('/');
+          const yamlPath = path.join(PIPELINE, pName, fName, 'pendiente', `${id}.${e.skill}`);
+          const y = readYamlSafe(yamlPath);
+          if (y && (y.rebote_tipo === 'crossphase' || y.rebote_numero_crossphase)) {
+            data.hasCrossphase = true;
+            data.crossphaseCount = Math.max(data.crossphaseCount, y.rebote_numero_crossphase || 1);
+          }
+        }
+      }
+    } catch { /* defensivo */ }
   }
 
   // ETA: calcular promedios históricos por skill+fase desde archivos procesados
@@ -688,10 +740,14 @@ const LAYER_META = {
 
 // --- Salud de Infra (sección del /monitor, issue #2306) ---
 
-// Escape HTML para datos leídos de .pipeline/infra-health.json antes de inyectar
-// como innerHTML. Defensa en profundidad contra XSS (CA-8 · Security).
-function escInfra(s) {
-  return String(s)
+// Escape HTML server-side unificado (#2523 CA-10).
+// Antes habia 3 escapadores server-side distintos (escInfra L693, escHtml inline
+// en generateHTML L1693, replace inline L2312) — ahora todos usan esta funcion.
+// Cubre 5 caracteres XSS-relevantes (& < > " '). Aplicar a TODO dato dinamico
+// que se interpole en HTML server-rendered: titulo de issue, nombre de agente,
+// motivo de rechazo, ultimo evento, voz narrando, logs, etc.
+function esc(s) {
+  return String(s == null ? '' : s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -752,7 +808,7 @@ function renderInfraHealth(state) {
     <div class="ih-head">
       <span class="ih-emoji" aria-hidden="true">⚪</span>
       <span class="ih-title">Salud de Infra</span>
-      <span class="ih-status ih-status-stale">STALE · ${escInfra(errMsg)}</span>
+      <span class="ih-status ih-status-stale">STALE · ${esc(errMsg)}</span>
     </div>
   </section>`;
   }
@@ -828,14 +884,14 @@ function renderInfraHealth(state) {
     const nFailures = consecutiveFailures && consecutiveFailures > 0 ? consecutiveFailures : '?';
     const ultParte = lastIssueNum
       ? '<span class="ih-cb-ult">Último: <a href="' + GITHUB_BASE + '/' + lastIssueNum + '" target="_blank" rel="noopener noreferrer">#' + lastIssueNum + '</a>'
-        + (lastIssueReason ? ' · ' + escInfra(lastIssueReason) : '')
+        + (lastIssueReason ? ' · ' + esc(lastIssueReason) : '')
         + (wasTruncated ? '…' : '')
-        + (dnsTs.rel !== '—' ? ' · ' + escInfra(dnsTs.rel) : '')
+        + (dnsTs.rel !== '—' ? ' · ' + esc(dnsTs.rel) : '')
         + '</span>'
       : '';
     cbText = 'PIPELINE PAUSADO';
     cbExtra = '<div class="ih-cb-body">'
-      + '<div class="ih-cb-line">' + escInfra(nFailures) + ' issues consecutivos fallaron por red</div>'
+      + '<div class="ih-cb-line">' + esc(nFailures) + ' issues consecutivos fallaron por red</div>'
       + (ultParte ? '<div class="ih-cb-line">' + ultParte + '</div>' : '')
       + '<div class="ih-cb-cta">Reanudar: <code>node .pipeline/restart.js</code>'
       + ' <button type="button" class="ih-copy" data-copy="node .pipeline/restart.js" title="Copiar comando" aria-label="Copiar comando de reanudación">📋</button>'
@@ -843,7 +899,7 @@ function renderInfraHealth(state) {
       + '</div>';
   }
   const cbTooltipTxt = openedAtRaw ? 'Abierto desde ' + openedAtRaw : '';
-  const cbTitle = cbTooltipTxt ? ' title="' + escInfra(cbTooltipTxt) + '"' : '';
+  const cbTitle = cbTooltipTxt ? ' title="' + esc(cbTooltipTxt) + '"' : '';
 
   // Fila 2: DNS
   let dnsEmoji = '⚪';
@@ -855,7 +911,7 @@ function renderInfraHealth(state) {
   if (dnsLatency != null && dnsLatency > 500) {
     dnsExtra = ' · ' + dnsLatency + 'ms' + (dnsLatency > 3000 ? ' ⚠' : '');
   }
-  const dnsTitle = dnsTs.abs ? ' title="' + escInfra(dnsTs.abs) + '"' : '';
+  const dnsTitle = dnsTs.abs ? ' title="' + esc(dnsTs.abs) + '"' : '';
 
   // Fila 3: Retries
   const retriesDelta = retriesLastHour - retriesPreviousHour;
@@ -873,9 +929,9 @@ function renderInfraHealth(state) {
     lastEmoji = '🔴';
     const reasonDisplay = lastIssueReason || 'motivo desconocido';
     lastText = '<a href="' + GITHUB_BASE + '/' + lastIssueNum + '" target="_blank" rel="noopener noreferrer">#' + lastIssueNum + '</a>'
-      + ' · ' + escInfra(reasonDisplay)
+      + ' · ' + esc(reasonDisplay)
       + (wasTruncated ? '<span class="ih-trunc" aria-hidden="true">…</span>' : '');
-    if (wasTruncated) lastTitle = ' title="' + escInfra(lastIssueReasonFull) + '"';
+    if (wasTruncated) lastTitle = ' title="' + esc(lastIssueReasonFull) + '"';
   }
 
   return `<section class="infra-health ${sectionCls}" role="region" aria-label="Salud de Infra" aria-live="polite">
@@ -883,7 +939,7 @@ function renderInfraHealth(state) {
     <span class="ih-emoji" aria-hidden="true">${emoji}</span>
     <span class="ih-title">Salud de Infra</span>
     <span class="ih-status ih-status-${sem.level}">${sem.label}</span>
-    ${dnsTs.rel !== '—' ? '<span class="ih-ts" title="' + escInfra(dnsTs.abs) + '">última señal ' + escInfra(dnsTs.rel) + '</span>' : ''}
+    ${dnsTs.rel !== '—' ? '<span class="ih-ts" title="' + esc(dnsTs.abs) + '">última señal ' + esc(dnsTs.rel) + '</span>' : ''}
   </div>
   <div class="ih-rows">
     <div class="ih-row ih-row-cb"${cbTitle}>
@@ -895,7 +951,7 @@ function renderInfraHealth(state) {
     <div class="ih-row ih-row-dns"${dnsTitle}>
       <span class="ih-row-emoji" aria-hidden="true">${dnsEmoji}</span>
       <span class="ih-row-lbl">DNS</span>
-      <span class="ih-row-val">${dnsText}${dnsExtra} · ${escInfra(dnsTs.rel)}</span>
+      <span class="ih-row-val">${dnsText}${dnsExtra} · ${esc(dnsTs.rel)}</span>
     </div>
     <div class="ih-row ih-row-retries"${retriesTitle}>
       <span class="ih-row-emoji" aria-hidden="true">${retriesEmoji}</span>
@@ -1211,13 +1267,13 @@ function generateHTML(state) {
       ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
       : '';
     const pdfBtn = e.hasRejectionPdf
-      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📑</a>`
+      ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">📑</a>`
       : '';
 
     const inner = `<span class="chip ${cls}${staleClass}${e.hasLog ? ' chip-has-log' : ''}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
     if (e.hasLog) {
       const isLive = e.estado === 'trabajando';
-      return `<a href="/logs/view/${e.logFile}${isLive ? '?live=1' : ''}" class="log-link" target="_blank" onclick="event.stopPropagation()">${inner}</a>`;
+      return `<a href="/logs/view/${e.logFile}${isLive ? '?live=1' : ''}" class="log-link" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${inner}</a>`;
     }
     return inner;
   };
@@ -1493,7 +1549,7 @@ function generateHTML(state) {
     <div class="ic-card${completedClass}${blockedClass}${workingClass}${staleClass}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}">
       <div class="ic-header" role="button" tabindex="0" aria-expanded="false" onclick="toggleIssueDetail('${issueNum}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleIssueDetail('${issueNum}')}">
         <div class="ic-left">
-          <a href="${GH(issueNum)}" target="_blank" class="ic-issue-link" onclick="event.stopPropagation()">#${issueNum}</a>
+          <a href="${GH(issueNum)}" target="_blank" rel="noopener noreferrer" class="ic-issue-link" onclick="event.stopPropagation()">#${issueNum}</a>
           ${bounceHTML}${blockIcons}${staleHTML}
           ${titleHTML}
         </div>
@@ -1616,11 +1672,26 @@ function generateHTML(state) {
     } else {
       priority = 10000 - pulpoScore;
     }
+    // #2523 CA-5: badges de estado transversales con SVG distinto (no solo color)
+    const stateBadges = [];
+    if (data.hasCrossphase) {
+      const n = data.crossphaseCount || 1;
+      stateBadges.push(`<span class="lc-state-badge lc-state-crossphase" title="Cross-phase rebote ${n} (#2516) — re-ejecucion de fase upstream solicitada por agente" aria-label="cross-phase rebote ${n}">${ic('estado-crossphase')} CROSS ${n}</span>`);
+    } else if (data.bounces > 0) {
+      stateBadges.push(`<span class="lc-state-badge lc-state-rebote" title="${data.bounces} rebote${data.bounces > 1 ? 's' : ''} de fase posterior" aria-label="${data.bounces} rebotes">${ic('estado-rebote')} rebote ${data.bounces}</span>`);
+    }
+    if (data.labels?.includes('needs-human')) {
+      stateBadges.push(`<span class="lc-state-badge lc-state-needshuman" title="Circuit breaker o pedido explicito de intervencion humana" aria-label="necesita intervencion humana">${ic('estado-needs-human')} needs-human</span>`);
+    }
+    if (isStale && !isRetrying) {
+      stateBadges.push(`<span class="lc-state-badge lc-state-stale" title="Sin actividad reciente: ${data.staleMin}m" aria-label="stale ${data.staleMin} minutos">${ic('estado-stale')} ${data.staleMin}m</span>`);
+    }
+    const stateBadgesHTML = stateBadges.length > 0 ? `<div class="lc-state-row" role="group" aria-label="Estados del issue">${stateBadges.join('')}</div>` : '';
     const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite">
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
-            <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
+            <a class="lc-num" href="${GH(issueNum)}" target="_blank" rel="noopener noreferrer" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
             ${lcBlockIcons}${lcRetryingIcon}
           </div>
           <div class="lc-top-right">
@@ -1628,6 +1699,7 @@ function generateHTML(state) {
           </div>
         </div>
         <div class="lc-title">${flagSpan}${laneTitle}</div>
+        ${stateBadgesHTML}
         <div class="lc-foot">
           <div class="lc-foot-left">
             <span class="lc-ps">${stepperDots}</span>
@@ -1690,20 +1762,18 @@ function generateHTML(state) {
 
   // V3 — Bloqueados esperando humano (issue #2478)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
-  const escHtml = (s) => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  // #2523 CA-10: usar el `esc()` server-side global (antes habia 5 escapadores duplicados).
   const bloqueadosHTML = bloqueados.length === 0 ? '' : `
     <div class="matrix-section" id="bloqueados-humano" style="border-left:4px solid #FBCA04;background:rgba(251,202,4,0.06);padding:12px 16px;margin-bottom:14px;border-radius:6px">
       <h2 style="margin:0 0 8px 0">🚧 Esperando intervención humana <span style="font-size:0.6em;color:var(--dim);font-weight:normal">(${bloqueados.length} · V3)</span></h2>
       <div style="display:flex;flex-direction:column;gap:6px">
         ${bloqueados.map(b => {
           const ageStr = b.age_hours < 1 ? Math.round(b.age_hours * 60) + 'min' : b.age_hours + 'h';
-          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${escHtml(b.title)}</span>` : '';
+          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${esc(b.title)}</span>` : '';
           return `<div style="font-size:0.92em">
             <b>#${b.issue}</b>${titleHtml}
-            <span style="color:var(--dim)"> · ${escHtml(b.skill)} en ${escHtml(b.phase)} · hace ${ageStr}</span>
-            ${b.question ? `<div style="margin:2px 0 0 14px;color:#FBCA04">❓ ${escHtml(b.question)}</div>` : ''}
+            <span style="color:var(--dim)"> · ${esc(b.skill)} en ${esc(b.phase)} · hace ${ageStr}</span>
+            ${b.question ? `<div style="margin:2px 0 0 14px;color:#FBCA04">❓ ${esc(b.question)}</div>` : ''}
           </div>`;
         }).join('')}
       </div>
@@ -1779,11 +1849,11 @@ function generateHTML(state) {
       const icon = r.resultado === 'aprobado' ? '\u2705' : r.resultado === 'rechazado' ? '\u274C' : '\u23F3';
       const inner = '#' + r.issue;
       const pdfLink = r.hasRejectionPdf
-        ? ' <a class="skill-recent-pdf" href="/logs/' + r.rejectionPdf + '" target="_blank" title="Reporte de rechazo PDF" onclick="event.stopPropagation()">\u{1F4C4}</a>'
+        ? ' <a class="skill-recent-pdf" href="/logs/' + r.rejectionPdf + '" target="_blank" rel="noopener noreferrer" title="Reporte de rechazo PDF" onclick="event.stopPropagation()">\u{1F4C4}</a>'
         : '';
       if (r.hasLog) {
         const isLive = !r.resultado || r.resultado === 'en curso';
-        return '<a class="skill-recent-item" href="/logs/view/' + r.logFile + (isLive ? '?live=1' : '') + '" target="_blank" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>' + pdfLink;
+        return '<a class="skill-recent-item" href="/logs/view/' + r.logFile + (isLive ? '?live=1' : '') + '" target="_blank" rel="noopener noreferrer" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>' + pdfLink;
       }
       return '<span class="skill-recent-item" title="' + (r.resultado || 'sin log') + '">' + icon + ' ' + inner + '</span>' + pdfLink;
     }).join('') + '</div>';
@@ -1815,7 +1885,7 @@ function generateHTML(state) {
       const label = (r.resultado || 'en curso') + ' #' + r.issue;
       const href = r.hasLog ? '/logs/view/' + r.logFile + (r.resultado && r.resultado !== 'en curso' ? '' : '?live=1') : null;
       const content = `<span class="persona-dot persona-dot-${cls}" title="${label}">${icon}</span>`;
-      return href ? `<a href="${href}" target="_blank" onclick="event.stopPropagation()">${content}</a>` : content;
+      return href ? `<a href="${href}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${content}</a>` : content;
     }).join('');
     return `<div class="persona-strip">${dots}</div>`;
   }
@@ -2083,7 +2153,7 @@ function generateHTML(state) {
   if (state.rechazos.length > 0) {
     rechazosHTML = state.rechazos.map(r => {
       const ts = fmtTime(r.ts);
-      return `<div class="rechazo-row">✗ <a href="${GH(r.issue)}" target="_blank" class="issue-link">#${r.issue}</a> ${r.skill} en ${r.fase} — <span class="rechazo-motivo">${(r.motivo || '').slice(0, 80)}</span> <span class="ts">${ts}</span></div>`;
+      return `<div class="rechazo-row">✗ <a href="${GH(r.issue)}" target="_blank" rel="noopener noreferrer" class="issue-link">#${r.issue}</a> ${r.skill} en ${r.fase} — <span class="rechazo-motivo">${(r.motivo || '').slice(0, 80)}</span> <span class="ts">${ts}</span></div>`;
     }).join('');
   }
 
@@ -2136,7 +2206,7 @@ function generateHTML(state) {
           ? `/logs/view/${i.logFile}?live=1`
           : GH(i.issue);
         const tip = i.hasLog ? `Ver log en vivo · ${i.skill} · #${i.issue}` : `Ver #${i.issue} en GitHub`;
-        return `<a href="${href}" target="_blank" class="eq-work-item" title="${tip}">
+        return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="eq-work-item" title="${tip}">
           <span class="eq-work-issue">#${i.issue}${i.hasLog ? ' 📄' : ' ↗'}</span>
           <span class="eq-work-fase">${i.fase}</span>
           <span class="eq-work-dur">${fmtDuration(i.duration)}</span>
@@ -2215,9 +2285,9 @@ function generateHTML(state) {
       const tip = h.hasLog ? `Ver log · ${h.skill} · #${h.issue}` : `Ver #${h.issue} en GitHub`;
       const title = h.titulo ? ` · ${h.titulo.slice(0, 40)}` : '';
       const pdfLink = h.hasRejectionPdf
-        ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
+        ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" rel="noopener noreferrer" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
         : '';
-      return `<a href="${href}" target="_blank" class="ah-card ${statusCls}" title="${tip}">
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="ah-card ${statusCls}" title="${tip}">
         <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
         <span class="ah-skill">${p.name}</span>
         <span class="ah-issue">#${h.issue}${title}</span>
@@ -2309,16 +2379,19 @@ function generateHTML(state) {
     const ts = a.ts ? a.ts.slice(11, 19) : '??';
     const dir = a.dir === 'in' ? '→' : '←';
     const cls = a.dir === 'in' ? 'msg-in' : 'msg-out';
-    const text = (a.text || '').replace(/</g, '&lt;');
+    const text = esc(a.text || '');  // #2523 CA-10: escape unificado server-side
     return `<div class="act-row ${cls}"><span class="ts">${ts}</span> ${dir} ${a.from ? '['+a.from+']' : ''} ${text}</div>`;
   }).join('') || '<div class="empty-label">Sin actividad</div>';
 
   return `<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Pipeline V2 — Intrale</title>
+<title>Pipeline V3 — Intrale</title>
 <style>
-/* ── Variables ──────────────────────────────────────────────────────────── */
+/* ── Design Tokens V3 (#2523) — fuente unica desde .pipeline/assets/design-tokens.css
+ *    Si el archivo no esta presente, se cae a las variables legacy inline mas abajo. */
+${loadDesignTokens()}
+/* ── Variables legacy (back-compat) — sobreescritas por design-tokens si esta cargado ── */
 :root{
   --bg:#0d1117;--sf:#161b22;--sf2:#1c2128;--bd:#30363d;--bd2:#21262d;
   --tx:#e6edf3;--dim:#8b949e;--dim2:#6e7681;
@@ -2335,6 +2408,43 @@ function generateHTML(state) {
   --retry:#F59E0B;
   --radius:10px;--radius-sm:6px;
 }
+/* ── Iconos del sprite (#2523) — visibles via <use href="#ic-*"/>. */
+.pl-ic{width:1em;height:1em;display:inline-block;vertical-align:-0.15em;flex:none;stroke:currentColor;fill:none}
+.pl-ic-md{width:18px;height:18px}
+.pl-ic-lg{width:22px;height:22px}
+.pl-ic-xl{width:28px;height:28px}
+/* ── Header V3 redisenado (#2523 CA-3, CA-4) ─────────────────────────────── */
+.hdr-bar-v3{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4,16px);padding:var(--space-3,12px) 0 var(--space-2,8px);margin-bottom:var(--space-2,8px);border-bottom:1px solid var(--border-subtle,var(--bd2))}
+.hdr-brand{display:flex;align-items:center;gap:var(--space-3,12px)}
+.hdr-logo{width:40px;height:40px;border-radius:var(--radius-md,10px);background:var(--brand-navy,#0D274D);display:flex;align-items:center;justify-content:center;color:var(--brand-cyan,#00D6FF);box-shadow:var(--shadow-glow-brand,0 0 16px rgba(0,214,255,0.35))}
+.hdr-logo svg{width:26px;height:26px;stroke:currentColor;fill:none}
+.hdr-title-block{display:flex;flex-direction:column;line-height:1.15}
+.hdr-title-main{font-size:var(--fs-xl,1.375rem);font-weight:var(--fw-bold,700);color:var(--text-primary,var(--tx));letter-spacing:-0.01em}
+.hdr-title-sub{font-size:var(--fs-xs,0.75rem);color:var(--text-dim,var(--dim));font-weight:var(--fw-semibold,600);letter-spacing:1.5px;text-transform:uppercase}
+.hdr-status-group{display:flex;align-items:center;gap:var(--space-2,8px);flex-wrap:wrap}
+.hdr-kpi-group{display:flex;align-items:center;gap:var(--space-4,16px);font-size:var(--fs-sm,0.875rem)}
+.hdr-kpi{display:flex;align-items:center;gap:var(--space-2,8px);color:var(--text-secondary,var(--tx))}
+.hdr-kpi-icon{color:var(--info,var(--ac))}
+.hdr-kpi-icon.kpi-issues{color:var(--purple,var(--pu))}
+.hdr-kpi-icon.kpi-uptime{color:var(--text-dim,var(--dim))}
+.hdr-kpi-value{font-weight:var(--fw-bold,700);color:var(--text-primary,var(--tx));font-variant-numeric:tabular-nums}
+.hdr-kpi-label{color:var(--text-dim,var(--dim));font-size:var(--fs-xs,0.75rem)}
+/* Pipeline status pill V3 — combina icono + texto (CA-4 nunca solo color) */
+.pipe-status{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs,0.75rem);font-weight:var(--fw-bold,700);letter-spacing:1.4px;text-transform:uppercase;padding:4px 12px;border-radius:var(--radius-full,9999px);cursor:pointer;border:1px solid transparent;transition:all var(--motion-base,200ms) var(--ease-out,ease)}
+.pipe-status .pl-ic{width:14px;height:14px}
+.pipe-status-running{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gn));border-color:rgba(63,185,80,0.4)}
+.pipe-status-running:hover{background:rgba(63,185,80,0.22)}
+.pipe-status-paused{background:rgba(240,165,0,0.18);color:#F0A500;border-color:rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
+.pipe-status-partial{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
+/* Badges de estado transversales para cards (CA-5 — rebote vs cross-phase con DIBUJO distinto, no solo color) */
+.lc-state-badge{display:inline-flex;align-items:center;gap:5px;font-size:0.7em;font-weight:var(--fw-bold,700);letter-spacing:0.5px;padding:2px 9px;border-radius:var(--radius-full,9999px);border:1px solid transparent}
+.lc-state-badge .pl-ic{width:13px;height:13px}
+.lc-state-rebote{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.4)}
+.lc-state-crossphase{background:var(--retry-bg,rgba(245,158,11,0.14));color:var(--retry,#F59E0B);border-color:rgba(245,158,11,0.45)}
+.lc-state-needshuman{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5);animation:pausePulse 2s infinite}
+.lc-state-narrating{background:var(--teal-bg,rgba(45,212,191,0.14));color:var(--teal,#2DD4BF);border-color:rgba(45,212,191,0.4)}
+.lc-state-stale{background:rgba(139,148,158,0.12);color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.3)}
+.lc-state-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 var(--space-3,10px) var(--space-2,6px);margin-top:-2px}
 /* ── Reset ──────────────────────────────────────────────────────────────── */
 *{margin:0;padding:0;box-sizing:border-box}
 body{
@@ -3727,22 +3837,51 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
 </style></head>
 <body>
-  <div class="hdr-bar">
-    <div class="hdr-left">
-      <h1 class="hdr-title">🐙 Pipeline ${v3Active ? 'V2+V3' : 'V2'}</h1>
-      ${v3Active ? `<span class="hdr-v3-badge" title="V3 activo · workers determinísticos: ${v3Workers.join(', ')}">⚙ V3 (${v3Workers.length})</span>` : ''}
-      <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">📊 Consumo</a>
-      <button class="hdr-status-badge ${isPaused ? 'badge-paused' : isPartialPause ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? 'Pausa parcial — click para reanudar completo' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : isPartialPause ? `⏸ PARCIAL (${partialPauseState.allowedIssues.length})` : '▶ RUNNING'}</button>
-      ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:rgba(240,165,0,0.15);color:#f0a500;border-color:rgba(240,165,0,0.4);">🎯 ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
-      <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar">↻ AUTO</button>
-      <span class="hdr-uptime">UP ${pulpoUptime}</span>
-      <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
+  ${loadIconSprite()}
+  <div class="hdr-bar hdr-bar-v3">
+    <div class="hdr-left hdr-brand">
+      <span class="hdr-logo" aria-hidden="true">${ic('intrale-logo')}</span>
+      <span class="hdr-title-block">
+        <span class="hdr-title-main">Intrale Pipeline</span>
+        <span class="hdr-title-sub">Dashboard V3 · localhost:3200${v3Active ? ' · ' + v3Workers.length + ' workers V3' : ''}</span>
+      </span>
+      <div class="hdr-status-group" role="status" aria-live="polite">
+        <button class="pipe-status ${isPaused ? 'pipe-status-paused' : isPartialPause ? 'pipe-status-partial' : 'pipe-status-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? 'Pausa parcial — click para reanudar completo' : 'Click para pausar el pipeline'}" aria-label="Estado del pipeline: ${isPaused ? 'pausado' : isPartialPause ? 'pausa parcial' : 'corriendo'}">
+          ${isPaused
+            ? ic('estado-partial-pause', 'pausado') + '<span>Pausado</span>'
+            : isPartialPause
+              ? ic('estado-partial-pause', 'pausa parcial') + `<span>Parcial · ${partialPauseState.allowedIssues.length}</span>`
+              : ic('health-ok', 'sano') + '<span>Running</span>'}
+        </button>
+        ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:var(--warning-bg,rgba(240,165,0,0.15));color:var(--warning,#f0a500);border-color:rgba(240,165,0,0.4);" aria-label="Issues permitidos: ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}">${ic('estado-partial-pause')} ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
+        <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar" aria-label="Auto-refresh desactivado">↻ AUTO</button>
+      </div>
+    </div>
+    <div class="hdr-kpi-group" aria-label="Métricas del pipeline">
+      <span class="hdr-kpi" title="Agentes trabajando ahora mismo">
+        <span class="hdr-kpi-icon" aria-hidden="true">${ic('agents-count')}</span>
+        <span class="hdr-kpi-value">${trabajando}</span>
+        <span class="hdr-kpi-label">agente${trabajando === 1 ? '' : 's'}</span>
+      </span>
+      <span class="hdr-kpi" title="Issues activos en el pipeline">
+        <span class="hdr-kpi-icon kpi-issues" aria-hidden="true">${ic('issues-count')}</span>
+        <span class="hdr-kpi-value">${matrixEntries.filter(([_, d]) => !isComplete(d)).length}</span>
+        <span class="hdr-kpi-label">en curso</span>
+      </span>
+      <span class="hdr-kpi" title="Tiempo desde el último restart del pulpo">
+        <span class="hdr-kpi-icon kpi-uptime" aria-hidden="true">${ic('estado-stale')}</span>
+        <span class="hdr-kpi-label">UP ${pulpoUptime}</span>
+      </span>
+      <span class="hdr-kpi" title="Build del dashboard / pulpo" style="font-size:var(--fs-xs,0.75rem)">
+        <span class="hdr-kpi-label">${dashboardBuild} · ${pulpoBuild}</span>
+      </span>
     </div>
     <div class="hdr-right">
       <div class="hdr-clock" id="hdr-clock">--:--<span class="clock-sec">--</span></div>
       <div class="hdr-date" id="hdr-date"></div>
     </div>
   </div>
+  <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin:8px 0 4px" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">${ic('fase-build')} Consumo V3</a>
   <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
   ${(() => {
     const pw = state.priorityWindows || {};
@@ -3932,6 +4071,13 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 </div>
 
 <script>
+// #2523 CA-10 \u2014 escape HTML client-side unico (antes habia replace inline en renderLine y esc duplicado en otro script).
+// Cubre los 5 caracteres XSS-relevantes (& < > " '), igual que el esc() server-side.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 (function(){var c=document.getElementById('hdr-clock'),d=document.getElementById('hdr-date');if(!c)return;var D=['dom','lun','mar','mi\u00e9','jue','vie','s\u00e1b'],M=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];function t(){var n=new Date(),h=String(n.getHours()).padStart(2,'0'),m=String(n.getMinutes()).padStart(2,'0'),s=String(n.getSeconds()).padStart(2,'0');c.innerHTML=h+':'+m+'<span class="clock-sec">'+s+'</span>';d.textContent=D[n.getDay()]+' '+n.getDate()+' '+M[n.getMonth()]+' '+n.getFullYear()}t();setInterval(t,1000)})();
 // Guardar estado del Issue Tracker en sessionStorage
 let __itRestoring = false;
@@ -4220,7 +4366,7 @@ function attachKpiTooltips() {
         const d = JSON.parse(el.dataset.tt);
         const shown = d.items.slice(0, MAX_TT);
         const rows = shown.map(it =>
-          '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
+          '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank" rel="noopener noreferrer">#' + it.id + '</a>' +
           (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
         ).join('');
         const more = d.items.length > MAX_TT
@@ -4456,8 +4602,8 @@ function showDotPopup(event, dotEl) {
       else { icon = '○'; cls = 'pending'; }
       var retry = s.retry ? '<span class="dp-retry">×'+s.retry+'</span>' : '';
       var dur = s.dur ? '<span class="dp-dur">'+s.dur+'</span>' : '';
-      var log = s.log ? '<a href="'+s.log+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
-      var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
+      var log = s.log ? '<a href="'+s.log+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
+      var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
       var motivo = s.motivo ? '<div class="dp-motivo">' + s.motivo + '</div>' : '';
       return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+s.skill+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
     }).join('');
@@ -4584,7 +4730,7 @@ function renderLine(text, idx) {
   var display = parseStreamJsonLine(text);
   if (!display || !display.trim()) return ''; // Skip empty lines
   var cls = classifyLine(display);
-  var escaped = display.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  var escaped = esc(display); // #2523 CA-10: usar esc() unico
   return '<div class="log-line ' + cls + '" data-idx="' + idx + '"><span class="log-line-num">' + (idx + 1) + '</span><span class="log-line-text">' + escaped + '</span></div>';
 }
 
@@ -5464,7 +5610,7 @@ function renderConsumoHtml() {
   </div>
 
   <div class="footer">
-    Schema V3 definido en <a href="https://github.com/intrale/platform/issues/2477" target="_blank">#2477</a> · Extensiones en <a href="https://github.com/intrale/platform/issues/2488" target="_blank">#2488</a>.<br>
+    Schema V3 definido en <a href="https://github.com/intrale/platform/issues/2477" target="_blank" rel="noopener noreferrer">#2477</a> · Extensiones en <a href="https://github.com/intrale/platform/issues/2488" target="_blank" rel="noopener noreferrer">#2488</a>.<br>
     Endpoints JSON: <a href="/metrics/agents">/agents</a> · <a href="/metrics/phases">/phases</a> · <a href="/metrics/issues">/issues</a> · <a href="/metrics/tts">/tts</a> · <a href="/metrics/projections">/projections</a> · <a href="/metrics/llm-vs-deterministic">/llm-vs-deterministic</a> · <a href="/metrics/daily">/daily</a> · <a href="/metrics/snapshot">/snapshot</a>
   </div>
 
@@ -5867,7 +6013,14 @@ function classifyText(text) {
   return '';
 }
 
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// #2523 CA-10: misma implementacion canonica que los esc() server-side y del
+// dashboard principal. 3 copias intencionales = 3 contextos JS independientes
+// (Node, dashboard browser, log-viewer browser) que NO comparten scope.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 function renderAll() {
   const html = [];
