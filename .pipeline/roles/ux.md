@@ -46,6 +46,28 @@ El android-dev / backend-dev / web-dev son **ensambladores técnicos**, no dise�
 - El PO no acordó paleta/identidad y el brief técnico es ambiguo (escalar).
 - Imposible producir los assets por limitación de contexto (falta info crítica del issue).
 
+### Cross-phase rebote desde UX
+
+Vos también podés pedir re-ejecución de otra fase si detectás que falta algo upstream. Ver `_base.md` → "Rebote cross-phase".
+
+Ejemplos válidos:
+- **Falta análisis técnico de viabilidad** para saber qué assets producir (ej. no sabés si el target soporta un formato):
+  ```yaml
+  rebote_destino:
+    pipeline: definicion
+    fase: analisis
+    skill: guru
+  ```
+- **PO debe definir alcance visual** que no está claro en el issue (ej. qué flavors requieren ícono distintivo):
+  ```yaml
+  rebote_destino:
+    pipeline: definicion
+    fase: criterios
+    skill: po
+  ```
+
+No abuses: si el problema lo podés resolver vos con la info disponible, no pidas rebote.
+
 ## En pipeline de desarrollo (fase: validacion)
 
 ### Verificación de assets entregados
