@@ -664,7 +664,7 @@ const SKILL_CATEGORY = {
 const FASE_LABEL_SHORT = {
   analisis: 'An', criterios: 'Cr', sizing: 'Si',
   validacion: 'Va', dev: 'Dv', build: 'Bd',
-  verificacion: 'Vf', aprobacion: 'Ap', entrega: 'En',
+  verificacion: 'Vf', linteo: 'Li', aprobacion: 'Ap', entrega: 'En',
 };
 
 const CATEGORY_META = {
@@ -1253,12 +1253,12 @@ function generateHTML(state) {
     const [pipe, fase] = fa.split('/');
     if (pipe === 'definicion') return 'def';
     if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
-    return 'qa'; // verificacion, aprobacion, entrega
+    return 'qa'; // verificacion, linteo, aprobacion, entrega
   }
   const laneMeta = {
     def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
     dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
-    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · aprob · entrega',      subFases: ['verificacion', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', aprobacion: 'Aprob', entrega: 'Entrega' } },
+    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · linteo · aprob · entrega', subFases: ['verificacion', 'linteo', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', linteo: 'Linteo', aprobacion: 'Aprob', entrega: 'Entrega' } },
   };
   const laneCards = { def: [], dev: [], qa: [], done: [] };
   const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
@@ -5072,7 +5072,7 @@ function generateMetricsHTML() {
 
   // ETA averages table
   let etaRows = '';
-  const faseOrder = ['analisis', 'criterios', 'sizing', 'validacion', 'dev', 'build', 'verificacion', 'aprobacion', 'entrega'];
+  const faseOrder = ['analisis', 'criterios', 'sizing', 'validacion', 'dev', 'build', 'verificacion', 'linteo', 'aprobacion', 'entrega'];
   for (const fase of faseOrder) {
     const avg = etaAverages[fase];
     if (!avg?.avgMs) continue;
