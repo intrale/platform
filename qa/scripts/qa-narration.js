@@ -29,6 +29,14 @@ const { spawnSync } = require("child_process");
 const os = require("os");
 
 // ─── Constantes TTS ──────────────────────────────────────────────────────────
+//
+// DEUDA TÉCNICA (#2518): este script llama OpenAI directo con voz `ash` y
+// instructions genéricas, sin pasar por el perfil `qa` (Rulo/Nacho) del
+// `.pipeline/tts-config.json`. Migración propuesta: reemplazar callOpenAITTS
+// por invocación a `.pipeline/lib/tts-generate.js --profile qa` para respetar
+// primary=edge (costo) + fallback=openai (premium) y las personalidades del
+// perfil qa. Por ahora se deja como estaba para no inflar el PR #2518; la
+// migración se tracker como issue aparte.
 
 const TTS_MODEL = "gpt-4o-mini-tts";
 const TTS_VOICE = "ash";
