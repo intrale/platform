@@ -65,6 +65,15 @@ val logger: Logger = LoggerFactory.getLogger("ar.com.intrale")
 
 - Si un endpoint requiere templates HTML estilizados, layouts de PDF con branding, o imágenes embebidas: los produce el UX en la fase `criterios` y los commitea en `backend/src/main/resources/templates/` o el path que corresponda.
 - Vos consumís esos assets desde código: los cargás, parametrizás, servís.
-- Si necesitás assets y el UX no los entregó → `resultado: rechazado, motivo: "Requiere assets visuales que UX debe entregar: <lista>"`.
+- Si necesitás assets y el UX no los entregó, usá **cross-phase rebote** (ver `_base.md` → "Rebote cross-phase"):
+  ```yaml
+  resultado: rechazado
+  motivo: "UX no entregó templates/imágenes requeridos: <lista + output de ls/find>"
+  rebote_destino:
+    pipeline: desarrollo
+    fase: validacion
+    skill: ux
+  ```
+  El pulpo rutea a `desarrollo/validacion/ux` para que regenere. Escalada automática a `definicion/criterios/ux` si persiste.
 
 **No inventes** HTML con CSS tuyo, ni busques imágenes stock, ni improvises branding. Rechazá pidiendo que UX produzca.

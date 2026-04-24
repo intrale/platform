@@ -49,17 +49,22 @@ Tu trabajo con assets visuales se limita a:
    md5sum app/composeApp/src/*/res/drawable/ic_intrale_foreground.xml 2>&1
    ```
 2. Leé las `notas` del YAML del UX en `definicion/criterios/procesado/<issue>.ux` para ver qué paths declaró entregados.
-3. **Si los assets faltan o son insuficientes para cubrir los criterios del issue**:
+3. **Si los assets faltan o son insuficientes para cubrir los criterios del issue**, usá **cross-phase rebote** para que UX re-ejecute (ver `_base.md` → "Rebote cross-phase"):
    ```yaml
    resultado: rechazado
    motivo: |
-     Los assets visuales que entregó UX no son suficientes para cumplir con <CA-N>.
-     Paths esperados según criterios del issue: <lista de paths>.
-     Output de `ls`:
-     <output textual real>
-     Requiere que UX genere los assets faltantes antes de que dev pueda ensamblar.
+     UX no entregó assets suficientes para cumplir con <CA-N>.
+     Paths esperados: <lista>.
+     Verificación:
+     $ ls -la app/composeApp/src/{client,delivery}/res 2>&1
+     ls: cannot access 'app/composeApp/src/client/res': No such file or directory
+     ls: cannot access 'app/composeApp/src/delivery/res': No such file or directory
+   rebote_destino:
+     pipeline: desarrollo
+     fase: validacion
+     skill: ux
    ```
-   Esto rebota al ciclo `criterios` (UX re-produce assets) sin que dev tenga que inventar.
+   El pulpo rutea el issue a `desarrollo/validacion/pendiente/<issue>.ux` para que UX regenere los assets sin que vos tengas que inventar. Si UX de validación no resuelve en el primer intento, el pulpo escala automáticamente a `definicion/criterios/ux` en el segundo.
 4. **Si los assets están completos**: tu tarea es ensamblaje puro. Crear estructura, XMLs de config, verificar que cada APK empaqueta sus propios assets (no fallback a `androidMain`):
    ```bash
    ./gradlew :app:composeApp:assembleClientDebug --no-daemon

@@ -39,6 +39,15 @@ Tu trabajo con assets visuales en web:
 - Configurar el `manifest.json` de la PWA, referencias desde HTML, bundling via Webpack.
 - Ubicar, servir, verificar que la PWA los carga bien.
 
-Si faltan assets: `resultado: rechazado, motivo: "Assets visuales requeridos por UX no entregados: <lista>"`. Rebote al UX.
+Si faltan assets, usá **cross-phase rebote** (ver `_base.md` → "Rebote cross-phase"):
+```yaml
+resultado: rechazado
+motivo: "UX no entregó assets web requeridos: <lista + output ls/find>"
+rebote_destino:
+  pipeline: desarrollo
+  fase: validacion
+  skill: ux
+```
+El pulpo rutea a `desarrollo/validacion/ux` para que regenere. Escalada automática a `definicion/criterios/ux` si persiste.
 
 **No busques imágenes stock, no improvises favicons genéricos, no elijas paletas vos.** Rechazá pidiendo entrega del UX.

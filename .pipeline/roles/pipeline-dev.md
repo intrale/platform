@@ -101,7 +101,16 @@ El QA E2E del producto (video + emulador) **no aplica** a cambios que solo tocan
 - Paletas, iconografía, branding del dashboard o PDFs: los produce el UX con Claude Design.
 - Estructura funcional del dashboard (endpoints, filtros, routing, performance): eso SÍ es tuyo.
 
-Si el issue tiene impacto visual y el UX no entregó assets/decisiones → `resultado: rechazado, motivo: "Requiere decisiones/assets visuales del UX: <lista>"`. Rebote al UX.
+Si el issue tiene impacto visual y el UX no entregó assets/decisiones, usá **cross-phase rebote** (ver `_base.md` → "Rebote cross-phase"):
+```yaml
+resultado: rechazado
+motivo: "UX no entregó decisiones/assets visuales para: <lista + evidencia>"
+rebote_destino:
+  pipeline: desarrollo
+  fase: validacion
+  skill: ux
+```
+El pulpo rutea a `desarrollo/validacion/ux` para que regenere. Escalada automática a `definicion/criterios/ux` si persiste.
 
 **No improvises CSS/HTML estético, no elijas emojis, no inventes paletas.** Tu dominio es la lógica del pipeline, no la estética.
 

@@ -116,6 +116,52 @@ Usá `gh` para interactuar con GitHub:
 - `gh pr create` — crear PR (solo delivery)
 - Siempre con `export PATH="/c/Workspaces/gh-cli/bin:$PATH"` antes
 
+## Rebote cross-phase (opcional — solicitar re-ejecución de otra fase/skill upstream)
+
+Si durante tu trabajo detectás que **te faltan entregables de otro skill** que vive en una fase anterior (ej. android-dev detecta que UX no entregó los assets esperados), podés solicitar al pipeline que re-ejecute ese skill **en lugar de rebotar al default**.
+
+Para hacerlo, emití en tu resultado:
+
+```yaml
+resultado: rechazado
+motivo: "Explicación detallada + evidencia empírica (output de ls/cat/etc)"
+rebote_destino:
+  pipeline: desarrollo   # o definicion
+  fase: validacion       # fase destino (debe ser upstream de la tuya)
+  skill: ux              # skill que debe re-ejecutar
+```
+
+### Reglas
+
+1. **Destino debe ser upstream** — la fase destino tiene que estar ANTES de la tuya en el orden del pipeline. Declarar un destino no-upstream hace que el pulpo ignore `rebote_destino` y caiga al rebote normal.
+2. **Skill debe existir en la fase destino** — validado contra `skills_por_fase` de `config.yaml`. Si no existe, se ignora.
+3. **Un destino por rechazo** — si varios archivos rechazados emiten destinos distintos para el mismo issue, el pulpo elige el más upstream (más conservador).
+4. **Motivo obligatorio con evidencia empírica** — como cualquier rechazo, debe citar output real de comandos (ver "Protocolo de rebote"). No basta con "me faltan cosas del UX" genérico.
+5. **El motivo viaja al destino** como `motivo_rechazo` + `rechazado_en_fase` + `rechazado_por_skill`. El agente que re-ejecute lee esos campos para saber qué pasó.
+
+### Escalada automática
+
+El pulpo lleva un contador `rebote_numero_crossphase` por issue:
+
+- **1er cross-phase rebote** → destino declarado por el agente.
+- **2do cross-phase rebote** → el pulpo **escala automáticamente** a la fase previa del mismo skill (ej. si pediste `desarrollo/validacion/ux` otra vez, escala a `definicion/criterios/ux`).
+- **3er cross-phase rebote** → circuit breaker, label `needs-human`, escalado manual.
+
+Esto da un gradiente natural: primero intentar cerrar el gap cerca en el flow, después ir más profundo si persiste, y finalmente pedir ayuda humana.
+
+### Cuándo usarlo
+
+- android-dev detecta que faltan assets de UX.
+- Tester detecta que faltan test cases de criterios.
+- QA detecta que el issue requiere re-análisis técnico por cambios no documentados.
+- Review detecta un problema de arquitectura que requiere re-definición.
+
+### Cuándo NO usarlo
+
+- Problemas que vos podés resolver (código, bugs en tu scope).
+- Rechazos por falta de información **en tu propio rol** (pedí al issue, no a otra fase).
+- Disputas con el veredicto de otra fase (eso es rebote normal con argumentación, no cross-phase).
+
 ## Idioma
 
 - Código: inglés
