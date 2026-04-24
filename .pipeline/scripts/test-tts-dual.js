@@ -11,8 +11,8 @@ const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json
 const tg = JSON.parse(fs.readFileSync(TG_CONFIG_PATH, 'utf8'));
 
 const TEXTS = {
-  openai: 'Hola Leito, soy el Commander hablando con OpenAI TTS. Esta es la voz premium que usamos por defecto. Si la escuchás bien, queda como primary.',
-  edge:   'Hola Leito, ahora probando Edge TTS, voz es-AR Tomas. Este es el fallback gratis. Si la calidad te cierra, podés switchearlo como primary cuando quieras.'
+  openai: 'Hola Leito, soy Claudito hablando con OpenAI TTS. Esta es la voz premium que usamos por defecto. Si la escuchás bien, queda como primary.',
+  edge:   'Eeeeh Leo, todo bien. Soy Tommy, el pibe nuevo del equipo. Estoy probando la voz de Edge TTS desde es-AR Tomas Neural. Si te cierra como fallback la banco yo cuando Claudito se tome licencia.'
 };
 
 (async () => {
