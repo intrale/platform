@@ -145,6 +145,33 @@ function listWorkFiles(dir) {
   } catch { return []; }
 }
 
+// Recovery al arrancar: los archivos en trabajando/ son huérfanos de un proceso
+// que murió antes de completar. Si son recientes (<15 min), reencolar a pendiente.
+// Si son viejos (>15 min), descartar a listo/ con marcador — reprocesar un mensaje
+// de Telegram de hace horas/días no tiene sentido (incidente 2026-04-24: zombie de 3 días).
+const ORPHAN_MAX_AGE_MS = 15 * 60 * 1000;
+function recoverOrphans() {
+  const orphans = listWorkFiles(TRABAJANDO);
+  if (orphans.length === 0) return;
+  const now = Date.now();
+  let recovered = 0, discarded = 0;
+  for (const file of orphans) {
+    try {
+      const mtime = fs.statSync(file.path).mtimeMs;
+      if (now - mtime < ORPHAN_MAX_AGE_MS) {
+        fs.renameSync(file.path, path.join(PENDIENTE, file.name));
+        recovered++;
+      } else {
+        const destName = file.name.replace(/\.json$/, '-zombie-descartado.json');
+        fs.renameSync(file.path, path.join(LISTO, destName));
+        discarded++;
+      }
+    } catch {}
+  }
+  if (recovered > 0) log(`Recovery: ${recovered} orphans recientes reencolados a pendiente/`);
+  if (discarded > 0) log(`Recovery: ${discarded} zombies viejos (>${ORPHAN_MAX_AGE_MS/60000}min) movidos a listo/ (no se reintentan)`);
+}
+
 async function processQueue() {
   const files = listWorkFiles(PENDIENTE);
   if (files.length === 0) return;
@@ -190,6 +217,7 @@ async function processQueue() {
 // Main loop
 async function main() {
   log('Servicio Telegram iniciado');
+  recoverOrphans();
   try { require('./lib/ready-marker').signalReady('svc-telegram'); } catch {}
   while (true) {
     try { await processQueue(); } catch (e) { log(`Error: ${e.message}`); }

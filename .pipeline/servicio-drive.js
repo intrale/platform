@@ -38,6 +38,32 @@ function listWorkFiles(dir) {
   } catch { return []; }
 }
 
+// Recovery al arrancar: archivos huérfanos en trabajando/ (proceso muerto mid-upload).
+// Recientes (<15 min) → reencolar a pendiente. Viejos → descartar a listo/ con marcador
+// (reintentar un upload de Drive de hace horas puede duplicar videos ya subidos).
+const ORPHAN_MAX_AGE_MS = 15 * 60 * 1000;
+function recoverOrphans() {
+  const orphans = listWorkFiles(TRABAJANDO);
+  if (orphans.length === 0) return;
+  const now = Date.now();
+  let recovered = 0, discarded = 0;
+  for (const file of orphans) {
+    try {
+      const mtime = fs.statSync(file.path).mtimeMs;
+      if (now - mtime < ORPHAN_MAX_AGE_MS) {
+        fs.renameSync(file.path, path.join(PENDIENTE, file.name));
+        recovered++;
+      } else {
+        const destName = file.name.replace(/\.json$/, '-zombie-descartado.json');
+        fs.renameSync(file.path, path.join(LISTO, destName));
+        discarded++;
+      }
+    } catch {}
+  }
+  if (recovered > 0) log(`Recovery: ${recovered} orphans recientes reencolados a pendiente/`);
+  if (discarded > 0) log(`Recovery: ${discarded} zombies viejos (>${ORPHAN_MAX_AGE_MS/60000}min) movidos a listo/ (no se reintentan)`);
+}
+
 // Extraer número de issue desde description o filename
 // Ej: "QA video con relato narrado #2015" → "2015"
 // Ej: "qa-2015-video.json" → "2015"
@@ -258,6 +284,7 @@ function main() {
     process.exit(1);
   }
 
+  recoverOrphans();
   try { require('./lib/ready-marker').signalReady('svc-drive'); } catch {}
   setInterval(() => {
     processQueue().catch(e => log(`Error en processQueue: ${e.message}`));
