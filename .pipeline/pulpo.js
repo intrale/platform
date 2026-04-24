@@ -4334,7 +4334,13 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
-  const useExistingWorktree = (fase === 'build');
+  // #2526: fases que LEEN código del issue (no generan commits) deben correr
+  // en el worktree del dev, no en ROOT. Si corren en ROOT, leen la rama
+  // arbitraria del repo principal (puede estar checkout en la rama de OTRO
+  // agente) y producen resultados incorrectos. Incidente 2026-04-24: linter
+  // de #2505 corrió en ROOT (checkout en agent/2450), reportó 'no-commits'
+  // aunque el worktree del #2505 tenía 3 commits legítimos.
+  const useExistingWorktree = (fase === 'build' || fase === 'linteo' || fase === 'aprobacion');
   let worktreePath = ROOT;
   let worktreeBranch = null;
 
@@ -4356,7 +4362,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       return;
     }
   } else if (useExistingWorktree) {
-    // Build: buscar el worktree existente del issue (creado en fase dev)
+    // Build/linteo/aprobacion: buscar el worktree existente del issue
+    // (creado en fase dev por algún skill dev: android-dev, backend-dev,
+    // web-dev o pipeline-dev). El primero que matchee `platform.agent-<issue>-*`.
     try {
       const worktreePattern = `platform.agent-${issue}-`;
       const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
@@ -4367,12 +4375,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         }
       }
       if (worktreePath !== ROOT) {
-        log('lanzamiento', `Build #${issue}: usando worktree existente ${worktreePath}`);
+        log('lanzamiento', `${skill}:#${issue} (fase ${fase}): usando worktree existente ${worktreePath}`);
       } else {
-        log('lanzamiento', `Build #${issue}: no se encontró worktree, usando ROOT`);
+        log('lanzamiento', `${skill}:#${issue} (fase ${fase}): no se encontró worktree, usando ROOT — posible lectura incorrecta si ROOT está en rama ajena`);
       }
     } catch (e) {
-      log('lanzamiento', `Build #${issue}: error buscando worktree (${e.message}), usando ROOT`);
+      log('lanzamiento', `${skill}:#${issue} (fase ${fase}): error buscando worktree (${e.message}), usando ROOT`);
     }
   }
 
