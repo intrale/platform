@@ -1,28 +1,22 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="1024"
     android:viewportHeight="1024">
 
+    <!--
+        delivery: triangulo con trazo naranja solido + emblema "R" (Repartos)
+        en naranja mas tenue. Sin <aapt:attr> ni gradientes inline: evita el bug
+        de aapt2 que compartia un auxiliar drawable-anydpi-v26 entre los 3 flavors
+        haciendo que todos se vieran iguales (ver #2505).
+    -->
     <path
         android:pathData="M512 59.357 L120 738.321 L904 738.321 Z"
+        android:strokeColor="#FFFF6B35"
         android:strokeWidth="84"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:fillColor="@android:color/transparent">
-        <aapt:attr name="android:strokeColor">
-            <gradient
-                android:type="linear"
-                android:startX="512"
-                android:startY="59.357"
-                android:endX="512"
-                android:endY="738.321">
-                <item android:offset="0" android:color="#FFFF6B35" />
-                <item android:offset="1" android:color="#FFF7931E" />
-            </gradient>
-        </aapt:attr>
-    </path>
+        android:fillColor="@android:color/transparent" />
 
     <path
         android:pathData="M418,586 L510,494 L462,494 L462,446 L582,446 L582,566 L534,566 L534,518 L442,610 Z"
