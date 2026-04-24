@@ -18,13 +18,13 @@
                 android:startY="59.357"
                 android:endX="512"
                 android:endY="738.321">
-                <item android:offset="0" android:color="#FF00C853" />
-                <item android:offset="1" android:color="#FF009688" />
+                <item android:offset="0" android:color="#FFFF6B35" />
+                <item android:offset="1" android:color="#FFF7931E" />
             </gradient>
         </aapt:attr>
     </path>
 
     <path
-        android:pathData="M512,384.983 L402,575.508 L622,575.508 Z"
-        android:fillColor="#FF263238" />
+        android:pathData="M418,586 L510,494 L462,494 L462,446 L582,446 L582,566 L534,566 L534,518 L442,610 Z"
+        android:fillColor="#FFF7931E" />
 </vector>
