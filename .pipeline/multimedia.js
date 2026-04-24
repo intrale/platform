@@ -241,14 +241,15 @@ function loadTtsConfig() {
       },
       edge: {
         voice: 'es-AR-TomasNeural',
-        rate: '+0%',
-        pitch: '+0Hz',
-        character_name: 'Tomás'
+        rate: '+8%',
+        pitch: '+4Hz',
+        character_name: 'Tommy',
+        personality: 'Sos Tommy, un pibe joven que recién arranca en el equipo. Tenés la frescura de la juventud, hablas con energía, onda y entusiasmo. Usas vos, che, dale, mira. Sos piola, curioso, con ganas de aprender. Nunca sos engreído — tenés el respeto del que recién se inicia pero la garra de querer comerse la cancha.'
       }
     },
     intros: {
-      openai_from_edge: 'Hola Leo, volvió Claudito. Gracias a Tomás por cubrir mientras me tomé la licencia.',
-      edge_from_openai: 'Hola Leo, soy Tomás. Claudito se tomó una licencia, lo cubro yo mientras vuelve.'
+      openai_from_edge: 'Hola Leo, volvió Claudito. Gracias Tommy por cubrirme, te saliste, pibe.',
+      edge_from_openai: 'Eeeeh Leo, todo bien. Soy Tommy, recién me sumo al equipo. Claudito se tomó una licencia y me dejó la posta mientras vuelve. La rompo yo hasta que regrese.'
     }
   };
   try {
