@@ -1562,16 +1562,21 @@ async function sendReport(data) {
       if (current.trim()) chunks.push(current.trim());
     }
 
+    // #2518 — usar perfil del agente que rechazó (Rulo/Nacho para qa,
+    // Bigote/Agus para security, etc.) para que el audio en Telegram
+    // tenga la voz del skill, no Claudito/Tommy (que quedan para mensajes
+    // generales del sistema).
+    const ttsProfile = data.skill || 'default';
     for (let i = 0; i < chunks.length; i++) {
       const chunkText = chunks.length > 1
         ? `Parte ${i + 1} de ${chunks.length}. ${chunks[i]}`
         : chunks[i];
-      const audioBuffer = await textToSpeech(chunkText);
+      const audioBuffer = await textToSpeech(chunkText, { profile: ttsProfile });
       if (audioBuffer) {
         const sent = await sendVoiceTelegram(audioBuffer, tgConfig.bot_token, tgConfig.chat_id);
-        console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado: ${sent ? 'OK' : 'FALLO'}`);
+        console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado (profile=${ttsProfile}): ${sent ? 'OK' : 'FALLO'}`);
       } else {
-        console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1})`);
+        console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1}, profile=${ttsProfile})`);
       }
     }
   } catch (audioErr) {

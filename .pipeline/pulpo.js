@@ -598,6 +598,117 @@ function fasePath(pipelineName, faseName) {
   return path.join(PIPELINE, pipelineName, faseName);
 }
 
+// ---------------------------------------------------------------------------
+// CROSS-PHASE REBOTE — permite a un agente solicitar rebote a otra fase/skill
+// upstream cuando detecta que necesita re-ejecución de trabajo previo.
+//
+// Ejemplo: android-dev detecta que faltan assets del UX → emite YAML con
+//   rebote_destino: { pipeline: desarrollo, fase: validacion, skill: ux }
+// El pulpo rutea el issue a esa fase en vez del default `fase_rechazo`.
+//
+// Escalada automática por cantidad de rebotes cross-phase del mismo issue:
+//   - 1er rebote → destino declarado por el agente.
+//   - 2do rebote → escala a fase previa del mismo skill (ej. validacion/ux → criterios/ux).
+//   - 3er rebote → escalado a humano (label needs-human).
+// ---------------------------------------------------------------------------
+
+const MAX_CROSSPHASE_REBOTES = 2;
+
+/** Orden global de fases considerando todos los pipelines en el orden de config. */
+function getFaseGlobalOrder(config) {
+  const order = [];
+  for (const [pName, pCfg] of Object.entries(config.pipelines || {})) {
+    for (const fase of (pCfg.fases || [])) {
+      order.push({ pipeline: pName, fase });
+    }
+  }
+  return order;
+}
+
+function faseGlobalIndex(pipelineName, fase, config) {
+  const order = getFaseGlobalOrder(config);
+  return order.findIndex(e => e.pipeline === pipelineName && e.fase === fase);
+}
+
+/** Busca la fase anterior (en orden global) donde el skill dado participa. */
+function findPreviousFaseForSkill(skill, fromPipeline, fromFase, config) {
+  const order = getFaseGlobalOrder(config);
+  const currentIdx = order.findIndex(e => e.pipeline === fromPipeline && e.fase === fromFase);
+  if (currentIdx <= 0) return null;
+  for (let i = currentIdx - 1; i >= 0; i--) {
+    const { pipeline: p, fase: f } = order[i];
+    const skills = (config.pipelines?.[p]?.skills_por_fase?.[f]) || [];
+    if (skills.includes(skill)) {
+      return { pipeline: p, fase: f, skill };
+    }
+  }
+  return null;
+}
+
+/** Valida que un rebote_destino declarado por agente sea utilizable. */
+function validateRebotedDestino(destino, faseOriginPipeline, faseOrigin, config) {
+  if (!destino || typeof destino !== 'object') return { ok: false, reason: 'no-destino' };
+  const { pipeline: p, fase: f, skill: s } = destino;
+  if (!p || !f || !s) return { ok: false, reason: 'campos-incompletos' };
+  if (!config.pipelines?.[p]) return { ok: false, reason: `pipeline-no-existe:${p}` };
+  if (!(config.pipelines[p].fases || []).includes(f)) return { ok: false, reason: `fase-no-existe:${p}/${f}` };
+  const skillsFase = (config.pipelines[p].skills_por_fase?.[f]) || [];
+  if (!skillsFase.includes(s)) return { ok: false, reason: `skill-no-en-fase:${s}@${p}/${f}` };
+  const destIdx = faseGlobalIndex(p, f, config);
+  const origIdx = faseGlobalIndex(faseOriginPipeline, faseOrigin, config);
+  if (destIdx < 0 || origIdx < 0) return { ok: false, reason: 'fase-no-resoluble' };
+  if (destIdx >= origIdx) return { ok: false, reason: `destino-no-upstream:${p}/${f}>=${faseOriginPipeline}/${faseOrigin}` };
+  return { ok: true };
+}
+
+/** Cuenta rebotes cross-phase existentes del issue buscando en todos los YAML. */
+function contarCrossPhaseRebotes(issue, config) {
+  let maxCount = 0;
+  for (const pName of Object.keys(config.pipelines || {})) {
+    for (const fase of (config.pipelines[pName].fases || [])) {
+      for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+        const dir = path.join(fasePath(pName, fase), estado);
+        try {
+          for (const f of fs.readdirSync(dir)) {
+            if (!f.startsWith(String(issue) + '.')) continue;
+            const data = readYaml(path.join(dir, f));
+            if (data?.rebote_tipo === 'crossphase' && (data.rebote_numero_crossphase || 0) > maxCount) {
+              maxCount = data.rebote_numero_crossphase;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+  return maxCount;
+}
+
+/**
+ * Resuelve un cross-phase rebote a partir de los archivos rechazados.
+ * Devuelve null si ningún archivo emitió `rebote_destino` o si el destino es inválido.
+ * Si hay múltiples destinos, elige el MÁS UPSTREAM (menor índice global).
+ */
+function resolveRebotedCrossPhase(resultados, pipelineOrigin, faseOrigin, config) {
+  const candidatos = [];
+  for (const r of resultados) {
+    if (r.resultado !== 'rechazado' || !r.rebote_destino) continue;
+    const validacion = validateRebotedDestino(r.rebote_destino, pipelineOrigin, faseOrigin, config);
+    if (!validacion.ok) {
+      log('barrido', `⚠️ #${r.issue || '?'} rebote_destino inválido (${validacion.reason}) — ignorando, cae a default`);
+      continue;
+    }
+    candidatos.push({
+      destino: r.rebote_destino,
+      skillOrigen: skillFromFile(r.file.name),
+      motivo: r.motivo || '',
+      index: faseGlobalIndex(r.rebote_destino.pipeline, r.rebote_destino.fase, config),
+    });
+  }
+  if (candidatos.length === 0) return null;
+  candidatos.sort((a, b) => a.index - b.index);
+  return candidatos[0];
+}
+
 /** Obtener el mtime de un archivo en minutos */
 function fileAgeMinutes(filepath) {
   try {
@@ -2158,6 +2269,106 @@ function brazoBarrido(config) {
         }
 
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
+
+        // CROSS-PHASE REBOTE: si algún archivo rechazado declara `rebote_destino`
+        // válido, rutear el issue a esa fase/skill upstream en lugar del default.
+        // Interceptado ANTES del flujo de rebote normal a `fase_rechazo`.
+        if (rechazados.length > 0) {
+          const cross = resolveRebotedCrossPhase(resultados, pipelineName, fase, loadConfig());
+          if (cross) {
+            const cfg = loadConfig();
+            const crossCount = contarCrossPhaseRebotes(issue, cfg);
+            const nuevoCrossCount = crossCount + 1;
+
+            let destinoEfectivo = null;
+            let escalaAHumano = false;
+            if (nuevoCrossCount > MAX_CROSSPHASE_REBOTES) {
+              escalaAHumano = true;
+            } else if (nuevoCrossCount === 1) {
+              destinoEfectivo = cross.destino;
+            } else {
+              // 2do intento: escalar a fase previa del mismo skill.
+              const previa = findPreviousFaseForSkill(
+                cross.destino.skill, cross.destino.pipeline, cross.destino.fase, cfg,
+              );
+              if (!previa) {
+                escalaAHumano = true;
+                log('barrido', `⛔ #${issue} cross-phase rev-${nuevoCrossCount}: sin fase previa para skill ${cross.destino.skill} — escalando a humano`);
+              } else {
+                destinoEfectivo = previa;
+                log('barrido', `↑ #${issue} cross-phase rev-${nuevoCrossCount}: escala a ${previa.pipeline}/${previa.fase}/${previa.skill}`);
+              }
+            }
+
+            if (escalaAHumano) {
+              log('barrido', `⛔ #${issue} CIRCUIT BREAKER CROSSPHASE — ${nuevoCrossCount} rebotes cross-phase (cap ${MAX_CROSSPHASE_REBOTES}). Escalando.`);
+              sendTelegram(`⛔ Issue #${issue} — ${nuevoCrossCount} rebotes cross-phase solicitados por agentes. Requiere intervención manual.`);
+              try {
+                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                fs.mkdirSync(ghQueueDir, { recursive: true });
+                const labelFile = path.join(ghQueueDir, `${issue}-needs-human-crossphase-${Date.now()}.json`);
+                fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }));
+              } catch (e) { log('barrido', `error encolando label needs-human: ${e.message}`); }
+              for (const a of archivos) {
+                const dest = path.join(fasePath(pipelineName, fase), 'procesado');
+                try { moveFile(a.path, dest); } catch {}
+              }
+              continue;
+            }
+
+            // Cleanup: mover a procesado/ archivos del issue en todas las fases
+            // entre el destino (inclusivo) y la fase origen (inclusivo), para
+            // que el nuevo ciclo arranque limpio sin conflicto con residuos.
+            const destIdx = faseGlobalIndex(destinoEfectivo.pipeline, destinoEfectivo.fase, cfg);
+            const origIdx = faseGlobalIndex(pipelineName, fase, cfg);
+            const orderGlobal = getFaseGlobalOrder(cfg);
+            for (let i = destIdx; i <= origIdx; i++) {
+              const { pipeline: p, fase: f } = orderGlobal[i];
+              for (const estado of ['pendiente', 'trabajando', 'listo']) {
+                const dir = path.join(fasePath(p, f), estado);
+                try {
+                  for (const fname of fs.readdirSync(dir)) {
+                    if (fname.startsWith('.')) continue;
+                    if (!fname.startsWith(String(issue) + '.')) continue;
+                    const src = path.join(dir, fname);
+                    const dst = path.join(fasePath(p, f), 'procesado', fname);
+                    try {
+                      const prev = readYaml(src) || {};
+                      writeYaml(dst, { ...prev, cancelado_por: 'cross-phase-rebote', cancelado_ts: new Date().toISOString() });
+                      fs.unlinkSync(src);
+                    } catch {}
+                  }
+                } catch {}
+              }
+            }
+
+            // Crear archivo en destino efectivo
+            const destPendiente = path.join(fasePath(destinoEfectivo.pipeline, destinoEfectivo.fase), 'pendiente');
+            try { fs.mkdirSync(destPendiente, { recursive: true }); } catch {}
+            const destFile = path.join(destPendiente, `${issue}.${destinoEfectivo.skill}`);
+            const yamlOut = {
+              issue: parseInt(issue),
+              fase: destinoEfectivo.fase,
+              pipeline: destinoEfectivo.pipeline,
+              rebote: true,
+              rebote_tipo: 'crossphase',
+              rebote_numero_crossphase: nuevoCrossCount,
+              rebote_destino_solicitado: cross.destino,
+              rebote_destino_efectivo: destinoEfectivo,
+              motivo_rechazo: sanitizePipelineText(cross.motivo),
+              rechazado_en_fase: fase,
+              rechazado_por_skill: cross.skillOrigen,
+            };
+            writeYaml(destFile, yamlOut);
+
+            log('barrido', `↪ #${issue} CROSS-PHASE rev-${nuevoCrossCount} — ${pipelineName}/${fase}/${cross.skillOrigen} → ${destinoEfectivo.pipeline}/${destinoEfectivo.fase}/${destinoEfectivo.skill}`);
+            ghCommentOnIssue(
+              issue,
+              `🔁 Pipeline: **${cross.skillOrigen}** (fase \`${pipelineName}/${fase}\`) solicitó re-ejecución de **${destinoEfectivo.skill}** (fase \`${destinoEfectivo.pipeline}/${destinoEfectivo.fase}\`).\n\nCross-phase rebote rev-${nuevoCrossCount}/${MAX_CROSSPHASE_REBOTES}.\n\nMotivo:\n> ${cross.motivo.slice(0, 500)}`
+            );
+            continue;
+          }
+        }
 
         if (rechazados.length > 0 && faseRechazo) {
           // #2317: clasificar los rechazos por tipo. Si TODOS los motivos
@@ -6118,6 +6329,14 @@ function brazoIntake(config) {
   if (Date.now() - lastIntakeTime < intakeInterval) return;
   lastIntakeTime = Date.now();
 
+  // #2506: respetar pausa parcial — si está activa, solo procesar issues del allowlist.
+  // Si es pausa completa, no hacer intake.
+  const pipelineMode = partialPause.getPipelineMode();
+  if (pipelineMode.mode === 'paused') return;
+  const allowlistSet = pipelineMode.mode === 'partial_pause'
+    ? new Set(pipelineMode.allowedIssues.map(String))
+    : null;
+
   const intakeConfig = config.intake || {};
 
   for (const [pipelineName, pipeIntake] of Object.entries(intakeConfig)) {
@@ -6135,9 +6354,22 @@ function brazoIntake(config) {
         `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
         { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
       );
-      const issues = JSON.parse(result || '[]');
+      let issues = JSON.parse(result || '[]');
 
       if (issues.length === 0) continue;
+
+      // #2506: si partial_pause, filtrar antes del loop principal para no hacer trabajo inútil.
+      if (allowlistSet) {
+        const before = issues.length;
+        issues = issues.filter(i => allowlistSet.has(String(i.number)));
+        if (issues.length === 0) {
+          log('intake', `${pipelineName}: partial_pause filtró ${before} issues fuera del allowlist — sin candidatos`);
+          continue;
+        }
+        if (before > issues.length) {
+          log('intake', `${pipelineName}: partial_pause filtró ${before - issues.length} issues fuera del allowlist (${issues.length} candidatos restantes)`);
+        }
+      }
 
       // Cachear labels+estado de los issues recién traídos de GitHub
       for (const issue of issues) {
@@ -6307,6 +6539,16 @@ function brazoDesbloqueo(config) {
   if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
   lastUnblockTime = Date.now();
 
+  // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
+  // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
+  // ciclo consultando sus dependencias en GitHub (cada issue toma 20-30s por
+  // los múltiples gh issue view; con 25 issues bloqueados típicos, ~8 min/ciclo).
+  const pipelineMode = partialPause.getPipelineMode();
+  if (pipelineMode.mode === 'paused') return;
+  const allowlistSet = pipelineMode.mode === 'partial_pause'
+    ? new Set(pipelineMode.allowedIssues.map(String))
+    : null;
+
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies
     ghThrottle();
@@ -6314,11 +6556,22 @@ function brazoDesbloqueo(config) {
       `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title,labels --limit 50`,
       { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
     );
-    const blockedIssues = JSON.parse(result || '[]');
+    let blockedIssues = JSON.parse(result || '[]');
     if (blockedIssues.length === 0) {
       // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
       try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
       return;
+    }
+
+    // #2506: filtrar por allowlist si pausa parcial activa.
+    if (allowlistSet) {
+      const before = blockedIssues.length;
+      blockedIssues = blockedIssues.filter(i => allowlistSet.has(String(i.number)));
+      if (blockedIssues.length === 0) {
+        log('desbloqueo', `partial_pause: ninguno de los ${before} issues bloqueados está en el allowlist — skip ciclo`);
+        return;
+      }
+      log('desbloqueo', `partial_pause: filtrados ${before - blockedIssues.length} issues fuera del allowlist (${blockedIssues.length} candidatos)`);
     }
 
     log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
@@ -6577,7 +6830,14 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     staleness,
     _precheckState: () => ({ lastPrecheckResult, lastPrecheckAt, lastInfraBlockedIssues: Array.from(lastInfraBlockedIssues) }),
     _setPrecheckState: (r) => { lastPrecheckResult = r; lastPrecheckAt = Date.now(); },
-    _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); }
+    _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); },
+    // #2516 — cross-phase rebote: utilidades para tests.
+    MAX_CROSSPHASE_REBOTES,
+    getFaseGlobalOrder,
+    faseGlobalIndex,
+    findPreviousFaseForSkill,
+    validateRebotedDestino,
+    resolveRebotedCrossPhase,
   };
   return; // No arrancar singleton ni mainLoop
 }

@@ -223,49 +223,82 @@ async function preprocessMessage(msg, botToken) {
   return result;
 }
 
-// --- TTS config (priorización dinámica) ---
+// --- TTS config (priorización dinámica con perfiles por agente) ---
 
 const TTS_CONFIG_PATH = path.join(ROOT, '.pipeline', 'tts-config.json');
 
-function loadTtsConfig() {
-  const defaults = {
-    primary: 'openai',
-    fallback: 'edge',
-    providers: {
-      openai: {
-        model: 'gpt-4o-mini-tts',
-        voice: 'ash',
-        instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
-        response_format: 'opus',
-        character_name: 'Claudito'
-      },
-      edge: {
-        voice: 'es-AR-TomasNeural',
-        rate: '+8%',
-        pitch: '+4Hz',
-        character_name: 'Tommy',
-        personality: 'Sos Tommy, un pibe joven que recién arranca en el equipo. Tenés la frescura de la juventud, hablas con energía, onda y entusiasmo. Usas vos, che, dale, mira. Sos piola, curioso, con ganas de aprender. Nunca sos engreído — tenés el respeto del que recién se inicia pero la garra de querer comerse la cancha.'
-      }
-    },
-    intros: {
-      openai_from_edge: 'Hola Leo, volvió Claudito. Gracias Tommy por cubrirme, te saliste, pibe.',
-      edge_from_openai: 'Eeeeh Leo, todo bien. Soy Tommy, recién me sumo al equipo. Claudito se tomó una licencia y me dejó la posta mientras vuelve. La rompo yo hasta que regrese.'
-    }
-  };
-  try {
-    const raw = JSON.parse(fs.readFileSync(TTS_CONFIG_PATH, 'utf8'));
-    return {
-      primary: raw.primary || defaults.primary,
-      fallback: raw.fallback === null ? null : (raw.fallback || defaults.fallback),
-      providers: {
-        openai: { ...defaults.providers.openai, ...(raw.providers && raw.providers.openai) },
-        edge: { ...defaults.providers.edge, ...(raw.providers && raw.providers.edge) }
-      },
-      intros: { ...defaults.intros, ...(raw.intros || {}) }
-    };
-  } catch {
-    return defaults;
+// Perfil default hardcoded como último fallback. Usado si el archivo no existe,
+// tiene schema inválido, o se pide un perfil inexistente (queremos audio
+// genérico antes que no audio). Cualquier agente del pipeline puede declarar
+// su propio perfil en tts-config.json → profiles.<nombre>.
+const DEFAULT_PROFILE = {
+  primary: 'openai',
+  fallback: 'edge',
+  openai: {
+    model: 'gpt-4o-mini-tts',
+    voice: 'ash',
+    instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
+    response_format: 'opus',
+    character_name: 'Claudito'
+  },
+  edge: {
+    voice: 'es-AR-TomasNeural',
+    rate: '+8%',
+    pitch: '+4Hz',
+    character_name: 'Tommy',
+    personality: 'Sos Tommy, un pibe joven que recién arranca en el equipo. Tenés la frescura de la juventud, hablas con energía, onda y entusiasmo. Usas vos, che, dale, mira. Sos piola, curioso, con ganas de aprender. Nunca sos engreído — tenés el respeto del que recién se inicia pero la garra de querer comerse la cancha.'
+  },
+  intros: {
+    openai_from_edge: 'Hola Leo, volvió Claudito. Gracias Tommy por cubrirme, te saliste, pibe.',
+    edge_from_openai: 'Eeeeh Leo, todo bien. Soy Tommy, recién me sumo al equipo. Claudito se tomó una licencia y me dejó la posta mientras vuelve. La rompo yo hasta que regrese.'
   }
+};
+
+/**
+ * Carga un perfil TTS por nombre. Soporta dos shapes de tts-config.json:
+ *   - Nuevo: { profiles: { default: {...}, qa: {...}, ... } }
+ *   - Viejo: { primary, fallback, providers: { openai, edge }, intros } → interpretado como profiles.default
+ * Si el perfil pedido no existe, cae a `default`. Si tampoco hay default, usa DEFAULT_PROFILE hardcoded.
+ * Retorna objeto con { primary, fallback, openai, edge, intros, profileName, profileFound }.
+ */
+function loadTtsConfig(profileName = 'default') {
+  let raw = null;
+  try {
+    raw = JSON.parse(fs.readFileSync(TTS_CONFIG_PATH, 'utf8'));
+  } catch {
+    return { ...DEFAULT_PROFILE, profileName: 'default', profileFound: false };
+  }
+
+  let profileRaw = null;
+  if (raw && raw.profiles && typeof raw.profiles === 'object') {
+    profileRaw = raw.profiles[profileName];
+    if (!profileRaw && profileName !== 'default') {
+      profileRaw = raw.profiles.default;
+    }
+  } else if (raw) {
+    // Shape viejo → interpretarlo como si fuera profiles.default
+    profileRaw = {
+      primary: raw.primary,
+      fallback: raw.fallback,
+      openai: raw.providers?.openai,
+      edge: raw.providers?.edge,
+      intros: raw.intros,
+    };
+  }
+
+  if (!profileRaw) {
+    return { ...DEFAULT_PROFILE, profileName: 'default', profileFound: false };
+  }
+
+  return {
+    primary: profileRaw.primary || DEFAULT_PROFILE.primary,
+    fallback: profileRaw.fallback === null ? null : (profileRaw.fallback || DEFAULT_PROFILE.fallback),
+    openai: { ...DEFAULT_PROFILE.openai, ...(profileRaw.openai || {}) },
+    edge: { ...DEFAULT_PROFILE.edge, ...(profileRaw.edge || {}) },
+    intros: { ...DEFAULT_PROFILE.intros, ...(profileRaw.intros || {}) },
+    profileName,
+    profileFound: true,
+  };
 }
 
 // Estado persistente: último provider usado (para detectar transiciones)
@@ -281,9 +314,9 @@ function saveTtsState(state) {
   catch (e) { log(`TTS state save error: ${e.message}`); }
 }
 
-function getTransitionIntro(newProvider, prevProvider) {
+function getTransitionIntro(newProvider, prevProvider, profileName = 'default') {
   if (!prevProvider || prevProvider === newProvider) return null;
-  const cfg = loadTtsConfig();
+  const cfg = loadTtsConfig(profileName);
   if (newProvider === 'openai' && prevProvider === 'edge') return cfg.intros?.openai_from_edge || null;
   if (newProvider === 'edge' && prevProvider === 'openai') return cfg.intros?.edge_from_openai || null;
   return null;
@@ -291,12 +324,12 @@ function getTransitionIntro(newProvider, prevProvider) {
 
 // --- OpenAI TTS ---
 
-function textToSpeechOpenAI(text) {
+function textToSpeechOpenAI(text, profileName = 'default') {
   const config = loadConfig();
   const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
   if (!apiKey) { log('TTS[openai]: falta openai_api_key'); return Promise.resolve(null); }
 
-  const ttsCfg = loadTtsConfig().providers.openai;
+  const ttsCfg = loadTtsConfig(profileName).openai;
 
   return new Promise((resolve) => {
     // OpenAI TTS soporta hasta 4096 chars — NO truncar, los callers manejan chunking
@@ -404,8 +437,8 @@ function mp3ToOpus(mp3Path) {
   });
 }
 
-function textToSpeechEdge(text) {
-  const ttsCfg = loadTtsConfig().providers.edge;
+function textToSpeechEdge(text, profileName = 'default') {
+  const ttsCfg = loadTtsConfig(profileName).edge;
   const tmpDir = path.join(os.tmpdir(), 'intrale-edge-tts');
   try { fs.mkdirSync(tmpDir, { recursive: true }); } catch {}
   const mp3Path = path.join(tmpDir, `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp3`);
@@ -446,42 +479,51 @@ function textToSpeechEdge(text) {
 
 // --- TTS con priorización dinámica + fallback ---
 
-async function textToSpeechByProvider(provider, text) {
-  if (provider === 'openai') return textToSpeechOpenAI(text);
-  if (provider === 'edge') return textToSpeechEdge(text);
+async function textToSpeechByProvider(provider, text, profileName = 'default') {
+  if (provider === 'openai') return textToSpeechOpenAI(text, profileName);
+  if (provider === 'edge') return textToSpeechEdge(text, profileName);
   log(`TTS: provider desconocido '${provider}'`);
   return null;
 }
 
-// Retorna { buffer, provider } donde provider es el que efectivamente generó el audio.
-// Null si ambos fallaron.
-async function textToSpeechWithMeta(text) {
-  const cfg = loadTtsConfig();
+/**
+ * Retorna { buffer, provider, profile } donde provider es el que efectivamente
+ * generó el audio y profile es el nombre del perfil usado. Null si ambos fallaron.
+ * @param {string} text
+ * @param {{ profile?: string }} [opts]
+ */
+async function textToSpeechWithMeta(text, opts = {}) {
+  const profileName = opts.profile || 'default';
+  const cfg = loadTtsConfig(profileName);
   const forced = process.env.TTS_PROVIDER;
   if (forced) {
-    log(`TTS forzado por env: ${forced}`);
-    const buf = await textToSpeechByProvider(forced, text);
-    return buf ? { buffer: buf, provider: forced } : null;
+    log(`TTS[${profileName}] forzado por env: ${forced}`);
+    const buf = await textToSpeechByProvider(forced, text, profileName);
+    return buf ? { buffer: buf, provider: forced, profile: profileName } : null;
   }
 
   const primary = cfg.primary || 'openai';
-  log(`TTS: intentando primary=${primary}`);
-  const bufPrimary = await textToSpeechByProvider(primary, text);
-  if (bufPrimary) return { buffer: bufPrimary, provider: primary };
+  log(`TTS[${profileName}]: intentando primary=${primary}`);
+  const bufPrimary = await textToSpeechByProvider(primary, text, profileName);
+  if (bufPrimary) return { buffer: bufPrimary, provider: primary, profile: profileName };
 
   const fallback = cfg.fallback;
   if (!fallback || fallback === primary) {
-    log(`TTS: primary fallo y no hay fallback distinto`);
+    log(`TTS[${profileName}]: primary fallo y no hay fallback distinto`);
     return null;
   }
-  log(`TTS: primary fallo, probando fallback=${fallback}`);
-  const bufFallback = await textToSpeechByProvider(fallback, text);
-  return bufFallback ? { buffer: bufFallback, provider: fallback } : null;
+  log(`TTS[${profileName}]: primary fallo, probando fallback=${fallback}`);
+  const bufFallback = await textToSpeechByProvider(fallback, text, profileName);
+  return bufFallback ? { buffer: bufFallback, provider: fallback, profile: profileName } : null;
 }
 
-// Compat: signature histórica que retorna solo el buffer.
-async function textToSpeech(text) {
-  const meta = await textToSpeechWithMeta(text);
+/**
+ * Compat: signature histórica que retorna solo el buffer.
+ * @param {string} text
+ * @param {{ profile?: string }} [opts]
+ */
+async function textToSpeech(text, opts = {}) {
+  const meta = await textToSpeechWithMeta(text, opts);
   return meta ? meta.buffer : null;
 }
 

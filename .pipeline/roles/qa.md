@@ -168,19 +168,19 @@ Arrancá directamente a testear los criterios de aceptación.
    - Usar `adb shell uiautomator dump /dev/tty` para encontrar elementos de UI
    - Usar `adb shell input tap X Y` para interactuar
 4. **Generar video con relato narrado** (OBLIGATORIO):
-   Usar edge-tts para narrar cada criterio verificado y mergear con el video crudo del pipeline.
+   Usar el helper TTS del pipeline con el perfil `qa` (Rulo/Nacho — tu personalidad como QA). El helper maneja primary edge / fallback openai automáticamente.
 
    ```bash
    # 1. Escribir guion narrando qué se verificó y el resultado de cada criterio
    cat > "qa/evidence/<issue>/qa-<issue>-guion.txt" << 'GUION'
-   [Narración de cada criterio de aceptación verificado...]
+   [Narración de cada criterio de aceptación verificado, en primera persona como Nacho/Rulo...]
    GUION
 
-   # 2. Generar audio
-   python -m edge_tts \
-     --voice "es-AR-TomasNeural" \
-     --file "qa/evidence/<issue>/qa-<issue>-guion.txt" \
-     --write-media "qa/evidence/<issue>/qa-<issue>-narration.mp3"
+   # 2. Generar audio con el perfil QA (primary edge por costo, fallback openai)
+   node .pipeline/lib/tts-generate.js \
+     --profile qa \
+     --input "qa/evidence/<issue>/qa-<issue>-guion.txt" \
+     --output "qa/evidence/<issue>/qa-<issue>-narration.mp3"
 
    # 3. Mergear audio + video crudo del pipeline
    FFMPEG_BIN=$(which ffmpeg 2>/dev/null || echo "/c/Users/Administrator/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg")
@@ -189,6 +189,8 @@ Arrancá directamente a testear los criterios de aceptación.
      -c:v copy -c:a aac -b:a 128k -shortest \
      "qa/evidence/<issue>/qa-<issue>.mp4" -y
    ```
+
+   **Sobre la personalidad**: escribí el guión en primera persona con la voz de tu perfil TTS (`qa` → Nacho si edge está OK, Rulo si cayó el fallback). Ver `.pipeline/tts-config.json` profiles.qa para los rasgos de cada uno. Son distintos a Claudito/Tommy (que quedan para mensajes generales del sistema).
 5. **Extraer frames clave** (respaldo visual):
    ```bash
    "$FFMPEG_BIN" -i "qa/evidence/<issue>/qa-<issue>.mp4" -vf "fps=1/3" -q:v 2 \
@@ -216,7 +218,7 @@ Tenés 45 minutos de timeout, usá el tiempo.
 **Para QA-Android con aprobación:**
 - [ ] Cada criterio de aceptación fue verificado explícitamente en la app
 - [ ] Guion narrado escrito en `qa/evidence/<issue>/qa-<issue>-guion.txt`
-- [ ] Audio generado con edge-tts en `qa/evidence/<issue>/qa-<issue>-narration.mp3`
+- [ ] Audio generado con `tts-generate.js --profile qa` en `qa/evidence/<issue>/qa-<issue>-narration.mp3`
 - [ ] Video final mergeado (audio + video crudo) en `qa/evidence/<issue>/qa-<issue>.mp4`
 - [ ] Frames extraídos en `qa/evidence/<issue>/qa-<issue>-frame-*.png`
 - [ ] Upload a Drive encolado en `.pipeline/servicios/drive/pendiente/`
@@ -227,7 +229,7 @@ Tenés 45 minutos de timeout, usá el tiempo.
 - [ ] Screenshots del defecto como evidencia
 - [ ] Label `qa:failed` encolado en `.pipeline/servicios/github/pendiente/`
 
-Si edge-tts falla, reintentar una vez. Si sigue fallando, documentar el error
+Si `tts-generate.js` falla (primary + fallback agotados), reintentar una vez. Si sigue fallando, documentar el error
 en el YAML pero **NO omitir el intento** — siempre ejecutar el comando.
 
 ### Resultado
@@ -274,7 +276,7 @@ Al terminar, dejar pedido en `.pipeline/servicios/github/pendiente/`:
 - NUNCA iniciar screenrecord — el pipeline ya está grabando video crudo
 - Si el backend remoto no responde, rechazar con motivo "backend remoto no disponible" e incluir el HTTP status
 - Si un criterio de aceptacion no es verificable (falta info), rechazar pidiendo mas detalle
-- SIEMPRE generar audio narrado con edge-tts y mergearlo al video con ffmpeg
+- SIEMPRE generar audio narrado con `tts-generate.js --profile qa` (perfil Rulo/Nacho) y mergearlo al video con ffmpeg
 - SIEMPRE mencionar cada criterio de aceptacion explicitamente en el relato
 - SIEMPRE extraer frames del video antes de aprobar
 - SIEMPRE encolar subida del video final a Drive
