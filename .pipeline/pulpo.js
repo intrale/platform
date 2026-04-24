@@ -4549,35 +4549,56 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
+    //
+    // Excepción (#2524): si el agente alcanzó a escribir un YAML con veredicto
+    // válido (`resultado: aprobado | rechazado`), NO es muerte prematura — es
+    // terminación legítima. Aplica principalmente a skills determinísticos
+    // (linter, builder, delivery, tester en modo no-LLM) que terminan rápido
+    // por diseño y emiten veredicto explícito antes del exit.
     if (code !== 0 && elapsedSec < 15) {
-      const { failures, delayMin } = registerFastFail(skill, issue);
-      log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
-      const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
-      try { moveFile(trabajandoPath, pendienteDir); } catch {}
-      activeProcesses.delete(processKey(skill, issue));
-      // Matar Gradle daemons incluso en fast-fail
-      killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
-      // Salir del canal de contexto
-      if (contextChannelId) {
-        try {
-          const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
-          cm.leaveChannelByType(contextChannelId, 'agent');
-        } catch (e) {}
-      }
-      sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
-      // Reporte PDF de muerte prematura (background)
+      let hasVerdict = false;
       try {
-        const reportScript = path.join(PIPELINE, 'rejection-report.js');
-        const reportChild = spawn(process.execPath, [
-          reportScript,
-          '--issue', String(issue), '--skill', skill, '--fase', fase,
-          '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
-          '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
-          '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
-        ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
-        reportChild.unref();
+        const quickYaml = readYaml(trabajandoPath) || {};
+        hasVerdict = quickYaml.resultado === 'aprobado' || quickYaml.resultado === 'rechazado';
       } catch {}
-      return;
+
+      if (!hasVerdict) {
+        const { failures, delayMin } = registerFastFail(skill, issue);
+        log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        try { moveFile(trabajandoPath, pendienteDir); } catch {}
+        activeProcesses.delete(processKey(skill, issue));
+        // Matar Gradle daemons incluso en fast-fail
+        killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
+        // Salir del canal de contexto
+        if (contextChannelId) {
+          try {
+            const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+            cm.leaveChannelByType(contextChannelId, 'agent');
+          } catch (e) {}
+        }
+        sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
+        // Reporte PDF de muerte prematura (background)
+        try {
+          const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          const reportChild = spawn(process.execPath, [
+            reportScript,
+            '--issue', String(issue), '--skill', skill, '--fase', fase,
+            '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+            '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
+            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+          ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
+          reportChild.unref();
+        } catch {}
+        return;
+      }
+
+      // Hay veredicto: tratamos como terminación normal. Limpiamos cooldown
+      // stale de fast-fails previos (el skill demostró que está OK emitiendo
+      // veredicto válido, aunque exit ≠ 0 por convención de rechazo).
+      log('lanzamiento', `✓ ${skill}:#${issue} terminó en ${elapsedSec.toFixed(0)}s con veredicto válido (code=${code}) — no es muerte prematura`);
+      clearCooldown(skill, issue);
+      // Cae al flujo normal de abajo que mueve trabajando → listo y dispara rejection-report si corresponde.
     }
 
     // Éxito o finalización normal → limpiar cooldown
