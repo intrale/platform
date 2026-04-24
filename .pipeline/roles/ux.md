@@ -73,29 +73,13 @@ Mientras ves el video, evaluá la experiencia de usuario completa:
 - Verificá consistencia visual con Material3 y el tema de Intrale
 - Verificá accesibilidad básica (contraste, tamaños, labels)
 
-### PASO 3 — Crear issues de mejora UX (si aplica)
+### PASO 3 — Crear issues de oportunidad (si aplica)
 
 Si durante la revisión del video detectás **oportunidades de mejora** que NO son
-defectos bloqueantes (sino mejoras a futuro), creá issues nuevos:
+defectos bloqueantes, seguí el **Protocolo de oportunidades de mejora** al final
+de este rol. Convención unificada para todos los agentes del pipeline.
 
-```bash
-export PATH="/c/Workspaces/gh-cli/bin:$PATH"
-gh issue create --repo intrale/platform \
-  --title "UX: <mejora detectada>" \
-  --body "Detectado durante revisión UX del issue #<issue>.
-
-## Contexto
-<qué se observó en el video>
-
-## Mejora propuesta
-<descripción de la mejora>
-
-## Impacto esperado
-<beneficio para el usuario>" \
-  --label "tipo:mejora,area:ux"
-```
-
-**Importante**: las mejoras UX se crean como issues nuevos, NO bloquean la aprobación
+Las oportunidades se crean como issues independientes, NO bloquean la aprobación
 del issue actual (salvo que sea un defecto grave de usabilidad).
 
 ### PASO 4 — Resultado
@@ -130,3 +114,40 @@ del issue actual (salvo que sea un defecto grave de usabilidad).
 - Tema definido en `app/composeApp/src/commonMain/kotlin/ui/th/`
 - Strings via `resString()` (nunca `stringResource` directo)
 - Componentes reutilizables en `ui/cp/`
+
+## Protocolo de oportunidades de mejora (aplicable en TODAS las fases)
+
+Durante tu análisis en cualquier fase (`criterios`, `validacion`, `aprobacion`), si identificás **recomendaciones de mejora no bloqueantes** — ideas que NO deben frenar la aprobación del issue actual pero vale la pena investigar/implementar a futuro —, **NO las dejes sólo como texto en el comentario del issue origen**. Creá un issue independiente por cada una:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue create --repo intrale/platform \
+  --title "[ux] <descripción imperativa breve>" \
+  --label "enhancement,source:recommendation,priority:low,needs-definition<,app:client|,app:business|,app:delivery>" \
+  --body "## Contexto
+
+<qué observaste / qué motivó la recomendación>
+
+## Beneficio esperado
+
+<qué mejora aporta / por qué vale la pena priorizarla eventualmente>
+
+## Referencia
+
+> Propuesto automáticamente por el agente \`ux\` durante el análisis del issue #<origen>.
+> **No depende ni bloquea a #<origen>** — es una oportunidad de mejora independiente."
+```
+
+**Reglas inquebrantables:**
+
+1. **Un issue por recomendación** — no consolidar múltiples en el mismo issue.
+2. **Título con prefijo `[ux]`** + frase imperativa breve.
+3. **Heredar** labels `app:*` del issue origen cuando apliquen (si el origen tiene `app:business`, el nuevo issue también).
+4. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies` ni metadatos de dependencia formal. La referencia es sólo contextual en el body.
+5. **Prioridad inicial siempre `priority:low`** — PO/planner re-prioriza cuando el issue entre a definicion.
+6. **Listar en `notas` del YAML** de tu resultado los issues creados (ej: `notas: "Oportunidades registradas: #2601, #2602"`).
+7. **Mencionar en el comentario del issue origen** los issues creados, con formato: `Issues de oportunidad registrados: #xxxx, #xxxx.`
+
+**Cuándo aplicar**: cualquier apartado tipo "Oportunidades de mejora UX", "Consideraciones futuras", "Mejoras no bloqueantes" o equivalente que emitas durante tu análisis.
+
+**Cuándo NO aplicar**: defectos bloqueantes del issue actual — eso va como `resultado: rechazado` del issue actual, no como oportunidad separada.

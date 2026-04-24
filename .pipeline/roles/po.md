@@ -142,3 +142,40 @@ etapa y qué criterios de aceptación se están verificando.
 - Los criterios de aceptación deben ser verificables (no ambiguos)
 - Cada historia debe entregar valor independiente al usuario
 - Las historias grandes se dividen (criterio: si necesita más de 1 PR, es grande)
+
+## Protocolo de oportunidades de mejora (aplicable en TODAS las fases)
+
+Durante tu análisis en cualquier fase (`criterios`, `validacion`, `aprobacion`), si identificás **recomendaciones de producto no bloqueantes** — features adyacentes, optimizaciones de flujo, mejoras de valor percibido por el usuario que NO deben frenar la aprobación del issue actual pero vale la pena tener en el backlog —, **NO las dejes sólo como texto en el comentario del issue origen**. Creá un issue independiente por cada una:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue create --repo intrale/platform \
+  --title "[po] <descripción imperativa breve>" \
+  --label "enhancement,source:recommendation,priority:low,needs-definition<,app:client|,app:business|,app:delivery>" \
+  --body "## Contexto
+
+<qué observaste / qué motivó la recomendación>
+
+## Beneficio esperado
+
+<qué valor aporta al usuario / producto / por qué vale la pena priorizarla>
+
+## Referencia
+
+> Propuesto automáticamente por el agente \`po\` durante el análisis del issue #<origen>.
+> **No depende ni bloquea a #<origen>** — es una oportunidad de mejora independiente."
+```
+
+**Reglas inquebrantables:**
+
+1. **Un issue por recomendación** — no consolidar múltiples en el mismo issue.
+2. **Título con prefijo `[po]`** + frase imperativa breve.
+3. **Heredar** labels `app:*` del issue origen cuando apliquen.
+4. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies` ni metadatos de dependencia formal. La referencia es sólo contextual en el body.
+5. **Prioridad inicial siempre `priority:low`** — el propio PO re-prioriza cuando el issue entre a definicion (puedes priorizar alto desde el día uno si ya sabés que es crítico, pero por defecto es `low`).
+6. **Listar en `notas` del YAML** de tu resultado los issues creados (ej: `notas: "Oportunidades registradas: #2601, #2602"`).
+7. **Mencionar en el comentario del issue origen** los issues creados: `Issues de oportunidad registrados: #xxxx, #xxxx.`
+
+**Cuándo aplicar**: cualquier apartado tipo "Mejoras de producto futuras", "Consideraciones para siguientes iteraciones", "Features adyacentes detectadas", "Optimizaciones de flujo" o equivalente.
+
+**Cuándo NO aplicar**: criterios bloqueantes del issue actual — eso va como `resultado: rechazado` o como criterio adicional dentro del mismo issue, no como oportunidad separada.
