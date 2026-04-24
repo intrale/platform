@@ -284,6 +284,29 @@ function processQueue() {
           const urlMatch = output.match(/\/(\d+)\s*$/);
           data.result = { number: urlMatch ? parseInt(urlMatch[1]) : null, url: output };
           log(`Issue creado: #${data.result.number} — ${data.title}`);
+
+          // Defensa anti-deadlock en pausa parcial (fix #2505):
+          // Si el issue creado tiene label qa:dependency Y el body referencia
+          // un issue que está en el allowlist de partial_pause, agregamos
+          // el nuevo número al allowlist. De lo contrario el issue original
+          // queda bloqueado esperando a este nuevo que nunca se procesaría.
+          try {
+            if (data.result?.number && typeof data.labels === 'string' && data.labels.includes('qa:dependency')) {
+              const partialPause = require('./lib/partial-pause');
+              const mode = partialPause.getPipelineMode();
+              if (mode.mode === 'partial_pause') {
+                const refs = [...String(data.body || '').matchAll(/#(\d+)/g)].map(m => parseInt(m[1]));
+                const touchesAllowlist = refs.some(n => mode.allowedIssues.includes(n));
+                if (touchesAllowlist && !mode.allowedIssues.includes(data.result.number)) {
+                  const next = [...mode.allowedIssues, data.result.number];
+                  partialPause.setPartialPause(next, { source: 'auto-deadlock-prevention' });
+                  log(`Partial pause: #${data.result.number} añadido al allowlist (bloquea a issue permitido).`);
+                }
+              }
+            }
+          } catch (e) {
+            log(`Warning: auto-allowlist falló: ${e.message}`);
+          }
           break;
         }
 

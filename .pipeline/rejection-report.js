@@ -1636,6 +1636,26 @@ async function phaseCollect() {
     return;
   }
 
+  // Gate de creación de issue dependiente (v7 — fix del bug del #2505/#2509):
+  // Solo crear issue qa:dependency cuando la causa raíz es EXTERNA al scope
+  // del issue rechazado (infra caída, servicio externo, puerto ocupado, etc.).
+  //
+  // Si el rechazo es INTERNO (el desarrollo no cumple los CA del propio issue,
+  // decisión de producto del PO, etc.), NO crear issue nuevo: el rebote natural
+  // del pulpo ya mueve el archivo de vuelta a dev/pendiente/ y android-dev
+  // vuelve a ejecutar sobre el mismo issue con el contexto del rechazo.
+  //
+  // Crear un issue qa:dependency en rechazos INTERNOS produce redundancia
+  // (el contenido del issue es lo mismo que android-dev ya va a retrabajar)
+  // y genera deadlock si hay pausa parcial sin el nuevo issue en la allowlist.
+  const origen = primaryCause.origen || 'INTERNO';
+  const OPT_IN_INTERNAL = primaryCause.forceCreateDep === true;
+  if (origen !== 'EXTERNO' && !OPT_IN_INTERNAL) {
+    console.log(`[rejection-report] RECHAZO_INTERNO (origen=${origen}) — PDF + rebote natural, sin crear issue qa:dependency.`);
+    await sendReport(data);
+    return;
+  }
+
   // Una causa raíz: armar título canonical
   const summary = primaryCause.summary || '';
   const detail = primaryCause.detail || summary;
