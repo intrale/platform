@@ -67,24 +67,29 @@ function fetchIssueTitles(issueIds, cache) {
   const batches = [];
   for (let i = 0; i < issueIds.length; i += 50) batches.push(issueIds.slice(i, i + 50));
   for (const batch of batches) {
+    const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
     try {
       const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title labels(first:10) { nodes { name } } }`).join(' ');
       const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
       // Write query to temp file to avoid shell escaping issues on Windows
-      const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
       fs.writeFileSync(tmpQuery, query);
       const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
       const out = execSync(cmd, { encoding: 'utf8', timeout: 30000, windowsHide: true });
-      try { fs.unlinkSync(tmpQuery); } catch {}
       const data = JSON.parse(out)?.data?.repository || {};
-      for (const val of Object.values(data)) {
-        if (!val?.number) continue;
-        cache[String(val.number)] = {
-          title: val.title,
-          labels: (val.labels?.nodes || []).map(l => l.name),
-          fetchedAt: Date.now()
-        };
-      }
+      // Negative cache: issues ausentes/null en la respuesta se marcan como notFound
+      // para que no vuelvan a consultarse en cada refresh (evita loop gh api).
+      batch.forEach((id, i) => {
+        const val = data[`i${i}`];
+        if (val?.number) {
+          cache[String(val.number)] = {
+            title: val.title,
+            labels: (val.labels?.nodes || []).map(l => l.name),
+            fetchedAt: Date.now()
+          };
+        } else {
+          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+        }
+      });
     } catch (e) {
       // Fallback: fetch one by one
       for (const id of batch) {
@@ -93,8 +98,14 @@ function fetchIssueTitles(issueIds, cache) {
           const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
           const iss = JSON.parse(out2);
           cache[id] = { title: iss.title, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
-        } catch {}
+        } catch {
+          // Issue no resoluble: cachear como notFound para evitar re-consulta en cada refresh
+          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+        }
       }
+    } finally {
+      // Garantiza limpieza del tmp aunque execSync falle (evita acumulación .gh-query-*.graphql)
+      try { fs.unlinkSync(tmpQuery); } catch {}
     }
   }
   saveIssueTitleCache(cache);
