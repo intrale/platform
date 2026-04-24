@@ -1605,6 +1605,25 @@ function evaluateQaPriority(config) {
   const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
   const now = Date.now();
 
+  // Diseño: las ventanas no tienen sentido cuando el pipeline está
+  // detenido (`paused`) o restringido a una allowlist (`partial_pause`).
+  // En esos modos no procesamos despacho normal, así que cualquier ventana
+  // activa quedaría pegada hasta que se libere la pausa. Forzamos cierre.
+  const pipelineMode = partialPause.getPipelineMode().mode;
+  if (pipelineMode === 'paused' || pipelineMode === 'partial_pause') {
+    if (qaPriorityActive) {
+      log('qa-priority', `🟢 QA Priority Window desactivada — pipeline en modo ${pipelineMode}`);
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      qaPriorityManual = false;
+      qaPriorityNotifiedTelegram = false;
+      qaPrioritySafetyNotified = false;
+      persistPriorityWindows();
+    }
+    return false;
+  }
+
   const pendingQa = countPendingVerificacion(config);
 
   // ---- Desactivación ----
@@ -1717,6 +1736,23 @@ function evaluateBuildPriority(config) {
   const threshold = limits.priority_windows_activation_threshold || 3;
   const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
   const now = Date.now();
+
+  // Diseño: las ventanas no tienen sentido cuando el pipeline está
+  // detenido (`paused`) o restringido a una allowlist (`partial_pause`).
+  const pipelineMode = partialPause.getPipelineMode().mode;
+  if (pipelineMode === 'paused' || pipelineMode === 'partial_pause') {
+    if (buildPriorityActive) {
+      log('build-priority', `🟢 Build Priority Window desactivada — pipeline en modo ${pipelineMode}`);
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityManual = false;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
+      persistPriorityWindows();
+    }
+    return false;
+  }
 
   const pendingBuild = countPendingBuild(config);
   const runningBuild = countRunningBuild(config);
