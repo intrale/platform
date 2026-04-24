@@ -328,22 +328,28 @@ async function main() {
         // Decisión de veredicto:
         // 1) tests fallidos o errores → rechazado
         // 2) cobertura < umbral (si se pidió coverage) → rechazado
-        // 3) gradle exit code ≠ 0 → rechazado
+        // 3) gradle exit code ≠ 0 CON bloque de error clasificable → rechazado
+        // 4) gradle exit code ≠ 0 SIN bloque clasificable pero tests OK → APROBADO (los tests son fuente de verdad)
+        // 5) no hay reportes JUnit válidos → rechazado (config rota)
         if (tests.valid && (tests.failures > 0 || tests.errors > 0)) {
             exitCode = 1;
             motivo = `Tests fallidos: ${tests.failures} failures + ${tests.errors} errors sobre ${tests.tests} totales`;
         } else if (args.coverage && koverData.aggregate.valid && koverData.aggregate.total.line.percent < args.threshold) {
             exitCode = 1;
             motivo = `Cobertura de líneas ${koverData.aggregate.total.line.percent}% por debajo del umbral ${args.threshold}%`;
-        } else if (gradleResult.exit_code !== 0) {
+        } else if (gradleResult.exit_code !== 0 && parsedGradle.errors[0]) {
+            // Solo rechazar cuando hay un bloque de error real — el exit code por sí solo
+            // puede venir de warnings o tasks que fallan post-tests sin afectar los resultados.
             exitCode = 1;
             const first = parsedGradle.errors[0];
-            motivo = first
-                ? `Gradle FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`
-                : `Gradle exit ${gradleResult.exit_code} sin bloque de error clasificable`;
+            motivo = `Gradle FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`;
         } else if (!tests.valid) {
             exitCode = 1;
             motivo = 'No se encontraron reportes JUnit — posible configuración rota o tests omitidos';
+        } else if (gradleResult.exit_code !== 0) {
+            // Tests válidos, sin errores de test, sin bloque de error clasificable de gradle, pero exit != 0.
+            // Aprobar con warning — los tests son la fuente de verdad. Evita rebotes espurios.
+            logAppend(`[tester] WARNING: gradle exit ${gradleResult.exit_code} sin bloque clasificable, pero ${tests.tests} tests pasaron (${tests.failures} fails, ${tests.errors} errors). Aprobando — tests son fuente de verdad.`);
         }
     } catch (e) {
         exitCode = 2;

@@ -2093,13 +2093,43 @@ function brazoBarrido(config) {
           todosCompletos = skillsRequeridos.every(s => skillsEnListo.includes(s));
         }
 
-        if (!todosCompletos) continue;
-
         // Leer resultados
         const resultados = archivos.map(a => ({
           ...readYaml(a.path),
           file: a
         }));
+
+        // FAST-FAIL: si al menos un skill rechazó, disparar el rebote sin esperar
+        // al resto. Los skills pendientes/en cooldown no cambian el veredicto
+        // (el issue va a rebotear igual) y esperarlos produce deadlocks cuando
+        // algún skill queda atascado. Incidente 2026-04-24: tester:#2505 en
+        // cooldown bloqueaba el rebote de qa:#2505 que ya había rechazado.
+        const hayRechazoConfirmado = resultados.some(r => r.resultado === 'rechazado');
+        if (!todosCompletos && !hayRechazoConfirmado) continue;
+
+        // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
+        // cancelar los archivos residuales del mismo issue en pendiente/ y trabajando/
+        // de la fase actual para que no queden huérfanos tras el rebote.
+        if (!todosCompletos && hayRechazoConfirmado) {
+          const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
+          for (const estado of ['pendiente', 'trabajando']) {
+            const dir = path.join(fasePath(pipelineName, fase), estado);
+            try {
+              for (const f of fs.readdirSync(dir)) {
+                if (f.startsWith('.')) continue; // flags internos
+                if (!f.startsWith(issue + '.')) continue;
+                const src = path.join(dir, f);
+                const dst = path.join(procesadoFaseActual, f);
+                try {
+                  const prev = readYaml(src) || {};
+                  writeYaml(dst, { ...prev, cancelado_por: 'fast-fail-rebote', cancelado_ts: new Date().toISOString() });
+                  fs.unlinkSync(src);
+                } catch {}
+              }
+            } catch {}
+          }
+          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+        }
 
         // --- GATE DE EVIDENCIA QA (fase verificacion) ---
         // Si el QA dice "aprobado" pero no tiene evidencia real, forzar rechazo automático.
