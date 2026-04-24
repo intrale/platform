@@ -6329,6 +6329,14 @@ function brazoIntake(config) {
   if (Date.now() - lastIntakeTime < intakeInterval) return;
   lastIntakeTime = Date.now();
 
+  // #2506: respetar pausa parcial — si está activa, solo procesar issues del allowlist.
+  // Si es pausa completa, no hacer intake.
+  const pipelineMode = partialPause.getPipelineMode();
+  if (pipelineMode.mode === 'paused') return;
+  const allowlistSet = pipelineMode.mode === 'partial_pause'
+    ? new Set(pipelineMode.allowedIssues.map(String))
+    : null;
+
   const intakeConfig = config.intake || {};
 
   for (const [pipelineName, pipeIntake] of Object.entries(intakeConfig)) {
@@ -6346,9 +6354,22 @@ function brazoIntake(config) {
         `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
         { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
       );
-      const issues = JSON.parse(result || '[]');
+      let issues = JSON.parse(result || '[]');
 
       if (issues.length === 0) continue;
+
+      // #2506: si partial_pause, filtrar antes del loop principal para no hacer trabajo inútil.
+      if (allowlistSet) {
+        const before = issues.length;
+        issues = issues.filter(i => allowlistSet.has(String(i.number)));
+        if (issues.length === 0) {
+          log('intake', `${pipelineName}: partial_pause filtró ${before} issues fuera del allowlist — sin candidatos`);
+          continue;
+        }
+        if (before > issues.length) {
+          log('intake', `${pipelineName}: partial_pause filtró ${before - issues.length} issues fuera del allowlist (${issues.length} candidatos restantes)`);
+        }
+      }
 
       // Cachear labels+estado de los issues recién traídos de GitHub
       for (const issue of issues) {
@@ -6518,6 +6539,16 @@ function brazoDesbloqueo(config) {
   if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
   lastUnblockTime = Date.now();
 
+  // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
+  // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
+  // ciclo consultando sus dependencias en GitHub (cada issue toma 20-30s por
+  // los múltiples gh issue view; con 25 issues bloqueados típicos, ~8 min/ciclo).
+  const pipelineMode = partialPause.getPipelineMode();
+  if (pipelineMode.mode === 'paused') return;
+  const allowlistSet = pipelineMode.mode === 'partial_pause'
+    ? new Set(pipelineMode.allowedIssues.map(String))
+    : null;
+
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies
     ghThrottle();
@@ -6525,11 +6556,22 @@ function brazoDesbloqueo(config) {
       `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title,labels --limit 50`,
       { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
     );
-    const blockedIssues = JSON.parse(result || '[]');
+    let blockedIssues = JSON.parse(result || '[]');
     if (blockedIssues.length === 0) {
       // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
       try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
       return;
+    }
+
+    // #2506: filtrar por allowlist si pausa parcial activa.
+    if (allowlistSet) {
+      const before = blockedIssues.length;
+      blockedIssues = blockedIssues.filter(i => allowlistSet.has(String(i.number)));
+      if (blockedIssues.length === 0) {
+        log('desbloqueo', `partial_pause: ninguno de los ${before} issues bloqueados está en el allowlist — skip ciclo`);
+        return;
+      }
+      log('desbloqueo', `partial_pause: filtrados ${before - blockedIssues.length} issues fuera del allowlist (${blockedIssues.length} candidatos)`);
     }
 
     log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
