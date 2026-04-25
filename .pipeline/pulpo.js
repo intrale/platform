@@ -1529,6 +1529,12 @@ let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación Q
 let qaPriorityNotifiedTelegram = false;
 let qaPriorityManual = false;       // true si fue activada manualmente desde el dashboard
 let qaPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
+// #2651 — cierre por no-progreso + cooldown.
+// Cuando la ventana queda abierta y nadie corre, marca timestamp.
+// Si pasan N min sin que arranque ningún agente QA → cierra y arma cooldown
+// para que la cola pendiente no la reabra inmediatamente (loop infinito).
+let qaNoProgressSince = 0;          // Primer tick con runningQa=0 y ventana abierta. 0 si arrancó alguien.
+let qaCooldownUntil = 0;            // Timestamp hasta el cual no se reabre por cola pendiente.
 
 // =============================================================================
 // BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
@@ -1561,6 +1567,11 @@ function restorePriorityWindows() {
       qaPriorityNotifiedTelegram = true; // Ya se notificó antes del restart
       log('qa-priority', `♻️ QA Priority Window restaurada desde disco (activada ${new Date(qaPriorityActivatedAt).toISOString()})`);
     }
+    // #2651 — restaurar cooldown si está vigente; si ya venció, ignorar.
+    if (data.qa?.cooldownUntil && data.qa.cooldownUntil > Date.now()) {
+      qaCooldownUntil = data.qa.cooldownUntil;
+      log('qa-priority', `♻️ QA cooldown restaurado: vigente hasta ${new Date(qaCooldownUntil).toISOString()}`);
+    }
     if (data.build?.active) {
       buildPriorityActive = true;
       buildPriorityActivatedAt = data.build.activatedAt || Date.now();
@@ -1586,7 +1597,8 @@ function persistPriorityWindows() {
     qa: {
       active: qaPriorityActive,
       activatedAt: qaPriorityActivatedAt || null,
-      manual: qaPriorityManual
+      manual: qaPriorityManual,
+      cooldownUntil: qaCooldownUntil || null
     },
     build: {
       active: buildPriorityActive,
@@ -1693,6 +1705,19 @@ function countPendingVerificacion(config) {
 }
 
 /**
+ * Contar agentes de verificación actualmente corriendo (tokens en trabajando/).
+ */
+function countRunningVerificacion(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('verificacion')) continue;
+    const trabajandoDir = path.join(PIPELINE, pName, 'verificacion', 'trabajando');
+    count += listWorkFiles(trabajandoDir).length;
+  }
+  return count;
+}
+
+/**
  * Detectar si hay agentes de dev corriendo (archivos en trabajando/ de fase dev).
  */
 function countRunningDev(config) {
@@ -1707,23 +1732,27 @@ function countRunningDev(config) {
 
 /**
  * Evaluar si debe activarse/desactivarse la QA Priority Window.
- * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
- * - Activación inmediata cuando cola >= umbral configurable
- * - Sin timeout fijo (corre hasta vaciar cola)
- * - Timeout de seguridad: notifica Telegram si no completa en N horas (no cierra)
+ * Modelo V2 #2651 — balance entre cola y agentes:
+ * - Activación: cola pendiente ≥ umbral (la cola dispara la ventana, igual que Build).
+ * - Cierre normal: cola pendiente = 0 y runningQa = 0 → vaciaje completo.
+ * - Cierre por no-progreso: ventana activa con runningQa = 0 sostenido N min → cierre + cooldown.
+ *   (Significa que el sistema no logra arrancar agentes QA — rate limit, slot lleno, etc.
+ *   Mantener la ventana abierta penaliza otras fases sin aporte.)
+ * - Cooldown post-cierre: tras cierre por no-progreso, durante M min no se reabre por cola.
+ *   Si llega un evento nuevo (runningQa pasa a ≥1 por otra vía), se cancela el cooldown.
+ * - Pulpo en paused/partial_pause: cierre inmediato, sin cooldown.
+ * - Safety timeout: notifica por Telegram si lleva muchas horas sin completar (no cierra).
  * Retorna true si QA Priority está activa (dev y build deben bloquearse).
  */
-function evaluateQaPriority(config) {
+function evaluateQaPriority(config, overrides = {}) {
   const limits = config.resource_limits || {};
   const threshold = limits.priority_windows_activation_threshold || 3;
   const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
-  const now = Date.now();
+  const noProgressMs = (limits.qa_priority_no_progress_minutes || 3) * 60 * 1000;
+  const cooldownMs = (limits.qa_priority_cooldown_minutes || 15) * 60 * 1000;
+  const now = overrides.now !== undefined ? overrides.now : Date.now();
 
-  // Diseño: las ventanas no tienen sentido cuando el pipeline está
-  // detenido (`paused`) o restringido a una allowlist (`partial_pause`).
-  // En esos modos no procesamos despacho normal, así que cualquier ventana
-  // activa quedaría pegada hasta que se libere la pausa. Forzamos cierre.
-  const pipelineMode = partialPause.getPipelineMode().mode;
+  const pipelineMode = overrides.pipelineMode || partialPause.getPipelineMode().mode;
   if (pipelineMode === 'paused' || pipelineMode === 'partial_pause') {
     if (qaPriorityActive) {
       log('qa-priority', `🟢 QA Priority Window desactivada — pipeline en modo ${pipelineMode}`);
@@ -1733,54 +1762,101 @@ function evaluateQaPriority(config) {
       qaPriorityManual = false;
       qaPriorityNotifiedTelegram = false;
       qaPrioritySafetyNotified = false;
+      qaNoProgressSince = 0;
+      // No tocamos cooldown: si la pausa se reanuda y la cola sigue, respetamos cooldown previo.
       persistPriorityWindows();
     }
     return false;
   }
 
-  const pendingQa = countPendingVerificacion(config);
+  const runningQa = overrides.runningQa !== undefined ? overrides.runningQa : countRunningVerificacion(config);
+  const pendingQa = overrides.pendingQa !== undefined ? overrides.pendingQa : countPendingVerificacion(config);
 
-  // ---- Desactivación ----
+  // Si hay agentes corriendo, cancelar cooldown anticipado: el sistema está sano.
+  if (runningQa >= 1 && qaCooldownUntil > 0) {
+    log('qa-priority', `✅ QA cooldown cancelado — ${runningQa} agente(s) arrancaron por otra vía`);
+    qaCooldownUntil = 0;
+    persistPriorityWindows();
+  }
+
+  // ---- Ventana activa: evaluar cierre ----
   if (qaPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
-    if (!qaPriorityManual && pendingQa === 0) {
-      log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
+    // Cierre normal: cola y running en cero (verificación completada).
+    if (!qaPriorityManual && runningQa === 0 && pendingQa === 0) {
+      log('qa-priority', '🟢 QA Priority Window desactivada — sin agentes de verificación corriendo ni pendientes');
       if (qaPriorityNotifiedTelegram) {
-        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Pipeline en modo normal.');
+        sendTelegram('✅ QA Priority Window terminó — verificación completada. Pipeline en modo normal.');
       }
       qaPriorityActive = false;
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       qaPriorityNotifiedTelegram = false;
+      qaNoProgressSince = 0;
       persistPriorityWindows();
       return false;
     }
+
+    // Cierre por no-progreso: 0 corriendo durante > N min con cola pendiente.
+    // Sólo aplica cuando NO es manual (manual la mantiene siempre).
+    if (!qaPriorityManual && runningQa === 0 && pendingQa > 0) {
+      if (qaNoProgressSince === 0) {
+        qaNoProgressSince = now;
+        log('qa-priority', `⏳ Sin agentes QA corriendo (${pendingQa} pendientes) — arrancando ventana de no-progreso (${noProgressMs / 60000}min)`);
+      } else if (now - qaNoProgressSince >= noProgressMs) {
+        const elapsedMin = Math.round((now - qaNoProgressSince) / 60000);
+        qaCooldownUntil = now + cooldownMs;
+        log('qa-priority', `🟡 QA Priority Window cerrada por no-progreso (${elapsedMin}min sin agentes corriendo). Cooldown ${cooldownMs / 60000}min hasta ${new Date(qaCooldownUntil).toISOString()}.`);
+        sendTelegram(`⚠️ Ventana QA cerrada por inactividad (${elapsedMin}min sin agentes corriendo, ${pendingQa} pendientes). Cooldown ${cooldownMs / 60000}min — revisar si hay rate limits o slots bloqueados.`);
+        qaPriorityActive = false;
+        qaPriorityActivatedAt = 0;
+        qaFirstBlockedAt = 0;
+        qaPriorityNotifiedTelegram = false;
+        qaNoProgressSince = 0;
+        persistPriorityWindows();
+        return false;
+      }
+    } else if (runningQa >= 1 && qaNoProgressSince !== 0) {
+      // Volvió a haber agentes corriendo → reset de la ventana de no-progreso.
+      qaNoProgressSince = 0;
+    }
+
     // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
     const elapsedHours = (now - qaPriorityActivatedAt) / (3600 * 1000);
     if (elapsedHours >= safetyTimeoutHours && !qaPrioritySafetyNotified) {
       qaPrioritySafetyNotified = true;
       log('qa-priority', `⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
-      sendTelegram(`⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingQa} issues pendientes. Verificá desde el dashboard si hay un problema.`);
+      sendTelegram(`⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa con ${runningQa} corriendo y ${pendingQa} pendientes. Verificá desde el dashboard si hay un problema.`);
     }
-    return true; // Sigue activa — sin timeout fijo
+    return true;
   }
 
-  // ---- Activación ----
-  // Activación inmediata cuando cola >= umbral (sin esperar N minutos)
+  // ---- Ventana inactiva: evaluar activación ----
+  // Cooldown vigente: no reabrir por cola pendiente (evita loop abrir/cerrar).
+  if (qaCooldownUntil > now) {
+    if (pendingQa >= threshold) {
+      const remainingMin = Math.ceil((qaCooldownUntil - now) / 60000);
+      log('qa-priority', `🧊 QA cooldown activo (${remainingMin}min restantes) — cola ${pendingQa} ≥ ${threshold} pero NO se reabre`);
+    }
+    return false;
+  }
+  // Cooldown vencido: limpiar timestamp.
+  if (qaCooldownUntil > 0 && qaCooldownUntil <= now) {
+    log('qa-priority', `🧊 QA cooldown vencido — listo para reactivar si cola lo requiere`);
+    qaCooldownUntil = 0;
+    persistPriorityWindows();
+  }
+
+  // Activación: cola pendiente ≥ umbral (igual que Build).
   if (pendingQa >= threshold) {
-    // Respetar override manual de Build: si el operador activó Build a mano,
-    // NO auto-activar QA en paralelo (las ventanas son autoexcluyentes).
-    // QA quedará en espera hasta que Build manual se desactive.
     if (buildPriorityActive && buildPriorityManual) {
       if (qaFirstBlockedAt === 0) {
         qaFirstBlockedAt = now;
-        log('qa-priority', `⏳ QA Priority en espera (${pendingQa} pendientes) — Build manual activa, autoexcluyentes`);
+        log('qa-priority', `⏳ QA Priority en espera (cola ${pendingQa} ≥ ${threshold}) — Build manual activa, autoexcluyentes`);
       }
       return false;
     }
-    // QA siempre gana sobre Build automática
     if (buildPriorityActive && !buildPriorityManual) {
-      log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — ${pendingQa} issues QA pendientes`);
+      log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — cola QA ${pendingQa} ≥ ${threshold}`);
       buildPriorityActive = false;
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
@@ -1791,14 +1867,14 @@ function evaluateQaPriority(config) {
     qaPriorityActivatedAt = now;
     qaPriorityNotifiedTelegram = true;
     qaPrioritySafetyNotified = false;
-    log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues en verificación (umbral: ${threshold}). Bloqueando dev y build.`);
-    sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues esperando verificación (umbral: ${threshold}). Dev y build bloqueados hasta vaciar cola.`);
+    qaNoProgressSince = runningQa === 0 ? now : 0;
+    log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — cola ${pendingQa} ≥ ${threshold} (umbral). Bloqueando dev y build.`);
+    sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issue(s) de verificación pendientes (umbral ${threshold}). Dev y build bloqueados hasta drenar cola.`);
     persistPriorityWindows();
     return true;
   } else {
-    // Si bajó del umbral, resetear
     if (qaFirstBlockedAt !== 0) {
-      log('qa-priority', `✅ Cola QA bajó a ${pendingQa} (< ${threshold}) — modo normal`);
+      log('qa-priority', `✅ Cola QA por debajo del umbral — modo normal`);
       qaFirstBlockedAt = 0;
     }
   }
@@ -3347,15 +3423,10 @@ function brazoLanzamiento(config) {
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
 
-  // Leer activaciones/desactivaciones manuales del dashboard
-  readManualPriorityOverrides();
-
-  // Evaluar Priority Windows ANTES del gate de recursos — para que puedan
-  // desactivarse (cola vacía) incluso cuando el sistema está bajo presión.
-  // Sin esto, una ventana activada durante un pico de carga queda atascada
-  // indefinidamente porque isSystemOverloaded() retorna antes de la evaluación.
-  const qaPriority = evaluateQaPriority(config);
-  const buildPriority = evaluateBuildPriority(config);
+  // Priority windows ya evaluadas en mainLoop (corren incluso pausado).
+  // Leer estado actual desde variables de módulo.
+  const qaPriority = qaPriorityActive;
+  const buildPriority = buildPriorityActive;
 
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
@@ -6952,6 +7023,13 @@ async function mainLoop() {
         bridge.tick();
       } catch (e) {}
 
+      // Priority windows: evaluar SIEMPRE, incluso pausado.
+      // Sin esto, una ventana activa queda "pegada" cuando se pausa el pipeline
+      // porque brazoLanzamiento (que antes evaluaba) no corre en modo pausado.
+      readManualPriorityOverrides();
+      evaluateQaPriority(config);
+      evaluateBuildPriority(config);
+
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
@@ -7025,6 +7103,17 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     findPreviousFaseForSkill,
     validateRebotedDestino,
     resolveRebotedCrossPhase,
+    // #2651 — QA priority window: cola dispara activación, no-progreso + cooldown.
+    evaluateQaPriority,
+    countRunningVerificacion,
+    countPendingVerificacion,
+    persistPriorityWindows,
+    _getQaPriorityState: () => ({ qaPriorityActive, qaPriorityActivatedAt, qaFirstBlockedAt, qaPriorityManual, qaPriorityNotifiedTelegram, qaPrioritySafetyNotified, qaNoProgressSince, qaCooldownUntil }),
+    _resetQaPriorityState: () => { qaPriorityActive = false; qaPriorityActivatedAt = 0; qaFirstBlockedAt = 0; qaPriorityManual = false; qaPriorityNotifiedTelegram = false; qaPrioritySafetyNotified = false; qaNoProgressSince = 0; qaCooldownUntil = 0; },
+    _setQaNoProgressSince: (ts) => { qaNoProgressSince = ts; },
+    _setQaCooldownUntil: (ts) => { qaCooldownUntil = ts; },
+    _setQaPriorityActive: (active, activatedAt) => { qaPriorityActive = active; qaPriorityActivatedAt = activatedAt || (active ? Date.now() : 0); qaPriorityNotifiedTelegram = active; },
+    _setBuildPriorityState: (active, manual) => { buildPriorityActive = active; buildPriorityManual = manual || false; },
   };
   return; // No arrancar singleton ni mainLoop
 }
