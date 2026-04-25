@@ -163,6 +163,9 @@ resource_limits:
   # Sin timeout fijo: la ventana corre hasta vaciar su cola o desactivación manual.
   priority_windows_activation_threshold: 3   # Issues acumulados para activar ventana (QA o Build)
   priority_windows_safety_timeout_hours: 2   # Horas sin completar ningún issue → notifica Telegram (NO cierra)
+  # #2651 — cierre por no-progreso + cooldown para evitar loop abrir/cerrar
+  qa_priority_no_progress_minutes: 3         # Ventana QA con 0 agentes corriendo durante N min → cierre por inactividad
+  qa_priority_cooldown_minutes: 15           # Tras cerrar por no-progreso, no reabrir durante N min aunque la cola siga ≥ umbral
 
   # Diagnóstico
   log_top_consumers: true          # Logear top 5 procesos por RAM antes de actuar
