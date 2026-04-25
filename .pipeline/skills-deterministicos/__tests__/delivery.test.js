@@ -134,3 +134,34 @@ test('QA_LABELS_OK — contiene exactamente passed y skipped', () => {
     assert.equal(delivery.QA_LABELS_OK.has('qa:passed'), true);
     assert.equal(delivery.QA_LABELS_OK.has('qa:skipped'), true);
 });
+
+// #2652 — CODEOWNERS humano: bloqueo de auto-merge cuando un PR toca paths
+// protegidos por un owner humano. Estos tests verifican el contrato público
+// (exports + integración con el módulo codeowners) sin invocar gh ni git.
+
+test('exporta getPRChangedPaths y applyNeedsHumanLabel (#2652)', () => {
+    assert.equal(typeof delivery.getPRChangedPaths, 'function');
+    assert.equal(typeof delivery.applyNeedsHumanLabel, 'function');
+});
+
+test('integración codeowners — paths del pipeline gatillan owner humano (#2652)', () => {
+    const codeowners = require('../lib/codeowners');
+    const ghDir = path.join(TMP, '.github');
+    fs.mkdirSync(ghDir, { recursive: true });
+    fs.writeFileSync(path.join(ghDir, 'CODEOWNERS'), [
+        '/.pipeline/   @leitolarreta',
+        '/.github/   @leitolarreta',
+    ].join('\n'));
+
+    const rules = codeowners.loadCodeowners(TMP);
+    assert.ok(rules.length >= 2, 'CODEOWNERS debe parsearse');
+
+    const human = codeowners.getHumanOwners(rules, [
+        '.pipeline/pulpo.js',
+        'docs/readme.md',
+    ]);
+    assert.deepEqual(human, ['@leitolarreta']);
+
+    const noHuman = codeowners.getHumanOwners(rules, ['app/composeApp/src/x.kt']);
+    assert.deepEqual(noHuman, []);
+});
