@@ -4340,7 +4340,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // agente) y producen resultados incorrectos. Incidente 2026-04-24: linter
   // de #2505 corrió en ROOT (checkout en agent/2450), reportó 'no-commits'
   // aunque el worktree del #2505 tenía 3 commits legítimos.
-  const useExistingWorktree = (fase === 'build' || fase === 'linteo' || fase === 'aprobacion');
+  //
+  // #2519 (rev-1, 2026-04-24): además se incluye `entrega`. El fix original
+  // (#2526) explicitó "entrega no toca git local, usa PR de GitHub" pero eso
+  // es FALSO: skills-deterministicos/delivery.js hace git add/commit/rebase/push
+  // en local antes del gh pr create. Si corre en ROOT, usa la rama y árbol del
+  // repo principal (rama ajena + cambios sucios de heartbeats/registry) y
+  // produce: rebase conflicts, commits a la rama equivocada, push a otra
+  // branch. Incidente real: delivery del #2519 corrió en ROOT con branch
+  // agent/2523-... y 66 archivos sucios, falló rebase con "unstaged changes".
+  const useExistingWorktree = (fase === 'build' || fase === 'linteo' || fase === 'aprobacion' || fase === 'entrega');
   let worktreePath = ROOT;
   let worktreeBranch = null;
 
