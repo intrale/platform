@@ -79,7 +79,15 @@ function fetchOrigin(cwd) {
 }
 
 function rebaseOnto(cwd, base = 'origin/main') {
-    return runGit(['rebase', base], { cwd, timeoutMs: 60 * 1000 });
+    // #2519 (rev-2): --autostash es defensa en profundidad para el caso en que
+    // el árbol de trabajo tenga archivos tracked modificados que SAFE_IGNORE
+    // (delivery.js) decidió no commitear (heartbeats, agent-registry, activity-
+    // logger, metrics-history). Sin --autostash, git rebase falla con
+    // "cannot rebase: You have unstaged changes" aunque esos archivos sean
+    // estado transitorio del pipeline en marcha. --autostash los stashea antes
+    // del rebase y los reaplica después; como main nunca toca esos paths, el
+    // pop es conflict-free.
+    return runGit(['rebase', '--autostash', base], { cwd, timeoutMs: 60 * 1000 });
 }
 
 function rebaseAbort(cwd) {

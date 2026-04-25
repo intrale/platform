@@ -260,6 +260,12 @@ async function main() {
         phaseEnd('stage_commit', t);
 
         // ── Fase 2: rebase contra origin/main ──────────────────────────
+        // #2519 (rev-2): rebaseOnto usa --autostash. Necesario porque después
+        // del commit pueden quedar archivos tracked modificados (heartbeats,
+        // agent-registry, activity-logger, metrics-history) que SAFE_IGNORE
+        // dejó fuera del staging — el pipeline sigue corriendo en paralelo y
+        // los reescribe. Sin --autostash el rebase muere con "You have
+        // unstaged changes" aunque sean estado transitorio.
         t = phaseStart();
         const fetchRes = git.fetchOrigin(REPO_ROOT);
         if (fetchRes.exit_code !== 0) {
