@@ -209,3 +209,180 @@ test('listBlockedIssues ignora archivos .reason.json y .gitkeep', () => {
     assert.equal(list.filter(i => i.issue === 6666).length, 1);
     assert.equal(list.find(i => String(i.issue) === '.gitkeep'), undefined);
 });
+
+// =============================================================================
+// #2549 — isHumanBlockReason: detección de motivos de bloqueo humano en rechazos
+// =============================================================================
+
+test('isHumanBlockReason detecta variantes literales del bloqueo humano', () => {
+    const positives = [
+        'bloqueo humano sobre PR #2547',
+        'Bloqueo Humano sobre el PR mergeable',
+        'bloqueo-humano: esperando merge',
+        'Bloqueado por humano hasta merge',
+        'necesita intervencion humana para mergear',
+        'Necesita intervención humana — CODEOWNERS pendiente',
+        'requiere intervención humana del CODEOWNERS',
+        'needs-human merge required',
+        'needs human review',
+        'needs:human label needed',
+        'Human review required before continuing',
+        'Merge manual del PR #2547 esperando humano',
+        'merge bloqueado por CODEOWNERS',
+        'merge humano pendiente',
+        'CODEOWNERS bloquea el merge automático',
+        'PR #2547 mergeable, esperando merge humano',
+        'pending human review on PR',
+        'aprobación humana pendiente',
+    ];
+    for (const p of positives) {
+        assert.equal(hb.isHumanBlockReason(p), true, `debería detectar: "${p}"`);
+    }
+});
+
+test('isHumanBlockReason NO marca rechazos técnicos comunes', () => {
+    const negatives = [
+        '',
+        null,
+        undefined,
+        'NullPointerException at FooBar.kt:42',
+        'ENOTFOUND github.com',
+        'Build failed: missing JAVA_HOME',
+        'Tests rojos: 3 fallos en LoginTest',
+        'Routing incorrecto: este issue es de backend',
+        'Connection refused on port 8080',
+        'Compilation error: unresolved reference foo',
+    ];
+    for (const n of negatives) {
+        assert.equal(hb.isHumanBlockReason(n), false, `NO debería detectar: "${n}"`);
+    }
+});
+
+test('inferHumanBlockQuestion menciona PR cuando el motivo lo cita', () => {
+    const q = hb.inferHumanBlockQuestion('bloqueo humano sobre PR #2547', { skill: 'pipeline-dev' });
+    assert.match(q, /\[pipeline-dev\]/);
+    assert.match(q, /PR/i);
+});
+
+test('inferHumanBlockQuestion menciona CODEOWNERS cuando aplica', () => {
+    const q = hb.inferHumanBlockQuestion('CODEOWNERS bloquea el merge automático');
+    assert.match(q, /CODEOWNERS/);
+});
+
+test('inferHumanBlockQuestion devuelve fallback razonable cuando el motivo es ambiguo', () => {
+    const q = hb.inferHumanBlockQuestion('algo raro pasa');
+    assert.match(q, /revisar/i);
+});
+
+test('buildBlockedSummaryMarkdown destaca el highlight y lista todos los bloqueados', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 7001, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'criterios contradictorios', question: '¿AC#2 o AC#5?',
+    });
+    hb.reportHumanBlock({
+        issue: 7002, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'PR #9999 esperando merge humano', question: '¿podés mergear?',
+    });
+
+    const md = hb.buildBlockedSummaryMarkdown({
+        highlight: { issue: 7002, skill: 'pipeline-dev', reason: 'bloqueo humano sobre PR #9999', question: '¿mergeás?' },
+    });
+
+    assert.match(md, /Issue \*?#?7002/);
+    assert.match(md, /Incidentes bloqueados esperando humano\*? \(2\)/);
+    assert.match(md, /#7001/);
+    assert.match(md, /#7002/);
+    assert.match(md, /unblock/);
+});
+
+test('buildBlockedSummaryMarkdown sin bloqueados devuelve mensaje placeholder', () => {
+    resetFs();
+    const md = hb.buildBlockedSummaryMarkdown({});
+    assert.match(md, /sin otros incidentes bloqueados/);
+});
+
+test('reportHumanBlock no duplica notificación: findBlockedMarker permite dedup', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 8001, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'bloqueo humano sobre PR #1', question: '¿mergeás?',
+    });
+    const found = hb.findBlockedMarker(8001);
+    assert.ok(found, 'el marker existe → cualquier siguiente ciclo del pulpo dedupea con esto');
+    assert.equal(found.skill, 'pipeline-dev');
+});
+
+// =============================================================================
+// E2E (#2549 CA): simular 3 ciclos del pulpo sobre un issue con bloqueo humano.
+// El criterio del issue exige que el pulpo NO relance el skill en 3 ciclos
+// consecutivos. Acá simulamos los 3 ciclos a nivel de la decisión: cada ciclo
+// consulta `findBlockedMarker` antes de procesar; si está presente, no se hace
+// nada (no se notifica, no se incrementa rev, no se mueve el archivo).
+// =============================================================================
+
+test('e2e: 3 ciclos consecutivos del pulpo sobre issue bloqueado por humano NO incrementan ni re-notifican', () => {
+    resetFs();
+    const issue = 9001;
+    const motivo = 'bloqueo humano sobre PR #2547 mergeable, esperando merge de CODEOWNERS';
+
+    // Simular el ciclo del pulpo: 1) clasifica motivo, 2) si es human-block y no hay
+    // marker previo → reportHumanBlock + notifica; 3) si ya hay marker → noop.
+    let notificacionesEnviadas = 0;
+    let rebotesIncrementados = 0;
+    function cicloPulpoSimulado(motivoRecibido) {
+        if (!hb.isHumanBlockReason(motivoRecibido)) {
+            // rebote técnico — incrementaría rev en el flujo real
+            rebotesIncrementados++;
+            return 'rebote-tecnico';
+        }
+        const yaBloqueado = hb.findBlockedMarker(issue);
+        if (yaBloqueado) {
+            // noop — el issue ya está dormido. No notificamos, no movemos.
+            return 'noop-dedup';
+        }
+        hb.reportHumanBlock({
+            issue, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo',
+            reason: motivoRecibido, question: 'mergeá el PR #2547',
+        });
+        notificacionesEnviadas++;
+        return 'reportado-y-notificado';
+    }
+
+    // Ciclo 1 → primer rechazo, debería reportar + notificar.
+    const r1 = cicloPulpoSimulado(motivo);
+    // Ciclo 2 → marker ya existe, debería ser noop.
+    const r2 = cicloPulpoSimulado(motivo);
+    // Ciclo 3 → marker ya existe, debería ser noop.
+    const r3 = cicloPulpoSimulado(motivo);
+
+    assert.equal(r1, 'reportado-y-notificado');
+    assert.equal(r2, 'noop-dedup');
+    assert.equal(r3, 'noop-dedup');
+    assert.equal(notificacionesEnviadas, 1, 'solo una notificación en 3 ciclos');
+    assert.equal(rebotesIncrementados, 0, 'cero incrementos de rev — bloqueo humano NO consume budget de circuit breaker');
+    const lista = hb.listBlockedIssues().filter(b => b.issue === issue);
+    assert.equal(lista.length, 1, 'un único marker en bloqueado-humano/');
+});
+
+test('e2e: cuando humano desbloquea, el siguiente ciclo del pulpo procesa normalmente', () => {
+    resetFs();
+    const issue = 9002;
+    hb.reportHumanBlock({
+        issue, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'bloqueo humano sobre PR #X', question: 'mergeá',
+    });
+    assert.ok(hb.findBlockedMarker(issue), 'pre-condición: marker existe');
+
+    // Humano desbloquea (equivale a /unblock o quitar label en GitHub).
+    const res = hb.unblockIssue({ issue, guidance: 'PR mergeado, podés seguir' });
+    assert.equal(res.ok, true);
+    assert.equal(hb.findBlockedMarker(issue), null, 'marker se removió de bloqueado-humano/');
+
+    // Ciclo siguiente del pulpo: como NO hay marker, podría procesar de nuevo
+    // (el archivo del unblock está en pendiente/ con guidance, listo para arrancar).
+    const dirPendiente = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'pendiente');
+    const archivos = fs.readdirSync(dirPendiente)
+        .filter(f => f.startsWith(String(issue) + '.') && !f.endsWith('.guidance.txt'));
+    assert.equal(archivos.length, 1, 'el archivo del issue volvió a pendiente/');
+});

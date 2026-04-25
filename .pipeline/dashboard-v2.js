@@ -1688,27 +1688,36 @@ function generateHTML(state) {
     <div class="it-done-grid">${laneCards.done}</div>
   </details>` : '';
 
-  // V3 — Bloqueados esperando humano (issue #2478)
+  // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
   const escHtml = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const bloqueadosHTML = bloqueados.length === 0 ? '' : `
-    <div class="matrix-section" id="bloqueados-humano" style="border-left:4px solid #FBCA04;background:rgba(251,202,4,0.06);padding:12px 16px;margin-bottom:14px;border-radius:6px">
-      <h2 style="margin:0 0 8px 0">🚧 Esperando intervención humana <span style="font-size:0.6em;color:var(--dim);font-weight:normal">(${bloqueados.length} · V3)</span></h2>
-      <div style="display:flex;flex-direction:column;gap:6px">
+    <div class="matrix-section needs-human-panel" id="bloqueados-humano">
+      <h2 style="margin:0 0 8px 0;color:#fff">
+        <span class="needs-human-pulse">🚨</span>
+        Necesitan intervención humana
+        <span class="needs-human-badge">${bloqueados.length}</span>
+      </h2>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
         ${bloqueados.map(b => {
-          const ageStr = b.age_hours < 1 ? Math.round(b.age_hours * 60) + 'min' : b.age_hours + 'h';
+          const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
+          const ageCls = b.age_hours >= 4 ? 'needs-human-age-old' : 'needs-human-age-fresh';
           const titleHtml = b.title ? ` — <span style="color:var(--dim)">${escHtml(b.title)}</span>` : '';
-          return `<div style="font-size:0.92em">
-            <b>#${b.issue}</b>${titleHtml}
-            <span style="color:var(--dim)"> · ${escHtml(b.skill)} en ${escHtml(b.phase)} · hace ${ageStr}</span>
-            ${b.question ? `<div style="margin:2px 0 0 14px;color:#FBCA04">❓ ${escHtml(b.question)}</div>` : ''}
+          const reasonTxt = (b.question || b.reason || '').toString();
+          return `<div class="needs-human-row">
+            <div>
+              <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener"><b>#${b.issue}</b></a>${titleHtml}
+              <span style="color:var(--dim)"> · ${escHtml(b.skill)} en ${escHtml(b.phase)}</span>
+              <span class="${ageCls}"> · hace ${ageStr}</span>
+            </div>
+            ${reasonTxt ? `<div class="needs-human-reason">❓ ${escHtml(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
           </div>`;
         }).join('')}
       </div>
-      <div style="margin-top:8px;font-size:0.82em;color:var(--dim)">
-        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code>
+      <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
+        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
       </div>
     </div>`;
 
@@ -2502,9 +2511,19 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   gap:8px;margin-bottom:0;padding:6px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
 }
-.kpis.kpis-5 .kpi{padding:10px 12px;min-width:0}
-.kpis.kpis-5 .kpi-value{font-size:1.7em}
-.kpis.kpis-5 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpis.kpis-6{
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi,.kpis.kpis-6 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value,.kpis.kpis-6 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label,.kpis.kpis-6 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpi.kpi-needs-human{--kpi-accent:#B60205}
+.kpi.kpi-needs-human.has-blocked{
+  background:linear-gradient(135deg,rgba(182,2,5,0.18),rgba(182,2,5,0.04));
+  border-color:rgba(182,2,5,0.55);
+}
 .kpi-trend{
   font-size:0.62em;color:var(--dim);margin-top:3px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
@@ -2596,6 +2615,37 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:18px 20px;margin-bottom:20px;
 }
+
+/* ── Needs-Human Panel (#2549) — alta visibilidad ───────────────────────── */
+.matrix-section.needs-human-panel{
+  background:linear-gradient(135deg,rgba(182,2,5,0.18),rgba(182,2,5,0.06));
+  border:2px solid #B60205;border-left:6px solid #B60205;
+  box-shadow:0 0 0 1px rgba(182,2,5,0.25),0 4px 18px rgba(182,2,5,0.18);
+  padding:14px 18px;margin-bottom:18px;border-radius:8px;
+}
+.needs-human-pulse{
+  display:inline-block;animation:needs-human-pulse 1.6s ease-in-out infinite;
+  margin-right:6px;
+}
+@keyframes needs-human-pulse{
+  0%,100%{transform:scale(1);opacity:1}
+  50%{transform:scale(1.18);opacity:0.7}
+}
+.needs-human-badge{
+  display:inline-block;background:#B60205;color:#fff;font-weight:700;
+  font-size:0.62em;padding:2px 10px;border-radius:14px;
+  margin-left:8px;vertical-align:middle;letter-spacing:0.4px;
+}
+.needs-human-row{
+  background:rgba(0,0,0,0.18);border-radius:5px;
+  padding:8px 10px;font-size:0.92em;
+  border-left:3px solid rgba(182,2,5,0.7);
+}
+.needs-human-reason{
+  margin:4px 0 0 14px;color:#FFB3B3;font-size:0.92em;line-height:1.35;
+}
+.needs-human-age-fresh{color:var(--yl)}
+.needs-human-age-old{color:#FF6B6B;font-weight:700}
 .matrix-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
 .matrix-count{
   font-size:0.8em;color:var(--dim);font-weight:400;
@@ -3824,7 +3874,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis-row">
-    <div class="kpis kpis-5">
+    <div class="kpis kpis-6">
       <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
         <div class="kpi-label">Definidos</div>
         <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
@@ -3849,6 +3899,11 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <div class="kpi-label">Bloqueados${blockedCount > 0 ? ' \u{1F6AB}' : ''}</div>
         <div class="kpi-value ${blockedCount > 0 ? 'danger' : 'muted'}">${blockedCount}</div>
         <div class="kpi-trend">${blockedCount > 0 ? 'click para filtrar' : 'sin bloqueos'}</div>
+      </div>
+      <div class="kpi kpi-needs-human ${bloqueados.length > 0 ? 'has-blocked kpi-clickable' : ''}" ${bloqueados.length > 0 ? 'onclick="document.getElementById(\'bloqueados-humano\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" title="Ver listado de incidentes bloqueados"' : 'title="Sin incidentes esperando humano"'}>
+        <div class="kpi-label">${bloqueados.length > 0 ? '\u{1F6A8} ' : ''}Necesitan humano</div>
+        <div class="kpi-value ${bloqueados.length > 0 ? 'danger' : 'muted'}">${bloqueados.length}</div>
+        <div class="kpi-trend">${bloqueados.length > 0 ? 'click para detalle' : 'pipeline fluido'}</div>
       </div>
     </div>
     ${(() => {

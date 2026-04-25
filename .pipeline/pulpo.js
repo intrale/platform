@@ -28,6 +28,9 @@ const { redact } = require('./redact');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+// #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
+// Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
+const humanBlock = require('./lib/human-block');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
@@ -2382,6 +2385,108 @@ function brazoBarrido(config) {
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
 
+          // #2549 — BLOQUEO HUMANO: si AL MENOS UN motivo indica que el avance
+          // depende de una intervención humana (PR esperando merge, CODEOWNERS,
+          // etc), marcar el issue como `bloqueado-humano/` y NO incrementar rev.
+          // Sin esto el pulpo relanza el skill cada ciclo y rebota infinitamente
+          // (caso #2519 → 41 rebotes contra PR #2547 mergeable).
+          const motivosHumanos = motivosClasificados.filter(m => humanBlock.isHumanBlockReason(m.motivo));
+          if (motivosHumanos.length > 0 && !esReboteDeInfra) {
+            const principal = motivosHumanos[0];
+            const skillBloq = principal.skill || skillFromFile(rechazados[0].file.name);
+            const motivoTxt = sanitizePipelineText(
+              motivosHumanos.map(m => `[${m.skill}] ${m.motivo}`).join('\n'),
+            ).slice(0, 1500);
+            const question = humanBlock.inferHumanBlockQuestion(principal.motivo, { skill: skillBloq });
+
+            // Dedup: si ya hay marker activo en bloqueado-humano/ no spamear.
+            const yaBloqueado = humanBlock.findBlockedMarker(issue);
+
+            // Mover archivos actuales (rechazados + residuales del issue en la fase)
+            // a archivado/ para sacar el token del flujo. El reportHumanBlock crea
+            // marker fresco en bloqueado-humano/ del propio fase.
+            for (const a of archivos) {
+              const dest = path.join(fasePath(pipelineName, fase), 'archivado');
+              try { fs.mkdirSync(dest, { recursive: true }); moveFile(a.path, dest); } catch {}
+            }
+            for (const estado of ['pendiente', 'trabajando']) {
+              const dir = path.join(fasePath(pipelineName, fase), estado);
+              try {
+                for (const f of fs.readdirSync(dir)) {
+                  if (f.startsWith(issue + '.') && !f.startsWith('.')) {
+                    const archDir = path.join(fasePath(pipelineName, fase), 'archivado');
+                    fs.mkdirSync(archDir, { recursive: true });
+                    try { moveFile(path.join(dir, f), archDir); } catch {}
+                  }
+                }
+              } catch {}
+            }
+
+            if (!yaBloqueado) {
+              try {
+                humanBlock.reportHumanBlock({
+                  issue: parseInt(issue),
+                  skill: skillBloq,
+                  phase: fase,
+                  pipeline: pipelineName,
+                  reason: motivoTxt,
+                  question,
+                  moveFromActive: false,
+                });
+              } catch (e) {
+                log('barrido', `❌ #${issue} reportHumanBlock falló: ${e.message}`);
+              }
+
+              // Aplicar label needs-human en GitHub (servicio-github auto-crea el label).
+              try {
+                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                fs.mkdirSync(ghQueueDir, { recursive: true });
+                fs.writeFileSync(
+                  path.join(ghQueueDir, `${issue}-needs-human-blockreason-${Date.now()}.json`),
+                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }),
+                );
+                const body = [
+                  `## Pipeline pausó este issue: requiere intervención humana`,
+                  '',
+                  `El agente \`${skillBloq}\` (fase \`${pipelineName}/${fase}\`) detectó que el avance depende de una acción humana — no es un bug del código ni un fallo de infra.`,
+                  '',
+                  `### Motivo`,
+                  '```',
+                  motivoTxt,
+                  '```',
+                  '',
+                  `### Qué necesitamos`,
+                  question,
+                  '',
+                  `Mientras el label \`needs-human\` esté presente, el pipeline NO va a relanzar el skill (cero rebotes, cero tokens consumidos).`,
+                  '',
+                  `Una vez resuelto, remové el label o usá \`/unblock ${issue} <orientación>\` desde Telegram para reentrar en la cola.`,
+                ].join('\n');
+                fs.writeFileSync(
+                  path.join(ghQueueDir, `${issue}-needs-human-comment-${Date.now()}.json`),
+                  JSON.stringify({ action: 'comment', issue: parseInt(issue), body }),
+                );
+              } catch (e) {
+                log('barrido', `Error encolando needs-human para #${issue}: ${e.message}`);
+              }
+
+              // Notificación Telegram con listado completo de incidentes.
+              try {
+                const summary = humanBlock.buildBlockedSummaryMarkdown({
+                  highlight: { issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question },
+                });
+                sendTelegram(summary);
+              } catch (e) {
+                log('barrido', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
+              }
+
+              log('barrido', `🚧 #${issue} → bloqueado-humano (skill=${skillBloq}, fase=${fase}). NO incrementa rev. Esperando humano.`);
+            } else {
+              log('barrido', `🔁 #${issue} ya estaba en bloqueado-humano (skill=${yaBloqueado.skill}). Cleanup de residuales sin re-notificar.`);
+            }
+            continue;
+          }
+
           // Routing mismatch: si el agente rechazó por "fuera de alcance",
           // devolver el issue a definición con observaciones — el ruteo se
           // reevalúa allá (Guru/PO/UX clasifican y aplican labels). NO consume
@@ -3342,6 +3447,50 @@ function brazoLanzamiento(config) {
     const issueLbls = getIssueLabels(issue);
     if (issueLbls.includes('blocked:dependencies')) {
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      continue;
+    }
+
+    // 0b-bis. NEEDS-HUMAN (#2549): si el issue tiene label needs-human, no
+    // lanzar el skill. El intake ya excluye con `-label:needs-human`, pero el
+    // label puede aplicarse después de que el archivo entró a pendiente/.
+    // Movemos el archivo a `bloqueado-humano/` (mismo subdir que reportHumanBlock)
+    // para que el dashboard lo vea como bloqueado y NO lo retomamos hasta que
+    // un humano remueva el label (entonces el intake genera un archivo fresco).
+    if (issueLbls.includes('needs-human') || issueLbls.includes('needs:human')) {
+      const blockedDir = path.join(fasePath(pipelineName, fase), 'bloqueado-humano');
+      try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
+      const targetFile = path.join(blockedDir, archivo.name);
+      const reasonFile = targetFile + '.reason.json';
+      const yaTeniaReason = fs.existsSync(reasonFile);
+      // Persistir reason mínima para que listBlockedIssues() lo muestre con contexto.
+      const reasonTxt = 'Label needs-human aplicado en GitHub — pipeline pausa el skill hasta que un humano remueva el label.';
+      const questionTxt = `¿Podés revisar #${issue} y quitar el label \`needs-human\` cuando esté listo para reentrar?`;
+      if (!yaTeniaReason) {
+        try {
+          fs.writeFileSync(reasonFile, JSON.stringify({
+            issue: parseInt(issue),
+            skill,
+            phase: fase,
+            pipeline: pipelineName,
+            reason: reasonTxt,
+            question: questionTxt,
+            blocked_at: new Date().toISOString(),
+          }, null, 2));
+        } catch {}
+      }
+      try { moveFile(archivo.path, blockedDir); } catch {}
+      log('lanzamiento', `🚧 #${issue} omitido — label needs-human. Movido a ${pipelineName}/${fase}/bloqueado-humano/`);
+      // Notificar Telegram solo la primera vez (dedup por reasonFile pre-existente).
+      if (!yaTeniaReason) {
+        try {
+          const summary = humanBlock.buildBlockedSummaryMarkdown({
+            highlight: { issue: parseInt(issue), skill, reason: reasonTxt, question: questionTxt },
+          });
+          sendTelegram(summary);
+        } catch (e) {
+          log('lanzamiento', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
+        }
+      }
       continue;
     }
 

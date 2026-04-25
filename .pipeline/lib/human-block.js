@@ -1,12 +1,17 @@
-// V3 Human-block helpers — estado transversal "bloqueado-humano" (issue #2478).
+// V3 Human-block helpers — estado transversal "bloqueado-humano" (issue #2478, #2549).
 //
 // Cualquier skill puede invocar reportHumanBlock() cuando detecte ambigüedad real
 // que una intervención corta del humano resolvería. El issue queda pausado:
 // no rebota, no consume tokens, hasta que se invoque unblockIssue().
 //
 // Marker en disco: <pipeline>/<phase>/bloqueado-humano/<issue>.<skill>
-// Label GitHub: needs:human
+// Label GitHub: needs-human (color #B60205, ya gestionado por servicio-github)
 // Eventos activity-log: human:blocked / human:unblocked
+//
+// #2549 — el pulpo también clasifica motivos de rechazo y, si detecta "bloqueo
+// humano" (PR mergeable bloqueado por CODEOWNERS, merge manual pendiente, etc),
+// llama a reportHumanBlock automáticamente en vez de relanzar el skill al infinito.
+// La heurística vive en isHumanBlockReason() — extender ahí los patrones nuevos.
 //
 // Directiva PO (Leo, 2026-04-22): preferir acumulación de issues bloqueados antes
 // que rebotes automáticos sin sentido. La eficiencia de tokens es prioritaria.
@@ -235,12 +240,114 @@ function unblockIssue(opts) {
     };
 }
 
+// #2549 — Heurística para detectar motivos de rechazo que en realidad son
+// bloqueos humanos (PR esperando merge manual, CODEOWNERS, etc).
+//
+// El pulpo usa esto antes de procesar un rechazo como "rebote técnico". Si
+// match → reportHumanBlock() en vez de incrementar rev y devolver a pendiente.
+//
+// Patrones literales (case-insensitive, sin regex backtracking):
+const HUMAN_BLOCK_PATTERNS = [
+    /\bbloqueo\s+humano\b/i,
+    /\bbloqueo[-_\s]humano\b/i,
+    /\bbloqueado(?:\s+por)?\s+humano\b/i,
+    /\bnecesita(?:\s+intervenci[oó]n)?\s+humana?\b/i,
+    /\brequiere(?:\s+intervenci[oó]n)?\s+humana?\b/i,
+    /\bneeds[-_:\s]?human\b/i,
+    /\bhuman[-_\s]review\s+required\b/i,
+    /\bmerge\s+(?:manual|humano|bloqueado)\b/i,
+    /\bmerge\s+pendiente\s+humano\b/i,
+    /\bcodeowners?\b.*\b(?:bloque|merge|aprobaci|review)/i,
+    /\bPR\s+#?\d+\s+(?:mergeable|esperando|pendiente)\b.*\b(?:merge|humano|review)/i,
+    /\bpending\s+human\s+(?:review|merge|approval)\b/i,
+    /\baprobaci[oó]n\s+humana\s+pendiente\b/i,
+];
+
+/**
+ * Devuelve true si el motivo (string) indica un bloqueo humano.
+ * Usado por pulpo.js antes de tratar el rechazo como rebote técnico.
+ */
+function isHumanBlockReason(motivo) {
+    if (!motivo || typeof motivo !== 'string') return false;
+    const txt = motivo.trim();
+    if (!txt) return false;
+    for (const re of HUMAN_BLOCK_PATTERNS) {
+        if (re.test(txt)) return true;
+    }
+    return false;
+}
+
+/**
+ * Genera una pregunta razonable a partir del motivo cuando el agente no la dejó
+ * explícita (reportHumanBlock requiere question no vacía).
+ */
+function inferHumanBlockQuestion(motivo, opts = {}) {
+    const m = String(motivo || '').slice(0, 280).trim();
+    const skill = opts.skill ? `[${opts.skill}] ` : '';
+    if (/\bPR\s+#?\d+/i.test(m)) {
+        return `${skill}¿Podés mergear el PR mencionado o quitar el bloqueo de CODEOWNERS para que el pipeline siga? Detalle: ${m}`;
+    }
+    if (/codeowners/i.test(m)) {
+        return `${skill}¿Podés revisar/aprobar este cambio? CODEOWNERS está pidiendo intervención humana. Detalle: ${m}`;
+    }
+    return `${skill}¿Podés revisar este bloqueo y darnos orientación? Detalle: ${m}`;
+}
+
+/**
+ * Construye un texto Markdown listando TODOS los bloqueados (Telegram-friendly).
+ * Usado al notificar un nuevo bloqueo: además del incidente nuevo, mostramos
+ * el panorama completo de qué requiere intervención humana.
+ *
+ * @param {object} opts
+ * @param {object} [opts.highlight] — Issue recién bloqueado a destacar al inicio.
+ * @param {Array}  [opts.blocked]   — Lista (default: listBlockedIssues()).
+ */
+function buildBlockedSummaryMarkdown(opts = {}) {
+    const blocked = Array.isArray(opts.blocked) ? opts.blocked : listBlockedIssues();
+    const highlight = opts.highlight || null;
+    const lines = [];
+
+    if (highlight) {
+        const tag = highlight.skill ? ` (${highlight.skill})` : '';
+        lines.push(`🚧 *Issue #${highlight.issue}${tag} marcado como needs-human*`);
+        if (highlight.reason) {
+            lines.push(`📝 ${String(highlight.reason).slice(0, 280)}`);
+        }
+        if (highlight.question) {
+            lines.push(`❓ ${String(highlight.question).slice(0, 280)}`);
+        }
+        lines.push('');
+    }
+
+    if (!blocked.length) {
+        lines.push('_(sin otros incidentes bloqueados actualmente)_');
+        return lines.join('\n');
+    }
+
+    lines.push(`📋 *Incidentes bloqueados esperando humano* (${blocked.length})`);
+    for (const b of blocked) {
+        const ageStr = b.age_hours < 1
+            ? `${Math.max(1, Math.round(b.age_hours * 60))}min`
+            : `${Math.round(b.age_hours)}h`;
+        lines.push(`• *#${b.issue}* — ${b.skill} en ${b.phase} _(${ageStr})_`);
+        const detail = (b.question || b.reason || '').toString().trim();
+        if (detail) lines.push(`   ↳ ${detail.slice(0, 160)}`);
+    }
+    lines.push('');
+    lines.push('_Usá_ `/unblock <issue> <orientación>` _para desbloquear._');
+    return lines.join('\n');
+}
+
 module.exports = {
     reportHumanBlock,
     unblockIssue,
     listBlockedIssues,
     findActiveMarker,
     findBlockedMarker,
+    isHumanBlockReason,
+    inferHumanBlockQuestion,
+    buildBlockedSummaryMarkdown,
+    HUMAN_BLOCK_PATTERNS,
     PIPELINE_DIR,
     PIPELINES,
     BLOCK_SUBDIR,
