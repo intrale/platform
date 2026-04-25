@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const trace = require('../lib/traceability');
 const git = require('./lib/git-ops');
+const codeowners = require('./lib/codeowners');
 
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
@@ -132,6 +133,28 @@ function getPRLabels(prNumber) {
 
 function hasQaGate(labels) {
     return labels.some((l) => QA_LABELS_OK.has(l));
+}
+
+function getPRChangedPaths(prNumber) {
+    const r = git.runGh(['pr', 'view', String(prNumber), '--json', 'files'], { cwd: REPO_ROOT });
+    if (r.exit_code !== 0) return [];
+    try {
+        return (JSON.parse(r.stdout).files || []).map((f) => f.path);
+    } catch { return []; }
+}
+
+function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
+    const lbl = git.runGh(
+        ['issue', 'edit', String(issue), '--add-label', 'needs-human'],
+        { cwd: repoRoot, timeoutMs: 30 * 1000 }
+    );
+    const ownersList = owners.join(' ');
+    const body = `🛑 Merge bloqueado — este PR toca paths con CODEOWNERS humano (${ownersList}). Requiere review manual antes de mergear.`;
+    const cmt = git.runGh(
+        ['pr', 'comment', String(prNumber), '--body', body],
+        { cwd: repoRoot, timeoutMs: 30 * 1000 }
+    );
+    return { labelExitCode: lbl.exit_code, commentExitCode: cmt.exit_code };
 }
 
 function tmpFile(prefix, content) {
@@ -347,12 +370,31 @@ async function main() {
         const finalLabels = getPRLabels(prNumber);
         labelsApplied = Array.from(new Set([...labelsApplied, ...finalLabels]));
 
+        // #2652 — Detección de CODEOWNERS humano: si el PR toca paths protegidos
+        // por un owner humano (ej. @leitolarreta), NO mergear automáticamente.
+        // En su lugar: aplicar label `needs-human` al issue + comentar el PR
+        // explicitando los owners requeridos. Esto evita merges silenciosos
+        // sobre `.pipeline/` o `.github/` que requieren review manual.
+        const ownerRules = codeowners.loadCodeowners(REPO_ROOT);
+        const changedForOwners = getPRChangedPaths(prNumber);
+        const humanOwners = ownerRules.length && changedForOwners.length
+            ? codeowners.getHumanOwners(ownerRules, changedForOwners)
+            : [];
+        if (humanOwners.length) {
+            logAppend(`[delivery] CODEOWNERS humano detectado: ${humanOwners.join(' ')} — bloqueando auto-merge`);
+        }
+
         if (!args.autoMerge) {
             logAppend(`[delivery] auto-merge desactivado por flag — PR queda abierto`);
             motivo = `PR #${prNumber} creado/actualizado. Auto-merge desactivado.`;
         } else if (!hasQaGate(finalLabels)) {
             // Sin gate QA → no mergeamos ciegamente; el delivery termina OK pero deja el PR abierto.
             motivo = `PR #${prNumber} creado pero sin label qa:passed/qa:skipped — merge bloqueado.`;
+            logAppend(`[delivery] ${motivo}`);
+        } else if (humanOwners.length) {
+            applyNeedsHumanLabel(issue, prNumber, humanOwners, REPO_ROOT);
+            labelsApplied = Array.from(new Set([...labelsApplied, 'needs-human']));
+            motivo = `PR #${prNumber} requiere review humano de ${humanOwners.join(' ')} — merge bloqueado, label needs-human aplicado.`;
             logAppend(`[delivery] ${motivo}`);
         } else {
             const mergeRes = git.runGh([
@@ -448,6 +490,8 @@ module.exports = {
     fetchIssueTitle,
     findExistingPR,
     getPRLabels,
+    getPRChangedPaths,
+    applyNeedsHumanLabel,
     hasQaGate,
     QA_LABELS_OK,
 };
