@@ -126,20 +126,136 @@ function resolveVideoPath(filePath) {
   return null;
 }
 
-// Ejecutar qa-video-share.js como child process
-function runVideoShare(videoPath, issue, title) {
+// #2519: lee qa-narration.meta.json (si existe) para saber qué proveedor TTS
+// narró el audio. El campo `provider` mapea a Nacho/Rulo del perfil qa.
+// Devuelve string vacío si no hay meta confiable — el template omite la línea
+// del narrador en ese caso (CA-A5).
+function readNarratorProvider(issue) {
+  if (!/^\d+$/.test(String(issue || ''))) return '';
+  const metaPath = path.join(PROJECT_ROOT, 'qa', 'evidence', String(issue), 'qa-narration.meta.json');
+  try {
+    if (!fs.existsSync(metaPath)) return '';
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const provider = typeof meta.provider === 'string' ? meta.provider.trim().toLowerCase() : '';
+    if (provider === 'edge' || provider === 'openai') return provider;
+    return '';
+  } catch (_) {
+    return '';
+  }
+}
+
+// #2519: derivar motivo + criterios + modo + verdict del YAML del QA si el
+// payload del job no los trae explícitos. Busca en
+// `.pipeline/desarrollo/verificacion/procesado/<issue>.qa.yaml` o variantes.
+// Best-effort: si no encuentra, devuelve objeto vacío y el template usa fallback.
+function readQaVerdictFromYaml(issue) {
+  if (!/^\d+$/.test(String(issue || ''))) return {};
+  const procesadoDir = path.join(PROJECT_ROOT, '.pipeline', 'desarrollo', 'verificacion', 'procesado');
+  try {
+    if (!fs.existsSync(procesadoDir)) return {};
+    const files = fs.readdirSync(procesadoDir)
+      .filter((f) => f.startsWith(String(issue) + '.') && f.endsWith('.yaml') && f.includes('qa'));
+    if (files.length === 0) return {};
+    // Preferir el más reciente
+    files.sort((a, b) => {
+      try {
+        return fs.statSync(path.join(procesadoDir, b)).mtimeMs -
+               fs.statSync(path.join(procesadoDir, a)).mtimeMs;
+      } catch (_) { return 0; }
+    });
+    const yamlText = fs.readFileSync(path.join(procesadoDir, files[0]), 'utf8');
+    // Parseo minimalista YAML — sólo los campos que nos interesan para el template
+    const out = {};
+    const m1 = /^\s*resultado:\s*(\w+)\s*$/m.exec(yamlText);
+    if (m1) out.verdict = m1[1].toLowerCase();
+    const m2 = /^\s*modo:\s*(\w+)\s*$/m.exec(yamlText);
+    if (m2) out.mode = m2[1].toLowerCase();
+    const m3 = /^\s*motivo:\s*["']?(.*?)["']?\s*$/m.exec(yamlText);
+    if (m3) out.motivo = m3[1].trim();
+    const m4 = /^\s*criterios_fallidos:\s*\[(.*?)\]\s*$/m.exec(yamlText);
+    if (m4) {
+      out.criteriosFallidos = m4[1]
+        .split(',')
+        .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+        .filter(Boolean);
+    }
+    const m5 = /^\s*tests_passed:\s*(\d+)\s*$/m.exec(yamlText);
+    if (m5) out.passed = m5[1];
+    const m6 = /^\s*tests_total:\s*(\d+)\s*$/m.exec(yamlText);
+    if (m6) out.total = m6[1];
+    return out;
+  } catch (_) {
+    return {};
+  }
+}
+
+// Ejecutar qa-video-share.js como child process.
+// #2519: ahora lee verdict/passed/total/mode/motivo/criteriosFallidos/narrator
+// del payload del job (con fallback a YAML del QA y meta de narración).
+// Todo lo textual pasa por sanitizeDrivePayload antes de viajar como arg CLI.
+function runVideoShare(videoPath, issue, title, payload) {
   return new Promise((resolve, reject) => {
+    // CA-S4: validar issue numérico antes de construir paths/args
+    if (!/^\d+$/.test(String(issue || ''))) {
+      return reject(new Error(`issue inválido: ${JSON.stringify(issue)}`));
+    }
+
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const yamlFallback = readQaVerdictFromYaml(issue);
+
+    // Helper: primer string no vacío
+    const firstNonEmpty = (...vals) => {
+      for (const v of vals) {
+        if (v !== undefined && v !== null && String(v).trim() !== '') return String(v);
+      }
+      return '';
+    };
+
+    const verdict = firstNonEmpty(data.verdict, yamlFallback.verdict);
+    const passed = firstNonEmpty(data.passed, yamlFallback.passed, '0');
+    const total = firstNonEmpty(data.total, yamlFallback.total, '0');
+    const mode = firstNonEmpty(data.mode, yamlFallback.mode);
+    const motivo = firstNonEmpty(data.motivo, yamlFallback.motivo);
+    const criteriosFallidos = Array.isArray(data.criteriosFallidos) && data.criteriosFallidos.length > 0
+      ? data.criteriosFallidos
+      : (Array.isArray(yamlFallback.criteriosFallidos) ? yamlFallback.criteriosFallidos : []);
+    const narrator = firstNonEmpty(data.narrator, readNarratorProvider(issue));
+    const rejectionPdf = firstNonEmpty(data.rejectionPdf, `logs/rejection-${issue}-qa.pdf`);
+
+    // CA-S2: sanitizar campos textuales libres antes de pasarlos como args.
+    // sanitizeDrivePayload cubre title/description/caption; extendemos para
+    // motivo + criterios + narrator + verdict usando el mismo sanitizer.
+    const sanitizable = sanitizeDrivePayload({
+      title: title || '',
+      verdict: verdict || '',
+      mode: mode || '',
+      motivo: motivo || '',
+      narrator: narrator || '',
+      criteriosFallidos: criteriosFallidos.join('|'),
+    });
+
     const args = [
       QA_VIDEO_SHARE,
       '--issue', issue,
       '--videos', videoPath,
-      '--verdict', 'EVIDENCIA',
-      '--passed', '0',
-      '--total', '0',
+      // CA-A1/A2: veredicto + contadores reales (o fallback legacy si no hay)
+      '--verdict', sanitizable.verdict || 'EVIDENCIA',
+      '--passed', String(passed),
+      '--total', String(total),
     ];
-    if (title) {
-      args.push('--title', title);
+    if (sanitizable.title) args.push('--title', sanitizable.title);
+    if (sanitizable.mode) args.push('--mode', sanitizable.mode);
+    if (sanitizable.motivo) args.push('--motivo', sanitizable.motivo);
+    if (sanitizable.criteriosFallidos) {
+      args.push('--criterios-fallidos', sanitizable.criteriosFallidos.replace(/\|/g, ','));
     }
+    if (sanitizable.narrator) args.push('--narrator', sanitizable.narrator);
+    // Rejection PDF: sólo si existe el archivo; el child también valida.
+    try {
+      if (rejectionPdf && fs.existsSync(path.resolve(PROJECT_ROOT, rejectionPdf))) {
+        args.push('--rejection-pdf', rejectionPdf);
+      }
+    } catch (_) { /* best-effort */ }
 
     log(`Ejecutando: node ${args.join(' ')}`);
 
@@ -218,10 +334,12 @@ async function processJob(file) {
     log(`Subiendo video: ${uploadPath} (issue #${issue})`);
 
     // Reintentar hasta MAX_RETRIES veces
+    // #2519: pasar `data` completo (ya sanitizado) al child para que el template
+    // tenga verdict/passed/total/mode/motivo/criterios/narrator/rejectionPdf.
     let lastErr;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        await runVideoShare(uploadPath, issue, title);
+        await runVideoShare(uploadPath, issue, title, data);
         log(`Upload exitoso: ${file.name} (intento ${attempt})`);
         fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
         return;

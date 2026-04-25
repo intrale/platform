@@ -115,6 +115,45 @@ async function main() {
     process.exit(3);
   }
 
+  // #2519: escribir side-metadata `<output>.meta.json` con el proveedor TTS
+  // que realmente sintetizó el audio. Consumida por servicio-drive para
+  // mapear provider → narrador (Nacho/Rulo del profile qa).
+  //
+  // Además, si el output está bajo `qa/evidence/<issue>/`, escribimos una
+  // copia canónica en `qa/evidence/<issue>/qa-narration.meta.json` — ese es
+  // el path que servicio-drive lee.
+  try {
+    const metaSibling = args.output + '.meta.json';
+    const metaPayload = {
+      profile: result.profile,
+      provider: result.provider,
+      voice: result.voice || '',
+      character_name: result.characterName || result.character_name || '',
+      output: args.output,
+      generated_at: new Date().toISOString(),
+      source: 'tts-generate.js',
+    };
+    fs.writeFileSync(metaSibling, JSON.stringify(metaPayload, null, 2));
+
+    // Escritura canónica si reconocemos pattern qa/evidence/<issue>/
+    const qaEvidenceRe = /qa[\\/]+evidence[\\/]+(\d+)[\\/]+/;
+    const m = args.output.match(qaEvidenceRe);
+    if (m) {
+      const issueNum = m[1];
+      const canonical = path.join(
+        path.dirname(args.output),
+        'qa-narration.meta.json'
+      );
+      fs.writeFileSync(canonical, JSON.stringify({
+        ...metaPayload,
+        issue: issueNum,
+      }, null, 2));
+    }
+  } catch (metaErr) {
+    // Best-effort; no bloquear si la meta no se pudo escribir.
+    console.warn(`WARN: no se pudo escribir metadata TTS: ${metaErr.message}`);
+  }
+
   console.log(`OK: audio generado con profile='${result.profile}' provider='${result.provider}' size=${result.buffer.length} bytes → ${args.output}`);
   process.exit(0);
 }

@@ -29,6 +29,13 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const crypto = require("crypto");
+const {
+    buildTelegramMessage,
+    resolveMode,
+    resolveVerdict,
+    isValidIssue,
+    formatTimestamp,
+} = require("./qa-telegram-template");
 
 // --- Constantes ---
 
@@ -78,6 +85,12 @@ function parseArgs() {
         verdict: "DESCONOCIDO",
         passed: "0",
         total: "0",
+        // #2519: nuevos flags — mode, motivo, criterios, narrador, rejectionPdf
+        mode: "",
+        motivo: "",
+        criteriosFallidos: "",
+        narratorProvider: "",
+        rejectionPdf: "",
     };
     for (let i = 0; i < args.length; i++) {
         switch (args[i]) {
@@ -88,6 +101,11 @@ function parseArgs() {
             case "--verdict": result.verdict = args[++i] || "DESCONOCIDO"; break;
             case "--passed":  result.passed  = args[++i] || "0"; break;
             case "--total":   result.total   = args[++i] || "0"; break;
+            case "--mode":    result.mode    = args[++i] || ""; break;
+            case "--motivo":  result.motivo  = args[++i] || ""; break;
+            case "--criterios-fallidos": result.criteriosFallidos = args[++i] || ""; break;
+            case "--narrator": result.narratorProvider = args[++i] || ""; break;
+            case "--rejection-pdf": result.rejectionPdf = args[++i] || ""; break;
         }
     }
     return result;
@@ -733,10 +751,52 @@ async function main() {
     // Resolución del sprint: parámetro > roadmap.json
     const sprintId = data.sprint || readActiveSprint();
 
-    const verdictIcon = data.verdict === "APROBADO" ? "\u2705" : "\u274C";
-    const timestamp = new Date().toLocaleString("es-AR", {
-        day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-    });
+    // #2519: el verdict puede venir en upper legacy ("APROBADO") o lower nuevo
+    // ("aprobado"). Normalizamos a lower antes de pasarlo al template.
+    const verdictNorm = String(data.verdict || "").toLowerCase();
+    const verdictResolved = resolveVerdict(verdictNorm);
+    const verdictIcon = verdictResolved ? verdictResolved.icon : "\uD83D\uDCF9";
+    const timestamp = formatTimestamp(new Date());
+
+    // Modo QA con fallback heuristico (CA-A6): si no llega explicito, derivar
+    // por presencia de videos (android) o qa-api-report.json (api). Resto
+    // => structural. El template muestra "indeterminado" solo si nada resuelve.
+    function resolveModeWithHeuristic() {
+        const explicit = resolveMode(data.mode);
+        if (explicit) return explicit.key;
+        if (videoPaths.length > 0) return "android";
+        const apiReportPath = path.resolve(
+            "qa", "evidence", String(data.issue || ""), "qa-api-report.json"
+        );
+        try { if (fs.existsSync(apiReportPath)) return "api"; } catch (_) {}
+        return "structural";
+    }
+    const effectiveMode = resolveModeWithHeuristic();
+
+    // Criterios fallidos: CSV ("CA-1,CA-4,...") o JSON array stringified.
+    function parseCriterios(raw) {
+        if (!raw) return [];
+        try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed.map(String);
+        } catch (_) { /* no JSON, tratarlo como CSV */ }
+        return String(raw).split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    const criteriosFallidos = parseCriterios(data.criteriosFallidos);
+
+    // Rejection PDF: solo se linkea si es relativo valido y existe en el
+    // working tree (CA-A7 + CA-S4). Paths con `..` o absolutos se descartan.
+    let rejectionPdfPath = "";
+    if (data.rejectionPdf) {
+        const relPdf = String(data.rejectionPdf).trim();
+        if (relPdf && !relPdf.includes("..") && !path.isAbsolute(relPdf)) {
+            const abs = path.resolve(process.cwd(), relPdf);
+            try { if (fs.existsSync(abs)) rejectionPdfPath = relPdf; } catch (_) {}
+        }
+    }
+
+    // CA-B1: sin verdict reconocido => path legacy en el template.
+    const isLegacyPayload = !verdictResolved;
 
     console.log("[qa-video-share] Distribuyendo " + videoPaths.length + " video(s) para issue #" + data.issue);
     if (driveAvailable()) {
@@ -795,17 +855,25 @@ async function main() {
                     updateQaReport(data.issue, driveLink);
                 }
 
-                // Mensaje Telegram con formato del issue #1805
-                const issueLabel = data.title
-                    ? "QA #" + data.issue + ": " + data.title
-                    : "QA #" + data.issue;
+                // #2519: template unificado via qa-telegram-template.
                 const repoReportPath = "qa/evidence/" + data.issue + "/qa-report.json";
-                const message =
-                    "\uD83D\uDCF9 *" + issueLabel + "*\n" +
-                    verdictIcon + " " + data.verdict + " | " + data.passed + "/" + data.total + " test cases" + audioTag + "\n" +
-                    "\uD83C\uDFAC Video: [Ver en Google Drive](" + driveLink + ")\n" +
-                    "\uD83D\uDCCB Reporte: `" + repoReportPath + "`\n" +
-                    "\uD83D\uDD52 " + timestamp;
+                const message = buildTelegramMessage({
+                    issue: data.issue,
+                    title: data.title,
+                    verdict: verdictNorm,
+                    passed: data.passed,
+                    total: data.total,
+                    mode: effectiveMode,
+                    motivo: data.motivo,
+                    criteriosFallidos: criteriosFallidos,
+                    narratorProvider: data.narratorProvider,
+                    rejectionPdf: rejectionPdfPath,
+                    driveLink: driveLink,
+                    reportPath: repoReportPath,
+                    audioTag: audioTag,
+                    timestamp: timestamp,
+                    legacy: isLegacyPayload,
+                });
 
                 await withRetry(() => sendTelegramMessage(message), "sendMessage Drive link " + driveFilename);
                 console.log("[qa-video-share] " + driveFilename + " subido a Drive, link enviado OK");

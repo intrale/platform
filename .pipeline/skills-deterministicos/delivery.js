@@ -181,6 +181,22 @@ async function main() {
         if (!branch || branch === 'main' || branch === 'develop' || branch === 'HEAD') {
             throw new Error(`Rama inválida para delivery: "${branch}"`);
         }
+
+        // #2519 (rev-1): salvaguarda contra ejecución desde el worktree equivocado.
+        // Si delivery corre en ROOT (porque pulpo no resolvió el worktree del issue)
+        // la rama detectada será la del repo principal, NO `agent/<issue>-*`.
+        // En ese caso committeamos/rebaseamos/pusheamos a la rama de OTRO agente.
+        // Mejor abortar fast-fail con mensaje claro que rebotar después de hacer
+        // commits a la rama equivocada y recién fallar en el rebase.
+        const expectedBranchPrefix = `agent/${issue}-`;
+        if (!branch.startsWith(expectedBranchPrefix)) {
+            throw new Error(
+                `Worktree incorrecto: cwd=${REPO_ROOT} está en rama "${branch}" pero ` +
+                `delivery del #${issue} esperaba una rama que empiece con "${expectedBranchPrefix}". ` +
+                `Probable causa: pulpo no resolvió el worktree del issue y delivery corrió en ROOT. ` +
+                `Verificar pulpo.js useExistingWorktree incluye 'entrega'.`
+            );
+        }
         logAppend(`[delivery] branch=${branch}`);
 
         const marker = readMarker(args.trabajando);
@@ -196,8 +212,20 @@ async function main() {
 
         if (hasChanges) {
             // Stagear todo lo modificado/untracked, EXCEPTO archivos sensibles del pipeline
-            // que se mueven solos (heartbeats, registros internos).
-            const SAFE_IGNORE = /^\.claude\/hooks\/(agent-\d+\.heartbeat|agent-registry\.json|activity-log)/;
+            // que se mueven solos (heartbeats, registros internos, métricas, stackdumps).
+            // #2519 (rev-1): ampliado a metrics-history.jsonl, *.heartbeat sueltos en root,
+            // bash.exe.stackdump y otros artefactos no commiteables que aparecen en cualquier
+            // worktree con pipeline en marcha.
+            const SAFE_IGNORE = new RegExp(
+                '^(?:' + [
+                    '\\.claude\\/hooks\\/agent-\\d+\\.heartbeat',
+                    '\\.claude\\/hooks\\/agent-registry\\.json',
+                    '\\.claude\\/hooks\\/activity-log',
+                    '\\.pipeline\\/metrics-history\\.jsonl',
+                    '\\.pipeline\\/.*\\.heartbeat',
+                    '.*\\.stackdump',
+                ].join('|') + ')'
+            );
             const stagePaths = changed
                 .map((c) => c.path)
                 .filter((p) => !SAFE_IGNORE.test(p));
@@ -232,6 +260,12 @@ async function main() {
         phaseEnd('stage_commit', t);
 
         // ── Fase 2: rebase contra origin/main ──────────────────────────
+        // #2519 (rev-2): rebaseOnto usa --autostash. Necesario porque después
+        // del commit pueden quedar archivos tracked modificados (heartbeats,
+        // agent-registry, activity-logger, metrics-history) que SAFE_IGNORE
+        // dejó fuera del staging — el pipeline sigue corriendo en paralelo y
+        // los reescribe. Sin --autostash el rebase muere con "You have
+        // unstaged changes" aunque sean estado transitorio.
         t = phaseStart();
         const fetchRes = git.fetchOrigin(REPO_ROOT);
         if (fetchRes.exit_code !== 0) {
