@@ -1,0 +1,64 @@
+appId: com.intrale.app.client
+---
+# Flujo E2E: Validacion #1931 - Login cliente
+# Prerrequisito para todos los demas flows del issue 1931
+# Usa usuario QA: qa-cliente@intrale.com.ar / QaCliente2026!
+#
+# Salida:
+# - Sesion abierta en la app cliente
+# - Pantalla home cargada (lista para navegar a "Mis pedidos")
+
+- launchApp:
+    clearState: true
+
+- waitForAnimationToEnd
+
+# Saltar onboarding si aparece
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 10000
+- tapOn:
+    text: "Saltar"
+    optional: true
+- waitForAnimationToEnd
+
+# Navegar al login desde "Bienvenido a la tienda"
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 10000
+- tapOn:
+    text: "Ya tengo cuenta"
+
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
+
+- takeScreenshot: 1931-login-01-empty
+
+# Ingresar credenciales QA cliente
+- tapOn:
+    id: "field_Usuario"
+- inputText: "qa-cliente@intrale.com.ar"
+
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "QaCliente2026!"
+
+- takeScreenshot: 1931-login-02-filled
+
+# Enviar login
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Esperar el home del cliente (bottom bar visible con "Mis pedidos")
+- extendedWaitUntil:
+    visible:
+      text: "Mis pedidos"
+    timeout: 20000
+
+- takeScreenshot: 1931-login-03-home
