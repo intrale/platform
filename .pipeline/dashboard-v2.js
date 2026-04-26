@@ -4302,6 +4302,14 @@ document.addEventListener('click', function(e) {
 let __softRefreshInFlight = false;
 async function softRefresh() {
   if (__softRefreshInFlight) return;
+  // En modo standalone (?section=X) el soft swap rompe el layout: los
+  // selectores que se reemplazan vienen del server sin la clase
+  // .standalone-target (la agrega applyStandaloneMode al cargar) y CSS
+  // body.standalone > *:not(.standalone-target) los oculta → pantalla negra.
+  // Solución: full reload, que re-ejecuta applyStandaloneMode.
+  if (document.body.classList.contains('standalone')) {
+    return location.reload();
+  }
   // No refrescar si hay log overlay abierto
   const logOv = document.getElementById('log-overlay');
   if (logOv && logOv.classList.contains('open')) return;
