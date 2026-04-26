@@ -190,13 +190,13 @@ del issue actual (salvo que sea un defecto grave de usabilidad).
 
 ## Protocolo de oportunidades de mejora (aplicable en TODAS las fases)
 
-Durante tu análisis en cualquier fase (`criterios`, `validacion`, `aprobacion`), si identificás **recomendaciones de mejora no bloqueantes** — ideas que NO deben frenar la aprobación del issue actual pero vale la pena investigar/implementar a futuro —, **NO las dejes sólo como texto en el comentario del issue origen**. Creá un issue independiente por cada una:
+Durante tu análisis en cualquier fase (`criterios`, `validacion`, `aprobacion`), si identificás **recomendaciones de mejora no bloqueantes** — ideas que NO deben frenar la aprobación del issue actual pero vale la pena investigar/implementar a futuro —, **NO las dejes sólo como texto en el comentario del issue origen**. Creá un issue independiente por cada una, **marcado como recomendación que requiere aprobación humana** (issue #2653 — el pipeline NO procesa recomendaciones hasta que un humano las apruebe):
 
 ```bash
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 gh issue create --repo intrale/platform \
   --title "[ux] <descripción imperativa breve>" \
-  --label "enhancement,source:recommendation,priority:low,needs-definition<,app:client|,app:business|,app:delivery>" \
+  --label "enhancement,source:recommendation,tipo:recomendacion,needs-human,priority:low<,app:client|,app:business|,app:delivery>" \
   --body "## Contexto
 
 <qué observaste / qué motivó la recomendación>
@@ -208,18 +208,21 @@ gh issue create --repo intrale/platform \
 ## Referencia
 
 > Propuesto automáticamente por el agente \`ux\` durante el análisis del issue #<origen>.
-> **No depende ni bloquea a #<origen>** — es una oportunidad de mejora independiente."
+> **Es una recomendación pendiente de aprobación humana** — no entra al pipeline automático hasta que un humano remueva el label \`needs-human\` y agregue \`recommendation:approved\` (o cierre con \`recommendation:rejected\`).
+> **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
 ```
 
 **Reglas inquebrantables:**
 
 1. **Un issue por recomendación** — no consolidar múltiples en el mismo issue.
-2. **Título con prefijo `[ux]`** + frase imperativa breve.
-3. **Heredar** labels `app:*` del issue origen cuando apliquen (si el origen tiene `app:business`, el nuevo issue también).
-4. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies` ni metadatos de dependencia formal. La referencia es sólo contextual en el body.
-5. **Prioridad inicial siempre `priority:low`** — PO/planner re-prioriza cuando el issue entre a definicion.
-6. **Listar en `notas` del YAML** de tu resultado los issues creados (ej: `notas: "Oportunidades registradas: #2601, #2602"`).
-7. **Mencionar en el comentario del issue origen** los issues creados, con formato: `Issues de oportunidad registrados: #xxxx, #xxxx.`
+2. **Máximo 3 recomendaciones por issue analizado** (anti-explosión, issue #2653). Si detectás más de 3 oportunidades, priorizá las top 3 por impacto en la experiencia del usuario y mencioná el resto en un párrafo "Otras oportunidades observadas" del comentario del issue origen, sin crear los issues.
+3. **Título con prefijo `[ux]`** + frase imperativa breve.
+4. **Heredar** labels `app:*` del issue origen cuando apliquen (si el origen tiene `app:business`, el nuevo issue también).
+5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs-human` para que el pulpo no procese el issue hasta aprobación humana.
+6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana). La referencia es sólo contextual en el body.
+7. **Prioridad inicial siempre `priority:low`** — PO/planner re-prioriza cuando el issue se apruebe y entre a definicion.
+8. **Listar en `notas` del YAML** de tu resultado los issues creados (ej: `notas: "Recomendaciones pendientes de aprobación: #2601, #2602"`).
+9. **Mencionar en el comentario del issue origen** los issues creados, con formato: `Recomendaciones pendientes de aprobación humana: #xxxx, #xxxx.`
 
 **Cuándo aplicar**: cualquier apartado tipo "Oportunidades de mejora UX", "Consideraciones futuras", "Mejoras no bloqueantes" o equivalente que emitas durante tu análisis.
 

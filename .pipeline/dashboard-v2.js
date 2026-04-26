@@ -28,6 +28,10 @@ try { retryingState = require('./retrying-state'); } catch { /* opcional */ }
 let v3Aggregator = null;
 try { v3Aggregator = require('./metrics/aggregator'); } catch { /* V3 no disponible */ }
 
+// Recomendaciones generadas por agentes (issue #2653). Best-effort require.
+let recommendationsLib = null;
+try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcional */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -909,6 +913,52 @@ function renderInfraHealth(state) {
     </div>
   </div>
 </section>`;
+}
+
+// --- Recomendaciones de agentes (issue #2653) ---
+function renderRecommendationsSection() {
+  if (!recommendationsLib) return '';
+  const cache = recommendationsLib.readCache();
+  const items = (cache.items || []).slice().sort((a, b) => {
+    if (a.createdAt && b.createdAt) return b.createdAt.localeCompare(a.createdAt);
+    return b.number - a.number;
+  });
+  const updatedAtTxt = cache.updatedAt
+    ? new Date(cache.updatedAt).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
+    : 'nunca';
+  const errorTxt = cache.error ? `<div class="reco-err">⚠ ${escapeHtml(cache.error)}</div>` : '';
+  const summary = `<summary>💡 Recomendaciones pendientes <span class="reco-count" data-count="${items.length}">${items.length}</span> <span class="reco-meta">· última sync: ${updatedAtTxt}</span></summary>`;
+  if (items.length === 0) {
+    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs-human</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
+  }
+  const rows = items.map(it => {
+    const fromTxt = it.fromIssue ? `desde #${it.fromIssue}` : '';
+    const agentBadge = `<span class="reco-agent reco-agent-${escapeHtml(it.sourceAgent)}">${escapeHtml(it.sourceAgent)}</span>`;
+    const created = it.createdAt
+      ? new Date(it.createdAt).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : '';
+    return `<tr data-issue="${it.number}">
+      <td class="reco-num"><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener">#${it.number}</a></td>
+      <td>${agentBadge}</td>
+      <td class="reco-title" title="${escapeHtml(it.title)}">${escapeHtml(it.title)}</td>
+      <td class="reco-from">${fromTxt}</td>
+      <td class="reco-created dim">${created}</td>
+      <td class="reco-actions">
+        <button class="reco-btn reco-btn-approve" onclick="recoApprove(${it.number})">✓ Aprobar</button>
+        <button class="reco-btn reco-btn-reject" onclick="recoReject(${it.number})">✗ Rechazar</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // --- HTML generation ---
@@ -3775,6 +3825,33 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 @media(max-width:900px){.eq-svc-grid{grid-template-columns:1fr}}
 @media(max-width:720px){.eq-areas-grid{grid-template-columns:1fr}}
 
+/* Recomendaciones de agentes (issue #2653) */
+.reco-section summary{position:relative}
+.reco-count{display:inline-block;background:#bc8cff;color:#0d1117;border-radius:10px;padding:1px 8px;font-size:0.75em;font-weight:700;margin-left:6px}
+.reco-count[data-count="0"]{background:var(--dim);color:#0d1117}
+.reco-meta{font-size:0.72em;color:var(--dim);font-weight:400;margin-left:6px}
+.reco-err{background:rgba(248,81,73,0.12);border:1px solid var(--rd);color:var(--rd);padding:6px 10px;border-radius:4px;font-size:0.85em;margin-bottom:8px}
+.reco-table{width:100%;border-collapse:collapse;font-size:0.85em}
+.reco-table th{text-align:left;padding:6px 8px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:0.4px;font-size:0.72em;border-bottom:1px solid var(--bd)}
+.reco-table td{padding:6px 8px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:top}
+.reco-table tr:hover td{background:rgba(255,255,255,0.02)}
+.reco-num a{color:var(--ac);text-decoration:none;font-weight:700}
+.reco-title{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reco-from{color:var(--dim);font-size:0.85em}
+.reco-created{font-size:0.78em}
+.reco-agent{display:inline-block;padding:1px 7px;border-radius:8px;font-size:0.7em;font-weight:700;text-transform:uppercase;background:rgba(188,140,255,0.15);color:#bc8cff}
+.reco-agent-security{background:rgba(248,81,73,0.15);color:#f85149}
+.reco-agent-po{background:rgba(210,153,34,0.15);color:#d29922}
+.reco-agent-ux{background:rgba(247,120,186,0.15);color:#f778ba}
+.reco-agent-review{background:rgba(255,166,87,0.15);color:#ffa657}
+.reco-actions{white-space:nowrap;text-align:right}
+.reco-btn{background:var(--card,#1a1f2e);color:var(--fg,#e0e6ed);border:1px solid var(--bd,#2a3560);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:0.78em;margin-left:4px;font-family:inherit}
+.reco-btn:hover{background:rgba(255,255,255,0.06)}
+.reco-btn-approve{border-color:#3fb950;color:#3fb950}
+.reco-btn-approve:hover{background:rgba(63,185,80,0.12)}
+.reco-btn-reject{border-color:#f85149;color:#f85149}
+.reco-btn-reject:hover{background:rgba(248,81,73,0.12)}
+
 </style></head>
 <body>
   <div class="hdr-bar">
@@ -3949,6 +4026,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   ${matrixHTML}
 
   ${historyHTML}
+
+  ${renderRecommendationsSection()}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
@@ -4828,6 +4907,39 @@ document.addEventListener('keydown', function(e) {
     document.getElementById('log-search').focus();
   }
 });
+
+// Recomendaciones de agentes (issue #2653)
+async function recoRefresh() {
+  try {
+    const r = await fetch('/api/recommendations/refresh', { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) location.reload();
+    else alert('Error refrescando: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error refrescando: ' + e.message); }
+}
+async function recoApprove(num) {
+  if (!confirm('Aprobar recomendación #' + num + '? Entrará al pipeline en el próximo ciclo.')) return;
+  try {
+    const r = await fetch('/api/recommendations/' + num + '/approve', { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) { recoRefresh(); }
+    else alert('Error: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error: ' + e.message); }
+}
+async function recoReject(num) {
+  const reason = prompt('Motivo del rechazo (opcional):', '');
+  if (reason === null) return;
+  try {
+    const r = await fetch('/api/recommendations/' + num + '/reject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || '' })
+    });
+    const j = await r.json();
+    if (j.ok) { recoRefresh(); }
+    else alert('Error: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error: ' + e.message); }
+}
 </script>
 </body></html>`;
 }
@@ -6350,6 +6462,57 @@ const server = http.createServer((req, res) => {
         log(`Priority Window: ${label} ${verb} manualmente`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, msg: `${label} Window ${verb} — surte efecto en el próximo ciclo del Pulpo` }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API recomendaciones (issue #2653)
+  if (req.url === '/api/recommendations/refresh' && req.method === 'POST') {
+    if (!recommendationsLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'recommendations lib no disponible' }));
+      return;
+    }
+    recommendationsLib.refreshCache().then(cache => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, count: (cache.items || []).length, error: cache.error || null }));
+    }).catch(e => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    });
+    return;
+  }
+
+  const recoMatch = req.url && req.url.match(/^\/api\/recommendations\/(\d+)\/(approve|reject)$/);
+  if (recoMatch && req.method === 'POST') {
+    if (!recommendationsLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'recommendations lib no disponible' }));
+      return;
+    }
+    const issueNum = Number(recoMatch[1]);
+    const action = recoMatch[2];
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        let result;
+        if (action === 'approve') {
+          result = recommendationsLib.approve({ issue: issueNum });
+        } else {
+          result = recommendationsLib.reject({ issue: issueNum, reason: payload.reason || '' });
+        }
+        if (result.ok) {
+          recommendationsLib.refreshCache().catch(() => {});
+          log(`Recomendaciones: ${action} #${issueNum} — ${result.msg}`);
+        }
+        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));

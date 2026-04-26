@@ -6650,6 +6650,16 @@ function brazoIntake(config) {
           continue;
         }
 
+        // RECOMENDACION (#2653): no procesar issues con label tipo:recomendacion
+        // hasta que un humano apruebe (recommendation:approved). Defensa en
+        // profundidad: el search ya filtra needs-human, pero si alguien quita
+        // needs-human por error sin agregar recommendation:approved, el issue
+        // sigue siendo una recomendación pendiente y NO debe entrar al flujo.
+        if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
+          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
+          continue;
+        }
+
         // Dedup por contenido para issues qa:dependency (cierra duplicados automáticamente)
         if (dedupDependencyIssue(issue, issues)) continue;
 

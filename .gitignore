@@ -139,6 +139,8 @@ scripts/planner-plan.json
 .pipeline/retrying-state.json
 # Estado TTS (último provider usado) — efímero por sesión
 .pipeline/.tts-state.json
+# #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
+.pipeline/recommendations-cache.json
 # #2477/#2488 — código fuente del aggregator V3 sí se commitea (snapshot/.last-cleanup quedan ignorados)
 .pipeline/metrics/*
 !.pipeline/metrics/aggregator.js
