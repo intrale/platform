@@ -1,0 +1,31 @@
+<!--
+  Icono de candado para pantalla "Sin acceso" del componente RequireRole.
+  Diseño: filled M3, tintable via Compose tint.
+  Uso: pantalla de gating cuando rol vigente no aplica + iconos contextuales en cards ocultas.
+  Color sugerido (tint): MaterialTheme.colorScheme.onSurfaceVariant para no alarmar (mensaje opaco).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+
+    <!-- Arco superior (shackle) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12,2 C9.24,2 7,4.24 7,7 L7,10 L9,10 L9,7 C9,5.34 10.34,4 12,4 C13.66,4 15,5.34 15,7 L15,10 L17,10 L17,7 C17,4.24 14.76,2 12,2 Z" />
+
+    <!-- Cuerpo del candado -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M6,10 L18,10 C19.1,10 20,10.9 20,12 L20,20 C20,21.1 19.1,22 18,22 L6,22 C4.9,22 4,21.1 4,20 L4,12 C4,10.9 4.9,10 6,10 Z" />
+
+    <!-- Ojo de la cerradura (recortado en blanco para verse independiente del tint) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,14 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11.4,15 L12.6,15 L12.6,18.5 L11.4,18.5 Z" />
+</vector>

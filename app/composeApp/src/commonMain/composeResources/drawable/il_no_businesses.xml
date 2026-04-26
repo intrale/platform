@@ -1,0 +1,74 @@
+<!--
+  Ilustracion para empty state cuando el usuario no tiene memberships en flavor business.
+  Simbologia: edificio con cartel de "?" sugiriendo ausencia de negocio asociado.
+  Diseño: ilustracion grande (160x160dp) con outline + relleno suave, tintable.
+  Uso: pantalla "No tenes negocios asociados" del BusinessHomeScreen.
+  Color sugerido (tint): MaterialTheme.colorScheme.onSurfaceVariant.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="160dp"
+    android:height="160dp"
+    android:viewportWidth="160"
+    android:viewportHeight="160"
+    android:tint="?attr/colorControlNormal">
+
+    <!-- Suelo / piso (linea base con sombra) -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.18"
+        android:pathData="M16,132 C16,128 36,124 80,124 C124,124 144,128 144,132 C144,136 124,140 80,140 C36,140 16,136 16,132 Z" />
+
+    <!-- Edificio principal (silueta) -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.28"
+        android:pathData="M48,60 L48,128 L112,128 L112,60 L102,52 L102,40 L92,40 L92,46 L80,38 L68,46 L68,40 L58,40 L58,52 Z" />
+
+    <!-- Outline reforzada del edificio -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M48,60 L48,128 L52,128 L52,60 Z M108,60 L108,128 L112,128 L112,60 Z M48,128 L112,128 L112,124 L48,124 Z M48,60 L80,38 L112,60 L110,63 L80,42 L50,63 Z" />
+
+    <!-- Techo decorativo (pestanas) -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.65"
+        android:pathData="M58,40 L68,40 L68,48 L58,48 Z M92,40 L102,40 L102,48 L92,48 Z" />
+
+    <!-- Ventanas: 2 columnas x 3 filas -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M60,72 L72,72 L72,82 L60,82 Z M88,72 L100,72 L100,82 L88,82 Z M60,90 L72,90 L72,100 L60,100 Z M88,90 L100,90 L100,100 L88,100 Z M60,108 L72,108 L72,118 L60,118 Z M88,108 L100,108 L100,118 L88,118 Z" />
+
+    <!-- Marcos de ventanas -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.55"
+        android:pathData="M65,72 L67,72 L67,82 L65,82 Z M93,72 L95,72 L95,82 L93,82 Z M60,76 L72,76 L72,78 L60,78 Z M88,76 L100,76 L100,78 L88,78 Z M65,90 L67,90 L67,100 L65,100 Z M93,90 L95,90 L95,100 L93,100 Z M60,94 L72,94 L72,96 L60,96 Z M88,94 L100,94 L100,96 L88,96 Z M65,108 L67,108 L67,118 L65,118 Z M93,108 L95,108 L95,118 L93,118 Z M60,112 L72,112 L72,114 L60,114 Z M88,112 L100,112 L100,114 L88,114 Z" />
+
+    <!-- Puerta principal (recortada en gris) -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.45"
+        android:pathData="M74,98 L86,98 L86,128 L74,128 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.85"
+        android:pathData="M83,113 m-0.8,0 a0.8,0.8 0 1,0 1.6,0 a0.8,0.8 0 1,0 -1.6,0" />
+
+    <!-- Burbuja de pregunta (sobre el techo) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M80,12 m-18,0 a18,18 0 1,0 36,0 a18,18 0 1,0 -36,0" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M80,30 L74,36 L78,32 L72,32 L72,28 L78,28 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M80,12 m-18,0 a18,18 0 1,0 36,0 a18,18 0 1,0 -36,0 M80,14 m-16,0 a16,16 0 1,1 32,0 a16,16 0 1,1 -32,0 Z" />
+
+    <!-- Signo de interrogacion central -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M75.6,7.5 C75.6,4.5 77.6,2.6 80.4,2.6 C83.2,2.6 85.0,4.4 85.0,6.8 C85.0,8.7 84.0,10.0 81.8,11.4 C80.4,12.3 80.0,13.0 80.0,14.6 L78.2,14.6 C78.2,12.4 78.7,11.4 80.4,10.3 C82.0,9.3 82.7,8.5 82.7,7.0 C82.7,5.5 81.7,4.5 80.3,4.5 C78.7,4.5 77.7,5.6 77.7,7.5 Z M78.0,18.4 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0" />
+</vector>

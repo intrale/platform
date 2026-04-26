@@ -1,0 +1,23 @@
+<!--
+  Icono del rol MANAGER (Encargado) — escudo con check interno.
+  Simbologia: autoridad delegada + aprobacion / control.
+  Diseño: filled M3, tintable via Compose tint.
+  Color sugerido (tint): roleBlue / onRoleBlue segun tema.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+
+    <!-- Escudo (silueta exterior) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12,2 L4,5 L4,11 C4,15.97 7.42,20.55 12,22 C16.58,20.55 20,15.97 20,11 L20,5 Z" />
+
+    <!-- Check interior recortado en blanco -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M10.4,15.2 L7,11.8 L8.4,10.4 L10.4,12.4 L15.6,7.2 L17,8.6 Z" />
+</vector>

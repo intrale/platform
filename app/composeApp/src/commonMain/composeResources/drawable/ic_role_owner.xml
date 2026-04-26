@@ -1,0 +1,39 @@
+<!--
+  Icono del rol OWNER (Dueño) — corona estilizada de 5 picos con joya central.
+  Diseño: lineas limpias filled, viewport M3 24dp, tintable via Compose tint.
+  Uso: chip de rol en BusinessSelector + RequireRole + matriz de roles.
+  Color sugerido (tint): rolePurple / onRolePurple segun tema.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+
+    <!-- Base de la corona (banda inferior) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M5,17 L19,17 L19,19 L5,19 Z" />
+
+    <!-- Cuerpo de la corona con 5 picos -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M5,17 L4,8 L8,11 L12,5 L16,11 L20,8 L19,17 Z" />
+
+    <!-- Joya central (circulo decorativo) -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.55"
+        android:pathData="M12,11 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0" />
+
+    <!-- Joyas laterales (puntos en los picos) -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.55"
+        android:pathData="M4,8 m-0.9,0 a0.9,0.9 0 1,0 1.8,0 a0.9,0.9 0 1,0 -1.8,0" />
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.55"
+        android:pathData="M20,8 m-0.9,0 a0.9,0.9 0 1,0 1.8,0 a0.9,0.9 0 1,0 -1.8,0" />
+</vector>

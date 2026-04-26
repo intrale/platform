@@ -1,0 +1,59 @@
+<!--
+  Icono del rol CASHIER (Cajero) — caja registradora estilizada.
+  Simbologia: punto de venta / cobro.
+  Diseño: filled M3, tintable via Compose tint.
+  Color sugerido (tint): roleGreen / onRoleGreen segun tema.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+
+    <!-- Pantalla / display superior -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M6,3 L18,3 C18.55,3 19,3.45 19,4 L19,8 C19,8.55 18.55,9 18,9 L6,9 C5.45,9 5,8.55 5,8 L5,4 C5,3.45 5.45,3 6,3 Z" />
+
+    <!-- Linea horizontal del display (recorte interno) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M7,5 L17,5 L17,7 L7,7 Z" />
+
+    <!-- Cuerpo principal de la caja -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4,10 L20,10 C20.55,10 21,10.45 21,11 L21,20 C21,20.55 20.55,21 20,21 L4,21 C3.45,21 3,20.55 3,20 L3,11 C3,10.45 3.45,10 4,10 Z" />
+
+    <!-- Teclado: signo $ central recortado -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11.4,12.5 L12.6,12.5 L12.6,13.4 C13.5,13.55 14.1,14.1 14.1,14.85 L13.0,14.85 C13.0,14.5 12.65,14.3 12.0,14.3 C11.4,14.3 11.0,14.5 11.0,14.8 C11.0,15.1 11.4,15.25 12.3,15.45 C13.6,15.7 14.2,16.15 14.2,16.95 C14.2,17.75 13.55,18.3 12.6,18.45 L12.6,19.4 L11.4,19.4 L11.4,18.45 C10.45,18.3 9.85,17.75 9.85,17.0 L10.95,17.0 C10.95,17.4 11.35,17.6 12.0,17.6 C12.7,17.6 13.1,17.4 13.1,17.05 C13.1,16.75 12.75,16.6 11.85,16.4 C10.5,16.15 9.95,15.7 9.95,14.95 C9.95,14.15 10.55,13.6 11.4,13.45 Z" />
+
+    <!-- Botones laterales (puntos decorativos del teclado) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.65"
+        android:pathData="M5.5,13 m-0.6,0 a0.6,0.6 0 1,0 1.2,0 a0.6,0.6 0 1,0 -1.2,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.65"
+        android:pathData="M5.5,15.5 m-0.6,0 a0.6,0.6 0 1,0 1.2,0 a0.6,0.6 0 1,0 -1.2,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.65"
+        android:pathData="M5.5,18 m-0.6,0 a0.6,0.6 0 1,0 1.2,0 a0.6,0.6 0 1,0 -1.2,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.65"
+        android:pathData="M18.5,13 m-0.6,0 a0.6,0.6 0 1,0 1.2,0 a0.6,0.6 0 1,0 -1.2,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.65"
+        android:pathData="M18.5,15.5 m-0.6,0 a0.6,0.6 0 1,0 1.2,0 a0.6,0.6 0 1,0 -1.2,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.65"
+        android:pathData="M18.5,18 m-0.6,0 a0.6,0.6 0 1,0 1.2,0 a0.6,0.6 0 1,0 -1.2,0" />
+</vector>
