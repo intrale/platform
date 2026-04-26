@@ -50,6 +50,11 @@ const COMPONENTS = [
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
 
+// gh CLI: el proceso del dashboard no necesariamente tiene gh en PATH.
+// Usamos un fallback hardcoded al binario en la instalación local.
+const GH_BIN_DEFAULT = 'C:/Workspaces/gh-cli/bin/gh';
+const GH_BIN = process.env.GH_BIN || process.env.GH_PATH || GH_BIN_DEFAULT;
+
 // --- Issue title/label cache (persisted to disk, refreshed via gh CLI) ---
 const TITLE_CACHE_FILE = path.join(PIPELINE, '.issue-title-cache.json');
 const TITLE_CACHE_TTL = 3600000; // 1 hour
@@ -66,7 +71,7 @@ function saveIssueTitleCache(cache) {
 }
 
 function fetchIssueTitles(issueIds, cache) {
-  const ghPath = process.env.GH_PATH || 'C:/Workspaces/gh-cli/bin/gh';
+  const ghPath = GH_BIN;
   // GraphQL batch: up to 50 issues per query
   const batches = [];
   for (let i = 0; i < issueIds.length; i += 50) batches.push(issueIds.slice(i, i + 50));
@@ -6801,7 +6806,7 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, msg: 'human-block lib no disponible: ' + e.message }));
         return;
       }
-      const ghBin = process.env.GH_BIN || process.env.GH_PATH || 'gh';
+      const ghBin = GH_BIN;
       const repo = 'intrale/platform';
       const { execFileSync } = require('child_process');
       const ghTry = (args) => {
@@ -6866,7 +6871,7 @@ const server = http.createServer((req, res) => {
     const targetLabel = action === 'prioritize' ? 'priority:critical' : 'priority:low';
     const otherLabels = ['priority:critical', 'priority:high', 'priority:medium', 'priority:low']
       .filter(l => l !== targetLabel);
-    const ghBin = process.env.GH_BIN || process.env.GH_PATH || 'gh';
+    const ghBin = GH_BIN;
     const repo = 'intrale/platform';
     const { execFileSync } = require('child_process');
     const ghTry = (args) => {
