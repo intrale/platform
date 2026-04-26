@@ -3288,12 +3288,27 @@ function calcularPrioridad(issueNum, config) {
   return effectivePrio * 10 + tiebreaker;
 }
 
-/** Ordenar archivos pendientes por prioridad del issue */
+/** Ordenar archivos pendientes por prioridad del issue.
+ *  Fuente única de verdad: orden manual del Issue Tracker
+ *  (.pipeline/issue-manual-order.json). Si un issue no tiene entrada en el orden
+ *  manual, cae al cálculo legacy por labels (calcularPrioridad).
+ */
 function sortByPriority(archivos, config) {
   if (archivos.length <= 1) return archivos;
+  let manualOrderIndex = null;
+  try {
+    const issueOrder = require('./lib/issue-order');
+    const state = issueOrder.load();
+    manualOrderIndex = new Map(state.order.map((n, i) => [String(n), i]));
+  } catch {}
   return archivos.sort((a, b) => {
-    const issueA = issueFromFile(a.name);
-    const issueB = issueFromFile(b.name);
+    const issueA = String(issueFromFile(a.name));
+    const issueB = String(issueFromFile(b.name));
+    if (manualOrderIndex && manualOrderIndex.size > 0) {
+      const ia = manualOrderIndex.has(issueA) ? manualOrderIndex.get(issueA) : Infinity;
+      const ib = manualOrderIndex.has(issueB) ? manualOrderIndex.get(issueB) : Infinity;
+      if (ia !== ib) return ia - ib; // index menor = prioritario primero
+    }
     return calcularPrioridad(issueA, config) - calcularPrioridad(issueB, config);
   });
 }

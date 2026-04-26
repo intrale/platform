@@ -1035,6 +1035,20 @@ function generateHTML(state) {
 
   // KPIs
   const matrixEntries = Object.entries(state.issueMatrix);
+
+  // Orden manual del Issue Tracker: única fuente de prioridad. Issues nuevos
+  // (que aún no tienen entrada) se insertan al tope para que el usuario los vea.
+  let manualOrderState = { version: 1, order: [] };
+  try {
+    const issueOrder = require('./lib/issue-order');
+    manualOrderState = issueOrder.load();
+    const activeIssueNums = matrixEntries
+      .filter(([_, d]) => d.estadoActual)
+      .map(([n]) => String(n));
+    issueOrder.syncWith(manualOrderState, activeIssueNums);
+  } catch (e) {}
+  const manualOrderIndex = new Map(manualOrderState.order.map((n, i) => [String(n), i]));
+
   const activosList = matrixEntries.filter(([_, d]) => d.estadoActual);
   const activos = activosList.length;
   const totalIssues = matrixEntries.length;
@@ -1658,35 +1672,26 @@ function generateHTML(state) {
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
     // Data atributos para búsqueda client-side
     const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
-    // Prioridad para sort (opción B, matchea orden del pulpo):
-    //   Tier 1 (top)    — working: el agente que se está ejecutando
-    //   Tier 2          — pendiente lanzable: próximos según score del pulpo
-    //   Tier 3          — pendiente bloqueado: no lanzables hasta resolver deps
-    //   Tier 4 (fondo)  — stale / failed: hundidos, no son el próximo a lanzar
-    // Dentro de cada tier se desempata por score del pulpo (critical primero).
-    // El sort es `b.priority - a.priority` (desc) → mayor priority = más arriba.
-    const pulpoScore = calcPulpoScore(data.labels);
-    let priority;
-    if (working) {
-      priority = 20000 - pulpoScore;
-    } else if (isStale || hasRejection) {
-      priority = 500 - (data.staleMin || 0);
-    } else if (isBlocked) {
-      priority = 5000 - pulpoScore;
-    } else {
-      priority = 10000 - pulpoScore;
-    }
-    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite">
+    // Prioridad para sort: orden manual del Issue Tracker es la única fuente.
+    // Position 0 = más prioritario; cuanto menor el index, más arriba en la lane.
+    // Sort es `b.priority - a.priority` (desc) → mayor priority = más arriba,
+    // así que invertimos el index. Issues sin entrada (no debería pasar tras
+    // syncWith pero por defensa) van al fondo.
+    const manualPos = manualOrderIndex.has(String(issueNum)) ? manualOrderIndex.get(String(issueNum)) : 999999;
+    const priority = -manualPos;
+    const posLabel = manualPos < 999999 ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${manualPos + 1}</span>` : '';
+    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-lane="${lane}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite" draggable="${complete ? 'false' : 'true'}" ondragstart="onCardDragStart(event)" ondragover="onCardDragOver(event)" ondragleave="onCardDragLeave(event)" ondrop="onCardDrop(event)" ondragend="onCardDragEnd(event)">
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
+            ${posLabel}
             <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
             ${lcBlockIcons}${lcRetryingIcon}
           </div>
           <div class="lc-top-right">
             <span class="lc-prio-actions">
-              <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issuePrioritize(${issueNum})" title="Priorizar al máximo (priority:critical)">▲</button>
-              <button class="lc-prio-btn lc-prio-down" onclick="event.stopPropagation();issueDeprioritize(${issueNum})" title="Despriorizar al mínimo (priority:low)">▼</button>
+              <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issueMoveUp(${issueNum})" title="Subir una posición">▲</button>
+              <button class="lc-prio-btn lc-prio-down" onclick="event.stopPropagation();issueMoveDown(${issueNum})" title="Bajar una posición">▼</button>
             </span>
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
           </div>
@@ -2301,13 +2306,16 @@ function generateHTML(state) {
         : '';
       const prioActions = isRunning
         ? `<span class="ah-prio-actions">
-            <button class="lc-prio-btn lc-prio-up" onclick="event.preventDefault();event.stopPropagation();issuePrioritize(${h.issue})" title="Priorizar al máximo (priority:critical)">▲</button>
-            <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueDeprioritize(${h.issue})" title="Despriorizar al mínimo (priority:low)">▼</button>
+            <button class="lc-prio-btn lc-prio-up" onclick="event.preventDefault();event.stopPropagation();issueMoveUp(${h.issue})" title="Subir una posición">▲</button>
+            <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueMoveDown(${h.issue})" title="Bajar una posición">▼</button>
           </span>`
         : '';
+      const ahPos = manualOrderIndex.has(String(h.issue)) ? manualOrderIndex.get(String(h.issue)) : null;
+      const ahPosLabel = ahPos !== null ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${ahPos + 1}</span>` : '';
       return `<a href="${href}" target="_blank" class="ah-card ${statusCls}" title="${tip}">
         <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
         <span class="ah-skill">${p.name}</span>
+        ${ahPosLabel}
         <span class="ah-issue">#${h.issue}${title}</span>
         <span class="ah-fase">${h.fase}</span>
         <span class="ah-status">${statusIcon} ${statusLabel}</span>
@@ -3754,6 +3762,17 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-prio-btn:disabled{opacity:0.4;cursor:wait}
 .lc-prio-up:hover{border-color:#3fb950;color:#3fb950}
 .lc-prio-down:hover{border-color:#f85149;color:#f85149}
+.lc-card[draggable="true"]{cursor:grab}
+.lc-card[draggable="true"]:active{cursor:grabbing}
+.lc-card-dragging{opacity:0.4;outline:1px dashed var(--ac,#6d8cff)}
+.lc-card.lc-drop-above{box-shadow:0 -3px 0 0 var(--ac,#6d8cff)}
+.lc-card.lc-drop-below{box-shadow:0 3px 0 0 var(--ac,#6d8cff)}
+.lc-pos{
+  display:inline-block;background:var(--sf2,#1a1f2e);color:var(--dim,#9aa6c2);
+  font-size:0.7em;font-weight:700;padding:1px 6px;border-radius:8px;
+  border:1px solid var(--bd,#2a3560);font-variant-numeric:tabular-nums;
+  margin-right:4px;line-height:1.4;
+}
 @keyframes prio-flash-ok-anim{
   0%{box-shadow:0 0 0 0 rgba(63,185,80,0.0);background:transparent}
   30%{box-shadow:0 0 0 3px rgba(63,185,80,0.45);background:rgba(63,185,80,0.10)}
@@ -5051,7 +5070,7 @@ function _prioCallApi(issueNum, action) {
     .then(r => r.json());
 }
 function _prioFindButtons(issueNum, action) {
-  const fnName = action === 'prioritize' ? 'issuePrioritize' : 'issueDeprioritize';
+  const fnName = (action === 'move-up' || action === 'up') ? 'issueMoveUp' : 'issueMoveDown';
   return Array.from(document.querySelectorAll('button.lc-prio-btn'))
     .filter(b => (b.getAttribute('onclick') || '').includes(fnName + '(' + issueNum + ')'));
 }
@@ -5094,44 +5113,112 @@ function showToast(msg, type) {
     setTimeout(() => t.remove(), 250);
   }, 2200);
 }
-async function issuePrioritize(issueNum) {
-  if (!confirm('Priorizar #' + issueNum + ' al máximo (priority:critical)?')) return;
-  _prioSetLoading(issueNum, 'prioritize', true);
+async function _issueMove(issueNum, direction) {
+  const action = direction === 'up' ? 'move-up' : 'move-down';
+  const arrow = direction === 'up' ? '▲' : '▼';
+  _prioSetLoading(issueNum, action, true);
   try {
-    const j = await _prioCallApi(issueNum, 'prioritize');
+    const r = await fetch('/api/issue/' + issueNum + '/' + action, { method: 'POST' });
+    const j = await r.json();
     if (j.ok) {
       _prioFlashCards(issueNum, true);
-      showToast('▲ #' + issueNum + ' priorizado (priority:critical)', 'ok');
-      setTimeout(() => location.reload(), 700);
+      showToast(arrow + ' #' + issueNum + ' ' + (j.msg || 'movido'), 'ok');
+      setTimeout(() => location.reload(), 500);
     } else {
-      _prioSetLoading(issueNum, 'prioritize', false);
-      _prioFlashCards(issueNum, false);
-      showToast('Error priorizando #' + issueNum + ': ' + (j.msg || 'desconocido'), 'err');
+      _prioSetLoading(issueNum, action, false);
+      if (j.msg === 'already-top' || j.msg === 'already-bottom') {
+        showToast('#' + issueNum + ' ya está en el ' + (j.msg === 'already-top' ? 'tope' : 'fondo'), 'info');
+      } else {
+        _prioFlashCards(issueNum, false);
+        showToast('Error: ' + (j.msg || 'desconocido'), 'err');
+      }
     }
   } catch (e) {
-    _prioSetLoading(issueNum, 'prioritize', false);
+    _prioSetLoading(issueNum, action, false);
     _prioFlashCards(issueNum, false);
-    showToast('Error priorizando #' + issueNum + ': ' + e.message, 'err');
+    showToast('Error moviendo #' + issueNum + ': ' + e.message, 'err');
   }
 }
-async function issueDeprioritize(issueNum) {
-  if (!confirm('Despriorizar #' + issueNum + ' al mínimo (priority:low)?')) return;
-  _prioSetLoading(issueNum, 'deprioritize', true);
+function issueMoveUp(issueNum) { return _issueMove(issueNum, 'up'); }
+function issueMoveDown(issueNum) { return _issueMove(issueNum, 'down'); }
+
+// Drag-and-drop nativo HTML5 sobre las cards del Issue Tracker.
+// Solo dentro de la misma lane: la lane se determina por estado del filesystem,
+// no por decisión del usuario.
+let _draggedCard = null;
+let _draggedLane = null;
+function onCardDragStart(e) {
+  const card = e.currentTarget;
+  if (card.getAttribute('draggable') === 'false') { e.preventDefault(); return; }
+  _draggedCard = card;
+  _draggedLane = card.dataset.lane;
+  card.classList.add('lc-card-dragging');
   try {
-    const j = await _prioCallApi(issueNum, 'deprioritize');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', card.dataset.issue);
+  } catch (err) {}
+}
+function onCardDragOver(e) {
+  if (!_draggedCard) return;
+  const card = e.currentTarget;
+  if (card === _draggedCard) return;
+  if (card.dataset.lane !== _draggedLane) return; // solo dentro de la misma lane
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  // Indicador visual: línea arriba o abajo según posición del cursor
+  const rect = card.getBoundingClientRect();
+  const isAbove = (e.clientY - rect.top) < rect.height / 2;
+  card.classList.toggle('lc-drop-above', isAbove);
+  card.classList.toggle('lc-drop-below', !isAbove);
+}
+function onCardDragLeave(e) {
+  e.currentTarget.classList.remove('lc-drop-above', 'lc-drop-below');
+}
+function onCardDrop(e) {
+  if (!_draggedCard) return;
+  const card = e.currentTarget;
+  if (card === _draggedCard) return;
+  if (card.dataset.lane !== _draggedLane) return;
+  e.preventDefault();
+  const rect = card.getBoundingClientRect();
+  const isAbove = (e.clientY - rect.top) < rect.height / 2;
+  card.classList.remove('lc-drop-above', 'lc-drop-below');
+  // Reorder DOM optimista: insertar la draggedCard arriba o abajo del target
+  const parent = card.parentNode;
+  if (isAbove) parent.insertBefore(_draggedCard, card);
+  else parent.insertBefore(_draggedCard, card.nextSibling);
+  // Mandar al server el orden completo de TODAS las cards activas (todas las lanes)
+  _persistDragOrder();
+}
+function onCardDragEnd(e) {
+  if (_draggedCard) _draggedCard.classList.remove('lc-card-dragging');
+  document.querySelectorAll('.lc-drop-above, .lc-drop-below').forEach(c => {
+    c.classList.remove('lc-drop-above', 'lc-drop-below');
+  });
+  _draggedCard = null;
+  _draggedLane = null;
+}
+async function _persistDragOrder() {
+  // Recolectar el orden actual de TODAS las cards activas (ordenadas como están
+  // en el DOM, lane por lane, top→bottom). El server hace setOrder con esto.
+  const allCards = Array.from(document.querySelectorAll('.lc-card[data-status="active"]'));
+  const order = allCards.map(c => c.dataset.issue);
+  try {
+    const r = await fetch('/api/issues/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order })
+    });
+    const j = await r.json();
     if (j.ok) {
-      _prioFlashCards(issueNum, true);
-      showToast('▼ #' + issueNum + ' despriorizado (priority:low)', 'ok');
-      setTimeout(() => location.reload(), 700);
+      showToast('✓ Orden actualizado (' + order.length + ' issues)', 'ok');
     } else {
-      _prioSetLoading(issueNum, 'deprioritize', false);
-      _prioFlashCards(issueNum, false);
-      showToast('Error despriorizando #' + issueNum + ': ' + (j.msg || 'desconocido'), 'err');
+      showToast('Error guardando orden: ' + (j.msg || 'desconocido'), 'err');
+      setTimeout(() => location.reload(), 600);
     }
   } catch (e) {
-    _prioSetLoading(issueNum, 'deprioritize', false);
-    _prioFlashCards(issueNum, false);
-    showToast('Error despriorizando #' + issueNum + ': ' + e.message, 'err');
+    showToast('Error guardando orden: ' + e.message, 'err');
+    setTimeout(() => location.reload(), 600);
   }
 }
 
@@ -6863,49 +6950,60 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API issue priority quick actions (cards de Issue Tracker y Equipo en ejecución)
-  const priorityMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(prioritize|deprioritize)$/);
-  if (priorityMatch && req.method === 'POST') {
-    const issueNum = Number(priorityMatch[1]);
-    const action = priorityMatch[2];
-    const targetLabel = action === 'prioritize' ? 'priority:critical' : 'priority:low';
-    const otherLabels = ['priority:critical', 'priority:high', 'priority:medium', 'priority:low']
-      .filter(l => l !== targetLabel);
-    const ghBin = GH_BIN;
-    const repo = 'intrale/platform';
-    const { execFileSync } = require('child_process');
-    const ghTry = (args) => {
-      try {
-        execFileSync(ghBin, args, { stdio: 'ignore', timeout: 15000 });
-        return true;
-      } catch { return false; }
-    };
-    for (const l of otherLabels) {
-      ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', l]);
-    }
-    const added = ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--add-label', targetLabel]);
-    if (!added) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: `No se pudo agregar label ${targetLabel}` }));
+  // API orden manual de issues (drag-drop + botones ▲/▼ del Issue Tracker)
+  const moveMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(move-up|move-down)$/);
+  if (moveMatch && req.method === 'POST') {
+    const issueNum = String(moveMatch[1]);
+    const action = moveMatch[2];
+    let issueOrder;
+    try { issueOrder = require('./lib/issue-order'); }
+    catch (e) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
       return;
     }
-    // Invalidar/actualizar entrada del title-cache para que el próximo render
-    // ordene la card por la nueva prioridad sin esperar al TTL de 1h.
-    try {
-      const cache = loadIssueTitleCache();
-      const key = String(issueNum);
-      if (cache[key]) {
-        const old = Array.isArray(cache[key].labels) ? cache[key].labels : [];
-        const filtered = old.filter(l => !/^priority:/.test(l));
-        filtered.push(targetLabel);
-        cache[key].labels = filtered;
-        cache[key].fetchedAt = Date.now();
-        saveIssueTitleCache(cache);
+    const state = issueOrder.load();
+    const result = action === 'move-up'
+      ? issueOrder.moveUp(state, issueNum)
+      : issueOrder.moveDown(state, issueNum);
+    log(`order: ${action} #${issueNum} → ${result.ok ? `${result.from}→${result.to}` : result.reason}`);
+    res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result.ok
+      ? { ok: true, msg: `Issue #${issueNum} ${action === 'move-up' ? 'subió' : 'bajó'} a posición ${result.to + 1}`, ...result }
+      : { ok: false, msg: result.reason }));
+    return;
+  }
+
+  if (req.url === '/api/issues/reorder' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
       }
-    } catch (e) { log(`priority: cache update fallido para #${issueNum}: ${e.message}`); }
-    log(`priority: ${action} #${issueNum} → ${targetLabel}`);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'prioritize' ? 'priorizado' : 'despriorizado'}`, label: targetLabel }));
+      const order = Array.isArray(payload.order) ? payload.order : null;
+      if (!order) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'Falta payload.order (array de issue numbers)' }));
+        return;
+      }
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      const state = issueOrder.load();
+      issueOrder.setOrder(state, order);
+      log(`order: reorder via drag-drop (${order.length} issues, head=${order.slice(0,3).join(',')})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, msg: `Orden actualizado (${order.length} issues)`, count: order.length }));
+    });
     return;
   }
 
