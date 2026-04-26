@@ -1690,8 +1690,10 @@ function generateHTML(state) {
           </div>
           <div class="lc-top-right">
             <span class="lc-prio-actions">
+              <button class="lc-prio-btn lc-prio-top" onclick="event.stopPropagation();issueMoveToTop(${issueNum})" title="Mover al tope de la columna">⏫</button>
               <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issueMoveUp(${issueNum})" title="Subir una posición">▲</button>
               <button class="lc-prio-btn lc-prio-down" onclick="event.stopPropagation();issueMoveDown(${issueNum})" title="Bajar una posición">▼</button>
+              <button class="lc-prio-btn lc-prio-bottom" onclick="event.stopPropagation();issueMoveToBottom(${issueNum})" title="Mover al fondo de la columna">⏬</button>
             </span>
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
           </div>
@@ -2312,8 +2314,10 @@ function generateHTML(state) {
         : '';
       const prioActions = isRunning
         ? `<span class="ah-prio-actions">
+            <button class="lc-prio-btn lc-prio-top" onclick="event.preventDefault();event.stopPropagation();issueMoveToTop(${h.issue})" title="Mover al tope de la columna">⏫</button>
             <button class="lc-prio-btn lc-prio-up" onclick="event.preventDefault();event.stopPropagation();issueMoveUp(${h.issue})" title="Subir una posición">▲</button>
             <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueMoveDown(${h.issue})" title="Bajar una posición">▼</button>
+            <button class="lc-prio-btn lc-prio-bottom" onclick="event.preventDefault();event.stopPropagation();issueMoveToBottom(${h.issue})" title="Mover al fondo de la columna">⏬</button>
           </span>`
         : '';
       const ahPos = manualOrderIndex.has(String(h.issue)) ? manualOrderIndex.get(String(h.issue)) : null;
@@ -3773,6 +3777,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-prio-btn:disabled{opacity:0.4;cursor:wait}
 .lc-prio-up:hover{border-color:#3fb950;color:#3fb950}
 .lc-prio-down:hover{border-color:#f85149;color:#f85149}
+.lc-prio-top:hover{border-color:#3fb950;color:#3fb950;background:rgba(63,185,80,0.10)}
+.lc-prio-bottom:hover{border-color:#f85149;color:#f85149;background:rgba(248,81,73,0.10)}
 .lc-card[draggable="true"]{cursor:grab}
 .lc-card[draggable="true"]:active{cursor:grabbing}
 .lc-card-dragging{opacity:0.4;outline:1px dashed var(--ac,#6d8cff)}
@@ -5220,6 +5226,70 @@ async function _issueMove(issueNum, direction) {
 }
 function issueMoveUp(issueNum) { return _issueMove(issueNum, 'up'); }
 function issueMoveDown(issueNum) { return _issueMove(issueNum, 'down'); }
+
+// Mover al tope/fondo de la columna: encuentra el primero/último visible en la
+// misma lane y manda anchor al endpoint move-before/move-after (splice sin swap).
+function _findLaneEnds(issueNum) {
+  const target = document.querySelector('.lc-card[data-issue="' + issueNum + '"][data-status="active"]');
+  if (!target) return { error: 'card-not-visible' };
+  const lane = target.dataset.lane;
+  const peers = Array.from(document.querySelectorAll(
+    '.lc-card[data-lane="' + lane + '"][data-status="active"]'
+  ));
+  if (peers.length === 0) return { error: 'no-peers' };
+  return { first: peers[0].dataset.issue, last: peers[peers.length - 1].dataset.issue, count: peers.length };
+}
+async function _issueMoveRelative(issueNum, direction) {
+  const ends = _findLaneEnds(issueNum);
+  if (ends.error) {
+    showToast('No se pudo localizar la columna del #' + issueNum, 'err');
+    return;
+  }
+  const anchor = direction === 'top' ? ends.first : ends.last;
+  if (anchor === String(issueNum)) {
+    showToast('#' + issueNum + ' ya está en el ' + (direction === 'top' ? 'tope' : 'fondo') + ' de la columna', 'info');
+    return;
+  }
+  const action = direction === 'top' ? 'move-before' : 'move-after';
+  const arrow = direction === 'top' ? '⏫' : '⏬';
+  const fnName = direction === 'top' ? 'issueMoveToTop' : 'issueMoveToBottom';
+  // Loading state en los botones afectados
+  document.querySelectorAll('button.lc-prio-btn[onclick*="' + fnName + '(' + issueNum + ')"]').forEach(b => {
+    b.dataset.origText = b.textContent;
+    b.textContent = '⋯';
+    b.disabled = true;
+  });
+  try {
+    const r = await fetch('/api/issue/' + issueNum + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      _prioFlashCards(issueNum, true);
+      showToast(arrow + ' #' + issueNum + ' ' + (j.msg || 'movido'), 'ok');
+      setTimeout(() => location.reload(), 500);
+    } else {
+      _prioFlashCards(issueNum, false);
+      showToast('Error: ' + (j.msg || 'desconocido'), 'err');
+      // Restaurar botones
+      document.querySelectorAll('button.lc-prio-btn[onclick*="' + fnName + '(' + issueNum + ')"]').forEach(b => {
+        if (b.dataset.origText) b.textContent = b.dataset.origText;
+        b.disabled = false;
+      });
+    }
+  } catch (e) {
+    _prioFlashCards(issueNum, false);
+    showToast('Error moviendo #' + issueNum + ': ' + e.message, 'err');
+    document.querySelectorAll('button.lc-prio-btn[onclick*="' + fnName + '(' + issueNum + ')"]').forEach(b => {
+      if (b.dataset.origText) b.textContent = b.dataset.origText;
+      b.disabled = false;
+    });
+  }
+}
+function issueMoveToTop(issueNum) { return _issueMoveRelative(issueNum, 'top'); }
+function issueMoveToBottom(issueNum) { return _issueMoveRelative(issueNum, 'bottom'); }
 
 // Drag-and-drop nativo HTML5 sobre las cards del Issue Tracker.
 // Solo dentro de la misma lane: la lane se determina por estado del filesystem,
@@ -7112,6 +7182,52 @@ const server = http.createServer((req, res) => {
       if (result.ok) {
         const newPos = state.order.indexOf(issueNum);
         res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'move-up' ? 'subió' : 'bajó'} a posición ${newPos + 1}`, ...result, position: newPos }));
+      } else {
+        res.end(JSON.stringify({ ok: false, msg: result.reason }));
+      }
+    });
+    return;
+  }
+
+  // API mover issue al tope/fondo de su columna (splice sin swap).
+  // Body: { "anchor": "<issue-num>" } — el primer/último issue de la columna.
+  const moveRelativeMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(move-before|move-after)$/);
+  if (moveRelativeMatch && req.method === 'POST') {
+    const issueNum = String(moveRelativeMatch[1]);
+    const action = moveRelativeMatch[2];
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      const anchor = payload.anchor != null ? String(payload.anchor) : null;
+      if (!anchor) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'Falta anchor en el body' }));
+        return;
+      }
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      const state = issueOrder.load();
+      const result = action === 'move-before'
+        ? issueOrder.moveBefore(state, issueNum, anchor)
+        : issueOrder.moveAfter(state, issueNum, anchor);
+      log(`order: ${action} #${issueNum} ${action === 'move-before' ? '←' : '→'} #${anchor} → ${result.ok ? `${result.from}→${result.to}` : result.reason}`);
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      if (result.ok) {
+        const newPos = state.order.indexOf(issueNum);
+        const verbo = action === 'move-before' ? 'al tope' : 'al fondo';
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} movido ${verbo} (posición ${newPos + 1})`, ...result, position: newPos }));
       } else {
         res.end(JSON.stringify({ ok: false, msg: result.reason }));
       }
