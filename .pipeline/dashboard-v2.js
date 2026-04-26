@@ -1674,6 +1674,10 @@ function generateHTML(state) {
             ${lcBlockIcons}${lcRetryingIcon}
           </div>
           <div class="lc-top-right">
+            <span class="lc-prio-actions">
+              <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issuePrioritize(${issueNum})" title="Priorizar al máximo (priority:critical)">▲</button>
+              <button class="lc-prio-btn lc-prio-down" onclick="event.stopPropagation();issueDeprioritize(${issueNum})" title="Despriorizar al mínimo (priority:low)">▼</button>
+            </span>
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
           </div>
         </div>
@@ -2285,6 +2289,12 @@ function generateHTML(state) {
       const pdfLink = h.hasRejectionPdf
         ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
         : '';
+      const prioActions = isRunning
+        ? `<span class="ah-prio-actions">
+            <button class="lc-prio-btn lc-prio-up" onclick="event.preventDefault();event.stopPropagation();issuePrioritize(${h.issue})" title="Priorizar al máximo (priority:critical)">▲</button>
+            <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueDeprioritize(${h.issue})" title="Despriorizar al mínimo (priority:low)">▼</button>
+          </span>`
+        : '';
       return `<a href="${href}" target="_blank" class="ah-card ${statusCls}" title="${tip}">
         <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
         <span class="ah-skill">${p.name}</span>
@@ -2293,6 +2303,7 @@ function generateHTML(state) {
         <span class="ah-status">${statusIcon} ${statusLabel}</span>
         <span class="ah-dur">${durStr}</span>
         <span class="ah-time">${timeStr}</span>
+        ${prioActions}
         ${pdfLink}
       </a>`;
     };
@@ -3714,6 +3725,17 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
 .lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
 .lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
+.lc-prio-actions,.ah-prio-actions{display:inline-flex;gap:2px;margin-right:4px}
+.lc-prio-btn{
+  background:transparent;color:var(--dim);
+  border:1px solid var(--bd);padding:0 4px;border-radius:3px;
+  cursor:pointer;font-size:0.7em;font-family:inherit;line-height:1.4;
+  min-width:18px;height:18px;
+}
+.lc-prio-btn:hover{background:rgba(255,255,255,0.06)}
+.lc-prio-btn:disabled{opacity:0.4;cursor:wait}
+.lc-prio-up:hover{border-color:#3fb950;color:#3fb950}
+.lc-prio-down:hover{border-color:#f85149;color:#f85149}
 .lc-gh{color:var(--dim);text-decoration:none;font-size:0.9em;padding:1px 4px;border-radius:3px;line-height:1}
 .lc-gh:hover{color:var(--ac);background:rgba(109,140,255,0.1)}
 .lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500;min-height:2.7em}
@@ -4974,6 +4996,28 @@ async function recoReject(num) {
     if (j.ok) { recoRefresh(); }
     else alert('Error: ' + (j.msg || 'desconocido'));
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Quick actions de prioridad por issue (cards de Issue Tracker y Equipo en ejecución)
+function _prioCallApi(issueNum, action) {
+  return fetch('/api/issue/' + issueNum + '/' + action, { method: 'POST' })
+    .then(r => r.json());
+}
+async function issuePrioritize(issueNum) {
+  if (!confirm('Priorizar #' + issueNum + ' al máximo (priority:critical)?')) return;
+  try {
+    const j = await _prioCallApi(issueNum, 'prioritize');
+    if (j.ok) location.reload();
+    else alert('Error priorizando: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error priorizando: ' + e.message); }
+}
+async function issueDeprioritize(issueNum) {
+  if (!confirm('Despriorizar #' + issueNum + ' al mínimo (priority:low)?')) return;
+  try {
+    const j = await _prioCallApi(issueNum, 'deprioritize');
+    if (j.ok) location.reload();
+    else alert('Error despriorizando: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error despriorizando: ' + e.message); }
 }
 
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
@@ -6683,6 +6727,38 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} desestimado y cerrado`, closed, ...result }));
     });
+    return;
+  }
+
+  // API issue priority quick actions (cards de Issue Tracker y Equipo en ejecución)
+  const priorityMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(prioritize|deprioritize)$/);
+  if (priorityMatch && req.method === 'POST') {
+    const issueNum = Number(priorityMatch[1]);
+    const action = priorityMatch[2];
+    const targetLabel = action === 'prioritize' ? 'priority:critical' : 'priority:low';
+    const otherLabels = ['priority:critical', 'priority:high', 'priority:medium', 'priority:low']
+      .filter(l => l !== targetLabel);
+    const ghBin = process.env.GH_BIN || process.env.GH_PATH || 'gh';
+    const repo = 'intrale/platform';
+    const { execFileSync } = require('child_process');
+    const ghTry = (args) => {
+      try {
+        execFileSync(ghBin, args, { stdio: 'ignore', timeout: 15000 });
+        return true;
+      } catch { return false; }
+    };
+    for (const l of otherLabels) {
+      ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', l]);
+    }
+    const added = ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--add-label', targetLabel]);
+    if (!added) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: `No se pudo agregar label ${targetLabel}` }));
+      return;
+    }
+    log(`priority: ${action} #${issueNum} → ${targetLabel}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'prioritize' ? 'priorizado' : 'despriorizado'}`, label: targetLabel }));
     return;
   }
 
