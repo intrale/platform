@@ -56,6 +56,20 @@ function emitUnblocked(opts) {
     });
 }
 
+function emitDismissed(opts) {
+    trace.appendEvent({
+        event: 'human:dismissed',
+        skill: opts.skill || null,
+        issue: Number(opts.issue) || null,
+        phase: opts.phase || null,
+        pipeline: opts.pipeline || null,
+        reason: opts.reason || '',
+        unlocker: opts.unlocker || 'commander',
+        ts: new Date().toISOString(),
+        pid: process.pid,
+    });
+}
+
 function findActiveMarker(issue) {
     const prefix = String(issue) + '.';
     for (const pipeline of PIPELINES) {
@@ -240,6 +254,31 @@ function unblockIssue(opts) {
     };
 }
 
+function dismissBlockedIssue(opts) {
+    const issue = Number(opts.issue);
+    if (!issue) throw new Error('dismissBlockedIssue requiere issue');
+    const reason = String(opts.reason || '').trim();
+    const unlocker = opts.unlocker || 'commander';
+
+    const blocked = findBlockedMarker(issue);
+    if (!blocked) {
+        return { ok: false, error: `Issue ${issue} no está en bloqueado-humano/` };
+    }
+
+    try { fs.unlinkSync(blocked.file); } catch {}
+    try { fs.unlinkSync(reasonFilePath(blocked.file)); } catch {}
+
+    emitDismissed({
+        issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
+        reason, unlocker,
+    });
+
+    return {
+        ok: true, issue, skill: blocked.skill, pipeline: blocked.pipeline,
+        phase: blocked.phase, reason,
+    };
+}
+
 // #2549 — Heurística para detectar motivos de rechazo que en realidad son
 // bloqueos humanos (PR esperando merge manual, CODEOWNERS, etc).
 //
@@ -341,6 +380,7 @@ function buildBlockedSummaryMarkdown(opts = {}) {
 module.exports = {
     reportHumanBlock,
     unblockIssue,
+    dismissBlockedIssue,
     listBlockedIssues,
     findActiveMarker,
     findBlockedMarker,
