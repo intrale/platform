@@ -1763,12 +1763,13 @@ function generateHTML(state) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const bloqueadosHTML = bloqueados.length === 0 ? '' : `
-    <div class="matrix-section needs-human-panel" id="bloqueados-humano">
+    <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
       <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
         <span class="needs-human-pulse">🚨</span>
         Necesitan intervención humana
         <span class="needs-human-badge">${bloqueados.length}</span>
         <span class="needs-human-chevron">▼</span>
+        <a class="section-popout" href="/?section=needs-human" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
       </h2>
       <div class="needs-human-body">
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
@@ -1801,7 +1802,7 @@ function generateHTML(state) {
 
   const matrixHTML = `
     ${bloqueadosHTML}
-    <div class="matrix-section section-collapsible" id="issue-tracker" data-section="issue-tracker">
+    <div class="matrix-section section-collapsible section-collapsed" id="issue-tracker" data-section="issue-tracker">
       <div class="matrix-header">
         <h2 class="section-title-clickable" onclick="toggleSection('issue-tracker')" title="Click para colapsar/expandir">
           <span class="section-chevron">▼</span> 📊 Issue Tracker
@@ -2340,7 +2341,7 @@ function generateHTML(state) {
       : '';
 
     historyHTML = `
-    <div class="matrix-section section-collapsible" id="agent-history" data-section="historial">
+    <div class="matrix-section section-collapsible section-collapsed" id="agent-history" data-section="historial">
       <div class="matrix-header">
         <h2 class="section-title-clickable" onclick="toggleSection('historial')" title="Click para colapsar/expandir">
           <span class="section-chevron">▼</span> \u{1F4DC} Historial de Ejecuciones
@@ -5302,12 +5303,15 @@ function toggleSection(name) {
   try { localStorage.setItem('section-collapsed-' + name, willCollapse ? '1' : '0'); } catch (e) {}
 }
 (function restoreCollapsedSections(){
+  // El server renderiza el default por sección (Issue Tracker e Historial
+  // arrancan colapsados, Equipo y otros expandidos). El cliente solo
+  // sobreescribe si el usuario tocó el toggle antes (localStorage explícito).
   try {
     document.querySelectorAll('[data-section]').forEach(sec => {
       const name = sec.getAttribute('data-section');
-      if (localStorage.getItem('section-collapsed-' + name) === '1') {
-        sec.classList.add('section-collapsed');
-      }
+      const stored = localStorage.getItem('section-collapsed-' + name);
+      if (stored === '1') sec.classList.add('section-collapsed');
+      else if (stored === '0') sec.classList.remove('section-collapsed');
     });
   } catch (e) {}
 })();
@@ -5319,7 +5323,7 @@ function toggleSection(name) {
     const params = new URLSearchParams(location.search);
     const section = params.get('section');
     if (!section) return;
-    const idMap = { 'equipo': 'equipo', 'issue-tracker': 'issue-tracker', 'historial': 'agent-history' };
+    const idMap = { 'equipo': 'equipo', 'issue-tracker': 'issue-tracker', 'historial': 'agent-history', 'needs-human': 'bloqueados-humano' };
     const targetId = idMap[section];
     const target = targetId ? document.getElementById(targetId) : null;
     if (!target) return;
@@ -5327,6 +5331,7 @@ function toggleSection(name) {
     document.body.insertBefore(target, document.body.firstChild);
     target.classList.add('standalone-target');
     target.classList.remove('section-collapsed');
+    target.classList.remove('nh-collapsed');
     document.title = section.charAt(0).toUpperCase() + section.slice(1) + ' · Pipeline';
   } catch (e) {}
 })();
