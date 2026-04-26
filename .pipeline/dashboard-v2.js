@@ -1801,9 +1801,12 @@ function generateHTML(state) {
 
   const matrixHTML = `
     ${bloqueadosHTML}
-    <div class="matrix-section" id="issue-tracker">
+    <div class="matrix-section section-collapsible" id="issue-tracker" data-section="issue-tracker">
       <div class="matrix-header">
-        <h2>📊 Issue Tracker</h2>
+        <h2 class="section-title-clickable" onclick="toggleSection('issue-tracker')" title="Click para colapsar/expandir">
+          <span class="section-chevron">▼</span> 📊 Issue Tracker
+        </h2>
+        <a class="section-popout" href="/?section=issue-tracker" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
         <div class="it-search-box">
           <input type="text" class="it-search" id="it-search-input" placeholder="🔍 Buscar por # o título…" oninput="filterIssuesBySearch(this.value)" />
           <span class="it-search-clear" onclick="clearIssueSearch()" title="Limpiar">×</span>
@@ -1814,11 +1817,13 @@ function generateHTML(state) {
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
       </div>
+      <div class="section-body">
       <div class="it-lanes">${lanesHTML}</div>
       ${doneLaneHTML}
       <div id="dot-popup" class="dot-popup" style="display:none">
         <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
         <div class="dp-body"></div>
+      </div>
       </div>
     </div>`;
 
@@ -2335,14 +2340,19 @@ function generateHTML(state) {
       : '';
 
     historyHTML = `
-    <div class="matrix-section" id="agent-history">
+    <div class="matrix-section section-collapsible" id="agent-history" data-section="historial">
       <div class="matrix-header">
-        <h2>\u{1F4DC} Historial de Ejecuciones</h2>
+        <h2 class="section-title-clickable" onclick="toggleSection('historial')" title="Click para colapsar/expandir">
+          <span class="section-chevron">▼</span> \u{1F4DC} Historial de Ejecuciones
+        </h2>
+        <a class="section-popout" href="/?section=historial" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
         <span class="ah-count">${agentHistory.length} ejecuciones</span>
       </div>
+      <div class="section-body">
       <div class="ah-list">
         ${visible}
         ${moreToggle}
+      </div>
       </div>
     </div>`;
   }
@@ -3678,7 +3688,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .it-sub-chip.it-sub-disabled:hover{background:var(--sf);border-color:transparent}
 .it-sub-all{flex:0 0 auto;min-width:56px}
 
-.it-lane-cards{display:flex;flex-direction:column;gap:6px;max-height:640px;overflow-y:auto;padding-right:2px}
+.it-lane-cards{display:flex;flex-direction:column;gap:6px;padding-right:2px}
 .it-lane-cards::-webkit-scrollbar{width:5px}
 .it-lane-cards::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 .lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
@@ -3773,6 +3783,30 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   border:1px solid var(--bd,#2a3560);font-variant-numeric:tabular-nums;
   margin-right:4px;line-height:1.4;
 }
+/* Secciones colapsables (Issue Tracker, Equipo, Historial) */
+.section-title-clickable{cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:6px}
+.section-title-clickable:hover{opacity:0.9}
+.section-chevron{
+  font-size:0.65em;color:var(--dim);display:inline-block;
+  transition:transform 0.18s ease;
+}
+.section-collapsible.section-collapsed .section-chevron{transform:rotate(-90deg)}
+.section-collapsible.section-collapsed .section-body{display:none}
+.section-popout{
+  display:inline-block;text-decoration:none;color:var(--dim);
+  font-size:1em;padding:2px 6px;border-radius:4px;
+  border:1px solid var(--bd);margin-left:8px;
+  transition:all 0.15s ease;
+}
+.section-popout:hover{color:var(--ac,#6d8cff);border-color:var(--ac,#6d8cff);background:rgba(109,140,255,0.08)}
+/* Modo standalone: el JS mueve la sección target a primer hijo del body
+   (clase .standalone-target) y CSS oculta todo lo demás */
+body.standalone{padding:14px}
+body.standalone > *:not(.standalone-target):not(#toast-host){display:none !important}
+body.standalone .section-popout{display:none}
+body.standalone .section-chevron{display:none}
+body.standalone .section-title-clickable{cursor:default}
+body.standalone .section-collapsed .section-body{display:block !important}
 @keyframes prio-flash-ok-anim{
   0%{box-shadow:0 0 0 0 rgba(63,185,80,0.0);background:transparent}
   30%{box-shadow:0 0 0 3px rgba(63,185,80,0.45);background:rgba(63,185,80,0.10)}
@@ -4130,9 +4164,12 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     })()}
   </div>
 
-  <div class="bar-section panel-equipo panel-equipo-full">
+  <div class="bar-section panel-equipo panel-equipo-full section-collapsible" id="equipo" data-section="equipo">
     <div class="eq-head">
-      <h2 class="eq-title">🧠 Equipo</h2>
+      <h2 class="eq-title section-title-clickable" onclick="toggleSection('equipo')" title="Click para colapsar/expandir">
+        <span class="section-chevron">▼</span> 🧠 Equipo
+      </h2>
+      <a class="section-popout" href="/?section=equipo" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
       <div class="eq-summary">
         <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSkills}</span>
         <span>\u00B7</span>
@@ -4141,9 +4178,11 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <span>Cola <b>${pendientes}</b></span>
       </div>
     </div>
+    <div class="section-body">
     ${activeStripHTML}
     ${eqAreaGridHTML || '<span class="empty-label">Sin skills configurados</span>'}
     ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
+    </div>
   </div>
 
   ${matrixHTML}
@@ -5252,6 +5291,45 @@ async function _persistDragOrder() {
     setTimeout(() => location.reload(), 600);
   }
 }
+
+// Toggle genérico de secciones colapsables (Issue Tracker, Equipo, Historial).
+// Estado persistido en localStorage por sección.
+function toggleSection(name) {
+  const sec = document.querySelector('[data-section="' + name + '"]');
+  if (!sec) return;
+  const willCollapse = !sec.classList.contains('section-collapsed');
+  sec.classList.toggle('section-collapsed');
+  try { localStorage.setItem('section-collapsed-' + name, willCollapse ? '1' : '0'); } catch (e) {}
+}
+(function restoreCollapsedSections(){
+  try {
+    document.querySelectorAll('[data-section]').forEach(sec => {
+      const name = sec.getAttribute('data-section');
+      if (localStorage.getItem('section-collapsed-' + name) === '1') {
+        sec.classList.add('section-collapsed');
+      }
+    });
+  } catch (e) {}
+})();
+
+// Modo standalone (?section=X): mueve la sección a primer hijo del body
+// y oculta todo lo demás vía CSS. Permite abrir cada sección en su ventana.
+(function applyStandaloneMode(){
+  try {
+    const params = new URLSearchParams(location.search);
+    const section = params.get('section');
+    if (!section) return;
+    const idMap = { 'equipo': 'equipo', 'issue-tracker': 'issue-tracker', 'historial': 'agent-history' };
+    const targetId = idMap[section];
+    const target = targetId ? document.getElementById(targetId) : null;
+    if (!target) return;
+    document.body.classList.add('standalone', 'standalone-' + section);
+    document.body.insertBefore(target, document.body.firstChild);
+    target.classList.add('standalone-target');
+    target.classList.remove('section-collapsed');
+    document.title = section.charAt(0).toUpperCase() + section.slice(1) + ' · Pipeline';
+  } catch (e) {}
+})();
 
 // Toggle de la sección "Salud de Infra" — colapsable + persistente (default: colapsada)
 function toggleInfraHealth() {
