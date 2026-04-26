@@ -127,6 +127,77 @@ test('swap con el mismo issue retorna error same-issue', () => {
     assert.equal(r.reason, 'same-issue');
 });
 
+test('moveBefore inserta el issue justo antes del anchor sin swappear', () => {
+    const f = tmpFile();
+    const s = { version: 1, order: ['a', 'b', 'c', 'd', 'e'] };
+    // Mover 'd' antes de 'b'
+    const r = lib.moveBefore(s, 'd', 'b', f);
+    assert.equal(r.ok, true);
+    // Resultado esperado: a, d, b, c, e (b/c mantuvieron orden relativo)
+    assert.deepEqual(s.order, ['a', 'd', 'b', 'c', 'e']);
+});
+
+test('moveBefore funciona para llevar al tope de un bloque (anchor=primero)', () => {
+    const s = { version: 1, order: ['a', 'b', 'c', 'd', 'e'] };
+    // Tope: mover 'd' antes de 'a'
+    lib.moveBefore(s, 'd', 'a', tmpFile());
+    assert.deepEqual(s.order, ['d', 'a', 'b', 'c', 'e']);
+});
+
+test('moveBefore con anchor inexistente restaura el array original', () => {
+    const s = { version: 1, order: ['a', 'b', 'c'] };
+    const r = lib.moveBefore(s, 'a', 'zzz', tmpFile());
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'anchor-not-found');
+    assert.deepEqual(s.order, ['a', 'b', 'c']);
+});
+
+test('moveBefore con issue inexistente devuelve not-found', () => {
+    const s = { version: 1, order: ['a', 'b'] };
+    const r = lib.moveBefore(s, 'zzz', 'a', tmpFile());
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'not-found');
+});
+
+test('moveBefore con mismo issue y anchor devuelve same-issue', () => {
+    const s = { version: 1, order: ['a', 'b'] };
+    const r = lib.moveBefore(s, 'a', 'a', tmpFile());
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'same-issue');
+});
+
+test('moveAfter inserta el issue justo después del anchor sin swappear', () => {
+    const f = tmpFile();
+    const s = { version: 1, order: ['a', 'b', 'c', 'd', 'e'] };
+    // Mover 'b' después de 'd'
+    const r = lib.moveAfter(s, 'b', 'd', f);
+    assert.equal(r.ok, true);
+    // Resultado: a, c, d, b, e (c mantuvo posición relativa, b al fondo del bloque)
+    assert.deepEqual(s.order, ['a', 'c', 'd', 'b', 'e']);
+});
+
+test('moveAfter funciona para llevar al fondo de un bloque (anchor=último)', () => {
+    const s = { version: 1, order: ['a', 'b', 'c', 'd', 'e'] };
+    // Fondo: mover 'b' después de 'e'
+    lib.moveAfter(s, 'b', 'e', tmpFile());
+    assert.deepEqual(s.order, ['a', 'c', 'd', 'e', 'b']);
+});
+
+test('moveAfter con anchor inexistente restaura el array original', () => {
+    const s = { version: 1, order: ['a', 'b', 'c'] };
+    const r = lib.moveAfter(s, 'a', 'zzz', tmpFile());
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'anchor-not-found');
+    assert.deepEqual(s.order, ['a', 'b', 'c']);
+});
+
+test('moveBefore preserva orden relativo del resto del array', () => {
+    const s = { version: 1, order: ['x', 'a', 'y', 'b', 'z', 'c'] };
+    // Mover 'c' antes de 'a' — el orden relativo entre x, y, b, z se preserva
+    lib.moveBefore(s, 'c', 'a', tmpFile());
+    assert.deepEqual(s.order, ['x', 'c', 'a', 'y', 'b', 'z']);
+});
+
 test('setOrder reemplaza la lista respetando el orden recibido', () => {
     const f = tmpFile();
     const s = { version: 1, order: ['a', 'b', 'c', 'd'] };

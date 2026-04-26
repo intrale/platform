@@ -100,6 +100,45 @@ function swap(state, issueA, issueB, orderFile = ORDER_FILE) {
     return { ok: true, from: ia, to: ib };
 }
 
+// Mueve un issue justo antes del anchor (splice sin swap). El resto del array
+// preserva su orden relativo. Útil para "tope de columna" desde el dashboard:
+// pasar como anchor el primer issue de la columna.
+function moveBefore(state, issue, anchor, orderFile = ORDER_FILE) {
+    const num = String(issue);
+    const anc = String(anchor);
+    if (num === anc) return { ok: false, reason: 'same-issue' };
+    const fromIdx = state.order.indexOf(num);
+    if (fromIdx === -1) return { ok: false, reason: 'not-found' };
+    state.order.splice(fromIdx, 1);
+    const ancIdx = state.order.indexOf(anc);
+    if (ancIdx === -1) {
+        state.order.splice(fromIdx, 0, num);
+        return { ok: false, reason: 'anchor-not-found' };
+    }
+    state.order.splice(ancIdx, 0, num);
+    save(state, orderFile);
+    return { ok: true, from: fromIdx, to: ancIdx };
+}
+
+// Mueve un issue justo después del anchor (splice sin swap). Útil para "fondo
+// de columna": pasar como anchor el último issue de la columna.
+function moveAfter(state, issue, anchor, orderFile = ORDER_FILE) {
+    const num = String(issue);
+    const anc = String(anchor);
+    if (num === anc) return { ok: false, reason: 'same-issue' };
+    const fromIdx = state.order.indexOf(num);
+    if (fromIdx === -1) return { ok: false, reason: 'not-found' };
+    state.order.splice(fromIdx, 1);
+    const ancIdx = state.order.indexOf(anc);
+    if (ancIdx === -1) {
+        state.order.splice(fromIdx, 0, num);
+        return { ok: false, reason: 'anchor-not-found' };
+    }
+    state.order.splice(ancIdx + 1, 0, num);
+    save(state, orderFile);
+    return { ok: true, from: fromIdx, to: ancIdx + 1 };
+}
+
 // Reemplaza la lista entera respetando el array recibido. Cualquier issue conocido
 // que no aparezca en `newOrder` se preserva al final (no se pierden referencias).
 function setOrder(state, newOrder, orderFile = ORDER_FILE) {
@@ -154,6 +193,8 @@ module.exports = {
     moveUp,
     moveDown,
     swap,
+    moveBefore,
+    moveAfter,
     setOrder,
     insertNew,
     removeIssue,
