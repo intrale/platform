@@ -183,6 +183,42 @@ test('unblockIssue retorna error si issue no está bloqueado', () => {
     assert.match(res.error, /no está en bloqueado-humano/);
 });
 
+test('dismissBlockedIssue borra marker, .reason.json y emite human:dismissed', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 6677, skill: 'review', phase: 'dev',
+        reason: 'duplicado de #6600',
+        question: '¿Cerramos como duplicado?',
+    });
+
+    const before = hb.findBlockedMarker(6677);
+    assert.ok(before, 'marker debería existir antes del dismiss');
+    assert.ok(fs.existsSync(before.file + '.reason.json'));
+
+    const res = hb.dismissBlockedIssue({ issue: 6677, reason: 'duplicado', unlocker: 'commander:dashboard' });
+    assert.equal(res.ok, true);
+    assert.equal(res.skill, 'review');
+    assert.equal(res.phase, 'dev');
+    assert.equal(res.reason, 'duplicado');
+
+    assert.equal(hb.findBlockedMarker(6677), null);
+    assert.equal(fs.existsSync(before.file), false);
+    assert.equal(fs.existsSync(before.file + '.reason.json'), false);
+
+    const events = readEvents();
+    const dismissed = events.find(e => e.event === 'human:dismissed' && e.issue === 6677);
+    assert.ok(dismissed, 'debe emitir evento human:dismissed');
+    assert.equal(dismissed.skill, 'review');
+    assert.equal(dismissed.unlocker, 'commander:dashboard');
+});
+
+test('dismissBlockedIssue retorna error si issue no está bloqueado', () => {
+    resetFs();
+    const res = hb.dismissBlockedIssue({ issue: 9988, reason: '' });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /no está en bloqueado-humano/);
+});
+
 test('findBlockedMarker localiza marker existente', () => {
     resetFs();
     hb.reportHumanBlock({

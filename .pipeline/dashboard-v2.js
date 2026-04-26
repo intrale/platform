@@ -1757,10 +1757,16 @@ function generateHTML(state) {
           const titleHtml = b.title ? ` — <span style="color:var(--dim)">${escHtml(b.title)}</span>` : '';
           const reasonTxt = (b.question || b.reason || '').toString();
           return `<div class="needs-human-row">
-            <div>
-              <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener"><b>#${b.issue}</b></a>${titleHtml}
-              <span style="color:var(--dim)"> · ${escHtml(b.skill)} en ${escHtml(b.phase)}</span>
-              <span class="${ageCls}"> · hace ${ageStr}</span>
+            <div class="needs-human-row-head">
+              <div class="needs-human-row-info">
+                <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener"><b>#${b.issue}</b></a>${titleHtml}
+                <span style="color:var(--dim)"> · ${escHtml(b.skill)} en ${escHtml(b.phase)}</span>
+                <span class="${ageCls}"> · hace ${ageStr}</span>
+              </div>
+              <div class="needs-human-row-actions">
+                <button class="nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${b.issue})" title="Quitar el label needs-human y devolver el issue a la cola del pipeline">▶ Reactivar</button>
+                <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
+              </div>
             </div>
             ${reasonTxt ? `<div class="needs-human-reason">❓ ${escHtml(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
           </div>`;
@@ -2696,6 +2702,20 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .needs-human-age-fresh{color:var(--yl)}
 .needs-human-age-old{color:#FF6B6B;font-weight:700}
+.needs-human-row-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.needs-human-row-info{flex:1 1 auto;min-width:200px}
+.needs-human-row-actions{display:flex;gap:6px;flex:0 0 auto}
+.nh-btn{
+  background:var(--card,#1a1f2e);color:var(--fg,#e0e6ed);
+  border:1px solid var(--bd,#2a3560);padding:4px 10px;border-radius:4px;
+  cursor:pointer;font-size:0.78em;font-family:inherit;white-space:nowrap;
+}
+.nh-btn:hover{background:rgba(255,255,255,0.06)}
+.nh-btn:disabled{opacity:0.5;cursor:wait}
+.nh-btn-reactivate{border-color:#3fb950;color:#3fb950}
+.nh-btn-reactivate:hover{background:rgba(63,185,80,0.12)}
+.nh-btn-dismiss{border-color:#f85149;color:#f85149}
+.nh-btn-dismiss:hover{background:rgba(248,81,73,0.12)}
 .matrix-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
 .matrix-count{
   font-size:0.8em;color:var(--dim);font-weight:400;
@@ -4940,6 +4960,37 @@ async function recoReject(num) {
     else alert('Error: ' + (j.msg || 'desconocido'));
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+// Quick actions sobre issues con label needs-human (panel "Necesitan intervención humana")
+function nhDisableButtons(issueNum) {
+  document.querySelectorAll('.needs-human-row button[onclick*="(' + issueNum + ')"]').forEach(b => { b.disabled = true; });
+}
+async function needsHumanReactivate(issueNum) {
+  if (!confirm('Reactivar #' + issueNum + '? Volverá a la cola del pipeline sin orientación adicional.')) return;
+  nhDisableButtons(issueNum);
+  try {
+    const r = await fetch('/api/needs-human/' + issueNum + '/reactivate', { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) location.reload();
+    else { alert('Error reactivando: ' + (j.msg || 'desconocido')); location.reload(); }
+  } catch (e) { alert('Error reactivando: ' + e.message); location.reload(); }
+}
+async function needsHumanDismiss(issueNum) {
+  const reason = prompt('Motivo para desestimar #' + issueNum + ' (opcional):', '');
+  if (reason === null) return;
+  if (!confirm('Cerrar #' + issueNum + ' como desestimado? Se quitará del panel y quedará cerrado en GitHub.')) return;
+  nhDisableButtons(issueNum);
+  try {
+    const r = await fetch('/api/needs-human/' + issueNum + '/dismiss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || '' })
+    });
+    const j = await r.json();
+    if (j.ok) location.reload();
+    else { alert('Error desestimando: ' + (j.msg || 'desconocido')); location.reload(); }
+  } catch (e) { alert('Error desestimando: ' + e.message); location.reload(); }
+}
 </script>
 </body></html>`;
 }
@@ -6517,6 +6568,85 @@ const server = http.createServer((req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
       }
+    });
+    return;
+  }
+
+  // API needs-human quick actions (panel del dashboard)
+  const needsHumanMatch = req.url && req.url.match(/^\/api\/needs-human\/(\d+)\/(reactivate|dismiss)$/);
+  if (needsHumanMatch && req.method === 'POST') {
+    const issueNum = Number(needsHumanMatch[1]);
+    const action = needsHumanMatch[2];
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      let humanBlock;
+      try { humanBlock = require('./lib/human-block'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'human-block lib no disponible: ' + e.message }));
+        return;
+      }
+      const ghBin = process.env.GH_BIN || process.env.GH_PATH || 'gh';
+      const repo = 'intrale/platform';
+      const { execFileSync } = require('child_process');
+      const ghTry = (args) => {
+        try {
+          execFileSync(ghBin, args, { stdio: 'ignore', timeout: 15000 });
+          return true;
+        } catch { return false; }
+      };
+
+      if (action === 'reactivate') {
+        let result;
+        try { result = humanBlock.unblockIssue({ issue: issueNum, guidance: '', unlocker: 'commander:dashboard' }); }
+        catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'Error desbloqueando: ' + e.message }));
+          return;
+        }
+        if (!result.ok) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: result.error }));
+          return;
+        }
+        ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', 'needs-human']);
+        const comment = `## ▶ Reactivado desde el dashboard\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\nVuelve a la cola del pipeline sin orientación adicional.`;
+        ghTry(['issue', 'comment', String(issueNum), '--repo', repo, '--body', comment]);
+        log(`needs-human: reactivado #${issueNum} (skill=${result.skill}, ${result.from_phase}→${result.to_phase})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} reactivado`, ...result }));
+        return;
+      }
+
+      // dismiss
+      const reason = String(payload.reason || '').trim();
+      let result;
+      try { result = humanBlock.dismissBlockedIssue({ issue: issueNum, reason, unlocker: 'commander:dashboard' }); }
+      catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'Error desestimando: ' + e.message }));
+        return;
+      }
+      if (!result.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: result.error }));
+        return;
+      }
+      ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', 'needs-human']);
+      const reasonLine = reason ? `\n\n**Motivo:** ${reason}` : '';
+      const closeComment = `## ✕ Desestimado desde el dashboard\n\nIssue cerrado manualmente; no entrará al pipeline.${reasonLine}`;
+      const closed = ghTry(['issue', 'close', String(issueNum), '--repo', repo, '--reason', 'not planned', '--comment', closeComment]);
+      log(`needs-human: desestimado #${issueNum} (skill=${result.skill}, closed=${closed})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} desestimado y cerrado`, closed, ...result }));
     });
     return;
   }
