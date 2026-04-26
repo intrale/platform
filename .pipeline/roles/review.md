@@ -58,13 +58,13 @@ Si el linter pasó, esos puntos **están OK**. No los repitas ni los revalidés.
 
 ## Protocolo de oportunidades de mejora (aplicable en fase aprobacion)
 
-Durante tu code review, si identificás **refactors sugeridos, mejoras de cohesión, consolidaciones de duplicación, extracciones de utilidades u otros cambios de calidad semántica** que NO son bloqueantes del PR actual pero vale la pena registrar para iterar la calidad del codebase, **NO las dejes sólo como comentario en el PR**. Creá un issue independiente por cada una:
+Durante tu code review, si identificás **refactors sugeridos, mejoras de cohesión, consolidaciones de duplicación, extracciones de utilidades u otros cambios de calidad semántica** que NO son bloqueantes del PR actual pero vale la pena registrar para iterar la calidad del codebase, **NO las dejes sólo como comentario en el PR**. Creá un issue independiente por cada una, **marcado como recomendación que requiere aprobación humana** (issue #2653 — el pipeline NO procesa recomendaciones hasta que un humano las apruebe):
 
 ```bash
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 gh issue create --repo intrale/platform \
   --title "[review] <descripción imperativa breve>" \
-  --label "enhancement,source:recommendation,priority:low,needs-definition<,area:backend|,area:pipeline|,area:infra|,app:client|,app:business|,app:delivery>" \
+  --label "enhancement,source:recommendation,tipo:recomendacion,needs-human,priority:low<,area:backend|,area:pipeline|,area:infra|,app:client|,app:business|,app:delivery>" \
   --body "## Contexto
 
 <qué observaste durante el code review / archivo:línea si aplica>
@@ -76,18 +76,21 @@ gh issue create --repo intrale/platform \
 ## Referencia
 
 > Propuesto automáticamente por el agente \`review\` durante la aprobación del issue #<origen>.
-> **No depende ni bloquea a #<origen>** — es una oportunidad de mejora independiente."
+> **Es una recomendación pendiente de aprobación humana** — no entra al pipeline automático hasta que un humano remueva el label \`needs-human\` y agregue \`recommendation:approved\` (o cierre con \`recommendation:rejected\`).
+> **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
 ```
 
 **Reglas inquebrantables:**
 
 1. **Un issue por recomendación** — no consolidar múltiples en el mismo issue.
-2. **Título con prefijo `[review]`** + frase imperativa breve.
-3. **Heredar** labels `area:*` y `app:*` del issue origen cuando apliquen.
-4. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies` ni metadatos de dependencia formal.
-5. **Prioridad inicial siempre `priority:low`** — son mejoras de calidad, no bloqueantes.
-6. **Listar en `notas` del YAML** de tu resultado los issues creados.
-7. **Mencionar en el comentario del PR/issue origen** los issues creados.
+2. **Máximo 3 recomendaciones por PR/issue revisado** (anti-explosión, issue #2653). Si detectás más de 3, priorizá las top 3 por impacto en calidad/mantenibilidad y mencioná el resto en el comentario del PR sin crear issues.
+3. **Título con prefijo `[review]`** + frase imperativa breve.
+4. **Heredar** labels `area:*` y `app:*` del issue origen cuando apliquen.
+5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs-human` para que el pulpo no procese el issue hasta aprobación humana.
+6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana).
+7. **Prioridad inicial siempre `priority:low`** — son mejoras de calidad, no bloqueantes.
+8. **Listar en `notas` del YAML** de tu resultado los issues creados.
+9. **Mencionar en el comentario del PR/issue origen** los issues creados, indicando que son recomendaciones pendientes de aprobación humana.
 
 **Cuándo aplicar**: "Refactors sugeridos", "Oportunidades de extracción/consolidación", "Mejoras de cohesión no bloqueantes", "Código duplicado detectado a consolidar a futuro".
 
