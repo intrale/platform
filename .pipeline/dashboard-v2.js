@@ -1578,6 +1578,7 @@ function generateHTML(state) {
           <span class="ic-pct${pct === 100 ? ' ic-pct-done' : ''}">${pct}%</span>
           ${etaHTML}
         </div>
+        ${complete ? '' : `<button class="ic-pause-btn" onclick="event.stopPropagation();needsHumanBlock(${issueNum})" title="Pausar — enviar a Necesitan humano">⏸</button>`}
         <span class="ic-expand-btn" id="expand-btn-${issueNum}" aria-hidden="true">▾</span>
       </div>
       <div class="ic-progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="ic-progress-fill${data.estadoActual === 'trabajando' ? ' ic-progress-active' : ''}" style="width:${pct}%"></div></div>
@@ -2926,6 +2927,14 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   width:20px;text-align:center;
 }
 .ic-expand-btn.expanded{transform:rotate(180deg)}
+.ic-pause-btn{
+  font-size:0.85em;background:transparent;border:1px solid color-mix(in srgb,#E3B341 50%,var(--bd));
+  color:#E3B341;border-radius:3px;padding:1px 5px;cursor:pointer;flex-shrink:0;
+  margin-left:6px;line-height:1;transition:background 0.15s,opacity 0.15s;
+}
+.ic-pause-btn:hover{background:rgba(227,179,65,0.12)}
+.ic-pause-btn:disabled{opacity:0.4;cursor:wait}
+.ic-pause-btn:focus-visible{outline:2px solid #E3B341;outline-offset:1px}
 
 /* ── Progress track (thin bar under header) ──────────────────────────── */
 .ic-progress-track{
@@ -5456,6 +5465,22 @@ function toggleNeedsHumanPanel(scrollOnExpand) {
 function nhDisableButtons(issueNum) {
   document.querySelectorAll('.needs-human-row button[onclick*="(' + issueNum + ')"]').forEach(b => { b.disabled = true; });
 }
+async function needsHumanBlock(issueNum) {
+  const reason = prompt('Pausar #' + issueNum + ' — motivo (opcional, Enter para omitir):', '');
+  if (reason === null) return;
+  const btn = document.querySelector('.ic-card[data-issue="' + issueNum + '"] .ic-pause-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/needs-human/' + issueNum + '/block', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || '', source: 'dashboard:issue-tracker' })
+    });
+    const j = await r.json();
+    if (j.ok) location.reload();
+    else { alert('Error pausando: ' + (j.msg || 'desconocido')); if (btn) btn.disabled = false; }
+  } catch (e) { alert('Error pausando: ' + e.message); if (btn) btn.disabled = false; }
+}
 async function needsHumanReactivate(issueNum) {
   if (!confirm('Reactivar #' + issueNum + '? Volverá a la cola del pipeline sin orientación adicional.')) return;
   nhDisableButtons(issueNum);
@@ -5478,7 +5503,19 @@ async function needsHumanDismiss(issueNum) {
       body: JSON.stringify({ reason: reason || '' })
     });
     const j = await r.json();
-    if (j.ok) location.reload();
+    if (j.ok) {
+      if (j.worktree && j.worktree_warning) {
+        const cleanWt = confirm('Issue #' + issueNum + ' desestimado.\n\nEl worktree tiene trabajo en disco:\n  ' + j.worktree + '\n\n¿Limpiar el worktree ahora? (Cancelar = conservar)');
+        if (cleanWt) {
+          try {
+            const rw = await fetch('/api/needs-human/' + issueNum + '/dismiss-worktree', { method: 'POST' });
+            const jw = await rw.json();
+            if (!jw.ok) alert('No pude limpiar el worktree: ' + (jw.msg || 'desconocido'));
+          } catch (e) { alert('Error limpiando worktree: ' + e.message); }
+        }
+      }
+      location.reload();
+    }
     else { alert('Error desestimando: ' + (j.msg || 'desconocido')); location.reload(); }
   } catch (e) { alert('Error desestimando: ' + e.message); location.reload(); }
 }
@@ -7064,7 +7101,7 @@ const server = http.createServer((req, res) => {
   }
 
   // API needs-human quick actions (panel del dashboard)
-  const needsHumanMatch = req.url && req.url.match(/^\/api\/needs-human\/(\d+)\/(reactivate|dismiss)$/);
+  const needsHumanMatch = req.url && req.url.match(/^\/api\/needs-human\/(\d+)\/(reactivate|dismiss|block|dismiss-worktree)$/);
   if (needsHumanMatch && req.method === 'POST') {
     const issueNum = Number(needsHumanMatch[1]);
     const action = needsHumanMatch[2];
@@ -7117,6 +7154,70 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      if (action === 'block') {
+        // Pausa manual desde el Issue Tracker — mueve marker activo (pendiente/trabajando/listo) a bloqueado-humano/
+        const reason = String(payload.reason || '').trim() || 'Pausado manualmente desde el Issue Tracker';
+        const source = String(payload.source || 'dashboard').trim();
+        let result;
+        try {
+          result = humanBlock.reportHumanBlock({
+            issue: issueNum,
+            skill: 'commander',
+            phase: 'validacion',
+            reason,
+            question: 'Revisión humana requerida — pausado por el usuario desde el dashboard',
+            pipeline: 'desarrollo',
+          });
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'Error pausando: ' + e.message }));
+          return;
+        }
+        ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--add-label', 'needs-human']);
+        const reasonLine = payload.reason ? `\n\n**Motivo:** ${reason}` : '';
+        const blockComment = `## ⏸ Pausado desde el dashboard\n\nEnviado a "Necesitan humano" por el usuario (source: \`${source}\`). El Pulpo deja de relanzar hasta que se reactive o desestime.${reasonLine}`;
+        ghTry(['issue', 'comment', String(issueNum), '--repo', repo, '--body', blockComment]);
+        log(`needs-human: pausado #${issueNum} (source=${source})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} pausado`, ...result }));
+        return;
+      }
+
+      if (action === 'dismiss-worktree') {
+        // Limpieza opt-in del worktree asociado al issue (después de un dismiss)
+        const { execSync } = require('child_process');
+        const REPO_ROOT_LOCAL = path.resolve(__dirname, '..');
+        let wtPath = null;
+        try {
+          const wtOut = execSync('git worktree list --porcelain', { cwd: REPO_ROOT_LOCAL, encoding: 'utf8', timeout: 10000, windowsHide: true });
+          const re = new RegExp('^worktree (.*platform\\.agent-' + issueNum + '-[^\\r\\n]*)', 'im');
+          const m = wtOut.match(re);
+          if (m) wtPath = m[1].trim();
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'No pude listar worktrees: ' + e.message }));
+          return;
+        }
+        if (!wtPath) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'Sin worktree asociado a #' + issueNum }));
+          return;
+        }
+        try {
+          // Desmontar junction .claude/ antes de remover (Windows-safe)
+          const claudeJunction = path.join(wtPath, '.claude');
+          try { execSync(`cmd /c rmdir "${claudeJunction.replace(/\//g, '\\')}"`, { timeout: 5000, windowsHide: true, stdio: 'ignore' }); } catch {}
+          execSync(`git worktree remove "${wtPath}" --force`, { cwd: REPO_ROOT_LOCAL, timeout: 30000, windowsHide: true, stdio: 'ignore' });
+          log(`needs-human: worktree limpiado para #${issueNum} (${wtPath})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: `Worktree limpiado`, worktree: wtPath }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'No pude remover worktree: ' + e.message, worktree: wtPath }));
+        }
+        return;
+      }
+
       // dismiss
       const reason = String(payload.reason || '').trim();
       let result;
@@ -7135,9 +7236,28 @@ const server = http.createServer((req, res) => {
       const reasonLine = reason ? `\n\n**Motivo:** ${reason}` : '';
       const closeComment = `## ✕ Desestimado desde el dashboard\n\nIssue cerrado manualmente; no entrará al pipeline.${reasonLine}`;
       const closed = ghTry(['issue', 'close', String(issueNum), '--repo', repo, '--reason', 'not planned', '--comment', closeComment]);
-      log(`needs-human: desestimado #${issueNum} (skill=${result.skill}, closed=${closed})`);
+
+      // Detectar worktree asociado para que el frontend pueda ofrecer limpieza opt-in
+      let worktreePath = null;
+      try {
+        const { execSync } = require('child_process');
+        const REPO_ROOT_LOCAL = path.resolve(__dirname, '..');
+        const wtOut = execSync('git worktree list --porcelain', { cwd: REPO_ROOT_LOCAL, encoding: 'utf8', timeout: 10000, windowsHide: true });
+        const re = new RegExp('^worktree (.*platform\\.agent-' + issueNum + '-[^\\r\\n]*)', 'im');
+        const m = wtOut.match(re);
+        if (m) worktreePath = m[1].trim();
+      } catch {}
+
+      log(`needs-human: desestimado #${issueNum} (skill=${result.skill}, closed=${closed}, wt=${worktreePath || 'none'})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} desestimado y cerrado`, closed, ...result }));
+      res.end(JSON.stringify({
+        ok: true,
+        msg: `Issue #${issueNum} desestimado y cerrado`,
+        closed,
+        worktree: worktreePath,
+        worktree_warning: worktreePath != null,
+        ...result
+      }));
     });
     return;
   }
