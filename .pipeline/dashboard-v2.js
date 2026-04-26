@@ -5113,12 +5113,43 @@ function showToast(msg, type) {
     setTimeout(() => t.remove(), 250);
   }, 2200);
 }
+// Encuentra al vecino visible dentro de la misma lane (def/dev/qa) del issue.
+// Si el issue no está en una lane (ej: card en la sección Equipo), busca el
+// vecino en CUALQUIER lane visible.
+function _findLanePeer(issueNum, direction) {
+  const target = document.querySelector('.lc-card[data-issue="' + issueNum + '"][data-status="active"]');
+  if (!target) return { error: 'card-not-visible' };
+  const lane = target.dataset.lane;
+  // Cards de la misma lane, en orden DOM (que es el orden visual)
+  const peers = Array.from(document.querySelectorAll(
+    '.lc-card[data-lane="' + lane + '"][data-status="active"]'
+  ));
+  const idx = peers.findIndex(p => p.dataset.issue === String(issueNum));
+  if (idx === -1) return { error: 'not-in-lane' };
+  if (direction === 'up') {
+    if (idx === 0) return { error: 'already-top' };
+    return { peer: peers[idx - 1].dataset.issue };
+  } else {
+    if (idx === peers.length - 1) return { error: 'already-bottom' };
+    return { peer: peers[idx + 1].dataset.issue };
+  }
+}
 async function _issueMove(issueNum, direction) {
   const action = direction === 'up' ? 'move-up' : 'move-down';
   const arrow = direction === 'up' ? '▲' : '▼';
+  // Resolver peer dentro de la lane visual (no del array global)
+  const lookup = _findLanePeer(issueNum, direction);
+  if (lookup.error === 'already-top' || lookup.error === 'already-bottom') {
+    showToast('#' + issueNum + ' ya está en el ' + (lookup.error === 'already-top' ? 'tope' : 'fondo') + ' de la columna', 'info');
+    return;
+  }
   _prioSetLoading(issueNum, action, true);
   try {
-    const r = await fetch('/api/issue/' + issueNum + '/' + action, { method: 'POST' });
+    const r = await fetch('/api/issue/' + issueNum + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lookup.peer ? { peer: lookup.peer } : {})
+    });
     const j = await r.json();
     if (j.ok) {
       _prioFlashCards(issueNum, true);
@@ -6950,27 +6981,50 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API orden manual de issues (drag-drop + botones ▲/▼ del Issue Tracker)
+  // API orden manual de issues (drag-drop + botones ▲/▼ del Issue Tracker).
+  // Si el body incluye `peer`, hace swap con ese issue (caso del frontend que
+  // resuelve el vecino de la misma lane). Si no, fallback al swap con el vecino
+  // del array global (legacy / clientes sin contexto de lane).
   const moveMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(move-up|move-down)$/);
   if (moveMatch && req.method === 'POST') {
     const issueNum = String(moveMatch[1]);
     const action = moveMatch[2];
-    let issueOrder;
-    try { issueOrder = require('./lib/issue-order'); }
-    catch (e) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
-      return;
-    }
-    const state = issueOrder.load();
-    const result = action === 'move-up'
-      ? issueOrder.moveUp(state, issueNum)
-      : issueOrder.moveDown(state, issueNum);
-    log(`order: ${action} #${issueNum} → ${result.ok ? `${result.from}→${result.to}` : result.reason}`);
-    res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result.ok
-      ? { ok: true, msg: `Issue #${issueNum} ${action === 'move-up' ? 'subió' : 'bajó'} a posición ${result.to + 1}`, ...result }
-      : { ok: false, msg: result.reason }));
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      const state = issueOrder.load();
+      const peer = payload.peer != null ? String(payload.peer) : null;
+      let result;
+      if (peer) {
+        result = issueOrder.swap(state, issueNum, peer);
+      } else {
+        result = action === 'move-up'
+          ? issueOrder.moveUp(state, issueNum)
+          : issueOrder.moveDown(state, issueNum);
+      }
+      log(`order: ${action} #${issueNum}${peer ? ` ↔ #${peer}` : ''} → ${result.ok ? `${result.from}↔${result.to}` : result.reason}`);
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      if (result.ok) {
+        const newPos = state.order.indexOf(issueNum);
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'move-up' ? 'subió' : 'bajó'} a posición ${newPos + 1}`, ...result, position: newPos }));
+      } else {
+        res.end(JSON.stringify({ ok: false, msg: result.reason }));
+      }
+    });
     return;
   }
 
