@@ -7118,12 +7118,14 @@ const server = http.createServer((req, res) => {
       }
       const ghBin = GH_BIN;
       const repo = 'intrale/platform';
-      const { execFileSync } = require('child_process');
+      const { execFile } = require('child_process');
+      // Fire-and-forget: el gh CLI puede demorar 5-15s por llamada en Windows.
+      // Si esperáramos sync, el fetch del cliente expira aunque el server haya
+      // procesado la acción. Lanzamos en background y respondemos ya.
       const ghTry = (args) => {
         try {
-          execFileSync(ghBin, args, { stdio: 'ignore', timeout: 15000 });
-          return true;
-        } catch { return false; }
+          execFile(ghBin, args, { timeout: 30000, windowsHide: true }, () => {});
+        } catch {}
       };
 
       if (action === 'reactivate') {
@@ -7229,7 +7231,7 @@ const server = http.createServer((req, res) => {
       ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', 'needs-human']);
       const reasonLine = reason ? `\n\n**Motivo:** ${reason}` : '';
       const closeComment = `## ✕ Desestimado desde el dashboard\n\nIssue cerrado manualmente; no entrará al pipeline.${reasonLine}`;
-      const closed = ghTry(['issue', 'close', String(issueNum), '--repo', repo, '--reason', 'not planned', '--comment', closeComment]);
+      ghTry(['issue', 'close', String(issueNum), '--repo', repo, '--reason', 'not planned', '--comment', closeComment]);
 
       // Detectar worktree asociado para que el frontend pueda ofrecer limpieza opt-in
       let worktreePath = null;
@@ -7242,12 +7244,11 @@ const server = http.createServer((req, res) => {
         if (m) worktreePath = m[1].trim();
       } catch {}
 
-      log(`needs-human: desestimado #${issueNum} (skill=${result.skill}, closed=${closed}, wt=${worktreePath || 'none'})`);
+      log(`needs-human: desestimado #${issueNum} (skill=${result.skill}, wt=${worktreePath || 'none'})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
         msg: `Issue #${issueNum} desestimado y cerrado`,
-        closed,
         worktree: worktreePath,
         worktree_warning: worktreePath != null,
         ...result
