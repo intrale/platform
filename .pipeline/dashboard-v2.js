@@ -1578,7 +1578,6 @@ function generateHTML(state) {
           <span class="ic-pct${pct === 100 ? ' ic-pct-done' : ''}">${pct}%</span>
           ${etaHTML}
         </div>
-        ${complete ? '' : `<button class="ic-pause-btn" onclick="event.stopPropagation();needsHumanBlock(${issueNum})" title="Pausar — enviar a Necesitan humano">⏸</button>`}
         <span class="ic-expand-btn" id="expand-btn-${issueNum}" aria-hidden="true">▾</span>
       </div>
       <div class="ic-progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="ic-progress-fill${data.estadoActual === 'trabajando' ? ' ic-progress-active' : ''}" style="width:${pct}%"></div></div>
@@ -1695,6 +1694,7 @@ function generateHTML(state) {
               <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issueMoveUp(${issueNum})" title="Subir una posición">▲</button>
               <button class="lc-prio-btn lc-prio-down" onclick="event.stopPropagation();issueMoveDown(${issueNum})" title="Bajar una posición">▼</button>
               <button class="lc-prio-btn lc-prio-bottom" onclick="event.stopPropagation();issueMoveToBottom(${issueNum})" title="Mover al fondo de la columna">⏬</button>
+              ${complete ? '' : `<button class="lc-prio-btn lc-pause-btn" onclick="event.stopPropagation();needsHumanBlock(${issueNum})" title="Pausar — enviar a Necesitan humano">⏸</button>`}
             </span>
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
           </div>
@@ -2927,14 +2927,6 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   width:20px;text-align:center;
 }
 .ic-expand-btn.expanded{transform:rotate(180deg)}
-.ic-pause-btn{
-  font-size:0.85em;background:transparent;border:1px solid color-mix(in srgb,#E3B341 50%,var(--bd));
-  color:#E3B341;border-radius:3px;padding:1px 5px;cursor:pointer;flex-shrink:0;
-  margin-left:6px;line-height:1;transition:background 0.15s,opacity 0.15s;
-}
-.ic-pause-btn:hover{background:rgba(227,179,65,0.12)}
-.ic-pause-btn:disabled{opacity:0.4;cursor:wait}
-.ic-pause-btn:focus-visible{outline:2px solid #E3B341;outline-offset:1px}
 
 /* ── Progress track (thin bar under header) ──────────────────────────── */
 .ic-progress-track{
@@ -3788,6 +3780,8 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-prio-down:hover{border-color:#f85149;color:#f85149}
 .lc-prio-top:hover{border-color:#3fb950;color:#3fb950;background:rgba(63,185,80,0.10)}
 .lc-prio-bottom:hover{border-color:#f85149;color:#f85149;background:rgba(248,81,73,0.10)}
+.lc-pause-btn{color:#E3B341;border-color:color-mix(in srgb,#E3B341 50%,var(--bd))}
+.lc-pause-btn:hover{border-color:#E3B341;color:#E3B341;background:rgba(227,179,65,0.12)}
 .lc-card[draggable="true"]{cursor:grab}
 .lc-card[draggable="true"]:active{cursor:grabbing}
 .lc-card-dragging{opacity:0.4;outline:1px dashed var(--ac,#6d8cff)}
@@ -5468,7 +5462,7 @@ function nhDisableButtons(issueNum) {
 async function needsHumanBlock(issueNum) {
   const reason = prompt('Pausar #' + issueNum + ' — motivo (opcional, Enter para omitir):', '');
   if (reason === null) return;
-  const btn = document.querySelector('.ic-card[data-issue="' + issueNum + '"] .ic-pause-btn');
+  const btn = document.querySelector('.lc-card[data-issue="' + issueNum + '"] .lc-pause-btn');
   if (btn) btn.disabled = true;
   try {
     const r = await fetch('/api/needs-human/' + issueNum + '/block', {
