@@ -101,3 +101,48 @@ test('runAllChecks — integra static-checks sin romper con repo vacío', () => 
     assert.equal(typeof r.commitCount, 'number');
     assert.equal(typeof r.fileCount, 'number');
 });
+
+// Regresión #2407: el linter debe leer git desde el worktree del issue, no
+// desde REPO_ROOT. Antes usaba REPO_ROOT (fijo, repo principal) y reportaba
+// la rama del worktree principal aunque el pulpo lo lanzaba con cwd=worktree.
+// Acá no podemos probar el spawn real, pero verificamos que el módulo expone
+// runAllChecks con el contrato cwd-based y que no hay referencia hardcodeada
+// a REPO_ROOT en el call-site (así el cwd que pasa el caller manda).
+test('runAllChecks — respeta el cwd recibido (no fuerza REPO_ROOT) — regresión #2407', () => {
+    // Crear dos directorios "ficticios" — el cwd recibido debe ser el que
+    // se pasa por argumento, no un valor cacheado del módulo.
+    const cwdA = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-linter-cwdA-'));
+    const cwdB = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-linter-cwdB-'));
+    try {
+        // Si cualquiera de los cwds rompiera el shape (ej. lanzando excepción
+        // por hardcode), el test fallaría. Como ambos no son repos git, los
+        // helpers devuelven vacío pero NO tiran.
+        const rA = linter.runAllChecks({ issue: 99, cwd: cwdA, base: 'origin/main' });
+        const rB = linter.runAllChecks({ issue: 99, cwd: cwdB, base: 'origin/main' });
+        assert.ok(Array.isArray(rA.findings));
+        assert.ok(Array.isArray(rB.findings));
+        // El branch detectado proviene del cwd, no de REPO_ROOT. Como ambos
+        // cwds están fuera de un repo git, branch es null y se reporta
+        // 'branch:missing'. Lo importante: ningún cwd ajeno se filtró.
+        assert.equal(typeof rA.commitCount, 'number');
+        assert.equal(typeof rB.commitCount, 'number');
+    } finally {
+        fs.rmSync(cwdA, { recursive: true, force: true });
+        fs.rmSync(cwdB, { recursive: true, force: true });
+    }
+});
+
+// Regresión #2407: confirma que el call-site real de `main()` usa
+// process.cwd() (vía GIT_CWD) y no REPO_ROOT. Inspeccionamos el source para
+// hacer fail si alguien revierte sin querer la línea clave.
+test('linter.js source — runAllChecks recibe GIT_CWD/process.cwd, no REPO_ROOT — regresión #2407', () => {
+    const linterSrc = fs.readFileSync(path.join(__dirname, '..', 'linter.js'), 'utf8');
+    // Aceptamos GIT_CWD (constante explícita) o process.cwd() (uso directo).
+    const acceptable = /runAllChecks\(\{\s*issue,\s*cwd:\s*(GIT_CWD|process\.cwd\(\))/;
+    assert.match(linterSrc, acceptable,
+        'main() debe pasar GIT_CWD o process.cwd() a runAllChecks, no REPO_ROOT');
+    // Garantía adicional: NO debe quedar `cwd: REPO_ROOT` en el call-site.
+    const forbidden = /runAllChecks\(\{\s*issue,\s*cwd:\s*REPO_ROOT/;
+    assert.doesNotMatch(linterSrc, forbidden,
+        'cwd: REPO_ROOT en runAllChecks fue revertido — bug del incidente #2407');
+});

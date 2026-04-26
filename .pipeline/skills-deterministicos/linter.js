@@ -29,9 +29,18 @@ const trace = require('../lib/traceability');
 const git = require('./lib/git-ops');
 const checks = require('./lib/static-checks');
 
+// REPO_ROOT → repo principal: donde el dashboard lee hooks (heartbeat) y
+// logs (lint-<issue>-report.md). Siempre apunta al main worktree, aún si
+// el linter se invoca desde un worktree paralelo del agente.
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
 const LOG_DIR = path.join(REPO_ROOT, '.pipeline', 'logs');
+// GIT_CWD → worktree del issue: el pulpo lanza el linter con cwd=worktreePath
+// (fix #2537) para que `git log origin/main..HEAD` lea la rama correcta.
+// Antes usábamos REPO_ROOT directo y el linter terminaba leyendo la rama
+// arbitraria del repo principal (incidente #2407: branch=agent/2523-... para
+// issue #2407, falso 'pr:no-commits'). Override por env var para tests.
+const GIT_CWD = process.env.PIPELINE_GIT_CWD || process.cwd();
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
 function parseArgs(argv) {
@@ -175,7 +184,7 @@ async function main() {
     let report = '';
 
     try {
-        result = runAllChecks({ issue, cwd: REPO_ROOT, base: args.base });
+        result = runAllChecks({ issue, cwd: GIT_CWD, base: args.base });
         logAppend(`[linter] branch=${result.branch} commits=${result.commitCount} files=${result.fileCount}`);
         logAppend(`[linter] diff=${result.stats.files_changed}f +${result.stats.additions} -${result.stats.deletions}`);
 
