@@ -95,6 +95,38 @@ test('moveDown en el fondo no hace nada', () => {
     assert.equal(r.reason, 'already-bottom');
 });
 
+test('swap intercambia posiciones de dos issues no adyacentes', () => {
+    const f = tmpFile();
+    const s = { version: 1, order: ['a', 'b', 'c', 'd', 'e'] };
+    const r = lib.swap(s, 'a', 'd', f);
+    assert.equal(r.ok, true);
+    assert.equal(r.from, 0);
+    assert.equal(r.to, 3);
+    assert.deepEqual(s.order, ['d', 'b', 'c', 'a', 'e']);
+    assert.deepEqual(lib.load(f).order, ['d', 'b', 'c', 'a', 'e']);
+});
+
+test('swap funciona con issues adyacentes (equiv a moveUp/moveDown)', () => {
+    const s = { version: 1, order: ['a', 'b', 'c'] };
+    lib.swap(s, 'a', 'b', tmpFile());
+    assert.deepEqual(s.order, ['b', 'a', 'c']);
+});
+
+test('swap retorna error si alguno de los issues no existe', () => {
+    const s = { version: 1, order: ['a', 'b'] };
+    const r = lib.swap(s, 'a', 'zzz', tmpFile());
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'not-found');
+    assert.deepEqual(s.order, ['a', 'b']);
+});
+
+test('swap con el mismo issue retorna error same-issue', () => {
+    const s = { version: 1, order: ['a', 'b'] };
+    const r = lib.swap(s, 'a', 'a', tmpFile());
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'same-issue');
+});
+
 test('setOrder reemplaza la lista respetando el orden recibido', () => {
     const f = tmpFile();
     const s = { version: 1, order: ['a', 'b', 'c', 'd'] };

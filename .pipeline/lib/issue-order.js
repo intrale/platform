@@ -84,6 +84,22 @@ function moveDown(state, issue, orderFile = ORDER_FILE) {
     return { ok: true, from: idx, to: idx + 1 };
 }
 
+// Intercambia las posiciones de dos issues en el array global. Útil cuando los
+// botones ▲/▼ del dashboard operan a nivel de lane: el frontend determina el
+// vecino visible en la columna (que puede no ser el vecino directo en el array
+// global) y manda ambos issues acá.
+function swap(state, issueA, issueB, orderFile = ORDER_FILE) {
+    const a = String(issueA);
+    const b = String(issueB);
+    const ia = state.order.indexOf(a);
+    const ib = state.order.indexOf(b);
+    if (ia === -1 || ib === -1) return { ok: false, reason: 'not-found' };
+    if (ia === ib) return { ok: false, reason: 'same-issue' };
+    [state.order[ia], state.order[ib]] = [state.order[ib], state.order[ia]];
+    save(state, orderFile);
+    return { ok: true, from: ia, to: ib };
+}
+
 // Reemplaza la lista entera respetando el array recibido. Cualquier issue conocido
 // que no aparezca en `newOrder` se preserva al final (no se pierden referencias).
 function setOrder(state, newOrder, orderFile = ORDER_FILE) {
@@ -137,6 +153,7 @@ module.exports = {
     orderOf,
     moveUp,
     moveDown,
+    swap,
     setOrder,
     insertNew,
     removeIssue,
