@@ -5505,7 +5505,7 @@ async function needsHumanDismiss(issueNum) {
     const j = await r.json();
     if (j.ok) {
       if (j.worktree && j.worktree_warning) {
-        const cleanWt = confirm('Issue #' + issueNum + ' desestimado.\n\nEl worktree tiene trabajo en disco:\n  ' + j.worktree + '\n\n¿Limpiar el worktree ahora? (Cancelar = conservar)');
+        const cleanWt = confirm('Issue #' + issueNum + ' desestimado.\\n\\nEl worktree tiene trabajo en disco:\\n  ' + j.worktree + '\\n\\n¿Limpiar el worktree ahora? (Cancelar = conservar)');
         if (cleanWt) {
           try {
             const rw = await fetch('/api/needs-human/' + issueNum + '/dismiss-worktree', { method: 'POST' });
