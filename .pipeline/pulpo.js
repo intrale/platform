@@ -28,6 +28,11 @@ const { redact } = require('./redact');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+// #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
+// Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
+const humanBlock = require('./lib/human-block');
+// #2490 — Pausa parcial con allowlist explícita de issues
+const partialPause = require('./lib/partial-pause');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -151,7 +156,7 @@ function ghCommentOnIssue(issueNumber, body) {
 // Dev también la usa (git + gh + gradle download), pero dev genera worktree
 // antes del spawn y un fallo de red suele manifestarse mejor como rebote de
 // build/tester que como precheck. Por ahora solo gateamos fases post-dev.
-const NETWORK_REQUIRED_PHASES = new Set(['build', 'verificacion', 'aprobacion', 'entrega']);
+const NETWORK_REQUIRED_PHASES = new Set(['build', 'verificacion', 'linteo', 'aprobacion', 'entrega']);
 
 // Intervalo mínimo entre prechecks ejecutados (ms). Evita spammear DNS en
 // cada ciclo del pulpo cuando el poll_interval es corto.
@@ -596,6 +601,117 @@ function fasePath(pipelineName, faseName) {
   return path.join(PIPELINE, pipelineName, faseName);
 }
 
+// ---------------------------------------------------------------------------
+// CROSS-PHASE REBOTE — permite a un agente solicitar rebote a otra fase/skill
+// upstream cuando detecta que necesita re-ejecución de trabajo previo.
+//
+// Ejemplo: android-dev detecta que faltan assets del UX → emite YAML con
+//   rebote_destino: { pipeline: desarrollo, fase: validacion, skill: ux }
+// El pulpo rutea el issue a esa fase en vez del default `fase_rechazo`.
+//
+// Escalada automática por cantidad de rebotes cross-phase del mismo issue:
+//   - 1er rebote → destino declarado por el agente.
+//   - 2do rebote → escala a fase previa del mismo skill (ej. validacion/ux → criterios/ux).
+//   - 3er rebote → escalado a humano (label needs-human).
+// ---------------------------------------------------------------------------
+
+const MAX_CROSSPHASE_REBOTES = 2;
+
+/** Orden global de fases considerando todos los pipelines en el orden de config. */
+function getFaseGlobalOrder(config) {
+  const order = [];
+  for (const [pName, pCfg] of Object.entries(config.pipelines || {})) {
+    for (const fase of (pCfg.fases || [])) {
+      order.push({ pipeline: pName, fase });
+    }
+  }
+  return order;
+}
+
+function faseGlobalIndex(pipelineName, fase, config) {
+  const order = getFaseGlobalOrder(config);
+  return order.findIndex(e => e.pipeline === pipelineName && e.fase === fase);
+}
+
+/** Busca la fase anterior (en orden global) donde el skill dado participa. */
+function findPreviousFaseForSkill(skill, fromPipeline, fromFase, config) {
+  const order = getFaseGlobalOrder(config);
+  const currentIdx = order.findIndex(e => e.pipeline === fromPipeline && e.fase === fromFase);
+  if (currentIdx <= 0) return null;
+  for (let i = currentIdx - 1; i >= 0; i--) {
+    const { pipeline: p, fase: f } = order[i];
+    const skills = (config.pipelines?.[p]?.skills_por_fase?.[f]) || [];
+    if (skills.includes(skill)) {
+      return { pipeline: p, fase: f, skill };
+    }
+  }
+  return null;
+}
+
+/** Valida que un rebote_destino declarado por agente sea utilizable. */
+function validateRebotedDestino(destino, faseOriginPipeline, faseOrigin, config) {
+  if (!destino || typeof destino !== 'object') return { ok: false, reason: 'no-destino' };
+  const { pipeline: p, fase: f, skill: s } = destino;
+  if (!p || !f || !s) return { ok: false, reason: 'campos-incompletos' };
+  if (!config.pipelines?.[p]) return { ok: false, reason: `pipeline-no-existe:${p}` };
+  if (!(config.pipelines[p].fases || []).includes(f)) return { ok: false, reason: `fase-no-existe:${p}/${f}` };
+  const skillsFase = (config.pipelines[p].skills_por_fase?.[f]) || [];
+  if (!skillsFase.includes(s)) return { ok: false, reason: `skill-no-en-fase:${s}@${p}/${f}` };
+  const destIdx = faseGlobalIndex(p, f, config);
+  const origIdx = faseGlobalIndex(faseOriginPipeline, faseOrigin, config);
+  if (destIdx < 0 || origIdx < 0) return { ok: false, reason: 'fase-no-resoluble' };
+  if (destIdx >= origIdx) return { ok: false, reason: `destino-no-upstream:${p}/${f}>=${faseOriginPipeline}/${faseOrigin}` };
+  return { ok: true };
+}
+
+/** Cuenta rebotes cross-phase existentes del issue buscando en todos los YAML. */
+function contarCrossPhaseRebotes(issue, config) {
+  let maxCount = 0;
+  for (const pName of Object.keys(config.pipelines || {})) {
+    for (const fase of (config.pipelines[pName].fases || [])) {
+      for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+        const dir = path.join(fasePath(pName, fase), estado);
+        try {
+          for (const f of fs.readdirSync(dir)) {
+            if (!f.startsWith(String(issue) + '.')) continue;
+            const data = readYaml(path.join(dir, f));
+            if (data?.rebote_tipo === 'crossphase' && (data.rebote_numero_crossphase || 0) > maxCount) {
+              maxCount = data.rebote_numero_crossphase;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+  return maxCount;
+}
+
+/**
+ * Resuelve un cross-phase rebote a partir de los archivos rechazados.
+ * Devuelve null si ningún archivo emitió `rebote_destino` o si el destino es inválido.
+ * Si hay múltiples destinos, elige el MÁS UPSTREAM (menor índice global).
+ */
+function resolveRebotedCrossPhase(resultados, pipelineOrigin, faseOrigin, config) {
+  const candidatos = [];
+  for (const r of resultados) {
+    if (r.resultado !== 'rechazado' || !r.rebote_destino) continue;
+    const validacion = validateRebotedDestino(r.rebote_destino, pipelineOrigin, faseOrigin, config);
+    if (!validacion.ok) {
+      log('barrido', `⚠️ #${r.issue || '?'} rebote_destino inválido (${validacion.reason}) — ignorando, cae a default`);
+      continue;
+    }
+    candidatos.push({
+      destino: r.rebote_destino,
+      skillOrigen: skillFromFile(r.file.name),
+      motivo: r.motivo || '',
+      index: faseGlobalIndex(r.rebote_destino.pipeline, r.rebote_destino.fase, config),
+    });
+  }
+  if (candidatos.length === 0) return null;
+  candidatos.sort((a, b) => a.index - b.index);
+  return candidatos[0];
+}
+
 /** Obtener el mtime de un archivo en minutos */
 function fileAgeMinutes(filepath) {
   try {
@@ -615,7 +731,9 @@ function issueExistsInPipeline(issueNum, pipelineName) {
     if (!pConfig) continue;
     for (const fase of pConfig.fases) {
       // Solo buscar en estados activos — procesado significa que ya terminó esa fase
-      for (const estado of ['pendiente', 'trabajando', 'listo']) {
+      // bloqueado-humano cuenta como activo: el issue está pausado pero ocupando slot conceptual,
+      // no debe re-intakearse ni relanzarse hasta que /unblock lo desbloquee (issue #2478)
+      for (const estado of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano']) {
         const dir = path.join(PIPELINE, pName, fase, estado);
         try {
           for (const f of fs.readdirSync(dir)) {
@@ -1411,6 +1529,12 @@ let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación Q
 let qaPriorityNotifiedTelegram = false;
 let qaPriorityManual = false;       // true si fue activada manualmente desde el dashboard
 let qaPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
+// #2651 — cierre por no-progreso + cooldown.
+// Cuando la ventana queda abierta y nadie corre, marca timestamp.
+// Si pasan N min sin que arranque ningún agente QA → cierra y arma cooldown
+// para que la cola pendiente no la reabra inmediatamente (loop infinito).
+let qaNoProgressSince = 0;          // Primer tick con runningQa=0 y ventana abierta. 0 si arrancó alguien.
+let qaCooldownUntil = 0;            // Timestamp hasta el cual no se reabre por cola pendiente.
 
 // =============================================================================
 // BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
@@ -1443,6 +1567,11 @@ function restorePriorityWindows() {
       qaPriorityNotifiedTelegram = true; // Ya se notificó antes del restart
       log('qa-priority', `♻️ QA Priority Window restaurada desde disco (activada ${new Date(qaPriorityActivatedAt).toISOString()})`);
     }
+    // #2651 — restaurar cooldown si está vigente; si ya venció, ignorar.
+    if (data.qa?.cooldownUntil && data.qa.cooldownUntil > Date.now()) {
+      qaCooldownUntil = data.qa.cooldownUntil;
+      log('qa-priority', `♻️ QA cooldown restaurado: vigente hasta ${new Date(qaCooldownUntil).toISOString()}`);
+    }
     if (data.build?.active) {
       buildPriorityActive = true;
       buildPriorityActivatedAt = data.build.activatedAt || Date.now();
@@ -1468,7 +1597,8 @@ function persistPriorityWindows() {
     qa: {
       active: qaPriorityActive,
       activatedAt: qaPriorityActivatedAt || null,
-      manual: qaPriorityManual
+      manual: qaPriorityManual,
+      cooldownUntil: qaCooldownUntil || null
     },
     build: {
       active: buildPriorityActive,
@@ -1575,6 +1705,19 @@ function countPendingVerificacion(config) {
 }
 
 /**
+ * Contar agentes de verificación actualmente corriendo (tokens en trabajando/).
+ */
+function countRunningVerificacion(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('verificacion')) continue;
+    const trabajandoDir = path.join(PIPELINE, pName, 'verificacion', 'trabajando');
+    count += listWorkFiles(trabajandoDir).length;
+  }
+  return count;
+}
+
+/**
  * Detectar si hay agentes de dev corriendo (archivos en trabajando/ de fase dev).
  */
 function countRunningDev(config) {
@@ -1589,61 +1732,131 @@ function countRunningDev(config) {
 
 /**
  * Evaluar si debe activarse/desactivarse la QA Priority Window.
- * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
- * - Activación inmediata cuando cola >= umbral configurable
- * - Sin timeout fijo (corre hasta vaciar cola)
- * - Timeout de seguridad: notifica Telegram si no completa en N horas (no cierra)
+ * Modelo V2 #2651 — balance entre cola y agentes:
+ * - Activación: cola pendiente ≥ umbral (la cola dispara la ventana, igual que Build).
+ * - Cierre normal: cola pendiente = 0 y runningQa = 0 → vaciaje completo.
+ * - Cierre por no-progreso: ventana activa con runningQa = 0 sostenido N min → cierre + cooldown.
+ *   (Significa que el sistema no logra arrancar agentes QA — rate limit, slot lleno, etc.
+ *   Mantener la ventana abierta penaliza otras fases sin aporte.)
+ * - Cooldown post-cierre: tras cierre por no-progreso, durante M min no se reabre por cola.
+ *   Si llega un evento nuevo (runningQa pasa a ≥1 por otra vía), se cancela el cooldown.
+ * - Pulpo en paused/partial_pause: cierre inmediato, sin cooldown.
+ * - Safety timeout: notifica por Telegram si lleva muchas horas sin completar (no cierra).
  * Retorna true si QA Priority está activa (dev y build deben bloquearse).
  */
-function evaluateQaPriority(config) {
+function evaluateQaPriority(config, overrides = {}) {
   const limits = config.resource_limits || {};
   const threshold = limits.priority_windows_activation_threshold || 3;
   const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
-  const now = Date.now();
+  const noProgressMs = (limits.qa_priority_no_progress_minutes || 3) * 60 * 1000;
+  const cooldownMs = (limits.qa_priority_cooldown_minutes || 15) * 60 * 1000;
+  const now = overrides.now !== undefined ? overrides.now : Date.now();
 
-  const pendingQa = countPendingVerificacion(config);
+  const pipelineMode = overrides.pipelineMode || partialPause.getPipelineMode().mode;
+  if (pipelineMode === 'paused' || pipelineMode === 'partial_pause') {
+    if (qaPriorityActive) {
+      log('qa-priority', `🟢 QA Priority Window desactivada — pipeline en modo ${pipelineMode}`);
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      qaPriorityManual = false;
+      qaPriorityNotifiedTelegram = false;
+      qaPrioritySafetyNotified = false;
+      qaNoProgressSince = 0;
+      // No tocamos cooldown: si la pausa se reanuda y la cola sigue, respetamos cooldown previo.
+      persistPriorityWindows();
+    }
+    return false;
+  }
 
-  // ---- Desactivación ----
+  const runningQa = overrides.runningQa !== undefined ? overrides.runningQa : countRunningVerificacion(config);
+  const pendingQa = overrides.pendingQa !== undefined ? overrides.pendingQa : countPendingVerificacion(config);
+
+  // Si hay agentes corriendo, cancelar cooldown anticipado: el sistema está sano.
+  if (runningQa >= 1 && qaCooldownUntil > 0) {
+    log('qa-priority', `✅ QA cooldown cancelado — ${runningQa} agente(s) arrancaron por otra vía`);
+    qaCooldownUntil = 0;
+    persistPriorityWindows();
+  }
+
+  // ---- Ventana activa: evaluar cierre ----
   if (qaPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
-    if (!qaPriorityManual && pendingQa === 0) {
-      log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
+    // Cierre normal: cola y running en cero (verificación completada).
+    if (!qaPriorityManual && runningQa === 0 && pendingQa === 0) {
+      log('qa-priority', '🟢 QA Priority Window desactivada — sin agentes de verificación corriendo ni pendientes');
       if (qaPriorityNotifiedTelegram) {
-        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Pipeline en modo normal.');
+        sendTelegram('✅ QA Priority Window terminó — verificación completada. Pipeline en modo normal.');
       }
       qaPriorityActive = false;
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       qaPriorityNotifiedTelegram = false;
+      qaNoProgressSince = 0;
       persistPriorityWindows();
       return false;
     }
+
+    // Cierre por no-progreso: 0 corriendo durante > N min con cola pendiente.
+    // Sólo aplica cuando NO es manual (manual la mantiene siempre).
+    if (!qaPriorityManual && runningQa === 0 && pendingQa > 0) {
+      if (qaNoProgressSince === 0) {
+        qaNoProgressSince = now;
+        log('qa-priority', `⏳ Sin agentes QA corriendo (${pendingQa} pendientes) — arrancando ventana de no-progreso (${noProgressMs / 60000}min)`);
+      } else if (now - qaNoProgressSince >= noProgressMs) {
+        const elapsedMin = Math.round((now - qaNoProgressSince) / 60000);
+        qaCooldownUntil = now + cooldownMs;
+        log('qa-priority', `🟡 QA Priority Window cerrada por no-progreso (${elapsedMin}min sin agentes corriendo). Cooldown ${cooldownMs / 60000}min hasta ${new Date(qaCooldownUntil).toISOString()}.`);
+        sendTelegram(`⚠️ Ventana QA cerrada por inactividad (${elapsedMin}min sin agentes corriendo, ${pendingQa} pendientes). Cooldown ${cooldownMs / 60000}min — revisar si hay rate limits o slots bloqueados.`);
+        qaPriorityActive = false;
+        qaPriorityActivatedAt = 0;
+        qaFirstBlockedAt = 0;
+        qaPriorityNotifiedTelegram = false;
+        qaNoProgressSince = 0;
+        persistPriorityWindows();
+        return false;
+      }
+    } else if (runningQa >= 1 && qaNoProgressSince !== 0) {
+      // Volvió a haber agentes corriendo → reset de la ventana de no-progreso.
+      qaNoProgressSince = 0;
+    }
+
     // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
     const elapsedHours = (now - qaPriorityActivatedAt) / (3600 * 1000);
     if (elapsedHours >= safetyTimeoutHours && !qaPrioritySafetyNotified) {
       qaPrioritySafetyNotified = true;
       log('qa-priority', `⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
-      sendTelegram(`⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingQa} issues pendientes. Verificá desde el dashboard si hay un problema.`);
+      sendTelegram(`⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa con ${runningQa} corriendo y ${pendingQa} pendientes. Verificá desde el dashboard si hay un problema.`);
     }
-    return true; // Sigue activa — sin timeout fijo
+    return true;
   }
 
-  // ---- Activación ----
-  // Activación inmediata cuando cola >= umbral (sin esperar N minutos)
+  // ---- Ventana inactiva: evaluar activación ----
+  // Cooldown vigente: no reabrir por cola pendiente (evita loop abrir/cerrar).
+  if (qaCooldownUntil > now) {
+    if (pendingQa >= threshold) {
+      const remainingMin = Math.ceil((qaCooldownUntil - now) / 60000);
+      log('qa-priority', `🧊 QA cooldown activo (${remainingMin}min restantes) — cola ${pendingQa} ≥ ${threshold} pero NO se reabre`);
+    }
+    return false;
+  }
+  // Cooldown vencido: limpiar timestamp.
+  if (qaCooldownUntil > 0 && qaCooldownUntil <= now) {
+    log('qa-priority', `🧊 QA cooldown vencido — listo para reactivar si cola lo requiere`);
+    qaCooldownUntil = 0;
+    persistPriorityWindows();
+  }
+
+  // Activación: cola pendiente ≥ umbral (igual que Build).
   if (pendingQa >= threshold) {
-    // Respetar override manual de Build: si el operador activó Build a mano,
-    // NO auto-activar QA en paralelo (las ventanas son autoexcluyentes).
-    // QA quedará en espera hasta que Build manual se desactive.
     if (buildPriorityActive && buildPriorityManual) {
       if (qaFirstBlockedAt === 0) {
         qaFirstBlockedAt = now;
-        log('qa-priority', `⏳ QA Priority en espera (${pendingQa} pendientes) — Build manual activa, autoexcluyentes`);
+        log('qa-priority', `⏳ QA Priority en espera (cola ${pendingQa} ≥ ${threshold}) — Build manual activa, autoexcluyentes`);
       }
       return false;
     }
-    // QA siempre gana sobre Build automática
     if (buildPriorityActive && !buildPriorityManual) {
-      log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — ${pendingQa} issues QA pendientes`);
+      log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — cola QA ${pendingQa} ≥ ${threshold}`);
       buildPriorityActive = false;
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
@@ -1654,14 +1867,14 @@ function evaluateQaPriority(config) {
     qaPriorityActivatedAt = now;
     qaPriorityNotifiedTelegram = true;
     qaPrioritySafetyNotified = false;
-    log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues en verificación (umbral: ${threshold}). Bloqueando dev y build.`);
-    sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues esperando verificación (umbral: ${threshold}). Dev y build bloqueados hasta vaciar cola.`);
+    qaNoProgressSince = runningQa === 0 ? now : 0;
+    log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — cola ${pendingQa} ≥ ${threshold} (umbral). Bloqueando dev y build.`);
+    sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issue(s) de verificación pendientes (umbral ${threshold}). Dev y build bloqueados hasta drenar cola.`);
     persistPriorityWindows();
     return true;
   } else {
-    // Si bajó del umbral, resetear
     if (qaFirstBlockedAt !== 0) {
-      log('qa-priority', `✅ Cola QA bajó a ${pendingQa} (< ${threshold}) — modo normal`);
+      log('qa-priority', `✅ Cola QA por debajo del umbral — modo normal`);
       qaFirstBlockedAt = 0;
     }
   }
@@ -1713,6 +1926,23 @@ function evaluateBuildPriority(config) {
   const threshold = limits.priority_windows_activation_threshold || 3;
   const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
   const now = Date.now();
+
+  // Diseño: las ventanas no tienen sentido cuando el pipeline está
+  // detenido (`paused`) o restringido a una allowlist (`partial_pause`).
+  const pipelineMode = partialPause.getPipelineMode().mode;
+  if (pipelineMode === 'paused' || pipelineMode === 'partial_pause') {
+    if (buildPriorityActive) {
+      log('build-priority', `🟢 Build Priority Window desactivada — pipeline en modo ${pipelineMode}`);
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityManual = false;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
+      persistPriorityWindows();
+    }
+    return false;
+  }
 
   const pendingBuild = countPendingBuild(config);
   const runningBuild = countRunningBuild(config);
@@ -2053,13 +2283,43 @@ function brazoBarrido(config) {
           todosCompletos = skillsRequeridos.every(s => skillsEnListo.includes(s));
         }
 
-        if (!todosCompletos) continue;
-
         // Leer resultados
         const resultados = archivos.map(a => ({
           ...readYaml(a.path),
           file: a
         }));
+
+        // FAST-FAIL: si al menos un skill rechazó, disparar el rebote sin esperar
+        // al resto. Los skills pendientes/en cooldown no cambian el veredicto
+        // (el issue va a rebotear igual) y esperarlos produce deadlocks cuando
+        // algún skill queda atascado. Incidente 2026-04-24: tester:#2505 en
+        // cooldown bloqueaba el rebote de qa:#2505 que ya había rechazado.
+        const hayRechazoConfirmado = resultados.some(r => r.resultado === 'rechazado');
+        if (!todosCompletos && !hayRechazoConfirmado) continue;
+
+        // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
+        // cancelar los archivos residuales del mismo issue en pendiente/ y trabajando/
+        // de la fase actual para que no queden huérfanos tras el rebote.
+        if (!todosCompletos && hayRechazoConfirmado) {
+          const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
+          for (const estado of ['pendiente', 'trabajando']) {
+            const dir = path.join(fasePath(pipelineName, fase), estado);
+            try {
+              for (const f of fs.readdirSync(dir)) {
+                if (f.startsWith('.')) continue; // flags internos
+                if (!f.startsWith(issue + '.')) continue;
+                const src = path.join(dir, f);
+                const dst = path.join(procesadoFaseActual, f);
+                try {
+                  const prev = readYaml(src) || {};
+                  writeYaml(dst, { ...prev, cancelado_por: 'fast-fail-rebote', cancelado_ts: new Date().toISOString() });
+                  fs.unlinkSync(src);
+                } catch {}
+              }
+            } catch {}
+          }
+          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+        }
 
         // --- GATE DE EVIDENCIA QA (fase verificacion) ---
         // Si el QA dice "aprobado" pero no tiene evidencia real, forzar rechazo automático.
@@ -2089,6 +2349,106 @@ function brazoBarrido(config) {
 
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
 
+        // CROSS-PHASE REBOTE: si algún archivo rechazado declara `rebote_destino`
+        // válido, rutear el issue a esa fase/skill upstream en lugar del default.
+        // Interceptado ANTES del flujo de rebote normal a `fase_rechazo`.
+        if (rechazados.length > 0) {
+          const cross = resolveRebotedCrossPhase(resultados, pipelineName, fase, loadConfig());
+          if (cross) {
+            const cfg = loadConfig();
+            const crossCount = contarCrossPhaseRebotes(issue, cfg);
+            const nuevoCrossCount = crossCount + 1;
+
+            let destinoEfectivo = null;
+            let escalaAHumano = false;
+            if (nuevoCrossCount > MAX_CROSSPHASE_REBOTES) {
+              escalaAHumano = true;
+            } else if (nuevoCrossCount === 1) {
+              destinoEfectivo = cross.destino;
+            } else {
+              // 2do intento: escalar a fase previa del mismo skill.
+              const previa = findPreviousFaseForSkill(
+                cross.destino.skill, cross.destino.pipeline, cross.destino.fase, cfg,
+              );
+              if (!previa) {
+                escalaAHumano = true;
+                log('barrido', `⛔ #${issue} cross-phase rev-${nuevoCrossCount}: sin fase previa para skill ${cross.destino.skill} — escalando a humano`);
+              } else {
+                destinoEfectivo = previa;
+                log('barrido', `↑ #${issue} cross-phase rev-${nuevoCrossCount}: escala a ${previa.pipeline}/${previa.fase}/${previa.skill}`);
+              }
+            }
+
+            if (escalaAHumano) {
+              log('barrido', `⛔ #${issue} CIRCUIT BREAKER CROSSPHASE — ${nuevoCrossCount} rebotes cross-phase (cap ${MAX_CROSSPHASE_REBOTES}). Escalando.`);
+              sendTelegram(`⛔ Issue #${issue} — ${nuevoCrossCount} rebotes cross-phase solicitados por agentes. Requiere intervención manual.`);
+              try {
+                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                fs.mkdirSync(ghQueueDir, { recursive: true });
+                const labelFile = path.join(ghQueueDir, `${issue}-needs-human-crossphase-${Date.now()}.json`);
+                fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }));
+              } catch (e) { log('barrido', `error encolando label needs-human: ${e.message}`); }
+              for (const a of archivos) {
+                const dest = path.join(fasePath(pipelineName, fase), 'procesado');
+                try { moveFile(a.path, dest); } catch {}
+              }
+              continue;
+            }
+
+            // Cleanup: mover a procesado/ archivos del issue en todas las fases
+            // entre el destino (inclusivo) y la fase origen (inclusivo), para
+            // que el nuevo ciclo arranque limpio sin conflicto con residuos.
+            const destIdx = faseGlobalIndex(destinoEfectivo.pipeline, destinoEfectivo.fase, cfg);
+            const origIdx = faseGlobalIndex(pipelineName, fase, cfg);
+            const orderGlobal = getFaseGlobalOrder(cfg);
+            for (let i = destIdx; i <= origIdx; i++) {
+              const { pipeline: p, fase: f } = orderGlobal[i];
+              for (const estado of ['pendiente', 'trabajando', 'listo']) {
+                const dir = path.join(fasePath(p, f), estado);
+                try {
+                  for (const fname of fs.readdirSync(dir)) {
+                    if (fname.startsWith('.')) continue;
+                    if (!fname.startsWith(String(issue) + '.')) continue;
+                    const src = path.join(dir, fname);
+                    const dst = path.join(fasePath(p, f), 'procesado', fname);
+                    try {
+                      const prev = readYaml(src) || {};
+                      writeYaml(dst, { ...prev, cancelado_por: 'cross-phase-rebote', cancelado_ts: new Date().toISOString() });
+                      fs.unlinkSync(src);
+                    } catch {}
+                  }
+                } catch {}
+              }
+            }
+
+            // Crear archivo en destino efectivo
+            const destPendiente = path.join(fasePath(destinoEfectivo.pipeline, destinoEfectivo.fase), 'pendiente');
+            try { fs.mkdirSync(destPendiente, { recursive: true }); } catch {}
+            const destFile = path.join(destPendiente, `${issue}.${destinoEfectivo.skill}`);
+            const yamlOut = {
+              issue: parseInt(issue),
+              fase: destinoEfectivo.fase,
+              pipeline: destinoEfectivo.pipeline,
+              rebote: true,
+              rebote_tipo: 'crossphase',
+              rebote_numero_crossphase: nuevoCrossCount,
+              rebote_destino_solicitado: cross.destino,
+              rebote_destino_efectivo: destinoEfectivo,
+              motivo_rechazo: sanitizePipelineText(cross.motivo),
+              rechazado_en_fase: fase,
+              rechazado_por_skill: cross.skillOrigen,
+            };
+            writeYaml(destFile, yamlOut);
+
+            log('barrido', `↪ #${issue} CROSS-PHASE rev-${nuevoCrossCount} — ${pipelineName}/${fase}/${cross.skillOrigen} → ${destinoEfectivo.pipeline}/${destinoEfectivo.fase}/${destinoEfectivo.skill}`);
+            ghCommentOnIssue(
+              issue,
+              `🔁 Pipeline: **${cross.skillOrigen}** (fase \`${pipelineName}/${fase}\`) solicitó re-ejecución de **${destinoEfectivo.skill}** (fase \`${destinoEfectivo.pipeline}/${destinoEfectivo.fase}\`).\n\nCross-phase rebote rev-${nuevoCrossCount}/${MAX_CROSSPHASE_REBOTES}.\n\nMotivo:\n> ${cross.motivo.slice(0, 500)}`
+            );
+            continue;
+          }
+        }
+
         if (rechazados.length > 0 && faseRechazo) {
           // #2317: clasificar los rechazos por tipo. Si TODOS los motivos
           // apuntan a infra (ENOTFOUND/ETIMEDOUT/etc) marcamos el rebote como
@@ -2100,6 +2460,108 @@ function brazoBarrido(config) {
           }));
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
+
+          // #2549 — BLOQUEO HUMANO: si AL MENOS UN motivo indica que el avance
+          // depende de una intervención humana (PR esperando merge, CODEOWNERS,
+          // etc), marcar el issue como `bloqueado-humano/` y NO incrementar rev.
+          // Sin esto el pulpo relanza el skill cada ciclo y rebota infinitamente
+          // (caso #2519 → 41 rebotes contra PR #2547 mergeable).
+          const motivosHumanos = motivosClasificados.filter(m => humanBlock.isHumanBlockReason(m.motivo));
+          if (motivosHumanos.length > 0 && !esReboteDeInfra) {
+            const principal = motivosHumanos[0];
+            const skillBloq = principal.skill || skillFromFile(rechazados[0].file.name);
+            const motivoTxt = sanitizePipelineText(
+              motivosHumanos.map(m => `[${m.skill}] ${m.motivo}`).join('\n'),
+            ).slice(0, 1500);
+            const question = humanBlock.inferHumanBlockQuestion(principal.motivo, { skill: skillBloq });
+
+            // Dedup: si ya hay marker activo en bloqueado-humano/ no spamear.
+            const yaBloqueado = humanBlock.findBlockedMarker(issue);
+
+            // Mover archivos actuales (rechazados + residuales del issue en la fase)
+            // a archivado/ para sacar el token del flujo. El reportHumanBlock crea
+            // marker fresco en bloqueado-humano/ del propio fase.
+            for (const a of archivos) {
+              const dest = path.join(fasePath(pipelineName, fase), 'archivado');
+              try { fs.mkdirSync(dest, { recursive: true }); moveFile(a.path, dest); } catch {}
+            }
+            for (const estado of ['pendiente', 'trabajando']) {
+              const dir = path.join(fasePath(pipelineName, fase), estado);
+              try {
+                for (const f of fs.readdirSync(dir)) {
+                  if (f.startsWith(issue + '.') && !f.startsWith('.')) {
+                    const archDir = path.join(fasePath(pipelineName, fase), 'archivado');
+                    fs.mkdirSync(archDir, { recursive: true });
+                    try { moveFile(path.join(dir, f), archDir); } catch {}
+                  }
+                }
+              } catch {}
+            }
+
+            if (!yaBloqueado) {
+              try {
+                humanBlock.reportHumanBlock({
+                  issue: parseInt(issue),
+                  skill: skillBloq,
+                  phase: fase,
+                  pipeline: pipelineName,
+                  reason: motivoTxt,
+                  question,
+                  moveFromActive: false,
+                });
+              } catch (e) {
+                log('barrido', `❌ #${issue} reportHumanBlock falló: ${e.message}`);
+              }
+
+              // Aplicar label needs-human en GitHub (servicio-github auto-crea el label).
+              try {
+                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                fs.mkdirSync(ghQueueDir, { recursive: true });
+                fs.writeFileSync(
+                  path.join(ghQueueDir, `${issue}-needs-human-blockreason-${Date.now()}.json`),
+                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }),
+                );
+                const body = [
+                  `## Pipeline pausó este issue: requiere intervención humana`,
+                  '',
+                  `El agente \`${skillBloq}\` (fase \`${pipelineName}/${fase}\`) detectó que el avance depende de una acción humana — no es un bug del código ni un fallo de infra.`,
+                  '',
+                  `### Motivo`,
+                  '```',
+                  motivoTxt,
+                  '```',
+                  '',
+                  `### Qué necesitamos`,
+                  question,
+                  '',
+                  `Mientras el label \`needs-human\` esté presente, el pipeline NO va a relanzar el skill (cero rebotes, cero tokens consumidos).`,
+                  '',
+                  `Una vez resuelto, remové el label o usá \`/unblock ${issue} <orientación>\` desde Telegram para reentrar en la cola.`,
+                ].join('\n');
+                fs.writeFileSync(
+                  path.join(ghQueueDir, `${issue}-needs-human-comment-${Date.now()}.json`),
+                  JSON.stringify({ action: 'comment', issue: parseInt(issue), body }),
+                );
+              } catch (e) {
+                log('barrido', `Error encolando needs-human para #${issue}: ${e.message}`);
+              }
+
+              // Notificación Telegram con listado completo de incidentes.
+              try {
+                const summary = humanBlock.buildBlockedSummaryMarkdown({
+                  highlight: { issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question },
+                });
+                sendTelegram(summary);
+              } catch (e) {
+                log('barrido', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
+              }
+
+              log('barrido', `🚧 #${issue} → bloqueado-humano (skill=${skillBloq}, fase=${fase}). NO incrementa rev. Esperando humano.`);
+            } else {
+              log('barrido', `🔁 #${issue} ya estaba en bloqueado-humano (skill=${yaBloqueado.skill}). Cleanup de residuales sin re-notificar.`);
+            }
+            continue;
+          }
 
           // Routing mismatch: si el agente rechazó por "fuera de alcance",
           // devolver el issue a definición con observaciones — el ruteo se
@@ -2826,12 +3288,27 @@ function calcularPrioridad(issueNum, config) {
   return effectivePrio * 10 + tiebreaker;
 }
 
-/** Ordenar archivos pendientes por prioridad del issue */
+/** Ordenar archivos pendientes por prioridad del issue.
+ *  Fuente única de verdad: orden manual del Issue Tracker
+ *  (.pipeline/issue-manual-order.json). Si un issue no tiene entrada en el orden
+ *  manual, cae al cálculo legacy por labels (calcularPrioridad).
+ */
 function sortByPriority(archivos, config) {
   if (archivos.length <= 1) return archivos;
+  let manualOrderIndex = null;
+  try {
+    const issueOrder = require('./lib/issue-order');
+    const state = issueOrder.load();
+    manualOrderIndex = new Map(state.order.map((n, i) => [String(n), i]));
+  } catch {}
   return archivos.sort((a, b) => {
-    const issueA = issueFromFile(a.name);
-    const issueB = issueFromFile(b.name);
+    const issueA = String(issueFromFile(a.name));
+    const issueB = String(issueFromFile(b.name));
+    if (manualOrderIndex && manualOrderIndex.size > 0) {
+      const ia = manualOrderIndex.has(issueA) ? manualOrderIndex.get(issueA) : Infinity;
+      const ib = manualOrderIndex.has(issueB) ? manualOrderIndex.get(issueB) : Infinity;
+      if (ia !== ib) return ia - ib; // index menor = prioritario primero
+    }
     return calcularPrioridad(issueA, config) - calcularPrioridad(issueB, config);
   });
 }
@@ -2961,15 +3438,10 @@ function brazoLanzamiento(config) {
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
 
-  // Leer activaciones/desactivaciones manuales del dashboard
-  readManualPriorityOverrides();
-
-  // Evaluar Priority Windows ANTES del gate de recursos — para que puedan
-  // desactivarse (cola vacía) incluso cuando el sistema está bajo presión.
-  // Sin esto, una ventana activada durante un pico de carga queda atascada
-  // indefinidamente porque isSystemOverloaded() retorna antes de la evaluación.
-  const qaPriority = evaluateQaPriority(config);
-  const buildPriority = evaluateBuildPriority(config);
+  // Priority windows ya evaluadas en mainLoop (corren incluso pausado).
+  // Leer estado actual desde variables de módulo.
+  const qaPriority = qaPriorityActive;
+  const buildPriority = buildPriorityActive;
 
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
@@ -3047,10 +3519,64 @@ function brazoLanzamiento(config) {
     //    Sin este check el siguiente iteration explota al intentar moverlo.
     if (!fs.existsSync(archivo.path)) continue;
 
+    // 0a. PARTIAL PAUSE (#2490): si hay allowlist activa, saltar issues fuera de ella.
+    // El archivo se queda en pendiente/ — no se archiva ni penaliza.
+    if (!partialPause.isIssueAllowed(issue)) {
+      const mode = partialPause.getPipelineMode();
+      if (mode.mode === 'partial_pause') {
+        log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
+      }
+      continue;
+    }
+
     // 0b. BLOCKED: no lanzar issues con blocked:dependencies
     const issueLbls = getIssueLabels(issue);
     if (issueLbls.includes('blocked:dependencies')) {
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      continue;
+    }
+
+    // 0b-bis. NEEDS-HUMAN (#2549): si el issue tiene label needs-human, no
+    // lanzar el skill. El intake ya excluye con `-label:needs-human`, pero el
+    // label puede aplicarse después de que el archivo entró a pendiente/.
+    // Movemos el archivo a `bloqueado-humano/` (mismo subdir que reportHumanBlock)
+    // para que el dashboard lo vea como bloqueado y NO lo retomamos hasta que
+    // un humano remueva el label (entonces el intake genera un archivo fresco).
+    if (issueLbls.includes('needs-human') || issueLbls.includes('needs:human')) {
+      const blockedDir = path.join(fasePath(pipelineName, fase), 'bloqueado-humano');
+      try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
+      const targetFile = path.join(blockedDir, archivo.name);
+      const reasonFile = targetFile + '.reason.json';
+      const yaTeniaReason = fs.existsSync(reasonFile);
+      // Persistir reason mínima para que listBlockedIssues() lo muestre con contexto.
+      const reasonTxt = 'Label needs-human aplicado en GitHub — pipeline pausa el skill hasta que un humano remueva el label.';
+      const questionTxt = `¿Podés revisar #${issue} y quitar el label \`needs-human\` cuando esté listo para reentrar?`;
+      if (!yaTeniaReason) {
+        try {
+          fs.writeFileSync(reasonFile, JSON.stringify({
+            issue: parseInt(issue),
+            skill,
+            phase: fase,
+            pipeline: pipelineName,
+            reason: reasonTxt,
+            question: questionTxt,
+            blocked_at: new Date().toISOString(),
+          }, null, 2));
+        } catch {}
+      }
+      try { moveFile(archivo.path, blockedDir); } catch {}
+      log('lanzamiento', `🚧 #${issue} omitido — label needs-human. Movido a ${pipelineName}/${fase}/bloqueado-humano/`);
+      // Notificar Telegram solo la primera vez (dedup por reasonFile pre-existente).
+      if (!yaTeniaReason) {
+        try {
+          const summary = humanBlock.buildBlockedSummaryMarkdown({
+            highlight: { issue: parseInt(issue), skill, reason: reasonTxt, question: questionTxt },
+          });
+          sendTelegram(summary);
+        } catch (e) {
+          log('lanzamiento', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
+        }
+      }
       continue;
     }
 
@@ -4043,7 +4569,22 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
-  const useExistingWorktree = (fase === 'build');
+  // #2526: fases que LEEN código del issue (no generan commits) deben correr
+  // en el worktree del dev, no en ROOT. Si corren en ROOT, leen la rama
+  // arbitraria del repo principal (puede estar checkout en la rama de OTRO
+  // agente) y producen resultados incorrectos. Incidente 2026-04-24: linter
+  // de #2505 corrió en ROOT (checkout en agent/2450), reportó 'no-commits'
+  // aunque el worktree del #2505 tenía 3 commits legítimos.
+  //
+  // #2519 (rev-1, 2026-04-24): además se incluye `entrega`. El fix original
+  // (#2526) explicitó "entrega no toca git local, usa PR de GitHub" pero eso
+  // es FALSO: skills-deterministicos/delivery.js hace git add/commit/rebase/push
+  // en local antes del gh pr create. Si corre en ROOT, usa la rama y árbol del
+  // repo principal (rama ajena + cambios sucios de heartbeats/registry) y
+  // produce: rebase conflicts, commits a la rama equivocada, push a otra
+  // branch. Incidente real: delivery del #2519 corrió en ROOT con branch
+  // agent/2523-... y 66 archivos sucios, falló rebase con "unstaged changes".
+  const useExistingWorktree = (fase === 'build' || fase === 'linteo' || fase === 'aprobacion' || fase === 'entrega');
   let worktreePath = ROOT;
   let worktreeBranch = null;
 
@@ -4065,7 +4606,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       return;
     }
   } else if (useExistingWorktree) {
-    // Build: buscar el worktree existente del issue (creado en fase dev)
+    // Build/linteo/aprobacion: buscar el worktree existente del issue
+    // (creado en fase dev por algún skill dev: android-dev, backend-dev,
+    // web-dev o pipeline-dev). El primero que matchee `platform.agent-<issue>-*`.
     try {
       const worktreePattern = `platform.agent-${issue}-`;
       const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
@@ -4076,12 +4619,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         }
       }
       if (worktreePath !== ROOT) {
-        log('lanzamiento', `Build #${issue}: usando worktree existente ${worktreePath}`);
+        log('lanzamiento', `${skill}:#${issue} (fase ${fase}): usando worktree existente ${worktreePath}`);
       } else {
-        log('lanzamiento', `Build #${issue}: no se encontró worktree, usando ROOT`);
+        log('lanzamiento', `${skill}:#${issue} (fase ${fase}): no se encontró worktree, usando ROOT — posible lectura incorrecta si ROOT está en rama ajena`);
       }
     } catch (e) {
-      log('lanzamiento', `Build #${issue}: error buscando worktree (${e.message}), usando ROOT`);
+      log('lanzamiento', `${skill}:#${issue} (fase ${fase}): error buscando worktree (${e.message}), usando ROOT`);
     }
   }
 
@@ -4126,17 +4669,41 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
+  // #2476 / #2482 / #2484 — bypass al LLM para skills determinísticos: si el skill
+  // tiene un script Node en `.pipeline/skills-deterministicos/<skill>.js`, lo corremos
+  // con Node puro (cero tokens). El script implementa el mismo contrato (marker,
+  // heartbeat, eventos V3, exit 0=aprobado/1=rebote) por lo que el resto del flujo
+  // (watchdog, on-exit, mover a listo/) funciona sin cambios.
+  // Rollout reversible: borrar el archivo → fallback automático al agente LLM.
+  const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
+  const deterministicScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
+  const useDeterministicSkill = (DETERMINISTIC_SKILLS.has(skill) && fs.existsSync(deterministicScript));
+
   // Launcher detectado al boot (ver detectClaudeLauncher). Evita cmd.exe cuando es posible.
-  const spawnCmd = CLAUDE_LAUNCHER.cmd;
-  const spawnArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...args];
+  const spawnCmd = useDeterministicSkill ? process.execPath : CLAUDE_LAUNCHER.cmd;
+  const spawnArgs = useDeterministicSkill
+    ? [deterministicScript, String(issue), `--trabajando=${trabajandoPath}`]
+    : [...CLAUDE_LAUNCHER.prefixArgs, ...args];
+
+  if (useDeterministicSkill) {
+    log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
+  }
 
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
-    shell: CLAUDE_LAUNCHER.shell,
+    shell: useDeterministicSkill ? false : CLAUDE_LAUNCHER.shell,
     windowsHide: true,
-    env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase, ...extraEnv }
+    env: {
+      ...process.env,
+      PIPELINE_ISSUE: issue,
+      PIPELINE_SKILL: skill,
+      PIPELINE_FASE: fase,
+      PIPELINE_PIPELINE: pipeline,
+      PIPELINE_TRABAJANDO: trabajandoPath,
+      ...extraEnv,
+    },
   });
 
   // #2334 / CA6: piping stdout/stderr → sanitizeStream → file.
@@ -4234,35 +4801,56 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
+    //
+    // Excepción (#2524): si el agente alcanzó a escribir un YAML con veredicto
+    // válido (`resultado: aprobado | rechazado`), NO es muerte prematura — es
+    // terminación legítima. Aplica principalmente a skills determinísticos
+    // (linter, builder, delivery, tester en modo no-LLM) que terminan rápido
+    // por diseño y emiten veredicto explícito antes del exit.
     if (code !== 0 && elapsedSec < 15) {
-      const { failures, delayMin } = registerFastFail(skill, issue);
-      log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
-      const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
-      try { moveFile(trabajandoPath, pendienteDir); } catch {}
-      activeProcesses.delete(processKey(skill, issue));
-      // Matar Gradle daemons incluso en fast-fail
-      killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
-      // Salir del canal de contexto
-      if (contextChannelId) {
-        try {
-          const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
-          cm.leaveChannelByType(contextChannelId, 'agent');
-        } catch (e) {}
-      }
-      sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
-      // Reporte PDF de muerte prematura (background)
+      let hasVerdict = false;
       try {
-        const reportScript = path.join(PIPELINE, 'rejection-report.js');
-        const reportChild = spawn(process.execPath, [
-          reportScript,
-          '--issue', String(issue), '--skill', skill, '--fase', fase,
-          '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
-          '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
-          '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
-        ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
-        reportChild.unref();
+        const quickYaml = readYaml(trabajandoPath) || {};
+        hasVerdict = quickYaml.resultado === 'aprobado' || quickYaml.resultado === 'rechazado';
       } catch {}
-      return;
+
+      if (!hasVerdict) {
+        const { failures, delayMin } = registerFastFail(skill, issue);
+        log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        try { moveFile(trabajandoPath, pendienteDir); } catch {}
+        activeProcesses.delete(processKey(skill, issue));
+        // Matar Gradle daemons incluso en fast-fail
+        killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
+        // Salir del canal de contexto
+        if (contextChannelId) {
+          try {
+            const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+            cm.leaveChannelByType(contextChannelId, 'agent');
+          } catch (e) {}
+        }
+        sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
+        // Reporte PDF de muerte prematura (background)
+        try {
+          const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          const reportChild = spawn(process.execPath, [
+            reportScript,
+            '--issue', String(issue), '--skill', skill, '--fase', fase,
+            '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+            '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
+            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+          ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
+          reportChild.unref();
+        } catch {}
+        return;
+      }
+
+      // Hay veredicto: tratamos como terminación normal. Limpiamos cooldown
+      // stale de fast-fails previos (el skill demostró que está OK emitiendo
+      // veredicto válido, aunque exit ≠ 0 por convención de rechazo).
+      log('lanzamiento', `✓ ${skill}:#${issue} terminó en ${elapsedSec.toFixed(0)}s con veredicto válido (code=${code}) — no es muerte prematura`);
+      clearCooldown(skill, issue);
+      // Cae al flujo normal de abajo que mueve trabajando → listo y dispara rejection-report si corresponde.
     }
 
     // Éxito o finalización normal → limpiar cooldown
@@ -4607,14 +5195,22 @@ async function cmdStatus(config) {
     log('commander', `[status] Error obteniendo PRs del día: ${e.message}`);
   }
 
-  // Estado pausa
-  if (paused) lines.push('\n⏸️ *PULPO PAUSADO*');
+  // Estado pausa (completa o parcial — #2490)
+  if (paused) {
+    lines.push('\n⏸️ *PULPO PAUSADO*');
+  } else {
+    const ppMode = partialPause.getPipelineMode();
+    if (ppMode.mode === 'partial_pause') {
+      const list = ppMode.allowedIssues.map(i => `#${i}`).join(', ');
+      lines.push(`\n⏸️ *PULPO EN PAUSA PARCIAL*\nIssues permitidos: ${list}`);
+    }
+  }
 
   const text = lines.join('\n');
 
   // Audio TTS de la narración
   try {
-    const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+    const { textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro } = require('./multimedia');
     const botToken = getTelegramToken();
     const chatId = getTelegramChatId();
     if (botToken && chatId) {
@@ -4625,7 +5221,14 @@ async function cmdStatus(config) {
       // Recursos
       const { cpuPercent: cpu, memPercent: mem } = getSystemResourceUsage();
       narration += `CPU al ${cpu} por ciento, RAM al ${mem} por ciento. `;
-      if (paused) narration += 'El pulpo está pausado. ';
+      if (paused) {
+        narration += 'El pulpo está pausado. ';
+      } else {
+        const ppMode = partialPause.getPipelineMode();
+        if (ppMode.mode === 'partial_pause') {
+          narration += `Pipeline en pausa parcial, procesando solo ${ppMode.allowedIssues.length} ${ppMode.allowedIssues.length === 1 ? 'issue' : 'issues'}. `;
+        }
+      }
       // PRs del día
       try {
         const today = new Date().toISOString().slice(0, 10);
@@ -4640,14 +5243,29 @@ async function cmdStatus(config) {
       } catch {}
 
       const statusChunks = splitTextForTTSChunks(narration, 3800);
+      let prevProviderStatus = loadTtsState().lastProvider;
       for (let i = 0; i < statusChunks.length; i++) {
-        const chunkText = statusChunks.length > 1
+        let chunkText = statusChunks.length > 1
           ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
           : statusChunks[i];
-        const audioBuffer = await textToSpeech(chunkText);
-        if (audioBuffer) {
-          await sendVoiceTelegram(audioBuffer, botToken, chatId);
-          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado`);
+        const meta = await textToSpeechWithMeta(chunkText);
+        if (meta && meta.buffer) {
+          const intro = i === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
+          if (intro) {
+            // Reenviar el primer chunk con el preámbulo de transición
+            const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`);
+            if (reMeta && reMeta.buffer) {
+              await sendVoiceTelegram(reMeta.buffer, botToken, chatId);
+              log('commander', `[status] Audio TTS parte 1/${statusChunks.length} enviado con intro (provider=${reMeta.provider})`);
+              saveTtsState({ lastProvider: reMeta.provider });
+              prevProviderStatus = reMeta.provider;
+              continue;
+            }
+          }
+          await sendVoiceTelegram(meta.buffer, botToken, chatId);
+          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado (provider=${meta.provider})`);
+          saveTtsState({ lastProvider: meta.provider });
+          prevProviderStatus = meta.provider;
         }
       }
     }
@@ -4748,9 +5366,31 @@ function cmdPausar() {
 }
 
 function cmdReanudar() {
-  try { fs.unlinkSync(PAUSE_FILE); } catch {}
+  // #2490 — /reanudar limpia tanto pausa completa como parcial.
+  const { removedFull, removedPartial } = partialPause.resumeAll();
   paused = false;
-  return '▶️ Pulpo REANUDADO. Procesamiento activo.';
+  const parts = [];
+  if (removedFull) parts.push('pausa completa');
+  if (removedPartial) parts.push('pausa parcial');
+  const cleared = parts.length > 0 ? ` (${parts.join(' + ')} eliminada)` : '';
+  return `▶️ Pulpo REANUDADO${cleared}. Procesamiento activo.`;
+}
+
+// #2490 — Pausa parcial con allowlist de issues.
+// Uso: /pause-partial 2490 2491  → procesa solo esos issues, pausa el resto.
+function cmdPausaParcial(args) {
+  const nums = String(args || '').match(/\d+/g) || [];
+  if (nums.length === 0) {
+    const state = partialPause.getPipelineMode();
+    if (state.mode === 'partial_pause') {
+      return `⏸️ *Pausa parcial activa*\nIssues permitidos: ${state.allowedIssues.map(i => `#${i}`).join(', ')}\nDesde: ${state.createdAt || '?'}\n\n_Usar /reanudar para desactivar._`;
+    }
+    return '⚠️ Uso: `/pause-partial 2490 2491`\n\nActiva pausa parcial con los issues indicados. El pipeline sigue corriendo solo para esos números, el resto queda pausado.';
+  }
+  const issues = nums.map(n => parseInt(n, 10));
+  const result = partialPause.setPartialPause(issues, { source: 'telegram' });
+  const list = result.allowedIssues.map(i => `#${i}`).join(', ');
+  return `⏸️ *Pausa parcial activa*\nIssues permitidos: ${list}\n\n_Todo el resto del pipeline queda pausado hasta que hagas /reanudar._`;
 }
 
 function cmdCostos() {
@@ -5386,6 +6026,77 @@ function cmdRestart(args) {
   return `🔄 Reinicio ${mode} del pipeline en progreso...\n_Te aviso cuando termine (~15-30s)._${paused ? '\n_Modo pausado: Telegram + dashboard activos, sin intake ni agentes._' : ''}`;
 }
 
+function cmdBloqueados() {
+  let humanBlock;
+  try { humanBlock = require('./lib/human-block'); }
+  catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
+
+  const list = humanBlock.listBlockedIssues();
+  if (!list.length) return '✅ No hay issues bloqueados esperando intervención humana.';
+
+  const lines = [`🚧 *Issues bloqueados esperando humano* (${list.length})\n`];
+  for (const b of list) {
+    const ageStr = b.age_hours < 1
+      ? `${Math.round(b.age_hours * 60)}min`
+      : `${b.age_hours}h`;
+    lines.push(`*#${b.issue}* — ${b.skill} en ${b.phase} _(hace ${ageStr})_`);
+    if (b.question) lines.push(`  ❓ ${b.question}`);
+    else if (b.reason) lines.push(`  📝 ${b.reason.slice(0, 140)}`);
+    lines.push('');
+  }
+  lines.push('_Usá_ `/unblock <issue> <orientación>` _para desbloquear._');
+  return lines.join('\n');
+}
+
+function cmdUnblock(args) {
+  const trimmed = (args || '').trim();
+  if (!trimmed) {
+    return '❌ Uso: `/unblock <issue> <orientación>`\nEj: `/unblock 2480 usar la API REST en lugar de gRPC`';
+  }
+
+  const m = trimmed.match(/^#?(\d+)\s+(.+)$/s);
+  if (!m) {
+    return '❌ Formato inválido. Usá: `/unblock <número de issue> <orientación>`';
+  }
+  const issue = Number(m[1]);
+  const guidance = m[2].trim();
+  if (!guidance) return '❌ La orientación no puede estar vacía.';
+
+  let humanBlock;
+  try { humanBlock = require('./lib/human-block'); }
+  catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
+
+  let result;
+  try { result = humanBlock.unblockIssue({ issue, guidance, unlocker: 'commander:telegram' }); }
+  catch (e) { return `❌ Error desbloqueando #${issue}: ${e.message}`; }
+
+  if (!result.ok) return `⚠️ ${result.error}`;
+
+  // Best-effort: quitar label needs:human del issue en GitHub
+  try {
+    const ghBin = process.env.GH_BIN || 'gh';
+    require('child_process').execSync(
+      `"${ghBin}" issue edit ${issue} --remove-label "needs:human" --repo intrale/platform`,
+      { stdio: 'ignore', timeout: 15000 }
+    );
+  } catch {}
+
+  // Best-effort: comentar en el issue con la orientación
+  try {
+    const ghBin = process.env.GH_BIN || 'gh';
+    const body = `## ✅ Desbloqueado por humano\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\n**Orientación:**\n\n> ${guidance.replace(/\n/g, '\n> ')}\n\n_Vuelve a la cola del pipeline._`;
+    const tmpFile = path.join(PIPELINE, `.unblock-comment-${issue}-${Date.now()}.md`);
+    fs.writeFileSync(tmpFile, body);
+    require('child_process').execSync(
+      `"${ghBin}" issue comment ${issue} --body-file "${tmpFile}" --repo intrale/platform`,
+      { stdio: 'ignore', timeout: 15000 }
+    );
+    try { fs.unlinkSync(tmpFile); } catch {}
+  } catch {}
+
+  return `✅ Issue *#${issue}* desbloqueado.\n*Skill:* \`${result.skill}\` · *Fase:* \`${result.from_phase}\` → \`${result.to_phase}\`\n*Orientación guardada* para que el próximo agente la lea al arrancar.`;
+}
+
 function cmdHelp() {
   return `🤖 *Comandos del Pipeline V2*
 
@@ -5397,9 +6108,12 @@ function cmdHelp() {
 /restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
 /limpiar — Matar daemons Gradle/Kotlin huérfanos
 /ghostbusters — Matar fantasmas: gradle zombies + worktrees abandonados + emuladores no sincronizados
-/pausar — Pausar el Pulpo
-/reanudar — Reanudar el Pulpo
+/pausar — Pausar el Pulpo (completo)
+/pause-partial 2490 2491 — Pausa parcial: solo esos issues siguen activos
+/reanudar — Reanudar el Pulpo (levanta pausa completa o parcial)
 /costos — Resumen de actividad/costos
+/bloqueados — Listar issues bloqueados esperando intervención humana (V3)
+/unblock <issue> <orientación> — Desbloquear un issue con orientación para el skill (V3)
 /help — Esta ayuda
 /stop — Apagar el Commander
 
@@ -5411,8 +6125,8 @@ function parseCommand(text) {
   if (!text || typeof text !== 'string') return null;
   const trimmed = text.trim();
 
-  // Comando explícito /xxx
-  const match = trimmed.match(/^\/(\w+)\s*(.*)?$/s);
+  // Comando explícito /xxx (admite guiones para /pause-partial, /chat-gpt, etc.)
+  const match = trimmed.match(/^\/([\w-]+)\s*(.*)?$/s);
   if (match) return { cmd: match[1].toLowerCase(), args: (match[2] || '').trim() };
 
   // Detección de intención por lenguaje natural (solo para mensajes cortos tipo comando)
@@ -5433,6 +6147,7 @@ function parseCommand(text) {
       { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
       { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
       { pattern: /\b(limpi[áa]|limpiar daemons|matar gradle|matar daemons|kill gradle)\b/i, cmd: 'limpiar' },
+      { pattern: /\b(bloqueados|qu[eé] est[áa] bloqueado|que necesita humano|necesitan intervenci[óo]n)\b/i, cmd: 'bloqueados' },
     ];
 
     for (const { pattern, cmd } of intentPatterns) {
@@ -5524,7 +6239,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  const { preprocessMessage, textToSpeech, sendVoiceTelegram } = require('./multimedia');
+  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro } = require('./multimedia');
   const session = loadSession();
 
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
@@ -5561,8 +6276,10 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       case 'actividad': respuesta = cmdActividad(parsed.args); break;
       case 'ghostbusters': respuesta = cmdGhostbusters(); break;
       case 'intake': respuesta = cmdIntake(parsed.args, config); break;
-      case 'pausar': respuesta = cmdPausar(); break;
-      case 'reanudar': respuesta = cmdReanudar(); break;
+      case 'pausar': case 'pause': respuesta = cmdPausar(); break;
+      case 'reanudar': case 'resume': respuesta = cmdReanudar(); break;
+      case 'pause-partial': case 'pause_partial': case 'pausarparcial':
+        respuesta = cmdPausaParcial(parsed.args); break;
       case 'costos': respuesta = cmdCostos(); break;
       case 'help': case 'start': respuesta = cmdHelp(); break;
       case 'stop':
@@ -5573,6 +6290,8 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
       case 'limpiar': respuesta = cmdLimpiar(); break;
       case 'restart': respuesta = cmdRestart(parsed.args); break;
+      case 'bloqueados': respuesta = cmdBloqueados(); break;
+      case 'unblock': respuesta = cmdUnblock(parsed.args); break;
       default: respuesta = null; break;
     }
 
@@ -5718,17 +6437,32 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         if (esAudio) {
           try {
             const chatChunks = splitTextForTTSChunks(respuesta, 3800);
+            let prevProvider = loadTtsState().lastProvider;
             for (let i = 0; i < chatChunks.length; i++) {
-              const chunkText = chatChunks.length > 1
+              const baseChunk = chatChunks.length > 1
                 ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
                 : chatChunks[i];
-              const audioBuffer = await textToSpeech(chunkText);
-              if (audioBuffer) {
-                const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
-                fs.writeFileSync(audioPath, audioBuffer);
-                enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
-                if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${audioBuffer.length} bytes)`);
+              // Primero probamos a ver qué provider gana para este chunk
+              const meta = await textToSpeechWithMeta(baseChunk);
+              if (!meta || !meta.buffer) continue;
+
+              const intro = i === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
+              let finalBuffer = meta.buffer;
+              let finalProvider = meta.provider;
+              if (intro) {
+                const reMeta = await textToSpeechWithMeta(`${intro} ${baseChunk}`);
+                if (reMeta && reMeta.buffer) {
+                  finalBuffer = reMeta.buffer;
+                  finalProvider = reMeta.provider;
+                }
               }
+
+              const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
+              fs.writeFileSync(audioPath, finalBuffer);
+              enviado = await sendVoiceTelegram(finalBuffer, botToken, chatId);
+              if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${finalBuffer.length} bytes, provider=${finalProvider}${intro ? ', con intro' : ''})`);
+              saveTtsState({ lastProvider: finalProvider });
+              prevProvider = finalProvider;
             }
           } catch (e) {
             log('commander', `TTS error: ${e.message}`);
@@ -5868,6 +6602,14 @@ function brazoIntake(config) {
   if (Date.now() - lastIntakeTime < intakeInterval) return;
   lastIntakeTime = Date.now();
 
+  // #2506: respetar pausa parcial — si está activa, solo procesar issues del allowlist.
+  // Si es pausa completa, no hacer intake.
+  const pipelineMode = partialPause.getPipelineMode();
+  if (pipelineMode.mode === 'paused') return;
+  const allowlistSet = pipelineMode.mode === 'partial_pause'
+    ? new Set(pipelineMode.allowedIssues.map(String))
+    : null;
+
   const intakeConfig = config.intake || {};
 
   for (const [pipelineName, pipeIntake] of Object.entries(intakeConfig)) {
@@ -5885,9 +6627,22 @@ function brazoIntake(config) {
         `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
         { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
       );
-      const issues = JSON.parse(result || '[]');
+      let issues = JSON.parse(result || '[]');
 
       if (issues.length === 0) continue;
+
+      // #2506: si partial_pause, filtrar antes del loop principal para no hacer trabajo inútil.
+      if (allowlistSet) {
+        const before = issues.length;
+        issues = issues.filter(i => allowlistSet.has(String(i.number)));
+        if (issues.length === 0) {
+          log('intake', `${pipelineName}: partial_pause filtró ${before} issues fuera del allowlist — sin candidatos`);
+          continue;
+        }
+        if (before > issues.length) {
+          log('intake', `${pipelineName}: partial_pause filtró ${before - issues.length} issues fuera del allowlist (${issues.length} candidatos restantes)`);
+        }
+      }
 
       // Cachear labels+estado de los issues recién traídos de GitHub
       for (const issue of issues) {
@@ -5907,6 +6662,16 @@ function brazoIntake(config) {
         const issueLabels = (issue.labels || []).map(l => l.name);
         if (issueLabels.includes('blocked:dependencies')) {
           log('intake', `#${issueNum} omitido — tiene label blocked:dependencies`);
+          continue;
+        }
+
+        // RECOMENDACION (#2653): no procesar issues con label tipo:recomendacion
+        // hasta que un humano apruebe (recommendation:approved). Defensa en
+        // profundidad: el search ya filtra needs-human, pero si alguien quita
+        // needs-human por error sin agregar recommendation:approved, el issue
+        // sigue siendo una recomendación pendiente y NO debe entrar al flujo.
+        if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
+          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
           continue;
         }
 
@@ -6057,6 +6822,16 @@ function brazoDesbloqueo(config) {
   if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
   lastUnblockTime = Date.now();
 
+  // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
+  // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
+  // ciclo consultando sus dependencias en GitHub (cada issue toma 20-30s por
+  // los múltiples gh issue view; con 25 issues bloqueados típicos, ~8 min/ciclo).
+  const pipelineMode = partialPause.getPipelineMode();
+  if (pipelineMode.mode === 'paused') return;
+  const allowlistSet = pipelineMode.mode === 'partial_pause'
+    ? new Set(pipelineMode.allowedIssues.map(String))
+    : null;
+
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies
     ghThrottle();
@@ -6064,11 +6839,22 @@ function brazoDesbloqueo(config) {
       `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title,labels --limit 50`,
       { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
     );
-    const blockedIssues = JSON.parse(result || '[]');
+    let blockedIssues = JSON.parse(result || '[]');
     if (blockedIssues.length === 0) {
       // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
       try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
       return;
+    }
+
+    // #2506: filtrar por allowlist si pausa parcial activa.
+    if (allowlistSet) {
+      const before = blockedIssues.length;
+      blockedIssues = blockedIssues.filter(i => allowlistSet.has(String(i.number)));
+      if (blockedIssues.length === 0) {
+        log('desbloqueo', `partial_pause: ninguno de los ${before} issues bloqueados está en el allowlist — skip ciclo`);
+        return;
+      }
+      log('desbloqueo', `partial_pause: filtrados ${before - blockedIssues.length} issues fuera del allowlist (${blockedIssues.length} candidatos)`);
     }
 
     log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
@@ -6262,6 +7048,13 @@ async function mainLoop() {
         bridge.tick();
       } catch (e) {}
 
+      // Priority windows: evaluar SIEMPRE, incluso pausado.
+      // Sin esto, una ventana activa queda "pegada" cuando se pausa el pipeline
+      // porque brazoLanzamiento (que antes evaluaba) no corre en modo pausado.
+      readManualPriorityOverrides();
+      evaluateQaPriority(config);
+      evaluateBuildPriority(config);
+
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
@@ -6327,7 +7120,25 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     staleness,
     _precheckState: () => ({ lastPrecheckResult, lastPrecheckAt, lastInfraBlockedIssues: Array.from(lastInfraBlockedIssues) }),
     _setPrecheckState: (r) => { lastPrecheckResult = r; lastPrecheckAt = Date.now(); },
-    _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); }
+    _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); },
+    // #2516 — cross-phase rebote: utilidades para tests.
+    MAX_CROSSPHASE_REBOTES,
+    getFaseGlobalOrder,
+    faseGlobalIndex,
+    findPreviousFaseForSkill,
+    validateRebotedDestino,
+    resolveRebotedCrossPhase,
+    // #2651 — QA priority window: cola dispara activación, no-progreso + cooldown.
+    evaluateQaPriority,
+    countRunningVerificacion,
+    countPendingVerificacion,
+    persistPriorityWindows,
+    _getQaPriorityState: () => ({ qaPriorityActive, qaPriorityActivatedAt, qaFirstBlockedAt, qaPriorityManual, qaPriorityNotifiedTelegram, qaPrioritySafetyNotified, qaNoProgressSince, qaCooldownUntil }),
+    _resetQaPriorityState: () => { qaPriorityActive = false; qaPriorityActivatedAt = 0; qaFirstBlockedAt = 0; qaPriorityManual = false; qaPriorityNotifiedTelegram = false; qaPrioritySafetyNotified = false; qaNoProgressSince = 0; qaCooldownUntil = 0; },
+    _setQaNoProgressSince: (ts) => { qaNoProgressSince = ts; },
+    _setQaCooldownUntil: (ts) => { qaCooldownUntil = ts; },
+    _setQaPriorityActive: (active, activatedAt) => { qaPriorityActive = active; qaPriorityActivatedAt = activatedAt || (active ? Date.now() : 0); qaPriorityNotifiedTelegram = active; },
+    _setBuildPriorityState: (active, manual) => { buildPriorityActive = active; buildPriorityManual = manual || false; },
   };
   return; // No arrancar singleton ni mainLoop
 }

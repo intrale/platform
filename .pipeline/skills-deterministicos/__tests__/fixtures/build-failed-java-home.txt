@@ -1,0 +1,9 @@
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Value 'C:\Users\Administrator\.jdks\jbr-21' given for org.gradle.java.installations.paths Gradle property is invalid (JAVA_HOME does not exist: no such file or directory)
+
+* Try:
+> Run with --stacktrace option to get more log output.
+
+BUILD FAILED in 2s

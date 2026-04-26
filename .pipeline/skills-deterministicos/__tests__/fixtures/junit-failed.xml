@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="ar.com.intrale.UserControllerTest" tests="4" skipped="0" failures="2" errors="0" timestamp="2026-04-22T12:00:00" hostname="ci" time="2.456">
+  <properties/>
+  <testcase name="list retorna todos los usuarios del negocio" classname="ar.com.intrale.UserControllerTest" time="0.234"/>
+  <testcase name="list rechaza cuando el business id no existe" classname="ar.com.intrale.UserControllerTest" time="0.112">
+    <failure message="expected: NotFound but was: InternalError" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: NotFound but was: InternalError
+        at ar.com.intrale.UserControllerTest.list rechaza cuando el business id no existe(UserControllerTest.kt:42)
+        at kotlin.reflect.jvm.internal.impl...
+    </failure>
+  </testcase>
+  <testcase name="list pagina correctamente con limit=10" classname="ar.com.intrale.UserControllerTest" time="0.089">
+    <failure message="Expected page size 10 but got 15" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: Expected page size 10 but got 15
+        at ar.com.intrale.UserControllerTest.list pagina correctamente(UserControllerTest.kt:67)
+    </failure>
+  </testcase>
+  <testcase name="list respeta el orden por createdAt desc" classname="ar.com.intrale.UserControllerTest" time="0.076"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

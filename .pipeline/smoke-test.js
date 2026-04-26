@@ -117,11 +117,15 @@ async function main() {
     fail(`Componentes no-ready tras ${waitedSec}s: ${bad.join(', ')}`, 1);
   }
 
-  // 2) Dashboard HTTP.
+  // 2) Dashboard HTTP. Timeout holgado (30s) porque /api/state lee bastante
+  // estado del filesystem (issueMatrix + servicios + bloqueados-humano +
+  // métricas). Con la cola creciendo se acerca al límite anterior de 5s y
+  // dispara rollbacks falsos positivos. 30s es margen amplio sin retrasar
+  // demasiado el restart cuando hay un problema real.
   if (args.http) {
     log('Verificando dashboard HTTP :3200...');
     const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
-    const httpRes = await checkDashboardHttp(dashPort, 5000);
+    const httpRes = await checkDashboardHttp(dashPort, 30000);
     if (!httpRes.ok) {
       fail(`Dashboard no responde en :${dashPort} (status=${httpRes.status})`, 2);
     }

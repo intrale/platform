@@ -29,6 +29,14 @@ const { spawnSync } = require("child_process");
 const os = require("os");
 
 // ─── Constantes TTS ──────────────────────────────────────────────────────────
+//
+// DEUDA TÉCNICA (#2518): este script llama OpenAI directo con voz `ash` y
+// instructions genéricas, sin pasar por el perfil `qa` (Rulo/Nacho) del
+// `.pipeline/tts-config.json`. Migración propuesta: reemplazar callOpenAITTS
+// por invocación a `.pipeline/lib/tts-generate.js --profile qa` para respetar
+// primary=edge (costo) + fallback=openai (premium) y las personalidades del
+// perfil qa. Por ahora se deja como estaba para no inflar el PR #2518; la
+// migración se tracker como issue aparte.
 
 const TTS_MODEL = "gpt-4o-mini-tts";
 const TTS_VOICE = "ash";
@@ -90,6 +98,39 @@ function findFFprobe(ffmpegPath) {
 }
 
 // ─── Argument parsing ─────────────────────────────────────────────────────────
+
+// #2519: path canónico de la metadata del narrador por issue.
+// `qa-video-share.js` la lee (vía servicio-drive) para mapear provider → Nacho/Rulo.
+function narrationMetaPath(issue, rootDir) {
+    if (!issue || !/^\d+$/.test(String(issue))) return null;
+    return path.join(rootDir || process.cwd(), "qa", "evidence", String(issue), "qa-narration.meta.json");
+}
+
+// #2519 CA-B3/S4: persiste metadata del narrador. No crashea por errores de
+// I/O — la metadata es best-effort; si no la escribimos, el template omite la
+// línea del narrador sin romper el mensaje.
+function writeNarrationMeta(issue, rootDir, meta) {
+    const target = narrationMetaPath(issue, rootDir);
+    if (!target) return false;
+    try {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const payload = {
+            issue: String(issue),
+            provider: String(meta.provider || "openai").toLowerCase(),
+            voice: String(meta.voice || ""),
+            model: String(meta.model || ""),
+            character_name: String(meta.character_name || ""),
+            source: String(meta.source || "qa-narration.js"),
+            generated_at: new Date().toISOString(),
+        };
+        fs.writeFileSync(target, JSON.stringify(payload, null, 2));
+        console.log("[qa-narration] Metadata persistida: " + target);
+        return true;
+    } catch (e) {
+        console.warn("[qa-narration] No se pudo persistir metadata de narrador: " + e.message);
+        return false;
+    }
+}
 
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -646,6 +687,16 @@ async function main() {
             console.error("[qa-narration] No se pudo generar ningún clip de audio");
             process.exit(0);
         }
+
+        // #2519: persistir metadata del narrador (provider siempre 'openai' para
+        // este script legacy — migración a tts-generate.js es issue #2521).
+        writeNarrationMeta(args.issue, args.rootDir || rootDir, {
+            provider: "openai",
+            voice: TTS_VOICE,
+            model: TTS_MODEL,
+            character_name: "", // este script no distingue personajes
+            source: "qa-narration.js",
+        });
 
         const outputPath = args.output || args.video.replace(/\.mp4$/, "-narrated.mp4");
 

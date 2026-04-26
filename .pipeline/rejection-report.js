@@ -1562,16 +1562,21 @@ async function sendReport(data) {
       if (current.trim()) chunks.push(current.trim());
     }
 
+    // #2518 — usar perfil del agente que rechazó (Rulo/Nacho para qa,
+    // Bigote/Agus para security, etc.) para que el audio en Telegram
+    // tenga la voz del skill, no Claudito/Tommy (que quedan para mensajes
+    // generales del sistema).
+    const ttsProfile = data.skill || 'default';
     for (let i = 0; i < chunks.length; i++) {
       const chunkText = chunks.length > 1
         ? `Parte ${i + 1} de ${chunks.length}. ${chunks[i]}`
         : chunks[i];
-      const audioBuffer = await textToSpeech(chunkText);
+      const audioBuffer = await textToSpeech(chunkText, { profile: ttsProfile });
       if (audioBuffer) {
         const sent = await sendVoiceTelegram(audioBuffer, tgConfig.bot_token, tgConfig.chat_id);
-        console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado: ${sent ? 'OK' : 'FALLO'}`);
+        console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado (profile=${ttsProfile}): ${sent ? 'OK' : 'FALLO'}`);
       } else {
-        console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1})`);
+        console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1}, profile=${ttsProfile})`);
       }
     }
   } catch (audioErr) {
@@ -1632,6 +1637,26 @@ async function phaseCollect() {
   const primaryCause = data.primaryCause;
   if (!primaryCause) {
     console.log(`[rejection-report] RECHAZADO_SIN_CAUSA — PDF directo, sin crear issue.`);
+    await sendReport(data);
+    return;
+  }
+
+  // Gate de creación de issue dependiente (v7 — fix del bug del #2505/#2509):
+  // Solo crear issue qa:dependency cuando la causa raíz es EXTERNA al scope
+  // del issue rechazado (infra caída, servicio externo, puerto ocupado, etc.).
+  //
+  // Si el rechazo es INTERNO (el desarrollo no cumple los CA del propio issue,
+  // decisión de producto del PO, etc.), NO crear issue nuevo: el rebote natural
+  // del pulpo ya mueve el archivo de vuelta a dev/pendiente/ y android-dev
+  // vuelve a ejecutar sobre el mismo issue con el contexto del rechazo.
+  //
+  // Crear un issue qa:dependency en rechazos INTERNOS produce redundancia
+  // (el contenido del issue es lo mismo que android-dev ya va a retrabajar)
+  // y genera deadlock si hay pausa parcial sin el nuevo issue en la allowlist.
+  const origen = primaryCause.origen || 'INTERNO';
+  const OPT_IN_INTERNAL = primaryCause.forceCreateDep === true;
+  if (origen !== 'EXTERNO' && !OPT_IN_INTERNAL) {
+    console.log(`[rejection-report] RECHAZO_INTERNO (origen=${origen}) — PDF + rebote natural, sin crear issue qa:dependency.`);
     await sendReport(data);
     return;
   }
