@@ -752,11 +752,12 @@ function renderInfraHealth(state) {
       : ih.error === 'empty' ? 'archivo vacío'
       : ih.error === 'invalid-json' ? 'JSON inválido'
       : 'estructura inválida';
-    return `<section class="infra-health infra-stale" role="region" aria-label="Salud de Infra" aria-live="polite">
-    <div class="ih-head">
+    return `<section class="infra-health infra-stale ih-collapsed" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head" onclick="toggleInfraHealth()" title="Click para colapsar/expandir">
       <span class="ih-emoji" aria-hidden="true">⚪</span>
       <span class="ih-title">Salud de Infra</span>
       <span class="ih-status ih-status-stale">STALE · ${escInfra(errMsg)}</span>
+      <span class="ih-chevron">▼</span>
     </div>
   </section>`;
   }
@@ -797,11 +798,12 @@ function renderInfraHealth(state) {
   // Caso especial: archivo creado pero sin datos todavía (UX punto 5 — Inicializando)
   const isInitializing = !dnsStatus && !cbState && !h.retries;
   if (isInitializing) {
-    return `<section class="infra-health infra-init" role="region" aria-label="Salud de Infra" aria-live="polite">
-    <div class="ih-head">
+    return `<section class="infra-health infra-init ih-collapsed" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head" onclick="toggleInfraHealth()" title="Click para colapsar/expandir">
       <span class="ih-emoji" aria-hidden="true">🔄</span>
       <span class="ih-title">Salud de Infra</span>
       <span class="ih-status ih-status-init">Inicializando healthchecks…</span>
+      <span class="ih-chevron">▼</span>
     </div>
   </section>`;
   }
@@ -882,13 +884,15 @@ function renderInfraHealth(state) {
     if (wasTruncated) lastTitle = ' title="' + escInfra(lastIssueReasonFull) + '"';
   }
 
-  return `<section class="infra-health ${sectionCls}" role="region" aria-label="Salud de Infra" aria-live="polite">
-  <div class="ih-head">
+  return `<section class="infra-health ${sectionCls} ih-collapsed" role="region" aria-label="Salud de Infra" aria-live="polite">
+  <div class="ih-head" onclick="toggleInfraHealth()" title="Click para colapsar/expandir">
     <span class="ih-emoji" aria-hidden="true">${emoji}</span>
     <span class="ih-title">Salud de Infra</span>
     <span class="ih-status ih-status-${sem.level}">${sem.label}</span>
     ${dnsTs.rel !== '—' ? '<span class="ih-ts" title="' + escInfra(dnsTs.abs) + '">última señal ' + escInfra(dnsTs.rel) + '</span>' : ''}
+    <span class="ih-chevron">▼</span>
   </div>
+  <div class="ih-body">
   <div class="ih-rows">
     <div class="ih-row ih-row-cb"${cbTitle}>
       <span class="ih-row-emoji" aria-hidden="true">${cbEmoji}</span>
@@ -911,6 +915,7 @@ function renderInfraHealth(state) {
       <span class="ih-row-lbl">Último issue afectado</span>
       <span class="ih-row-val">${lastText}</span>
     </div>
+  </div>
   </div>
 </section>`;
 }
@@ -2494,7 +2499,15 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .ih-head{
   display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  cursor:pointer;user-select:none;
 }
+.ih-head:hover{opacity:0.9}
+.ih-chevron{
+  margin-left:auto;font-size:0.7em;color:var(--dim);
+  transition:transform 0.18s ease;display:inline-block;
+}
+.infra-health.ih-collapsed .ih-chevron{transform:rotate(-90deg)}
+.infra-health.ih-collapsed .ih-body{display:none}
 .ih-emoji{font-size:1.15em;line-height:1}
 .ih-title{
   font-size:0.82em;color:var(--dim);font-weight:700;
@@ -5019,6 +5032,24 @@ async function issueDeprioritize(issueNum) {
     else alert('Error despriorizando: ' + (j.msg || 'desconocido'));
   } catch (e) { alert('Error despriorizando: ' + e.message); }
 }
+
+// Toggle de la sección "Salud de Infra" — colapsable + persistente (default: colapsada)
+function toggleInfraHealth() {
+  const sec = document.querySelector('section.infra-health');
+  if (!sec) return;
+  const willCollapse = !sec.classList.contains('ih-collapsed');
+  sec.classList.toggle('ih-collapsed');
+  try { localStorage.setItem('ih-collapsed', willCollapse ? '1' : '0'); } catch (e) {}
+}
+(function restoreInfraHealthState(){
+  try {
+    const sec = document.querySelector('section.infra-health');
+    if (!sec) return;
+    if (localStorage.getItem('ih-collapsed') === '0') {
+      sec.classList.remove('ih-collapsed');
+    }
+  } catch (e) {}
+})();
 
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
 function toggleNeedsHumanPanel(scrollOnExpand) {
