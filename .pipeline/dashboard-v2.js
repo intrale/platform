@@ -1745,11 +1745,13 @@ function generateHTML(state) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const bloqueadosHTML = bloqueados.length === 0 ? '' : `
     <div class="matrix-section needs-human-panel" id="bloqueados-humano">
-      <h2 style="margin:0 0 8px 0;color:#fff">
+      <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
         <span class="needs-human-pulse">🚨</span>
         Necesitan intervención humana
         <span class="needs-human-badge">${bloqueados.length}</span>
+        <span class="needs-human-chevron">▼</span>
       </h2>
+      <div class="needs-human-body">
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
         ${bloqueados.map(b => {
           const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
@@ -1774,6 +1776,7 @@ function generateHTML(state) {
       </div>
       <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
         Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
+      </div>
       </div>
     </div>`;
 
@@ -2702,6 +2705,18 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .needs-human-age-fresh{color:var(--yl)}
 .needs-human-age-old{color:#FF6B6B;font-weight:700}
+.needs-human-header{
+  margin:0 0 8px 0;color:#fff;cursor:pointer;user-select:none;
+  display:flex;align-items:center;gap:6px;
+}
+.needs-human-header:hover{opacity:0.85}
+.needs-human-chevron{
+  margin-left:auto;font-size:0.7em;color:var(--dim);
+  transition:transform 0.18s ease;display:inline-block;
+}
+.needs-human-panel.nh-collapsed .needs-human-chevron{transform:rotate(-90deg)}
+.needs-human-panel.nh-collapsed .needs-human-body{display:none}
+.needs-human-panel.nh-collapsed .needs-human-header{margin-bottom:0}
 .needs-human-row-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .needs-human-row-info{flex:1 1 auto;min-width:200px}
 .needs-human-row-actions{display:flex;gap:6px;flex:0 0 auto}
@@ -3997,10 +4012,10 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <div class="kpi-value ${blockedCount > 0 ? 'danger' : 'muted'}">${blockedCount}</div>
         <div class="kpi-trend">${blockedCount > 0 ? 'click para filtrar' : 'sin bloqueos'}</div>
       </div>
-      <div class="kpi kpi-needs-human ${bloqueados.length > 0 ? 'has-blocked kpi-clickable' : ''}" ${bloqueados.length > 0 ? 'onclick="document.getElementById(\'bloqueados-humano\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" title="Ver listado de incidentes bloqueados"' : 'title="Sin incidentes esperando humano"'}>
+      <div class="kpi kpi-needs-human ${bloqueados.length > 0 ? 'has-blocked kpi-clickable' : ''}" ${bloqueados.length > 0 ? 'onclick="toggleNeedsHumanPanel(true)" title="Click para colapsar/expandir el listado de incidentes"' : 'title="Sin incidentes esperando humano"'}>
         <div class="kpi-label">${bloqueados.length > 0 ? '\u{1F6A8} ' : ''}Necesitan humano</div>
         <div class="kpi-value ${bloqueados.length > 0 ? 'danger' : 'muted'}">${bloqueados.length}</div>
-        <div class="kpi-trend">${bloqueados.length > 0 ? 'click para detalle' : 'pipeline fluido'}</div>
+        <div class="kpi-trend">${bloqueados.length > 0 ? 'click para colapsar/expandir' : 'pipeline fluido'}</div>
       </div>
     </div>
     ${(() => {
@@ -4960,6 +4975,26 @@ async function recoReject(num) {
     else alert('Error: ' + (j.msg || 'desconocido'));
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+// Toggle del panel "Necesitan intervención humana" — colapsable + persistente
+function toggleNeedsHumanPanel(scrollOnExpand) {
+  const panel = document.getElementById('bloqueados-humano');
+  if (!panel) return;
+  const willCollapse = !panel.classList.contains('nh-collapsed');
+  panel.classList.toggle('nh-collapsed');
+  try { localStorage.setItem('nh-panel-collapsed', willCollapse ? '1' : '0'); } catch (e) {}
+  if (!willCollapse && scrollOnExpand) {
+    panel.scrollIntoView({behavior:'smooth', block:'start'});
+  }
+}
+(function restoreNeedsHumanPanelState(){
+  try {
+    if (localStorage.getItem('nh-panel-collapsed') === '1') {
+      const panel = document.getElementById('bloqueados-humano');
+      if (panel) panel.classList.add('nh-collapsed');
+    }
+  } catch (e) {}
+})();
 
 // Quick actions sobre issues con label needs-human (panel "Necesitan intervención humana")
 function nhDisableButtons(issueNum) {
