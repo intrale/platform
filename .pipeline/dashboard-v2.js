@@ -3749,6 +3749,35 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-prio-btn:disabled{opacity:0.4;cursor:wait}
 .lc-prio-up:hover{border-color:#3fb950;color:#3fb950}
 .lc-prio-down:hover{border-color:#f85149;color:#f85149}
+@keyframes prio-flash-ok-anim{
+  0%{box-shadow:0 0 0 0 rgba(63,185,80,0.0);background:transparent}
+  30%{box-shadow:0 0 0 3px rgba(63,185,80,0.45);background:rgba(63,185,80,0.10)}
+  100%{box-shadow:0 0 0 0 rgba(63,185,80,0.0);background:transparent}
+}
+@keyframes prio-flash-err-anim{
+  0%{box-shadow:0 0 0 0 rgba(248,81,73,0.0);background:transparent}
+  30%{box-shadow:0 0 0 3px rgba(248,81,73,0.45);background:rgba(248,81,73,0.10)}
+  100%{box-shadow:0 0 0 0 rgba(248,81,73,0.0);background:transparent}
+}
+.prio-flash-ok{animation:prio-flash-ok-anim 1.2s ease-out}
+.prio-flash-err{animation:prio-flash-err-anim 1.2s ease-out}
+#toast-host{
+  position:fixed;bottom:18px;right:18px;z-index:9999;
+  display:flex;flex-direction:column;gap:6px;pointer-events:none;
+  max-width:min(420px,calc(100vw - 36px));
+}
+.toast{
+  background:var(--card,#1a1f2e);color:var(--fg,#e0e6ed);
+  border:1px solid var(--bd,#2a3560);border-radius:6px;
+  padding:9px 14px;font-size:0.86em;font-family:inherit;
+  box-shadow:0 4px 14px rgba(0,0,0,0.35);
+  opacity:0;transform:translateY(8px);
+  transition:opacity 0.18s ease,transform 0.18s ease;
+}
+.toast-show{opacity:1;transform:translateY(0)}
+.toast-ok{border-left:3px solid #3fb950}
+.toast-err{border-left:3px solid #f85149}
+.toast-info{border-left:3px solid var(--ac,#6d8cff)}
 .lc-gh{color:var(--dim);text-decoration:none;font-size:0.9em;padding:1px 4px;border-radius:3px;line-height:1}
 .lc-gh:hover{color:var(--ac);background:rgba(109,140,255,0.1)}
 .lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500;min-height:2.7em}
@@ -5016,21 +5045,89 @@ function _prioCallApi(issueNum, action) {
   return fetch('/api/issue/' + issueNum + '/' + action, { method: 'POST' })
     .then(r => r.json());
 }
+function _prioFindButtons(issueNum, action) {
+  const fnName = action === 'prioritize' ? 'issuePrioritize' : 'issueDeprioritize';
+  return Array.from(document.querySelectorAll('button.lc-prio-btn'))
+    .filter(b => (b.getAttribute('onclick') || '').includes(fnName + '(' + issueNum + ')'));
+}
+function _prioSetLoading(issueNum, action, loading) {
+  const btns = _prioFindButtons(issueNum, action);
+  for (const b of btns) {
+    if (loading) {
+      b.dataset.origText = b.textContent;
+      b.textContent = '⋯';
+      b.disabled = true;
+    } else {
+      if (b.dataset.origText) b.textContent = b.dataset.origText;
+      b.disabled = false;
+    }
+  }
+}
+function _prioFlashCards(issueNum, ok) {
+  const cards = document.querySelectorAll('[data-issue="' + issueNum + '"]');
+  cards.forEach(c => {
+    c.classList.add(ok ? 'prio-flash-ok' : 'prio-flash-err');
+    setTimeout(() => c.classList.remove('prio-flash-ok', 'prio-flash-err'), 1200);
+  });
+}
+function showToast(msg, type) {
+  let host = document.getElementById('toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toast-host';
+    document.body.appendChild(host);
+  }
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + (type || 'info');
+  t.textContent = msg;
+  host.appendChild(t);
+  // forzar reflow para que la animación de entrada arranque
+  void t.offsetWidth;
+  t.classList.add('toast-show');
+  setTimeout(() => {
+    t.classList.remove('toast-show');
+    setTimeout(() => t.remove(), 250);
+  }, 2200);
+}
 async function issuePrioritize(issueNum) {
   if (!confirm('Priorizar #' + issueNum + ' al máximo (priority:critical)?')) return;
+  _prioSetLoading(issueNum, 'prioritize', true);
   try {
     const j = await _prioCallApi(issueNum, 'prioritize');
-    if (j.ok) location.reload();
-    else alert('Error priorizando: ' + (j.msg || 'desconocido'));
-  } catch (e) { alert('Error priorizando: ' + e.message); }
+    if (j.ok) {
+      _prioFlashCards(issueNum, true);
+      showToast('▲ #' + issueNum + ' priorizado (priority:critical)', 'ok');
+      setTimeout(() => location.reload(), 700);
+    } else {
+      _prioSetLoading(issueNum, 'prioritize', false);
+      _prioFlashCards(issueNum, false);
+      showToast('Error priorizando #' + issueNum + ': ' + (j.msg || 'desconocido'), 'err');
+    }
+  } catch (e) {
+    _prioSetLoading(issueNum, 'prioritize', false);
+    _prioFlashCards(issueNum, false);
+    showToast('Error priorizando #' + issueNum + ': ' + e.message, 'err');
+  }
 }
 async function issueDeprioritize(issueNum) {
   if (!confirm('Despriorizar #' + issueNum + ' al mínimo (priority:low)?')) return;
+  _prioSetLoading(issueNum, 'deprioritize', true);
   try {
     const j = await _prioCallApi(issueNum, 'deprioritize');
-    if (j.ok) location.reload();
-    else alert('Error despriorizando: ' + (j.msg || 'desconocido'));
-  } catch (e) { alert('Error despriorizando: ' + e.message); }
+    if (j.ok) {
+      _prioFlashCards(issueNum, true);
+      showToast('▼ #' + issueNum + ' despriorizado (priority:low)', 'ok');
+      setTimeout(() => location.reload(), 700);
+    } else {
+      _prioSetLoading(issueNum, 'deprioritize', false);
+      _prioFlashCards(issueNum, false);
+      showToast('Error despriorizando #' + issueNum + ': ' + (j.msg || 'desconocido'), 'err');
+    }
+  } catch (e) {
+    _prioSetLoading(issueNum, 'deprioritize', false);
+    _prioFlashCards(issueNum, false);
+    showToast('Error despriorizando #' + issueNum + ': ' + e.message, 'err');
+  }
 }
 
 // Toggle de la sección "Salud de Infra" — colapsable + persistente (default: colapsada)
@@ -6787,6 +6884,20 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: false, msg: `No se pudo agregar label ${targetLabel}` }));
       return;
     }
+    // Invalidar/actualizar entrada del title-cache para que el próximo render
+    // ordene la card por la nueva prioridad sin esperar al TTL de 1h.
+    try {
+      const cache = loadIssueTitleCache();
+      const key = String(issueNum);
+      if (cache[key]) {
+        const old = Array.isArray(cache[key].labels) ? cache[key].labels : [];
+        const filtered = old.filter(l => !/^priority:/.test(l));
+        filtered.push(targetLabel);
+        cache[key].labels = filtered;
+        cache[key].fetchedAt = Date.now();
+        saveIssueTitleCache(cache);
+      }
+    } catch (e) { log(`priority: cache update fallido para #${issueNum}: ${e.message}`); }
     log(`priority: ${action} #${issueNum} → ${targetLabel}`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'prioritize' ? 'priorizado' : 'despriorizado'}`, label: targetLabel }));
