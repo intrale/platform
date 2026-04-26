@@ -1679,10 +1679,12 @@ function generateHTML(state) {
     // syncWith pero por defensa) van al fondo.
     const manualPos = manualOrderIndex.has(String(issueNum)) ? manualOrderIndex.get(String(issueNum)) : 999999;
     const priority = -manualPos;
+    const posLabel = manualPos < 999999 ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${manualPos + 1}</span>` : '';
     const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-lane="${lane}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite" draggable="${complete ? 'false' : 'true'}" ondragstart="onCardDragStart(event)" ondragover="onCardDragOver(event)" ondragleave="onCardDragLeave(event)" ondrop="onCardDrop(event)" ondragend="onCardDragEnd(event)">
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
+            ${posLabel}
             <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
             ${lcBlockIcons}${lcRetryingIcon}
           </div>
@@ -2308,9 +2310,12 @@ function generateHTML(state) {
             <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueMoveDown(${h.issue})" title="Bajar una posición">▼</button>
           </span>`
         : '';
+      const ahPos = manualOrderIndex.has(String(h.issue)) ? manualOrderIndex.get(String(h.issue)) : null;
+      const ahPosLabel = ahPos !== null ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${ahPos + 1}</span>` : '';
       return `<a href="${href}" target="_blank" class="ah-card ${statusCls}" title="${tip}">
         <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
         <span class="ah-skill">${p.name}</span>
+        ${ahPosLabel}
         <span class="ah-issue">#${h.issue}${title}</span>
         <span class="ah-fase">${h.fase}</span>
         <span class="ah-status">${statusIcon} ${statusLabel}</span>
@@ -3762,6 +3767,12 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-card-dragging{opacity:0.4;outline:1px dashed var(--ac,#6d8cff)}
 .lc-card.lc-drop-above{box-shadow:0 -3px 0 0 var(--ac,#6d8cff)}
 .lc-card.lc-drop-below{box-shadow:0 3px 0 0 var(--ac,#6d8cff)}
+.lc-pos{
+  display:inline-block;background:var(--sf2,#1a1f2e);color:var(--dim,#9aa6c2);
+  font-size:0.7em;font-weight:700;padding:1px 6px;border-radius:8px;
+  border:1px solid var(--bd,#2a3560);font-variant-numeric:tabular-nums;
+  margin-right:4px;line-height:1.4;
+}
 @keyframes prio-flash-ok-anim{
   0%{box-shadow:0 0 0 0 rgba(63,185,80,0.0);background:transparent}
   30%{box-shadow:0 0 0 3px rgba(63,185,80,0.45);background:rgba(63,185,80,0.10)}
