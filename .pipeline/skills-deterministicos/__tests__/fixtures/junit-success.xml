@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="ar.com.intrale.SessionTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-04-22T12:00:00" hostname="ci" time="1.234">
+  <properties/>
+  <testcase name="validate retorna true cuando el token es valido" classname="ar.com.intrale.SessionTest" time="0.123"/>
+  <testcase name="validate retorna false cuando el token expiro" classname="ar.com.intrale.SessionTest" time="0.045"/>
+  <testcase name="new session copia el business id" classname="ar.com.intrale.SessionTest" time="0.033"/>
+  <testcase name="new session rechaza business id vacio" classname="ar.com.intrale.SessionTest" time="0.021"/>
+  <testcase name="format deja el string intacto cuando no tiene tildes" classname="ar.com.intrale.SessionTest" time="0.012"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

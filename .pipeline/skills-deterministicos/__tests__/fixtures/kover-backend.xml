@@ -1,0 +1,63 @@
+<?xml version="1.0" ?>
+<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd">
+<report name="backend Coverage Report">
+  <sessioninfo id="backend-1" start="1735123200000" dump="1735123260000"/>
+  <package name="ar/com/intrale/core">
+    <class name="ar/com/intrale/core/Session" sourcefilename="Session.kt">
+      <method name="&lt;init&gt;" desc="()V" line="10">
+        <counter type="INSTRUCTION" missed="0" covered="5"/>
+        <counter type="LINE" missed="0" covered="1"/>
+        <counter type="METHOD" missed="0" covered="1"/>
+      </method>
+      <method name="validate" desc="()Z" line="20">
+        <counter type="INSTRUCTION" missed="2" covered="18"/>
+        <counter type="BRANCH" missed="1" covered="3"/>
+        <counter type="LINE" missed="0" covered="4"/>
+        <counter type="METHOD" missed="0" covered="1"/>
+      </method>
+      <counter type="INSTRUCTION" missed="2" covered="23"/>
+      <counter type="BRANCH" missed="1" covered="3"/>
+      <counter type="LINE" missed="0" covered="5"/>
+      <counter type="METHOD" missed="0" covered="2"/>
+      <counter type="CLASS" missed="0" covered="1"/>
+    </class>
+    <class name="ar/com/intrale/core/Helper" sourcefilename="Helper.kt">
+      <method name="format" desc="(Ljava/lang/String;)Ljava/lang/String;" line="5">
+        <counter type="INSTRUCTION" missed="0" covered="10"/>
+        <counter type="LINE" missed="0" covered="3"/>
+        <counter type="METHOD" missed="0" covered="1"/>
+      </method>
+      <counter type="INSTRUCTION" missed="0" covered="10"/>
+      <counter type="LINE" missed="0" covered="3"/>
+      <counter type="METHOD" missed="0" covered="1"/>
+      <counter type="CLASS" missed="0" covered="1"/>
+    </class>
+    <counter type="INSTRUCTION" missed="2" covered="33"/>
+    <counter type="BRANCH" missed="1" covered="3"/>
+    <counter type="LINE" missed="0" covered="8"/>
+    <counter type="METHOD" missed="0" covered="3"/>
+    <counter type="CLASS" missed="0" covered="2"/>
+  </package>
+  <package name="ar/com/intrale/api">
+    <class name="ar/com/intrale/api/UserController" sourcefilename="UserController.kt">
+      <method name="list" desc="()Ljava/util/List;" line="15">
+        <counter type="INSTRUCTION" missed="10" covered="5"/>
+        <counter type="LINE" missed="3" covered="2"/>
+        <counter type="METHOD" missed="0" covered="1"/>
+      </method>
+      <counter type="INSTRUCTION" missed="10" covered="5"/>
+      <counter type="LINE" missed="3" covered="2"/>
+      <counter type="METHOD" missed="0" covered="1"/>
+      <counter type="CLASS" missed="0" covered="1"/>
+    </class>
+    <counter type="INSTRUCTION" missed="10" covered="5"/>
+    <counter type="LINE" missed="3" covered="2"/>
+    <counter type="METHOD" missed="0" covered="1"/>
+    <counter type="CLASS" missed="0" covered="1"/>
+  </package>
+  <counter type="INSTRUCTION" missed="12" covered="38"/>
+  <counter type="BRANCH" missed="1" covered="3"/>
+  <counter type="LINE" missed="3" covered="10"/>
+  <counter type="METHOD" missed="0" covered="4"/>
+  <counter type="CLASS" missed="0" covered="3"/>
+</report>

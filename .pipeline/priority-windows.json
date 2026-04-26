@@ -1,0 +1,13 @@
+{
+  "qa": {
+    "active": false,
+    "activatedAt": null,
+    "manual": false
+  },
+  "build": {
+    "active": false,
+    "activatedAt": null,
+    "manual": false
+  },
+  "updatedAt": 1777024382604
+}

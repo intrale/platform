@@ -1,0 +1,17 @@
+> Task :backend:compileKotlin FAILED
+
+e: file:///c/Workspaces/Intrale/platform/backend/src/main/kotlin/ar/com/intrale/http/Server.kt:45:23 error: unresolved reference: configureSecurity
+e: file:///c/Workspaces/Intrale/platform/backend/src/main/kotlin/ar/com/intrale/http/Server.kt:46:19 error: unresolved reference: configureRouting
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':backend:compileKotlin'.
+> Compilation error. See log for more details
+  error: unresolved reference: configureSecurity
+
+* Try:
+> Run with --info or --debug option to get more log output.
+
+BUILD FAILED in 34s
+5 actionable tasks: 3 executed, 2 up-to-date

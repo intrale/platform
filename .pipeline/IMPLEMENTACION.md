@@ -1,6 +1,8 @@
-# Implementación Pipeline V2
+# Implementación Pipeline V3
 
-## Estado: COMPLETADA
+> **Nomenclatura (2026-04-22):** A partir de esta fecha, el dashboard y el pipeline se denominan **V3** (antes V2). El cambio refleja la nueva etapa de skills determinísticos + métricas extendidas. Los nombres físicos de archivos (`pulpo.js`, `dashboard-v2.js`, etc.) se mantienen para no romper la operación; la versión es conceptual.
+
+## Estado de V2 (pre-V3): COMPLETADA
 
 ## Documentación de diseño
 - Diseño completo: docs/pipeline-v2-diseno.md
@@ -105,3 +107,135 @@ node .pipeline/servicio-drive.js &      # Servicio Drive (stub)
 | Launch | `.pipeline/launch-v2.ps1` | PowerShell | ~40 |
 | Config | `.pipeline/config.yaml` | YAML | ~60 |
 | Roles | `.pipeline/roles/*.md` | Markdown | ~15 archivos |
+
+---
+
+# Pipeline V3 — Skills determinísticos
+
+## Estado: EN CURSO (arrancó 2026-04-22)
+
+## Motivación
+
+Reporte de eficiencia de tokens v2 (`docs/qa/reporte-eficiencia-tokens-v2-2026-04-22.pdf`)
+identificó que todo skill se trata hoy como monolito LLM, aunque cada uno tiene 3 fases:
+preparación (100% determinística), razonamiento (LLM) y entrega (100% determinística).
+Estamos pagando Opus/Haiku para hacer pasos mecánicos (`./gradlew assembleXDebug`,
+`git reset --hard main`, `gh pr merge`, agrupar data del activity-log, etc).
+
+Directiva de Leo (2026-04-22): migración **quirúrgica, sin romper el V2**, uno a uno.
+No tocar skills creativos (dev/qa/po) donde el LLM aporta valor real a la calidad.
+
+## Nomenclatura
+
+Los skills existentes se clasifican en 2 tipos según su implementación:
+
+- **Skill determinístico** — corre con Node puro (0 tokens LLM). Reemplaza el `claude.exe` por un script en `.pipeline/skills-deterministicos/<skill>.js`.
+- **Skill LLM** — corre con `claude.exe` y modelo Claude (flujo V2 clásico). Se mantiene para skills creativos.
+
+No hay palabra nueva más allá del adjetivo. El vocabulario del pipeline (pulpo, fases, ventanas, rebotes, circuit breaker, markers) **se conserva intacto**.
+
+## Tag de arranque
+
+- `v3-workers-deterministicos-start` — snapshot del V2 estable antes del primer merge V3 (tag histórico; mantenemos el nombre del tag pese al cambio de nomenclatura).
+- V2 sigue operativo en paralelo hasta que cada skill determinístico se valide.
+
+## Principio de trazabilidad (INNEGOCIABLE)
+
+La capa de observabilidad del V2 **no se toca**. Los skills determinísticos deben aparecer en los mismos sistemas de monitoreo que los skills LLM, sin excepciones:
+
+- **Markers de fase** — `pendiente/`, `trabajando/`, `listo/`, `rebotado/` (contrato idéntico).
+- **Heartbeat** — archivo `agent-<pid>.heartbeat` cada 30s (watchdog del Pulpo no los distingue).
+- **Activity log** — `.claude/activity-log.jsonl` con eventos `session:start`, `tool:call`, `session:end` y metadata del skill + issue + fase.
+- **Dashboard v2** — aparecen como agentes activos con progreso (sub-pasos `metadata.steps`), ruta en el grafo, colores por fase.
+- **Telegram notifications** — mismos hooks (`notify-telegram.js` para inicio/fin/rebote).
+- **agent-registry** — registro idéntico al skill LLM.
+- **Rejection reports** — mismo formato PDF + audio narrado si la fase rebota.
+
+La **única diferencia observable**: el campo `tokens_in/tokens_out = 0` y `model = "deterministic"` en el activity-log (para que las métricas de costo reflejen el ahorro).
+
+## Métricas extendidas V3 — distribuidas en cada migración (directiva 2026-04-22)
+
+El consumo de tokens pasa a ser el KPI central. Se trackea con granularidad:
+
+- Por **agente/skill** (ej: `android-dev`, `builder`, `qa`).
+- Por **fase** (ej: `definicion`, `dev`, `build`, `qa`).
+- Por **issue de punta a punta** (suma de todos los agentes que tocaron el issue).
+
+Métricas requeridas por agente:
+
+- **Tokens consumidos** (input + output + cache_read + cache_write).
+- **Tiempo de ejecución** (wall-clock entre `session:start` y `session:end`).
+- **TTS generado** — segundos de audio + caracteres enviados al TTS (por agente/fase). Permite estimar costo OpenAI TTS y detectar agentes verbosos.
+
+### Regla de oro (Leo, 2026-04-22)
+
+La **instrumentación de tokens/tiempo/TTS NO se implementa como issue separado por skill**. Cada issue de migración (builder, reset, cleanup, monitor, cost, branch, delivery) DEBE incorporar como parte de su scope:
+
+1. Emisión de `session:start` y `session:end` con `tokens_in/out`, `cache_read/write`, `model`, `phase`, `issue` y `duration_ms`.
+2. Wrapper de TTS (si el skill lo usa) que emita evento `tts:generated` con `chars`, `audio_seconds`, `provider`, `voice`.
+3. Verificación de aparición en dashboard + endpoints `/metrics/*` como criterio de aceptación.
+
+Motivo: evitar tener que volver a tocar cada skill para "agregarle" trazabilidad después. Sale completo del primer commit.
+
+El issue **#2477** queda como issue **transversal de convención + capa común**: define el schema de eventos, implementa el helper compartido (`.pipeline/lib/traceability.js`, `.pipeline/lib/tts-logger.js`), el agregador (`aggregator.js`), el dashboard `Consumo` y los endpoints. Pero la instrumentación concreta de cada skill viaja en su propio issue de migración.
+
+## Roadmap de migración (orden acordado con Leo)
+
+Cada migración = un issue + un PR. Respetan siempre ventanas, colas, concurrencia y
+circuit breaker del Pulpo — solo cambia *qué* ejecuta el Pulpo cuando libera el slot.
+
+| Orden | Skill | Issue | Por qué primero | Estado |
+|-------|-------|-------|-----------------|--------|
+| 1 | `builder` | #2476 | 100% mecánico: gradle → parse → reporte | En curso |
+| 2 | `reset` | — | Mata procesos + reset main + restart.js (ya existe) | Pendiente |
+| 3 | `cleanup` | — | Filtros por path del proyecto | Pendiente |
+| 4 | `monitor` | — | Abrir dashboard, ya casi determinístico | Pendiente |
+| 5 | `cost` | — | Leer activity-log, agrupar, calcular | Pendiente |
+| 6 | `branch` | — | Convenciones de ramas | Pendiente |
+| 7 | `delivery` | — | 95% determinístico, PR body podría usar Haiku | Pendiente |
+
+Issues transversales:
+
+- **#2477 Métricas extendidas V3** — convención + capa común (schema, helpers `traceability.js` y `tts-logger.js`, agregador, dashboard `Consumo`, endpoints `/metrics/*`). NO instrumenta skills — cada skill se instrumenta dentro de su propio issue de migración.
+
+## Estructura nueva
+
+```
+.pipeline/skills-deterministicos/
+├── builder.js       # Skill determinístico (reemplaza claude.exe + skill LLM builder)
+├── reset.js
+├── cleanup.js
+└── ...
+```
+
+El Pulpo detecta si un skill tiene implementación determinística en `.pipeline/skills-deterministicos/<skill>.js`:
+- Si existe → lanza `node .pipeline/skills-deterministicos/<skill>.js <issue>` (0 tokens).
+- Si no existe → sigue lanzando `claude.exe` con el skill (V2 clásico).
+
+## Feedback de errores
+
+Skills determinísticos que encuentran errores no triviales **rebotan al skill LLM
+correspondiente** (builder → android-dev/backend-dev) vía el rebote estándar del
+Pulpo. Los errores clasificables (OOM, network, timeout) se reintentan sin LLM.
+
+## Convención de commits
+
+- `v3(builder): ...`
+- `v3(cleanup): ...`
+- etc.
+
+## Dashboard
+
+El header muestra `V3` desde 2026-04-22 (decisión Leo: la etapa actual del pipeline y dashboard es V3, independientemente de cuántos skills determinísticos haya migrados). El indicador adicional `mixto` se enciende cuando hay skills determinísticos conviviendo con skills LLM.
+
+## Plantilla obligatoria para issues de migración (a partir de 2026-04-22)
+
+Todo issue de migración de skill (reset, cleanup, monitor, cost, branch, delivery, futuros) DEBE incluir en su body:
+
+1. **Sección "Migración a skill determinístico"** — qué pasos del skill son mecánicos vs creativos.
+2. **Sección "Trazabilidad de tokens/tiempo"** — cómo emite `session:start` / `session:end` con `tokens=0`, `model="deterministic"`, `phase`, `issue`, `duration_ms`. Usa `lib/traceability.js` del #2477.
+3. **Sección "Trazabilidad de TTS"** — si el skill genera audio, cómo envuelve la llamada con `lib/tts-logger.js` para emitir `tts:generated` con `chars`, `audio_seconds`, `provider`, `voice`.
+4. **Criterios de aceptación de métricas** — verificar que el skill aparece en dashboard `Consumo`, endpoint `/metrics/agents` y endpoint `/metrics/issues/:n`.
+
+No se acepta migración de skill que no contemple estos 4 puntos en su scope original.
+

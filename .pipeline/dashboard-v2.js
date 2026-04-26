@@ -23,6 +23,15 @@ const {
 let retryingState = null;
 try { retryingState = require('./retrying-state'); } catch { /* opcional */ }
 
+// V3 — Métricas extendidas (issue #2477). Best-effort require por si el
+// módulo todavía no existe en pipelines antiguos.
+let v3Aggregator = null;
+try { v3Aggregator = require('./metrics/aggregator'); } catch { /* V3 no disponible */ }
+
+// Recomendaciones generadas por agentes (issue #2653). Best-effort require.
+let recommendationsLib = null;
+try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcional */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -41,6 +50,11 @@ const COMPONENTS = [
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
 
+// gh CLI: el proceso del dashboard no necesariamente tiene gh en PATH.
+// Usamos un fallback hardcoded al binario en la instalación local.
+const GH_BIN_DEFAULT = 'C:/Workspaces/gh-cli/bin/gh';
+const GH_BIN = process.env.GH_BIN || process.env.GH_PATH || GH_BIN_DEFAULT;
+
 // --- Issue title/label cache (persisted to disk, refreshed via gh CLI) ---
 const TITLE_CACHE_FILE = path.join(PIPELINE, '.issue-title-cache.json');
 const TITLE_CACHE_TTL = 3600000; // 1 hour
@@ -57,29 +71,34 @@ function saveIssueTitleCache(cache) {
 }
 
 function fetchIssueTitles(issueIds, cache) {
-  const ghPath = process.env.GH_PATH || 'C:/Workspaces/gh-cli/bin/gh';
+  const ghPath = GH_BIN;
   // GraphQL batch: up to 50 issues per query
   const batches = [];
   for (let i = 0; i < issueIds.length; i += 50) batches.push(issueIds.slice(i, i + 50));
   for (const batch of batches) {
+    const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
     try {
       const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title labels(first:10) { nodes { name } } }`).join(' ');
       const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
       // Write query to temp file to avoid shell escaping issues on Windows
-      const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
       fs.writeFileSync(tmpQuery, query);
       const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
       const out = execSync(cmd, { encoding: 'utf8', timeout: 30000, windowsHide: true });
-      try { fs.unlinkSync(tmpQuery); } catch {}
       const data = JSON.parse(out)?.data?.repository || {};
-      for (const val of Object.values(data)) {
-        if (!val?.number) continue;
-        cache[String(val.number)] = {
-          title: val.title,
-          labels: (val.labels?.nodes || []).map(l => l.name),
-          fetchedAt: Date.now()
-        };
-      }
+      // Negative cache: issues ausentes/null en la respuesta se marcan como notFound
+      // para que no vuelvan a consultarse en cada refresh (evita loop gh api).
+      batch.forEach((id, i) => {
+        const val = data[`i${i}`];
+        if (val?.number) {
+          cache[String(val.number)] = {
+            title: val.title,
+            labels: (val.labels?.nodes || []).map(l => l.name),
+            fetchedAt: Date.now()
+          };
+        } else {
+          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+        }
+      });
     } catch (e) {
       // Fallback: fetch one by one
       for (const id of batch) {
@@ -88,8 +107,14 @@ function fetchIssueTitles(issueIds, cache) {
           const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
           const iss = JSON.parse(out2);
           cache[id] = { title: iss.title, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
-        } catch {}
+        } catch {
+          // Issue no resoluble: cachear como notFound para evitar re-consulta en cada refresh
+          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+        }
       }
+    } finally {
+      // Garantiza limpieza del tmp aunque execSync falle (evita acumulación .gh-query-*.graphql)
+      try { fs.unlinkSync(tmpQuery); } catch {}
     }
   }
   saveIssueTitleCache(cache);
@@ -404,6 +429,23 @@ function getPipelineState() {
     if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
   }
 
+  // V3 — Bloqueados esperando humano (issue #2478)
+  state.bloqueados = [];
+  try {
+    const humanBlock = require('./lib/human-block');
+    state.bloqueados = humanBlock.listBlockedIssues().map(b => ({
+      issue: b.issue,
+      skill: b.skill,
+      phase: b.phase,
+      pipeline: b.pipeline,
+      reason: b.reason,
+      question: b.question,
+      blocked_at: b.blocked_at,
+      age_hours: b.age_hours,
+      title: titleCache[String(b.issue)]?.title || '',
+    }));
+  } catch {}
+
   // Servicios
   state.servicios = {};
   try {
@@ -631,7 +673,7 @@ const SKILL_CATEGORY = {
 const FASE_LABEL_SHORT = {
   analisis: 'An', criterios: 'Cr', sizing: 'Si',
   validacion: 'Va', dev: 'Dv', build: 'Bd',
-  verificacion: 'Vf', aprobacion: 'Ap', entrega: 'En',
+  verificacion: 'Vf', linteo: 'Li', aprobacion: 'Ap', entrega: 'En',
 };
 
 const CATEGORY_META = {
@@ -715,11 +757,12 @@ function renderInfraHealth(state) {
       : ih.error === 'empty' ? 'archivo vacío'
       : ih.error === 'invalid-json' ? 'JSON inválido'
       : 'estructura inválida';
-    return `<section class="infra-health infra-stale" role="region" aria-label="Salud de Infra" aria-live="polite">
-    <div class="ih-head">
+    return `<section class="infra-health infra-stale ih-collapsed" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head" onclick="toggleInfraHealth()" title="Click para colapsar/expandir">
       <span class="ih-emoji" aria-hidden="true">⚪</span>
       <span class="ih-title">Salud de Infra</span>
       <span class="ih-status ih-status-stale">STALE · ${escInfra(errMsg)}</span>
+      <span class="ih-chevron">▼</span>
     </div>
   </section>`;
   }
@@ -760,11 +803,12 @@ function renderInfraHealth(state) {
   // Caso especial: archivo creado pero sin datos todavía (UX punto 5 — Inicializando)
   const isInitializing = !dnsStatus && !cbState && !h.retries;
   if (isInitializing) {
-    return `<section class="infra-health infra-init" role="region" aria-label="Salud de Infra" aria-live="polite">
-    <div class="ih-head">
+    return `<section class="infra-health infra-init ih-collapsed" role="region" aria-label="Salud de Infra" aria-live="polite">
+    <div class="ih-head" onclick="toggleInfraHealth()" title="Click para colapsar/expandir">
       <span class="ih-emoji" aria-hidden="true">🔄</span>
       <span class="ih-title">Salud de Infra</span>
       <span class="ih-status ih-status-init">Inicializando healthchecks…</span>
+      <span class="ih-chevron">▼</span>
     </div>
   </section>`;
   }
@@ -845,13 +889,15 @@ function renderInfraHealth(state) {
     if (wasTruncated) lastTitle = ' title="' + escInfra(lastIssueReasonFull) + '"';
   }
 
-  return `<section class="infra-health ${sectionCls}" role="region" aria-label="Salud de Infra" aria-live="polite">
-  <div class="ih-head">
+  return `<section class="infra-health ${sectionCls} ih-collapsed" role="region" aria-label="Salud de Infra" aria-live="polite">
+  <div class="ih-head" onclick="toggleInfraHealth()" title="Click para colapsar/expandir">
     <span class="ih-emoji" aria-hidden="true">${emoji}</span>
     <span class="ih-title">Salud de Infra</span>
     <span class="ih-status ih-status-${sem.level}">${sem.label}</span>
     ${dnsTs.rel !== '—' ? '<span class="ih-ts" title="' + escInfra(dnsTs.abs) + '">última señal ' + escInfra(dnsTs.rel) + '</span>' : ''}
+    <span class="ih-chevron">▼</span>
   </div>
+  <div class="ih-body">
   <div class="ih-rows">
     <div class="ih-row ih-row-cb"${cbTitle}>
       <span class="ih-row-emoji" aria-hidden="true">${cbEmoji}</span>
@@ -875,7 +921,54 @@ function renderInfraHealth(state) {
       <span class="ih-row-val">${lastText}</span>
     </div>
   </div>
+  </div>
 </section>`;
+}
+
+// --- Recomendaciones de agentes (issue #2653) ---
+function renderRecommendationsSection() {
+  if (!recommendationsLib) return '';
+  const cache = recommendationsLib.readCache();
+  const items = (cache.items || []).slice().sort((a, b) => {
+    if (a.createdAt && b.createdAt) return b.createdAt.localeCompare(a.createdAt);
+    return b.number - a.number;
+  });
+  const updatedAtTxt = cache.updatedAt
+    ? new Date(cache.updatedAt).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
+    : 'nunca';
+  const errorTxt = cache.error ? `<div class="reco-err">⚠ ${escapeHtml(cache.error)}</div>` : '';
+  const summary = `<summary>💡 Recomendaciones pendientes <span class="reco-count" data-count="${items.length}">${items.length}</span> <span class="reco-meta">· última sync: ${updatedAtTxt}</span></summary>`;
+  if (items.length === 0) {
+    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs-human</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
+  }
+  const rows = items.map(it => {
+    const fromTxt = it.fromIssue ? `desde #${it.fromIssue}` : '';
+    const agentBadge = `<span class="reco-agent reco-agent-${escapeHtml(it.sourceAgent)}">${escapeHtml(it.sourceAgent)}</span>`;
+    const created = it.createdAt
+      ? new Date(it.createdAt).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : '';
+    return `<tr data-issue="${it.number}">
+      <td class="reco-num"><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener">#${it.number}</a></td>
+      <td>${agentBadge}</td>
+      <td class="reco-title" title="${escapeHtml(it.title)}">${escapeHtml(it.title)}</td>
+      <td class="reco-from">${fromTxt}</td>
+      <td class="reco-created dim">${created}</td>
+      <td class="reco-actions">
+        <button class="reco-btn reco-btn-approve" onclick="recoApprove(${it.number})">✓ Aprobar</button>
+        <button class="reco-btn reco-btn-reject" onclick="recoReject(${it.number})">✗ Rechazar</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // --- HTML generation ---
@@ -897,6 +990,26 @@ function generateHTML(state) {
   let pulpoUptime = '—';
   try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
   const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
+
+  // #2490 — Pausa parcial (allowlist de issues)
+  let partialPauseState = { mode: 'running', allowedIssues: [] };
+  try {
+    const pp = require('./lib/partial-pause');
+    partialPauseState = pp.getPipelineMode();
+  } catch {}
+  const isPartialPause = partialPauseState.mode === 'partial_pause';
+
+  // V3 detection: workers determinísticos en .pipeline/workers/*.js
+  let v3Workers = [];
+  try {
+    const workersDir = path.join(PIPELINE, 'workers');
+    if (fs.existsSync(workersDir)) {
+      v3Workers = fs.readdirSync(workersDir)
+        .filter(f => f.endsWith('.js'))
+        .map(f => f.replace(/\.js$/, ''));
+    }
+  } catch {}
+  const v3Active = v3Workers.length > 0;
 
   // Agentes con personalidad — referentes del mercado
   const AGENT_PERSONA = {
@@ -922,6 +1035,20 @@ function generateHTML(state) {
 
   // KPIs
   const matrixEntries = Object.entries(state.issueMatrix);
+
+  // Orden manual del Issue Tracker: única fuente de prioridad. Issues nuevos
+  // (que aún no tienen entrada) se insertan al tope para que el usuario los vea.
+  let manualOrderState = { version: 1, order: [] };
+  try {
+    const issueOrder = require('./lib/issue-order');
+    manualOrderState = issueOrder.load();
+    const activeIssueNums = matrixEntries
+      .filter(([_, d]) => d.estadoActual)
+      .map(([n]) => String(n));
+    issueOrder.syncWith(manualOrderState, activeIssueNums);
+  } catch (e) {}
+  const manualOrderIndex = new Map(manualOrderState.order.map((n, i) => [String(n), i]));
+
   const activosList = matrixEntries.filter(([_, d]) => d.estadoActual);
   const activos = activosList.length;
   const totalIssues = matrixEntries.length;
@@ -1200,12 +1327,12 @@ function generateHTML(state) {
     const [pipe, fase] = fa.split('/');
     if (pipe === 'definicion') return 'def';
     if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
-    return 'qa'; // verificacion, aprobacion, entrega
+    return 'qa'; // verificacion, linteo, aprobacion, entrega
   }
   const laneMeta = {
     def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
     dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
-    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · aprob · entrega',      subFases: ['verificacion', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', aprobacion: 'Aprob', entrega: 'Entrega' } },
+    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · linteo · aprob · entrega', subFases: ['verificacion', 'linteo', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', linteo: 'Linteo', aprobacion: 'Aprob', entrega: 'Entrega' } },
   };
   const laneCards = { def: [], dev: [], qa: [], done: [] };
   const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
@@ -1545,32 +1672,29 @@ function generateHTML(state) {
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
     // Data atributos para búsqueda client-side
     const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
-    // Prioridad para sort (opción B, matchea orden del pulpo):
-    //   Tier 1 (top)    — working: el agente que se está ejecutando
-    //   Tier 2          — pendiente lanzable: próximos según score del pulpo
-    //   Tier 3          — pendiente bloqueado: no lanzables hasta resolver deps
-    //   Tier 4 (fondo)  — stale / failed: hundidos, no son el próximo a lanzar
-    // Dentro de cada tier se desempata por score del pulpo (critical primero).
-    // El sort es `b.priority - a.priority` (desc) → mayor priority = más arriba.
-    const pulpoScore = calcPulpoScore(data.labels);
-    let priority;
-    if (working) {
-      priority = 20000 - pulpoScore;
-    } else if (isStale || hasRejection) {
-      priority = 500 - (data.staleMin || 0);
-    } else if (isBlocked) {
-      priority = 5000 - pulpoScore;
-    } else {
-      priority = 10000 - pulpoScore;
-    }
-    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite">
+    // Prioridad para sort: orden manual del Issue Tracker es la única fuente.
+    // Position 0 = más prioritario; cuanto menor el index, más arriba en la lane.
+    // Sort es `b.priority - a.priority` (desc) → mayor priority = más arriba,
+    // así que invertimos el index. Issues sin entrada (no debería pasar tras
+    // syncWith pero por defensa) van al fondo.
+    const manualPos = manualOrderIndex.has(String(issueNum)) ? manualOrderIndex.get(String(issueNum)) : 999999;
+    const priority = -manualPos;
+    const posLabel = manualPos < 999999 ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${manualPos + 1}</span>` : '';
+    const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-lane="${lane}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite" draggable="${complete ? 'false' : 'true'}" ondragstart="onCardDragStart(event)" ondragover="onCardDragOver(event)" ondragleave="onCardDragLeave(event)" ondrop="onCardDrop(event)" ondragend="onCardDragEnd(event)">
       <div class="lc-card-main">
         <div class="lc-top">
           <div class="lc-top-left">
+            ${posLabel}
             <a class="lc-num" href="${GH(issueNum)}" target="_blank" title="Ver issue en GitHub" onclick="event.stopPropagation()">#${issueNum}</a>
             ${lcBlockIcons}${lcRetryingIcon}
           </div>
           <div class="lc-top-right">
+            <span class="lc-prio-actions">
+              <button class="lc-prio-btn lc-prio-top" onclick="event.stopPropagation();issueMoveToTop(${issueNum})" title="Mover al tope de la columna">⏫</button>
+              <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issueMoveUp(${issueNum})" title="Subir una posición">▲</button>
+              <button class="lc-prio-btn lc-prio-down" onclick="event.stopPropagation();issueMoveDown(${issueNum})" title="Bajar una posición">▼</button>
+              <button class="lc-prio-btn lc-prio-bottom" onclick="event.stopPropagation();issueMoveToBottom(${issueNum})" title="Mover al fondo de la columna">⏬</button>
+            </span>
             <span class="lc-elapsed ${laneElapsedCls}">${laneElapsedTxt}</span>
           </div>
         </div>
@@ -1635,10 +1759,57 @@ function generateHTML(state) {
     <div class="it-done-grid">${laneCards.done}</div>
   </details>` : '';
 
+  // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
+  const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
+  const escHtml = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const bloqueadosHTML = bloqueados.length === 0 ? '' : `
+    <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
+      <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
+        <span class="needs-human-pulse">🚨</span>
+        Necesitan intervención humana
+        <span class="needs-human-badge">${bloqueados.length}</span>
+        <span class="needs-human-chevron">▼</span>
+        <a class="section-popout" href="/?section=needs-human" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
+      </h2>
+      <div class="needs-human-body">
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
+        ${bloqueados.map(b => {
+          const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
+          const ageCls = b.age_hours >= 4 ? 'needs-human-age-old' : 'needs-human-age-fresh';
+          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${escHtml(b.title)}</span>` : '';
+          const reasonTxt = (b.question || b.reason || '').toString();
+          return `<div class="needs-human-row">
+            <div class="needs-human-row-head">
+              <div class="needs-human-row-info">
+                <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener"><b>#${b.issue}</b></a>${titleHtml}
+                <span style="color:var(--dim)"> · ${escHtml(b.skill)} en ${escHtml(b.phase)}</span>
+                <span class="${ageCls}"> · hace ${ageStr}</span>
+              </div>
+              <div class="needs-human-row-actions">
+                <button class="nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${b.issue})" title="Quitar el label needs-human y devolver el issue a la cola del pipeline">▶ Reactivar</button>
+                <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
+              </div>
+            </div>
+            ${reasonTxt ? `<div class="needs-human-reason">❓ ${escHtml(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
+        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
+      </div>
+      </div>
+    </div>`;
+
   const matrixHTML = `
-    <div class="matrix-section" id="issue-tracker">
+    ${bloqueadosHTML}
+    <div class="matrix-section section-collapsible section-collapsed" id="issue-tracker" data-section="issue-tracker">
       <div class="matrix-header">
-        <h2>📊 Issue Tracker</h2>
+        <h2 class="section-title-clickable" onclick="toggleSection('issue-tracker')" title="Click para colapsar/expandir">
+          <span class="section-chevron">▼</span> 📊 Issue Tracker
+        </h2>
+        <a class="section-popout" href="/?section=issue-tracker" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
         <div class="it-search-box">
           <input type="text" class="it-search" id="it-search-input" placeholder="🔍 Buscar por # o título…" oninput="filterIssuesBySearch(this.value)" />
           <span class="it-search-clear" onclick="clearIssueSearch()" title="Limpiar">×</span>
@@ -1649,11 +1820,13 @@ function generateHTML(state) {
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
       </div>
+      <div class="section-body">
       <div class="it-lanes">${lanesHTML}</div>
       ${doneLaneHTML}
       <div id="dot-popup" class="dot-popup" style="display:none">
         <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
         <div class="dp-body"></div>
+      </div>
       </div>
     </div>`;
 
@@ -2139,14 +2312,26 @@ function generateHTML(state) {
       const pdfLink = h.hasRejectionPdf
         ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
         : '';
+      const prioActions = isRunning
+        ? `<span class="ah-prio-actions">
+            <button class="lc-prio-btn lc-prio-top" onclick="event.preventDefault();event.stopPropagation();issueMoveToTop(${h.issue})" title="Mover al tope de la columna">⏫</button>
+            <button class="lc-prio-btn lc-prio-up" onclick="event.preventDefault();event.stopPropagation();issueMoveUp(${h.issue})" title="Subir una posición">▲</button>
+            <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueMoveDown(${h.issue})" title="Bajar una posición">▼</button>
+            <button class="lc-prio-btn lc-prio-bottom" onclick="event.preventDefault();event.stopPropagation();issueMoveToBottom(${h.issue})" title="Mover al fondo de la columna">⏬</button>
+          </span>`
+        : '';
+      const ahPos = manualOrderIndex.has(String(h.issue)) ? manualOrderIndex.get(String(h.issue)) : null;
+      const ahPosLabel = ahPos !== null ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${ahPos + 1}</span>` : '';
       return `<a href="${href}" target="_blank" class="ah-card ${statusCls}" title="${tip}">
         <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
         <span class="ah-skill">${p.name}</span>
+        ${ahPosLabel}
         <span class="ah-issue">#${h.issue}${title}</span>
         <span class="ah-fase">${h.fase}</span>
         <span class="ah-status">${statusIcon} ${statusLabel}</span>
         <span class="ah-dur">${durStr}</span>
         <span class="ah-time">${timeStr}</span>
+        ${prioActions}
         ${pdfLink}
       </a>`;
     };
@@ -2160,14 +2345,19 @@ function generateHTML(state) {
       : '';
 
     historyHTML = `
-    <div class="matrix-section" id="agent-history">
+    <div class="matrix-section section-collapsible section-collapsed" id="agent-history" data-section="historial">
       <div class="matrix-header">
-        <h2>\u{1F4DC} Historial de Ejecuciones</h2>
+        <h2 class="section-title-clickable" onclick="toggleSection('historial')" title="Click para colapsar/expandir">
+          <span class="section-chevron">▼</span> \u{1F4DC} Historial de Ejecuciones
+        </h2>
+        <a class="section-popout" href="/?section=historial" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
         <span class="ah-count">${agentHistory.length} ejecuciones</span>
       </div>
+      <div class="section-body">
       <div class="ah-list">
         ${visible}
         ${moreToggle}
+      </div>
       </div>
     </div>`;
   }
@@ -2289,6 +2479,7 @@ h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px
 .hdr-meta{font-size:0.75em;color:var(--dim);white-space:nowrap}
 .hdr-meta-sep{color:var(--bd);margin:0 2px}
 .hdr-uptime{font-size:0.75em;color:var(--dim);font-weight:500;cursor:help;padding:2px 8px;background:var(--sf);border-radius:10px;border:1px solid var(--bd)}
+.hdr-v3-badge{font-size:0.7em;font-weight:700;letter-spacing:1.2px;padding:3px 10px;border-radius:20px;background:linear-gradient(90deg,rgba(45,212,191,0.18),rgba(88,166,255,0.18));color:var(--teal,#2dd4bf);border:1px solid rgba(45,212,191,0.45);text-transform:uppercase;cursor:help}
 .hdr-right{display:flex;flex-direction:column;align-items:flex-end;line-height:1}
 .hdr-clock{font-size:1.6em;font-weight:700;font-family:'SF Mono',Consolas,monospace;color:var(--tx);letter-spacing:2px;font-variant-numeric:tabular-nums}
 .hdr-clock .clock-sec{font-size:0.55em;color:var(--dim);vertical-align:super;margin-left:1px}
@@ -2336,7 +2527,15 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .ih-head{
   display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  cursor:pointer;user-select:none;
 }
+.ih-head:hover{opacity:0.9}
+.ih-chevron{
+  margin-left:auto;font-size:0.7em;color:var(--dim);
+  transition:transform 0.18s ease;display:inline-block;
+}
+.infra-health.ih-collapsed .ih-chevron{transform:rotate(-90deg)}
+.infra-health.ih-collapsed .ih-body{display:none}
 .ih-emoji{font-size:1.15em;line-height:1}
 .ih-title{
   font-size:0.82em;color:var(--dim);font-weight:700;
@@ -2423,9 +2622,19 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   gap:8px;margin-bottom:0;padding:6px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
 }
-.kpis.kpis-5 .kpi{padding:10px 12px;min-width:0}
-.kpis.kpis-5 .kpi-value{font-size:1.7em}
-.kpis.kpis-5 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpis.kpis-6{
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi,.kpis.kpis-6 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value,.kpis.kpis-6 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label,.kpis.kpis-6 .kpi-label{margin-bottom:4px;font-size:0.64em}
+.kpi.kpi-needs-human{--kpi-accent:#B60205}
+.kpi.kpi-needs-human.has-blocked{
+  background:linear-gradient(135deg,rgba(182,2,5,0.18),rgba(182,2,5,0.04));
+  border-color:rgba(182,2,5,0.55);
+}
 .kpi-trend{
   font-size:0.62em;color:var(--dim);margin-top:3px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
@@ -2517,6 +2726,63 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:18px 20px;margin-bottom:20px;
 }
+
+/* ── Needs-Human Panel (#2549) — alta visibilidad ───────────────────────── */
+.matrix-section.needs-human-panel{
+  background:linear-gradient(135deg,rgba(182,2,5,0.18),rgba(182,2,5,0.06));
+  border:2px solid #B60205;border-left:6px solid #B60205;
+  box-shadow:0 0 0 1px rgba(182,2,5,0.25),0 4px 18px rgba(182,2,5,0.18);
+  padding:14px 18px;margin-bottom:18px;border-radius:8px;
+}
+.needs-human-pulse{
+  display:inline-block;animation:needs-human-pulse 1.6s ease-in-out infinite;
+  margin-right:6px;
+}
+@keyframes needs-human-pulse{
+  0%,100%{transform:scale(1);opacity:1}
+  50%{transform:scale(1.18);opacity:0.7}
+}
+.needs-human-badge{
+  display:inline-block;background:#B60205;color:#fff;font-weight:700;
+  font-size:0.62em;padding:2px 10px;border-radius:14px;
+  margin-left:8px;vertical-align:middle;letter-spacing:0.4px;
+}
+.needs-human-row{
+  background:rgba(0,0,0,0.18);border-radius:5px;
+  padding:8px 10px;font-size:0.92em;
+  border-left:3px solid rgba(182,2,5,0.7);
+}
+.needs-human-reason{
+  margin:4px 0 0 14px;color:#FFB3B3;font-size:0.92em;line-height:1.35;
+}
+.needs-human-age-fresh{color:var(--yl)}
+.needs-human-age-old{color:#FF6B6B;font-weight:700}
+.needs-human-header{
+  margin:0 0 8px 0;color:#fff;cursor:pointer;user-select:none;
+  display:flex;align-items:center;gap:6px;
+}
+.needs-human-header:hover{opacity:0.85}
+.needs-human-chevron{
+  margin-left:auto;font-size:0.7em;color:var(--dim);
+  transition:transform 0.18s ease;display:inline-block;
+}
+.needs-human-panel.nh-collapsed .needs-human-chevron{transform:rotate(-90deg)}
+.needs-human-panel.nh-collapsed .needs-human-body{display:none}
+.needs-human-panel.nh-collapsed .needs-human-header{margin-bottom:0}
+.needs-human-row-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.needs-human-row-info{flex:1 1 auto;min-width:200px}
+.needs-human-row-actions{display:flex;gap:6px;flex:0 0 auto}
+.nh-btn{
+  background:var(--card,#1a1f2e);color:var(--fg,#e0e6ed);
+  border:1px solid var(--bd,#2a3560);padding:4px 10px;border-radius:4px;
+  cursor:pointer;font-size:0.78em;font-family:inherit;white-space:nowrap;
+}
+.nh-btn:hover{background:rgba(255,255,255,0.06)}
+.nh-btn:disabled{opacity:0.5;cursor:wait}
+.nh-btn-reactivate{border-color:#3fb950;color:#3fb950}
+.nh-btn-reactivate:hover{background:rgba(63,185,80,0.12)}
+.nh-btn-dismiss{border-color:#f85149;color:#f85149}
+.nh-btn-dismiss:hover{background:rgba(248,81,73,0.12)}
 .matrix-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
 .matrix-count{
   font-size:0.8em;color:var(--dim);font-weight:400;
@@ -3427,7 +3693,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .it-sub-chip.it-sub-disabled:hover{background:var(--sf);border-color:transparent}
 .it-sub-all{flex:0 0 auto;min-width:56px}
 
-.it-lane-cards{display:flex;flex-direction:column;gap:6px;max-height:640px;overflow-y:auto;padding-right:2px}
+.it-lane-cards{display:flex;flex-direction:column;gap:6px;padding-right:2px}
 .it-lane-cards::-webkit-scrollbar{width:5px}
 .it-lane-cards::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 .lane-empty{font-size:0.72em;color:var(--dim);text-align:center;padding:14px 0;font-style:italic}
@@ -3500,6 +3766,83 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .lc-elapsed{font-size:0.82em;color:var(--dim);font-variant-numeric:tabular-nums}
 .lc-elapsed.lc-warn{color:var(--yl);font-weight:700}
 .lc-elapsed.lc-teal{color:#2dd4bf;font-weight:700}
+.lc-prio-actions,.ah-prio-actions{display:inline-flex;gap:2px;margin-right:4px}
+.lc-prio-btn{
+  background:transparent;color:var(--dim);
+  border:1px solid var(--bd);padding:0 4px;border-radius:3px;
+  cursor:pointer;font-size:0.7em;font-family:inherit;line-height:1.4;
+  min-width:18px;height:18px;
+}
+.lc-prio-btn:hover{background:rgba(255,255,255,0.06)}
+.lc-prio-btn:disabled{opacity:0.4;cursor:wait}
+.lc-prio-up:hover{border-color:#3fb950;color:#3fb950}
+.lc-prio-down:hover{border-color:#f85149;color:#f85149}
+.lc-prio-top:hover{border-color:#3fb950;color:#3fb950;background:rgba(63,185,80,0.10)}
+.lc-prio-bottom:hover{border-color:#f85149;color:#f85149;background:rgba(248,81,73,0.10)}
+.lc-card[draggable="true"]{cursor:grab}
+.lc-card[draggable="true"]:active{cursor:grabbing}
+.lc-card-dragging{opacity:0.4;outline:1px dashed var(--ac,#6d8cff)}
+.lc-card.lc-drop-above{box-shadow:0 -3px 0 0 var(--ac,#6d8cff)}
+.lc-card.lc-drop-below{box-shadow:0 3px 0 0 var(--ac,#6d8cff)}
+.lc-pos{
+  display:inline-block;background:var(--sf2,#1a1f2e);color:var(--dim,#9aa6c2);
+  font-size:0.7em;font-weight:700;padding:1px 6px;border-radius:8px;
+  border:1px solid var(--bd,#2a3560);font-variant-numeric:tabular-nums;
+  margin-right:4px;line-height:1.4;
+}
+/* Secciones colapsables (Issue Tracker, Equipo, Historial) */
+.section-title-clickable{cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:6px}
+.section-title-clickable:hover{opacity:0.9}
+.section-chevron{
+  font-size:0.65em;color:var(--dim);display:inline-block;
+  transition:transform 0.18s ease;
+}
+.section-collapsible.section-collapsed .section-chevron{transform:rotate(-90deg)}
+.section-collapsible.section-collapsed .section-body{display:none}
+.section-popout{
+  display:inline-block;text-decoration:none;color:var(--dim);
+  font-size:1em;padding:2px 6px;border-radius:4px;
+  border:1px solid var(--bd);margin-left:8px;
+  transition:all 0.15s ease;
+}
+.section-popout:hover{color:var(--ac,#6d8cff);border-color:var(--ac,#6d8cff);background:rgba(109,140,255,0.08)}
+/* Modo standalone: el JS mueve la sección target a primer hijo del body
+   (clase .standalone-target) y CSS oculta todo lo demás */
+body.standalone{padding:14px}
+body.standalone > *:not(.standalone-target):not(#toast-host){display:none !important}
+body.standalone .section-popout{display:none}
+body.standalone .section-chevron{display:none}
+body.standalone .section-title-clickable{cursor:default}
+body.standalone .section-collapsed .section-body{display:block !important}
+@keyframes prio-flash-ok-anim{
+  0%{box-shadow:0 0 0 0 rgba(63,185,80,0.0);background:transparent}
+  30%{box-shadow:0 0 0 3px rgba(63,185,80,0.45);background:rgba(63,185,80,0.10)}
+  100%{box-shadow:0 0 0 0 rgba(63,185,80,0.0);background:transparent}
+}
+@keyframes prio-flash-err-anim{
+  0%{box-shadow:0 0 0 0 rgba(248,81,73,0.0);background:transparent}
+  30%{box-shadow:0 0 0 3px rgba(248,81,73,0.45);background:rgba(248,81,73,0.10)}
+  100%{box-shadow:0 0 0 0 rgba(248,81,73,0.0);background:transparent}
+}
+.prio-flash-ok{animation:prio-flash-ok-anim 1.2s ease-out}
+.prio-flash-err{animation:prio-flash-err-anim 1.2s ease-out}
+#toast-host{
+  position:fixed;bottom:18px;right:18px;z-index:9999;
+  display:flex;flex-direction:column;gap:6px;pointer-events:none;
+  max-width:min(420px,calc(100vw - 36px));
+}
+.toast{
+  background:var(--card,#1a1f2e);color:var(--fg,#e0e6ed);
+  border:1px solid var(--bd,#2a3560);border-radius:6px;
+  padding:9px 14px;font-size:0.86em;font-family:inherit;
+  box-shadow:0 4px 14px rgba(0,0,0,0.35);
+  opacity:0;transform:translateY(8px);
+  transition:opacity 0.18s ease,transform 0.18s ease;
+}
+.toast-show{opacity:1;transform:translateY(0)}
+.toast-ok{border-left:3px solid #3fb950}
+.toast-err{border-left:3px solid #f85149}
+.toast-info{border-left:3px solid var(--ac,#6d8cff)}
 .lc-gh{color:var(--dim);text-decoration:none;font-size:0.9em;padding:1px 4px;border-radius:3px;line-height:1}
 .lc-gh:hover{color:var(--ac);background:rgba(109,140,255,0.1)}
 .lc-title{font-size:0.95em;line-height:1.35;color:var(--tx);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:500;min-height:2.7em}
@@ -3646,12 +3989,42 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 @media(max-width:900px){.eq-svc-grid{grid-template-columns:1fr}}
 @media(max-width:720px){.eq-areas-grid{grid-template-columns:1fr}}
 
+/* Recomendaciones de agentes (issue #2653) */
+.reco-section summary{position:relative}
+.reco-count{display:inline-block;background:#bc8cff;color:#0d1117;border-radius:10px;padding:1px 8px;font-size:0.75em;font-weight:700;margin-left:6px}
+.reco-count[data-count="0"]{background:var(--dim);color:#0d1117}
+.reco-meta{font-size:0.72em;color:var(--dim);font-weight:400;margin-left:6px}
+.reco-err{background:rgba(248,81,73,0.12);border:1px solid var(--rd);color:var(--rd);padding:6px 10px;border-radius:4px;font-size:0.85em;margin-bottom:8px}
+.reco-table{width:100%;border-collapse:collapse;font-size:0.85em}
+.reco-table th{text-align:left;padding:6px 8px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:0.4px;font-size:0.72em;border-bottom:1px solid var(--bd)}
+.reco-table td{padding:6px 8px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:top}
+.reco-table tr:hover td{background:rgba(255,255,255,0.02)}
+.reco-num a{color:var(--ac);text-decoration:none;font-weight:700}
+.reco-title{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reco-from{color:var(--dim);font-size:0.85em}
+.reco-created{font-size:0.78em}
+.reco-agent{display:inline-block;padding:1px 7px;border-radius:8px;font-size:0.7em;font-weight:700;text-transform:uppercase;background:rgba(188,140,255,0.15);color:#bc8cff}
+.reco-agent-security{background:rgba(248,81,73,0.15);color:#f85149}
+.reco-agent-po{background:rgba(210,153,34,0.15);color:#d29922}
+.reco-agent-ux{background:rgba(247,120,186,0.15);color:#f778ba}
+.reco-agent-review{background:rgba(255,166,87,0.15);color:#ffa657}
+.reco-actions{white-space:nowrap;text-align:right}
+.reco-btn{background:var(--card,#1a1f2e);color:var(--fg,#e0e6ed);border:1px solid var(--bd,#2a3560);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:0.78em;margin-left:4px;font-family:inherit}
+.reco-btn:hover{background:rgba(255,255,255,0.06)}
+.reco-btn-approve{border-color:#3fb950;color:#3fb950}
+.reco-btn-approve:hover{background:rgba(63,185,80,0.12)}
+.reco-btn-reject{border-color:#f85149;color:#f85149}
+.reco-btn-reject:hover{background:rgba(248,81,73,0.12)}
+
 </style></head>
 <body>
   <div class="hdr-bar">
     <div class="hdr-left">
-      <h1 class="hdr-title">🐙 Pipeline V2</h1>
-      <button class="hdr-status-badge ${isPaused ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : '▶ RUNNING'}</button>
+      <h1 class="hdr-title">🐙 Pipeline ${v3Active ? 'V2+V3' : 'V2'}</h1>
+      ${v3Active ? `<span class="hdr-v3-badge" title="V3 activo · workers determinísticos: ${v3Workers.join(', ')}">⚙ V3 (${v3Workers.length})</span>` : ''}
+      <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">📊 Consumo</a>
+      <button class="hdr-status-badge ${isPaused ? 'badge-paused' : isPartialPause ? 'badge-paused' : 'badge-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? 'Pausa parcial — click para reanudar completo' : 'Click para pausar el pipeline'}">${isPaused ? '⏸ PAUSADO' : isPartialPause ? `⏸ PARCIAL (${partialPauseState.allowedIssues.length})` : '▶ RUNNING'}</button>
+      ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:rgba(240,165,0,0.15);color:#f0a500;border-color:rgba(240,165,0,0.4);">🎯 ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
       <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar">↻ AUTO</button>
       <span class="hdr-uptime">UP ${pulpoUptime}</span>
       <span class="hdr-meta">📊 ${dashboardBuild}<span class="hdr-meta-sep">|</span>🐙 ${pulpoBuild}</span>
@@ -3680,6 +4053,10 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     } else if (isPaused) {
       statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Pipeline en pausa</span>'
         + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
+    } else if (isPartialPause) {
+      const allowedList = partialPauseState.allowedIssues.map(i => '#' + i).join(', ');
+      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F3AF}</span>Pausa parcial \u00B7 allowed: ' + allowedList + '</span>'
+        + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Desactivar pausa parcial y reanudar todo">\u25B6 Reanudar</button>';
     } else if (qaActive) {
       const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
       statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F50D}</span>Ventana QA activa \u00B7 ' + elapsed + ' min</span>'
@@ -3738,7 +4115,7 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis-row">
-    <div class="kpis kpis-5">
+    <div class="kpis kpis-6">
       <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
         <div class="kpi-label">Definidos</div>
         <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
@@ -3763,6 +4140,11 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <div class="kpi-label">Bloqueados${blockedCount > 0 ? ' \u{1F6AB}' : ''}</div>
         <div class="kpi-value ${blockedCount > 0 ? 'danger' : 'muted'}">${blockedCount}</div>
         <div class="kpi-trend">${blockedCount > 0 ? 'click para filtrar' : 'sin bloqueos'}</div>
+      </div>
+      <div class="kpi kpi-needs-human ${bloqueados.length > 0 ? 'has-blocked kpi-clickable' : ''}" ${bloqueados.length > 0 ? 'onclick="toggleNeedsHumanPanel(true)" title="Click para colapsar/expandir el listado de incidentes"' : 'title="Sin incidentes esperando humano"'}>
+        <div class="kpi-label">${bloqueados.length > 0 ? '\u{1F6A8} ' : ''}Necesitan humano</div>
+        <div class="kpi-value ${bloqueados.length > 0 ? 'danger' : 'muted'}">${bloqueados.length}</div>
+        <div class="kpi-trend">${bloqueados.length > 0 ? 'click para colapsar/expandir' : 'pipeline fluido'}</div>
       </div>
     </div>
     ${(() => {
@@ -3789,9 +4171,12 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
     })()}
   </div>
 
-  <div class="bar-section panel-equipo panel-equipo-full">
+  <div class="bar-section panel-equipo panel-equipo-full section-collapsible" id="equipo" data-section="equipo">
     <div class="eq-head">
-      <h2 class="eq-title">🧠 Equipo</h2>
+      <h2 class="eq-title section-title-clickable" onclick="toggleSection('equipo')" title="Click para colapsar/expandir">
+        <span class="section-chevron">▼</span> 🧠 Equipo
+      </h2>
+      <a class="section-popout" href="/?section=equipo" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
       <div class="eq-summary">
         <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSkills}</span>
         <span>\u00B7</span>
@@ -3800,14 +4185,18 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
         <span>Cola <b>${pendientes}</b></span>
       </div>
     </div>
+    <div class="section-body">
     ${activeStripHTML}
     ${eqAreaGridHTML || '<span class="empty-label">Sin skills configurados</span>'}
     ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
+    </div>
   </div>
 
   ${matrixHTML}
 
   ${historyHTML}
+
+  ${renderRecommendationsSection()}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
@@ -3919,6 +4308,14 @@ document.addEventListener('click', function(e) {
 let __softRefreshInFlight = false;
 async function softRefresh() {
   if (__softRefreshInFlight) return;
+  // En modo standalone (?section=X) el soft swap rompe el layout: los
+  // selectores que se reemplazan vienen del server sin la clase
+  // .standalone-target (la agrega applyStandaloneMode al cargar) y CSS
+  // body.standalone > *:not(.standalone-target) los oculta → pantalla negra.
+  // Solución: full reload, que re-ejecuta applyStandaloneMode.
+  if (document.body.classList.contains('standalone')) {
+    return location.reload();
+  }
   // No refrescar si hay log overlay abierto
   const logOv = document.getElementById('log-overlay');
   if (logOv && logOv.classList.contains('open')) return;
@@ -4687,6 +5084,404 @@ document.addEventListener('keydown', function(e) {
     document.getElementById('log-search').focus();
   }
 });
+
+// Recomendaciones de agentes (issue #2653)
+async function recoRefresh() {
+  try {
+    const r = await fetch('/api/recommendations/refresh', { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) location.reload();
+    else alert('Error refrescando: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error refrescando: ' + e.message); }
+}
+async function recoApprove(num) {
+  if (!confirm('Aprobar recomendación #' + num + '? Entrará al pipeline en el próximo ciclo.')) return;
+  try {
+    const r = await fetch('/api/recommendations/' + num + '/approve', { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) { recoRefresh(); }
+    else alert('Error: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error: ' + e.message); }
+}
+async function recoReject(num) {
+  const reason = prompt('Motivo del rechazo (opcional):', '');
+  if (reason === null) return;
+  try {
+    const r = await fetch('/api/recommendations/' + num + '/reject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || '' })
+    });
+    const j = await r.json();
+    if (j.ok) { recoRefresh(); }
+    else alert('Error: ' + (j.msg || 'desconocido'));
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Quick actions de prioridad por issue (cards de Issue Tracker y Equipo en ejecución)
+function _prioCallApi(issueNum, action) {
+  return fetch('/api/issue/' + issueNum + '/' + action, { method: 'POST' })
+    .then(r => r.json());
+}
+function _prioFindButtons(issueNum, action) {
+  const fnName = (action === 'move-up' || action === 'up') ? 'issueMoveUp' : 'issueMoveDown';
+  return Array.from(document.querySelectorAll('button.lc-prio-btn'))
+    .filter(b => (b.getAttribute('onclick') || '').includes(fnName + '(' + issueNum + ')'));
+}
+function _prioSetLoading(issueNum, action, loading) {
+  const btns = _prioFindButtons(issueNum, action);
+  for (const b of btns) {
+    if (loading) {
+      b.dataset.origText = b.textContent;
+      b.textContent = '⋯';
+      b.disabled = true;
+    } else {
+      if (b.dataset.origText) b.textContent = b.dataset.origText;
+      b.disabled = false;
+    }
+  }
+}
+function _prioFlashCards(issueNum, ok) {
+  const cards = document.querySelectorAll('[data-issue="' + issueNum + '"]');
+  cards.forEach(c => {
+    c.classList.add(ok ? 'prio-flash-ok' : 'prio-flash-err');
+    setTimeout(() => c.classList.remove('prio-flash-ok', 'prio-flash-err'), 1200);
+  });
+}
+function showToast(msg, type) {
+  let host = document.getElementById('toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toast-host';
+    document.body.appendChild(host);
+  }
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + (type || 'info');
+  t.textContent = msg;
+  host.appendChild(t);
+  // forzar reflow para que la animación de entrada arranque
+  void t.offsetWidth;
+  t.classList.add('toast-show');
+  setTimeout(() => {
+    t.classList.remove('toast-show');
+    setTimeout(() => t.remove(), 250);
+  }, 2200);
+}
+// Encuentra al vecino visible dentro de la misma lane (def/dev/qa) del issue.
+// Si el issue no está en una lane (ej: card en la sección Equipo), busca el
+// vecino en CUALQUIER lane visible.
+function _findLanePeer(issueNum, direction) {
+  const target = document.querySelector('.lc-card[data-issue="' + issueNum + '"][data-status="active"]');
+  if (!target) return { error: 'card-not-visible' };
+  const lane = target.dataset.lane;
+  // Cards de la misma lane, en orden DOM (que es el orden visual)
+  const peers = Array.from(document.querySelectorAll(
+    '.lc-card[data-lane="' + lane + '"][data-status="active"]'
+  ));
+  const idx = peers.findIndex(p => p.dataset.issue === String(issueNum));
+  if (idx === -1) return { error: 'not-in-lane' };
+  if (direction === 'up') {
+    if (idx === 0) return { error: 'already-top' };
+    return { peer: peers[idx - 1].dataset.issue };
+  } else {
+    if (idx === peers.length - 1) return { error: 'already-bottom' };
+    return { peer: peers[idx + 1].dataset.issue };
+  }
+}
+async function _issueMove(issueNum, direction) {
+  const action = direction === 'up' ? 'move-up' : 'move-down';
+  const arrow = direction === 'up' ? '▲' : '▼';
+  // Resolver peer dentro de la lane visual (no del array global)
+  const lookup = _findLanePeer(issueNum, direction);
+  if (lookup.error === 'already-top' || lookup.error === 'already-bottom') {
+    showToast('#' + issueNum + ' ya está en el ' + (lookup.error === 'already-top' ? 'tope' : 'fondo') + ' de la columna', 'info');
+    return;
+  }
+  _prioSetLoading(issueNum, action, true);
+  try {
+    const r = await fetch('/api/issue/' + issueNum + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lookup.peer ? { peer: lookup.peer } : {})
+    });
+    const j = await r.json();
+    if (j.ok) {
+      _prioFlashCards(issueNum, true);
+      showToast(arrow + ' #' + issueNum + ' ' + (j.msg || 'movido'), 'ok');
+      setTimeout(() => location.reload(), 500);
+    } else {
+      _prioSetLoading(issueNum, action, false);
+      if (j.msg === 'already-top' || j.msg === 'already-bottom') {
+        showToast('#' + issueNum + ' ya está en el ' + (j.msg === 'already-top' ? 'tope' : 'fondo'), 'info');
+      } else {
+        _prioFlashCards(issueNum, false);
+        showToast('Error: ' + (j.msg || 'desconocido'), 'err');
+      }
+    }
+  } catch (e) {
+    _prioSetLoading(issueNum, action, false);
+    _prioFlashCards(issueNum, false);
+    showToast('Error moviendo #' + issueNum + ': ' + e.message, 'err');
+  }
+}
+function issueMoveUp(issueNum) { return _issueMove(issueNum, 'up'); }
+function issueMoveDown(issueNum) { return _issueMove(issueNum, 'down'); }
+
+// Mover al tope/fondo de la columna: encuentra el primero/último visible en la
+// misma lane y manda anchor al endpoint move-before/move-after (splice sin swap).
+function _findLaneEnds(issueNum) {
+  const target = document.querySelector('.lc-card[data-issue="' + issueNum + '"][data-status="active"]');
+  if (!target) return { error: 'card-not-visible' };
+  const lane = target.dataset.lane;
+  const peers = Array.from(document.querySelectorAll(
+    '.lc-card[data-lane="' + lane + '"][data-status="active"]'
+  ));
+  if (peers.length === 0) return { error: 'no-peers' };
+  return { first: peers[0].dataset.issue, last: peers[peers.length - 1].dataset.issue, count: peers.length };
+}
+async function _issueMoveRelative(issueNum, direction) {
+  const ends = _findLaneEnds(issueNum);
+  if (ends.error) {
+    showToast('No se pudo localizar la columna del #' + issueNum, 'err');
+    return;
+  }
+  const anchor = direction === 'top' ? ends.first : ends.last;
+  if (anchor === String(issueNum)) {
+    showToast('#' + issueNum + ' ya está en el ' + (direction === 'top' ? 'tope' : 'fondo') + ' de la columna', 'info');
+    return;
+  }
+  const action = direction === 'top' ? 'move-before' : 'move-after';
+  const arrow = direction === 'top' ? '⏫' : '⏬';
+  const fnName = direction === 'top' ? 'issueMoveToTop' : 'issueMoveToBottom';
+  // Loading state en los botones afectados
+  document.querySelectorAll('button.lc-prio-btn[onclick*="' + fnName + '(' + issueNum + ')"]').forEach(b => {
+    b.dataset.origText = b.textContent;
+    b.textContent = '⋯';
+    b.disabled = true;
+  });
+  try {
+    const r = await fetch('/api/issue/' + issueNum + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      _prioFlashCards(issueNum, true);
+      showToast(arrow + ' #' + issueNum + ' ' + (j.msg || 'movido'), 'ok');
+      setTimeout(() => location.reload(), 500);
+    } else {
+      _prioFlashCards(issueNum, false);
+      showToast('Error: ' + (j.msg || 'desconocido'), 'err');
+      // Restaurar botones
+      document.querySelectorAll('button.lc-prio-btn[onclick*="' + fnName + '(' + issueNum + ')"]').forEach(b => {
+        if (b.dataset.origText) b.textContent = b.dataset.origText;
+        b.disabled = false;
+      });
+    }
+  } catch (e) {
+    _prioFlashCards(issueNum, false);
+    showToast('Error moviendo #' + issueNum + ': ' + e.message, 'err');
+    document.querySelectorAll('button.lc-prio-btn[onclick*="' + fnName + '(' + issueNum + ')"]').forEach(b => {
+      if (b.dataset.origText) b.textContent = b.dataset.origText;
+      b.disabled = false;
+    });
+  }
+}
+function issueMoveToTop(issueNum) { return _issueMoveRelative(issueNum, 'top'); }
+function issueMoveToBottom(issueNum) { return _issueMoveRelative(issueNum, 'bottom'); }
+
+// Drag-and-drop nativo HTML5 sobre las cards del Issue Tracker.
+// Solo dentro de la misma lane: la lane se determina por estado del filesystem,
+// no por decisión del usuario.
+let _draggedCard = null;
+let _draggedLane = null;
+function onCardDragStart(e) {
+  const card = e.currentTarget;
+  if (card.getAttribute('draggable') === 'false') { e.preventDefault(); return; }
+  _draggedCard = card;
+  _draggedLane = card.dataset.lane;
+  card.classList.add('lc-card-dragging');
+  try {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', card.dataset.issue);
+  } catch (err) {}
+}
+function onCardDragOver(e) {
+  if (!_draggedCard) return;
+  const card = e.currentTarget;
+  if (card === _draggedCard) return;
+  if (card.dataset.lane !== _draggedLane) return; // solo dentro de la misma lane
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  // Indicador visual: línea arriba o abajo según posición del cursor
+  const rect = card.getBoundingClientRect();
+  const isAbove = (e.clientY - rect.top) < rect.height / 2;
+  card.classList.toggle('lc-drop-above', isAbove);
+  card.classList.toggle('lc-drop-below', !isAbove);
+}
+function onCardDragLeave(e) {
+  e.currentTarget.classList.remove('lc-drop-above', 'lc-drop-below');
+}
+function onCardDrop(e) {
+  if (!_draggedCard) return;
+  const card = e.currentTarget;
+  if (card === _draggedCard) return;
+  if (card.dataset.lane !== _draggedLane) return;
+  e.preventDefault();
+  const rect = card.getBoundingClientRect();
+  const isAbove = (e.clientY - rect.top) < rect.height / 2;
+  card.classList.remove('lc-drop-above', 'lc-drop-below');
+  // Reorder DOM optimista: insertar la draggedCard arriba o abajo del target
+  const parent = card.parentNode;
+  if (isAbove) parent.insertBefore(_draggedCard, card);
+  else parent.insertBefore(_draggedCard, card.nextSibling);
+  // Mandar al server el orden completo de TODAS las cards activas (todas las lanes)
+  _persistDragOrder();
+}
+function onCardDragEnd(e) {
+  if (_draggedCard) _draggedCard.classList.remove('lc-card-dragging');
+  document.querySelectorAll('.lc-drop-above, .lc-drop-below').forEach(c => {
+    c.classList.remove('lc-drop-above', 'lc-drop-below');
+  });
+  _draggedCard = null;
+  _draggedLane = null;
+}
+async function _persistDragOrder() {
+  // Recolectar el orden actual de TODAS las cards activas (ordenadas como están
+  // en el DOM, lane por lane, top→bottom). El server hace setOrder con esto.
+  const allCards = Array.from(document.querySelectorAll('.lc-card[data-status="active"]'));
+  const order = allCards.map(c => c.dataset.issue);
+  try {
+    const r = await fetch('/api/issues/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      showToast('✓ Orden actualizado (' + order.length + ' issues)', 'ok');
+    } else {
+      showToast('Error guardando orden: ' + (j.msg || 'desconocido'), 'err');
+      setTimeout(() => location.reload(), 600);
+    }
+  } catch (e) {
+    showToast('Error guardando orden: ' + e.message, 'err');
+    setTimeout(() => location.reload(), 600);
+  }
+}
+
+// Toggle genérico de secciones colapsables (Issue Tracker, Equipo, Historial).
+// Estado persistido en localStorage por sección.
+function toggleSection(name) {
+  const sec = document.querySelector('[data-section="' + name + '"]');
+  if (!sec) return;
+  const willCollapse = !sec.classList.contains('section-collapsed');
+  sec.classList.toggle('section-collapsed');
+  try { localStorage.setItem('section-collapsed-' + name, willCollapse ? '1' : '0'); } catch (e) {}
+}
+(function restoreCollapsedSections(){
+  // El server renderiza el default por sección (Issue Tracker e Historial
+  // arrancan colapsados, Equipo y otros expandidos). El cliente solo
+  // sobreescribe si el usuario tocó el toggle antes (localStorage explícito).
+  try {
+    document.querySelectorAll('[data-section]').forEach(sec => {
+      const name = sec.getAttribute('data-section');
+      const stored = localStorage.getItem('section-collapsed-' + name);
+      if (stored === '1') sec.classList.add('section-collapsed');
+      else if (stored === '0') sec.classList.remove('section-collapsed');
+    });
+  } catch (e) {}
+})();
+
+// Modo standalone (?section=X): mueve la sección a primer hijo del body
+// y oculta todo lo demás vía CSS. Permite abrir cada sección en su ventana.
+(function applyStandaloneMode(){
+  try {
+    const params = new URLSearchParams(location.search);
+    const section = params.get('section');
+    if (!section) return;
+    const idMap = { 'equipo': 'equipo', 'issue-tracker': 'issue-tracker', 'historial': 'agent-history', 'needs-human': 'bloqueados-humano' };
+    const targetId = idMap[section];
+    const target = targetId ? document.getElementById(targetId) : null;
+    if (!target) return;
+    document.body.classList.add('standalone', 'standalone-' + section);
+    document.body.insertBefore(target, document.body.firstChild);
+    target.classList.add('standalone-target');
+    target.classList.remove('section-collapsed');
+    target.classList.remove('nh-collapsed');
+    document.title = section.charAt(0).toUpperCase() + section.slice(1) + ' · Pipeline';
+  } catch (e) {}
+})();
+
+// Toggle de la sección "Salud de Infra" — colapsable + persistente (default: colapsada)
+function toggleInfraHealth() {
+  const sec = document.querySelector('section.infra-health');
+  if (!sec) return;
+  const willCollapse = !sec.classList.contains('ih-collapsed');
+  sec.classList.toggle('ih-collapsed');
+  try { localStorage.setItem('ih-collapsed', willCollapse ? '1' : '0'); } catch (e) {}
+}
+(function restoreInfraHealthState(){
+  try {
+    const sec = document.querySelector('section.infra-health');
+    if (!sec) return;
+    if (localStorage.getItem('ih-collapsed') === '0') {
+      sec.classList.remove('ih-collapsed');
+    }
+  } catch (e) {}
+})();
+
+// Toggle del panel "Necesitan intervención humana" — colapsable + persistente
+function toggleNeedsHumanPanel(scrollOnExpand) {
+  const panel = document.getElementById('bloqueados-humano');
+  if (!panel) return;
+  const willCollapse = !panel.classList.contains('nh-collapsed');
+  panel.classList.toggle('nh-collapsed');
+  try { localStorage.setItem('nh-panel-collapsed', willCollapse ? '1' : '0'); } catch (e) {}
+  if (!willCollapse && scrollOnExpand) {
+    panel.scrollIntoView({behavior:'smooth', block:'start'});
+  }
+}
+(function restoreNeedsHumanPanelState(){
+  try {
+    if (localStorage.getItem('nh-panel-collapsed') === '1') {
+      const panel = document.getElementById('bloqueados-humano');
+      if (panel) panel.classList.add('nh-collapsed');
+    }
+  } catch (e) {}
+})();
+
+// Quick actions sobre issues con label needs-human (panel "Necesitan intervención humana")
+function nhDisableButtons(issueNum) {
+  document.querySelectorAll('.needs-human-row button[onclick*="(' + issueNum + ')"]').forEach(b => { b.disabled = true; });
+}
+async function needsHumanReactivate(issueNum) {
+  if (!confirm('Reactivar #' + issueNum + '? Volverá a la cola del pipeline sin orientación adicional.')) return;
+  nhDisableButtons(issueNum);
+  try {
+    const r = await fetch('/api/needs-human/' + issueNum + '/reactivate', { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) location.reload();
+    else { alert('Error reactivando: ' + (j.msg || 'desconocido')); location.reload(); }
+  } catch (e) { alert('Error reactivando: ' + e.message); location.reload(); }
+}
+async function needsHumanDismiss(issueNum) {
+  const reason = prompt('Motivo para desestimar #' + issueNum + ' (opcional):', '');
+  if (reason === null) return;
+  if (!confirm('Cerrar #' + issueNum + ' como desestimado? Se quitará del panel y quedará cerrado en GitHub.')) return;
+  nhDisableButtons(issueNum);
+  try {
+    const r = await fetch('/api/needs-human/' + issueNum + '/dismiss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || '' })
+    });
+    const j = await r.json();
+    if (j.ok) location.reload();
+    else { alert('Error desestimando: ' + (j.msg || 'desconocido')); location.reload(); }
+  } catch (e) { alert('Error desestimando: ' + e.message); location.reload(); }
+}
 </script>
 </body></html>`;
 }
@@ -4986,7 +5781,7 @@ function generateMetricsHTML() {
 
   // ETA averages table
   let etaRows = '';
-  const faseOrder = ['analisis', 'criterios', 'sizing', 'validacion', 'dev', 'build', 'verificacion', 'aprobacion', 'entrega'];
+  const faseOrder = ['analisis', 'criterios', 'sizing', 'validacion', 'dev', 'build', 'verificacion', 'linteo', 'aprobacion', 'entrega'];
   for (const fase of faseOrder) {
     const avg = etaAverages[fase];
     if (!avg?.avgMs) continue;
@@ -5241,6 +6036,387 @@ ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>P
 <div style="color:var(--dim);font-size:0.8em;margin-top:20px">
 🔴 Live · <a href="/api/metrics">API JSON</a> · <a href="/">← Dashboard</a> · ${new Date().toLocaleString('es-AR')}
 </div>
+</body></html>`;
+}
+
+// ---------------------------------------------------------------------------
+// V3 — /consumo: página con 3 tabs (Por agente | Por fase | Por issue)
+// Contrato: issue #2477. Datos vienen de /metrics/* (buildSnapshot).
+// ---------------------------------------------------------------------------
+function renderConsumoHtml() {
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Consumo V3 — Pipeline Intrale</title>
+<style>
+  :root {
+    --bg: #0a0e27; --fg: #e0e6ed; --card: #141b3a; --border: #2a3560;
+    --accent: #4a9eff; --dim: #8592a8; --danger: #ff5a5a; --ok: #5aff8a;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 20px; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .subtitle { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .controls label { color: var(--dim); font-size: 12px; }
+  .controls select { background: var(--card); color: var(--fg); border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; }
+  .controls button { background: var(--accent); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 16px; }
+  .tab { padding: 10px 18px; cursor: pointer; background: transparent; color: var(--dim); border: none; font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+  .tab.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .kpi { background: var(--card); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+  .kpi .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .kpi .value { font-size: 19px; font-weight: 700; color: var(--accent); margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+  th { background: #1a2246; text-align: left; padding: 10px 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim); border-bottom: 1px solid var(--border); }
+  td { padding: 9px 12px; border-bottom: 1px solid #1a2246; font-size: 13px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.usd { text-align: right; font-weight: 600; color: var(--ok); font-variant-numeric: tabular-nums; }
+  td.skill, td.issue, td.phase { font-weight: 600; color: var(--accent); }
+  tr:hover td { background: #1a2246; cursor: pointer; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .drilldown { margin-top: 14px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 14px; display: none; }
+  .drilldown.open { display: block; }
+  .drilldown h3 { margin-top: 0; color: var(--accent); }
+  .timeline-row { display: grid; grid-template-columns: 160px 120px 110px 1fr 100px 90px; gap: 10px; padding: 6px 0; border-bottom: 1px solid #1a2246; font-size: 12px; }
+  .timeline-row:last-child { border-bottom: none; }
+  .timeline-row .t-ts { color: var(--dim); }
+  .timeline-row .t-skill { font-weight: 600; color: var(--accent); }
+  .empty { color: var(--dim); padding: 20px; text-align: center; }
+  .footer { color: var(--dim); font-size: 11px; margin-top: 24px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>📊 Consumo V3 — Pipeline</h1>
+  <div class="subtitle">Métricas extendidas (tokens, duración, TTS) por agente, fase e issue. Contrato issue #2477.</div>
+
+  <div class="controls">
+    <label>Ventana:</label>
+    <select id="window">
+      <option value="1h">Última hora</option>
+      <option value="24h" selected>Últimas 24h</option>
+      <option value="7d">Últimos 7 días</option>
+      <option value="all">Histórico</option>
+    </select>
+    <button onclick="refresh()">Actualizar</button>
+    <span id="last-refresh" style="color: var(--dim); font-size: 12px;"></span>
+    <a href="/" style="color: var(--accent); font-size: 12px; margin-left: auto;">← Dashboard</a>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="tabs">
+    <button class="tab active" data-panel="agents">Por agente</button>
+    <button class="tab" data-panel="phases">Por fase</button>
+    <button class="tab" data-panel="issues">Por issue</button>
+    <button class="tab" data-panel="projections">Proyecciones</button>
+    <button class="tab" data-panel="llmvsdet">LLM vs Determinístico</button>
+    <button class="tab" data-panel="ttsissues">TTS por issue</button>
+  </div>
+
+  <div class="panel active" id="panel-agents">
+    <table>
+      <thead><tr><th>Skill</th><th class="num">Sesiones</th><th class="num">Tokens in+out</th><th class="num">Cache</th><th class="num">Dur. prom</th><th class="num">TTS chars</th><th class="num">TTS audio</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-agents"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="panel-phases">
+    <table>
+      <thead><tr><th>Fase</th><th class="num">Sesiones</th><th class="num">Tokens in+out</th><th class="num">Cache</th><th class="num">Dur. prom</th><th class="num">TTS audio</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-phases"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="panel-issues">
+    <table>
+      <thead><tr><th>Issue</th><th class="num">Sesiones</th><th class="num">Tokens in+out</th><th class="num">Dur. total</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-issues"><tr><td colspan="5" class="empty">Cargando…</td></tr></tbody>
+    </table>
+    <div class="drilldown" id="drilldown">
+      <h3 id="dd-title">Timeline</h3>
+      <div id="dd-body"></div>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-projections">
+    <div id="proj-cards"><div class="empty">Cargando…</div></div>
+  </div>
+
+  <div class="panel" id="panel-llmvsdet">
+    <div class="card-sub" style="color:var(--dim);font-size:12px;margin-bottom:8px;">
+      Comparativa por skill entre ejecución LLM (Claude) y determinística (Node puro). "Ahorro estimado" = sesiones_det × costo_promedio_llm.
+    </div>
+    <table>
+      <thead><tr><th>Skill</th><th class="num">LLM sesiones</th><th class="num">LLM costo</th><th class="num">LLM prom/sesión</th><th class="num">Det sesiones</th><th class="num">Det costo</th><th class="num">Ahorro estimado</th><th>Estado</th></tr></thead>
+      <tbody id="tbody-llmvsdet"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="panel-ttsissues">
+    <div class="card-sub" style="color:var(--dim);font-size:12px;margin-bottom:8px;">
+      Consumo de TTS (caracteres, audio, costo) desglosado por issue. Click en una fila para ver los providers usados.
+    </div>
+    <table>
+      <thead><tr><th>Issue</th><th class="num">TTS count</th><th class="num">Caracteres</th><th class="num">Audio</th><th class="num">Costo</th></tr></thead>
+      <tbody id="tbody-ttsissues"><tr><td colspan="5" class="empty">Cargando…</td></tr></tbody>
+    </table>
+    <div class="drilldown" id="tts-drilldown">
+      <h3 id="tts-dd-title">Providers</h3>
+      <div id="tts-dd-body"></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Schema V3 definido en <a href="https://github.com/intrale/platform/issues/2477" target="_blank">#2477</a> · Extensiones en <a href="https://github.com/intrale/platform/issues/2488" target="_blank">#2488</a>.<br>
+    Endpoints JSON: <a href="/metrics/agents">/agents</a> · <a href="/metrics/phases">/phases</a> · <a href="/metrics/issues">/issues</a> · <a href="/metrics/tts">/tts</a> · <a href="/metrics/projections">/projections</a> · <a href="/metrics/llm-vs-deterministic">/llm-vs-deterministic</a> · <a href="/metrics/daily">/daily</a> · <a href="/metrics/snapshot">/snapshot</a>
+  </div>
+
+<script>
+function fmtNum(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return String(Math.round(n));
+}
+function fmtDur(ms) {
+  ms = Number(ms || 0);
+  const s = Math.round(ms/1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s/60);
+  const rem = s % 60;
+  if (m < 60) return m + 'm ' + rem + 's';
+  const h = Math.floor(m/60);
+  return h + 'h ' + (m%60) + 'm';
+}
+function fmtUsd(n) { return '$' + Number(n || 0).toFixed(4); }
+function fmtAudio(sec) {
+  sec = Number(sec || 0);
+  if (sec < 60) return sec.toFixed(1) + 's';
+  return (sec/60).toFixed(1) + 'min';
+}
+
+function renderKpis(totals) {
+  const el = document.getElementById('kpis');
+  const cache = Number(totals.cache_read || 0) + Number(totals.cache_write || 0);
+  el.innerHTML = [
+    ['Sesiones', fmtNum(totals.sessions), ''],
+    ['Tokens in+out', fmtNum(Number(totals.tokens_in||0) + Number(totals.tokens_out||0)), 'Cache: ' + fmtNum(cache)],
+    ['Costo estimado', fmtUsd(totals.cost_usd), ''],
+    ['TTS chars', fmtNum(totals.tts_chars), 'Audio: ' + fmtAudio(totals.tts_audio_seconds)],
+    ['TTS costo', fmtUsd(totals.tts_cost_usd), ''],
+    ['Eventos V3', fmtNum(totals.v3_events), 'log: ' + fmtNum(totals.total_log_lines)],
+  ].map(([l,v,s]) => '<div class="kpi"><div class="label">'+l+'</div><div class="value">'+v+'</div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>').join('');
+}
+
+function renderAgents(rows) {
+  const body = document.getElementById('tbody-agents');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="8" class="empty">Sin datos en la ventana seleccionada</td></tr>'; return; }
+  body.innerHTML = rows.map(a => {
+    const cache = Number(a.cache_read||0)+Number(a.cache_write||0);
+    return '<tr><td class="skill">'+(a.skill||'—')+'</td>'
+      +'<td class="num">'+fmtNum(a.sessions)+'</td>'
+      +'<td class="num">'+fmtNum(Number(a.tokens_in||0)+Number(a.tokens_out||0))+'</td>'
+      +'<td class="num">'+fmtNum(cache)+'</td>'
+      +'<td class="num">'+fmtDur(a.avg_duration_ms)+'</td>'
+      +'<td class="num">'+fmtNum(a.tts_chars)+'</td>'
+      +'<td class="num">'+fmtAudio(a.tts_audio_seconds)+'</td>'
+      +'<td class="usd">'+fmtUsd(a.cost_usd)+'</td></tr>';
+  }).join('');
+}
+
+function renderPhases(rows) {
+  const body = document.getElementById('tbody-phases');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">Sin datos en la ventana seleccionada</td></tr>'; return; }
+  body.innerHTML = rows.map(p => {
+    const cache = Number(p.cache_read||0)+Number(p.cache_write||0);
+    return '<tr><td class="phase">'+(p.phase||'—')+'</td>'
+      +'<td class="num">'+fmtNum(p.sessions)+'</td>'
+      +'<td class="num">'+fmtNum(Number(p.tokens_in||0)+Number(p.tokens_out||0))+'</td>'
+      +'<td class="num">'+fmtNum(cache)+'</td>'
+      +'<td class="num">'+fmtDur(p.avg_duration_ms)+'</td>'
+      +'<td class="num">'+fmtAudio(p.tts_audio_seconds)+'</td>'
+      +'<td class="usd">'+fmtUsd(p.cost_usd)+'</td></tr>';
+  }).join('');
+}
+
+function renderIssues(rows) {
+  const body = document.getElementById('tbody-issues');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="5" class="empty">Sin issues con eventos V3 en la ventana</td></tr>'; return; }
+  body.innerHTML = rows.map(i =>
+    '<tr onclick="showTimeline('+i.issue+')"><td class="issue">#'+i.issue+'</td>'
+    +'<td class="num">'+fmtNum(i.sessions)+'</td>'
+    +'<td class="num">'+fmtNum(Number(i.tokens_in||0)+Number(i.tokens_out||0))+'</td>'
+    +'<td class="num">'+fmtDur(i.duration_ms)+'</td>'
+    +'<td class="usd">'+fmtUsd(i.cost_usd)+'</td></tr>'
+  ).join('');
+}
+
+function projCard(title, dim) {
+  if (!dim) return '';
+  const q = dim.quota || {};
+  const status = q.status || 'ok';
+  const color = status === 'over' ? 'var(--rd, #f85149)' : (status === 'warning' ? 'var(--yl, #d29922)' : 'var(--gn, #3fb950)');
+  const ratioPct = q.ratio != null ? Math.round(q.ratio * 100) + '%' : '—';
+  const alert = q.alert ? '<div style="margin-top:8px;padding:8px;background:rgba(248,81,73,0.10);border-left:3px solid '+color+';font-size:12px;">⚠️ '+q.alert+'</div>' : '';
+  const secondary = [];
+  if (dim.dimension === 'tts') {
+    if (dim.tts_chars_monthly_projection != null) secondary.push(['Caracteres/mes (proyectado)', fmtNum(dim.tts_chars_monthly_projection)]);
+    if (dim.tts_audio_seconds_monthly_projection != null) secondary.push(['Audio/mes (proyectado)', fmtAudio(dim.tts_audio_seconds_monthly_projection)]);
+    if (dim.tts_chars_month_to_date != null) secondary.push(['Caracteres MTD', fmtNum(dim.tts_chars_month_to_date)]);
+  } else {
+    if (dim.sessions_monthly_projection != null) secondary.push(['Sesiones/mes (proyectado)', fmtNum(dim.sessions_monthly_projection)]);
+    if (dim.sessions_month_to_date != null) secondary.push(['Sesiones MTD', fmtNum(dim.sessions_month_to_date)]);
+  }
+  const secHtml = secondary.length ? '<div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;color:var(--dim);">'
+    + secondary.map(([l,v]) => '<div>'+l+': <span style="color:var(--fg);font-weight:600;">'+v+'</span></div>').join('') + '</div>' : '';
+  return '<div class="kpi" style="border-left:3px solid '+color+';padding:14px;">'
+    +'<div class="label" style="font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">'+title+'</div>'
+    +'<div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;">'
+      +'<div><div style="color:var(--dim);font-size:11px;">Promedio diario</div><div style="font-weight:600;">'+fmtUsd(dim.daily_avg_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Proyección semanal</div><div style="font-weight:600;">'+fmtUsd(dim.weekly_projection_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Mes hasta hoy</div><div style="font-weight:600;">'+fmtUsd(dim.month_to_date_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Proyección fin de mes</div><div style="font-weight:600;color:'+color+';">'+fmtUsd(dim.monthly_forecast_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">Cuota mensual</div><div style="font-weight:600;">'+fmtUsd(q.monthly_usd)+'</div></div>'
+      +'<div><div style="color:var(--dim);font-size:11px;">% de cuota</div><div style="font-weight:600;color:'+color+';">'+ratioPct+'</div></div>'
+    +'</div>'
+    + secHtml
+    + alert
+    +'<div style="margin-top:8px;font-size:11px;color:var(--dim);">Basado en últimos '+(dim.samples||0)+' días · '+dim.days_remaining_this_month+' días restantes del mes</div>'
+  +'</div>';
+}
+
+function renderProjections(projections) {
+  const el = document.getElementById('proj-cards');
+  if (!projections || (!projections.tokens && !projections.tts)) {
+    el.innerHTML = '<div class="empty">Sin datos suficientes para proyectar.</div>';
+    return;
+  }
+  el.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">'
+    + projCard('Tokens (LLM)', projections.tokens)
+    + projCard('TTS (audio)', projections.tts)
+    + '</div>';
+}
+
+function renderLlmVsDet(rows) {
+  const body = document.getElementById('tbody-llmvsdet');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="8" class="empty">Sin sesiones registradas para comparar</td></tr>'; return; }
+  body.innerHTML = rows.map(r => {
+    const status = r.migrated
+      ? '<span style="color:var(--gn, #3fb950);">✓ Migrado</span>'
+      : '<span style="color:var(--dim);">— Solo LLM</span>';
+    const savings = r.estimated_savings_usd > 0
+      ? '<span style="color:var(--gn, #3fb950);font-weight:600;">'+fmtUsd(r.estimated_savings_usd)+'</span>'
+      : fmtUsd(r.estimated_savings_usd);
+    return '<tr><td class="skill">'+(r.skill||'—')+'</td>'
+      +'<td class="num">'+fmtNum(r.llm_sessions)+'</td>'
+      +'<td class="usd">'+fmtUsd(r.llm_cost_usd)+'</td>'
+      +'<td class="usd">'+fmtUsd(r.llm_avg_cost_per_session)+'</td>'
+      +'<td class="num">'+fmtNum(r.deterministic_sessions)+'</td>'
+      +'<td class="usd">'+fmtUsd(r.deterministic_cost_usd)+'</td>'
+      +'<td class="usd">'+savings+'</td>'
+      +'<td>'+status+'</td></tr>';
+  }).join('');
+}
+
+function renderTtsByIssue(rows) {
+  const body = document.getElementById('tbody-ttsissues');
+  if (!rows || !rows.length) { body.innerHTML = '<tr><td colspan="5" class="empty">Sin TTS registrado en la ventana</td></tr>'; return; }
+  body.innerHTML = rows.map(r =>
+    '<tr onclick="showTtsProviders('+r.issue+')"><td class="issue">#'+r.issue+'</td>'
+    +'<td class="num">'+fmtNum(r.tts_count)+'</td>'
+    +'<td class="num">'+fmtNum(r.tts_chars)+'</td>'
+    +'<td class="num">'+fmtAudio(r.tts_audio_seconds)+'</td>'
+    +'<td class="usd">'+fmtUsd(r.tts_cost_usd)+'</td></tr>'
+  ).join('');
+}
+
+function showTtsProviders(issueNumber) {
+  const list = (lastSnapshot && lastSnapshot.tts && lastSnapshot.tts.by_issue) || [];
+  const issue = list.find(i => Number(i.issue) === Number(issueNumber));
+  const dd = document.getElementById('tts-drilldown');
+  const title = document.getElementById('tts-dd-title');
+  const body = document.getElementById('tts-dd-body');
+  if (!issue || !issue.by_provider || !issue.by_provider.length) {
+    title.textContent = 'Providers TTS de #' + issueNumber;
+    body.innerHTML = '<div class="empty">Sin breakdown por provider para este issue.</div>';
+  } else {
+    title.textContent = 'Providers TTS de #' + issue.issue + ' · ' + fmtNum(issue.tts_count) + ' generaciones · ' + fmtUsd(issue.tts_cost_usd);
+    body.innerHTML = '<table style="width:100%;margin-top:6px;"><thead><tr><th>Provider</th><th class="num">Eventos</th><th class="num">Caracteres</th><th class="num">Audio</th><th class="usd">Costo</th></tr></thead><tbody>'
+      + issue.by_provider.map(p =>
+        '<tr><td>'+(p.provider||'—')+'</td>'
+        +'<td class="num">'+fmtNum(p.tts_count)+'</td>'
+        +'<td class="num">'+fmtNum(p.tts_chars)+'</td>'
+        +'<td class="num">'+fmtAudio(p.tts_audio_seconds)+'</td>'
+        +'<td class="usd">'+fmtUsd(p.tts_cost_usd)+'</td></tr>'
+      ).join('')
+      + '</tbody></table>';
+  }
+  dd.classList.add('open');
+  dd.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+let lastSnapshot = null;
+
+async function refresh() {
+  const w = document.getElementById('window').value;
+  try {
+    const r = await fetch('/metrics/snapshot?window='+encodeURIComponent(w));
+    const snap = await r.json();
+    lastSnapshot = snap;
+    renderKpis(snap.totals || {});
+    renderAgents(snap.agents || []);
+    renderPhases(snap.phases || []);
+    renderIssues(snap.issues || []);
+    renderProjections(snap.projections || null);
+    renderLlmVsDet(snap.llm_vs_deterministic || []);
+    renderTtsByIssue((snap.tts && snap.tts.by_issue) || []);
+    document.getElementById('last-refresh').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
+  } catch (e) {
+    document.getElementById('last-refresh').textContent = 'Error: ' + e.message;
+  }
+}
+
+function showTimeline(issueNumber) {
+  const issue = (lastSnapshot && lastSnapshot.issues || []).find(i => Number(i.issue) === Number(issueNumber));
+  const dd = document.getElementById('drilldown');
+  const title = document.getElementById('dd-title');
+  const body = document.getElementById('dd-body');
+  if (!issue || !issue.timeline || !issue.timeline.length) {
+    title.textContent = 'Timeline de #' + issueNumber;
+    body.innerHTML = '<div class="empty">Sin eventos para este issue en la ventana.</div>';
+  } else {
+    title.textContent = 'Timeline de #' + issue.issue + ' · ' + issue.sessions + ' sesiones · ' + fmtUsd(issue.cost_usd);
+    body.innerHTML = '<div class="timeline-row" style="font-weight:600;color:var(--dim);"><div>Fecha</div><div>Skill</div><div>Fase</div><div>Evento</div><div class="num">Duración</div><div class="usd">Costo</div></div>'
+      + issue.timeline.map(t =>
+        '<div class="timeline-row"><div class="t-ts">'+(t.ts||'').replace('T',' ').slice(0,19)+'</div>'
+        +'<div class="t-skill">'+(t.skill||'—')+'</div>'
+        +'<div>'+(t.phase||'—')+'</div>'
+        +'<div>'+t.event+(t.tts_chars!=null?' · '+fmtNum(t.tts_chars)+' chars':'')+'</div>'
+        +'<div class="num">'+(t.duration_ms!=null?fmtDur(t.duration_ms):'—')+'</div>'
+        +'<div class="usd">'+fmtUsd(t.cost_usd)+'</div></div>'
+      ).join('');
+  }
+  dd.classList.add('open');
+  dd.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById('panel-' + t.dataset.panel).classList.add('active');
+}));
+
+document.getElementById('window').addEventListener('change', refresh);
+refresh();
+setInterval(refresh, 60000);
+</script>
 </body></html>`;
 }
 
@@ -5658,7 +6834,12 @@ const server = http.createServer((req, res) => {
         const { action } = JSON.parse(body);
         const pauseFile = path.join(PIPELINE, '.paused');
         if (action === 'resume' || action === 'remove') {
+          // #2490 — resume limpia tanto pausa completa como parcial
           try { fs.unlinkSync(pauseFile); } catch {}
+          try {
+            const { resumeAll } = require('./lib/partial-pause');
+            resumeAll();
+          } catch {}
           log(`Pausa eliminada por dashboard (${action})`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
@@ -5671,6 +6852,40 @@ const server = http.createServer((req, res) => {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, msg: `Acción "${action}" no válida` }));
         }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: #2490 — Pausa parcial con allowlist de issues
+  if (req.url === '/api/pause-partial' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { issues } = JSON.parse(body || '{}');
+        const { setPartialPause, clearPartialPause, getPipelineMode } = require('./lib/partial-pause');
+        const list = Array.isArray(issues) ? issues : [];
+        if (list.length === 0) {
+          clearPartialPause();
+          log('Pausa parcial eliminada desde dashboard');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pausa parcial desactivada', mode: 'running' }));
+          return;
+        }
+        const result = setPartialPause(list, { source: 'dashboard' });
+        const state = getPipelineMode();
+        log(`Pausa parcial activada desde dashboard (${result.allowedIssues.join(',')})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          msg: result.msg,
+          mode: state.mode,
+          allowedIssues: state.allowedIssues,
+        }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
@@ -5698,19 +6913,25 @@ const server = http.createServer((req, res) => {
           return;
         }
 
-        // Buscar PID del agente en agent-registry
+        // #2486 — descubrimiento dinámico del PID vía pid-discovery.
+        // Reemplaza la lectura de agent-registry.json (fuente duplicada con race conditions
+        // y PIDs stale). pid-discovery cruza scan de procesos vivos por cmdline +
+        // heartbeat reciente, con verificación cruzada antes de matar.
         let killed = false;
+        let pidsKilled = [];
         try {
-          const registry = JSON.parse(fs.readFileSync(path.join(path.dirname(PIPELINE), '.claude', 'hooks', 'agent-registry.json'), 'utf8'));
-          for (const [, agent] of Object.entries(registry.agents || {})) {
-            if (agent.issue === `#${issue}` && agent.pid) {
-              try {
-                execSync(`taskkill /PID ${agent.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-                killed = true;
-              } catch {}
-            }
+          const { discoverAgentPids } = require('./skills-deterministicos/lib/pid-discovery');
+          const matches = discoverAgentPids({ issue, skill });
+          for (const match of matches) {
+            try {
+              execSync(`taskkill /PID ${match.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+              killed = true;
+              pidsKilled.push(`${match.pid}(${match.source})`);
+            } catch {}
           }
-        } catch {}
+        } catch (e) {
+          log(`pid-discovery error: ${e.message}`);
+        }
 
         // Mover de trabajando/ a pendiente/ (para que pueda ser relanzado)
         try {
@@ -5723,9 +6944,9 @@ const server = http.createServer((req, res) => {
         }
 
         const msg = killed
-          ? `Agente ${skill} #${issue} cancelado (proceso terminado + devuelto a pendiente)`
-          : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado en registry)`;
-        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? 'PID killed' : 'no PID'}`);
+          ? `Agente ${skill} #${issue} cancelado (PIDs ${pidsKilled.join(', ')} + devuelto a pendiente)`
+          : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado — ya terminó o nunca arrancó)`;
+        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? `killed ${pidsKilled.join(',')}` : 'no PID'}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, msg }));
       } catch (e) {
@@ -5791,6 +7012,262 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API recomendaciones (issue #2653)
+  if (req.url === '/api/recommendations/refresh' && req.method === 'POST') {
+    if (!recommendationsLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'recommendations lib no disponible' }));
+      return;
+    }
+    recommendationsLib.refreshCache().then(cache => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, count: (cache.items || []).length, error: cache.error || null }));
+    }).catch(e => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    });
+    return;
+  }
+
+  const recoMatch = req.url && req.url.match(/^\/api\/recommendations\/(\d+)\/(approve|reject)$/);
+  if (recoMatch && req.method === 'POST') {
+    if (!recommendationsLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'recommendations lib no disponible' }));
+      return;
+    }
+    const issueNum = Number(recoMatch[1]);
+    const action = recoMatch[2];
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        let result;
+        if (action === 'approve') {
+          result = recommendationsLib.approve({ issue: issueNum });
+        } else {
+          result = recommendationsLib.reject({ issue: issueNum, reason: payload.reason || '' });
+        }
+        if (result.ok) {
+          recommendationsLib.refreshCache().catch(() => {});
+          log(`Recomendaciones: ${action} #${issueNum} — ${result.msg}`);
+        }
+        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API needs-human quick actions (panel del dashboard)
+  const needsHumanMatch = req.url && req.url.match(/^\/api\/needs-human\/(\d+)\/(reactivate|dismiss)$/);
+  if (needsHumanMatch && req.method === 'POST') {
+    const issueNum = Number(needsHumanMatch[1]);
+    const action = needsHumanMatch[2];
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      let humanBlock;
+      try { humanBlock = require('./lib/human-block'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'human-block lib no disponible: ' + e.message }));
+        return;
+      }
+      const ghBin = GH_BIN;
+      const repo = 'intrale/platform';
+      const { execFileSync } = require('child_process');
+      const ghTry = (args) => {
+        try {
+          execFileSync(ghBin, args, { stdio: 'ignore', timeout: 15000 });
+          return true;
+        } catch { return false; }
+      };
+
+      if (action === 'reactivate') {
+        let result;
+        try { result = humanBlock.unblockIssue({ issue: issueNum, guidance: '', unlocker: 'commander:dashboard' }); }
+        catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'Error desbloqueando: ' + e.message }));
+          return;
+        }
+        if (!result.ok) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: result.error }));
+          return;
+        }
+        ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', 'needs-human']);
+        const comment = `## ▶ Reactivado desde el dashboard\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\nVuelve a la cola del pipeline sin orientación adicional.`;
+        ghTry(['issue', 'comment', String(issueNum), '--repo', repo, '--body', comment]);
+        log(`needs-human: reactivado #${issueNum} (skill=${result.skill}, ${result.from_phase}→${result.to_phase})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} reactivado`, ...result }));
+        return;
+      }
+
+      // dismiss
+      const reason = String(payload.reason || '').trim();
+      let result;
+      try { result = humanBlock.dismissBlockedIssue({ issue: issueNum, reason, unlocker: 'commander:dashboard' }); }
+      catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'Error desestimando: ' + e.message }));
+        return;
+      }
+      if (!result.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: result.error }));
+        return;
+      }
+      ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', 'needs-human']);
+      const reasonLine = reason ? `\n\n**Motivo:** ${reason}` : '';
+      const closeComment = `## ✕ Desestimado desde el dashboard\n\nIssue cerrado manualmente; no entrará al pipeline.${reasonLine}`;
+      const closed = ghTry(['issue', 'close', String(issueNum), '--repo', repo, '--reason', 'not planned', '--comment', closeComment]);
+      log(`needs-human: desestimado #${issueNum} (skill=${result.skill}, closed=${closed})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} desestimado y cerrado`, closed, ...result }));
+    });
+    return;
+  }
+
+  // API orden manual de issues (drag-drop + botones ▲/▼ del Issue Tracker).
+  // Si el body incluye `peer`, hace swap con ese issue (caso del frontend que
+  // resuelve el vecino de la misma lane). Si no, fallback al swap con el vecino
+  // del array global (legacy / clientes sin contexto de lane).
+  const moveMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(move-up|move-down)$/);
+  if (moveMatch && req.method === 'POST') {
+    const issueNum = String(moveMatch[1]);
+    const action = moveMatch[2];
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      const state = issueOrder.load();
+      const peer = payload.peer != null ? String(payload.peer) : null;
+      let result;
+      if (peer) {
+        result = issueOrder.swap(state, issueNum, peer);
+      } else {
+        result = action === 'move-up'
+          ? issueOrder.moveUp(state, issueNum)
+          : issueOrder.moveDown(state, issueNum);
+      }
+      log(`order: ${action} #${issueNum}${peer ? ` ↔ #${peer}` : ''} → ${result.ok ? `${result.from}↔${result.to}` : result.reason}`);
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      if (result.ok) {
+        const newPos = state.order.indexOf(issueNum);
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'move-up' ? 'subió' : 'bajó'} a posición ${newPos + 1}`, ...result, position: newPos }));
+      } else {
+        res.end(JSON.stringify({ ok: false, msg: result.reason }));
+      }
+    });
+    return;
+  }
+
+  // API mover issue al tope/fondo de su columna (splice sin swap).
+  // Body: { "anchor": "<issue-num>" } — el primer/último issue de la columna.
+  const moveRelativeMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(move-before|move-after)$/);
+  if (moveRelativeMatch && req.method === 'POST') {
+    const issueNum = String(moveRelativeMatch[1]);
+    const action = moveRelativeMatch[2];
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      const anchor = payload.anchor != null ? String(payload.anchor) : null;
+      if (!anchor) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'Falta anchor en el body' }));
+        return;
+      }
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      const state = issueOrder.load();
+      const result = action === 'move-before'
+        ? issueOrder.moveBefore(state, issueNum, anchor)
+        : issueOrder.moveAfter(state, issueNum, anchor);
+      log(`order: ${action} #${issueNum} ${action === 'move-before' ? '←' : '→'} #${anchor} → ${result.ok ? `${result.from}→${result.to}` : result.reason}`);
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      if (result.ok) {
+        const newPos = state.order.indexOf(issueNum);
+        const verbo = action === 'move-before' ? 'al tope' : 'al fondo';
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} movido ${verbo} (posición ${newPos + 1})`, ...result, position: newPos }));
+      } else {
+        res.end(JSON.stringify({ ok: false, msg: result.reason }));
+      }
+    });
+    return;
+  }
+
+  if (req.url === '/api/issues/reorder' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      const order = Array.isArray(payload.order) ? payload.order : null;
+      if (!order) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'Falta payload.order (array de issue numbers)' }));
+        return;
+      }
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      const state = issueOrder.load();
+      issueOrder.setOrder(state, order);
+      log(`order: reorder via drag-drop (${order.length} issues, head=${order.slice(0,3).join(',')})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, msg: `Orden actualizado (${order.length} issues)`, count: order.length }));
+    });
+    return;
+  }
+
   // API JSON
   if (req.url === '/api/state' || req.url === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -5809,6 +7286,66 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/metrics') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(getMetricsData()));
+    return;
+  }
+
+  // ===========================================================================
+  // V3 — Endpoints de métricas extendidas (issue #2477)
+  // ===========================================================================
+  if (req.url.startsWith('/metrics/') || req.url === '/consumo' || req.url === '/metrics-v3' || req.url === '/metrics-v3/') {
+    if (!v3Aggregator) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'V3 aggregator no disponible. Verificar .pipeline/metrics/aggregator.js' }));
+      return;
+    }
+
+    // /consumo o /metrics-v3 → página HTML con tabs (#2488: alias /metrics-v3 más descriptivo)
+    if (req.url === '/consumo' || req.url === '/metrics-v3' || req.url === '/metrics-v3/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderConsumoHtml());
+      return;
+    }
+
+    // Endpoints JSON: extraer ventana de querystring
+    const u = new URL(req.url, 'http://localhost');
+    const windowParam = u.searchParams.get('window') || 'all';
+
+    const respond = (data) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data, null, 2));
+    };
+    const fail = (err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || String(err) }));
+    };
+
+    v3Aggregator.buildSnapshot({ window: windowParam }).then(snap => {
+      const baseMeta = { window: windowParam, generated_at: snap.generated_at };
+
+      if (u.pathname === '/metrics/agents') return respond(Object.assign({}, baseMeta, { agents: snap.agents || [] }));
+      if (u.pathname === '/metrics/phases') return respond(Object.assign({}, baseMeta, { phases: snap.phases || [] }));
+      if (u.pathname === '/metrics/tts')    return respond(Object.assign({}, baseMeta, { tts: snap.tts || {} }));
+      if (u.pathname === '/metrics/snapshot') return respond(snap);
+      if (u.pathname === '/metrics/totals')  return respond(Object.assign({}, baseMeta, { totals: snap.totals || {} }));
+      // #2488 — nuevos endpoints
+      if (u.pathname === '/metrics/projections') return respond(Object.assign({}, baseMeta, { projections: snap.projections || {} }));
+      if (u.pathname === '/metrics/llm-vs-deterministic') return respond(Object.assign({}, baseMeta, { llm_vs_deterministic: snap.llm_vs_deterministic || [] }));
+      if (u.pathname === '/metrics/daily') return respond(Object.assign({}, baseMeta, { daily: snap.daily || [] }));
+
+      const issueMatch = u.pathname.match(/^\/metrics\/issues\/(\d+)\/?$/);
+      if (issueMatch) {
+        const n = Number(issueMatch[1]);
+        const issue = (snap.issues || []).find(i => Number(i.issue) === n);
+        if (!issue) return respond(Object.assign({}, baseMeta, { issue: n, not_found: true, timeline: [] }));
+        return respond(Object.assign({}, baseMeta, issue));
+      }
+      if (u.pathname === '/metrics/issues' || u.pathname === '/metrics/issues/') {
+        return respond(Object.assign({}, baseMeta, { issues: snap.issues || [] }));
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'endpoint no reconocido', valid: ['/metrics/agents', '/metrics/phases', '/metrics/issues', '/metrics/issues/:n', '/metrics/tts', '/metrics/totals', '/metrics/snapshot', '/metrics/projections', '/metrics/llm-vs-deterministic', '/metrics/daily', '/consumo', '/metrics-v3'] }));
+    }).catch(fail);
     return;
   }
 
