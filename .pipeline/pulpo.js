@@ -3104,12 +3104,15 @@ function brazoBarrido(config) {
           resetInfraCounterOnSuccess();
           log('barrido', `#${issue} COMPLETADO — salió del pipeline ${pipelineName}`);
 
-          // Si es pipeline de definición → agregar label "ready" para que desarrollo lo tome
+          // Si es pipeline de definición → agregar label "Ready" para que desarrollo lo tome.
+          // Case-sensitive: el repo usa "Ready" (uppercase). Si se escribe "ready",
+          // el intake de desarrollo no lo va a encontrar (gh issue list es
+          // case-sensitive en --label). Ver fix #2801 / PR #2827.
           if (pipelineName === 'definicion') {
             const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
             const labelFile = path.join(ghQueueDir, `${issue}-ready-${Date.now()}.json`);
-            fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'ready' }));
-            log('barrido', `#${issue} → encolado label "ready" en servicio-github`);
+            fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'Ready' }));
+            log('barrido', `#${issue} → encolado label "Ready" en servicio-github`);
 
             // También remover label needs-definition
             const rmLabelFile = path.join(ghQueueDir, `${issue}-rm-ndef-${Date.now()}.json`);
