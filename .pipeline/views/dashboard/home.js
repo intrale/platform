@@ -492,7 +492,11 @@ async function tickActive(){
     const list = document.getElementById('active-list');
     const empty = document.getElementById('active-empty');
     if(!list) return;
-    const arr = (d.agents || []).slice(0, 3);
+    // Mostrar TODOS los agentes activos (no limitar a 3) — antes había
+    // inconsistencia entre /equipo (que mostraba todos) y home (capeado a 3),
+    // confundía al operador. Si hay overflow visual en kiosk, lo manejamos
+    // con el container que es flex-column (crece naturalmente).
+    const arr = (d.agents || []);
     const totalRunning = d.totalRunning || 0;
     setText('active-count', totalRunning > 0 ? (totalRunning + ' activo' + (totalRunning===1?'':'s')) : '0');
     if(arr.length === 0){
