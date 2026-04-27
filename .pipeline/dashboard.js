@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 // =============================================================================
-// Dashboard V2 — Visualización completa del pipeline
-// Issue Tracker Matrix + tooltips + links GitHub + logs + SSE live
+// Dashboard — Visualización completa del pipeline.
+//
+// Convivencia (#2801): se mantiene el render legacy en `/` para compatibilidad
+// y se exponen las rutas del nuevo dashboard kiosk vertical bajo:
+//   /v3                      home kiosk (1080×1920, anti-flicker)
+//   /equipo /pipeline /...   tabs satélite con diseño temático
+//   /api/dash/*              endpoints JSON con polling independiente
+//
+// Convención anti-flicker: TODA sección/área/tab debe usar fetch JSON +
+// DOM morphing manual. Los containers nunca se reemplazan, sólo se mutan
+// nodos hijos por id. Ver lib/dashboard-routes.js para más detalle.
 // =============================================================================
 
 const http = require('http');
@@ -38,11 +47,10 @@ const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
-// V3 — Sistema visual unificado (issue #2523).
+// Sistema visual unificado (issue #2523).
 // Los assets viven en .pipeline/assets/ y son producidos por el agente UX.
 // Lazy-load con cache: el dashboard renderiza muchas veces por minuto y
-// queremos evitar I/O repetido. Si el archivo cambia hace falta restart
-// (mismo modelo que dashboard-v2.js mismo).
+// queremos evitar I/O repetido. Si el archivo cambia hace falta restart.
 const ASSETS_DIR = path.join(__dirname, 'assets');
 let _designTokensCache = null;
 let _iconSpriteCache = null;
@@ -1041,7 +1049,7 @@ function generateHTML(state) {
       return st.mtime.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     } catch { return '—'; }
   };
-  const dashboardBuild = fmtDate(path.join(PIPELINE, 'dashboard-v2.js'));
+  const dashboardBuild = fmtDate(path.join(PIPELINE, 'dashboard.js'));
   const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
   let pulpoUptime = '—';
   try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
@@ -7628,15 +7636,29 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // HTML dashboard
+  // Nuevo dashboard kiosk vertical (#2801) — home + 9 tabs satélite + slices JSON
+  // bajo /api/dash/*. Anti-flicker: cliente hace polling JSON y muta DOM in-place.
+  // Si la ruta no matchea aquí, cae al catch-all (home legacy en /legacy o /).
+  try {
+    const dashRoutes = require('./lib/dashboard-routes');
+    const url = req.url || '';
+    const isLegacy = (url === '/legacy' || url === '/legacy/');
+    if (!isLegacy && dashRoutes.handle(req, res, { getState: getPipelineState, PIPELINE, ROOT, GH_BIN })) {
+      return;
+    }
+  } catch (e) {
+    log(`dashboard-routes error: ${e.message}`);
+  }
+
+  // HTML dashboard legacy (accesible vía /legacy o como fallback de URLs no matcheadas).
   const state = getPipelineState();
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(generateHTML(state));
 });
 
 server.listen(PORT, () => {
-  log(`Dashboard V2 en http://localhost:${PORT}`);
-  log(`API: /api/state | Logs: /logs/{file} | SSE: /events`);
+  log(`Dashboard en http://localhost:${PORT}`);
+  log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3`);
   try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT }); } catch {}
 });
 

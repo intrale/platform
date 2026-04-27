@@ -41,7 +41,7 @@ $Services = @(
     @{ Name = 'svc-telegram';  Script = 'servicio-telegram.js' },
     @{ Name = 'svc-github';    Script = 'servicio-github.js' },
     @{ Name = 'svc-drive';     Script = 'servicio-drive.js' },
-    @{ Name = 'dashboard';     Script = 'dashboard-v2.js' }
+    @{ Name = 'dashboard';     Script = 'dashboard.js' }
 )
 
 # Un único scan del SO, reutilizado para todos los componentes.
@@ -86,7 +86,7 @@ $ScriptMap = @{
     'svc-telegram' = 'servicio-telegram.js'
     'svc-github'   = 'servicio-github.js'
     'svc-drive'    = 'servicio-drive.js'
-    'dashboard'    = 'dashboard-v2.js'
+    'dashboard'    = 'dashboard.js'
 }
 
 # Sincronizar con main antes de levantar (para tener scripts actualizados)

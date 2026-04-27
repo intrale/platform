@@ -451,7 +451,7 @@ function buildInfraReboteMotivo(precheckResult) {
 
 /**
  * Persiste el estado de salud de infra en `.pipeline/infra-health.json`.
- * Mantiene compatibilidad con el formato consumido por el dashboard-v2.js
+ * Mantiene compatibilidad con el formato consumido por el dashboard.js
  * (ver sección `infraHealth` / helpers `simular-rebote-infra.js`).
  *
  * Preserva los contadores de retries y circuit breaker previos para no

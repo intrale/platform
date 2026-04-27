@@ -1,6 +1,6 @@
 # Implementación Pipeline V3
 
-> **Nomenclatura (2026-04-22):** A partir de esta fecha, el dashboard y el pipeline se denominan **V3** (antes V2). El cambio refleja la nueva etapa de skills determinísticos + métricas extendidas. Los nombres físicos de archivos (`pulpo.js`, `dashboard-v2.js`, etc.) se mantienen para no romper la operación; la versión es conceptual.
+> **Nomenclatura (2026-04-27, #2801):** Los archivos físicos no llevan sufijo de versión. Renombres aplicados: `dashboard-v2.js` → `dashboard.js`, `launch-v2.ps1` → `launch.ps1`, `lib/v3-*` → `lib/dashboard-*`, `views/v3/` → `views/dashboard/`. La versión queda conceptual (V3 = pipeline determinístico + métricas extendidas) pero no aparece en filenames.
 
 ## Estado de V2 (pre-V3): COMPLETADA
 
@@ -11,14 +11,14 @@
 ## Cómo arrancar el sistema
 
 ```powershell
-powershell -File .pipeline/launch-v2.ps1
+powershell -File .pipeline/launch.ps1
 ```
 
 O manualmente:
 ```bash
 node .pipeline/pulpo.js &              # Pulpo (barrido + lanzamiento + intake)
 node .pipeline/listener-telegram.js &   # Listener Telegram
-node .pipeline/dashboard-v2.js &        # Dashboard web
+node .pipeline/dashboard.js &        # Dashboard web
 node .pipeline/servicio-telegram.js &   # Servicio Telegram
 node .pipeline/servicio-github.js &     # Servicio GitHub
 node .pipeline/servicio-drive.js &      # Servicio Drive (stub)
@@ -67,9 +67,9 @@ node .pipeline/servicio-drive.js &      # Servicio Drive (stub)
 - Commander history en commander-history.jsonl
 - 8 comandos: /status, /actividad, /intake, /proponer, /pausar, /reanudar, /costos, /help
 
-### F7 — Dashboard V2
+### F7 — Dashboard
 - Fecha: 2026-03-27
-- `dashboard-v2.js` en puerto 3200
+- `dashboard.js` en puerto 3200
 - KPIs: en pipeline, procesados, servicios pendientes
 - Vista Kanban por fase con estado por issue
 - API JSON en /api/state
@@ -85,7 +85,7 @@ node .pipeline/servicio-drive.js &      # Servicio Drive (stub)
 ### F9 — Watchdog Task Scheduler
 - Fecha: 2026-03-27
 - `watchdog.ps1` — vigila Pulpo + Listener
-- `launch-v2.ps1` — script de lanzamiento completo + registro en Task Scheduler
+- `launch.ps1` — script de lanzamiento completo + registro en Task Scheduler
 
 ### F10 — Limpieza final
 - Fecha: 2026-03-27
@@ -99,12 +99,12 @@ node .pipeline/servicio-drive.js &      # Servicio Drive (stub)
 |-----------|---------|------|-------------|
 | Pulpo | `.pipeline/pulpo.js` | Node.js | ~400 |
 | Listener Telegram | `.pipeline/listener-telegram.js` | Node.js | ~120 |
-| Dashboard | `.pipeline/dashboard-v2.js` | Node.js | ~250 |
+| Dashboard | `.pipeline/dashboard.js` | Node.js | ~250 |
 | Servicio Telegram | `.pipeline/servicio-telegram.js` | Node.js | ~80 |
 | Servicio GitHub | `.pipeline/servicio-github.js` | Node.js | ~80 |
 | Servicio Drive | `.pipeline/servicio-drive.js` | Node.js | ~50 |
 | Watchdog | `.pipeline/watchdog.ps1` | PowerShell | ~30 |
-| Launch | `.pipeline/launch-v2.ps1` | PowerShell | ~40 |
+| Launch | `.pipeline/launch.ps1` | PowerShell | ~40 |
 | Config | `.pipeline/config.yaml` | YAML | ~60 |
 | Roles | `.pipeline/roles/*.md` | Markdown | ~15 archivos |
 

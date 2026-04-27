@@ -95,7 +95,7 @@ El QA E2E del producto (video + emulador) **no aplica** a cambios que solo tocan
 
 ### Delegación al UX para assets visuales (CRÍTICO)
 
-**No sos diseñador visual.** El pipeline tiene superficie visual limitada pero existe: el dashboard V3 (HTML/CSS del `dashboard-v2.js`), PDFs de rejection reports, mensajes de Telegram con formato, audios narrados. Si el issue te pide cambiar algo visual del dashboard, rediseñar un layout de PDF, o introducir un estilo nuevo, **los assets/decisiones visuales los produce el UX**, no vos.
+**No sos diseñador visual.** El pipeline tiene superficie visual limitada pero existe: el dashboard V3 (HTML/CSS del `dashboard.js`), PDFs de rejection reports, mensajes de Telegram con formato, audios narrados. Si el issue te pide cambiar algo visual del dashboard, rediseñar un layout de PDF, o introducir un estilo nuevo, **los assets/decisiones visuales los produce el UX**, no vos.
 
 - Cambios de copy/texto en UI del dashboard: los define el UX (o el PO). Vos los aplicás.
 - Paletas, iconografía, branding del dashboard o PDFs: los produce el UX con Claude Design.

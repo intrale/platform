@@ -32,7 +32,7 @@ dashboard HTML, `/consumo`, PDFs de rejection y mensajes de Telegram.
 - **El perfil `ux` del pipeline** es el unico dueno de este directorio. Los
   cambios a paleta, tipografia o iconografia pasan siempre por UX.
 - **El perfil `pipeline-dev`** consume estos assets para aplicarlos a
-  `dashboard-v2.js` en fase `dev` del pipeline de desarrollo.
+  `dashboard.js` en fase `dev` del pipeline de desarrollo.
 - **Los skills `po` y `guru`** participan en la validacion cross-cutting
   (coherencia de marca y viabilidad tecnica respectivamente).
 
@@ -41,7 +41,7 @@ dashboard HTML, `/consumo`, PDFs de rejection y mensajes de Telegram.
 1. UX produce / actualiza assets en este directorio (fase `criterios` o
    `validacion`).
 2. UX commitea los assets al repo desde su worktree.
-3. Pipeline-dev los aplica a `dashboard-v2.js` en fase `dev`.
+3. Pipeline-dev los aplica a `dashboard.js` en fase `dev`.
 4. QA / UX verifican en fase `aprobacion` que lo entregado respeta el
    sistema visual.
 

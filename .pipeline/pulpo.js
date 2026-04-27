@@ -6383,7 +6383,7 @@ REGLAS:
 4. NO menciones paths internos del pipeline (pendiente/, listo/, etc).
 5. Contexto del entorno:
    - Pipeline dir: ${PIPELINE}
-   - Dashboard: node .pipeline/dashboard-v2.js (puerto 3200)
+   - Dashboard: node .pipeline/dashboard.js (puerto 3200)
    - PIDs: .pipeline/*.pid
    - Logs: .pipeline/logs/
    - Procesos: tasklist | grep node

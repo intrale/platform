@@ -41,7 +41,7 @@ const COMPONENTS = [
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
   { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
-  { name: 'dashboard', script: 'dashboard-v2.js', pid: 'dashboard.pid' },
+  { name: 'dashboard', script: 'dashboard.js', pid: 'dashboard.pid' },
 ];
 
 function log(msg) {

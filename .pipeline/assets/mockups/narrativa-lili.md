@@ -59,7 +59,7 @@ pipeline dev aplique esto al dashboard, no queden residuos de los cinco
 escapadores distintos que hay hoy.
 
 Lo que viene: el skill pipeline-dev toma estos tokens y este sprite, los
-aplica al `dashboard-v2.js`, y entrega el rediseño implementado. Yo
+aplica al `dashboard.js`, y entrega el rediseño implementado. Yo
 vuelvo en fase validación a verificar que los assets estén donde los
 dejé, con los hashes correctos, y a revisar el video final en fase
 aprobación. Cualquier duda, estoy atenta.

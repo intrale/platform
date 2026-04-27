@@ -197,8 +197,8 @@ Cuando PASO 0.A determinó que **NO se exige video** (issue de infra pura sin
    ls -la .pipeline/assets/design-tokens.css \
           .pipeline/assets/icons/sprite.svg \
           .pipeline/assets/mockups/*.svg 2>/dev/null
-   grep -c 'var(--' .pipeline/dashboard-v2.js   # consumo de tokens
-   grep -c 'href="#ic-' .pipeline/dashboard-v2.js  # consumo de iconos
+   grep -c 'var(--' .pipeline/dashboard.js   # consumo de tokens
+   grep -c 'href="#ic-' .pipeline/dashboard.js  # consumo de iconos
    ```
 2. **Mockups commiteados**: el contrato de UX en `criterios` es entregar mockups
    SVG que muestran el resultado esperado. Esos mockups SON la evidencia visual
@@ -210,7 +210,7 @@ Cuando PASO 0.A determinó que **NO se exige video** (issue de infra pura sin
    bytes renderizados, conteo de tokens consumidos, símbolos del sprite
    referenciados. Cruzá esos números con la intención de los mockups.
 5. **Code review visual** (acotado): revisá los diffs en archivos de UI del
-   pipeline (`dashboard-v2.js`, `rejection-report.js`, mensajes Telegram con
+   pipeline (`dashboard.js`, `rejection-report.js`, mensajes Telegram con
    formato) para confirmar que la paleta y la iconografía están aplicadas.
 
 **Aprobar (PASO 2-bis)** cuando:

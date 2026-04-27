@@ -3,7 +3,7 @@
  * -----------------------------------------------------------------------------
  * Fuente unica de verdad para colores, tipografia, espaciado, radios,
  * sombras y animaciones del sistema visual. Referenciado desde:
- *   - .pipeline/dashboard-v2.js (dashboard web V3)
+ *   - .pipeline/dashboard.js (dashboard web V3)
  *   - docs/qa/rejection-*.html  (PDFs de rejection)
  *   - mensajes de Telegram (via post-procesamiento)
  *   - pagina /consumo
@@ -181,7 +181,7 @@
   --ease-in-out:   cubic-bezier(0.65, 0, 0.35, 1);
 
   /* ---------------------------------------------------------------------------
-   * 11. BACK-COMPAT con dashboard-v2.js actual
+   * 11. BACK-COMPAT con dashboard.js actual
    * Aliases para que el dashboard existente no rompa durante la migracion.
    * Una vez aplicado el rediseno, estas aliases pueden eliminarse.
    * -------------------------------------------------------------------------- */

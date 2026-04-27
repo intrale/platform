@@ -101,7 +101,7 @@ dev_routing_priority:
 pipeline_scope_keywords:
   - ".pipeline/"
   - "pulpo.js"
-  - "dashboard-v2"
+  - "dashboard"
   - "restart.js"
   - "rollback.sh"
   - "smoke-test"
