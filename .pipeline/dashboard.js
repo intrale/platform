@@ -7374,8 +7374,12 @@ const server = http.createServer((req, res) => {
       };
 
       if (action === 'reactivate') {
+        // #2801 — guidance opcional desde el dashboard. Si viene, se persiste
+        // en `<marker>.guidance.txt` (vía humanBlock) y el pulpo la inyecta
+        // al prompt del agente cuando lo lance.
+        const guidance = String(payload.guidance || '').trim();
         let result;
-        try { result = humanBlock.unblockIssue({ issue: issueNum, guidance: '', unlocker: 'commander:dashboard' }); }
+        try { result = humanBlock.unblockIssue({ issue: issueNum, guidance, unlocker: 'commander:dashboard' }); }
         catch (e) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, msg: 'Error desbloqueando: ' + e.message }));
@@ -7387,11 +7391,14 @@ const server = http.createServer((req, res) => {
           return;
         }
         ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', 'needs-human']);
-        const comment = `## ▶ Reactivado desde el dashboard\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\nVuelve a la cola del pipeline sin orientación adicional.`;
+        const guidanceBlock = guidance
+          ? `\n\n**Orientación del operador:**\n\n> ${guidance.replace(/\n/g, '\n> ')}`
+          : '\n\nVuelve a la cola del pipeline sin orientación adicional.';
+        const comment = `## ▶ Reactivado desde el dashboard\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`${guidanceBlock}`;
         ghTry(['issue', 'comment', String(issueNum), '--repo', repo, '--body', comment]);
-        log(`needs-human: reactivado #${issueNum} (skill=${result.skill}, ${result.from_phase}→${result.to_phase})`);
+        log(`needs-human: reactivado #${issueNum} (skill=${result.skill}, ${result.from_phase}→${result.to_phase})${guidance ? ` con orientación (${guidance.length} chars)` : ''}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} reactivado`, ...result }));
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} reactivado${guidance ? ' con orientación' : ''}`, ...result }));
         return;
       }
 
