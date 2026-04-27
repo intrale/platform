@@ -80,7 +80,10 @@ function quotaFile(metricsDir) {
 function loadState(metricsDir) {
     try {
         const raw = fs.readFileSync(quotaFile(metricsDir), 'utf8');
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        // Defaults para campos nuevos en estados viejos
+        if (!parsed.calibration) parsed.calibration = null;
+        return parsed;
     } catch {
         return {
             config_limit_hours: DEFAULT_LIMIT_HOURS,
@@ -88,8 +91,39 @@ function loadState(metricsDir) {
             observed_max_hours: 0,
             observed_max_at: null,
             adjustments: [],
+            calibration: null,
         };
     }
+}
+
+/**
+ * Persiste una calibración manual: el operador ingresa el % real que ve
+ * en claude.ai/settings/usage; calculamos un factor que multiplica el %
+ * del pipeline para estimar el % real (que incluye uso interactivo en
+ * claude.ai aparte del pipeline).
+ *
+ * @param {string} metricsDir
+ * @param {{realWeeklyPct: number, realSessionPct: number, pipelineWeeklyPct: number, pipelineSessionPct: number}} obs
+ */
+function saveCalibration(metricsDir, obs) {
+    const state = loadState(metricsDir);
+    const realWeekly = Number(obs.realWeeklyPct);
+    const realSession = Number(obs.realSessionPct);
+    const pipelineWeekly = Number(obs.pipelineWeeklyPct);
+    const pipelineSession = Number(obs.pipelineSessionPct);
+    const weeklyFactor = pipelineWeekly > 0 ? realWeekly / pipelineWeekly : 1;
+    const sessionFactor = pipelineSession > 0 ? realSession / pipelineSession : 1;
+    state.calibration = {
+        at: new Date().toISOString(),
+        real_weekly_pct: realWeekly,
+        real_session_pct: realSession,
+        pipeline_weekly_pct_at: pipelineWeekly,
+        pipeline_session_pct_at: pipelineSession,
+        weekly_factor: Math.round(weeklyFactor * 100) / 100,
+        session_factor: Math.round(sessionFactor * 100) / 100,
+    };
+    saveState(metricsDir, state);
+    return state.calibration;
 }
 
 function saveState(metricsDir, state) {
@@ -229,6 +263,29 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
     else if (sessionPct >= 75) sessionStatus = 'warning';
     else if (sessionPct >= 50) sessionStatus = 'normal';
 
+    // Aplicar calibración manual (si existe). Multiplica el % del pipeline
+    // por el factor observado contra el % real de claude.ai. El resultado es
+    // un "estimado real" más cercano a la cuota verdadera de Anthropic
+    // (que incluye uso interactivo del operador, no solo el pipeline).
+    let realPct = null;
+    let realSessionPct = null;
+    let realStatus = status;
+    let realSessionStatus = sessionStatus;
+    if (state.calibration && state.calibration.weekly_factor) {
+        realPct = Math.round(pct * state.calibration.weekly_factor * 10) / 10;
+        if (realPct >= 90) realStatus = 'critical';
+        else if (realPct >= 75) realStatus = 'warning';
+        else if (realPct >= 50) realStatus = 'normal';
+        else realStatus = 'ok';
+    }
+    if (state.calibration && state.calibration.session_factor) {
+        realSessionPct = Math.round(sessionPct * state.calibration.session_factor * 10) / 10;
+        if (realSessionPct >= 90) realSessionStatus = 'critical';
+        else if (realSessionPct >= 75) realSessionStatus = 'warning';
+        else if (realSessionPct >= 50) realSessionStatus = 'normal';
+        else realSessionStatus = 'ok';
+    }
+
     return {
         // Semanal (ventana real, reset domingo 21:00 local)
         hoursUsed7d: Math.round(usage.hoursUsed * 10) / 10,
@@ -237,6 +294,8 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
         effectiveLimitHours: state.effective_limit_hours,
         configLimitHours: state.config_limit_hours,
         pct: Math.round(pct * 10) / 10,
+        realPct,
+        realStatus,
         hoursRemaining: Math.round(hoursRemaining * 10) / 10,
         burnRatePerDay: Math.round(burnRatePerDay * 10) / 10,
         daysToLimit: Number.isFinite(daysToLimit) ? Math.round(daysToLimit * 10) / 10 : null,
@@ -255,9 +314,13 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
             sessionsCount: sessionUsage.sessionsCount,
             limitHours: DEFAULT_SESSION_LIMIT_HOURS,
             pct: Math.round(sessionPct * 10) / 10,
+            realPct: realSessionPct,
+            realStatus: realSessionStatus,
             hoursRemaining: Math.round(Math.max(0, DEFAULT_SESSION_LIMIT_HOURS - sessionUsage.hoursUsed) * 100) / 100,
             status: sessionStatus,
         },
+        // Calibración (si existe)
+        calibration: state.calibration,
     };
 }
 
@@ -269,6 +332,7 @@ module.exports = {
     getNextWeeklyResetMs,
     loadState,
     saveState,
+    saveCalibration,
     DEFAULT_LIMIT_HOURS,
     DEFAULT_SESSION_LIMIT_HOURS,
 };

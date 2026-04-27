@@ -7766,6 +7766,43 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // #2801 — Calibración manual de la cuota Plan Max contra el real de claude.ai.
+  // El operador pega los % que ve en claude.ai/settings/usage; el sistema guarda
+  // factor = real/pipeline para extrapolar futuras lecturas.
+  if (req.url === '/api/dash/quota/calibrate' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        const realWeekly = Number(payload.real_weekly_pct);
+        const realSession = Number(payload.real_session_pct);
+        if (!Number.isFinite(realWeekly) || !Number.isFinite(realSession)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'real_weekly_pct y real_session_pct son requeridos (números)' }));
+          return;
+        }
+        const quotaLib = require('./lib/weekly-quota');
+        const metricsDir = path.join(PIPELINE, 'metrics');
+        const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
+        const current = quotaLib.computeQuota(metricsDir, activityLog);
+        const calibration = quotaLib.saveCalibration(metricsDir, {
+          realWeeklyPct: realWeekly,
+          realSessionPct: realSession,
+          pipelineWeeklyPct: current.pct,
+          pipelineSessionPct: current.session ? current.session.pct : 0,
+        });
+        log(`quota: calibrado real(weekly=${realWeekly}%, session=${realSession}%) → pipeline(weekly=${current.pct}%, session=${current.session?.pct}%) → factors(weekly=${calibration.weekly_factor}, session=${calibration.session_factor})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Calibración guardada · factor semanal ×${calibration.weekly_factor} · sesión ×${calibration.session_factor}`, calibration }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'Error: ' + e.message }));
+      }
+    });
+    return;
+  }
+
   // Nuevo dashboard kiosk vertical (#2801) — home + 9 tabs satélite + slices JSON
   // bajo /api/dash/*. Anti-flicker: cliente hace polling JSON y muta DOM in-place.
   // Si la ruta no matchea aquí, cae al catch-all (home legacy en /legacy o /).

@@ -788,6 +788,21 @@ function renderCostos() {
   <div id="quota-grid" class="kp-grid"></div>
   <div id="quota-bar-wrap" style="margin-top:14px"></div>
   <div id="quota-meta" style="margin-top:10px;font-size:12px;color:var(--in-fg-dim)"></div>
+  <details id="quota-calib" style="margin-top:14px;border-top:1px solid var(--in-border);padding-top:12px">
+    <summary style="cursor:pointer;font-size:12px;color:var(--in-fg-dim);user-select:none">🎯 Calibrar contra valores reales de claude.ai/settings/usage</summary>
+    <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end">
+      <div>
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% semanal real (claude.ai)</label>
+        <input id="calib-weekly" type="number" step="0.1" min="0" max="100" placeholder="ej: 22" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% sesión 5h real (claude.ai)</label>
+        <input id="calib-session" type="number" step="0.1" min="0" max="100" placeholder="ej: 60" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
+      </div>
+      <button id="calib-save" class="in-btn" style="border-color:var(--in-accent);color:var(--in-accent)">Aplicar</button>
+    </div>
+    <div id="calib-status" style="margin-top:10px;font-size:11px;color:var(--in-fg-dim)"></div>
+  </details>
 </section>
 <section class="in-section">
   <h2 class="in-section-title"><span class="in-section-title-icon">💰</span>Consumo · tokens y costo</h2>
@@ -823,17 +838,29 @@ async function tickQuota(){
         if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de cuota: '+(d && d.error || 'activity-log vacío')+'</div>';
         return;
     }
-    const sess = d.session || { hoursUsed: 0, pct: 0, hoursRemaining: 5, status: 'ok' };
-    const sessCls = sess.status==='critical'?'kp-bad':sess.status==='warning'?'kp-warn':sess.status==='normal'?'':'kp-ok';
-    const weekCls = d.status==='critical'?'kp-bad':d.status==='warning'?'kp-warn':d.status==='normal'?'':'kp-ok';
+    const sess = d.session || { hoursUsed: 0, pct: 0, realPct: null, hoursRemaining: 5, status: 'ok', realStatus: 'ok' };
+    const sessShownPct = sess.realPct != null ? sess.realPct : sess.pct;
+    const sessShownStatus = sess.realPct != null ? sess.realStatus : sess.status;
+    const sessCls = sessShownStatus==='critical'?'kp-bad':sessShownStatus==='warning'?'kp-warn':sessShownStatus==='normal'?'':'kp-ok';
+    const weekShownPct = d.realPct != null ? d.realPct : d.pct;
+    const weekShownStatus = d.realPct != null ? d.realStatus : d.status;
+    const weekCls = weekShownStatus==='critical'?'kp-bad':weekShownStatus==='warning'?'kp-warn':weekShownStatus==='normal'?'':'kp-ok';
     const resetTxt = d.daysToReset != null ? 'Reset en '+d.daysToReset.toFixed(1)+' días' : '';
+    const sessLabel = sess.realPct != null ? 'Sesión 5h · estimado real' : 'Sesión actual · 5h';
+    const sessSub = sess.realPct != null
+        ? 'pipeline '+sess.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.session_factor ? d.calibration.session_factor : 1)
+        : sess.hoursUsed.toFixed(2)+'h / 5h';
+    const weekLabel = d.realPct != null ? 'Semanal · estimado real' : 'Semanal · cuota';
+    const weekSub = d.realPct != null
+        ? 'pipeline '+d.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.weekly_factor ? d.calibration.weekly_factor : 1)
+        : 'de '+d.effectiveLimitHours+'h estimadas';
     const tiles = [
-        { label: 'Sesión actual · 5h', value: sess.pct.toFixed(1)+'%', sub: sess.hoursUsed.toFixed(2)+'h / 5h', cls: sessCls },
-        { label: 'Sesión · restante', value: sess.hoursRemaining.toFixed(2)+'h', sub: 'reset rolling 5h', cls: '' },
-        { label: 'Semanal · usada', value: d.hoursUsed7d.toFixed(1)+'h', sub: d.sessionsCount7d+' sesiones desde dom 21h', cls: '' },
-        { label: 'Semanal · cuota', value: d.pct.toFixed(1)+'%', sub: 'de '+d.effectiveLimitHours+'h estimadas', cls: weekCls },
-        { label: 'Horas restantes', value: d.hoursRemaining+'h', sub: resetTxt, cls: '' },
-        { label: 'Burn rate', value: d.burnRatePerDay+'h/d', sub: 'últimas 24h o promedio semana', cls: '' },
+        { label: sessLabel, value: sessShownPct.toFixed(1)+'%', sub: sessSub, cls: sessCls },
+        { label: 'Sesión · restante (pipeline)', value: sess.hoursRemaining.toFixed(2)+'h', sub: 'reset rolling 5h', cls: '' },
+        { label: 'Semanal · pipeline usado', value: d.hoursUsed7d.toFixed(1)+'h', sub: d.sessionsCount7d+' sesiones desde dom 21h', cls: '' },
+        { label: weekLabel, value: weekShownPct.toFixed(1)+'%', sub: weekSub, cls: weekCls },
+        { label: 'Horas restantes (pipeline)', value: d.hoursRemaining+'h', sub: resetTxt, cls: '' },
+        { label: 'Burn rate (pipeline)', value: d.burnRatePerDay+'h/d', sub: 'últimas 24h o promedio semana', cls: '' },
         { label: 'Días al límite', value: d.daysToLimit != null ? d.daysToLimit.toFixed(1)+'d' : '∞', sub: 'al ritmo actual', cls: d.daysToLimit != null && d.daysToLimit < 1 ? 'kp-bad' : d.daysToLimit != null && d.daysToLimit < 2 ? 'kp-warn' : '' },
         { label: 'Auto-ajustes', value: d.adjustmentsCount, sub: 'observed: '+d.observedMaxHours+'h', cls: '' },
     ];
@@ -857,6 +884,36 @@ async function tickQuota(){
         if(d.observedMaxAt) lines.push('Pico observado en la semana: '+d.observedMaxHours+'h (' + fmtART(d.observedMaxAt) + ')');
         const txt = lines.join(' · ');
         if(meta.textContent !== txt) meta.textContent = txt;
+    }
+    // Renderizar status de calibración + bind del botón (idempotente).
+    const calibStatus = document.getElementById('calib-status');
+    if(calibStatus){
+        let ctxt;
+        if(d.calibration){
+            const at = fmtART(d.calibration.at);
+            ctxt = '✓ Calibrado el '+at+' · semanal '+d.calibration.real_weekly_pct+'% real / '+d.calibration.pipeline_weekly_pct_at+'% pipeline = factor ×'+d.calibration.weekly_factor+' · sesión ×'+d.calibration.session_factor+'.';
+        } else {
+            ctxt = 'Sin calibrar. Pegá los % que ves en claude.ai/settings/usage para extrapolar el real.';
+        }
+        if(calibStatus.textContent !== ctxt) calibStatus.textContent = ctxt;
+    }
+    const calibBtn = document.getElementById('calib-save');
+    if(calibBtn && !calibBtn.dataset._bound){
+        calibBtn.dataset._bound = '1';
+        calibBtn.addEventListener('click', async () => {
+            const w = parseFloat(document.getElementById('calib-weekly').value);
+            const s = parseFloat(document.getElementById('calib-session').value);
+            if(!Number.isFinite(w) || !Number.isFinite(s)){
+                showToast('Ingresá ambos % (semanal y sesión)', false);
+                return;
+            }
+            try{
+                const r = await fetch('/api/dash/quota/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({real_weekly_pct: w, real_session_pct: s})});
+                const j = await r.json();
+                showToast(j.msg || (j.ok?'Calibrado':'Falló'), j.ok);
+                setTimeout(() => tickQuota().catch(()=>{}), 400);
+            } catch(e){ showToast('Error: '+e.message, false); }
+        });
     }
 }
 
