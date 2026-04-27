@@ -1,0 +1,18 @@
+<!--
+  ic_team_role_cashier — Chip ícono para el rol CASHIER (operativo de caja).
+  Diseño: caja registradora estilizada (Material Symbols outlined "point_of_sale").
+  Uso: leading icon del SuggestionChip/AssistChip con container=secondaryContainer y tint=onSecondaryContainer.
+  Tamaño objetivo: 18dp (chip leading icon).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:pathData="M21,16V19H3V16H21ZM5,15V12H19V15H5ZM5,11V4H19V11H5Z M7,6V9H17V6H7Z M7,13V14H9V13H7Z M11,13V14H13V13H11Z M15,13V14H17V13H15Z"
+      android:fillColor="#FF000000"/>
+  <path
+      android:pathData="M4,21V20H20V21H4Z"
+      android:fillColor="#FF000000"/>
+</vector>

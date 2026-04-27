@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 04 — Pantalla "Aceptación de invitación" (deep link válido)
+  Issue: #2748
+  Audience: android-dev
+
+  Decisiones UX:
+  - Hero icon: ic_invitation_envelope.xml a 96dp, color = primary.
+  - Título: "Te invitan a [Nombre del Negocio]" (headlineMedium, fontWeight=600).
+  - Body: explica el contexto en 1-2 líneas.
+  - Chip M3 grande mostrando el rol asignado, leadingIcon del rol.
+  - Dos CTAs apilados:
+    - Primario "Aceptar" (FilledButton M3, container=primary).
+    - Secundario "Rechazar" (OutlinedButton M3).
+  - Si NO hay sesión: redirigir a login PRIMERO, luego mostrar esta pantalla.
+  - Si email distinto: ver mockup 05 (estado de error).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 412 892" width="412" height="892" font-family="Roboto, Inter, system-ui, sans-serif">
+
+  <rect width="412" height="892" fill="#F9F9FF"/>
+
+  <!-- Status bar -->
+  <rect width="412" height="32" fill="#F9F9FF"/>
+  <text x="20" y="22" font-size="13" fill="#191C20" font-weight="500">9:41</text>
+  <rect x="350" y="12" width="20" height="8" rx="2" fill="#191C20"/>
+
+  <!-- TopAppBar minimal con back -->
+  <rect x="0" y="32" width="412" height="64" fill="#F9F9FF"/>
+  <path d="M28 64 L36 56 M28 64 L36 72 M28 64 L48 64" stroke="#191C20" stroke-width="2" stroke-linecap="round" fill="none"/>
+
+  <!-- Hero icon: sobre con check -->
+  <g transform="translate(158, 144)">
+    <rect width="96" height="96" rx="48" fill="#D6E3FF"/>
+    <g transform="translate(20, 20)">
+      <!-- envelope body -->
+      <path d="M48 12 L8 12 L8 44 L48 44 Z" fill="#415F91"/>
+      <!-- envelope flap -->
+      <path d="M8 12 L28 28 L48 12" fill="none" stroke="#415F91" stroke-width="2"/>
+      <!-- check -->
+      <circle cx="44" cy="42" r="14" fill="#37BF6E"/>
+      <path d="M38 42 L42 46 L50 38" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+    </g>
+  </g>
+
+  <!-- Título -->
+  <text x="206" y="280" font-size="13" fill="#44474E" text-anchor="middle">Te invitan a</text>
+  <text x="206" y="316" font-size="26" font-weight="600" fill="#191C20" text-anchor="middle">Mi Almacen</text>
+
+  <!-- Body -->
+  <text x="206" y="350" font-size="14" fill="#44474E" text-anchor="middle">
+    <tspan x="206" dy="0">Vas a poder operar el negocio según el rol</tspan>
+    <tspan x="206" dy="20">que te asignó el dueño.</tspan>
+  </text>
+
+  <!-- Chip de rol (grande) -->
+  <g transform="translate(126, 392)">
+    <rect width="160" height="48" rx="16" fill="#FAD8FD"/>
+    <g transform="translate(16, 12)">
+      <path d="M16 8 L10 10 V14 C10 17 13 20 16 21 C19 20 22 17 22 14 V10 Z" fill="none" stroke="#28132E" stroke-width="1.5"/>
+      <path d="M14 14 L13 13 L12 14 L14 16 L19 11 L18 10 Z" fill="#28132E"/>
+    </g>
+    <text x="60" y="30" font-size="15" font-weight="600" fill="#28132E">Tu rol: Manager</text>
+  </g>
+
+  <!-- Description del rol -->
+  <text x="206" y="476" font-size="12" fill="#44474E" text-anchor="middle">
+    <tspan x="206" dy="0">Administra el equipo del negocio sin tocar</tspan>
+    <tspan x="206" dy="18">facturación. Acepta para empezar.</tspan>
+  </text>
+
+  <!-- CTAs apilados -->
+  <g transform="translate(40, 550)">
+    <rect width="332" height="56" rx="16" fill="#415F91"/>
+    <text x="166" y="34" font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">Aceptar invitación</text>
+  </g>
+
+  <g transform="translate(40, 622)">
+    <rect width="332" height="56" rx="16" fill="none" stroke="#415F91" stroke-width="1.5"/>
+    <text x="166" y="34" font-size="15" font-weight="500" fill="#415F91" text-anchor="middle">Rechazar</text>
+  </g>
+
+  <!-- Hint de privacidad -->
+  <g transform="translate(40, 712)">
+    <rect width="332" height="60" rx="12" fill="#EDEDF4"/>
+    <circle cx="20" cy="30" r="10" fill="none" stroke="#44474E" stroke-width="1.5"/>
+    <text x="20" y="34" font-size="12" font-weight="700" fill="#44474E" text-anchor="middle">i</text>
+    <text x="36" y="26" font-size="11" fill="#44474E">Si rechazás, no se notifica a nadie.</text>
+    <text x="36" y="42" font-size="11" fill="#44474E">El link queda inválido para futuros usos.</text>
+  </g>
+
+  <!-- Notas DEV -->
+  <g transform="translate(16, 800)">
+    <rect width="380" height="80" rx="12" fill="#EDEDF4" stroke="#C4C6D0" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="16" y="22" font-size="11" font-weight="700" fill="#191C20">NOTAS DEV — InvitationScreen</text>
+    <text x="16" y="40" font-size="10" fill="#44474E">• Si no hay sesión: redirigir a login con returnTo, NO mostrar nombre del negocio</text>
+    <text x="16" y="56" font-size="10" fill="#44474E">• Token NUNCA en logs. Tras consumo, borrar de InvitationDeepLinkStore</text>
+    <text x="16" y="72" font-size="10" fill="#BA1A1A">• Tras Aceptar: refresh del BusinessSelector + nav al home del negocio nuevo</text>
+  </g>
+</svg>
