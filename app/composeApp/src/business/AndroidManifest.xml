@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest exclusivo del flavor `business` (Intrale Negocios).
+
+  Inyecta la API Key de Google Maps via manifestPlaceholders.MAPS_API_KEY,
+  que se resuelve desde local.properties / -PMAPS_API_KEY / variable de
+  entorno MAPS_API_KEY (ver app/composeApp/build.gradle.kts).
+
+  La key NO se hardcodea en codigo (CA-10-L de #2420). El placeholder
+  fallbackea a string vacio si no esta configurada — el app degrada al
+  fallback "necesitas Google Play Services" / "no podemos cargar el mapa".
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+    </application>
+</manifest>

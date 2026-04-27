@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.tooling.preview.Preview
+import ext.business.AppContextHolder
 import ext.push.AndroidPushNotificationDisplay
 import ext.push.PushDeepLinkStore
 import ui.App
@@ -18,6 +19,10 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Inicializar holder del Application Context — usado por servicios de larga vida
+        // que se instancian en DI (ej. AndroidDeliveryZonesCache con DataStore en #2420).
+        AppContextHolder.init(applicationContext)
 
         // Inicializar canales de notificacion push
         AndroidPushNotificationDisplay(this).initializeChannels()

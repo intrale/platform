@@ -779,6 +779,27 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.dashboard_card_delivery_zone_description to "Define donde podes realizar entregas a domicilio",
     MessageKey.dashboard_card_delivery_zone_cta to "Configurar zona",
 
+    // Zonas de delivery (split 1 #2420 - visualizacion read-only con mapa)
+    MessageKey.business_delivery_zones_title to "Zonas de delivery",
+    MessageKey.business_delivery_zones_loading to "Cargando tus zonas...",
+    MessageKey.business_delivery_zones_missing_business to "Selecciona un negocio para ver sus zonas",
+    MessageKey.business_delivery_zones_offline_banner to "Sin conexion - estas viendo datos guardados",
+    MessageKey.business_delivery_zones_empty_title to "Todavia no configuraste tus zonas de reparto",
+    MessageKey.business_delivery_zones_empty_subtitle to "Dibuja el area hasta donde llegas y cuanto cobras",
+    MessageKey.business_delivery_zones_empty_cta_circular to "Agregar zona circular",
+    MessageKey.business_delivery_zones_empty_cta_polygon to "Dibujar zona libre",
+    MessageKey.business_delivery_zones_cta_soon to "Muy pronto vas a poder crear tus zonas desde aca",
+    MessageKey.business_delivery_zones_error_title to "No pudimos cargar tus zonas",
+    MessageKey.business_delivery_zones_error_subtitle to "Revisa tu conexion e intenta de nuevo",
+    MessageKey.business_delivery_zones_error_retry to "Reintentar",
+    MessageKey.business_delivery_zones_play_services_title to "Necesitas Google Play Services para ver tus zonas de reparto",
+    MessageKey.business_delivery_zones_play_services_subtitle to "Este servicio permite mostrar mapas interactivos y no esta instalado en tu dispositivo",
+    MessageKey.business_delivery_zones_play_services_install to "Instalar Google Play Services",
+    MessageKey.business_delivery_zones_play_services_back to "Volver al menu",
+    MessageKey.business_delivery_zones_map_content_description to "Mapa con zonas de reparto. Desliza para mover, pellizca para zoom",
+    MessageKey.business_delivery_zones_zone_color_description to "Color asignado a la zona",
+    MessageKey.business_delivery_zones_fab_add_description to "Agregar nueva zona de reparto",
+
     // Gestion de repartidores del negocio
     MessageKey.business_delivery_people_title to "Repartidores",
     MessageKey.business_delivery_people_access_denied to "No tenes permiso para gestionar repartidores",

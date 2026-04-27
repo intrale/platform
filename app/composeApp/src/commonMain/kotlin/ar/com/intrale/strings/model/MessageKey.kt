@@ -783,6 +783,27 @@ enum class MessageKey {
     dashboard_card_delivery_zone_description,
     dashboard_card_delivery_zone_cta,
 
+    // Zonas de delivery (split 1 #2420 - visualizacion read-only con mapa)
+    business_delivery_zones_title,
+    business_delivery_zones_loading,
+    business_delivery_zones_missing_business,
+    business_delivery_zones_offline_banner,
+    business_delivery_zones_empty_title,
+    business_delivery_zones_empty_subtitle,
+    business_delivery_zones_empty_cta_circular,
+    business_delivery_zones_empty_cta_polygon,
+    business_delivery_zones_cta_soon,
+    business_delivery_zones_error_title,
+    business_delivery_zones_error_subtitle,
+    business_delivery_zones_error_retry,
+    business_delivery_zones_play_services_title,
+    business_delivery_zones_play_services_subtitle,
+    business_delivery_zones_play_services_install,
+    business_delivery_zones_play_services_back,
+    business_delivery_zones_map_content_description,
+    business_delivery_zones_zone_color_description,
+    business_delivery_zones_fab_add_description,
+
     // Gestión de repartidores del negocio
     business_delivery_people_title,
     business_delivery_people_access_denied,

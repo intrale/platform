@@ -58,6 +58,9 @@ ktor-wasm2 = "3.0.0-wasm2"
 canard = "1.2.0"
 russhwolf = "1.2.0"
 buildkonfig = "0.13.3"
+maps-compose = "4.4.1"
+androidx-datastore = "1.1.1"
+play-services-maps = "18.2.0"
 
 [libraries]
 kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
@@ -138,6 +141,9 @@ settings-no-arg = { module = "com.russhwolf:multiplatform-settings-no-arg", vers
 settings-serialization = { module = "com.russhwolf:multiplatform-settings-serialization", version.ref = "russhwolf" }
 settings-coroutines = { module = "com.russhwolf:multiplatform-settings-coroutines", version.ref = "russhwolf" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+maps-compose = { module = "com.google.maps.android:maps-compose", version.ref = "maps-compose" }
+play-services-maps = { module = "com.google.android.gms:play-services-maps", version.ref = "play-services-maps" }
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidx-datastore" }
 
 [bundles]
 ktor-common = ["ktor-client-core", "ktor-client-json", "ktor-client-logging", "ktor-client-serialization", "ktor-client-content-negotiation", "ktor-serialization-kotlinx-json"]

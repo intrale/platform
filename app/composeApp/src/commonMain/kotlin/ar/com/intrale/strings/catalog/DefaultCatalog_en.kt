@@ -779,6 +779,27 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.dashboard_card_delivery_zone_description to "Define where you can deliver to customers",
     MessageKey.dashboard_card_delivery_zone_cta to "Configure zone",
 
+    // Delivery zones (split 1 #2420 - read-only visualization with map)
+    MessageKey.business_delivery_zones_title to "Delivery zones",
+    MessageKey.business_delivery_zones_loading to "Loading your zones...",
+    MessageKey.business_delivery_zones_missing_business to "Select a business to view its zones",
+    MessageKey.business_delivery_zones_offline_banner to "Offline - showing saved data",
+    MessageKey.business_delivery_zones_empty_title to "You haven't configured your delivery zones yet",
+    MessageKey.business_delivery_zones_empty_subtitle to "Draw the area where you deliver and how much you charge",
+    MessageKey.business_delivery_zones_empty_cta_circular to "Add circular zone",
+    MessageKey.business_delivery_zones_empty_cta_polygon to "Draw freeform zone",
+    MessageKey.business_delivery_zones_cta_soon to "You'll be able to create zones from here soon",
+    MessageKey.business_delivery_zones_error_title to "We couldn't load your zones",
+    MessageKey.business_delivery_zones_error_subtitle to "Check your connection and try again",
+    MessageKey.business_delivery_zones_error_retry to "Retry",
+    MessageKey.business_delivery_zones_play_services_title to "You need Google Play Services to view your delivery zones",
+    MessageKey.business_delivery_zones_play_services_subtitle to "This service enables interactive maps and is not installed on your device",
+    MessageKey.business_delivery_zones_play_services_install to "Install Google Play Services",
+    MessageKey.business_delivery_zones_play_services_back to "Back to menu",
+    MessageKey.business_delivery_zones_map_content_description to "Map with delivery zones. Swipe to move, pinch to zoom",
+    MessageKey.business_delivery_zones_zone_color_description to "Color assigned to the zone",
+    MessageKey.business_delivery_zones_fab_add_description to "Add new delivery zone",
+
     // Delivery people management
     MessageKey.business_delivery_people_title to "Delivery drivers",
     MessageKey.business_delivery_people_access_denied to "You don't have permission to manage delivery drivers",

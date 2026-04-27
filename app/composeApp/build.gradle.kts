@@ -8,6 +8,7 @@ import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -121,6 +122,22 @@ val business = providers.gradleProperty("business").orElse("intrale")
 val delivery = providers.gradleProperty("delivery").orElse(business)
 val storeAvailable = providers.gradleProperty("storeAvailable").orElse("true")
 val twoFactorEnabled = providers.gradleProperty("twoFactorEnabled").orElse("true")
+
+// MAPS_API_KEY: leemos en orden local.properties -> -P propiedad -> ENV var -> "" (placeholder).
+// El secreto NUNCA se commitea — se inyecta como manifestPlaceholder en el flavor business.
+val mapsApiKey: Provider<String> = providers.provider {
+    val localPropsFile = rootProject.file("local.properties")
+    val fromLocal: String? = if (localPropsFile.exists()) {
+        val props = Properties()
+        localPropsFile.inputStream().use { props.load(it) }
+        props.getProperty("MAPS_API_KEY")
+    } else null
+
+    fromLocal
+        ?: providers.gradleProperty("MAPS_API_KEY").orNull
+        ?: providers.environmentVariable("MAPS_API_KEY").orNull
+        ?: ""
+}
 val inferredAppType = providers.provider {
     val taskNames = gradle.startParameter.taskNames.map(String::lowercase)
 
@@ -347,7 +364,10 @@ android {
             dimension = "appType"
             applicationId = businessApplicationId
             val businessAppName = "Intrale Negocios"
-            manifestPlaceholders += mapOf("appName" to businessAppName)
+            manifestPlaceholders += mapOf(
+                "appName" to businessAppName,
+                "MAPS_API_KEY" to mapsApiKey.get()
+            )
             resValue("string", "app_name", businessAppName)
         }
 
@@ -507,6 +527,23 @@ dependencies {
     add("androidInstrumentedTestImplementation", platform(libs.androidx.compose.bom))
     debugImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(compose.uiTooling)
+
+    // DataStore Preferences disponible para todos los flavors Android (cache offline #2420).
+    add("androidMainImplementation", libs.androidx.datastore.preferences)
+
+    // Google Maps Compose y Play Services Maps — disponibles en androidMain para que el
+    // expect/actual de `ZonesMapContent` (commonMain -> androidMain) compile. El composable
+    // queda gated por flavor: solo el flavor `business` referencia el mapa real desde la
+    // pantalla `ZonesListScreen`. Los flavors `client`/`delivery` cargan el SDK en su
+    // classpath pero no lo invocan (la pantalla no se registra en DIManager para esos
+    // flavors — ver issue #2420 CA-9-L y src/commonMain/kotlin/DIManager.kt).
+    //
+    // Si en el futuro queremos eliminar el SDK del APK de client/delivery (impacto: ~3MB),
+    // hay que migrar `ZonesMapContent` a una source set flavor-specific (src/business/kotlin)
+    // y proveer stubs equivalentes en src/client/kotlin y src/delivery/kotlin, con triple
+    // actual por flavor. Queda como mejora #2421-friendly tras estabilizar split 1.
+    add("androidMainImplementation", libs.maps.compose)
+    add("androidMainImplementation", libs.play.services.maps)
 }
 
 compose.desktop {
