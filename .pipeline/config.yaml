@@ -68,7 +68,7 @@ intake:
     label: "needs-definition"
     fase_entrada: analisis
   desarrollo:
-    label: "ready"
+    label: "Ready"
     fase_entrada: validacion
 
 # Mapeo de labels de GitHub a skill de desarrollo
