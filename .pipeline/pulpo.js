@@ -33,6 +33,10 @@ const qaEvidenceGate = require('./lib/qa-evidence-gate');
 const humanBlock = require('./lib/human-block');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+// #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
+// para que el aggregator pueda contabilizar tokens consumidos. Los skills
+// determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
+const trace = require('./lib/traceability');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -4689,6 +4693,48 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
   }
 
+  // #2801 — parsea el log stream-json del agente Claude y suma tokens de
+  // cada turno `assistant.usage`. Stream JSON line por línea — algunas
+  // líneas son truncadas o quedan a mitad por timeouts; el try/catch las
+  // descarta sin afectar el resto.
+  function parseTokensFromLog(logPath) {
+    const totals = { input: 0, output: 0, cache_read: 0, cache_create: 0, tool_calls: 0 };
+    try {
+      const raw = fs.readFileSync(logPath, 'utf8');
+      for (const line of raw.split('\n')) {
+        if (!line.startsWith('{')) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (obj.type === 'assistant' && obj.message && obj.message.usage) {
+          const u = obj.message.usage;
+          totals.input += Number(u.input_tokens || 0);
+          totals.output += Number(u.output_tokens || 0);
+          totals.cache_read += Number(u.cache_read_input_tokens || 0);
+          totals.cache_create += Number(u.cache_creation_input_tokens || 0);
+          if (Array.isArray(obj.message.content)) {
+            totals.tool_calls += obj.message.content.filter(c => c.type === 'tool_use').length;
+          }
+        }
+      }
+    } catch { /* log no existe o ilegible */ }
+    return totals;
+  }
+
+  // #2801 — emit session:start para agentes Claude (LLM). Los skills
+  // determinísticos emiten su propio par session:start/end internamente,
+  // así que solo cubrimos el path LLM acá. El handle se usa luego en
+  // child.on('exit') para emitir session:end con tokens parseados del log.
+  let traceHandle = null;
+  if (!useDeterministicSkill) {
+    try {
+      traceHandle = trace.emitSessionStart({
+        skill, issue: parseInt(issue), phase: fase, model: 'claude-opus-4-7',
+      });
+    } catch (e) {
+      log('lanzamiento', `traceability emitSessionStart falló: ${e.message}`);
+    }
+  }
+
   // PIPELINE_WORKTREE: refuerzo defensivo del cwd. Algunos skills
   // determinísticos (linter.js #2523 rev-1) precomputan rutas absolutas en
   // tiempo de carga del módulo y no respetan el cwd del spawn salvo que se
@@ -4807,6 +4853,29 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     clearTimeout(watchdog);
 
     const elapsedSec = (Date.now() - launchTime) / 1000;
+
+    // #2801 — emit session:end para agentes Claude. Damos un pequeño delay
+    // para que el writer termine de flushear el último chunk del log antes
+    // de parsearlo. No bloqueamos el resto del handler.
+    if (traceHandle) {
+      setTimeout(() => {
+        try {
+          const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
+          const tk = parseTokensFromLog(logPath);
+          trace.emitSessionEnd(traceHandle, {
+            tokens_in: tk.input,
+            tokens_out: tk.output,
+            cache_read: tk.cache_read,
+            cache_write: tk.cache_create,
+            tool_calls: tk.tool_calls,
+            exit_code: code == null ? -1 : code,
+            duration_ms: Math.round(elapsedSec * 1000),
+          });
+        } catch (e) {
+          log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);
+        }
+      }, 500);
+    }
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     //
