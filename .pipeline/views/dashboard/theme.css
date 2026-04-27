@@ -1,9 +1,11 @@
-/* Intrale V3 — tema compartido entre home kiosk y tabs satélite.
- * Paleta: identidad Intrale (azul + acento cian), modo oscuro por default,
- * con override claro vía media query.
+/* Intrale — tema compartido entre home kiosk y tabs satélite.
+ * Paleta: identidad Intrale (azul + acento cian).
+ * Modo oscuro siempre — el dashboard se mira en kiosko largas horas, el
+ * fondo claro cansa la vista. Si en el futuro hace falta modo claro,
+ * se controla con `data-theme="light"` en <html>, no con prefers-color-scheme.
  */
 
-:root {
+:root, html[data-theme="dark"] {
   --in-bg: #0d1117;
   --in-bg-2: #161b22;
   --in-bg-3: #1f2937;
@@ -34,19 +36,20 @@
 
   --in-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --in-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --in-bg: #f6f8fa;
-    --in-bg-2: #ffffff;
-    --in-bg-3: #eaeef2;
-    --in-fg: #1f2328;
-    --in-fg-dim: #57606a;
-    --in-fg-soft: #8c959f;
-    --in-border: #d0d7de;
-    --in-border-soft: rgba(0,0,0,0.05);
-  }
+html[data-theme="light"] {
+  --in-bg: #f6f8fa;
+  --in-bg-2: #ffffff;
+  --in-bg-3: #eaeef2;
+  --in-fg: #1f2328;
+  --in-fg-dim: #57606a;
+  --in-fg-soft: #8c959f;
+  --in-border: #d0d7de;
+  --in-border-soft: rgba(0,0,0,0.05);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }

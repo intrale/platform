@@ -320,6 +320,25 @@ function fmtTime(ms) {
 
 // --- Recolectar estado ---
 
+// Cache memoizado del state — getPipelineState() escanea TODO el filesystem
+// del pipeline (cada fase × cada estado × cada archivo). En el dashboard
+// nuevo (#2801) cada bloque hace polling independiente, y sin cache cada
+// endpoint /api/dash/* re-escanea el FS → 8-12s por endpoint, dashboard
+// inutilizable. TTL 1500ms balancea frescura (sub-segundo apenas se nota
+// el desfase) con costo (un único escaneo cubre todos los endpoints del
+// mismo "tick" de polling).
+let _stateCache = null;
+let _stateCacheAt = 0;
+const STATE_CACHE_TTL_MS = 2000;
+
+function getCachedPipelineState() {
+  const now = Date.now();
+  if (_stateCache && (now - _stateCacheAt) < STATE_CACHE_TTL_MS) return _stateCache;
+  _stateCache = getPipelineState();
+  _stateCacheAt = now;
+  return _stateCache;
+}
+
 function getPipelineState() {
   const config = loadConfig();
   const state = { config };
@@ -6620,14 +6639,26 @@ setInterval(refresh, 60000);
 
 function generateLogViewerHTML(filename, isLive) {
   const title = filename.replace('.log', '').replace(/-/g, ' ');
+  // Import theme compartido (#2801) — el log viewer es un satélite más,
+  // hereda paleta y tipografía del resto del dashboard nuevo.
+  let sharedTheme = '';
+  try { sharedTheme = fs.readFileSync(path.join(__dirname, 'views', 'dashboard', 'theme.css'), 'utf8'); }
+  catch { /* fallback al CSS local de abajo */ }
   return `<!DOCTYPE html>
-<html><head>
+<html lang="es"><head>
 <meta charset="utf-8">
-<title>${title} — Log Viewer</title>
+<title>${title} — Log Viewer · Intrale</title>
+<style>${sharedTheme}</style>
 <style>
-:root{--bg:#0d1117;--sf:#161b22;--tx:#e6edf3;--dim:#8b949e;--bd:#30363d;--ac:#58a6ff;--gn:#3fb950;--rd:#f85149;--yl:#d29922;--or:#d18616}
+:root{--bg:var(--in-bg);--sf:var(--in-bg-2);--tx:var(--in-fg);--dim:var(--in-fg-dim);--bd:var(--in-border);--ac:var(--in-info);--gn:var(--in-ok);--rd:var(--in-bad);--yl:var(--in-warn);--or:#d18616}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--tx);font-family:'JetBrains Mono',Consolas,monospace;font-size:13px}
+body{background:var(--in-bg);color:var(--in-fg);font-family:var(--in-mono);font-size:13px}
+.lv-topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;background:linear-gradient(135deg,var(--in-brand-soft),transparent 60%);border-bottom:1px solid var(--in-border)}
+.lv-back{font-size:12px;color:var(--in-fg-dim);text-decoration:none}
+.lv-back:hover{color:var(--in-accent)}
+.lv-back::before{content:"← "}
+.lv-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--in-brand),var(--in-accent));color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-family:var(--in-font);font-size:14px}
+.lv-name{font-family:var(--in-font);font-size:14px;font-weight:600}
 .header{position:sticky;top:0;z-index:10;background:var(--sf);border-bottom:1px solid var(--bd);padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .title{font-size:1.1em;font-weight:700;color:var(--ac)}
 .badge{font-size:0.78em;padding:2px 10px;border-radius:10px;font-weight:600}
@@ -6659,6 +6690,11 @@ input[type=text]:focus{outline:none;border-color:var(--ac)}
 .scroll-btn.visible{display:block}
 </style>
 </head><body>
+<div class="lv-topbar">
+  <a class="lv-back" href="/" target="_self">Operación</a>
+  <span class="lv-logo">i</span>
+  <span class="lv-name">Intrale · Log Viewer</span>
+</div>
 <div class="header">
   <span class="title">${title}</span>
   <span class="badge ${isLive ? 'badge-live' : 'badge-done'}">${isLive ? '● LIVE' : '✓ Finalizado'}</span>
@@ -7643,7 +7679,7 @@ const server = http.createServer((req, res) => {
     const dashRoutes = require('./lib/dashboard-routes');
     const url = req.url || '';
     const isLegacy = (url === '/legacy' || url === '/legacy/');
-    if (!isLegacy && dashRoutes.handle(req, res, { getState: getPipelineState, PIPELINE, ROOT, GH_BIN })) {
+    if (!isLegacy && dashRoutes.handle(req, res, { getState: getCachedPipelineState, PIPELINE, ROOT, GH_BIN })) {
       return;
     }
   } catch (e) {
