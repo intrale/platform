@@ -699,9 +699,11 @@ function bindModeToggle(){
                     const issues = raw.split(/[,\s]+/).map(s => Number(s.replace(/^#/, '').trim())).filter(n => Number.isInteger(n) && n > 0);
                     if(issues.length === 0){ showToast('Ningún número de issue válido en el input', false); return; }
                     const lista = issues.map(n => '#'+n).join(', ');
-                    const msg = '¿Activar pausa parcial?\n\n' +
-                        'Solo se van a procesar estos ' + issues.length + ' issue' + (issues.length===1?'':'s') + ':\n' +
-                        lista + '\n\n' +
+                    // \\n para que el template literal de Node escriba "\\n" literal al HTML;
+                    // el cliente al ejecutar el string los interpreta como saltos de línea.
+                    const msg = '¿Activar pausa parcial?\\n\\n' +
+                        'Solo se van a procesar estos ' + issues.length + ' issue' + (issues.length===1?'':'s') + ':\\n' +
+                        lista + '\\n\\n' +
                         'El resto del pipeline queda pausado hasta que reanudes o cambies la lista.';
                     if(!confirm(msg)) return;
                     const r = await fetch('/api/pause-partial', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issues})});
