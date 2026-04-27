@@ -783,6 +783,13 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
 function renderCostos() {
     const body = `
 <section class="in-section">
+  <h2 class="in-section-title"><span class="in-section-title-icon">📊</span>Cuota semanal · Plan Max</h2>
+  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Anthropic no expone API; estimación basada en duration_ms del activity-log. Auto-ajuste pasivo: el límite sube si el observado lo supera sin bloqueos.</p>
+  <div id="quota-grid" class="kp-grid"></div>
+  <div id="quota-bar-wrap" style="margin-top:14px"></div>
+  <div id="quota-meta" style="margin-top:10px;font-size:12px;color:var(--in-fg-dim)"></div>
+</section>
+<section class="in-section">
   <h2 class="in-section-title"><span class="in-section-title-icon">💰</span>Consumo · tokens y costo</h2>
   <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Datos del aggregator V3 (.pipeline/metrics/snapshot.json). Reload cada 60s.</p>
   <div id="costos-grid" class="kp-grid"></div>
@@ -797,8 +804,52 @@ function renderCostos() {
 .kp-tile-label { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); letter-spacing: 0.6px; }
 .kp-tile-value { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .kp-tile-sub { font-size: 11px; color: var(--in-fg-dim); }
-.kp-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 500px; border: 1px solid var(--in-border); }`;
+.kp-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 500px; border: 1px solid var(--in-border); }
+.quota-bar { height: 14px; border-radius: 7px; background: var(--in-bg-3); overflow: hidden; border: 1px solid var(--in-border); position: relative; }
+.quota-bar > span { display: block; height: 100%; transition: width 0.5s ease; background: var(--in-ok); }
+.quota-bar.warn > span { background: var(--in-warn); }
+.quota-bar.bad > span { background: var(--in-bad); }
+.quota-bar-label { font-size: 11px; color: var(--in-fg-dim); margin-top: 6px; display: flex; justify-content: space-between; }
+.kp-tile.kp-warn .kp-tile-value { color: var(--in-warn); }
+.kp-tile.kp-bad .kp-tile-value { color: var(--in-bad); }
+.kp-tile.kp-ok .kp-tile-value { color: var(--in-ok); }`;
     const script = `
+async function tickQuota(){
+    const d = await fetchJson('/api/dash/quota');
+    const grid = document.getElementById('quota-grid');
+    const barWrap = document.getElementById('quota-bar-wrap');
+    const meta = document.getElementById('quota-meta');
+    if(!d || d.error){
+        if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de cuota: '+(d && d.error || 'activity-log vacío')+'</div>';
+        return;
+    }
+    const tiles = [
+        { label: 'Horas usadas · 7d', value: d.hoursUsed7d.toFixed(1)+'h', sub: d.sessionsCount7d+' sesiones', cls: '' },
+        { label: 'Cuota consumida', value: d.pct.toFixed(1)+'%', sub: 'de '+d.effectiveLimitHours+'h estimadas', cls: d.status==='critical'?'kp-bad':d.status==='warning'?'kp-warn':'kp-ok' },
+        { label: 'Horas restantes', value: d.hoursRemaining+'h', sub: 'antes del límite estimado', cls: '' },
+        { label: 'Burn rate', value: d.burnRatePerDay+'h/d', sub: 'últimas 24h o promedio 7d', cls: '' },
+        { label: 'Días al límite', value: d.daysToLimit != null ? d.daysToLimit+'d' : '∞', sub: 'al ritmo actual', cls: d.daysToLimit != null && d.daysToLimit < 1 ? 'kp-bad' : d.daysToLimit != null && d.daysToLimit < 2 ? 'kp-warn' : '' },
+        { label: 'Auto-ajustes', value: d.adjustmentsCount, sub: 'observed: '+d.observedMaxHours+'h', cls: '' },
+    ];
+    let html = '';
+    for(const t of tiles) html += '<div class="kp-tile '+t.cls+'"><div class="kp-tile-label">'+escapeHtml(t.label)+'</div><div class="kp-tile-value">'+escapeHtml(String(t.value))+'</div><div class="kp-tile-sub">'+escapeHtml(t.sub)+'</div></div>';
+    if(grid && grid.innerHTML !== html) grid.innerHTML = html;
+    if(barWrap){
+        const barCls = d.status==='critical'?'bad':d.status==='warning'?'warn':'';
+        const barHtml = '<div class="quota-bar '+barCls+'"><span style="width:'+Math.min(100,d.pct).toFixed(1)+'%"></span></div><div class="quota-bar-label"><span>'+d.hoursUsed7d.toFixed(1)+'h consumidas</span><span>'+d.effectiveLimitHours+'h estimadas</span></div>';
+        if(barWrap.innerHTML !== barHtml) barWrap.innerHTML = barHtml;
+    }
+    if(meta){
+        const lines = [];
+        if(d.adjustmentsCount > 0) lines.push('🔧 Límite auto-ajustado '+d.adjustmentsCount+' vez/veces (config inicial: '+d.configLimitHours+'h, actual: '+d.effectiveLimitHours+'h).');
+        if(d.daysToLimit != null && d.daysToLimit < 2) lines.push('⚠ Proyección: a este ritmo llegás al límite en ~'+d.daysToLimit+' días.');
+        else if(d.daysToLimit == null || d.daysToLimit > 30) lines.push('Burn rate bajo: la cuota dura más de un mes al ritmo actual.');
+        if(d.observedMaxAt) lines.push('Pico observado: '+d.observedMaxHours+'h (' + new Date(d.observedMaxAt).toLocaleString('es-AR') + ')');
+        const txt = lines.join(' · ');
+        if(meta.textContent !== txt) meta.textContent = txt;
+    }
+}
+
 async function tickCostos(){
     // Endpoint correcto (#2801): /metrics/snapshot?window=24h, no /api/metrics.
     // El snapshot del aggregator V3 usa snake_case (tokens_in, tokens_out,
@@ -847,11 +898,11 @@ async function tickCostos(){
         }
     }
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickCostos, ms: 60000 }];
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn: tickCostos, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Costos', 'Tokens y consumo', body, script, css);
+    return pageShell('Costos', 'Cuota Plan Max + tokens y consumo', body, script, css);
 }
 
 module.exports = {

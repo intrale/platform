@@ -379,6 +379,24 @@ function historialSlice(state) {
     return { actividad: (state.actividad || []).slice(-30) };
 }
 
+// #2801 — Cuota semanal del Plan Max de Anthropic. Sin API pública,
+// aproximamos sumando duration_ms de session:end del activity-log.
+// Auto-ajuste pasivo: si el observado supera el effective_limit sin
+// bloqueos detectados, sube el límite. Ver lib/weekly-quota.js.
+function quotaSlice(state, ctx) {
+    const PIPELINE = ctx.PIPELINE;
+    const ROOT = ctx.ROOT;
+    try {
+        const quotaLib = require('./weekly-quota');
+        const metricsDir = path.join(PIPELINE, 'metrics');
+        const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
+        const configLimitHours = Number(process.env.ANTHROPIC_MAX_WEEKLY_HOURS) || undefined;
+        return quotaLib.computeQuota(metricsDir, activityLog, { configLimitHours });
+    } catch (e) {
+        return { error: e.message, hoursUsed7d: 0, pct: 0, status: 'unknown' };
+    }
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -390,4 +408,5 @@ module.exports = {
     bloqueadosSlice,
     opsSlice,
     historialSlice,
+    quotaSlice,
 };

@@ -62,6 +62,7 @@ const API_ROUTES = {
     '/api/dash/bloqueados': (state) => slices.bloqueadosSlice(state),
     '/api/dash/ops': (state) => slices.opsSlice(state),
     '/api/dash/historial': (state) => slices.historialSlice(state),
+    '/api/dash/quota': (state, ctx) => slices.quotaSlice(state, ctx),
 };
 
 function sendJson(res, payload, status = 200) {
