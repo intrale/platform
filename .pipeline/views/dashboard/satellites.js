@@ -377,6 +377,8 @@ function renderBloqueados() {
     const css = `
 .blk-row { background: var(--in-bg-3); border: 1px solid var(--in-warn); border-radius: var(--in-radius-sm); padding: 14px 16px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
 .blk-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.blk-prio { font-size: 11px; color: var(--in-fg-soft); font-variant-numeric: tabular-nums; min-width: 28px; }
+.blk-prio.set { color: var(--in-fg-dim); font-weight: 600; }
 .blk-issue { font-weight: 600; }
 .blk-issue a { color: var(--in-info); }
 .blk-issue a:hover { text-decoration: underline; }
@@ -407,6 +409,7 @@ async function tickBloqueados(){
             row.dataset.issue = key;
             row.innerHTML = \`
                 <div class="blk-head">
+                  <span class="blk-prio"></span>
                   <div class="blk-issue"><a href="https://github.com/intrale/platform/issues/\${key}" target="_blank" rel="noopener">#\${key}</a> · <span class="blk-skill"></span></div>
                   <div class="blk-actions">
                     <button class="blk-btn blk-btn-reactivate" title="Quitar label needs-human y devolver a la cola">▶ Reactivar</button>
@@ -418,12 +421,16 @@ async function tickBloqueados(){
             \`;
             row.querySelector('.blk-btn-reactivate').addEventListener('click', () => nhReactivate(b.issue));
             row.querySelector('.blk-btn-dismiss').addEventListener('click', () => nhDismiss(b.issue));
-            c.appendChild(row);
         }
+        const prioEl = row.querySelector('.blk-prio');
+        if(b.priorityIndex != null){ prioEl.textContent = '#' + b.priorityIndex; prioEl.classList.add('set'); }
+        else { prioEl.textContent = '—'; prioEl.classList.remove('set'); }
         row.querySelector('.blk-skill').textContent = b.skill || '';
         row.querySelector('.blk-reason').textContent = b.reason || b.question || 'sin razón';
         row.querySelector('.blk-fase').textContent = 'fase: ' + (b.phase || '');
         row.querySelector('.blk-since').textContent = 'desde: ' + (b.blocked_at ? new Date(b.blocked_at).toLocaleString('es-AR') : '—');
+        // appendChild de un nodo ya hijo lo MUEVE al final → reordena sin flicker.
+        c.appendChild(row);
     }
     for(const row of [...c.children]){ if(!seen.has(row.dataset.issue || '')) row.remove(); }
 }
@@ -443,38 +450,81 @@ function renderIssues() {
   <div id="issues-table"></div>
 </section>`;
     const css = `
-.iss-row { display: grid; grid-template-columns: 80px 1fr 140px 90px 60px 80px; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--in-border-soft); align-items: center; font-size: 13px; }
+.iss-row { display: grid; grid-template-columns: 50px 80px 1fr 130px 80px 60px 200px; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--in-border-soft); align-items: center; font-size: 13px; }
 .iss-row:hover { background: var(--in-bg-3); }
+.iss-prio { font-size: 11px; color: var(--in-fg-soft); font-variant-numeric: tabular-nums; text-align: right; }
+.iss-prio.set { color: var(--in-fg-dim); font-weight: 600; }
 .iss-issue { font-weight: 600; }
 .iss-issue a { color: var(--in-info); }
 .iss-issue a:hover { text-decoration: underline; }
 .iss-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--in-fg-dim); }
+.iss-title.paused::before { content: "⏸ "; color: var(--in-warn); font-weight: 600; }
 .iss-fase { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); }
 .iss-state { font-size: 11px; }
 .iss-state.trabajando { color: var(--in-accent); }
 .iss-state.listo { color: var(--in-ok); }
 .iss-bounces { text-align: right; color: var(--in-fg-dim); font-size: 11px; }
 .iss-bounces.warn { color: var(--in-warn); }
-.iss-actions { display: flex; gap: 4px; justify-content: flex-end; }
-.iss-btn { background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim); border-radius: 4px; width: 26px; height: 22px; font-size: 12px; cursor: pointer; padding: 0; line-height: 1; transition: background 0.12s, border-color 0.12s; }
-.iss-btn:hover { background: var(--in-bg-3); border-color: var(--in-accent); color: var(--in-accent); }`;
+.iss-actions { display: flex; gap: 3px; justify-content: flex-end; }
+.iss-btn { background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim); border-radius: 4px; width: 26px; height: 22px; font-size: 11px; cursor: pointer; padding: 0; line-height: 1; transition: background 0.12s, border-color 0.12s; }
+.iss-btn:hover { background: var(--in-bg-3); border-color: var(--in-accent); color: var(--in-accent); }
+.iss-btn.pause:hover { border-color: var(--in-warn); color: var(--in-warn); }
+.iss-btn.paused { border-color: var(--in-warn); color: var(--in-warn); }
+.iss-btn.gh { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }`;
     const script = `
 let issuesData = null;
 function renderIssuesTable(filter){
     const c = document.getElementById('issues-table');
     if(!c || !issuesData) return;
     const rows = Object.entries(issuesData.matrix||{});
+    const orderMap = new Map((issuesData.priorityOrder || []).map((id, idx) => [String(id), idx]));
+    rows.sort((a, b) => {
+        const oa = orderMap.get(String(a[0]));
+        const ob = orderMap.get(String(b[0]));
+        if(oa != null && ob != null) return oa - ob;
+        if(oa != null) return -1;
+        if(ob != null) return 1;
+        return Number(a[0]) - Number(b[0]);
+    });
     const f = (filter||'').toLowerCase();
     const filtered = f ? rows.filter(([id, data]) => id.includes(f) || (data.title||'').toLowerCase().includes(f)) : rows;
     setText('issues-count', filtered.length);
     if(filtered.length === 0){ c.innerHTML = '<div class="in-empty">Sin resultados</div>'; return; }
     let html = '';
     for(const [id, data] of filtered.slice(0, 200)){
-        html += '<div class="iss-row"><div class="iss-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(id)+'" target="_blank" rel="noopener">#'+escapeHtml(id)+'</a></div><div class="iss-title">'+escapeHtml(data.title||'')+'</div><div class="iss-fase">'+escapeHtml(data.faseActual||'—')+'</div><div class="iss-state '+escapeHtml(data.estadoActual||'')+'">'+escapeHtml(data.estadoActual||'')+'</div><div class="iss-bounces '+(data.bounces>2?'warn':'')+'">'+(data.bounces||0)+'×</div><div class="iss-actions"><button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-dir="move-up" title="Subir prioridad">▲</button><button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-dir="move-down" title="Bajar prioridad">▼</button></div></div>';
+        const labels = data.labels || [];
+        const paused = labels.includes('blocked:dependencies');
+        const prio = orderMap.has(String(id)) ? '#' + (orderMap.get(String(id)) + 1) : '—';
+        const prioClass = orderMap.has(String(id)) ? 'iss-prio set' : 'iss-prio';
+        const pauseAction = paused ? 'resume' : 'pause';
+        const pauseIcon = paused ? '▶' : '⏸';
+        const pauseTitle = paused ? 'Reanudar issue' : 'Pausar issue';
+        const titleClass = paused ? 'iss-title paused' : 'iss-title';
+        html += ''
+          + '<div class="iss-row" data-issue="'+escapeHtml(id)+'">'
+          +   '<div class="'+prioClass+'">'+escapeHtml(prio)+'</div>'
+          +   '<div class="iss-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(id)+'" target="_blank" rel="noopener">#'+escapeHtml(id)+'</a></div>'
+          +   '<div class="'+titleClass+'" title="'+escapeHtml(data.title||'')+'">'+escapeHtml(data.title||'')+'</div>'
+          +   '<div class="iss-fase">'+escapeHtml(data.faseActual||'—')+'</div>'
+          +   '<div class="iss-state '+escapeHtml(data.estadoActual||'')+'">'+escapeHtml(data.estadoActual||'')+'</div>'
+          +   '<div class="iss-bounces '+(data.bounces>2?'warn':'')+'">'+(data.bounces||0)+'×</div>'
+          +   '<div class="iss-actions">'
+          +     '<button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-action="move-top" title="Máxima prioridad">⏫</button>'
+          +     '<button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-action="move-up" title="Subir">▲</button>'
+          +     '<button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-action="move-down" title="Bajar">▼</button>'
+          +     '<button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-action="move-bottom" title="Mínima prioridad">⏬</button>'
+          +     '<button class="iss-btn pause'+(paused?' paused':'')+'" data-issue="'+escapeHtml(id)+'" data-action="'+pauseAction+'" title="'+pauseTitle+'">'+pauseIcon+'</button>'
+          +     '<a class="iss-btn gh" href="https://github.com/intrale/platform/issues/'+escapeHtml(id)+'" target="_blank" rel="noopener" title="Abrir en GitHub">↗</a>'
+          +   '</div>'
+          + '</div>';
     }
     c.innerHTML = html;
-    c.querySelectorAll('.iss-btn').forEach(b => {
-        b.addEventListener('click', () => moveIssue(b.dataset.issue, b.dataset.dir));
+    c.querySelectorAll('.iss-btn[data-action]').forEach(b => {
+        b.addEventListener('click', () => {
+            const action = b.dataset.action;
+            if(action === 'pause' || action === 'resume') return pauseIssue(b.dataset.issue, action === 'resume');
+            return moveIssue(b.dataset.issue, action);
+        });
     });
 }
 async function tickIssues(){
