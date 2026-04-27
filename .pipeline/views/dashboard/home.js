@@ -644,6 +644,10 @@ function renderHomeHTML() {
       </div>
     </section>
 
+    <nav class="areas-bar" aria-label="Áreas">
+      ${areasHtml}
+    </nav>
+
     <section class="active-section">
       <h2 class="in-section-title">
         <span class="in-section-title-icon">🟢</span>
@@ -660,7 +664,7 @@ function renderHomeHTML() {
     <section class="in-section">
       <h2 class="in-section-title">
         <span class="in-section-title-icon">⏪</span>
-        Últimos 3 ejecutados
+        Últimos 5 ejecutados
       </h2>
       <div class="line-list" id="recent-list"></div>
     </section>
@@ -668,19 +672,9 @@ function renderHomeHTML() {
     <section class="in-section">
       <h2 class="in-section-title">
         <span class="in-section-title-icon">⏩</span>
-        Próximos 3 en cola
+        Próximos 5 en cola
       </h2>
       <div class="line-list" id="queue-list"></div>
-    </section>
-
-    <section class="in-section">
-      <h2 class="in-section-title">
-        <span class="in-section-title-icon">🗂</span>
-        Áreas
-      </h2>
-      <div class="areas-bar">
-        ${areasHtml}
-      </div>
     </section>
 
   </main>
