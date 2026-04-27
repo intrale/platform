@@ -715,7 +715,7 @@ async function tickKpis(){
         for(const t of tiles) html += '<div class="kp-tile"><div class="kp-tile-label">'+escapeHtml(t.label)+'</div><div class="kp-tile-value">'+escapeHtml(t.value)+'</div><div class="kp-tile-sub">'+escapeHtml(t.sub)+'</div></div>';
         if(grid.innerHTML !== html) grid.innerHTML = html;
     }
-    const snap = await fetchJson('/api/metrics?window=24h').catch(()=>null);
+    const snap = await fetchJson('/metrics/snapshot?window=24h').catch(()=>null);
     const pre = document.getElementById('kpis-snapshot');
     if(pre){
         const txt = snap ? JSON.stringify(snap, null, 2).slice(0, 8000) : '— sin snapshot V3 —';
@@ -787,27 +787,51 @@ function renderCostos() {
 .kp-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 500px; border: 1px solid var(--in-border); }`;
     const script = `
 async function tickCostos(){
-    const snap = await fetchJson('/api/metrics?window=24h');
+    // Endpoint correcto (#2801): /metrics/snapshot?window=24h, no /api/metrics.
+    // El snapshot del aggregator V3 usa snake_case (tokens_in, tokens_out,
+    // cache_read, cache_write, cost_usd, sessions) — NO camelCase.
+    const snap = await fetchJson('/metrics/snapshot?window=24h');
     const grid = document.getElementById('costos-grid');
     const detail = document.getElementById('costos-detail');
     if(!snap || !snap.totals){
-        if(grid) grid.innerHTML = '<div class="in-empty">Aggregator V3 sin datos</div>';
+        if(grid) grid.innerHTML = '<div class="in-empty">Aggregator V3 sin datos. Esperá a que termine algún agente Claude (los determinísticos no contabilizan tokens).</div>';
         if(detail) detail.textContent = '—';
         return;
     }
     const t = snap.totals;
+    const totalTokens = (t.tokens_in || 0) + (t.tokens_out || 0) + (t.cache_read || 0) + (t.cache_write || 0);
     const tiles = [
-        { label: 'Tokens input', value: fmtNum(t.tokensInput) },
-        { label: 'Tokens output', value: fmtNum(t.tokensOutput) },
-        { label: 'Costo USD', value: '$'+(t.costUsd||0).toFixed(2) },
-        { label: 'Runs', value: fmtNum(t.runs) },
+        { label: 'Costo USD', value: '$'+(t.cost_usd||0).toFixed(2), sub: snap.window || 'all' },
+        { label: 'Sesiones', value: fmtNum(t.sessions || 0), sub: 'agentes terminados' },
+        { label: 'Tokens · total', value: fmtNum(totalTokens), sub: 'in + out + cache' },
+        { label: 'Tokens · output', value: fmtNum(t.tokens_out || 0), sub: 'generados por LLM' },
+        { label: 'Cache · read', value: fmtNum(t.cache_read || 0), sub: 'reutilizado' },
+        { label: 'Cache · write', value: fmtNum(t.cache_write || 0), sub: 'creado' },
     ];
     let html = '';
-    for(const ti of tiles) html += '<div class="kp-tile"><div class="kp-tile-label">'+escapeHtml(ti.label)+'</div><div class="kp-tile-value">'+escapeHtml(ti.value)+'</div></div>';
+    for(const ti of tiles) html += '<div class="kp-tile"><div class="kp-tile-label">'+escapeHtml(ti.label)+'</div><div class="kp-tile-value">'+escapeHtml(ti.value)+'</div><div class="kp-tile-sub">'+escapeHtml(ti.sub||'')+'</div></div>';
     if(grid && grid.innerHTML !== html) grid.innerHTML = html;
     if(detail){
-        const txt = JSON.stringify(snap.bySkill || snap.byAgent || {}, null, 2);
-        if(detail.textContent !== txt) detail.textContent = txt;
+        // Tabla compacta por skill — más legible que JSON crudo.
+        const agents = snap.agents || [];
+        if(agents.length === 0){
+            if(detail.textContent !== '— sin agentes en la ventana —') detail.textContent = '— sin agentes en la ventana —';
+        } else {
+            const lines = ['skill          sessions    tokens_total       cost_usd  duration  tool_calls', '─'.repeat(82)];
+            for(const a of agents){
+                const tot = (a.tokens_in||0) + (a.tokens_out||0) + (a.cache_read||0) + (a.cache_write||0);
+                lines.push(
+                    (a.skill||'?').padEnd(15) +
+                    String(a.sessions||0).padStart(8) +
+                    fmtNum(tot).padStart(16) +
+                    ('$'+(a.cost_usd||0).toFixed(2)).padStart(14) +
+                    fmtDur(a.duration_ms||0).padStart(10) +
+                    String(a.tool_calls||0).padStart(12)
+                );
+            }
+            const txt = lines.join('\\n');
+            if(detail.textContent !== txt) detail.textContent = txt;
+        }
     }
 }
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickCostos, ms: 60000 }];
