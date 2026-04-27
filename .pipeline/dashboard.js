@@ -18,7 +18,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawn } = require('child_process');
+const { execSync, spawn, spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const {
   findPidByComponent,
@@ -7555,6 +7555,56 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, msg: result.reason }));
       }
     });
+    return;
+  }
+
+  // API mover issue al tope/fondo absoluto del orden manual (#2801).
+  // Distinto de move-before/move-after: no requiere conocer el anchor, el server
+  // resuelve el primer/último issue del state.
+  const moveExtremeMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(move-top|move-bottom)$/);
+  if (moveExtremeMatch && req.method === 'POST') {
+    const issueNum = String(moveExtremeMatch[1]);
+    const action = moveExtremeMatch[2];
+    let issueOrder;
+    try { issueOrder = require('./lib/issue-order'); }
+    catch (e) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+      return;
+    }
+    const state = issueOrder.load();
+    const order = (state.order || []).filter(x => String(x) !== issueNum);
+    if (action === 'move-top') order.unshift(issueNum);
+    else order.push(issueNum);
+    issueOrder.setOrder(state, order);
+    const newPos = state.order.indexOf(issueNum);
+    log(`order: ${action} #${issueNum} → posición ${newPos + 1}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} → ${action === 'move-top' ? 'tope' : 'fondo'} (posición ${newPos + 1})`, position: newPos }));
+    return;
+  }
+
+  // API pausar/reanudar issue individual (#2801) — toggle del label
+  // `blocked:dependencies` en GitHub. El pulpo ya respeta ese label en intake
+  // y lanzamiento (líneas 6663, 3534), así que con set/unset alcanza.
+  const pauseIssueMatch = req.url && req.url.match(/^\/api\/issue\/(\d+)\/(pause|resume)$/);
+  if (pauseIssueMatch && req.method === 'POST') {
+    const issueNum = String(pauseIssueMatch[1]);
+    const action = pauseIssueMatch[2];
+    const repo = 'intrale/platform';
+    const flag = action === 'pause' ? '--add-label' : '--remove-label';
+    const result = spawnSync(GH_BIN, ['issue', 'edit', issueNum, '--repo', repo, flag, 'blocked:dependencies'], {
+      encoding: 'utf8', timeout: 15000, windowsHide: true
+    });
+    if (result.status !== 0) {
+      log(`pauseIssue: #${issueNum} ${action} FAIL — ${(result.stderr || '').slice(0, 200)}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: `gh edit falló: ${(result.stderr || '').trim().slice(0, 200)}` }));
+      return;
+    }
+    log(`pauseIssue: #${issueNum} ${action === 'pause' ? 'pausado (+blocked:dependencies)' : 'reanudado (-blocked:dependencies)'}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'pause' ? 'pausado' : 'reanudado'}` }));
     return;
   }
 

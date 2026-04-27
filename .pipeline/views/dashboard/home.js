@@ -476,7 +476,13 @@ function renderLineRow(a, isQueue){
     const ghLink = '<a class="line-btn" href="https://github.com/intrale/platform/issues/'+a.issue+'" target="_blank" rel="noopener" title="Abrir issue en GitHub">↗</a>';
     let actions = '';
     if(isQueue){
-        actions = '<button class="line-btn" data-issue="'+a.issue+'" data-action="move-up" title="Subir prioridad">▲</button><button class="line-btn" data-issue="'+a.issue+'" data-action="move-down" title="Bajar prioridad">▼</button>'+ghLink;
+        actions = ''
+          + '<button class="line-btn" data-issue="'+a.issue+'" data-action="move-top" title="Máxima prioridad">⏫</button>'
+          + '<button class="line-btn" data-issue="'+a.issue+'" data-action="move-up" title="Subir prioridad">▲</button>'
+          + '<button class="line-btn" data-issue="'+a.issue+'" data-action="move-down" title="Bajar prioridad">▼</button>'
+          + '<button class="line-btn" data-issue="'+a.issue+'" data-action="move-bottom" title="Mínima prioridad">⏬</button>'
+          + '<button class="line-btn" data-issue="'+a.issue+'" data-action="pause" title="Pausar issue (label blocked:dependencies)">⏸</button>'
+          + ghLink;
     } else {
         const logBtn = a.hasLog ? '<a class="line-btn" href="/logs/view/'+(a.logFile||'')+'" target="_blank" rel="noopener" title="Ver log">📄</a>' : '';
         actions = logBtn+ghLink;
@@ -496,7 +502,11 @@ function bindLineActions(container){
     container.querySelectorAll('.line-btn[data-action]').forEach(b => {
         if(b.dataset._bound) return;
         b.dataset._bound = '1';
-        b.addEventListener('click', () => moveIssue(b.dataset.issue, b.dataset.action));
+        b.addEventListener('click', () => {
+            const action = b.dataset.action;
+            if(action === 'pause') return pauseIssueHome(b.dataset.issue);
+            return moveIssue(b.dataset.issue, action);
+        });
     });
 }
 
@@ -559,6 +569,16 @@ async function moveIssue(issue, direction){
         const j = await r.json();
         showToast(j.msg || (j.ok?'Movido':'Falló'), j.ok);
         setTimeout(() => tickQueue().catch(()=>{}), 400);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
+async function pauseIssueHome(issue){
+    if(!confirm('¿Pausar #'+issue+'? Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes en /pipeline.')) return;
+    try{
+        const r = await fetch('/api/issue/'+issue+'/pause', {method:'POST'});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Pausado':'Falló'), j.ok);
+        setTimeout(() => tickQueue().catch(()=>{}), 600);
     } catch(e){ showToast('Error: '+e.message, false); }
 }
 
