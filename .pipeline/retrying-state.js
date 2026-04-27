@@ -7,7 +7,7 @@
 //   - pulpo.js: al reencolar issues tras `connectivity_restored`, escribe
 //     `retryingUntil = now + MIN_RETRY_MS` ANTES de encolar el cmd.json de
 //     Telegram (orden FS-first CA7.1 / REQ-SEC-6).
-//   - dashboard-v2.js: al renderizar lane cards, chequea si el issue esta
+//   - dashboard.js: al renderizar lane cards, chequea si el issue esta
 //     en ventana `retrying` (mientras `now < retryingUntil`) y aplica el
 //     estado visual `lc-retrying` (CA8).
 //

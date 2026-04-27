@@ -1,5 +1,5 @@
-# Launch V2 - Arranca todo el pipeline V2
-# Uso: powershell -File .pipeline/launch-v2.ps1
+# Launch - Arranca todo el pipeline
+# Uso: powershell -File .pipeline/launch.ps1
 # SIEMPRE lanza desde platform.ops (worktree en main) si está disponible
 
  = 'C:WorkspacesIntraleplatform.ops'
@@ -24,7 +24,7 @@ if ( -eq ) {
 
 :PIPELINE_STATE_DIR = "\.pipeline"
 :PIPELINE_MAIN_ROOT = 
-Write-Host '=== Pipeline V2 - Lanzamiento ===' -ForegroundColor Cyan
+Write-Host '=== Pipeline - Lanzamiento ===' -ForegroundColor Cyan
 
 Write-Host 'Lanzando Pulpo...' -ForegroundColor Yellow
 Start-Process -FilePath 'node' -ArgumentList "\pulpo.js" -WorkingDirectory  -WindowStyle Minimized

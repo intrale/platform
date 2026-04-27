@@ -8,7 +8,7 @@
 //   node aggregator.js --window 24h    → aplicar ventana temporal al snapshot (1h|24h|7d|all)
 //
 // Output: .pipeline/metrics/snapshot.json (ver schema abajo).
-// Consumido por dashboard-v2.js y report-daily.js.
+// Consumido por dashboard.js y report-daily.js.
 
 'use strict';
 

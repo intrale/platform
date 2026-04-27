@@ -1,0 +1,585 @@
+// V3 Home — render del HTML inicial del dashboard kiosk vertical 1080×1920.
+// El layout y los textos se imprimen una sola vez. El refresh es client-side
+// vía fetch JSON + DOM morphing manual (sin reemplazar containers, evita flicker).
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
+
+function loadTheme() {
+    try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); }
+    catch { return ''; }
+}
+
+function homeStyles() {
+    return `
+.kiosk-frame {
+    width: 1080px;
+    min-height: 1920px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+}
+.kiosk-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px 22px;
+}
+
+/* KPI grid */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+}
+.kpi-card {
+    background: var(--in-bg-2);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius);
+    padding: 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: var(--in-shadow);
+}
+.kpi-icon { font-size: 18px; opacity: 0.85; }
+.kpi-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--in-fg-dim);
+    letter-spacing: 0.8px;
+}
+.kpi-value {
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--in-fg);
+    transition: color 0.3s;
+    font-variant-numeric: tabular-nums;
+}
+.kpi-sub {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+}
+.kpi-card.kpi-warn .kpi-value { color: var(--in-warn); }
+.kpi-card.kpi-bad .kpi-value { color: var(--in-bad); }
+.kpi-card.kpi-ok .kpi-value { color: var(--in-ok); }
+.kpi-bar { margin-top: 6px; }
+
+/* Active section */
+.active-section {
+    background: linear-gradient(180deg, rgba(46,230,193,0.05), transparent 80%), var(--in-bg-2);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius);
+    padding: 18px 22px;
+    box-shadow: var(--in-shadow);
+}
+.active-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.active-card {
+    display: grid;
+    grid-template-columns: 38px 1fr auto;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 16px;
+    background: var(--in-bg-3);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius-sm);
+    transition: opacity 0.3s, transform 0.3s;
+}
+.active-card.entering { opacity: 0; transform: translateY(-6px); }
+.active-card.leaving { opacity: 0; transform: translateY(6px); }
+.active-card-skill {
+    grid-row: 1 / span 2;
+    width: 38px; height: 38px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    color: #fff;
+}
+.active-card-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.active-card-issue {
+    font-weight: 600;
+    color: var(--in-fg);
+    font-size: 14px;
+}
+.active-card-fase {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+.active-card-title {
+    font-size: 12px;
+    color: var(--in-fg-dim);
+    grid-column: 2 / span 1;
+    grid-row: 2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 580px;
+}
+.active-card-time {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    text-align: right;
+    font-family: var(--in-mono);
+    font-size: 13px;
+    color: var(--in-accent);
+    font-variant-numeric: tabular-nums;
+}
+.active-card-progress {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+}
+
+.active-empty {
+    text-align: center;
+    padding: 40px 16px;
+    color: var(--in-fg-dim);
+}
+.active-empty-icon { font-size: 32px; margin-bottom: 10px; }
+.active-empty-msg { font-size: 13px; }
+
+/* Recent / queue rows */
+.line-list {
+    display: flex; flex-direction: column;
+    gap: 6px;
+}
+.line-row {
+    display: grid;
+    grid-template-columns: 22px 70px 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: var(--in-radius-sm);
+    background: var(--in-bg-3);
+    transition: background 0.15s;
+}
+.line-row:hover { background: var(--in-bg); }
+.line-icon { font-size: 14px; }
+.line-skill {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.line-issue {
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.line-fase {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    text-transform: uppercase;
+}
+.line-time {
+    font-family: var(--in-mono);
+    font-size: 12px;
+    color: var(--in-fg-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Áreas grid */
+.areas-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+}
+.area-card {
+    background: var(--in-bg-2);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius);
+    padding: 18px 16px;
+    text-align: center;
+    transition: transform 0.2s, border-color 0.2s, background 0.2s;
+    cursor: pointer;
+    position: relative;
+    box-shadow: var(--in-shadow);
+}
+.area-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--in-accent);
+    background: linear-gradient(180deg, var(--in-accent-soft), var(--in-bg-2));
+}
+.area-card-icon { font-size: 28px; margin-bottom: 6px; }
+.area-card-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--in-fg);
+}
+.area-card-sub {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    margin-top: 4px;
+}
+.area-card-arrow {
+    position: absolute;
+    top: 8px; right: 10px;
+    font-size: 11px;
+    opacity: 0.5;
+}
+
+/* Mode pill in header */
+.in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
+.in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
+.in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
+`;
+}
+
+const SKILL_ICONS = {
+    'android-dev': '📱', 'backend-dev': '⚡', 'web-dev': '🌐', 'pipeline-dev': '🔧',
+    ux: '🎨', po: '📋', planner: '📐',
+    guru: '🧙', security: '🔒', tester: '🧪', qa: '✅', review: '👁',
+    linter: '🧹', build: '🛠', delivery: '🚚', commander: '🎖',
+};
+const SKILL_COLORS = {
+    'android-dev': '#58a6ff', 'backend-dev': '#3fb950', 'web-dev': '#79c0ff', 'pipeline-dev': '#a371f7',
+    ux: '#f778ba', po: '#d29922', planner: '#a371f7',
+    guru: '#58a6ff', security: '#f85149', tester: '#d2a8ff', qa: '#3fb950', review: '#ffa657',
+    linter: '#8b949e', build: '#ffa657', delivery: '#2ee6c1', commander: '#f778ba',
+};
+
+const AREAS = [
+    { key: 'equipo', label: 'Equipo', icon: '👥', sub: 'Agentes y carga', href: '/equipo' },
+    { key: 'pipeline', label: 'Pipeline', icon: '🔄', sub: 'Issues por fase', href: '/pipeline' },
+    { key: 'bloqueados', label: 'Bloqueados', icon: '🚧', sub: 'Esperando humano', href: '/bloqueados' },
+    { key: 'issues', label: 'Issues', icon: '📋', sub: 'Backlog completo', href: '/issues' },
+    { key: 'matriz', label: 'Matriz', icon: '📈', sub: 'Skill × Fase', href: '/matriz' },
+    { key: 'ops', label: 'Ops', icon: '🛠', sub: 'Procesos e infra', href: '/ops' },
+    { key: 'kpis', label: 'KPIs', icon: '📊', sub: 'Métricas detalladas', href: '/kpis' },
+    { key: 'historial', label: 'Historial', icon: '📜', sub: 'Actividad reciente', href: '/historial' },
+    { key: 'costos', label: 'Costos', icon: '💰', sub: 'Tokens y consumo', href: '/costos' },
+];
+
+function renderClientScript() {
+    return `
+const SKILL_ICONS = ${JSON.stringify(SKILL_ICONS)};
+const SKILL_COLORS = ${JSON.stringify(SKILL_COLORS)};
+
+function fmtDur(ms){ if(!ms||ms<0) return '—'; const s=Math.round(ms/1000); if(s<60) return s+'s'; const m=Math.floor(s/60), r=s%60; if(m<60) return m+'m '+r+'s'; const h=Math.floor(m/60), rm=m%60; return h+'h '+rm+'m'; }
+function fmtNum(n){ if(n==null||isNaN(n)) return '—'; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'k'; return String(n); }
+function fmtPct(n){ return n==null?'—':n.toFixed(1)+'%'; }
+function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
+function setClass(id, cls, on){ const el=document.getElementById(id); if(el) el.classList.toggle(cls, !!on); }
+function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(()=>null); }
+
+async function tickHeader(){
+    const d = await fetchJson('/api/dash/header');
+    if(!d) return;
+    const now = new Date();
+    setText('hdr-clock', now.toLocaleTimeString('es-AR'));
+    const modePill = document.getElementById('hdr-mode');
+    if(modePill){
+        modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
+        if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
+        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+d.allowedIssues.length+' issues'; }
+        else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
+    }
+    const pulpoPill = document.getElementById('hdr-pulpo');
+    if(pulpoPill){
+        pulpoPill.classList.remove('in-pill-ok','in-pill-bad');
+        pulpoPill.classList.add(d.pulpoAlive ? 'in-pill-ok' : 'in-pill-bad');
+        pulpoPill.textContent = (d.pulpoAlive ? '🟢' : '🔴') + ' Pulpo · '+fmtDur(d.pulpoUptimeMs);
+    }
+}
+
+async function tickKpis(){
+    const d = await fetchJson('/api/dash/kpis');
+    if(!d) return;
+    setText('kpi-prs-value', d.prsLast7d==null?'—':d.prsLast7d);
+    setText('kpi-tokens-value', fmtNum(d.tokens24h));
+    setText('kpi-cycle-value', fmtDur(d.cycleTimeMs));
+    const bp = d.bouncePct;
+    setText('kpi-bounce-value', fmtPct(bp));
+    const bcard = document.getElementById('kpi-bounce');
+    if(bcard){
+        bcard.classList.remove('kpi-ok','kpi-warn','kpi-bad');
+        if(bp!=null){ if(bp>30) bcard.classList.add('kpi-bad'); else if(bp>15) bcard.classList.add('kpi-warn'); else bcard.classList.add('kpi-ok'); }
+    }
+}
+
+async function tickActive(){
+    const d = await fetchJson('/api/dash/active');
+    if(!d) return;
+    const list = document.getElementById('active-list');
+    const empty = document.getElementById('active-empty');
+    if(!list) return;
+    const arr = (d.agents || []).slice(0, 3);
+    const totalRunning = d.totalRunning || 0;
+    setText('active-count', totalRunning > 0 ? (totalRunning + ' activo' + (totalRunning===1?'':'s')) : '0');
+    if(arr.length === 0){
+        list.style.display = 'none';
+        if(empty) empty.style.display = 'block';
+        return;
+    }
+    list.style.display = 'flex';
+    if(empty) empty.style.display = 'none';
+
+    const seen = new Set();
+    for(const a of arr){
+        const key = a.issue + '-' + a.skill + '-' + a.fase;
+        seen.add(key);
+        let card = list.querySelector('[data-key="'+key+'"]');
+        if(!card){
+            card = document.createElement('div');
+            card.className = 'active-card entering';
+            card.dataset.key = key;
+            card.innerHTML = \`
+                <div class="active-card-skill"></div>
+                <div class="active-card-meta">
+                    <span class="active-card-issue"></span>
+                    <span class="active-card-fase"></span>
+                </div>
+                <div class="active-card-time"></div>
+                <div class="active-card-title"></div>
+                <div class="active-card-progress"><div class="in-bar"><span></span></div></div>
+            \`;
+            list.appendChild(card);
+            requestAnimationFrame(() => card.classList.remove('entering'));
+        }
+        const skillBadge = card.querySelector('.active-card-skill');
+        skillBadge.style.background = SKILL_COLORS[a.skill] || '#8b949e';
+        skillBadge.textContent = SKILL_ICONS[a.skill] || '⚙';
+        const issueEl = card.querySelector('.active-card-issue');
+        const issueText = '#'+a.issue+' · '+a.skill;
+        if(issueEl.textContent !== issueText){
+            if(a.hasLog){
+                issueEl.innerHTML = '<a class="in-link" href="/logs/view/'+a.logFile+'?live=1" target="_blank" rel="noopener">'+issueText+' ↗</a>';
+            } else {
+                issueEl.textContent = issueText;
+            }
+        }
+        setText(card.querySelector('.active-card-fase')._id || '', a.fase);
+        card.querySelector('.active-card-fase').textContent = a.fase;
+        card.querySelector('.active-card-title').textContent = a.title || '';
+        card.querySelector('.active-card-time').textContent = fmtDur(a.durationMs);
+        const bar = card.querySelector('.in-bar > span');
+        const pct = a.etaMs && a.etaMs > 0 ? Math.min(100, Math.round((a.durationMs / a.etaMs) * 100)) : 4;
+        bar.style.width = pct + '%';
+    }
+    for(const card of [...list.children]){
+        if(!seen.has(card.dataset.key)){
+            card.classList.add('leaving');
+            setTimeout(() => card.remove(), 300);
+        }
+    }
+}
+
+function renderLineRow(a, isQueue){
+    const icon = isQueue ? (a.slotFree ? '→' : '⏸') : (a.resultado === 'aprobado' ? '✓' : a.resultado === 'rechazado' ? '✗' : '·');
+    const time = isQueue
+        ? (a.slotFree ? 'libre · '+a.slotInfo : '⏸ '+a.slotInfo)
+        : fmtDur(a.durationMs);
+    const titleAttr = a.title ? ' title="'+a.title.replace(/"/g,'&quot;')+'"' : '';
+    return \`
+        <div class="line-row" data-key="\${a.issue}-\${a.skill}-\${a.fase}"\${titleAttr}>
+          <span class="line-icon">\${icon}</span>
+          <span class="line-skill">\${a.skill}</span>
+          <span class="line-issue">#\${a.issue}\${a.title ? ' · '+a.title.slice(0, 60) : ''}</span>
+          <span class="line-fase">\${a.fase}</span>
+          <span class="line-time">\${time}</span>
+        </div>\`;
+}
+
+async function tickRecent(){
+    const d = await fetchJson('/api/dash/recent');
+    if(!d) return;
+    const container = document.getElementById('recent-list');
+    if(!container) return;
+    const arr = (d.recent || []).slice(0, 3);
+    if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Sin actividad reciente</div>'; return; }
+    const seen = new Set();
+    for(const a of arr){
+        const key = a.issue+'-'+a.skill+'-'+a.fase;
+        seen.add(key);
+        const existing = container.querySelector('[data-key="'+key+'"]');
+        if(!existing){
+            const tmp = document.createElement('div');
+            tmp.innerHTML = renderLineRow(a, false);
+            container.prepend(tmp.firstElementChild);
+        }
+    }
+    for(const row of [...container.querySelectorAll('.line-row')]){
+        if(!seen.has(row.dataset.key)) row.remove();
+    }
+}
+
+async function tickQueue(){
+    const d = await fetchJson('/api/dash/queue');
+    if(!d) return;
+    const container = document.getElementById('queue-list');
+    if(!container) return;
+    const arr = (d.queue || []).slice(0, 3);
+    if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Cola vacía</div>'; return; }
+    const seen = new Set();
+    for(const a of arr){
+        const key = a.issue+'-'+a.skill+'-'+a.fase;
+        seen.add(key);
+        let row = container.querySelector('[data-key="'+key+'"]');
+        if(!row){
+            const tmp = document.createElement('div');
+            tmp.innerHTML = renderLineRow(a, true);
+            row = tmp.firstElementChild;
+            container.appendChild(row);
+        } else {
+            const timeEl = row.querySelector('.line-time');
+            const newTime = a.slotFree ? 'libre · '+a.slotInfo : '⏸ '+a.slotInfo;
+            if(timeEl.textContent !== newTime) timeEl.textContent = newTime;
+        }
+    }
+    for(const row of [...container.querySelectorAll('.line-row')]){
+        if(!seen.has(row.dataset.key)) row.remove();
+    }
+}
+
+const POLLS = [
+    { fn: tickHeader, ms: 5000 },
+    { fn: tickKpis, ms: 60000 },
+    { fn: tickActive, ms: 2000 },
+    { fn: tickRecent, ms: 10000 },
+    { fn: tickQueue, ms: 5000 },
+];
+async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
+runAll();
+for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
+
+// Pause polling when tab hidden (avoid wasted backend load)
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') runAll(); });
+`;
+}
+
+function renderHomeHTML() {
+    const theme = loadTheme();
+    const styles = homeStyles();
+    const script = renderClientScript();
+    const areasHtml = AREAS.map(a => `
+      <a class="area-card" href="${a.href}" target="_blank" rel="noopener">
+        <span class="area-card-arrow">↗</span>
+        <div class="area-card-icon">${a.icon}</div>
+        <div class="area-card-name">${a.label}</div>
+        <div class="area-card-sub">${a.sub}</div>
+      </a>`).join('');
+
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080">
+<title>Intrale · Operación</title>
+<style>${theme}</style>
+<style>${styles}</style>
+</head>
+<body>
+<div class="kiosk-frame">
+  <header class="in-header">
+    <div class="in-header-brand">
+      <div class="in-header-logo">i</div>
+      <div>
+        <div class="in-header-title">Intrale · Operación</div>
+        <div class="in-header-subtitle">Pipeline V3 · estado en vivo</div>
+      </div>
+    </div>
+    <div class="in-header-meta">
+      <span class="in-pill" id="hdr-mode">…</span>
+      <span class="in-pill" id="hdr-pulpo">…</span>
+      <span class="in-clock" id="hdr-clock">…</span>
+    </div>
+  </header>
+
+  <main class="kiosk-body">
+
+    <section class="kpi-grid" aria-label="KPIs">
+      <div class="kpi-card" id="kpi-prs">
+        <span class="kpi-icon">✅</span>
+        <span class="kpi-label">PRs · 7d</span>
+        <span class="kpi-value" id="kpi-prs-value">…</span>
+        <span class="kpi-sub">mergeados</span>
+      </div>
+      <div class="kpi-card" id="kpi-tokens">
+        <span class="kpi-icon">⚡</span>
+        <span class="kpi-label">Tokens · 24h</span>
+        <span class="kpi-value" id="kpi-tokens-value">…</span>
+        <span class="kpi-sub">in + out</span>
+      </div>
+      <div class="kpi-card" id="kpi-cycle">
+        <span class="kpi-icon">⏱</span>
+        <span class="kpi-label">Cycle time</span>
+        <span class="kpi-value" id="kpi-cycle-value">…</span>
+        <span class="kpi-sub">mediana por fase</span>
+      </div>
+      <div class="kpi-card" id="kpi-bounce">
+        <span class="kpi-icon">↩</span>
+        <span class="kpi-label">% Rebote</span>
+        <span class="kpi-value" id="kpi-bounce-value">…</span>
+        <span class="kpi-sub">rechazos / total</span>
+      </div>
+    </section>
+
+    <section class="active-section">
+      <h2 class="in-section-title">
+        <span class="in-section-title-icon">🟢</span>
+        Ejecutando
+        <span class="in-section-title-count" id="active-count">…</span>
+      </h2>
+      <div class="active-list" id="active-list"></div>
+      <div class="active-empty" id="active-empty" style="display:none">
+        <div class="active-empty-icon">⏸</div>
+        <div class="active-empty-msg">No hay agentes corriendo. Verificar pausa, cola y blocked:dependencies.</div>
+      </div>
+    </section>
+
+    <section class="in-section">
+      <h2 class="in-section-title">
+        <span class="in-section-title-icon">⏪</span>
+        Últimos 3 ejecutados
+      </h2>
+      <div class="line-list" id="recent-list"></div>
+    </section>
+
+    <section class="in-section">
+      <h2 class="in-section-title">
+        <span class="in-section-title-icon">⏩</span>
+        Próximos 3 en cola
+      </h2>
+      <div class="line-list" id="queue-list"></div>
+    </section>
+
+    <section class="in-section">
+      <h2 class="in-section-title">
+        <span class="in-section-title-icon">🗂</span>
+        Áreas
+      </h2>
+      <div class="areas-grid">
+        ${areasHtml}
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="in-footer">
+    <span>Refresh independiente · sin flicker</span>
+    <span id="footer-meta">Intrale V3</span>
+  </footer>
+</div>
+
+<script>${script}</script>
+</body>
+</html>`;
+}
+
+module.exports = { renderHomeHTML };

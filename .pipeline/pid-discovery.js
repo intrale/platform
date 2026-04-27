@@ -23,7 +23,7 @@ const SCRIPT_MAP = {
   'svc-github': 'servicio-github.js',
   'svc-drive': 'servicio-drive.js',
   'svc-emulador': 'servicio-emulador.js',
-  'dashboard': 'dashboard-v2.js',
+  'dashboard': 'dashboard.js',
   'outbox-drain': 'outbox-drain.js',
 };
 
