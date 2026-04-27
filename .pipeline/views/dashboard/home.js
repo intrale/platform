@@ -34,8 +34,8 @@ function homeStyles() {
 /* KPI grid */
 .kpi-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 14px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
 }
 .kpi-card {
     background: var(--in-bg-2);
@@ -486,6 +486,25 @@ async function tickKpis(){
     }
 }
 
+async function tickQuota(){
+    const d = await fetchJson('/api/dash/quota');
+    if(!d) return;
+    const card = document.getElementById('kpi-quota');
+    if(!card) return;
+    setText('kpi-quota-value', d.pct != null ? d.pct.toFixed(1)+'%' : '—');
+    const used = d.hoursUsed7d != null ? d.hoursUsed7d.toFixed(1)+'h' : '—';
+    const limit = d.effectiveLimitHours != null ? d.effectiveLimitHours+'h' : '—';
+    setText('kpi-quota-sub', used+' / '+limit+' (Max)');
+    card.classList.remove('kpi-ok','kpi-warn','kpi-bad');
+    if(d.status === 'critical') card.classList.add('kpi-bad');
+    else if(d.status === 'warning') card.classList.add('kpi-warn');
+    else if(d.status === 'normal') card.classList.add('kpi-ok');
+    // Tooltip detallado con info de auto-ajuste
+    const adj = d.adjustmentsCount > 0 ? ' · '+d.adjustmentsCount+' auto-ajustes' : '';
+    const days = d.daysToLimit != null ? '~'+d.daysToLimit+'d al límite' : 'sin proyección';
+    card.title = used+' usadas en 7d · '+d.pct.toFixed(1)+'% de '+limit+' estimado'+adj+'. Burn rate '+d.burnRatePerDay+'h/d, '+days+'.';
+}
+
 async function tickActive(){
     const d = await fetchJson('/api/dash/active');
     if(!d) return;
@@ -734,6 +753,7 @@ async function pauseIssueHome(issue){
 const POLLS = [
     { fn: tickHeader, ms: 5000 },
     { fn: tickKpis, ms: 60000 },
+    { fn: tickQuota, ms: 60000 },
     { fn: tickActive, ms: 2000 },
     { fn: tickRecent, ms: 10000 },
     { fn: tickQueue, ms: 5000 },
@@ -825,6 +845,12 @@ function renderHomeHTML() {
         <span class="kpi-label">% Rebote</span>
         <span class="kpi-value" id="kpi-bounce-value">…</span>
         <span class="kpi-sub">rechazos / total</span>
+      </div>
+      <div class="kpi-card" id="kpi-quota" title="% del límite estimado del Plan Max consumido en los últimos 7 días. Anthropic no expone API; el límite se auto-ajusta observando el uso real.">
+        <span class="kpi-icon">📊</span>
+        <span class="kpi-label">Cuota · 7d</span>
+        <span class="kpi-value" id="kpi-quota-value">…</span>
+        <span class="kpi-sub" id="kpi-quota-sub">plan Max</span>
       </div>
     </section>
 
