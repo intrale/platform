@@ -1,0 +1,51 @@
+## Contexto
+
+Actualmente los tres flavours de la app Android (`client`, `business`, `delivery`) comparten el mismo ícono de launcher — no hay forma visual de distinguirlos cuando un usuario tiene más de una app instalada ni cuando el operador prueba los tres APKs en el mismo dispositivo.
+
+Esta historia cubre únicamente Android (los otros targets — iOS, Desktop, Web — no tienen flavours; usan bundle único).
+
+## User story
+
+> Como usuario del ecosistema Intrale (cliente, dueño de negocio o repartidor), quiero ver un ícono distintivo en el launcher de mi celular para identificar rápidamente qué app abro — sin tener que leer el texto debajo del ícono.
+
+> Como operador interno o QA, quiero instalar los tres APKs en el mismo emulador y distinguirlos visualmente de un vistazo.
+
+## Criterios de aceptación
+
+1. Cada flavor tiene su propio ícono en `app/composeApp/src/{client,business,delivery}Main/res/mipmap-*/`:
+   - 5 densidades: `mdpi`, `hdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`.
+   - Adaptive icon (`mipmap-anydpi-v26/ic_launcher.xml` con foreground + background + monochrome para Android 13+).
+   - Ícono redondo (`ic_launcher_round`) visualmente coherente.
+2. El `AndroidManifest.xml` de cada flavor **no se modifica** — sigue referenciando `@mipmap/ic_launcher`. Los assets son la única superficie de cambio.
+3. Distinción visual clara por flavor (a definir por UX, ver abajo).
+4. Los 3 APKs compilan y muestran cada uno su ícono al instalarse en el launcher:
+   - `./gradlew :app:composeApp:assembleClientDebug`
+   - `./gradlew :app:composeApp:assembleBusinessDebug`
+   - `./gradlew :app:composeApp:assembleDeliveryDebug`
+
+## Diseño — potenciado con Claude Design
+
+**Importante:** UX debe producir los íconos con calidad profesional apoyándose en Claude Design. No se acepta placeholder simple ni \"mismo logo con tint distinto\". UX decide la dirección visual (forma, paleta, emblema) respetando la identidad de cada flavor:
+
+- **client**: app del usuario final que compra. Tono amigable, cercano.
+- **business**: app del dueño del negocio. Tono profesional, corporativo.
+- **delivery**: app del repartidor. Tono dinámico, movimiento.
+
+UX entrega los 3 sets de assets listos (foreground SVG/PNG + background + monochrome) para que android-dev los coloque en los directorios correspondientes.
+
+## QA E2E
+
+- Instalar los 3 APKs en el emulador `virtualAndroid` (snapshot `qa-ready`).
+- Verificar visualmente en la home screen: los 3 íconos son distintos, cada uno corresponde a su app, se ven nítidos en densidades relevantes.
+- Capturar video corto mostrando los 3 íconos en el drawer + home.
+
+## Fuera de alcance
+
+- iOS app icon (un solo bundle, sin flavours).
+- Desktop JVM icon.
+- Web favicon / PWA manifest.
+- Rebranding general (colores del tema Material, logo dentro de la app, etc.) — esto sólo toca el ícono de launcher.
+
+## Test del pipeline V3
+
+Esta historia se usa además como **prueba punta-a-punta** del pipeline V3 en modo pausa parcial. Se espera que recorra las 13 fases: `analisis` → `criterios` → `sizing` → `validacion` → `dev` → `build` → `verificacion` → `linteo` → `aprobacion` → `entrega`.
