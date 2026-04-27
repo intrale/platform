@@ -269,6 +269,11 @@ function pipelineSlice(state, ctx) {
             estadoActual: data.estadoActual,
             bounces: data.bounces,
             staleMin: data.staleMin,
+            rebote: !!data.rebote,
+            rebote_tipo: data.rebote_tipo || null,
+            motivo_rechazo: data.motivo_rechazo || null,
+            rechazado_en_fase: data.rechazado_en_fase || null,
+            rechazado_skill_previo: data.rechazado_skill_previo || null,
         };
     }
     // Orden manual de prioridad (#2801) — el cliente lo usa para ordenar

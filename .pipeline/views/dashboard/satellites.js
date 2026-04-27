@@ -289,7 +289,8 @@ function renderPipeline() {
 .pl-card-state-trabajando { border-color: var(--in-accent); }
 .pl-card-state-listo { border-color: var(--in-ok); }
 .pl-card-state-pendiente { border-color: var(--in-fg-soft); }
-.pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }`;
+.pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }`;
     const script = `
 function compareByPriority(orderMap){
     return (a, b) => {
@@ -321,7 +322,14 @@ async function tickPipeline(){
         if(data.faseActual && cols[data.faseActual]){
             const labels = data.labels || [];
             const paused = labels.includes('blocked:dependencies');
-            cols[data.faseActual].items.push({ issue, title: data.title, estado: data.estadoActual, bounces: data.bounces, staleMin: data.staleMin, paused });
+            cols[data.faseActual].items.push({
+                issue, title: data.title, estado: data.estadoActual,
+                bounces: data.bounces, staleMin: data.staleMin, paused,
+                rebote: data.rebote, rebote_tipo: data.rebote_tipo,
+                motivo_rechazo: data.motivo_rechazo,
+                rechazado_en_fase: data.rechazado_en_fase,
+                rechazado_skill_previo: data.rechazado_skill_previo,
+            });
         }
     }
     const cmp = compareByPriority(orderMap);
@@ -331,10 +339,14 @@ async function tickPipeline(){
         const cards = col.items.slice(0, 12).map(i => {
             const prio = orderMap.has(String(i.issue)) ? '#' + (orderMap.get(String(i.issue)) + 1) : '';
             const pausedBadge = i.paused ? '<span class="pl-card-paused-badge">⏸ pausado</span>' : '';
+            const reboteBadge = i.rebote
+              ? '<div class="pl-card-rebote" title="Rechazado en ' + escapeHtml(i.rechazado_en_fase||'?') + (i.rechazado_skill_previo?'/'+escapeHtml(i.rechazado_skill_previo):'') + ': ' + escapeHtml((i.motivo_rechazo||'').replace(/"/g,"\\u0027").slice(0,400)) + '">↩ rebote' + (i.rebote_tipo?' · '+escapeHtml(i.rebote_tipo):'') + '</div>'
+              : '';
             const pauseBtn = '<button class="pl-card-btn pause' + (i.paused?' paused':'') + '" data-issue="'+escapeHtml(i.issue)+'" data-action="' + (i.paused?'resume':'pause') + '" title="' + (i.paused?'Reanudar issue':'Pausar issue') + '">' + (i.paused?'▶':'⏸') + '</button>';
             return '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+'" data-issue="'+escapeHtml(i.issue)+'">'
               + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
               + '<div class="pl-card-title" title="'+escapeHtml(i.title||'')+'">'+escapeHtml((i.title||'').slice(0,60))+'</div>'
+              + reboteBadge
               + '<div class="pl-card-actions">'
               +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-top" title="Máxima prioridad">⏫</button>'
               +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-up" title="Subir">▲</button>'
@@ -459,6 +471,7 @@ function renderIssues() {
 .iss-issue a:hover { text-decoration: underline; }
 .iss-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--in-fg-dim); }
 .iss-title.paused::before { content: "⏸ "; color: var(--in-warn); font-weight: 600; }
+.iss-rebote { display: inline-block; font-size: 10px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 5px; margin-right: 6px; cursor: help; }
 .iss-fase { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); }
 .iss-state { font-size: 11px; }
 .iss-state.trabajando { color: var(--in-accent); }
@@ -500,11 +513,14 @@ function renderIssuesTable(filter){
         const pauseIcon = paused ? '▶' : '⏸';
         const pauseTitle = paused ? 'Reanudar issue' : 'Pausar issue';
         const titleClass = paused ? 'iss-title paused' : 'iss-title';
+        const reboteChip = data.rebote
+          ? '<span class="iss-rebote" title="Rechazado en '+escapeHtml(data.rechazado_en_fase||'?')+(data.rechazado_skill_previo?'/'+escapeHtml(data.rechazado_skill_previo):'')+': '+escapeHtml((data.motivo_rechazo||'').replace(/"/g,"'").slice(0,300))+'">↩ rechazo</span>'
+          : '';
         html += ''
           + '<div class="iss-row" data-issue="'+escapeHtml(id)+'">'
           +   '<div class="'+prioClass+'">'+escapeHtml(prio)+'</div>'
           +   '<div class="iss-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(id)+'" target="_blank" rel="noopener">#'+escapeHtml(id)+'</a></div>'
-          +   '<div class="'+titleClass+'" title="'+escapeHtml(data.title||'')+'">'+escapeHtml(data.title||'')+'</div>'
+          +   '<div class="'+titleClass+'" title="'+escapeHtml(data.title||'')+'">'+reboteChip+escapeHtml(data.title||'')+'</div>'
           +   '<div class="iss-fase">'+escapeHtml(data.faseActual||'—')+'</div>'
           +   '<div class="iss-state '+escapeHtml(data.estadoActual||'')+'">'+escapeHtml(data.estadoActual||'')+'</div>'
           +   '<div class="iss-bounces '+(data.bounces>2?'warn':'')+'">'+(data.bounces||0)+'×</div>'
