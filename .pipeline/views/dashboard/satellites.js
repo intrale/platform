@@ -564,11 +564,13 @@ function renderMatriz() {
 </section>`;
     const css = `
 .mtx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.mtx-table th, .mtx-table td { padding: 9px 11px; border: 1px solid var(--in-border); text-align: center; }
+.mtx-table th, .mtx-table td { padding: 9px 11px; border: 1px solid var(--in-border); text-align: center; font-variant-numeric: tabular-nums; }
 .mtx-table th { background: var(--in-bg-3); font-weight: 600; color: var(--in-fg-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.6px; }
-.mtx-table td.skill { text-align: left; font-weight: 500; background: var(--in-bg-3); }
+.mtx-table th.skill-h, .mtx-table td.skill { text-align: left; font-weight: 500; background: var(--in-bg-3); position: sticky; left: 0; }
 .mtx-cell-0 { color: var(--in-fg-soft); }
-.mtx-cell-active { background: var(--in-accent-soft); color: var(--in-accent); font-weight: 600; }`;
+.mtx-cell-active { background: var(--in-accent-soft); color: var(--in-accent); font-weight: 600; }
+.mtx-cell-hot { background: var(--in-warn-soft); color: var(--in-warn); font-weight: 600; }
+.mtx-totals td { background: var(--in-bg-3); font-weight: 600; color: var(--in-fg-dim); border-top: 2px solid var(--in-border); }`;
     const script = `
 async function tickMatriz(){
     const d = await fetchJson('/api/dash/pipeline');
@@ -576,31 +578,54 @@ async function tickMatriz(){
     const c = document.getElementById('matriz-table');
     if(!c) return;
     const fases = d.fases || [];
-    const matrix = d.matrix || {};
-    const skills = new Set();
-    const grid = {};
-    for(const [issue, data] of Object.entries(matrix)){
-        if(!data.faseActual) continue;
-        const skill = data.estadoActual; // estadoActual is also stored
-        // Use fase as key, build skill columns from concurrencia keys instead
-    }
+    const counts = d.matrixCounts || {};
+    // Skills: usar SKILL_COLORS (orden estable, conocido) + cualquiera que aparezca en counts.
     const SKILL_LIST = Object.keys(SKILL_COLORS);
-    for(const skill of SKILL_LIST) skills.add(skill);
-    for(const skill of skills){
-        grid[skill] = {};
-        for(const { pipeline: p, fase } of fases){ grid[skill][p+'/'+fase] = 0; }
+    const extraSkills = new Set();
+    for(const fase of Object.values(counts)) for(const sk of Object.keys(fase)) if(!SKILL_LIST.includes(sk)) extraSkills.add(sk);
+    const allSkills = [...SKILL_LIST, ...extraSkills];
+
+    // Calcular totales por fase y por skill para totals row/col
+    const totalsByFase = {};
+    const totalsBySkill = {};
+    let grandTotal = 0;
+    for(const { pipeline: p, fase } of fases){
+        const key = p+'/'+fase;
+        let sum = 0;
+        for(const sk of allSkills){ sum += (counts[key]||{})[sk] || 0; }
+        totalsByFase[key] = sum;
+        grandTotal += sum;
     }
-    for(const [, data] of Object.entries(matrix)){
-        // contar issues activos por fase, sin discriminar skill exacta del archivo (se necesitaría más data)
+    for(const sk of allSkills){
+        let sum = 0;
+        for(const { pipeline: p, fase } of fases){ sum += (counts[p+'/'+fase]||{})[sk] || 0; }
+        totalsBySkill[sk] = sum;
     }
-    let html = '<table class="mtx-table"><thead><tr><th>Skill</th>';
-    for(const { pipeline: p, fase } of fases){ html += '<th>'+escapeHtml(p[0]+':'+fase)+'</th>'; }
-    html += '</tr></thead><tbody>';
-    for(const skill of SKILL_LIST){
-        html += '<tr><td class="skill">'+(SKILL_ICONS[skill]||'⚙')+' '+escapeHtml(skill)+'</td>';
-        for(const { pipeline: p, fase } of fases){ html += '<td class="mtx-cell-0">·</td>'; }
-        html += '</tr>';
+
+    let html = '<table class="mtx-table"><thead><tr><th class="skill-h">Skill</th>';
+    for(const { pipeline: p, fase } of fases){ html += '<th title="'+escapeHtml(p+'/'+fase)+'">'+escapeHtml(p[0].toUpperCase()+':'+fase)+'</th>'; }
+    html += '<th>Total</th></tr></thead><tbody>';
+    // Solo mostrar skills con al menos 1 issue activo (los demás son ruido).
+    const visibleSkills = allSkills.filter(sk => totalsBySkill[sk] > 0);
+    if(visibleSkills.length === 0){
+        html += '<tr><td colspan="'+(fases.length+2)+'"><div class="in-empty">Sin issues activos en este momento</div></td></tr>';
+    } else {
+        for(const skill of visibleSkills){
+            html += '<tr><td class="skill"><span style="color:'+(SKILL_COLORS[skill]||'inherit')+'">'+(SKILL_ICONS[skill]||'⚙')+'</span> '+escapeHtml(skill)+'</td>';
+            for(const { pipeline: p, fase } of fases){
+                const n = (counts[p+'/'+fase]||{})[skill] || 0;
+                let cls = 'mtx-cell-0';
+                if(n >= 5) cls = 'mtx-cell-hot';
+                else if(n > 0) cls = 'mtx-cell-active';
+                html += '<td class="'+cls+'">'+(n || '·')+'</td>';
+            }
+            html += '<td><strong>'+totalsBySkill[skill]+'</strong></td></tr>';
+        }
     }
+    // Totals row
+    html += '<tr class="mtx-totals"><td>Total fase</td>';
+    for(const { pipeline: p, fase } of fases){ html += '<td>'+(totalsByFase[p+'/'+fase] || 0)+'</td>'; }
+    html += '<td>'+grandTotal+'</td></tr>';
     html += '</tbody></table>';
     if(c.innerHTML !== html) c.innerHTML = html;
 }
