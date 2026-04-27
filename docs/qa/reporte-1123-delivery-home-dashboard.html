@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Delivery Home y Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-sec { background: #ffebee; color: #b71c1c; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .tag-crit { background: #b71c1c; color: #fff; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .sec-finding { background: #ffebee; border-left: 3px solid #c62828; padding: 6px 9px; margin: 6px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .overlay-example { background: #111; color: #fff; border-radius: 4px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; margin: 6px 0; position: relative; }
+  .overlay-example .ov-id { color: #64b5f6; font-weight: bold; }
+  .overlay-example .ov-step { color: #81c784; }
+  .overlay-example .ov-result { color: #ffb74d; }
+  .overlay-example .ov-time { color: #bbb; position: absolute; right: 10px; top: 10px; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Delivery Home y Dashboard del Repartidor</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+    <span class="tag tag-sec">SEC</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo de QA compliance v2.0 con diagramas de flujo,<br>
+    casos de prueba funcionales y de seguridad, guion de video y criterios<br>
+    de evidencia para las pantallas Home y Dashboard del flavor Delivery<br>
+    de la plataforma Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Issue:</strong> #1123 — qa(compliance)</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-04-27</p>
+    <p><strong>App / Flavor:</strong> Delivery (com.intrale.app.delivery)</p>
+    <p><strong>Generado por:</strong> Pipeline V2 — Android Dev Agent</p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Indice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo</a></li>
+  <li><a href="#s2">Estandar de Evidencia en Video</a></li>
+  <li><a href="#s3">Arquitectura Delivery — Home y Dashboard</a></li>
+  <li><a href="#s4">Flujo A — Carga de Home (resumen + activos)</a></li>
+  <li><a href="#s5">Flujo B — Cambio de Estado de Pedido (inline)</a></li>
+  <li><a href="#s6">Flujo C — Dashboard con Tabs y Filtros</a></li>
+  <li><a href="#s7">Flujo D — Navegacion Bottom Bar</a></li>
+  <li><a href="#s8">Flujo E — Estados de Loading y Error</a></li>
+  <li><a href="#s9">Casos de Seguridad</a></li>
+  <li><a href="#s10">Hallazgos de Seguridad (riesgos conocidos)</a></li>
+  <li><a href="#s11">Resumen y Cobertura</a></li>
+  <li><a href="#s12">Gaps y Recomendaciones</a></li>
+</ol>
+
+<!-- ========== 1. RESUMEN ========== -->
+<h2 id="s1">1. Resumen Ejecutivo</h2>
+<p>Las pantallas <strong>DeliveryHome</strong> y <strong>DeliveryDashboard</strong> del flavor <code>delivery</code> conforman la operacion diaria del repartidor: ver resumen de pedidos, gestionar pedidos asignados, tomar pedidos disponibles, cambiar estados de entrega y consultar historial. Este reporte documenta <strong>32 casos de prueba</strong> (24 funcionales + 8 de seguridad) con:</p>
+<ul>
+  <li>Diagramas de flujo Mermaid por cada flujo y sub-flujo</li>
+  <li>Guion de video paso a paso para cada caso de prueba</li>
+  <li>Criterios de evidencia visual que debe capturar el video</li>
+  <li>Narracion (texto/audio) de cada paso durante la grabacion</li>
+  <li>Documentacion de hallazgos de seguridad pendientes (4 vulnerabilidades)</li>
+</ul>
+
+<table>
+  <tr><th>#</th><th>Flujo</th><th>Pantalla</th><th>Auth</th><th>Tipo</th><th>Casos</th></tr>
+  <tr><td>A</td><td>Carga de Home</td><td>DeliveryHome</td><td>JWT</td><td>Funcional</td><td>5</td></tr>
+  <tr><td>B</td><td>Cambio de estado de pedido</td><td>Home + Dashboard</td><td>JWT</td><td>Funcional</td><td>6</td></tr>
+  <tr><td>C</td><td>Dashboard con tabs y filtros</td><td>DeliveryDashboard</td><td>JWT</td><td>Funcional</td><td>7</td></tr>
+  <tr><td>D</td><td>Navegacion bottom bar</td><td>Home + Dashboard</td><td>JWT</td><td>Navegacion</td><td>3</td></tr>
+  <tr><td>E</td><td>Loading y error</td><td>Home + Dashboard</td><td>JWT</td><td>UX/Resiliencia</td><td>3</td></tr>
+  <tr><td>S</td><td>Seguridad</td><td>Endpoints delivery</td><td>Variable</td><td>Security</td><td>8</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td></td><td>32</td></tr>
+</table>
+
+<div class="note">
+  <strong>Alcance:</strong> Este reporte cubre las dos pantallas principales del repartidor (Home en <code>/delivery/home</code> y Dashboard en <code>/delivery/dashboard</code>) y el endpoint backend <code>/{biz}/delivery/orders</code> que las alimenta. Quedan fuera del alcance las pantallas de detalle, perfil y notificaciones (cubiertas por sus propios issues de QA compliance).
+</div>
+
+<!-- ========== 2. ESTANDAR DE VIDEO ========== -->
+<h2 id="s2">2. Estandar de Evidencia en Video</h2>
+
+<h3>2.1 Nomenclatura de archivos</h3>
+<div class="video-std">
+  <code>{FLUJO}-{ID}_{slug-descriptivo}.mp4</code><br>
+  Ejemplos:<br>
+  <code>DEL-A-001_home-resumen-contadores.mp4</code><br>
+  <code>DEL-B-003_dashboard-marcar-entregado.mp4</code><br>
+  <code>DEL-S-002_acceso-sin-token.mp4</code>
+</div>
+
+<h3>2.2 Estructura del video</h3>
+<p>Cada video de evidencia DEBE contener estas 4 fases:</p>
+<table>
+  <tr><th>Fase</th><th>Duracion</th><th>Contenido</th></tr>
+  <tr><td><strong>1. Titulo</strong></td><td>3-5 seg</td><td>Overlay con ID del caso, nombre completo, fecha y entorno</td></tr>
+  <tr><td><strong>2. Precondiciones</strong></td><td>3-5 seg</td><td>Mostrar/narrar el estado inicial requerido (login OK, datos sembrados)</td></tr>
+  <tr><td><strong>3. Ejecucion</strong></td><td>Variable</td><td>Cada paso narrado con overlay de numero de paso</td></tr>
+  <tr><td><strong>4. Verificacion</strong></td><td>5-10 seg</td><td>Evidencia explicita de CADA resultado esperado</td></tr>
+</table>
+
+<h3>2.3 Overlay de pantalla (formato obligatorio)</h3>
+<div class="overlay-example">
+  <span class="ov-id">DEL-A-001</span> | Home: carga de resumen con contadores<span class="ov-time">00:12</span><br>
+  <span class="ov-step">► Paso 2/4:</span> Verificamos cards Pendientes / En Progreso / Entregados<br>
+  <span class="ov-result">◉ Verificar: contadores numericos visibles y coinciden con backend</span>
+</div>
+<p>El overlay debe ser visible pero no obstruir la interfaz. Posicion sugerida: franja semi-transparente en la parte inferior.</p>
+
+<h3>2.4 Narracion</h3>
+<table>
+  <tr><th>Metodo</th><th>Formato</th><th>Cuando usar</th></tr>
+  <tr><td><strong>Audio TTS</strong> (ideal)</td><td>Voz sintetizada relatando cada paso</td><td>Videos finales para stakeholders</td></tr>
+  <tr><td><strong>Texto overlay</strong></td><td>Subtitulos con cada accion</td><td>Videos automatizados (Maestro/script)</td></tr>
+  <tr><td><strong>Audio + texto</strong></td><td>Ambos simultaneamente</td><td>Videos de demostracion formal</td></tr>
+</table>
+
+<h3>2.5 Evidencia de resultados esperados</h3>
+<div class="video-std">
+  <strong>Obligatorio para CADA resultado esperado:</strong>
+  <ol>
+    <li><strong>Pausa visual</strong> (2-3 seg): mostrar claramente el resultado en pantalla</li>
+    <li><strong>Highlight/marca</strong>: flecha, recuadro o zoom al elemento que evidencia el resultado</li>
+    <li><strong>Overlay de verificacion</strong>: texto <code>VERIFICADO: [descripcion del resultado]</code> o <code>FALLO: [descripcion]</code></li>
+    <li><strong>Screenshot automatico</strong>: captura individual del momento de verificacion</li>
+  </ol>
+</div>
+
+<h3>2.6 Ejemplo de guion de video completo</h3>
+<table>
+  <tr><th>Tiempo</th><th>Overlay</th><th>Narracion</th><th>Accion en pantalla</th></tr>
+  <tr><td>00:00</td><td><code>DEL-A-001 | Home: resumen con contadores correctos</code></td><td>"Caso DEL-A-001: Home delivery — verificacion de contadores"</td><td>Pantalla negra con titulo</td></tr>
+  <tr><td>00:04</td><td><code>Precondicion: Repartidor logueado, 3 pedidos asignados</code></td><td>"Precondicion: el repartidor inicio sesion con 3 pedidos"</td><td>Login OK, datos en DB</td></tr>
+  <tr><td>00:08</td><td><code>► Paso 1/4: Abrir app flavor delivery</code></td><td>"Paso uno: abrimos la aplicacion Intrale Repartos"</td><td>Splash + Home visible</td></tr>
+  <tr><td>00:12</td><td><code>► Paso 2/4: Verificamos saludo personalizado</code></td><td>"Paso dos: vemos el saludo y la fecha del dia"</td><td>Header con saludo + fecha</td></tr>
+  <tr><td>00:16</td><td><code>► Paso 3/4: Verificamos cards de resumen</code></td><td>"Paso tres: tres cards muestran Pendientes, En Progreso y Entregados"</td><td>Row con 3 DeliverySummaryCard</td></tr>
+  <tr><td>00:22</td><td><code>► Paso 4/4: Verificamos lista de activos</code></td><td>"Paso cuatro: lista de pedidos activos visible"</td><td>DeliveryOrderCard items</td></tr>
+  <tr><td>00:26</td><td><code>VERIFICADO: contadores 1/2/0 y 3 pedidos listados</code></td><td>"Verificado: 1 pendiente, 2 en progreso, 0 entregados, 3 cards"</td><td>Highlight + screenshot</td></tr>
+  <tr><td>00:32</td><td><code>RESULTADO: PASS</code></td><td>"Caso DEL-A-001: resultado PASS"</td><td>Pantalla final verde</td></tr>
+</table>
+
+<!-- ========== 3. ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura Delivery — Home y Dashboard</h2>
+
+<h3>3.1 Diagrama general de capas</h3>
+<pre class="mermaid">
+graph LR
+  UI["UI Compose<br>DeliveryHomeScreen<br>DeliveryDashboardScreen"] --> VM["ViewModels<br>DeliveryHomeViewModel<br>DeliveryOrdersViewModel<br>AvailableOrdersViewModel<br>DeliveryHistoryViewModel"]
+  VM --> EXT["Service Layer<br>CommDeliveryOrders<br>ClientDeliveryOrders"]
+  EXT --> BE["Backend Ktor<br>DeliveryOrdersFunction"]
+  BE --> COG["Amazon Cognito<br>JWT validation"]
+  BE --> DDB["DynamoDB<br>DeliveryOrderRepository"]
+  style UI fill:#e3f2fd,stroke:#1565c0
+  style VM fill:#e8f5e9,stroke:#2e7d32
+  style BE fill:#fff8e1,stroke:#f57f17
+</pre>
+
+<h3>3.2 Mapa de navegacion entre pantallas</h3>
+<pre class="mermaid">
+graph TD
+  LOGIN["Login (flavor delivery)"] -->|"login OK"| HOME["/delivery/home<br>DeliveryHomeScreen"]
+  HOME -->|"Tap card de pedido"| DETAIL["/delivery/order-detail<br>DeliveryOrderDetailScreen"]
+  HOME -->|"Tap 'Ver todos' / Bottom Orders"| DASH["/delivery/dashboard<br>DeliveryDashboardScreen"]
+  HOME -->|"Tap Bottom Notifications"| NOTIF["/delivery/notifications"]
+  HOME -->|"Tap Bottom Profile"| PROF["/delivery/profile"]
+  DASH -->|"Tap Bottom Home"| HOME
+  DASH -->|"Tap card de pedido"| DETAIL
+  DASH -->|"Tap Bottom Notifications"| NOTIF
+  DASH -->|"Tap Bottom Profile"| PROF
+  DASH -->|"Tab Activos"| TAB_A["Activos + Filter Chips"]
+  DASH -->|"Tab Disponibles"| TAB_B["Lista de pedidos disponibles"]
+  DASH -->|"Tab Historial"| TAB_C["Lista de pedidos finalizados"]
+
+  style HOME fill:#e3f2fd,stroke:#1565c0
+  style DASH fill:#e3f2fd,stroke:#1565c0
+  style DETAIL fill:#fff8e1,stroke:#f57f17
+</pre>
+
+<h3>3.3 Endpoints del backend</h3>
+<table>
+  <tr><th>Endpoint</th><th>Metodo</th><th>Auth</th><th>Funcion</th><th>Uso</th></tr>
+  <tr><td><code>/{biz}/delivery/orders/summary</code></td><td>GET</td><td>JWT</td><td>DeliveryOrdersFunction</td><td>Home: contadores</td></tr>
+  <tr><td><code>/{biz}/delivery/orders/active</code></td><td>GET</td><td>JWT</td><td>DeliveryOrdersFunction</td><td>Home + Dashboard tab Activos</td></tr>
+  <tr><td><code>/{biz}/delivery/orders/available</code></td><td>GET</td><td>JWT</td><td>DeliveryOrdersFunction</td><td>Dashboard tab Disponibles</td></tr>
+  <tr><td><code>/{biz}/delivery/orders/{id}</code></td><td>GET</td><td>JWT</td><td>DeliveryOrdersFunction</td><td>Detalle de pedido</td></tr>
+  <tr><td><code>/{biz}/delivery/orders/{id}/status</code></td><td>PUT</td><td>JWT</td><td>DeliveryOrdersFunction</td><td>Actualizar status</td></tr>
+  <tr><td><code>/{biz}/delivery/orders/{id}/state</code></td><td>PUT</td><td>JWT</td><td>DeliveryOrdersFunction</td><td>Cambiar estado de entrega</td></tr>
+  <tr><td><code>/{biz}/delivery/orders/{id}/take</code></td><td>PUT</td><td>JWT</td><td>DeliveryOrdersFunction</td><td>Tomar pedido disponible</td></tr>
+</table>
+
+<h3>3.4 Estados del modelo DeliveryOrderStatus</h3>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> PENDING: pedido asignado a repartidor
+  PENDING --> IN_PROGRESS: "Iniciar entrega"
+  IN_PROGRESS --> DELIVERED: "Marcar entregado"
+  IN_PROGRESS --> NOT_DELIVERED: "Reportar problema"
+  DELIVERED --> [*]
+  NOT_DELIVERED --> [*]
+  PENDING --> UNKNOWN: payload corrupto
+  UNKNOWN --> [*]
+</pre>
+
+<!-- ========== 4. FLUJO A — CARGA DE HOME ========== -->
+<h2 id="s4">4. Flujo A — Carga de Home (resumen + activos)</h2>
+
+<h3>4.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Al abrir la app o volver a Home desde otra pantalla, el ViewModel dispara <code>loadData()</code>. Se cargan en paralelo el resumen de pedidos (contadores) y la lista de pedidos activos asignados al repartidor. La pantalla muestra saludo personalizado, fecha del dia, tres cards de resumen, lista de pedidos activos y un bloque de acciones rapidas con accesos a Dashboard.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Repartidor logueado con JWT valido | Sesion activa con role=delivery | Conexion a internet | Negocio APPROVED
+</div>
+
+<h3>4.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> OPEN["DeliveryHomeScreen<br>composable"]
+  OPEN --> LE["LaunchedEffect(Unit)<br>viewModel.loadData()"]
+  LE --> P1["GET /summary"]
+  LE --> P2["GET /active"]
+  P1 --> S_LOAD{"summaryState"}
+  P2 --> A_LOAD{"activeOrdersState"}
+  S_LOAD -->|"Loading"| S_SPIN["DeliveryLoading()"]
+  S_LOAD -->|"Error"| S_ERR["DeliveryStateCard<br>+ accion 'Reintentar'"]
+  S_LOAD -->|"Loaded"| S_OK["DeliverySummaryRow<br>(3 cards: pending/inProgress/delivered)"]
+  A_LOAD -->|"Loading"| A_SPIN["DeliveryLoading()"]
+  A_LOAD -->|"Empty"| A_EMP["DeliveryStateCard<br>'Sin pedidos activos'"]
+  A_LOAD -->|"Error"| A_ERR["DeliveryStateCard<br>+ accion 'Reintentar'"]
+  A_LOAD -->|"Loaded"| A_OK["forEach order<br>DeliveryOrderCard"]
+  S_OK --> RENDER["Pantalla completa<br>+ Quick Actions<br>+ BottomBar (Home activo)"]
+  A_OK --> RENDER
+
+  style S_ERR fill:#ffebee,stroke:#c62828
+  style A_ERR fill:#ffebee,stroke:#c62828
+  style RENDER fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>4.3 Componentes y datos esperados</h3>
+<table>
+  <tr><th>Componente</th><th>Fuente de datos</th><th>Comportamiento</th></tr>
+  <tr><td><code>DeliveryHomeHeader</code></td><td><code>SessionStore.role.rawValue</code></td><td>Saludo + nombre + fecha</td></tr>
+  <tr><td><code>DeliverySummaryRow</code></td><td><code>summaryState.summary</code> (pending/inProgress/delivered)</td><td>3 cards con contador entero</td></tr>
+  <tr><td><code>DeliveryOrderCard</code></td><td><code>activeOrdersState.orders</code></td><td>Card por cada pedido con label, business, neighborhood, eta, accion segun status</td></tr>
+  <tr><td><code>QuickActions</code></td><td>Estatico</td><td>2 botones: 'Ver asignados' y 'Disponibles'</td></tr>
+  <tr><td><code>DeliveryBottomBar</code></td><td><code>activeTab=HOME</code></td><td>4 tabs: Home (activo), Orders, Notifications, Profile</td></tr>
+</table>
+
+<h3>4.4 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-A-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Home: carga de resumen con contadores</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso DEL-A-001: carga del Home con contadores"<br>
+      <strong>► P1</strong> "Sembramos 1 pendiente, 2 en progreso, 0 entregados"<br>
+      <strong>► P2</strong> "Abrimos la app Intrale Repartos y hacemos login"<br>
+      <strong>► P3</strong> "Esperamos a que cargue Home"<br>
+      <strong>◉ V1</strong> "Verificamos: 3 cards de resumen visibles"<br>
+      <strong>◉ V2</strong> "Verificamos: contadores 1 / 2 / 0 coinciden con DB"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Header con saludo<br>
+      VERIFICADO 3 cards: Pendientes=1, EnProgreso=2, Entregados=0<br>
+      VERIFICADO No spinner residual<br>
+      VERIFICADO Sin snackbar de error
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-A-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Home: lista de pedidos activos con datos reales</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Sembramos 3 pedidos asignados (label, business, neighborhood, eta)"<br>
+      <strong>► P2</strong> "Abrimos Home"<br>
+      <strong>◉ V1</strong> "Verificamos: 3 DeliveryOrderCard con datos reales"<br>
+      <strong>◉ V2</strong> "Verificamos: cada card muestra label, business, barrio y eta"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO 3 cards renderizadas<br>
+      VERIFICADO Datos no mockeados (coinciden con seed)<br>
+      VERIFICADO Etiqueta de status visible y traducida<br>
+      VERIFICADO Boton de accion segun status
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-A-003</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Home: estado vacio (sin pedidos activos)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Sembramos repartidor sin pedidos asignados"<br>
+      <strong>► P2</strong> "Abrimos Home"<br>
+      <strong>◉ V1</strong> "Verificamos: card de estado vacio con mensaje"<br>
+      <strong>◉ V2</strong> "Verificamos: boton 'Reintentar' visible"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Mensaje 'Sin pedidos activos'<br>
+      VERIFICADO Resumen sigue mostrandose con ceros<br>
+      VERIFICADO Quick Actions accesibles<br>
+      VERIFICADO Tap en Reintentar dispara loadData
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-A-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Home: spinner de carga inicial</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Throttling de red activo (3G lento)"<br>
+      <strong>► P2</strong> "Abrimos Home"<br>
+      <strong>◉ V1</strong> "Verificamos: DeliveryLoading visible mientras carga"<br>
+      <strong>◉ V2</strong> "Verificamos: al terminar, spinner desaparece"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Spinner centrado en bloque resumen<br>
+      VERIFICADO Spinner centrado en bloque activos<br>
+      VERIFICADO Transicion suave a contenido<br>
+      VERIFICADO No queda doble loader
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-A-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Home: tap card abre detalle del pedido</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en Home con pedidos cargados"<br>
+      <strong>► P2</strong> "Tocamos boton ArrowForward de un card"<br>
+      <strong>◉ V1</strong> "Verificamos: DeliveryOrderSelectionStore.select(orderId)"<br>
+      <strong>◉ V2</strong> "Verificamos: navega a /delivery/order-detail"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Tap registrado<br>
+      VERIFICADO Cambio de pantalla<br>
+      VERIFICADO Detalle muestra el orderId correcto
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 5. FLUJO B — CAMBIO DE ESTADO ========== -->
+<h2 id="s5">5. Flujo B — Cambio de Estado de Pedido (inline)</h2>
+
+<h3>5.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Tanto en Home como en Dashboard, el repartidor puede cambiar el estado de un pedido sin abrir la pantalla de detalle. La accion disponible depende del estado actual: PENDING permite "Iniciar entrega", IN_PROGRESS permite "Marcar entregado" o "Reportar problema". El cambio se hace via PUT al backend, mostrando spinner durante la actualizacion y snackbar al finalizar.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Sesion activa | Pedido visible en lista | Conexion a internet
+</div>
+
+<h3>5.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Card visible")) --> CHECK{"order.status"}
+  CHECK -->|"PENDING"| BTN_START["Boton 'Iniciar entrega'<br>(IntraleOutlinedButton)"]
+  CHECK -->|"IN_PROGRESS"| BTN_DEL["Boton 'Marcar entregado'<br>(IntralePrimaryButton)"]
+  CHECK -->|"DELIVERED / UNKNOWN"| NO_BTN["Sin boton de accion"]
+  BTN_START -->|"Tap"| TAP_S["viewModel.updateStatus(id, IN_PROGRESS)"]
+  BTN_DEL -->|"Tap"| TAP_D["viewModel.updateStatus(id, DELIVERED)"]
+  TAP_S --> SPIN["state.updatingOrderId == id<br>CircularProgressIndicator"]
+  TAP_D --> SPIN
+  SPIN --> HTTP["PUT /{biz}/delivery/orders/{id}/status<br>{status: 'IN_PROGRESS' o 'DELIVERED'}"]
+  HTTP -->|"200 OK"| OK["state.statusUpdateSuccess=true<br>Snackbar 'Estado actualizado'"]
+  HTTP -->|"4xx / 5xx"| ERR["state.statusUpdateError=msg<br>Snackbar de error"]
+  OK --> REFRESH["loadData() -> refresca lista"]
+  ERR --> CHECK
+
+  style ERR fill:#ffebee,stroke:#c62828
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style SPIN fill:#e3f2fd,stroke:#1565c0
+</pre>
+
+<h3>5.3 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-B-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Home: iniciar entrega (PENDING -> IN_PROGRESS)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en Home con pedido en estado PENDING"<br>
+      <strong>► P2</strong> "Tocamos boton 'Iniciar entrega'"<br>
+      <strong>◉ V1</strong> "Verificamos: spinner aparece en lugar del boton"<br>
+      <strong>◉ V2</strong> "Verificamos: snackbar 'Estado actualizado'"<br>
+      <strong>◉ V3</strong> "Verificamos: card actualizado a IN_PROGRESS"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO PUT /status enviado<br>
+      VERIFICADO Spinner durante request<br>
+      VERIFICADO Snackbar exito<br>
+      VERIFICADO Boton cambia a 'Marcar entregado'
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-B-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Dashboard: iniciar entrega (PENDING -> IN_PROGRESS)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en Dashboard tab Activos con pedido PENDING"<br>
+      <strong>► P2</strong> "Tocamos boton 'Iniciar entrega'"<br>
+      <strong>◉ V1</strong> "Verificamos: spinner + snackbar exito + status actualizado"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Mismo comportamiento que Home<br>
+      VERIFICADO Lista refrescada
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-B-003</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Dashboard: marcar entregado (IN_PROGRESS -> DELIVERED)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en Dashboard tab Activos con pedido IN_PROGRESS"<br>
+      <strong>► P2</strong> "Tocamos boton 'Marcar entregado'"<br>
+      <strong>◉ V1</strong> "Verificamos: spinner + snackbar exito"<br>
+      <strong>◉ V2</strong> "Verificamos: pedido desaparece de Activos (con filtro Todos pasa a Entregado)"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO PUT /status con DELIVERED<br>
+      VERIFICADO Card cambia/desaparece segun filtro<br>
+      VERIFICADO Snackbar exito
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-B-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cambio de estado con error de red</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Desactivamos red"<br>
+      <strong>► P2</strong> "Tocamos 'Iniciar entrega'"<br>
+      <strong>◉ V1</strong> "Verificamos: snackbar de error visible"<br>
+      <strong>◉ V2</strong> "Verificamos: card no cambia de estado"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Snackbar error legible<br>
+      VERIFICADO Card permanece en PENDING<br>
+      VERIFICADO Boton vuelve a estado normal (sin spinner)
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-B-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Boton deshabilitado durante actualizacion (anti doble-tap)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en Home con pedido PENDING"<br>
+      <strong>► P2</strong> "Tocamos 'Iniciar entrega'"<br>
+      <strong>► P3</strong> "Intentamos tocar de nuevo durante el spinner"<br>
+      <strong>◉ V1</strong> "Verificamos: el boton no responde al segundo tap"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Una sola request al backend<br>
+      VERIFICADO Spinner durante toda la operacion<br>
+      VERIFICADO No se duplica el cambio
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-B-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Cambio de estado en pedido DELIVERED (no debe permitir)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos viendo un pedido DELIVERED en filtro Entregado"<br>
+      <strong>◉ V1</strong> "Verificamos: NO hay boton de accion visible"<br>
+      <strong>◉ V2</strong> "Verificamos: solo se muestra info y boton 'Ver pedido'"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Sin boton 'Iniciar' o 'Marcar'<br>
+      VERIFICADO Estado se muestra como 'Entregado'
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 6. FLUJO C — DASHBOARD CON TABS Y FILTROS ========== -->
+<h2 id="s6">6. Flujo C — Dashboard con Tabs y Filtros</h2>
+
+<h3>6.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El Dashboard del repartidor tiene tres tabs principales: <strong>Activos</strong> (pedidos asignados), <strong>Disponibles</strong> (pedidos sin asignar que el repartidor puede tomar) e <strong>Historial</strong> (pedidos finalizados). En el tab Activos hay un filtro de chips por estado: Todos / Pendiente / En Progreso / Entregado.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Sesion activa | Datos sembrados con varios pedidos en distintos estados
+</div>
+
+<h3>6.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("DashboardScreen")) --> TR["TabRow<br>(3 tabs)"]
+  TR --> T0["Tab 0: Activos"]
+  TR --> T1["Tab 1: Disponibles"]
+  TR --> T2["Tab 2: Historial"]
+
+  T0 --> CHIPS["FilterChips:<br>Todos / Pendiente / En Progreso / Entregado"]
+  CHIPS -->|"selectedFilter"| FLT["state.filteredOrders"]
+  FLT --> LIST_A["LazyColumn<br>DeliveryOrderCard"]
+
+  T1 -->|"LaunchedEffect Idle"| LOAD_AV["availableViewModel.loadAvailableOrders()"]
+  LOAD_AV --> LIST_B["LazyColumn<br>AvailableOrderCard"]
+  LIST_B -->|"Tap 'Tomar pedido'"| TAKE["PUT /take<br>snackbar exito"]
+
+  T2 -->|"LaunchedEffect Idle"| LOAD_H["historyViewModel.loadHistory()"]
+  LOAD_H --> LIST_C["LazyColumn<br>HistoryOrderCard<br>(DELIVERED / NOT_DELIVERED)"]
+
+  style T0 fill:#e3f2fd,stroke:#1565c0
+  style T1 fill:#fff8e1,stroke:#f57f17
+  style T2 fill:#f3e5f5,stroke:#6a1b9a
+</pre>
+
+<h3>6.3 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-C-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Dashboard: filter chip 'Todos' muestra todo</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Sembramos 5 pedidos: 2 PENDING, 2 IN_PROGRESS, 1 DELIVERED"<br>
+      <strong>► P2</strong> "Abrimos Dashboard tab Activos"<br>
+      <strong>► P3</strong> "Verificamos chip 'Todos' seleccionado por defecto"<br>
+      <strong>◉ V1</strong> "Verificamos: 5 cards visibles en LazyColumn"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Chip 'Todos' resaltado<br>
+      VERIFICADO 5 cards listadas<br>
+      VERIFICADO Sin filtro aplicado
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-C-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Dashboard: filter chip 'Pendiente'</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Misma seed (5 pedidos)"<br>
+      <strong>► P2</strong> "Tocamos chip 'Pendiente'"<br>
+      <strong>◉ V1</strong> "Verificamos: solo 2 cards (los PENDING)"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Chip 'Pendiente' resaltado<br>
+      VERIFICADO Solo 2 cards filtradas<br>
+      VERIFICADO Resto oculto
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-C-003</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Dashboard: filter chip 'En Progreso'</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Tocamos chip 'En Progreso'"<br>
+      <strong>◉ V1</strong> "Verificamos: solo 2 cards (los IN_PROGRESS)"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Chip 'En Progreso' resaltado<br>
+      VERIFICADO Solo 2 cards
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-C-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Dashboard: filter chip 'Entregado'</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Tocamos chip 'Entregado'"<br>
+      <strong>◉ V1</strong> "Verificamos: solo 1 card (el DELIVERED)"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Chip 'Entregado' resaltado<br>
+      VERIFICADO Solo 1 card
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-C-005</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Dashboard: tab 'Disponibles' carga lazy</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en tab Activos"<br>
+      <strong>► P2</strong> "Tocamos tab 'Disponibles'"<br>
+      <strong>◉ V1</strong> "Verificamos: spinner + GET /available"<br>
+      <strong>◉ V2</strong> "Verificamos: lista de AvailableOrderCard"<br>
+      <strong>► P3</strong> "Tocamos 'Tomar pedido' en uno"<br>
+      <strong>◉ V3</strong> "Verificamos: snackbar 'Pedido tomado correctamente'"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO LaunchedEffect dispara loadAvailableOrders<br>
+      VERIFICADO Cards muestran business + neighborhood + eta<br>
+      VERIFICADO PUT /take exitoso
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-C-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Dashboard: tomar pedido ya tomado por otro</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Repartidor B toma pedido X (estado real)"<br>
+      <strong>► P2</strong> "Repartidor A intenta tomarlo desde Disponibles"<br>
+      <strong>◉ V1</strong> "Verificamos: snackbar 'Este pedido ya no esta disponible'"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO HTTP 409 Conflict<br>
+      VERIFICADO Snackbar visible<br>
+      VERIFICADO Lista refrescada sin el pedido
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-C-007</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Dashboard: tab 'Historial' carga lazy</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Sembramos 2 DELIVERED y 1 NOT_DELIVERED"<br>
+      <strong>► P2</strong> "Tocamos tab 'Historial'"<br>
+      <strong>◉ V1</strong> "Verificamos: spinner + GET /history"<br>
+      <strong>◉ V2</strong> "Verificamos: 3 HistoryOrderCard con icono CheckCircle/Cancel"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Cards con icono distinto segun status<br>
+      VERIFICADO Color tinted<br>
+      VERIFICADO Tap navega a detalle (readOnly=true)
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 7. FLUJO D — NAVEGACION BOTTOM BAR ========== -->
+<h2 id="s7">7. Flujo D — Navegacion Bottom Bar</h2>
+
+<h3>7.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>La <code>DeliveryBottomBar</code> esta presente en Home y Dashboard. Tiene 4 tabs: Home, Orders, Notifications, Profile. Tocar un tab cambia de pantalla, salvo si ya estamos en el tab correspondiente (en cuyo caso refresca o scrollea al inicio).</p>
+
+<h3>7.2 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video</th>
+    <th class="evidence-col">Evidencia</th>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-D-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Bottom bar: Home -> Orders</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en Home (tab HOME activo)"<br>
+      <strong>► P2</strong> "Tocamos icono Orders"<br>
+      <strong>◉ V1</strong> "Verificamos: navega a /delivery/dashboard"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Pantalla Dashboard visible<br>
+      VERIFICADO Tab ORDERS marcado activo
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-D-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Bottom bar: Dashboard -> Home</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Estamos en Dashboard (tab ORDERS activo)"<br>
+      <strong>► P2</strong> "Tocamos icono Home"<br>
+      <strong>◉ V1</strong> "Verificamos: navega a /delivery/home"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Pantalla Home visible<br>
+      VERIFICADO Tab HOME marcado activo
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-D-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Bottom bar: Profile y Notifications</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Tocamos Profile desde Home"<br>
+      <strong>◉ V1</strong> "Verificamos: navega a /delivery/profile"<br>
+      <strong>► P2</strong> "Volvemos y tocamos Notifications"<br>
+      <strong>◉ V2</strong> "Verificamos: navega a /delivery/notifications"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Cada tab navega a su path<br>
+      VERIFICADO Backstack correcto al volver
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 8. FLUJO E — LOADING Y ERROR ========== -->
+<h2 id="s8">8. Flujo E — Estados de Loading y Error</h2>
+
+<h3>8.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Tanto Home como Dashboard manejan tres estados visuales por seccion: <strong>Loading</strong> (DeliveryLoading con CircularProgressIndicator), <strong>Error</strong> (DeliveryStateCard con mensaje + accion 'Reintentar'), <strong>Empty</strong> (DeliveryStateCard con mensaje contextual).</p>
+
+<h3>8.2 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video</th>
+    <th class="evidence-col">Evidencia</th>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-E-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Home: error de red en /summary</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Apagamos backend o forzamos 500"<br>
+      <strong>► P2</strong> "Abrimos Home"<br>
+      <strong>◉ V1</strong> "Verificamos: card de error en seccion resumen"<br>
+      <strong>► P3</strong> "Levantamos backend, tocamos 'Reintentar'"<br>
+      <strong>◉ V2</strong> "Verificamos: refreshSummary se ejecuta"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Mensaje legible<br>
+      VERIFICADO Boton 'Reintentar' funcional<br>
+      VERIFICADO Recovery exitoso
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-E-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Dashboard: error en tab Activos</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Backend retorna 500 en /active"<br>
+      <strong>► P2</strong> "Abrimos Dashboard"<br>
+      <strong>◉ V1</strong> "Verificamos: DeliveryStateCard con mensaje de error"<br>
+      <strong>► P3</strong> "Tocamos 'Reintentar'"<br>
+      <strong>◉ V2</strong> "Verificamos: loadOrders se reintenta"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Estado Error en LazyColumn<br>
+      VERIFICADO Reintentar dispara fetch<br>
+      VERIFICADO Mensaje fallback si state.errorMessage es null
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-E-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Dashboard: estado vacio en tab Disponibles</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Sin pedidos disponibles en el negocio"<br>
+      <strong>► P2</strong> "Tocamos tab Disponibles"<br>
+      <strong>◉ V1</strong> "Verificamos: card de estado vacio"<br>
+      <strong>◉ V2</strong> "Verificamos: boton 'Reintentar' presente"
+    </td>
+    <td class="evidence-col">
+      VERIFICADO Estado Empty visible<br>
+      VERIFICADO Sin LazyColumn de items<br>
+      VERIFICADO Reintentar funcional
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 9. FLUJO S — SEGURIDAD ========== -->
+<h2 id="s9">9. Casos de Seguridad</h2>
+
+<h3>9.1 Descripcion <span class="tag tag-sec">SEC</span></h3>
+<p>El endpoint <code>/{biz}/delivery/orders</code> esta protegido por <code>SecuredFunction</code> (JWT via Cognito), pero existen 4 vulnerabilidades documentadas por el Security Agent que requieren cobertura de tests negativos. Estos casos verifican el comportamiento defensivo esperado y sirven como referencia para crear los issues de remediacion.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Backend con JWT validation activa | Repartidor A con email <code>repartidorA@test.com</code> | Repartidor B con email <code>repartidorB@test.com</code> | Pedido X asignado a Repartidor B
+</div>
+
+<h3>9.2 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-sec">SEC</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:50px">Severidad</th>
+    <th>Caso de prueba</th>
+    <th>Pasos / Comandos</th>
+    <th class="evidence-col">Resultado esperado</th>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-001</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Acceso sin token</strong></td>
+    <td class="video-script">
+      curl -X GET <code>/{biz}/delivery/orders/active</code> sin header Authorization
+    </td>
+    <td class="evidence-col">
+      Esperado: HTTP 401 Unauthorized<br>
+      VERIFICADO No retorna datos<br>
+      VERIFICADO Logs registran rechazo
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-002</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Token expirado</strong></td>
+    <td class="video-script">
+      curl con JWT expirado en header Authorization
+    </td>
+    <td class="evidence-col">
+      Esperado: HTTP 401 Unauthorized<br>
+      VERIFICADO Validacion Cognito rechaza<br>
+      VERIFICADO No revela datos
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-003</td>
+    <td><span class="tag tag-crit">Critica</span></td>
+    <td><strong>Header X-Debug-User como impersonacion</strong></td>
+    <td class="video-script">
+      curl sin Authorization, con header <code>X-Debug-User: repartidorA@test.com</code><br>
+      Verificar contra entorno PRODUCTIVO (no dev)
+    </td>
+    <td class="evidence-col">
+      Esperado en PROD: HTTP 401<br>
+      Si responde 200: VULNERABLE — bloquear release<br>
+      Hallazgo: <code>DeliveryOrdersFunction:174</code>
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-004</td>
+    <td><span class="tag tag-crit">Critica</span></td>
+    <td><strong>Repartidor A consulta pedido de Repartidor B</strong></td>
+    <td class="video-script">
+      Login como Repartidor A<br>
+      GET <code>/{biz}/delivery/orders/{idDeB}</code>
+    </td>
+    <td class="evidence-col">
+      Esperado: HTTP 403 Forbidden o 404<br>
+      ESTADO ACTUAL: VULNERABLE — repository.getOrder no valida ownership<br>
+      Hallazgo: <code>DeliveryOrdersFunction:67</code> + <code>DeliveryOrderRepository:28-31</code>
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-005</td>
+    <td><span class="tag tag-crit">Critica</span></td>
+    <td><strong>Repartidor A cambia estado de pedido de B</strong></td>
+    <td class="video-script">
+      Login como A<br>
+      PUT <code>/{biz}/delivery/orders/{idDeB}/status</code> con <code>{"status":"DELIVERED"}</code>
+    </td>
+    <td class="evidence-col">
+      Esperado: HTTP 403<br>
+      ESTADO ACTUAL: VULNERABLE — sin validacion de ownership<br>
+      Hallazgo: <code>DeliveryOrdersFunction:117, 134</code>
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-006</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cambio de estado con valor invalido</strong></td>
+    <td class="video-script">
+      PUT <code>/{biz}/delivery/orders/{id}/state</code> con <code>{"state":"HACKED"}</code>
+    </td>
+    <td class="evidence-col">
+      Esperado: HTTP 400 con mensaje claro<br>
+      ESTADO ACTUAL: acepta string libre<br>
+      Hallazgo: <code>DeliveryStateChangeRequest</code>
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-007</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>IDOR: enumeracion de IDs de pedidos</strong></td>
+    <td class="video-script">
+      Login como A con 1 pedido asignado<br>
+      Iterar IDs incrementales (000001..000100)<br>
+      GET <code>/orders/{i}</code>
+    </td>
+    <td class="evidence-col">
+      Esperado: solo el pedido asignado responde 200<br>
+      VERIFICADO No hay leak de pedidos ajenos<br>
+      ESTADO ACTUAL: lee cualquier pedido del negocio
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">DEL-S-008</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Inyeccion en business slug</strong></td>
+    <td class="video-script">
+      curl con slugs maliciosos: <code>../admin</code>, <code>../../etc</code>
+    </td>
+    <td class="evidence-col">
+      Esperado: HTTP 4xx, no traversal<br>
+      VERIFICADO Slug normalizado<br>
+      VERIFICADO Logs no exponen path interno
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 10. HALLAZGOS DE SEGURIDAD ========== -->
+<h2 id="s10">10. Hallazgos de Seguridad (riesgos conocidos)</h2>
+
+<p>El Security Agent identifico cuatro vulnerabilidades en el codigo bajo test que NO son nuevas (existen desde antes de este issue de QA compliance) pero deben quedar documentadas como riesgos conocidos. Cada hallazgo requiere un issue de seguridad separado para su remediacion.</p>
+
+<div class="sec-finding">
+  <strong>SEC-1 (Critica) — Sin validacion de ownership al consultar pedido</strong><br>
+  <strong>Ubicacion:</strong> <code>users/src/main/kotlin/ar/com/intrale/DeliveryOrdersFunction.kt:67</code> + <code>DeliveryOrderRepository:28-31</code><br>
+  <strong>Descripcion:</strong> Cualquier repartidor autenticado puede consultar cualquier pedido por ID dentro del mismo negocio. El metodo <code>repository.getOrder(business, orderId)</code> no compara el email del JWT con el email del repartidor asignado al pedido.<br>
+  <strong>Recomendacion:</strong> agregar filtro <code>assignedTo == authenticatedEmail</code> en query DynamoDB, o validar tras el fetch. Si no se cumple, retornar 403/404.
+</div>
+
+<div class="sec-finding">
+  <strong>SEC-2 (Critica) — Sin validacion de ownership al cambiar estado/status</strong><br>
+  <strong>Ubicacion:</strong> <code>DeliveryOrdersFunction:117 (status)</code>, <code>DeliveryOrdersFunction:134 (state)</code><br>
+  <strong>Descripcion:</strong> Repartidor A puede mutar pedidos asignados a Repartidor B. El metodo <code>repository.updateStatus / updateState</code> no valida que el email del JWT coincida con el repartidor asignado al pedido.<br>
+  <strong>Recomendacion:</strong> validar ownership antes del update; en caso de mismatch, 403 Forbidden.
+</div>
+
+<div class="sec-finding">
+  <strong>SEC-3 (Alta) — DeliveryStateChangeRequest.state es String libre</strong><br>
+  <strong>Ubicacion:</strong> <code>DeliveryOrdersFunction:131-134</code>, <code>DeliveryStateDtos.kt</code><br>
+  <strong>Descripcion:</strong> El payload <code>{state: String}</code> acepta cualquier valor sin enum o whitelist. Un repartidor puede enviar <code>"HACKED"</code>, <code>""</code>, <code>"DROP TABLE orders"</code>.<br>
+  <strong>Recomendacion:</strong> usar enum serializable (sealed class o <code>kotlinx.serialization</code>) y validar contra valores permitidos: PENDING, IN_PROGRESS, DELIVERED, NOT_DELIVERED. Rechazar con 400 si no matchea.
+</div>
+
+<div class="sec-finding">
+  <strong>SEC-4 (Alta) — Header X-Debug-User como fallback de auth</strong><br>
+  <strong>Ubicacion:</strong> <code>DeliveryOrdersFunction:174</code>, <code>DeliveryProfileFunction:115</code><br>
+  <strong>Descripcion:</strong> El metodo <code>resolveEmail(headers)</code> acepta <code>X-Debug-User</code> como fallback cuando no hay JWT valido. En produccion, esto permitiria impersonar a cualquier repartidor solo conociendo su email.<br>
+  <strong>Recomendacion:</strong> condicionar el fallback a <code>config.environment == "dev"</code>. En PROD/STAGE debe rechazar con 401 si no hay JWT valido. Idealmente eliminar el fallback completo y usar JWTs de testing reales.
+</div>
+
+<h3>10.1 Issues recomendados</h3>
+<table>
+  <tr><th>Issue propuesto</th><th>Severidad</th><th>Hallazgos cubiertos</th></tr>
+  <tr><td>"sec(delivery): validar ownership en getOrder y updateStatus"</td><td>Critica</td><td>SEC-1, SEC-2</td></tr>
+  <tr><td>"sec(delivery): convertir DeliveryStateChangeRequest.state a enum validado"</td><td>Alta</td><td>SEC-3</td></tr>
+  <tr><td>"sec(delivery): restringir X-Debug-User a entorno dev"</td><td>Alta</td><td>SEC-4</td></tr>
+</table>
+
+<!-- ========== 11. RESUMEN Y COBERTURA ========== -->
+<h2 id="s11">11. Resumen y Cobertura</h2>
+
+<table>
+  <tr><th>Area</th><th>Casos</th><th>Smoke</th><th>Regression</th><th>Edge</th><th>Security</th></tr>
+  <tr><td>Flujo A — Home</td><td>5</td><td>2</td><td>2</td><td>1</td><td>0</td></tr>
+  <tr><td>Flujo B — Cambio estado</td><td>6</td><td>3</td><td>2</td><td>1</td><td>0</td></tr>
+  <tr><td>Flujo C — Dashboard</td><td>7</td><td>4</td><td>2</td><td>1</td><td>0</td></tr>
+  <tr><td>Flujo D — Bottom bar</td><td>3</td><td>2</td><td>1</td><td>0</td><td>0</td></tr>
+  <tr><td>Flujo E — Loading/Error</td><td>3</td><td>2</td><td>1</td><td>0</td><td>0</td></tr>
+  <tr><td>Flujo S — Seguridad</td><td>8</td><td>0</td><td>0</td><td>0</td><td>8</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td>TOTAL</td><td>32</td><td>13</td><td>8</td><td>3</td><td>8</td></tr>
+</table>
+
+<h3>11.1 Cobertura por componente</h3>
+<table>
+  <tr><th>Componente</th><th>Casos</th><th>Cobertura</th></tr>
+  <tr><td><code>DeliveryHomeScreen</code></td><td>11 (A1-5, B1, B5, D1, D3, E1, E3)</td><td>Alta — todos los componentes y estados</td></tr>
+  <tr><td><code>DeliveryDashboardScreen</code></td><td>15 (B2-4, B6, C1-7, D2-3, E2-3)</td><td>Alta — 3 tabs cubiertas</td></tr>
+  <tr><td><code>DeliveryHomeViewModel</code></td><td>5 (A1-5)</td><td>Alta — loadData, refreshSummary, refreshActive, updateStatus</td></tr>
+  <tr><td><code>DeliveryOrdersViewModel</code></td><td>6 (B2-4, C1-4)</td><td>Alta — selectFilter, updateStatus</td></tr>
+  <tr><td><code>AvailableOrdersViewModel</code></td><td>2 (C5-6)</td><td>Media — loadAvailableOrders, takeOrder</td></tr>
+  <tr><td><code>DeliveryHistoryViewModel</code></td><td>1 (C7)</td><td>Media — loadHistory</td></tr>
+  <tr><td><code>DeliveryOrdersFunction</code> (backend)</td><td>14 (B1-6, C1-7, S1-8)</td><td>Muy alta — todos los endpoints + seguridad</td></tr>
+</table>
+
+<!-- ========== 12. GAPS Y RECOMENDACIONES ========== -->
+<h2 id="s12">12. Gaps y Recomendaciones</h2>
+
+<h3>12.1 Gaps identificados</h3>
+<table>
+  <tr><th>Gap</th><th>Riesgo</th><th>Recomendacion</th></tr>
+  <tr><td>Sin tests automatizados E2E con Maestro/Compose UI Test para Home y Dashboard</td><td>Alto</td><td>Crear suite Maestro <code>delivery-home.yaml</code> y <code>delivery-dashboard.yaml</code> con los casos smoke del reporte</td></tr>
+  <tr><td>4 vulnerabilidades de seguridad criticas/altas en endpoints (ver seccion 10)</td><td>Critico</td><td>Crear 3 issues de remediacion (ownership, enum state, X-Debug-User dev-only)</td></tr>
+  <tr><td>No hay metricas de tiempo de carga del Home en produccion</td><td>Bajo</td><td>Agregar telemetria del LaunchedEffect <code>loadData()</code> y observar p95</td></tr>
+  <tr><td>Detalle de pedido (DELIVERY_ORDER_DETAIL_PATH) no esta cubierto por este reporte</td><td>Medio</td><td>Crear issue separado de QA compliance para detalle (forma parte del flujo pero excede el alcance)</td></tr>
+  <tr><td>El Snackbar de error muestra <code>state.errorMessage</code> directo (string del backend)</td><td>Medio</td><td>Sanitizar y/o traducir mensajes de error antes de mostrar</td></tr>
+</table>
+
+<h3>12.2 Recomendaciones</h3>
+<ul>
+  <li><strong>Automatizacion E2E:</strong> los 32 casos del reporte deberian convertirse en suite Maestro automatizada para correr en cada PR que toque <code>app/composeApp/src/commonMain/kotlin/ui/sc/delivery/</code> o <code>users/src/main/kotlin/ar/com/intrale/DeliveryOrdersFunction.kt</code>.</li>
+  <li><strong>Capa de seguridad:</strong> antes del proximo release con la app delivery en TestFlight/Play Internal, cerrar SEC-1 y SEC-2 (ownership) — son criticas y trivialmente explotables por cualquier repartidor.</li>
+  <li><strong>Refresh strategy:</strong> evaluar <code>swipe-to-refresh</code> o <code>pull-to-refresh</code> en la lista de Home y Dashboard para complementar el flujo de recovery via card de error.</li>
+  <li><strong>Observabilidad:</strong> incluir <code>logger.info</code> con <code>orderId</code>, <code>email</code>, <code>statusFrom</code>, <code>statusTo</code> en cada updateStatus para trazabilidad operativa.</li>
+  <li><strong>Documentacion viva:</strong> mantener este reporte como referencia y actualizarlo cuando cambien los flujos (hooks de pre-merge si toca <code>DeliveryHomeScreen</code> o <code>DeliveryDashboardScreen</code>).</li>
+</ul>
+
+<hr>
+
+<p style="text-align:center;font-size:9px;color:#777;margin-top:20px;">
+  Reporte generado por el Pipeline V2 — Android Dev Agent — Intrale Platform — v2.0 — 2026-04-27<br>
+  Issue <a href="https://github.com/intrale/platform/issues/1123">#1123</a> — qa(compliance): Reporte PO+QA v2.0 — Home y dashboard del repartidor
+</p>
+
+</body>
+</html>
