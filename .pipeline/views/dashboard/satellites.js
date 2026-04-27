@@ -783,8 +783,8 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
 function renderCostos() {
     const body = `
 <section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📊</span>Cuota semanal · Plan Max</h2>
-  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Anthropic no expone API; estimación basada en duration_ms del activity-log. Auto-ajuste pasivo: el límite sube si el observado lo supera sin bloqueos.</p>
+  <h2 class="in-section-title"><span class="in-section-title-icon">📊</span>Cuota Plan Max · sesión 5h + semanal (reset domingo 21:00 ART)</h2>
+  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Anthropic no expone API. Estimación basada en duration_ms del activity-log (solo agentes Claude del pipeline; tu uso interactivo en claude.ai cuenta aparte). Auto-ajuste pasivo del límite semanal cuando el observado lo supera sin bloqueos.</p>
   <div id="quota-grid" class="kp-grid"></div>
   <div id="quota-bar-wrap" style="margin-top:14px"></div>
   <div id="quota-meta" style="margin-top:10px;font-size:12px;color:var(--in-fg-dim)"></div>
@@ -823,12 +823,18 @@ async function tickQuota(){
         if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de cuota: '+(d && d.error || 'activity-log vacío')+'</div>';
         return;
     }
+    const sess = d.session || { hoursUsed: 0, pct: 0, hoursRemaining: 5, status: 'ok' };
+    const sessCls = sess.status==='critical'?'kp-bad':sess.status==='warning'?'kp-warn':sess.status==='normal'?'':'kp-ok';
+    const weekCls = d.status==='critical'?'kp-bad':d.status==='warning'?'kp-warn':d.status==='normal'?'':'kp-ok';
+    const resetTxt = d.daysToReset != null ? 'Reset en '+d.daysToReset.toFixed(1)+' días' : '';
     const tiles = [
-        { label: 'Horas usadas · 7d', value: d.hoursUsed7d.toFixed(1)+'h', sub: d.sessionsCount7d+' sesiones', cls: '' },
-        { label: 'Cuota consumida', value: d.pct.toFixed(1)+'%', sub: 'de '+d.effectiveLimitHours+'h estimadas', cls: d.status==='critical'?'kp-bad':d.status==='warning'?'kp-warn':'kp-ok' },
-        { label: 'Horas restantes', value: d.hoursRemaining+'h', sub: 'antes del límite estimado', cls: '' },
-        { label: 'Burn rate', value: d.burnRatePerDay+'h/d', sub: 'últimas 24h o promedio 7d', cls: '' },
-        { label: 'Días al límite', value: d.daysToLimit != null ? d.daysToLimit+'d' : '∞', sub: 'al ritmo actual', cls: d.daysToLimit != null && d.daysToLimit < 1 ? 'kp-bad' : d.daysToLimit != null && d.daysToLimit < 2 ? 'kp-warn' : '' },
+        { label: 'Sesión actual · 5h', value: sess.pct.toFixed(1)+'%', sub: sess.hoursUsed.toFixed(2)+'h / 5h', cls: sessCls },
+        { label: 'Sesión · restante', value: sess.hoursRemaining.toFixed(2)+'h', sub: 'reset rolling 5h', cls: '' },
+        { label: 'Semanal · usada', value: d.hoursUsed7d.toFixed(1)+'h', sub: d.sessionsCount7d+' sesiones desde dom 21h', cls: '' },
+        { label: 'Semanal · cuota', value: d.pct.toFixed(1)+'%', sub: 'de '+d.effectiveLimitHours+'h estimadas', cls: weekCls },
+        { label: 'Horas restantes', value: d.hoursRemaining+'h', sub: resetTxt, cls: '' },
+        { label: 'Burn rate', value: d.burnRatePerDay+'h/d', sub: 'últimas 24h o promedio semana', cls: '' },
+        { label: 'Días al límite', value: d.daysToLimit != null ? d.daysToLimit.toFixed(1)+'d' : '∞', sub: 'al ritmo actual', cls: d.daysToLimit != null && d.daysToLimit < 1 ? 'kp-bad' : d.daysToLimit != null && d.daysToLimit < 2 ? 'kp-warn' : '' },
         { label: 'Auto-ajustes', value: d.adjustmentsCount, sub: 'observed: '+d.observedMaxHours+'h', cls: '' },
     ];
     let html = '';
@@ -840,11 +846,15 @@ async function tickQuota(){
         if(barWrap.innerHTML !== barHtml) barWrap.innerHTML = barHtml;
     }
     if(meta){
+        const fmtART = (iso) => new Date(iso).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
         const lines = [];
-        if(d.adjustmentsCount > 0) lines.push('🔧 Límite auto-ajustado '+d.adjustmentsCount+' vez/veces (config inicial: '+d.configLimitHours+'h, actual: '+d.effectiveLimitHours+'h).');
-        if(d.daysToLimit != null && d.daysToLimit < 2) lines.push('⚠ Proyección: a este ritmo llegás al límite en ~'+d.daysToLimit+' días.');
-        else if(d.daysToLimit == null || d.daysToLimit > 30) lines.push('Burn rate bajo: la cuota dura más de un mes al ritmo actual.');
-        if(d.observedMaxAt) lines.push('Pico observado: '+d.observedMaxHours+'h (' + new Date(d.observedMaxAt).toLocaleString('es-AR') + ')');
+        if(d.lastResetAt && d.nextResetAt){
+            lines.push('🗓 Semana actual: ' + fmtART(d.lastResetAt) + ' → ' + fmtART(d.nextResetAt));
+        }
+        if(d.adjustmentsCount > 0) lines.push('🔧 Límite auto-ajustado '+d.adjustmentsCount+' vez/veces (config: '+d.configLimitHours+'h → actual: '+d.effectiveLimitHours+'h)');
+        if(d.daysToLimit != null && d.daysToLimit < 2) lines.push('⚠ Llegás al límite en ~'+d.daysToLimit.toFixed(1)+' días al ritmo actual');
+        else if(d.daysToLimit == null || d.daysToLimit > (d.daysToReset || 7)) lines.push('✓ Cuota dura hasta el próximo reset al ritmo actual');
+        if(d.observedMaxAt) lines.push('Pico observado en la semana: '+d.observedMaxHours+'h (' + fmtART(d.observedMaxAt) + ')');
         const txt = lines.join(' · ');
         if(meta.textContent !== txt) meta.textContent = txt;
     }
