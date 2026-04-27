@@ -26,7 +26,7 @@ class ZonesPaletteTest {
     }
 
     @Test
-    fun `colorAt 11 reusa color 0 (modulo 10)`() {
+    fun `colorAt 11 reusa color 0 modulo 10`() {
         val zero = ZonesPalette.colorAt(0)
         val ten = ZonesPalette.colorAt(10)
         val twenty = ZonesPalette.colorAt(20)
@@ -54,7 +54,7 @@ class ZonesPaletteTest {
     }
 
     @Test
-    fun `fillFor aplica alpha 0_35 (CA-4-L)`() {
+    fun `fillFor aplica alpha 0_35 CA-4-L`() {
         val color = ZonesPalette.colorAt(0)
         val fillLight = color.fillFor(isDark = false)
         val fillDark = color.fillFor(isDark = true)
@@ -106,13 +106,13 @@ class ZonesPaletteTest {
     }
 
     @Test
-    fun `relativeLuminance de blanco es ~1_0`() {
+    fun `relativeLuminance de blanco es cercana a 1_0`() {
         val l = white.relativeLuminance()
         assertTrue(l > 0.99 && l <= 1.0, "luminance(white)=$l fuera de rango")
     }
 
     @Test
-    fun `relativeLuminance de negro es ~0_0`() {
+    fun `relativeLuminance de negro es cercana a 0_0`() {
         val l = Color(0xFF000000).relativeLuminance()
         assertTrue(l < 0.01, "luminance(black)=$l fuera de rango")
     }

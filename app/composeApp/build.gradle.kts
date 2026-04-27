@@ -408,6 +408,33 @@ android {
     }
     lint {
         disable += "NullSafeMutableLiveData"
+        // IconDetector usa BufferedImage.createGraphics() y requiere inicializar
+        // java.awt.GraphicsEnvironment$LocalGE. En entornos sin AWT nativo
+        // (workers de pipeline en Windows/headless) tira NoClassDefFoundError y
+        // hace fallar el task `lintAnalyzeBusinessDebug` aunque los íconos sean
+        // válidos. Los íconos por flavor (#2812) ya están validados por
+        // `syncBrandingIcons`, así que estas comprobaciones de lint son
+        // redundantes en este proyecto. Deshabilitamos siguiendo la sugerencia
+        // del propio crash report del Android Lint.
+        disable += listOf(
+            "IconDuplicatesConfig",
+            "IconDuplicates",
+            "GifUsage",
+            "IconColors",
+            "IconDensities",
+            "IconDipSize",
+            "IconExpectedSize",
+            "IconExtension",
+            "IconLauncherShape",
+            "IconLocation",
+            "IconMissingDensityFolder",
+            "IconMixedNinePatch",
+            "IconNoDpi",
+            "IconXmlAndPng",
+            "NotificationIconCompatibility",
+            "ConvertToWebp",
+            "WebpUnsupported"
+        )
     }
     testOptions {
         unitTests.isReturnDefaultValues = true
@@ -604,6 +631,21 @@ tasks.named("check").configure {
 // Desactivar koverVerify genérico — falla con ConcurrentModificationException por los Android
 // product flavors. Se usa koverVerifyJvm (desktop) que cubre commonTest.
 tasks.matching { it.name == "koverVerify" }.configureEach {
+    enabled = false
+}
+
+// Desactivar tareas de link/sync del executable de test Wasm — el `wasmJsBrowserTest`
+// ya está deshabilitado más arriba (`testTask { enabled = false }`) porque requiere
+// Chrome headless. Sin embargo, las tareas de link/sync del executable se siguen
+// ejecutando como dependencias del check y son extremadamente costosas en RAM
+// (>6GB), causando OOM en workers del pipeline. Las desactivamos porque no aportan
+// señal: nadie ejecuta los tests Wasm en el flujo. El compile a klib
+// (compileTestKotlinWasmJs) sigue corriendo y eso valida que el código Wasm
+// compila correctamente.
+tasks.matching {
+    it.name == "compileTestDevelopmentExecutableKotlinWasmJs" ||
+    it.name == "wasmJsTestTestDevelopmentExecutableCompileSync"
+}.configureEach {
     enabled = false
 }
 
