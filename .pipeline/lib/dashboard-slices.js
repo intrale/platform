@@ -176,6 +176,35 @@ function headerSlice(state, ctx) {
 let _prsCache = { value: null, at: 0 };
 const PRS_CACHE_TTL_MS = 5 * 60 * 1000;
 
+// Snapshot del aggregator V3 — TTL más agresivo (10 min) porque generar el
+// snapshot es lento (escanea activity-log.jsonl entero) y los tokens no
+// cambian en milisegundos. Refresh en background sin bloquear la response.
+let _snapshotRefreshing = false;
+let _snapshotLastRefresh = 0;
+const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
+
+function maybeRefreshSnapshot(ROOT, snapshotPath) {
+    if (_snapshotRefreshing) return;
+    let mtimeMs = 0;
+    try { mtimeMs = require('fs').statSync(snapshotPath).mtimeMs; } catch {}
+    const ageMs = Date.now() - mtimeMs;
+    if (ageMs < SNAPSHOT_TTL_MS && Date.now() - _snapshotLastRefresh < SNAPSHOT_TTL_MS) return;
+    _snapshotRefreshing = true;
+    _snapshotLastRefresh = Date.now();
+    // Lanza aggregator --once en background (fire-and-forget). Cuando termine,
+    // el siguiente poll de /api/dash/kpis va a leer el snapshot fresh.
+    try {
+        const { spawn } = require('child_process');
+        const aggregatorPath = path.join(__dirname, '..', 'metrics', 'aggregator.js');
+        const child = spawn(process.execPath, [aggregatorPath, '--once'], {
+            cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true,
+        });
+        child.unref();
+        child.on('exit', () => { _snapshotRefreshing = false; });
+        child.on('error', () => { _snapshotRefreshing = false; });
+    } catch { _snapshotRefreshing = false; }
+}
+
 function kpisSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
@@ -198,9 +227,16 @@ function kpisSlice(state, ctx) {
     let snapshot = null;
     try {
         const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
+        // Lanzar refresh background si el snapshot es viejo (>10 min). No
+        // bloquea la response actual; el siguiente poll va a leer fresh.
+        maybeRefreshSnapshot(ROOT, snapPath);
         snapshot = safeReadJson(snapPath, null);
         if (snapshot && snapshot.totals) {
-            tokens24h = snapshot.totals.tokensInput + snapshot.totals.tokensOutput || null;
+            // El snapshot del aggregator usa snake_case (tokens_in, tokens_out).
+            // Suma puede ser 0 si el log no tiene eventos con tokens contables;
+            // en ese caso retornamos null para que la UI muestre "—".
+            const sum = (snapshot.totals.tokens_in || 0) + (snapshot.totals.tokens_out || 0);
+            tokens24h = sum > 0 ? sum : null;
         }
     } catch { /* ignore */ }
 
@@ -210,7 +246,12 @@ function kpisSlice(state, ctx) {
         for (const data of Object.values(state.issueMatrix || {})) {
             for (const entries of Object.values(data.fases || {})) {
                 for (const e of entries) {
-                    if ((e.estado === 'procesado' || e.estado === 'listo') && e.durationMs && e.durationMs > 0 && e.durationMs < 6 * 3600000) {
+                    // Filtros: estado terminal + duración entre 1 segundo y 24 horas.
+                    // < 1s descarta ruido del FS (timestamps casi iguales).
+                    // > 24h descarta archivos huérfanos antiguos que distorsionan la mediana.
+                    if ((e.estado === 'procesado' || e.estado === 'listo')
+                        && e.durationMs >= 1000
+                        && e.durationMs < 24 * 3600000) {
                         allDurations.push(e.durationMs);
                     }
                 }

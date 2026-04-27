@@ -371,7 +371,16 @@ function getPipelineState() {
         if (stat) {
           entry.startedAt = stat.ctimeMs;
           entry.updatedAt = stat.mtimeMs;
-          entry.durationMs = (estado === 'trabajando') ? Date.now() - stat.ctimeMs : stat.mtimeMs - stat.ctimeMs;
+          // En Windows, `fs.rename` (move entre carpetas del pipeline) actualiza
+          // ctime al timestamp del move, mientras que mtime queda con el último
+          // write del agente. Resultado: para archivos en `procesado/` con
+          // varios moves, mtime < ctime y la resta da negativo. Tomamos el
+          // valor absoluto y usamos `birthtimeMs` (origen real del archivo)
+          // si está disponible y resulta en un span más coherente.
+          const tStart = Math.min(stat.ctimeMs, stat.birthtimeMs || stat.ctimeMs);
+          entry.durationMs = (estado === 'trabajando')
+            ? Math.max(0, Date.now() - tStart)
+            : Math.abs(stat.mtimeMs - tStart);
           entry.ageMin = Math.round((Date.now() - stat.mtimeMs) / 60000);
         }
 
