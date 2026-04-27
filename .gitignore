@@ -111,6 +111,10 @@ scripts/planner-plan.json
 .pipeline/logs/
 .pipeline/*.pid
 .pipeline/.paused
+.pipeline/.partial-pause.json
+.pipeline/blocked-issues.json
+.pipeline/cooldowns.json
+.pipeline/last-restart.json
 .pipeline/listener-offset.json
 .pipeline/commander-history.jsonl
 .pipeline/node_modules/
