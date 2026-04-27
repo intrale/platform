@@ -287,6 +287,75 @@ function homeStyles() {
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
+
+/* Mode pill — clickeable con dropdown */
+.in-pill[data-mode-toggle] { cursor: pointer; user-select: none; position: relative; }
+.in-pill[data-mode-toggle]:hover { filter: brightness(1.15); }
+.in-pill[data-mode-toggle]::after { content: " ▾"; opacity: 0.6; font-size: 10px; }
+
+.in-mode-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 100;
+    background: var(--in-bg-2);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius-sm);
+    box-shadow: var(--in-shadow);
+    min-width: 220px;
+    padding: 6px;
+    display: none;
+}
+.in-mode-menu.open { display: block; }
+.in-mode-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--in-fg);
+    transition: background 0.12s;
+    border: none;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+}
+.in-mode-menu-item:hover { background: var(--in-bg-3); }
+.in-mode-menu-item.active { background: var(--in-brand-soft); color: var(--in-fg); font-weight: 600; }
+.in-mode-menu-item-icon { width: 18px; text-align: center; }
+.in-mode-menu-divider { height: 1px; background: var(--in-border); margin: 4px 0; }
+.in-mode-menu-input {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px;
+}
+.in-mode-menu-input label { font-size: 11px; color: var(--in-fg-dim); }
+.in-mode-menu-input input {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--in-bg);
+    color: var(--in-fg);
+    border: 1px solid var(--in-border);
+    border-radius: 4px;
+    font-family: var(--in-mono);
+    font-size: 12px;
+    box-sizing: border-box;
+}
+.in-mode-menu-input input:focus { outline: none; border-color: var(--in-accent); }
+.in-mode-menu-input button {
+    padding: 6px 10px;
+    background: var(--in-warn-soft);
+    color: var(--in-warn);
+    border: 1px solid var(--in-warn);
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 500;
+}
+.in-mode-menu-input button:hover { background: var(--in-warn); color: var(--in-bg); }
 `;
 }
 
@@ -360,10 +429,30 @@ async function tickHeader(){
     const modePill = document.getElementById('hdr-mode');
     if(modePill){
         modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
-        if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+d.allowedIssues.length+' issues'; }
-        else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
+        // El menú vive como child de la pill — preservarlo entre updates de texto.
+        const menu = document.getElementById('hdr-mode-menu');
+        let label = '🟢 Running';
+        if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); label = '⏸ Pausado'; }
+        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); label = '⏸ Parcial · '+d.allowedIssues.length+' issues'; }
+        else { modePill.classList.add('in-mode-running'); }
+        // Buscar/crear el span de label que NO afecte el menú children.
+        let labelSpan = modePill.querySelector('.in-mode-label');
+        if(!labelSpan){
+            labelSpan = document.createElement('span');
+            labelSpan.className = 'in-mode-label';
+            modePill.insertBefore(labelSpan, modePill.firstChild);
+        }
+        if(labelSpan.textContent !== label) labelSpan.textContent = label;
+        // Marcar item activo en el menú
+        if(menu){
+            menu.querySelectorAll('.in-mode-menu-item').forEach(it => {
+                const a = it.dataset.modeAction;
+                const isActive = (a === 'resume' && d.mode === 'running') || (a === 'pause' && d.mode === 'paused');
+                it.classList.toggle('active', isActive);
+            });
+        }
     }
+    bindModeToggle();
     const pulpoPill = document.getElementById('hdr-pulpo');
     if(pulpoPill){
         pulpoPill.classList.remove('in-pill-ok','in-pill-bad');
@@ -572,6 +661,54 @@ async function moveIssue(issue, direction){
     } catch(e){ showToast('Error: '+e.message, false); }
 }
 
+// ─── Mode toggle (running / paused / partial_pause) ───
+function bindModeToggle(){
+    const pill = document.getElementById('hdr-mode');
+    const menu = document.getElementById('hdr-mode-menu');
+    if(!pill || !menu || pill.dataset._bound) return;
+    pill.dataset._bound = '1';
+    pill.addEventListener('click', (ev) => {
+        const target = ev.target;
+        // Click en input/button del menú: dejar burbujear al handler propio
+        if(target.closest('.in-mode-menu-input') || target.closest('[data-mode-action]')) return;
+        ev.stopPropagation();
+        menu.classList.toggle('open');
+        menu.setAttribute('aria-hidden', menu.classList.contains('open') ? 'false' : 'true');
+    });
+    document.addEventListener('click', (ev) => {
+        if(!pill.contains(ev.target)) menu.classList.remove('open');
+    });
+    menu.querySelectorAll('[data-mode-action]').forEach(b => {
+        b.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const action = b.dataset.modeAction;
+            try {
+                if(action === 'resume'){
+                    const r = await fetch('/api/pause', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'resume'})});
+                    const j = await r.json();
+                    showToast(j.msg || 'Pipeline reanudado', j.ok);
+                } else if(action === 'pause'){
+                    if(!confirm('¿Pausar TODO el pipeline? Se detendrán todos los lanzamientos hasta que reanudes.')) return;
+                    const r = await fetch('/api/pause', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'pause'})});
+                    const j = await r.json();
+                    showToast(j.msg || 'Pipeline pausado', j.ok);
+                } else if(action === 'partial'){
+                    const input = document.getElementById('hdr-mode-partial-input');
+                    const raw = (input.value || '').trim();
+                    if(!raw){ showToast('Ingresá al menos 1 issue (ej: 2505, 2519)', false); return; }
+                    const issues = raw.split(/[,\s]+/).map(s => Number(s.replace(/^#/, '').trim())).filter(n => Number.isInteger(n) && n > 0);
+                    if(issues.length === 0){ showToast('Ningún número de issue válido en el input', false); return; }
+                    const r = await fetch('/api/pause-partial', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issues})});
+                    const j = await r.json();
+                    showToast(j.msg || 'Pausa parcial aplicada', j.ok);
+                }
+                menu.classList.remove('open');
+                setTimeout(() => tickHeader().catch(()=>{}), 300);
+            } catch(e){ showToast('Error: '+e.message, false); }
+        });
+    });
+}
+
 async function pauseIssueHome(issue){
     if(!confirm('¿Pausar #'+issue+'? Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes en /pipeline.')) return;
     try{
@@ -629,7 +766,22 @@ function renderHomeHTML() {
       </div>
     </div>
     <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode">…</span>
+      <span class="in-pill" id="hdr-mode" data-mode-toggle title="Click para cambiar el estado del pipeline">…
+        <div class="in-mode-menu" id="hdr-mode-menu" role="menu" aria-hidden="true">
+          <button class="in-mode-menu-item" data-mode-action="resume" type="button">
+            <span class="in-mode-menu-item-icon">🟢</span>Running (sin pausa)
+          </button>
+          <button class="in-mode-menu-item" data-mode-action="pause" type="button">
+            <span class="in-mode-menu-item-icon">⏸</span>Pausa total (todo en hold)
+          </button>
+          <div class="in-mode-menu-divider"></div>
+          <div class="in-mode-menu-input" data-mode-action-block="partial">
+            <label>Pausa parcial · solo procesar issues:</label>
+            <input type="text" id="hdr-mode-partial-input" placeholder="ej: 2505, 2519, 2520" inputmode="numeric">
+            <button data-mode-action="partial" type="button">⏸ Aplicar pausa parcial</button>
+          </div>
+        </div>
+      </span>
       <span class="in-pill" id="hdr-pulpo">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
