@@ -491,28 +491,32 @@ async function tickQuota(){
     if(!d) return;
     const card = document.getElementById('kpi-quota');
     if(!card) return;
-    // Mostrar el peor de los dos %: sesión y semanal — el que esté más
-    // saturado es el que va a cortar antes.
-    const weekPct = d.pct || 0;
-    const sessPct = (d.session && d.session.pct) || 0;
+    // Si hay calibración, usar realPct (factor × pipeline). Si no, pipeline raw.
+    const weekPct = d.realPct != null ? d.realPct : (d.pct || 0);
+    const sessPct = d.session && d.session.realPct != null ? d.session.realPct : ((d.session && d.session.pct) || 0);
+    const weekStatus = d.realPct != null ? d.realStatus : d.status;
+    const sessStatus = d.session && d.session.realPct != null ? d.session.realStatus : (d.session && d.session.status);
+    // Mostrar el peor de los dos — el que sature primero corta antes.
     const isSession = sessPct > weekPct;
     const dominantPct = isSession ? sessPct : weekPct;
-    const dominantStatus = isSession ? d.session.status : d.status;
+    const dominantStatus = isSession ? sessStatus : weekStatus;
+    const calibTag = d.realPct != null ? ' (real)' : '';
     setText('kpi-quota-value', dominantPct.toFixed(1)+'%');
     const used = isSession
-        ? (d.session.hoursUsed.toFixed(2)+'h / 5h sesión')
-        : (d.hoursUsed7d.toFixed(1)+'h / '+d.effectiveLimitHours+'h sem');
+        ? ('sesión 5h'+calibTag)
+        : ('semanal'+calibTag);
     setText('kpi-quota-sub', used);
     card.classList.remove('kpi-ok','kpi-warn','kpi-bad');
     if(dominantStatus === 'critical') card.classList.add('kpi-bad');
     else if(dominantStatus === 'warning') card.classList.add('kpi-warn');
     else if(dominantStatus === 'normal') card.classList.add('kpi-ok');
-    // Tooltip con ambas ventanas + reset
+    // Tooltip con ambas ventanas + calibración + reset
     const reset = d.daysToReset != null ? 'Reset semanal en '+d.daysToReset.toFixed(1)+' días.' : '';
     const adj = d.adjustmentsCount > 0 ? ' '+d.adjustmentsCount+' auto-ajustes.' : '';
-    card.title = 'Sesión 5h: '+sessPct.toFixed(1)+'% ('+(d.session ? d.session.hoursUsed.toFixed(2) : 0)+'h)\\n' +
-        'Semanal: '+weekPct.toFixed(1)+'% ('+d.hoursUsed7d+'h / '+d.effectiveLimitHours+'h)\\n' +
-        reset + adj + ' Burn rate '+d.burnRatePerDay+'h/d.';
+    const realLine = d.realPct != null ? ' Calibrado vs claude.ai (factor ×'+(d.calibration?d.calibration.weekly_factor:'?')+' sem, ×'+(d.calibration?d.calibration.session_factor:'?')+' ses).' : '';
+    const sessLine = 'Sesión 5h: '+sessPct.toFixed(1)+'%'+(d.session && d.session.realPct != null ? ' (real, pipeline '+d.session.pct.toFixed(1)+'%)' : '');
+    const weekLine = 'Semanal: '+weekPct.toFixed(1)+'%'+(d.realPct != null ? ' (real, pipeline '+d.pct.toFixed(1)+'%)' : '');
+    card.title = sessLine+'\\n'+weekLine+'\\n'+reset+adj+realLine;
 }
 
 async function tickActive(){
