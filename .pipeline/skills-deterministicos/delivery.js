@@ -7,9 +7,33 @@ const trace = require('../lib/traceability');
 const git = require('./lib/git-ops');
 const codeowners = require('./lib/codeowners');
 
+// REPO_ROOT: ubicación central donde el pulpo escribe logs/heartbeats/markers.
+// Siempre apunta al checkout principal del monorepo (no al worktree del agente),
+// porque el pulpo lee/escribe esos archivos desde un único lugar.
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
 const LOG_DIR = path.join(REPO_ROOT, '.pipeline', 'logs');
+
+// WORK_DIR: directorio del worktree del agente — donde realmente vive la
+// rama `agent/<issue>-*` y los cambios a entregar. Para fase `entrega` el
+// pulpo nos spawnea con `cwd: <worktree>` (pulpo.js useExistingWorktree
+// incluye 'entrega' desde #2519/#2547) y desde #2523 rev-1 además puede
+// pasar PIPELINE_WORKTREE explícito.
+//
+// Sin esta separación, REPO_ROOT cae a `path.resolve(__dirname, '..', '..')`
+// = `<monorepo>/platform` (el checkout principal compartido entre worktrees
+// vía .git symlink) y todas las operaciones git corren contra la rama
+// arbitraria del ROOT (típicamente `fix/dashboard-pause-optimistic-ui` o
+// la sesión interactiva de Leo). Incidente real (#2523 rev-2, 2026-04-27
+// 03:12 UTC):
+//
+//   delivery del #2523 corrió con cwd=ROOT y leyó branch=
+//   `fix/dashboard-pause-optimistic-ui`, abortó con
+//   `Worktree incorrecto: ... esperaba "agent/2523-"`.
+//
+// Mismo patrón de bug que linter.js #2523 rev-1 (ver linter.js L39-48).
+const WORK_DIR = process.env.PIPELINE_WORKTREE || process.cwd() || REPO_ROOT;
+
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
 const QA_LABELS_OK = new Set(['qa:passed', 'qa:skipped']);
@@ -98,7 +122,7 @@ function updateMarker(trabajandoPath, payload) {
 }
 
 function fetchIssueTitle(issue) {
-    const r = git.runGh(['issue', 'view', String(issue), '--json', 'title,labels'], { cwd: REPO_ROOT });
+    const r = git.runGh(['issue', 'view', String(issue), '--json', 'title,labels'], { cwd: WORK_DIR });
     if (r.exit_code !== 0) return { title: null, labels: [] };
     try {
         const json = JSON.parse(r.stdout);
@@ -110,7 +134,7 @@ function fetchIssueTitle(issue) {
 }
 
 function findExistingPR(branch) {
-    const r = git.runGh(['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,url,labels'], { cwd: REPO_ROOT });
+    const r = git.runGh(['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,url,labels'], { cwd: WORK_DIR });
     if (r.exit_code !== 0) return null;
     try {
         const arr = JSON.parse(r.stdout);
@@ -124,7 +148,7 @@ function findExistingPR(branch) {
 }
 
 function getPRLabels(prNumber) {
-    const r = git.runGh(['pr', 'view', String(prNumber), '--json', 'labels'], { cwd: REPO_ROOT });
+    const r = git.runGh(['pr', 'view', String(prNumber), '--json', 'labels'], { cwd: WORK_DIR });
     if (r.exit_code !== 0) return [];
     try {
         return (JSON.parse(r.stdout).labels || []).map((l) => l.name);
@@ -136,7 +160,7 @@ function hasQaGate(labels) {
 }
 
 function getPRChangedPaths(prNumber) {
-    const r = git.runGh(['pr', 'view', String(prNumber), '--json', 'files'], { cwd: REPO_ROOT });
+    const r = git.runGh(['pr', 'view', String(prNumber), '--json', 'files'], { cwd: WORK_DIR });
     if (r.exit_code !== 0) return [];
     try {
         return (JSON.parse(r.stdout).files || []).map((f) => f.path);
@@ -200,7 +224,7 @@ async function main() {
 
     try {
         // ── Verificación previa ────────────────────────────────────────
-        const branch = git.getCurrentBranch(REPO_ROOT);
+        const branch = git.getCurrentBranch(WORK_DIR);
         if (!branch || branch === 'main' || branch === 'develop' || branch === 'HEAD') {
             throw new Error(`Rama inválida para delivery: "${branch}"`);
         }
@@ -211,16 +235,20 @@ async function main() {
         // En ese caso committeamos/rebaseamos/pusheamos a la rama de OTRO agente.
         // Mejor abortar fast-fail con mensaje claro que rebotar después de hacer
         // commits a la rama equivocada y recién fallar en el rebase.
+        //
+        // #2523 (rev-2): error message reporta WORK_DIR (no REPO_ROOT) porque
+        // ese es el cwd real desde donde corrió git. REPO_ROOT siempre apunta
+        // al checkout principal, lo cual confundía el diagnóstico.
         const expectedBranchPrefix = `agent/${issue}-`;
         if (!branch.startsWith(expectedBranchPrefix)) {
             throw new Error(
-                `Worktree incorrecto: cwd=${REPO_ROOT} está en rama "${branch}" pero ` +
+                `Worktree incorrecto: cwd=${WORK_DIR} está en rama "${branch}" pero ` +
                 `delivery del #${issue} esperaba una rama que empiece con "${expectedBranchPrefix}". ` +
                 `Probable causa: pulpo no resolvió el worktree del issue y delivery corrió en ROOT. ` +
                 `Verificar pulpo.js useExistingWorktree incluye 'entrega'.`
             );
         }
-        logAppend(`[delivery] branch=${branch}`);
+        logAppend(`[delivery] cwd=${WORK_DIR} branch=${branch}`);
 
         const marker = readMarker(args.trabajando);
         const issueMeta = fetchIssueTitle(issue);
@@ -229,7 +257,7 @@ async function main() {
 
         // ── Fase 1: stage + commit (si hay cambios sin commitear) ──────
         let t = phaseStart();
-        const changed = git.getChangedFiles(REPO_ROOT);
+        const changed = git.getChangedFiles(WORK_DIR);
         const hasChanges = changed.length > 0;
         logAppend(`[delivery] cambios detectados: ${changed.length}`);
 
@@ -254,14 +282,14 @@ async function main() {
                 .filter((p) => !SAFE_IGNORE.test(p));
 
             if (stagePaths.length) {
-                const addRes = git.runGit(['add', '--', ...stagePaths], { cwd: REPO_ROOT });
+                const addRes = git.runGit(['add', '--', ...stagePaths], { cwd: WORK_DIR });
                 if (addRes.exit_code !== 0) {
                     throw new Error(`git add falló: ${addRes.stderr || addRes.stdout}`);
                 }
             }
 
             // Verificamos si quedó algo staged (puede ser que todo lo cambiado fuera ignored)
-            const stagedCheck = git.runGit(['diff', '--cached', '--name-only'], { cwd: REPO_ROOT });
+            const stagedCheck = git.runGit(['diff', '--cached', '--name-only'], { cwd: WORK_DIR });
             if (stagedCheck.stdout.trim()) {
                 const commitMsg = git.buildCommitMessage({
                     issue, title: issueTitle,
@@ -270,7 +298,7 @@ async function main() {
                     files: changed,
                 });
                 const msgFile = tmpFile('commit-msg', commitMsg);
-                const commitRes = git.runGit(['commit', '-F', msgFile], { cwd: REPO_ROOT });
+                const commitRes = git.runGit(['commit', '-F', msgFile], { cwd: WORK_DIR });
                 try { fs.unlinkSync(msgFile); } catch {}
                 if (commitRes.exit_code !== 0) {
                     throw new Error(`git commit falló: ${commitRes.stderr || commitRes.stdout}`);
@@ -290,32 +318,50 @@ async function main() {
         // los reescribe. Sin --autostash el rebase muere con "You have
         // unstaged changes" aunque sean estado transitorio.
         t = phaseStart();
-        const fetchRes = git.fetchOrigin(REPO_ROOT);
+        const fetchRes = git.fetchOrigin(WORK_DIR);
         if (fetchRes.exit_code !== 0) {
             logAppend(`[delivery] git fetch warning: ${fetchRes.stderr.slice(0, 200)}`);
         }
-        const rebaseRes = git.rebaseOnto(REPO_ROOT, 'origin/main');
+        const rebaseRes = git.rebaseOnto(WORK_DIR, 'origin/main');
         if (rebaseRes.exit_code !== 0) {
             // Conflicto irresoluble — abortar y rebote
-            git.rebaseAbort(REPO_ROOT);
+            git.rebaseAbort(WORK_DIR);
             throw new Error(`Rebase conflict: ${rebaseRes.stderr.slice(0, 300) || rebaseRes.stdout.slice(0, 300)}`);
         }
         logAppend(`[delivery] rebase OK`);
         phaseEnd('rebase', t);
 
         // ── Fase 3: push ──────────────────────────────────────────────
+        // #2523 (rev-3): pushAndVerify trata el caso "spawnSync devuelve error
+        // pero el remote ya tiene el SHA" como éxito. Sin esto, pushes lentos
+        // (~90-120s) en redes pesadas hacían rebotar al agente al circuit
+        // breaker aunque el push hubiese completado en el remote.
         t = phaseStart();
-        const pushRes = git.pushBranch(REPO_ROOT, branch);
+        const pushRes = git.pushAndVerify(WORK_DIR, branch);
         if (pushRes.exit_code !== 0) {
-            throw new Error(`git push falló: ${pushRes.stderr.slice(0, 300)}`);
+            // Fallo real: remote no tiene nuestro SHA. Diagnóstico rico para
+            // que el rebote sea accionable (signal, error, wall_ms, stderr).
+            const diag = [
+                `signal=${pushRes.signal || 'none'}`,
+                `error=${pushRes.error || 'none'}`,
+                `wall_ms=${pushRes.wall_ms}`,
+                `local_sha=${(pushRes.local_sha || '').slice(0, 7) || 'n/a'}`,
+                `remote_sha=${(pushRes.remote_sha || '').slice(0, 7) || 'n/a'}`,
+            ].join(' ');
+            const stderrMsg = (pushRes.stderr || '').slice(0, 200);
+            throw new Error(`git push falló: ${stderrMsg || '(stderr vacío)'} [${diag}]`);
         }
-        logAppend(`[delivery] push OK`);
+        if (pushRes.recovered) {
+            logAppend(`[delivery] push recovered: ${pushRes.recovered_reason}`);
+        } else {
+            logAppend(`[delivery] push OK`);
+        }
         phaseEnd('push', t);
 
         // ── Fase 4: PR (crear o reutilizar) ───────────────────────────
         t = phaseStart();
         let pr = findExistingPR(branch);
-        const stats = git.getDiffStats(REPO_ROOT, 'origin/main');
+        const stats = git.getDiffStats(WORK_DIR, 'origin/main');
 
         if (!pr) {
             // Determinar label QA: si el issue ya viene de un pipeline con QA, hereda;
@@ -346,7 +392,7 @@ async function main() {
                 '--assignee', 'leitolarreta',
                 '--label', qaLabel,
             ];
-            const createRes = git.runGh(createArgs, { cwd: REPO_ROOT, timeoutMs: 90 * 1000 });
+            const createRes = git.runGh(createArgs, { cwd: WORK_DIR, timeoutMs: 90 * 1000 });
             try { fs.unlinkSync(bodyFile); } catch {}
             if (createRes.exit_code !== 0) {
                 throw new Error(`gh pr create falló: ${createRes.stderr.slice(0, 300) || createRes.stdout.slice(0, 300)}`);
@@ -375,7 +421,7 @@ async function main() {
         // En su lugar: aplicar label `needs-human` al issue + comentar el PR
         // explicitando los owners requeridos. Esto evita merges silenciosos
         // sobre `.pipeline/` o `.github/` que requieren review manual.
-        const ownerRules = codeowners.loadCodeowners(REPO_ROOT);
+        const ownerRules = codeowners.loadCodeowners(WORK_DIR);
         const changedForOwners = getPRChangedPaths(prNumber);
         const humanOwners = ownerRules.length && changedForOwners.length
             ? codeowners.getHumanOwners(ownerRules, changedForOwners)
@@ -392,7 +438,7 @@ async function main() {
             motivo = `PR #${prNumber} creado pero sin label qa:passed/qa:skipped — merge bloqueado.`;
             logAppend(`[delivery] ${motivo}`);
         } else if (humanOwners.length) {
-            applyNeedsHumanLabel(issue, prNumber, humanOwners, REPO_ROOT);
+            applyNeedsHumanLabel(issue, prNumber, humanOwners, WORK_DIR);
             labelsApplied = Array.from(new Set([...labelsApplied, 'needs-human']));
             motivo = `PR #${prNumber} requiere review humano de ${humanOwners.join(' ')} — merge bloqueado, label needs-human aplicado.`;
             logAppend(`[delivery] ${motivo}`);
@@ -401,14 +447,14 @@ async function main() {
                 'pr', 'merge', String(prNumber),
                 '--squash', '--delete-branch',
                 '--subject', `${issueTitle} (#${prNumber})`,
-            ], { cwd: REPO_ROOT, timeoutMs: 3 * 60 * 1000 });
+            ], { cwd: WORK_DIR, timeoutMs: 3 * 60 * 1000 });
             if (mergeRes.exit_code !== 0) {
                 throw new Error(`gh pr merge falló: ${mergeRes.stderr.slice(0, 300) || mergeRes.stdout.slice(0, 300)}`);
             }
             // Resolver SHA del merge commit (best-effort)
-            const fetchAfter = git.runGit(['fetch', 'origin', 'main'], { cwd: REPO_ROOT });
+            const fetchAfter = git.runGit(['fetch', 'origin', 'main'], { cwd: WORK_DIR });
             if (fetchAfter.exit_code === 0) {
-                const sha = git.runGit(['rev-parse', 'origin/main'], { cwd: REPO_ROOT });
+                const sha = git.runGit(['rev-parse', 'origin/main'], { cwd: WORK_DIR });
                 if (sha.exit_code === 0) mergeSha = sha.stdout.trim();
             }
             logAppend(`[delivery] PR #${prNumber} mergeado (squash) sha=${mergeSha || 'unknown'}`);
@@ -494,4 +540,6 @@ module.exports = {
     applyNeedsHumanLabel,
     hasQaGate,
     QA_LABELS_OK,
+    REPO_ROOT,
+    WORK_DIR,
 };

@@ -29,9 +29,24 @@ const trace = require('../lib/traceability');
 const git = require('./lib/git-ops');
 const checks = require('./lib/static-checks');
 
+// REPO_ROOT: ubicación central donde el pulpo escribe logs/heartbeats/markers.
+// Siempre apunta al checkout principal del monorepo (no al worktree del agente),
+// porque el pulpo lee/escribe esos archivos desde un único lugar.
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
 const LOG_DIR = path.join(REPO_ROOT, '.pipeline', 'logs');
+
+// WORK_DIR: directorio sobre el que se ejecutan las operaciones de git
+// (rama actual, log origin/main..HEAD, diff, archivos cambiados).
+// Para fases que LEEN código del worktree del agente (linteo, build, aprobacion,
+// entrega — ver pulpo.js #2526) el pulpo nos spawnea con `cwd: <worktree>` y
+// además puede pasar PIPELINE_WORKTREE explícito. Si caemos en REPO_ROOT,
+// estaríamos leyendo la rama arbitraria del checkout principal (incidente
+// #2523 rev-1: linteo de #2523 corrió contra `fix/dashboard-pause-optimistic-ui`
+// porque ROOT estaba en esa rama, y reportó `pr:no-commits` aunque el
+// worktree del #2523 tenía commits legítimos).
+const WORK_DIR = process.env.PIPELINE_WORKTREE || process.cwd() || REPO_ROOT;
+
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
 function parseArgs(argv) {
@@ -175,8 +190,8 @@ async function main() {
     let report = '';
 
     try {
-        result = runAllChecks({ issue, cwd: REPO_ROOT, base: args.base });
-        logAppend(`[linter] branch=${result.branch} commits=${result.commitCount} files=${result.fileCount}`);
+        result = runAllChecks({ issue, cwd: WORK_DIR, base: args.base });
+        logAppend(`[linter] cwd=${WORK_DIR} branch=${result.branch} commits=${result.commitCount} files=${result.fileCount}`);
         logAppend(`[linter] diff=${result.stats.files_changed}f +${result.stats.additions} -${result.stats.deletions}`);
 
         const agg = checks.aggregate(result.findings);
@@ -264,4 +279,6 @@ module.exports = {
     getDiffText,
     getChangedFilePaths,
     runAllChecks,
+    REPO_ROOT,
+    WORK_DIR,
 };

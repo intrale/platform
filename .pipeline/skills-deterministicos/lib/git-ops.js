@@ -1,6 +1,8 @@
 'use strict';
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -29,8 +31,82 @@ function runGit(args, opts = {}) {
     return runCmd('git', args, opts);
 }
 
+// #2523 (rev-4): resolver `gh.exe` a una ruta absoluta en Windows. La causa
+// del rebote del 2026-04-27 fue que el pulpo lanza delivery.js como hijo
+// directo (cmd.exe), heredando un PATH que NO incluye `C:\Workspaces\gh-cli\
+// bin`. La invocación `spawn('gh', ..., { shell: true })` deriva en cmd.exe
+// que falla con "'gh' no se reconoce como un comando interno o externo".
+//
+// La memoria `github-cli.md` documenta que el binario vive en
+// `/c/Workspaces/gh-cli/bin/gh.exe` y que en sesiones interactivas se
+// agrega al PATH manualmente vía `export PATH=...`. Como el pulpo arranca
+// como servicio (no necesariamente desde un shell con ese export), no
+// podemos confiar en el PATH heredado.
+//
+// Estrategia de resolución (orden):
+//   1. Si `process.env.PATH` ya tiene `gh.exe`, usar el primero encontrado.
+//   2. Si no, probar ubicaciones conocidas de instalación en Windows.
+//   3. Si nada matchea, caer a `'gh'` literal — falla visible con el mismo
+//      error original (no peor que antes).
+//
+// El resultado se cachea por proceso (la ubicación no cambia en runtime).
+// Para tests, exponemos `clearGhPathCache()` como helper interno.
+let _ghPathCache;
+function resolveGhPath() {
+    if (process.platform !== 'win32') return 'gh';
+    if (_ghPathCache !== undefined) return _ghPathCache;
+
+    const isFile = (p) => {
+        try {
+            return fs.statSync(p).isFile();
+        } catch { return false; }
+    };
+
+    // 1) Buscar en PATH (case-insensitive en Windows pero usamos los nombres tal cual)
+    const rawPath = process.env.PATH || process.env.Path || '';
+    const pathDirs = rawPath.split(path.delimiter).filter(Boolean);
+    for (const dir of pathDirs) {
+        const candidate = path.join(dir, 'gh.exe');
+        if (isFile(candidate)) {
+            _ghPathCache = candidate;
+            return candidate;
+        }
+    }
+
+    // 2) Ubicaciones conocidas de instalación en Windows
+    const known = [
+        'C:\\Workspaces\\gh-cli\\bin\\gh.exe',
+        'C:\\Program Files\\GitHub CLI\\gh.exe',
+        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'GitHub CLI', 'gh.exe'),
+        process.env.USERPROFILE && path.join(process.env.USERPROFILE, '.local', 'bin', 'gh.exe'),
+        process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'GitHub CLI', 'gh.exe'),
+    ].filter(Boolean);
+    for (const candidate of known) {
+        if (isFile(candidate)) {
+            _ghPathCache = candidate;
+            return candidate;
+        }
+    }
+
+    // 3) Fallback: dejar la falla visible con el comando bare
+    _ghPathCache = 'gh';
+    return 'gh';
+}
+
+// Para tests: limpiar la cache y forzar re-resolución.
+function clearGhPathCache() { _ghPathCache = undefined; }
+
 function runGh(args, opts = {}) {
-    return runCmd('gh', args, opts);
+    const ghPath = resolveGhPath();
+    // #2523 (rev-4): cuando resolvimos a una ruta absoluta, deshabilitamos
+    // shell:true. spawnSync con shell:true en Windows enruta vía cmd.exe que
+    // requiere quoting frágil para paths con espacios; con shell:false node
+    // usa CreateProcess directo con la ruta literal, sin quoting issues.
+    // Cuando ghPath==='gh' (fallback), respetamos el shell:true por defecto
+    // del runCmd para que cmd.exe pueda hacer la búsqueda en PATH.
+    const isAbs = ghPath !== 'gh';
+    const optsOut = isAbs ? { ...opts, shell: false } : opts;
+    return runCmd(ghPath, args, optsOut);
 }
 
 function getCurrentBranch(cwd) {
@@ -96,7 +172,80 @@ function rebaseAbort(cwd) {
 
 function pushBranch(cwd, branch) {
     // --force-with-lease es seguro tras rebase (no pisa cambios ajenos al upstream conocido)
-    return runGit(['push', '--force-with-lease', '-u', 'origin', branch], { cwd, timeoutMs: 2 * 60 * 1000 });
+    // #2523 (rev-3): timeout subido de 2min a 5min. La red de Leo tarda ~90-120s
+    // en pushes con muchos objects (p.ej. assets/mockups/narrativa-lili.mp3) y
+    // 2min era exactamente el borde — spawnSync mataba el proceso justo cuando
+    // git terminaba de transferir, devolviendo exit_code != 0 con stderr vacío
+    // aunque el push había completado en el remote.
+    return runGit(['push', '--force-with-lease', '-u', 'origin', branch], { cwd, timeoutMs: 5 * 60 * 1000 });
+}
+
+// #2523 (rev-3): helper para verificar el SHA actual de un ref en origin.
+// Usado por pushAndVerify para distinguir "push falló de verdad" (remote sin
+// nuestros commits) de "spawnSync timeout pero git terminó" (remote == HEAD).
+function getRemoteSha(cwd, ref) {
+    const r = runGit(['ls-remote', 'origin', ref], { cwd, timeoutMs: 30 * 1000 });
+    if (r.exit_code !== 0) return null;
+    const line = (r.stdout || '').trim().split(/\r?\n/)[0] || '';
+    const sha = line.split(/\s+/)[0] || '';
+    return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+}
+
+// #2523 (rev-3): decisión pura sobre el outcome del push.
+// Separada de pushAndVerify para poder testearse sin spawnear git real.
+//
+// Reglas:
+// - exit_code === 0  → éxito directo (push OK).
+// - exit_code !== 0 + localSha === remoteSha → push completó en el remote
+//   pero spawnSync devolvió error transitorio (timeout, signal SIGKILL,
+//   stderr vacío). Tratamos como éxito recuperado y logueamos por qué.
+// - exit_code !== 0 + SHAs no coinciden → fallo real. Propagamos diagnóstico
+//   rico (signal/error/sha local/sha remote) para que el rebote sea accionable.
+function decidePushOutcome({ pushRes, localSha, remoteSha, branch }) {
+    if (pushRes.exit_code === 0) {
+        return { ...pushRes, verified: true, recovered: false };
+    }
+    if (localSha && remoteSha && localSha === remoteSha) {
+        const shortLocal = localSha.slice(0, 7);
+        return {
+            ...pushRes,
+            exit_code: 0,
+            verified: true,
+            recovered: true,
+            recovered_reason:
+                `local SHA (${shortLocal}) == origin/${branch} SHA — ` +
+                `push completó pese a exit_code=${pushRes.exit_code} ` +
+                `signal=${pushRes.signal || 'none'}`,
+        };
+    }
+    return {
+        ...pushRes,
+        verified: false,
+        recovered: false,
+        local_sha: localSha,
+        remote_sha: remoteSha,
+    };
+}
+
+// #2523 (rev-3): pushBranch con verificación post-push contra origin.
+// Si pushBranch reporta exit_code != 0 pero el remote ya tiene el SHA local
+// (push completó pero spawnSync devolvió error transitorio: timeout, signal,
+// stderr vacío), tratamos como éxito y lo logueamos para diagnóstico.
+// Si el remote NO coincide → fallo real, propagamos el error original.
+//
+// Caso histórico (rebote-3 del #2523, 2026-04-27): push tardó 126s, spawnSync
+// timeout @ 120s, exit_code=1, stderr="", pero `git rev-parse origin/agent/
+// 2523-dashboard-visual-redesign` post-fetch == HEAD local. Esto rebotaba al
+// agente y lo llevaba al circuit breaker (rebote_numero=3) por un fallo
+// puramente cosmético del orquestador.
+function pushAndVerify(cwd, branch) {
+    const pushRes = pushBranch(cwd, branch);
+    if (pushRes.exit_code === 0) {
+        return decidePushOutcome({ pushRes, localSha: null, remoteSha: null, branch });
+    }
+    const localSha = getCurrentSha(cwd);
+    const remoteSha = getRemoteSha(cwd, `refs/heads/${branch}`);
+    return decidePushOutcome({ pushRes, localSha, remoteSha, branch });
 }
 
 // ── Builders de mensajes ──────────────────────────────────────────────
@@ -173,6 +322,8 @@ module.exports = {
     runCmd,
     runGit,
     runGh,
+    resolveGhPath,
+    clearGhPathCache,
     getCurrentBranch,
     getCurrentSha,
     getChangedFiles,
@@ -181,6 +332,9 @@ module.exports = {
     rebaseOnto,
     rebaseAbort,
     pushBranch,
+    pushAndVerify,
+    decidePushOutcome,
+    getRemoteSha,
     inferCommitType,
     inferScope,
     buildCommitMessage,
