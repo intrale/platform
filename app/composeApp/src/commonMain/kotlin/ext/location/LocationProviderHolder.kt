@@ -1,5 +1,7 @@
 package ext.location
 
+import kotlin.concurrent.Volatile
+
 /**
  * Holder global que permite a `MainActivity` registrar la implementación
  * Android-específica de [CommLocationProvider] (que requiere `Context`)
