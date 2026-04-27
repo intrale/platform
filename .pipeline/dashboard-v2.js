@@ -5462,8 +5462,10 @@ function nhDisableButtons(issueNum) {
 async function needsHumanBlock(issueNum) {
   const reason = prompt('Pausar #' + issueNum + ' — motivo (opcional, Enter para omitir):', '');
   if (reason === null) return;
-  const btn = document.querySelector('.lc-card[data-issue="' + issueNum + '"] .lc-pause-btn');
-  if (btn) btn.disabled = true;
+  // Feedback visual optimista: ocultar la card inmediatamente.
+  // El server puede tardar 3-5s; sin feedback el usuario clickea de nuevo.
+  const cards = document.querySelectorAll('.lc-card[data-issue="' + issueNum + '"]');
+  cards.forEach(c => { c.style.transition = 'opacity 0.2s'; c.style.opacity = '0.3'; c.style.pointerEvents = 'none'; });
   try {
     const r = await fetch('/api/needs-human/' + issueNum + '/block', {
       method: 'POST',
@@ -5471,9 +5473,16 @@ async function needsHumanBlock(issueNum) {
       body: JSON.stringify({ reason: reason || '', source: 'dashboard:issue-tracker' })
     });
     const j = await r.json();
-    if (j.ok) location.reload();
-    else { alert('Error pausando: ' + (j.msg || 'desconocido')); if (btn) btn.disabled = false; }
-  } catch (e) { alert('Error pausando: ' + e.message); if (btn) btn.disabled = false; }
+    if (j.ok) {
+      cards.forEach(c => { c.style.display = 'none'; });
+    } else {
+      alert('Error pausando: ' + (j.msg || 'desconocido'));
+      cards.forEach(c => { c.style.opacity = ''; c.style.pointerEvents = ''; });
+    }
+  } catch (e) {
+    alert('Error pausando: ' + e.message);
+    cards.forEach(c => { c.style.opacity = ''; c.style.pointerEvents = ''; });
+  }
 }
 async function needsHumanReactivate(issueNum) {
   if (!confirm('Reactivar #' + issueNum + '? Volverá a la cola del pipeline sin orientación adicional.')) return;
