@@ -1,0 +1,15 @@
+file 'dashboard-ok.png'
+duration 40
+file 'dashboard-warn.png'
+duration 40
+file 'dashboard-alert.png'
+duration 40
+file 'dashboard-dns-fail.png'
+duration 40
+file 'dashboard-stale.png'
+duration 40
+file 'dashboard-init.png'
+duration 40
+file 'dashboard-clear.png'
+duration 40
+file 'dashboard-clear.png'

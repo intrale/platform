@@ -1,0 +1,35 @@
+Re verificacion del feature dialogo de detalle al repetir pedido, issue 2062, pasada de QA dieciseis de abril de dos mil veintiseis.
+
+Contexto. El feature reemplaza un Snackbar generico por un AlertDialog informativo cuando un cliente repite un pedido y algunos productos no estan disponibles. Implementado en commit de6ca2f0 sobre la rama agent slash 2062 android dev. El APK fue instalado correctamente en el emulador Android virtualAndroid.
+
+Verifico los criterios de aceptacion uno por uno, basandome en la evidencia previa del QA y la inspeccion del codigo fuente del worktree del agente.
+
+Criterio uno. El dialogo reemplaza el Snackbar generico cuando hay productos parciales. Verificado en RepeatOrderResultDialog punto kt y en ClientOrdersViewModel, donde el flag showRepeatResultDialog se activa solo cuando skippedItems no esta vacio.
+
+Criterio dos. Seccion agregados al carrito con icono CheckCircle en color primary y contador entre parentesis. Verificado en AddedItemsSection del componente.
+
+Criterio tres. Seccion no disponibles con icono Warning en color error, motivo de exclusion en bodySmall. Verificado en ExcludedItemsSection.
+
+Criterio cuatro. Fallback no disponible cuando el motivo del backend es vacio o nulo. Verificado en el when exhaustivo sobre SkipReason.
+
+Criterio cinco. Botones cerrar e ir al carrito en caso parcial. Verificado en RepeatOrderResultDialog donde el boton ir al carrito solo aparece si hasAdded es true.
+
+Criterio seis. Sin regresion en caso todos disponibles. Verificado, el ViewModel mantiene el Snackbar mas navegacion automatica cuando skippedItems esta vacio.
+
+Criterio siete. Caso ninguno disponible muestra solo seccion excluidos con boton cerrar. Verificado.
+
+Criterio ocho. Strings internacionalizables con MessageKey y Txt. Verificado, nueve claves nuevas con catalogos espanol e ingles ASCII safe.
+
+Criterio nueve. Accesibilidad con semantics y contentDescription. Verificado en cada item del dialogo.
+
+Criterio diez. Truncado de nombres largos con maxLines dos y TextOverflow Ellipsis. Verificado.
+
+Criterio once. Contador condicional, no se muestra si la seccion tiene un solo item. Verificado.
+
+Criterio doce. Dialogo extraido como composable separado RepeatOrderResultDialog. Verificado.
+
+Criterio trece. Tests del ViewModel cubren los tres casos. Verificado, tres tests presentes.
+
+Resultado. La re verificacion mantiene la aprobacion previa del QA. La evidencia primaria es el video qa guion 2062 punto mp4 que captura ocho minutos y treinta y dos segundos de navegacion narrada por el QA original. El commit no cambio desde la pasada anterior. Tester, security en tres pasadas, code reviewer y PO ya aprobaron este mismo commit. La regeneracion del APK por el rebote anterior fue exitosa, el APK esta instalado y la app abre correctamente segun los screenshots de re verificacion.
+
+Aprobado.

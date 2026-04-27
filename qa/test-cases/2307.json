@@ -1,0 +1,156 @@
+[
+  {
+    "id": "TC-01",
+    "title": "**CA-3** Retry con backoff exponencial **2s → 4s → 8s** más jitter ±20% en er...",
+    "criteria": "**CA-3** Retry con backoff exponencial **2s → 4s → 8s** más jitter ±20% en errores de red (`ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND`, `ECONNRESET`). NO reintenta en 4xx/5xx.",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-02",
+    "title": "**CA-4** Retry solo idempotente por default (`GET`, `HEAD`, `OPTIONS`, `PUT`,...",
+    "criteria": "**CA-4** Retry solo idempotente por default (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`). En `POST` requiere `{ retryable: true }` explícito o header `Idempotency-Key`.",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "POST",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-03",
+    "title": "**CA-5** Cap de timeout total configurable (default 60s) vía `AbortController...",
+    "criteria": "**CA-5** Cap de timeout total configurable (default 60s) vía `AbortController` / `AbortSignal.timeout()`. Timeouts escalonados: DNS 3s, TCP 5s, TLS 5s, response headers 10s, body read 30s.",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-04",
+    "title": "**CA-6** Helper único `redactSensitive()` enmascara:",
+    "criteria": "**CA-6** Helper único `redactSensitive()` enmascara:",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-05",
+    "title": "Headers: `Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Amz-*`, `Pr...",
+    "criteria": "Headers: `Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Amz-*`, `Proxy-Authorization`",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-06",
+    "title": "JSON: `password`, `code2FA`, `otp`, `refresh_token`, `id_token`, `access_toke...",
+    "criteria": "JSON: `password`, `code2FA`, `otp`, `refresh_token`, `id_token`, `access_token`, `secret`, `apiKey`",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-07",
+    "title": "Emails: `us***@dom***.com`",
+    "criteria": "Emails: `us***@dom***.com`",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-08",
+    "title": "Stack traces: rutas absolutas truncadas",
+    "criteria": "Stack traces: rutas absolutas truncadas",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-09",
+    "title": "Marker visible en logs: `Authorization: [REDACTED]` (no vacío ni `***` sin co...",
+    "criteria": "Marker visible en logs: `Authorization: [REDACTED]` (no vacío ni `***` sin contexto)",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-10",
+    "title": "**CA-7** TLS estricto: `minVersion: 'TLSv1.2'`, NO `rejectUnauthorized: false...",
+    "criteria": "**CA-7** TLS estricto: `minVersion: 'TLSv1.2'`, NO `rejectUnauthorized: false`, NO `NODE_TLS_REJECT_UNAUTHORIZED=0`. Test unitario: cert inválido rompe el request.",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "POST",
+    "endpoint": "/intrale/status",
+    "expected_status": 401,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-11",
+    "title": "**CA-8** Whitelist de proxy en `.pipeline/config/proxy-allowlist.json` (array...",
+    "criteria": "**CA-8** Whitelist de proxy en `.pipeline/config/proxy-allowlist.json` (array de URLs exactas hostname+puerto, NO regex/wildcards). Auth embebida (`user:pass@host`) nunca se loguea.",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-12",
+    "title": "**CA-9** SSRF prevention: rechazar RFC 1918 (`10.*`, `172.16-31.*`, `192.168....",
+    "criteria": "**CA-9** SSRF prevention: rechazar RFC 1918 (`10.*`, `172.16-31.*`, `192.168.*`, `169.254.*`, `127.*`), `localhost`, `0.0.0.0`, `::1`. Resolver DNS manualmente y validar IP antes de conectar.",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-13",
+    "title": "**CA-11** Todos los cambios en `.pipeline/` o scripts auxiliares. NO tocar `b...",
+    "criteria": "**CA-11** Todos los cambios en `.pipeline/` o scripts auxiliares. NO tocar `backend/`, `users/`, `app/composeApp/`. `npm audit --audit-level=high` limpio.",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-14",
+    "title": "**CA-12** Checklist de seguridad del PR (ver #2304).",
+    "criteria": "**CA-12** Checklist de seguridad del PR (ver #2304).",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  }
+]

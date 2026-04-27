@@ -1,0 +1,17 @@
+=== QA #1924 - Anomaly endpoints probe - vie., 17 de abr. de 2026 01:32:07 a. m. ===
+
+### POST /qa-automation/business/anomalies/analyze (SecuredFunction sin JWT)
+HTTP 403
+{"message":"Missing Authentication Token"}---
+
+### GET /qa-automation/business/anomalies (SecuredFunction sin JWT)
+HTTP 403
+{"message":"Missing Authentication Token"}---
+
+### GET /qa-automation/business/anomalies/config (SecuredFunction sin JWT)
+HTTP 403
+{"message":"Missing Authentication Token"}---
+
+### GET /qa-automation/business/anomalies/history (SecuredFunction sin JWT)
+HTTP 403
+{"message":"Missing Authentication Token"}---

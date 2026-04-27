@@ -1,0 +1,86 @@
+# QA Estructural — Issue #2335
+# Split de #2329: Deteccion connectivity_restored + reencolado atomico + contador infra separado
+# Fecha: 2026-04-20
+# Modo: structural (infra/pipeline, no requiere emulador ni backend remoto)
+
+## Contexto
+Issue de infra pura (label `area:infra`). Implementa núcleo mecánico del
+feedback proactivo del pipeline en Node.js. NO toca UI ni endpoints de negocio,
+por lo tanto aplica QA estructural (lint/sintaxis/tests unitarios/validación
+de archivos) según CLAUDE.md ("Infra / hooks internos → qa:skipped/structural").
+
+## Branch / Commit
+- Branch: agent/2335-backend-dev
+- Commit: c806f852 (+ merge 07f33e73 de main)
+
+## Archivos entregados (4)
+1. .pipeline/connectivity-state.js          (nuevo, 465 líneas)
+2. .pipeline/test-connectivity-state.js     (nuevo, 272 líneas, 12 tests)
+3. .pipeline/pulpo.js                       (+111/-6)
+4. .gitignore                               (+6 líneas — ignora estado operativo)
+
+## Validaciones ejecutadas
+
+### 1) Sintaxis JS (node --check)
+- connectivity-state.js       → OK
+- test-connectivity-state.js  → OK
+- pulpo.js                    → OK
+
+### 2) Tests unitarios (node test-connectivity-state.js)
+12/12 pasaron, 0 fallaron:
+  T1  recordProbeResult detecta transicion FAIL→OK y emite connectivity_restored
+  T2  anti-spoofing: tocar archivos externos NO dispara evento
+  T3  blocked-by-infra.json respeta schema version 1
+  T4  addBlockedIssue idempotente + clearBlockedIssues purga
+  T5  reason normaliza valores invalidos a `unknown`
+  T6  rotateEventLogIfNeeded rota cuando supera cap
+  T7  dedup ventana 30s preserva ultimo evento + aumenta counter
+  T8  sanitizeForLog redacta tokens inline (OpenAI/GitHub/AWS/Telegram/Bearer)
+  T9  connectivity_restored incluye probe + requeued + blocked_duration_ms
+  T10 todos los timestamps son ISO8601 con Z (UTC)
+  T11 rebote_numero_infra se incrementa en contador separado
+  T12 cap duro MAX_REBOTES_INFRA=20 aplica
+
+### 3) Cobertura de criterios de aceptación
+
+CA1 — Evento recuperación + reencolado ✅
+  - Hook en pulpo.js::ejecutarPrecheck invoca recordProbeResult (line 170)
+  - Evento emitido SOLO desde código del pulpo tras probe HTTP real (anti-spoofing)
+  - Estado `blockedByInfra` persistido en `.pipeline/blocked-by-infra.json`
+    (archivo nuevo, NO reutiliza `blocked-issues.json` existente — distinta semántica)
+  - Reencolado atomico con write-tmp+fsync+rename
+
+CA9 — Contador rebote_numero_infra separado del circuit breaker ✅
+  - Rebotes infra NO cuentan contra MAX_REBOTES=3 (pulpo.js:1937-1971)
+  - Contador independiente con cap duro MAX_REBOTES_INFRA=20 (defense-in-depth)
+  - Clasificación rebote_tipo se re-determina en pulpo (mapPrecheckFailureToReason)
+    sobre señales internas — NO se confía en valor escrito por agente (defensa A01)
+  - Comentarios in-line en pulpo.js referenciando #2335
+
+CA11 — Sanitización de logs ✅
+  - sanitizeForLog helper redacta sk-* / ghp_* / AKIA* / bot tokens / Bearer
+  - Host, status code y duración se preservan para debugging (UX-4)
+  - connectivity-state.js usa sanitizeForLog en todos los `log()` del pulpo
+
+Schema/contrato para hijas 2 y 3 ✅
+  - blocked-by-infra.json schema v1 documentado y versionado
+  - Enum cerrado de reason: network_unreachable | backend_timeout | backend_5xx
+    | rate_limit | auth_failure | unknown (normalización T5)
+  - Escritura atómica (tmp + fsync + rename) validada en T3/T4
+  - Event log append-only en .pipeline/events/connectivity.jsonl
+  - Rotación 5MB → .1/.2/.3, retención 7 días, dedup 30s validados (T6/T7)
+
+### 4) Gitignore
+`.pipeline/connectivity-state.json`, `.pipeline/blocked-by-infra.json`,
+`.pipeline/events/` y `.pipeline/tmp/` correctamente ignorados
+(estado operativo, no se commitea).
+
+### 5) Verificaciones de seguridad
+- No loguea URLs completas ni Authorization headers (verificado T8)
+- No filtra contenido de .pipeline/config.yaml
+- Escritura atómica previene corrupción ante kill -9
+
+## Resultado
+APROBADO — Implementación cubre los 4 criterios de aceptación (CA1, CA9, CA11,
+schema/contrato) con tests unitarios ejecutables y en verde. Sintaxis JS válida.
+Módulo `connectivity-state.js` queda como contrato para hijas #2329-2 y #2329-3.

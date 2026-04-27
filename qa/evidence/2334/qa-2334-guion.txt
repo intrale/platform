@@ -1,0 +1,19 @@
+QA del issue 2334. Split del issue 2324 sobre integración del sanitizer en servicios externos, stream filter de logs del pipeline, y test end to end.
+
+Antes que nada un aclaratorio. Este issue está etiquetado como app cliente pero en realidad toca infraestructura del pipeline node. No hay cambios visibles en la interfaz, todo es backend del pipeline. Por eso esta revisión combina el smoke test de la aplicación Android, para confirmar que no hubo regresiones, con la ejecución directa de los tests node que validan los criterios reales de aceptación.
+
+Criterio uno. Integración en servicios externos. El sanitizer se llama antes de enviar mensajes a Telegram, antes de los comments de github issue, y antes de los uploads a google drive. Los tests de integración por servicio verifican exactamente esto, usando mocks de send message, gh issue comment y el uploader de drive. Resultado, los seis tests pasaron.
+
+Criterio dos. Nombres de archivo en drive. Si el filename contiene un secreto, en vez de redactar con placeholder se renombra a redacted guión hash sha256 truncado, manteniendo identificación. Validado en los tests de filename del módulo sanitize payload.
+
+Criterio tres. Stream filter sobre los logs del pipeline. El pulpo ahora pipea el stdout y stderr de los agentes por un transform stream que sanitiza antes de escribir a disco. Nunca se escribe el contenido crudo, ni siquiera transitoriamente. Los cinco tests de sanitize log stream cubren jwt partido entre chunks, múltiples fuentes simultáneas y creación automática del directorio.
+
+Criterio cuatro. Test end to end de integridad. El fixture inyecta secretos realistas vía process env, no hardcodeados, y luego corre grep recursivo buscando patrones AKIA, ghp guión, eyJ, AIza y uno barra barra cero. Cero coincidencias en logs y reports. Los placeholders marcados como REDACTED aparecen visibles en los outputs. Test pasa.
+
+Criterio cinco. Patch de console. Los servicios telegram, drive y github más el pulpo parchean console punto log, error, warn e info para interceptar writes al file descriptor heredado desde restart. Cinco tests de sanitize console pasaron, incluyendo uno que levanta un sub proceso real y verifica que el stdout no tiene leaks.
+
+Totales de tests node. Ochenta y siete tests pasados, cero fallados. Cincuenta y uno del sanitizer core heredado del issue 2333, más treinta y seis nuevos específicos de este split.
+
+Smoke test Android. Para confirmar que no hubo regresión en la aplicación cliente, navegué por la pantalla de onboarding con tres páginas, pulsé saltar, llegué a la pantalla de bienvenida y cliquié ya tengo cuenta. La pantalla de login apareció correctamente con los campos usuario y contraseña. Ingresé un mail y contraseña de prueba y pulsé ingresar. La app respondió sin crashear, todo el flujo de navegación está intacto. Sin regresiones.
+
+Resultado final. QA aprobado. Los cuatro criterios de aceptación del split 2334 están cubiertos por tests automatizados que pasan al cien por ciento. La integración con servicios externos está verificada contra mocks, el stream filter captura secretos antes de tocar disco, el test end to end con grep real retorna cero matches, y la aplicación Android cliente sigue funcionando sin regresiones.

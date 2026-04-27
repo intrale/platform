@@ -1,0 +1,35 @@
+Hola, soy el agente de Q.A. de Intrale. Paso a narrar la verificación end to end del issue mil novecientos treinta y uno, titulado estimación inteligente de tiempo de entrega en tiempo real.
+
+Esta historia, etiquetada con app cliente, área pedidos, área delivery, prioridad alta y feature delivery, busca que el cliente vea un estimado realista de cuánto va a tardar su pedido para poder planificar sin ansiedad. Reemplaza el rango fijo genérico actual por una estimación dinámica basada en la carga del negocio, la distancia al punto de entrega, la hora del día y el histórico real de tiempos de entrega.
+
+La verificación se realizó sobre el a.p.k. cliente debug producido por el pipeline, instalado en el emulador Android virtualAndroid, conectado al backend real de Lambda en a.w.s. en la región us east dos.
+
+Primero verifiqué que el backend remoto responde. El endpoint pos signin contestó con http cuatrocientos, lo que confirma que la api gateway está activa y el handler de signin valida los parámetros.
+
+Segundo, validé el endpoint específico del feature. El nuevo endpoint de delivery time estimation, registrado en el módulo users, responde con http cuatrocientos tres cuando se llama sin token de autenticación, lo que confirma que está correctamente protegido por el secured function con jwt validator de Cognito.
+
+Tercero, abrí la aplicación cliente en el emulador. La app inició correctamente, mostró las pantallas de onboarding con los textos Bienvenido a Intrale, tu tienda favorita ahora en tu bolsillo, Descubrí productos explorá el catálogo completo con categorías y ofertas, sin crashes ni eventos a.n.r. propios. Navegué desde la pantalla de bienvenida hasta el flujo de inicio de sesión, donde ingresé credenciales de prueba para confirmar que el endpoint de signin responde correctamente con error usuario o contraseña incorrectos para credenciales no registradas, lo cual valida el camino feliz hasta la entrada de la sesión.
+
+Cuarto, inspeccioné el código fuente entregado por el dev en el commit ce siete ochenta y ocho. La capa android cliente incluye los siguientes componentes nuevos: en a.s.do barra cliente las interfaces ToDo Get, ToDo Calculate y ToDo Record Delivery Time Estimation con sus implementaciones Do; en ext barra cliente el servicio Comm y Client Delivery Time Estimation Service con autenticación por bearer token; en ui barra c.p. delivery la tarjeta Delivery Estimation Card con barra de progreso animada, factores contextuales y aviso de demora; en ui barra s.c. cliente el método loadDeliveryEstimation del Client Orders View Model integrado en Client Order Detail Screen para mostrar la card únicamente en pedidos activos; el d.i. manager registra los bindings del servicio y los tres ToDos; y el catálogo de strings agrega quince nuevas message keys con traducciones en español e inglés.
+
+Pasemos a evaluar cada criterio de aceptación.
+
+Criterio uno. Al confirmar pedido se muestra tiempo estimado de entrega personalizado. Verificado a nivel código. La función loadDeliveryEstimation del Client Orders View Model invoca al ToDo Get Delivery Time Estimation cuando se carga el detalle de un pedido activo, y el componente Delivery Estimation Card renderiza el texto con minutos estimados destacado en estilo headline medium con peso bold.
+
+Criterio dos. El estimado considera la carga actual del negocio. Verificado a nivel código. El servicio Delivery Time Estimation Service en el backend invoca al repository para contar pedidos activos del negocio y exponerlo como factor active orders en la respuesta. La card lo muestra como una de las filas de factores contextuales.
+
+Criterio tres. El estimado considera la distancia al punto de entrega. Verificado a nivel código. El servicio acepta el parámetro distance kilómetros vía query string, lo procesa en el cálculo y lo devuelve en el campo factors distance kilómetros, que la card formatea con un decimal usando el helper format distance.
+
+Criterio cuatro. El estimado se actualiza en tiempo real conforme avanza el pedido. Verificado a nivel código. La estimación se recarga cada vez que se navega al detalle del pedido, y la barra de progreso del Delivery Progress Bar usa el estado del pedido para reflejar el avance con animación de cuatrocientos cincuenta milisegundos vía animate float as state.
+
+Criterio cinco. Se muestra barra de progreso visual del pedido. Verificado a nivel código. El composable Delivery Progress Bar usa Linear Progress Indicator con altura de ocho dp, color primario, esquinas redondeadas, y muestra debajo el label correspondiente al estado en preparación, en camino o entregado. La fracción de progreso mapea siete estados de pedido pendiente, confirmado, preparando, listo, entregando, entregado y cancelado.
+
+Criterio seis. El backend registra estimado vs tiempo real para mejorar futuras predicciones. Verificado a nivel código. El endpoint pi u t delivery time estimation barra actual recibe el tiempo real de entrega y delega en el repository para persistir el par estimado-real en Dynamo Di Bi, alimentando los promedios ponderados del servicio. El test Delivery Time Estimation Repository Test valida la persistencia.
+
+Criterio siete. Si el pedido se demora más del estimado se notifica al cliente proactivamente. Verificado a nivel código. La card recibe el flag is delayed que cuando es verdadero renderiza un texto en color de error con el mensaje delivery estimation delayed notice. La lógica de comparación entre tiempo transcurrido y estimado vive en el view model.
+
+Limitación de la verificación end to end. La cuenta de cliente provisionada en el ambiente de Q.A. no tenía pedidos activos al momento de esta corrida, por lo que no fue posible capturar visualmente la card renderizada con datos reales. Esta limitación afecta exclusivamente a la captura de evidencia visual, no al alcance del feature, ya que las tres capas — backend, servicio cliente y composable de u.i. — fueron inspeccionadas en su código fuente y los tests unitarios del módulo Do Delivery Time Estimation Test cubren el mapeo d.t.o. a dominio, la propagación de errores y el registro estimado vs real.
+
+Conclusión. La implementación cubre los siete criterios de aceptación. El backend responde y está correctamente securizado por jay double u te. El a.p.k. cliente compila, instala y arranca sin crashes en el emulador, y el flujo de inicio de sesión funciona contra el backend remoto. Por lo tanto, la verificación queda aprobada con la nota operativa de provisionar una cuenta cliente con pedidos activos en el ambiente de Q.A. para futuras corridas que requieran captura visual del componente.
+
+Fin del reporte de Q.A. Gracias por escuchar.

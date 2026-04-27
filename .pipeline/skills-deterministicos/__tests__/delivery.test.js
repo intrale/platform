@@ -165,3 +165,63 @@ test('integración codeowners — paths del pipeline gatillan owner humano (#265
     const noHuman = codeowners.getHumanOwners(rules, ['app/composeApp/src/x.kt']);
     assert.deepEqual(noHuman, []);
 });
+
+// #2523 (rev-2) — separación REPO_ROOT vs WORK_DIR.
+// Regresión del incidente: delivery del #2523 corrió con cwd=ROOT (porque
+// `path.resolve(__dirname, '..', '..')` resuelve siempre al checkout principal,
+// compartido por todos los worktrees vía .git symlink) y leyó la rama
+// `fix/dashboard-pause-optimistic-ui` del ROOT en vez de
+// `agent/2523-dashboard-visual-redesign` del worktree del agente.
+// Mismo fix patrón que linter.js #2523 rev-1.
+
+test('#2523 rev-2 — WORK_DIR usa PIPELINE_WORKTREE cuando está seteado', () => {
+    const fakeWorktree = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-delivery-wt-'));
+    const savedWt = process.env.PIPELINE_WORKTREE;
+    process.env.PIPELINE_WORKTREE = fakeWorktree;
+    try {
+        delete require.cache[require.resolve('../delivery')];
+        const reloaded = require('../delivery');
+        assert.equal(reloaded.WORK_DIR, fakeWorktree,
+            'WORK_DIR debe priorizar PIPELINE_WORKTREE sobre process.cwd() y REPO_ROOT');
+        assert.notEqual(reloaded.WORK_DIR, reloaded.REPO_ROOT,
+            'cuando el agente corre en worktree, WORK_DIR ≠ REPO_ROOT');
+    } finally {
+        if (savedWt === undefined) delete process.env.PIPELINE_WORKTREE;
+        else process.env.PIPELINE_WORKTREE = savedWt;
+        // Restaurar cache con el módulo en estado canónico para tests siguientes
+        delete require.cache[require.resolve('../delivery')];
+        require('../delivery');
+    }
+});
+
+test('#2523 rev-2 — sin PIPELINE_WORKTREE, WORK_DIR cae a process.cwd() (no a REPO_ROOT)', () => {
+    const fakeCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-delivery-cwd-'));
+    const savedWt = process.env.PIPELINE_WORKTREE;
+    const savedCwd = process.cwd();
+    delete process.env.PIPELINE_WORKTREE;
+    process.chdir(fakeCwd);
+    try {
+        delete require.cache[require.resolve('../delivery')];
+        const reloaded = require('../delivery');
+        // En Windows, process.cwd() puede normalizar drive letter case;
+        // comparamos con realpath para evitar falsos negativos.
+        const cwdReal = fs.realpathSync(fakeCwd);
+        const workReal = fs.realpathSync(reloaded.WORK_DIR);
+        assert.equal(workReal, cwdReal,
+            'sin PIPELINE_WORKTREE, WORK_DIR debe usar process.cwd() — NO REPO_ROOT (que era el bug)');
+        assert.notEqual(workReal, fs.realpathSync(reloaded.REPO_ROOT),
+            'WORK_DIR no debe coincidir con REPO_ROOT cuando el cwd es distinto');
+    } finally {
+        process.chdir(savedCwd);
+        if (savedWt !== undefined) process.env.PIPELINE_WORKTREE = savedWt;
+        delete require.cache[require.resolve('../delivery')];
+        require('../delivery');
+    }
+});
+
+test('#2523 rev-2 — exporta REPO_ROOT y WORK_DIR para introspección', () => {
+    assert.equal(typeof delivery.REPO_ROOT, 'string');
+    assert.equal(typeof delivery.WORK_DIR, 'string');
+    assert.ok(delivery.REPO_ROOT.length > 0);
+    assert.ok(delivery.WORK_DIR.length > 0);
+});

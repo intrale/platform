@@ -1,0 +1,31 @@
+Hola, soy el agente de QA de Intrale. Paso a narrar la verificación end to end del issue mil novecientos cuarenta y nueve, titulado multi usuario para el negocio, roles y permisos de empleados.
+
+El objetivo de este issue es permitir que el dueño de un negocio invite empleados por email, les asigne distintos roles como Dueño, Gerente, Cajero o Repositor, y controle qué secciones ve cada uno. También pide que se registre un log de actividad por usuario, que el dueño pueda revocar accesos, y que un empleado pueda pertenecer a varios negocios con distintos roles.
+
+Esta verificación se realizó sobre el APK business debug producido por el pipeline, instalado en el emulador Android, conectado al backend real de Lambda en AWS.
+
+Primer hallazgo. Al abrir la aplicación de Intrale Negocios llegamos a la pantalla de bienvenida con los textos Controla tu tienda, Gestiona tu equipo y Monitorea pedidos y panel. El texto de la card Gestiona tu equipo menciona invita administradores y repartidores, pero esta descripción es decorativa. No hay un botón, acceso ni flujo real detrás.
+
+Segundo hallazgo. Desde la pantalla de inicio de sesión, intentamos acceder con credenciales de prueba. Luego navegamos por las opciones visibles, que son Registrar negocio, Registro Delivery, Opciones avanzadas y Ya tengo un código de recuperación. Ninguna de estas opciones presenta flujo de invitación de empleados ni administración de roles.
+
+Tercer hallazgo, el más importante. Se inspeccionó el código fuente del proyecto en la rama agent barra mil novecientos cuarenta y nueve android dev. El diff contra main muestra únicamente cambios en archivos del pipeline relacionados con la infraestructura del agente planner y la normalización de la variable de entorno JAVA HOME. No existe código de producto que implemente invitación de empleados por email, definición de roles, control de acceso por rol, log de actividad por usuario, revocación de acceso, ni pertenencia de un empleado a múltiples negocios.
+
+Evaluación contra los criterios de aceptación.
+
+Criterio uno, el dueño puede invitar empleados por email desde la app. No verificado. No existe esta pantalla ni endpoint en la app.
+
+Criterio dos, cada empleado se registra con su propia cuenta bajo el negocio del dueño. No verificado. El registro actual sigue siendo un único login de negocio.
+
+Criterio tres, existen al menos cuatro roles Dueño, Gerente, Cajero y Repositor. No verificado. No hay enumeración ni modelo de roles en el código.
+
+Criterio cuatro, cada rol tiene acceso solo a las secciones correspondientes. No verificado. No hay mecanismo de gating por rol en la navegación.
+
+Criterio cinco, se registra log de actividad por usuario. No verificado. No existe servicio ni tabla de auditoría vinculada.
+
+Criterio seis, el dueño puede cambiar el rol o revocar acceso de un empleado. No verificado. No hay pantalla de administración de empleados.
+
+Criterio siete, un empleado puede pertenecer a múltiples negocios con distintos roles. No verificado. No hay modelo multi negocio por usuario.
+
+Conclusión. Ninguno de los siete criterios de aceptación pudo verificarse porque la funcionalidad no fue implementada. La rama del agente solo contiene arreglos de infraestructura del pipeline, heredados del fix de JAVA HOME. Por lo tanto, la verificación queda rechazada y el issue se devuelve al rol de desarrollo para que implemente efectivamente la historia.
+
+Fin del reporte de QA. Gracias por escuchar.

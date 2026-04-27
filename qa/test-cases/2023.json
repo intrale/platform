@@ -1,0 +1,102 @@
+[
+  {
+    "id": "TC-AUTH-01",
+    "title": "Signin endpoint existe y valida body",
+    "criteria": "Auth: signin",
+    "method": "POST",
+    "endpoint": "/qa-automation/signin",
+    "body": {},
+    "expected_status": 400,
+    "expected_body_contains": ["email is required"],
+    "generated_at": "qa",
+    "generated_reason": "Fallback - reemplaza test cases genericos previos"
+  },
+  {
+    "id": "TC-AUTH-02",
+    "title": "Signup endpoint existe y valida body",
+    "criteria": "Auth: signup",
+    "method": "POST",
+    "endpoint": "/qa-automation/signup",
+    "body": {},
+    "expected_status": 400,
+    "expected_body_contains": ["email is required"],
+    "generated_at": "qa"
+  },
+  {
+    "id": "TC-AUTH-03",
+    "title": "Recovery (forgot password) endpoint existe",
+    "criteria": "Auth: forgot password",
+    "method": "POST",
+    "endpoint": "/qa-automation/recovery",
+    "body": {},
+    "expected_status": 400,
+    "expected_body_contains": ["email is required"],
+    "generated_at": "qa"
+  },
+  {
+    "id": "TC-AUTH-04",
+    "title": "Signin con credenciales invalidas responde 401",
+    "criteria": "Auth: flujo completo signin",
+    "method": "POST",
+    "endpoint": "/qa-automation/signin",
+    "body": {"email": "inexistente@test.com", "password": "WrongPass123!"},
+    "expected_status": 401,
+    "expected_body_contains": ["Unauthorized"],
+    "generated_at": "qa"
+  },
+  {
+    "id": "TC-PROD-01",
+    "title": "Products endpoint existe (requiere auth JWT)",
+    "criteria": "Productos: listar/crear/editar/publicar",
+    "method": "POST",
+    "endpoint": "/qa-automation/products",
+    "body": {},
+    "expected_status": 401,
+    "expected_body_contains": ["Unauthorized"],
+    "generated_at": "qa"
+  },
+  {
+    "id": "TC-ORDER-01",
+    "title": "Orders endpoint existe (requiere auth JWT)",
+    "criteria": "Pedidos: crear/listar",
+    "method": "POST",
+    "endpoint": "/qa-automation/orders",
+    "body": {},
+    "expected_status": 400,
+    "expected_body_contains": [],
+    "generated_at": "qa"
+  },
+  {
+    "id": "TC-ORDER-02",
+    "title": "Order-detail endpoint existe (requiere auth JWT)",
+    "criteria": "Pedidos: detalle",
+    "method": "POST",
+    "endpoint": "/qa-automation/order-detail",
+    "body": {},
+    "expected_status": 400,
+    "expected_body_contains": [],
+    "generated_at": "qa"
+  },
+  {
+    "id": "TC-DELIVERY-01",
+    "title": "Delivery orders endpoint existe",
+    "criteria": "Delivery: asignar/cambiar estado/confirmar",
+    "method": "POST",
+    "endpoint": "/qa-automation/delivery-orders",
+    "body": {},
+    "expected_status": 400,
+    "expected_body_contains": [],
+    "generated_at": "qa"
+  },
+  {
+    "id": "TC-PROFILE-01",
+    "title": "Profile endpoint existe (requiere auth JWT)",
+    "criteria": "Perfil: obtener/actualizar",
+    "method": "POST",
+    "endpoint": "/qa-automation/profile",
+    "body": {},
+    "expected_status": 400,
+    "expected_body_contains": [],
+    "generated_at": "qa"
+  }
+]

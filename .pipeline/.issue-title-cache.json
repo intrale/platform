@@ -1,0 +1,2441 @@
+{
+  "741": {
+    "title": "DCMM-001 – Contacto con comercio o cliente desde la app delivery",
+    "labels": [
+      "Ready",
+      "from-intake",
+      "area:pedidos",
+      "app:delivery",
+      "area:comunicacion",
+      "feature:delivery",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "742": {
+    "title": "DSEC-001 – Integración básica con autenticación en dos pasos (2FA) para delivery",
+    "labels": [
+      "Ready",
+      "from-intake",
+      "app:delivery",
+      "feature:usuarios-auth",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1094": {
+    "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+    "labels": [
+      "Ready",
+      "app:client",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1095": {
+    "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+    "labels": [
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1096": {
+    "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+    "labels": [
+      "Ready",
+      "app:client",
+      "area:perfil",
+      "area:direcciones",
+      "area:testing",
+      "size:simple",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1097": {
+    "title": "qa(video): App Cliente — pedidos con evidencia en video",
+    "labels": [
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "area:testing",
+      "size:simple"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1098": {
+    "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+    "labels": [
+      "Ready",
+      "app:business",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1099": {
+    "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+    "labels": [
+      "Ready",
+      "app:business",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1100": {
+    "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+    "labels": [
+      "Ready",
+      "app:business",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1101": {
+    "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+    "labels": [
+      "Ready",
+      "app:business",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1102": {
+    "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+    "labels": [
+      "Ready",
+      "area:delivery",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1103": {
+    "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+    "labels": [
+      "Ready",
+      "area:delivery",
+      "area:perfil",
+      "area:testing",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1118": {
+    "title": "qa(compliance): Reporte PO+QA v2.0 — Gestión de categorías (CRUD)",
+    "labels": [
+      "Backlog",
+      "Ready",
+      "area:productos",
+      "area:testing",
+      "qa-compliance",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1121": {
+    "title": "qa(compliance): Reporte PO+QA v2.0 — Carrito de compras y pedidos (cliente)",
+    "labels": [
+      "Backlog",
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "area:carrito",
+      "area:testing",
+      "qa-compliance",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1122": {
+    "title": "qa(compliance): Reporte PO+QA v2.0 — Perfil y direcciones del cliente",
+    "labels": [
+      "Backlog",
+      "Ready",
+      "app:client",
+      "area:perfil",
+      "area:direcciones",
+      "area:testing",
+      "qa-compliance",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1123": {
+    "title": "qa(compliance): Reporte PO+QA v2.0 — Home y dashboard del repartidor",
+    "labels": [
+      "Backlog",
+      "Ready",
+      "area:delivery",
+      "app:delivery",
+      "area:testing",
+      "qa-compliance",
+      "size:simple"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1124": {
+    "title": "qa(compliance): Reporte PO+QA v2.0 — Detalle de pedido y flujo de estados (delivery)",
+    "labels": [
+      "Backlog",
+      "Ready",
+      "area:delivery",
+      "app:delivery",
+      "area:estado",
+      "area:testing",
+      "qa-compliance",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1125": {
+    "title": "qa(compliance): Reporte PO+QA v2.0 — Perfil y disponibilidad del repartidor",
+    "labels": [
+      "Backlog",
+      "Ready",
+      "area:configuracion",
+      "area:perfil",
+      "app:delivery",
+      "area:testing",
+      "qa-compliance",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1879": {
+    "title": "[UX] DeliveryNotificationsScreen: mostrar error en UI cuando falla la carga",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:delivery",
+      "ux",
+      "feature:delivery",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1880": {
+    "title": "[UX/A11Y] DeliveryNotificationsScreen: contentDescription en iconos de tipo de evento",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:delivery",
+      "ux",
+      "qa:passed",
+      "qa:failed",
+      "feature:delivery",
+      "priority:critical",
+      "status:done"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1881": {
+    "title": "[Security] DeliveryNotificationStore.updateFromOrders() no es thread-safe",
+    "labels": [
+      "bug",
+      "Ready",
+      "app:delivery",
+      "qa:passed",
+      "qa:failed",
+      "feature:delivery",
+      "priority:critical",
+      "status:done"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1882": {
+    "title": "[Security] DeliveryNotificationsViewModel: validar rol antes de cargar notificaciones",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:delivery",
+      "qa:passed"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1883": {
+    "title": "[Test] DeliveryNotificationStoreTest: agregar archivo de tests faltante para el Store",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:delivery",
+      "qa:passed",
+      "feature:delivery",
+      "priority:critical",
+      "status:done"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1884": {
+    "title": "[Fix] DeliveryNotificationsScreen: strings de contentDescription hardcodeados",
+    "labels": [
+      "bug",
+      "Ready",
+      "app:delivery",
+      "qa:passed"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1910": {
+    "title": "Búsqueda inteligente de productos con sugerencias en tiempo real",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:productos",
+      "app:client",
+      "qa:passed",
+      "qa:failed"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1911": {
+    "title": "Notificaciones push del estado del pedido",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "qa:passed",
+      "feature:checkout-pagos",
+      "priority:critical",
+      "status:done"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1912": {
+    "title": "Repetir un pedido anterior con un toque",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "area:carrito",
+      "qa:passed",
+      "feature:checkout-pagos",
+      "priority:critical",
+      "status:done"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1913": {
+    "title": "Panel de métricas de ventas del día",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:dashboard",
+      "qa:failed",
+      "feature:dashboard-analitica",
+      "priority:low",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1914": {
+    "title": "Gestión de horarios de atención del negocio",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "qa:failed",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1915": {
+    "title": "Notificaciones sonoras de pedidos nuevos para el negocio",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:pedidos",
+      "feature:checkout-pagos",
+      "priority:high"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1916": {
+    "title": "Navegación integrada al punto de entrega para repartidores",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:delivery",
+      "app:delivery",
+      "qa:passed",
+      "feature:delivery",
+      "priority:critical",
+      "status:done"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1917": {
+    "title": "Registro de motivo de no entrega con evidencia",
+    "labels": [
+      "enhancement",
+      "area:delivery",
+      "app:delivery",
+      "area:estado",
+      "feature:delivery",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1918": {
+    "title": "[IA] Recomendaciones personalizadas de productos basadas en historial",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:productos",
+      "app:client",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1919": {
+    "title": "[IA] Asistente de compra conversacional — buscar productos en lenguaje natural",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:productos",
+      "app:client",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1920": {
+    "title": "[IA] Carga de productos con foto — nombre, descripción y categoría automáticos",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "qa:failed",
+      "ia",
+      "feature:catalogo-productos",
+      "priority:critical",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1921": {
+    "title": "[IA] Resumen inteligente del día con insights para el negocio",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:dashboard",
+      "qa:failed",
+      "ia",
+      "feature:dashboard-analitica",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1922": {
+    "title": "[IA] Respuestas automáticas a consultas frecuentes de clientes",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:comunicacion",
+      "ia"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1923": {
+    "title": "[IA] Optimización de ruta con múltiples entregas para repartidores",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:delivery",
+      "app:delivery",
+      "ia",
+      "feature:delivery",
+      "priority:high",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1924": {
+    "title": "[IA] Detección de anomalías en pedidos — prevención de fraude y errores",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:pedidos",
+      "qa:passed",
+      "qa:failed",
+      "ia",
+      "feature:ia",
+      "priority:low",
+      "area:backend"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1925": {
+    "title": "[IA] Traducción automática del catálogo según idioma del cliente",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:productos",
+      "app:client",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1926": {
+    "title": "[IA] Predicción de demanda — sugerencia semanal de stock al negocio",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1927": {
+    "title": "[IA] Generación automática de promos para productos con baja rotación",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1928": {
+    "title": "[IA] Análisis de sentimiento de reviews y feedback de clientes",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:pedidos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1929": {
+    "title": "[IA] Onboarding guiado por voz para negocios",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:onboarding",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1930": {
+    "title": "[IA] Pricing dinámico sugerido por horario y demanda",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1931": {
+    "title": "[IA] Estimación inteligente de tiempo de entrega en tiempo real",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:pedidos",
+      "area:delivery",
+      "app:client",
+      "ia",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1932": {
+    "title": "[IA] Menú del día generado automáticamente para gastronomía",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1933": {
+    "title": "[IA] Detección de fotos de mala calidad en catálogo con sugerencias",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1934": {
+    "title": "[IA] Chat negocio-repartidor con traducción automática bidireccional",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "app:delivery",
+      "area:comunicacion",
+      "ia",
+      "feature:comunicacion",
+      "priority:low",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1935": {
+    "title": "[IA] Reporte semanal ejecutivo del negocio por Telegram/WhatsApp",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:dashboard",
+      "ia",
+      "feature:dashboard-analitica",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810117389
+  },
+  "1936": {
+    "title": "Gestión de stock básica — alta, baja y alertas de mínimo",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "feature:stock-inventario",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1937": {
+    "title": "[IA] Conteo de stock por foto — inventario visual con Claude Vision",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:stock-inventario",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1938": {
+    "title": "[IA] Alerta predictiva de quiebre de stock inminente",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "qa:failed",
+      "ia",
+      "feature:stock-inventario",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1939": {
+    "title": "Registro de compras y reposición de stock",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "feature:stock-inventario",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1940": {
+    "title": "[IA] Análisis de margen por producto — rentabilidad real con sugerencias",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:stock-inventario",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1941": {
+    "title": "[IA] Lista de compras sugerida para reposición de stock",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:stock-inventario",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1942": {
+    "title": "[IA] Detección de merma y desperdicio de productos",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:stock-inventario",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1943": {
+    "title": "[IA] Inteligencia competitiva — monitoreo de precios y promos de la competencia",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1944": {
+    "title": "[IA] Sugerencias creativas de promos basadas en competencia y contexto",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:productos",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1945": {
+    "title": "Programa de puntos y fidelidad con rewards inteligentes",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "feature:marketing-engagement",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1946": {
+    "title": "[IA] Notificaciones personalizadas de re-compra por patrón de consumo",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1947": {
+    "title": "Valoraciones y reviews de productos con fotos",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:productos",
+      "app:client",
+      "feature:catalogo-productos",
+      "priority:high",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1948": {
+    "title": "[IA] Compartir pedido en redes sociales con diseño automático",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "ia",
+      "feature:marketing-engagement",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1949": {
+    "title": "Multi-usuario para el negocio — roles y permisos de empleados",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "qa:failed",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1950": {
+    "title": "[IA] Asistente de configuración del negocio por chat",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1951": {
+    "title": "Integración con Mercado Pago — pagos digitales en checkout",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "area:checkout",
+      "qa:failed",
+      "feature:checkout-pagos",
+      "priority:critical",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1952": {
+    "title": "Zonas de delivery configurables con mapa interactivo",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "feature:delivery",
+      "priority:high",
+      "split",
+      "blocked:dependencies",
+      "blocked:routing-manual"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1953": {
+    "title": "Seguimiento en tiempo real del repartidor en mapa",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:delivery",
+      "app:client",
+      "app:delivery",
+      "feature:delivery",
+      "priority:critical",
+      "blocked:dependencies",
+      "blocked:routing-manual"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1954": {
+    "title": "[IA] Agrupamiento inteligente de pedidos cercanos para repartidores",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:delivery",
+      "app:delivery",
+      "ia",
+      "feature:delivery",
+      "priority:high",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1955": {
+    "title": "[IA] Facturación simplificada con detección automática de datos fiscales",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "ia",
+      "feature:ia",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1956": {
+    "title": "[IA] Generación automática de publicaciones para redes sociales del negocio",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "ia",
+      "feature:marketing-engagement",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1957": {
+    "title": "[IA] Chatbot para WhatsApp Business del negocio",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:comunicacion",
+      "qa:failed",
+      "ia",
+      "feature:comunicacion",
+      "priority:low",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1958": {
+    "title": "[IA] Segmentación automática de clientes con promos dirigidas",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:pedidos",
+      "ia",
+      "feature:marketing-engagement",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "1959": {
+    "title": "[IA] Predicción de abandono de clientes con reactivación proactiva",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:pedidos",
+      "ia",
+      "feature:marketing-engagement",
+      "priority:low"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2015": {
+    "title": "UX: Agregar ImeAction.Search y mejorar accesibilidad en buscador de productos",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "qa:failed",
+      "size:simple",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2017": {
+    "title": "qa(verificación): Login, registro y recuperar contraseña — App Cliente",
+    "labels": [
+      "Ready",
+      "app:client",
+      "area:testing",
+      "qa:passed",
+      "qa:failed",
+      "feature:usuarios-auth",
+      "priority:critical",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2018": {
+    "title": "qa(verificación): Login, registro y revisión de negocio — App Negocio",
+    "labels": [
+      "Ready",
+      "app:business",
+      "area:testing",
+      "qa:passed",
+      "qa:failed",
+      "feature:usuarios-auth",
+      "priority:critical",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2019": {
+    "title": "qa(verificación): Login y registro de repartidor — App Delivery",
+    "labels": [
+      "Ready",
+      "app:delivery",
+      "area:testing",
+      "qa:passed",
+      "qa:failed",
+      "feature:usuarios-auth",
+      "priority:critical",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2020": {
+    "title": "qa(verificación): Carrito de compras y checkout completo — App Cliente",
+    "labels": [
+      "Ready",
+      "app:client",
+      "area:carrito",
+      "area:checkout",
+      "area:testing",
+      "qa:failed",
+      "feature:checkout-pagos",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2021": {
+    "title": "qa(verificación): Carga y publicación de productos — App Negocio",
+    "labels": [
+      "Ready",
+      "app:business",
+      "area:productos",
+      "app:client",
+      "area:testing",
+      "feature:catalogo-productos",
+      "priority:critical",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2022": {
+    "title": "qa(verificación): Flujo completo de delivery — asignación, estados y entrega",
+    "labels": [
+      "Ready",
+      "area:delivery",
+      "app:delivery",
+      "area:testing",
+      "qa:passed",
+      "qa:pending",
+      "feature:delivery",
+      "priority:critical"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2023": {
+    "title": "qa(verificación): Endpoints backend core — auth, productos, pedidos, delivery",
+    "labels": [
+      "Ready",
+      "area:testing",
+      "qa:passed",
+      "feature:checkout-pagos",
+      "priority:critical",
+      "area:backend",
+      "status:done"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2040": {
+    "title": "UX: Loading state faltante en ClientNotificationsScreen",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "ux",
+      "qa:failed",
+      "size:simple",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2041": {
+    "title": "UX: Accesibilidad inconsistente en iconos de notificacion client vs delivery",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "ux",
+      "qa:failed",
+      "size:simple"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2042": {
+    "title": "UX: Detallar productos excluidos al repetir pedido",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "ux",
+      "qa:failed",
+      "split",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2043": {
+    "title": "UX: Avisar cambio de precio al repetir pedido",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "ux",
+      "qa:passed",
+      "status:done",
+      "size:medium"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2061": {
+    "title": "[Split de #2042] Backend: endpoint de disponibilidad y lógica de motivos de exclusión",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:failed",
+      "area:backend",
+      "size:medium",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2062": {
+    "title": "[Split de #2042] UI: diálogo de detalle al repetir pedido",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:pedidos",
+      "app:client",
+      "ux",
+      "qa:passed",
+      "status:done",
+      "size:medium"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2158": {
+    "title": "fix: Bug en Dashboard / ClientSearchBusinessesService",
+    "labels": [
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "size:simple",
+      "priority:high",
+      "status:done",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2159": {
+    "title": "feat: Falta ignoreUnknownKeys en un servicio client",
+    "labels": [
+      "Ready",
+      "qa:skipped",
+      "priority:critical",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2160": {
+    "title": "infra: Emulador o dispositivo Android no disponible",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "qa:failed",
+      "size:simple",
+      "priority:high",
+      "qa:dependency",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2162": {
+    "title": "fix: El login no funciona",
+    "labels": [
+      "Ready",
+      "size:simple",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2192": {
+    "title": "fix: El login no funciona",
+    "labels": [
+      "Ready",
+      "size:simple",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2263": {
+    "title": "infra: Emulador Android no esta corriendo",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2264": {
+    "title": "fix: El APK no se pudo generar",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2265": {
+    "title": "infra: Emulador Android no esta corriendo",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2267": {
+    "title": "infra: Emulador Android no esta corriendo",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "size:simple",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2276": {
+    "title": "infra: Emulador o dispositivo Android no disponible",
+    "labels": [
+      "Ready",
+      "size:simple",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2278": {
+    "title": "infra: Emulador o dispositivo Android no disponible",
+    "labels": [
+      "Ready",
+      "size:simple",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2279": {
+    "title": "infra: Emulador Android no esta corriendo",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "size:simple",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118087
+  },
+  "2281": {
+    "title": "infra: Emulador o dispositivo Android no disponible",
+    "labels": [
+      "Ready",
+      "app:client",
+      "qa:skipped",
+      "size:simple",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2285": {
+    "title": "infra: Timeout de conexion al backend",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2296": {
+    "title": "infra: Timeout de conexion al backend",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2302": {
+    "title": "infra: Problema de red/DNS",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2304": {
+    "title": "[Split de #2302] infra: Healthcheck previo + retry HTTP con backoff exponencial",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2305": {
+    "title": "[Split de #2302] infra: Circuit breaker de infra + notificacion Telegram",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2306": {
+    "title": "[Split de #2302] infra: Seccion Salud de Infra en dashboard /monitor",
+    "labels": [
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2307": {
+    "title": "[Split de #2304] infra: Cliente HTTP seguro (retry/backoff/jitter, redacción, TLS, SSRF, proxy whitelist)",
+    "labels": [
+      "Ready",
+      "qa:passed",
+      "priority:high",
+      "area:backend",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2314": {
+    "title": "infra: Problema de red/DNS",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2315": {
+    "title": "infra: Emulador Android no esta corriendo",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2317": {
+    "title": "[Split de #2314] Pre-check de conectividad + clasificación de rebote infra en el pipeline V2",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "qa:skipped",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2318": {
+    "title": "[Split de #2314] Sanitización de logs + health-check de conectividad en /checkup",
+    "labels": [
+      "Ready",
+      "qa:failed",
+      "priority:high",
+      "area:backend",
+      "split",
+      "qa:dependency",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2319": {
+    "title": "[Split de #2314] UX de fallos infra: Telegram natural + audio narrado + dashboard diferenciado",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2322": {
+    "title": "infra: Emulador Android no esta corriendo",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "size:simple",
+      "priority:high",
+      "qa:dependency",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2324": {
+    "title": "[Split de #2318] Módulo sanitizer.js + integración write-time en logs/PDFs/rebotes",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2325": {
+    "title": "[Split de #2318] Whitelist de endpoints + prevención SSRF + TLS hardening + linter",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2327": {
+    "title": "[Split de #2319] Rejection UX: Telegram natural + audio narrado + PDF accesible WCAG AA",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2328": {
+    "title": "[Split de #2319] Dashboard /monitor: distincion visual infra vs codigo",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2329": {
+    "title": "[Split de #2319] Feedback proactivo al restaurarse la red: dedup + rate limit + choreografia",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2331": {
+    "title": "[Split de #2325] Linter de security patterns + pre-commit + CI + docs",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2332": {
+    "title": "[Split de #2325] Migración de consumidor HTTP a safeRequest + QA E2E end-to-end",
+    "labels": [
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2333": {
+    "title": "[Split de #2324] sanitizer.js core + integración en rejection-report + pulpo",
+    "labels": [
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2334": {
+    "title": "[Split de #2324] Integración sanitizer en servicios externos + stream-filter logs + E2E",
+    "labels": [
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2335": {
+    "title": "[Split de #2329] Deteccion connectivity_restored + reencolado atomico + contador infra separado",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2336": {
+    "title": "[Split de #2329] Notificacion Telegram unica + audio + rate limit TTS + dedup sha256",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2337": {
+    "title": "[Split de #2329] Dashboard estado reintentando + choreografia temporal + metricas UX append-only",
+    "labels": [
+      "Ready",
+      "area:dashboard",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2338": {
+    "title": "infra: Timeout de conexion al backend",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2351": {
+    "title": "fix: El APK no se pudo generar",
+    "labels": [
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2393": {
+    "title": "fix: build rechazó: Build falla en `:app:composeApp:bundleBusinessReleaseClassesToRun",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "qa:skipped",
+      "size:simple",
+      "priority:high",
+      "status:done",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2399": {
+    "title": "fix: android-dev rechazó: Rebote improcedente: no hay código de android-dev para corr",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2400": {
+    "title": "fix: android-dev rechazó: Timeout de watchdog: excedió 30 minutos sin terminar",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "size:simple",
+      "priority:high",
+      "status:done",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2401": {
+    "title": "fix: android-dev rechazó: Rebote con motivo irresoluble desde android-dev.",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:high",
+      "split",
+      "qa:dependency",
+      "blocked:dependencies",
+      "blocked:routing-manual",
+      "size:large"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2402": {
+    "title": "fix: android-dev rechazó: Rechazo del build (rebote #2) es un problema de infraestruc",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2403": {
+    "title": "fix: Guru rechazó: Re-análisis tras rebote desde desarrollo/dev.",
+    "labels": [
+      "Ready",
+      "size:simple",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2404": {
+    "title": "[Split de #2401] Clasificar errores de toolchain como infra + validar log staleness",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "qa:skipped",
+      "priority:high",
+      "status:done",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2405": {
+    "title": "[Split de #2401] Fail-fast JAVA_HOME + backup tags + sanitizar logs + needs-human",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2406": {
+    "title": "[Split de #2401] recover.js + re-encolado 15 issues + UX operador + docs",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:high",
+      "qa:dependency",
+      "size:large"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2407": {
+    "title": "fix: android-dev rechazó: INFRA-BLOCKED (2do ciclo consecutivo con el mismo diagnosti",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "size:simple",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2410": {
+    "title": "[Split de #2406] UX operador: dashboard stale + Telegram + GitHub + docs runbook",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:high",
+      "split",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2414": {
+    "title": "[Split de #2410] Documentación del pipeline + runbook de crisis",
+    "labels": [
+      "Ready",
+      "docs",
+      "tipo:infra",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2415": {
+    "title": "[Split de #1952] Backend: CRUD de zonas de delivery + verificación point-in-polygon",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:delivery",
+      "feature:delivery",
+      "priority:high",
+      "area:backend",
+      "size:medium"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2416": {
+    "title": "[Split de #1952] App Negocios: UI configuración de zonas con mapa interactivo",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "feature:delivery",
+      "priority:high",
+      "split",
+      "size:large"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2417": {
+    "title": "[Split de #1952] App Cliente: verificación de dirección pre-carrito y costo de envío por zona",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:delivery",
+      "app:client",
+      "feature:delivery",
+      "priority:high",
+      "split"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2420": {
+    "title": "[Split de #2416] App Negocios: Zonas — visualización + setup Google Maps",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2421": {
+    "title": "[Split de #2416] App Negocios: Zonas — editor, mutaciones y sync offline",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2422": {
+    "title": "[Split de #2417] App Cliente A: verificación de dirección pre-carrito (permisos, rationale, DoCheckAddress, AddressCheckScreen)",
+    "labels": [
+      "enhancement",
+      "area:delivery",
+      "app:client",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2423": {
+    "title": "[Split de #2417] App Cliente B: mapa read-only de zonas de cobertura (OSMDroid, DoListBusinessZones)",
+    "labels": [
+      "enhancement",
+      "area:delivery",
+      "app:client",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2424": {
+    "title": "[Split de #2417] App Cliente C: checkout con desglose de envío y costo congelado al momento del pedido",
+    "labels": [
+      "enhancement",
+      "area:delivery",
+      "app:client",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2426": {
+    "title": "fix: QA rechazó: La funcionalidad de multi-usuario para el negocio (invitacion de emp",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2427": {
+    "title": "fix: Security rechazó: No puedo auditar seguridad porque el feature multi-usuario (ro",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810118754
+  },
+  "2428": {
+    "title": "fix: android-dev rechazó: Timeout de watchdog: excedió 30 minutos sin terminar",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810119416
+  },
+  "2429": {
+    "title": "fix: android-dev rechazó: Timeout de watchdog: excedió 30 minutos sin terminar",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810119416
+  },
+  "2430": {
+    "title": "fix: android-dev rechazó: Timeout de watchdog: excedió 30 minutos sin terminar",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810119416
+  },
+  "2431": {
+    "title": "fix: Security rechazó: [security] REBOTE FUERA-DE-SCOPE",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810119416
+  },
+  "2432": {
+    "title": "fix: El APK no se pudo generar",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810119416
+  },
+  "2433": {
+    "title": "fix: QA rechazó: QA-Android rechaza #1957: el feature \"Chatbot WhatsApp Business\" no ",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776810119416
+  },
+  "2435": {
+    "title": "[Split de #2421] App Negocios: Zonas — editor base y crear zona circular",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776812214960
+  },
+  "2436": {
+    "title": "[Split de #2421] App Negocios: Zonas — polígono libre con validaciones geométricas",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776812214960
+  },
+  "2437": {
+    "title": "[Split de #2421] App Negocios: Zonas — editar, eliminar y sync offline con queue",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776812214960
+  },
+  "2439": {
+    "title": "[Split de #2426] Backend — Roles + invitación de empleados (InviteEmployee + AcceptInvitation)",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "area:backend",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776813583198
+  },
+  "2440": {
+    "title": "[Split de #2426] Backend — Admin de empleados + audit log (Revoke/ChangeRole/List + activity_log)",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "area:backend",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776813583198
+  },
+  "2441": {
+    "title": "[Split de #2426] Frontend business — Pantallas Equipo + Actividad + gating + selector multi-negocio",
+    "labels": [
+      "app:business",
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776813913732
+  },
+  "2442": {
+    "title": "[Split de #1949] feat: modelo de roles BusinessRole + matriz de permisos",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776814942307
+  },
+  "2443": {
+    "title": "[Split de #1949] feat: cross-tenant guard en SecuredFunction",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776814942307
+  },
+  "2444": {
+    "title": "[Split de #1949] feat: invitación de empleados con token HMAC",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776814942307
+  },
+  "2445": {
+    "title": "[Split de #1949] feat: audit log append-only de acciones sensibles",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776814942307
+  },
+  "2446": {
+    "title": "[Split de #2435] App Negocios: Zonas — infraestructura save (asdo + ext + geo)",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1776814942307
+  },
+  "2447": {
+    "title": "[Split de #2435] App Negocios: Zonas — UI editor circular (Screen + VM + UX)",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1776814942307
+  },
+  "2450": {
+    "title": "fix(pipeline): respawn por watchdog deja marker ready con PID stale cuando singleton aborta",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1776999628196
+  },
+  "2452": {
+    "title": "[Split de #2437] App Negocios: Zonas — editar zona (PUT)",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776818019170
+  },
+  "2453": {
+    "title": "[Split de #2437] App Negocios: Zonas — eliminar con undo (DELETE online)",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776818019170
+  },
+  "2454": {
+    "title": "[Split de #2437] App Negocios: Zonas — mutation queue + sync offline + cleanup multi-tenant",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776818019170
+  },
+  "2456": {
+    "title": "fix: QA rechazó: Dos criterios de aceptacion explicitos del issue no se cumplen:\\n\\n1) ",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776819379774
+  },
+  "2458": {
+    "title": "fix: Product Owner rechazó: Video de QA no demuestra los criterios de aceptación en l",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776823851892
+  },
+  "2459": {
+    "title": "[Split de #2454] App Negocios: Zonas — DataStore + SessionEvents + queue core (sin drain)",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776823848273
+  },
+  "2460": {
+    "title": "[Split de #2454] App Negocios: Zonas — drain FIFO + WorkManager + backoff + re-validación",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776824165060
+  },
+  "2461": {
+    "title": "[Split de #2454] App Negocios: Zonas — banner offline + bottom sheet + ViewModel + QA E2E",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:delivery",
+      "area:configuracion",
+      "needs-definition",
+      "feature:delivery",
+      "priority:high"
+    ],
+    "fetchedAt": 1776824165060
+  },
+  "2462": {
+    "title": "[Split de #2443] feat: GSI business-employees-index + hasApprovedProfileFor(business, email)",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776824484761
+  },
+  "2463": {
+    "title": "[Split de #2443] feat: cross-tenant guard en SecuredFunction + JWT hardening",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776824484761
+  },
+  "2464": {
+    "title": "[Split de #2443] refactor: handlers reciben BusinessRole del guard + header X-Business-Role",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776824484761
+  },
+  "2465": {
+    "title": "fix: UX rechazó: No puedo evaluar UX del feature porque el video de QA no muestra nin",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1776824484761
+  },
+  "2468": {
+    "title": "[Split de #2444] feat(backend): servicio de email + token HMAC + endpoint invite",
+    "labels": [
+      "enhancement",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776824805328
+  },
+  "2469": {
+    "title": "[Split de #2444] feat(backend): endpoint accept-invitation + validación de token + registro de perfil",
+    "labels": [
+      "enhancement",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776824805328
+  },
+  "2470": {
+    "title": "[Split de #2444] feat(app:business): UI flujo de invitación de empleados + deeplink",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high"
+    ],
+    "fetchedAt": 1776824805328
+  },
+  "2473": {
+    "title": "[Split de #2445] feat: tabla AuditLog append-only + helper logAuditEvent + integracion fail-closed",
+    "labels": [
+      "enhancement",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776826119434
+  },
+  "2474": {
+    "title": "[Split de #2445] feat: endpoint GET /audit con paginacion cursor, rate limit y meta-auditoria",
+    "labels": [
+      "enhancement",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776826119434
+  },
+  "2475": {
+    "title": "[Split de #2445] feat: pantalla Actividad en app:business + export CSV multiplataforma",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high"
+    ],
+    "fetchedAt": 1776826419263
+  },
+  "2497": {
+    "title": "[Split de #2464] refactor: firma securedExecute recibe BusinessRole + 14 handlers",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776996881073
+  },
+  "2498": {
+    "title": "[Split de #2464] feat: header X-Business-Role + MEMBERSHIP_REVOKED + audit logging",
+    "labels": [
+      "enhancement",
+      "app:business",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1776996881731
+  },
+  "2501": {
+    "title": "[Split de #2468] feat(backend): HmacTokenGenerator + RateLimitService (infra crypto/limits)",
+    "labels": [
+      "enhancement",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1777032466995
+  },
+  "2502": {
+    "title": "[Split de #2468] feat(backend): CommEmailService + ClientSESService + template invitación",
+    "labels": [
+      "enhancement",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1777032466995
+  },
+  "2503": {
+    "title": "[Split de #2468] feat(backend): endpoint POST /{business}/employees/invite + audit trail",
+    "labels": [
+      "enhancement",
+      "area:configuracion",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend"
+    ],
+    "fetchedAt": 1777032466995
+  },
+  "2505": {
+    "title": "feat(app): ícono distintivo por flavor (client / business / delivery)",
+    "labels": [
+      "app:business",
+      "app:client",
+      "app:delivery",
+      "needs-definition",
+      "priority:low"
+    ],
+    "fetchedAt": 1777034707586
+  },
+  "2506": {
+    "title": "fix(pipeline): brazoDesbloqueo y brazoIntake ignoran la pausa parcial — 5-8 min de lag por ciclo",
+    "labels": [
+      "area:infra",
+      "needs-definition",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1777037190461
+  },
+  "2507": {
+    "title": "feat(pipeline): recomendaciones de agentes se convierten en issues independientes en el backlog",
+    "labels": [
+      "enhancement",
+      "area:infra",
+      "needs-definition",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1777038804035
+  },
+  "2509": {
+    "title": "fix: QA rechazó: Los 3 flavors muestran iconos VISUALMENTE IDENTICOS en el launcher (",
+    "labels": [
+      "needs-definition",
+      "priority:high",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1777041159585
+  },
+  "2510": {
+    "title": "[security] agregar Gradle task que valide asset hygiene en mipmap/drawable",
+    "labels": [
+      "enhancement",
+      "needs-definition",
+      "priority:low",
+      "area:backend",
+      "source:recommendation"
+    ],
+    "fetchedAt": 1777041471635
+  },
+  "2519": {
+    "title": "fix(ux): rediseñar mensaje de Telegram de QA — aprobado/rechazado visualmente claro",
+    "labels": [
+      "enhancement",
+      "area:infra",
+      "needs-definition",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1777061196485
+  },
+  "2520": {
+    "title": "fix(dashboard): página /consumo no refresca datos, muestra vacío o datos parciales intermitentes",
+    "labels": [
+      "bug",
+      "area:infra",
+      "needs-definition",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1777061510549
+  },
+  "2523": {
+    "title": "feat(dashboard): rediseño visual del home / dashboard V3 con identidad de marca Intrale",
+    "labels": [
+      "enhancement",
+      "area:infra",
+      "needs-definition",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1777061823129
+  },
+  "2519-comment": {
+    "title": "",
+    "labels": [],
+    "notFound": true,
+    "fetchedAt": 1777062472251
+  },
+  "2523-comment": {
+    "title": "",
+    "labels": [],
+    "notFound": true,
+    "fetchedAt": 1777064385740
+  }
+}

@@ -1,0 +1,15 @@
+=== POST /qa-automation/anomalies/analyze ===
+HTTP 403
+{"message":"Missing Authentication Token"}
+=== GET /qa-automation/anomalies ===
+HTTP 403
+{"message":"Missing Authentication Token"}
+=== GET /qa-automation/anomalies/config ===
+HTTP 403
+{"message":"Missing Authentication Token"}
+=== GET /qa-automation/anomalies/history ===
+HTTP 403
+{"message":"Missing Authentication Token"}
+=== PUT /qa-automation/anomalies/resolve ===
+HTTP 403
+{"message":"Missing Authentication Token"}

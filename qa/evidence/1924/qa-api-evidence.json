@@ -1,0 +1,28 @@
+{
+  "issue": 1924,
+  "qa_mode": "android",
+  "timestamp": "2026-04-16T15:15:00Z",
+  "backend_connectivity": {
+    "signin_endpoint": "POST /qa-automation/signin → HTTP 200 (OK, token obtenido)",
+    "signup_endpoint": "POST /qa-automation/signup → HTTP 400 (alcanza Lambda, endpoint existe)"
+  },
+  "anomaly_endpoints_test": {
+    "POST /qa-automation/order-anomaly": "HTTP 400 - 'No function defined on path' (alcanza Lambda pero funcion NO registrada)",
+    "POST /qa-automation/order-anomaly/analyze": "HTTP 403 - 'Missing Authentication Token' (API Gateway rechaza, ruta no existe)",
+    "GET /qa-automation/order-anomaly/config": "HTTP 403 - 'Missing Authentication Token' (API Gateway rechaza, ruta no existe)",
+    "GET /qa-automation/order-anomaly/list": "HTTP 403 - 'Missing Authentication Token' (API Gateway rechaza, ruta no existe)",
+    "GET /qa-automation/order-anomaly/history": "HTTP 403 - 'Missing Authentication Token' (API Gateway rechaza, ruta no existe)"
+  },
+  "diagnosis": {
+    "branch_status": "agent/1924-backend-dev existe con el codigo de anomalias, pero NO esta mergeado a main",
+    "pr_status": "No existe PR abierto para la rama agent/1924-backend-dev",
+    "lambda_deploy": "Lambda kotlinTest solo despliega desde main (CI/CD en push a main)",
+    "conclusion": "Los endpoints de deteccion de anomalias NO existen en el backend remoto porque el codigo no fue mergeado ni desplegado"
+  },
+  "apk_test": {
+    "apk": "1924-composeApp-business-debug.apk (23.8 MB)",
+    "install": "Success en emulator-5554",
+    "launch": "App carga pantalla de bienvenida de Intrale Negocios",
+    "anomaly_ui": "No verificable sin backend - los indicadores de anomalias dependen de respuestas del endpoint /order-anomaly/*"
+  }
+}

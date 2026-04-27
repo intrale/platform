@@ -1,0 +1,13 @@
+Reporte de QA para el issue dos tres tres dos. Historia split C de dos tres dos cinco. Migración del consumidor HTTP servicio telegram al cliente seguro http-client, con logging estructurado de denials.
+
+Primer criterio de aceptación verificado. Migración del consumidor HTTP. Se corrió el grep sobre punto pipeline barra servicio telegram punto js. El resultado es cero ocurrencias de https punto request, cero ocurrencias de require https. En cambio, el archivo usa exclusivamente http-client punto post json y http-client punto request. Criterio nueve aprobado.
+
+Segundo criterio de aceptación verificado. Mensajes accionables. Los errores del módulo incluyen la frase guía, si es intencional, agregar a whitelist de proxy o usar endpoint público. Verificado en la salida de los smoke tests. Criterio diez aprobado.
+
+Tercer criterio de aceptación verificado. Logging estructurado de denials. Se corrieron cuatro vectores adversariales. Uno. Bloqueo de AWS metadata en ciento sesenta y nueve punto doscientos cincuenta y cuatro punto ciento sesenta y nueve punto doscientos cincuenta y cuatro. Dos. Bloqueo de local host en puerto veintidós. Tres. Bloqueo de decimal encoding, dos mil ochocientos cincuenta y dos millones, que resuelve a AWS metadata. Cuatro. Bloqueo de IPv6 loopback. Cada rechazo emitió el log estructurado DENIAL con código, URL, host, razón y stack trace completo. Criterio once aprobado.
+
+Cuarto criterio de aceptación verificado parcialmente. Video QA end to end. Este video demuestra el bloqueo del consumidor migrado a ciento sesenta y nueve punto doscientos cincuenta y cuatro. También demuestra que la app Android cliente continúa funcionando sin regresiones, ya que el cambio del issue impacta solo al pipeline Node punto js. Los sub items de linter pre-commit y anotación colon colon error en pull request no son verificables porque dependen del issue dos tres tres uno, que fue cerrado como not planned. El developer documentó esto en sus notas de dev y la decisión de aceptación está abierta al product owner.
+
+Tests unitarios. Veintidós de veintidós tests pasan en http-client punto test punto js, incluyendo los tres tests nuevos del criterio once. Cuarenta y seis de cuarenta y seis tests pasan en los módulos relacionados SSRF guard, proxy validator y redact.
+
+Resultado del QA. Aprobado con observación. Los criterios nueve, diez y once están completamente cubiertos. El criterio catorce está cubierto parcialmente con decisión delegada al product owner por dependencia cerrada.

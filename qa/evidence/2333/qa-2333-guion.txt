@@ -1,0 +1,23 @@
+Hola Leito, soy el agente QA de Intrale reportando la segunda verificación del issue dos mil trescientos treinta y tres, split del dos mil trescientos veinticuatro, que entrega el módulo sanitizer punto js core y su integración en rejection report y pulpo.
+
+Este issue es cien por ciento infraestructura pipeline en Node punto js. El sanitizador redacta secretos antes de escribirlos en reportes a Telegram y en comentarios automáticos a GitHub. No toca la app Android. Aun así, porque el label app cliente activó el modo android, verifiqué explícitamente que la app no tiene regresiones.
+
+Criterio de aceptación uno, API pública. El módulo expone sanitize, createSanitizeStream y un objeto for tests only con sanitize secrets puro. Verificado.
+
+Criterio de aceptación dos, cobertura de patrones. AWS access key, secret y session; tokens de GitHub; JWT con Bearer; token de bot de Telegram incluyendo la URL slash bot token; claves de Google API; refresh de Google OAuth; Cognito; claves privadas PEM; autenticación básica en URLs; cadenas de conexión a base de datos; webhooks de Slack; headers sensibles como Authorization, x api key y Cookie; y entradas estructuradas de application conf. Todos verificados con test positivo y negativo por patrón.
+
+Criterio de aceptación tres, resistencia a bypass. Normalización NFC, homoglifos cirílicos, zero width space, zero width joiner, BOM, bytes nulos y case folding en headers. Todos cubiertos.
+
+Criterio de aceptación cinco, fail closed. En caso de excepción interna se retorna el placeholder sanitizer error sin filtrar jamás el input original. Verificado.
+
+Criterio de aceptación seis, stream filter. Transform con ventana deslizante de al menos doscientos cincuenta y seis bytes y flush por newline o por tamaño máximo. Verificado con tests de chunks partidos.
+
+Criterio de aceptación ocho, tests unitarios. Cincuenta y un tests pasan, cero fallan. Incluye los ocho tests nuevos de CA once punto uno que portamos desde la base después del rebote del tester. La performance adversarial de diez megas se mantiene bajo quinientos milisegundos, medida en seis milisegundos.
+
+Criterio CA once punto uno, cobertura URL Telegram. El patrón ahora redacta correctamente slash bot token en URLs completas, case insensitive, sin redactar bot solo ni bot embebido en palabras. Fix aplicado en commits cuarenta y uno c cinco setenta y cinco b f y f tres c c e seis cuatro seis.
+
+Integración. Rejection report sanitiza el HTML antes de pasarlo a PDF. Pulpo sanitiza el body en github comment on issue y el motivo de rechazo en brazo barrido antes de escribir el YAML. Verificado en pasada previa.
+
+Smoke Android. Abrí la app cliente, se muestra correctamente la pantalla Bienvenido a Intrale con el subtítulo tu tienda favorita ahora en tu bolsillo. Navegué los tres pasos del onboarding tocando el botón Siguiente y llegué a la pantalla final Empezá ahora con el botón Empezar habilitado. Sin crashes, sin ANR, sin regresiones visuales.
+
+Resultado, aprobado. Los tres quality gates anteriores ya estaban verdes, build exitoso con trescientas treinta y siete tareas, tester aprobó cincuenta y un de cincuenta y un tests, security re auditó el fix del patrón Telegram y aprobó. El video de esta segunda corrida queda como evidencia y se encola subida a Drive y label qa passed a GitHub. Fin del reporte, Leito, todo listo para delivery.

@@ -1,0 +1,81 @@
+===== TC-AUTH-01: POST /qa-automation/signin =====
+TITLE: Signin endpoint existe y valida body
+REQUEST BODY: {}
+EXPECTED: 400..400
+ACTUAL STATUS: 400
+TIME_MS: 461
+RESPONSE: {"message":"email is required password is required","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-AUTH-02: POST /qa-automation/signup =====
+TITLE: Signup endpoint existe y valida body
+REQUEST BODY: {}
+EXPECTED: 400..400
+ACTUAL STATUS: 400
+TIME_MS: 438
+RESPONSE: {"message":"email is required","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-AUTH-03: POST /qa-automation/recovery =====
+TITLE: Recovery (forgot password) endpoint existe
+REQUEST BODY: {}
+EXPECTED: 400..400
+ACTUAL STATUS: 400
+TIME_MS: 714
+RESPONSE: {"message":"email is required","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-AUTH-04: POST /qa-automation/signin =====
+TITLE: Signin con credenciales invalidas responde error
+REQUEST BODY: {"email":"inexistente@test.com","password":"WrongPass123!"}
+EXPECTED: 400..401
+ACTUAL STATUS: 401
+TIME_MS: 3402
+RESPONSE: {"statusCode":{"value":401,"description":"Unauthorized"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-PROD-01: POST /qa-automation/products =====
+TITLE: Products endpoint existe (requiere auth)
+REQUEST BODY: {}
+EXPECTED: 400..401
+ACTUAL STATUS: 401
+TIME_MS: 445
+RESPONSE: {"statusCode":{"value":401,"description":"Unauthorized"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-ORDER-01: POST /qa-automation/orders =====
+TITLE: Orders endpoint existe (requiere auth)
+REQUEST BODY: {}
+EXPECTED: 400..401
+ACTUAL STATUS: 400
+TIME_MS: 504
+RESPONSE: {"message":"No function defined on path","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-ORDER-02: POST /qa-automation/order-detail =====
+TITLE: Order-detail endpoint existe (requiere auth)
+REQUEST BODY: {}
+EXPECTED: 400..401
+ACTUAL STATUS: 400
+TIME_MS: 399
+RESPONSE: {"message":"No function defined on path","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-DELIVERY-01: POST /qa-automation/delivery-orders =====
+TITLE: Delivery orders endpoint existe
+REQUEST BODY: {}
+EXPECTED: 400..401
+ACTUAL STATUS: 400
+TIME_MS: 405
+RESPONSE: {"message":"No function defined on path","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+VERDICT: PASS
+
+===== TC-PROFILE-01: POST /qa-automation/profile =====
+TITLE: Profile endpoint existe (requiere auth)
+REQUEST BODY: {}
+EXPECTED: 400..401
+ACTUAL STATUS: 400
+TIME_MS: 378
+RESPONSE: {"message":"No function defined on path","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+VERDICT: PASS
+

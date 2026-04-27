@@ -1,0 +1,19 @@
+Hola, soy el QA de Intrale validando el issue mil novecientos quince, notificaciones sonoras de pedidos nuevos para el negocio. Voy a reportar los hallazgos de la verificación.
+
+El issue pide seis criterios de aceptación. Uno, que llegue un sonido distintivo al entrar un pedido nuevo. Dos, que el dispositivo vibre. Tres, que el sonido se repita cada treinta segundos hasta que abran el pedido. Cuatro, que el negocio pueda configurar volumen y tipo de sonido. Cinco, que funcione con la app en segundo plano. Seis, que se pueda silenciar temporalmente.
+
+Revisé el código del commit uno nueve cero d dos f nueve cinco. El desarrollador creó la clase BusinessOrderNotificationStore, el banner OrderSoundAlertBanner, el servicio OrderNotificationSoundService con implementación Android usando ToneGenerator y Vibrator, y la pantalla BusinessSoundConfigScreen. Los tipos de sonido disponibles son cuatro: por defecto, campanilla, chime y urgente. La repetición cada treinta segundos está implementada con un launched effect y delay dentro del banner.
+
+Sin embargo, encontré dos defectos graves.
+
+Defecto número uno, el más grave: la pantalla de configuración de sonido no es accesible desde la interfaz. El desarrollador creó la BusinessSoundConfigScreen y la registró en el inyector de dependencias con el tag BUSINESS_SOUND_CONFIG y el path barra business barra sound-config. Pero no agregó ningún botón, tarjeta o ítem de menú que navegue a esa pantalla. Revisé el DashboardScreen del commit y tiene navegación a BusinessConfig, BusinessSchedules, BusinessDeliveryZone y BusinessPaymentMethods, pero cero referencias a BUSINESS_SOUND_CONFIG_PATH. Hice grep en todo el commit y la constante solo aparece en su propia declaración, sin ningún uso. Esto significa que el empleado del negocio no puede configurar volumen ni tipo de sonido desde la app, rompiendo el criterio cuatro.
+
+Defecto número dos: la funcionalidad no anda en segundo plano. La reproducción del sonido vive dentro del composable OrderSoundAlertBanner, que existe solo mientras la pantalla de pedidos está visible. Hay un DisposableEffect con onDispose que llama a stopSound y release, así que apenas el usuario navega a otra pantalla o la app se minimiza, el sonido se detiene. No hay foreground service de Android, no hay work manager, no hay push notification con sonido propio. El criterio cinco explícitamente pide que funcione con la app en segundo plano, y no se cumple.
+
+Adicionalmente, la detección de pedidos nuevos depende de que el usuario refresque manualmente la pantalla de pedidos. El store se invoca desde BusinessOrdersViewModel loadOrders, sin polling ni push. El sonido entonces nunca suena a tiempo real, solo cuando el empleado ya está mirando la pantalla, contradiciendo la motivación del issue que dice que el empleado no está mirando la app constantemente.
+
+En resumen, aprobé parcialmente la implementación a nivel código para sonido distintivo, vibración, repetición cada treinta segundos y mute. Pero rechazo la historia porque dos criterios explícitos fallan: el usuario no puede configurar sonido por falta de navegación, y no funciona en segundo plano.
+
+Recomendación al developer: agregar una tarjeta en DashboardScreen que navegue al path sound-config o un icono de configuración en el top bar de la pantalla de pedidos, y sumar un foreground service o mecanismo de push para detectar pedidos nuevos sin depender de la pantalla activa.
+
+Estado final del issue mil novecientos quince: rechazado.

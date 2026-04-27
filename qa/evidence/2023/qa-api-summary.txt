@@ -1,0 +1,26 @@
+QA-API verificacion - Issue #2023
+=====================================
+Fecha: 2026-04-21T02:03:07Z
+Pipeline: desarrollo
+Modo: qa-api
+Backend: https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev
+
+Resultados: 9/9 PASS, 0 FAIL
+
+Endpoints verificados (existencia y reachability):
+- Auth: signin, signup, recovery (forgot password)
+  Nota: NO hay endpoint /refresh dedicado. El refreshToken se entrega
+        como parte de la respuesta de signin. Documentado por Guru.
+- Productos: /products (requiere auth JWT)
+- Pedidos: /orders, /order-detail (requiere auth JWT)
+- Delivery: /delivery-orders (requiere auth JWT)
+- Perfil: /profile (requiere auth JWT)
+
+Interpretacion de status codes:
+- 400 = endpoint existe, Lambda valida body y rechaza (OK)
+- 401 = endpoint existe, API Gateway/Lambda valida auth y rechaza (OK)
+- 403 (Missing Authentication Token) = ruta NO existe en API Gateway (FAIL)
+- 404 = recurso no encontrado (FAIL si es lista de rutas)
+
+Detalle completo en: qa/evidence/2023/raw-responses.txt
+Reporte JSON: qa/evidence/2023/qa-api-report.json
