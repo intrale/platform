@@ -70,6 +70,40 @@ function homeStyles() {
 .kpi-card.kpi-ok .kpi-value { color: var(--in-ok); }
 .kpi-bar { margin-top: 6px; }
 
+/* KPI dual de cuota: 2 filas, sin un value gigante */
+.kpi-quota-dual { gap: 6px; }
+.kpi-quota-dual .kpi-icon { font-size: 16px; opacity: 0.7; }
+.kpi-quota-row {
+    display: grid;
+    grid-template-columns: auto 60px 1fr;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 0;
+    border-top: 1px solid var(--in-border-soft);
+}
+.kpi-quota-row:first-of-type { border-top: none; }
+.kpi-quota-row-label {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.kpi-quota-row-value {
+    font-size: 20px;
+    font-weight: 700;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.kpi-quota-row-eta {
+    font-size: 10px;
+    color: var(--in-fg-soft);
+    font-family: var(--in-mono);
+    text-align: right;
+}
+.kpi-quota-row.kpi-warn .kpi-quota-row-value { color: var(--in-warn); }
+.kpi-quota-row.kpi-bad .kpi-quota-row-value { color: var(--in-bad); }
+.kpi-quota-row.kpi-ok .kpi-quota-row-value { color: var(--in-ok); }
+
 /* Active section */
 .active-section {
     background: linear-gradient(180deg, rgba(46,230,193,0.05), transparent 80%), var(--in-bg-2);
@@ -469,6 +503,58 @@ async function tickHeader(){
         if(count === 0) badge.classList.add('area-pill-badge-zero');
         else if(area === 'bloqueados' && count > 0) badge.classList.add('area-pill-badge-bad');
     }
+    // Priority Windows: pills clickeables solo visibles si están active.
+    const pw = d.priorityWindows || {};
+    function setWindowPill(id, win, label){
+        const pill = document.getElementById(id);
+        if(!pill) return;
+        if(!win || !win.active){
+            pill.style.display = 'none';
+            return;
+        }
+        pill.style.display = '';
+        pill.classList.remove('in-pill-ok','in-pill-bad');
+        pill.classList.add('in-pill-warn');
+        const tag = win.manual ? '🔒' : '⚡';
+        let elapsed = '';
+        if(win.activatedAt){
+            const ms = Date.now() - win.activatedAt;
+            const min = Math.floor(ms/60000);
+            elapsed = min < 60 ? ' · '+min+'m' : ' · '+Math.floor(min/60)+'h '+(min%60)+'m';
+        }
+        pill.textContent = tag+' '+label+' window'+elapsed;
+        if(!pill.dataset._bound){
+            pill.dataset._bound = '1';
+            pill.style.cursor = 'pointer';
+            pill.addEventListener('click', async () => {
+                if(!confirm('¿Desactivar la '+label+' Priority Window? El pipeline va a poder lanzar dev/build de nuevo.')) return;
+                try{
+                    const r = await fetch('/api/priority-window', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({window: id.replace('hdr-window-',''), action:'deactivate'})});
+                    const j = await r.json();
+                    showToast(j.msg || (j.ok?label+' desactivada':'Falló'), j.ok);
+                    setTimeout(() => tickHeader().catch(()=>{}), 600);
+                } catch(e){ showToast('Error: '+e.message, false); }
+            });
+        }
+    }
+    setWindowPill('hdr-window-qa', pw.qa, 'QA');
+    setWindowPill('hdr-window-build', pw.build, 'Build');
+    // Recursos: CPU/RAM con coloreo según umbrales.
+    const res = d.resources;
+    const resPill = document.getElementById('hdr-resources');
+    if(resPill && res){
+        const cpu = res.cpuPercent != null ? res.cpuPercent : '?';
+        const mem = res.memPercent != null ? res.memPercent : '?';
+        resPill.textContent = '🖥 CPU '+cpu+'% · RAM '+mem+'%';
+        resPill.classList.remove('in-pill-ok','in-pill-warn','in-pill-bad');
+        const worst = Math.max(Number(cpu)||0, Number(mem)||0);
+        const maxCpu = res.maxCpu || 70;
+        const maxMem = res.maxMem || 70;
+        if((Number(cpu)||0) > maxCpu || (Number(mem)||0) > maxMem) resPill.classList.add('in-pill-bad');
+        else if(worst > 50) resPill.classList.add('in-pill-warn');
+        else resPill.classList.add('in-pill-ok');
+        resPill.title = 'CPU '+cpu+'% (cap '+maxCpu+'%) · RAM '+mem+'% ('+(res.memUsedGB||'?')+'GB / '+(res.memTotalGB||'?')+'GB · cap '+maxMem+'%) · '+(res.cpuCores||'?')+' cores';
+    }
 }
 
 async function tickKpis(){
@@ -486,38 +572,94 @@ async function tickKpis(){
     }
 }
 
-async function tickQuota(){
-    const d = await fetchJson('/api/dash/quota');
-    if(!d) return;
+// Cache del último d para que el tick de cuenta regresiva (cada segundo)
+// pueda actualizar los ETA sin esperar al fetch del polling de 60s.
+let _quotaLastData = null;
+
+function fmtETA(ms){
+    if(ms == null || !Number.isFinite(ms) || ms <= 0) return '·';
+    const totalMin = Math.floor(ms / 60000);
+    if(totalMin < 60) return totalMin+'m';
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    if(h < 24) return h+'h '+(m>0?m+'m':'');
+    const d = Math.floor(h / 24);
+    const rh = h % 24;
+    return d+'d '+(rh>0?rh+'h':'');
+}
+
+function renderQuotaCard(d){
     const card = document.getElementById('kpi-quota');
-    if(!card) return;
-    // Si hay calibración, usar realPct (factor × pipeline). Si no, pipeline raw.
+    if(!card || !d) return;
     const weekPct = d.realPct != null ? d.realPct : (d.pct || 0);
     const sessPct = d.session && d.session.realPct != null ? d.session.realPct : ((d.session && d.session.pct) || 0);
     const weekStatus = d.realPct != null ? d.realStatus : d.status;
     const sessStatus = d.session && d.session.realPct != null ? d.session.realStatus : (d.session && d.session.status);
-    // Mostrar el peor de los dos — el que sature primero corta antes.
-    const isSession = sessPct > weekPct;
-    const dominantPct = isSession ? sessPct : weekPct;
-    const dominantStatus = isSession ? sessStatus : weekStatus;
-    const calibTag = d.realPct != null ? ' (real)' : '';
-    setText('kpi-quota-value', dominantPct.toFixed(1)+'%');
-    const used = isSession
-        ? ('sesión 5h'+calibTag)
-        : ('semanal'+calibTag);
-    setText('kpi-quota-sub', used);
+
+    setText('kpi-quota-session-pct', sessPct.toFixed(1)+'%');
+    setText('kpi-quota-week-pct', weekPct.toFixed(1)+'%');
+
+    // Cuenta regresiva: si tenemos session_resets_at o weekly_resets_at, usar
+    // diferencia con now. Si no, usar daysToReset del backend (semanal) o
+    // hoursRemaining (sesión, asume rolling 5h sin punto fijo).
+    const now = Date.now();
+    let sessETA;
+    if(d.sessionResetsAt){
+        const ts = new Date(d.sessionResetsAt).getTime();
+        sessETA = ts > now ? fmtETA(ts - now) : '· reseteó';
+    } else if(d.session && d.session.hoursRemaining != null){
+        sessETA = '~'+d.session.hoursRemaining.toFixed(1)+'h al cap';
+    } else {
+        sessETA = '·';
+    }
+    let weekETA;
+    if(d.weeklyResetsAtReported){
+        const ts = new Date(d.weeklyResetsAtReported).getTime();
+        weekETA = ts > now ? fmtETA(ts - now) : '· reseteó';
+    } else if(d.daysToReset != null){
+        weekETA = fmtETA(d.daysToReset * 86400000);
+    } else {
+        weekETA = '·';
+    }
+    setText('kpi-quota-session-eta', sessETA);
+    setText('kpi-quota-week-eta', weekETA);
+
+    const sessRow = document.getElementById('kpi-quota-session');
+    const weekRow = document.getElementById('kpi-quota-week');
+    function setRowStatus(row, status){
+        if(!row) return;
+        row.classList.remove('kpi-ok','kpi-warn','kpi-bad');
+        if(status === 'critical') row.classList.add('kpi-bad');
+        else if(status === 'warning') row.classList.add('kpi-warn');
+        else if(status === 'normal') row.classList.add('kpi-ok');
+    }
+    setRowStatus(sessRow, sessStatus);
+    setRowStatus(weekRow, weekStatus);
+
+    // Color del card = peor de los dos (alerta global)
+    const worst = (sessStatus === 'critical' || weekStatus === 'critical') ? 'critical'
+        : (sessStatus === 'warning' || weekStatus === 'warning') ? 'warning'
+        : (sessStatus === 'normal' || weekStatus === 'normal') ? 'normal' : 'ok';
     card.classList.remove('kpi-ok','kpi-warn','kpi-bad');
-    if(dominantStatus === 'critical') card.classList.add('kpi-bad');
-    else if(dominantStatus === 'warning') card.classList.add('kpi-warn');
-    else if(dominantStatus === 'normal') card.classList.add('kpi-ok');
-    // Tooltip con ambas ventanas + calibración + reset
-    const reset = d.daysToReset != null ? 'Reset semanal en '+d.daysToReset.toFixed(1)+' días.' : '';
-    const adj = d.adjustmentsCount > 0 ? ' '+d.adjustmentsCount+' auto-ajustes.' : '';
-    const realLine = d.realPct != null ? ' Calibrado vs claude.ai (factor ×'+(d.calibration?d.calibration.weekly_factor:'?')+' sem, ×'+(d.calibration?d.calibration.session_factor:'?')+' ses).' : '';
-    const sessLine = 'Sesión 5h: '+sessPct.toFixed(1)+'%'+(d.session && d.session.realPct != null ? ' (real, pipeline '+d.session.pct.toFixed(1)+'%)' : '');
-    const weekLine = 'Semanal: '+weekPct.toFixed(1)+'%'+(d.realPct != null ? ' (real, pipeline '+d.pct.toFixed(1)+'%)' : '');
-    card.title = sessLine+'\\n'+weekLine+'\\n'+reset+adj+realLine;
+    if(worst === 'critical') card.classList.add('kpi-bad');
+    else if(worst === 'warning') card.classList.add('kpi-warn');
+    else if(worst === 'normal') card.classList.add('kpi-ok');
+
+    const realLine = d.realPct != null
+        ? 'Calibrado vs claude.ai (×'+(d.calibration?d.calibration.weekly_factor:'?')+' sem, ×'+(d.calibration?d.calibration.session_factor:'?')+' ses, '+(d.calibration?d.calibration.sample_count:0)+' muestras).'
+        : 'Sin calibrar — pipeline raw. Calibrá en /costos para mejor precisión.';
+    card.title = realLine;
 }
+
+async function tickQuota(){
+    const d = await fetchJson('/api/dash/quota');
+    if(!d) return;
+    _quotaLastData = d;
+    renderQuotaCard(d);
+}
+
+// Cuenta regresiva del ETA actualizada cada segundo sin re-fetch.
+setInterval(() => { if(_quotaLastData) renderQuotaCard(_quotaLastData); }, 1000);
 
 async function tickActive(){
     const d = await fetchJson('/api/dash/active');
@@ -828,6 +970,9 @@ function renderHomeHTML() {
           </div>
         </div>
       </span>
+      <span class="in-pill" id="hdr-window-qa" style="display:none" title="Click para desactivar la QA Priority Window">…</span>
+      <span class="in-pill" id="hdr-window-build" style="display:none" title="Click para desactivar la Build Priority Window">…</span>
+      <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema">…</span>
       <span class="in-pill" id="hdr-pulpo">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
@@ -860,11 +1005,19 @@ function renderHomeHTML() {
         <span class="kpi-value" id="kpi-bounce-value">…</span>
         <span class="kpi-sub">rechazos / total</span>
       </div>
-      <div class="kpi-card" id="kpi-quota" title="% del límite estimado del Plan Max consumido en los últimos 7 días. Anthropic no expone API; el límite se auto-ajusta observando el uso real.">
+      <div class="kpi-card kpi-quota-dual" id="kpi-quota" title="Cuota Plan Max (sin API pública de Anthropic — calibrado contra valores reales de claude.ai).">
         <span class="kpi-icon">📊</span>
-        <span class="kpi-label">Cuota · 7d</span>
-        <span class="kpi-value" id="kpi-quota-value">…</span>
-        <span class="kpi-sub" id="kpi-quota-sub">plan Max</span>
+        <span class="kpi-label">Cuota Plan Max</span>
+        <div class="kpi-quota-row" id="kpi-quota-session">
+          <span class="kpi-quota-row-label">Sesión 5h</span>
+          <span class="kpi-quota-row-value" id="kpi-quota-session-pct">…</span>
+          <span class="kpi-quota-row-eta" id="kpi-quota-session-eta">·</span>
+        </div>
+        <div class="kpi-quota-row" id="kpi-quota-week">
+          <span class="kpi-quota-row-label">Semanal</span>
+          <span class="kpi-quota-row-value" id="kpi-quota-week-pct">…</span>
+          <span class="kpi-quota-row-eta" id="kpi-quota-week-eta">·</span>
+        </div>
       </div>
     </section>
 

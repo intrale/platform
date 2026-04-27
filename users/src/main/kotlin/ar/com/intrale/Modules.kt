@@ -107,6 +107,12 @@ val appModule = DI.Module("appModule") {
         }
     }
 
+    bind <DynamoDbTable<DeliveryZoneEntity>>{
+        singleton {
+            instance<DynamoDbEnhancedClient>().table("deliveryzones", TableSchema.fromBean(DeliveryZoneEntity::class.java))
+        }
+    }
+
     bind<UsersConfig> {
         singleton {
             val configFactory = ConfigFactory.load()
@@ -300,6 +306,14 @@ val appModule = DI.Module("appModule") {
 
     bind<Function> (tag="business/delivery-zone") {
         singleton { BusinessDeliveryZoneFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="zones") {
+        singleton { ZonesFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="zones/check") {
+        singleton { ZonesCheckFunction(instance(), instance(), instance()) }
     }
 
     bind<Function> (tag="business/payment-methods") {

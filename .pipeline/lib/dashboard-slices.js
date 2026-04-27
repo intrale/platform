@@ -154,6 +154,37 @@ function headerSlice(state, ctx) {
     const bloqueadosCount = (state.bloqueados || []).length;
     const historialCount = (state.actividad || []).length;
 
+    // Priority windows (QA/Build) — bloquean dev/build cuando la cola QA
+    // o Build se acumula. El operador necesita verlas en el header del home
+    // para saber por qué no se lanzan agentes y poder desactivarlas con un click.
+    const pw = state.priorityWindows || {};
+    const priorityWindows = {
+        qa: {
+            active: !!pw.qa?.active,
+            activatedAt: pw.qa?.activatedAt || null,
+            cooldownUntil: pw.qa?.cooldownUntil || null,
+            manual: !!pw.qa?.manual,
+        },
+        build: {
+            active: !!pw.build?.active,
+            activatedAt: pw.build?.activatedAt || null,
+            manual: !!pw.build?.manual,
+        },
+    };
+
+    // Salud del sistema (CPU/RAM) — antes vivía en una sección /ops, pero el
+    // operador la quiere a la vista en el home (sin tener que ir a otra tab).
+    const r = state.resources || {};
+    const resources = {
+        cpuPercent: r.cpuPercent ?? null,
+        memPercent: r.memPercent ?? null,
+        memUsedGB: r.memUsedGB ?? null,
+        memTotalGB: r.memTotalGB ?? null,
+        cpuCores: r.cpuCores ?? null,
+        maxCpu: r.maxCpu ?? 70,
+        maxMem: r.maxMem ?? 70,
+    };
+
     return {
         mode,
         allowedIssues,
@@ -167,6 +198,8 @@ function headerSlice(state, ctx) {
             matriz: pipelineActive,
             historial: historialCount,
         },
+        priorityWindows,
+        resources,
         timestamp: Date.now(),
     };
 }

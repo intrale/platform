@@ -789,19 +789,32 @@ function renderCostos() {
   <div id="quota-bar-wrap" style="margin-top:14px"></div>
   <div id="quota-meta" style="margin-top:10px;font-size:12px;color:var(--in-fg-dim)"></div>
   <details id="quota-calib" style="margin-top:14px;border-top:1px solid var(--in-border);padding-top:12px">
-    <summary style="cursor:pointer;font-size:12px;color:var(--in-fg-dim);user-select:none">🎯 Calibrar contra valores reales de claude.ai/settings/usage</summary>
-    <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end">
+    <summary style="cursor:pointer;font-size:12px;color:var(--in-fg-dim);user-select:none">🎯 Calibrar con valores reales de claude.ai/settings/usage (con aprendizaje)</summary>
+    <p style="font-size:11px;color:var(--in-fg-dim);margin:10px 0 6px 0">Pegá los % que ves y, si querés mejorar la precisión del reset semanal, también el tiempo restante hasta cada reset. Cada calibración entra al historial — los factores se promedian con EMA (más muestras = más estables, menos sensibles a outliers).</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
       <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% semanal real (claude.ai)</label>
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% semanal real</label>
         <input id="calib-weekly" type="number" step="0.1" min="0" max="100" placeholder="ej: 22" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
       </div>
       <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% sesión 5h real (claude.ai)</label>
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% sesión 5h real</label>
         <input id="calib-session" type="number" step="0.1" min="0" max="100" placeholder="ej: 60" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
       </div>
-      <button id="calib-save" class="in-btn" style="border-color:var(--in-accent);color:var(--in-accent)">Aplicar</button>
+      <div>
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Sesión: día y hora del reset (opcional)</label>
+        <input id="calib-session-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Semanal: día y hora del reset (opcional)</label>
+        <input id="calib-weekly-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button id="calib-save" class="in-btn" style="border-color:var(--in-accent);color:var(--in-accent)">▶ Aplicar y aprender</button>
+      <button id="calib-clear" class="in-btn" style="border-color:var(--in-fg-soft);color:var(--in-fg-dim)">✕ Borrar calibración</button>
     </div>
     <div id="calib-status" style="margin-top:10px;font-size:11px;color:var(--in-fg-dim)"></div>
+    <div id="calib-history" style="margin-top:14px"></div>
   </details>
 </section>
 <section class="in-section">
@@ -872,8 +885,11 @@ async function tickQuota(){
         const barHtml = '<div class="quota-bar '+barCls+'"><span style="width:'+Math.min(100,d.pct).toFixed(1)+'%"></span></div><div class="quota-bar-label"><span>'+d.hoursUsed7d.toFixed(1)+'h consumidas</span><span>'+d.effectiveLimitHours+'h estimadas</span></div>';
         if(barWrap.innerHTML !== barHtml) barWrap.innerHTML = barHtml;
     }
+    // fmtART al scope de la función (no dentro de if(meta)) porque también
+    // lo usa el bloque de calibración debajo. Antes estaba scoped al if(meta)
+    // y rompía con ReferenceError → el binding del botón nunca se ejecutaba.
+    const fmtART = (iso) => new Date(iso).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     if(meta){
-        const fmtART = (iso) => new Date(iso).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
         const lines = [];
         if(d.lastResetAt && d.nextResetAt){
             lines.push('🗓 Semana actual: ' + fmtART(d.lastResetAt) + ' → ' + fmtART(d.nextResetAt));
@@ -891,26 +907,93 @@ async function tickQuota(){
         let ctxt;
         if(d.calibration){
             const at = fmtART(d.calibration.at);
-            ctxt = '✓ Calibrado el '+at+' · semanal '+d.calibration.real_weekly_pct+'% real / '+d.calibration.pipeline_weekly_pct_at+'% pipeline = factor ×'+d.calibration.weekly_factor+' · sesión ×'+d.calibration.session_factor+'.';
+            const stale = d.calibrationStale ? ' ⚠ ' : ' ✓ ';
+            const ageInfo = d.calibrationAgeDays != null ? ' (hace '+d.calibrationAgeDays+'d)' : '';
+            ctxt = stale+'Calibrado #'+d.calibration.sample_count+' · '+at+ageInfo+' · factor smooth(w=×'+d.calibration.weekly_factor+', s=×'+d.calibration.session_factor+') raw esta vez(w=×'+d.calibration.weekly_factor_obs+', s=×'+d.calibration.session_factor_obs+') · α EMA '+d.calibration.ema_alpha;
+            if(d.calibrationStale) ctxt += ' — recomendado recalibrar';
+            if(d.weeklyResetDriftMin) ctxt += ' · drift TZ del reset semanal: '+d.weeklyResetDriftMin+' min';
         } else {
             ctxt = 'Sin calibrar. Pegá los % que ves en claude.ai/settings/usage para extrapolar el real.';
         }
         if(calibStatus.textContent !== ctxt) calibStatus.textContent = ctxt;
     }
+
+    // Historial de calibraciones (tabla compacta)
+    const calibHist = document.getElementById('calib-history');
+    if(calibHist){
+        const arr = (d.calibrations || []).slice().reverse();
+        if(arr.length === 0){
+            calibHist.innerHTML = '';
+        } else {
+            const rows = arr.slice(0, 10).map(c => '<tr>'+
+                '<td style="padding:4px 8px">'+fmtART(c.at)+'</td>'+
+                '<td style="padding:4px 8px;text-align:right">'+c.real_weekly_pct+'%</td>'+
+                '<td style="padding:4px 8px;text-align:right">'+c.real_session_pct+'%</td>'+
+                '<td style="padding:4px 8px;text-align:right;color:var(--in-fg-dim)">'+c.pipeline_weekly_pct_at.toFixed(1)+'%</td>'+
+                '<td style="padding:4px 8px;text-align:right;color:var(--in-fg-dim)">'+c.pipeline_session_pct_at.toFixed(1)+'%</td>'+
+                '<td style="padding:4px 8px;text-align:right">×'+c.weekly_factor_obs+'</td>'+
+                '<td style="padding:4px 8px;text-align:right">×'+c.session_factor_obs+'</td>'+
+                '</tr>').join('');
+            const html = '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--in-fg-dim);user-select:none">📜 Historial de '+arr.length+' calibración'+(arr.length===1?'':'es')+'</summary>'+
+                '<table style="width:100%;font-size:11px;font-family:var(--in-mono);margin-top:8px;border-collapse:collapse"><thead><tr style="color:var(--in-fg-dim);border-bottom:1px solid var(--in-border)">'+
+                '<th style="padding:4px 8px;text-align:left">Fecha</th>'+
+                '<th style="padding:4px 8px;text-align:right">Sem real</th>'+
+                '<th style="padding:4px 8px;text-align:right">Ses real</th>'+
+                '<th style="padding:4px 8px;text-align:right">Sem pipe</th>'+
+                '<th style="padding:4px 8px;text-align:right">Ses pipe</th>'+
+                '<th style="padding:4px 8px;text-align:right">×Sem</th>'+
+                '<th style="padding:4px 8px;text-align:right">×Ses</th>'+
+                '</tr></thead><tbody>'+rows+'</tbody></table></details>';
+            if(calibHist.innerHTML !== html) calibHist.innerHTML = html;
+        }
+    }
+
+    // Bind del botón Aplicar
     const calibBtn = document.getElementById('calib-save');
     if(calibBtn && !calibBtn.dataset._bound){
         calibBtn.dataset._bound = '1';
         calibBtn.addEventListener('click', async () => {
             const w = parseFloat(document.getElementById('calib-weekly').value);
             const s = parseFloat(document.getElementById('calib-session').value);
+            const sAtRaw = document.getElementById('calib-session-at').value;
+            const wAtRaw = document.getElementById('calib-weekly-at').value;
+            // datetime-local NO incluye TZ — el browser lo interpreta como local.
+            // new Date('2026-04-27T22:00') usa TZ del browser, que para el
+            // operador es ART (lo que queremos). Convertimos a ISO UTC.
+            const sAt = sAtRaw ? new Date(sAtRaw).toISOString() : null;
+            const wAt = wAtRaw ? new Date(wAtRaw).toISOString() : null;
             if(!Number.isFinite(w) || !Number.isFinite(s)){
                 showToast('Ingresá ambos % (semanal y sesión)', false);
                 return;
             }
             try{
-                const r = await fetch('/api/dash/quota/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({real_weekly_pct: w, real_session_pct: s})});
+                const body = { real_weekly_pct: w, real_session_pct: s };
+                if(sAt) body.session_resets_at = sAt;
+                if(wAt) body.weekly_resets_at = wAt;
+                const r = await fetch('/api/dash/quota/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
                 const j = await r.json();
                 showToast(j.msg || (j.ok?'Calibrado':'Falló'), j.ok);
+                if(j.ok){
+                    document.getElementById('calib-weekly').value = '';
+                    document.getElementById('calib-session').value = '';
+                    document.getElementById('calib-session-at').value = '';
+                    document.getElementById('calib-weekly-at').value = '';
+                }
+                setTimeout(() => tickQuota().catch(()=>{}), 400);
+            } catch(e){ showToast('Error: '+e.message, false); }
+        });
+    }
+
+    // Bind del botón Borrar
+    const calibClear = document.getElementById('calib-clear');
+    if(calibClear && !calibClear.dataset._bound){
+        calibClear.dataset._bound = '1';
+        calibClear.addEventListener('click', async () => {
+            if(!confirm('¿Borrar la calibración actual? El KPI vuelve a mostrar el pipeline raw. El historial de calibraciones previas se conserva.')) return;
+            try{
+                const r = await fetch('/api/dash/quota/calibrate', {method:'DELETE'});
+                const j = await r.json();
+                showToast(j.msg || (j.ok?'Borrada':'Falló'), j.ok);
                 setTimeout(() => tickQuota().catch(()=>{}), 400);
             } catch(e){ showToast('Error: '+e.message, false); }
         });
