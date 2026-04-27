@@ -872,8 +872,11 @@ async function tickQuota(){
         const barHtml = '<div class="quota-bar '+barCls+'"><span style="width:'+Math.min(100,d.pct).toFixed(1)+'%"></span></div><div class="quota-bar-label"><span>'+d.hoursUsed7d.toFixed(1)+'h consumidas</span><span>'+d.effectiveLimitHours+'h estimadas</span></div>';
         if(barWrap.innerHTML !== barHtml) barWrap.innerHTML = barHtml;
     }
+    // fmtART al scope de la función (no dentro de if(meta)) porque también
+    // lo usa el bloque de calibración debajo. Antes estaba scoped al if(meta)
+    // y rompía con ReferenceError → el binding del botón nunca se ejecutaba.
+    const fmtART = (iso) => new Date(iso).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     if(meta){
-        const fmtART = (iso) => new Date(iso).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
         const lines = [];
         if(d.lastResetAt && d.nextResetAt){
             lines.push('🗓 Semana actual: ' + fmtART(d.lastResetAt) + ' → ' + fmtART(d.nextResetAt));
