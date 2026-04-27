@@ -1,0 +1,24 @@
+QA end to end del issue dos mil trescientos seis. Seccion Salud de Infra en el dashboard monitor.
+Este relato recorre los siete escenarios grabados y valida los once criterios de aceptacion definidos por Producto y UX.
+
+Escenario uno, pipeline sano. La seccion Salud de Infra aparece en la parte superior del dashboard, visualmente separada del panel de agentes y del tracker de issues, con el semaforo verde y la etiqueta SALUDABLE, cumpliendo el criterio uno y el criterio siete. El circuit breaker muestra cerrado, lanzamientos habilitados. DNS OK hace un segundo. Retries ultima hora dos con delta menos uno respecto a la hora anterior, uno coma dos por ciento. Ultimo issue afectado sin rebotes registrados. El timestamp relativo cumple el criterio cuatro.
+
+Escenario dos, estado degradado. El semaforo cambia a amarillo con la etiqueta DEGRADADO. DNS OK pero con latencia de tres mil doscientos milisegundos sobre el umbral de tres segundos. Retries dieciocho con delta mas seis respecto a la hora anterior, doce coma cinco por ciento. El circuit breaker permanece cerrado. Cumple el criterio tres de semaforo amarillo y el refinamiento UX de senal emoji mas texto.
+
+Escenario tres, circuit breaker abierto, estado critico. El semaforo pasa a rojo con la etiqueta CRITICO. El circuit breaker exhibe el mensaje autoexplicativo PIPELINE PAUSADO. Debajo, tres issues consecutivos fallaron por red. Ultimo issue dos mil doscientos noventa y seis con motivo ENOTFOUND, hace un segundo. La CTA de reanudacion aparece como texto, node punto pipeline barra restart punto js, con boton de copiar al portapapeles pasivo, no ejecuta acciones en el servidor. Cumple el criterio cinco del PO y el refinamiento UX tres sobre copy friendly.
+
+Escenario cuatro, fallo de DNS. El semaforo sigue rojo. DNS FAIL hace un segundo. Retries en treinta y cinco con tasa veintidos por ciento. Ultimo issue afectado dos mil doscientos noventa y seis ENOTFOUND. Cumple la rama DNS FAIL del criterio tres.
+
+Escenario cinco, stale. El semaforo cambia a gris con la etiqueta STALE. Ultima senal hace diez minutos, superando el umbral de cinco minutos. La seccion no queda en verde con data vieja, cumpliendo el criterio cuatro sobre umbral stale.
+
+Escenario seis, inicializacion. La seccion muestra INICIALIZANDO HEALTHCHECKS cuando el archivo existe pero los datos aun son nulos. No se confunde con stale ni con error. Cumple el refinamiento UX cinco sobre primera ejecucion.
+
+Escenario siete, feature flag apagado. Cuando el archivo infra health punto json no existe, la seccion no se renderiza y el dashboard queda intacto, como exige el criterio once. Esto permite mergear esta historia antes que sus hermanas dos mil trescientos cuatro y dos mil trescientos cinco sin romper el monitor actual.
+
+Seguridad, verificado en codigo. Se usa el helper escInfra para todo dato antes de innerHTML. Whitelists estrictas para DNS status y estado del circuit breaker. Issue number validado con Number punto isInteger. Razon truncada a cincuenta caracteres. Try catch alrededor de la lectura y parseo del JSON. El servidor bindea a localhost. CTA como texto no ejecutable. Cumple el criterio ocho.
+
+Accesibilidad, verificado en codigo. Role region con aria label y aria live polite. Respeta prefers reduced motion. Paleta reutiliza variables existentes verde, amarillo, rojo y gris. Responsive con breakpoint en cuatrocientos ochenta pixeles. Cumple el criterio siete.
+
+Scope, verificado en el commit. Cambios solo en punto pipeline barra dashboard v dos punto js mas el simulador punto pipeline barra simular rebote infra punto js. Sin modificar backend, users ni app composeApp. Cumple el criterio once.
+
+Veredicto, aprobado. Los once criterios de aceptacion y los refinamientos de UX estan cubiertos. La evidencia consta de siete capturas de pantalla del dashboard monitor, un video narrado y el audio adjunto.

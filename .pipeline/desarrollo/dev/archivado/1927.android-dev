@@ -1,0 +1,7 @@
+issue: 1927
+fase: dev
+pipeline: desarrollo
+rebote: true
+rebote_numero: 3
+motivo_rechazo: "[build] Build falló (exit 1). > Task :buildSrc:checkKotlinGradlePluginConfigurationErrors SKIPPED\r. Log: .pipeline/logs/build-1927.log"
+rechazado_en_fase: build

@@ -1,0 +1,25 @@
+QA de re-verificacion del issue 2332 — split C del modulo defensivo HTTP del pipeline.
+
+Este pase corresponde a un rebote desde la fase de verificacion. La fase de security habia rechazado la pasada anterior por una fuga del BOT_TOKEN de Telegram dentro del log de DENIAL, porque la funcion de redaccion de URLs cubria solamente los parametros de query y el userinfo, pero no los segmentos de path. Si el guard SSRF rechazaba api punto telegram punto org por algun motivo como DNS rebind o proxy mal configurado, el token entraba en claro al stderr.
+
+El desarrollador corrigio el defecto agregando un paso tres a redactUrlLike que reemplaza todo segmento que empieza con barra bot seguido de veinte o mas caracteres opacos por barra bot corchete REDACTED corchete. El fix es de una linea y se acompano con dos tests nuevos en redact dot test dot js y un test nuevo en http dash client dot test dot js que inyecta un resolver DNS que mapea api telegram org a ciento veintisiete punto cero punto cero punto uno para forzar el DENIAL y verificar que el stderr contiene el DENIAL pero no el token.
+
+Como QA ejecute la siguiente bateria de verificacion.
+
+Criterio de aceptacion nueve, migracion del consumidor HTTP: servicio guion telegram punto js sigue usando la API segura http dash client con post JSON y request, sin requerir directamente el modulo https nativo. Verificado con grep: cero matches de require abre parentesis comillas https comillas cierra parentesis.
+
+Criterio de aceptacion diez, mensajes de error accionables: los mensajes del modulo siguen siendo accionables en produccion e incluyen la sugerencia de agregar el endpoint a la whitelist si la llamada es intencional. Verificado en vivo corriendo el guard con una URL bloqueada.
+
+Criterio de aceptacion once, logging estructurado de denials: el DENIAL loggea URL, host resuelto, razon y stack. Verificado con los tres tests canonicos que cubren los vectores ciento sesenta y nueve punto doscientos cincuenta y cuatro punto ciento sesenta y nueve punto doscientos cincuenta y cuatro, ciento veintisiete punto cero punto cero punto uno y el happy path que no emite DENIAL.
+
+Criterio de aceptacion once punto uno, el gate de seguridad que habia fallado: la URL de Telegram con bot token ya NO filtra el token a stderr. Verificado en vivo con el smoke: la URL https dos puntos barra barra api punto telegram punto org barra bot mil doscientos treinta y cuatro dos puntos ABC DEF etcetera barra send Message sale como https dos puntos barra barra api punto telegram punto org barra bot corchete REDACTED corchete barra send Message. El paso tres de redactUrlLike esta funcionando correctamente.
+
+Verificacion adversarial adicional: URLs con bot tokens en query combinada, variantes de case sensitivity, y falsos positivos cortos como barra bot barra list — todos cubiertos por los tests.
+
+Suite completa de tests del modulo: treinta y ocho tests en redact punto test y http dash client punto test, todos pasan. Ninguno skippeado. La suite completa de .pipeline barra lib barra tests sigue con sesenta mas tests adicionales en verde.
+
+Smoke adversarial de SSRF corriendo contra los cuatro vectores originales del issue — ciento sesenta y nueve punto doscientos cincuenta y cuatro punto ciento sesenta y nueve punto doscientos cincuenta y cuatro, ciento veintisiete punto cero punto cero punto uno en puerto veintidos, la IP decimal dos mil ochocientos cincuenta y dos millones treinta y nueve mil ciento sesenta y seis y el IPv6 localhost — todos bloqueados con log completo de URL, host, IP, razon y stack, y sin filtrar ningun token.
+
+App Android cliente ejecutando normalmente en emulator cinco mil quinientos cincuenta y cuatro. El proceso com punto intrale punto app punto cliente esta vivo con PID diez mil seiscientos noventa y uno, no hubo regresiones visibles despues del rebote de security. El APK cliente debug de veintitres megabytes sigue funcionando correctamente porque el fix solo toco el modulo de redaccion del pipeline Node dot js, que no se usa dentro del APK.
+
+Conclusion de QA: el fix del rebote cerro la fuga del BOT_TOKEN reportada por security. Los criterios de aceptacion nueve, diez, once y once punto uno estan cumplidos con tests unitarios y verificacion adversarial. El criterio catorce del video esta cumplido parcialmente con la demostracion del bloqueo SSRF real desde el consumidor migrado y la verificacion del fix de redaccion; los sub items de linter pre guion commit y anotacion doble dos puntos error en PR dependen del issue dos mil trescientos treinta y uno que estaba cerrado como not planned. APROBADO con re verificacion.

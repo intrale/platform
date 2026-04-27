@@ -101,3 +101,65 @@ test('runAllChecks — integra static-checks sin romper con repo vacío', () => 
     assert.equal(typeof r.commitCount, 'number');
     assert.equal(typeof r.fileCount, 'number');
 });
+
+// Regresión #2523 rev-1: el linter debe operar sobre el worktree del agente,
+// no sobre el checkout principal. Antes del fix, REPO_ROOT (calculado desde
+// __dirname) apuntaba siempre al monorepo principal y `runAllChecks` recibía
+// ese cwd, leyendo la rama y los commits incorrectos. Verificamos acá que el
+// módulo expone tanto REPO_ROOT como WORK_DIR y que WORK_DIR se resuelve a
+// partir de PIPELINE_WORKTREE / process.cwd() / fallback REPO_ROOT.
+test('módulo — WORK_DIR distinto de REPO_ROOT cuando PIPELINE_WORKTREE difiere', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-linter-root-'));
+    const tmpWork = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-linter-work-'));
+    fs.mkdirSync(path.join(tmpRoot, '.claude', 'hooks'), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, '.pipeline', 'logs'), { recursive: true });
+
+    const savedRepo = process.env.PIPELINE_REPO_ROOT;
+    const savedClaudeDir = process.env.CLAUDE_PROJECT_DIR;
+    const savedWork = process.env.PIPELINE_WORKTREE;
+    process.env.PIPELINE_REPO_ROOT = tmpRoot;
+    process.env.CLAUDE_PROJECT_DIR = tmpRoot;
+    process.env.PIPELINE_WORKTREE = tmpWork;
+
+    try {
+        delete require.cache[require.resolve('../linter')];
+        const fresh = require('../linter');
+        assert.equal(fresh.REPO_ROOT, tmpRoot, 'REPO_ROOT debe respetar PIPELINE_REPO_ROOT');
+        assert.equal(fresh.WORK_DIR, tmpWork, 'WORK_DIR debe respetar PIPELINE_WORKTREE');
+        assert.notEqual(fresh.REPO_ROOT, fresh.WORK_DIR, 'WORK_DIR ≠ REPO_ROOT cuando el agente corre en worktree');
+    } finally {
+        if (savedRepo === undefined) delete process.env.PIPELINE_REPO_ROOT; else process.env.PIPELINE_REPO_ROOT = savedRepo;
+        if (savedClaudeDir === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = savedClaudeDir;
+        if (savedWork === undefined) delete process.env.PIPELINE_WORKTREE; else process.env.PIPELINE_WORKTREE = savedWork;
+        // Restaurar carga del módulo bajo el setup global del archivo
+        delete require.cache[require.resolve('../linter')];
+        require('../linter');
+    }
+});
+
+test('módulo — sin PIPELINE_WORKTREE WORK_DIR cae a process.cwd()', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-linter-cwd-'));
+    fs.mkdirSync(path.join(tmpRoot, '.claude', 'hooks'), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, '.pipeline', 'logs'), { recursive: true });
+
+    const savedRepo = process.env.PIPELINE_REPO_ROOT;
+    const savedClaudeDir = process.env.CLAUDE_PROJECT_DIR;
+    const savedWork = process.env.PIPELINE_WORKTREE;
+    process.env.PIPELINE_REPO_ROOT = tmpRoot;
+    process.env.CLAUDE_PROJECT_DIR = tmpRoot;
+    delete process.env.PIPELINE_WORKTREE;
+
+    try {
+        delete require.cache[require.resolve('../linter')];
+        const fresh = require('../linter');
+        // Sin PIPELINE_WORKTREE, WORK_DIR debe usar process.cwd() (no REPO_ROOT).
+        // Esto importa porque el pulpo ya hace `cwd: <worktree>` en el spawn.
+        assert.equal(fresh.WORK_DIR, process.cwd(), 'WORK_DIR debe ser process.cwd() cuando no hay PIPELINE_WORKTREE');
+    } finally {
+        if (savedRepo === undefined) delete process.env.PIPELINE_REPO_ROOT; else process.env.PIPELINE_REPO_ROOT = savedRepo;
+        if (savedClaudeDir === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = savedClaudeDir;
+        if (savedWork !== undefined) process.env.PIPELINE_WORKTREE = savedWork;
+        delete require.cache[require.resolve('../linter')];
+        require('../linter');
+    }
+});

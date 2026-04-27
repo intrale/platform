@@ -1,0 +1,60 @@
+✔ CA-3 · computeBackoffMs: 2s → 4s → 8s con jitter ±20% (1.8894ms)
+[09:53:24] [WARN ] [http-client/test] intento 1/3 falló: conexión rechazada por el host (ECONNREFUSED) → reintentando en 1.9s
+[09:53:26] [INFO ] [http-client/test] GET http://127.0.0.1:1/x → 127.0.0.1
+[09:53:26] [WARN ] [http-client/test] intento 2/3 falló: conexión rechazada por el host (ECONNREFUSED) → reintentando en 4.1s
+[09:53:30] [INFO ] [http-client/test] GET http://127.0.0.1:1/x → 127.0.0.1
+✔ CA-4 · GET reintenta en ECONNREFUSED (6090.0995ms)
+[09:53:30] [INFO ] [http-client/test] POST http://127.0.0.1:56049/x → 127.0.0.1
+✔ CA-4 · POST sin retryable NO reintenta (10.8525ms)
+[09:53:30] [INFO ] [http-client/test] POST http://127.0.0.1:56051/x → 127.0.0.1
+[09:53:30] [WARN ] [http-client/test] intento 1/3 falló: la conexión fue cerrada por el host remoto (ECONNRESET) → reintentando en 1.7s
+[09:53:32] [INFO ] [http-client/test] POST http://127.0.0.1:56051/x → 127.0.0.1
+[09:53:32] [WARN ] [http-client/test] intento 2/3 falló: la conexión fue cerrada por el host remoto (ECONNRESET) → reintentando en 4.6s
+[09:53:36] [INFO ] [http-client/test] POST http://127.0.0.1:56051/x → 127.0.0.1
+✔ CA-4 · POST con retryable:true SÍ reintenta (6300.2757ms)
+[09:53:36] [INFO ] [http-client/test] POST http://127.0.0.1:50102/x → 127.0.0.1
+[09:53:36] [WARN ] [http-client/test] intento 1/3 falló: la conexión fue cerrada por el host remoto (ECONNRESET) → reintentando en 1.7s
+[09:53:38] [INFO ] [http-client/test] POST http://127.0.0.1:50102/x → 127.0.0.1
+✔ CA-4 · POST con Idempotency-Key SÍ reintenta (1680.7432ms)
+[09:53:38] [INFO ] [http-client/test] GET http://127.0.0.1:50105/x → 127.0.0.1
+✔ CA-3 · NO reintenta en 4xx/5xx (5.098ms)
+[09:53:38] [INFO ] [http-client/test] GET http://127.0.0.1:50107/x → 127.0.0.1
+✔ CA-5 · timeout total excede → error (1519.8109ms)
+[09:53:39] [INFO ] [http-client/test] GET https://127.0.0.1:50109/ → 127.0.0.1
+(node:16960) [DEP0123] DeprecationWarning: Setting the TLS ServerName to an IP address is not permitted by RFC 6066. This will be ignored in a future version.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+✔ CA-7 · cert self-signed inválido rompe el request (15.3598ms)
+[09:53:39] [INFO ] [http-client/test] GET https://127.0.0.1:50111/ → 127.0.0.1
+✔ CA-7 · con CA custom (cert confiado) → 200 OK (10.174ms)
+[09:53:39] [INFO ] [http-client/test] GET http://127.0.0.1:50113/ → 127.0.0.1
+✔ CA-14 · followRedirects=false por default → 3xx devuelve error (3.3316ms)
+[09:53:39] [INFO ] [http-client/test] GET http://127.0.0.1:50116/ → 127.0.0.1
+[09:53:39] [INFO ] [http-client/test] redirect cross-origin → drop de headers sensibles
+[09:53:39] [INFO ] [http-client/test] GET http://other.test:50115/ → 127.0.0.1
+✔ CA-14 · cross-origin drop de Authorization/Cookie (6.7343ms)
+[09:53:39] [INFO ] [http-client/test] GET http://127.0.0.1:50119/ → 127.0.0.1
+[09:53:39] [INFO ] [http-client/test] GET http://127.0.0.1:50119/next → 127.0.0.1
+✔ CA-14 · maxRedirects respetado (4.6989ms)
+✔ CA-16 · header con \r\n lanza ERR_CRLF_INJECTION (0.5065ms)
+✔ CA-16 · request con CRLF en header aborta antes de red (0.2153ms)
+[09:53:39] [INFO ] [http-client/test] GET http://127.0.0.1:50121/ → 127.0.0.1
+✔ CA-19 · response >maxResponseBytes aborta con ERR_RESPONSE_TOO_LARGE (11.3383ms)
+[09:53:39] [INFO ] [http-client/test] GET http://127.0.0.1:50123/ → 127.0.0.1
+[09:53:39] [ERROR] [http-client/test] DENIAL ERR_SSRF_BLOCKED url=http://127.0.0.1:1/ host=127.0.0.1 razon=[HTTP_SSRF_BLOCKED]: IP privada 127.0.0.1 rechazada por política de seguridad (CA-9) → si es intencional, agregar a whitelist de proxy (.pipeline/config/proxy-allowlist.json) o usar un endpoint público stack=Error: [HTTP_SSRF_BLOCKED]: IP privada 127.0.0.1 rechazada por política de seguridad (CA-9) → si es intencional, agregar a whitelist de proxy (.pipeline/config/proxy-allowlist.json) o usar un endpoint público |     at buildSSRFError (C:\Workspaces\Intrale\platform.agent-2332-backend-dev\.pipeline\lib\ssrf-guard.js:192:17) |     at Object.validateHostname (C:\Workspaces\Intrale\platform.agent-2332-backend-dev\.pipeline\lib\ssrf-guard.js:226:19) |     at doSingleRequest (C:\Workspaces\Intrale\platform.agent-2332-backend-dev\.pipeline\lib\http-client.js:215:23) |     at request (C:\Workspaces\Intrale\platform.agent-2332-backend-dev\.pipeline\lib\http-client.js:504:32)
+✔ CA-19 · response <cap se lee OK (2.3668ms)
+✔ CA-9 · URL con hostname que resuelve a 127.0.0.1 rechaza ERR_SSRF_BLOCKED (1.1879ms)
+✔ CA-9 · URL con userinfo rechaza ERR_USERINFO_BLOCKED (0.1708ms)
+[09:53:39] [INFO ] [http-client/test] POST http://127.0.0.1:50125/ → 127.0.0.1
+✔ postJson · serializa y setea content-type (3.1797ms)
+✔ CA-11 · SSRF a 169.254.169.254 logea DENIAL con URL/host/razón/stack (0.4809ms)
+✔ CA-11 · SSRF a 127.0.0.1 logea DENIAL (otro rango privado) (0.2533ms)
+[09:53:39] [INFO ] [http-client/test-happy] GET http://127.0.0.1:50127/ → 127.0.0.1
+✔ CA-11 · request exitoso NO emite DENIAL (2.9115ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 72425.4966

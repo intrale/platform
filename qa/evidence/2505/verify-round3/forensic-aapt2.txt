@@ -1,0 +1,52 @@
+=== Evidencia forense drawable-anydpi-v26 (ronda 3) ===
+
+--- DEVICE APK client (lo que corre ahora en el emulador) ---
+N: android=http://schemas.android.com/apk/res/android (line=0)
+  N: aapt=http://schemas.android.com/aapt (line=0)
+    E: gradient (line=20)
+      A: http://schemas.android.com/apk/res/android:angle(0x010101a0)=0.000000e+00
+      A: http://schemas.android.com/apk/res/android:type(0x010101a1)=0
+      A: http://schemas.android.com/apk/res/android:startX(0x01010510)=512
+      A: http://schemas.android.com/apk/res/android:startY(0x01010511)=59.357
+      A: http://schemas.android.com/apk/res/android:endX(0x01010512)=512
+      A: http://schemas.android.com/apk/res/android:endY(0x01010513)=738.321
+        E: item (line=21)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff00d6ff
+          A: http://schemas.android.com/apk/res/android:offset(0x01010514)=0.000000e+00
+        E: item (line=22)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff1890ff
+          A: http://schemas.android.com/apk/res/android:offset(0x01010514)=1
+
+--- DEVICE APK business (lo que corre ahora en el emulador) ---
+N: android=http://schemas.android.com/apk/res/android (line=0)
+  N: aapt=http://schemas.android.com/aapt (line=0)
+    E: gradient (line=20)
+      A: http://schemas.android.com/apk/res/android:angle(0x010101a0)=0.000000e+00
+      A: http://schemas.android.com/apk/res/android:type(0x010101a1)=0
+      A: http://schemas.android.com/apk/res/android:startX(0x01010510)=512
+      A: http://schemas.android.com/apk/res/android:startY(0x01010511)=59.357
+      A: http://schemas.android.com/apk/res/android:endX(0x01010512)=512
+      A: http://schemas.android.com/apk/res/android:endY(0x01010513)=738.321
+        E: item (line=21)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff00d6ff
+          A: http://schemas.android.com/apk/res/android:offset(0x01010514)=0.000000e+00
+        E: item (line=22)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff1890ff
+          A: http://schemas.android.com/apk/res/android:offset(0x01010514)=1
+
+--- DEVICE APK delivery (lo que corre ahora en el emulador) ---
+N: android=http://schemas.android.com/apk/res/android (line=0)
+  N: aapt=http://schemas.android.com/aapt (line=0)
+    E: gradient (line=20)
+      A: http://schemas.android.com/apk/res/android:angle(0x010101a0)=0.000000e+00
+      A: http://schemas.android.com/apk/res/android:type(0x010101a1)=0
+      A: http://schemas.android.com/apk/res/android:startX(0x01010510)=512
+      A: http://schemas.android.com/apk/res/android:startY(0x01010511)=59.357
+      A: http://schemas.android.com/apk/res/android:endX(0x01010512)=512
+      A: http://schemas.android.com/apk/res/android:endY(0x01010513)=738.321
+        E: item (line=21)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff00d6ff
+          A: http://schemas.android.com/apk/res/android:offset(0x01010514)=0.000000e+00
+        E: item (line=22)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff1890ff
+          A: http://schemas.android.com/apk/res/android:offset(0x01010514)=1

@@ -1,0 +1,49 @@
+QA-API verificacion — Issue #2318
+=====================================
+Fecha: 2026-04-17
+Pipeline: desarrollo
+Modo: qa-api
+
+Resultado: RECHAZADO
+
+Motivos:
+
+1. Historia con label `split` — dividida en hijas #2324, #2325, #2326
+   - El PO (comentario del 2026-04-17) marcó explicitamente esta historia
+     como "dividida en 3 historias hijas" y reasigno los CA a cada una.
+   - Implementar #2318 end-to-end duplica trabajo distribuido en las hijas.
+
+2. Sin codigo sobre la rama `agent/2318-backend-dev`
+   - `git log main..agent/2318-backend-dev --oneline` = 0 commits
+   - La rama no tiene cambios propios vs main. No hay nada que validar.
+
+3. Dependencia bloqueante no mergeada
+   - El PO marco #2317 (pre-check + rebote infra) como dependencia dura
+     antes de arrancar desarrollo end-to-end de #2318.
+   - #2317 sigue OPEN hoy. La integracion end-to-end no es posible.
+
+4. Test cases inapropiados para el alcance real
+   - `qa/test-cases/2318.json` contiene 16 TCs generados como fallback,
+     todos hitteando `/intrale/status`.
+   - Los CA reales son pura infra del pipeline (Node.js):
+       * sanitizer.js con regex de redaccion write-time
+       * endpoint-whitelist.js + prevencion SSRF
+       * TLS hardening (minVersion TLSv1.2, killswitch NODE_TLS_REJECT_UNAUTHORIZED)
+       * health-check /checkup con OK/WARN/FAIL
+   - QA_MODE=api es incorrecto: la historia NO toca API ni backend Kotlin.
+     Deberia haber sido QA_MODE=structural, o directamente rechazada antes
+     por el intake del pipeline al detectar el label `split`.
+
+5. Consistencia con rechazos previos
+   - Guru (fase dev pipeline desarrollo) ya rechazo por estos mismos motivos
+     (comentario del 2026-04-17).
+   - Security (fase verificacion pipeline desarrollo) tambien rechazo por
+     estos mismos motivos (comentario del 2026-04-17).
+   - Aprobarlo ahora en QA seria inconsistente.
+
+Accion recomendada al operador:
+- Quitar label `Ready` de #2318 (o cerrarla como parent/epic).
+- Dejar avanzar las hijas (#2324, #2325) por su ciclo independiente.
+- Reforzar el intake del pulpo para ignorar issues con label `split`.
+
+Backend remoto verificado: HTTP 400 en POST /intrale/signin (alcanzable).

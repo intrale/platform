@@ -1,0 +1,14 @@
+=== Test 1: URL de Telegram con BOT_TOKEN redactada ===
+INPUT : https://api.telegram.org/bot1234567890:ABCDefGHIjklMNOpqrsTUVwxyz/sendMessage
+OUTPUT: https://api.telegram.org/bot[REDACTED]/sendMessage
+PASS: token redactado, marker presente
+
+=== Test 2: /bot/list (falso positivo corto) no redacta ===
+INPUT : https://api.intrale.com/bot/list
+OUTPUT: https://api.intrale.com/bot/list
+PASS: /bot/list preservado
+
+=== Test 3: tokens en múltiples posiciones + query ===
+INPUT : https://api.telegram.org/bot9876543210:XYZ_TOKEN_MUY_LARGO_DE_EJEMPLO/getUpdates?access_token=SECRET123
+OUTPUT: https://api.telegram.org/bot[REDACTED]/getUpdates?access_token=[REDACTED]
+PASS: path+query ambos redactados

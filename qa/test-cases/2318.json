@@ -1,0 +1,180 @@
+[
+  {
+    "id": "TC-01",
+    "title": "Regex de redacción aplicado a: `AKIA[0-9A-Z]{16}` (AWS Access Key), `ghp_*` /...",
+    "criteria": "Regex de redacción aplicado a: `AKIA[0-9A-Z]{16}` (AWS Access Key), `ghp_*` / `gho_*` / `ghs_*` (GH tokens), `Bearer eyJ*` (JWT), `AWS_SECRET_ACCESS_KEY`, contenido de `application.conf`",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-02",
+    "title": "Headers `Authorization`, `x-api-key`, `Cookie` nunca aparecen en logs del pip...",
+    "criteria": "Headers `Authorization`, `x-api-key`, `Cookie` nunca aparecen en logs del pipeline",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-03",
+    "title": "Aplicable a `.pipeline/logs/*`, rejection reports PDF y mensajes de rebote",
+    "criteria": "Aplicable a `.pipeline/logs/*`, rejection reports PDF y mensajes de rebote",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-04",
+    "title": "Test automatizado: fallo simulado no genera logs que matcheen patterns de sec...",
+    "criteria": "Test automatizado: fallo simulado no genera logs que matcheen patterns de secretos",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-05",
+    "title": "Placeholder visible `[REDACTED]` en lugar de vacío (para que se entienda que ...",
+    "criteria": "Placeholder visible `[REDACTED]` en lugar de vacío (para que se entienda que hubo censura)",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-06",
+    "title": "`/checkup` reporta estado `OK` / `WARN` / `FAIL` para: GitHub API, AWS endpoi...",
+    "criteria": "`/checkup` reporta estado `OK` / `WARN` / `FAIL` para: GitHub API, AWS endpoints, backend Lambda desplegado",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-07",
+    "title": "Cada FAIL incluye **acción concreta** (\\\"verificá DNS\\\", \\\"chequeá VPN\\\", \\\"r...",
+    "criteria": "Cada FAIL incluye **acción concreta** (\\\"verificá DNS\\\", \\\"chequeá VPN\\\", \\\"reiniciá adaptador de red\\\")",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-08",
+    "title": "Incluye verificación de \\\"logs limpios\\\" (regex para AWS keys, gh tokens, JWT...",
+    "criteria": "Incluye verificación de \\\"logs limpios\\\" (regex para AWS keys, gh tokens, JWT con payload decodificable)",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": [
+      "verificaci"
+    ]
+  },
+  {
+    "id": "TC-09",
+    "title": "Output estructurado con 3 estados visuales claros",
+    "criteria": "Output estructurado con 3 estados visuales claros",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "PUT",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-10",
+    "title": "Whitelist: `api.github.com`, `*.amazonaws.com`, backend Lambda conocido",
+    "criteria": "Whitelist: `api.github.com`, `*.amazonaws.com`, backend Lambda conocido",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-11",
+    "title": "**Prohibido**: `curl -k`, `verify=False`, `trustAllCerts`, fallback HTTPS→HTTP",
+    "criteria": "**Prohibido**: `curl -k`, `verify=False`, `trustAllCerts`, fallback HTTPS→HTTP",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-12",
+    "title": "Validación contra whitelist antes de cada request saliente (prevención SSRF)",
+    "criteria": "Validación contra whitelist antes de cada request saliente (prevención SSRF)",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-13",
+    "title": "Code review confirma que no se deshabilitó TLS en ningún retry",
+    "criteria": "Code review confirma que no se deshabilitó TLS en ningún retry",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-14",
+    "title": "Unit test: regex de redacción detecta y redacta todos los patterns de secretos",
+    "criteria": "Unit test: regex de redacción detecta y redacta todos los patterns de secretos",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-15",
+    "title": "Unit test: whitelist bloquea endpoints fuera de los permitidos",
+    "criteria": "Unit test: whitelist bloquea endpoints fuera de los permitidos",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  },
+  {
+    "id": "TC-16",
+    "title": "E2E: `/checkup` reporta correctamente OK/WARN/FAIL según escenario",
+    "criteria": "E2E: `/checkup` reporta correctamente OK/WARN/FAIL según escenario",
+    "generated_at": "qa",
+    "generated_reason": "Test case generado como fallback — no existía en etapa de definición",
+    "method": "GET",
+    "endpoint": "/intrale/status",
+    "expected_status": 200,
+    "expected_body_contains": []
+  }
+]

@@ -1,0 +1,6 @@
+=== POST /qa-automation/business/anomalies ===
+HTTP 403
+{"message":"Missing Authentication Token"}
+=== POST /qa-automation/anomalies (single path) ===
+HTTP 400
+{"message":"No function defined on path","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}

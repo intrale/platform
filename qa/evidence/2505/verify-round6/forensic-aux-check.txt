@@ -1,0 +1,9 @@
+--- client ---
+    resource 0x7f040008 drawable/ic_intrale_foreground
+      () (file) res/drawable/ic_intrale_foreground.xml type=XML
+--- business ---
+    resource 0x7f040008 drawable/ic_intrale_foreground
+      () (file) res/drawable/ic_intrale_foreground.xml type=XML
+--- delivery ---
+    resource 0x7f040008 drawable/ic_intrale_foreground
+      () (file) res/drawable/ic_intrale_foreground.xml type=XML

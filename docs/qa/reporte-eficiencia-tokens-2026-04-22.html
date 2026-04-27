@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Propuesta de eficiencia — Anthropic + OpenAI TTS — 2026-04-22</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 30px auto; padding: 20px; color: #1a1a1a; line-height: 1.55; }
+  h1 { color: #0d47a1; border-bottom: 3px solid #0d47a1; padding-bottom: 8px; }
+  h2 { color: #1565c0; margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  h3 { color: #1976d2; margin-top: 20px; }
+  code, pre { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: Consolas, monospace; font-size: 0.92em; }
+  pre { padding: 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+  th, td { border: 1px solid #ccc; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; }
+  .crit { background: #ffebee; border-left: 4px solid #c62828; padding: 10px 14px; margin: 12px 0; }
+  .win  { background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 10px 14px; margin: 12px 0; }
+  .note { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px; margin: 12px 0; }
+  .mini { font-size: 0.9em; color: #555; }
+  .kpi { display: inline-block; background: #0d47a1; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: 600; }
+  ul li { margin: 3px 0; }
+  .footer { margin-top: 40px; font-size: 0.85em; color: #666; text-align: center; border-top: 1px solid #ccc; padding-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>Propuesta de eficiencia — consumo de Anthropic + OpenAI TTS</h1>
+<p class="mini">Fecha: 2026-04-22 · Proyecto: Intrale Platform · Pipeline V2 · Autor: análisis automático Claude Code</p>
+
+<h2>Resumen ejecutivo</h2>
+
+<div class="crit">
+<strong>Hallazgo crítico #1 — no hay observabilidad real de tokens.</strong><br>
+El campo <code>tokens_input/output/total</code> en <code>agent-metrics-history.jsonl</code> está en <code>null</code> en el 100% de las sesiones. Solo existe <code>tokens_estimated</code> (heurística, no real). <strong>No podés optimizar lo que no medís</strong> → precondición para cualquier ahorro.
+</div>
+
+<div class="crit">
+<strong>Hallazgo crítico #2 — prompt caching desactivado.</strong><br>
+Cada agente lanzado envía el rol completo (4-12 KB) sin <code>cache_control</code>. El rol base (<code>_base.md</code>, 3483 bytes ≈ 870 tokens) y el rol específico (hasta 11.750 bytes ≈ 2.938 tokens para QA) se facturan como input fresh en cada invocación. <strong>Ahorro estimado activando caching: 40-70% en tokens de input</strong>.
+</div>
+
+<div class="crit">
+<strong>Hallazgo crítico #3 — OpenAI TTS sin alternativa gratuita activa.</strong><br>
+Todo TTS usa <code>gpt-4o-mini-tts</code> con voz "ash". Edge-TTS (gratis, misma calidad para español) fue evaluada pero nunca activada en producción. Los textos de <code>rejection reports</code> (120-150 chars) + voice responses de Telegram son volumen bajo pero recurrente. <strong>Ahorro estimado usando edge-tts como primario: 100% del costo TTS</strong>.
+</div>
+
+<h2>1. Anthropic — análisis del consumo</h2>
+
+<h3>1.1 Roles y tamaños</h3>
+
+<p>El pipeline tiene <strong>16 roles</strong> (<code>.pipeline/roles/*.md</code>) que se envían como system prompt en cada spawn. Tamaños:</p>
+
+<table>
+<tr><th>Rol</th><th>Bytes</th><th>Tokens est.</th><th>Frecuencia de uso</th></tr>
+<tr><td><code>_base.md</code> (siempre)</td><td>3.483</td><td>~870</td><td>100% de los lanzamientos</td></tr>
+<tr><td><code>qa.md</code></td><td>11.750</td><td>~2.938</td><td>1 por verificación</td></tr>
+<tr><td><code>build.md</code></td><td>8.327</td><td>~2.082</td><td>1 por build</td></tr>
+<tr><td><code>po.md</code></td><td>8.153</td><td>~2.038</td><td>validación + aprobación</td></tr>
+<tr><td><code>ux.md</code></td><td>5.913</td><td>~1.478</td><td>validación + aprobación</td></tr>
+<tr><td><code>pipeline-dev.md</code></td><td>5.541</td><td>~1.386</td><td>dev pipeline</td></tr>
+<tr><td>resto (10 archivos)</td><td>14.876</td><td>~3.720 total</td><td>varios</td></tr>
+<tr><th>Total roles</th><th>58.043</th><th>~14.511</th><th></th></tr>
+</table>
+
+<p><strong>Peor caso por lanzamiento</strong>: 3.808 tokens solo en system prompt (<code>_base + qa</code>).</p>
+
+<h3>1.2 Cómo se spawnean los agentes</h3>
+
+<p>Desde <code>.pipeline/pulpo.js:4088, 4130-4140</code>:</p>
+
+<pre>const args = ['-p', userPrompt, '--system-prompt-file', systemFile,
+             '--output-format', 'stream-json', '--verbose',
+             '--permission-mode', 'bypassPermissions'];</pre>
+
+<p>Sin especificación de modelo (usa default), <strong>sin flags de caching</strong> (ni <code>--cache-control</code>, ni marcadores de cache-breakpoint). Cada lanzamiento paga el 100% del input.</p>
+
+<h3>1.3 Patrones ineficientes identificados</h3>
+
+<ol>
+<li><strong>YAML verbatim en el user prompt</strong> (<code>pulpo.js:3954</code>): se inyecta el archivo de trabajo completo sin truncar. Issues con contexto largo (descripción + acceptance criteria + comments) cargan miles de tokens innecesarios.</li>
+
+<li><strong>Rebotes sin compactación</strong>: cada rebote (rechazo → dev → re-verificación) reinicia contexto con el motivo de rechazo verbatim + paths de logs + 7 pasos de instrucciones. Sin compendio iterativo.</li>
+
+<li><strong>Sistema prompt archivado por cada lanzamiento</strong> (<code>pulpo.js:3950-3951</code>): se genera <code>logs/agent-&lt;issue&gt;-&lt;skill&gt;-system.txt</code> fresh en cada spawn, sin reuso entre agentes del mismo skill.</li>
+
+<li><strong>68 hooks en <code>.claude/hooks/</code></strong> (archivos <code>.js</code>). Desconocemos cuántos se ejecutan por mensaje — cada uno consume contexto. No hay trace ni budget.</li>
+
+<li><strong>Sin budget por skill</strong>: no hay límite superior de tokens por lanzamiento. Un agente en bucle de pensamiento puede generar miles de output tokens sin corte automático.</li>
+</ol>
+
+<h3>1.4 Métrica actual (muestra histórica)</h3>
+
+<p>Único reporte disponible — SPR-0051, del 2026-03-17 al 2026-03-22:</p>
+
+<table>
+<tr><th>Skill</th><th>Sesiones</th><th>Tokens estimados</th><th>Avg/sesión</th><th>Min/sesión</th></tr>
+<tr><td>Agente #722</td><td>1</td><td>317.125</td><td>317.125</td><td>183</td></tr>
+<tr><td>/scrum,/planner</td><td>1</td><td>216.735</td><td>216.735</td><td>156</td></tr>
+<tr><td>/ops</td><td>3</td><td>79.875</td><td>26.625</td><td>18</td></tr>
+<tr><td>/po</td><td>2</td><td>21.330</td><td>10.665</td><td>4</td></tr>
+<tr><td>ad-hoc</td><td>3</td><td>5.735</td><td>1.912</td><td>&lt;1</td></tr>
+<tr><th>Total</th><th>12</th><th>654.410</th><th></th><th></th></tr>
+</table>
+
+<p class="mini">Nota: estos son tokens <em>estimados</em>, no reales. Un agente largo (#722, 183 min) consumió 48% del total del sprint. Sugiere que sesiones largas son el driver principal.</p>
+
+<h2>2. OpenAI TTS — análisis del consumo</h2>
+
+<h3>2.1 Dónde se invoca</h3>
+
+<table>
+<tr><th>Archivo</th><th>Línea</th><th>Uso</th></tr>
+<tr><td><code>.pipeline/multimedia.js</code></td><td>226-270</td><td>función <code>textToSpeech()</code></td></tr>
+<tr><td><code>.claude/hooks/commander/multimedia-handler.js</code></td><td>177-215</td><td>función <code>callOpenAITTS()</code></td></tr>
+<tr><td><code>.pipeline/rejection-report.js</code></td><td>1544-1576</td><td>audio para cada rejection report</td></tr>
+</table>
+
+<h3>2.2 Configuración actual</h3>
+
+<ul>
+<li><strong>Modelo</strong>: <code>gpt-4o-mini-tts</code></li>
+<li><strong>Voz</strong>: <code>ash</code> con <em>instructions</em> porteño rioplatense</li>
+<li><strong>Fallback</strong>: ElevenLabs (si hay <code>elevenlabsApiKey</code>)</li>
+<li><strong>Edge-TTS</strong>: <strong>NO implementado</strong> (solo mencionado en sesiones históricas)</li>
+<li><strong>Formato</strong>: <code>opus</code></li>
+</ul>
+
+<h3>2.3 Cuándo dispara</h3>
+
+<ul>
+<li><strong>Rejection reports</strong>: cada vez que un agente rechaza en cualquier fase (análisis, dev, build, verificación, entrega). Texto 120-150 chars. Frecuencia ≈ 5-15/día en días normales.</li>
+<li><strong>Voice responses</strong>: solo cuando un humano manda audio al bot. Bajo volumen.</li>
+<li><strong>NO dispara</strong> en <code>/status</code>, heartbeats, <code>/help</code>.</li>
+</ul>
+
+<h3>2.4 Consumo estimado</h3>
+
+<p>Volumen diario estimado (conservador):</p>
+
+<ul>
+<li>Rejection reports: 10 × ~135 chars = ~1.350 chars/día</li>
+<li>Voice responses: ~3 × ~500 chars = ~1.500 chars/día</li>
+<li><strong>Total ≈ 3.000 chars/día</strong></li>
+</ul>
+
+<p>Precio <code>gpt-4o-mini-tts</code>: <strong>$0.015 / 1K chars</strong> → <strong>~$0.045/día</strong> (~$1.35/mes). Bajo en términos absolutos, pero <strong>100% evitable</strong> con edge-tts.</p>
+
+<h2>3. Propuestas de mejora</h2>
+
+<h3>Prioridad 1 — Quick wins (1-3 días)</h3>
+
+<div class="win">
+<strong>P1.1 — Activar prompt caching de Anthropic</strong><br>
+Agregar <code>cache_control: { type: "ephemeral" }</code> al bloque del system prompt cuando se use la Messages API. Si se usa el CLI <code>claude</code>, verificar si soporta <code>--cache-prompt</code> o similar; si no, migrar a invocación vía SDK.
+<ul>
+  <li><strong>Impacto</strong>: reduce costo de input tokens 40-70% para roles repetidos (90% de los spawns usan <code>_base.md</code>).</li>
+  <li><strong>Costo</strong>: cambio chico en <code>pulpo.js</code> spawner, 2-3 líneas.</li>
+  <li><strong>Riesgo</strong>: bajo — el caching es transparente.</li>
+</ul>
+</div>
+
+<div class="win">
+<strong>P1.2 — Edge-TTS como primario, OpenAI TTS como fallback</strong><br>
+Reordenar la cadena de fallback: <strong>edge-tts → OpenAI → ElevenLabs</strong>. Edge-tts es gratis, tiene voces en español (es-AR-ElenaNeural, es-AR-TomasNeural).
+<ul>
+  <li><strong>Impacto</strong>: 100% del costo TTS eliminado (~$1.35/mes).</li>
+  <li><strong>Costo</strong>: instalar <code>edge-tts</code> npm package + wrapper en <code>multimedia.js</code>.</li>
+  <li><strong>Riesgo</strong>: bajo — OpenAI queda como fallback.</li>
+</ul>
+</div>
+
+<div class="win">
+<strong>P1.3 — Tracking real de tokens</strong><br>
+Capturar la respuesta del CLI <code>claude</code> (tiene JSON con <code>usage.input_tokens</code>, <code>cache_creation_input_tokens</code>, <code>cache_read_input_tokens</code>, <code>output_tokens</code>). Actualmente el Pulpo descarta esa info.
+<ul>
+  <li><strong>Impacto</strong>: habilita todas las otras optimizaciones basadas en datos reales.</li>
+  <li><strong>Costo</strong>: parseo del stream-json en <code>pulpo.js</code> + escritura JSONL.</li>
+  <li><strong>Riesgo</strong>: ninguno.</li>
+</ul>
+</div>
+
+<h3>Prioridad 2 — Optimizaciones estructurales (1-2 semanas)</h3>
+
+<div class="note">
+<strong>P2.1 — Compactar roles redundantes</strong><br>
+Los roles comparten mucho boilerplate (reglas de branch, PR conventions, QA gates) que también está en <code>CLAUDE.md</code>. Mover contenido duplicado a <code>_base.md</code>, dejar roles específicos con <strong>solo lo propio de su skill</strong>. Target: reducir roles mayores (qa.md: 11.7K → ~4K, build.md: 8.3K → ~3K).<br>
+<strong>Impacto</strong>: 30-50% menos tokens en system prompt por lanzamiento.
+</div>
+
+<div class="note">
+<strong>P2.2 — Truncar YAML del work file</strong><br>
+En <code>pulpo.js:3954</code>, limitar el dump del YAML a campos esenciales (<code>issue, fase, pipeline, modo, motivo_rechazo_reciente</code>). Issues con 50+ comments inyectan 10-20K tokens que el agente no necesita.<br>
+<strong>Impacto</strong>: 20-40% menos tokens en user prompt.
+</div>
+
+<div class="note">
+<strong>P2.3 — Budget de tokens por skill</strong><br>
+Agregar <code>max_tokens_per_agent</code> en <code>config.yaml</code> por skill. Agentes que llegan al límite → cierre automático con reporte. Evita sesiones runaway como la del agente #722 (317K tokens en 183 min).<br>
+<strong>Impacto</strong>: techo duro al consumo; protege contra casos patológicos.
+</div>
+
+<div class="note">
+<strong>P2.4 — Dashboard de costo de tokens</strong><br>
+Sumar panel al dashboard V2 con consumo diario por skill, top consumidores, tendencia semanal. Fuente: JSONL real del P1.3.<br>
+<strong>Impacto</strong>: visibilidad operativa continua; permite alertas automáticas.
+</div>
+
+<h3>Prioridad 3 — Optimizaciones avanzadas (2-4 semanas)</h3>
+
+<div class="note">
+<strong>P3.1 — Ruteo por modelo según complejidad</strong><br>
+Skills simples (tester verificación básica, security quick-scan, po acceptance check) pueden usar Haiku (cheaper/faster). Skills complejos (planner, pipeline-dev, build debug) usan Sonnet. Reservar Opus solo para casos excepcionales.<br>
+<strong>Impacto</strong>: 50-80% menos costo en skills "chicos" (que son el 60% de los lanzamientos).
+</div>
+
+<div class="note">
+<strong>P3.2 — Reuso de contexto en rebotes</strong><br>
+En vez de reiniciar un agente dev tras rechazo, enviar un message adicional al mismo agente con <code>cache_control</code> del contexto previo. Requiere refactor de <code>pulpo.js</code> para mantener sesiones persistentes.<br>
+<strong>Impacto</strong>: 70-90% menos tokens en segundo/tercer intento.
+</div>
+
+<div class="note">
+<strong>P3.3 — Auditoría de 68 hooks</strong><br>
+Revisar qué hooks corren por mensaje vs sesión. Deshabilitar los que no aportan valor en cada invocación. Algunos pueden ser <em>on-demand</em> en vez de <em>always-on</em>.<br>
+<strong>Impacto</strong>: reduce el overhead por cada interacción.
+</div>
+
+<h2>4. Roadmap propuesto</h2>
+
+<table>
+<tr><th>Fase</th><th>Ítems</th><th>Tiempo</th><th>Ahorro estimado</th></tr>
+<tr><td><strong>Sprint 1</strong></td><td>P1.1, P1.2, P1.3</td><td>3-5 días</td><td>40-70% en input tokens + 100% TTS</td></tr>
+<tr><td><strong>Sprint 2</strong></td><td>P2.1, P2.2, P2.3, P2.4</td><td>1-2 semanas</td><td>+20-40% adicional en tokens</td></tr>
+<tr><td><strong>Sprint 3</strong></td><td>P3.1, P3.2, P3.3</td><td>2-4 semanas</td><td>+30-50% adicional según perfil de uso</td></tr>
+</table>
+
+<p><strong>Target total combinado:</strong> <span class="kpi">reducción 60-80% del consumo Anthropic</span> y <span class="kpi">100% del consumo OpenAI TTS</span>, manteniendo la misma capacidad operativa del pipeline.</p>
+
+<h2>5. Precondiciones</h2>
+
+<ol>
+<li><strong>P1.3 (tracking real) es bloqueante</strong> para medir si las demás optimizaciones funcionan. Hacer primero.</li>
+<li><strong>Crear issues específicos</strong> para cada propuesta (P1.1, P1.2, P1.3 como <code>priority:high</code>, resto como <code>priority:medium</code>).</li>
+<li><strong>Verificar soporte de caching en el CLI <code>claude</code></strong>: si no lo soporta nativo, puede requerir migrar a SDK. El análisis de viabilidad va dentro de P1.1.</li>
+</ol>
+
+<div class="footer">
+Generado automáticamente · Intrale Platform Pipeline V2 · 2026-04-22
+</div>
+
+</body>
+</html>

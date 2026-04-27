@@ -1,0 +1,25 @@
+Hola, soy Murble. Les comparto el QA del issue dos mil cuarenta y tres, sobre avisar cambios de precio al repetir un pedido.
+
+El APK del flavor client se instaló correctamente en el emulador y la aplicación Intrale arranca sin errores.
+
+La pantalla de bienvenida muestra los botones Registrarme y Ya tengo cuenta, con el mensaje Bienvenido a la tienda.
+
+Verifico el flujo de login, ingresando credenciales y confirmando que la pantalla responde correctamente a la interacción.
+
+El criterio de aceptación uno pide detectar cambios de precio comparando el unit price del pedido original contra el promotion price o base price del catálogo actual. La lógica está implementada en Do Repeat Order.
+
+El criterio dos exige mostrar un diálogo informativo con nombre del producto, precio original, precio actual y diferencia con indicador visual. Los tests unitarios de Do Client Orders cubren esta visualización.
+
+El criterio tres valida que los productos se agreguen al carrito con el precio actual del catálogo, no el histórico. El ViewModel usa effective price del current price map.
+
+El criterio cuatro confirma que si no hay cambios de precio, no se muestra ningún aviso. El flujo continúa como antes.
+
+El criterio cinco verifica la coexistencia con productos excluidos por falta de stock, que se muestran en el mismo diálogo.
+
+El criterio seis asegura el formato monetario consistente con el resto de la aplicación.
+
+La auditoría de seguridad aprobó los cambios como mejora de postura, reduciendo la ventana de manipulación client side al usar precios actuales del catálogo.
+
+Los siete nuevos tests unitarios cubren: aumento de precio, descuento, sin cambios, escenario mixto, promotion price, sin business id y fallo de catálogo con degradación elegante.
+
+QA end to end aprobado para el issue dos mil cuarenta y tres.

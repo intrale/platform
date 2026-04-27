@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 03 — Pagina /consumo (coordinada con #2520)
+  Demuestra: consumo de tokens por agente, costo USD, barras de costo por fase,
+             tabla detalle, todo con mismos tokens de marca.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+  <defs>
+    <linearGradient id="brandGrad3" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- Header compacto -->
+  <rect x="0" y="0" width="1440" height="60" fill="#161B22"/>
+  <rect x="0" y="59" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(32, 18)">
+    <rect width="26" height="26" rx="7" fill="#0D274D"/>
+    <path d="M13 5.5 L4 21 L22 21 Z" fill="none" stroke="url(#brandGrad3)" stroke-width="2.2" stroke-linejoin="round"/>
+    <path d="M13 12 L9 19 L17 19 Z" fill="url(#brandGrad3)"/>
+  </g>
+  <text x="66" y="38" fill="#E6EDF3" font-size="16" font-weight="700">Intrale Pipeline</text>
+  <text x="230" y="38" fill="#8B949E" font-size="13">· Consumo V3</text>
+
+  <!-- Breadcrumb -->
+  <g transform="translate(32, 94)" font-size="13">
+    <text fill="#8B949E">Dashboard</text>
+    <text x="72" fill="#8B949E">›</text>
+    <text x="86" fill="#E6EDF3" font-weight="600">Consumo</text>
+  </g>
+
+  <!-- Titulo -->
+  <text x="32" y="152" fill="#E6EDF3" font-size="26" font-weight="700">Consumo del pipeline V3</text>
+  <text x="32" y="178" fill="#8B949E" font-size="14">Ultimos 7 dias · actualizado hace 12 s · SSE conectado</text>
+
+  <!-- Filtros -->
+  <g transform="translate(32, 202)" font-size="12" font-weight="600">
+    <g><rect width="58" height="30" rx="15" fill="#1890FF" fill-opacity="0.18" stroke="#1890FF" stroke-opacity="0.45"/>
+       <text x="29" y="20" fill="#58A6FF" text-anchor="middle">7 dias</text></g>
+    <g transform="translate(68, 0)"><rect width="50" height="30" rx="15" fill="#161B22" stroke="#30363D"/>
+       <text x="25" y="20" fill="#B1BAC4" text-anchor="middle">24h</text></g>
+    <g transform="translate(128, 0)"><rect width="58" height="30" rx="15" fill="#161B22" stroke="#30363D"/>
+       <text x="29" y="20" fill="#B1BAC4" text-anchor="middle">Mes</text></g>
+    <g transform="translate(196, 0)"><rect width="80" height="30" rx="15" fill="#161B22" stroke="#30363D"/>
+       <text x="40" y="20" fill="#B1BAC4" text-anchor="middle">Sprint activo</text></g>
+  </g>
+
+  <!-- === 4 KPI cards === -->
+  <g transform="translate(32, 252)">
+    <!-- Costo total -->
+    <g>
+      <rect width="332" height="104" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="332" height="4" rx="2" fill="#3FB950"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">COSTO TOTAL (USD)</text>
+      <text x="16" y="68" fill="#E6EDF3" font-size="32" font-weight="700">US$ 48.26</text>
+      <g transform="translate(16, 78)" font-size="11">
+        <text fill="#3FB950" font-weight="600">↓ 12 %</text>
+        <text x="42" fill="#8B949E">vs semana previa</text>
+      </g>
+    </g>
+    <!-- Tokens -->
+    <g transform="translate(344, 0)">
+      <rect width="332" height="104" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="332" height="4" rx="2" fill="#58A6FF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">TOKENS PROCESADOS</text>
+      <text x="16" y="68" fill="#E6EDF3" font-size="32" font-weight="700">8.4 M</text>
+      <text x="16" y="90" fill="#8B949E" font-size="11">input 6.1M · output 2.3M · cache 43 %</text>
+    </g>
+    <!-- Issues -->
+    <g transform="translate(688, 0)">
+      <rect width="332" height="104" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="332" height="4" rx="2" fill="#BC8CFF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">ISSUES CERRADOS</text>
+      <text x="16" y="68" fill="#E6EDF3" font-size="32" font-weight="700">23</text>
+      <text x="16" y="90" fill="#8B949E" font-size="11">promedio · US$ 2.10 por issue</text>
+    </g>
+    <!-- TTS minutos -->
+    <g transform="translate(1032, 0)">
+      <rect width="332" height="104" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="332" height="4" rx="2" fill="#2DD4BF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">VOZ NARRADA (TTS)</text>
+      <text x="16" y="68" fill="#E6EDF3" font-size="32" font-weight="700">147 min</text>
+      <text x="16" y="90" fill="#8B949E" font-size="11">edge-tts · gratis · 12 voces activas</text>
+    </g>
+  </g>
+
+  <!-- === Grafico de barras por fase === -->
+  <text x="32" y="400" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">COSTO POR FASE (USD) — ULTIMOS 7 DIAS</text>
+
+  <g transform="translate(32, 418)">
+    <rect width="820" height="380" rx="10" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Ejes -->
+    <line x1="88" y1="40" x2="88" y2="320" stroke="#30363D" stroke-width="1"/>
+    <line x1="88" y1="320" x2="780" y2="320" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Y labels -->
+    <g font-size="11" fill="#8B949E" text-anchor="end">
+      <text x="78" y="44">15</text>
+      <text x="78" y="114">10</text>
+      <text x="78" y="184">5</text>
+      <text x="78" y="324">0</text>
+    </g>
+
+    <!-- Barras por fase (9 fases) -->
+    <g font-size="11" fill="#8B949E" text-anchor="middle">
+
+      <!-- analisis -->
+      <g transform="translate(120, 0)">
+        <rect x="0" y="220" width="44" height="100" rx="4" fill="#BC8CFF"/>
+        <rect x="0" y="216" width="44" height="4" rx="2" fill="#BC8CFF" fill-opacity="0.7"/>
+        <text x="22" y="340">analisis</text>
+        <text x="22" y="210" fill="#E6EDF3" font-weight="600">$4.8</text>
+      </g>
+      <!-- criterios -->
+      <g transform="translate(190, 0)">
+        <rect x="0" y="162" width="44" height="158" rx="4" fill="#BC8CFF"/>
+        <text x="22" y="340">criterios</text>
+        <text x="22" y="154" fill="#E6EDF3" font-weight="600">$7.2</text>
+      </g>
+      <!-- sizing -->
+      <g transform="translate(260, 0)">
+        <rect x="0" y="276" width="44" height="44" rx="4" fill="#BC8CFF"/>
+        <text x="22" y="340">sizing</text>
+        <text x="22" y="268" fill="#E6EDF3" font-weight="600">$2.0</text>
+      </g>
+      <!-- validacion -->
+      <g transform="translate(330, 0)">
+        <rect x="0" y="198" width="44" height="122" rx="4" fill="#58A6FF"/>
+        <text x="22" y="340">validacion</text>
+        <text x="22" y="190" fill="#E6EDF3" font-weight="600">$5.6</text>
+      </g>
+      <!-- dev -->
+      <g transform="translate(400, 0)">
+        <rect x="0" y="62" width="44" height="258" rx="4" fill="#58A6FF"/>
+        <text x="22" y="340">dev</text>
+        <text x="22" y="54" fill="#E6EDF3" font-weight="600">$11.7</text>
+      </g>
+      <!-- build -->
+      <g transform="translate(470, 0)">
+        <rect x="0" y="234" width="44" height="86" rx="4" fill="#58A6FF"/>
+        <text x="22" y="340">build</text>
+        <text x="22" y="226" fill="#E6EDF3" font-weight="600">$3.9</text>
+      </g>
+      <!-- verificacion -->
+      <g transform="translate(540, 0)">
+        <rect x="0" y="220" width="44" height="100" rx="4" fill="#58A6FF"/>
+        <text x="22" y="340">verif.</text>
+        <text x="22" y="210" fill="#E6EDF3" font-weight="600">$4.6</text>
+      </g>
+      <!-- aprobacion -->
+      <g transform="translate(610, 0)">
+        <rect x="0" y="252" width="44" height="68" rx="4" fill="#2DD4BF"/>
+        <text x="22" y="340">aprob.</text>
+        <text x="22" y="244" fill="#E6EDF3" font-weight="600">$3.1</text>
+      </g>
+      <!-- entrega -->
+      <g transform="translate(680, 0)">
+        <rect x="0" y="274" width="44" height="46" rx="4" fill="#2DD4BF"/>
+        <text x="22" y="340">entrega</text>
+        <text x="22" y="266" fill="#E6EDF3" font-weight="600">$2.1</text>
+      </g>
+
+    </g>
+
+    <!-- Leyenda -->
+    <g transform="translate(120, 358)" font-size="11" fill="#8B949E">
+      <rect x="0" y="0" width="10" height="10" rx="2" fill="#BC8CFF"/>
+      <text x="16" y="9">Definicion</text>
+      <rect x="96" y="0" width="10" height="10" rx="2" fill="#58A6FF"/>
+      <text x="112" y="9">Desarrollo + Build</text>
+      <rect x="234" y="0" width="10" height="10" rx="2" fill="#2DD4BF"/>
+      <text x="250" y="9">QA + Entrega</text>
+    </g>
+  </g>
+
+  <!-- === Tabla: top issues por costo === -->
+  <text x="872" y="400" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">TOP 5 ISSUES POR COSTO</text>
+
+  <g transform="translate(872, 418)">
+    <rect width="536" height="380" rx="10" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Header tabla -->
+    <g transform="translate(16, 24)" font-size="11" fill="#8B949E" font-weight="600" letter-spacing="1">
+      <text x="0">ISSUE</text>
+      <text x="236">TOKENS</text>
+      <text x="336">USD</text>
+      <text x="420">FASE</text>
+    </g>
+    <line x1="16" y1="42" x2="520" y2="42" stroke="#30363D"/>
+
+    <!-- Filas -->
+    <g font-size="13">
+      <!-- Row 1 -->
+      <g transform="translate(16, 58)">
+        <text fill="#E6EDF3" font-weight="600">#2505</text>
+        <text x="52" fill="#B1BAC4">Android splash por flavor</text>
+        <text x="236" fill="#B1BAC4">682 k</text>
+        <text x="336" fill="#E6EDF3" font-weight="600">$6.84</text>
+        <g transform="translate(420, -12)">
+          <rect width="62" height="22" rx="11" fill="#58A6FF" fill-opacity="0.14" stroke="#58A6FF" stroke-opacity="0.35"/>
+          <text x="31" y="15" fill="#58A6FF" font-size="11" font-weight="600" text-anchor="middle">dev</text>
+        </g>
+      </g>
+      <line x1="16" y1="78" x2="520" y2="78" stroke="#21262D"/>
+
+      <!-- Row 2 -->
+      <g transform="translate(16, 92)">
+        <text fill="#E6EDF3" font-weight="600">#2523</text>
+        <text x="52" fill="#B1BAC4">Rediseno visual V3</text>
+        <text x="236" fill="#B1BAC4">441 k</text>
+        <text x="336" fill="#E6EDF3" font-weight="600">$4.72</text>
+        <g transform="translate(420, -12)">
+          <rect width="78" height="22" rx="11" fill="#BC8CFF" fill-opacity="0.14" stroke="#BC8CFF" stroke-opacity="0.35"/>
+          <text x="39" y="15" fill="#BC8CFF" font-size="11" font-weight="600" text-anchor="middle">criterios</text>
+        </g>
+      </g>
+      <line x1="16" y1="112" x2="520" y2="112" stroke="#21262D"/>
+
+      <!-- Row 3 -->
+      <g transform="translate(16, 126)">
+        <text fill="#E6EDF3" font-weight="600">#2159</text>
+        <text x="52" fill="#B1BAC4">Perfil editable — 4 rebotes</text>
+        <text x="236" fill="#B1BAC4">398 k</text>
+        <text x="336" fill="#E6EDF3" font-weight="600">$3.95</text>
+        <g transform="translate(420, -12)">
+          <rect width="82" height="22" rx="11" fill="#D29922" fill-opacity="0.14" stroke="#D29922" stroke-opacity="0.35"/>
+          <text x="41" y="15" fill="#D29922" font-size="11" font-weight="600" text-anchor="middle">rebote 3</text>
+        </g>
+      </g>
+      <line x1="16" y1="146" x2="520" y2="146" stroke="#21262D"/>
+
+      <!-- Row 4 -->
+      <g transform="translate(16, 160)">
+        <text fill="#E6EDF3" font-weight="600">#2450</text>
+        <text x="52" fill="#B1BAC4">Watchdog heartbeat</text>
+        <text x="236" fill="#B1BAC4">352 k</text>
+        <text x="336" fill="#E6EDF3" font-weight="600">$3.12</text>
+        <g transform="translate(420, -12)">
+          <rect width="62" height="22" rx="11" fill="#58A6FF" fill-opacity="0.14" stroke="#58A6FF" stroke-opacity="0.35"/>
+          <text x="31" y="15" fill="#58A6FF" font-size="11" font-weight="600" text-anchor="middle">build</text>
+        </g>
+      </g>
+      <line x1="16" y1="180" x2="520" y2="180" stroke="#21262D"/>
+
+      <!-- Row 5 -->
+      <g transform="translate(16, 194)">
+        <text fill="#E6EDF3" font-weight="600">#2525</text>
+        <text x="52" fill="#B1BAC4">Muerte prematura agentes</text>
+        <text x="236" fill="#B1BAC4">287 k</text>
+        <text x="336" fill="#E6EDF3" font-weight="600">$2.48</text>
+        <g transform="translate(420, -12)">
+          <rect width="70" height="22" rx="11" fill="#3FB950" fill-opacity="0.14" stroke="#3FB950" stroke-opacity="0.35"/>
+          <text x="35" y="15" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">entrega</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Mini trend spark -->
+    <text x="16" y="260" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">TENDENCIA 7 DIAS</text>
+    <polyline points="16,320 80,300 144,284 208,306 272,282 336,268 400,246 464,252 528,230"
+              fill="none" stroke="#3FB950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="528" cy="230" r="4" fill="#3FB950"/>
+    <text x="16" y="350" fill="#8B949E" font-size="11">tokens/dia · promedio 1.2M</text>
+  </g>
+</svg>

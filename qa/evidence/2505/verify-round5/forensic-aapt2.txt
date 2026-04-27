@@ -1,0 +1,50 @@
+=== QA Round 5 — forensic aapt2 evidence ===
+Date: 2026-04-24T15:38:19-03:00
+
+APKs pulled from device emulator-5554:
+eb19728be1dbb8c70596ff690d259acd */c/Workspaces/Intrale/platform/qa/evidence/2505/verify-round5/business.apk
+3fdd870b0e4876272c99452b741ec17d */c/Workspaces/Intrale/platform/qa/evidence/2505/verify-round5/client.apk
+5b5c6fdb9d3a4641a320e0b181340798 */c/Workspaces/Intrale/platform/qa/evidence/2505/verify-round5/delivery.apk
+
+APKs in qa/artifacts (supposedly from Round 4 build):
+eb19728be1dbb8c70596ff690d259acd */c/Workspaces/Intrale/platform/qa/artifacts/2505-composeApp-business-debug.apk
+c60edc7ac85154e3c5c8cf5fdf13a4e7 */c/Workspaces/Intrale/platform/qa/artifacts/2505-composeApp-client-debug.apk
+5b5c6fdb9d3a4641a320e0b181340798 */c/Workspaces/Intrale/platform/qa/artifacts/2505-composeApp-delivery-debug.apk
+
+APKs from Round 3 (previous rejection evidence):
+eb19728be1dbb8c70596ff690d259acd */c/Workspaces/Intrale/platform/qa/evidence/2505/verify-round3/device-apks/business.apk
+3fdd870b0e4876272c99452b741ec17d */c/Workspaces/Intrale/platform/qa/evidence/2505/verify-round3/device-apks/client.apk
+5b5c6fdb9d3a4641a320e0b181340798 */c/Workspaces/Intrale/platform/qa/evidence/2505/verify-round3/device-apks/delivery.apk
+
+=== Conclusion ===
+- business APK installed = business APK in artifacts = Round 3 APK (MD5 eb19728b...)
+- delivery APK installed = delivery APK in artifacts = Round 3 APK (MD5 5b5c6fdb...)
+- client APK installed = Round 3 APK (MD5 3fdd870b...), artifacts has different (MD5 c60edc7a...) but both PRE-fix
+
+=== aapt2: drawable-anydpi-v26/$ic_intrale_foreground__0.xml (el auxiliar bug) ===
+
+--- client ---
+    E: gradient (line=20)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff00d6ff
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff1890ff
+
+--- business ---
+    E: gradient (line=20)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff00d6ff
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff1890ff
+
+--- delivery ---
+    E: gradient (line=20)
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff00d6ff
+          A: http://schemas.android.com/apk/res/android:color(0x010101a5)=#ff1890ff
+
+=== aapt2: res/drawable/ic_intrale_foreground.xml (fix esperado) ===
+
+--- client ---
+          A: http://schemas.android.com/apk/res/android:strokeColor(0x01010406)=@0x7f040000
+
+--- business ---
+          A: http://schemas.android.com/apk/res/android:strokeColor(0x01010406)=@0x7f040000
+
+--- delivery ---
+          A: http://schemas.android.com/apk/res/android:strokeColor(0x01010406)=@0x7f040000

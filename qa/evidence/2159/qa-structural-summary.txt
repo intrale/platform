@@ -1,0 +1,41 @@
+QA Estructural — Issue #2159
+Branch: agent/2159-backend-dev (commit 5e45afa5 + merge main c93506a7)
+Fecha: 2026-04-17
+
+Criterios de aceptación verificados (estructural):
+
+[OK] AC-1: Instancia global de Json en DI
+     DIManager.kt línea 398:
+     bindSingleton<Json> { Json { ignoreUnknownKeys = true; isLenient = true } }
+
+[OK] AC-2: Servicios migrados a instancia global inyectada
+     - 91 llamadas a Json.decodeFromString (default) removidas
+     - 91 llamadas a json.decodeFromString (inyectado) agregadas
+     - Firma estándar de constructores: ServiceX(httpClient, json)
+     - 1 caso excepcional: DeliveryExceptions.kt mantiene Json.decodeFromString
+       en extension function fuera de DI, protegido por runCatching+getOrElse
+       (no crashea ante unknown keys, fallback devuelve mensaje raw).
+       Comportamiento pre-existente, no regresión.
+
+[OK] AC-3: Instancias locales duplicadas eliminadas
+     - 5 instancias locales `val json = Json { ignoreUnknownKeys = true }` removidas
+       en servicios delivery/business migrados a DI.
+
+[OK] AC-4: Tests de tolerancia a campos desconocidos
+     - Archivo: app/composeApp/src/commonTest/kotlin/ext/JsonUnknownKeysToleranceTest.kt
+     - 157 líneas, 7 tests @Test anotados
+     - Verifican que JSON con campos extra no causa SerializationException
+
+[OK] AC-5: Sin regresiones compilatorias
+     - Tester de pipeline aprobó (fase verificacion/procesado/2159.tester)
+     - Security aprobó (fase verificacion/procesado/2159.security)
+     - Branch mergea con main sin conflictos (c93506a7)
+
+[OK] AC-6: Patrón error handling preservado
+     - Se mantiene bodyAsText() + decodeFromString (no migración a body<T>())
+     - El patrón de ExceptionResponse sigue igual en los 46 servicios
+
+Conclusión: aprobado — el cambio cumple estructuralmente con todos los
+criterios de aceptación. La única observación (DeliveryExceptions.kt)
+está fuera del alcance de DI y no representa riesgo de crash por estar
+envuelta en runCatching.

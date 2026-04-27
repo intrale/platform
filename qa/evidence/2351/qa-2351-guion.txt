@@ -1,0 +1,21 @@
+QA del issue 2351: fix del gate de evidencia y del rejection report del pipeline V2.
+
+Contexto del cambio. Este issue es infraestructura pura del pipeline, no toca código de la aplicación. Los archivos modificados son punto pipeline barra pulpo punto js, punto pipeline barra rejection-report punto js, dos módulos nuevos en punto pipeline barra lib y documentación en docs barra QA.
+
+Criterios validados por el desarrollador con 40 tests unitarios que corrieron con node test. Son los siguientes.
+
+Criterio 1. El gate de evidencia respeta el modo QA usando una whitelist explícita. Cuando el modo es api o structural, no pide video ni audio. Cuando el modo es android, sigue pidiendo evidencia audiovisual como hasta ahora.
+
+Criterio 2. El rejection report verifica que los APK debug de los flavors client, business y delivery existen y están frescos, con mtime mayor al momento de inicio del build. Si el APK existe y es reciente, descarta el falso positivo del match assemble fail.
+
+Criterio 3. Logging auditable. Cada bypass del gate y cada match descartado emite un log estructurado con el issue, la razón, el modo QA y la decisión tomada. Queda trazabilidad completa en el monitor.
+
+Criterio 4. El bypass es quirúrgico. Solo afecta a la evidencia de video y audio. No toca el verifier, el ruteo de skills ni el gate de QA para merge de pull request.
+
+Criterio 5. Desbloquea el issue 2023, que es QA de API pura y había sido rechazado incorrectamente por falta de video. Con el fix, el gate reconoce que el modo api no requiere evidencia audiovisual.
+
+Criterio 6. No introduce regresiones. Los issues con label app client, app business o app delivery siguen exigiendo video con audio narrado, sin cambios.
+
+Smoke test de la aplicación cliente. Como el issue tiene aplicado el label app client por herencia, se ejecutó un smoke test del APK del flavor client para confirmar que no hay regresión de fondo en el artefacto distribuido. La aplicación abre correctamente en la pantalla de bienvenida de Intrale con el mensaje bienvenido a la tienda y los botones registrarme y ya tengo cuenta. Navegando a ya tengo cuenta se abre la pantalla ingresá a tu cuenta con el campo usuario disponible. El botón atrás devuelve al welcome sin errores. El flujo básico de la app sigue funcionando, confirmando que los cambios de infraestructura del pipeline no tuvieron impacto en el producto de usuario final.
+
+Resultado. Los seis criterios de aceptación quedan cubiertos por los 40 tests unitarios del pipeline ejecutados en fase de desarrollo. El smoke test del APK en el emulador confirma que no hay regresión de UI. La evidencia audiovisual acompaña el cierre de la verificación. QA aprobado.

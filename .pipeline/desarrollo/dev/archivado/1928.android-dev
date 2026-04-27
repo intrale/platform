@@ -1,0 +1,7 @@
+issue: 1928
+fase: dev
+pipeline: desarrollo
+rebote: true
+rebote_numero: 3
+motivo_rechazo: "[build] Build falló (exit 1). FAILURE: Build failed with an exception.\r. Log: .pipeline/logs/build-1928.log"
+rechazado_en_fase: build

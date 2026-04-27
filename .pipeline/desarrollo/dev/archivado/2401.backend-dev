@@ -1,0 +1,52 @@
+issue: 2401
+fase: dev
+pipeline: desarrollo
+rebote: true
+rebote_numero: 1
+rebote_tipo: codigo
+motivo_rechazo: |-
+  [po] Issue marcado como `split` — NO debe entrar al pipeline de desarrollo.
+
+  El Planner dividió este issue en 3 hijas el 2026-04-21 10:36:
+    - #2404: Clasificar errores de toolchain como infra + validar log staleness
+    - #2405: Fail-fast JAVA_HOME + backup tags + sanitizar logs + needs-human
+    - #2406: recover.js + re-encolado de 15 issues + UX operador + docs
+
+  El propio comentario del Planner dice textualmente: "Este issue (#2401) queda
+  marcado como `split` y NO se implementa directamente — las hijas cubren el
+  alcance completo".
+
+  Evidencia (labels del issue):
+    - Ready
+    - split                  <-- bloquea desarrollo del parent
+    - area:infra
+    - tipo:infra
+    - priority:high
+    - size:large
+    - qa:dependency
+
+  Historial de rebotes del mismo parent en este pipeline:
+    - Guru (desarrollo/validacion) rechazó el 2026-04-21 15:44 y 15:47
+    - Security (desarrollo/validacion) confirmó rebote de routing 15:52
+    - UX (desarrollo/validacion) confirmó rebote de routing 15:57
+    - Planner (definicion/sizing) re-aprobó sizing large pero sin reactivar parent 16:00
+    - PO (este rol) rebotó 15:45, 15:45:48 y 12:57 con idéntico diagnóstico
+
+  Los criterios de aceptación están completos y fueron escritos por el PO
+  pensando en fragmentarse entre las 3 hijas, no en un PR monolítico del parent.
+  Implementar #2401 directamente violaría el scope dado por el Planner y
+  duplicaría esfuerzo con las hijas que ya están en `needs-definition`.
+
+  Acción correcta (pipeline-dev, no agente):
+    1. Filtrar en el intake del Pulpo: si labels incluyen `split`, NO encolar a
+       `desarrollo/validacion` ni a `definicion/analisis`. Hoy se está escapando
+       y genera rebotes circulares.
+    2. Mantener #2401 abierto solo para trazabilidad histórica del parent.
+    3. Promover #2404 primero (base habilitante), luego #2405 y #2406 en paralelo
+       según dependencias técnicas ya documentadas por Planner y PO.
+
+  No hay nada accionable para un developer en este parent. El rechazo no es de
+  contenido sino de routing del pipeline.
+
+  [ux] Issue marcado como `split` — ya fue dividido por el Planner en 3 hijas (#2404, #2405, #2406) que cubren el alcance completo. No debe implementarse directamente como parent. Los criterios UX/DX ya fueron definidos en el análisis previo (comentario del 2026-04-21 10:28) y se heredan explícitamente a las hijas (tabla de mapeo en comentario del 2026-04-21 15:57). Acción: sacar #2401 de la cola de desarrollo y promover #2404 primero (base habilitante), luego #2405 y #2406 en paralelo. Recomendación al pipeline: filtrar label `split` en el intake antes de encolar parents a `desarrollo/validacion` (ya mencionado por Guru y UX en rebotes previos).
+rechazado_en_fase: validacion

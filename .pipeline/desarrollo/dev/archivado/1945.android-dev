@@ -1,0 +1,7 @@
+issue: 1945
+fase: dev
+pipeline: desarrollo
+rebote: true
+rebote_numero: 2
+motivo_rechazo: '[build] Build falló (exit 1). ERROR: JAVA_HOME is set to an invalid directory: C:/Program Files/JetBrains/IntelliJ IDEA 2024.3.1/jbr. Log: .pipeline/logs/build-1945.log'
+rechazado_en_fase: build

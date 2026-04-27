@@ -4689,8 +4689,14 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
   }
 
+  // PIPELINE_WORKTREE: refuerzo defensivo del cwd. Algunos skills
+  // determinísticos (linter.js #2523 rev-1) precomputan rutas absolutas en
+  // tiempo de carga del módulo y no respetan el cwd del spawn salvo que se
+  // les diga explícitamente. Pasarlo como env evita que vuelvan a leer la
+  // rama del checkout principal por accidente.
+  const spawnCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
   const child = spawn(spawnCmd, spawnArgs, {
-    cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
+    cwd: spawnCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
     shell: useDeterministicSkill ? false : CLAUDE_LAUNCHER.shell,
@@ -4702,6 +4708,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       PIPELINE_FASE: fase,
       PIPELINE_PIPELINE: pipeline,
       PIPELINE_TRABAJANDO: trabajandoPath,
+      PIPELINE_WORKTREE: spawnCwd,
+      PIPELINE_REPO_ROOT: ROOT,
       ...extraEnv,
     },
   });
