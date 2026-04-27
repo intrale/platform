@@ -4486,6 +4486,22 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Construir user prompt — enriquecer si es un rebote con contexto del rechazo
   let userPrompt = `Archivo de trabajo: ${path.basename(trabajandoPath)}\nPath: ${trabajandoPath}\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;
 
+  // #2801 — Si el issue fue desbloqueado manualmente con orientación humana,
+  // human-block deja un archivo `<marker>.guidance.txt` junto al archivo de
+  // trabajo. Lo inyectamos al prompt como bloque destacado para que el
+  // agente sepa qué hacer ANTES de retomar el flujo normal. El archivo se
+  // borra después de leerlo (one-shot) para no contaminar reintentos.
+  try {
+    const guidancePath = trabajandoPath + '.guidance.txt';
+    if (fs.existsSync(guidancePath)) {
+      const guidance = fs.readFileSync(guidancePath, 'utf8').trim();
+      if (guidance) {
+        userPrompt += `\n\n📋 INDICACIONES HUMANAS — Este issue venía bloqueado y fue reactivado por un operador con guía explícita. Tenelo en cuenta antes de actuar:\n\n${guidance}\n\nUsá esta orientación para informar tus decisiones — NO la ignores.`;
+      }
+      try { fs.unlinkSync(guidancePath); } catch {}
+    }
+  } catch (e) { log('lanzamiento', `⚠️ ${skill}:#${issue} no se pudo leer guidance: ${e.message}`); }
+
   if (workData.rebote) {
     const rechazadoEn = workData.rechazado_en_fase || 'desconocida';
     const motivo = workData.motivo_rechazo || 'sin motivo especificado';

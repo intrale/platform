@@ -98,9 +98,22 @@ async function killSkillGroup(skill, agents){
 }
 
 async function nhReactivate(issue){
-    if(!confirm('¿Reactivar #'+issue+' (quitar label needs-human)?')) return;
+    // Pedir indicaciones para el agente. prompt() permite multi-línea pegando texto.
+    // Si el operador acepta sin texto, sigue (compat con el flujo viejo).
+    // Si cancela (null), abortar.
+    const guidance = prompt(
+        '¿Reactivar #'+issue+'?\\n\\n' +
+        'Indicaciones para el agente (opcional — se pasan como contexto al prompt y se postean en el issue):\\n' +
+        'Ej: "Usar la API REST en vez de gh CLI", "Ignorar el rebase conflict, ya está limpio", etc.',
+        ''
+    );
+    if(guidance === null) return; // cancel
     try{
-        const r = await fetch('/api/needs-human/'+issue+'/reactivate', {method:'POST'});
+        const r = await fetch('/api/needs-human/'+issue+'/reactivate', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ guidance: guidance.trim() }),
+        });
         const j = await r.json();
         showToast(j.msg || (j.ok?'Reactivado':'Falló'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
