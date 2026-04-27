@@ -150,20 +150,28 @@ function headerSlice(state, ctx) {
     };
 }
 
+// `gh pr list` tarda ~3-4s y los PRs mergeados de 7 días no cambian rápido.
+// Cache de 5 min para no bloquear el endpoint /api/dash/kpis cada poll.
+let _prsCache = { value: null, at: 0 };
+const PRS_CACHE_TTL_MS = 5 * 60 * 1000;
+
 function kpisSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
     const GH_BIN = ctx.GH_BIN;
 
-    let prsLast7d = null;
-    try {
-        const since = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-        const result = execSync(
-            `"${GH_BIN}" pr list --state merged --search "merged:>=${since}" --json number --limit 200`,
-            { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true }
-        );
-        prsLast7d = JSON.parse(result || '[]').length;
-    } catch { /* gh offline */ }
+    let prsLast7d = _prsCache.value;
+    if (Date.now() - _prsCache.at > PRS_CACHE_TTL_MS) {
+        try {
+            const since = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+            const result = execSync(
+                `"${GH_BIN}" pr list --state merged --search "merged:>=${since}" --json number --limit 200`,
+                { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true }
+            );
+            prsLast7d = JSON.parse(result || '[]').length;
+            _prsCache = { value: prsLast7d, at: Date.now() };
+        } catch { /* gh offline — mantener valor previo del cache si existe */ }
+    }
 
     let tokens24h = null;
     let snapshot = null;
