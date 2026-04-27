@@ -130,10 +130,21 @@ function saveCalibration(metricsDir, obs) {
     const newSessionFactor = pipelineSession > 0 ? realSession / pipelineSession : 1;
 
     const now = Date.now();
-    const sessionResetsAt = Number.isFinite(obs.sessionResetsInMinutes) && obs.sessionResetsInMinutes > 0
-        ? new Date(now + obs.sessionResetsInMinutes * 60000).toISOString() : null;
-    const weeklyResetsAt = Number.isFinite(obs.weeklyResetsInMinutes) && obs.weeklyResetsInMinutes > 0
-        ? new Date(now + obs.weeklyResetsInMinutes * 60000).toISOString() : null;
+    // Aceptar tanto "minutos al reset" (legacy) como "timestamp ISO absoluto"
+    // (preferido — más natural cuando el operador pega una hora del datetime
+    // picker o de claude.ai). Si vienen ambos, gana el ISO absoluto.
+    function parseResetAt(directIso, minutesField) {
+        if (directIso) {
+            const ts = new Date(directIso).getTime();
+            if (Number.isFinite(ts) && ts > now) return new Date(ts).toISOString();
+        }
+        if (Number.isFinite(minutesField) && minutesField > 0) {
+            return new Date(now + minutesField * 60000).toISOString();
+        }
+        return null;
+    }
+    const sessionResetsAt = parseResetAt(obs.sessionResetsAt, obs.sessionResetsInMinutes);
+    const weeklyResetsAt = parseResetAt(obs.weeklyResetsAt, obs.weeklyResetsInMinutes);
 
     // Detectar drift del reset semanal: si nuestro cálculo predice X y user
     // reporta Y con > 30 min de diferencia, persistir el offset para corregir

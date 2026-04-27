@@ -7791,7 +7791,10 @@ const server = http.createServer((req, res) => {
           realSessionPct: realSession,
           pipelineWeeklyPct: current.pct,
           pipelineSessionPct: current.session ? current.session.pct : 0,
-          // Opcionales — tiempos de reset reportados por el operador
+          // Opcionales — tiempos de reset reportados por el operador.
+          // Acepta ISO absoluto (preferido) o minutos relativos (legacy).
+          sessionResetsAt: payload.session_resets_at || null,
+          weeklyResetsAt: payload.weekly_resets_at || null,
           sessionResetsInMinutes: Number.isFinite(payload.session_resets_in_minutes) ? Number(payload.session_resets_in_minutes) : null,
           weeklyResetsInMinutes: Number.isFinite(payload.weekly_resets_in_minutes) ? Number(payload.weekly_resets_in_minutes) : null,
         });
