@@ -7791,15 +7791,33 @@ const server = http.createServer((req, res) => {
           realSessionPct: realSession,
           pipelineWeeklyPct: current.pct,
           pipelineSessionPct: current.session ? current.session.pct : 0,
+          // Opcionales — tiempos de reset reportados por el operador
+          sessionResetsInMinutes: Number.isFinite(payload.session_resets_in_minutes) ? Number(payload.session_resets_in_minutes) : null,
+          weeklyResetsInMinutes: Number.isFinite(payload.weekly_resets_in_minutes) ? Number(payload.weekly_resets_in_minutes) : null,
         });
-        log(`quota: calibrado real(weekly=${realWeekly}%, session=${realSession}%) → pipeline(weekly=${current.pct}%, session=${current.session?.pct}%) → factors(weekly=${calibration.weekly_factor}, session=${calibration.session_factor})`);
+        log(`quota: calibrado #${calibration.sample_count} real(w=${realWeekly}%, s=${realSession}%) → pipeline(w=${current.pct}%, s=${current.session?.pct}%) → factor smooth(w=${calibration.weekly_factor}, s=${calibration.session_factor}) raw(w=${calibration.weekly_factor_obs}, s=${calibration.session_factor_obs}) α=${calibration.ema_alpha}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, msg: `Calibración guardada · factor semanal ×${calibration.weekly_factor} · sesión ×${calibration.session_factor}`, calibration }));
+        res.end(JSON.stringify({ ok: true, msg: `Calibración #${calibration.sample_count} guardada · factor semanal ×${calibration.weekly_factor} · sesión ×${calibration.session_factor} (EMA α=${calibration.ema_alpha})`, calibration }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: 'Error: ' + e.message }));
       }
     });
+    return;
+  }
+
+  if (req.url === '/api/dash/quota/calibrate' && req.method === 'DELETE') {
+    try {
+      const quotaLib = require('./lib/weekly-quota');
+      const metricsDir = path.join(PIPELINE, 'metrics');
+      const result = quotaLib.clearCalibration(metricsDir);
+      log('quota: calibración borrada por operador');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, msg: result.msg }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'Error: ' + e.message }));
+    }
     return;
   }
 
