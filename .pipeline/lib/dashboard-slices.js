@@ -302,6 +302,12 @@ function equipoSlice(state) {
 
 function pipelineSlice(state, ctx) {
     const matrix = {};
+    // matrixCounts[faseKey][skill] = N — cuántos issues activos hay en cada
+    // combinación skill × fase. Se cuenta solo estados activos
+    // (pendiente/trabajando/listo); procesado/archivado no cuentan porque
+    // ya salieron del flujo.
+    const matrixCounts = {};
+    const ACTIVE_STATES = new Set(['pendiente', 'trabajando', 'listo']);
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         matrix[issueId] = {
             title: data.title,
@@ -316,6 +322,13 @@ function pipelineSlice(state, ctx) {
             rechazado_en_fase: data.rechazado_en_fase || null,
             rechazado_skill_previo: data.rechazado_skill_previo || null,
         };
+        for (const [faseKey, entries] of Object.entries(data.fases || {})) {
+            for (const e of entries) {
+                if (!ACTIVE_STATES.has(e.estado)) continue;
+                if (!matrixCounts[faseKey]) matrixCounts[faseKey] = {};
+                matrixCounts[faseKey][e.skill] = (matrixCounts[faseKey][e.skill] || 0) + 1;
+            }
+        }
     }
     // Orden manual de prioridad (#2801) — el cliente lo usa para ordenar
     // las columnas del kanban. Sin esto cada cliente ordena distinto.
@@ -325,7 +338,7 @@ function pipelineSlice(state, ctx) {
         const data = issueOrder.load();
         priorityOrder = (data && Array.isArray(data.order)) ? data.order.map(String) : [];
     } catch { /* lib no disponible */ }
-    return { matrix, fases: state.allFases, priorityOrder };
+    return { matrix, fases: state.allFases, priorityOrder, matrixCounts };
 }
 
 function bloqueadosSlice(state) {
