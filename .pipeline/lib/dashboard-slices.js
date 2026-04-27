@@ -283,7 +283,26 @@ function pipelineSlice(state, ctx) {
 }
 
 function bloqueadosSlice(state) {
-    return { bloqueados: state.bloqueados || [] };
+    let priorityOrder = [];
+    try {
+        const issueOrder = require('./issue-order');
+        const data = issueOrder.load();
+        priorityOrder = (data && Array.isArray(data.order)) ? data.order.map(String) : [];
+    } catch { /* lib no disponible */ }
+    const orderMap = new Map(priorityOrder.map((id, idx) => [id, idx]));
+    const sorted = [...(state.bloqueados || [])].sort((a, b) => {
+        const oa = orderMap.get(String(a.issue));
+        const ob = orderMap.get(String(b.issue));
+        if (oa != null && ob != null) return oa - ob;
+        if (oa != null) return -1;
+        if (ob != null) return 1;
+        return Number(a.issue) - Number(b.issue);
+    });
+    const enriched = sorted.map(b => ({
+        ...b,
+        priorityIndex: orderMap.has(String(b.issue)) ? orderMap.get(String(b.issue)) + 1 : null,
+    }));
+    return { bloqueados: enriched };
 }
 
 function opsSlice(state) {
