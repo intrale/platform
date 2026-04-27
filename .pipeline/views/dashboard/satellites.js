@@ -801,12 +801,12 @@ function renderCostos() {
         <input id="calib-session" type="number" step="0.1" min="0" max="100" placeholder="ej: 60" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
       </div>
       <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Sesión: minutos al reset (opcional)</label>
-        <input id="calib-session-mins" type="number" step="1" min="0" max="300" placeholder="ej: 165 (= 2h 45m)" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Sesión: día y hora del reset (opcional)</label>
+        <input id="calib-session-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
       </div>
       <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Semanal: minutos al reset (opcional)</label>
-        <input id="calib-weekly-mins" type="number" step="1" min="0" max="10080" placeholder="ej: 8940 (= 6d 5h)" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
+        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Semanal: día y hora del reset (opcional)</label>
+        <input id="calib-weekly-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
       </div>
     </div>
     <div style="display:flex;gap:8px">
@@ -955,24 +955,29 @@ async function tickQuota(){
         calibBtn.addEventListener('click', async () => {
             const w = parseFloat(document.getElementById('calib-weekly').value);
             const s = parseFloat(document.getElementById('calib-session').value);
-            const sm = parseInt(document.getElementById('calib-session-mins').value, 10);
-            const wm = parseInt(document.getElementById('calib-weekly-mins').value, 10);
+            const sAtRaw = document.getElementById('calib-session-at').value;
+            const wAtRaw = document.getElementById('calib-weekly-at').value;
+            // datetime-local NO incluye TZ — el browser lo interpreta como local.
+            // new Date('2026-04-27T22:00') usa TZ del browser, que para el
+            // operador es ART (lo que queremos). Convertimos a ISO UTC.
+            const sAt = sAtRaw ? new Date(sAtRaw).toISOString() : null;
+            const wAt = wAtRaw ? new Date(wAtRaw).toISOString() : null;
             if(!Number.isFinite(w) || !Number.isFinite(s)){
                 showToast('Ingresá ambos % (semanal y sesión)', false);
                 return;
             }
             try{
                 const body = { real_weekly_pct: w, real_session_pct: s };
-                if(Number.isFinite(sm)) body.session_resets_in_minutes = sm;
-                if(Number.isFinite(wm)) body.weekly_resets_in_minutes = wm;
+                if(sAt) body.session_resets_at = sAt;
+                if(wAt) body.weekly_resets_at = wAt;
                 const r = await fetch('/api/dash/quota/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
                 const j = await r.json();
                 showToast(j.msg || (j.ok?'Calibrado':'Falló'), j.ok);
                 if(j.ok){
                     document.getElementById('calib-weekly').value = '';
                     document.getElementById('calib-session').value = '';
-                    document.getElementById('calib-session-mins').value = '';
-                    document.getElementById('calib-weekly-mins').value = '';
+                    document.getElementById('calib-session-at').value = '';
+                    document.getElementById('calib-weekly-at').value = '';
                 }
                 setTimeout(() => tickQuota().catch(()=>{}), 400);
             } catch(e){ showToast('Error: '+e.message, false); }
