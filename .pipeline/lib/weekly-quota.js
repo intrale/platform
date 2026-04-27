@@ -69,8 +69,8 @@ function getLastWeeklyResetMs(now = Date.now()) {
     return localReset.getTime() - TZ_OFFSET_MIN * 60000;
 }
 
-function getNextWeeklyResetMs(now = Date.now()) {
-    return getLastWeeklyResetMs(now) + WEEK_MS;
+function getNextWeeklyResetMs(now = Date.now(), driftMin = 0) {
+    return getLastWeeklyResetMs(now) + WEEK_MS + (driftMin || 0) * 60000;
 }
 
 function quotaFile(metricsDir) {
@@ -83,6 +83,7 @@ function loadState(metricsDir) {
         const parsed = JSON.parse(raw);
         // Defaults para campos nuevos en estados viejos
         if (!parsed.calibration) parsed.calibration = null;
+        if (!parsed.calibrations) parsed.calibrations = [];
         return parsed;
     } catch {
         return {
@@ -92,18 +93,32 @@ function loadState(metricsDir) {
             observed_max_at: null,
             adjustments: [],
             calibration: null,
+            calibrations: [],
         };
     }
 }
 
+const round2 = (n) => Math.round(n * 100) / 100;
+
 /**
- * Persiste una calibración manual: el operador ingresa el % real que ve
- * en claude.ai/settings/usage; calculamos un factor que multiplica el %
- * del pipeline para estimar el % real (que incluye uso interactivo en
- * claude.ai aparte del pipeline).
+ * Persiste una calibración manual con APRENDIZAJE INCREMENTAL:
+ *
+ *   1. Cada calibración se acumula en `calibrations[]` (historial — últimas 20).
+ *   2. Los factores semanal/sesión se calculan por **EMA** (Exponential Moving
+ *      Average) en lugar de reemplazo total: `nuevo = α·obs + (1-α)·viejo`.
+ *      α se ajusta según cantidad de muestras (más muestras → α menor → más
+ *      conservador, menos sensible a outliers individuales).
+ *   3. Si el operador reporta `sessionResetsInMinutes` o `weeklyResetsInMinutes`,
+ *      persistimos esos timestamps absolutos. El cliente los usa para mostrar
+ *      cuenta regresiva precisa, y el server detecta drift de TZ del weekly
+ *      reset (e.g. si reportado != calculado por nuestra fórmula, ajustamos
+ *      el offset persistido).
+ *   4. `weighted_pipeline_pct_at` registra el pipeline pct al momento de
+ *      calibrar — sirve para recalcular factor cuando el pipeline cambia
+ *      mucho entre calibraciones (no implementado aún, queda como hook).
  *
  * @param {string} metricsDir
- * @param {{realWeeklyPct: number, realSessionPct: number, pipelineWeeklyPct: number, pipelineSessionPct: number}} obs
+ * @param {{realWeeklyPct, realSessionPct, pipelineWeeklyPct, pipelineSessionPct, sessionResetsInMinutes?, weeklyResetsInMinutes?}} obs
  */
 function saveCalibration(metricsDir, obs) {
     const state = loadState(metricsDir);
@@ -111,19 +126,79 @@ function saveCalibration(metricsDir, obs) {
     const realSession = Number(obs.realSessionPct);
     const pipelineWeekly = Number(obs.pipelineWeeklyPct);
     const pipelineSession = Number(obs.pipelineSessionPct);
-    const weeklyFactor = pipelineWeekly > 0 ? realWeekly / pipelineWeekly : 1;
-    const sessionFactor = pipelineSession > 0 ? realSession / pipelineSession : 1;
-    state.calibration = {
-        at: new Date().toISOString(),
+    const newWeeklyFactor = pipelineWeekly > 0 ? realWeekly / pipelineWeekly : 1;
+    const newSessionFactor = pipelineSession > 0 ? realSession / pipelineSession : 1;
+
+    const now = Date.now();
+    const sessionResetsAt = Number.isFinite(obs.sessionResetsInMinutes) && obs.sessionResetsInMinutes > 0
+        ? new Date(now + obs.sessionResetsInMinutes * 60000).toISOString() : null;
+    const weeklyResetsAt = Number.isFinite(obs.weeklyResetsInMinutes) && obs.weeklyResetsInMinutes > 0
+        ? new Date(now + obs.weeklyResetsInMinutes * 60000).toISOString() : null;
+
+    // Detectar drift del reset semanal: si nuestro cálculo predice X y user
+    // reporta Y con > 30 min de diferencia, persistir el offset para corregir
+    // próximas invocaciones de getNextWeeklyResetMs().
+    let weeklyResetDriftMin = state.weekly_reset_drift_min || 0;
+    if (weeklyResetsAt) {
+        const ourPredicted = getNextWeeklyResetMs(now);
+        const reportedMs = new Date(weeklyResetsAt).getTime();
+        const driftMs = reportedMs - ourPredicted;
+        if (Math.abs(driftMs) > 30 * 60000) {
+            weeklyResetDriftMin = Math.round(driftMs / 60000);
+        }
+    }
+
+    const entry = {
+        at: new Date(now).toISOString(),
         real_weekly_pct: realWeekly,
         real_session_pct: realSession,
         pipeline_weekly_pct_at: pipelineWeekly,
         pipeline_session_pct_at: pipelineSession,
-        weekly_factor: Math.round(weeklyFactor * 100) / 100,
-        session_factor: Math.round(sessionFactor * 100) / 100,
+        weekly_factor_obs: round2(newWeeklyFactor),
+        session_factor_obs: round2(newSessionFactor),
+        session_resets_at: sessionResetsAt,
+        weekly_resets_at: weeklyResetsAt,
     };
+    state.calibrations.push(entry);
+    if (state.calibrations.length > 20) state.calibrations = state.calibrations.slice(-20);
+
+    // EMA: α decrece con número de muestras. Primera muestra: α=1 (exact).
+    // De ahí en adelante: α = max(0.2, 1 / sqrt(n)) — equilibra respuesta
+    // a cambios reales con resistencia a ruido.
+    const n = state.calibrations.length;
+    const alpha = n === 1 ? 1.0 : Math.max(0.2, 1 / Math.sqrt(n));
+    const prevWeeklyFactor = state.calibration ? state.calibration.weekly_factor : newWeeklyFactor;
+    const prevSessionFactor = state.calibration ? state.calibration.session_factor : newSessionFactor;
+    const smoothWeekly = alpha * newWeeklyFactor + (1 - alpha) * prevWeeklyFactor;
+    const smoothSession = alpha * newSessionFactor + (1 - alpha) * prevSessionFactor;
+
+    state.calibration = {
+        at: new Date(now).toISOString(),
+        real_weekly_pct: realWeekly,
+        real_session_pct: realSession,
+        pipeline_weekly_pct_at: pipelineWeekly,
+        pipeline_session_pct_at: pipelineSession,
+        weekly_factor: round2(smoothWeekly),
+        session_factor: round2(smoothSession),
+        weekly_factor_obs: round2(newWeeklyFactor),
+        session_factor_obs: round2(newSessionFactor),
+        sample_count: n,
+        ema_alpha: round2(alpha),
+        session_resets_at: sessionResetsAt,
+        weekly_resets_at: weeklyResetsAt,
+    };
+    state.weekly_reset_drift_min = weeklyResetDriftMin;
     saveState(metricsDir, state);
     return state.calibration;
+}
+
+function clearCalibration(metricsDir) {
+    const state = loadState(metricsDir);
+    state.calibration = null;
+    state.weekly_reset_drift_min = 0;
+    // calibrations[] (historial) se conserva para auditoría/debug.
+    saveState(metricsDir, state);
+    return { ok: true, msg: 'Calibración borrada — los KPIs vuelven a mostrar el pipeline raw.' };
 }
 
 function saveState(metricsDir, state) {
@@ -242,7 +317,15 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
     const daysToLimit = burnRatePerDay > 0
         ? hoursRemaining / burnRatePerDay
         : Infinity;
-    const nextReset = getNextWeeklyResetMs();
+    // Si el operador reportó el reset semanal exacto en una calibración
+    // reciente, lo usamos por encima de nuestro cálculo (que corrige TZ
+    // drift via weekly_reset_drift_min).
+    let nextReset = getNextWeeklyResetMs(Date.now(), state.weekly_reset_drift_min || 0);
+    if (state.calibration && state.calibration.weekly_resets_at) {
+        const reportedReset = new Date(state.calibration.weekly_resets_at).getTime();
+        // Solo respetar si está en el futuro (no expiró). Sino caer al cálculo.
+        if (reportedReset > Date.now()) nextReset = reportedReset;
+    }
     const msToReset = nextReset - Date.now();
     const daysToReset = msToReset / DAY_MS;
 
@@ -319,8 +402,21 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
             hoursRemaining: Math.round(Math.max(0, DEFAULT_SESSION_LIMIT_HOURS - sessionUsage.hoursUsed) * 100) / 100,
             status: sessionStatus,
         },
-        // Calibración (si existe)
+        // Calibración (si existe) + historial reciente (últimas 20)
         calibration: state.calibration,
+        calibrations: (state.calibrations || []).slice(-20),
+        weeklyResetDriftMin: state.weekly_reset_drift_min || 0,
+        // Stale: la calibración pierde precisión con el tiempo. Marcamos
+        // stale > 7d para sugerir recalibrar.
+        calibrationAgeDays: state.calibration
+            ? Math.round((Date.now() - new Date(state.calibration.at).getTime()) / DAY_MS * 10) / 10
+            : null,
+        calibrationStale: state.calibration
+            ? (Date.now() - new Date(state.calibration.at).getTime()) > 7 * DAY_MS
+            : false,
+        // Reset times reportados por el operador (si los proveyó en última calib)
+        sessionResetsAt: state.calibration ? state.calibration.session_resets_at : null,
+        weeklyResetsAtReported: state.calibration ? state.calibration.weekly_resets_at : null,
     };
 }
 
@@ -333,6 +429,7 @@ module.exports = {
     loadState,
     saveState,
     saveCalibration,
+    clearCalibration,
     DEFAULT_LIMIT_HOURS,
     DEFAULT_SESSION_LIMIT_HOURS,
 };
