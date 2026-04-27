@@ -127,6 +127,17 @@ async function moveIssue(issue, direction){
     } catch(e){ showToast('Error: '+e.message, false); }
 }
 
+async function pauseIssue(issue, paused){
+    const verb = paused ? 'Reanudar' : 'Pausar';
+    if(!confirm('¿'+verb+' #'+issue+'? '+(paused ? '(quita label blocked:dependencies)' : '(agrega label blocked:dependencies)'))) return;
+    try{
+        const r = await fetch('/api/issue/'+issue+'/'+(paused?'resume':'pause'), {method:'POST'});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?(paused?'Reanudado':'Pausado'):'Falló'), j.ok);
+        if(typeof runAll === 'function') setTimeout(runAll, 600);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
 document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible' && typeof runAll === 'function') runAll(); });
 `;
 }
@@ -258,17 +269,41 @@ function renderPipeline() {
 </section>`;
     const css = `
 .pl-board { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
-.pl-col { min-width: 180px; flex: 1; background: var(--in-bg-3); border-radius: var(--in-radius-sm); padding: 10px; border: 1px solid var(--in-border); }
+.pl-col { min-width: 220px; flex: 1; background: var(--in-bg-3); border-radius: var(--in-radius-sm); padding: 10px; border: 1px solid var(--in-border); }
 .pl-col-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-dim); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--in-border); }
 .pl-col-count { background: var(--in-bg); padding: 1px 8px; border-radius: 9px; font-size: 10px; color: var(--in-fg); }
-.pl-card { display: block; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; transition: border-color 0.2s, background 0.2s; color: var(--in-fg); text-decoration: none; }
+.pl-card { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; transition: border-color 0.2s, background 0.2s; color: var(--in-fg); }
 .pl-card:hover { border-color: var(--in-accent); background: var(--in-bg-3); }
+.pl-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .pl-card-issue { font-weight: 600; color: var(--in-info); }
+.pl-card-issue a { color: inherit; text-decoration: none; }
+.pl-card-issue a:hover { text-decoration: underline; }
+.pl-card-prio { color: var(--in-fg-soft); font-size: 10px; margin-left: auto; font-variant-numeric: tabular-nums; }
 .pl-card-title { font-size: 11px; color: var(--in-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-card-actions { display: flex; gap: 3px; margin-top: 6px; opacity: 0.55; transition: opacity 0.15s; }
+.pl-card:hover .pl-card-actions { opacity: 1; }
+.pl-card-btn { background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim); border-radius: 3px; width: 22px; height: 20px; font-size: 10px; cursor: pointer; padding: 0; line-height: 1; transition: background 0.12s, border-color 0.12s, color 0.12s; }
+.pl-card-btn:hover { background: var(--in-bg); border-color: var(--in-accent); color: var(--in-accent); }
+.pl-card-btn.pause:hover { border-color: var(--in-warn); color: var(--in-warn); }
+.pl-card-btn.paused { border-color: var(--in-warn); color: var(--in-warn); }
 .pl-card-state-trabajando { border-color: var(--in-accent); }
 .pl-card-state-listo { border-color: var(--in-ok); }
-.pl-card-state-pendiente { border-color: var(--in-fg-soft); }`;
+.pl-card-state-pendiente { border-color: var(--in-fg-soft); }
+.pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }`;
     const script = `
+function compareByPriority(orderMap){
+    return (a, b) => {
+        const trab = (b.estado==='trabajando'?1:0) - (a.estado==='trabajando'?1:0);
+        if(trab !== 0) return trab;
+        const oa = orderMap.get(String(a.issue));
+        const ob = orderMap.get(String(b.issue));
+        if(oa != null && ob != null) return oa - ob;
+        if(oa != null) return -1;
+        if(ob != null) return 1;
+        return Number(a.issue) - Number(b.issue);
+    };
+}
+
 async function tickPipeline(){
     const d = await fetchJson('/api/dash/pipeline');
     if(!d) return;
@@ -276,6 +311,7 @@ async function tickPipeline(){
     if(!board) return;
     const fases = d.fases || [];
     const matrix = d.matrix || {};
+    const orderMap = new Map((d.priorityOrder || []).map((id, idx) => [String(id), idx]));
     const cols = {};
     for(const { pipeline: p, fase } of fases){
         const key = p+'/'+fase;
@@ -283,16 +319,46 @@ async function tickPipeline(){
     }
     for(const [issue, data] of Object.entries(matrix)){
         if(data.faseActual && cols[data.faseActual]){
-            cols[data.faseActual].items.push({ issue, title: data.title, estado: data.estadoActual, bounces: data.bounces, staleMin: data.staleMin });
+            const labels = data.labels || [];
+            const paused = labels.includes('blocked:dependencies');
+            cols[data.faseActual].items.push({ issue, title: data.title, estado: data.estadoActual, bounces: data.bounces, staleMin: data.staleMin, paused });
         }
     }
+    const cmp = compareByPriority(orderMap);
     let html = '';
     for(const [key, col] of Object.entries(cols)){
-        col.items.sort((a,b) => (b.estado==='trabajando'?1:0) - (a.estado==='trabajando'?1:0));
-        const cards = col.items.slice(0, 12).map(i => '<a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener" class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+'"><div class="pl-card-issue">#'+escapeHtml(i.issue)+'</div><div class="pl-card-title">'+escapeHtml((i.title||'').slice(0,40))+'</div></a>').join('');
+        col.items.sort(cmp);
+        const cards = col.items.slice(0, 12).map(i => {
+            const prio = orderMap.has(String(i.issue)) ? '#' + (orderMap.get(String(i.issue)) + 1) : '';
+            const pausedBadge = i.paused ? '<span class="pl-card-paused-badge">⏸ pausado</span>' : '';
+            const pauseBtn = '<button class="pl-card-btn pause' + (i.paused?' paused':'') + '" data-issue="'+escapeHtml(i.issue)+'" data-action="' + (i.paused?'resume':'pause') + '" title="' + (i.paused?'Reanudar issue':'Pausar issue') + '">' + (i.paused?'▶':'⏸') + '</button>';
+            return '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+'" data-issue="'+escapeHtml(i.issue)+'">'
+              + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
+              + '<div class="pl-card-title" title="'+escapeHtml(i.title||'')+'">'+escapeHtml((i.title||'').slice(0,60))+'</div>'
+              + '<div class="pl-card-actions">'
+              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-top" title="Máxima prioridad">⏫</button>'
+              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-up" title="Subir">▲</button>'
+              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-down" title="Bajar">▼</button>'
+              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-bottom" title="Mínima prioridad">⏬</button>'
+              +   pauseBtn
+              + '</div>'
+              + '</div>';
+        }).join('');
         html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+col.items.length+'</span></div>'+(cards || '<div class="in-empty" style="padding:14px 4px;font-size:11px">vacío</div>')+'</div>';
     }
-    if(board.innerHTML !== html) board.innerHTML = html;
+    if(board.innerHTML !== html){
+        board.innerHTML = html;
+        board.querySelectorAll('.pl-card-btn').forEach(b => {
+            const action = b.dataset.action;
+            b.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const issue = b.dataset.issue;
+                if(action === 'pause' || action === 'resume') return pauseIssue(issue, action === 'resume');
+                return moveIssue(issue, action);
+            });
+        });
+    }
 }
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickPipeline, ms: 5000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }

@@ -259,7 +259,7 @@ function equipoSlice(state) {
     return { skills };
 }
 
-function pipelineSlice(state) {
+function pipelineSlice(state, ctx) {
     const matrix = {};
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         matrix[issueId] = {
@@ -271,7 +271,15 @@ function pipelineSlice(state) {
             staleMin: data.staleMin,
         };
     }
-    return { matrix, fases: state.allFases };
+    // Orden manual de prioridad (#2801) — el cliente lo usa para ordenar
+    // las columnas del kanban. Sin esto cada cliente ordena distinto.
+    let priorityOrder = [];
+    try {
+        const issueOrder = require('./issue-order');
+        const data = issueOrder.load();
+        priorityOrder = (data && Array.isArray(data.order)) ? data.order.map(String) : [];
+    } catch { /* lib no disponible */ }
+    return { matrix, fases: state.allFases, priorityOrder };
 }
 
 function bloqueadosSlice(state) {
