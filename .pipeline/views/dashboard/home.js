@@ -503,6 +503,58 @@ async function tickHeader(){
         if(count === 0) badge.classList.add('area-pill-badge-zero');
         else if(area === 'bloqueados' && count > 0) badge.classList.add('area-pill-badge-bad');
     }
+    // Priority Windows: pills clickeables solo visibles si están active.
+    const pw = d.priorityWindows || {};
+    function setWindowPill(id, win, label){
+        const pill = document.getElementById(id);
+        if(!pill) return;
+        if(!win || !win.active){
+            pill.style.display = 'none';
+            return;
+        }
+        pill.style.display = '';
+        pill.classList.remove('in-pill-ok','in-pill-bad');
+        pill.classList.add('in-pill-warn');
+        const tag = win.manual ? '🔒' : '⚡';
+        let elapsed = '';
+        if(win.activatedAt){
+            const ms = Date.now() - win.activatedAt;
+            const min = Math.floor(ms/60000);
+            elapsed = min < 60 ? ' · '+min+'m' : ' · '+Math.floor(min/60)+'h '+(min%60)+'m';
+        }
+        pill.textContent = tag+' '+label+' window'+elapsed;
+        if(!pill.dataset._bound){
+            pill.dataset._bound = '1';
+            pill.style.cursor = 'pointer';
+            pill.addEventListener('click', async () => {
+                if(!confirm('¿Desactivar la '+label+' Priority Window? El pipeline va a poder lanzar dev/build de nuevo.')) return;
+                try{
+                    const r = await fetch('/api/priority-window', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({window: id.replace('hdr-window-',''), action:'deactivate'})});
+                    const j = await r.json();
+                    showToast(j.msg || (j.ok?label+' desactivada':'Falló'), j.ok);
+                    setTimeout(() => tickHeader().catch(()=>{}), 600);
+                } catch(e){ showToast('Error: '+e.message, false); }
+            });
+        }
+    }
+    setWindowPill('hdr-window-qa', pw.qa, 'QA');
+    setWindowPill('hdr-window-build', pw.build, 'Build');
+    // Recursos: CPU/RAM con coloreo según umbrales.
+    const res = d.resources;
+    const resPill = document.getElementById('hdr-resources');
+    if(resPill && res){
+        const cpu = res.cpuPercent != null ? res.cpuPercent : '?';
+        const mem = res.memPercent != null ? res.memPercent : '?';
+        resPill.textContent = '🖥 CPU '+cpu+'% · RAM '+mem+'%';
+        resPill.classList.remove('in-pill-ok','in-pill-warn','in-pill-bad');
+        const worst = Math.max(Number(cpu)||0, Number(mem)||0);
+        const maxCpu = res.maxCpu || 70;
+        const maxMem = res.maxMem || 70;
+        if((Number(cpu)||0) > maxCpu || (Number(mem)||0) > maxMem) resPill.classList.add('in-pill-bad');
+        else if(worst > 50) resPill.classList.add('in-pill-warn');
+        else resPill.classList.add('in-pill-ok');
+        resPill.title = 'CPU '+cpu+'% (cap '+maxCpu+'%) · RAM '+mem+'% ('+(res.memUsedGB||'?')+'GB / '+(res.memTotalGB||'?')+'GB · cap '+maxMem+'%) · '+(res.cpuCores||'?')+' cores';
+    }
 }
 
 async function tickKpis(){
@@ -918,6 +970,9 @@ function renderHomeHTML() {
           </div>
         </div>
       </span>
+      <span class="in-pill" id="hdr-window-qa" style="display:none" title="Click para desactivar la QA Priority Window">…</span>
+      <span class="in-pill" id="hdr-window-build" style="display:none" title="Click para desactivar la Build Priority Window">…</span>
+      <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema">…</span>
       <span class="in-pill" id="hdr-pulpo">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
