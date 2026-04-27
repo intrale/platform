@@ -6605,6 +6605,47 @@ function closeDuplicateIssue(dupNum, existingNum, dupTitle) {
   }
 }
 
+/**
+ * Busca el último rechazo del issue en `<pipeline>/<fase>/procesado/<issue>.*`.
+ * Devuelve `{motivo, fase, skill, at}` del archivo más reciente con
+ * `resultado: rechazado` o `null` si no encuentra ninguno.
+ *
+ * Caso de uso (#2801): el intake re-toma un issue que ya pasó por el pipeline
+ * (post circuit breaker o cleanup downstream). El agente que reciba el
+ * re-intake necesita saber por qué falló la corrida anterior — sin eso,
+ * arranca a ciegas y vuelve a fallar por la misma razón.
+ */
+function findLastRejection(pipelineName, issueNum, config) {
+    const pipelineConfig = (config.pipelines || {})[pipelineName];
+    if (!pipelineConfig) return null;
+    const fases = pipelineConfig.fases || [];
+    let best = null;
+    for (const fase of fases) {
+        const dir = path.join(fasePath(pipelineName, fase), 'procesado');
+        try {
+            for (const f of fs.readdirSync(dir)) {
+                if (!f.startsWith(issueNum + '.') || f.startsWith('.')) continue;
+                const filepath = path.join(dir, f);
+                let data;
+                try { data = readYaml(filepath); } catch { continue; }
+                if (!data || data.resultado !== 'rechazado') continue;
+                let at = 0;
+                try { at = fs.statSync(filepath).mtimeMs; } catch {}
+                if (!best || at > best.at) {
+                    const skill = f.split('.').slice(1).join('.');
+                    best = {
+                        motivo: data.motivo || data.motivo_rechazo || 'sin motivo registrado',
+                        fase,
+                        skill,
+                        at: at ? new Date(at).toISOString() : null,
+                    };
+                }
+            }
+        } catch { /* dir no existe */ }
+    }
+    return best;
+}
+
 function brazoIntake(config) {
   const intakeInterval = (config.timeouts?.intake_interval_seconds || 300) * 1000;
   if (Date.now() - lastIntakeTime < intakeInterval) return;
@@ -6693,13 +6734,30 @@ function brazoIntake(config) {
         const skills = pipelineConfig.skills_por_fase[faseEntrada] || [];
         const pendienteDir = path.join(fasePath(pipelineName, faseEntrada), 'pendiente');
 
+        // #2801 — Si el issue ya pasó por el pipeline antes (circuit breaker
+        // o intake repetido), buscamos el último rechazo en `*/procesado/`
+        // para propagar el contexto al nuevo archivo. Sin esto, el agente
+        // que recibe el re-intake arranca a ciegas y vuelve a fallar igual.
+        const previousRejection = findLastRejection(pipelineName, issueNum, config);
+        const baseYaml = { issue: parseInt(issueNum), fase: faseEntrada, pipeline: pipelineName };
+        if (previousRejection) {
+          baseYaml.rebote = true;
+          baseYaml.rebote_tipo = 're-intake';
+          baseYaml.rebote_re_intake = true;
+          baseYaml.motivo_rechazo = previousRejection.motivo;
+          baseYaml.rechazado_en_fase = previousRejection.fase;
+          baseYaml.rechazado_skill_previo = previousRejection.skill;
+          baseYaml.rechazado_at = previousRejection.at;
+        }
+
         if (faseEntrada === 'dev') {
           // Fase dev: un solo skill según labels
           const devSkill = determinarDevSkill(issueNum, config);
           const filePath = path.join(pendienteDir, `${issueNum}.${devSkill}`);
           if (!fs.existsSync(filePath)) {
-            writeYaml(filePath, { issue: parseInt(issueNum), fase: faseEntrada, pipeline: pipelineName });
-            log('intake', `#${issueNum} "${issue.title}" → ${pipelineName}/${faseEntrada} (${devSkill})`);
+            writeYaml(filePath, baseYaml);
+            const tag = previousRejection ? ` ↩ con contexto de rechazo previo (${previousRejection.fase}/${previousRejection.skill})` : '';
+            log('intake', `#${issueNum} "${issue.title}" → ${pipelineName}/${faseEntrada} (${devSkill})${tag}`);
           }
         } else {
           // Fase paralela: un archivo por skill
@@ -6707,12 +6765,13 @@ function brazoIntake(config) {
           for (const skill of skills) {
             const filePath = path.join(pendienteDir, `${issueNum}.${skill}`);
             if (!fs.existsSync(filePath)) {
-              writeYaml(filePath, { issue: parseInt(issueNum), fase: faseEntrada, pipeline: pipelineName });
+              writeYaml(filePath, baseYaml);
               created = true;
             }
           }
           if (created) {
-            log('intake', `#${issueNum} "${issue.title}" → ${pipelineName}/${faseEntrada} (${skills.join(', ')})`);
+            const tag = previousRejection ? ` ↩ con contexto de rechazo previo (${previousRejection.fase}/${previousRejection.skill})` : '';
+            log('intake', `#${issueNum} "${issue.title}" → ${pipelineName}/${faseEntrada} (${skills.join(', ')})${tag}`);
           }
         }
       }

@@ -382,6 +382,20 @@ function getPipelineState() {
           entry.motivo = yamlData.motivo;
         }
 
+        // #2801 — Si el archivo en pendiente/trabajando tiene contexto de
+        // rebote (sea por flujo normal o por re-intake), exponerlo a la UI
+        // para que el operador sepa por qué este issue volvió a esta fase.
+        if (estado === 'pendiente' || estado === 'trabajando') {
+          const yamlData = readYamlSafe(filepath);
+          if (yamlData && (yamlData.rebote || yamlData.motivo_rechazo)) {
+            entry.rebote = true;
+            entry.rebote_tipo = yamlData.rebote_tipo || null;
+            entry.motivo_rechazo = yamlData.motivo_rechazo || null;
+            entry.rechazado_en_fase = yamlData.rechazado_en_fase || null;
+            entry.rechazado_skill_previo = yamlData.rechazado_skill_previo || null;
+          }
+        }
+
         // Log disponible? Buscar {issue}-{skill}.log o build-{issue}.log
         let logFile = `${issue}-${skill}.log`;
         if (!fs.existsSync(path.join(LOG_DIR, logFile)) && skill === 'build') {
@@ -443,6 +457,20 @@ function getPipelineState() {
       bounces += rejected.length;
     }
     data.bounces = bounces;
+    // #2801 — surface info de rebote del archivo activo (pendiente/trabajando)
+    // si el agente lo recibió con motivo_rechazo del intake o del barrido.
+    data.rebote = false;
+    for (const entries of Object.values(data.fases)) {
+      const reboteEntry = entries.find(e => (e.estado === 'pendiente' || e.estado === 'trabajando') && e.rebote);
+      if (reboteEntry) {
+        data.rebote = true;
+        data.rebote_tipo = reboteEntry.rebote_tipo || null;
+        data.motivo_rechazo = reboteEntry.motivo_rechazo || null;
+        data.rechazado_en_fase = reboteEntry.rechazado_en_fase || null;
+        data.rechazado_skill_previo = reboteEntry.rechazado_skill_previo || null;
+        break;
+      }
+    }
     // Calcular stale: minutos desde última actividad en fase activa
     if (data.estadoActual === 'trabajando') {
       const currentEntries = data.fases[data.faseActual] || [];
