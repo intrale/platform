@@ -491,18 +491,28 @@ async function tickQuota(){
     if(!d) return;
     const card = document.getElementById('kpi-quota');
     if(!card) return;
-    setText('kpi-quota-value', d.pct != null ? d.pct.toFixed(1)+'%' : '—');
-    const used = d.hoursUsed7d != null ? d.hoursUsed7d.toFixed(1)+'h' : '—';
-    const limit = d.effectiveLimitHours != null ? d.effectiveLimitHours+'h' : '—';
-    setText('kpi-quota-sub', used+' / '+limit+' (Max)');
+    // Mostrar el peor de los dos %: sesión y semanal — el que esté más
+    // saturado es el que va a cortar antes.
+    const weekPct = d.pct || 0;
+    const sessPct = (d.session && d.session.pct) || 0;
+    const isSession = sessPct > weekPct;
+    const dominantPct = isSession ? sessPct : weekPct;
+    const dominantStatus = isSession ? d.session.status : d.status;
+    setText('kpi-quota-value', dominantPct.toFixed(1)+'%');
+    const used = isSession
+        ? (d.session.hoursUsed.toFixed(2)+'h / 5h sesión')
+        : (d.hoursUsed7d.toFixed(1)+'h / '+d.effectiveLimitHours+'h sem');
+    setText('kpi-quota-sub', used);
     card.classList.remove('kpi-ok','kpi-warn','kpi-bad');
-    if(d.status === 'critical') card.classList.add('kpi-bad');
-    else if(d.status === 'warning') card.classList.add('kpi-warn');
-    else if(d.status === 'normal') card.classList.add('kpi-ok');
-    // Tooltip detallado con info de auto-ajuste
-    const adj = d.adjustmentsCount > 0 ? ' · '+d.adjustmentsCount+' auto-ajustes' : '';
-    const days = d.daysToLimit != null ? '~'+d.daysToLimit+'d al límite' : 'sin proyección';
-    card.title = used+' usadas en 7d · '+d.pct.toFixed(1)+'% de '+limit+' estimado'+adj+'. Burn rate '+d.burnRatePerDay+'h/d, '+days+'.';
+    if(dominantStatus === 'critical') card.classList.add('kpi-bad');
+    else if(dominantStatus === 'warning') card.classList.add('kpi-warn');
+    else if(dominantStatus === 'normal') card.classList.add('kpi-ok');
+    // Tooltip con ambas ventanas + reset
+    const reset = d.daysToReset != null ? 'Reset semanal en '+d.daysToReset.toFixed(1)+' días.' : '';
+    const adj = d.adjustmentsCount > 0 ? ' '+d.adjustmentsCount+' auto-ajustes.' : '';
+    card.title = 'Sesión 5h: '+sessPct.toFixed(1)+'% ('+(d.session ? d.session.hoursUsed.toFixed(2) : 0)+'h)\\n' +
+        'Semanal: '+weekPct.toFixed(1)+'% ('+d.hoursUsed7d+'h / '+d.effectiveLimitHours+'h)\\n' +
+        reset + adj + ' Burn rate '+d.burnRatePerDay+'h/d.';
 }
 
 async function tickActive(){
