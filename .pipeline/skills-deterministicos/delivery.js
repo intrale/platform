@@ -443,21 +443,42 @@ async function main() {
             motivo = `PR #${prNumber} requiere review humano de ${humanOwners.join(' ')} — merge bloqueado, label needs-human aplicado.`;
             logAppend(`[delivery] ${motivo}`);
         } else {
+            // #2801 — merge vía API REST de GitHub (server-side) en lugar de
+            // `gh pr merge` (que ejecuta git ops locales). Razón: cuando otro
+            // worktree del mismo repo tiene `main` checked-out, `gh pr merge`
+            // intenta hacer `git checkout main` localmente y falla con
+            // "fatal: 'main' is already used by worktree at <otro path>".
+            // La API REST hace todo del lado del servidor — el estado local
+            // del repo no importa.
             const mergeRes = git.runGh([
-                'pr', 'merge', String(prNumber),
-                '--squash', '--delete-branch',
-                '--subject', `${issueTitle} (#${prNumber})`,
+                'api', '-X', 'PUT', `repos/{owner}/{repo}/pulls/${prNumber}/merge`,
+                '-f', 'merge_method=squash',
+                '-f', `commit_title=${issueTitle} (#${prNumber})`,
             ], { cwd: WORK_DIR, timeoutMs: 3 * 60 * 1000 });
             if (mergeRes.exit_code !== 0) {
-                throw new Error(`gh pr merge falló: ${mergeRes.stderr.slice(0, 300) || mergeRes.stdout.slice(0, 300)}`);
+                throw new Error(`gh api merge falló: ${mergeRes.stderr.slice(0, 300) || mergeRes.stdout.slice(0, 300)}`);
             }
-            // Resolver SHA del merge commit (best-effort)
-            const fetchAfter = git.runGit(['fetch', 'origin', 'main'], { cwd: WORK_DIR });
-            if (fetchAfter.exit_code === 0) {
-                const sha = git.runGit(['rev-parse', 'origin/main'], { cwd: WORK_DIR });
-                if (sha.exit_code === 0) mergeSha = sha.stdout.trim();
+            // Response shape: {"sha":"<merge-commit-sha>","merged":true,"message":"..."}
+            try {
+                const parsed = JSON.parse(mergeRes.stdout);
+                if (parsed && parsed.sha) mergeSha = parsed.sha;
+            } catch { /* response no-JSON: best-effort fallback abajo */ }
+            // Borrar rama del PR (igual que --delete-branch en gh pr merge)
+            const deleteRes = git.runGh([
+                'api', '-X', 'DELETE', `repos/{owner}/{repo}/git/refs/heads/${branch}`,
+            ], { cwd: WORK_DIR, timeoutMs: 30 * 1000 });
+            if (deleteRes.exit_code !== 0) {
+                logAppend(`[delivery] aviso: no se pudo borrar la rama ${branch}: ${(deleteRes.stderr || '').slice(0, 200)}`);
             }
-            logAppend(`[delivery] PR #${prNumber} mergeado (squash) sha=${mergeSha || 'unknown'}`);
+            // Best-effort fetch del nuevo main para sincronizar local (no crítico).
+            if (!mergeSha) {
+                const fetchAfter = git.runGit(['fetch', 'origin', 'main'], { cwd: WORK_DIR });
+                if (fetchAfter.exit_code === 0) {
+                    const sha = git.runGit(['rev-parse', 'origin/main'], { cwd: WORK_DIR });
+                    if (sha.exit_code === 0) mergeSha = sha.stdout.trim();
+                }
+            }
+            logAppend(`[delivery] PR #${prNumber} mergeado vía API REST (squash) sha=${mergeSha || 'unknown'}`);
         }
         phaseEnd('pr_merge', t);
 
