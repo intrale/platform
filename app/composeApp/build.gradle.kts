@@ -257,6 +257,14 @@ kotlin {
                 implementation(libs.ktor.client.android)
                 implementation("io.coil-kt:coil-compose:2.6.0")
                 implementation("io.coil-kt:coil-svg:2.6.0")
+                // Fused Location Provider para verificación de zona en flavor client.
+                // Se incluye como dep común androidMain para mantener la compilación
+                // multiflavor simple; el permiso ACCESS_COARSE_LOCATION solo está
+                // declarado en el AndroidManifest del flavor `client`, por lo que
+                // los flavors `business` y `delivery` NO pueden invocar APIs de
+                // ubicación en runtime aunque la lib esté linkeada (verificable
+                // con `processBusinessDebugManifest`).
+                implementation("com.google.android.gms:play-services-location:21.3.0")
             }
         }
 

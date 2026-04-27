@@ -16,6 +16,7 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
+import asdo.client.DoCheckAddress
 import asdo.client.DoCheckBusinessOpen
 import asdo.client.DoCreateClientOrder
 import asdo.client.DoGetClientOrders
@@ -29,6 +30,7 @@ import asdo.client.DoGetNotifications
 import asdo.client.DoGetPushPreferences
 import asdo.client.DoMarkNotificationRead
 import asdo.client.DoMarkAllNotificationsRead
+import asdo.client.ToDoCheckAddress
 import asdo.client.ToDoCheckBusinessOpen
 import asdo.client.DoUpdatePushPreferences
 import asdo.client.ToDoCreateClientOrder
@@ -52,6 +54,8 @@ import asdo.client.ToDoUnregisterPushToken
 import asdo.client.ToDoPushNotificationHandler
 import ext.client.CommPushTokenService
 import ext.client.PushTokenService
+import ext.location.CommLocationProvider
+import ext.location.HolderBackedLocationProvider
 import asdo.delivery.DoDeliveryStateChange
 import asdo.delivery.DoGetDeliveryNotifications
 import asdo.delivery.DoMarkAllDeliveryNotificationsRead
@@ -181,6 +185,7 @@ import ext.auth.CommTwoFactorSetupService
 import ext.auth.CommTwoFactorVerifyService
 import ext.client.ClientAddressesService
 import ext.client.ClientOrdersService
+import ext.client.ClientZoneCheckService
 import ext.client.ProductAvailabilityService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
@@ -188,6 +193,7 @@ import ext.client.CommClientOrdersService
 import ext.client.CommProductAvailabilityService
 import ext.client.CommClientProfileService
 import ext.client.CommPaymentMethodsService
+import ext.client.CommZoneCheckService
 import ext.client.PaymentMethodsService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
@@ -302,6 +308,7 @@ import ui.sc.business.RegisterNewBusinessScreen
 import ui.sc.business.RequestJoinBusinessScreen
 import ui.sc.business.ReviewBusinessScreen
 import ui.sc.business.ReviewJoinBusinessScreen
+import ui.sc.client.AddressCheckScreen
 import ui.sc.client.ClientCatalogScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
@@ -348,6 +355,7 @@ public const val CLIENT_ORDER_DETAIL = "clientOrderDetail"
 public const val CLIENT_REPEAT_ORDER_DIALOG_SHOWCASE = "clientRepeatOrderDialogShowcase"
 public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
 public const val CLIENT_NOTIFICATIONS = "clientNotifications"
+public const val CLIENT_ADDRESS_CHECK = "clientAddressCheck"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -522,6 +530,15 @@ private val clientModule = DI.Module("client") {
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance(), instance()) }
     bindSingleton<CommProductAvailabilityService> { ProductAvailabilityService(instance(), instance(), instance()) }
     bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance(), instance()) }
+    // Verificación de zona — issue #2422.
+    // El servicio HTTPS real consume `POST /{business}/zones/check` (#2415).
+    // Mientras #2415 no esté deployado, los tests E2E con AVD pueden cambiar
+    // este bind por `FakeCommZoneCheckService` (LOCAL_BASE_URL ignorado).
+    bindSingleton<CommZoneCheckService> { ClientZoneCheckService(instance(), instance()) }
+    bindSingleton<ToDoCheckAddress> { DoCheckAddress(instance()) }
+    // LocationProvider Android-only via holder; en otros targets el holder
+    // entrega NoOp (la pantalla cae al fallback manual sin permisos).
+    bindSingleton<CommLocationProvider> { HolderBackedLocationProvider() }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -587,6 +604,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
     bindSingleton(tag = CLIENT_PRODUCT_DETAIL) { ClientProductDetailScreen() }
     bindSingleton(tag = CLIENT_NOTIFICATIONS) { ClientNotificationsScreen() }
+    bindSingleton(tag = CLIENT_ADDRESS_CHECK) { AddressCheckScreen() }
     bindSingleton(tag = HOME) { Home() }
     bindSingleton(tag = INIT) { Login() }
     bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -648,6 +666,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = CLIENT_PRODUCT_DETAIL))
                     add(instance(tag = CLIENT_NOTIFICATIONS))
+                    add(instance(tag = CLIENT_ADDRESS_CHECK))
                     add(instance(tag = INIT))
                     add(instance(tag = SIGNUP))
                     add(instance(tag = CONFIRM_SIGNUP))

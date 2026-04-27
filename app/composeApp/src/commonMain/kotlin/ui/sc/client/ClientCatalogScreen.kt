@@ -356,6 +356,13 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
         val cartCount = cartItems.values.sumOf { it.quantity }
         val searchHistory by SearchHistoryStore.history.collectAsState()
 
+        // Estado del flujo de verificación de zona — issue #2422.
+        // El banner sticky reacciona a [AddressCheckStore.state] y la
+        // adición al carrito se bloquea con un AlertDialog si el usuario
+        // intenta agregar un producto sin haber verificado.
+        val addressCheckState by AddressCheckStore.state.collectAsState()
+        var cartBlockedDialogVisible by remember { mutableStateOf(false) }
+
         val title = Txt(MessageKey.client_catalog_title)
         val subtitle = Txt(MessageKey.client_catalog_subtitle)
         val searchPlaceholder = Txt(MessageKey.client_catalog_search_placeholder)
@@ -424,6 +431,14 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                         cartContentDescription = cartContentDescription,
                         onCartClick = { navigate(CLIENT_CART_PATH) },
                         onBackClick = { goBack() }
+                    )
+                }
+
+                // Banner sticky de verificación de zona (CA-1).
+                item {
+                    AddressCheckBanner(
+                        phase = addressCheckState.phase,
+                        onVerifyClick = { navigate(CLIENT_ADDRESS_CHECK_PATH) },
                     )
                 }
 
@@ -533,7 +548,15 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                                 addLabel = addLabel,
                                 addContentDescription = addContentDescription,
                                 outOfStockLabel = outOfStockLabel,
-                                onAddClick = { viewModel.addToCart(product) },
+                                onAddClick = {
+                                    // CA-1: bloquear agregar al carrito si la
+                                    // dirección aún no está verificada.
+                                    if (addressCheckState.isVerified) {
+                                        viewModel.addToCart(product)
+                                    } else {
+                                        cartBlockedDialogVisible = true
+                                    }
+                                },
                                 onCardClick = {
                                     ClientProductSelectionStore.select(product.id)
                                     this@ClientCatalogScreen.navigate(CLIENT_PRODUCT_DETAIL_PATH)
@@ -544,6 +567,19 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                 }
 
                 item { Spacer(modifier = Modifier.height(MaterialTheme.spacing.x8)) }
+            }
+
+            // CA-1: modal bloqueante cuando intenta agregar al carrito
+            // sin haber verificado la zona. Redirige al flujo de
+            // verificación al confirmar.
+            if (cartBlockedDialogVisible) {
+                CartBlockedDialog(
+                    onConfirm = {
+                        cartBlockedDialogVisible = false
+                        navigate(CLIENT_ADDRESS_CHECK_PATH)
+                    },
+                    onDismiss = { cartBlockedDialogVisible = false },
+                )
             }
         }
     }

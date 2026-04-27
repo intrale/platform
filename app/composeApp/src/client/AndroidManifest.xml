@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest específico del flavor `client`.
+
+  Justificación del permiso:
+  - ACCESS_COARSE_LOCATION (precisión ~500 m) es suficiente para verificar si una
+    dirección está dentro de la zona de cobertura de un negocio. NO se solicita
+    ACCESS_FINE_LOCATION porque viola el principio de minimización de datos
+    (CA-8 / Security A05): para zonas de delivery (~km) la precisión fina aporta
+    valor marginal y empeora la huella de privacidad.
+  - El permiso queda restringido al flavor `client`: el merger de Gradle NO lo
+    propaga a `business` ni a `delivery`. Verificable con
+    `processBusinessDebugManifest` y `processDeliveryDebugManifest`.
+  - La solicitud al usuario se hace en runtime con
+    ActivityResultContracts.RequestPermission(), precedida por un rationale
+    visual (ModalBottomSheet) que ofrece explícitamente la alternativa de
+    ingreso manual de dirección (CA-2).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+</manifest>
