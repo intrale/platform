@@ -141,11 +141,32 @@ function headerSlice(state, ctx) {
     }
     const procesos = state.procesos || {};
     const pulpoAlive = !!(procesos.pulpo && procesos.pulpo.alive);
+
+    // Conteos por área para los badges de la botonera del home (#2801).
+    // Se calculan acá porque header poll cada 5s ya alcanza para refrescarlos.
+    let equipoActive = 0;
+    for (const data of Object.values(state.issueMatrix || {})) {
+        for (const entries of Object.values(data.fases || {})) {
+            for (const e of entries) if (e.estado === 'trabajando') equipoActive++;
+        }
+    }
+    const pipelineActive = Object.keys(state.issueMatrix || {}).length;
+    const bloqueadosCount = (state.bloqueados || []).length;
+    const historialCount = (state.actividad || []).length;
+
     return {
         mode,
         allowedIssues,
         pulpoAlive,
         pulpoUptimeMs: procesos.pulpo?.uptime || 0,
+        counts: {
+            equipo: equipoActive,
+            pipeline: pipelineActive,
+            bloqueados: bloqueadosCount,
+            issues: pipelineActive,
+            matriz: pipelineActive,
+            historial: historialCount,
+        },
         timestamp: Date.now(),
     };
 }

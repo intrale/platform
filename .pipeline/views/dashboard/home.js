@@ -170,14 +170,14 @@ function homeStyles() {
 /* Recent / queue rows */
 .line-list {
     display: flex; flex-direction: column;
-    gap: 6px;
+    gap: 4px;
 }
 .line-row {
     display: grid;
-    grid-template-columns: 22px 70px 1fr auto auto;
+    grid-template-columns: 22px 70px 1fr auto auto auto;
     align-items: center;
-    gap: 10px;
-    padding: 9px 12px;
+    gap: 8px;
+    padding: 7px 12px;
     border-radius: var(--in-radius-sm);
     background: var(--in-bg-3);
     transition: background 0.15s;
@@ -196,6 +196,8 @@ function homeStyles() {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.line-issue a { color: var(--in-info); }
+.line-issue a:hover { text-decoration: underline; }
 .line-fase {
     font-size: 11px;
     color: var(--in-fg-dim);
@@ -207,46 +209,79 @@ function homeStyles() {
     color: var(--in-fg-dim);
     font-variant-numeric: tabular-nums;
 }
-
-/* Áreas grid */
-.areas-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
+.line-actions {
+    display: flex;
+    gap: 4px;
+    justify-self: end;
 }
-.area-card {
+.line-btn {
+    background: transparent;
+    border: 1px solid var(--in-border);
+    color: var(--in-fg-dim);
+    border-radius: 4px;
+    width: 24px; height: 22px;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.line-btn:hover { background: var(--in-bg-3); border-color: var(--in-accent); color: var(--in-accent); }
+
+/* Áreas — botonera horizontal compacta con badges de conteo */
+.areas-bar {
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    gap: 8px;
+}
+.area-pill {
     background: var(--in-bg-2);
     border: 1px solid var(--in-border);
-    border-radius: var(--in-radius);
-    padding: 18px 16px;
-    text-align: center;
-    transition: transform 0.2s, border-color 0.2s, background 0.2s;
+    border-radius: var(--in-radius-sm);
+    padding: 10px 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    transition: transform 0.15s, border-color 0.15s, background 0.15s;
     cursor: pointer;
     position: relative;
-    box-shadow: var(--in-shadow);
+    text-decoration: none;
+    color: var(--in-fg);
+    min-height: 64px;
 }
-.area-card:hover {
-    transform: translateY(-3px);
+.area-pill:hover {
+    transform: translateY(-2px);
     border-color: var(--in-accent);
-    background: linear-gradient(180deg, var(--in-accent-soft), var(--in-bg-2));
+    background: var(--in-bg-3);
 }
-.area-card-icon { font-size: 28px; margin-bottom: 6px; }
-.area-card-name {
-    font-size: 13px;
+.area-pill-icon { font-size: 18px; line-height: 1; }
+.area-pill-name {
+    font-size: 11px;
     font-weight: 600;
     color: var(--in-fg);
+    letter-spacing: 0.2px;
 }
-.area-card-sub {
-    font-size: 11px;
-    color: var(--in-fg-dim);
-    margin-top: 4px;
-}
-.area-card-arrow {
+.area-pill-badge {
     position: absolute;
-    top: 8px; right: 10px;
-    font-size: 11px;
-    opacity: 0.5;
+    top: 6px; right: 6px;
+    background: var(--in-brand);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 10px;
+    padding: 1px 6px;
+    min-width: 18px;
+    text-align: center;
+    line-height: 1.4;
 }
+.area-pill-badge-warn { background: var(--in-warn); }
+.area-pill-badge-bad { background: var(--in-bad); }
+.area-pill-badge-zero { background: var(--in-bg-3); color: var(--in-fg-soft); border: 1px solid var(--in-border); }
 
 /* Mode pill in header */
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
@@ -334,6 +369,16 @@ async function tickHeader(){
         pulpoPill.classList.remove('in-pill-ok','in-pill-bad');
         pulpoPill.classList.add(d.pulpoAlive ? 'in-pill-ok' : 'in-pill-bad');
         pulpoPill.textContent = (d.pulpoAlive ? '🟢' : '🔴') + ' Pulpo · '+fmtDur(d.pulpoUptimeMs);
+    }
+    // Badges de la botonera de áreas (counts vienen en el header slice).
+    const counts = d.counts || {};
+    for(const [area, count] of Object.entries(counts)){
+        const badge = document.getElementById('badge-'+area);
+        if(!badge) continue;
+        badge.textContent = count;
+        badge.classList.remove('area-pill-badge-warn','area-pill-badge-bad','area-pill-badge-zero');
+        if(count === 0) badge.classList.add('area-pill-badge-zero');
+        else if(area === 'bloqueados' && count > 0) badge.classList.add('area-pill-badge-bad');
     }
 }
 
@@ -427,14 +472,32 @@ function renderLineRow(a, isQueue){
         ? (a.slotFree ? 'libre · '+a.slotInfo : '⏸ '+a.slotInfo)
         : fmtDur(a.durationMs);
     const titleAttr = a.title ? ' title="'+a.title.replace(/"/g,'&quot;')+'"' : '';
+    const titleText = a.title ? ' · '+a.title.slice(0, 50) : '';
+    const ghLink = '<a class="line-btn" href="https://github.com/intrale/platform/issues/'+a.issue+'" target="_blank" rel="noopener" title="Abrir issue en GitHub">↗</a>';
+    let actions = '';
+    if(isQueue){
+        actions = '<button class="line-btn" data-issue="'+a.issue+'" data-action="move-up" title="Subir prioridad">▲</button><button class="line-btn" data-issue="'+a.issue+'" data-action="move-down" title="Bajar prioridad">▼</button>'+ghLink;
+    } else {
+        const logBtn = a.hasLog ? '<a class="line-btn" href="/logs/view/'+(a.logFile||'')+'" target="_blank" rel="noopener" title="Ver log">📄</a>' : '';
+        actions = logBtn+ghLink;
+    }
     return \`
         <div class="line-row" data-key="\${a.issue}-\${a.skill}-\${a.fase}"\${titleAttr}>
           <span class="line-icon">\${icon}</span>
           <span class="line-skill">\${a.skill}</span>
-          <span class="line-issue">#\${a.issue}\${a.title ? ' · '+a.title.slice(0, 60) : ''}</span>
+          <span class="line-issue"><a href="https://github.com/intrale/platform/issues/\${a.issue}" target="_blank" rel="noopener">#\${a.issue}</a>\${titleText}</span>
           <span class="line-fase">\${a.fase}</span>
           <span class="line-time">\${time}</span>
+          <span class="line-actions">\${actions}</span>
         </div>\`;
+}
+
+function bindLineActions(container){
+    container.querySelectorAll('.line-btn[data-action]').forEach(b => {
+        if(b.dataset._bound) return;
+        b.dataset._bound = '1';
+        b.addEventListener('click', () => moveIssue(b.dataset.issue, b.dataset.action));
+    });
 }
 
 async function tickRecent(){
@@ -442,7 +505,7 @@ async function tickRecent(){
     if(!d) return;
     const container = document.getElementById('recent-list');
     if(!container) return;
-    const arr = (d.recent || []).slice(0, 3);
+    const arr = (d.recent || []).slice(0, 5);
     if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Sin actividad reciente</div>'; return; }
     const seen = new Set();
     for(const a of arr){
@@ -458,6 +521,7 @@ async function tickRecent(){
     for(const row of [...container.querySelectorAll('.line-row')]){
         if(!seen.has(row.dataset.key)) row.remove();
     }
+    bindLineActions(container);
 }
 
 async function tickQueue(){
@@ -465,7 +529,7 @@ async function tickQueue(){
     if(!d) return;
     const container = document.getElementById('queue-list');
     if(!container) return;
-    const arr = (d.queue || []).slice(0, 3);
+    const arr = (d.queue || []).slice(0, 5);
     if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Cola vacía</div>'; return; }
     const seen = new Set();
     for(const a of arr){
@@ -486,6 +550,16 @@ async function tickQueue(){
     for(const row of [...container.querySelectorAll('.line-row')]){
         if(!seen.has(row.dataset.key)) row.remove();
     }
+    bindLineActions(container);
+}
+
+async function moveIssue(issue, direction){
+    try{
+        const r = await fetch('/api/issue/'+issue+'/'+direction, {method:'POST'});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Movido':'Falló'), j.ok);
+        setTimeout(() => tickQueue().catch(()=>{}), 400);
+    } catch(e){ showToast('Error: '+e.message, false); }
 }
 
 const POLLS = [
@@ -509,11 +583,10 @@ function renderHomeHTML() {
     const styles = homeStyles();
     const script = renderClientScript();
     const areasHtml = AREAS.map(a => `
-      <a class="area-card" href="${a.href}" target="_blank" rel="noopener">
-        <span class="area-card-arrow">↗</span>
-        <div class="area-card-icon">${a.icon}</div>
-        <div class="area-card-name">${a.label}</div>
-        <div class="area-card-sub">${a.sub}</div>
+      <a class="area-pill" href="${a.href}" target="_blank" rel="noopener" title="${a.sub}">
+        <span class="area-pill-badge area-pill-badge-zero" id="badge-${a.key}">·</span>
+        <span class="area-pill-icon">${a.icon}</span>
+        <span class="area-pill-name">${a.label}</span>
       </a>`).join('');
 
     return `<!DOCTYPE html>
@@ -605,7 +678,7 @@ function renderHomeHTML() {
         <span class="in-section-title-icon">🗂</span>
         Áreas
       </h2>
-      <div class="areas-grid">
+      <div class="areas-bar">
         ${areasHtml}
       </div>
     </section>
