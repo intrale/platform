@@ -51,6 +51,82 @@ async function tickHeader(){
     }
 }
 
+// ─── Acciones (importadas del dashboard legacy) ───
+// Los endpoints POST viven en dashboard.js; el cliente solo los invoca.
+// Refresh tras la acción: forzar tick inmediato sin recargar la página
+// para preservar el patrón anti-flicker.
+
+function showToast(msg, ok){
+    let t = document.getElementById('in-toast');
+    if(!t){
+        t = document.createElement('div');
+        t.id = 'in-toast';
+        t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 22px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,0.4);transition:opacity 0.3s,transform 0.3s;opacity:0;color:#fff';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.background = ok===false ? 'var(--in-bad)' : (ok===true ? 'var(--in-ok)' : 'var(--in-brand)');
+    t.style.opacity = '1';
+    t.style.transform = 'translateX(-50%) translateY(0)';
+    clearTimeout(t._timeout);
+    t._timeout = setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(8px)'; }, 3500);
+}
+
+async function killAgent(issue, skill, pipeline, fase){
+    if(!confirm('¿Cancelar agente '+skill+' en #'+issue+'?')) return;
+    try{
+        const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue, skill, pipeline, fase})});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Agente cancelado':'Falló la cancelación'), j.ok);
+        if(typeof runAll === 'function') setTimeout(runAll, 600);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
+async function killSkillGroup(skill, agents){
+    if(!agents || !agents.length) return;
+    if(!confirm('¿Cancelar todos los agentes '+skill+' ('+agents.length+' activos)?')) return;
+    let ok=0, fail=0;
+    for(const a of agents){
+        try{
+            const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase})});
+            const j = await r.json();
+            if(j.ok) ok++; else fail++;
+        } catch{ fail++; }
+    }
+    showToast(skill+': '+ok+' cancelados'+(fail>0?', '+fail+' fallaron':''), fail===0);
+    if(typeof runAll === 'function') setTimeout(runAll, 600);
+}
+
+async function nhReactivate(issue){
+    if(!confirm('¿Reactivar #'+issue+' (quitar label needs-human)?')) return;
+    try{
+        const r = await fetch('/api/needs-human/'+issue+'/reactivate', {method:'POST'});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Reactivado':'Falló'), j.ok);
+        if(typeof runAll === 'function') setTimeout(runAll, 600);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
+async function nhDismiss(issue){
+    const reason = prompt('Razón para desestimar #'+issue+' (opcional):') || '';
+    if(reason === null) return;
+    try{
+        const r = await fetch('/api/needs-human/'+issue+'/dismiss', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({reason})});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Desestimado':'Falló'), j.ok);
+        if(typeof runAll === 'function') setTimeout(runAll, 600);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
+async function moveIssue(issue, direction){
+    try{
+        const r = await fetch('/api/issue/'+issue+'/'+direction, {method:'POST'});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Movido':'Falló'), j.ok);
+        if(typeof runAll === 'function') setTimeout(runAll, 400);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
 document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible' && typeof runAll === 'function') runAll(); });
 `;
 }
@@ -116,9 +192,28 @@ function renderEquipo() {
 .eq-name { font-weight: 600; font-size: 13px; }
 .eq-load { font-size: 12px; color: var(--in-fg-dim); margin-left: auto; font-variant-numeric: tabular-nums; }
 .eq-bar { height: 6px; border-radius: 3px; background: var(--in-bg); overflow: hidden; }
-.eq-bar > span { display: block; height: 100%; background: var(--in-fg-dim); transition: width 0.4s, background 0.2s; }`;
+.eq-bar > span { display: block; height: 100%; background: var(--in-fg-dim); transition: width 0.4s, background 0.2s; }
+.eq-kill { background: transparent; border: 1px solid var(--in-bad); color: var(--in-bad); border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; transition: background 0.15s; margin-left: 6px; }
+.eq-kill:hover { background: var(--in-bad-soft); }
+.eq-card.busy .eq-kill { display: inline-block; }
+.eq-kill { display: none; }`;
     const script = `
+// Cachea agents activos para que el botón × del skill sepa a quién matar.
+let _activeAgents = [];
+async function refreshActiveAgents(){
+    const d = await fetchJson('/api/dash/active');
+    if(d) _activeAgents = d.agents || [];
+}
+
+async function killSkillFromCard(skill){
+    if(!_activeAgents.length) await refreshActiveAgents();
+    const agents = _activeAgents.filter(a => a.skill === skill);
+    if(!agents.length){ showToast('Sin agentes '+skill+' corriendo', false); return; }
+    await killSkillGroup(skill, agents);
+}
+
 async function tickEquipo(){
+    await refreshActiveAgents();
     const d = await fetchJson('/api/dash/equipo');
     if(!d) return;
     const grid = document.getElementById('equipo-grid');
@@ -131,7 +226,8 @@ async function tickEquipo(){
             card = document.createElement('div');
             card.className = 'eq-card';
             card.dataset.skill = sk.skill;
-            card.innerHTML = '<div class="eq-card-head"><span class="eq-avatar"></span><span class="eq-name"></span><span class="eq-load"></span></div><div class="eq-bar"><span></span></div>';
+            card.innerHTML = '<div class="eq-card-head"><span class="eq-avatar"></span><span class="eq-name"></span><span class="eq-load"></span><button class="eq-kill" title="Cancelar agentes de este skill">✕</button></div><div class="eq-bar"><span></span></div>';
+            card.querySelector('.eq-kill').addEventListener('click', () => killSkillFromCard(sk.skill));
             grid.appendChild(card);
         }
         card.classList.toggle('busy', sk.running > 0);
@@ -165,9 +261,9 @@ function renderPipeline() {
 .pl-col { min-width: 180px; flex: 1; background: var(--in-bg-3); border-radius: var(--in-radius-sm); padding: 10px; border: 1px solid var(--in-border); }
 .pl-col-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-dim); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--in-border); }
 .pl-col-count { background: var(--in-bg); padding: 1px 8px; border-radius: 9px; font-size: 10px; color: var(--in-fg); }
-.pl-card { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; transition: border-color 0.2s; }
-.pl-card:hover { border-color: var(--in-accent); }
-.pl-card-issue { font-weight: 600; }
+.pl-card { display: block; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; transition: border-color 0.2s, background 0.2s; color: var(--in-fg); text-decoration: none; }
+.pl-card:hover { border-color: var(--in-accent); background: var(--in-bg-3); }
+.pl-card-issue { font-weight: 600; color: var(--in-info); }
 .pl-card-title { font-size: 11px; color: var(--in-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pl-card-state-trabajando { border-color: var(--in-accent); }
 .pl-card-state-listo { border-color: var(--in-ok); }
@@ -193,7 +289,7 @@ async function tickPipeline(){
     let html = '';
     for(const [key, col] of Object.entries(cols)){
         col.items.sort((a,b) => (b.estado==='trabajando'?1:0) - (a.estado==='trabajando'?1:0));
-        const cards = col.items.slice(0, 12).map(i => '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+'"><div class="pl-card-issue">#'+escapeHtml(i.issue)+'</div><div class="pl-card-title">'+escapeHtml((i.title||'').slice(0,40))+'</div></div>').join('');
+        const cards = col.items.slice(0, 12).map(i => '<a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener" class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+'"><div class="pl-card-issue">#'+escapeHtml(i.issue)+'</div><div class="pl-card-title">'+escapeHtml((i.title||'').slice(0,40))+'</div></a>').join('');
         html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+col.items.length+'</span></div>'+(cards || '<div class="in-empty" style="padding:14px 4px;font-size:11px">vacío</div>')+'</div>';
     }
     if(board.innerHTML !== html) board.innerHTML = html;
@@ -213,10 +309,19 @@ function renderBloqueados() {
   <div id="bloqueados-list"></div>
 </section>`;
     const css = `
-.blk-row { background: var(--in-bg-3); border: 1px solid var(--in-warn); border-radius: var(--in-radius-sm); padding: 14px 16px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
+.blk-row { background: var(--in-bg-3); border: 1px solid var(--in-warn); border-radius: var(--in-radius-sm); padding: 14px 16px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
+.blk-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .blk-issue { font-weight: 600; }
+.blk-issue a { color: var(--in-info); }
+.blk-issue a:hover { text-decoration: underline; }
 .blk-reason { color: var(--in-fg-dim); font-size: 12px; }
-.blk-meta { display: flex; gap: 14px; font-size: 11px; color: var(--in-fg-dim); margin-top: 6px; }`;
+.blk-meta { display: flex; gap: 14px; font-size: 11px; color: var(--in-fg-dim); margin-top: 4px; }
+.blk-actions { display: flex; gap: 8px; margin-left: auto; }
+.blk-btn { background: transparent; border: 1px solid; border-radius: 6px; padding: 5px 11px; font-size: 11px; cursor: pointer; transition: background 0.15s; font-weight: 500; }
+.blk-btn-reactivate { border-color: var(--in-ok); color: var(--in-ok); }
+.blk-btn-reactivate:hover { background: var(--in-ok-soft); }
+.blk-btn-dismiss { border-color: var(--in-fg-soft); color: var(--in-fg-dim); }
+.blk-btn-dismiss:hover { background: var(--in-bg); color: var(--in-fg); }`;
     const script = `
 async function tickBloqueados(){
     const d = await fetchJson('/api/dash/bloqueados');
@@ -225,11 +330,36 @@ async function tickBloqueados(){
     if(!c) return;
     const list = d.bloqueados || [];
     if(list.length === 0){ c.innerHTML = '<div class="in-empty"><div class="in-empty-strong">Sin issues bloqueados</div>Todo fluye</div>'; return; }
-    let html = '';
+    const seen = new Set();
     for(const b of list){
-        html += '<div class="blk-row"><div class="blk-issue">#'+escapeHtml(b.issue)+' · '+escapeHtml(b.skill||'')+'</div><div class="blk-reason">'+escapeHtml(b.reason||b.question||'sin razón')+'</div><div class="blk-meta"><span>fase: '+escapeHtml(b.phase||'')+'</span><span>desde: '+(b.blocked_at?new Date(b.blocked_at).toLocaleString('es-AR'):'—')+'</span></div></div>';
+        const key = String(b.issue);
+        seen.add(key);
+        let row = c.querySelector('[data-issue="'+key+'"]');
+        if(!row){
+            row = document.createElement('div');
+            row.className = 'blk-row';
+            row.dataset.issue = key;
+            row.innerHTML = \`
+                <div class="blk-head">
+                  <div class="blk-issue"><a href="https://github.com/intrale/platform/issues/\${key}" target="_blank" rel="noopener">#\${key}</a> · <span class="blk-skill"></span></div>
+                  <div class="blk-actions">
+                    <button class="blk-btn blk-btn-reactivate" title="Quitar label needs-human y devolver a la cola">▶ Reactivar</button>
+                    <button class="blk-btn blk-btn-dismiss" title="Cerrar el issue como desestimado">✕ Desestimar</button>
+                  </div>
+                </div>
+                <div class="blk-reason"></div>
+                <div class="blk-meta"><span class="blk-fase"></span><span class="blk-since"></span></div>
+            \`;
+            row.querySelector('.blk-btn-reactivate').addEventListener('click', () => nhReactivate(b.issue));
+            row.querySelector('.blk-btn-dismiss').addEventListener('click', () => nhDismiss(b.issue));
+            c.appendChild(row);
+        }
+        row.querySelector('.blk-skill').textContent = b.skill || '';
+        row.querySelector('.blk-reason').textContent = b.reason || b.question || 'sin razón';
+        row.querySelector('.blk-fase').textContent = 'fase: ' + (b.phase || '');
+        row.querySelector('.blk-since').textContent = 'desde: ' + (b.blocked_at ? new Date(b.blocked_at).toLocaleString('es-AR') : '—');
     }
-    if(c.innerHTML !== html) c.innerHTML = html;
+    for(const row of [...c.children]){ if(!seen.has(row.dataset.issue || '')) row.remove(); }
 }
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickBloqueados, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
@@ -247,16 +377,21 @@ function renderIssues() {
   <div id="issues-table"></div>
 </section>`;
     const css = `
-.iss-row { display: grid; grid-template-columns: 80px 1fr 140px 90px 60px; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--in-border-soft); align-items: center; font-size: 13px; }
+.iss-row { display: grid; grid-template-columns: 80px 1fr 140px 90px 60px 80px; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--in-border-soft); align-items: center; font-size: 13px; }
 .iss-row:hover { background: var(--in-bg-3); }
 .iss-issue { font-weight: 600; }
+.iss-issue a { color: var(--in-info); }
+.iss-issue a:hover { text-decoration: underline; }
 .iss-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--in-fg-dim); }
 .iss-fase { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); }
 .iss-state { font-size: 11px; }
 .iss-state.trabajando { color: var(--in-accent); }
 .iss-state.listo { color: var(--in-ok); }
 .iss-bounces { text-align: right; color: var(--in-fg-dim); font-size: 11px; }
-.iss-bounces.warn { color: var(--in-warn); }`;
+.iss-bounces.warn { color: var(--in-warn); }
+.iss-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.iss-btn { background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim); border-radius: 4px; width: 26px; height: 22px; font-size: 12px; cursor: pointer; padding: 0; line-height: 1; transition: background 0.12s, border-color 0.12s; }
+.iss-btn:hover { background: var(--in-bg-3); border-color: var(--in-accent); color: var(--in-accent); }`;
     const script = `
 let issuesData = null;
 function renderIssuesTable(filter){
@@ -269,9 +404,12 @@ function renderIssuesTable(filter){
     if(filtered.length === 0){ c.innerHTML = '<div class="in-empty">Sin resultados</div>'; return; }
     let html = '';
     for(const [id, data] of filtered.slice(0, 200)){
-        html += '<div class="iss-row"><div class="iss-issue">#'+escapeHtml(id)+'</div><div class="iss-title">'+escapeHtml(data.title||'')+'</div><div class="iss-fase">'+escapeHtml(data.faseActual||'—')+'</div><div class="iss-state '+escapeHtml(data.estadoActual||'')+'">'+escapeHtml(data.estadoActual||'')+'</div><div class="iss-bounces '+(data.bounces>2?'warn':'')+'">'+(data.bounces||0)+'×</div></div>';
+        html += '<div class="iss-row"><div class="iss-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(id)+'" target="_blank" rel="noopener">#'+escapeHtml(id)+'</a></div><div class="iss-title">'+escapeHtml(data.title||'')+'</div><div class="iss-fase">'+escapeHtml(data.faseActual||'—')+'</div><div class="iss-state '+escapeHtml(data.estadoActual||'')+'">'+escapeHtml(data.estadoActual||'')+'</div><div class="iss-bounces '+(data.bounces>2?'warn':'')+'">'+(data.bounces||0)+'×</div><div class="iss-actions"><button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-dir="move-up" title="Subir prioridad">▲</button><button class="iss-btn" data-issue="'+escapeHtml(id)+'" data-dir="move-down" title="Bajar prioridad">▼</button></div></div>';
     }
     c.innerHTML = html;
+    c.querySelectorAll('.iss-btn').forEach(b => {
+        b.addEventListener('click', () => moveIssue(b.dataset.issue, b.dataset.dir));
+    });
 }
 async function tickIssues(){
     issuesData = await fetchJson('/api/dash/pipeline');

@@ -133,13 +133,27 @@ function homeStyles() {
 }
 .active-card-time {
     grid-column: 3;
-    grid-row: 1 / span 2;
+    grid-row: 1;
     text-align: right;
     font-family: var(--in-mono);
     font-size: 13px;
     color: var(--in-accent);
     font-variant-numeric: tabular-nums;
 }
+.active-card-kill {
+    grid-column: 3;
+    grid-row: 2;
+    justify-self: end;
+    background: transparent;
+    border: 1px solid var(--in-bad);
+    color: var(--in-bad);
+    border-radius: 6px;
+    padding: 2px 9px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.active-card-kill:hover { background: var(--in-bad-soft); }
 .active-card-progress {
     grid-column: 1 / -1;
     margin-top: 4px;
@@ -278,6 +292,31 @@ function setText(id, value){ const el=document.getElementById(id); if(el && el.t
 function setClass(id, cls, on){ const el=document.getElementById(id); if(el) el.classList.toggle(cls, !!on); }
 function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(()=>null); }
 
+function showToast(msg, ok){
+    let t = document.getElementById('in-toast');
+    if(!t){
+        t = document.createElement('div');
+        t.id = 'in-toast';
+        t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 22px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,0.4);transition:opacity 0.3s;opacity:0;color:#fff';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.background = ok===false ? 'var(--in-bad)' : (ok===true ? 'var(--in-ok)' : 'var(--in-brand)');
+    t.style.opacity = '1';
+    clearTimeout(t._timeout);
+    t._timeout = setTimeout(() => { t.style.opacity = '0'; }, 3500);
+}
+
+async function killAgent(issue, skill, pipeline, fase){
+    if(!confirm('¿Cancelar agente '+skill+' en #'+issue+'?')) return;
+    try{
+        const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue, skill, pipeline, fase})});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Agente cancelado':'Falló'), j.ok);
+        setTimeout(() => tickActive().catch(()=>{}), 600);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
@@ -346,9 +385,11 @@ async function tickActive(){
                     <span class="active-card-fase"></span>
                 </div>
                 <div class="active-card-time"></div>
+                <button class="active-card-kill" title="Cancelar este agente">✕</button>
                 <div class="active-card-title"></div>
                 <div class="active-card-progress"><div class="in-bar"><span></span></div></div>
             \`;
+            card.querySelector('.active-card-kill').addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase));
             list.appendChild(card);
             requestAnimationFrame(() => card.classList.remove('entering'));
         }
