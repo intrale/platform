@@ -1,6 +1,6 @@
 {
-  "bot_token": "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk",
-  "chat_id": "6529617704",
+  "bot_token": "YOUR_BOT_TOKEN_HERE",
+  "chat_id": "YOUR_CHAT_ID_HERE",
   "permission_timeout_min": 60,
   "task_report_interval_min": 10,
   "retry_intervals_min": [
@@ -47,6 +47,11 @@
     "weekly_budget_usd": 50
   },
   "elevenlabs_api_key": "",
-  "elevenlabs_voice_id": "pNInz6obpgDQGcFmaJgB",
-  "openai_api_key": ""
+  "elevenlabs_voice_id": "",
+  "openai_api_key": "",
+  "google_oauth_client_id": "",
+  "google_oauth_client_secret": "",
+  "google_oauth_refresh_token": "",
+  "google_drive_folder_id": "",
+  "google_credentials_path": ""
 }

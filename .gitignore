@@ -153,3 +153,6 @@ scripts/planner-plan.json
 !.pipeline/metrics/__tests__/
 !.pipeline/metrics/__tests__/**
 !.pipeline/**/.gitkeep
+
+# Telegram bot config con secretos (token, chat_id, OAuth refresh tokens, API keys) — usar telegram-config.example.json como referencia
+.claude/hooks/telegram-config.json
