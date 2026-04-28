@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest del flavor `client` (issue #2423 - Hija B del split #2417).
+
+  OSMDroid declara permisos opcionales que NO necesitamos para esta hija
+  (solo mostramos zonas, NUNCA la posicion del usuario - Security A05/A09).
+  Los removemos explicitamente con tools:node="remove" para que el
+  manifest merger no los eleve a "required" en el APK del flavor client.
+
+  Verificable con processClientDebugManifest. El manifest mergeado debe
+  contener solo INTERNET, ACCESS_NETWORK_STATE y POST_NOTIFICATIONS.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Necesario para que OSMDroid descargue tiles desde HTTPS. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Removemos permisos sensibles que OSMDroid declara como opcionales. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        tools:node="remove" />
+
+</manifest>

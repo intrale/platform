@@ -17,6 +17,8 @@ import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
 import asdo.client.DoCheckBusinessOpen
+import asdo.client.DoListBusinessZones
+import asdo.client.ToDoListBusinessZones
 import asdo.client.DoCreateClientOrder
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
@@ -52,6 +54,8 @@ import asdo.client.ToDoUnregisterPushToken
 import asdo.client.ToDoPushNotificationHandler
 import ext.client.CommPushTokenService
 import ext.client.PushTokenService
+import ext.client.ClientListBusinessZonesService
+import ext.client.CommListBusinessZonesService
 import asdo.delivery.DoDeliveryStateChange
 import asdo.delivery.DoGetDeliveryNotifications
 import asdo.delivery.DoMarkAllDeliveryNotificationsRead
@@ -313,6 +317,7 @@ import ui.sc.client.RepeatOrderDialogShowcaseScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.client.ClientCheckoutScreen
 import ui.sc.client.ClientProductDetailScreen
+import ui.sc.client.ZonesMapScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
 import ui.sc.delivery.DeliveryNotificationsScreen
@@ -348,6 +353,7 @@ public const val CLIENT_ORDER_DETAIL = "clientOrderDetail"
 public const val CLIENT_REPEAT_ORDER_DIALOG_SHOWCASE = "clientRepeatOrderDialogShowcase"
 public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
 public const val CLIENT_NOTIFICATIONS = "clientNotifications"
+public const val CLIENT_ZONES_MAP = "clientZonesMap"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -540,6 +546,10 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoCreateClientOrder> { DoCreateClientOrder(instance()) }
     bindSingleton<ToDoCheckBusinessOpen> { DoCheckBusinessOpen(instance()) }
 
+    // Zones map (issue #2423 — Hija B del split #2417)
+    bindSingleton<CommListBusinessZonesService> { ClientListBusinessZonesService(instance(), instance()) }
+    bindSingleton<ToDoListBusinessZones> { DoListBusinessZones(instance()) }
+
     // Push notifications
     bindSingleton<CommPushTokenService> { PushTokenService(instance(), instance(), instance()) }
     bindSingleton<ToDoRegisterPushToken> { DoRegisterPushToken(instance()) }
@@ -587,6 +597,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
     bindSingleton(tag = CLIENT_PRODUCT_DETAIL) { ClientProductDetailScreen() }
     bindSingleton(tag = CLIENT_NOTIFICATIONS) { ClientNotificationsScreen() }
+    bindSingleton(tag = CLIENT_ZONES_MAP) { ZonesMapScreen() }
     bindSingleton(tag = HOME) { Home() }
     bindSingleton(tag = INIT) { Login() }
     bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -648,6 +659,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = CLIENT_PRODUCT_DETAIL))
                     add(instance(tag = CLIENT_NOTIFICATIONS))
+                    add(instance(tag = CLIENT_ZONES_MAP))
                     add(instance(tag = INIT))
                     add(instance(tag = SIGNUP))
                     add(instance(tag = CONFIRM_SIGNUP))

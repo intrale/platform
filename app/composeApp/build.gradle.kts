@@ -507,6 +507,11 @@ dependencies {
     add("androidInstrumentedTestImplementation", platform(libs.androidx.compose.bom))
     debugImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(compose.uiTooling)
+
+    // OSMDroid 6.1.20 — solo flavor `client`, scope Android (issue #2423).
+    // Pineado a >=6.1.18 por Security A06 (CVE-2022-24858 fix). HTTPS y
+    // userAgent custom configurados en `OsmdroidInitializer`.
+    add("clientImplementation", "org.osmdroid:osmdroid-android:6.1.20")
 }
 
 compose.desktop {
