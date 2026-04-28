@@ -22,7 +22,12 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Polygon
 
 /**
- * Android actual de [ZonesMapPlatformView] (issue #2423).
+ * Android `actual` de [ZonesMapPlatformView] (issue #2423) — flavor `client`.
+ *
+ * Ubicado en `src/client/kotlin/` para que solo se compile en variantes
+ * client. Business y Delivery tienen sus propios stubs no-op porque la
+ * `expect` esta declarada en `commonMain` y AGP necesita un `actual` por
+ * cada variante Android.
  *
  * - OSMDroid 6.1.20 (clientImplementation, scopeado al flavor `client`).
  * - HTTPS forzado vio `MAPNIK` (`https://tile.openstreetmap.org`).
@@ -118,7 +123,7 @@ actual fun ZonesMapPlatformView(
     }
 }
 
-/** En Android renderizamos un mapa interactivo real. */
+/** En Android (flavor client) renderizamos un mapa interactivo real. */
 actual val isInteractiveMapAvailable: Boolean = true
 
 /**
