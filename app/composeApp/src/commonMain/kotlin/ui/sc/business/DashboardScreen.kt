@@ -149,6 +149,22 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                     onRetry = { coroutineScope.launch { viewModel.refreshSummary() } },
                     onNavigateProducts = { navigate(BUSINESS_PRODUCTS_PATH) }
                 )
+
+                // CA-1-L #2420: la card "Configurar zonas" se renderiza SIEMPRE,
+                // independiente del estado del summary (Loading / Empty / Error / Loaded).
+                // Razon: el flujo de UX exige que el dueno pueda entrar a "Configuracion >
+                // Zonas de delivery" desde el menu de Intrale Negocios incluso si el endpoint
+                // /dashboard/summary falla (HTTP 403, etc.). Antes la card vivia dentro del
+                // bloque is BusinessDashboardSummaryState.Loaded y quedaba inalcanzable cuando
+                // summary erroreaba.
+                DashboardActionCard(
+                    title = Txt(MessageKey.dashboard_card_delivery_zone_title),
+                    description = Txt(MessageKey.dashboard_card_delivery_zone_description),
+                    metric = "",
+                    actions = listOf(
+                        Txt(MessageKey.dashboard_card_delivery_zone_cta) to { navigate(BUSINESS_DELIVERY_ZONES_PATH) }
+                    )
+                )
             }
         }
     }
@@ -249,18 +265,10 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                             Txt(MessageKey.dashboard_card_schedules_cta) to { navigate(BUSINESS_SCHEDULES_PATH) }
                         )
                     )
-                    DashboardActionCard(
-                        title = Txt(MessageKey.dashboard_card_delivery_zone_title),
-                        description = Txt(MessageKey.dashboard_card_delivery_zone_description),
-                        metric = "",
-                        actions = listOf(
-                            // CA-1-L #2420: la card del dashboard navega a la nueva ZonesListScreen
-                            // (visualizacion read-only con mapa). La pantalla legacy queda registrada
-                            // en DI por CA-9-L (coexistencia + tests legacy) pero ya no es alcanzable
-                            // desde el dashboard.
-                            Txt(MessageKey.dashboard_card_delivery_zone_cta) to { navigate(BUSINESS_DELIVERY_ZONES_PATH) }
-                        )
-                    )
+                    // Nota: la card "Configurar zonas" ya NO se renderiza aca dentro de Loaded.
+                    // Se movio al Column principal (fuera de DashboardSummarySection) para que
+                    // sea accesible incluso cuando el summary esta en Loading / Empty / Error.
+                    // Ver bloque siguiente al DashboardSummarySection en ScreenContent (CA-1-L #2420).
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_payment_methods_title),
                         description = Txt(MessageKey.dashboard_card_payment_methods_description),
