@@ -7,7 +7,9 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawn } = require('child_process');
+const { execSync, spawn, execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const yaml = require('js-yaml');
 const dedupLib = require('./dedup-lib');
 const precheck = require('./connectivity-precheck');
@@ -6973,14 +6975,36 @@ function persistMetricsSnapshot(config) {
 let lastUnblockTime = 0;
 const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
 
-function brazoDesbloqueo(config) {
+// #2801 — `brazoDesbloqueo` se hizo async para no bloquear el event loop.
+// Antes: 5 execSync (gh issue list/view/edit/comment/close) que con 46 issues
+// y ~6 calls cada uno = ~30 min de pulpo bloqueado consultando GitHub. Mientras
+// tanto los brazos siguientes (barrido, lanzamiento) NO corrían y el pipeline
+// se atascaba.
+//
+// Ahora: execFileAsync + await — el event loop sigue atendiendo otras tareas
+// (HTTP, timers, signals) mientras gh está en vuelo. El loop principal del
+// pulpo invoca este brazo sin await ('fire and forget') así que el lanzamiento
+// no se atrasa por el desbloqueo. El guard `lastUnblockTime` y `_unblockRunning`
+// previenen entrar dos veces a la vez.
+let _unblockRunning = false;
+
+async function ghDesbloqueoCall(args, timeout = 15000) {
+  return execFileAsync(GH_BIN, args, { cwd: ROOT, timeout, windowsHide: true, encoding: 'utf8' });
+}
+
+async function brazoDesbloqueo(config) {
+  if (_unblockRunning) return;
   if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
   lastUnblockTime = Date.now();
+  _unblockRunning = true;
+  try { await brazoDesbloqueoImpl(config); }
+  finally { _unblockRunning = false; }
+}
 
+async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
-  // ciclo consultando sus dependencias en GitHub (cada issue toma 20-30s por
-  // los múltiples gh issue view; con 25 issues bloqueados típicos, ~8 min/ciclo).
+  // ciclo consultando sus dependencias en GitHub.
   const pipelineMode = partialPause.getPipelineMode();
   if (pipelineMode.mode === 'paused') return;
   const allowlistSet = pipelineMode.mode === 'partial_pause'
@@ -6990,9 +7014,9 @@ function brazoDesbloqueo(config) {
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies
     ghThrottle();
-    const result = execSync(
-      `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title,labels --limit 50`,
-      { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+    const { stdout: result } = await ghDesbloqueoCall(
+      ['issue', 'list', '--label', 'blocked:dependencies', '--state', 'open', '--json', 'number,title,labels', '--limit', '50'],
+      30000
     );
     let blockedIssues = JSON.parse(result || '[]');
     if (blockedIssues.length === 0) {
@@ -7022,9 +7046,8 @@ function brazoDesbloqueo(config) {
       try {
         // 2. Leer comentarios del issue para encontrar dependencias creadas por el pipeline
         ghThrottle();
-        const comments = execSync(
-          `"${GH_BIN}" issue view ${issue.number} --json comments --jq ".comments[].body" --repo intrale/platform`,
-          { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+        const { stdout: comments } = await ghDesbloqueoCall(
+          ['issue', 'view', String(issue.number), '--json', 'comments', '--jq', '.comments[].body', '--repo', 'intrale/platform']
         );
 
         // Buscar el comentario de dependencias del pipeline
@@ -7040,9 +7063,8 @@ function brazoDesbloqueo(config) {
         if (depIssueNumbers.length === 0) {
           try {
             ghThrottle();
-            const fullData = execSync(
-              `"${GH_BIN}" issue view ${issue.number} --json body,comments --jq "[.body, .comments[].body] | join(\\"\\\\n\\")" --repo intrale/platform`,
-              { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+            const { stdout: fullData } = await ghDesbloqueoCall(
+              ['issue', 'view', String(issue.number), '--json', 'body,comments', '--jq', '[.body, .comments[].body] | join("\\n")', '--repo', 'intrale/platform']
             );
             const allRefs = [...fullData.matchAll(/#(\d+)/g)]
               .map(m => m[1])
@@ -7070,11 +7092,11 @@ function brazoDesbloqueo(config) {
         for (const depNum of depIssueNumbers) {
           ghThrottle();
           try {
-            const depState = execSync(
-              `"${GH_BIN}" issue view ${depNum} --json state --jq ".state" --repo intrale/platform`,
-              { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
-            ).trim();
-            if (depState !== 'CLOSED') {
+            const { stdout: depState } = await ghDesbloqueoCall(
+              ['issue', 'view', String(depNum), '--json', 'state', '--jq', '.state', '--repo', 'intrale/platform'],
+              10000
+            );
+            if (depState.trim() !== 'CLOSED') {
               allClosed = false;
               openDeps.push(depNum);
             }
@@ -7103,9 +7125,9 @@ function brazoDesbloqueo(config) {
             const closeComment = `## ✅ Paraguas resuelto\n\nEste issue era un paraguas (label \`split\`) y todas sus historias hijas fueron cerradas (${depIssueNumbers.map(n => '#' + n).join(', ')}). El scope queda cubierto por las hijas, no requiere desarrollo adicional.\n\n_Cerrado automáticamente por el brazo de desbloqueo del pipeline._`;
             ghThrottle();
             try {
-              execSync(
-                `"${GH_BIN}" issue close ${issue.number} --reason completed --comment "${closeComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
-                { cwd: ROOT, timeout: 10000, windowsHide: true }
+              await ghDesbloqueoCall(
+                ['issue', 'close', String(issue.number), '--reason', 'completed', '--comment', closeComment, '--repo', 'intrale/platform'],
+                10000
               );
               sendTelegram(`🟢 Paraguas #${issue.number} cerrado automáticamente — todas las hijas del split (${depIssueNumbers.map(n => '#' + n).join(', ')}) resueltas.`);
               log('desbloqueo', `#${issue.number} paraguas cerrado exitosamente`);
@@ -7117,17 +7139,17 @@ function brazoDesbloqueo(config) {
 
             // Quitar label blocked:dependencies
             ghThrottle();
-            execSync(
-              `"${GH_BIN}" issue edit ${issue.number} --remove-label "blocked:dependencies" --repo intrale/platform`,
-              { cwd: ROOT, timeout: 10000, windowsHide: true }
+            await ghDesbloqueoCall(
+              ['issue', 'edit', String(issue.number), '--remove-label', 'blocked:dependencies', '--repo', 'intrale/platform'],
+              10000
             );
 
             // Agregar comentario de desbloqueo
             const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
             ghThrottle();
-            execSync(
-              `"${GH_BIN}" issue comment ${issue.number} --body "${unblockComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
-              { cwd: ROOT, timeout: 10000, windowsHide: true }
+            await ghDesbloqueoCall(
+              ['issue', 'comment', String(issue.number), '--body', unblockComment, '--repo', 'intrale/platform'],
+              10000
             );
 
             sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
@@ -7225,7 +7247,11 @@ async function mainLoop() {
         }
 
         brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
-        brazoDesbloqueo(config);  // Tercero: desbloquear issues cuyas dependencias se resolvieron
+        // #2801 — desbloqueo en background (fire-and-forget). Antes era síncrono
+        // y bloqueaba el loop por ~30 min cuando había muchas dependencias
+        // fantasma que tiraban GraphQL errors. Ahora corre async sin frenar
+        // barrido ni lanzamiento; el guard interno previene re-entrada.
+        brazoDesbloqueo(config).catch(e => log('desbloqueo', `error en brazo async: ${e.message}`));
         brazoBarrido(config);     // Cuarto: promover entre fases
         brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
         brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
