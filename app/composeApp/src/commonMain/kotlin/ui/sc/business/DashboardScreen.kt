@@ -43,6 +43,7 @@ import ui.cp.loading.ErrorState
 import ui.sc.delivery.DELIVERY_DASHBOARD_PATH
 import ui.sc.business.BUSINESS_DELIVERY_PEOPLE_PATH
 import ui.sc.business.BUSINESS_PAYMENT_METHODS_PATH
+import ui.sc.business.zones.BUSINESS_DELIVERY_ZONES_PATH
 import ui.sc.shared.Screen
 import ui.th.spacing
 
@@ -253,7 +254,11 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                         description = Txt(MessageKey.dashboard_card_delivery_zone_description),
                         metric = "",
                         actions = listOf(
-                            Txt(MessageKey.dashboard_card_delivery_zone_cta) to { navigate(BUSINESS_DELIVERY_ZONE_PATH) }
+                            // CA-1-L #2420: la card del dashboard navega a la nueva ZonesListScreen
+                            // (visualizacion read-only con mapa). La pantalla legacy queda registrada
+                            // en DI por CA-9-L (coexistencia + tests legacy) pero ya no es alcanzable
+                            // desde el dashboard.
+                            Txt(MessageKey.dashboard_card_delivery_zone_cta) to { navigate(BUSINESS_DELIVERY_ZONES_PATH) }
                         )
                     )
                     DashboardActionCard(
