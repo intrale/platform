@@ -860,12 +860,20 @@ async function tickQuota(){
     const weekCls = weekShownStatus==='critical'?'kp-bad':weekShownStatus==='warning'?'kp-warn':weekShownStatus==='normal'?'':'kp-ok';
     const resetTxt = d.daysToReset != null ? 'Reset en '+d.daysToReset.toFixed(1)+' días' : '';
     const sessLabel = sess.realPct != null ? 'Sesión 5h · estimado real' : 'Sesión actual · 5h';
+    const sessCap = sess.realPctCapped ? ' ⚠ recalibrar' : '';
+    const sessRawTxt = sess.realPctRaw != null && sess.realPctCapped
+        ? ' (raw '+sess.realPctRaw.toFixed(1)+'%)'
+        : '';
     const sessSub = sess.realPct != null
-        ? 'pipeline '+sess.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.session_factor ? d.calibration.session_factor : 1)
+        ? 'pipeline '+sess.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.session_factor ? d.calibration.session_factor : 1)+sessRawTxt+sessCap
         : sess.hoursUsed.toFixed(2)+'h / 5h';
     const weekLabel = d.realPct != null ? 'Semanal · estimado real' : 'Semanal · cuota';
+    const weekCap = d.realPctCapped ? ' ⚠ recalibrar' : '';
+    const weekRawTxt = d.realPctRaw != null && d.realPctCapped
+        ? ' (raw '+d.realPctRaw.toFixed(1)+'%)'
+        : '';
     const weekSub = d.realPct != null
-        ? 'pipeline '+d.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.weekly_factor ? d.calibration.weekly_factor : 1)
+        ? 'pipeline '+d.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.weekly_factor ? d.calibration.weekly_factor : 1)+weekRawTxt+weekCap
         : 'de '+d.effectiveLimitHours+'h estimadas';
     const tiles = [
         { label: sessLabel, value: sessShownPct.toFixed(1)+'%', sub: sessSub, cls: sessCls },

@@ -508,30 +508,44 @@ async function tickHeader(){
     function setWindowPill(id, win, label){
         const pill = document.getElementById(id);
         if(!pill) return;
-        if(!win || !win.active){
-            pill.style.display = 'none';
-            return;
+        const winKey = id.replace('hdr-window-','');
+        const active = !!(win && win.active);
+        pill.classList.remove('in-pill-ok','in-pill-warn','in-pill-bad','in-pill-info');
+        if(active){
+            pill.classList.add('in-pill-warn');
+            const tag = win.manual ? '🔒' : '⚡';
+            let elapsed = '';
+            if(win.activatedAt){
+                const ms = Date.now() - win.activatedAt;
+                const min = Math.floor(ms/60000);
+                elapsed = min < 60 ? ' · '+min+'m' : ' · '+Math.floor(min/60)+'h '+(min%60)+'m';
+            }
+            pill.textContent = tag+' '+label+' window'+elapsed;
+            pill.title = 'Click para DESACTIVAR la ventana de prioridad '+label+' (vuelve a permitir lanzamientos normales).';
+        } else {
+            // Inactiva: estilo dim + click → activar
+            pill.classList.add('in-pill-info');
+            pill.style.opacity = '0.55';
+            pill.textContent = '○ '+label+' window';
+            pill.title = 'Click para ACTIVAR la ventana de prioridad '+label+' (bloquea otros lanzamientos para drenar la cola).';
         }
-        pill.style.display = '';
-        pill.classList.remove('in-pill-ok','in-pill-bad');
-        pill.classList.add('in-pill-warn');
-        const tag = win.manual ? '🔒' : '⚡';
-        let elapsed = '';
-        if(win.activatedAt){
-            const ms = Date.now() - win.activatedAt;
-            const min = Math.floor(ms/60000);
-            elapsed = min < 60 ? ' · '+min+'m' : ' · '+Math.floor(min/60)+'h '+(min%60)+'m';
-        }
-        pill.textContent = tag+' '+label+' window'+elapsed;
+        // Reset opacity si está activa (puede haber sido seteado en un tick previo)
+        if(active) pill.style.opacity = '';
         if(!pill.dataset._bound){
             pill.dataset._bound = '1';
             pill.style.cursor = 'pointer';
             pill.addEventListener('click', async () => {
-                if(!confirm('¿Desactivar la '+label+' Priority Window? El pipeline va a poder lanzar dev/build de nuevo.')) return;
+                const isActive = pill.classList.contains('in-pill-warn');
+                const action = isActive ? 'off' : 'on'; // endpoint acepta 'on'/'off'
+                const verb = isActive ? 'DESACTIVAR' : 'ACTIVAR';
+                const consequence = isActive
+                    ? '. El pipeline va a poder lanzar dev/build de nuevo.'
+                    : '. Va a bloquear lanzamientos de otros skills para drenar la cola de '+label+'.';
+                if(!confirm('¿'+verb+' la ventana de prioridad '+label+'?'+consequence)) return;
                 try{
-                    const r = await fetch('/api/priority-window', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({window: id.replace('hdr-window-',''), action:'deactivate'})});
+                    const r = await fetch('/api/priority-window', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({window: winKey, action})});
                     const j = await r.json();
-                    showToast(j.msg || (j.ok?label+' desactivada':'Falló'), j.ok);
+                    showToast(j.msg || (j.ok?label+' '+(isActive?'desactivada':'activada'):'Falló'), j.ok);
                     setTimeout(() => tickHeader().catch(()=>{}), 600);
                 } catch(e){ showToast('Error: '+e.message, false); }
             });
@@ -648,7 +662,10 @@ function renderQuotaCard(d){
     const realLine = d.realPct != null
         ? 'Calibrado vs claude.ai (×'+(d.calibration?d.calibration.weekly_factor:'?')+' sem, ×'+(d.calibration?d.calibration.session_factor:'?')+' ses, '+(d.calibration?d.calibration.sample_count:0)+' muestras).'
         : 'Sin calibrar — pipeline raw. Calibrá en /costos para mejor precisión.';
-    card.title = realLine;
+    let extraTitle = '';
+    if(d.realPctCapped) extraTitle += ' ⚠ Semanal capeado al 100% (raw '+d.realPctRaw+'%) — recalibrar.';
+    if(d.session && d.session.realPctCapped) extraTitle += ' ⚠ Sesión capeada al 100% (raw '+d.session.realPctRaw+'%) — recalibrar.';
+    card.title = realLine+extraTitle;
 }
 
 async function tickQuota(){
@@ -970,8 +987,8 @@ function renderHomeHTML() {
           </div>
         </div>
       </span>
-      <span class="in-pill" id="hdr-window-qa" style="display:none" title="Click para desactivar la QA Priority Window">…</span>
-      <span class="in-pill" id="hdr-window-build" style="display:none" title="Click para desactivar la Build Priority Window">…</span>
+      <span class="in-pill" id="hdr-window-qa" title="Click para activar/desactivar la QA Priority Window">…</span>
+      <span class="in-pill" id="hdr-window-build" title="Click para activar/desactivar la Build Priority Window">…</span>
       <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema">…</span>
       <span class="in-pill" id="hdr-pulpo">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
