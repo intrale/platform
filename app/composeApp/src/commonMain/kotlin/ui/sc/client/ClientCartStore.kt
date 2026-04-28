@@ -1,5 +1,6 @@
 package ui.sc.client
 
+import asdo.client.DoCheckAddressResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +19,13 @@ object ClientCartStore {
     val selectedAddressId: StateFlow<String?> = _selectedAddressId.asStateFlow()
     private val _selectedPaymentMethodId = MutableStateFlow<String?>(null)
     val selectedPaymentMethodId: StateFlow<String?> = _selectedPaymentMethodId.asStateFlow()
+    /**
+     * Resultado de la ultima verificacion de direccion + zona (Hija A #2422).
+     * Mientras este vigente, `addToCart` no requiere re-verificacion (CA-1).
+     * Se borra al limpiar el carrito o cambiar de negocio.
+     */
+    private val _lastZoneCheckResult = MutableStateFlow<DoCheckAddressResult?>(null)
+    val lastZoneCheckResult: StateFlow<DoCheckAddressResult?> = _lastZoneCheckResult.asStateFlow()
 
     fun add(product: ClientProduct) {
         if (!product.isAvailable) return
@@ -66,6 +74,7 @@ object ClientCartStore {
         _items.value = emptyMap()
         _selectedAddressId.value = null
         _selectedPaymentMethodId.value = null
+        _lastZoneCheckResult.value = null
     }
 
     fun selectAddress(addressId: String?) {
@@ -74,5 +83,14 @@ object ClientCartStore {
 
     fun selectPaymentMethod(paymentMethodId: String?) {
         _selectedPaymentMethodId.value = paymentMethodId
+    }
+
+    /**
+     * Persiste el resultado de verificacion de direccion + zona del negocio
+     * (issue #2424 CA-1, CA-2). Llamado por la pantalla de verificacion (Hija A
+     * #2422) al confirmar la direccion.
+     */
+    fun setZoneCheckResult(result: DoCheckAddressResult?) {
+        _lastZoneCheckResult.value = result
     }
 }

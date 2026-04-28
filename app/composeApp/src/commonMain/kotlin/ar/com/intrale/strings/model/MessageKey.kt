@@ -921,4 +921,18 @@ enum class MessageKey {
     client_checkout_business_closed_title,
     client_checkout_business_closed_message,
     client_checkout_business_closed_next,
+
+    // Shipping cost integration (issue #2424)
+    client_cart_zone_check_required_title,
+    client_cart_zone_check_required_body,
+    client_cart_zone_check_required_cta,
+    client_cart_zone_check_required_cancel,
+    client_checkout_shipping_with_zone_label,
+    client_checkout_shipping_free_label,
+    client_checkout_shipping_recalculating,
+    client_checkout_confirm_button_with_total,
+    client_checkout_recheck_failed,
+    client_checkout_shipping_row_a11y,
+    client_checkout_shipping_free_a11y,
+    client_checkout_total_a11y,
 }

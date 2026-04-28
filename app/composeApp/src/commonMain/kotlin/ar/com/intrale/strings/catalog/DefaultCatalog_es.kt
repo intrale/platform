@@ -932,4 +932,18 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_take_already_taken to "Este pedido ya no esta disponible",
     MessageKey.delivery_order_take_error to "Error al tomar el pedido. Intenta de nuevo.",
     MessageKey.delivery_order_distance_placeholder to "-- km",
+
+    // Shipping cost integration (issue #2424)
+    MessageKey.client_cart_zone_check_required_title to "Veamos si te llega",
+    MessageKey.client_cart_zone_check_required_body to "Antes de sumar productos, chequeamos que llegamos a tu zona y calculamos el envio.",
+    MessageKey.client_cart_zone_check_required_cta to "Verificar direccion",
+    MessageKey.client_cart_zone_check_required_cancel to "Cancelar",
+    MessageKey.client_checkout_shipping_with_zone_label to "Envio ({zone})",
+    MessageKey.client_checkout_shipping_free_label to "Envio gratis",
+    MessageKey.client_checkout_shipping_recalculating to "Calculando envio...",
+    MessageKey.client_checkout_confirm_button_with_total to "Confirmar pedido - {total}",
+    MessageKey.client_checkout_recheck_failed to "No pudimos actualizar el envio. Reintenta o segui con la direccion anterior.",
+    MessageKey.client_checkout_shipping_row_a11y to "Envio para {zone}: {amount}",
+    MessageKey.client_checkout_shipping_free_a11y to "Envio gratis para {zone}",
+    MessageKey.client_checkout_total_a11y to "Total a pagar: {amount}",
 )

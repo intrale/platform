@@ -18,7 +18,10 @@ data class ClientOrder(
     val createdAt: String,
     val promisedAt: String?,
     val total: Double,
-    val itemCount: Int
+    val itemCount: Int,
+    // Costo de envio congelado al momento del pedido (issue #2424 CA-7).
+    val shippingCost: Double? = null,
+    val zoneName: String? = null
 )
 
 data class ClientOrderStatusEvent(
@@ -42,7 +45,10 @@ data class ClientOrderDetail(
     val paymentMethod: String? = null,
     val statusHistory: List<ClientOrderStatusEvent> = emptyList(),
     val businessMessage: String? = null,
-    val businessPhone: String? = null
+    val businessPhone: String? = null,
+    // Costo de envio congelado al momento del pedido (issue #2424 CA-7).
+    val shippingCost: Double? = null,
+    val zoneName: String? = null
 )
 
 data class ClientOrderItem(
@@ -82,7 +88,9 @@ fun ClientOrderDTO.toDomain(): ClientOrder = ClientOrder(
     createdAt = createdAt.orEmpty(),
     promisedAt = promisedAt,
     total = total,
-    itemCount = itemCount
+    itemCount = itemCount,
+    shippingCost = shippingCost,
+    zoneName = zoneName
 )
 
 fun ClientOrderDetailDTO.toDomain(): ClientOrderDetail = ClientOrderDetail(
@@ -109,7 +117,9 @@ fun ClientOrderDetailDTO.toDomain(): ClientOrderDetail = ClientOrderDetail(
     paymentMethod = paymentMethod,
     statusHistory = statusHistory.map { it.toDomain() },
     businessMessage = businessMessage,
-    businessPhone = businessPhone
+    businessPhone = businessPhone,
+    shippingCost = shippingCost,
+    zoneName = zoneName
 )
 
 fun ClientOrderStatusEventDTO.toDomain(): ClientOrderStatusEvent = ClientOrderStatusEvent(

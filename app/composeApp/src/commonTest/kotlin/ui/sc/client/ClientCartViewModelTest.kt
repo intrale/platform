@@ -4,6 +4,7 @@ import asdo.client.ClientAddress
 import asdo.client.ClientPreferences
 import asdo.client.ClientProfile
 import asdo.client.ClientProfileData
+import asdo.client.DoCheckAddressResult
 import asdo.client.PaymentMethod
 import asdo.client.PaymentMethodType
 import asdo.client.ToDoGetClientProfile
@@ -216,5 +217,94 @@ class ClientCartViewModelTest {
         assertNull(viewModel.state.selectedAddressId)
         assertNull(viewModel.state.selectedPaymentMethodId)
         assertNull(viewModel.state.error)
+    }
+
+    @Test
+    fun `cart bloquea agregar producto cuando no hay verificacion previa`() {
+        // Issue #2424 CA-1 — sin verificacion vigente, addToCart se bloquea con modal.
+        val viewModel = ClientCartViewModel(
+            getClientProfile = FakeGetClientProfile(),
+            getPaymentMethods = FakeGetPaymentMethods(),
+            loggerFactory = testLoggerFactory
+        )
+        // Pre: sin verificacion previa
+        assertNull(ClientCartStore.lastZoneCheckResult.value)
+
+        val product = ClientProduct(
+            id = "prod-1",
+            name = "Manzana",
+            priceLabel = "$1.200",
+            emoji = "🍎",
+            unitPrice = 1200.0,
+            categoryId = "cat-1",
+            isAvailable = true
+        )
+        viewModel.requestAddToCart(product)
+
+        // El modal se dispara y el producto NO se agrega al carrito.
+        assertTrue(viewModel.state.requireZoneCheck)
+        assertEquals(product, viewModel.state.pendingProduct)
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `cart agrega producto cuando hay verificacion vigente`() {
+        // Issue #2424 CA-1 — con verificacion vigente, el flujo es transparente.
+        val viewModel = ClientCartViewModel(
+            getClientProfile = FakeGetClientProfile(),
+            getPaymentMethods = FakeGetPaymentMethods(),
+            loggerFactory = testLoggerFactory
+        )
+        ClientCartStore.setZoneCheckResult(
+            DoCheckAddressResult(
+                businessId = "biz-1",
+                addressId = "addr-1",
+                lat = -34.6,
+                lng = -58.4,
+                zoneId = "zone-1",
+                zoneName = "Zona Norte",
+                shippingCost = 500.0
+            )
+        )
+
+        val product = ClientProduct(
+            id = "prod-1",
+            name = "Manzana",
+            priceLabel = "$1.200",
+            emoji = "🍎",
+            unitPrice = 1200.0,
+            categoryId = "cat-1",
+            isAvailable = true
+        )
+        viewModel.requestAddToCart(product)
+
+        // No se dispara modal y el producto se agrega.
+        assertFalse(viewModel.state.requireZoneCheck)
+        assertNull(viewModel.state.pendingProduct)
+        assertEquals(1, ClientCartStore.items.value.size)
+    }
+
+    @Test
+    fun `cart agrega producto sin bloquear cuando negocio no tiene zonas`() {
+        // Issue #2424 CA-5 — negocio sin zonas no activa el flujo bloqueante.
+        val viewModel = ClientCartViewModel(
+            getClientProfile = FakeGetClientProfile(),
+            getPaymentMethods = FakeGetPaymentMethods(),
+            loggerFactory = testLoggerFactory
+        )
+        // Sin verificacion previa, pero el negocio no tiene zonas configuradas.
+        val product = ClientProduct(
+            id = "prod-1",
+            name = "Manzana",
+            priceLabel = "$1.200",
+            emoji = "🍎",
+            unitPrice = 1200.0,
+            categoryId = "cat-1",
+            isAvailable = true
+        )
+        viewModel.requestAddToCart(product, businessHasZones = false)
+
+        assertFalse(viewModel.state.requireZoneCheck)
+        assertEquals(1, ClientCartStore.items.value.size)
     }
 }

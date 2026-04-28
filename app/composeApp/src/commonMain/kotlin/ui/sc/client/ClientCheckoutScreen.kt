@@ -1,5 +1,12 @@
 package ui.sc.client
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +46,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -95,6 +106,8 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
         val subtotalLabel = Txt(MessageKey.client_cart_subtotal_label)
         val shippingLabel = Txt(MessageKey.client_cart_shipping_label)
         val totalLabel = Txt(MessageKey.client_cart_total_label)
+        val freeShippingLabel = Txt(MessageKey.client_checkout_shipping_free_label)
+        val recalculatingLabel = Txt(MessageKey.client_checkout_shipping_recalculating)
 
         LaunchedEffect(Unit) {
             val itemsList = cartItems.values.toList()
@@ -125,7 +138,9 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
                 }
                 .onFailure { logger.error(it) { "Error cargando medios de pago para checkout" } }
 
-            viewModel.loadFromCart(itemsList, address, paymentMethod)
+            // issue #2424 CA-2: poblar desde el resultado de la verificacion de Hija A.
+            val zoneCheck = ClientCartStore.lastZoneCheckResult.value
+            viewModel.loadFromCart(itemsList, address, paymentMethod, zoneCheck)
             viewModel.checkBusinessOpenStatus()
         }
 
@@ -222,16 +237,22 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
                             )
                         }
 
-                        // Summary
+                        // Summary (issue #2424 — desglose con shippingCost CA-3/CA-4/CA-5)
                         item {
                             CheckoutSummaryCard(
                                 sectionSummary = sectionSummary,
                                 subtotalLabel = subtotalLabel,
                                 shippingLabel = shippingLabel,
                                 totalLabel = totalLabel,
+                                freeShippingLabel = freeShippingLabel,
+                                recalculatingLabel = recalculatingLabel,
                                 subtotal = viewModel.state.subtotal,
                                 shipping = viewModel.state.shipping,
-                                total = viewModel.state.total
+                                total = viewModel.state.total,
+                                showShippingRow = viewModel.state.showShippingRow,
+                                isFreeShipping = viewModel.state.isFreeShipping,
+                                zoneName = viewModel.state.zoneName,
+                                recalculating = viewModel.state.recalculatingShipping
                             )
                         }
 
@@ -246,7 +267,7 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
                             }
                         }
 
-                        // Confirm button
+                        // Confirm button (issue #2424 CA-3 — total embebido)
                         item {
                             if (viewModel.state.status == CheckoutStatus.Loading) {
                                 Box(
@@ -264,12 +285,23 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
                                     }
                                 }
                             } else {
+                                // CA-3: el boton incluye el total formateado.
+                                // Si esta recalculando, mostrar texto de loading (CA-6).
+                                val buttonText = when {
+                                    viewModel.state.recalculatingShipping -> recalculatingLabel
+                                    else -> Txt(
+                                        MessageKey.client_checkout_confirm_button_with_total,
+                                        mapOf("total" to formatPrice(viewModel.state.total))
+                                    )
+                                }
                                 IntralePrimaryButton(
-                                    text = confirmButton,
+                                    text = buttonText,
                                     onClick = {
                                         coroutineScope.launch { viewModel.confirmOrder() }
                                     },
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.fillMaxWidth().semantics {
+                                        contentDescription = buttonText
+                                    },
                                     enabled = viewModel.state.canConfirm
                                 )
                             }
@@ -407,15 +439,30 @@ private fun CheckoutPaymentCard(method: asdo.client.PaymentMethod) {
     }
 }
 
+/**
+ * Desglose del checkout con shippingCost integrado (issue #2424 CA-3/CA-4/CA-5).
+ *
+ * - CA-3: tres filas (subtotal / envio / total) con el zoneName en el label de envio.
+ * - CA-4: cuando shipping == 0, muestra "Envio gratis" en `onTertiaryContainer`.
+ * - CA-5: si `showShippingRow == false` (negocio sin zonas), no se renderiza la fila de envio.
+ * - CA-6: anima cambios con AnimatedContent + animateContentSize (200ms).
+ * - CA-12: tabular numbers + liveRegion Polite + contentDescription naturales.
+ */
 @Composable
 private fun CheckoutSummaryCard(
     sectionSummary: String,
     subtotalLabel: String,
     shippingLabel: String,
     totalLabel: String,
+    freeShippingLabel: String,
+    recalculatingLabel: String,
     subtotal: Double,
     shipping: Double,
-    total: Double
+    total: Double,
+    showShippingRow: Boolean,
+    isFreeShipping: Boolean,
+    zoneName: String?,
+    recalculating: Boolean
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -425,7 +472,8 @@ private fun CheckoutSummaryCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(MaterialTheme.spacing.x3),
+                .padding(MaterialTheme.spacing.x3)
+                .animateContentSize(),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
         ) {
             Text(
@@ -434,9 +482,133 @@ private fun CheckoutSummaryCard(
                 fontWeight = FontWeight.Bold
             )
             CheckoutSummaryRow(label = subtotalLabel, value = formatPrice(subtotal))
-            CheckoutSummaryRow(label = shippingLabel, value = formatPrice(shipping))
+            if (showShippingRow) {
+                // CA-3 + CA-4: label con zona (o "Envio") y valor (o "Envio gratis").
+                val shippingRowLabel = if (zoneName != null) {
+                    Txt(
+                        MessageKey.client_checkout_shipping_with_zone_label,
+                        mapOf("zone" to zoneName)
+                    )
+                } else {
+                    shippingLabel
+                }
+                ShippingSummaryRow(
+                    label = shippingRowLabel,
+                    shippingValue = shipping,
+                    isFreeShipping = isFreeShipping,
+                    freeShippingLabel = freeShippingLabel,
+                    zoneName = zoneName,
+                    recalculating = recalculating,
+                    recalculatingLabel = recalculatingLabel
+                )
+            }
             Divider()
-            CheckoutSummaryRow(label = totalLabel, value = formatPrice(total), emphasize = true)
+            // CA-12: liveRegion para que TalkBack anuncie cambios del total.
+            Box(
+                modifier = Modifier.semantics {
+                    liveRegion = LiveRegionMode.Polite
+                    contentDescription = "Total a pagar: ${formatPrice(total)}"
+                }
+            ) {
+                AnimatedContent(
+                    targetState = total,
+                    transitionSpec = {
+                        (fadeIn(animationSpec = androidx.compose.animation.core.tween(200)) +
+                            slideInVertically(
+                                animationSpec = androidx.compose.animation.core.tween(200)
+                            ) { -it / 2 }) togetherWith
+                            (fadeOut(animationSpec = androidx.compose.animation.core.tween(200)) +
+                                slideOutVertically(
+                                    animationSpec = androidx.compose.animation.core.tween(200)
+                                ) { it / 2 })
+                    },
+                    label = "totalAnimation"
+                ) { animatedTotal ->
+                    CheckoutSummaryRow(
+                        label = totalLabel,
+                        value = formatPrice(animatedTotal),
+                        emphasize = true
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShippingSummaryRow(
+    label: String,
+    shippingValue: Double,
+    isFreeShipping: Boolean,
+    freeShippingLabel: String,
+    zoneName: String?,
+    recalculating: Boolean,
+    recalculatingLabel: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        // CA-6: durante recalculo, mostrar texto de loading en lugar del valor.
+        AnimatedContent(
+            targetState = Triple(recalculating, isFreeShipping, shippingValue),
+            transitionSpec = {
+                fadeIn(animationSpec = androidx.compose.animation.core.tween(200)) togetherWith
+                    fadeOut(animationSpec = androidx.compose.animation.core.tween(200))
+            },
+            label = "shippingValueAnimation"
+        ) { (loading, free, value) ->
+            when {
+                loading -> {
+                    Text(
+                        text = recalculatingLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                free -> {
+                    // CA-4: pill con tertiaryContainer / onTertiaryContainer.
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.tertiaryContainer)
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .semantics {
+                                contentDescription = if (zoneName != null) {
+                                    "Envio gratis para $zoneName"
+                                } else {
+                                    "Envio gratis"
+                                }
+                            }
+                    ) {
+                        Text(
+                            text = freeShippingLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                else -> {
+                    Text(
+                        text = formatPrice(value),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.semantics {
+                            contentDescription = if (zoneName != null) {
+                                "Envio para $zoneName: ${formatPrice(value)}"
+                            } else {
+                                "Envio: ${formatPrice(value)}"
+                            }
+                        }
+                    )
+                }
+            }
         }
     }
 }

@@ -264,6 +264,34 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                     text = { Text(text = clearConfirmation) }
                 )
             }
+
+            // issue #2424 CA-1: modal bloqueante de pre-carrito.
+            // Cuando se intenta agregar al carrito sin verificacion previa.
+            if (vmState.requireZoneCheck) {
+                val zoneCheckTitle = Txt(MessageKey.client_cart_zone_check_required_title)
+                val zoneCheckBody = Txt(MessageKey.client_cart_zone_check_required_body)
+                val zoneCheckCta = Txt(MessageKey.client_cart_zone_check_required_cta)
+                val zoneCheckCancel = Txt(MessageKey.client_cart_zone_check_required_cancel)
+                AlertDialog(
+                    onDismissRequest = { viewModel.dismissZoneCheckRequest() },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            viewModel.dismissZoneCheckRequest()
+                            // TODO(#2422): navegar a AddressCheckScreen cuando Hija A entregue.
+                            navigate(CLIENT_PROFILE_PATH)
+                        }) {
+                            Text(text = zoneCheckCta)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { viewModel.dismissZoneCheckRequest() }) {
+                            Text(text = zoneCheckCancel)
+                        }
+                    },
+                    title = { Text(text = zoneCheckTitle, fontWeight = FontWeight.Bold) },
+                    text = { Text(text = zoneCheckBody) }
+                )
+            }
         }
     }
 }

@@ -932,4 +932,18 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_take_already_taken to "This order is no longer available",
     MessageKey.delivery_order_take_error to "Error taking the order. Please try again.",
     MessageKey.delivery_order_distance_placeholder to "-- km",
+
+    // Shipping cost integration (issue #2424)
+    MessageKey.client_cart_zone_check_required_title to "Let's see if we deliver to you",
+    MessageKey.client_cart_zone_check_required_body to "Before adding products, we will check if we deliver to your zone and calculate the shipping cost.",
+    MessageKey.client_cart_zone_check_required_cta to "Verify address",
+    MessageKey.client_cart_zone_check_required_cancel to "Cancel",
+    MessageKey.client_checkout_shipping_with_zone_label to "Shipping ({zone})",
+    MessageKey.client_checkout_shipping_free_label to "Free shipping",
+    MessageKey.client_checkout_shipping_recalculating to "Calculating shipping...",
+    MessageKey.client_checkout_confirm_button_with_total to "Confirm order - {total}",
+    MessageKey.client_checkout_recheck_failed to "We could not update the shipping cost. Retry or continue with the previous address.",
+    MessageKey.client_checkout_shipping_row_a11y to "Shipping for {zone}: {amount}",
+    MessageKey.client_checkout_shipping_free_a11y to "Free shipping for {zone}",
+    MessageKey.client_checkout_total_a11y to "Total to pay: {amount}",
 )
