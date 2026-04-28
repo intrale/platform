@@ -823,6 +823,17 @@ function renderCostos() {
   <div id="costos-grid" class="kp-grid"></div>
 </section>
 <section class="in-section">
+  <h2 class="in-section-title"><span class="in-section-title-icon">📈</span>Proyección de cuota · burn rate y budget gap</h2>
+  <p id="burn-summary" style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Calculando proyección…</p>
+  <div id="burn-grid" class="kp-grid"></div>
+</section>
+<section class="in-section">
+  <h2 class="in-section-title"><span class="in-section-title-icon">🛰</span>Multi-bot accounting · Plan Max compartido</h2>
+  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Consolidado de todos los bots que usan la misma cuenta Anthropic (Intrale + Alina + libro + club + Néstor). Drill-down: bot → skill → issue.</p>
+  <div id="multibot-grid" class="kp-grid"></div>
+  <div id="multibot-detail" style="margin-top:14px"></div>
+</section>
+<section class="in-section">
   <h2 class="in-section-title"><span class="in-section-title-icon">📋</span>Por skill</h2>
   <pre id="costos-detail" class="kp-pre"></pre>
 </section>`;
@@ -917,7 +928,11 @@ async function tickQuota(){
             const at = fmtART(d.calibration.at);
             const stale = d.calibrationStale ? ' ⚠ ' : ' ✓ ';
             const ageInfo = d.calibrationAgeDays != null ? ' (hace '+d.calibrationAgeDays+'d)' : '';
-            ctxt = stale+'Calibrado #'+d.calibration.sample_count+' · '+at+ageInfo+' · factor smooth(w=×'+d.calibration.weekly_factor+', s=×'+d.calibration.session_factor+') raw esta vez(w=×'+d.calibration.weekly_factor_obs+', s=×'+d.calibration.session_factor_obs+') · α EMA '+d.calibration.ema_alpha;
+            const fresh = d.calibration.fresh_sample_count != null ? d.calibration.fresh_sample_count+'/' : '';
+            const method = d.calibration.method === 'weighted_recency_median_28d'
+                ? 'mediana ponderada 28d (½-life '+(d.calibration.half_life_days||14)+'d)'
+                : (d.calibration.ema_alpha != null ? 'α EMA '+d.calibration.ema_alpha : 'EMA');
+            ctxt = stale+'Calibrado '+fresh+'#'+d.calibration.sample_count+' · '+at+ageInfo+' · factor refinado(w=×'+d.calibration.weekly_factor+', s=×'+d.calibration.session_factor+') raw esta vez(w=×'+d.calibration.weekly_factor_obs+', s=×'+d.calibration.session_factor_obs+') · '+method;
             if(d.calibrationStale) ctxt += ' — recomendado recalibrar';
             if(d.weeklyResetDriftMin) ctxt += ' · drift TZ del reset semanal: '+d.weeklyResetDriftMin+' min';
         } else {
@@ -1056,7 +1071,101 @@ async function tickCostos(){
         }
     }
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn: tickCostos, ms: 60000 }];
+async function tickBurn(){
+    // #2854 — Burn rate + budget gap (proyección semanal en US$).
+    const data = await fetchJson('/metrics/burn');
+    const grid = document.getElementById('burn-grid');
+    const summary = document.getElementById('burn-summary');
+    const b = data && data.burn || null;
+    if(!b || b.weekly_quota_usd == null){
+        if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de burn rate. Esperá a que termine algún agente.</div>';
+        if(summary) summary.textContent = '—';
+        return;
+    }
+    const fmtUsd = (n) => '$'+Number(n||0).toFixed(2);
+    const fmtDate = (iso) => { try{ return new Date(iso).toLocaleString('es-AR', {hour12:false, day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}); } catch{ return '—'; } };
+    const statusCls = b.status==='over'?'kp-bad':b.status==='projected_over'?'kp-bad':b.status==='warning'?'kp-warn':'kp-ok';
+    const exhaustValue = b.days_to_quota_exhaustion != null
+        ? (b.days_to_quota_exhaustion < 1 ? fmtDate(b.quota_exhaustion_at) : b.days_to_quota_exhaustion.toFixed(1)+' días')
+        : '∞';
+    const tiles = [
+        { label: 'Burn rate · 24h', value: fmtUsd(b.burn_rate_usd_per_day_24h), sub: 'costo del último día', cls: '' },
+        { label: 'Burn rate · 7d prom', value: fmtUsd(b.burn_rate_usd_per_day_7d), sub: 'media diaria 7 días', cls: '' },
+        { label: 'Semana en curso', value: fmtUsd(b.week_to_date_usd), sub: 'desde último reset · ' + fmtUsd(b.weekly_quota_usd) + ' cuota', cls: statusCls },
+        { label: 'Forecast fin de semana', value: fmtUsd(b.forecast_week_end_usd), sub: 'al ritmo actual · reset ' + fmtDate(b.week_resets_at), cls: statusCls },
+        { label: 'Budget gap', value: (b.week_gap_usd > 0 ? '+' : '') + fmtUsd(b.week_gap_usd), sub: b.week_gap_usd > 0 ? 'extra necesario para llegar al reset' : 'dentro del presupuesto', cls: b.week_gap_usd > 0 ? 'kp-bad' : 'kp-ok' },
+        { label: 'Te quedás sin cuota', value: exhaustValue, sub: b.status === 'over' ? 'ya agotada' : 'al ritmo efectivo', cls: b.status === 'over' || (b.days_to_quota_exhaustion != null && b.days_to_quota_exhaustion < 1) ? 'kp-bad' : '' },
+    ];
+    let html = '';
+    for(const t of tiles) html += '<div class="kp-tile '+t.cls+'"><div class="kp-tile-label">'+escapeHtml(t.label)+'</div><div class="kp-tile-value">'+escapeHtml(String(t.value))+'</div><div class="kp-tile-sub">'+escapeHtml(t.sub)+'</div></div>';
+    if(grid && grid.innerHTML !== html) grid.innerHTML = html;
+    if(summary){
+        const txt = b.human_message || '—';
+        if(summary.textContent !== txt) summary.textContent = txt;
+    }
+}
+
+async function tickMultiBot(){
+    // #2854 — Multi-bot accounting (Intrale + bots externos en misma cuenta).
+    const snap = await fetchJson('/metrics/multi-bot/snapshot');
+    const grid = document.getElementById('multibot-grid');
+    const detail = document.getElementById('multibot-detail');
+    if(!snap || !snap.totals){
+        if(grid) grid.innerHTML = '<div class="in-empty">Multi-bot aggregator sin datos. Solo se contabiliza Intrale por ahora.</div>';
+        if(detail) detail.innerHTML = '';
+        return;
+    }
+    const t = snap.totals;
+    const fmtUsd = (n) => '$'+Number(n||0).toFixed(2);
+    const totalUsd = Number(t.cost_usd || 0);
+    const tiles = [
+        { label: 'Total bots · costo', value: fmtUsd(totalUsd), sub: snap.bots_available + ' bot(s) disponibles', cls: '' },
+        { label: 'Total · sesiones', value: fmtNum(t.sessions || 0), sub: 'todas las cuentas combinadas', cls: '' },
+        { label: 'Total · tokens', value: fmtNum((t.tokens_in||0) + (t.tokens_out||0) + (t.cache_read||0) + (t.cache_write||0)), sub: 'in + out + cache', cls: '' },
+        { label: 'Bots inactivos', value: (snap.bots_unavailable && snap.bots_unavailable.length) || 0, sub: 'sin snapshot reciente', cls: '' },
+    ];
+    let html = '';
+    for(const ti of tiles) html += '<div class="kp-tile '+ti.cls+'"><div class="kp-tile-label">'+escapeHtml(ti.label)+'</div><div class="kp-tile-value">'+escapeHtml(String(ti.value))+'</div><div class="kp-tile-sub">'+escapeHtml(ti.sub)+'</div></div>';
+    if(grid && grid.innerHTML !== html) grid.innerHTML = html;
+
+    if(detail){
+        const byBot = snap.by_bot || [];
+        const bySkill = snap.by_skill || [];
+        const byIssue = snap.by_issue || [];
+        const pct = (v) => totalUsd > 0 ? ((Number(v||0) / totalUsd) * 100).toFixed(1) + '%' : '—';
+        let block = '';
+        if(byBot.length){
+            block += '<details open style="margin-bottom:12px"><summary style="cursor:pointer;font-weight:600;font-size:12px;padding:6px 0">Por bot (' + byBot.length + ')</summary>';
+            block += '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px"><thead><tr style="border-bottom:1px solid var(--in-border);text-align:left"><th style="padding:4px 8px">bot</th><th style="padding:4px 8px;text-align:right">sesiones</th><th style="padding:4px 8px;text-align:right">tokens</th><th style="padding:4px 8px;text-align:right">costo USD</th><th style="padding:4px 8px;text-align:right">% del total</th></tr></thead><tbody>';
+            for(const b of byBot){
+                const tot = (b.tokens_in||0) + (b.tokens_out||0) + (b.cache_read||0) + (b.cache_write||0);
+                block += '<tr><td style="padding:4px 8px">'+escapeHtml(b.bot_id||b.bot_name||'?')+'</td><td style="padding:4px 8px;text-align:right">'+fmtNum(b.sessions||0)+'</td><td style="padding:4px 8px;text-align:right">'+fmtNum(tot)+'</td><td style="padding:4px 8px;text-align:right">'+fmtUsd(b.cost_usd||0)+'</td><td style="padding:4px 8px;text-align:right">'+pct(b.cost_usd)+'</td></tr>';
+            }
+            block += '</tbody></table></details>';
+        }
+        if(bySkill.length){
+            block += '<details style="margin-bottom:12px"><summary style="cursor:pointer;font-weight:600;font-size:12px;padding:6px 0">Por skill (' + bySkill.length + ')</summary>';
+            block += '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px"><thead><tr style="border-bottom:1px solid var(--in-border);text-align:left"><th style="padding:4px 8px">bot · skill</th><th style="padding:4px 8px;text-align:right">sesiones</th><th style="padding:4px 8px;text-align:right">costo USD</th><th style="padding:4px 8px;text-align:right">% del total</th></tr></thead><tbody>';
+            for(const s of bySkill){
+                block += '<tr><td style="padding:4px 8px">'+escapeHtml((s.bot_id||'?')+' · '+(s.skill||'?'))+'</td><td style="padding:4px 8px;text-align:right">'+fmtNum(s.sessions||0)+'</td><td style="padding:4px 8px;text-align:right">'+fmtUsd(s.cost_usd||0)+'</td><td style="padding:4px 8px;text-align:right">'+pct(s.cost_usd)+'</td></tr>';
+            }
+            block += '</tbody></table></details>';
+        }
+        if(byIssue.length){
+            const top = byIssue.slice(0, 20);
+            block += '<details style="margin-bottom:12px"><summary style="cursor:pointer;font-weight:600;font-size:12px;padding:6px 0">Por issue · top 20 (' + byIssue.length + ' total)</summary>';
+            block += '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px"><thead><tr style="border-bottom:1px solid var(--in-border);text-align:left"><th style="padding:4px 8px">bot · issue</th><th style="padding:4px 8px;text-align:right">sesiones</th><th style="padding:4px 8px;text-align:right">costo USD</th><th style="padding:4px 8px;text-align:right">% del total</th></tr></thead><tbody>';
+            for(const i of top){
+                const issueLbl = (i.bot_id||'?') + ' · #' + (i.issue||'?');
+                block += '<tr><td style="padding:4px 8px">'+escapeHtml(issueLbl)+'</td><td style="padding:4px 8px;text-align:right">'+fmtNum(i.sessions||0)+'</td><td style="padding:4px 8px;text-align:right">'+fmtUsd(i.cost_usd||0)+'</td><td style="padding:4px 8px;text-align:right">'+pct(i.cost_usd)+'</td></tr>';
+            }
+            block += '</tbody></table></details>';
+        }
+        if(detail.innerHTML !== block) detail.innerHTML = block;
+    }
+}
+
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn: tickCostos, ms: 60000 }, { fn: tickBurn, ms: 60000 }, { fn: tickMultiBot, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;

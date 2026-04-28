@@ -1,0 +1,45 @@
+{
+  "$schema": "./multi-bot-config.schema.md",
+  "comment": "Lista de bots que comparten la misma cuenta Anthropic. El multi-bot-aggregator lee el snapshot de cada uno y consolida en multi-bot-snapshot.json. Cada bot debe publicar un snapshot con el mismo schema que .pipeline/metrics/snapshot.json (mínimo: bot_id, bot_label, totals.cost_usd, agents[], issues[]). Para bots externos (Alina, libro, club, Néstor) configurar el path absoluto que apunta a su snapshot.json. Los bots ausentes (path inexistente) se ignoran sin romper.",
+  "bots": [
+    {
+      "bot_id": "intrale",
+      "label": "Intrale",
+      "snapshot_path": ".pipeline/metrics/snapshot.json",
+      "owner": "Leo",
+      "enabled": true
+    },
+    {
+      "bot_id": "alina",
+      "label": "Alina",
+      "snapshot_path": "../alina/.pipeline/metrics/snapshot.json",
+      "owner": "Alina",
+      "enabled": false,
+      "note": "Pendiente: Alina debe alinear el formato del snapshot y habilitar."
+    },
+    {
+      "bot_id": "libro",
+      "label": "Libro",
+      "snapshot_path": "../libro/.pipeline/metrics/snapshot.json",
+      "owner": "Leo",
+      "enabled": false,
+      "note": "Pendiente: instrumentar el bot del libro para emitir snapshot."
+    },
+    {
+      "bot_id": "club",
+      "label": "Club",
+      "snapshot_path": "../club/.pipeline/metrics/snapshot.json",
+      "owner": "Leo",
+      "enabled": false,
+      "note": "Pendiente: instrumentar el bot del club para emitir snapshot."
+    },
+    {
+      "bot_id": "nestor",
+      "label": "Néstor",
+      "snapshot_path": "../nestor/.pipeline/metrics/snapshot.json",
+      "owner": "Leo",
+      "enabled": false,
+      "note": "Pendiente: instrumentar el bot Néstor para emitir snapshot."
+    }
+  ]
+}

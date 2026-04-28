@@ -41,6 +41,16 @@ const ADJUSTMENT_BUFFER_HOURS = 5;
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 const DAY_MS = 24 * 3600 * 1000;
 const HOUR_MS = 3600 * 1000;
+// #2854 — Aprendizaje multi-semana. Histórico extendido a 50 muestras
+// (~4-8 semanas). El factor se refina con mediana ponderada por recencia
+// sobre las últimas 28 días. Half-life del peso = 14 días.
+const CALIBRATION_HISTORY_MAX = 50;
+const CALIBRATION_FRESH_WINDOW_MS = 28 * DAY_MS;
+const CALIBRATION_HALF_LIFE_DAYS = 14;
+// `weekly_profiles[]` persiste el factor "estable" de cada semana cerrada
+// para tener referencia comparativa semana a semana. Hasta 12 semanas
+// (~3 meses) — útil para detectar tendencias estacionales.
+const WEEKLY_PROFILES_MAX = 12;
 // Anthropic resetea la cuota semanal **domingo 21:00 hora local del usuario**
 // (constatado en claude.ai/settings/usage). En Argentina = UTC-3 fijo (sin DST).
 // Configurable vía env por si el operador está en otra TZ.
@@ -84,6 +94,7 @@ function loadState(metricsDir) {
         // Defaults para campos nuevos en estados viejos
         if (!parsed.calibration) parsed.calibration = null;
         if (!parsed.calibrations) parsed.calibrations = [];
+        if (!parsed.weekly_profiles) parsed.weekly_profiles = [];
         return parsed;
     } catch {
         return {
@@ -94,28 +105,77 @@ function loadState(metricsDir) {
             adjustments: [],
             calibration: null,
             calibrations: [],
+            weekly_profiles: [],
         };
     }
+}
+
+/**
+ * Mediana ponderada por recencia. Cada observación tiene un peso
+ * exponencialmente decreciente con la edad (half-life 14 días).
+ *
+ *   peso(age_days) = 0.5 ^ (age_days / 14)
+ *
+ * Ventajas vs EMA simple:
+ *  - **Robusta a outliers**: la mediana ignora picos extremos. Cuando Leo
+ *    carga varios % seguidos para experimentar, los outliers no arrastran
+ *    el factor.
+ *  - **Multi-semana**: usa hasta 28 días de historial en lugar de chatarse
+ *    a una EMA con peso fijo.
+ *  - **Tendencia**: muestras más recientes pesan más (recency bias suave).
+ *
+ * Si hay menos de 3 muestras frescas, fallback al promedio simple.
+ *
+ * @param {Array<{at:string, value:number}>} samples - observaciones con timestamp
+ * @param {number} now - timestamp actual (ms)
+ * @returns {number} factor calibrado
+ */
+function weightedRecencyMedian(samples, now) {
+    const fresh = (samples || []).filter(s => {
+        const age = now - new Date(s.at).getTime();
+        return age >= 0 && age <= CALIBRATION_FRESH_WINDOW_MS && Number.isFinite(s.value) && s.value > 0;
+    });
+    if (fresh.length === 0) return null;
+    if (fresh.length < 3) {
+        // Promedio simple para n<3 — la mediana no es estable con pocas muestras
+        const sum = fresh.reduce((s, x) => s + x.value, 0);
+        return sum / fresh.length;
+    }
+    // Calcular peso por edad
+    const weighted = fresh.map(s => {
+        const ageDays = (now - new Date(s.at).getTime()) / DAY_MS;
+        const w = Math.pow(0.5, ageDays / CALIBRATION_HALF_LIFE_DAYS);
+        return { value: s.value, weight: w };
+    });
+    // Ordenar por valor y encontrar el punto donde la suma de pesos cruza el 50%
+    weighted.sort((a, b) => a.value - b.value);
+    const totalWeight = weighted.reduce((s, x) => s + x.weight, 0);
+    let cumulative = 0;
+    for (const item of weighted) {
+        cumulative += item.weight;
+        if (cumulative >= totalWeight / 2) return item.value;
+    }
+    return weighted[weighted.length - 1].value;
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
 /**
- * Persiste una calibración manual con APRENDIZAJE INCREMENTAL:
+ * Persiste una calibración manual con APRENDIZAJE MULTI-SEMANA (#2854).
  *
- *   1. Cada calibración se acumula en `calibrations[]` (historial — últimas 20).
- *   2. Los factores semanal/sesión se calculan por **EMA** (Exponential Moving
- *      Average) en lugar de reemplazo total: `nuevo = α·obs + (1-α)·viejo`.
- *      α se ajusta según cantidad de muestras (más muestras → α menor → más
- *      conservador, menos sensible a outliers individuales).
- *   3. Si el operador reporta `sessionResetsInMinutes` o `weeklyResetsInMinutes`,
- *      persistimos esos timestamps absolutos. El cliente los usa para mostrar
- *      cuenta regresiva precisa, y el server detecta drift de TZ del weekly
- *      reset (e.g. si reportado != calculado por nuestra fórmula, ajustamos
- *      el offset persistido).
- *   4. `weighted_pipeline_pct_at` registra el pipeline pct al momento de
- *      calibrar — sirve para recalcular factor cuando el pipeline cambia
- *      mucho entre calibraciones (no implementado aún, queda como hook).
+ *   1. Histórico extendido a 50 calibraciones (~4-8 semanas).
+ *   2. El factor se refina con **mediana ponderada por recencia** sobre las
+ *      últimas 28 días (half-life 14d). Razón: la mediana es robusta a
+ *      outliers (Leo a veces carga varios % seguidos para experimentar),
+ *      y considerar 4 semanas permite que la calibración mejore con cada
+ *      semana en lugar de chatarse a una EMA simple.
+ *   3. Si la calibración cruza un reset semanal vs la calibración previa,
+ *      snapshoteamos el factor "estable" de la semana cerrada en
+ *      `weekly_profiles[]` (max 12 entradas). Esto preserva el factor
+ *      característico de cada semana para análisis comparativo.
+ *   4. Persiste `session_resets_at` / `weekly_resets_at` absolutos cuando
+ *      el operador los reporta — el cliente muestra cuenta regresiva
+ *      precisa y el server detecta drift de TZ del weekly reset.
  *
  * @param {string} metricsDir
  * @param {{realWeeklyPct, realSessionPct, pipelineWeeklyPct, pipelineSessionPct, sessionResetsInMinutes?, weeklyResetsInMinutes?}} obs
@@ -130,6 +190,9 @@ function saveCalibration(metricsDir, obs) {
     const newSessionFactor = pipelineSession > 0 ? realSession / pipelineSession : 1;
 
     const now = Date.now();
+    // Snapshot de la semana cerrada: si la calibración previa pertenecía a
+    // una semana anterior, congelar el factor final como perfil de esa semana.
+    maybeSnapshotPreviousWeek(state, now);
     // Aceptar tanto "minutos al reset" (legacy) como "timestamp ISO absoluto"
     // (preferido — más natural cuando el operador pega una hora del datetime
     // picker o de claude.ai). Si vienen ambos, gana el ISO absoluto.
@@ -171,17 +234,23 @@ function saveCalibration(metricsDir, obs) {
         weekly_resets_at: weeklyResetsAt,
     };
     state.calibrations.push(entry);
-    if (state.calibrations.length > 20) state.calibrations = state.calibrations.slice(-20);
+    if (state.calibrations.length > CALIBRATION_HISTORY_MAX) {
+        state.calibrations = state.calibrations.slice(-CALIBRATION_HISTORY_MAX);
+    }
 
-    // EMA: α decrece con número de muestras. Primera muestra: α=1 (exact).
-    // De ahí en adelante: α = max(0.2, 1 / sqrt(n)) — equilibra respuesta
-    // a cambios reales con resistencia a ruido.
-    const n = state.calibrations.length;
-    const alpha = n === 1 ? 1.0 : Math.max(0.2, 1 / Math.sqrt(n));
-    const prevWeeklyFactor = state.calibration ? state.calibration.weekly_factor : newWeeklyFactor;
-    const prevSessionFactor = state.calibration ? state.calibration.session_factor : newSessionFactor;
-    const smoothWeekly = alpha * newWeeklyFactor + (1 - alpha) * prevWeeklyFactor;
-    const smoothSession = alpha * newSessionFactor + (1 - alpha) * prevSessionFactor;
+    // Mediana ponderada por recencia sobre los obs frescos (≤28d).
+    // Si hay muy pocas muestras (<3 frescas), `weightedRecencyMedian` cae
+    // a promedio simple — y si tampoco hay frescas, usamos el obs actual.
+    const weeklySamples = state.calibrations.map(c => ({ at: c.at, value: Number(c.weekly_factor_obs) }));
+    const sessionSamples = state.calibrations.map(c => ({ at: c.at, value: Number(c.session_factor_obs) }));
+    const refinedWeekly = weightedRecencyMedian(weeklySamples, now);
+    const refinedSession = weightedRecencyMedian(sessionSamples, now);
+    const finalWeekly = Number.isFinite(refinedWeekly) && refinedWeekly > 0 ? refinedWeekly : newWeeklyFactor;
+    const finalSession = Number.isFinite(refinedSession) && refinedSession > 0 ? refinedSession : newSessionFactor;
+    // Conteo de muestras frescas (las que efectivamente entraron al cálculo).
+    const freshCount = state.calibrations.filter(c =>
+        (now - new Date(c.at).getTime()) <= CALIBRATION_FRESH_WINDOW_MS
+    ).length;
 
     state.calibration = {
         at: new Date(now).toISOString(),
@@ -189,18 +258,63 @@ function saveCalibration(metricsDir, obs) {
         real_session_pct: realSession,
         pipeline_weekly_pct_at: pipelineWeekly,
         pipeline_session_pct_at: pipelineSession,
-        weekly_factor: round2(smoothWeekly),
-        session_factor: round2(smoothSession),
+        weekly_factor: round2(finalWeekly),
+        session_factor: round2(finalSession),
         weekly_factor_obs: round2(newWeeklyFactor),
         session_factor_obs: round2(newSessionFactor),
-        sample_count: n,
-        ema_alpha: round2(alpha),
+        sample_count: state.calibrations.length,
+        fresh_sample_count: freshCount,
+        method: 'weighted_recency_median_28d',
+        half_life_days: CALIBRATION_HALF_LIFE_DAYS,
         session_resets_at: sessionResetsAt,
         weekly_resets_at: weeklyResetsAt,
     };
     state.weekly_reset_drift_min = weeklyResetDriftMin;
     saveState(metricsDir, state);
     return state.calibration;
+}
+
+/**
+ * Si la calibración previa (state.calibration) pertenece a una semana
+ * anterior al `now`, snapshotea el perfil de esa semana en `weekly_profiles[]`.
+ * Idempotente: si ya hay perfil para esa misma semana, no duplica.
+ *
+ * Estructura del perfil:
+ *  - `week_start_iso`, `week_end_iso`: límites de la semana cerrada
+ *  - `final_factor_weekly`, `final_factor_session`: último factor refinado
+ *  - `samples_in_week`: cantidad de calibraciones cargadas en esa semana
+ *  - `max_real_weekly_pct`: pico de %real reportado en la semana (para
+ *    detectar semanas más intensas)
+ */
+function maybeSnapshotPreviousWeek(state, now) {
+    if (!state.calibration || !state.calibration.at) return;
+    const prevAt = new Date(state.calibration.at).getTime();
+    const prevResetEnd = getNextWeeklyResetMs(prevAt);
+    // Si el siguiente reset semanal de la calib previa ya pasó vs `now`,
+    // entonces la calibración previa pertenece a una semana cerrada.
+    if (prevResetEnd > now) return;
+    const weekStart = getLastWeeklyResetMs(prevAt);
+    const weekStartIso = new Date(weekStart).toISOString();
+    if (!state.weekly_profiles) state.weekly_profiles = [];
+    if (state.weekly_profiles.some(p => p.week_start_iso === weekStartIso)) return;
+    // Filtrar calibraciones que cayeron dentro de esa semana
+    const inWeek = (state.calibrations || []).filter(c => {
+        const t = new Date(c.at).getTime();
+        return t >= weekStart && t < prevResetEnd;
+    });
+    const maxRealWeekly = inWeek.reduce((m, c) => Math.max(m, Number(c.real_weekly_pct) || 0), 0);
+    state.weekly_profiles.push({
+        week_start_iso: weekStartIso,
+        week_end_iso: new Date(prevResetEnd).toISOString(),
+        final_factor_weekly: state.calibration.weekly_factor,
+        final_factor_session: state.calibration.session_factor,
+        samples_in_week: inWeek.length,
+        max_real_weekly_pct: maxRealWeekly,
+        snapshotted_at: new Date(now).toISOString(),
+    });
+    if (state.weekly_profiles.length > WEEKLY_PROFILES_MAX) {
+        state.weekly_profiles = state.weekly_profiles.slice(-WEEKLY_PROFILES_MAX);
+    }
 }
 
 function clearCalibration(metricsDir) {
@@ -433,9 +547,12 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
             hoursRemaining: Math.round(Math.max(0, DEFAULT_SESSION_LIMIT_HOURS - sessionUsage.hoursUsed) * 100) / 100,
             status: sessionStatus,
         },
-        // Calibración (si existe) + historial reciente (últimas 20)
+        // Calibración (si existe) + historial reciente (últimas 50, multi-semana)
         calibration: state.calibration,
-        calibrations: (state.calibrations || []).slice(-20),
+        calibrations: (state.calibrations || []).slice(-CALIBRATION_HISTORY_MAX),
+        // Perfiles de semanas cerradas (factor estable de cada semana, hasta 12)
+        // Permite a Leo / al dashboard comparar tendencia semana a semana.
+        weeklyProfiles: state.weekly_profiles || [],
         weeklyResetDriftMin: state.weekly_reset_drift_min || 0,
         // Stale: la calibración pierde precisión con el tiempo. Marcamos
         // stale > 7d para sugerir recalibrar.
@@ -461,6 +578,11 @@ module.exports = {
     saveState,
     saveCalibration,
     clearCalibration,
+    weightedRecencyMedian,
     DEFAULT_LIMIT_HOURS,
     DEFAULT_SESSION_LIMIT_HOURS,
+    CALIBRATION_HISTORY_MAX,
+    CALIBRATION_FRESH_WINDOW_MS,
+    CALIBRATION_HALF_LIFE_DAYS,
+    WEEKLY_PROFILES_MAX,
 };

@@ -10,6 +10,7 @@ const { execSync } = require("child_process");
 // --- Config ---
 const REPO_ROOT = path.resolve(__dirname, "..");
 const METRICS_PATH = path.join(REPO_ROOT, ".claude", "hooks", "agent-metrics.json");
+const SNAPSHOT_PATH = path.join(REPO_ROOT, ".pipeline", "metrics", "snapshot.json");
 const CONFIG_PATH = path.join(REPO_ROOT, ".claude", "hooks", "telegram-config.json");
 const SPRINT_PLAN_PATH = path.join(__dirname, "sprint-plan.json");
 const LOG_DIR = path.join(__dirname, "logs");
@@ -44,15 +45,55 @@ function readJsonSafe(filePath) {
     }
 }
 
-// --- Token estimation ---
-function estimateTokens(session) {
+// --- Snapshot real (.pipeline/metrics/snapshot.json) ---
+// Devuelve un mapa por skill con tokens/cost reales y tool_calls totales,
+// para prorratear costos a sesiones individuales del agent-metrics.json.
+// Si el snapshot no existe → null y se usa la heurística como fallback.
+function loadSnapshotIndex() {
+    const snap = readJsonSafe(SNAPSHOT_PATH);
+    if (!snap || !snap.agents) return null;
+    const bySkill = {};
+    for (const a of snap.agents) {
+        if (!a.skill) continue;
+        const tokensTotal = (a.tokens_in || 0) + (a.tokens_out || 0) + (a.cache_read || 0) + (a.cache_write || 0);
+        bySkill[a.skill] = {
+            sessions: a.sessions || 0,
+            tool_calls: a.tool_calls || 0,
+            tokens_total: tokensTotal,
+            cost_usd: a.cost_usd || 0,
+        };
+    }
+    return {
+        totals: snap.totals || null,
+        bySkill,
+        generated_at: snap.generated_at || null,
+    };
+}
+
+// Prorratea tokens reales de la skill a esta sesión según su % de tool_calls.
+// Si no hay datos del snapshot para la skill → fallback heurístico.
+function estimateTokens(session, snapshotIndex) {
     if (session.tokens_estimated) return session.tokens_estimated;
+    const skill = session.agent_name || session.skill;
+    if (snapshotIndex && skill && snapshotIndex.bySkill[skill] && snapshotIndex.bySkill[skill].tool_calls > 0) {
+        const sk = snapshotIndex.bySkill[skill];
+        const sessionCalls = session.total_tool_calls || 0;
+        const ratio = sessionCalls / sk.tool_calls;
+        return Math.round(sk.tokens_total * ratio);
+    }
     const durationSec = (session.duration_min || 0) * 60;
     const toolCalls = session.total_tool_calls || 0;
     return (durationSec * 15) + (toolCalls * 500);
 }
 
-function estimateCost(session, costPerAction) {
+function estimateCost(session, costPerAction, snapshotIndex) {
+    const skill = session.agent_name || session.skill;
+    if (snapshotIndex && skill && snapshotIndex.bySkill[skill] && snapshotIndex.bySkill[skill].tool_calls > 0) {
+        const sk = snapshotIndex.bySkill[skill];
+        const sessionCalls = session.total_tool_calls || 0;
+        const ratio = sessionCalls / sk.tool_calls;
+        return sk.cost_usd * ratio;
+    }
     const toolCalls = session.total_tool_calls || 0;
     return toolCalls * costPerAction;
 }
@@ -109,6 +150,8 @@ function escapeHtml(str) {
 
 function buildHtml(sessions, costPerAction, weeklyBudget, sprintPlan, filterSprintId) {
     const fecha = new Date().toISOString().split("T")[0];
+    const snapshotIndex = loadSnapshotIndex();
+    const usingRealMetrics = !!(snapshotIndex && snapshotIndex.totals);
 
     // Filtrar por sprint si se especificó
     let filteredSessions = sessions;
@@ -116,26 +159,33 @@ function buildHtml(sessions, costPerAction, weeklyBudget, sprintPlan, filterSpri
         filteredSessions = sessions.filter(s => s.sprint_id === filterSprintId);
     }
 
-    // Enriquecer sesiones
+    // Enriquecer sesiones (prorrateo desde snapshot real cuando hay match por skill)
     const enriched = filteredSessions.map(s => ({
         ...s,
-        tokens_estimated: estimateTokens(s),
-        cost_estimated_usd: estimateCost(s, costPerAction),
+        tokens_estimated: estimateTokens(s, snapshotIndex),
+        cost_estimated_usd: estimateCost(s, costPerAction, snapshotIndex),
     }));
 
-    // Totales
+    // Totales: si hay snapshot real y NO hay filtro de sprint, usamos el snapshot
+    // como ground truth (es la realidad agregada por el Pulpo).
+    // Si hay filtro o no hay snapshot, sumamos por sesión.
     const totalSessions = enriched.length;
     const totalToolCalls = enriched.reduce((sum, s) => sum + (s.total_tool_calls || 0), 0);
-    const totalTokens = enriched.reduce((sum, s) => sum + s.tokens_estimated, 0);
-    const totalCost = enriched.reduce((sum, s) => sum + s.cost_estimated_usd, 0);
     const totalDurationMin = enriched.reduce((sum, s) => sum + (s.duration_min || 0), 0);
+    const useGlobalSnapshot = usingRealMetrics && !filterSprintId;
+    const totalTokens = useGlobalSnapshot
+        ? ((snapshotIndex.totals.tokens_in || 0) + (snapshotIndex.totals.tokens_out || 0) + (snapshotIndex.totals.cache_read || 0) + (snapshotIndex.totals.cache_write || 0))
+        : enriched.reduce((sum, s) => sum + s.tokens_estimated, 0);
+    const totalCost = useGlobalSnapshot
+        ? (snapshotIndex.totals.cost_usd || 0)
+        : enriched.reduce((sum, s) => sum + s.cost_estimated_usd, 0);
 
     // Sesiones de últimos 7 días para costo semanal
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const weeklySessions = sessions.map(s => ({
         ...s,
-        tokens_estimated: estimateTokens(s),
-        cost_estimated_usd: estimateCost(s, costPerAction),
+        tokens_estimated: estimateTokens(s, snapshotIndex),
+        cost_estimated_usd: estimateCost(s, costPerAction, snapshotIndex),
     })).filter(s => (s.started_ts || "") >= weekAgo);
     const weeklyCost = weeklySessions.reduce((sum, s) => sum + s.cost_estimated_usd, 0);
     const weeklyPct = weeklyBudget > 0 ? Math.min(Math.round(weeklyCost / weeklyBudget * 100), 100) : 0;
@@ -190,10 +240,14 @@ function buildHtml(sessions, costPerAction, weeklyBudget, sprintPlan, filterSpri
 <p><strong>Proyecto:</strong> Intrale Platform (<code>intrale/platform</code>)<br>
 <strong>Fecha:</strong> ${fecha}<br>
 <strong>Sesiones analizadas:</strong> ${totalSessions}<br>
-<strong>Costo por acción:</strong> ${formatUSD(costPerAction)}</p>
+<strong>Fuente de datos:</strong> ${usingRealMetrics
+    ? `tokens y costos reales del snapshot del Pulpo (<code>.pipeline/metrics/snapshot.json</code>${snapshotIndex.generated_at ? `, generado ${escapeHtml(snapshotIndex.generated_at)}` : ""})`
+    : `estimación heurística (snapshot no disponible)`}</p>
 
 <div class="formula">
-<strong>Fórmula de estimación:</strong> tokens ≈ (duración_seg × 15) + (tool_calls × 500) | costo ≈ tool_calls × ${formatUSD(costPerAction)}
+${usingRealMetrics
+    ? `<strong>Cálculo:</strong> totales globales = snapshot real (Anthropic API). Per-sesión = prorrateo del costo de la skill por % de tool_calls de cada sesión.`
+    : `<strong>Fórmula heurística (fallback):</strong> tokens ≈ (duración_seg × 15) + (tool_calls × 500) | costo ≈ tool_calls × ${formatUSD(costPerAction)}`}
 </div>
 
 <!-- MÉTRICAS GLOBALES -->
@@ -339,7 +393,9 @@ function buildHtml(sessions, costPerAction, weeklyBudget, sprintPlan, filterSpri
     html += `
 <div class="footer">
   <p>Generado automáticamente el ${fecha} | Intrale Platform | Cost Report</p>
-  <p>Modelo: Claude Haiku 4.5 | Estimación por proxy (duración + tool calls)</p>
+  <p>${usingRealMetrics
+    ? `Datos reales del snapshot del Pulpo (.pipeline/metrics/snapshot.json) — precios oficiales de Anthropic`
+    : `Snapshot real no disponible — usando estimación heurística por tool_calls + duración`}</p>
 </div>
 
 </body>

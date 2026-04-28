@@ -9,9 +9,13 @@
 // Cuotas por defecto — override con env vars si el usuario maneja plan Max/etc.
 const DEFAULT_MONTHLY_TOKEN_USD = Number(process.env.METRICS_QUOTA_MONTHLY_USD || 100);
 const DEFAULT_MONTHLY_TTS_USD   = Number(process.env.METRICS_QUOTA_TTS_MONTHLY_USD || 10);
+// #2854 — Cuota semanal (USD). Permite proyectar agotamiento dentro de la
+// semana corriente (Plan API o presupuesto operativo). Override con env.
+const DEFAULT_WEEKLY_TOKEN_USD = Number(process.env.METRICS_QUOTA_WEEKLY_USD || 25);
 
 // Cuántos días recientes se usan para el promedio (ignora días muy viejos para reflejar tendencia actual)
 const DEFAULT_WINDOW_DAYS = 7;
+const DEFAULT_BURN_WINDOW_DAYS = 7;
 
 function daysInMonth(date) {
     return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
@@ -115,6 +119,7 @@ function computeProjections(opts) {
     const quotas = opts.quotas || {};
     const monthlyTokenQuota = Number(quotas.monthly_token_usd !== undefined ? quotas.monthly_token_usd : DEFAULT_MONTHLY_TOKEN_USD);
     const monthlyTtsQuota   = Number(quotas.monthly_tts_usd   !== undefined ? quotas.monthly_tts_usd   : DEFAULT_MONTHLY_TTS_USD);
+    const weeklyTokenQuota  = Number(quotas.weekly_token_usd  !== undefined ? quotas.weekly_token_usd  : DEFAULT_WEEKLY_TOKEN_USD);
 
     return {
         generated_at: now.toISOString(),
@@ -134,17 +139,142 @@ function computeProjections(opts) {
             label: 'tts',
             secondaryFields: ['tts_chars', 'tts_audio_seconds'],
         }),
+        // #2854 — Burn rate y budget gap por costo USD (semanal). Permite
+        // contestar: "te quedás sin cuota el [día]" y "necesitás +US$ X
+        // para llegar al domingo a este ritmo".
+        burn: computeBurnAndGap({ series, weeklyTokenQuota, monthlyTokenQuota, now }),
+    };
+}
+
+// Día de la semana en que reseta la cuota semanal (Anthropic Plan Max:
+// domingo 21:00 hora local). Override por env si la cuenta es API/distinta.
+const WEEK_RESET_DOW = Number(process.env.METRICS_WEEK_RESET_DOW); // 0=Dom, 6=Sáb
+const WEEK_RESET_DEFAULT = 0; // Domingo
+
+function nextWeeklyResetIso(now) {
+    const targetDow = Number.isFinite(WEEK_RESET_DOW) ? WEEK_RESET_DOW : WEEK_RESET_DEFAULT;
+    const d = new Date(now.getTime());
+    const dow = d.getDay();
+    let daysAhead = (targetDow - dow + 7) % 7;
+    if (daysAhead === 0) daysAhead = 7; // si hoy es el día de reset, apuntar al próximo
+    d.setDate(d.getDate() + daysAhead);
+    d.setHours(21, 0, 0, 0); // 21:00 local
+    return d;
+}
+
+function startOfCurrentWeek(now) {
+    const targetDow = Number.isFinite(WEEK_RESET_DOW) ? WEEK_RESET_DOW : WEEK_RESET_DEFAULT;
+    const next = nextWeeklyResetIso(now);
+    const start = new Date(next.getTime());
+    start.setDate(start.getDate() - 7);
+    return start;
+}
+
+function sumSeriesSince(series, startIso, field) {
+    return series
+        .filter(d => d.day >= startIso)
+        .reduce((s, d) => s + Number(d[field] || 0), 0);
+}
+
+function computeBurnAndGap({ series, weeklyTokenQuota, monthlyTokenQuota, now }) {
+    if (!series || series.length === 0) {
+        return {
+            burn_rate_usd_per_day_24h: 0,
+            burn_rate_usd_per_day_7d: 0,
+            week_to_date_usd: 0,
+            week_remaining_quota_usd: weeklyTokenQuota,
+            weekly_quota_usd: weeklyTokenQuota,
+            forecast_week_end_usd: 0,
+            week_gap_usd: 0,
+            days_to_quota_exhaustion: null,
+            quota_exhaustion_at: null,
+            week_resets_at: nextWeeklyResetIso(now).toISOString(),
+            human_message: null,
+            status: 'ok',
+        };
+    }
+    // Burn rate 24h = costo del último día de la serie (proxy).
+    const last = series[series.length - 1];
+    const burn24h = Number(last && last.cost_usd || 0);
+    // Burn rate 7d promedio.
+    const burn7dAvg = dailyAverage(series, 'cost_usd', DEFAULT_BURN_WINDOW_DAYS);
+    // Burn rate efectivo: máximo entre 24h reciente y promedio 7d para ser
+    // conservador con picos. Si 24h > 7d → estamos acelerando.
+    const burnEffective = Math.max(burn24h, burn7dAvg);
+
+    const weekStartIso = startOfCurrentWeek(now).toISOString().substring(0, 10);
+    const weekToDate = sumSeriesSince(series, weekStartIso, 'cost_usd');
+    const weekRemainingQuota = Math.max(0, weeklyTokenQuota - weekToDate);
+    const weekResetMs = nextWeeklyResetIso(now).getTime();
+    const daysToWeekReset = Math.max(0, (weekResetMs - now.getTime()) / 86400000);
+
+    const forecastWeekEnd = weekToDate + (burnEffective * daysToWeekReset);
+    const weekGap = forecastWeekEnd - weeklyTokenQuota;
+
+    let daysToExhaustion = null;
+    let exhaustionAt = null;
+    if (burnEffective > 0 && weekRemainingQuota > 0) {
+        daysToExhaustion = weekRemainingQuota / burnEffective;
+        exhaustionAt = new Date(now.getTime() + daysToExhaustion * 86400000).toISOString();
+    } else if (weekRemainingQuota <= 0) {
+        daysToExhaustion = 0;
+        exhaustionAt = now.toISOString();
+    }
+
+    let status = 'ok';
+    if (weekRemainingQuota <= 0) status = 'over';
+    else if (forecastWeekEnd > weeklyTokenQuota) status = 'projected_over';
+    else if (forecastWeekEnd > weeklyTokenQuota * 0.9) status = 'warning';
+
+    let humanMessage = null;
+    const dayNames = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+    if (status === 'over') {
+        humanMessage = `Te quedaste sin cuota semanal. Llevás US$${weekToDate.toFixed(2)} de US$${weeklyTokenQuota.toFixed(2)}.`;
+    } else if (daysToExhaustion !== null && Number.isFinite(daysToExhaustion) && daysToExhaustion < daysToWeekReset) {
+        const exhaustDate = new Date(exhaustionAt);
+        const dayName = dayNames[exhaustDate.getDay()];
+        const hh = String(exhaustDate.getHours()).padStart(2, '0');
+        const mm = String(exhaustDate.getMinutes()).padStart(2, '0');
+        humanMessage = `A este ritmo te quedás sin cuota el ${dayName} a las ${hh}:${mm}. Necesitás +US$${weekGap.toFixed(2)} de presupuesto extra para llegar al fin de semana.`;
+    } else if (status === 'warning') {
+        humanMessage = `Atención: la proyección al fin de semana (US$${forecastWeekEnd.toFixed(2)}) está cerca del límite (US$${weeklyTokenQuota.toFixed(2)}).`;
+    } else {
+        humanMessage = `OK. Proyección al fin de semana: US$${forecastWeekEnd.toFixed(2)} de US$${weeklyTokenQuota.toFixed(2)}.`;
+    }
+
+    return {
+        burn_rate_usd_per_day_24h: round(burn24h, 4),
+        burn_rate_usd_per_day_7d: round(burn7dAvg, 4),
+        burn_rate_usd_per_day_effective: round(burnEffective, 4),
+        week_to_date_usd: round(weekToDate, 4),
+        week_remaining_quota_usd: round(weekRemainingQuota, 4),
+        weekly_quota_usd: weeklyTokenQuota,
+        monthly_quota_usd: monthlyTokenQuota,
+        forecast_week_end_usd: round(forecastWeekEnd, 4),
+        week_gap_usd: round(weekGap, 4),
+        days_to_quota_exhaustion: daysToExhaustion !== null && Number.isFinite(daysToExhaustion)
+            ? round(daysToExhaustion, 2)
+            : null,
+        quota_exhaustion_at: exhaustionAt,
+        week_resets_at: new Date(weekResetMs).toISOString(),
+        days_to_week_reset: round(daysToWeekReset, 2),
+        human_message: humanMessage,
+        status,
     };
 }
 
 module.exports = {
     computeProjections,
+    computeBurnAndGap,
     dailyAverage,
     daysInMonth,
     daysRemainingThisMonth,
     daysRemainingThisWeek,
-    monthToDate,
+    nextWeeklyResetIso,
+    startOfCurrentWeek,
     DEFAULT_MONTHLY_TOKEN_USD,
     DEFAULT_MONTHLY_TTS_USD,
+    DEFAULT_WEEKLY_TOKEN_USD,
     DEFAULT_WINDOW_DAYS,
+    monthToDate,
 };

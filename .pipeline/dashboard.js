@@ -37,6 +37,11 @@ try { retryingState = require('./retrying-state'); } catch { /* opcional */ }
 let v3Aggregator = null;
 try { v3Aggregator = require('./metrics/aggregator'); } catch { /* V3 no disponible */ }
 
+// Multi-bot accounting (issue #2854). Consolida snapshots de varios bots
+// que comparten cuenta Anthropic. Best-effort.
+let multiBotAggregator = null;
+try { multiBotAggregator = require('./metrics/multi-bot-aggregator'); } catch { /* opcional */ }
+
 // Recomendaciones generadas por agentes (issue #2653). Best-effort require.
 let recommendationsLib = null;
 try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcional */ }
@@ -7708,8 +7713,9 @@ const server = http.createServer((req, res) => {
 
   // ===========================================================================
   // V3 — Endpoints de métricas extendidas (issue #2477)
+  // El check excluye /metrics/multi-bot (handler propio en #2854 más abajo).
   // ===========================================================================
-  if (req.url.startsWith('/metrics/') || req.url === '/consumo' || req.url === '/metrics-v3' || req.url === '/metrics-v3/') {
+  if ((req.url.startsWith('/metrics/') && !req.url.startsWith('/metrics/multi-bot')) || req.url === '/consumo' || req.url === '/metrics-v3' || req.url === '/metrics-v3/') {
     if (!v3Aggregator) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'V3 aggregator no disponible. Verificar .pipeline/metrics/aggregator.js' }));
@@ -7746,6 +7752,8 @@ const server = http.createServer((req, res) => {
       if (u.pathname === '/metrics/totals')  return respond(Object.assign({}, baseMeta, { totals: snap.totals || {} }));
       // #2488 — nuevos endpoints
       if (u.pathname === '/metrics/projections') return respond(Object.assign({}, baseMeta, { projections: snap.projections || {} }));
+      // #2854 — Burn rate y budget gap (proyección semanal en USD)
+      if (u.pathname === '/metrics/burn') return respond(Object.assign({}, baseMeta, { burn: (snap.projections && snap.projections.burn) || {} }));
       if (u.pathname === '/metrics/llm-vs-deterministic') return respond(Object.assign({}, baseMeta, { llm_vs_deterministic: snap.llm_vs_deterministic || [] }));
       if (u.pathname === '/metrics/daily') return respond(Object.assign({}, baseMeta, { daily: snap.daily || [] }));
 
@@ -7761,8 +7769,53 @@ const server = http.createServer((req, res) => {
       }
 
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'endpoint no reconocido', valid: ['/metrics/agents', '/metrics/phases', '/metrics/issues', '/metrics/issues/:n', '/metrics/tts', '/metrics/totals', '/metrics/snapshot', '/metrics/projections', '/metrics/llm-vs-deterministic', '/metrics/daily', '/consumo', '/metrics-v3'] }));
+      res.end(JSON.stringify({ error: 'endpoint no reconocido', valid: ['/metrics/agents', '/metrics/phases', '/metrics/issues', '/metrics/issues/:n', '/metrics/tts', '/metrics/totals', '/metrics/snapshot', '/metrics/projections', '/metrics/burn', '/metrics/llm-vs-deterministic', '/metrics/daily', '/metrics/multi-bot/snapshot', '/metrics/multi-bot/by-bot', '/metrics/multi-bot/by-skill', '/metrics/multi-bot/by-issue', '/metrics/multi-bot/totals', '/consumo', '/metrics-v3'] }));
     }).catch(fail);
+    return;
+  }
+
+  // ===========================================================================
+  // #2854 — Multi-bot accounting endpoints
+  // Consolida snapshots de Intrale + Alina + libro + club + Néstor.
+  // ===========================================================================
+  if (req.url.startsWith('/metrics/multi-bot')) {
+    if (!multiBotAggregator) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'multi-bot aggregator no disponible' }));
+      return;
+    }
+    try {
+      const snap = multiBotAggregator.consolidate();
+      const u = new URL(req.url, 'http://localhost');
+      const pathname = u.pathname;
+      const respond = (data) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data, null, 2));
+      };
+      const baseMeta = { generated_at: snap.generated_at, bots_available: snap.bots_available };
+      if (pathname === '/metrics/multi-bot' || pathname === '/metrics/multi-bot/' || pathname === '/metrics/multi-bot/snapshot') {
+        return respond(snap);
+      }
+      if (pathname === '/metrics/multi-bot/by-bot') {
+        return respond(Object.assign({}, baseMeta, { by_bot: snap.by_bot }));
+      }
+      if (pathname === '/metrics/multi-bot/by-skill') {
+        return respond(Object.assign({}, baseMeta, { by_skill: snap.by_skill }));
+      }
+      if (pathname === '/metrics/multi-bot/by-issue') {
+        const botFilter = u.searchParams.get('bot');
+        const list = botFilter ? snap.by_issue.filter(i => i.bot_id === botFilter) : snap.by_issue;
+        return respond(Object.assign({}, baseMeta, { by_issue: list, filtered_by_bot: botFilter || null }));
+      }
+      if (pathname === '/metrics/multi-bot/totals') {
+        return respond(Object.assign({}, baseMeta, { totals: snap.totals, bots_unavailable: snap.bots_unavailable }));
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'endpoint multi-bot no reconocido', valid: ['/metrics/multi-bot/snapshot', '/metrics/multi-bot/by-bot', '/metrics/multi-bot/by-skill', '/metrics/multi-bot/by-issue?bot=<id>', '/metrics/multi-bot/totals'] }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
     return;
   }
 

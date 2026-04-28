@@ -150,6 +150,8 @@ scripts/planner-plan.json
 !.pipeline/metrics/aggregator.js
 !.pipeline/metrics/projections.js
 !.pipeline/metrics/report-daily.js
+!.pipeline/metrics/multi-bot-aggregator.js
+!.pipeline/metrics/multi-bot-config.json
 !.pipeline/metrics/__tests__/
 !.pipeline/metrics/__tests__/**
 !.pipeline/**/.gitkeep

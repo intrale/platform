@@ -22,6 +22,12 @@ const METRICS_DIR = path.join(REPO_ROOT, '.pipeline', 'metrics');
 const SNAPSHOT_FILE = path.join(METRICS_DIR, 'snapshot.json');
 const DEFAULT_REFRESH_MS = 60000;
 
+// #2854 — Identificador del bot dueño de este snapshot. Permite consolidar
+// el costo de varios bots que comparten cuenta Anthropic (Intrale, Alina,
+// libro, club, Néstor) sin perder discriminación. Override por env.
+const BOT_ID = process.env.INTRALE_BOT_ID || 'intrale';
+const BOT_LABEL = process.env.INTRALE_BOT_LABEL || 'Intrale';
+
 // Normaliza el modelo a "deterministic" | "llm" para comparativa (#2488)
 function classifyExecutionMode(model) {
     const m = String(model || '').toLowerCase().trim();
@@ -284,6 +290,8 @@ async function buildSnapshot(options) {
 
     return {
         generated_at: new Date().toISOString(),
+        bot_id: BOT_ID,
+        bot_label: BOT_LABEL,
         window: options.window || 'all',
         cutoff_ts: cutoffMs ? new Date(cutoffMs).toISOString() : null,
         totals: {
@@ -313,6 +321,8 @@ async function buildSnapshot(options) {
 function emitEmptySnapshot(options) {
     return {
         generated_at: new Date().toISOString(),
+        bot_id: BOT_ID,
+        bot_label: BOT_LABEL,
         window: (options && options.window) || 'all',
         cutoff_ts: null,
         totals: emptyBucket(),
