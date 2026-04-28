@@ -648,7 +648,10 @@ function renderQuotaCard(d){
     const realLine = d.realPct != null
         ? 'Calibrado vs claude.ai (×'+(d.calibration?d.calibration.weekly_factor:'?')+' sem, ×'+(d.calibration?d.calibration.session_factor:'?')+' ses, '+(d.calibration?d.calibration.sample_count:0)+' muestras).'
         : 'Sin calibrar — pipeline raw. Calibrá en /costos para mejor precisión.';
-    card.title = realLine;
+    let extraTitle = '';
+    if(d.realPctCapped) extraTitle += ' ⚠ Semanal capeado al 100% (raw '+d.realPctRaw+'%) — recalibrar.';
+    if(d.session && d.session.realPctCapped) extraTitle += ' ⚠ Sesión capeada al 100% (raw '+d.session.realPctRaw+'%) — recalibrar.';
+    card.title = realLine+extraTitle;
 }
 
 async function tickQuota(){
