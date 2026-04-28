@@ -1,0 +1,24 @@
+<!--
+  ic_team_menu — Ícono para la entrada "Equipo" del home del flavor business.
+  Diseño: tres siluetas de personas agrupadas (Material Symbols outlined "groups").
+  Uso: leadingIcon de NavigationBar/NavigationDrawer/MenuItem en HomeScreen.
+  Tamaño objetivo: 24dp.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:pathData="M4,13C5.1,13 6,12.1 6,11C6,9.9 5.1,9 4,9C2.9,9 2,9.9 2,11C2,12.1 2.9,13 4,13ZM5.13,14.1C4.76,14.04 4.39,14 4,14C3.01,14 2.07,14.21 1.22,14.58C0.48,14.9 0,15.62 0,16.43V18H4.5V16.39C4.5,15.56 4.73,14.78 5.13,14.1Z"
+      android:fillColor="#FF000000"/>
+  <path
+      android:pathData="M20,13C21.1,13 22,12.1 22,11C22,9.9 21.1,9 20,9C18.9,9 18,9.9 18,11C18,12.1 18.9,13 20,13ZM24,16.43C24,15.62 23.52,14.9 22.78,14.58C21.93,14.21 20.99,14 20,14C19.61,14 19.24,14.04 18.87,14.1C19.27,14.78 19.5,15.56 19.5,16.39V18H24V16.43Z"
+      android:fillColor="#FF000000"/>
+  <path
+      android:pathData="M16.24,13.65C15.07,13.13 13.63,12.75 12,12.75C10.37,12.75 8.93,13.13 7.76,13.65C6.68,14.13 6,15.21 6,16.39V18H18V16.39C18,15.21 17.32,14.13 16.24,13.65ZM8.07,16C8.16,15.77 8.2,15.61 8.98,15.31C9.95,14.93 10.97,14.75 12,14.75C13.03,14.75 14.05,14.93 15.02,15.31C15.79,15.61 15.83,15.77 15.93,16H8.07Z"
+      android:fillColor="#FF000000"/>
+  <path
+      android:pathData="M12,6C13.1,6 14,6.9 14,8C14,9.1 13.1,10 12,10C10.9,10 10,9.1 10,8C10,6.9 10.9,6 12,6ZM12,4C9.79,4 8,5.79 8,8C8,10.21 9.79,12 12,12C14.21,12 16,10.21 16,8C16,5.79 14.21,4 12,4Z"
+      android:fillColor="#FF000000"/>
+</vector>

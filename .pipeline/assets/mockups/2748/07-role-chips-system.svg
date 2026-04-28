@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 07 — Sistema de chips de rol y de estado con paleta WCAG AA
+  Issue: #2748
+  Audience: android-dev + reviewers (UX/accesibilidad)
+
+  Documentación visual de:
+    1. Cuatro chips de rol (OWNER, MANAGER, CASHIER, EMPLOYEE) con tokens del tema Intrale.
+    2. Tres chips de estado (ACTIVO, PENDIENTE, REVOCADO).
+    3. Tabla de contraste WCAG AA.
+    4. Variantes (selected / disabled / outlined-only).
+
+  Decisiones críticas (BLOQUEANTES):
+  - Cero colores ad-hoc. TODO sale del tema en `ui/th/Color.kt`.
+  - Container y onContainer del mismo tono → contraste WCAG AA garantizado.
+  - El bloque "anti-escalada" en el header explica por qué son 4 y por qué sólo OWNER/MANAGER ven todos.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 980" width="1280" height="980" font-family="Roboto, Inter, system-ui, sans-serif">
+
+  <rect width="1280" height="980" fill="#F0F0F7"/>
+
+  <!-- Header -->
+  <text x="40" y="48" font-size="24" font-weight="700" fill="#191C20">Sistema de chips de rol y estado — Equipo (#2748)</text>
+  <text x="40" y="76" font-size="13" fill="#44474E">Paleta tomada del tema en ui/th/Color.kt — WCAG AA (≥4.5:1) verificado para texto y leading icon en cada chip.</text>
+
+  <!-- ====== Sección 1: Chips de rol ====== -->
+  <text x="40" y="124" font-size="16" font-weight="600" fill="#191C20">1) Chips de rol — SuggestionChip M3 con leadingIcon</text>
+
+  <!-- OWNER -->
+  <g transform="translate(40, 152)">
+    <rect width="280" height="156" rx="16" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#191C20">OWNER</text>
+    <text x="16" y="46" font-size="11" fill="#44474E">primaryContainer + onPrimaryContainer</text>
+    <!-- chip -->
+    <g transform="translate(16, 60)">
+      <rect width="100" height="32" rx="8" fill="#D6E3FF"/>
+      <g transform="translate(8, 4)"><path d="M14 22 L13 17 L16 18.5 L19 15 L22 18.5 L25 17 L24 22 Z" fill="#001B3E"/></g>
+      <text x="38" y="22" font-size="12" font-weight="600" fill="#001B3E">OWNER</text>
+    </g>
+    <text x="16" y="118" font-size="10" fill="#44474E">Hex container: #D6E3FF</text>
+    <text x="16" y="132" font-size="10" fill="#44474E">Hex onContainer: #001B3E</text>
+    <text x="16" y="146" font-size="10" font-weight="600" fill="#37BF6E">Contrast 12.4:1 ✓ AAA</text>
+  </g>
+
+  <!-- MANAGER -->
+  <g transform="translate(336, 152)">
+    <rect width="280" height="156" rx="16" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#191C20">MANAGER</text>
+    <text x="16" y="46" font-size="11" fill="#44474E">tertiaryContainer + onTertiaryContainer</text>
+    <g transform="translate(16, 60)">
+      <rect width="116" height="32" rx="8" fill="#FAD8FD"/>
+      <g transform="translate(8, 4)">
+        <path d="M16 8 L10 10 V14 C10 17 13 20 16 21 C19 20 22 17 22 14 V10 Z" fill="none" stroke="#28132E" stroke-width="1.5"/>
+        <path d="M14 14 L13 13 L12 14 L14 16 L19 11 L18 10 Z" fill="#28132E"/>
+      </g>
+      <text x="38" y="22" font-size="12" font-weight="600" fill="#28132E">MANAGER</text>
+    </g>
+    <text x="16" y="118" font-size="10" fill="#44474E">Hex container: #FAD8FD</text>
+    <text x="16" y="132" font-size="10" fill="#44474E">Hex onContainer: #28132E</text>
+    <text x="16" y="146" font-size="10" font-weight="600" fill="#37BF6E">Contrast 13.1:1 ✓ AAA</text>
+  </g>
+
+  <!-- CASHIER -->
+  <g transform="translate(632, 152)">
+    <rect width="280" height="156" rx="16" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#191C20">CASHIER</text>
+    <text x="16" y="46" font-size="11" fill="#44474E">secondaryContainer + onSecondaryContainer</text>
+    <g transform="translate(16, 60)">
+      <rect width="108" height="32" rx="8" fill="#DAE2F9"/>
+      <rect x="9" y="12" width="14" height="8" rx="1" fill="none" stroke="#131C2B" stroke-width="1.4"/>
+      <text x="38" y="22" font-size="12" font-weight="600" fill="#131C2B">CASHIER</text>
+    </g>
+    <text x="16" y="118" font-size="10" fill="#44474E">Hex container: #DAE2F9</text>
+    <text x="16" y="132" font-size="10" fill="#44474E">Hex onContainer: #131C2B</text>
+    <text x="16" y="146" font-size="10" font-weight="600" fill="#37BF6E">Contrast 12.8:1 ✓ AAA</text>
+  </g>
+
+  <!-- EMPLOYEE -->
+  <g transform="translate(928, 152)">
+    <rect width="280" height="156" rx="16" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#191C20">EMPLOYEE</text>
+    <text x="16" y="46" font-size="11" fill="#44474E">surfaceContainerHigh + onSurface</text>
+    <g transform="translate(16, 60)">
+      <rect width="120" height="32" rx="8" fill="#E7E8EE"/>
+      <circle cx="22" cy="14" r="3.5" fill="none" stroke="#191C20" stroke-width="1.4"/>
+      <path d="M16 26 Q22 20 28 26" fill="none" stroke="#191C20" stroke-width="1.4"/>
+      <text x="38" y="22" font-size="12" font-weight="600" fill="#191C20">EMPLOYEE</text>
+    </g>
+    <text x="16" y="118" font-size="10" fill="#44474E">Hex container: #E7E8EE</text>
+    <text x="16" y="132" font-size="10" fill="#44474E">Hex onContainer: #191C20</text>
+    <text x="16" y="146" font-size="10" font-weight="600" fill="#37BF6E">Contrast 12.0:1 ✓ AAA</text>
+  </g>
+
+  <!-- ====== Sección 2: Chips de estado ====== -->
+  <text x="40" y="356" font-size="16" font-weight="600" fill="#191C20">2) Chips de estado — AssistChip M3</text>
+
+  <!-- ACTIVO -->
+  <g transform="translate(40, 380)">
+    <rect width="280" height="120" rx="16" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#191C20">ACTIVO</text>
+    <text x="16" y="46" font-size="11" fill="#44474E">outlined + dot indicador</text>
+    <g transform="translate(16, 60)">
+      <rect width="84" height="32" rx="8" fill="none" stroke="#74777F" stroke-width="1"/>
+      <circle cx="16" cy="16" r="4" fill="#37BF6E"/>
+      <text x="28" y="22" font-size="12" font-weight="500" fill="#191C20">ACTIVO</text>
+    </g>
+    <text x="16" y="110" font-size="10" fill="#44474E">Outline + dot semántico (#37BF6E success)</text>
+  </g>
+
+  <!-- PENDIENTE -->
+  <g transform="translate(336, 380)">
+    <rect width="280" height="120" rx="16" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#191C20">PENDIENTE</text>
+    <text x="16" y="46" font-size="11" fill="#44474E">tertiaryContainer + ic_team_status_pending</text>
+    <g transform="translate(16, 60)">
+      <rect width="108" height="32" rx="8" fill="#FAD8FD"/>
+      <circle cx="16" cy="16" r="6" fill="none" stroke="#28132E" stroke-width="1.4"/>
+      <line x1="16" y1="16" x2="16" y2="12" stroke="#28132E" stroke-width="1.4" stroke-linecap="round"/>
+      <line x1="16" y1="16" x2="19" y2="17.5" stroke="#28132E" stroke-width="1.4" stroke-linecap="round"/>
+      <text x="28" y="22" font-size="12" font-weight="600" fill="#28132E">PENDIENTE</text>
+    </g>
+    <text x="16" y="110" font-size="10" font-weight="600" fill="#37BF6E">Contrast 13.1:1 ✓ AAA</text>
+  </g>
+
+  <!-- REVOCADO -->
+  <g transform="translate(632, 380)">
+    <rect width="280" height="120" rx="16" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#191C20">REVOCADO</text>
+    <text x="16" y="46" font-size="11" fill="#44474E">errorContainer + onErrorContainer</text>
+    <g transform="translate(16, 60)">
+      <rect width="116" height="32" rx="8" fill="#FFDAD6"/>
+      <line x1="9" y1="10" x2="17" y2="22" stroke="#410002" stroke-width="2" stroke-linecap="round"/>
+      <line x1="17" y1="10" x2="9" y2="22" stroke="#410002" stroke-width="2" stroke-linecap="round"/>
+      <text x="26" y="22" font-size="12" font-weight="600" fill="#410002">REVOCADO</text>
+    </g>
+    <text x="16" y="110" font-size="10" font-weight="600" fill="#37BF6E">Contrast 11.6:1 ✓ AAA</text>
+  </g>
+
+  <!-- ====== Sección 3: Variantes selected ====== -->
+  <text x="40" y="544" font-size="16" font-weight="600" fill="#191C20">3) Variantes en BottomSheet de invitación — selected vs unselected</text>
+
+  <g transform="translate(40, 568)">
+    <text x="0" y="20" font-size="12" font-weight="600" fill="#44474E">Unselected (default)</text>
+    <g transform="translate(0, 36)">
+      <rect width="200" height="76" rx="12" fill="#FFFFFF" stroke="#C4C6D0" stroke-width="1.5"/>
+      <text x="14" y="28" font-size="14" font-weight="600" fill="#191C20">Manager</text>
+      <text x="14" y="50" font-size="11" fill="#44474E">Administra equipo</text>
+      <text x="14" y="64" font-size="11" fill="#44474E">sin tocar facturación.</text>
+    </g>
+  </g>
+
+  <g transform="translate(264, 568)">
+    <text x="0" y="20" font-size="12" font-weight="600" fill="#44474E">Selected (acción primaria)</text>
+    <g transform="translate(0, 36)">
+      <rect width="200" height="76" rx="12" fill="#D6E3FF" stroke="#415F91" stroke-width="2.5"/>
+      <text x="14" y="28" font-size="14" font-weight="600" fill="#001B3E">Manager</text>
+      <circle cx="180" cy="22" r="10" fill="#415F91"/>
+      <path d="M176 22 L179 25 L185 19" stroke="#FFFFFF" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <text x="14" y="50" font-size="11" fill="#001B3E">Administra equipo</text>
+      <text x="14" y="64" font-size="11" fill="#001B3E">sin tocar facturación.</text>
+    </g>
+  </g>
+
+  <g transform="translate(488, 568)">
+    <text x="0" y="20" font-size="12" font-weight="600" fill="#44474E">Disabled (anti-escalada — NO se renderiza)</text>
+    <g transform="translate(0, 36)" opacity="0.4">
+      <rect width="200" height="76" rx="12" fill="#FFFFFF" stroke="#C4C6D0" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <text x="14" y="28" font-size="14" font-weight="600" fill="#191C20">Owner</text>
+      <text x="14" y="50" font-size="11" fill="#44474E">Control total del negocio</text>
+      <text x="14" y="64" font-size="11" fill="#44474E">y del equipo.</text>
+    </g>
+    <text x="0" y="128" font-size="10" font-weight="600" fill="#BA1A1A">Si el invitador es MANAGER, esta opción NO se filtra como disabled — se OMITE del set.</text>
+  </g>
+
+  <!-- ====== Sección 4: Mapeo ícono → drawable ====== -->
+  <text x="40" y="752" font-size="16" font-weight="600" fill="#191C20">4) Mapeo de drawables (ya commiteados por UX en commonMain/composeResources/drawable/)</text>
+
+  <g transform="translate(40, 776)">
+    <rect width="1200" height="160" rx="12" fill="#FFFFFF" stroke="#C4C6D0"/>
+    <text x="20" y="28" font-size="11" font-weight="700" fill="#191C20">Rol / estado</text>
+    <text x="220" y="28" font-size="11" font-weight="700" fill="#191C20">Drawable XML</text>
+    <text x="600" y="28" font-size="11" font-weight="700" fill="#191C20">Container token</text>
+    <text x="880" y="28" font-size="11" font-weight="700" fill="#191C20">Tint token</text>
+
+    <line x1="0" y1="40" x2="1200" y2="40" stroke="#C4C6D0"/>
+
+    <text x="20" y="60" font-size="11" fill="#191C20">OWNER</text>
+    <text x="220" y="60" font-size="11" font-family="monospace" fill="#44474E">ic_team_role_owner.xml</text>
+    <text x="600" y="60" font-size="11" font-family="monospace" fill="#44474E">primaryContainer</text>
+    <text x="880" y="60" font-size="11" font-family="monospace" fill="#44474E">onPrimaryContainer</text>
+
+    <text x="20" y="78" font-size="11" fill="#191C20">MANAGER</text>
+    <text x="220" y="78" font-size="11" font-family="monospace" fill="#44474E">ic_team_role_manager.xml</text>
+    <text x="600" y="78" font-size="11" font-family="monospace" fill="#44474E">tertiaryContainer</text>
+    <text x="880" y="78" font-size="11" font-family="monospace" fill="#44474E">onTertiaryContainer</text>
+
+    <text x="20" y="96" font-size="11" fill="#191C20">CASHIER</text>
+    <text x="220" y="96" font-size="11" font-family="monospace" fill="#44474E">ic_team_role_cashier.xml</text>
+    <text x="600" y="96" font-size="11" font-family="monospace" fill="#44474E">secondaryContainer</text>
+    <text x="880" y="96" font-size="11" font-family="monospace" fill="#44474E">onSecondaryContainer</text>
+
+    <text x="20" y="114" font-size="11" fill="#191C20">EMPLOYEE</text>
+    <text x="220" y="114" font-size="11" font-family="monospace" fill="#44474E">ic_team_role_employee.xml</text>
+    <text x="600" y="114" font-size="11" font-family="monospace" fill="#44474E">surfaceContainerHigh</text>
+    <text x="880" y="114" font-size="11" font-family="monospace" fill="#44474E">onSurface</text>
+
+    <text x="20" y="132" font-size="11" fill="#191C20">PENDIENTE</text>
+    <text x="220" y="132" font-size="11" font-family="monospace" fill="#44474E">ic_team_status_pending.xml</text>
+    <text x="600" y="132" font-size="11" font-family="monospace" fill="#44474E">tertiaryContainer</text>
+    <text x="880" y="132" font-size="11" font-family="monospace" fill="#44474E">onTertiaryContainer</text>
+
+    <text x="20" y="150" font-size="11" fill="#191C20">REVOCADO</text>
+    <text x="220" y="150" font-size="11" font-family="monospace" fill="#44474E">(close icon inline, sin drawable)</text>
+    <text x="600" y="150" font-size="11" font-family="monospace" fill="#44474E">errorContainer</text>
+    <text x="880" y="150" font-size="11" font-family="monospace" fill="#44474E">onErrorContainer</text>
+  </g>
+</svg>

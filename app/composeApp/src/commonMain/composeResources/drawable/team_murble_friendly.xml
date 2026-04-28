@@ -1,0 +1,92 @@
+<!--
+  team_murble_friendly — Companion blob "Murble" en pose amistosa con un saludo de bienvenida.
+  Identidad: blob orgánico de color secundario con dos ojos grandes expresivos, sonrisa cálida y
+  un brazo levantado saludando. Pensado para el estado EMPTY de la pantalla "Equipo" del flavor
+  business: invita al OWNER a sumar a sus primeros empleados.
+
+  Composición:
+    - Cuerpo principal: silueta blob asimétrica con curva orgánica (no círculo perfecto, identidad).
+    - Brazo izquierdo: extendido saludando (gesto inclusivo).
+    - Ojos: dos óvalos grandes con highlight blanco (lifelike).
+    - Boca: sonrisa amplia con gesto cálido.
+    - Pequeñas estrellitas alrededor: sensación de bienvenida activa.
+
+  Color: usa android:fillColor placeholder "#FF000000" para que el dev lo tinte con
+  ColorFilter del tema Material3 (`MaterialTheme.colorScheme.tertiary` recomendado, contraste AA).
+  El blanco de highlights va literal porque tiene que verse contra cualquier tint.
+
+  Tamaño objetivo: 160-200dp en el estado EMPTY (gran presencia).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+  <!-- Cuerpo principal: blob orgánico asimétrico (la "personalidad" de Murble) -->
+  <path
+      android:pathData="M100,40 C140,38 165,62 168,98 C170,124 162,148 140,160 C120,170 100,168 90,165 C70,160 55,148 48,128 C42,108 45,82 60,62 C72,48 86,42 100,40 Z"
+      android:fillColor="#FF000000"/>
+
+  <!-- Brazo izquierdo levantado saludando -->
+  <path
+      android:pathData="M55,90 C42,82 32,72 28,60 C26,52 30,46 38,46 C46,46 54,54 62,68 C66,76 64,86 60,92 C58,94 56,93 55,90 Z"
+      android:fillColor="#FF000000"/>
+
+  <!-- Ojo izquierdo (óvalo grande) -->
+  <path
+      android:pathData="M82,90 m-10,0 a10,12 0 1,0 20,0 a10,12 0 1,0 -20,0"
+      android:fillColor="#FFFFFFFF"/>
+
+  <!-- Pupila izquierda -->
+  <path
+      android:pathData="M84,93 m-4,0 a4,5 0 1,0 8,0 a4,5 0 1,0 -8,0"
+      android:fillColor="#FF1A1A1A"/>
+
+  <!-- Highlight ojo izquierdo -->
+  <path
+      android:pathData="M86,89 m-1.5,0 a1.5,1.8 0 1,0 3,0 a1.5,1.8 0 1,0 -3,0"
+      android:fillColor="#FFFFFFFF"/>
+
+  <!-- Ojo derecho (óvalo grande) -->
+  <path
+      android:pathData="M126,90 m-10,0 a10,12 0 1,0 20,0 a10,12 0 1,0 -20,0"
+      android:fillColor="#FFFFFFFF"/>
+
+  <!-- Pupila derecha -->
+  <path
+      android:pathData="M128,93 m-4,0 a4,5 0 1,0 8,0 a4,5 0 1,0 -8,0"
+      android:fillColor="#FF1A1A1A"/>
+
+  <!-- Highlight ojo derecho -->
+  <path
+      android:pathData="M130,89 m-1.5,0 a1.5,1.8 0 1,0 3,0 a1.5,1.8 0 1,0 -3,0"
+      android:fillColor="#FFFFFFFF"/>
+
+  <!-- Sonrisa cálida (boca curva amplia) -->
+  <path
+      android:pathData="M85,120 Q105,138 125,120 Q120,134 105,136 Q90,134 85,120 Z"
+      android:fillColor="#FFFFFFFF"/>
+
+  <!-- Línea inferior de sonrisa para reforzar el gesto -->
+  <path
+      android:pathData="M85,120 Q105,140 125,120"
+      android:strokeColor="#FF1A1A1A"
+      android:strokeWidth="2"
+      android:strokeLineCap="round"
+      android:fillColor="#00000000"/>
+
+  <!-- Estrellitas de bienvenida — invitación a interactuar -->
+  <path
+      android:pathData="M170,55 L173,62 L180,62 L174,67 L176,74 L170,70 L164,74 L166,67 L160,62 L167,62 Z"
+      android:fillColor="#FF000000"/>
+
+  <path
+      android:pathData="M30,130 L32,135 L37,135 L33,138 L34,143 L30,140 L26,143 L27,138 L23,135 L28,135 Z"
+      android:fillColor="#FF000000"/>
+
+  <path
+      android:pathData="M155,150 L156.5,153.5 L160,153.5 L157.2,156 L158,160 L155,158 L152,160 L152.8,156 L150,153.5 L153.5,153.5 Z"
+      android:fillColor="#FF000000"/>
+
+</vector>

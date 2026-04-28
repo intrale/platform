@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 02 — Estado EMPTY de la pantalla "Equipo" con Murble companion
+  Issue: #2748
+  Audience: android-dev
+
+  Decisiones UX clave:
+  - Murble centrado verticalmente, 200dp, tinte = MaterialTheme.colorScheme.tertiary (#705575).
+  - Copy primario: "Sumá gente a tu equipo" (titleLarge, fontWeight=600).
+  - Copy secundario: explica el beneficio ("Invitá a tus compañeros con un mail. Eligen rol, aceptan y empiezan a operar el negocio con vos.").
+  - CTA primario "Invitar a alguien" (FilledButton M3, container=primary).
+  - Sin FAB en este estado (el CTA inline lo reemplaza por jerarquía clara).
+  - El TopAppBar y BusinessSelector permanecen iguales que en estado lleno.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 412 892" width="412" height="892" font-family="Roboto, Inter, system-ui, sans-serif">
+
+  <rect width="412" height="892" fill="#F9F9FF"/>
+
+  <!-- Status bar -->
+  <rect width="412" height="32" fill="#F9F9FF"/>
+  <text x="20" y="22" font-size="13" fill="#191C20" font-weight="500">9:41</text>
+  <rect x="350" y="12" width="20" height="8" rx="2" fill="#191C20"/>
+
+  <!-- TopAppBar -->
+  <rect x="0" y="32" width="412" height="64" fill="#EDEDF4"/>
+  <rect x="20" y="60" width="20" height="2" fill="#191C20"/>
+  <rect x="20" y="66" width="20" height="2" fill="#191C20"/>
+  <rect x="20" y="72" width="20" height="2" fill="#191C20"/>
+  <text x="60" y="71" font-size="20" font-weight="500" fill="#191C20">Equipo</text>
+  <rect x="280" y="50" width="118" height="28" rx="14" fill="#DAE2F9"/>
+  <text x="294" y="69" font-size="12" fill="#131C2B" font-weight="500">Mi Almacen</text>
+  <path d="M380 64 L386 70 L392 64" stroke="#131C2B" stroke-width="2" fill="none" stroke-linecap="round"/>
+
+  <!-- ====== Murble centrado ====== -->
+  <g transform="translate(106, 200)" opacity="0.9">
+    <!-- Cuerpo blob -->
+    <path d="M100,40 C140,38 165,62 168,98 C170,124 162,148 140,160 C120,170 100,168 90,165 C70,160 55,148 48,128 C42,108 45,82 60,62 C72,48 86,42 100,40 Z" fill="#705575"/>
+    <!-- Brazo saludando -->
+    <path d="M55,90 C42,82 32,72 28,60 C26,52 30,46 38,46 C46,46 54,54 62,68 C66,76 64,86 60,92 C58,94 56,93 55,90 Z" fill="#705575"/>
+    <!-- Ojo izq -->
+    <ellipse cx="82" cy="90" rx="10" ry="12" fill="#FFFFFF"/>
+    <ellipse cx="84" cy="93" rx="4" ry="5" fill="#28132E"/>
+    <ellipse cx="86" cy="89" rx="1.5" ry="1.8" fill="#FFFFFF"/>
+    <!-- Ojo der -->
+    <ellipse cx="126" cy="90" rx="10" ry="12" fill="#FFFFFF"/>
+    <ellipse cx="128" cy="93" rx="4" ry="5" fill="#28132E"/>
+    <ellipse cx="130" cy="89" rx="1.5" ry="1.8" fill="#FFFFFF"/>
+    <!-- Sonrisa -->
+    <path d="M85,120 Q105,138 125,120 Q120,134 105,136 Q90,134 85,120 Z" fill="#FFFFFF"/>
+    <path d="M85,120 Q105,140 125,120" stroke="#28132E" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <!-- Estrellitas -->
+    <path d="M170,55 L173,62 L180,62 L174,67 L176,74 L170,70 L164,74 L166,67 L160,62 L167,62 Z" fill="#705575"/>
+    <path d="M30,130 L32,135 L37,135 L33,138 L34,143 L30,140 L26,143 L27,138 L23,135 L28,135 Z" fill="#705575"/>
+    <path d="M155,150 L156.5,153.5 L160,153.5 L157.2,156 L158,160 L155,158 L152,160 L152.8,156 L150,153.5 L153.5,153.5 Z" fill="#705575"/>
+  </g>
+
+  <!-- ====== Copy primario ====== -->
+  <text x="206" y="500" font-size="22" font-weight="600" fill="#191C20" text-anchor="middle">Sumá gente a tu equipo</text>
+
+  <!-- ====== Copy secundario ====== -->
+  <text x="206" y="538" font-size="14" fill="#44474E" text-anchor="middle">
+    <tspan x="206" dy="0">Invitá a tus compañeros con un mail. Eligen rol,</tspan>
+    <tspan x="206" dy="20">aceptan y empiezan a operar el negocio con vos.</tspan>
+  </text>
+
+  <!-- ====== CTA primario ====== -->
+  <g transform="translate(106, 600)">
+    <rect width="200" height="56" rx="16" fill="#415F91"/>
+    <line x1="68" y1="28" x2="80" y2="28" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="74" y1="22" x2="74" y2="34" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
+    <text x="118" y="34" font-size="15" font-weight="600" fill="#FFFFFF">Invitar a alguien</text>
+  </g>
+
+  <!-- ====== Notas DEV ====== -->
+  <g transform="translate(16, 720)">
+    <rect width="380" height="140" rx="12" fill="#EDEDF4" stroke="#C4C6D0" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="16" y="24" font-size="11" font-weight="700" fill="#191C20">NOTAS DEV — estado EMPTY</text>
+    <text x="16" y="44" font-size="10" fill="#44474E">• Asset: team_murble_friendly.xml a 200dp, tint = MaterialTheme.colorScheme.tertiary</text>
+    <text x="16" y="60" font-size="10" fill="#44474E">• ContentDescription Murble: "Murble, el ayudante de Intrale, te da la bienvenida"</text>
+    <text x="16" y="76" font-size="10" fill="#44474E">• Copy con resString() + fb() ASCII-safe (TODOS los strings)</text>
+    <text x="16" y="92" font-size="10" fill="#44474E">• CTA: FilledButton M3, mismo destino que el FAB del estado lleno (BottomSheet de invitar)</text>
+    <text x="16" y="108" font-size="10" fill="#44474E">• En este estado NO se muestra FAB — el CTA inline ES el CTA primario</text>
+    <text x="16" y="124" font-size="10" fill="#BA1A1A">• Si CASHIER llega aquí (no debería por RequireRole), igual mostrar empty + CTA disabled</text>
+  </g>
+</svg>

@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 03 — BottomSheet "Invitar empleado"
+  Issue: #2748
+  Audience: android-dev
+
+  Decisiones UX:
+  - ModalBottomSheet M3, drag handle visible, padding 24dp.
+  - Título "Invitar empleado" + subtítulo (titleLarge + bodyMedium).
+  - Campo email TextField outlined, validación en vivo Konform.
+  - Selector de rol: 4 SuggestionChip seleccionables (single-select), grid 2x2.
+  - Cada chip tiene leadingIcon + nombre + descripción corta debajo.
+  - CTA "Enviar invitación" full-width, deshabilitado hasta validar email + rol.
+  - Botón "Cancelar" texto secundario arriba a la derecha.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 412 892" width="412" height="892" font-family="Roboto, Inter, system-ui, sans-serif">
+
+  <!-- Scrim oscuro detrás -->
+  <rect width="412" height="892" fill="#191C20" opacity="0.5"/>
+
+  <!-- ====== BottomSheet ====== -->
+  <g transform="translate(0, 240)">
+    <path d="M0,28 Q0,0 28,0 L384,0 Q412,0 412,28 L412,652 L0,652 Z" fill="#F3F3FA"/>
+
+    <!-- Drag handle -->
+    <rect x="186" y="12" width="40" height="4" rx="2" fill="#74777F"/>
+
+    <!-- Header -->
+    <text x="24" y="56" font-size="22" font-weight="600" fill="#191C20">Invitar empleado</text>
+    <text x="372" y="56" font-size="14" fill="#415F91" text-anchor="end">Cancelar</text>
+    <text x="24" y="86" font-size="14" fill="#44474E">Le mandamos un mail con un link para que se sume.</text>
+
+    <!-- TextField email -->
+    <text x="24" y="124" font-size="12" fill="#44474E">Email</text>
+    <rect x="24" y="132" width="364" height="56" rx="8" fill="none" stroke="#415F91" stroke-width="2"/>
+    <text x="40" y="166" font-size="15" fill="#191C20">maria.rodriguez@miempresa.com</text>
+    <!-- helper text -->
+    <text x="40" y="206" font-size="11" fill="#37BF6E">✓ Email válido</text>
+
+    <!-- Selector rol header -->
+    <text x="24" y="240" font-size="12" fill="#44474E">Elegí un rol</text>
+
+    <!-- Chip OWNER (sin selección por defecto) -->
+    <g transform="translate(24, 256)">
+      <rect width="174" height="80" rx="12" fill="#FFFFFF" stroke="#C4C6D0" stroke-width="1.5"/>
+      <g transform="translate(12, 12)">
+        <rect width="28" height="28" rx="14" fill="#D6E3FF"/>
+        <path d="M14 22 L13 17 L16 18.5 L19 15 L22 18.5 L25 17 L24 22 Z" fill="#001B3E" transform="translate(-4 -2)"/>
+      </g>
+      <text x="48" y="28" font-size="14" font-weight="600" fill="#191C20">Owner</text>
+      <text x="12" y="58" font-size="11" fill="#44474E">Control total del negocio</text>
+      <text x="12" y="72" font-size="11" fill="#44474E">y del equipo.</text>
+    </g>
+
+    <!-- Chip MANAGER seleccionado -->
+    <g transform="translate(214, 256)">
+      <rect width="174" height="80" rx="12" fill="#D6E3FF" stroke="#415F91" stroke-width="2.5"/>
+      <g transform="translate(12, 12)">
+        <rect width="28" height="28" rx="14" fill="#FAD8FD"/>
+        <path d="M16 8 L10 10 V14 C10 17 13 20 16 21 C19 20 22 17 22 14 V10 Z" fill="none" stroke="#28132E" stroke-width="1.5"/>
+        <path d="M14 14 L13 13 L12 14 L14 16 L19 11 L18 10 Z" fill="#28132E"/>
+      </g>
+      <text x="48" y="28" font-size="14" font-weight="600" fill="#001B3E">Manager</text>
+      <!-- Check de selección -->
+      <circle cx="156" cy="22" r="10" fill="#415F91"/>
+      <path d="M152 22 L155 25 L161 19" stroke="#FFFFFF" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <text x="12" y="58" font-size="11" fill="#001B3E">Administra equipo</text>
+      <text x="12" y="72" font-size="11" fill="#001B3E">sin tocar facturación.</text>
+    </g>
+
+    <!-- Chip CASHIER -->
+    <g transform="translate(24, 348)">
+      <rect width="174" height="80" rx="12" fill="#FFFFFF" stroke="#C4C6D0" stroke-width="1.5"/>
+      <g transform="translate(12, 12)">
+        <rect width="28" height="28" rx="14" fill="#DAE2F9"/>
+        <rect x="9" y="10" width="14" height="8" rx="1" fill="none" stroke="#131C2B" stroke-width="1.4" transform="translate(-2 0)"/>
+      </g>
+      <text x="48" y="28" font-size="14" font-weight="600" fill="#191C20">Cashier</text>
+      <text x="12" y="58" font-size="11" fill="#44474E">Opera caja, ve sus</text>
+      <text x="12" y="72" font-size="11" fill="#44474E">propias ventas.</text>
+    </g>
+
+    <!-- Chip EMPLOYEE -->
+    <g transform="translate(214, 348)">
+      <rect width="174" height="80" rx="12" fill="#FFFFFF" stroke="#C4C6D0" stroke-width="1.5"/>
+      <g transform="translate(12, 12)">
+        <rect width="28" height="28" rx="14" fill="#E7E8EE"/>
+        <circle cx="14" cy="11" r="3.5" fill="none" stroke="#191C20" stroke-width="1.4"/>
+        <path d="M9 21 Q14 16 19 21" fill="none" stroke="#191C20" stroke-width="1.4"/>
+      </g>
+      <text x="48" y="28" font-size="14" font-weight="600" fill="#191C20">Employee</text>
+      <text x="12" y="58" font-size="11" fill="#44474E">Acceso básico, sin</text>
+      <text x="12" y="72" font-size="11" fill="#44474E">acciones administrativas.</text>
+    </g>
+
+    <!-- CTA enviar (habilitado porque email + rol válidos) -->
+    <g transform="translate(24, 460)">
+      <rect width="364" height="56" rx="16" fill="#415F91"/>
+      <text x="182" y="34" font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">Enviar invitación</text>
+    </g>
+
+    <!-- Anti-escalada hint -->
+    <g transform="translate(24, 540)">
+      <rect width="364" height="64" rx="12" fill="#FAD8FD" opacity="0.5"/>
+      <text x="16" y="22" font-size="11" font-weight="600" fill="#28132E">Sobre los roles</text>
+      <text x="16" y="40" font-size="10" fill="#28132E">No podés asignar un rol con más permisos que los tuyos.</text>
+      <text x="16" y="56" font-size="10" fill="#28132E">Si sos MANAGER, no vas a ver "Owner" como opción.</text>
+    </g>
+  </g>
+
+  <!-- Notas DEV (al fondo) -->
+  <g transform="translate(16, 894)" opacity="0">
+    <text>placeholder</text>
+  </g>
+</svg>

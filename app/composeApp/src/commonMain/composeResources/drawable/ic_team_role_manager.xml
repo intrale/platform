@@ -1,0 +1,18 @@
+<!--
+  ic_team_role_manager — Chip ícono para el rol MANAGER (autoridad delegada).
+  Diseño: escudo con check (símbolo de "verificado/autorizado").
+  Uso: leading icon del SuggestionChip/AssistChip con container=tertiaryContainer y tint=onTertiaryContainer.
+  Tamaño objetivo: 18dp (chip leading icon).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:pathData="M12,2L4,5V11C4,15.55 6.84,19.74 11,21C11.33,21.1 11.66,21.16 12,21.16C12.34,21.16 12.67,21.1 13,21C17.16,19.74 20,15.55 20,11V5L12,2ZM18,11C18,14.55 15.84,17.83 12.5,18.93C12.17,19.04 11.83,19.04 11.5,18.93C8.16,17.83 6,14.55 6,11V6.39L12,4.14L18,6.39V11Z"
+      android:fillColor="#FF000000"/>
+  <path
+      android:pathData="M10.5,13.59L8.41,11.5L7,12.91L10.5,16.41L16.5,10.41L15.09,9L10.5,13.59Z"
+      android:fillColor="#FF000000"/>
+</vector>
