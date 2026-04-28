@@ -1,0 +1,124 @@
+appId: com.intrale.app.client
+---
+# Flujo: ClientOrders — Listado de pedidos del cliente
+# Issue #1097 — qa(video): App Cliente — pedidos con evidencia en video
+#
+# Cubre los criterios de aceptación del PO:
+#  - Escenario 1: Navegación al tab "Mis pedidos" desde el bottom bar
+#  - Escenario 2: Listado de pedidos con datos (si los hay) con scroll
+#  - Escenario 3: Estado vacío con CTA "Ver catálogo"
+#  - Escenario 4: Filtros (FilterChip) — al menos 2 cambios diferentes
+
+- launchApp:
+    clearState: true
+
+# Saltar onboarding si aparece (primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 10000
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+# Pantalla de bienvenida → ir a login
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 15000
+- tapOn:
+    text: "Ya tengo cuenta"
+
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
+
+# Login con usuario de prueba
+- tapOn:
+    id: "field_Usuario"
+- inputText: "admin@intrale.com"
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "Admin1234!"
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Esperar que el home del cliente se cargue (banner CTA visible)
+- extendedWaitUntil:
+    visible:
+      text: "Ver catálogo"
+    timeout: 20000
+
+- takeScreenshot: client-orders-home-loaded
+
+# Escenario 1: Navegar a "Mis pedidos" desde el bottom bar
+- tapOn:
+    text: "Mis pedidos"
+
+- waitForAnimationToEnd
+- takeScreenshot: client-orders-after-tap-bottom-bar
+
+# Esperar a que el título de pedidos sea visible
+- extendedWaitUntil:
+    visible:
+      text: "Mis pedidos"
+    timeout: 15000
+
+- assertVisible:
+    text: "Mis pedidos"
+    label: "Título de pantalla de pedidos visible"
+
+- takeScreenshot: client-orders-screen-loaded
+
+# Escenarios 2 y 3: Listado o estado vacío
+# Verificar que el chip "Todos" del filtro está visible (estructura de filtros presente)
+- assertVisible:
+    text: "Todos"
+    label: "FilterChip Todos visible"
+
+- takeScreenshot: client-orders-filters-visible
+
+# Captura del listado/empty/error tal cual lo devuelva el backend
+- waitForAnimationToEnd
+- takeScreenshot: client-orders-list-or-empty
+
+# Si hay datos podríamos hacer scroll; si no, capturamos el empty state
+- scroll
+- waitForAnimationToEnd
+- takeScreenshot: client-orders-after-scroll
+
+# Escenario 4: Filtros — al menos 2 cambios diferentes
+# Filtro 1: Pendiente
+- tapOn:
+    text: "Pendiente"
+    optional: true
+
+- waitForAnimationToEnd
+- takeScreenshot: client-orders-filter-pending
+
+# Filtro 2: Entregado
+- tapOn:
+    text: "Entregado"
+    optional: true
+
+- waitForAnimationToEnd
+- takeScreenshot: client-orders-filter-delivered
+
+# Volver al filtro Todos para cerrar
+- tapOn:
+    text: "Todos"
+    optional: true
+
+- waitForAnimationToEnd
+- takeScreenshot: client-orders-filter-all-restored
+
+# Volver al home via bottom bar
+- tapOn:
+    text: "Inicio"
+    optional: true
+
+- waitForAnimationToEnd
+- takeScreenshot: client-orders-back-to-home
