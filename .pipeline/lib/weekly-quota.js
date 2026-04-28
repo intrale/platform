@@ -361,19 +361,35 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
     // por el factor observado contra el % real de claude.ai. El resultado es
     // un "estimado real" más cercano a la cuota verdadera de Anthropic
     // (que incluye uso interactivo del operador, no solo el pipeline).
+    //
+    // **Cap al 100%**: el factor es lineal y queda fijo desde la calibración,
+    // pero el pipeline pct rolling 5h puede crecer (porque el pipeline procesa
+    // más) sin que necesariamente la cuota real crezca proporcional. Resultado:
+    // sin cap, se llegan a valores absurdos (211%, 300%). Capear refleja la
+    // realidad (la cuota nunca puede pasar 100%) y exponer `*PctRaw` permite
+    // detectar saturación: si pasa >120%, la calibración está obsoleta y
+    // conviene recalibrar.
     let realPct = null;
+    let realPctRaw = null;
+    let realPctCapped = false;
     let realSessionPct = null;
+    let realSessionPctRaw = null;
+    let realSessionPctCapped = false;
     let realStatus = status;
     let realSessionStatus = sessionStatus;
     if (state.calibration && state.calibration.weekly_factor) {
-        realPct = Math.round(pct * state.calibration.weekly_factor * 10) / 10;
+        realPctRaw = Math.round(pct * state.calibration.weekly_factor * 10) / 10;
+        realPct = Math.min(100, realPctRaw);
+        realPctCapped = realPctRaw > 100;
         if (realPct >= 90) realStatus = 'critical';
         else if (realPct >= 75) realStatus = 'warning';
         else if (realPct >= 50) realStatus = 'normal';
         else realStatus = 'ok';
     }
     if (state.calibration && state.calibration.session_factor) {
-        realSessionPct = Math.round(sessionPct * state.calibration.session_factor * 10) / 10;
+        realSessionPctRaw = Math.round(sessionPct * state.calibration.session_factor * 10) / 10;
+        realSessionPct = Math.min(100, realSessionPctRaw);
+        realSessionPctCapped = realSessionPctRaw > 100;
         if (realSessionPct >= 90) realSessionStatus = 'critical';
         else if (realSessionPct >= 75) realSessionStatus = 'warning';
         else if (realSessionPct >= 50) realSessionStatus = 'normal';
@@ -389,6 +405,8 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
         configLimitHours: state.config_limit_hours,
         pct: Math.round(pct * 10) / 10,
         realPct,
+        realPctRaw,
+        realPctCapped,
         realStatus,
         hoursRemaining: Math.round(hoursRemaining * 10) / 10,
         burnRatePerDay: Math.round(burnRatePerDay * 10) / 10,
@@ -409,6 +427,8 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
             limitHours: DEFAULT_SESSION_LIMIT_HOURS,
             pct: Math.round(sessionPct * 10) / 10,
             realPct: realSessionPct,
+            realPctRaw: realSessionPctRaw,
+            realPctCapped: realSessionPctCapped,
             realStatus: realSessionStatus,
             hoursRemaining: Math.round(Math.max(0, DEFAULT_SESSION_LIMIT_HOURS - sessionUsage.hoursUsed) * 100) / 100,
             status: sessionStatus,
