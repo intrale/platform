@@ -696,6 +696,18 @@ function getPipelineState() {
     state.infraHealth = { error: 'invalid-json', mtimeMs: Date.now() };
   }
 
+  // Telegram bot health: lo escribe el listener-telegram en cada poll (ok | error
+  // con description). Permite mostrar en /ops cuando el token fue rechazado o
+  // los secrets faltan, en lugar de quedar el bot silenciosamente caido.
+  state.telegramHealth = null;
+  try {
+    const tgHealthPath = path.join(PIPELINE, 'telegram-health.json');
+    if (fs.existsSync(tgHealthPath)) {
+      const raw = fs.readFileSync(tgHealthPath, 'utf8');
+      state.telegramHealth = JSON.parse(raw);
+    }
+  } catch { state.telegramHealth = { ok: false, lastError: { description: 'invalid-json', source: 'dashboard' } }; }
+
   // Recursos del sistema
   const resourceLimits = config.resource_limits || {};
   const sys = getSystemResourceUsage();

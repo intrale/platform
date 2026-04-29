@@ -652,6 +652,7 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
 // ─────────────────── Ops ───────────────────
 function renderOps() {
     const body = `
+<div id="ops-tg-banner" class="ops-banner-hidden"></div>
 <section class="in-section">
   <h2 class="in-section-title"><span class="in-section-title-icon">🛠</span>Procesos del pipeline</h2>
   <div id="ops-procesos" class="ops-grid"></div>
@@ -665,14 +666,19 @@ function renderOps() {
 .ops-card { background: var(--in-bg-3); padding: 12px 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); display: flex; flex-direction: column; gap: 4px; }
 .ops-card.alive { border-color: var(--in-ok); }
 .ops-card.dead { border-color: var(--in-bad); opacity: 0.7; }
+.ops-card.bot-down { border-color: var(--in-bad); background: var(--in-bad-soft); }
 .ops-card-name { font-weight: 600; }
 .ops-card-meta { font-size: 11px; color: var(--in-fg-dim); font-family: var(--in-mono); }
+.ops-card-error { font-size: 11px; color: var(--in-bad); font-weight: 600; margin-top: 2px; }
 .ops-queues { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .ops-queue-group { display: flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 999px; background: var(--in-bg-2); border: 1px solid var(--in-border); font-size: 10px; font-family: var(--in-mono); font-variant-numeric: tabular-nums; }
 .ops-queue-group .ops-queue-name { color: var(--in-fg-dim); margin-right: 2px; font-weight: 600; text-transform: lowercase; }
 .ops-chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 6px; color: var(--in-fg-dim); }
 .ops-chip.hot { color: var(--in-warn); font-weight: 600; }
 .ops-chip.work { color: var(--in-info); font-weight: 600; }
+.ops-banner-hidden { display: none; }
+.ops-banner { display: block; padding: 12px 16px; margin-bottom: 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-bad); background: var(--in-bad-soft); color: var(--in-bad); font-weight: 600; }
+.ops-banner-sub { font-weight: 400; font-size: 12px; color: var(--in-fg-dim); margin-top: 4px; font-family: var(--in-mono); }
 .ops-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 280px; border: 1px solid var(--in-border); }`;
     const script = `
 const PROC_QUEUES = {
@@ -705,18 +711,47 @@ function queuesHTML(name, servicios){
     html += '</div>';
     return html;
 }
+const TG_PROCS = new Set(['listener', 'svc-telegram']);
 async function tickOps(){
     const d = await fetchJson('/api/dash/ops');
     if(!d) return;
+    const tgHealth = d.telegramHealth;
+    const tgDown = tgHealth && tgHealth.ok === false;
+
+    const banner = document.getElementById('ops-tg-banner');
+    if(banner){
+        if(tgDown){
+            const err = tgHealth.lastError || {};
+            const desc = (err.description || 'sin detalle').slice(0, 200);
+            const code = err.code || '—';
+            const src = err.source || '—';
+            const upd = tgHealth.updatedAt ? new Date(tgHealth.updatedAt).toLocaleString('es-AR') : '—';
+            const html = '<div class="ops-banner">⚠ Bot de Telegram caído'
+                + '<div class="ops-banner-sub">'+escapeHtml(desc)+' · code='+escapeHtml(String(code))+' · origen='+escapeHtml(String(src))+' · actualizado '+escapeHtml(upd)+'</div>'
+                + '<div class="ops-banner-sub">Acción: rotar token con BotFather y guardarlo en ~/.claude/secrets/telegram-config.json (fuera del repo). Reiniciar listener.</div>'
+                + '</div>';
+            if(banner.innerHTML !== html){ banner.className = ''; banner.innerHTML = html; }
+        } else if(banner.className !== 'ops-banner-hidden'){
+            banner.className = 'ops-banner-hidden';
+            banner.innerHTML = '';
+        }
+    }
+
     const grid = document.getElementById('ops-procesos');
     if(grid){
         let html = '';
         for(const [name, p] of Object.entries(d.procesos || {})){
-            const cls = p.alive ? 'alive' : 'dead';
+            const isTg = TG_PROCS.has(name);
+            let cls = p.alive ? 'alive' : 'dead';
+            if(isTg && tgDown) cls = (p.alive ? 'alive ' : 'dead ') + 'bot-down';
+            const errLine = (isTg && tgDown)
+                ? '<div class="ops-card-error">⚠ '+escapeHtml((tgHealth.lastError||{}).description || 'API rechazada').slice(0, 80)+'</div>'
+                : '';
             html += '<div class="ops-card '+cls+'">'
                 + '<div class="ops-card-name">'+(p.alive?'\u{1F7E2}':'\u{1F534}')+' '+escapeHtml(name)+'</div>'
                 + '<div class="ops-card-meta">PID '+(p.pid||'—')+'</div>'
                 + '<div class="ops-card-meta">uptime '+fmtDur(p.uptime||0)+'</div>'
+                + errLine
                 + queuesHTML(name, d.servicios)
                 + '</div>';
         }
@@ -724,7 +759,7 @@ async function tickOps(){
     }
     const pre = document.getElementById('ops-qaenv');
     if(pre){
-        const txt = JSON.stringify({ qaEnv: d.qaEnv, qaRemote: d.qaRemote, infraHealth: d.infraHealth }, null, 2);
+        const txt = JSON.stringify({ qaEnv: d.qaEnv, qaRemote: d.qaRemote, infraHealth: d.infraHealth, telegramHealth: d.telegramHealth }, null, 2);
         if(pre.textContent !== txt) pre.textContent = txt;
     }
 }

@@ -405,6 +405,7 @@ function opsSlice(state) {
         qaEnv: state.qaEnv || {},
         qaRemote: state.qaRemote || {},
         resources: state.resources || {},
+        telegramHealth: state.telegramHealth || null,
     };
 }
 

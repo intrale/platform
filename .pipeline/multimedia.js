@@ -10,10 +10,20 @@ const { spawn } = require('child_process');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
+const { loadTelegramSecrets } = require('./lib/telegram-secrets');
 
+// Merge: el archivo committed conserva configs no-secretas (elevenlabs key,
+// openai key, etc.); los secrets criticos (bot_token, chat_id) vienen del
+// helper que prioriza ~/.claude/secrets/.
 function loadConfig() {
-  try { return JSON.parse(fs.readFileSync(TG_CONFIG_PATH, 'utf8')); }
-  catch { return {}; }
+  let base = {};
+  try { base = JSON.parse(fs.readFileSync(TG_CONFIG_PATH, 'utf8')); } catch {}
+  try {
+    const sec = loadTelegramSecrets({ legacyConfigPath: TG_CONFIG_PATH });
+    base.bot_token = sec.bot_token;
+    base.chat_id = sec.chat_id;
+  } catch {}
+  return base;
 }
 
 function log(msg) {

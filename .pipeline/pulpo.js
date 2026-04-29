@@ -6619,17 +6619,17 @@ function sendTelegram(text) {
   }
 }
 
-function getTelegramToken() {
+function _loadTgSecrets() {
   try {
-    return JSON.parse(fs.readFileSync(path.join(ROOT, '.claude', 'hooks', 'telegram-config.json'), 'utf8')).bot_token;
-  } catch { return ''; }
+    const { loadTelegramSecrets } = require('./lib/telegram-secrets');
+    return loadTelegramSecrets({
+      legacyConfigPath: path.join(ROOT, '.claude', 'hooks', 'telegram-config.json'),
+    });
+  } catch { return null; }
 }
 
-function getTelegramChatId() {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(ROOT, '.claude', 'hooks', 'telegram-config.json'), 'utf8')).chat_id;
-  } catch { return ''; }
-}
+function getTelegramToken() { return _loadTgSecrets()?.bot_token || ''; }
+function getTelegramChatId() { return _loadTgSecrets()?.chat_id || ''; }
 
 // =============================================================================
 // BRAZO 4: INTAKE — Lee issues de GitHub y los mete al pipeline

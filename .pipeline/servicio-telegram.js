@@ -32,20 +32,24 @@ const LISTO = path.join(QUEUE_DIR, 'listo');
 
 const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
-let BOT_TOKEN, CHAT_ID;
-
-try {
-  const config = JSON.parse(fs.readFileSync(TELEGRAM_CONFIG, 'utf8'));
-  BOT_TOKEN = config.bot_token;
-  CHAT_ID = config.chat_id;
-} catch (e) {
-  console.error('Error leyendo telegram-config.json:', e.message);
-  process.exit(1);
-}
+const { loadTelegramSecrets } = require('./lib/telegram-secrets');
+const health = require('./lib/telegram-health');
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [svc-telegram] ${msg}`);
+}
+
+let BOT_TOKEN, CHAT_ID;
+try {
+  const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log });
+  BOT_TOKEN = sec.bot_token;
+  CHAT_ID = sec.chat_id;
+  log(`Secrets cargados desde: ${sec.source}`);
+} catch (e) {
+  console.error('FATAL: ' + e.message);
+  health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
+  process.exit(1);
 }
 
 // Tag fijo para logs del http-client — permite filtrar denials del servicio.
