@@ -10,11 +10,14 @@ const { spawn } = require('child_process');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
-const { loadTelegramSecrets } = require('./lib/telegram-secrets');
+const { loadTelegramSecrets, loadApiKeys } = require('./lib/telegram-secrets');
 
-// Merge: el archivo committed conserva configs no-secretas (elevenlabs key,
-// openai key, etc.); los secrets criticos (bot_token, chat_id) vienen del
-// helper que prioriza ~/.claude/secrets/.
+// Merge en 3 capas para que TTS/STT/Vision nunca se rompa por la migracion
+// del archivo committed a placeholders:
+//   - base = archivo committed (configs no-secretas: voice_id, retries, etc.)
+//   - bot_token + chat_id desde el helper de secrets criticos (home preferido)
+//   - api keys (OpenAI/Anthropic/ElevenLabs) desde loadApiKeys (ENV → home → legacy)
+// Cualquier valor del home pisa el placeholder vacio del archivo committed.
 function loadConfig() {
   let base = {};
   try { base = JSON.parse(fs.readFileSync(TG_CONFIG_PATH, 'utf8')); } catch {}
@@ -23,6 +26,11 @@ function loadConfig() {
     base.bot_token = sec.bot_token;
     base.chat_id = sec.chat_id;
   } catch {}
+  const keys = loadApiKeys({ legacyConfigPath: TG_CONFIG_PATH });
+  if (keys.openai_api_key) base.openai_api_key = keys.openai_api_key;
+  if (keys.anthropic_api_key) base.anthropic_api_key = keys.anthropic_api_key;
+  if (keys.elevenlabs_api_key) base.elevenlabs_api_key = keys.elevenlabs_api_key;
+  if (keys.elevenlabs_voice_id) base.elevenlabs_voice_id = keys.elevenlabs_voice_id;
   return base;
 }
 
