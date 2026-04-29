@@ -410,7 +410,13 @@ function renderBloqueados() {
 .blk-title { color: var(--in-fg-dim); font-weight: 400; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .blk-summary { color: var(--in-fg); font-size: 12px; line-height: 1.4; opacity: 0.92; margin-top: 2px; }
 .blk-summary.loading { opacity: 0.55; font-style: italic; }
-.blk-reason { color: var(--in-warn); font-size: 12px; line-height: 1.35; }
+.blk-skills-block { background: rgba(255,255,255,0.04); border-left: 2px solid var(--in-warn); border-radius: 0 4px 4px 0; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.blk-skills-label { font-size: 10px; color: var(--in-fg-dim); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+.blk-skills-list { display: flex; flex-direction: column; gap: 4px; }
+.blk-skill-row { display: flex; gap: 8px; align-items: baseline; font-size: 12px; line-height: 1.35; }
+.blk-skill-chip { display: inline-block; font-weight: 600; color: var(--in-warn); background: var(--in-warn-soft); border: 1px solid var(--in-warn); border-radius: 3px; padding: 1px 7px; font-size: 11px; flex: 0 0 auto; }
+.blk-skill-fase { color: var(--in-fg-soft); font-size: 11px; flex: 0 0 auto; }
+.blk-skill-reason { color: var(--in-fg-dim); flex: 1; min-width: 0; }
 .blk-events { padding: 6px 10px; background: rgba(255,255,255,0.04); border-left: 2px solid rgba(255,255,255,0.18); border-radius: 0 4px 4px 0; margin-top: 2px; }
 .blk-events-label { font-size: 10px; color: var(--in-fg-dim); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; font-weight: 600; }
 .blk-events-list { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.45; }
@@ -446,9 +452,43 @@ async function tickBloqueados(){
     if(!c) return;
     const list = d.bloqueados || [];
     if(list.length === 0){ c.innerHTML = '<div class="in-empty"><div class="in-empty-strong">Sin issues bloqueados</div>Todo fluye</div>'; return; }
-    const seen = new Set();
+    // Un issue puede tener varios skills pausados (p.ej. po, ux, guru en
+    // validacion). El backend devuelve una entrada por skill; aquí los
+    // agrupamos en una sola card por issue para que el usuario vea de un
+    // solo vistazo cuáles agentes se reactivarían si despausara el issue.
+    const groups = new Map();
     for(const b of list){
         const key = String(b.issue);
+        let g = groups.get(key);
+        if(!g){
+            g = {
+                issue: b.issue,
+                title: b.title || '',
+                summary: b.summary || '',
+                summary_stale: !!b.summary_stale,
+                priorityIndex: b.priorityIndex,
+                recent_events: Array.isArray(b.recent_events) ? b.recent_events : [],
+                skills: [],
+                earliest_blocked_at: b.blocked_at || null,
+            };
+            groups.set(key, g);
+        }
+        g.skills.push({
+            skill: b.skill || '?',
+            phase: b.phase || '',
+            pipeline: b.pipeline || '',
+            reason: b.reason || '',
+            question: b.question || '',
+            blocked_at: b.blocked_at || null,
+            age_hours: b.age_hours,
+        });
+        // Tomar el blocked_at más viejo como representativo del issue.
+        if(b.blocked_at && (!g.earliest_blocked_at || b.blocked_at < g.earliest_blocked_at)){
+            g.earliest_blocked_at = b.blocked_at;
+        }
+    }
+    const seen = new Set();
+    for(const [key, g] of groups){
         seen.add(key);
         let row = c.querySelector('[data-issue="'+key+'"]');
         if(!row){
@@ -458,45 +498,61 @@ async function tickBloqueados(){
             row.innerHTML = \`
                 <div class="blk-head">
                   <span class="blk-prio"></span>
-                  <div class="blk-issue"><a href="https://github.com/intrale/platform/issues/\${key}" target="_blank" rel="noopener">#\${key}</a> · <span class="blk-skill"></span></div>
+                  <div class="blk-issue"><a href="https://github.com/intrale/platform/issues/\${key}" target="_blank" rel="noopener">#\${key}</a></div>
                   <div class="blk-title"></div>
                   <div class="blk-actions">
-                    <button class="blk-btn blk-btn-reactivate" title="Quitar label needs-human y devolver a la cola">▶ Reactivar</button>
+                    <button class="blk-btn blk-btn-reactivate" title="Despausar todos los skills pendientes del issue">▶ Reactivar</button>
                     <button class="blk-btn blk-btn-dismiss" title="Cerrar el issue como desestimado">✕ Desestimar</button>
                   </div>
                 </div>
                 <div class="blk-summary"></div>
-                <div class="blk-reason"></div>
+                <div class="blk-skills-block">
+                  <div class="blk-skills-label">⏸ Skills pausados (se reactivan todos al despausar)</div>
+                  <div class="blk-skills-list"></div>
+                </div>
                 <div class="blk-events" hidden>
                   <div class="blk-events-label">📜 Actividad reciente</div>
                   <ul class="blk-events-list"></ul>
                 </div>
-                <div class="blk-meta"><span class="blk-fase"></span><span class="blk-since"></span></div>
+                <div class="blk-meta"><span class="blk-since"></span></div>
             \`;
-            row.querySelector('.blk-btn-reactivate').addEventListener('click', () => nhReactivate(b.issue));
-            row.querySelector('.blk-btn-dismiss').addEventListener('click', () => nhDismiss(b.issue));
+            row.querySelector('.blk-btn-reactivate').addEventListener('click', () => nhReactivate(g.issue));
+            row.querySelector('.blk-btn-dismiss').addEventListener('click', () => nhDismiss(g.issue));
         }
         const prioEl = row.querySelector('.blk-prio');
-        if(b.priorityIndex != null){ prioEl.textContent = '#' + b.priorityIndex; prioEl.classList.add('set'); }
+        if(g.priorityIndex != null){ prioEl.textContent = '#' + g.priorityIndex; prioEl.classList.add('set'); }
         else { prioEl.textContent = '—'; prioEl.classList.remove('set'); }
-        row.querySelector('.blk-skill').textContent = b.skill || '';
-        row.querySelector('.blk-title').textContent = b.title || '';
+        row.querySelector('.blk-title').textContent = g.title || '';
         const sumEl = row.querySelector('.blk-summary');
-        if(b.summary){
-            sumEl.textContent = '📄 ' + b.summary;
+        if(g.summary){
+            sumEl.textContent = '📄 ' + g.summary;
             sumEl.classList.remove('loading');
             sumEl.hidden = false;
-        } else if(b.summary_stale){
+        } else if(g.summary_stale){
             sumEl.textContent = '📄 Cargando resumen funcional…';
             sumEl.classList.add('loading');
             sumEl.hidden = false;
         } else {
             sumEl.hidden = true;
         }
-        row.querySelector('.blk-reason').textContent = '❓ ' + (b.question || b.reason || 'sin razón');
+        // Skills pausados: chip con nombre, fase y motivo individual de cada uno.
+        const skillsLabel = row.querySelector('.blk-skills-label');
+        skillsLabel.textContent = g.skills.length === 1
+            ? '⏸ Skill pausado'
+            : '⏸ ' + g.skills.length + ' skills pausados (se reactivan todos al despausar)';
+        const skillsList = row.querySelector('.blk-skills-list');
+        skillsList.innerHTML = g.skills.map(s => {
+            const reasonText = s.question || s.reason || 'sin motivo registrado';
+            const faseText = s.pipeline && s.phase ? s.pipeline + '/' + s.phase : (s.phase || '');
+            return '<div class="blk-skill-row">'
+                + '<span class="blk-skill-chip">' + blkEsc(s.skill) + '</span>'
+                + (faseText ? '<span class="blk-skill-fase">' + blkEsc(faseText) + '</span>' : '')
+                + '<span class="blk-skill-reason">' + blkEsc(reasonText) + '</span>'
+                + '</div>';
+        }).join('');
         const evWrap = row.querySelector('.blk-events');
         const evList = row.querySelector('.blk-events-list');
-        const events = Array.isArray(b.recent_events) ? b.recent_events : [];
+        const events = g.recent_events;
         if(events.length === 0){
             evWrap.hidden = true;
             evList.innerHTML = '';
@@ -504,8 +560,7 @@ async function tickBloqueados(){
             evWrap.hidden = false;
             evList.innerHTML = events.map(ev => '<li><span class="blk-ev-when">' + blkEsc(blkRelTime(ev.when)) + '</span> <span class="blk-ev-author">' + blkEsc(ev.author || '?') + '</span>: <span class="blk-ev-text">' + blkEsc(ev.preview || '') + '</span></li>').join('');
         }
-        row.querySelector('.blk-fase').textContent = 'fase: ' + (b.phase || '');
-        row.querySelector('.blk-since').textContent = 'desde: ' + (b.blocked_at ? new Date(b.blocked_at).toLocaleString('es-AR') : '—');
+        row.querySelector('.blk-since').textContent = 'pausado desde: ' + (g.earliest_blocked_at ? new Date(g.earliest_blocked_at).toLocaleString('es-AR') : '—');
         // appendChild de un nodo ya hijo lo MUEVE al final → reordena sin flicker.
         c.appendChild(row);
     }
