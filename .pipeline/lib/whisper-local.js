@@ -12,10 +12,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
-// Modelo por defecto: large-v3-turbo — calidad casi igual a large-v3 pero ~5x
-// más rápido y con buen reconocimiento de español rioplatense. Se puede pisar
-// con WHISPER_LOCAL_MODEL (small/medium/large-v3-turbo/large-v3).
-const DEFAULT_MODEL = process.env.WHISPER_LOCAL_MODEL || 'large-v3-turbo';
+// Modelo por defecto: medium — balance entre calidad y memoria. El large-v3-turbo
+// pide ~6-10 GB de RAM y crashea con ACCESS_VIOLATION (exit 0xC0000005) cuando la
+// máquina ya está cargada (CPU/RAM altos + audio largo). medium usa ~5 GB y
+// transcribe español rioplatense con buena calidad. Se puede pisar con
+// WHISPER_LOCAL_MODEL (small/medium/large-v3-turbo/large-v3).
+const DEFAULT_MODEL = process.env.WHISPER_LOCAL_MODEL || 'medium';
 const DEFAULT_LANGUAGE = process.env.WHISPER_LOCAL_LANGUAGE || 'Spanish';
 const DEFAULT_THREADS = Number(process.env.WHISPER_LOCAL_THREADS || 4);
 const DEFAULT_TIMEOUT_MS = Number(process.env.WHISPER_LOCAL_TIMEOUT_MS || 300000); // 5 min
