@@ -407,7 +407,18 @@ function renderBloqueados() {
 .blk-issue { font-weight: 600; }
 .blk-issue a { color: var(--in-info); }
 .blk-issue a:hover { text-decoration: underline; }
-.blk-reason { color: var(--in-fg-dim); font-size: 12px; }
+.blk-title { color: var(--in-fg-dim); font-weight: 400; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blk-summary { color: var(--in-fg); font-size: 12px; line-height: 1.4; opacity: 0.92; margin-top: 2px; }
+.blk-summary.loading { opacity: 0.55; font-style: italic; }
+.blk-reason { color: var(--in-warn); font-size: 12px; line-height: 1.35; }
+.blk-events { padding: 6px 10px; background: rgba(255,255,255,0.04); border-left: 2px solid rgba(255,255,255,0.18); border-radius: 0 4px 4px 0; margin-top: 2px; }
+.blk-events-label { font-size: 10px; color: var(--in-fg-dim); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; font-weight: 600; }
+.blk-events-list { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.45; }
+.blk-events-list li { padding: 2px 0; color: var(--in-fg); border-top: 1px dashed rgba(255,255,255,0.06); }
+.blk-events-list li:first-child { border-top: none; }
+.blk-ev-when { display: inline-block; min-width: 42px; color: var(--in-fg-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.blk-ev-author { color: var(--in-info); font-weight: 600; margin-right: 4px; }
+.blk-ev-text { color: var(--in-fg-dim); }
 .blk-meta { display: flex; gap: 14px; font-size: 11px; color: var(--in-fg-dim); margin-top: 4px; }
 .blk-actions { display: flex; gap: 8px; margin-left: auto; }
 .blk-btn { background: transparent; border: 1px solid; border-radius: 6px; padding: 5px 11px; font-size: 11px; cursor: pointer; transition: background 0.15s; font-weight: 500; }
@@ -416,6 +427,18 @@ function renderBloqueados() {
 .blk-btn-dismiss { border-color: var(--in-fg-soft); color: var(--in-fg-dim); }
 .blk-btn-dismiss:hover { background: var(--in-bg); color: var(--in-fg); }`;
     const script = `
+function blkRelTime(iso){
+    if(!iso) return '';
+    const t = Date.parse(iso);
+    if(!t) return '';
+    const min = Math.round((Date.now() - t) / 60000);
+    if(min < 1) return 'ahora';
+    if(min < 60) return min + 'min';
+    const hr = Math.round(min / 60);
+    if(hr < 24) return hr + 'h';
+    return Math.round(hr / 24) + 'd';
+}
+function blkEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function tickBloqueados(){
     const d = await fetchJson('/api/dash/bloqueados');
     if(!d) return;
@@ -436,12 +459,18 @@ async function tickBloqueados(){
                 <div class="blk-head">
                   <span class="blk-prio"></span>
                   <div class="blk-issue"><a href="https://github.com/intrale/platform/issues/\${key}" target="_blank" rel="noopener">#\${key}</a> · <span class="blk-skill"></span></div>
+                  <div class="blk-title"></div>
                   <div class="blk-actions">
                     <button class="blk-btn blk-btn-reactivate" title="Quitar label needs-human y devolver a la cola">▶ Reactivar</button>
                     <button class="blk-btn blk-btn-dismiss" title="Cerrar el issue como desestimado">✕ Desestimar</button>
                   </div>
                 </div>
+                <div class="blk-summary"></div>
                 <div class="blk-reason"></div>
+                <div class="blk-events" hidden>
+                  <div class="blk-events-label">📜 Actividad reciente</div>
+                  <ul class="blk-events-list"></ul>
+                </div>
                 <div class="blk-meta"><span class="blk-fase"></span><span class="blk-since"></span></div>
             \`;
             row.querySelector('.blk-btn-reactivate').addEventListener('click', () => nhReactivate(b.issue));
@@ -451,7 +480,30 @@ async function tickBloqueados(){
         if(b.priorityIndex != null){ prioEl.textContent = '#' + b.priorityIndex; prioEl.classList.add('set'); }
         else { prioEl.textContent = '—'; prioEl.classList.remove('set'); }
         row.querySelector('.blk-skill').textContent = b.skill || '';
-        row.querySelector('.blk-reason').textContent = b.reason || b.question || 'sin razón';
+        row.querySelector('.blk-title').textContent = b.title || '';
+        const sumEl = row.querySelector('.blk-summary');
+        if(b.summary){
+            sumEl.textContent = '📄 ' + b.summary;
+            sumEl.classList.remove('loading');
+            sumEl.hidden = false;
+        } else if(b.summary_stale){
+            sumEl.textContent = '📄 Cargando resumen funcional…';
+            sumEl.classList.add('loading');
+            sumEl.hidden = false;
+        } else {
+            sumEl.hidden = true;
+        }
+        row.querySelector('.blk-reason').textContent = '❓ ' + (b.question || b.reason || 'sin razón');
+        const evWrap = row.querySelector('.blk-events');
+        const evList = row.querySelector('.blk-events-list');
+        const events = Array.isArray(b.recent_events) ? b.recent_events : [];
+        if(events.length === 0){
+            evWrap.hidden = true;
+            evList.innerHTML = '';
+        } else {
+            evWrap.hidden = false;
+            evList.innerHTML = events.map(ev => '<li><span class="blk-ev-when">' + blkEsc(blkRelTime(ev.when)) + '</span> <span class="blk-ev-author">' + blkEsc(ev.author || '?') + '</span>: <span class="blk-ev-text">' + blkEsc(ev.preview || '') + '</span></li>').join('');
+        }
         row.querySelector('.blk-fase').textContent = 'fase: ' + (b.phase || '');
         row.querySelector('.blk-since').textContent = 'desde: ' + (b.blocked_at ? new Date(b.blocked_at).toLocaleString('es-AR') : '—');
         // appendChild de un nodo ya hijo lo MUEVE al final → reordena sin flicker.
