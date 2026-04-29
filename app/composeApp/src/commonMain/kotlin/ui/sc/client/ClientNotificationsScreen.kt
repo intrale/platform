@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -134,6 +135,15 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
                 }
 
                 when (state.status) {
+                    NotificationsStatus.Loading -> item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(MaterialTheme.spacing.x4),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+
                     NotificationsStatus.Empty -> item {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -169,7 +179,7 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
                         }
                     }
 
-                    else -> {}
+                    NotificationsStatus.Idle -> {}
                 }
             }
         }

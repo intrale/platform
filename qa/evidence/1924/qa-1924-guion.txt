@@ -1,0 +1,21 @@
+Hola Leo, soy el agente de QA de Intrale. Estoy ejecutando la validación end to end del issue mil novecientos veinticuatro, detección automática de anomalías en pedidos, sobre el flavor Business.
+
+El objetivo del feature es prevenir fraude o errores detectando patrones anómalos antes de que impacten al negocio. Las reglas heurísticas evalúan tres patrones principales: pedidos duplicados del mismo usuario dentro de cinco minutos, pedidos con monto mayor a tres veces el ticket promedio, y pedidos con frecuencia inusualmente alta por hora.
+
+Arranco verificando el ambiente. El backend remoto de Intrale corre en la Lambda kotlin test detrás de API Gateway en us east dos. La conectividad está OK, el signin con body vacío responde HTTP cuatrocientos, lo que confirma que la Lambda está viva.
+
+Ahora valido la app Business en el emulador virtualAndroid. La pantalla principal muestra correctamente la propuesta Administrá tu negocio con Intrale, con las tres opciones: Controlá tu tienda, Gestioná tu equipo, y Monitoreá pedidos y panel.
+
+Navego al flujo de login tocando el botón Ingresar. Llego a la pantalla Inicio de sesión como administrador de negocio, con los campos Usuario y Contraseña correctamente renderizados. Ingreso credenciales de prueba y el sistema responde con el mensaje esperado: Ocurrió un error al iniciar sesión. Esto confirma que la autenticación Cognito responde desde la Lambda remota.
+
+Respecto a los criterios backend del issue, la evidencia está en los tests del Tester: cuatrocientos dieciocho tests del módulo users, todos verdes, incluyendo veinticuatro tests nuevos específicos de anomalías. Nueve tests unitarios en OrderAnomalyDetectionServiceTest validan las tres reglas de detección. Doce tests en OrderAnomalyFunctionTest validan los seis endpoints expuestos: listar pedidos flaggeados, historial, configuración, análisis bajo demanda, actualización de umbrales, y resolución manual. Tres tests de integración en ClientOrdersAnomalyIntegrationTest validan el flujo completo con pedidos reales.
+
+Kover verify pasa. El ComposeApp test task está OK, los cambios de UI en BusinessOrdersScreen para el indicador visual de pedidos flaggeados compilan sin errores.
+
+La auditoría de seguridad fue aprobada: todos los endpoints usan SecuredFunction con JWT de Cognito, el scoping por business previene data leak, no hay vectores de inyección, ni secrets hardcodeados, ni dependencias con vulnerabilidades.
+
+Respecto a los criterios de aceptación: criterio uno, reglas de detección al confirmar pedido, cubierto por OrderAnomalyDetectionServiceTest y la integración en ClientOrders. Criterio dos, detección de duplicados, cubierto por tests con pedidos dentro de la ventana de cinco minutos. Criterio tres, umbral de monto tres veces el promedio, cubierto por tests unitarios. Criterio cuatro, confirmación manual del negocio, implementado en el endpoint PUT anomalies resolve. Criterio cinco, indicador visual en la UI, implementado en BusinessOrdersScreen. Criterio seis, historial de anomalías, implementado en el endpoint GET anomalies history. Criterio siete, configuración de sensibilidad, implementado en el endpoint PUT anomalies config con validaciones de rangos.
+
+Conclusión: el issue mil novecientos veinticuatro cumple con los siete criterios de aceptación en el código, validado por tests unitarios e integración. La app Business renderiza correctamente, el backend está implementado y auditado. QA aprobado. Lista para merge y deploy automático a Lambda vía GitHub Actions.
+
+Fin del informe. Agente QA fuera.

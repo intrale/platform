@@ -7,6 +7,15 @@
 const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+// #2334: sanitización write-time.
+require('./lib/sanitize-console').install();
+// Saneado global de JAVA_HOME — este servicio spawnea agentes Claude que
+// pueden invocar gradle; hereda y propaga el valor a sus hijos.
+require('./lib/java-home-normalizer').normalizeJavaHome({
+  log: (msg) => console.error(msg),
+});
+const { sanitize } = require('./sanitizer');
+const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
@@ -34,7 +43,11 @@ function listWorkFiles(dir) {
 
 // --- Escape para shell ---
 function esc(str) {
-  return (str || '').replace(/"/g, '\\"');
+  return (str || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '');
 }
 
 // --- Recovery: mover orphans de trabajando/ a pendiente/ al arrancar ---
@@ -197,6 +210,7 @@ const LABEL_COLORS = {
   'qa:dependency': 'D93F0B',
   'blocked:dependencies': 'B60205',
   'needs-definition': 'ededed',
+  'needs-human': 'B60205',   // #2405 CA-4 — circuit breaker infra escalado a humano
 };
 
 function ensureLabels(labelsStr) {
@@ -233,7 +247,10 @@ function processQueue() {
 
     let data;
     try {
-      data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      const rawData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      // #2334: sanitizar body/title/label ANTES del execSync a `gh`.
+      // El body viaja a la API pública de GitHub, visible por cualquiera.
+      data = sanitizeGithubPayload(rawData);
 
       switch (data.action) {
         case 'comment':
@@ -267,6 +284,29 @@ function processQueue() {
           const urlMatch = output.match(/\/(\d+)\s*$/);
           data.result = { number: urlMatch ? parseInt(urlMatch[1]) : null, url: output };
           log(`Issue creado: #${data.result.number} — ${data.title}`);
+
+          // Defensa anti-deadlock en pausa parcial (fix #2505):
+          // Si el issue creado tiene label qa:dependency Y el body referencia
+          // un issue que está en el allowlist de partial_pause, agregamos
+          // el nuevo número al allowlist. De lo contrario el issue original
+          // queda bloqueado esperando a este nuevo que nunca se procesaría.
+          try {
+            if (data.result?.number && typeof data.labels === 'string' && data.labels.includes('qa:dependency')) {
+              const partialPause = require('./lib/partial-pause');
+              const mode = partialPause.getPipelineMode();
+              if (mode.mode === 'partial_pause') {
+                const refs = [...String(data.body || '').matchAll(/#(\d+)/g)].map(m => parseInt(m[1]));
+                const touchesAllowlist = refs.some(n => mode.allowedIssues.includes(n));
+                if (touchesAllowlist && !mode.allowedIssues.includes(data.result.number)) {
+                  const next = [...mode.allowedIssues, data.result.number];
+                  partialPause.setPartialPause(next, { source: 'auto-deadlock-prevention' });
+                  log(`Partial pause: #${data.result.number} añadido al allowlist (bloquea a issue permitido).`);
+                }
+              }
+            }
+          } catch (e) {
+            log(`Warning: auto-allowlist falló: ${e.message}`);
+          }
           break;
         }
 
@@ -315,6 +355,7 @@ function main() {
   retryFailedOnCompletes();
 
   log('Servicio GitHub iniciado');
+  try { require('./lib/ready-marker').signalReady('svc-github'); } catch {}
   setInterval(() => {
     try { processQueue(); } catch (e) { log(`Error: ${e.message}`); }
   }, 10000);
@@ -326,13 +367,14 @@ process.on('SIGTERM', () => process.exit(0));
 
 // Crash handlers
 process.on('uncaughtException', (err) => {
-  const msg = `[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  // #2334: sanitizar antes de persistir stack a disco.
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  const msg = `[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
   try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
   console.error(msg);
   process.exit(1);

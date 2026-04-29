@@ -14,6 +14,12 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// Saneado global de JAVA_HOME — propaga un JDK válido a qa-environment y a
+// los builds QA que corren contra el emulador. Incidente 2026-04-21.
+require('./lib/java-home-normalizer').normalizeJavaHome({
+  log: (msg) => console.error(msg),
+});
+
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
@@ -30,6 +36,20 @@ const ADB = 'C:\\Users\\Administrator\\AppData\\Local\\Android\\Sdk\\platform-to
 const POLL_INTERVAL = 10000; // 10 segundos
 const BOOT_TIMEOUT = 120000; // 2 minutos para boot
 const KILL_TIMEOUT = 15000;  // 15 segundos para kill
+
+// --- Sanitización de PIDs (CA-5 #2160) ---
+// Valida que un PID leído del state file sea un entero positivo antes de
+// interpolarlo en comandos tasklist/taskkill. Previene inyección de comandos
+// si qa-env-state.json es corrupto o manipulado.
+function sanitizePid(pid) {
+  if (pid === null || pid === undefined) return null;
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) {
+    log(`⚠️ PID inválido rechazado: ${JSON.stringify(pid)} — se ignora`);
+    return null;
+  }
+  return n;
+}
 
 // --- Estado interno ---
 // stopped | starting | running | stopping
@@ -67,7 +87,7 @@ function detectEmulatorState() {
   // Check 2: qa-env-state.json + proceso vivo
   try {
     const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    const pid = state.emulator || state.emulador;
+    const pid = sanitizePid(state.emulator || state.emulador);
     if (pid && isProcessAlive(pid)) return 'running'; // proceso vivo pero ADB no responde = starting
   } catch {}
 
@@ -82,11 +102,12 @@ function detectEmulatorState() {
 }
 
 function isProcessAlive(pid) {
-  if (!pid) return false;
+  const safePid = sanitizePid(pid);
+  if (!safePid) return false;
   try {
-    const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`,
+    const r = execSync(`tasklist /FI "PID eq ${safePid}" /NH /FO CSV`,
       { encoding: 'utf8', timeout: 5000, windowsHide: true });
-    return r.includes(`"${pid}"`);
+    return r.includes(`"${safePid}"`);
   } catch { return false; }
 }
 
@@ -257,6 +278,8 @@ async function main() {
       try { fs.renameSync(file.path, path.join(PENDIENTE, file.name)); } catch {}
     }
   }
+
+  try { require('./lib/ready-marker').signalReady('svc-emulador'); } catch {}
 
   while (true) {
     try {

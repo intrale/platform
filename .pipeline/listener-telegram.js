@@ -13,23 +13,28 @@ const COMMANDER_QUEUE = path.join(PIPELINE, 'servicios', 'commander', 'pendiente
 const HISTORY_FILE = path.join(PIPELINE, 'commander-history.jsonl');
 const OFFSET_FILE = path.join(PIPELINE, 'listener-offset.json');
 
-// Leer config de Telegram
+// Secrets fuera del repo (ver lib/telegram-secrets.js)
 const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
-let BOT_TOKEN, CHAT_ID;
-
-try {
-  const config = JSON.parse(fs.readFileSync(TELEGRAM_CONFIG, 'utf8'));
-  BOT_TOKEN = config.bot_token;
-  CHAT_ID = config.chat_id;
-} catch (e) {
-  console.error('Error leyendo telegram-config.json:', e.message);
-  process.exit(1);
-}
+const { loadTelegramSecrets } = require('./lib/telegram-secrets');
+const health = require('./lib/telegram-health');
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [listener] ${msg}`);
+}
+
+let BOT_TOKEN, CHAT_ID, SECRETS_SOURCE;
+try {
+  const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log });
+  BOT_TOKEN = sec.bot_token;
+  CHAT_ID = sec.chat_id;
+  SECRETS_SOURCE = sec.source;
+  log(`Secrets cargados desde: ${SECRETS_SOURCE}`);
+} catch (e) {
+  console.error('FATAL: ' + e.message);
+  health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
+  process.exit(1);
 }
 
 // --- Offset persistence ---
@@ -198,7 +203,27 @@ async function pollLoop() {
   log(`Listener iniciado — offset: ${offset}`);
   log(`Chat ID: ${CHAT_ID}`);
 
+  // Probe inicial: getMe valida que el token siga siendo aceptado por Telegram.
+  // Si no, marcamos health=error con descripcion para que /ops lo muestre y
+  // hacemos backoff hasta que el operador rote el token (no spammear la API).
+  try {
+    const me = await telegramRequest('getMe', {});
+    if (!me.ok) {
+      const desc = me.description || 'unknown';
+      log(`Telegram getMe RECHAZADO (${me.error_code || '-'}): ${desc}`);
+      health.markError(PIPELINE, { code: me.error_code, description: desc, source: 'getMe' });
+    } else {
+      log(`Bot OK: @${me.result?.username} id=${me.result?.id}`);
+      health.markOk(PIPELINE, { bot: me.result?.username, source: SECRETS_SOURCE });
+    }
+  } catch (e) { log(`Error en getMe inicial: ${e.message}`); }
+
   await sendMessage('🐙 *Pipeline V2* — Listener activo');
+  try { require('./lib/ready-marker').signalReady('listener', { offset }); } catch {}
+
+  // Backoff exponencial cuando Telegram rechaza el token: empieza 5s, hasta 5min.
+  let backoffMs = 0;
+  let lastErrCode = null;
 
   while (true) {
     try {
@@ -208,21 +233,41 @@ async function pollLoop() {
         allowed_updates: ['message']
       });
 
-      if (result.ok && result.result?.length > 0) {
-        for (const update of result.result) {
-          try {
-            await enqueueMessage(update);
-          } catch (e) {
-            log(`Error procesando update ${update.update_id}: ${e.message}`);
+      if (result.ok) {
+        if (backoffMs > 0) log(`Telegram OK de nuevo, reseteo backoff`);
+        backoffMs = 0;
+        lastErrCode = null;
+        health.markOk(PIPELINE, { bot: 'reachable', source: SECRETS_SOURCE });
+        if (result.result?.length > 0) {
+          for (const update of result.result) {
+            try {
+              await enqueueMessage(update);
+            } catch (e) {
+              log(`Error procesando update ${update.update_id}: ${e.message}`);
+            }
+            offset = update.update_id + 1;
           }
-          offset = update.update_id + 1;
+          saveOffset(offset);
+          log(`Procesados ${result.result.length} update(s), offset → ${offset}`);
         }
-        saveOffset(offset);
-        log(`Procesados ${result.result.length} update(s), offset → ${offset}`);
+      } else {
+        // Telegram respondio JSON con ok:false → token rechazado o config invalido.
+        // El bug previo era ignorar este path silenciosamente y spammear la API.
+        const desc = result.description || 'unknown';
+        const code = result.error_code || null;
+        if (code !== lastErrCode) {
+          log(`Telegram API RECHAZA getUpdates (${code || '-'}): ${desc}`);
+          lastErrCode = code;
+        }
+        health.markError(PIPELINE, { code, description: desc, source: 'getUpdates' });
+        backoffMs = Math.min(Math.max(backoffMs * 2, 5000), 5 * 60 * 1000);
+        await new Promise(r => setTimeout(r, backoffMs));
       }
     } catch (e) {
       log(`Error en polling: ${e.message}`);
-      await new Promise(r => setTimeout(r, 5000));
+      health.markError(PIPELINE, { code: 'NETWORK', description: e.message, source: 'getUpdates' });
+      backoffMs = Math.min(Math.max(backoffMs * 2, 5000), 5 * 60 * 1000);
+      await new Promise(r => setTimeout(r, backoffMs));
     }
   }
 }

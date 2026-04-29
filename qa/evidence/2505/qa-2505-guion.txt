@@ -1,0 +1,29 @@
+Buenas, soy Nacho del equipo de QA. Les traigo el reporte de la ronda nueve de verificación del issue dos mil quinientos cinco, ícono distintivo por flavor en la app Android.
+
+En esta ronda el build regeneró los tres APK Debug. Yo agarré los artefactos de la carpeta qa artifacts y comparé contra lo que está instalado en el emulador virtualAndroid. Los tres hashes MD cinco coinciden bit a bit con los aprobados en la ronda siete y ocho. O sea, la base de comparación es sólida.
+
+Arranco por los criterios técnicos verificables empíricamente.
+
+CA dos, manifest inmutable. Corrí git diff contra origin main para todos los AndroidManifest.xml y me devolvió cero líneas de diferencia. Ningún manifest fue tocado, ni el base ni los de los flavors. Aprobado.
+
+CA tres, los tres APK compilan. El archivo build procesado confirma BUILD SUCCESSFUL en la regeneración, y los tres artefactos están presentes en qa artifacts. Aprobado.
+
+CA cinco, themed icons para Android trece en adelante. Usé aapt dos dump xmltree sobre res mipmap anydpi v veintiséis ic launcher xml para los tres APK y verifiqué que declaran las tres capas adaptativas: background, foreground y monochrome. Los tres tienen la capa monochrome presente, lo que habilita themed icons en Android trece. Aprobado.
+
+CA ocho, sin duplicación parcial. Este era el gran bug de las rondas tres y cinco, cuando aapt dos generaba un drawable auxiliar compartido por la referencia aapt attr. Verifiqué el strokeColor literal por flavor. Client tiene ff uno ocho nueve cero ff, azul cielo. Business tiene ff cero cero c ocho cinco tres, verde esmeralda. Delivery tiene ff ff seis b tres cinco, naranja coral. Tres valores hex literales distintos, sin referencias al drawable auxiliar. El fix quedó empaquetado en los tres APK. Aprobado.
+
+CA nueve, package ids intactos. Aapt dos dump badging confirma com punto intrale punto app punto client, business y delivery, con labels Intrale, Intrale Negocios e Intrale Repartos. Los tres ids originales se preservan. Aprobado.
+
+Ahora los criterios visuales verificados en vivo en el emulador.
+
+CA cuatro, distinción visual clara al instalar. Abrí el drawer del launcher y busqué Intrale. En el screenshot round nueve cero tres drawer search punto p n g se ven los tres íconos uno al lado del otro. Intrale client, triángulo azul cielo con bolsa de compras ámbar en el centro. Intrale Negocios business, triángulo verde esmeralda con un triángulo interior grafito. Intrale Repartos delivery, triángulo naranja coral con una flecha diagonal blanca y ámbar apuntando arriba a la derecha. Los tres son visualmente distintos al instante. No es mismo logo con tint diferente, es familia visual con diferenciación real. Cumple el brief UX: client amigable, business profesional, delivery dinámico. Aprobado.
+
+CA nueve versión visual, matching ícono a paquete. Forcé stop de las tres apps y las lancé una por una con monkey, capturando splash de cada una. El screenshot cuatro muestra la app client con el triángulo azul y la bolsa ámbar. El cinco muestra la app business con el triángulo verde y el emblema grafito. El seis muestra la app delivery con el triángulo naranja y la flecha diagonal. Cada ícono del launcher coincide con el vector foreground del splash del paquete correspondiente. Aprobado.
+
+CA uno estructura de assets, CA seis calidad UX con Claude Design, y CA siete sin metadata sensible ya fueron aprobados por Security y UX en rondas anteriores sobre estos mismos APK. Los confirmo como válidos para esta ronda.
+
+CA diez, evidencia QA E2E. Este mismo video con este mismo audio narrado es la evidencia. Cubre drawer con los tres íconos, splash de las tres apps, y menciono explícitamente cada criterio verificado.
+
+Resumen: los diez criterios de aceptación cumplen. Los tres APK regenerados por la fase build pasan QA. Veredicto de esta ronda nueve: aprobado. La historia avanza a la fase linteo.
+
+Eso es todo. Cierro la ronda.

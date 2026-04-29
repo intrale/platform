@@ -23,7 +23,8 @@ import org.kodein.log.newLogger
 
 class ClientBusinessPaymentMethodsService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommBusinessPaymentMethodsService {
 
     private val logger = LoggerFactory.default.newLogger<ClientBusinessPaymentMethodsService>()
@@ -37,10 +38,10 @@ class ClientBusinessPaymentMethodsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(GetBusinessPaymentMethodsResponse.serializer(), bodyText)
+                val result = json.decodeFromString(GetBusinessPaymentMethodsResponse.serializer(), bodyText)
                 Result.success(result.paymentMethods)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -62,10 +63,10 @@ class ClientBusinessPaymentMethodsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(UpdateBusinessPaymentMethodsResponse.serializer(), bodyText)
+                val result = json.decodeFromString(UpdateBusinessPaymentMethodsResponse.serializer(), bodyText)
                 Result.success(result.paymentMethods)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Eficiencia de tokens V2 — Determinismo + Splitting — 2026-04-22</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 960px; margin: 30px auto; padding: 20px; color: #1a1a1a; line-height: 1.55; }
+  h1 { color: #0d47a1; border-bottom: 3px solid #0d47a1; padding-bottom: 8px; }
+  h2 { color: #1565c0; margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  h3 { color: #1976d2; margin-top: 20px; }
+  h4 { color: #1e88e5; margin-top: 16px; margin-bottom: 6px; }
+  code, pre { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: Consolas, monospace; font-size: 0.92em; }
+  pre { padding: 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 0.93em; }
+  th, td { border: 1px solid #ccc; padding: 7px 9px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; }
+  .crit { background: #ffebee; border-left: 4px solid #c62828; padding: 10px 14px; margin: 12px 0; }
+  .win  { background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 10px 14px; margin: 12px 0; }
+  .note { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px; margin: 12px 0; }
+  .det  { background: #e1f5fe; border-left: 4px solid #0277bd; padding: 10px 14px; margin: 12px 0; }
+  .mini { font-size: 0.9em; color: #555; }
+  .kpi { display: inline-block; background: #0d47a1; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: 600; }
+  .kpi-green { display: inline-block; background: #2e7d32; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: 600; }
+  .tag-det { background: #0277bd; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 0.82em; }
+  .tag-haiku { background: #6a1b9a; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 0.82em; }
+  .tag-sonnet { background: #ef6c00; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 0.82em; }
+  .tag-opus { background: #c62828; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 0.82em; }
+  ul li, ol li { margin: 3px 0; }
+  .footer { margin-top: 40px; font-size: 0.85em; color: #666; text-align: center; border-top: 1px solid #ccc; padding-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>Eficiencia de tokens V2 — Determinismo + Splitting</h1>
+<p class="mini">Fecha: 2026-04-22 · Iteración: V2 (profunda) · Proyecto: Intrale Platform · Pipeline V2</p>
+
+<div class="win">
+<strong>Qué cambió respecto del reporte V1 del 2026-04-22 (mañana):</strong> El V1 se enfocó en <em>prompt caching</em> + <em>TTS gratis</em>. Este V2 agrega el eje que Leo pidió explícitamente: <strong>cuánto de lo que hoy consume tokens puede hacerse SIN modelo</strong> (determinismo puro) y <strong>cuánto puede bajar de modelo</strong> (Opus → Sonnet → Haiku) vía splitting de agentes en fases.
+</div>
+
+<h2>1. Tesis central</h2>
+
+<p>El pipeline hoy trata a casi todos los agentes como "unidad monolítica": se spawnea un proceso <code>claude</code>, el rol ya asignado marca un modelo fijo, y el agente hace <strong>todo</strong> con ese modelo. Pero la mayoría de los skills contienen, en realidad, <strong>tres fases muy distintas</strong>:</p>
+
+<ol>
+  <li><strong>Preparación</strong> — recolectar inputs: <code>gh issue view</code>, <code>git diff</code>, lectura de archivos, ejecución de linters, corrida de tests, parseo de reportes XML/JSON. <span class="tag-det">100% determinístico</span></li>
+  <li><strong>Razonamiento</strong> — entender el problema, decidir, generar prosa o código nuevo. <span class="tag-opus">requiere LLM pesado</span></li>
+  <li><strong>Entrega</strong> — commit, push, crear PR, subir comentarios, actualizar labels, mover cards. <span class="tag-det">100% determinístico</span></li>
+</ol>
+
+<p>Hoy, los tres se pagan al mismo precio (modelo del role). Si partimos el flujo en etapas con el modelo correcto, se evita pagar Opus por hacer <code>gh pr merge</code>.</p>
+
+<h2>2. Inventario de skills — determinismo y modelo óptimo</h2>
+
+<table>
+<tr><th>Skill</th><th>Hoy</th><th>% determinístico</th><th>Modelo óptimo para el resto</th><th>Splitting propuesto</th></tr>
+
+<tr><td><code>/branch</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Reemplazar por script Node: leer issue, derivar slug, <code>git checkout -b</code>. Cero LLM.</td></tr>
+
+<tr><td><code>/monitor</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Ya está casi todo en <code>context-cli.js</code>. Eliminar el skill LLM.</td></tr>
+
+<tr><td><code>/cleanup</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Script Node con reglas de protección (paths Intrale). Ya parcialmente hecho.</td></tr>
+
+<tr><td><code>/ops</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Ya existe <code>ops-check.js</code>. El role LLM es un pasamanos.</td></tr>
+
+<tr><td><code>/builder</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Es <code>./gradlew check</code> + parseo. Node wrapper ya validado en #2425.</td></tr>
+
+<tr><td><code>/cost</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Fórmula fija sobre <code>agent-metrics.json</code>. Un <code>.js</code>.</td></tr>
+
+<tr><td><code>/perf</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Parse de <code>--profile</code> Gradle. Diff vs baseline. Node puro.</td></tr>
+
+<tr><td><code>/priorizar</code></td><td><span class="tag-haiku">Haiku</span></td><td>100%</td><td><span class="tag-det">ninguno</span></td><td>Matriz de labels × reglas. Tabla en JSON. Sin LLM.</td></tr>
+
+<tr><td><code>/auth</code></td><td><span class="tag-haiku">Haiku</span></td><td>~90%</td><td><span class="tag-haiku">Haiku</span> para casos borde</td><td>Validación de settings.json + diff: Node. Solo explicación de hallazgo al usuario necesita LLM.</td></tr>
+
+<tr><td><code>/delivery</code></td><td><span class="tag-haiku">Haiku</span></td><td>~75%</td><td><span class="tag-haiku">Haiku</span> solo redacción</td><td>git+gh CLI es script. Solo <strong>commit body + PR body</strong> va a LLM (contexto: diff resumido).</td></tr>
+
+<tr><td><code>/scrum</code></td><td><span class="tag-haiku">Haiku</span></td><td>~80%</td><td><span class="tag-haiku">Haiku</span> solo narrativa</td><td>Métricas Project V2 = API + cálculo. Solo "insights / standup narrative" va a LLM.</td></tr>
+
+<tr><td><code>/doc</code>, <code>/historia</code>, <code>/refinar</code></td><td><span class="tag-haiku">Haiku</span></td><td>~60%</td><td><span class="tag-haiku">Haiku</span></td><td>Búsqueda de duplicados + labels + <code>gh issue create</code> es Node. Redacción va a Haiku con template restrictivo (no necesita Sonnet).</td></tr>
+
+<tr><td><code>/guru</code></td><td><span class="tag-sonnet">Sonnet</span></td><td>~40%</td><td><span class="tag-haiku">Haiku</span> para extracción</td><td>Context7 fetch + grep en codebase = Node. Solo <strong>viabilidad arquitectónica</strong> requiere Sonnet. El resto (listar dependencias, breaking changes) lo hace Haiku con regex.</td></tr>
+
+<tr><td><code>/planner</code></td><td><span class="tag-sonnet">Sonnet</span></td><td>~55%</td><td><span class="tag-sonnet">Sonnet</span> solo priorización</td><td>Capacity math + carry-over + cerrar sprint = Node. Split heurístico de historias grandes con reglas (archivos tocados, módulos) = Haiku. Solo la priorización del backlog requiere Sonnet.</td></tr>
+
+<tr><td><code>/po</code></td><td><span class="tag-sonnet">Sonnet</span></td><td>~30%</td><td><span class="tag-sonnet">Sonnet</span></td><td>Chequeo estructural de criterios (¿existen? ¿son testeables?) = Node regex. Solo <strong>juicio de aceptación</strong> requiere Sonnet.</td></tr>
+
+<tr><td><code>/ux</code></td><td><span class="tag-sonnet">Sonnet</span></td><td>~25%</td><td><span class="tag-sonnet">Sonnet</span></td><td>Chequeo de checklist UX fijo (strings, i18n, accesibilidad por linter) = Node. Solo <strong>crítica de diseño libre</strong> requiere Sonnet.</td></tr>
+
+<tr><td><code>/security</code></td><td><span class="tag-sonnet">Sonnet</span></td><td>~70%</td><td><span class="tag-haiku">Haiku</span> para triaje</td><td><code>npm audit</code> + <code>semgrep</code> + <code>detect-secrets</code> ya son determinísticos. Solo el <strong>triaje de falsos positivos</strong> requiere LLM, y Haiku alcanza (la info cruda es estructurada).</td></tr>
+
+<tr><td><code>/review</code></td><td><span class="tag-opus">Opus</span></td><td>~40%</td><td><span class="tag-sonnet">Sonnet</span> mayoría + <span class="tag-opus">Opus</span> solo cambios críticos</td><td>Chequeos de convenciones (logger declarado, statusCode, Do pattern, <code>resString</code>, no stringResource) = <strong>linter ad-hoc</strong>. Solo el análisis semántico libre va a LLM, y mayoritariamente Sonnet es suficiente; Opus solo si el diff pasa cierto umbral de complejidad (≥500 LOC o tocar seguridad/auth).</td></tr>
+
+<tr><td><code>/tester</code></td><td><span class="tag-opus">Opus</span></td><td>~65%</td><td><span class="tag-sonnet">Sonnet</span></td><td>Correr <code>./gradlew check</code> + parsear Kover XML + diff vs baseline = Node. Solo <strong>proponer tests nuevos</strong> requiere LLM; Sonnet alcanza para ese step.</td></tr>
+
+<tr><td><code>/qa</code></td><td><span class="tag-opus">Opus</span></td><td>~50%</td><td><span class="tag-sonnet">Sonnet</span> + narración edge-tts</td><td>Levantar emulador + correr flow script + grabar video = Node (ya está en <code>qa-android.sh</code>). Narración TTS = edge-tts (gratis). Solo <strong>análisis del video/logs de fallo</strong> requiere LLM — Sonnet alcanza si los logs vienen estructurados.</td></tr>
+
+<tr><td><code>/backend-dev</code>, <code>/android-dev</code>, <code>/web-dev</code>, <code>/pipeline-dev</code></td><td><span class="tag-opus">Opus</span></td><td>~15%</td><td><span class="tag-opus">Opus</span></td><td>Solo la fase de <strong>preparación</strong> (leer issue, checkout branch, scan de archivos tocados) puede hacerse en Node antes de spawnear Opus. Implementación genuinamente requiere Opus. Pero se puede <strong>bajar a Sonnet</strong> si el issue está marcado <code>complejidad:baja</code> o <code>tipo:fix-pequeño</code>.</td></tr>
+
+</table>
+
+<p><strong>Conclusión del inventario:</strong> de los 22 skills listados, <strong>8 son 100% determinísticos</strong>, <strong>5 son mayormente determinísticos con un toque de Haiku</strong>, y <strong>solo 4 necesitan genuinamente un modelo grande para el núcleo</strong> (dev/Opus + review complejo).</p>
+
+<h2>3. Oportunidades determinísticas fuera de los skills</h2>
+
+<h3>3.1 Router determinístico en Telegram</h3>
+
+<div class="det">
+<strong>Situación actual:</strong> el listener (<code>listener-telegram.js</code>) encola todo mensaje al commander, que arranca una sesión <code>claude</code> para resolver incluso comandos triviales. Sin embargo, <code>command-dispatcher.js</code> ya tiene 13+ handlers Node puros (<code>/help</code>, <code>/status</code>, <code>/session</code>, <code>/pendientes</code>, <code>/retry</code>, <code>/limpiar</code>, <code>/detalle</code>, <code>/restart</code>, <code>/reset</code>, <code>/dash-*</code>).
+
+<p><strong>Problema:</strong> esos handlers corren <em>dentro</em> de una sesión Claude — el proceso se spawneó aunque el resultado no use el modelo. Eso paga carga del system prompt del Commander (~8K tokens) por nada.</p>
+
+<p><strong>Propuesta:</strong> agregar un <em>router determinístico</em> en <code>listener-telegram.js</code> que intercepte comandos reconocidos con regex y los despache a un proceso Node chico (sin spawn de <code>claude</code>). Los mensajes que no hacen match van al commander como hoy.</p>
+
+<p><strong>Ahorro:</strong> alto — cada <code>/status</code> hoy gasta al menos 3-5K tokens solo por arrancar la sesión. Leo tipea <code>/status</code> ~8-15 veces/día.</p>
+</div>
+
+<h3>3.2 Compactación del user prompt al spawnear agentes</h3>
+
+<div class="crit">
+<strong>Hallazgo nuevo crítico.</strong> En <code>pulpo.js:3954</code>:
+<pre>let userPrompt = `Archivo de trabajo: ...\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;</pre>
+
+<p>Se inyecta <strong>todo</strong> <code>workData</code> sin filtrar. En issues con rebotes, eso incluye histórico completo, logs de builds anteriores, resultados de fases pasadas, comentarios… Fácil 5-20 KB <em>por invocación</em>.</p>
+
+<p><strong>Propuesta:</strong> pasar solo <em>paths</em>, no contenidos. El agente lee lo que necesita con <code>Read</code>/<code>cat</code>:</p>
+
+<pre>workDataSlim = {
+  issue: workData.issue,
+  fase: workData.fase,
+  pipeline: workData.pipeline,
+  rebote: workData.rebote,
+  rechazado_en_fase: workData.rechazado_en_fase,
+  motivo_rechazo: truncate(workData.motivo_rechazo, 500),
+  evidence_paths: {
+    build_log: `.pipeline/logs/build-${issue}.log`,
+    previous_phase: `.pipeline/procesado/${issue}.*`,
+    rebote_history: `.pipeline/rebotes/${issue}.jsonl`
+  }
+}</pre>
+
+<p><strong>Ahorro estimado:</strong> ~3-7 KB por spawn × ~200 spawns/semana ≈ <strong>50-100K tokens/semana de input</strong>, sin perder información (el agente puede leer bajo demanda).</p>
+</div>
+
+<h3>3.3 Templates de rejection report (ya es determinístico — verificado)</h3>
+
+<p><code>rejection-report.js:1396-1499</code> ya es 100% template Node. No hay LLM generando la narración, solo interpolación de strings. <strong>OK, no tocar.</strong> (El V1 sugería mejoras marginales; vale la pena solo si se hace el refactor de templates globales.)</p>
+
+<h3>3.4 Prompt caching (sigue siendo la mayor ganancia absoluta)</h3>
+
+<p>Confirmado del V1: el rol base + specific suma 3.5-14.5 KB por spawn, sin <code>cache_control</code>. <strong>Ahorro estimado: 40-70% en input tokens</strong>. Nada cambió.</p>
+
+<h3>3.5 Heartbeats del pulpo</h3>
+
+<p><code>pulpo.js:4866-4898</code> (<code>generarMensajeProgreso</code>): <strong>ya es template Node</strong>, sin LLM. <strong>OK.</strong></p>
+
+<h3>3.6 Hooks</h3>
+
+<p>El análisis del hook system mostró solo 2 hooks activos (<code>PreToolUse: branch-guard.js</code>, <code>PostToolUse: activity-logger.js</code>). Los "68 hooks" mencionados en V1 son archivos <code>.js</code> en disco, pero no todos registrados — falso positivo parcial. <strong>Hook overhead real es bajo.</strong></p>
+
+<h2>4. Splitting concreto — 4 casos prioritarios</h2>
+
+<h3>4.1 <code>/review</code> — el caso más grande</h3>
+
+<div class="win">
+<p><strong>Antes:</strong> Opus hace todo: leer PR, diff, evaluar convenciones, análisis semántico, escribir comentarios.</p>
+<p><strong>Propuesta (3 fases):</strong></p>
+<ol>
+  <li><span class="tag-det">Node</span> <code>review-lint.js</code>: valida convenciones Intrale con regex (logger declarado, statusCode en response, patrón Do, <code>resString</code>, no <code>stringResource</code> fuera de <code>ResStrings</code>). Output: JSON de hallazgos.</li>
+  <li><span class="tag-sonnet">Sonnet</span> análisis semántico del diff filtrado (solo archivos con cambios no triviales, excluyendo import reorders y format-only). Lee el JSON de (1) como contexto estructurado.</li>
+  <li><span class="tag-opus">Opus</span> solo si: <code>diff_loc &gt; 500</code> OR <code>touches_auth</code> OR <code>touches_payment</code> OR label <code>risk:high</code>.</li>
+  <li><span class="tag-det">Node</span> post-proceso: publicar comentarios en GH vía <code>gh api</code>, bajar checks, etiquetar.</li>
+</ol>
+<p><strong>Ahorro esperado:</strong> ~60% del costo actual de <code>/review</code>.</p>
+</div>
+
+<h3>4.2 <code>/qa</code> — caso multi-etapa</h3>
+
+<div class="win">
+<p><strong>Propuesta:</strong></p>
+<ol>
+  <li><span class="tag-det">Node</span> <code>qa-android.sh</code>/<code>qa-api.sh</code>: levantar emulador, instalar APK, correr flow scripted, grabar video, guardar logcat. (Ya existe.)</li>
+  <li><span class="tag-det">Node</span> parsear logcat buscando <code>FATAL EXCEPTION</code>, <code>ANR</code>, <code>CRASH</code>. Si no hay → <strong>pass automático</strong> (no se gasta un solo token).</li>
+  <li><span class="tag-sonnet">Sonnet</span> solo si hay fallo: recibir el fragmento relevante del logcat + transcripción simple del video (frames clave con OCR, que es determinístico), decidir causa.</li>
+  <li><span class="tag-det">Node</span> edge-tts genera narración del veredicto con template.</li>
+</ol>
+<p><strong>Ahorro esperado:</strong> en runs sin fallo (la mayoría) → <strong>cero LLM</strong>. Hoy siempre se ejecuta Opus.</p>
+</div>
+
+<h3>4.3 <code>/tester</code> — chequeos con baseline</h3>
+
+<div class="win">
+<p><strong>Propuesta:</strong></p>
+<ol>
+  <li><span class="tag-det">Node</span> correr <code>./gradlew check</code>, parsear Kover XML, comparar cobertura vs baseline (<code>kover-baseline.json</code>).</li>
+  <li>Si tests pasan + cobertura ≥ baseline → <strong>aprobar sin LLM</strong>.</li>
+  <li><span class="tag-sonnet">Sonnet</span> solo si hay gap: leer el diff + reportes, proponer 2-5 casos nuevos en template.</li>
+</ol>
+<p><strong>Ahorro:</strong> ~70% de runs (cuando ya hay tests suficientes) saltan el LLM.</p>
+</div>
+
+<h3>4.4 <code>/security</code> — bajar a Haiku</h3>
+
+<div class="win">
+<p><strong>Propuesta:</strong></p>
+<ol>
+  <li><span class="tag-det">Node</span> <code>npm audit</code>, <code>semgrep</code>, <code>detect-secrets</code>, <code>gradle dependencyCheck</code>. Output: JSON estructurado de hallazgos.</li>
+  <li>Si 0 hallazgos críticos/altos → <strong>aprobar sin LLM</strong>.</li>
+  <li><span class="tag-haiku">Haiku</span> para triaje de falsos positivos (la info cruda ya está estructurada, no requiere razonamiento complejo).</li>
+  <li><span class="tag-det">Node</span> abrir issues de seguridad con template por cada hallazgo confirmado.</li>
+</ol>
+<p><strong>Ahorro:</strong> pasar de Sonnet a Haiku + salto completo cuando no hay hallazgos → <strong>~80% del costo de /security</strong>.</p>
+</div>
+
+<h2>5. Roadmap consolidado (V2)</h2>
+
+<table>
+<tr><th>Fase</th><th>Ítem</th><th>Esfuerzo</th><th>Ahorro</th><th>Precondición</th></tr>
+
+<tr><td>F0 · Ya</td><td>P1.3 V1: tracking real de tokens</td><td>Simple</td><td>bloqueante para medir</td><td>ninguna</td></tr>
+
+<tr><td>F1 · Determinismo barato</td><td>Router Telegram (§3.1)</td><td>Simple</td><td>-15-25% tokens Commander</td><td>F0</td></tr>
+
+<tr><td>F1</td><td>Compactar workData (§3.2)</td><td>Simple</td><td>-50-100K tokens/semana input</td><td>F0</td></tr>
+
+<tr><td>F1</td><td>Prompt caching (V1 §P1.1)</td><td>Simple</td><td>-40-70% input repetido</td><td>F0</td></tr>
+
+<tr><td>F1</td><td>Edge-TTS primario (V1 §P1.2)</td><td>Simple</td><td>-100% TTS OpenAI</td><td>ninguna</td></tr>
+
+<tr><td>F2 · Migración de skills a Node</td><td>Eliminar LLM de /branch, /monitor, /cleanup, /ops, /cost, /perf, /priorizar</td><td>Medio</td><td>-100% costo de esos skills</td><td>F1 tracking</td></tr>
+
+<tr><td>F2</td><td>Migrar /builder a Node wrapper</td><td>Simple</td><td>-100% LLM (gradle ya corre)</td><td>ninguna</td></tr>
+
+<tr><td>F3 · Splitting</td><td>/security bajado a Haiku + salto en 0 hallazgos (§4.4)</td><td>Medio</td><td>-80% /security</td><td>F0, F2</td></tr>
+
+<tr><td>F3</td><td>/tester con baseline-skip (§4.3)</td><td>Medio</td><td>-70% runs sin cambios</td><td>F0</td></tr>
+
+<tr><td>F3</td><td>/qa multi-etapa con pass-auto (§4.2)</td><td>Grande</td><td>-90% costos QA cuando no hay fallo</td><td>F0, OCR de video</td></tr>
+
+<tr><td>F3</td><td>/review con linter + ruteo por complejidad (§4.1)</td><td>Grande</td><td>-60% costo review</td><td>F0, reglas en linter</td></tr>
+
+<tr><td>F4 · Avanzado</td><td>Sesiones persistentes en rebotes (V1 §P3.2)</td><td>Grande</td><td>-70-90% en re-intentos</td><td>F1 caching</td></tr>
+
+<tr><td>F4</td><td>Budget duro de tokens por skill (V1 §P2.3)</td><td>Medio</td><td>proteje runaways</td><td>F0</td></tr>
+</table>
+
+<h2>6. Target combinado realista</h2>
+
+<div class="win" style="text-align:center">
+  <span class="kpi-green">-60% Anthropic total en 3 meses</span>
+  &nbsp;·&nbsp;
+  <span class="kpi-green">-100% OpenAI TTS</span>
+  <br><br>
+  <span class="kpi">-30-40% de lo actual solo con F1 (1-2 semanas)</span>
+  <br>
+  <span class="kpi">+20-30% adicional con F2 (2-3 semanas)</span>
+  <br>
+  <span class="kpi">+15-20% adicional con F3 (1 mes)</span>
+</div>
+
+<h2>7. Principios de diseño (para no volver a caer en lo mismo)</h2>
+
+<ol>
+  <li><strong>LLM es para decisiones, no para movimiento de datos.</strong> Si una tarea se puede describir como "leer X, aplicar regla Y, escribir Z", no debería tener LLM.</li>
+  <li><strong>Cuanto más estructurado el input, más barato el modelo que alcanza.</strong> Dar a Sonnet un JSON de hallazgos > dar a Opus el log crudo.</li>
+  <li><strong>El agente no debe recibir lo que puede leer él mismo.</strong> Paths &gt; contenidos. Herramientas &gt; dumps.</li>
+  <li><strong>Pass-through automático cuando no hay señal.</strong> Tests verdes + cobertura OK + sin hallazgos = aprobar sin consultar LLM.</li>
+  <li><strong>Splitting por fase, no por feature.</strong> Preparación y entrega son Node; razonamiento es LLM.</li>
+</ol>
+
+<h2>8. Issues a abrir (propuesta)</h2>
+
+<table>
+<tr><th>#</th><th>Título</th><th>Prioridad</th><th>Labels</th></tr>
+<tr><td>1</td><td>[pipeline] Tracking real de tokens desde stream-json del CLI claude</td><td>high</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>2</td><td>[pipeline] Router determinístico en listener-telegram.js para comandos Node-only</td><td>high</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>3</td><td>[pipeline] Compactar workData en user prompt — pasar paths en vez de contenidos</td><td>high</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>4</td><td>[pipeline] Activar prompt caching en spawn de agentes</td><td>high</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>5</td><td>[pipeline] Edge-TTS como primario, OpenAI como fallback</td><td>medium</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>6</td><td>[pipeline] Migrar skills determinísticos a Node puro (/branch, /monitor, /cleanup, /ops, /cost, /perf, /priorizar)</td><td>medium</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>7</td><td>[pipeline] /security con ejecución determinística + salto cuando 0 hallazgos</td><td>medium</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>8</td><td>[pipeline] /tester con baseline-skip cuando tests pasan y cobertura no baja</td><td>medium</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>9</td><td>[pipeline] /qa multi-etapa: pass-auto cuando logcat no muestra crash</td><td>medium</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>10</td><td>[pipeline] /review con linter ad-hoc + ruteo por complejidad (Sonnet default, Opus solo si risk:high)</td><td>medium</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>11</td><td>[pipeline] Budget duro de tokens por skill (cortar runaways)</td><td>low</td><td>area:pipeline, tipo:infra</td></tr>
+<tr><td>12</td><td>[pipeline] Sesiones persistentes para rebotes (reuso de contexto)</td><td>low</td><td>area:pipeline, tipo:infra</td></tr>
+</table>
+
+<div class="footer">
+Generado 2026-04-22 · Intrale Platform Pipeline V2 · Iteración V2 del reporte de eficiencia
+</div>
+
+</body>
+</html>

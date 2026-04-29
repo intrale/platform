@@ -14,7 +14,7 @@ import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.business.RequestJoinBusinessRequest
 import ar.com.intrale.shared.business.RequestJoinBusinessResponse
 
-class ClientRequestJoinBusinessService(private val httpClient: HttpClient) : CommRequestJoinBusinessService {
+class ClientRequestJoinBusinessService(private val httpClient: HttpClient, private val json: Json) : CommRequestJoinBusinessService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(business: String): Result<RequestJoinBusinessResponse> {
         return try {
@@ -23,11 +23,11 @@ class ClientRequestJoinBusinessService(private val httpClient: HttpClient) : Com
             }
             if (response.status.isSuccess()) {
                 val bodyText = response.bodyAsText()
-                val result = Json.decodeFromString(RequestJoinBusinessResponse.serializer(), bodyText)
+                val result = json.decodeFromString(RequestJoinBusinessResponse.serializer(), bodyText)
                 Result.success(result)
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

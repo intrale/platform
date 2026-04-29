@@ -29,6 +29,14 @@ const { spawnSync } = require("child_process");
 const os = require("os");
 
 // ─── Constantes TTS ──────────────────────────────────────────────────────────
+//
+// DEUDA TÉCNICA (#2518): este script llama OpenAI directo con voz `ash` y
+// instructions genéricas, sin pasar por el perfil `qa` (Rulo/Nacho) del
+// `.pipeline/tts-config.json`. Migración propuesta: reemplazar callOpenAITTS
+// por invocación a `.pipeline/lib/tts-generate.js --profile qa` para respetar
+// primary=edge (costo) + fallback=openai (premium) y las personalidades del
+// perfil qa. Por ahora se deja como estaba para no inflar el PR #2518; la
+// migración se tracker como issue aparte.
 
 const TTS_MODEL = "gpt-4o-mini-tts";
 const TTS_VOICE = "ash";
@@ -91,14 +99,59 @@ function findFFprobe(ffmpegPath) {
 
 // ─── Argument parsing ─────────────────────────────────────────────────────────
 
+// #2519: path canónico de la metadata del narrador por issue.
+// `qa-video-share.js` la lee (vía servicio-drive) para mapear provider → Nacho/Rulo.
+function narrationMetaPath(issue, rootDir) {
+    if (!issue || !/^\d+$/.test(String(issue))) return null;
+    return path.join(rootDir || process.cwd(), "qa", "evidence", String(issue), "qa-narration.meta.json");
+}
+
+// #2519 CA-B3/S4: persiste metadata del narrador. No crashea por errores de
+// I/O — la metadata es best-effort; si no la escribimos, el template omite la
+// línea del narrador sin romper el mensaje.
+function writeNarrationMeta(issue, rootDir, meta) {
+    const target = narrationMetaPath(issue, rootDir);
+    if (!target) return false;
+    try {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const payload = {
+            issue: String(issue),
+            provider: String(meta.provider || "openai").toLowerCase(),
+            voice: String(meta.voice || ""),
+            model: String(meta.model || ""),
+            character_name: String(meta.character_name || ""),
+            source: String(meta.source || "qa-narration.js"),
+            generated_at: new Date().toISOString(),
+        };
+        fs.writeFileSync(target, JSON.stringify(payload, null, 2));
+        console.log("[qa-narration] Metadata persistida: " + target);
+        return true;
+    } catch (e) {
+        console.warn("[qa-narration] No se pudo persistir metadata de narrador: " + e.message);
+        return false;
+    }
+}
+
 function parseArgs() {
     const args = process.argv.slice(2);
-    const result = { video: "", flowsDir: "", output: "" };
+    const result = {
+        video: "",
+        flowsDir: "",
+        output: "",
+        issue: "",
+        issueTitle: "",
+        resultsXml: "",
+        rootDir: ""
+    };
     for (let i = 0; i < args.length; i++) {
         switch (args[i]) {
             case "--video": result.video = args[++i] || ""; break;
             case "--flows-dir": result.flowsDir = args[++i] || ""; break;
             case "--output": result.output = args[++i] || ""; break;
+            case "--issue": result.issue = args[++i] || ""; break;
+            case "--issue-title": result.issueTitle = args[++i] || ""; break;
+            case "--results-xml": result.resultsXml = args[++i] || ""; break;
+            case "--root": result.rootDir = args[++i] || ""; break;
         }
     }
     return result;
@@ -164,6 +217,69 @@ function getDuration(filePath, ffprobePath) {
     return null;
 }
 
+// ─── Boot trim: detectar pantalla negra inicial y recortarla ────────────────
+// El emulador + splash de Maestro se llevan 1-2 minutos de pantalla negra
+// antes de que aparezca contenido útil. Ese fragmento no aporta evidencia y
+// hace que los videos sean más largos y los audios más caros. Detectamos el
+// primer bloque negro que arranque cerca de t=0 y trimeamos hasta su fin.
+
+function detectBootTrim(videoPath, ffmpegPath) {
+    if (!ffmpegPath) return 0;
+    try {
+        // blackdetect: d=duración mínima, pix_th=umbral por pixel, pic_th=ratio
+        const result = spawnSync(ffmpegPath, [
+            "-i", videoPath,
+            "-vf", "blackdetect=d=0.5:pix_th=0.10:pic_th=0.98",
+            "-an",
+            "-f", "null",
+            "-"
+        ], { stdio: "pipe", timeout: 90000 });
+
+        const stderr = (result.stderr || "").toString();
+        const re = /black_start:(\d+(?:\.\d+)?)\s+black_end:(\d+(?:\.\d+)?)\s+black_duration:(\d+(?:\.\d+)?)/g;
+        let match = re.exec(stderr);
+        if (!match) return 0;
+
+        const start = parseFloat(match[1]);
+        const end = parseFloat(match[2]);
+
+        // Solo trimeamos si el primer bloque arranca cerca del comienzo
+        if (start > 1.5) return 0;
+        // Tope conservador: nunca recortamos más de 60s, aunque blackdetect diga más
+        return Math.min(end, 60);
+    } catch (e) {
+        return 0;
+    }
+}
+
+function trimBootIfNeeded(videoPath, tmpDir, ffmpegPath, ffprobePath) {
+    const trimSec = detectBootTrim(videoPath, ffmpegPath);
+    if (trimSec < 2) return videoPath; // recortes < 2s no valen el reencode
+
+    const trimmedPath = path.join(tmpDir, "video-trimmed.mp4");
+    // Re-encode para garantizar keyframe en el nuevo inicio (copy podría desfasar audio)
+    const result = spawnSync(ffmpegPath, [
+        "-ss", String(trimSec),
+        "-i", videoPath,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-an",
+        "-y",
+        trimmedPath
+    ], { stdio: "pipe", timeout: 180000 });
+
+    if (result.status !== 0 || !fs.existsSync(trimmedPath)) {
+        const stderr = result.stderr ? result.stderr.toString().slice(-300) : "?";
+        console.warn("[qa-narration] Trim de boot falló (" + stderr + ") — usando video original");
+        return videoPath;
+    }
+
+    const newDur = getDuration(trimmedPath, ffprobePath);
+    console.log("[qa-narration] Boot trim: -" + trimSec.toFixed(1) + "s (video ahora " + (newDur || 0).toFixed(1) + "s)");
+    return trimmedPath;
+}
+
 // ─── Narration files discovery ────────────────────────────────────────────────
 
 function findNarrationFiles(flowsDir) {
@@ -185,6 +301,103 @@ function findNarrationFiles(flowsDir) {
         console.error("[qa-narration] Error leyendo flows dir: " + e.message);
     }
     return narrationFiles;
+}
+
+// ─── Generar segmentos a partir de los criterios de aceptación del issue ─────
+// Esta es la vía principal cuando el agente QA conoce el issue. Arma un guion
+// breve: intro con el título del issue, un clip por criterio con su verdicto,
+// y un cierre con el resumen. Los verdictos se leen del JUnit XML de Maestro.
+
+function parseJunitVerdict(resultsXml) {
+    try {
+        const xml = fs.readFileSync(resultsXml, "utf8");
+        const testsMatch = xml.match(/tests="(\d+)"/);
+        const failuresMatch = xml.match(/failures="(\d+)"/);
+        const errorsMatch = xml.match(/errors="(\d+)"/);
+        const tests = testsMatch ? parseInt(testsMatch[1], 10) : 0;
+        const failures = failuresMatch ? parseInt(failuresMatch[1], 10) : 0;
+        const errors = errorsMatch ? parseInt(errorsMatch[1], 10) : 0;
+        return {
+            total: tests,
+            failures: failures + errors,
+            passed: Math.max(0, tests - failures - errors),
+            pass: tests > 0 && (failures + errors) === 0
+        };
+    } catch (e) {
+        return null;
+    }
+}
+
+function getIssueTitle(issueNumber) {
+    if (!issueNumber) return null;
+    try {
+        const ghPath = process.env.GH_PATH || "gh";
+        const result = spawnSync(ghPath, [
+            "issue", "view", String(issueNumber),
+            "--json", "title",
+            "--jq", ".title"
+        ], { stdio: "pipe", timeout: 15000, windowsHide: true });
+        const title = (result.stdout || "").toString().trim();
+        if (title) return title;
+    } catch (e) { /* sin gh, sin título */ }
+    return null;
+}
+
+function loadTestCases(issueNumber, rootDir) {
+    if (!issueNumber) return null;
+    const tcPath = path.join(rootDir, "qa", "test-cases", `${issueNumber}.json`);
+    try {
+        const data = JSON.parse(fs.readFileSync(tcPath, "utf8"));
+        if (Array.isArray(data) && data.length > 0) return data;
+    } catch (e) { /* no test cases */ }
+    return null;
+}
+
+function buildSegmentsFromIssue(issueNumber, issueTitle, resultsXml, rootDir) {
+    const testCases = loadTestCases(issueNumber, rootDir);
+    if (!testCases) return [];
+
+    const verdict = resultsXml && fs.existsSync(resultsXml) ? parseJunitVerdict(resultsXml) : null;
+    const globalPass = verdict ? verdict.pass : null; // null = desconocido
+
+    const titleClean = (issueTitle || "").trim();
+    const segments = [];
+
+    // Intro: explica qué se está validando
+    const intro = titleClean
+        ? `Validamos el issue número ${issueNumber}: ${titleClean}. Revisamos ${testCases.length} criterio${testCases.length === 1 ? "" : "s"} de aceptación.`
+        : `Validamos el issue número ${issueNumber}. Revisamos ${testCases.length} criterio${testCases.length === 1 ? "" : "s"} de aceptación.`;
+    segments.push({ text: intro, delay_ms: 0 });
+
+    // Un clip por criterio, con el verdicto si lo sabemos
+    testCases.forEach((tc, idx) => {
+        const n = idx + 1;
+        const crit = (tc.criteria || tc.title || `Criterio ${n}`).trim();
+        // Tono: enuncia el criterio y, si el QA global pasó, lo declara verificado.
+        // Si falló, lo deja en modo descriptivo sin afirmar OK (no tenemos mapeo por TC).
+        let text;
+        if (globalPass === true) {
+            text = `Criterio ${n}: ${crit}. Verificado.`;
+        } else if (globalPass === false) {
+            text = `Criterio ${n}: ${crit}.`;
+        } else {
+            text = `Criterio ${n}: ${crit}.`;
+        }
+        segments.push({ text, delay_ms: 0 });
+    });
+
+    // Cierre: resume el veredicto global
+    let closing;
+    if (globalPass === true) {
+        closing = `Resultado: los ${testCases.length} criterio${testCases.length === 1 ? "" : "s"} de aceptación se cumplieron. Issue aprobado.`;
+    } else if (globalPass === false) {
+        closing = `Resultado: el flujo se interrumpió antes de validar todos los criterios. Issue rechazado.`;
+    } else {
+        closing = `Fin de la validación del issue ${issueNumber}.`;
+    }
+    segments.push({ text: closing, delay_ms: 0 });
+
+    return segments;
 }
 
 // ─── Generar segmentos de narración a partir de flows ────────────────────────
@@ -354,54 +567,72 @@ async function main() {
 
     // Encontrar archivos de narración o generar desde flows
     const flowsDir = args.flowsDir || path.resolve(__dirname, "../../.maestro/flows");
-    const narrationFiles = findNarrationFiles(flowsDir);
+    const rootDir = args.rootDir || path.resolve(__dirname, "../..");
 
     let allSegments = [];
+    let narrationSource = "";
 
-    if (narrationFiles.length > 0) {
-        for (const nf of narrationFiles) {
-            if (nf.data.segments) {
-                for (const seg of nf.data.segments) {
-                    allSegments.push({ flow: nf.data.flow || "", ...seg });
+    // Prioridad 1: criterios de aceptación del issue (vía principal cuando se conoce el issue)
+    if (args.issue) {
+        const issueTitle = args.issueTitle || getIssueTitle(args.issue);
+        const resultsXml = args.resultsXml || path.join(rootDir, "qa", "recordings", "maestro-results.xml");
+        const issueSegments = buildSegmentsFromIssue(args.issue, issueTitle, resultsXml, rootDir);
+        if (issueSegments.length > 0) {
+            allSegments = issueSegments;
+            narrationSource = "criterios de aceptación del issue #" + args.issue +
+                (issueTitle ? " (" + issueTitle.substring(0, 60) + ")" : "");
+        } else {
+            console.log("[qa-narration] Issue #" + args.issue + " sin test-cases en qa/test-cases/ — cayendo a fallback");
+        }
+    }
+
+    // Prioridad 2: archivos .narration.json por flow
+    if (allSegments.length === 0) {
+        const narrationFiles = findNarrationFiles(flowsDir);
+        if (narrationFiles.length > 0) {
+            for (const nf of narrationFiles) {
+                if (nf.data.segments) {
+                    for (const seg of nf.data.segments) {
+                        allSegments.push({ flow: nf.data.flow || "", ...seg });
+                    }
                 }
             }
+            narrationSource = narrationFiles.length + " archivo(s) .narration.json";
         }
-        console.log("[qa-narration] " + narrationFiles.length + " archivo(s) .narration.json — " + allSegments.length + " segmentos");
-    } else {
-        // Fallback: generar desde nombres de flows YAML
+    }
+
+    // Prioridad 3: fallback genérico desde nombres de flows YAML
+    if (allSegments.length === 0) {
         allSegments = buildSegmentsFromFlows(flowsDir);
         if (allSegments.length === 0) {
             console.log("[qa-narration] No hay segmentos de narración — saltando");
             process.exit(0);
         }
-        console.log("[qa-narration] Narración generada desde " + allSegments.length + " flow(s) YAML");
+        narrationSource = "fallback: " + allSegments.length + " flow(s) YAML";
     }
 
-    // Obtener duración del video
-    const videoDuration = getDuration(args.video, ffprobePath) || 60;
-    console.log("[qa-narration] Duración del video: " + videoDuration.toFixed(1) + "s");
-
-    // Calcular timestamps: distribuir uniformemente si no hay delay_ms explícito
-    const segmentInterval = videoDuration / (allSegments.length + 1);
-    const timedSegments = allSegments.map((seg, idx) => ({
-        ...seg,
-        startTime: typeof seg.start_ms === "number"
-            ? seg.start_ms / 1000
-            : segmentInterval * (idx + 1) + (seg.delay_ms || 0) / 1000
-    }));
+    console.log("[qa-narration] Guión: " + narrationSource + " — " + allSegments.length + " segmentos");
 
     // Crear directorio temporal
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "qa-narration-"));
 
+    // Trim del boot inicial (pantalla negra del emulador + splash de Maestro).
+    // Devuelve un nuevo path si vale la pena; si no, el original.
+    const sourceVideo = ffmpegPath ? trimBootIfNeeded(args.video, tmpDir, ffmpegPath, ffprobePath) : args.video;
+
+    // Obtener duración del video (ya trimado si correspondió)
+    const videoDuration = getDuration(sourceVideo, ffprobePath) || 60;
+    console.log("[qa-narration] Duración del video: " + videoDuration.toFixed(1) + "s");
+
     try {
-        // Generar clips de audio TTS para cada segmento
-        console.log("[qa-narration] Generando " + timedSegments.length + " clip(s) TTS con OpenAI...");
+        // Generar clips de audio TTS primero (sin asignar timestamps todavía)
+        console.log("[qa-narration] Generando " + allSegments.length + " clip(s) TTS con OpenAI...");
         const clipFiles = [];
 
-        for (let i = 0; i < timedSegments.length; i++) {
-            const seg = timedSegments[i];
+        for (let i = 0; i < allSegments.length; i++) {
+            const seg = allSegments[i];
             const clipPath = path.join(tmpDir, "paso_" + (i + 1) + ".opus");
-            const progressLabel = "  Paso " + (i + 1) + "/" + timedSegments.length;
+            const progressLabel = "  Paso " + (i + 1) + "/" + allSegments.length;
 
             try {
                 const audioBuffer = await callOpenAITTS(seg.text, openaiApiKey);
@@ -409,8 +640,10 @@ async function main() {
                 const clipDuration = getDuration(clipPath, ffprobePath) || 3;
                 clipFiles.push({
                     path: clipPath,
-                    startTime: seg.startTime,
-                    duration: clipDuration
+                    duration: clipDuration,
+                    // startTime se asigna abajo en base a la duración acumulada real
+                    explicitStart: typeof seg.start_ms === "number" ? seg.start_ms / 1000 : null,
+                    delayMs: seg.delay_ms || 0
                 });
                 process.stdout.write(progressLabel + " OK (" + clipDuration.toFixed(1) + "s) → " + seg.text.substring(0, 60) + "\n");
             } catch (e) {
@@ -419,10 +652,51 @@ async function main() {
             }
         }
 
+        // Asignar startTime SINCRÓNICO con la acción real:
+        // 1) Si el segmento trae start_ms explícito → se usa tal cual.
+        // 2) Si no → se encadena secuencialmente desde el inicio del video,
+        //    acumulando duraciones reales de los clips + una pausa breve.
+        //    Esto evita el desfasaje que producía la distribución uniforme,
+        //    donde la narración quedaba desalineada respecto a lo mostrado.
+        const INTER_CLIP_PAUSE = 0.35; // 350ms entre clips consecutivos
+        let cursor = 0;
+        for (const clip of clipFiles) {
+            if (clip.explicitStart !== null) {
+                clip.startTime = clip.explicitStart + clip.delayMs / 1000;
+                cursor = Math.max(cursor, clip.startTime + clip.duration + INTER_CLIP_PAUSE);
+            } else {
+                clip.startTime = cursor + clip.delayMs / 1000;
+                cursor = clip.startTime + clip.duration + INTER_CLIP_PAUSE;
+            }
+        }
+
+        // Si la narración total excede la duración del video, avisar.
+        // El filtro amix respeta duration=first, por lo que recortará naturalmente,
+        // pero un buffer menor a 2s suele indicar que conviene guiones más cortos.
+        const last = clipFiles[clipFiles.length - 1];
+        if (last) {
+            const end = last.startTime + last.duration;
+            if (end > videoDuration) {
+                console.warn("[qa-narration] Narración (" + end.toFixed(1) + "s) excede video (" + videoDuration.toFixed(1) + "s) — final queda truncado");
+            } else {
+                console.log("[qa-narration] Narración termina a " + end.toFixed(1) + "s / video " + videoDuration.toFixed(1) + "s (buffer " + (videoDuration - end).toFixed(1) + "s)");
+            }
+        }
+
         if (clipFiles.length === 0) {
             console.error("[qa-narration] No se pudo generar ningún clip de audio");
             process.exit(0);
         }
+
+        // #2519: persistir metadata del narrador (provider siempre 'openai' para
+        // este script legacy — migración a tts-generate.js es issue #2521).
+        writeNarrationMeta(args.issue, args.rootDir || rootDir, {
+            provider: "openai",
+            voice: TTS_VOICE,
+            model: TTS_MODEL,
+            character_name: "", // este script no distingue personajes
+            source: "qa-narration.js",
+        });
 
         const outputPath = args.output || args.video.replace(/\.mp4$/, "-narrated.mp4");
 
@@ -432,7 +706,7 @@ async function main() {
 
             if (audioTrackPath) {
                 try {
-                    mergeVideoAudio(args.video, audioTrackPath, outputPath, ffmpegPath);
+                    mergeVideoAudio(sourceVideo, audioTrackPath, outputPath, ffmpegPath);
                     const stats = fs.statSync(outputPath);
                     const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
                     console.log("[qa-narration] ✓ Video narrado: " + outputPath + " (" + sizeMB + "MB)");

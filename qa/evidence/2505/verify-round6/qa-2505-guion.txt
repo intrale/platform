@@ -1,0 +1,19 @@
+QA ronda seis para el issue dos mil quinientos cinco: ícono distintivo por flavor cliente, negocios y repartos.
+
+Contexto del rebote. En rondas tres y cinco, QA rechazó porque los tres A P Ks mostraban íconos visualmente idénticos en el launcher, aunque el fix del desarrollador estaba correcto en el código fuente. La causa raíz era que los A P Ks entregados por el builder no correspondían al commit del fix, sino a versiones anteriores en caché.
+
+En esta ronda seis, detecté que los A P Ks frescos del builder quedaron correctamente generados en el worktree del agente, pero el pre-warm del pipeline instaló las versiones viejas desde la ruta principal del repo. Tras verificar empíricamente que los A P Ks del worktree tenían el fix, desinstalé las versiones viejas e instalé las correctas desde el worktree.
+
+Verificación técnica con aapt2 sobre los A P Ks recién instalados. Criterio de aceptación ocho, cada flavor reemplaza completamente el set. En el A P K de cliente, stroke color hex literal uno ocho nueve cero F F, azul sólido. En el A P K de negocios, stroke color hex cero cero C ocho cinco tres, verde sólido. En el A P K de repartos, stroke color hex F F seis B tres cinco, naranja sólido. Los tres son valores literales, no referencias a atributos auxiliares, y el auxiliar drawable anydpi-v26 dólar ic intrale foreground guión guión cero punto xml ya no existe en ninguno de los tres A P Ks. El defecto estructural documentado en rondas previas está resuelto.
+
+Criterio de aceptación cuatro, distinción visual en el launcher. Al buscar "Intrale" en el drawer del emulador virtualAndroid, aparecen los tres íconos lado a lado, claramente diferenciados. El ícono de cliente muestra un triángulo azul con un emblema interno ámbar tipo bolsa de compras, comunicando la identidad amigable del comprador. El ícono de negocios muestra un triángulo verde con un emblema interno gris grafito tipo maletín, comunicando la identidad profesional del dueño de negocio. El ícono de repartos muestra un triángulo naranja con un emblema interno de flecha más clara, comunicando la identidad dinámica del repartidor. Los tres íconos son hermanos visuales por compartir la geometría triangular, pero distinguibles al instante por color y emblema, cumpliendo el brief de UX.
+
+Criterio de aceptación cinco, themed icons Android trece. Los tres A P Ks contienen mipmap anydpi v veintiséis con capas background, foreground y monochrome. No fue posible activar themed icons en el launcher default del emulador durante este ciclo, pero la estructura monochrome está presente por aapt2 dump.
+
+Criterio de aceptación nueve, package I Ds intactos. Las tres apps se lanzan correctamente desde sus package I Ds: com punto intrale punto app punto client, com punto intrale punto app punto business, com punto intrale punto app punto delivery. Cada ícono tocado abre la app correspondiente.
+
+Criterio de aceptación dos, manifest inmutable. Confirmado por Security en esta misma fase de verificación.
+
+Criterio de aceptación siete, sin metadata sensible. Confirmado por Security en esta misma fase de verificación.
+
+Resultado de Q A ronda seis. Aprobado. Los tres criterios visuales que habían sido rechazados en rondas previas están empíricamente resueltos en los A P Ks correctos. Se adjunta evidencia completa: md5 de los tres A P Ks instalados, dump aapt2 con strokeColor diferenciado por flavor, screenshot del drawer con los tres íconos visibles simultáneamente, screenshots individuales de cada app abierta. Se levanta un hallazgo separado: el pipeline de build debe sincronizar los A P Ks desde el worktree del agente hacia la ruta principal del repo, o el pre-warm debe leer desde el worktree del agente. Ese hallazgo no bloquea este issue, pero debe abrirse como issue independiente para evitar que el defecto vuelva a ocurrir.

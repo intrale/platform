@@ -23,7 +23,8 @@ import org.kodein.log.newLogger
 
 class ClientBusinessSchedulesService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommBusinessSchedulesService {
 
     private val logger = LoggerFactory.default.newLogger<ClientBusinessSchedulesService>()
@@ -35,10 +36,10 @@ class ClientBusinessSchedulesService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(GetBusinessSchedulesResponse.serializer(), bodyText)
+                val result = json.decodeFromString(GetBusinessSchedulesResponse.serializer(), bodyText)
                 Result.success(result.schedules)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -58,10 +59,10 @@ class ClientBusinessSchedulesService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(UpdateBusinessSchedulesResponse.serializer(), bodyText)
+                val result = json.decodeFromString(UpdateBusinessSchedulesResponse.serializer(), bodyText)
                 Result.success(result.schedules)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte diario V3 — Consumo Pipeline</title>
+<style>
+    body { font-family: -apple-system, 'Segoe UI', sans-serif; color: #1a1a2e; padding: 24px; max-width: 900px; margin: 0 auto; }
+    h1 { color: #16213e; border-bottom: 3px solid #0f3460; padding-bottom: 8px; margin-bottom: 4px; }
+    .subtitle { color: #666; font-size: 13px; margin-bottom: 24px; }
+    h2 { color: #0f3460; margin-top: 28px; border-left: 4px solid #0f3460; padding-left: 10px; }
+    .totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+    .kpi { background: #f4f6fb; padding: 12px; border-radius: 6px; }
+    .kpi .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+    .kpi .value { font-size: 20px; font-weight: 700; color: #0f3460; margin-top: 4px; }
+    .kpi .trend { font-size: 12px; margin-top: 4px; color: #888; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+    th { background: #0f3460; color: white; text-align: left; padding: 8px 10px; }
+    td { padding: 8px 10px; border-bottom: 1px solid #eee; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.usd { text-align: right; font-weight: 600; color: #0f3460; font-variant-numeric: tabular-nums; }
+    td.skill, td.issue { font-weight: 600; }
+    tr:nth-child(even) { background: #fafbfd; }
+    .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 11px; color: #888; }
+</style>
+</head>
+<body>
+    <h1>Reporte diario V3 — Consumo del pipeline</h1>
+    <div class="subtitle">Ventana: <b>24h</b> · Generado: 2026-04-22T12:31:29.444Z</div>
+
+    <div class="totals">
+        <div class="kpi"><div class="label">Sesiones</div><div class="value">2</div><div class="trend">vs previo: —</div></div>
+        <div class="kpi"><div class="label">Tokens in+out</div><div class="value">3.8K</div><div class="trend">vs previo: —</div></div>
+        <div class="kpi"><div class="label">Costo estimado</div><div class="value">$0.1699</div><div class="trend">vs previo: —</div></div>
+        <div class="kpi"><div class="label">TTS (costo)</div><div class="value">$0.0164</div><div class="trend">920 chars · 1.1min</div></div>
+    </div>
+
+    <h2>Top 5 agentes por costo</h2>
+    <table>
+        <thead><tr><th>Skill</th><th class="num">Sesiones</th><th class="num">Tokens</th><th class="num">Cache</th><th class="num">Dur. prom</th><th class="num">Costo</th></tr></thead>
+        <tbody>
+        <tr>
+            <td class="skill">smoke-test</td>
+            <td class="num">2</td>
+            <td class="num">3.8K</td>
+            <td class="num">17.5K</td>
+            <td class="num">0s</td>
+            <td class="usd">$0.1699</td>
+        </tr></tbody>
+    </table>
+
+    <h2>Top 5 issues más caros</h2>
+    <table>
+        <thead><tr><th>Issue</th><th class="num">Sesiones</th><th class="num">Tokens</th><th class="num">Duración total</th><th class="num">Costo</th></tr></thead>
+        <tbody>
+        <tr>
+            <td class="issue">#2477</td>
+            <td class="num">2</td>
+            <td class="num">3.8K</td>
+            <td class="num">0s</td>
+            <td class="usd">$0.1699</td>
+        </tr></tbody>
+    </table>
+
+    <h2>TTS por provider</h2>
+    <table>
+        <thead><tr><th>Provider</th><th class="num">Invocaciones</th><th class="num">Chars</th><th class="num">Audio</th><th class="num">Costo</th></tr></thead>
+        <tbody>
+        <tr>
+            <td class="skill">openai</td>
+            <td class="num">2</td>
+            <td class="num">920</td>
+            <td class="num">1.1 min</td>
+            <td class="usd">$0.0164</td>
+        </tr></tbody>
+    </table>
+
+    <div class="footer">
+        Generado por <code>.pipeline/metrics/report-daily.js</code> · Schema V3 definido en issue #2477.<br>
+        Costos: estimaciones basadas en pricing público por modelo (ver <code>lib/traceability.js</code> → MODEL_PRICING).
+    </div>
+</body>
+</html>

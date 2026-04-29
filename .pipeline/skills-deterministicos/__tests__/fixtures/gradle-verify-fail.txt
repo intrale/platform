@@ -1,0 +1,13 @@
+> Task :app:composeApp:verifyNoLegacyStrings FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:composeApp:verifyNoLegacyStrings'.
+> Se detectaron 3 usos prohibidos de strings legacy. Ver output.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+
+BUILD FAILED in 12s
+3 actionable tasks: 1 executed, 2 up-to-date

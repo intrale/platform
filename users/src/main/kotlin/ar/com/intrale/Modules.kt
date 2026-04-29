@@ -107,6 +107,12 @@ val appModule = DI.Module("appModule") {
         }
     }
 
+    bind <DynamoDbTable<DeliveryZoneEntity>>{
+        singleton {
+            instance<DynamoDbEnhancedClient>().table("deliveryzones", TableSchema.fromBean(DeliveryZoneEntity::class.java))
+        }
+    }
+
     bind<UsersConfig> {
         singleton {
             val configFactory = ConfigFactory.load()
@@ -148,6 +154,7 @@ val appModule = DI.Module("appModule") {
     bind<ClientOrderRepository> {
         singleton { ClientOrderRepository() }
     }
+
 
     bind<DeliveryProfileRepository> {
         singleton { DeliveryProfileRepository() }
@@ -226,7 +233,7 @@ val appModule = DI.Module("appModule") {
         singleton { ClientAddressesFunction(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="client/orders") {
-        singleton { ClientOrders(instance(), instance(), instance(), instance()) }
+        singleton { ClientOrders(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="client/order-detail") {
         singleton { ClientOrderDetail(instance(), instance(), instance(), instance()) }
@@ -301,12 +308,32 @@ val appModule = DI.Module("appModule") {
         singleton { BusinessDeliveryZoneFunction(instance(), instance(), instance(), instance(), instance()) }
     }
 
+    bind<Function> (tag="zones") {
+        singleton { ZonesFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="zones/check") {
+        singleton { ZonesCheckFunction(instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="business/payment-methods") {
         singleton { BusinessPaymentMethodsFunction(instance(), instance(), instance(), instance(), instance()) }
     }
 
     bind<Function> (tag="client/payment-methods") {
         singleton { ClientPaymentMethodsFunction(instance(), instance(), instance()) }
+    }
+
+    bind<AnomalyRepository> {
+        singleton { AnomalyRepository() }
+    }
+
+    bind<OrderAnomalyDetectionService> {
+        singleton { OrderAnomalyDetectionService(instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/anomalies") {
+        singleton { OrderAnomalyFunction(instance(), instance(), instance(), instance(), instance(), instance()) }
     }
 
     bind<AiResponseService> {

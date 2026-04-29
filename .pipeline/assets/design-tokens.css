@@ -1,0 +1,233 @@
+/* =============================================================================
+ * Intrale Pipeline V3 — Design Tokens
+ * -----------------------------------------------------------------------------
+ * Fuente unica de verdad para colores, tipografia, espaciado, radios,
+ * sombras y animaciones del sistema visual. Referenciado desde:
+ *   - .pipeline/dashboard.js (dashboard web V3)
+ *   - docs/qa/rejection-*.html  (PDFs de rejection)
+ *   - mensajes de Telegram (via post-procesamiento)
+ *   - pagina /consumo
+ *
+ * Todo cambio a esta paleta debe mantener:
+ *   - WCAG AA (contraste >= 4.5:1 texto normal, >= 3:1 texto grande / iconos)
+ *   - Consistencia con branding corporativo Intrale (logo: #00D6FF / #1890FF)
+ *
+ * Verificado con WebAIM Contrast Checker — ver docs/pipeline/design-system.md
+ * seccion "Accesibilidad" para la tabla completa de ratios.
+ * ========================================================================== */
+
+:root {
+  /* ---------------------------------------------------------------------------
+   * 1. MARCA (Brand) — extraidos del logo maestro Intrale
+   * -------------------------------------------------------------------------- */
+  --brand-navy-deep:    #0A1C36;   /* fondo logo gradient start */
+  --brand-navy:         #0D274D;   /* fondo logo gradient end */
+  --brand-cyan:         #00D6FF;   /* acento primario — simbolo gradient start */
+  --brand-blue:         #1890FF;   /* acento primario — simbolo gradient end */
+  --brand-cyan-dim:     #0099B8;   /* cyan oscurecido para hover / borders */
+  --brand-blue-dim:     #0F6CD6;   /* blue oscurecido para hover / borders */
+
+  /* ---------------------------------------------------------------------------
+   * 2. NEUTROS (Superficies y texto)
+   * Dark-first, coherente con GitHub-flavor del dashboard actual pero
+   * afinado para maximizar contraste en WCAG AA.
+   * -------------------------------------------------------------------------- */
+  --surface-0:          #0D1117;   /* body background */
+  --surface-1:          #161B22;   /* cards, panels — elev 1 */
+  --surface-2:          #1C2128;   /* hover, nested panels — elev 2 */
+  --surface-3:          #252B33;   /* modals, popovers — elev 3 */
+  --border-subtle:      #21262D;   /* dividers sutiles */
+  --border:             #30363D;   /* bordes estandar */
+  --border-strong:      #484F58;   /* bordes prominentes, focus */
+
+  --text-primary:       #E6EDF3;   /* texto principal — 14.8:1 sobre surface-0 */
+  --text-secondary:     #B1BAC4;   /* texto secundario — 9.7:1 sobre surface-0 */
+  --text-dim:           #8B949E;   /* texto terciario / timestamps — 5.3:1 */
+  --text-disabled:      #6E7681;   /* deshabilitado — 3.9:1 (solo elementos grandes) */
+
+  /* ---------------------------------------------------------------------------
+   * 3. SEMANTICOS (estado)
+   * Cada color tiene tres tonos: base, dim (10%), y text (para uso sobre fondo).
+   * Siempre combinados con icono o texto — NUNCA informacion solo por color.
+   * -------------------------------------------------------------------------- */
+  --success:            #3FB950;   /* verde healthy / passed */
+  --success-dim:        #196C2E;   /* verde oscuro para bordes */
+  --success-bg:         rgba(63, 185, 80, 0.14);
+
+  --warning:            #D29922;   /* amarillo stale / attention */
+  --warning-dim:        #9E6A03;
+  --warning-bg:         rgba(210, 153, 34, 0.14);
+
+  --danger:             #F85149;   /* rojo error / failed */
+  --danger-dim:         #8B1A14;
+  --danger-bg:          rgba(248, 81, 73, 0.14);
+
+  --info:               #58A6FF;   /* azul info / neutro accionable */
+  --info-dim:           #1F6FEB;
+  --info-bg:            rgba(88, 166, 255, 0.14);
+
+  --retry:              #F59E0B;   /* ambar reintentando (#2337) */
+  --retry-dim:          #B8730A;
+  --retry-bg:           rgba(245, 158, 11, 0.14);
+
+  --purple:             #BC8CFF;   /* acento alternativo / definicion */
+  --purple-dim:         #8957E5;
+  --purple-bg:          rgba(188, 140, 255, 0.14);
+
+  --teal:               #2DD4BF;   /* acento alternativo / V3 badge */
+  --teal-dim:           #0D9488;
+  --teal-bg:            rgba(45, 212, 191, 0.14);
+
+  /* ---------------------------------------------------------------------------
+   * 4. ACENTOS POR LANE (board del dashboard)
+   * Cada lane tiene un color distintivo para reforzar la identidad del flujo.
+   * -------------------------------------------------------------------------- */
+  --lane-definicion:       var(--purple);          /* morado — ideacion */
+  --lane-definicion-bg:    var(--purple-bg);
+  --lane-desarrollo:       var(--info);            /* azul — construccion */
+  --lane-desarrollo-bg:    var(--info-bg);
+  --lane-qa:               var(--teal);            /* teal — verificacion */
+  --lane-qa-bg:            var(--teal-bg);
+  --lane-entrega:          var(--success);         /* verde — deploy */
+  --lane-entrega-bg:       var(--success-bg);
+
+  /* ---------------------------------------------------------------------------
+   * 5. TIPOGRAFIA
+   * System font stack — zero dependencias, cero CDN, zero fuga de IP.
+   * Optimizado para legibilidad en terminales/dashboards tecnicos.
+   * -------------------------------------------------------------------------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable",
+               "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "Consolas", "Liberation Mono", Menlo, Monaco,
+               "Courier New", monospace;
+
+  /* Escala tipografica — base 15px, razon 1.200 (Minor Third) */
+  --fs-xs:       0.75rem;    /* 12px — timestamps, hints */
+  --fs-sm:       0.875rem;   /* 14px — body secundario */
+  --fs-md:       1rem;       /* 16px — body default */
+  --fs-lg:       1.125rem;   /* 18px — subtitulos */
+  --fs-xl:       1.375rem;   /* 22px — H3 */
+  --fs-2xl:      1.625rem;   /* 26px — H2 */
+  --fs-3xl:      2rem;       /* 32px — H1 header */
+  --fs-clock:    1.6rem;     /* reloj del header */
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  --lh-tight:    1.2;
+  --lh-normal:   1.5;
+  --lh-relaxed:  1.65;
+
+  --ls-tight:    -0.01em;
+  --ls-normal:   0;
+  --ls-wide:     0.05em;
+  --ls-wider:    0.1em;     /* para badges y chips */
+
+  /* ---------------------------------------------------------------------------
+   * 6. ESPACIADO (spacing scale — base 4px)
+   * -------------------------------------------------------------------------- */
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---------------------------------------------------------------------------
+   * 7. BORDES Y RADIOS
+   * -------------------------------------------------------------------------- */
+  --radius-xs:   4px;
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius:     10px;
+  --radius-lg:  14px;
+  --radius-xl:  20px;      /* chips / pills */
+  --radius-full: 9999px;
+
+  --border-width:     1px;
+  --border-width-2:   2px;
+
+  /* ---------------------------------------------------------------------------
+   * 8. SOMBRAS (elevation)
+   * -------------------------------------------------------------------------- */
+  --shadow-xs:  0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-sm:  0 2px 4px rgba(0, 0, 0, 0.36);
+  --shadow-md:  0 4px 12px rgba(0, 0, 0, 0.40);
+  --shadow-lg:  0 8px 24px rgba(0, 0, 0, 0.50);
+  --shadow-glow-brand: 0 0 16px rgba(0, 214, 255, 0.35);
+  --shadow-glow-ok:    0 0 10px rgba(63, 185, 80, 0.45);
+  --shadow-glow-warn:  0 0 10px rgba(210, 153, 34, 0.45);
+  --shadow-glow-err:   0 0 10px rgba(248, 81, 73, 0.45);
+
+  /* ---------------------------------------------------------------------------
+   * 9. FOCUS RING (accesibilidad — WCAG 2.1)
+   * -------------------------------------------------------------------------- */
+  --focus-ring-color: var(--brand-cyan);
+  --focus-ring:       0 0 0 2px var(--surface-0), 0 0 0 4px var(--focus-ring-color);
+
+  /* ---------------------------------------------------------------------------
+   * 10. ANIMACION
+   * -------------------------------------------------------------------------- */
+  --motion-fast:   120ms;
+  --motion-base:   200ms;
+  --motion-slow:   320ms;
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:   cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* ---------------------------------------------------------------------------
+   * 11. BACK-COMPAT con dashboard.js actual
+   * Aliases para que el dashboard existente no rompa durante la migracion.
+   * Una vez aplicado el rediseno, estas aliases pueden eliminarse.
+   * -------------------------------------------------------------------------- */
+  --bg:   var(--surface-0);
+  --sf:   var(--surface-1);
+  --sf2:  var(--surface-2);
+  --bd:   var(--border);
+  --bd2:  var(--border-subtle);
+  --tx:   var(--text-primary);
+  --dim:  var(--text-dim);
+  --dim2: var(--text-disabled);
+  --ac:   var(--info);
+  --ac2:  var(--info-dim);
+  --gn:   var(--success);
+  --gn2:  var(--success-dim);
+  --yl:   var(--warning);
+  --yl2:  var(--warning-dim);
+  --rd:   var(--danger);
+  --rd2:  var(--danger-dim);
+  --or:   var(--retry);
+  --or2:  var(--retry-dim);
+  --pu:   var(--purple);
+}
+
+/* ---------------------------------------------------------------------------
+ * 12. MEDIA QUERY — prefers-reduced-motion
+ * Respeta la preferencia del SO: desactiva animaciones decorativas.
+ * -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 13. MEDIA QUERY — prefers-contrast: more
+ * Modo alto contraste: fortalece bordes y texto secundario.
+ * -------------------------------------------------------------------------- */
+@media (prefers-contrast: more) {
+  :root {
+    --border:        #6E7681;
+    --border-subtle: #484F58;
+    --text-dim:      #C9D1D9;
+    --text-disabled: #8B949E;
+  }
+}

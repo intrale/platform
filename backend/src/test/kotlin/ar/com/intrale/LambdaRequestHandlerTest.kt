@@ -46,7 +46,7 @@ class LambdaRequestHandlerTest {
     }
 
     @Test
-    fun missingFunctionReturnsError() {
+    fun `funcion inexistente retorna 400`() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
             bind<Config>() with singleton { cfg("biz") }
@@ -60,7 +60,8 @@ class LambdaRequestHandlerTest {
             path = "/biz/missing"
         }
         val response = handler.handle(module, request, null)
-        assertEquals(500, response.statusCode)
+        // Función no encontrada en ningún binding → "No function defined on path" → 400
+        assertEquals(400, response.statusCode)
     }
 
     @Test
@@ -182,7 +183,7 @@ class LambdaRequestHandlerTest {
     }
 
     @Test
-    fun `ruta multi-segmento construye function key con dos segmentos`() {
+    fun `ruta multi-segmento resuelve binding de 2 segmentos cuando no hay de 3`() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
             bind<Config>() with singleton { cfg("biz") }
@@ -198,5 +199,51 @@ class LambdaRequestHandlerTest {
         }
         val response = handler.handle(module, request, null)
         assertEquals(201, response.statusCode)
+    }
+
+    @Test
+    fun `ruta de 3 segmentos resuelve binding exacto de 3 segmentos`() {
+        val module = DI.Module(name = "test") {
+            bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
+            bind<Config>() with singleton { cfg("biz") }
+            bind<Function>(tag = "client/products/availability") with singleton { HelloFunction() }
+        }
+        val handler = TestHandler(module)
+        val request = APIGatewayProxyRequestEvent().apply {
+            httpMethod = "POST"
+            pathParameters = mapOf("business" to "biz", "function" to "client/products/availability")
+            headers = emptyMap()
+            body = null
+            path = "/biz/client/products/availability"
+        }
+        val response = handler.handle(module, request, null)
+        assertEquals(201, response.statusCode)
+    }
+
+    private class AcceptedFunction : Function {
+        override suspend fun execute(business: String, function: String, headers: Map<String, String>, textBody: String): Response {
+            return Response(HttpStatusCode.Accepted) // 202 para distinguir
+        }
+    }
+
+    @Test
+    fun `ruta de 3 segmentos prefiere binding exacto sobre parcial de 2`() {
+        val module = DI.Module(name = "test") {
+            bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
+            bind<Config>() with singleton { cfg("biz") }
+            bind<Function>(tag = "client/products") with singleton { HelloFunction() } // 201
+            bind<Function>(tag = "client/products/availability") with singleton { AcceptedFunction() } // 202
+        }
+        val handler = TestHandler(module)
+        val request = APIGatewayProxyRequestEvent().apply {
+            httpMethod = "POST"
+            pathParameters = mapOf("business" to "biz", "function" to "client/products/availability")
+            headers = emptyMap()
+            body = null
+            path = "/biz/client/products/availability"
+        }
+        val response = handler.handle(module, request, null)
+        // Debe preferir el binding de 3 segmentos (202) sobre el de 2 (201)
+        assertEquals(202, response.statusCode)
     }
 }

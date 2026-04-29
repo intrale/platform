@@ -1,0 +1,139 @@
+{
+  "issue": "2023",
+  "mode": "qa-api",
+  "timestamp": "2026-04-21T02:03:07.325410Z",
+  "base_url": "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev",
+  "results": [
+    {
+      "id": "TC-AUTH-01",
+      "title": "Signin endpoint existe y valida body",
+      "method": "POST",
+      "endpoint": "/qa-automation/signin",
+      "expected_status_range": [
+        400,
+        400
+      ],
+      "actual_status": 400,
+      "time_ms": 461,
+      "response_body": "{\"message\":\"email is required password is required\",\"statusCode\":{\"value\":400,\"description\":\"Bad Request\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-AUTH-02",
+      "title": "Signup endpoint existe y valida body",
+      "method": "POST",
+      "endpoint": "/qa-automation/signup",
+      "expected_status_range": [
+        400,
+        400
+      ],
+      "actual_status": 400,
+      "time_ms": 438,
+      "response_body": "{\"message\":\"email is required\",\"statusCode\":{\"value\":400,\"description\":\"Bad Request\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-AUTH-03",
+      "title": "Recovery (forgot password) endpoint existe",
+      "method": "POST",
+      "endpoint": "/qa-automation/recovery",
+      "expected_status_range": [
+        400,
+        400
+      ],
+      "actual_status": 400,
+      "time_ms": 714,
+      "response_body": "{\"message\":\"email is required\",\"statusCode\":{\"value\":400,\"description\":\"Bad Request\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-AUTH-04",
+      "title": "Signin con credenciales invalidas responde error",
+      "method": "POST",
+      "endpoint": "/qa-automation/signin",
+      "expected_status_range": [
+        400,
+        401
+      ],
+      "actual_status": 401,
+      "time_ms": 3402,
+      "response_body": "{\"statusCode\":{\"value\":401,\"description\":\"Unauthorized\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-PROD-01",
+      "title": "Products endpoint existe (requiere auth)",
+      "method": "POST",
+      "endpoint": "/qa-automation/products",
+      "expected_status_range": [
+        400,
+        401
+      ],
+      "actual_status": 401,
+      "time_ms": 445,
+      "response_body": "{\"statusCode\":{\"value\":401,\"description\":\"Unauthorized\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-ORDER-01",
+      "title": "Orders endpoint existe (requiere auth)",
+      "method": "POST",
+      "endpoint": "/qa-automation/orders",
+      "expected_status_range": [
+        400,
+        401
+      ],
+      "actual_status": 400,
+      "time_ms": 504,
+      "response_body": "{\"message\":\"No function defined on path\",\"statusCode\":{\"value\":400,\"description\":\"Bad Request\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-ORDER-02",
+      "title": "Order-detail endpoint existe (requiere auth)",
+      "method": "POST",
+      "endpoint": "/qa-automation/order-detail",
+      "expected_status_range": [
+        400,
+        401
+      ],
+      "actual_status": 400,
+      "time_ms": 399,
+      "response_body": "{\"message\":\"No function defined on path\",\"statusCode\":{\"value\":400,\"description\":\"Bad Request\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-DELIVERY-01",
+      "title": "Delivery orders endpoint existe",
+      "method": "POST",
+      "endpoint": "/qa-automation/delivery-orders",
+      "expected_status_range": [
+        400,
+        401
+      ],
+      "actual_status": 400,
+      "time_ms": 405,
+      "response_body": "{\"message\":\"No function defined on path\",\"statusCode\":{\"value\":400,\"description\":\"Bad Request\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    },
+    {
+      "id": "TC-PROFILE-01",
+      "title": "Profile endpoint existe (requiere auth)",
+      "method": "POST",
+      "endpoint": "/qa-automation/profile",
+      "expected_status_range": [
+        400,
+        401
+      ],
+      "actual_status": 400,
+      "time_ms": 378,
+      "response_body": "{\"message\":\"No function defined on path\",\"statusCode\":{\"value\":400,\"description\":\"Bad Request\"},\"responseHeaders\":{}}",
+      "verdict": "PASS"
+    }
+  ],
+  "summary": {
+    "total": 9,
+    "passed": 9,
+    "failed": 0
+  }
+}

@@ -155,93 +155,50 @@ Cuando `QA_MODE=android` (o vacío), validás con emulador, APK y video narrado.
 
 ### Tu trabajo (QA-Android)
 
+**IMPORTANTE — Pre-warm y video crudo:**
+El pipeline ya instaló el APK, abrió la app y cerró diálogos del sistema por vos.
+También está grabando video crudo automáticamente (`qa/evidence/<issue>/qa-<issue>-raw.mp4`).
+**NO necesitás** instalar el APK, abrir la app, ni iniciar screenrecord — ya está hecho.
+Arrancá directamente a testear los criterios de aceptación.
+
 1. Lee los criterios de aceptacion del issue: `gh issue view <issue> --json title,body,labels`
 2. Lee el resultado del dev en fases anteriores (si hay worktree, mirá qué cambió)
-3. Determina qué flavor necesitas probar:
-   - `app:client` → `com.intrale.app.client`
-   - `app:business` → `com.intrale.app.business`
-   - `app:delivery` → `com.intrale.app.delivery`
-4. Si es cambio de UI/app:
-   a. **APK: usar artefacto pre-compilado de la fase Build** (SIN LOCAL_BASE_URL):
-      ```bash
-      # Buscar APK en orden de prioridad:
-      # 1. qa/artifacts/composeApp-<flavor>-debug.apk (copiado por fase Build)
-      # 2. app/composeApp/build/outputs/apk/<flavor>/debug/*.apk (build previo)
-      APK_PATH="qa/artifacts/composeApp-client-debug.apk"
-      if [ ! -f "$APK_PATH" ]; then
-          APK_PATH=$(ls app/composeApp/build/outputs/apk/client/debug/*.apk 2>/dev/null | head -1)
-      fi
-      ```
-      Si no se encuentra APK pre-compilado, compilar como fallback **SIN LOCAL_BASE_URL**:
-      ```bash
-      export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
-      ./gradlew :app:composeApp:assemble<Flavor>Debug --no-daemon
-      ```
-      **IMPORTANTE:** NUNCA usar `-PLOCAL_BASE_URL`. El APK debe apuntar al endpoint remoto de API Gateway.
-   b. Instalar APK en emulador:
-      ```bash
-      adb install -r "$APK_PATH"
-      ```
-   c. Lanzar la app: `adb shell am start -n "<package>/ar.com.intrale.MainActivity"`
-   d. Esperar que renderice (~15s con swiftshader)
-   e. Grabar video de pantalla:
-      ```bash
-      adb shell 'screenrecord --time-limit 45 --bit-rate 12000000 /sdcard/qa-evidence.mp4' &
-      sleep 47
-      adb pull //sdcard/qa-evidence.mp4 qa/evidence/qa-<issue>-raw.mp4
-      ```
-   f. **Validar grabacion de pantalla** (antes de seguir):
-      ```bash
-      VIDEO_RAW="qa/evidence/qa-<issue>-raw.mp4"
-      SIZE=$(stat -c%s "$VIDEO_RAW" 2>/dev/null || stat -f%z "$VIDEO_RAW" 2>/dev/null || echo "0")
-      if [ "$SIZE" -lt 204800 ]; then
-        echo "ERROR: Video pesa ${SIZE} bytes (<200KB) — grabacion fallida"
-      fi
-      FFMPEG_BIN=$(which ffmpeg 2>/dev/null || echo "/c/Users/Administrator/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg")
-      DURATION=$("$FFMPEG_BIN" -i "$VIDEO_RAW" 2>&1 | grep Duration | sed 's/.*Duration: \([^,]*\).*/\1/')
-      echo "Duracion: $DURATION"
-      ```
-      Si el video pesa <200KB o dura <5s: **NO aprobar**. Regrabar.
-   g. **Generar video con relato narrado** (OBLIGATORIO):
-      Usar `qa-narration.js` que genera TTS con OpenAI `gpt-4o-mini-tts` (misma voz que Telegram)
-      y mergea automáticamente el audio con el video usando FFmpeg.
+3. Navegar en la app y verificar cada criterio de aceptación
+   - Tomar screenshots de cada paso clave: `adb exec-out screencap -p > qa/evidence/<issue>/screenshot-paso-N.png`
+   - Usar `adb shell uiautomator dump /dev/tty` para encontrar elementos de UI
+   - Usar `adb shell input tap X Y` para interactuar
+4. **Generar video con relato narrado** (OBLIGATORIO):
+   Usar el helper TTS del pipeline con el perfil `qa` (Rulo/Nacho — tu personalidad como QA). El helper maneja primary edge / fallback openai automáticamente.
 
-      Primero, restaurar API keys si es necesario:
-      ```bash
-      node .claude/hooks/api-keys-guardian.js restore 2>/dev/null || true
-      ```
+   ```bash
+   # 1. Escribir guion narrando qué se verificó y el resultado de cada criterio
+   cat > "qa/evidence/<issue>/qa-<issue>-guion.txt" << 'GUION'
+   [Narración de cada criterio de aceptación verificado, en primera persona como Nacho/Rulo...]
+   GUION
 
-      Luego generar el video narrado:
-      ```bash
-      node qa/scripts/qa-narration.js \
-        --video "qa/evidence/qa-<issue>-raw.mp4" \
-        --flows-dir .maestro/flows \
-        --output "qa/evidence/qa-<issue>.mp4"
-      ```
+   # 2. Generar audio con el perfil QA (primary edge por costo, fallback openai)
+   node .pipeline/lib/tts-generate.js \
+     --profile qa \
+     --input "qa/evidence/<issue>/qa-<issue>-guion.txt" \
+     --output "qa/evidence/<issue>/qa-<issue>-narration.mp3"
 
-      Si `qa-narration.js` falla (sin API key), usar edge-tts como fallback:
-      1. Escribir guion en `qa/evidence/qa-<issue>-guion.txt` narrando cada criterio verificado
-      2. Generar audio:
-         ```bash
-         python -m edge_tts \
-           --voice "es-AR-TomasNeural" \
-           --file "qa/evidence/qa-<issue>-guion.txt" \
-           --write-media "qa/evidence/qa-<issue>-narration.mp3"
-         ```
-      3. Mergear:
-         ```bash
-         FFMPEG_BIN=$(which ffmpeg 2>/dev/null || echo "/c/Users/Administrator/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg")
-         "$FFMPEG_BIN" -i "qa/evidence/qa-<issue>-raw.mp4" \
-           -i "qa/evidence/qa-<issue>-narration.mp3" \
-           -c:v copy -c:a aac -b:a 128k -shortest \
-           "qa/evidence/qa-<issue>.mp4" -y
-         ```
-   i. **Extraer frames clave** (respaldo visual):
-      ```bash
-      "$FFMPEG_BIN" -i "qa/evidence/qa-<issue>.mp4" -vf "fps=1/3" -q:v 2 \
-        "qa/evidence/qa-<issue>-frame-%02d.png" -y 2>/dev/null
-      ```
-5. Si es cambio de backend/API:
+   # 3. Mergear audio + video crudo del pipeline
+   FFMPEG_BIN=$(which ffmpeg 2>/dev/null || echo "/c/Users/Administrator/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg")
+   "$FFMPEG_BIN" -i "qa/evidence/<issue>/qa-<issue>-raw.mp4" \
+     -i "qa/evidence/<issue>/qa-<issue>-narration.mp3" \
+     -c:v copy -c:a aac -b:a 128k -shortest \
+     "qa/evidence/<issue>/qa-<issue>.mp4" -y
+   ```
+
+   **Sobre la personalidad**: escribí el guión en primera persona con la voz de tu perfil TTS (`qa` → Nacho si edge está OK, Rulo si cayó el fallback). Ver `.pipeline/tts-config.json` profiles.qa para los rasgos de cada uno. Son distintos a Claudito/Tommy (que quedan para mensajes generales del sistema).
+
+   **Metadata del narrador (#2519):** `tts-generate.js` escribe automáticamente `qa/evidence/<issue>/qa-narration.meta.json` con el `provider` usado (`edge` | `openai`). Ese archivo es leído después por `servicio-drive.js` para saber si el audio lo narró Nacho o Rulo, y lo refleja al pie del mensaje de Telegram. **No hay que tocar esa metadata manualmente.** Si el archivo no existe, el mensaje simplemente omite la línea del narrador.
+5. **Extraer frames clave** (respaldo visual):
+   ```bash
+   "$FFMPEG_BIN" -i "qa/evidence/<issue>/qa-<issue>.mp4" -vf "fps=1/3" -q:v 2 \
+     "qa/evidence/<issue>/qa-<issue>-frame-%02d.png" -y 2>/dev/null
+   ```
+6. Si es cambio de backend/API:
    - Ejecutar requests con curl contra `$REMOTE_URL` (NUNCA localhost)
    - Capturar request + response como evidencia
    - Ejemplo:
@@ -254,13 +211,36 @@ Cuando `QA_MODE=android` (o vacío), validás con emulador, APK y video narrado.
 6. Verificar cada criterio de aceptacion
 7. Verificar que no hay regresiones en flujos existentes
 
+### CHECKLIST DE CIERRE (CRITICO — no podés cerrar sin completar TODO esto)
+
+Antes de escribir `resultado: aprobado` o `resultado: rechazado`, verificá que completaste
+**TODOS** estos entregables. Si falta alguno, NO cerrés — completalo primero.
+Tenés 45 minutos de timeout, usá el tiempo.
+
+**Para QA-Android con aprobación:**
+- [ ] Cada criterio de aceptación fue verificado explícitamente en la app
+- [ ] Guion narrado escrito en `qa/evidence/<issue>/qa-<issue>-guion.txt`
+- [ ] Audio generado con `tts-generate.js --profile qa` en `qa/evidence/<issue>/qa-<issue>-narration.mp3`
+- [ ] Video final mergeado (audio + video crudo) en `qa/evidence/<issue>/qa-<issue>.mp4`
+- [ ] Frames extraídos en `qa/evidence/<issue>/qa-<issue>-frame-*.png`
+- [ ] Upload a Drive encolado en `.pipeline/servicios/drive/pendiente/`
+- [ ] Label `qa:passed` encolado en `.pipeline/servicios/github/pendiente/`
+
+**Para QA-Android con rechazo:**
+- [ ] Motivo claro y específico del defecto
+- [ ] Screenshots del defecto como evidencia
+- [ ] Label `qa:failed` encolado en `.pipeline/servicios/github/pendiente/`
+
+Si `tts-generate.js` falla (primary + fallback agotados), reintentar una vez. Si sigue fallando, documentar el error
+en el YAML pero **NO omitir el intento** — siempre ejecutar el comando.
+
 ### Resultado
 
-Si todo OK (video con relato narrado):
+Si todo OK (video con relato narrado — solo después de completar el checklist):
 ```yaml
 resultado: aprobado
-evidencia: "qa/evidence/qa-<issue>.mp4"
-evidencia_frames: "qa/evidence/qa-<issue>-frame-*.png"
+evidencia: "qa/evidence/<issue>/qa-<issue>.mp4"
+evidencia_frames: "qa/evidence/<issue>/qa-<issue>-frame-*.png"
 video_size_kb: <tamano en KB>
 video_duration: "<duracion>"
 tiene_audio: true
@@ -274,10 +254,68 @@ motivo: "Descripcion clara del defecto encontrado"
 
 ### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
 
-Encolar el video (con audio narrado) para subida a Google Drive:
+Encolar el video (con audio narrado) para subida a Google Drive. El payload
+del job **DEBE** incluir los campos de veredicto para que el mensaje de Telegram
+que envía `qa-video-share.js` refleje el estado real (ver issue #2519):
+
 ```bash
-echo '{"action":"upload","file":"qa/evidence/qa-<issue>.mp4","folder":"QA/evidence/<issue>","description":"QA video con relato narrado #<issue>"}' > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json
+# Aprobado — modo android
+cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json << 'JSON'
+{
+  "action": "upload",
+  "file": "qa/evidence/<issue>/qa-<issue>.mp4",
+  "folder": "QA/evidence/<issue>",
+  "description": "QA video con relato narrado #<issue>",
+  "title": "<titulo del issue (se copia tal cual al mensaje)>",
+  "verdict": "aprobado",
+  "passed": 5,
+  "total": 5,
+  "mode": "android"
+}
+JSON
+
+# Rechazado — modo android con motivo + criterios fallidos
+cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json << 'JSON'
+{
+  "action": "upload",
+  "file": "qa/evidence/<issue>/qa-<issue>.mp4",
+  "folder": "QA/evidence/<issue>",
+  "description": "QA video con relato narrado #<issue>",
+  "title": "<titulo del issue>",
+  "verdict": "rechazado",
+  "passed": 2,
+  "total": 5,
+  "mode": "android",
+  "motivo": "Primera frase: causa concreta y accionable. El detalle va al rejection-report PDF.",
+  "criteriosFallidos": ["CA-1", "CA-4", "CA-5"],
+  "rejectionPdf": "logs/rejection-<issue>-qa.pdf"
+}
+JSON
 ```
+
+**Campos del payload (#2519):**
+
+| Campo | Tipo | Obligatorio | Semántica |
+|-------|------|-------------|-----------|
+| `action` | string | Sí | Siempre `"upload"` |
+| `file` | string | Sí | Path relativo al repo del video a subir |
+| `folder` | string | Sí | Carpeta destino en Drive |
+| `description` | string | Sí | Descripción para metadata de Drive |
+| `title` | string | Recomendado | Título humano del issue — se muestra en Telegram |
+| `verdict` | string | **Sí** (#2519) | `"aprobado"` o `"rechazado"` — define icono + header |
+| `passed` | int | Sí | Criterios verificados OK. Si no hay tests cuantificados, `0` |
+| `total` | int | Sí | Criterios totales. Si es `0`, el mensaje usa UX especial |
+| `mode` | string | Sí | `"android"`, `"api"` o `"structural"` |
+| `motivo` | string | Sólo si rechazado | Primera frase = causa concreta, ≤500 chars |
+| `criteriosFallidos` | string[] | Sólo si rechazado | IDs de CAs fallidos, ej. `["CA-1", "CA-4"]` |
+| `rejectionPdf` | string | Opcional | Path relativo al PDF de rejection-report |
+| `narrator` | string | Opcional | `"edge"` (→ Nacho) o `"openai"` (→ Rulo). Si se omite, se lee de `qa/evidence/<issue>/qa-narration.meta.json`. |
+
+**Estilo del campo `motivo` (guía UX, #2519):**
+- Primera frase: causa concreta y accionable. Ej: *"Los 3 flavors muestran íconos idénticos."*
+- No repetir el título del issue.
+- No pegar stack traces — para eso está `rejectionPdf`.
+- Si excede 500 chars, el template corta con elipsis; asegurá que el "qué" quede antes del corte.
 
 **NUNCA aprobar sin haber encolado la subida a Drive.** La evidencia debe quedar respaldada.
 
@@ -289,16 +327,17 @@ Al terminar, dejar pedido en `.pipeline/servicios/github/pendiente/`:
 
 ### Reglas
 
+- NUNCA cerrar sin completar el checklist de cierre — usá los 45 minutos que tenés
 - NUNCA aprobar sin evidencia (video o log de requests)
-- NUNCA aprobar si el video pesa <200KB o dura <5 segundos — regrabar
+- NUNCA aprobar si el video pesa <200KB o dura <5 segundos
 - NUNCA levantar ni bajar el backend ni DynamoDB (son remotos en AWS)
-- NUNCA compilar APK con `-PLOCAL_BASE_URL` — el APK siempre apunta al endpoint remoto
+- NUNCA compilar APK — el pipeline ya lo instaló por vos
 - NUNCA hacer requests a localhost — siempre usar el endpoint remoto de API Gateway
+- NUNCA iniciar screenrecord — el pipeline ya está grabando video crudo
 - Si el backend remoto no responde, rechazar con motivo "backend remoto no disponible" e incluir el HTTP status
-- Si el emulador no esta disponible, rechazar con motivo "emulador Android no disponible"
 - Si un criterio de aceptacion no es verificable (falta info), rechazar pidiendo mas detalle
-- SIEMPRE generar audio narrado con edge-tts y mergearlo al video con ffmpeg
+- SIEMPRE generar audio narrado con `tts-generate.js --profile qa` (perfil Rulo/Nacho) y mergearlo al video con ffmpeg
 - SIEMPRE mencionar cada criterio de aceptacion explicitamente en el relato
 - SIEMPRE extraer frames del video antes de aprobar
 - SIEMPRE encolar subida del video final a Drive
-- SIEMPRE guardar evidencia en `qa/evidence/` (NO en `.pipeline/logs/media/`)
+- SIEMPRE guardar evidencia en `qa/evidence/<issue>/`

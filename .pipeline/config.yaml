@@ -11,13 +11,14 @@ pipelines:
       sizing: [planner]
 
   desarrollo:
-    fases: [validacion, dev, build, verificacion, aprobacion, entrega]
+    fases: [validacion, dev, build, verificacion, linteo, aprobacion, entrega]
     fase_rechazo: dev   # Los rechazos siempre vuelven a dev
     skills_por_fase:
       validacion: [po, ux, guru]
-      dev: [backend-dev, android-dev, web-dev]  # Uno solo por historia, según labels
+      dev: [backend-dev, android-dev, web-dev, pipeline-dev]  # Uno solo por historia, según labels
       build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
+      linteo: [linter]                           # Determinístico (Node, #2491) — chequeos mecánicos antes del LLM
       aprobacion: [review, po, ux]
       entrega: [delivery]
 
@@ -34,12 +35,12 @@ concurrencia:
   backend-dev: 3
   android-dev: 2
   web-dev: 2
-
-  hotfix: 1              # Hotfix secuencial — uno a la vez
+  pipeline-dev: 2        # Scripts Node.js del pipeline (.pipeline/*.js)
 
   # Verificación
   tester: 2
   qa: 1                  # Limitado por hardware (emulador + video)
+  linter: 3              # Determinístico, Node puro — cero tokens, puede correr en paralelo
   review: 2
 
   # Entrega — secuencial
@@ -52,7 +53,14 @@ concurrencia:
 # Priorización de fases: el Pulpo procesa fases en orden inverso (post-dev primero)
 # Esto garantiza que build/qa/review/delivery tengan slots antes que dev,
 # evitando que el backlog de desarrollo bloquee el avance de issues ya codificados.
-# Orden efectivo: entrega → aprobacion → verificacion → build → dev → validacion
+# Orden efectivo: entrega → aprobacion → linteo → verificacion → build → dev → validacion
+
+# Routing mismatch: cuántas veces puede un issue volver a definición por
+# "fuera de alcance" antes de escalar a humano. Evita bucles en casos raros
+# donde ningún agente encuentra su alcance. Al superar el budget se aplica
+# label `blocked:routing-manual` y se notifica por Telegram.
+routing:
+  max_bounces: 2
 
 # Intake: qué labels de GitHub disparan la entrada a cada pipeline
 intake:
@@ -60,18 +68,50 @@ intake:
     label: "needs-definition"
     fase_entrada: analisis
   desarrollo:
-    label: "ready"
+    label: "Ready"
     fase_entrada: validacion
 
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
+  "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)
+  "area:infra": "backend-dev"    # Infra kotlin/gradle/ci-cd (NO pipeline — eso es area:pipeline)
   "area:backend": "backend-dev"
   "app:client": "android-dev"
   "app:business": "android-dev"
   "app:delivery": "android-dev"
   "area:web": "web-dev"
-  "priority:critical": "hotfix"  # Issues críticos van por hotfix
-  default: "backend-dev"         # Si no tiene label de área
+  default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
+
+# Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
+# Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
+# Rationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline
+# no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
+dev_routing_priority:
+  - "area:pipeline"
+  - "area:infra"
+  - "area:backend"
+  - "area:web"
+  - "app:client"
+  - "app:business"
+  - "app:delivery"
+
+# Heurística de override por contenido: issues etiquetados `area:infra` pero con
+# referencias fuertes al pipeline Node.js se re-rutean a `pipeline-dev`. Evita que
+# cambios del pulpo/dashboard caigan en backend-dev (stack Kotlin, no valida JS).
+pipeline_scope_keywords:
+  - ".pipeline/"
+  - "pulpo.js"
+  - "dashboard"
+  - "restart.js"
+  - "rollback.sh"
+  - "smoke-test"
+  - "rejection-report"
+  - "listener-telegram"
+  - "servicio-telegram"
+  - "servicio-github"
+  - "servicio-emulador"
+  - "servicio-drive"
+  - ".pipeline/roles/"
 
 # Prioridad de intake (orden de procesamiento)
 prioridad_labels:
@@ -123,6 +163,9 @@ resource_limits:
   # Sin timeout fijo: la ventana corre hasta vaciar su cola o desactivación manual.
   priority_windows_activation_threshold: 3   # Issues acumulados para activar ventana (QA o Build)
   priority_windows_safety_timeout_hours: 2   # Horas sin completar ningún issue → notifica Telegram (NO cierra)
+  # #2651 — cierre por no-progreso + cooldown para evitar loop abrir/cerrar
+  qa_priority_no_progress_minutes: 3         # Ventana QA con 0 agentes corriendo durante N min → cierre por inactividad
+  qa_priority_cooldown_minutes: 15           # Tras cerrar por no-progreso, no reabrir durante N min aunque la cola siga ≥ umbral
 
   # Diagnóstico
   log_top_consumers: true          # Logear top 5 procesos por RAM antes de actuar
@@ -134,8 +177,62 @@ timeouts:
   intake_interval_seconds: 300    # Frecuencia de intake (GitHub API, 5 min)
   orphan_timeout_minutes: 10      # Archivo en trabajando/ sin proceso → vuelve a pendiente
 
+  # Timeout efectivo por agente (watchdog en pulpo.js mata al hijo si lo excede)
+  # Si un skill no está en el override, se usa agent_timeout_default_minutes.
+  agent_timeout_default_minutes: 30
+  agent_timeout_overrides:
+    backend-dev: 60               # Dev mínimo 60min: historias grandes necesitan tiempo
+    android-dev: 60               # Dev mínimo 60min: historias grandes necesitan tiempo
+    web-dev: 60                   # Dev mínimo 60min: historias grandes necesitan tiempo
+    pipeline-dev: 60              # Dev mínimo 60min: historias grandes necesitan tiempo
+    build: 60                     # Gradle check + assemble puede tardar mucho en primer build
+    qa: 45                        # QA E2E con emulador + video
+    tester: 45                    # Cobertura Kover + suite completa
+    linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
+    delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
+
+# Build (#2405 CA-1) — Allowlist de JAVA_HOME para el rol build
+# Se compara normalizando separadores (C:/Users/... y C:\Users\...), case-insensitive.
+# Paths con `..` o whitespace embebido son rechazados.
+# Agregar un JDK nuevo: appendear una entrada y commitear.
+# Ver docs/operacion-pipeline.md para el flujo completo.
+build:
+  java_home_allowlist:
+    - "C:/Users/Administrator/.jdks/temurin-21.0.7"
+    - "C:/Users/Administrator/.jdks/temurin-21.0.8"
+
+# Circuit breaker de infra (#2405 CA-4)
+# Cuando un issue acumula N rebotes infra consecutivos sin recuperación, el Pulpo
+# aplica label `needs-human`, comenta en GitHub con estructura UX, y lo saca de la
+# cola de intake hasta que un humano quite el label. Arranca en 5 (conservador) y
+# se puede bajar a 3 tras una semana de observación. Distinto de MAX_REBOTES_INFRA
+# (cap duro antisabotaje, default 20) — este es el threshold "escalar a humano".
+circuit_breaker:
+  infra_escalate_threshold: 5
+
 # GitHub
 github:
   owner: "intrale"
   repo: "platform"
   project_number: 2               # GitHub Project V2
+
+# Pre-check de conectividad (#2317) — evita lanzar agentes cuando la red está caída
+precheck:
+  timeout_ms: 5000                # Timeout por endpoint (DNS y TLS)
+  max_retries: 3                  # Reintentos por endpoint con backoff exponencial + jitter
+  # endpoints: (opcional; si no se define se usan los de connectivity-precheck.js)
+  # - { category: github,  host: api.github.com,                                 tlsPort: 443 }
+  # - { category: aws,     host: s3.us-east-2.amazonaws.com,                     tlsPort: 443 }
+  # - { category: backend, host: mgnr0htbvd.execute-api.us-east-2.amazonaws.com, tlsPort: 443 }
+
+# Staleness (#2404) — evita rebotar a dev con `motivo_rechazo` que referencia un
+# build-log obsoleto. Si el log tiene mtime > umbral, NO se rebota al developer:
+# se resetea el contador del circuit breaker y se re-encola a `build` para que
+# el builder vuelva a correr con el entorno actualizado.
+# Override por env: PIPELINE_STALENESS_HOURS (horas, decimal OK).
+# Clamp mínimo hardcoded de 5 minutos (300s) — valores menores se elevan a este
+# mínimo con warning en log. Protege contra bypass del circuit breaker
+# por config maliciosa/errónea (ej. staleness: 0).
+staleness:
+  build_log_max_age_hours: 24     # Default — logs de build más viejos se consideran stale
+  max_resets_per_issue: 5         # Tope duro: más de 5 resets por stale-log → escalar, no resetear

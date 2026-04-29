@@ -26,7 +26,8 @@ import org.kodein.log.newLogger
 
 class ClientProfileService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommClientProfileService {
 
     private val logger = LoggerFactory.default.newLogger<ClientProfileService>()
@@ -72,14 +73,14 @@ class ClientProfileService(
             return if (bodyText.isBlank()) {
                 ClientProfileResponse(profile = ClientProfileDTO())
             } else {
-                Json.decodeFromString(ClientProfileResponse.serializer(), bodyText)
+                json.decodeFromString(ClientProfileResponse.serializer(), bodyText)
             }
         }
         throw bodyText.toClientException()
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {
@@ -91,7 +92,8 @@ class ClientProfileService(
 
 class ClientAddressesService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommClientAddressesService {
 
     private val logger = LoggerFactory.default.newLogger<ClientAddressesService>()
@@ -172,12 +174,12 @@ class ClientAddressesService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return emptyList()
             val parsedResponse = runCatching {
-                Json.decodeFromString(ClientAddressResponse.serializer(), bodyText).addresses
+                json.decodeFromString(ClientAddressResponse.serializer(), bodyText).addresses
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return Json.decodeFromString(ListSerializer(ClientAddressDTO.serializer()), bodyText)
+            return json.decodeFromString(ListSerializer(ClientAddressDTO.serializer()), bodyText)
         }
         throw bodyText.toClientException()
     }
@@ -186,13 +188,13 @@ class ClientAddressesService(
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return ClientAddressDTO()
-            return Json.decodeFromString(ClientAddressDTO.serializer(), bodyText)
+            return json.decodeFromString(ClientAddressDTO.serializer(), bodyText)
         }
         throw bodyText.toClientException()
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

@@ -34,6 +34,8 @@ private fun mockClient(status: HttpStatusCode, body: String): HttpClient {
     }
 }
 
+private val jsonConfig = Json { ignoreUnknownKeys = true; isLenient = true }
+
 private class FakeStorage(override var token: String? = "Bearer tok") : CommKeyValueStorage {
     override var profileCache: ClientProfileCache? = null
     override var preferredLanguage: String? = null
@@ -47,7 +49,7 @@ class DeliveryProfileServiceTest {
     @Test
     fun `fetchProfile exitoso retorna DeliveryProfileResponse`() = runTest {
         val body = """{"profile":{"fullName":"Driver","email":"d@test.com"},"zones":[{"id":"z1","name":"Norte"}]}"""
-        val service = DeliveryProfileService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryProfileService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchProfile()
 
@@ -57,7 +59,7 @@ class DeliveryProfileServiceTest {
 
     @Test
     fun `fetchProfile con error retorna stub fallback`() = runTest {
-        val service = DeliveryProfileService(mockClient(HttpStatusCode.OK, ""), FakeStorage(token = null))
+        val service = DeliveryProfileService(mockClient(HttpStatusCode.OK, ""), FakeStorage(token = null), jsonConfig)
 
         val result = service.fetchProfile()
 
@@ -69,7 +71,7 @@ class DeliveryProfileServiceTest {
     @Test
     fun `updateProfile exitoso retorna DeliveryProfileResponse`() = runTest {
         val body = """{"profile":{"fullName":"Updated","email":"d@test.com"},"zones":[]}"""
-        val service = DeliveryProfileService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryProfileService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.updateProfile(DeliveryProfileDTO(fullName = "Updated", email = "d@test.com"))
 
@@ -87,7 +89,7 @@ class DeliveryAvailabilityServiceTest {
     @Test
     fun `fetchAvailability exitoso retorna DTO`() = runTest {
         val body = """{"timezone":"America/Argentina/Buenos_Aires","slots":[]}"""
-        val service = DeliveryAvailabilityService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryAvailabilityService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchAvailability()
 
@@ -97,7 +99,7 @@ class DeliveryAvailabilityServiceTest {
 
     @Test
     fun `fetchAvailability con error retorna fallback vacio`() = runTest {
-        val service = DeliveryAvailabilityService(mockClient(HttpStatusCode.OK, ""), FakeStorage(token = null))
+        val service = DeliveryAvailabilityService(mockClient(HttpStatusCode.OK, ""), FakeStorage(token = null), jsonConfig)
 
         val result = service.fetchAvailability()
 
@@ -109,7 +111,7 @@ class DeliveryAvailabilityServiceTest {
     @Test
     fun `updateAvailability exitoso retorna DTO`() = runTest {
         val body = """{"timezone":"UTC","slots":[]}"""
-        val service = DeliveryAvailabilityService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryAvailabilityService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.updateAvailability(DeliveryAvailabilityDTO(timezone = "UTC"))
 
@@ -126,7 +128,7 @@ class DeliveryOrdersServiceTest {
     @Test
     fun `fetchSummary exitoso retorna DTO`() = runTest {
         val body = """{"pending":3,"inProgress":1,"delivered":5}"""
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchSummary(LocalDate(2026, 2, 17))
 
@@ -137,7 +139,7 @@ class DeliveryOrdersServiceTest {
     @Test
     fun `fetchSummary fallido retorna DeliveryExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":500,"description":"Error"},"message":"Error"}"""
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.InternalServerError, body), FakeStorage())
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.InternalServerError, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchSummary(LocalDate(2026, 2, 17))
 
@@ -147,7 +149,7 @@ class DeliveryOrdersServiceTest {
     @Test
     fun `fetchActiveOrders exitoso retorna lista`() = runTest {
         val body = """[{"id":"o1","businessName":"Tienda","neighborhood":"Centro","status":"IN_PROGRESS"}]"""
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchActiveOrders()
 
@@ -158,7 +160,7 @@ class DeliveryOrdersServiceTest {
     @Test
     fun `fetchAvailableOrders exitoso retorna lista`() = runTest {
         val body = """[]"""
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchAvailableOrders()
 
@@ -168,7 +170,7 @@ class DeliveryOrdersServiceTest {
 
     @Test
     fun `fetchActiveOrders sin token retorna error`() = runTest {
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, "[]"), FakeStorage(token = null))
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, "[]"), FakeStorage(token = null), jsonConfig)
 
         val result = service.fetchActiveOrders()
 
@@ -188,7 +190,7 @@ class DeliveryOrdersServiceTest {
             "customerPhone":"+5491155551234",
             "createdAt":"2026-02-21T12:00:00","updatedAt":"2026-02-21T12:30:00"
         }""".trimIndent()
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-1")
 
@@ -208,7 +210,7 @@ class DeliveryOrdersServiceTest {
     @Test
     fun `fetchOrderDetail fallido retorna DeliveryExceptionResponse`() = runTest {
         val body = """{"statusCode":{"value":404,"description":"Not Found"},"message":"Pedido no encontrado"}"""
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.NotFound, body), FakeStorage())
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.NotFound, body), FakeStorage(), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-inexistente")
 
@@ -217,7 +219,7 @@ class DeliveryOrdersServiceTest {
 
     @Test
     fun `fetchOrderDetail sin token retorna error`() = runTest {
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, "{}"), FakeStorage(token = null))
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, "{}"), FakeStorage(token = null), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-1")
 
@@ -226,7 +228,7 @@ class DeliveryOrdersServiceTest {
 
     @Test
     fun `fetchOrderDetail con body vacio retorna error`() = runTest {
-        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, ""), FakeStorage())
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, ""), FakeStorage(), jsonConfig)
 
         val result = service.fetchOrderDetail("ord-1")
 

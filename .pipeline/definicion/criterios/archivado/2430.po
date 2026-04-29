@@ -1,0 +1,3 @@
+issue: 2430
+fase: criterios
+pipeline: definicion

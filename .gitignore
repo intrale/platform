@@ -1,3 +1,14 @@
+# Secrets — defensa en profundidad. La ubicacion oficial de credenciales es
+# ~/.claude/secrets/ (home del usuario, fuera del repo); estos patrones
+# bloquean cualquier intento accidental de crear esos paths dentro del repo.
+.claude/secrets/
+**/.claude/secrets/
+secrets.json
+**/secrets.json
+.env
+.env.*
+!.env.example
+
 # Build outputs
 build/
 */build/
@@ -111,10 +122,16 @@ scripts/planner-plan.json
 .pipeline/logs/
 .pipeline/*.pid
 .pipeline/.paused
+.pipeline/.partial-pause.json
+.pipeline/blocked-issues.json
+.pipeline/cooldowns.json
+.pipeline/last-restart.json
 .pipeline/listener-offset.json
 .pipeline/commander-history.jsonl
 .pipeline/node_modules/
 .pipeline/package-lock.json
+.pipeline/circuit-breaker-infra.json
+.pipeline/circuit-breaker-infra.json.tmp
 .pipeline/definicion/*/pendiente/*
 .pipeline/definicion/*/trabajando/*
 .pipeline/definicion/*/listo/*
@@ -127,4 +144,23 @@ scripts/planner-plan.json
 .pipeline/servicios/*/trabajando/*
 .pipeline/servicios/*/listo/*
 .pipeline/servicios/*/procesado/*
+# #2335 — estado operativo del connectivity-state (no comitear)
+.pipeline/connectivity-state.json
+.pipeline/blocked-by-infra.json
+.pipeline/infra-health.json
+.pipeline/events/
+.pipeline/tmp/
+# #2337 — estado reintentando + metricas UX rotadas (no comitear)
+.pipeline/retrying-state.json
+# Estado TTS (último provider usado) — efímero por sesión
+.pipeline/.tts-state.json
+# #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
+.pipeline/recommendations-cache.json
+# #2477/#2488 — código fuente del aggregator V3 sí se commitea (snapshot/.last-cleanup quedan ignorados)
+.pipeline/metrics/*
+!.pipeline/metrics/aggregator.js
+!.pipeline/metrics/projections.js
+!.pipeline/metrics/report-daily.js
+!.pipeline/metrics/__tests__/
+!.pipeline/metrics/__tests__/**
 !.pipeline/**/.gitkeep

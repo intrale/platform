@@ -60,7 +60,6 @@ const AGENT_MAP = {
     "/cleanup": "Cleanup",
     "/perf": "Perf",
     "/cost": "Cost",
-    "/hotfix": "Hotfix",
     "/config": "Config",
 };
 

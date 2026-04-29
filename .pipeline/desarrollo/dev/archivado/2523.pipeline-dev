@@ -1,0 +1,8 @@
+issue: 2523
+fase: dev
+pipeline: desarrollo
+rebote: true
+rebote_numero: 1
+rebote_tipo: codigo
+motivo_rechazo: '[po] Agente terminó con código 1'
+rechazado_en_fase: validacion

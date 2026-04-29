@@ -19,7 +19,8 @@ import org.kodein.log.newLogger
 
 class ClientGetSalesMetricsService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommGetSalesMetricsService {
 
     private val logger = LoggerFactory.default.newLogger<ClientGetSalesMetricsService>()
@@ -31,10 +32,10 @@ class ClientGetSalesMetricsService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(DailySalesMetricsResponseDTO.serializer(), bodyText)
+                val result = json.decodeFromString(DailySalesMetricsResponseDTO.serializer(), bodyText)
                 Result.success(result.metrics ?: DailySalesMetricsDTO())
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

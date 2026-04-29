@@ -238,7 +238,6 @@ Si un rol se convierte en cuello de botella constante, se abre otra terminal de 
 | android-dev | Developer | Desarrollo (dev) |
 | backend-dev | Developer | Desarrollo (dev) |
 | web-dev | Developer | Desarrollo (dev) |
-| hotfix | Developer urgente | Desarrollo (dev) |
 | tester | Tester | Desarrollo (verificación) |
 | qa | QA E2E | Desarrollo (verificación) |
 | cua | Video + evidencia | Desarrollo (verificación) |

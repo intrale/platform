@@ -1,0 +1,289 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 01 — Home del dashboard V3 (sano)
+  Resolucion target: 1440x900 (cabe holgado en 1280x720)
+  Demuestra: header con identidad, health live, 3 lanes, cards con jerarquia,
+             badges diferenciados rebote vs cross-phase.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <!-- Tokens embebidos para que el mockup sea self-contained -->
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- =============== HEADER =============== -->
+  <rect x="0" y="0" width="1440" height="92" fill="url(#headerGrad)"/>
+  <rect x="0" y="91" width="1440" height="1" fill="#30363D"/>
+
+  <!-- Logo + nombre -->
+  <g transform="translate(32, 26)">
+    <!-- Squircle -->
+    <rect width="40" height="40" rx="10" fill="#0D274D"/>
+    <!-- Triangulo A -->
+    <path d="M20 8 L6 33 L34 33 Z" fill="none" stroke="url(#brandGrad)" stroke-width="3"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M20 18 L14.5 28 L25.5 28 Z" fill="url(#brandGrad)"/>
+  </g>
+  <text x="84" y="42" fill="#E6EDF3" font-size="22" font-weight="700">Intrale Pipeline</text>
+  <text x="84" y="62" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1.5">
+    DASHBOARD V3 · localhost:3200
+  </text>
+
+  <!-- Badge V3 -->
+  <g transform="translate(260, 32)">
+    <rect width="40" height="24" rx="12" fill="#2DD4BF" fill-opacity="0.18" stroke="#2DD4BF" stroke-opacity="0.45"/>
+    <text x="20" y="16" fill="#2DD4BF" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1.2">V3</text>
+  </g>
+
+  <!-- Pipeline status badge (sano) -->
+  <g transform="translate(320, 32)">
+    <rect width="108" height="24" rx="12" fill="#3FB950" fill-opacity="0.15" stroke="#3FB950" stroke-opacity="0.4"/>
+    <circle cx="14" cy="12" r="3.5" fill="#3FB950"/>
+    <text x="26" y="16" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.5">RUNNING</text>
+  </g>
+
+  <!-- KPIs header -->
+  <g transform="translate(900, 32)" font-size="13" fill="#B1BAC4">
+    <!-- Agents -->
+    <g>
+      <path d="M4 9 a3 3 0 1 0 6 0 a3 3 0 1 0 -6 0 M0 22 C0 17 3 14 7 14 C11 14 14 17 14 22"
+            fill="none" stroke="#58A6FF" stroke-width="1.75" stroke-linecap="round"/>
+      <text x="22" y="17" fill="#E6EDF3" font-size="14" font-weight="700">4</text>
+      <text x="38" y="17" fill="#8B949E" font-size="11">agentes</text>
+    </g>
+    <!-- Issues -->
+    <g transform="translate(110, 0)">
+      <path d="M12 3 L21 8 L12 13 L3 8 Z M3 12 L12 17 L21 12 M3 16 L12 21 L21 16"
+            fill="none" stroke="#BC8CFF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="29" y="17" fill="#E6EDF3" font-size="14" font-weight="700">7</text>
+      <text x="45" y="17" fill="#8B949E" font-size="11">en curso</text>
+    </g>
+    <!-- Uptime -->
+    <g transform="translate(235, 0)">
+      <circle cx="10" cy="12" r="7" fill="none" stroke="#8B949E" stroke-width="1.5"/>
+      <path d="M10 7 V12 L13 14" fill="none" stroke="#8B949E" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="24" y="17" fill="#B1BAC4" font-size="12">uptime 3d 14h</text>
+    </g>
+  </g>
+
+  <!-- Clock -->
+  <g transform="translate(1320, 30)" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+    <text x="100" y="22" fill="#E6EDF3" font-size="22" font-weight="700" letter-spacing="2">14:32:07</text>
+    <text x="100" y="38" fill="#8B949E" font-size="10" letter-spacing="0.5">Vie 24 abr 2026</text>
+  </g>
+
+  <!-- =============== H2 SECCION =============== -->
+  <text x="32" y="130" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">BOARD KANBAN — PIPELINE V3</text>
+
+  <!-- =============== LANES =============== -->
+  <!-- Lane widths: 3 columnas iguales con margen -->
+  <!-- total 1440 - 2*32 = 1376; 3 lanes con gap 20 → lane = (1376 - 40)/3 = 445.33 -->
+
+  <!-- === Lane 1: DEFINICION === -->
+  <g transform="translate(32, 150)">
+    <!-- Header lane -->
+    <rect width="445" height="48" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="48" rx="2" fill="#BC8CFF"/>
+    <circle cx="24" cy="24" r="12" fill="#BC8CFF" fill-opacity="0.18"/>
+    <path d="M20 21 l4 4 l6 -8 M18 16 h12 v16 h-12 z" transform="translate(6, 6)"
+          fill="none" stroke="#BC8CFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="46" y="28" fill="#E6EDF3" font-size="14" font-weight="700">Definicion</text>
+    <text x="46" y="42" fill="#8B949E" font-size="11">analisis · criterios · sizing</text>
+    <!-- Counter -->
+    <g transform="translate(395, 12)">
+      <rect width="36" height="24" rx="12" fill="#252B33" stroke="#30363D"/>
+      <text x="18" y="16" fill="#E6EDF3" font-size="12" font-weight="700" text-anchor="middle">3</text>
+    </g>
+
+    <!-- Card 1: #2523 (criterios) -->
+    <g transform="translate(0, 60)">
+      <rect width="445" height="112" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="445" height="4" rx="2" fill="#BC8CFF"/>
+      <!-- issue number + title -->
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600">#2523</text>
+      <text x="16" y="52" fill="#E6EDF3" font-size="14" font-weight="600">Rediseno visual dashboard V3...</text>
+      <!-- fase actual -->
+      <g transform="translate(16, 66)">
+        <rect width="92" height="22" rx="11" fill="#BC8CFF" fill-opacity="0.14" stroke="#BC8CFF" stroke-opacity="0.35"/>
+        <g transform="translate(6, 3)">
+          <rect x="0" y="0" width="16" height="16" rx="2" fill="none" stroke="#BC8CFF" stroke-width="1.3"/>
+          <path d="M3 6 l2 2 l4 -5 M3 11 l2 2 l4 -5" fill="none" stroke="#BC8CFF" stroke-width="1.2" stroke-linecap="round"/>
+        </g>
+        <text x="28" y="15" fill="#BC8CFF" font-size="11" font-weight="600">criterios</text>
+      </g>
+      <!-- progreso -->
+      <rect x="125" y="72" width="150" height="4" rx="2" fill="#30363D"/>
+      <rect x="125" y="72" width="67" height="4" rx="2" fill="#BC8CFF"/>
+      <text x="285" y="76" fill="#8B949E" font-size="10">2/6</text>
+      <!-- voz narrando -->
+      <g transform="translate(314, 62)">
+        <rect width="115" height="22" rx="11" fill="#2DD4BF" fill-opacity="0.14" stroke="#2DD4BF" stroke-opacity="0.35"/>
+        <path d="M6 9 h5 q2 0 2 2 v4 q0 2 -2 2 h-1 l-2 2 v-2 h-2 q-2 0 -2 -2 v-4 q0 -2 2 -2 z M15 11 q2 1 2 3 t-2 3 M17 9 q3 1 3 5 t-3 5"
+              transform="translate(0, 0)" fill="none" stroke="#2DD4BF" stroke-width="1.3" stroke-linecap="round"/>
+        <text x="26" y="15" fill="#2DD4BF" font-size="10" font-weight="600">Lili narrando</text>
+      </g>
+      <!-- ultimo evento -->
+      <text x="16" y="100" fill="#8B949E" font-size="11">Lili esta redactando design-tokens.css · hace 2 min</text>
+    </g>
+
+    <!-- Card 2: #2519 (analisis) -->
+    <g transform="translate(0, 184)">
+      <rect width="445" height="92" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="445" height="4" rx="2" fill="#BC8CFF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600">#2519</text>
+      <text x="16" y="52" fill="#E6EDF3" font-size="14" font-weight="600">Rediseno mensajes Telegram QA</text>
+      <g transform="translate(16, 66)">
+        <rect width="86" height="22" rx="11" fill="#BC8CFF" fill-opacity="0.14" stroke="#BC8CFF" stroke-opacity="0.35"/>
+        <circle cx="12" cy="11" r="5" fill="none" stroke="#BC8CFF" stroke-width="1.3"/>
+        <path d="M15 14 l3 3" stroke="#BC8CFF" stroke-width="1.3" stroke-linecap="round"/>
+        <text x="26" y="15" fill="#BC8CFF" font-size="11" font-weight="600">analisis</text>
+      </g>
+      <text x="112" y="80" fill="#8B949E" font-size="11">Guru analizando dependencias · hace 8 min</text>
+    </g>
+
+    <!-- Card 3: #2520 (sizing) -->
+    <g transform="translate(0, 288)">
+      <rect width="445" height="92" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="445" height="4" rx="2" fill="#BC8CFF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600">#2520</text>
+      <text x="16" y="52" fill="#E6EDF3" font-size="14" font-weight="600">Fix pagina /consumo — datos V3</text>
+      <g transform="translate(16, 66)">
+        <rect width="76" height="22" rx="11" fill="#BC8CFF" fill-opacity="0.14" stroke="#BC8CFF" stroke-opacity="0.35"/>
+        <rect x="6" y="5" width="12" height="12" rx="1" fill="none" stroke="#BC8CFF" stroke-width="1.3"/>
+        <text x="24" y="15" fill="#BC8CFF" font-size="11" font-weight="600">sizing</text>
+      </g>
+      <text x="100" y="80" fill="#8B949E" font-size="11">Planner estimando · hace 15 min</text>
+    </g>
+  </g>
+
+  <!-- === Lane 2: DESARROLLO + BUILD === -->
+  <g transform="translate(497, 150)">
+    <rect width="445" height="48" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="48" rx="2" fill="#58A6FF"/>
+    <circle cx="24" cy="24" r="12" fill="#58A6FF" fill-opacity="0.18"/>
+    <text x="46" y="28" fill="#E6EDF3" font-size="14" font-weight="700">Desarrollo + Build</text>
+    <text x="46" y="42" fill="#8B949E" font-size="11">dev · build · verificacion · linteo</text>
+    <g transform="translate(395, 12)">
+      <rect width="36" height="24" rx="12" fill="#252B33" stroke="#30363D"/>
+      <text x="18" y="16" fill="#E6EDF3" font-size="12" font-weight="700" text-anchor="middle">2</text>
+    </g>
+
+    <!-- Card 1: #2505 (dev) CON CROSS-PHASE REBOTE -->
+    <g transform="translate(0, 60)">
+      <rect width="445" height="132" rx="10" fill="#161B22" stroke="#F59E0B" stroke-opacity="0.4"/>
+      <rect width="445" height="4" rx="2" fill="#58A6FF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600">#2505</text>
+      <text x="16" y="52" fill="#E6EDF3" font-size="14" font-weight="600">Android: splash screen por flavor</text>
+      <g transform="translate(16, 66)">
+        <rect width="54" height="22" rx="11" fill="#58A6FF" fill-opacity="0.14" stroke="#58A6FF" stroke-opacity="0.35"/>
+        <text x="27" y="15" fill="#58A6FF" font-size="11" font-weight="600" text-anchor="middle">dev</text>
+      </g>
+      <!-- Badge cross-phase -->
+      <g transform="translate(76, 66)">
+        <rect width="128" height="22" rx="11" fill="#F59E0B" fill-opacity="0.14" stroke="#F59E0B" stroke-opacity="0.4"/>
+        <g transform="translate(5, 3)">
+          <path d="M1 6 h10 l-2 -2 m2 2 l-2 2 M15 10 h-10 l2 2 m-2 -2 l2 -2"
+                fill="none" stroke="#F59E0B" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <text x="28" y="15" fill="#F59E0B" font-size="10" font-weight="700" letter-spacing="0.5">CROSS-PHASE #2</text>
+      </g>
+      <rect x="210" y="72" width="150" height="4" rx="2" fill="#30363D"/>
+      <rect x="210" y="72" width="90" height="4" rx="2" fill="#58A6FF"/>
+      <text x="370" y="76" fill="#8B949E" font-size="10">3/5</text>
+      <text x="16" y="104" fill="#B1BAC4" font-size="11" font-weight="500">Motivo rebote:</text>
+      <text x="16" y="120" fill="#8B949E" font-size="11">UX no entrego mipmap-xxxhdpi — re-ejecutar UX upstream</text>
+    </g>
+
+    <!-- Card 2: #2450 (build) — retrying -->
+    <g transform="translate(0, 204)">
+      <rect width="445" height="112" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="445" height="4" rx="2" fill="#58A6FF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600">#2450</text>
+      <text x="16" y="52" fill="#E6EDF3" font-size="14" font-weight="600">Marker heartbeat watchdog</text>
+      <g transform="translate(16, 66)">
+        <rect width="62" height="22" rx="11" fill="#58A6FF" fill-opacity="0.14" stroke="#58A6FF" stroke-opacity="0.35"/>
+        <text x="31" y="15" fill="#58A6FF" font-size="11" font-weight="600" text-anchor="middle">build</text>
+      </g>
+      <!-- Retrying badge -->
+      <g transform="translate(84, 66)">
+        <rect width="86" height="22" rx="11" fill="#F59E0B" fill-opacity="0.14" stroke="#F59E0B" stroke-opacity="0.35"/>
+        <g transform="translate(5, 3)" stroke="#F59E0B" stroke-width="1.3" fill="none" stroke-linecap="round">
+          <path d="M2 8 a6 6 0 1 1 12 0"/>
+          <path d="M14 4 v4 h-4"/>
+        </g>
+        <text x="26" y="15" fill="#F59E0B" font-size="11" font-weight="600">retry 2/3</text>
+      </g>
+      <text x="16" y="100" fill="#8B949E" font-size="11">Reintentando test :backend:test · hace 32s</text>
+    </g>
+  </g>
+
+  <!-- === Lane 3: QA + ENTREGA === -->
+  <g transform="translate(962, 150)">
+    <rect width="445" height="48" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="48" rx="2" fill="#2DD4BF"/>
+    <circle cx="24" cy="24" r="12" fill="#2DD4BF" fill-opacity="0.18"/>
+    <text x="46" y="28" fill="#E6EDF3" font-size="14" font-weight="700">QA + Entrega</text>
+    <text x="46" y="42" fill="#8B949E" font-size="11">aprobacion · qa · entrega</text>
+    <g transform="translate(395, 12)">
+      <rect width="36" height="24" rx="12" fill="#252B33" stroke="#30363D"/>
+      <text x="18" y="16" fill="#E6EDF3" font-size="12" font-weight="700" text-anchor="middle">2</text>
+    </g>
+
+    <!-- Card 1: #2537 (aprobacion, rebote) -->
+    <g transform="translate(0, 60)">
+      <rect width="445" height="112" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="445" height="4" rx="2" fill="#2DD4BF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600">#2537</text>
+      <text x="16" y="52" fill="#E6EDF3" font-size="14" font-weight="600">Fix linteo/aprobacion worktree...</text>
+      <g transform="translate(16, 66)">
+        <rect width="96" height="22" rx="11" fill="#2DD4BF" fill-opacity="0.14" stroke="#2DD4BF" stroke-opacity="0.35"/>
+        <text x="48" y="15" fill="#2DD4BF" font-size="11" font-weight="600" text-anchor="middle">aprobacion</text>
+      </g>
+      <!-- Rebote normal badge -->
+      <g transform="translate(118, 66)">
+        <rect width="82" height="22" rx="11" fill="#D29922" fill-opacity="0.14" stroke="#D29922" stroke-opacity="0.35"/>
+        <g transform="translate(6, 4)" stroke="#D29922" stroke-width="1.3" fill="none" stroke-linecap="round">
+          <path d="M2 2 v4 C2 8 4 10 6 10 h6"/>
+          <path d="M10 8 l3 3 l-3 3"/>
+        </g>
+        <text x="26" y="15" fill="#D29922" font-size="11" font-weight="600">rebote 1</text>
+      </g>
+      <text x="16" y="100" fill="#8B949E" font-size="11">Review pidio ajustar patron singleton · hace 4 min</text>
+    </g>
+
+    <!-- Card 2: #2525 (entrega OK) -->
+    <g transform="translate(0, 184)">
+      <rect width="445" height="112" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="445" height="4" rx="2" fill="#3FB950"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600">#2525</text>
+      <text x="16" y="52" fill="#E6EDF3" font-size="14" font-weight="600">Fix muerte prematura agentes...</text>
+      <g transform="translate(16, 66)">
+        <rect width="76" height="22" rx="11" fill="#3FB950" fill-opacity="0.14" stroke="#3FB950" stroke-opacity="0.35"/>
+        <text x="38" y="15" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">entrega</text>
+      </g>
+      <rect x="98" y="72" width="150" height="4" rx="2" fill="#30363D"/>
+      <rect x="98" y="72" width="150" height="4" rx="2" fill="#3FB950"/>
+      <text x="258" y="76" fill="#3FB950" font-size="10" font-weight="600">100%</text>
+      <text x="16" y="100" fill="#8B949E" font-size="11">PR #2525 mergeado a main · hace 1h 2 min</text>
+    </g>
+  </g>
+
+  <!-- =============== FOOTER TIMELINE HINT =============== -->
+  <g transform="translate(32, 840)">
+    <text fill="#8B949E" font-size="11">
+      Timeline: 7 eventos ultima hora · SSE conectado · autorefresh ON
+    </text>
+  </g>
+</svg>

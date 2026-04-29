@@ -1,0 +1,246 @@
+/* Intrale — tema compartido entre home kiosk y tabs satélite.
+ * Paleta: identidad Intrale (azul + acento cian).
+ * Modo oscuro siempre — el dashboard se mira en kiosko largas horas, el
+ * fondo claro cansa la vista. Si en el futuro hace falta modo claro,
+ * se controla con `data-theme="light"` en <html>, no con prefers-color-scheme.
+ */
+
+:root, html[data-theme="dark"] {
+  --in-bg: #0d1117;
+  --in-bg-2: #161b22;
+  --in-bg-3: #1f2937;
+  --in-fg: #e6edf3;
+  --in-fg-dim: #8b949e;
+  --in-fg-soft: #6e7681;
+  --in-border: #30363d;
+  --in-border-soft: rgba(255,255,255,0.06);
+
+  --in-brand: #1f6feb;
+  --in-brand-soft: rgba(31,111,235,0.15);
+  --in-accent: #2ee6c1;
+  --in-accent-soft: rgba(46,230,193,0.15);
+
+  --in-ok: #3fb950;
+  --in-ok-soft: rgba(63,185,80,0.18);
+  --in-warn: #d29922;
+  --in-warn-soft: rgba(210,153,34,0.18);
+  --in-bad: #f85149;
+  --in-bad-soft: rgba(248,81,73,0.18);
+  --in-info: #58a6ff;
+  --in-info-soft: rgba(88,166,255,0.18);
+
+  --in-radius: 14px;
+  --in-radius-sm: 8px;
+  --in-shadow: 0 6px 24px rgba(0,0,0,0.35);
+  --in-gap: 16px;
+
+  --in-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --in-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  --in-bg: #f6f8fa;
+  --in-bg-2: #ffffff;
+  --in-bg-3: #eaeef2;
+  --in-fg: #1f2328;
+  --in-fg-dim: #57606a;
+  --in-fg-soft: #8c959f;
+  --in-border: #d0d7de;
+  --in-border-soft: rgba(0,0,0,0.05);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--in-bg);
+  color: var(--in-fg);
+  font-family: var(--in-font);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a { color: inherit; text-decoration: none; }
+a:hover { color: var(--in-accent); }
+
+/* ──────────────── Header ──────────────── */
+.in-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 28px;
+  background: linear-gradient(135deg, var(--in-brand-soft), transparent 60%);
+  border-bottom: 1px solid var(--in-border);
+  height: 80px;
+}
+.in-header-brand { display: flex; align-items: center; gap: 14px; }
+.in-header-logo {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--in-brand), var(--in-accent));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; color: #fff; font-size: 18px;
+  box-shadow: var(--in-shadow);
+}
+.in-header-title { font-size: 18px; font-weight: 600; letter-spacing: 0.3px; }
+.in-header-subtitle { font-size: 12px; color: var(--in-fg-dim); margin-top: 2px; }
+.in-header-meta {
+  display: flex; align-items: center; gap: 16px;
+  font-size: 13px;
+}
+.in-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--in-bg-3);
+  border: 1px solid var(--in-border);
+  font-size: 12px;
+  font-weight: 500;
+}
+.in-pill-ok { background: var(--in-ok-soft); border-color: var(--in-ok); color: var(--in-ok); }
+.in-pill-warn { background: var(--in-warn-soft); border-color: var(--in-warn); color: var(--in-warn); }
+.in-pill-bad { background: var(--in-bad-soft); border-color: var(--in-bad); color: var(--in-bad); }
+.in-pill-info { background: var(--in-info-soft); border-color: var(--in-info); color: var(--in-info); }
+
+.in-clock {
+  font-family: var(--in-mono);
+  font-size: 13px;
+  color: var(--in-fg-dim);
+}
+
+/* ──────────────── Footer ──────────────── */
+.in-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px;
+  border-top: 1px solid var(--in-border);
+  background: var(--in-bg-2);
+  font-size: 12px;
+  color: var(--in-fg-dim);
+}
+
+/* ──────────────── Cards & sections ──────────────── */
+.in-section {
+  background: var(--in-bg-2);
+  border: 1px solid var(--in-border);
+  border-radius: var(--in-radius);
+  padding: 18px 22px;
+  box-shadow: var(--in-shadow);
+}
+.in-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--in-fg-dim);
+  margin: 0 0 14px 0;
+  display: flex; align-items: center; gap: 8px;
+}
+.in-section-title-icon { font-size: 16px; }
+.in-section-title-count {
+  background: var(--in-bg-3);
+  border-radius: 10px;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--in-fg);
+  margin-left: auto;
+}
+
+/* ──────────────── Status / loading / empty ──────────────── */
+.in-empty {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--in-fg-dim);
+  font-size: 13px;
+}
+.in-empty-strong { color: var(--in-fg); font-weight: 500; margin-bottom: 6px; }
+.in-loading {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid var(--in-border);
+  border-top-color: var(--in-accent);
+  border-radius: 50%;
+  animation: in-spin 0.9s linear infinite;
+  vertical-align: middle;
+}
+@keyframes in-spin { to { transform: rotate(360deg); } }
+
+.in-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--in-bg-3);
+  overflow: hidden;
+  position: relative;
+}
+.in-bar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--in-brand), var(--in-accent));
+  transition: width 0.4s ease;
+}
+
+.in-stale-fresh { color: var(--in-ok); }
+.in-stale-warn { color: var(--in-warn); }
+.in-stale-dead { color: var(--in-bad); }
+
+/* ──────────────── Buttons & links ──────────────── */
+.in-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--in-radius-sm);
+  background: var(--in-bg-3);
+  border: 1px solid var(--in-border);
+  color: var(--in-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.in-btn:hover { background: var(--in-brand-soft); border-color: var(--in-brand); }
+.in-link { color: var(--in-accent); }
+.in-link:hover { text-decoration: underline; }
+
+/* ──────────────── Tab back link (en satélites) ──────────────── */
+.in-back-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px;
+  color: var(--in-fg-dim);
+}
+.in-back-link::before { content: "←"; }
+.in-back-link:hover { color: var(--in-accent); }
+
+/* ──────────────── Skill avatars ──────────────── */
+.in-skill {
+  --c: var(--in-fg-dim);
+  display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 500;
+}
+.in-skill-icon {
+  width: 24px; height: 24px;
+  border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px;
+  background: var(--c);
+  color: #fff;
+}
+
+.in-skill-androiddev { --c: #58a6ff; }
+.in-skill-backenddev { --c: #3fb950; }
+.in-skill-webdev { --c: #79c0ff; }
+.in-skill-pipelinedev { --c: #a371f7; }
+.in-skill-ux { --c: #f778ba; }
+.in-skill-po { --c: #d29922; }
+.in-skill-planner { --c: #a371f7; }
+.in-skill-guru { --c: #58a6ff; }
+.in-skill-security { --c: #f85149; }
+.in-skill-tester { --c: #d2a8ff; }
+.in-skill-qa { --c: #3fb950; }
+.in-skill-review { --c: #ffa657; }
+.in-skill-linter { --c: #8b949e; }
+.in-skill-build { --c: #ffa657; }
+.in-skill-delivery { --c: #2ee6c1; }
+.in-skill-commander { --c: #f778ba; }

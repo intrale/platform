@@ -1,0 +1,15 @@
+=== TEST 1: POST /qa-automation/anomalies (sin auth) ===
+{"message":"No function defined on path","statusCode":{"value":400,"description":"Bad Request"},"responseHeaders":{}}
+HTTP 400
+
+=== TEST 2: POST /qa-automation/anomalies/analyze ===
+{"message":"Missing Authentication Token"}
+HTTP 403
+
+=== TEST 3: GET /qa-automation/anomalies/config ===
+{"message":"Missing Authentication Token"}
+HTTP 403
+
+=== TEST 4: GET /qa-automation/anomalies/history ===
+{"message":"Missing Authentication Token"}
+HTTP 403

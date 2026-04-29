@@ -1,118 +1,17 @@
 {
   "agents": {
-<<<<<<< Updated upstream
-    "e9af064c": {
-      "session_id": "e9af064c",
-      "issue": "#675",
-      "skill": "Agente 1",
-      "agent_name": "Agente 1",
-      "branch": "agent/675-gestion-repartidores-del-negocio",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-675-gestion-repartidores-del-negocio",
-      "pid": 2528,
-      "started_at": "2026-03-22T19:39:45Z",
-      "last_heartbeat": "2026-03-22T19:41:47Z",
-      "status": "active"
-    }
-  },
-  "updated_at": "2026-03-22T19:41:47Z"
-=======
-    "207df781": {
-      "session_id": "207df781",
-      "issue": "#679",
-      "skill": "Agente 3",
-      "agent_name": "Agente 3",
-      "branch": "agent/679-config-medios-de-pago",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-679-config-medios-de-pago",
-      "pid": 17876,
-      "started_at": "2026-03-22T21:36:24Z",
-      "last_heartbeat": "2026-03-22T22:09:29Z",
-      "status": "idle"
-    },
-    "41824ccd": {
-      "session_id": "41824ccd",
-      "issue": "#679",
-      "skill": "Agente 3",
-      "agent_name": "Agente 3",
-      "branch": "agent/679-config-medios-de-pago",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-679-config-medios-de-pago",
-      "pid": 9232,
-      "started_at": "2026-03-22T21:36:07Z",
-      "last_heartbeat": "2026-03-22T22:09:03Z",
-      "status": "idle"
-    },
-    "e1bc14e5": {
-      "session_id": "e1bc14e5",
-      "issue": "#679",
-      "skill": "Agente 3",
-      "agent_name": "Agente 3",
-      "branch": "agent/679-config-medios-de-pago",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-679-config-medios-de-pago",
-      "pid": 5808,
-      "started_at": "2026-03-22T21:36:52Z",
-      "last_heartbeat": "2026-03-22T22:08:29Z",
-      "status": "idle"
-    },
-    "0f351e61": {
-      "session_id": "0f351e61",
-      "issue": "#1803",
-      "skill": "Agente 1",
-      "agent_name": "Agente 1",
-      "branch": "agent/1803-qa-e2e-test-cases-del-issue-como-guion-d",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-1803-qa-e2e-test-cases-del-issue-como-guion-d",
-      "pid": 24608,
-      "started_at": "2026-03-22T22:12:47Z",
-      "last_heartbeat": "2026-03-22T22:16:50Z",
-      "status": "idle"
-    },
-    "db6a19b0": {
-      "session_id": "db6a19b0",
-      "issue": "#1804",
-      "skill": "Agente 2",
-      "agent_name": "Agente 2",
-      "branch": "agent/1804-qa-e2e-narracion-tts-en-videos-con-opena",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-1804-qa-e2e-narracion-tts-en-videos-con-opena",
-      "pid": 7308,
-      "started_at": "2026-03-22T22:15:07Z",
-      "last_heartbeat": "2026-03-22T22:19:55Z",
-      "status": "idle"
-    },
-    "36640db9": {
-      "session_id": "36640db9",
-      "issue": "#1784",
-      "skill": "Agente 6",
-      "agent_name": "Agente 6",
-      "branch": "agent/1784-integrar-sast-en-ci-pipeline",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-1784-integrar-sast-en-ci-pipeline",
-      "pid": 21316,
-      "started_at": "2026-03-22T22:20:27Z",
-      "last_heartbeat": "2026-03-22T22:53:30Z",
-      "status": "idle"
-    },
-    "21da05dd": {
-      "session_id": "21da05dd",
-      "issue": "#1806",
-      "skill": "Agente 4",
-      "agent_name": "Agente 4",
-      "branch": "agent/1806-qa-e2e-regresion-automatica-como-gate-de",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-1806-qa-e2e-regresion-automatica-como-gate-de",
-      "pid": 3168,
-      "started_at": "2026-03-22T22:30:54Z",
-      "last_heartbeat": "2026-03-22T22:51:50Z",
-      "status": "idle"
-    },
-    "79e5d633": {
-      "session_id": "79e5d633",
-      "issue": "#1805",
-      "skill": "Agente 3",
-      "agent_name": "Agente 3",
-      "branch": "agent/1805-qa-e2e-subir-videos-a-google-drive-y-not",
-      "worktree": "C:/Workspaces/Intrale/platform.agent-1805-qa-e2e-subir-videos-a-google-drive-y-not",
-      "pid": 24600,
-      "started_at": "2026-03-22T22:34:16Z",
-      "last_heartbeat": "2026-03-22T22:44:23Z",
+    "2bf05b59": {
+      "session_id": "2bf05b59",
+      "issue": "#2042",
+      "skill": "Agente 2042",
+      "agent_name": "Agente 2042",
+      "branch": "agent/2042-android-dev",
+      "worktree": "C:/Workspaces/Intrale/platform.agent-2042-android-dev",
+      "pid": 8624,
+      "started_at": "2026-04-15T02:31:20Z",
+      "last_heartbeat": "2026-04-15T02:36:27Z",
       "status": "idle"
     }
   },
-  "updated_at": "2026-03-23T00:48:43Z"
->>>>>>> Stashed changes
+  "updated_at": "2026-04-15T02:47:20Z"
 }

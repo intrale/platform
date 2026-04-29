@@ -49,6 +49,31 @@ val logger: Logger = LoggerFactory.getLogger("ar.com.intrale")
 - NUNCA usar `stringResource()` directo, `Res.string.*`, `R.string.*`
 - Siempre usar `resString()` con `fb()` para fallback ASCII-safe
 
+### Si el issue es `priority:critical` (hotfix)
+- Branch **desde `origin/main`**, nunca desde `develop`
+- **Cambio mínimo**: solo tocar lo necesario para corregir el bug
+- **No refactorizar**: no limpiar código adyacente, no optimizar
+- **Test obligatorio**: al menos un test que reproduzca el bug
+
 ### Resultado
 - `resultado: aprobado` cuando el código está commiteado y pusheado
 - Incluir en el archivo: branch name, último commit hash
+
+### Delegación al UX para assets visuales (CRÍTICO)
+
+**No sos diseñador visual.** Aunque backend es mayormente lógica pura, si algún endpoint sirve recursos visuales (PDFs con branding, emails HTML con layout específico, respuestas con imágenes generadas/referenciadas), **los assets los produce el UX**, no vos.
+
+- Si un endpoint requiere templates HTML estilizados, layouts de PDF con branding, o imágenes embebidas: los produce el UX en la fase `criterios` y los commitea en `backend/src/main/resources/templates/` o el path que corresponda.
+- Vos consumís esos assets desde código: los cargás, parametrizás, servís.
+- Si necesitás assets y el UX no los entregó, usá **cross-phase rebote** (ver `_base.md` → "Rebote cross-phase"):
+  ```yaml
+  resultado: rechazado
+  motivo: "UX no entregó templates/imágenes requeridos: <lista + output de ls/find>"
+  rebote_destino:
+    pipeline: desarrollo
+    fase: validacion
+    skill: ux
+  ```
+  El pulpo rutea a `desarrollo/validacion/ux` para que regenere. Escalada automática a `definicion/criterios/ux` si persiste.
+
+**No inventes** HTML con CSS tuyo, ni busques imágenes stock, ni improvises branding. Rechazá pidiendo que UX produzca.

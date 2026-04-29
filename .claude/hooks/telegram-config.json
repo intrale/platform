@@ -1,6 +1,7 @@
 {
-  "bot_token": "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk",
-  "chat_id": "6529617704",
+  "_secrets_note": "bot_token y chat_id MOVIDOS a ~/.claude/secrets/telegram-config.json (fuera del repo, inmune a checkouts/pulls). NO restaurar credenciales aqui — quedan trackeadas en git. Ver .pipeline/lib/telegram-secrets.js.",
+  "bot_token": "MOVED_TO_HOME_DOT_CLAUDE_SECRETS",
+  "chat_id": "MOVED_TO_HOME_DOT_CLAUDE_SECRETS",
   "permission_timeout_min": 60,
   "task_report_interval_min": 10,
   "retry_intervals_min": [

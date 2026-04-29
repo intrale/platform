@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 02 — Drilldown de issue individual
+  Demuestra: breadcrumb, KPIs del issue, timeline vertical con fases, badges
+             de rebote vs cross-phase, panel de voz narrando en vivo.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+  <defs>
+    <linearGradient id="brandGrad2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- Header compacto -->
+  <rect x="0" y="0" width="1440" height="60" fill="#161B22"/>
+  <rect x="0" y="59" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(32, 18)">
+    <rect width="26" height="26" rx="7" fill="#0D274D"/>
+    <path d="M13 5.5 L4 21 L22 21 Z" fill="none" stroke="url(#brandGrad2)" stroke-width="2.2" stroke-linejoin="round"/>
+    <path d="M13 12 L9 19 L17 19 Z" fill="url(#brandGrad2)"/>
+  </g>
+  <text x="66" y="38" fill="#E6EDF3" font-size="16" font-weight="700">Intrale Pipeline</text>
+
+  <!-- Breadcrumb -->
+  <g transform="translate(32, 94)" font-size="13">
+    <text fill="#8B949E">Dashboard</text>
+    <text x="72" fill="#8B949E">›</text>
+    <text x="86" fill="#8B949E">Issues en curso</text>
+    <text x="186" fill="#8B949E">›</text>
+    <text x="200" fill="#E6EDF3" font-weight="600">#2523</text>
+  </g>
+
+  <!-- Titulo del issue -->
+  <text x="32" y="148" fill="#B1BAC4" font-size="12" font-weight="600" letter-spacing="1.5">ISSUE · feat · enhancement</text>
+  <text x="32" y="182" fill="#E6EDF3" font-size="26" font-weight="700">#2523 Rediseno visual del dashboard V3 con identidad Intrale</text>
+
+  <!-- Labels -->
+  <g transform="translate(32, 204)" font-size="11" font-weight="600">
+    <g><rect width="88" height="22" rx="11" fill="#A2EEEF" fill-opacity="0.14" stroke="#A2EEEF" stroke-opacity="0.35"/>
+       <text x="44" y="15" fill="#A2EEEF" text-anchor="middle">enhancement</text></g>
+    <g transform="translate(96, 0)"><rect width="78" height="22" rx="11" fill="#5319E7" fill-opacity="0.25" stroke="#BC8CFF" stroke-opacity="0.45"/>
+       <text x="39" y="15" fill="#BC8CFF" text-anchor="middle">area:pipeline</text></g>
+    <g transform="translate(182, 0)"><rect width="114" height="22" rx="11" fill="#FBCA04" fill-opacity="0.14" stroke="#FBCA04" stroke-opacity="0.4"/>
+       <text x="57" y="15" fill="#FBCA04" text-anchor="middle">priority:medium</text></g>
+  </g>
+
+  <!-- === KPIs del issue === -->
+  <g transform="translate(32, 252)">
+    <!-- Fase actual -->
+    <g>
+      <rect width="220" height="96" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="220" height="4" rx="2" fill="#BC8CFF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">FASE ACTUAL</text>
+      <g transform="translate(16, 44)">
+        <rect x="0" y="0" width="28" height="28" rx="4" fill="none" stroke="#BC8CFF" stroke-width="1.8"/>
+        <path d="M5 9 l3 3 l6 -8 M5 18 l3 3 l6 -8" fill="none" stroke="#BC8CFF" stroke-width="1.6" stroke-linecap="round"/>
+      </g>
+      <text x="54" y="62" fill="#E6EDF3" font-size="18" font-weight="700">criterios</text>
+      <text x="54" y="80" fill="#8B949E" font-size="11">definicion · 2/6 steps</text>
+    </g>
+    <!-- Agente -->
+    <g transform="translate(232, 0)">
+      <rect width="220" height="96" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="220" height="4" rx="2" fill="#2DD4BF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">AGENTE</text>
+      <circle cx="30" cy="62" r="14" fill="#2DD4BF" fill-opacity="0.18" stroke="#2DD4BF"/>
+      <text x="30" y="67" fill="#2DD4BF" font-size="14" font-weight="700" text-anchor="middle">L</text>
+      <text x="54" y="62" fill="#E6EDF3" font-size="16" font-weight="700">Lili (ux)</text>
+      <text x="54" y="80" fill="#8B949E" font-size="11">voz es-AR · pitch +1.2</text>
+    </g>
+    <!-- Tiempo -->
+    <g transform="translate(464, 0)">
+      <rect width="220" height="96" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="220" height="4" rx="2" fill="#58A6FF"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">TIEMPO EN PIPELINE</text>
+      <text x="16" y="62" fill="#E6EDF3" font-size="22" font-weight="700">47m 18s</text>
+      <text x="16" y="80" fill="#8B949E" font-size="11">Inicio · 14:04:49 hoy</text>
+    </g>
+    <!-- Rebotes -->
+    <g transform="translate(696, 0)">
+      <rect width="220" height="96" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="220" height="4" rx="2" fill="#D29922"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">REBOTES</text>
+      <text x="16" y="62" fill="#E6EDF3" font-size="22" font-weight="700">0 <tspan fill="#8B949E" font-size="14" font-weight="500">normales</tspan></text>
+      <text x="16" y="80" fill="#F59E0B" font-size="11">0 cross-phase</text>
+    </g>
+    <!-- Tokens consumidos -->
+    <g transform="translate(928, 0)">
+      <rect width="220" height="96" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect width="220" height="4" rx="2" fill="#3FB950"/>
+      <text x="16" y="30" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1">TOKENS</text>
+      <text x="16" y="62" fill="#E6EDF3" font-size="22" font-weight="700">28,412</text>
+      <text x="16" y="80" fill="#8B949E" font-size="11">≈ US$ 0.084</text>
+    </g>
+  </g>
+
+  <!-- === Columna izquierda: TIMELINE === -->
+  <text x="32" y="388" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">TIMELINE DE FASES</text>
+
+  <g transform="translate(32, 410)">
+    <rect width="720" height="420" rx="10" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Linea vertical -->
+    <line x1="52" y1="40" x2="52" y2="380" stroke="#30363D" stroke-width="2"/>
+
+    <!-- Fase 1: analisis (done) -->
+    <g transform="translate(24, 40)">
+      <circle cx="28" cy="12" r="16" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-width="1.75"/>
+      <path d="M22 12 l4 4 l8 -8" fill="none" stroke="#3FB950" stroke-width="2" stroke-linecap="round"/>
+      <text x="60" y="12" fill="#E6EDF3" font-size="14" font-weight="600">analisis</text>
+      <text x="60" y="30" fill="#8B949E" font-size="11">guru · aprobado · 8m 12s · hace 39 min</text>
+    </g>
+
+    <!-- Fase 2: analisis seguridad (done) -->
+    <g transform="translate(24, 110)">
+      <circle cx="28" cy="12" r="16" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-width="1.75"/>
+      <path d="M22 12 l4 4 l8 -8" fill="none" stroke="#3FB950" stroke-width="2" stroke-linecap="round"/>
+      <text x="60" y="12" fill="#E6EDF3" font-size="14" font-weight="600">analisis (security)</text>
+      <text x="60" y="30" fill="#8B949E" font-size="11">security · aprobado · 6m 02s · hace 27 min</text>
+    </g>
+
+    <!-- Fase 3: criterios (in progress, Lili narrando) -->
+    <g transform="translate(24, 180)">
+      <circle cx="28" cy="12" r="16" fill="#BC8CFF" fill-opacity="0.22" stroke="#BC8CFF" stroke-width="1.75"/>
+      <rect x="22" y="6" width="12" height="12" rx="2" fill="none" stroke="#BC8CFF" stroke-width="1.5"/>
+      <path d="M25 12 l2 2 l4 -5" fill="none" stroke="#BC8CFF" stroke-width="1.4" stroke-linecap="round"/>
+      <text x="60" y="12" fill="#E6EDF3" font-size="14" font-weight="600">criterios</text>
+      <text x="60" y="30" fill="#BC8CFF" font-size="11" font-weight="600">en curso · Lili produciendo assets · 2/6</text>
+      <!-- Voz narrando pill -->
+      <g transform="translate(60, 44)">
+        <rect width="150" height="22" rx="11" fill="#2DD4BF" fill-opacity="0.14" stroke="#2DD4BF" stroke-opacity="0.35"/>
+        <g transform="translate(6, 3)" fill="none" stroke="#2DD4BF" stroke-width="1.3" stroke-linecap="round">
+          <path d="M2 5 h5 q2 0 2 2 v4 q0 2 -2 2 h-1 l-2 2 v-2 h-2 q-2 0 -2 -2 v-4 q0 -2 2 -2 z"/>
+          <path d="M11 7 q2 1 2 3 t-2 3"/>
+          <path d="M13 5 q3 1 3 5 t-3 5"/>
+        </g>
+        <text x="28" y="15" fill="#2DD4BF" font-size="10" font-weight="600">Voz activa (Lili — TTS)</text>
+      </g>
+    </g>
+
+    <!-- Fase 4: sizing (pendiente) -->
+    <g transform="translate(24, 270)">
+      <circle cx="28" cy="12" r="16" fill="#161B22" stroke="#30363D" stroke-width="1.75"/>
+      <rect x="20" y="10" width="16" height="8" rx="1" fill="none" stroke="#8B949E" stroke-width="1.3"/>
+      <text x="60" y="12" fill="#8B949E" font-size="14" font-weight="500">sizing</text>
+      <text x="60" y="30" fill="#8B949E" font-size="11">planner · pendiente</text>
+    </g>
+
+    <!-- Fase 5: validacion (pendiente) -->
+    <g transform="translate(24, 330)">
+      <circle cx="28" cy="12" r="16" fill="#161B22" stroke="#30363D" stroke-width="1.75"/>
+      <path d="M28 4 L36 7 v5 c0 3 -3 5 -8 7 c-5 -2 -8 -4 -8 -7 v-5 z"
+            fill="none" stroke="#8B949E" stroke-width="1.4"/>
+      <text x="60" y="12" fill="#8B949E" font-size="14" font-weight="500">validacion</text>
+      <text x="60" y="30" fill="#8B949E" font-size="11">guru + ux · pendiente</text>
+    </g>
+  </g>
+
+  <!-- === Columna derecha: PANEL ULTIMO EVENTO + LOG === -->
+  <text x="772" y="388" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">ULTIMO EVENTO NARRADO</text>
+
+  <g transform="translate(772, 410)">
+    <rect width="636" height="420" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="636" height="4" rx="2" fill="#2DD4BF"/>
+
+    <!-- Header panel con Lili -->
+    <g transform="translate(20, 20)">
+      <circle cx="22" cy="22" r="22" fill="#2DD4BF" fill-opacity="0.18" stroke="#2DD4BF"/>
+      <text x="22" y="28" fill="#2DD4BF" font-size="20" font-weight="700" text-anchor="middle">L</text>
+      <text x="56" y="22" fill="#E6EDF3" font-size="16" font-weight="700">Lili</text>
+      <text x="56" y="40" fill="#8B949E" font-size="12">ux · voz es-AR · tono amable</text>
+      <!-- Waveform animado (mock estatico) -->
+      <g transform="translate(420, 12)" fill="#2DD4BF">
+        <rect x="0" y="8" width="3" height="14" rx="1.5"/>
+        <rect x="8" y="4" width="3" height="22" rx="1.5"/>
+        <rect x="16" y="0" width="3" height="30" rx="1.5"/>
+        <rect x="24" y="6" width="3" height="18" rx="1.5"/>
+        <rect x="32" y="10" width="3" height="10" rx="1.5"/>
+        <rect x="40" y="4" width="3" height="22" rx="1.5"/>
+        <rect x="48" y="2" width="3" height="26" rx="1.5"/>
+        <rect x="56" y="8" width="3" height="14" rx="1.5"/>
+        <rect x="64" y="6" width="3" height="18" rx="1.5"/>
+      </g>
+      <text x="520" y="24" fill="#8B949E" font-size="11">14:32:01 · hace 6 s</text>
+    </g>
+
+    <!-- Quote narrado -->
+    <g transform="translate(20, 96)">
+      <rect x="0" y="0" width="4" height="260" rx="2" fill="#2DD4BF"/>
+      <text x="20" y="20" fill="#B1BAC4" font-size="14" font-style="italic">
+        <tspan x="20" dy="0">Hola equipo, soy Lili del pipeline. Estoy produciendo</tspan>
+        <tspan x="20" dy="22">los assets visuales del dashboard V3: ya commiteé</tspan>
+        <tspan x="20" dy="22">la paleta unificada en design-tokens.css con 13 categorías</tspan>
+        <tspan x="20" dy="22">de color, incluyendo cuatro acentos por lane y variables</tspan>
+        <tspan x="20" dy="22">semánticas para success, warning, error e info.</tspan>
+        <tspan x="20" dy="22"></tspan>
+        <tspan x="20" dy="22">Todos los pares texto/fondo cumplen WCAG AA con</tspan>
+        <tspan x="20" dy="22">contraste mínimo de 4.5 a 1. Ahora voy a continuar</tspan>
+        <tspan x="20" dy="22">con el sprite de iconografía.</tspan>
+      </text>
+    </g>
+
+    <!-- Controles -->
+    <g transform="translate(20, 374)">
+      <rect width="100" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+      <path d="M12 9 l7 5 l-7 5 z" fill="#E6EDF3"/>
+      <text x="30" y="18" fill="#B1BAC4" font-size="12">Reproducir</text>
+    </g>
+    <g transform="translate(132, 374)">
+      <rect width="110" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+      <text x="16" y="18" fill="#B1BAC4" font-size="12">Ver transcripcion</text>
+    </g>
+  </g>
+</svg>

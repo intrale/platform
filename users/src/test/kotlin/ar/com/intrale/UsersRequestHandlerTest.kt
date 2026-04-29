@@ -51,7 +51,8 @@ class UsersRequestHandlerTest {
             path = "/biz/missing"
         }
         val response = handler.handle(module, request, null)
-        assertEquals(500, response.statusCode)
+        // Función no encontrada en ningún binding → "No function defined on path" → 400
+        assertEquals(400, response.statusCode)
     }
 
     @Test

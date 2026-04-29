@@ -23,7 +23,8 @@ import org.kodein.log.newLogger
 
 class ClientBusinessDeliveryZoneService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommBusinessDeliveryZoneService {
 
     private val logger = LoggerFactory.default.newLogger<ClientBusinessDeliveryZoneService>()
@@ -35,10 +36,10 @@ class ClientBusinessDeliveryZoneService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(GetBusinessDeliveryZoneResponse.serializer(), bodyText)
+                val result = json.decodeFromString(GetBusinessDeliveryZoneResponse.serializer(), bodyText)
                 Result.success(result.deliveryZone)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {
@@ -58,10 +59,10 @@ class ClientBusinessDeliveryZoneService(
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val result = Json.decodeFromString(UpdateBusinessDeliveryZoneResponse.serializer(), bodyText)
+                val result = json.decodeFromString(UpdateBusinessDeliveryZoneResponse.serializer(), bodyText)
                 Result.success(result.deliveryZone)
             } else {
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

@@ -18,6 +18,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+private val jsonConfig = Json { ignoreUnknownKeys = true; isLenient = true }
+
 class ClientReviewBusinessRegistrationServiceTest {
    /* @Test
     fun `adjunta el token en Authorization y conserva el cuerpo`() = runTest {
@@ -43,7 +45,7 @@ class ClientReviewBusinessRegistrationServiceTest {
             }
         }
 
-        val service = ClientReviewBusinessRegistrationService(client)
+        val service = ClientReviewBusinessRegistrationService(client, jsonConfig)
         val result = service.execute("pub-123", "approved", "654321", "Bearer token-xyz")
 
         assertTrue(result.isSuccess)

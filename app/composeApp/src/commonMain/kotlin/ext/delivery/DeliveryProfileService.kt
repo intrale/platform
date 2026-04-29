@@ -22,7 +22,8 @@ import org.kodein.log.newLogger
 
 class DeliveryProfileService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommDeliveryProfileService {
 
     private val logger = LoggerFactory.default.newLogger<DeliveryProfileService>()
@@ -68,7 +69,7 @@ class DeliveryProfileService(
         val bodyText = bodyAsText()
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return DeliveryProfileResponse(profile = DeliveryProfileDTO())
-            return Json.decodeFromString(DeliveryProfileResponse.serializer(), bodyText)
+            return json.decodeFromString(DeliveryProfileResponse.serializer(), bodyText)
         }
         throw bodyText.toDeliveryException()
     }
@@ -80,6 +81,6 @@ class DeliveryProfileService(
     }
 
     private fun String.toDeliveryException(): DeliveryExceptionResponse =
-        runCatching { Json.decodeFromString(DeliveryExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(DeliveryExceptionResponse.serializer(), this) }
             .getOrElse { DeliveryExceptionResponse(message = this) }
 }

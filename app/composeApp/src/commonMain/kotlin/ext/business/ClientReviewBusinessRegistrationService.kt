@@ -16,7 +16,7 @@ import ar.com.intrale.shared.toExceptionResponse
 import ar.com.intrale.shared.business.ReviewBusinessRegistrationRequest
 import ar.com.intrale.shared.business.ReviewBusinessRegistrationResponse
 
-class ClientReviewBusinessRegistrationService(private val httpClient: HttpClient) : CommReviewBusinessRegistrationService {
+class ClientReviewBusinessRegistrationService(private val httpClient: HttpClient, private val json: Json) : CommReviewBusinessRegistrationService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(
         publicId: String,
@@ -33,7 +33,7 @@ class ClientReviewBusinessRegistrationService(private val httpClient: HttpClient
                 Result.success(ReviewBusinessRegistrationResponse(StatusCodeDTO(response.status.value, response.status.description)))
             } else {
                 val bodyText = response.bodyAsText()
-                val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                val exception = json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
             }
         } catch (e: Exception) {

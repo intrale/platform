@@ -724,10 +724,16 @@ else
         VIDEO_LOCAL="${RECORDINGS_DIR}/maestro-shard-${port}.mp4"
         if [ -f "$VIDEO_LOCAL" ]; then
             echo "  Procesando shard $port..."
+            NARRATION_ARGS=(--video "$VIDEO_LOCAL"
+                --flows-dir "$MAESTRO_DIR"
+                --root "$PROJECT_ROOT"
+                --results-xml "${RECORDINGS_DIR}/maestro-results.xml"
+                --output "${RECORDINGS_DIR}/maestro-shard-${port}-narrated.mp4")
+            if [ -n "${QA_ISSUE:-}" ]; then
+                NARRATION_ARGS+=(--issue "$QA_ISSUE")
+            fi
             QA_NARRATION="$QA_NARRATION" node "$SCRIPT_DIR/qa-narration.js" \
-                --video "$VIDEO_LOCAL" \
-                --flows-dir "$MAESTRO_DIR" \
-                --output "${RECORDINGS_DIR}/maestro-shard-${port}-narrated.mp4" \
+                "${NARRATION_ARGS[@]}" \
                 2>&1 | tail -8 || echo "  Narracion fallida para shard $port (continuando sin audio)"
         fi
     done

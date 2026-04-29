@@ -19,7 +19,8 @@ import org.kodein.log.newLogger
 
 class PaymentMethodsService(
     private val httpClient: HttpClient,
-    private val keyValueStorage: CommKeyValueStorage
+    private val keyValueStorage: CommKeyValueStorage,
+    private val json: Json
 ) : CommPaymentMethodsService {
 
     private val logger = LoggerFactory.default.newLogger<PaymentMethodsService>()
@@ -44,18 +45,18 @@ class PaymentMethodsService(
         if (status.isSuccess()) {
             if (bodyText.isBlank()) return emptyList()
             val parsedResponse = runCatching {
-                Json.decodeFromString(PaymentMethodsResponse.serializer(), bodyText).paymentMethods
+                json.decodeFromString(PaymentMethodsResponse.serializer(), bodyText).paymentMethods
             }.getOrNull()
             if (parsedResponse != null) {
                 return parsedResponse
             }
-            return Json.decodeFromString(ListSerializer(PaymentMethodDTO.serializer()), bodyText)
+            return json.decodeFromString(ListSerializer(PaymentMethodDTO.serializer()), bodyText)
         }
         throw bodyText.toClientException()
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
-        runCatching { Json.decodeFromString(ClientExceptionResponse.serializer(), this) }
+        runCatching { json.decodeFromString(ClientExceptionResponse.serializer(), this) }
             .getOrElse { ClientExceptionResponse(message = this) }
 
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {

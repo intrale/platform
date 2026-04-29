@@ -1,0 +1,19 @@
+{
+  "flow": "client-orders",
+  "language": "es",
+  "segments": [
+    { "at_step": 1, "text": "Abrimos la aplicacion Intrale Cliente para validar la pantalla de pedidos.", "delay_ms": 0 },
+    { "at_step": 3, "text": "Saltamos el onboarding si aparece para llegar mas rapido a la pantalla de bienvenida.", "delay_ms": 500 },
+    { "at_step": 6, "text": "Tocamos Ya tengo cuenta para ir al login.", "delay_ms": 500 },
+    { "at_step": 9, "text": "Completamos las credenciales del usuario de prueba en el formulario de login.", "delay_ms": 0 },
+    { "at_step": 14, "text": "Enviamos el formulario y esperamos a que cargue el home del cliente.", "delay_ms": 1000 },
+    { "at_step": 17, "text": "Estamos en el home del cliente. Vamos a navegar al tab Mis pedidos desde la barra inferior.", "delay_ms": 500 },
+    { "at_step": 19, "text": "Tocamos Mis pedidos en la barra de navegacion inferior.", "delay_ms": 500 },
+    { "at_step": 22, "text": "Pantalla de pedidos cargada. Verificamos el titulo Mis pedidos y los filtros disponibles.", "delay_ms": 1000 },
+    { "at_step": 27, "text": "Estado del listado: si hay pedidos vemos las tarjetas, si no aparece el estado vacio con CTA Ver catalogo.", "delay_ms": 1000 },
+    { "at_step": 31, "text": "Probamos el filtro Pendiente para ver pedidos en ese estado.", "delay_ms": 500 },
+    { "at_step": 34, "text": "Ahora cambiamos al filtro Entregado para ver pedidos completados.", "delay_ms": 500 },
+    { "at_step": 37, "text": "Restauramos el filtro Todos para volver a la vista completa.", "delay_ms": 500 },
+    { "at_step": 40, "text": "Volvemos al inicio desde el bottom bar. Validacion de la pantalla de pedidos finalizada.", "delay_ms": 500 }
+  ]
+}

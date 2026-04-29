@@ -5,7 +5,7 @@ import ext.storage.model.ClientProfileCache
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-class KeyValueStorageService : CommKeyValueStorage {
+class KeyValueStorageService(private val json: Json) : CommKeyValueStorage {
     private val settings: Settings by lazy { Settings() }
 
     override var token: String?
@@ -20,13 +20,13 @@ class KeyValueStorageService : CommKeyValueStorage {
 
     override var profileCache: ClientProfileCache?
         get() = settings.getStringOrNull(StorageKeys.LOGIN_INFO.key)?.let { raw ->
-            runCatching { Json.decodeFromString(ClientProfileCache.serializer(), raw) }.getOrNull()
+            runCatching { json.decodeFromString(ClientProfileCache.serializer(), raw) }.getOrNull()
         }
         set(value) {
             if (value == null) {
                 settings.remove(StorageKeys.LOGIN_INFO.key)
             } else {
-                settings.putString(StorageKeys.LOGIN_INFO.key, Json.encodeToString(value))
+                settings.putString(StorageKeys.LOGIN_INFO.key, json.encodeToString(value))
             }
         }
 
