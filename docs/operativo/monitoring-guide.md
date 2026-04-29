@@ -49,7 +49,7 @@ Próximo chequeo: en 10 minutos
 ```
 /monitor          Dashboard detallado del sprint
 /ops             Health-check del entorno (JAVA, Node, gh, hooks)
-/cleanup         Limpiar workspace (logs, worktrees, procesos)
+/ghostbusters    Cazar fantasmas: procesos, worktrees, sesiones, locks, logs, QA
 /scrum audit     Auditar sincronización Project V2
 /help            Listar comandos disponibles
 ```
@@ -262,7 +262,7 @@ grep "Watcher:" .claude/hooks/agent-watcher.log | tail -10
 **Causas posibles:**
 1. Hook Stop no disparó (sesión anterior no terminó correctamente) → `/ops` + reinicio
 2. Start-Agente.ps1 no existe o no tiene permisos → Verificar archivo
-3. sprint-plan.json corrupto (JSON inválido) → `/cleanup` puede reparar
+3. sprint-plan.json corrupto (JSON inválido) → reparar manualmente o restaurar de backup
 4. agent-watcher muerto → Lanzar manualmente: `node .claude/hooks/agent-watcher.js`
 
 **Acción correctiva:**
@@ -412,8 +412,8 @@ tail -100 .claude/hooks/telegram-commander.log
 | Cola pendiente | >5 items | >10 items | Sprint demasiado grande, replanificar |
 | CI en "running" | >30 min | >60 min | Cancelar workflow en GitHub |
 | Scrum inconsistencies | >1 | >3 | `/scrum audit` + auto-repair |
-| Hook-debug.log size | >1 MB | >2 MB | `/cleanup --logs --run` |
-| Activity-log entries | >1000 | >5000 | `/cleanup --logs --run` |
+| Hook-debug.log size | >1 MB | >2 MB | `/ghostbusters --logs --run` |
+| Activity-log entries | >1000 | >5000 | `/ghostbusters --logs --run` |
 | Telegram no responde | >5 seg | >30 seg | Reiniciar commander |
 | Branch-guard trigger | >5 veces/día | >10 veces/día | Revisar si alguien intenta push a main |
 
@@ -433,10 +433,10 @@ tail -100 .claude/hooks/telegram-commander.log
 # Retorna: inconsistencias, estado de issues, Project V2 status
 ```
 
-### Limpiar workspace
+### Cazar fantasmas (limpiar workspace)
 ```bash
-/cleanup
-# Retorna: dry-run con lo que se limpiaría
+/ghostbusters
+# Retorna: dry-run con lo que se limpiaría (procesos, worktrees, sesiones, locks, logs, QA)
 # Ejecutar con --run para limpiar realmente
 ```
 

@@ -151,7 +151,7 @@ Generar un dashboard box-drawing con los resultados. Formato:
 │ ✗ worktree-guard.js      registrado en settings · FALTA archivo │
 ├─ RECURSOS ──────────────────────────────────────────────────────┤
 │ ✓ Disco         47 GB libres                                     │
-│ ⚠ Worktrees     3 huérfanos (platform.agent-*) → /cleanup       │
+│ ⚠ Worktrees     3 huérfanos (platform.agent-*) → /ghostbusters  │
 │ ✓ Procesos      sin zombies detectados                           │
 │ ⚠ hook-debug    1,247 líneas → /ops --fix                       │
 ├─ VEREDICTO ─────────────────────────────────────────────────────┤
@@ -184,7 +184,7 @@ Mostrar qué se reparó en una sección adicional del dashboard:
 │ ✓ PIDs limpiados       sprint-pids.json: 3 stale eliminados     │
 ├─ NO REPARABLE ──────────────────────────────────────────────────┤
 │ ⚠ JAVA_HOME            exportar manualmente en el shell         │
-│ ⚠ Worktrees sibling    usar /cleanup --worktrees --run          │
+│ ⚠ Worktrees sibling    usar /ghostbusters --worktrees --run     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -193,7 +193,7 @@ Mostrar qué se reparó en una sección adicional del dashboard:
 - NO borrar worktrees con cambios
 - NO alterar settings.json ni settings.local.json
 - NO eliminar archivos .js de hooks
-- Para limpieza profunda, delegar a `/cleanup --run`
+- Para limpieza profunda, delegar a `/ghostbusters --run --deep`
 
 ## Modo `reset` — Reinicio operativo completo
 

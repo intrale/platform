@@ -675,7 +675,7 @@ Se creará una guía de lanzamiento tipo checklist para poner el sistema operati
 ---
 
 ### 34. CLIs deterministas: `cli-monitor.js` (176), `cli-ops.js` (164), `cli-scrum.js` (141), `cli-cost.js` (250), `cli-branch.js` (91), `cli-cleanup.js` (158) — 980 líneas total
-- **Función:** Scripts de línea de comando (issue #1661) que reemplazan skills `/monitor`, `/ops`, `/scrum`, `/cost`, `/branch`, `/cleanup` sin gastar tokens. Hacen lo mismo que los skills pero 100% deterministas.
+- **Función:** Scripts de línea de comando (issue #1661) que reemplazan skills `/monitor`, `/ops`, `/scrum`, `/cost`, `/branch`, `/ghostbusters` sin gastar tokens. Hacen lo mismo que los skills pero 100% deterministas.
 - **Determinísticos:** Sí, 100% (esa es la razón de existir)
 - **Consumen tokens:** No
 - **Decisión: ELIMINAR en V2** — todos dependen del modelo actual: leen `sprint-plan.json`, `sessions/`, `agent-metrics.json`, `health-check-state.json`. En V2 ninguno de esos archivos existe. Si se necesitan CLIs de diagnóstico, se construyen leyendo el filesystem de fases.
@@ -849,7 +849,7 @@ De ~35 comandos + 27 skills actuales → **8 comandos fijos**.
 | `/limpiar` | Poco valor, se hace manual si hace falta |
 | `/detalle` / `/mas` | Evaluar post-implementación si tiene sentido |
 | Skills como comandos (`/po`, `/qa`, `/review`, etc.) | Los roles del pipeline los lanza el Pulpo, no el usuario |
-| Skills de operaciones (`/ops`, `/cleanup`, `/scrum`, etc.) | Se usan desde terminal directa, no desde Telegram |
+| Skills de operaciones (`/ops`, `/ghostbusters`, `/scrum`, etc.) | Se usan desde terminal directa, no desde Telegram |
 | Keywords de permisos (si/no/siempre) | No hay permisos por Telegram |
 
 #### Flujo de `/proponer`

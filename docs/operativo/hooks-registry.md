@@ -293,7 +293,7 @@
 - **Comandos disponibles:**
   - `/monitor` — Dashboard sprint actual
   - `/ops` — Health-check entorno
-  - `/cleanup` — Limpiar workspace
+  - `/ghostbusters` — Cazar fantasmas (procesos, worktrees, sesiones, locks, logs, QA)
   - `/help` — Lista de comandos
   - `/scrum audit` — Auditar sprint
 - **Heartbeat:** Envía screenshot del Monitor cada X minutos (adaptativo)
@@ -324,7 +324,7 @@ ci-monitor-bg.js
 telegram-commander.js
   ├─→ /monitor (invoca skill)
   ├─→ /ops (invoca skill)
-  ├─→ /cleanup (invoca skill)
+  ├─→ /ghostbusters (invoca skill)
   └─→ notify-telegram.js (responder usuario)
 
 activity-logger.js

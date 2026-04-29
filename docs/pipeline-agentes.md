@@ -145,7 +145,7 @@ Para cada agente: fase(s) de intervención, trigger, output, veredicto.
 | `/doc priorizar` | Ad-hoc | Triaje masivo | Categorizar, etiquetar y organizar issues en backlogs | **Fusionable** con `/doc refinar` |
 | `/auth` | Transversal | PostToolUse automático | Auto-persistir permisos aprobados en approval-history.json | **Indispensable** |
 | `/monitor` | Ad-hoc | Invocación manual | Dashboard de semáforos multi-sesión, actividad en tiempo real | **Indispensable** |
-| `/cleanup` | Ad-hoc | Fin de sprint o mantenimiento | Limpiar logs, sesiones, worktrees, procesos temporales | **Indispensable** |
+| `/ghostbusters` | Ad-hoc | Fin de sprint o mantenimiento | Cazar fantasmas: procesos zombi, worktrees, sesiones, locks, logs, QA artifacts, agentes, entorno | **Indispensable** |
 | `/backend-dev` | F1-F3 | Issues con módulos `:backend`, `:users` | Implementación backend Ktor, microservicios, DynamoDB, Cognito | **Fusionable** — es un developer agent con contexto de backend. Evaluar si el prompt enrichment del agente genérico lo reemplaza. |
 | `/android-dev` | F1-F3 | Issues con label `app:android` o archivos Android | Desarrollo Android con Compose, flavors, Coil, Material3 | **Fusionable** — developer agent con contexto Android. Misma evaluación que backend-dev. |
 | `/ios-dev` | F1-F3 | Issues con label `app:ios` o archivos iOS | Desarrollo iOS con ComposeUIViewController | **Fusionable** — developer agent con contexto iOS. Activar solo si issue.labels incluye `app:ios`. |
@@ -155,7 +155,7 @@ Para cada agente: fase(s) de intervención, trigger, output, veredicto.
 
 ### Resumen por veredicto
 
-**Indispensables (17):** `/po`, `/guru`, `/ux`, `/security`, `/tester`, `/review`, `/builder`, `/qa`, `/scrum`, `/ops`, `/branch`, `/delivery`, `/planner`, `/doc nueva`, `/auth`, `/monitor`, `/cleanup`
+**Indispensables (17):** `/po`, `/guru`, `/ux`, `/security`, `/tester`, `/review`, `/builder`, `/qa`, `/scrum`, `/ops`, `/branch`, `/delivery`, `/planner`, `/doc nueva`, `/auth`, `/monitor`, `/ghostbusters`
 
 **Fusionables (6):** `/doc` + `/doc refinar` + `/doc priorizar` (posible unificación en un solo agente de triaje); `/backend-dev` + `/android-dev` + `/ios-dev` + `/web-dev` + `/desktop-dev` (evaluación: unificar como agente developer genérico con contexto de plataforma inyectado vía prompt enrichment del sprint-plan)
 

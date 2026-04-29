@@ -437,7 +437,7 @@ Después de un merge exitoso, **limpiar el worktree automáticamente** si:
 
 ### 0. Detectar si el worktree es la sesión activa (CRITICO — fix #2867)
 
-Si `/delivery` se invoca desde dentro del propio worktree, la limpieza voltea los skills y deja el CLI sin `cleanup`, `ghostbusters`, etc.
+Si `/delivery` se invoca desde dentro del propio worktree, la limpieza voltea los skills y deja el CLI sin `ghostbusters`, etc.
 
 ```bash
 SESSION_CWD=$(cd "$(pwd)" && pwd -P)
@@ -446,7 +446,7 @@ WORKTREE_REAL=$(cd "$WORKTREE_PATH" 2>/dev/null && pwd -P || echo "")
 if [ -n "$WORKTREE_REAL" ] && [[ "$SESSION_CWD" == "$WORKTREE_REAL"* ]]; then
   echo "⚠️ Skip cleanup: el worktree es donde corre la sesión actual del CLI"
   echo "   Worktree: $WORKTREE_PATH"
-  echo "   Branch local se conserva. Worktree quedará como huérfano hasta /cleanup manual."
+  echo "   Branch local se conserva. Worktree quedará como huérfano hasta /ghostbusters --worktrees --run manual."
   git -C /c/Workspaces/Intrale/platform worktree prune 2>/dev/null || true
   # Saltar al Paso 7 (reportar)
 fi

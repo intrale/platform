@@ -240,7 +240,7 @@
 │  │        - SÍ → Presionar "✅ Aprobar" en Telegram
 │  │        - NO → Telegram offline (ver FLUJO E)
 │  │     3. Si espera >15 min, timeout automático → Denegar
-│  │     4. Usar /cleanup --run en su lugar (tiene autorización pre-built)
+│  │     4. Usar /ghostbusters --run en su lugar (tiene autorización pre-built)
 │  │
 │  └─ Otro comando → Pregunta 2
 │
@@ -518,7 +518,7 @@
 ├─ Acción H1: Limpiar espacio
 │  │
 │  └─ Ejecutar:
-│     /cleanup --run --deep
+│     /ghostbusters --run --deep
 │     1. Elimina: worktrees sibling, logs, node_modules, .gradle cache
 │     2. Espera 5min
 │     3. Verifica espacio: df -h /c/Workspaces/
@@ -530,7 +530,7 @@
 │  │
 │  └─ Ejecutar:
 │     git worktree prune -v
-│     /cleanup --worktrees --run
+│     /ghostbusters --worktrees --run
 │     1. Limpia references huérfanas
 │     2. Elimina directorios vacios
 │
@@ -545,7 +545,7 @@
 ├─ Acción H4: Limpiar logs
 │  │
 │  └─ Ejecutar:
-│     /cleanup --logs --run
+│     /ghostbusters --logs --run
 │     1. Recorta hook-debug.log a 500 líneas
 │     2. Recorta activity-log.jsonl a 200 entradas
 │     3. Libera ~100+ MB
@@ -571,7 +571,7 @@
 | Tests fallan | `./gradlew test --info` | Arreglar test O código |
 | Build falla | `./gradlew clean build` | Investigar con `/guru` |
 | Permisos bloqueados | Ver Telegram | Aprobar / Denegar en Telegram |
-| Disco lleno | `df -h /c/Workspaces/` | `/cleanup --run --deep` |
+| Disco lleno | `df -h /c/Workspaces/` | `/ghostbusters --run --deep` |
 | Sprint desincronizado | `/scrum audit` | `/scrum repair --auto` |
 
 ---

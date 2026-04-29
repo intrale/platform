@@ -106,7 +106,7 @@ async function cleanupWorktree({
     log('⚠️ Skip cleanup: worktree es la sesión activa del CLI');
     log(`   Worktree: ${worktreePath}`);
     log(`   Session:  ${sessionCwd}`);
-    log('   Branch local se conserva. Worktree quedará huérfano hasta /cleanup manual.');
+    log('   Branch local se conserva. Worktree quedará huérfano hasta /ghostbusters --worktrees --run manual.');
     gitInMain(['worktree', 'prune'], mainRepoPath);
     return {
       ok: true,

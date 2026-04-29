@@ -155,7 +155,7 @@ Mientras los agentes trabajan, **4 sistemas monitorean en background**:
 - **Script:** `.claude/hooks/telegram-commander.js`
 - **Ciclo:**
   1. Polling remoto cada 10-30s (según `heartbeat_interval` adaptativo)
-  2. Si hay comando, ejecutarlo (ej: `/monitor`, `/ops`, `/cleanup`)
+  2. Si hay comando, ejecutarlo (ej: `/monitor`, `/ops`, `/ghostbusters`)
   3. Responder al usuario en Telegram con resultado
 - **Proactividad:** Envía heartbeat con screenshots del Monitor cada X minutos
 
@@ -369,7 +369,7 @@ while (true) {
 **Comandos disponibles:**
 - `/monitor` — Dashboard de Sprint actual
 - `/ops` — Health-check del entorno
-- `/cleanup` — Limpieza de workspace
+- `/ghostbusters` — Caza fantasmas (procesos, worktrees, sesiones, locks, logs, QA)
 - `/help` — Lista de comandos
 
 ### 6b. scrum-monitor-bg (auditor automático)
@@ -578,7 +578,7 @@ Si el sistema se desincroniza (ej: agente no se promociona):
 1. Ejecutar `/ops` para diagnosticar
 2. Ejecutar `/scrum audit` para verificar Project V2
 3. Si falta promoción: ejecutar `Start-Agente.ps1 <numero>` manualmente
-4. Si hay conflicto: ejecutar `/cleanup --run` para limpiar stale
+4. Si hay conflicto: ejecutar `/ghostbusters --run` para limpiar stale
 
 ---
 
@@ -615,7 +615,7 @@ Si el sistema se desincroniza (ej: agente no se promociona):
 - **Gates Pre-Merge:** `/tester`, `/builder`, `/security`, `/review`
 - **Hooks Registry:** `.claude/settings.json` (lista completa de todos los eventos)
 - **Monitoreo:** `/monitor` (dashboard en Telegram), `/ops` (health-check)
-- **Limpieza:** `/cleanup` (workspace cleanup + state files)
+- **Limpieza:** `/ghostbusters` (procesos, worktrees, sesiones, locks, logs, QA artifacts, state files)
 - **Sprint Lifecycle:** `/scrum` (metricas, audit, close sprint)
 
 ---
