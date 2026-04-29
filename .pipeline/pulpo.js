@@ -6337,7 +6337,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro } = require('./multimedia');
+  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, transcriptionFailureMessage } = require('./multimedia');
   const session = loadSession();
 
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
@@ -6346,7 +6346,9 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     const processed = await preprocessMessage(m, botToken);
     m._textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
     m._esAudio = !!(m.voice || m.voice_path);
-    log('commander', `Preprocesado: "${m._textoFinal.slice(0, 80)}"`);
+    m._audio = processed.audio || null;
+    m._audioFailed = !!(processed.audio && processed.audio.ok === false);
+    log('commander', `Preprocesado: "${m._textoFinal.slice(0, 80)}"${m._audioFailed ? ' [audio fallido: ' + processed.audio.errorKind + ']' : ''}`);
 
     // Registrar entrada en historial
     fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: m._textoFinal, timestamp: new Date().toISOString() }) + '\n');
@@ -6407,6 +6409,21 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     try { moveFile(m._path, commanderListo); } catch {}
     const logFile = path.join(LOG_DIR, 'commander.log');
     fs.appendFileSync(logFile, `[${new Date().toISOString()}] /${parsed.cmd}\n${respuesta || '(sin respuesta)'}\n---\n`);
+  }
+
+  // --- FALLBACK: si TODOS los mensajes libres son audios fallidos (whisper
+  // sin cuota, key inválida, timeout, etc.), no malgastamos una sesión de
+  // Claude para procesar un error. Respondemos directo a Telegram con un
+  // mensaje accionable y movemos los mensajes a listo. ---
+  if (textoLibre.length > 0 && textoLibre.every(m => m._audioFailed && !(m._textoFinal || '').replace(/\(.*?\)/g, '').trim())) {
+    const errorKinds = [...new Set(textoLibre.map(m => m._audio && m._audio.errorKind).filter(Boolean))];
+    const dominant = errorKinds[0] || 'unknown';
+    const fallback = (textoLibre[0]._audio && textoLibre[0]._audio.fallbackMessage) || transcriptionFailureMessage(dominant);
+    log('commander', `Audio(s) sin transcribir [${errorKinds.join(',')}] — fallback directo a Telegram, sin invocar a Claude`);
+    sendTelegram(fallback);
+    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: fallback, timestamp: new Date().toISOString(), reason: `audio_fallback:${dominant}` }) + '\n');
+    for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+    return;
   }
 
   // --- PROCESAR TEXTO LIBRE CONSOLIDADO (una sola llamada a Claude) ---

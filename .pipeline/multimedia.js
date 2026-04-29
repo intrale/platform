@@ -11,6 +11,12 @@ const { spawn } = require('child_process');
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
 const { loadTelegramSecrets, loadApiKeys } = require('./lib/telegram-secrets');
+const { transcribeLocal: whisperLocal, isAvailable: whisperLocalAvailable } = require('./lib/whisper-local');
+
+// errorKinds de la API que ameritan probar el fallback local (cuota, auth,
+// rate limit, network, timeout). 'parse'/'no_key' tampoco deberían volar la
+// transcripción si tenemos whisper local disponible.
+const LOCAL_FALLBACK_KINDS = new Set(['quota', 'auth', 'rate_limit', 'network', 'timeout', 'no_key']);
 
 // Merge en 3 capas para que TTS/STT/Vision nunca se rompa por la migracion
 // del archivo committed a placeholders:
@@ -73,13 +79,27 @@ function downloadTelegramFile(fileId, botToken) {
 }
 
 // --- OpenAI Whisper transcription ---
+// Devuelve siempre {ok, text, errorKind, raw} para que el caller decida si
+// degrada con gracia. errorKind ∈ {'no_key','quota','auth','rate_limit',
+// 'network','timeout','parse','api','unknown'}.
+
+function classifyOpenAIError(errObj) {
+  if (!errObj) return 'unknown';
+  const code = (errObj.code || '').toLowerCase();
+  const type = (errObj.type || '').toLowerCase();
+  const msg  = (errObj.message || '').toLowerCase();
+  if (code === 'insufficient_quota' || type === 'insufficient_quota' || msg.includes('exceeded your current quota')) return 'quota';
+  if (code === 'invalid_api_key' || type === 'invalid_request_error' && msg.includes('api key')) return 'auth';
+  if (code === 'rate_limit_exceeded' || type === 'rate_limit_error') return 'rate_limit';
+  return 'api';
+}
 
 function transcribeAudio(audioBuffer, filename) {
   const config = loadConfig();
   const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
-  if (!apiKey) return Promise.resolve('(audio no soportado — falta openai_api_key)');
+  if (!apiKey) return Promise.resolve({ ok: false, text: '', errorKind: 'no_key', raw: 'falta openai_api_key' });
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const boundary = 'boundary' + Date.now();
     const parts = [];
     parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-4o-mini-transcribe\r\n`);
@@ -105,16 +125,69 @@ function transcribeAudio(audioBuffer, filename) {
       res.on('end', () => {
         try {
           const r = JSON.parse(d);
-          if (r.error) { resolve(`(error transcripcion: ${r.error.message})`); return; }
-          resolve(r.text || '(sin transcripcion)');
-        } catch { resolve('(error parseando respuesta de transcripcion)'); }
+          if (r.error) {
+            resolve({ ok: false, text: '', errorKind: classifyOpenAIError(r.error), raw: r.error.message || JSON.stringify(r.error) });
+            return;
+          }
+          if (r.text) { resolve({ ok: true, text: r.text }); return; }
+          resolve({ ok: false, text: '', errorKind: 'parse', raw: 'respuesta sin campo text' });
+        } catch (e) {
+          resolve({ ok: false, text: '', errorKind: 'parse', raw: e.message });
+        }
       });
     });
-    req.on('error', (e) => resolve(`(error transcripcion: ${e.message})`));
-    req.on('timeout', () => { req.destroy(); resolve('(timeout transcripcion)'); });
+    req.on('error', (e) => resolve({ ok: false, text: '', errorKind: 'network', raw: e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, text: '', errorKind: 'timeout', raw: 'timeout' }); });
     req.write(body);
     req.end();
   });
+}
+
+// Orquesta API + fallback local. Devuelve la misma forma {ok,text,errorKind,raw}
+// más un campo `source` ∈ {'openai','local'} para que se pueda auditar/loguear
+// cuál motor terminó respondiendo.
+async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) {
+  const apiResult = await transcribeAudio(audioBuffer, filename);
+  if (apiResult.ok) return { ...apiResult, source: 'openai' };
+
+  // Sólo intentamos local cuando el motivo de falla es uno que el local puede
+  // resolver (cuota agotada, key inválida, network). Errores de parseo o de
+  // formato de respuesta no se arreglan re-corriendo en local.
+  if (!LOCAL_FALLBACK_KINDS.has(apiResult.errorKind)) {
+    return { ...apiResult, source: 'openai' };
+  }
+  if (!whisperLocalAvailable()) {
+    log(`API falló (${apiResult.errorKind}) y whisper local no está disponible`);
+    return { ...apiResult, source: 'openai' };
+  }
+
+  log(`API falló (${apiResult.errorKind}) — fallback a whisper local`);
+  const localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
+  if (localResult.ok) {
+    return { ok: true, text: localResult.text, source: 'local', apiErrorKind: apiResult.errorKind };
+  }
+  // Si el local también falló, devolvemos el error original de la API (es el
+  // que tiene contexto más útil para el operador). Anotamos el fallo del local.
+  return {
+    ...apiResult,
+    source: 'openai',
+    localErrorKind: localResult.errorKind,
+    localRaw: localResult.raw,
+  };
+}
+
+// Mensaje human-friendly que va a Telegram cuando whisper no pudo transcribir.
+// Es lo que va a leer Leo, así que tiene que ser breve y accionable.
+function transcriptionFailureMessage(errorKind) {
+  switch (errorKind) {
+    case 'no_key':     return '🎤 Audio recibido. No tengo `openai_api_key` cargada — repetímelo por texto cuando puedas.';
+    case 'quota':      return '🎤 Audio recibido. La cuota de OpenAI está agotada (Whisper no responde) — repetímelo por texto cuando puedas. Para volver a habilitar la transcripción: subir cuota o rotar la key en `~/.claude/secrets/telegram-config.json`.';
+    case 'auth':       return '🎤 Audio recibido. La `openai_api_key` está inválida — repetímelo por texto y revisá la key en `~/.claude/secrets/telegram-config.json`.';
+    case 'rate_limit': return '🎤 Audio recibido. Whisper está rate-limited ahora mismo — esperá unos segundos y reenviá, o repetímelo por texto.';
+    case 'timeout':    return '🎤 Audio recibido. La transcripción se colgó (timeout) — repetímelo por texto, o reenvialo más cortito.';
+    case 'network':    return '🎤 Audio recibido. No pude llegar a la API de OpenAI (network) — repetímelo por texto.';
+    default:           return '🎤 Audio recibido pero no pude transcribirlo — repetímelo por texto cuando puedas.';
+  }
 }
 
 // --- Anthropic Vision ---
@@ -174,7 +247,7 @@ function describeImage(imageBuffer, mediaType) {
 // --- Preprocesar mensaje completo ---
 
 async function preprocessMessage(msg, botToken) {
-  const result = { text: msg.text || '', extras: [] };
+  const result = { text: msg.text || '', extras: [], audio: null };
 
   // Transcribir audio
   // El listener ya descargó el archivo a voice_path (local) o tenemos file_id en voice
@@ -193,13 +266,27 @@ async function preprocessMessage(msg, botToken) {
 
     if (audioBuffer) {
       log(`Transcribiendo audio (${audioBuffer.length} bytes)...`);
-      const transcription = await transcribeAudio(audioBuffer, 'audio.ogg');
-      log(`Transcripcion: "${transcription.slice(0, 100)}"`);
-      result.text = transcription;
-      result.extras.push('(mensaje de voz transcripto)');
+      const tx = await transcribeAudioWithFallback(audioBuffer, msg.voice_path || null, 'audio.ogg');
+      if (tx.ok) {
+        const sourceTag = tx.source === 'local' ? ' [whisper local]' : '';
+        log(`Transcripcion${sourceTag}: "${tx.text.slice(0, 100)}"`);
+        result.text = tx.text;
+        const extra = tx.source === 'local'
+          ? '(mensaje de voz transcripto · whisper local · API en fallback)'
+          : '(mensaje de voz transcripto)';
+        result.extras.push(extra);
+        result.audio = { ok: true, source: tx.source };
+      } else {
+        log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}${tx.localErrorKind ? ` | local=${tx.localErrorKind}: ${tx.localRaw}` : ''}`);
+        // No metemos el error como texto del mensaje — el caller decide qué hacer.
+        result.text = '';
+        result.audio = { ok: false, errorKind: tx.errorKind, raw: tx.raw, fallbackMessage: transcriptionFailureMessage(tx.errorKind) };
+        result.extras.push(`(audio sin transcribir: ${tx.errorKind})`);
+      }
     } else {
       log('Audio no disponible');
       result.extras.push('(audio no disponible)');
+      result.audio = { ok: false, errorKind: 'download_failed', raw: 'no se pudo bajar el audio', fallbackMessage: '🎤 Audio recibido pero no pude descargarlo de Telegram — reintentá o repetímelo por texto.' };
     }
   }
 
@@ -618,6 +705,8 @@ function splitTextForTTSChunks(text, maxChars) {
 module.exports = {
   preprocessMessage,
   transcribeAudio,
+  transcribeAudioWithFallback,
+  transcriptionFailureMessage,
   describeImage,
   downloadTelegramFile,
   textToSpeech,
