@@ -1,13 +1,18 @@
 // =============================================================================
-// telegram-secrets.js — fuente unica de bot_token y chat_id.
+// telegram-secrets.js — fuente unica de credenciales del bot Telegram + claves
+// API (OpenAI, Anthropic, ElevenLabs) usadas por TTS/STT/Vision en multimedia.
 //
 // Prioridad de carga:
-//   1) ENV: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+//   1) ENV: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID  (+ OPENAI_API_KEY etc.)
 //   2) ~/.claude/secrets/telegram-config.json   (FUERA del repo, recomendado)
 //   3) <repo>/.claude/hooks/telegram-config.json (legacy, fallback con warning)
 //
 // El path (2) es inmune a checkouts/pulls del repo y nunca se sube a github
 // porque vive en el home del usuario. Es la ubicacion oficial post-intrusion.
+//
+// loadTelegramSecrets()  -> {bot_token, chat_id, source}        (criticos, throw si faltan)
+// loadApiKeys()          -> {openai_api_key, anthropic_api_key,
+//                           elevenlabs_api_key, elevenlabs_voice_id}  (best-effort, vacio si falta)
 // =============================================================================
 
 'use strict';
@@ -30,6 +35,13 @@ function isLikelyToken(s) {
 function looksLikePlaceholder(s) {
     if (!s) return true;
     return /(REVOKED|PLACEHOLDER|MOVED|EXAMPLE|REPLACE|CHANGE_ME)/i.test(s);
+}
+
+function pickKey(value) {
+    if (typeof value !== 'string') return '';
+    if (!value.trim()) return '';
+    if (looksLikePlaceholder(value)) return '';
+    return value;
 }
 
 /**
@@ -68,4 +80,35 @@ function loadTelegramSecrets({ legacyConfigPath, log } = {}) {
     throw err;
 }
 
-module.exports = { loadTelegramSecrets, HOME_SECRETS };
+/**
+ * Devuelve las API keys de proveedores externos (TTS/STT/Vision).
+ * Best-effort: nunca lanza, retorna strings vacios para keys faltantes.
+ * Prioridad por key: ENV → home secrets → legacy committed config.
+ * El consumidor decide que hacer cuando una key viene vacia (multimedia
+ * loggea "falta openai_api_key" y degrada).
+ */
+function loadApiKeys({ legacyConfigPath } = {}) {
+    const home = tryRead(HOME_SECRETS) || {};
+    const legacy = legacyConfigPath ? (tryRead(legacyConfigPath) || {}) : {};
+
+    return {
+        openai_api_key:
+            pickKey(process.env.OPENAI_API_KEY) ||
+            pickKey(home.openai_api_key) ||
+            pickKey(legacy.openai_api_key),
+        anthropic_api_key:
+            pickKey(process.env.ANTHROPIC_API_KEY) ||
+            pickKey(home.anthropic_api_key) ||
+            pickKey(legacy.anthropic_api_key),
+        elevenlabs_api_key:
+            pickKey(process.env.ELEVENLABS_API_KEY) ||
+            pickKey(home.elevenlabs_api_key) ||
+            pickKey(legacy.elevenlabs_api_key),
+        elevenlabs_voice_id:
+            pickKey(process.env.ELEVENLABS_VOICE_ID) ||
+            pickKey(home.elevenlabs_voice_id) ||
+            pickKey(legacy.elevenlabs_voice_id),
+    };
+}
+
+module.exports = { loadTelegramSecrets, loadApiKeys, HOME_SECRETS };
