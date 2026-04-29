@@ -11,6 +11,12 @@ const { spawn } = require('child_process');
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
 const { loadTelegramSecrets, loadApiKeys } = require('./lib/telegram-secrets');
+const { transcribeLocal: whisperLocal, isAvailable: whisperLocalAvailable } = require('./lib/whisper-local');
+
+// errorKinds de la API que ameritan probar el fallback local (cuota, auth,
+// rate limit, network, timeout). 'parse'/'no_key' tampoco deberían volar la
+// transcripción si tenemos whisper local disponible.
+const LOCAL_FALLBACK_KINDS = new Set(['quota', 'auth', 'rate_limit', 'network', 'timeout', 'no_key']);
 
 // Merge en 3 capas para que TTS/STT/Vision nunca se rompa por la migracion
 // del archivo committed a placeholders:
@@ -137,6 +143,39 @@ function transcribeAudio(audioBuffer, filename) {
   });
 }
 
+// Orquesta API + fallback local. Devuelve la misma forma {ok,text,errorKind,raw}
+// más un campo `source` ∈ {'openai','local'} para que se pueda auditar/loguear
+// cuál motor terminó respondiendo.
+async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) {
+  const apiResult = await transcribeAudio(audioBuffer, filename);
+  if (apiResult.ok) return { ...apiResult, source: 'openai' };
+
+  // Sólo intentamos local cuando el motivo de falla es uno que el local puede
+  // resolver (cuota agotada, key inválida, network). Errores de parseo o de
+  // formato de respuesta no se arreglan re-corriendo en local.
+  if (!LOCAL_FALLBACK_KINDS.has(apiResult.errorKind)) {
+    return { ...apiResult, source: 'openai' };
+  }
+  if (!whisperLocalAvailable()) {
+    log(`API falló (${apiResult.errorKind}) y whisper local no está disponible`);
+    return { ...apiResult, source: 'openai' };
+  }
+
+  log(`API falló (${apiResult.errorKind}) — fallback a whisper local`);
+  const localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
+  if (localResult.ok) {
+    return { ok: true, text: localResult.text, source: 'local', apiErrorKind: apiResult.errorKind };
+  }
+  // Si el local también falló, devolvemos el error original de la API (es el
+  // que tiene contexto más útil para el operador). Anotamos el fallo del local.
+  return {
+    ...apiResult,
+    source: 'openai',
+    localErrorKind: localResult.errorKind,
+    localRaw: localResult.raw,
+  };
+}
+
 // Mensaje human-friendly que va a Telegram cuando whisper no pudo transcribir.
 // Es lo que va a leer Leo, así que tiene que ser breve y accionable.
 function transcriptionFailureMessage(errorKind) {
@@ -227,14 +266,18 @@ async function preprocessMessage(msg, botToken) {
 
     if (audioBuffer) {
       log(`Transcribiendo audio (${audioBuffer.length} bytes)...`);
-      const tx = await transcribeAudio(audioBuffer, 'audio.ogg');
+      const tx = await transcribeAudioWithFallback(audioBuffer, msg.voice_path || null, 'audio.ogg');
       if (tx.ok) {
-        log(`Transcripcion: "${tx.text.slice(0, 100)}"`);
+        const sourceTag = tx.source === 'local' ? ' [whisper local]' : '';
+        log(`Transcripcion${sourceTag}: "${tx.text.slice(0, 100)}"`);
         result.text = tx.text;
-        result.extras.push('(mensaje de voz transcripto)');
-        result.audio = { ok: true };
+        const extra = tx.source === 'local'
+          ? '(mensaje de voz transcripto · whisper local · API en fallback)'
+          : '(mensaje de voz transcripto)';
+        result.extras.push(extra);
+        result.audio = { ok: true, source: tx.source };
       } else {
-        log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}`);
+        log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}${tx.localErrorKind ? ` | local=${tx.localErrorKind}: ${tx.localRaw}` : ''}`);
         // No metemos el error como texto del mensaje — el caller decide qué hacer.
         result.text = '';
         result.audio = { ok: false, errorKind: tx.errorKind, raw: tx.raw, fallbackMessage: transcriptionFailureMessage(tx.errorKind) };
@@ -662,6 +705,7 @@ function splitTextForTTSChunks(text, maxChars) {
 module.exports = {
   preprocessMessage,
   transcribeAudio,
+  transcribeAudioWithFallback,
   transcriptionFailureMessage,
   describeImage,
   downloadTelegramFile,
