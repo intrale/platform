@@ -661,14 +661,50 @@ function renderOps() {
   <pre id="ops-qaenv" class="ops-pre"></pre>
 </section>`;
     const css = `
-.ops-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.ops-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .ops-card { background: var(--in-bg-3); padding: 12px 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); display: flex; flex-direction: column; gap: 4px; }
 .ops-card.alive { border-color: var(--in-ok); }
 .ops-card.dead { border-color: var(--in-bad); opacity: 0.7; }
 .ops-card-name { font-weight: 600; }
 .ops-card-meta { font-size: 11px; color: var(--in-fg-dim); font-family: var(--in-mono); }
+.ops-queues { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.ops-queue-group { display: flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 999px; background: var(--in-bg-2); border: 1px solid var(--in-border); font-size: 10px; font-family: var(--in-mono); font-variant-numeric: tabular-nums; }
+.ops-queue-group .ops-queue-name { color: var(--in-fg-dim); margin-right: 2px; font-weight: 600; text-transform: lowercase; }
+.ops-chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 6px; color: var(--in-fg-dim); }
+.ops-chip.hot { color: var(--in-warn); font-weight: 600; }
+.ops-chip.work { color: var(--in-info); font-weight: 600; }
 .ops-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 280px; border: 1px solid var(--in-border); }`;
     const script = `
+const PROC_QUEUES = {
+    'listener': ['commander', 'telegram'],
+    'svc-telegram': ['telegram'],
+    'svc-github': ['github'],
+    'svc-drive': ['drive'],
+    'svc-emulador': ['emulador'],
+};
+function chip(icon, n, cls){
+    const v = Number(n) || 0;
+    const c = (cls === 'pend' && v > 0) ? 'ops-chip hot'
+            : (cls === 'work' && v > 0) ? 'ops-chip work'
+            : 'ops-chip';
+    return '<span class="'+c+'" title="'+escapeHtml(cls)+'">'+icon+' '+v+'</span>';
+}
+function queuesHTML(name, servicios){
+    const queues = PROC_QUEUES[name] || [];
+    if(!queues.length) return '';
+    let html = '<div class="ops-queues">';
+    for(const q of queues){
+        const s = (servicios && servicios[q]) || { pendiente: 0, trabajando: 0, listo: 0 };
+        html += '<span class="ops-queue-group" title="cola '+escapeHtml(q)+'">'
+            + '<span class="ops-queue-name">'+escapeHtml(q)+'</span>'
+            + chip('⏳', s.pendiente, 'pend')
+            + chip('⚙', s.trabajando, 'work')
+            + chip('✓', s.listo, 'done')
+            + '</span>';
+    }
+    html += '</div>';
+    return html;
+}
 async function tickOps(){
     const d = await fetchJson('/api/dash/ops');
     if(!d) return;
@@ -677,7 +713,12 @@ async function tickOps(){
         let html = '';
         for(const [name, p] of Object.entries(d.procesos || {})){
             const cls = p.alive ? 'alive' : 'dead';
-            html += '<div class="ops-card '+cls+'"><div class="ops-card-name">'+(p.alive?'🟢':'🔴')+' '+escapeHtml(name)+'</div><div class="ops-card-meta">PID '+(p.pid||'—')+'</div><div class="ops-card-meta">uptime '+fmtDur(p.uptime||0)+'</div></div>';
+            html += '<div class="ops-card '+cls+'">'
+                + '<div class="ops-card-name">'+(p.alive?'\u{1F7E2}':'\u{1F534}')+' '+escapeHtml(name)+'</div>'
+                + '<div class="ops-card-meta">PID '+(p.pid||'—')+'</div>'
+                + '<div class="ops-card-meta">uptime '+fmtDur(p.uptime||0)+'</div>'
+                + queuesHTML(name, d.servicios)
+                + '</div>';
         }
         if(grid.innerHTML !== html) grid.innerHTML = html;
     }
