@@ -7475,27 +7475,49 @@ const server = http.createServer((req, res) => {
         // en `<marker>.guidance.txt` (vía humanBlock) y el pulpo la inyecta
         // al prompt del agente cuando lo lance.
         const guidance = String(payload.guidance || '').trim();
-        let result;
-        try { result = humanBlock.unblockIssue({ issue: issueNum, guidance, unlocker: 'commander:dashboard' }); }
-        catch (e) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, msg: 'Error desbloqueando: ' + e.message }));
-          return;
+        // unblockIssue() despausa UN solo marker (skill, fase) por llamada.
+        // Un issue puede tener varios skills pausados en paralelo (p.ej. po,
+        // ux, guru en validacion). El dashboard agrupa por issue, así que
+        // "reactivar" tiene que despausarlos a todos en una sola operación.
+        const reactivated = [];
+        const MAX_LOOP = 20;
+        for (let i = 0; i < MAX_LOOP; i++) {
+          let r;
+          try { r = humanBlock.unblockIssue({ issue: issueNum, guidance, unlocker: 'commander:dashboard' }); }
+          catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, msg: 'Error desbloqueando: ' + e.message, reactivated }));
+            return;
+          }
+          if (!r.ok) break;
+          reactivated.push(r);
         }
-        if (!result.ok) {
+        if (reactivated.length === 0) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, msg: result.error }));
+          res.end(JSON.stringify({ ok: false, msg: `Issue ${issueNum} no está en bloqueado-humano/` }));
           return;
         }
         ghTry(['issue', 'edit', String(issueNum), '--repo', repo, '--remove-label', 'needs-human']);
         const guidanceBlock = guidance
           ? `\n\n**Orientación del operador:**\n\n> ${guidance.replace(/\n/g, '\n> ')}`
           : '\n\nVuelve a la cola del pipeline sin orientación adicional.';
-        const comment = `## ▶ Reactivado desde el dashboard\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`${guidanceBlock}`;
+        const skillsLine = reactivated
+          .map(r => `\`${r.skill}\` (${r.from_phase} → ${r.to_phase})`)
+          .join(', ');
+        const comment = `## ▶ Reactivado desde el dashboard\n\n**Skills reactivados (${reactivated.length}):** ${skillsLine}${guidanceBlock}`;
         ghTry(['issue', 'comment', String(issueNum), '--repo', repo, '--body', comment]);
-        log(`needs-human: reactivado #${issueNum} (skill=${result.skill}, ${result.from_phase}→${result.to_phase})${guidance ? ` con orientación (${guidance.length} chars)` : ''}`);
+        const skillsLog = reactivated.map(r => `${r.skill}@${r.from_phase}→${r.to_phase}`).join(', ');
+        log(`needs-human: reactivado #${issueNum} (${reactivated.length} skills: ${skillsLog})${guidance ? ` con orientación (${guidance.length} chars)` : ''}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} reactivado${guidance ? ' con orientación' : ''}`, ...result }));
+        res.end(JSON.stringify({
+          ok: true,
+          msg: `Issue #${issueNum} reactivado · ${reactivated.length} skill${reactivated.length === 1 ? '' : 's'}${guidance ? ' con orientación' : ''}`,
+          reactivated,
+          // Mantener compat con clientes viejos que esperaban skill/from_phase/to_phase top-level.
+          skill: reactivated[0].skill,
+          from_phase: reactivated[0].from_phase,
+          to_phase: reactivated[0].to_phase,
+        }));
         return;
       }
 
