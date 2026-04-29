@@ -582,11 +582,61 @@ function textToSpeechEdge(text, profileName = 'default') {
   });
 }
 
+// --- Sanitizer markdown → texto natural para TTS ---
+// El TTS lee literal: "**bold**" se pronuncia "asterisco asterisco bold asterisco
+// asterisco". Limpiamos antes de mandarle el chunk al provider.
+function sanitizeForTts(text) {
+  if (!text) return text;
+  let s = String(text);
+  // Bloques de código triple-backtick: descartarlos completamente.
+  s = s.replace(/```[\s\S]*?```/g, ' ');
+  // Inline code `xxx` → xxx
+  s = s.replace(/`([^`]+)`/g, '$1');
+  // Negrita **xxx** y __xxx__
+  s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
+  s = s.replace(/__([^_]+)__/g, '$1');
+  // Itálicas *xxx* y _xxx_ (cuidando de no romper identificadores con _ dentro)
+  s = s.replace(/(^|[\s(])\*([^*\n]+)\*([\s).,:;!?]|$)/g, '$1$2$3');
+  s = s.replace(/(^|[\s(])_([^_\n]+)_([\s).,:;!?]|$)/g, '$1$2$3');
+  // Links markdown [texto](url) → texto
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+  // Headers (# ## ### al inicio de línea)
+  s = s.replace(/^#{1,6}\s+/gm, '');
+  // Blockquotes ">"
+  s = s.replace(/^\s*>\s?/gm, '');
+  // Tablas: separador --- | --- y filas con |
+  // OJO: usar [ \t] en lugar de \s para no engullir \n (la clase con \s greedy
+  // pegaba las filas adyacentes al separador).
+  s = s.replace(/^[ \t|:\-]+$/gm, '');
+  s = s.replace(/^[ \t]*\|(.+)\|[ \t]*$/gm, (_, inner) =>
+    inner
+      .split('|')
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .join(', ')
+  );
+  // Bullets/numeradas al inicio de línea
+  s = s.replace(/^\s*[-*+]\s+/gm, '');
+  s = s.replace(/^\s*\d+\.\s+/gm, '');
+  // Asteriscos sueltos remanentes (énfasis sin cierre, separadores)
+  s = s.replace(/\*+/g, '');
+  // Backticks remanentes
+  s = s.replace(/`+/g, '');
+  // Tildes de tachado ~~xxx~~
+  s = s.replace(/~~/g, '');
+  // Saltos triples → dobles
+  s = s.replace(/\n{3,}/g, '\n\n');
+  // Espacios múltiples
+  s = s.replace(/[ \t]+/g, ' ');
+  return s.trim();
+}
+
 // --- TTS con priorización dinámica + fallback ---
 
 async function textToSpeechByProvider(provider, text, profileName = 'default') {
-  if (provider === 'openai') return textToSpeechOpenAI(text, profileName);
-  if (provider === 'edge') return textToSpeechEdge(text, profileName);
+  const cleaned = sanitizeForTts(text);
+  if (provider === 'openai') return textToSpeechOpenAI(cleaned, profileName);
+  if (provider === 'edge') return textToSpeechEdge(cleaned, profileName);
   log(`TTS: provider desconocido '${provider}'`);
   return null;
 }
@@ -718,5 +768,6 @@ module.exports = {
   saveTtsState,
   getTransitionIntro,
   sendVoiceTelegram,
-  splitTextForTTSChunks
+  splitTextForTTSChunks,
+  sanitizeForTts
 };
