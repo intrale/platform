@@ -224,6 +224,39 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
 - Verificaciones: OK / FALLO
 ```
 
+## Paso 8: Handoff (si fui invocado con issue)
+
+Si el argumento `<issue-o-tarea>` es un número de issue, antes de exitar invocá `/handoff`
+con el commit-message y pr-body redactados desde TU contexto (vos hiciste el laburo,
+vos sabés qué cambió y por qué).
+
+**Redactar commit-message** (Conventional Commits, máx 72 chars el subject):
+```
+feat(web): subject corto y descriptivo
+
+Body opcional explicando el por qué del cambio.
+```
+
+**Redactar pr-body** (markdown estructurado):
+```
+## Resumen
+- Bullet 1: qué cambió
+- Bullet 2: por qué
+
+## Cambios técnicos
+- Archivo X: ...
+
+## Tests
+- [N] tests nuevos
+```
+
+**Invocación:**
+```
+Skill(skill="handoff", args="<issue> --commit '<commit-message>' --body '<pr-body>' --type <tipo>")
+```
+
+Si el argumento NO es un número de issue, saltá este paso.
+
 ## Reglas
 
 ### Convenciones obligatorias
