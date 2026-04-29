@@ -420,34 +420,65 @@ Este paso se ejecuta **tanto en modo individual como en modo `--all`**. El deliv
 
 ## Paso 6.6: Limpieza de worktree post-merge
 
-Después de un merge exitoso, **limpiar el worktree automáticamente** si el directorio actual NO es el repo principal:
+Después de un merge exitoso, **limpiar el worktree automáticamente** si:
+- El directorio actual NO es el repo principal, Y
+- El worktree a limpiar NO es donde está corriendo la sesión actual de Claude Code
 
-1. Volver al repo principal:
+### 0. Detectar si el worktree es la sesión activa (CRITICO — fix #2867)
+
+Si `/delivery` se invoca desde dentro del propio worktree, la limpieza voltea los skills y deja el CLI sin `cleanup`, `ghostbusters`, etc.
+
+```bash
+SESSION_CWD=$(cd "$(pwd)" && pwd -P)
+WORKTREE_REAL=$(cd "$WORKTREE_PATH" 2>/dev/null && pwd -P || echo "")
+
+if [ -n "$WORKTREE_REAL" ] && [[ "$SESSION_CWD" == "$WORKTREE_REAL"* ]]; then
+  echo "⚠️ Skip cleanup: el worktree es donde corre la sesión actual del CLI"
+  echo "   Worktree: $WORKTREE_PATH"
+  echo "   Branch local se conserva. Worktree quedará como huérfano hasta /cleanup manual."
+  git -C /c/Workspaces/Intrale/platform worktree prune 2>/dev/null || true
+  # Saltar al Paso 7 (reportar)
+fi
+```
+
+### 1. Volver al repo principal
 ```bash
 cd /c/Workspaces/Intrale/platform
 ```
 
-2. Desmontar junction de `.claude/` (seguro en Windows, evita borrar el original):
+### 2. Desmontar `.claude/` SOLO si es un junction (defensivo — fix #2867)
+
+Hay worktrees con `.claude/` como junction (`mklink /J`) y otros con copia real (memory `worktrees-claude-copy.md`). Hacer `rmdir` sobre una copia real **borra todo el contenido** y se lleva los skills del proyecto.
+
 ```bash
-cmd /c rmdir "<WORKTREE_PATH>\.claude" 2>/dev/null || true
+# fsutil reparsepoint query devuelve exit 0 solo si es junction/symlink
+if cmd //c "fsutil reparsepoint query \"$WORKTREE_PATH\\.claude\"" >/dev/null 2>&1; then
+  cmd //c "rmdir \"$WORKTREE_PATH\\.claude\"" 2>/dev/null || true
+  echo "  → .claude junction desmontado"
+else
+  echo "  → .claude es copia real (o no existe), git worktree remove se encarga"
+fi
 ```
 
-3. Eliminar el worktree con git:
+### 3. Eliminar el worktree con git
 ```bash
-git worktree remove "<WORKTREE_PATH>" --force
+git worktree remove "$WORKTREE_PATH" --force
 ```
 
-4. Eliminar branch local (la remota ya se borró con `--delete-branch` del merge):
+### 4. Eliminar branch local (la remota ya se borró con `--delete-branch` del merge)
 ```bash
 git branch -D "$BRANCH" 2>/dev/null || true
 ```
 
-5. Podar referencias huérfanas:
+### 5. Podar referencias huérfanas
 ```bash
 git worktree prune
 ```
 
-**CRITICO**: NUNCA usar `rm -rf` sobre directorios de worktrees — sigue symlinks/junctions y puede borrar `.claude/` del repo principal. SIEMPRE usar `git worktree remove`.
+**CRITICO**:
+- NUNCA usar `rm -rf` sobre directorios de worktrees — sigue symlinks/junctions y puede borrar `.claude/` del repo principal. SIEMPRE usar `git worktree remove`.
+- NUNCA hacer `rmdir` ciego sobre `.claude/` de un worktree — verificar antes que sea junction. Si es copia real, `rmdir` la borra entera y deja el CLI sin skills (incidente #2867).
+- NUNCA limpiar el worktree donde corre la sesión actual del CLI — el cleanup voltea los skills desde adentro.
 
 ## Paso 7: Reportar resultado
 
@@ -525,7 +556,8 @@ PR_STATE=$(gh pr list --repo intrale/platform --head "$BRANCH" --state all --jso
 ```
 
 6. Limpiar cada worktree candidato usando el mismo procedimiento seguro del Paso 6.6:
-   - Desmontar junction `.claude/` con `cmd /c rmdir`
+   - **Skipear si el worktree es la sesión activa del CLI** (chequear con `pwd -P` vs `WORKTREE_REAL`)
+   - Desmontar `.claude/` SOLO si es junction (verificar con `fsutil reparsepoint query`)
    - `git worktree remove --force`
    - `git branch -D` (branch local)
    - `git push origin --delete` (branch remota, si existe)
@@ -544,5 +576,7 @@ PR_STATE=$(gh pr list --repo intrale/platform --head "$BRANCH" --state all --jso
 - **SIEMPRE mergear**: el delivery cierra el ciclo completo (commit → push → PR → merge). Si el merge falla, cerrar PR y mover issue al backlog técnico
 - Si el merge falla por conflictos irreconciliables: cerrar PR, reabrir issue con label `backlog-tecnico`, y limpiar worktree
 - **NUNCA usar `rm -rf` sobre directorios de worktrees** — sigue symlinks/junctions y puede borrar `.claude/` del repo principal. SIEMPRE usar `git worktree remove --force`
+- **NUNCA limpiar el worktree donde corre la sesión activa del CLI** — voltea los skills desde adentro (incidente #2867). El Paso 6.6.0 detecta este caso y skipea
+- **NUNCA hacer `rmdir` ciego sobre `.claude/` de un worktree** — verificar con `fsutil reparsepoint query` que sea junction antes de borrar. Si es copia real, `rmdir` la borra entera
 - En modo `--all`: ejecutar limpieza automática (`--clean`) al finalizar todos los deliveries
 - En modo `--clean`: mostrar clasificación al usuario y proceder con la limpieza sin confirmación adicional
