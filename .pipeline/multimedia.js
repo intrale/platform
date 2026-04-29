@@ -73,13 +73,27 @@ function downloadTelegramFile(fileId, botToken) {
 }
 
 // --- OpenAI Whisper transcription ---
+// Devuelve siempre {ok, text, errorKind, raw} para que el caller decida si
+// degrada con gracia. errorKind ∈ {'no_key','quota','auth','rate_limit',
+// 'network','timeout','parse','api','unknown'}.
+
+function classifyOpenAIError(errObj) {
+  if (!errObj) return 'unknown';
+  const code = (errObj.code || '').toLowerCase();
+  const type = (errObj.type || '').toLowerCase();
+  const msg  = (errObj.message || '').toLowerCase();
+  if (code === 'insufficient_quota' || type === 'insufficient_quota' || msg.includes('exceeded your current quota')) return 'quota';
+  if (code === 'invalid_api_key' || type === 'invalid_request_error' && msg.includes('api key')) return 'auth';
+  if (code === 'rate_limit_exceeded' || type === 'rate_limit_error') return 'rate_limit';
+  return 'api';
+}
 
 function transcribeAudio(audioBuffer, filename) {
   const config = loadConfig();
   const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
-  if (!apiKey) return Promise.resolve('(audio no soportado — falta openai_api_key)');
+  if (!apiKey) return Promise.resolve({ ok: false, text: '', errorKind: 'no_key', raw: 'falta openai_api_key' });
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const boundary = 'boundary' + Date.now();
     const parts = [];
     parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-4o-mini-transcribe\r\n`);
@@ -105,16 +119,36 @@ function transcribeAudio(audioBuffer, filename) {
       res.on('end', () => {
         try {
           const r = JSON.parse(d);
-          if (r.error) { resolve(`(error transcripcion: ${r.error.message})`); return; }
-          resolve(r.text || '(sin transcripcion)');
-        } catch { resolve('(error parseando respuesta de transcripcion)'); }
+          if (r.error) {
+            resolve({ ok: false, text: '', errorKind: classifyOpenAIError(r.error), raw: r.error.message || JSON.stringify(r.error) });
+            return;
+          }
+          if (r.text) { resolve({ ok: true, text: r.text }); return; }
+          resolve({ ok: false, text: '', errorKind: 'parse', raw: 'respuesta sin campo text' });
+        } catch (e) {
+          resolve({ ok: false, text: '', errorKind: 'parse', raw: e.message });
+        }
       });
     });
-    req.on('error', (e) => resolve(`(error transcripcion: ${e.message})`));
-    req.on('timeout', () => { req.destroy(); resolve('(timeout transcripcion)'); });
+    req.on('error', (e) => resolve({ ok: false, text: '', errorKind: 'network', raw: e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, text: '', errorKind: 'timeout', raw: 'timeout' }); });
     req.write(body);
     req.end();
   });
+}
+
+// Mensaje human-friendly que va a Telegram cuando whisper no pudo transcribir.
+// Es lo que va a leer Leo, así que tiene que ser breve y accionable.
+function transcriptionFailureMessage(errorKind) {
+  switch (errorKind) {
+    case 'no_key':     return '🎤 Audio recibido. No tengo `openai_api_key` cargada — repetímelo por texto cuando puedas.';
+    case 'quota':      return '🎤 Audio recibido. La cuota de OpenAI está agotada (Whisper no responde) — repetímelo por texto cuando puedas. Para volver a habilitar la transcripción: subir cuota o rotar la key en `~/.claude/secrets/telegram-config.json`.';
+    case 'auth':       return '🎤 Audio recibido. La `openai_api_key` está inválida — repetímelo por texto y revisá la key en `~/.claude/secrets/telegram-config.json`.';
+    case 'rate_limit': return '🎤 Audio recibido. Whisper está rate-limited ahora mismo — esperá unos segundos y reenviá, o repetímelo por texto.';
+    case 'timeout':    return '🎤 Audio recibido. La transcripción se colgó (timeout) — repetímelo por texto, o reenvialo más cortito.';
+    case 'network':    return '🎤 Audio recibido. No pude llegar a la API de OpenAI (network) — repetímelo por texto.';
+    default:           return '🎤 Audio recibido pero no pude transcribirlo — repetímelo por texto cuando puedas.';
+  }
 }
 
 // --- Anthropic Vision ---
@@ -174,7 +208,7 @@ function describeImage(imageBuffer, mediaType) {
 // --- Preprocesar mensaje completo ---
 
 async function preprocessMessage(msg, botToken) {
-  const result = { text: msg.text || '', extras: [] };
+  const result = { text: msg.text || '', extras: [], audio: null };
 
   // Transcribir audio
   // El listener ya descargó el archivo a voice_path (local) o tenemos file_id en voice
@@ -193,13 +227,23 @@ async function preprocessMessage(msg, botToken) {
 
     if (audioBuffer) {
       log(`Transcribiendo audio (${audioBuffer.length} bytes)...`);
-      const transcription = await transcribeAudio(audioBuffer, 'audio.ogg');
-      log(`Transcripcion: "${transcription.slice(0, 100)}"`);
-      result.text = transcription;
-      result.extras.push('(mensaje de voz transcripto)');
+      const tx = await transcribeAudio(audioBuffer, 'audio.ogg');
+      if (tx.ok) {
+        log(`Transcripcion: "${tx.text.slice(0, 100)}"`);
+        result.text = tx.text;
+        result.extras.push('(mensaje de voz transcripto)');
+        result.audio = { ok: true };
+      } else {
+        log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}`);
+        // No metemos el error como texto del mensaje — el caller decide qué hacer.
+        result.text = '';
+        result.audio = { ok: false, errorKind: tx.errorKind, raw: tx.raw, fallbackMessage: transcriptionFailureMessage(tx.errorKind) };
+        result.extras.push(`(audio sin transcribir: ${tx.errorKind})`);
+      }
     } else {
       log('Audio no disponible');
       result.extras.push('(audio no disponible)');
+      result.audio = { ok: false, errorKind: 'download_failed', raw: 'no se pudo bajar el audio', fallbackMessage: '🎤 Audio recibido pero no pude descargarlo de Telegram — reintentá o repetímelo por texto.' };
     }
   }
 
@@ -618,6 +662,7 @@ function splitTextForTTSChunks(text, maxChars) {
 module.exports = {
   preprocessMessage,
   transcribeAudio,
+  transcriptionFailureMessage,
   describeImage,
   downloadTelegramFile,
   textToSpeech,
