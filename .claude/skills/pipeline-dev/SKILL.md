@@ -161,7 +161,38 @@ El QA E2E del producto (video + emulador) **no aplica** a cambios que solo tocan
 3. Label `qa:skipped` con justificación: *"Cambio de pipeline infra, validado por smoke test post-restart. Sin UI ni endpoint de producto afectado."*
 4. El PO aprueba por lectura de código + justificación (PO-gate contextual lo permite para `area:pipeline`/`area:infra` sin `app:*`).
 
-## Paso 9: Emitir resultado al pulpo
+## Paso 9: Handoff al issue
+
+Antes de emitir al pulpo, postear el payload de delivery en el issue para que `/delivery`
+lo consuma cuando le toque (refactor #2870):
+
+**Redactar commit-message** (Conventional Commits):
+```
+fix(pipeline): subject corto y descriptivo
+
+Body explicando el por qué.
+```
+
+**Redactar pr-body**:
+```
+## Resumen
+- Bullet 1: qué cambió en el pipeline
+- Bullet 2: por qué
+
+## Smoke test
+- Ejecutado: sí/no
+- Resultado: ...
+
+## Tests unitarios
+- [N] tests
+```
+
+**Invocación:**
+```
+Skill(skill="handoff", args="<issue> --commit '<commit-message>' --body '<pr-body>' --qa 'qa:skipped (cambio de infra, validado por smoke test)'")
+```
+
+## Paso 10: Emitir resultado al pulpo
 
 Emitir YAML a `.pipeline/desarrollo/dev/listo/<issue>.pipeline-dev` con:
 

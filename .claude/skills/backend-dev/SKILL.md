@@ -236,6 +236,43 @@ Si el build falla, leer el error, corregir y volver a intentar hasta que pase.
 - Compilación: OK / FALLO
 ```
 
+## Paso 9: Handoff (si fui invocado con issue)
+
+Si el argumento `<issue-o-tarea>` es un número de issue, antes de exitar invocá `/handoff` con
+el commit-message y pr-body redactados desde TU contexto (vos hiciste el laburo, vos sabés
+qué cambió y por qué — un template no puede igualar eso).
+
+**Redactar commit-message** (Conventional Commits, máx 72 chars el subject):
+```
+feat(scope): subject corto y descriptivo
+
+Body opcional explicando el por qué del cambio.
+Si hay breaking changes, agregar BREAKING CHANGE: ...
+```
+
+**Redactar pr-body** (markdown estructurado):
+```
+## Resumen
+- Bullet 1: qué cambió
+- Bullet 2: por qué
+
+## Cambios técnicos
+- Archivo X: ...
+- Archivo Y: ...
+
+## Tests
+- [N] tests nuevos
+- Cobertura: ...
+```
+
+**Invocación:**
+```
+Skill(skill="handoff", args="<issue> --commit '<commit-message>' --body '<pr-body>' --type <tipo>")
+```
+
+Si el argumento NO es un número de issue (ej: `"refactor X"`), saltá este paso — `/delivery` usará
+el fallback determinístico cuando no haya issue.
+
 ## Reglas
 
 ### Convenciones obligatorias

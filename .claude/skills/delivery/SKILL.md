@@ -76,31 +76,42 @@ export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
 ```
 
-## Paso 2: Contexto actual
+## Paso 2: Contexto + commit/PR determinísticos (script)
+
+A partir del refactor #2870, los pasos 2-3-4-6 (contexto, tipo, commit-message, pr-body)
+los resuelve un script determinístico que NO invoca LLM:
 
 ```bash
-# Branch actual
-BRANCH=$(git branch --show-current)
-
-# Commits que van a incluirse (diferencia con main)
-git log origin/main..HEAD --oneline
-
-# Cambios staged y unstaged
-git status
-git diff --stat
+node .pipeline/delivery.js \
+  --description "<descripcion-breve>" \
+  ${ISSUE_NUM:+--issue $ISSUE_NUM} \
+  --json
 ```
 
-Analizá los cambios para redactar el commit y el PR.
+El script:
+- Lee snapshot del git (`git-context`)
+- Clasifica el tipo de cambio (`change-classifier`)
+- Si hay issue, busca payload `<!-- delivery-payload -->` en los comentarios y lee
+  `commit-message` + `pr-body` del agente que hizo el laburo (`/handoff`)
+- Si no hay payload, cae a template determinístico
 
-## Paso 3: Determinar tipo de cambio
+**Output JSON** (parsealo):
+```json
+{
+  "branch": "...",
+  "type": "feat|fix|refactor|...",
+  "commitMessage": "...",
+  "commitSource": "issue-payload | fallback",
+  "prTitle": "...",
+  "prBody": "...",
+  "prSource": "issue-payload | fallback"
+}
+```
 
-Basándote en el diff, clasificá:
-- `feat:` — nueva funcionalidad
-- `fix:` — corrección de bug
-- `refactor:` — refactor sin cambio de comportamiento
-- `test:` — solo tests
-- `docs:` — solo documentación
-- `chore:` — tareas de mantenimiento
+Usá `commitMessage` para el commit del Paso 4, `prTitle` + `prBody` para el `gh pr create` del Paso 6.
+**No redactes nada vos** — el agente que hizo el laburo ya lo redactó vía `/handoff`.
+
+Si el script falla (raro), seguí el flujo manual debajo como fallback.
 
 ## Paso 3.5: Verificar QA E2E (gate obligatorio)
 
