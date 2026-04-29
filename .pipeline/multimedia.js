@@ -178,7 +178,22 @@ async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) {
 
 // Mensaje human-friendly que va a Telegram cuando whisper no pudo transcribir.
 // Es lo que va a leer Leo, así que tiene que ser breve y accionable.
-function transcriptionFailureMessage(errorKind) {
+// Cuando ambos engines (API + local) fallan, el mensaje refleja eso —
+// no podemos echarle la culpa solo a la cuota de OpenAI si el local crasheó.
+function transcriptionFailureMessage(errorKind, localErrorKind = null) {
+  if (localErrorKind) {
+    const apiPart = errorKind === 'quota' ? 'cuota OpenAI agotada'
+                  : errorKind === 'auth'  ? 'key OpenAI inválida'
+                  : errorKind === 'rate_limit' ? 'rate-limit OpenAI'
+                  : errorKind === 'network' ? 'no llegué a OpenAI'
+                  : errorKind === 'timeout' ? 'timeout OpenAI'
+                  : `OpenAI ${errorKind}`;
+    const localHint = localErrorKind === 'cli_error' ? 'crasheó (probable OOM con audio largo)'
+                    : localErrorKind === 'timeout'  ? 'tardó demasiado'
+                    : localErrorKind === 'no_binary' ? 'no está instalado'
+                    : `falló (${localErrorKind})`;
+    return `🎤 Audio recibido. Falló API (${apiPart}) y también whisper local — ${localHint}. Repetímelo por texto cuando puedas. Si el local sigue crasheando: bajar \`WHISPER_LOCAL_MODEL\` a \`small\` o reiniciar la máquina.`;
+  }
   switch (errorKind) {
     case 'no_key':     return '🎤 Audio recibido. No tengo `openai_api_key` cargada — repetímelo por texto cuando puedas.';
     case 'quota':      return '🎤 Audio recibido. La cuota de OpenAI está agotada (Whisper no responde) — repetímelo por texto cuando puedas. Para volver a habilitar la transcripción: subir cuota o rotar la key en `~/.claude/secrets/telegram-config.json`.';
@@ -280,7 +295,7 @@ async function preprocessMessage(msg, botToken) {
         log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}${tx.localErrorKind ? ` | local=${tx.localErrorKind}: ${tx.localRaw}` : ''}`);
         // No metemos el error como texto del mensaje — el caller decide qué hacer.
         result.text = '';
-        result.audio = { ok: false, errorKind: tx.errorKind, raw: tx.raw, fallbackMessage: transcriptionFailureMessage(tx.errorKind) };
+        result.audio = { ok: false, errorKind: tx.errorKind, raw: tx.raw, localErrorKind: tx.localErrorKind || null, fallbackMessage: transcriptionFailureMessage(tx.errorKind, tx.localErrorKind || null) };
         result.extras.push(`(audio sin transcribir: ${tx.errorKind})`);
       }
     } else {
