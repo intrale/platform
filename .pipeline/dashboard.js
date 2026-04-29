@@ -7646,6 +7646,15 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: false, msg: `gh edit falló: ${(result.stderr || '').trim().slice(0, 200)}` }));
       return;
     }
+    // El title-cache (TTL 1h) tapa el label recién editado: refrescar el issue
+    // puntual + invalidar el state cache memoizado para que el próximo poll del
+    // dashboard vea el cambio.
+    try {
+      const titleCache = loadIssueTitleCache();
+      delete titleCache[issueNum];
+      fetchIssueTitles([issueNum], titleCache);
+    } catch (e) { log(`pauseIssue: cache refresh failed for #${issueNum}: ${e.message}`); }
+    _stateCache = null; _stateCacheAt = 0;
     log(`pauseIssue: #${issueNum} ${action === 'pause' ? 'pausado (+blocked:dependencies)' : 'reanudado (-blocked:dependencies)'}`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} ${action === 'pause' ? 'pausado' : 'reanudado'}` }));
