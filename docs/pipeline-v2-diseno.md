@@ -222,7 +222,8 @@ Si un rol se convierte en cuello de botella constante, se abre otra terminal de 
 | /historia | Alias de `/doc nueva` |
 | /refinar | Alias de `/doc refinar` |
 | /priorizar | Alias de `/doc priorizar` |
-| /checkup | Duplica `/ops` + `/cleanup` |
+| /checkup | Eliminado en 2026-04-29 — su funcionalidad pasó a `/ghostbusters` (que también unificó `/cleanup`) |
+| /cleanup | Eliminado en 2026-04-29 — unificado en `/ghostbusters` |
 | /branch | Lo absorbe el proceso de lanzamiento |
 | /builder | Lo absorbe `/tester` (compilar ya incluye testear) |
 

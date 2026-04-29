@@ -251,7 +251,7 @@ Muestra para cada sprint (últimos 2-3) qué agentes participaron vs. estuvieron
 │  Presentes: /po /tester /security /delivery /ux /guru …          │
 │  Ausentes:  /backend-dev /android-dev /ios-dev /web-dev …        │
 │ Sprint 2026-02-24:  ██████████ 18/21 (86%) 🟢                    │
-│  Presentes: todos excepto /cleanup /doc            │
+│  Presentes: todos excepto /ghostbusters /doc       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

@@ -57,7 +57,7 @@ const AGENT_MAP = {
     "/desktop-dev": "DesktopDev",
     "/branch": "Branch",
     "/security": "Security",
-    "/cleanup": "Cleanup",
+    "/ghostbusters": "Ghostbusters",
     "/perf": "Perf",
     "/cost": "Cost",
     "/config": "Config",

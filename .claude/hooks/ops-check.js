@@ -325,7 +325,7 @@ function checkResources() {
 
         if (orphanWorktrees.length > 0) {
             result.warnings.push(orphanWorktrees.length + " worktrees huérfanos detectados");
-            result.items.push({ name: "Worktrees", status: "warn", detail: orphanWorktrees.length + " huérfanos → /cleanup", worktrees: orphanWorktrees });
+            result.items.push({ name: "Worktrees", status: "warn", detail: orphanWorktrees.length + " huérfanos → /ghostbusters --worktrees --run", worktrees: orphanWorktrees });
         } else {
             result.items.push({ name: "Worktrees", status: "ok", detail: "sin huérfanos" });
         }

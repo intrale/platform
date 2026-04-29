@@ -139,7 +139,7 @@ const SKILL_TO_AGENT = {
   "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
-  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost",
+  "/security": "Security", "/ghostbusters": "Ghostbusters", "/perf": "Perf", "/cost": "Cost",
   "/update-config": "Config", "/simplify": "Simplify",
 };
 // Case-insensitive lookup for AGENT_ICON_MAP
@@ -993,7 +993,7 @@ const AGENT_MAP_DASHBOARD = {
   "/scrum": "Scrum Master", "/ops": "Ops",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev",
   "/ios-dev": "iOSDev", "/web-dev": "WebDev", "/desktop-dev": "DesktopDev",
-  "/branch": "Branch", "/security": "Security", "/cleanup": "Cleanup",
+  "/branch": "Branch", "/security": "Security", "/ghostbusters": "Ghostbusters",
   "/perf": "Perf", "/cost": "Cost", "/config": "Config",
 };
 
@@ -1340,7 +1340,7 @@ const SKILL_NAME_ALIASES = {
   "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
-  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost",
+  "/security": "Security", "/ghostbusters": "Ghostbusters", "/perf": "Perf", "/cost": "Cost",
   // Lowercase canonical
   "guru": "Guru", "doc": "Doc", "planner": "Planner", "deliverymanager": "DeliveryManager",
   "tester": "Tester", "monitor": "Monitor", "builder": "Builder", "review": "Review",

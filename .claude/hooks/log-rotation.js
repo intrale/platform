@@ -157,7 +157,7 @@ function rotateJsonlFile(fileName) {
 
 /**
  * Ejecuta la rotación completa de todos los logs configurados.
- * Puede llamarse como módulo desde /cleanup u otros scripts.
+ * Puede llamarse como módulo desde /ghostbusters u otros scripts.
  *
  * @param {{ dryRun?: boolean, verbose?: boolean }} opts
  * @returns {{ logs: Array, jsonl: Array, summary: string }}
