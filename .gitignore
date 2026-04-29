@@ -1,3 +1,14 @@
+# Secrets — defensa en profundidad. La ubicacion oficial de credenciales es
+# ~/.claude/secrets/ (home del usuario, fuera del repo); estos patrones
+# bloquean cualquier intento accidental de crear esos paths dentro del repo.
+.claude/secrets/
+**/.claude/secrets/
+secrets.json
+**/secrets.json
+.env
+.env.*
+!.env.example
+
 # Build outputs
 build/
 */build/

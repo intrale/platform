@@ -1539,7 +1539,14 @@ async function sendReport(data) {
   try {
     const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
     const TG_CONFIG = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
-    const tgConfig = JSON.parse(fs.readFileSync(TG_CONFIG, 'utf8'));
+    let tgConfig = {};
+    try { tgConfig = JSON.parse(fs.readFileSync(TG_CONFIG, 'utf8')); } catch {}
+    try {
+      const { loadTelegramSecrets } = require('./lib/telegram-secrets');
+      const sec = loadTelegramSecrets({ legacyConfigPath: TG_CONFIG });
+      tgConfig.bot_token = sec.bot_token;
+      tgConfig.chat_id = sec.chat_id;
+    } catch {}
 
     const narration = generateNarration(data);
     console.log(`[rejection-report] Generando audio TTS (${narration.length} chars)...`);
