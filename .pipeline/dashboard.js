@@ -546,20 +546,49 @@ function getPipelineState() {
   }
 
   // V3 — Bloqueados esperando humano (issue #2478)
+  // Enriquecidos con resumen funcional + eventos recientes (#2862-followup)
+  // para que Leo pueda decidir desestimar/reactivar sin abrir cada issue.
   state.bloqueados = [];
   try {
     const humanBlock = require('./lib/human-block');
-    state.bloqueados = humanBlock.listBlockedIssues().map(b => ({
-      issue: b.issue,
-      skill: b.skill,
-      phase: b.phase,
-      pipeline: b.pipeline,
-      reason: b.reason,
-      question: b.question,
-      blocked_at: b.blocked_at,
-      age_hours: b.age_hours,
-      title: titleCache[String(b.issue)]?.title || '',
-    }));
+    let summaries = {};
+    try {
+      const issueSummary = require('./lib/issue-summary');
+      const blockedList = humanBlock.listBlockedIssues();
+      summaries = issueSummary.getSummaries(blockedList.map(b => b.issue));
+      state.bloqueados = blockedList.map(b => {
+        const s = summaries[String(b.issue)] || {};
+        return {
+          issue: b.issue,
+          skill: b.skill,
+          phase: b.phase,
+          pipeline: b.pipeline,
+          reason: b.reason,
+          question: b.question,
+          blocked_at: b.blocked_at,
+          age_hours: b.age_hours,
+          title: titleCache[String(b.issue)]?.title || '',
+          summary: s.summary || '',
+          recent_events: s.recent_events || [],
+          summary_stale: !!s.stale,
+        };
+      });
+    } catch {
+      state.bloqueados = humanBlock.listBlockedIssues().map(b => ({
+        issue: b.issue,
+        skill: b.skill,
+        phase: b.phase,
+        pipeline: b.pipeline,
+        reason: b.reason,
+        question: b.question,
+        blocked_at: b.blocked_at,
+        age_hours: b.age_hours,
+        title: titleCache[String(b.issue)]?.title || '',
+        summary: '',
+        recent_events: [],
+        summary_stale: true,
+      }));
+    }
   } catch {}
 
   // Servicios
@@ -1928,6 +1957,32 @@ function generateHTML(state) {
           // #2523 CA-10: usar `esc()` server-side global (antes habia 5 escapadores duplicados).
           const titleHtml = b.title ? ` — <span style="color:var(--dim)">${esc(b.title)}</span>` : '';
           const reasonTxt = (b.question || b.reason || '').toString();
+          const summaryTxt = (b.summary || '').toString();
+          const events = Array.isArray(b.recent_events) ? b.recent_events : [];
+          // Tiempo relativo compacto para los eventos: "12h", "3d", "ahora"
+          const relTime = (whenIso) => {
+            if (!whenIso) return '';
+            const t = Date.parse(whenIso);
+            if (!t) return '';
+            const diffMs = Date.now() - t;
+            const min = Math.round(diffMs / 60000);
+            if (min < 1) return 'ahora';
+            if (min < 60) return `${min}min`;
+            const hr = Math.round(min / 60);
+            if (hr < 24) return `${hr}h`;
+            const d = Math.round(hr / 24);
+            return `${d}d`;
+          };
+          const eventsHtml = events.length === 0 ? '' : `
+            <div class="needs-human-events">
+              <div class="needs-human-events-label">📜 Actividad reciente</div>
+              <ul class="needs-human-events-list">
+                ${events.map(ev => `<li><span class="nh-ev-when">${esc(relTime(ev.when))}</span> <span class="nh-ev-author">${esc(ev.author || '?')}</span>: <span class="nh-ev-text">${esc(ev.preview || '')}</span></li>`).join('')}
+              </ul>
+            </div>`;
+          const summaryHtml = summaryTxt
+            ? `<div class="needs-human-summary">📄 ${esc(summaryTxt)}</div>`
+            : (b.summary_stale ? `<div class="needs-human-summary needs-human-summary-loading">📄 <em>Cargando resumen funcional…</em></div>` : '');
           return `<div class="needs-human-row">
             <div class="needs-human-row-head">
               <div class="needs-human-row-info">
@@ -1940,7 +1995,9 @@ function generateHTML(state) {
                 <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
               </div>
             </div>
+            ${summaryHtml}
             ${reasonTxt ? `<div class="needs-human-reason">❓ ${esc(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
+            ${eventsHtml}
           </div>`;
         }).join('')}
       </div>
@@ -2944,6 +3001,34 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .needs-human-reason{
   margin:4px 0 0 14px;color:#FFB3B3;font-size:0.92em;line-height:1.35;
 }
+.needs-human-summary{
+  margin:6px 0 0 14px;color:#E8EDF5;font-size:0.91em;line-height:1.4;
+  opacity:0.92;
+}
+.needs-human-summary-loading{opacity:0.55;font-style:italic}
+.needs-human-events{
+  margin:8px 0 0 14px;padding:6px 10px;
+  background:rgba(255,255,255,0.04);border-left:2px solid rgba(255,255,255,0.18);
+  border-radius:0 4px 4px 0;
+}
+.needs-human-events-label{
+  font-size:0.78em;color:var(--dim);text-transform:uppercase;
+  letter-spacing:0.6px;margin-bottom:3px;font-weight:600;
+}
+.needs-human-events-list{
+  margin:0;padding:0;list-style:none;font-size:0.85em;line-height:1.45;
+}
+.needs-human-events-list li{
+  padding:2px 0;color:#D4DAE3;
+  border-top:1px dashed rgba(255,255,255,0.06);
+}
+.needs-human-events-list li:first-child{border-top:none}
+.nh-ev-when{
+  display:inline-block;min-width:42px;color:var(--dim);font-size:0.92em;
+  font-variant-numeric:tabular-nums;
+}
+.nh-ev-author{color:#9DB7E0;font-weight:600;margin-right:4px}
+.nh-ev-text{color:#C9D1D9}
 .needs-human-age-fresh{color:var(--yl)}
 .needs-human-age-old{color:#FF6B6B;font-weight:700}
 .needs-human-header{
