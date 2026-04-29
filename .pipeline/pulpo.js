@@ -1087,10 +1087,11 @@ function limpiarDaemonsOnDemand() {
   // 1. Buscar Gradle daemons
   try {
     const wmicOut = execSync(
-      'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
+      'wmic process get Name,ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     );
     for (const line of wmicOut.split('\n')) {
+      if (!line.includes('java.exe')) continue;
       if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
       const parts = line.split(',');
       const pid = parts[parts.length - 2]?.trim();
@@ -1118,10 +1119,11 @@ function limpiarDaemonsOnDemand() {
   // 2. Buscar Kotlin compile daemons
   try {
     const wmicOut2 = execSync(
-      'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+      'wmic process get Name,ProcessId,CommandLine /FORMAT:CSV',
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     );
     for (const line of wmicOut2.split('\n')) {
+      if (!line.includes('java.exe')) continue;
       if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
       const match = line.match(/,(\d+)\s*$/);
       if (!match) continue;
