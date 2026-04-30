@@ -800,7 +800,7 @@ async function tickRecent(){
     if(!d) return;
     const container = document.getElementById('recent-list');
     if(!container) return;
-    const arr = (d.recent || []).slice(0, 5);
+    const arr = (d.recent || []).slice(0, 10);
     if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Sin actividad reciente</div>'; return; }
     const seen = new Set();
     for(const a of arr){
@@ -824,7 +824,7 @@ async function tickQueue(){
     if(!d) return;
     const container = document.getElementById('queue-list');
     if(!container) return;
-    const arr = (d.queue || []).slice(0, 5);
+    const arr = (d.queue || []).slice(0, 10);
     if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Cola vacía</div>'; return; }
     const seen = new Set();
     for(const a of arr){
@@ -1058,7 +1058,7 @@ function renderHomeHTML() {
     <section class="in-section">
       <h2 class="in-section-title">
         <span class="in-section-title-icon">⏪</span>
-        Últimos 5 ejecutados
+        Últimos 10 ejecutados
       </h2>
       <div class="line-list" id="recent-list"></div>
     </section>
@@ -1066,7 +1066,7 @@ function renderHomeHTML() {
     <section class="in-section">
       <h2 class="in-section-title">
         <span class="in-section-title-icon">⏩</span>
-        Próximos 5 en cola
+        Próximos 10 en cola
       </h2>
       <div class="line-list" id="queue-list"></div>
     </section>
