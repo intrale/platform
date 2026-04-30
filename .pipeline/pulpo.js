@@ -39,6 +39,8 @@ const partialPause = require('./lib/partial-pause');
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
 const trace = require('./lib/traceability');
+// #2891 PR-B — Detector de anomalías de consumo (cron interno).
+const { AnomalyDetector } = require('./anomaly-detector');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -864,10 +866,14 @@ function recordSkillResourceUsage(skill, startTime, endTime) {
       try { parsed.push(JSON.parse(line)); } catch {}
     }
 
-    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s)
-    const baseline = parsed.filter(s => s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
+    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s).
+    // Filtramos por presencia de cpu numérico para excluir entries de
+    // anomaly-detector (#2891 PR-B) que comparten el mismo archivo pero con
+    // shape distinta `{ type: 'anomaly', ts ISO, ... }` y sin cpu/mem.
+    const isPulse = (s) => typeof s.cpu === 'number' && typeof s.mem === 'number' && typeof s.ts === 'number';
+    const baseline = parsed.filter(s => isPulse(s) && s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
     // Durante: muestras mientras el agente estuvo vivo
-    const during = parsed.filter(s => s.ts >= startTime && s.ts <= endTime);
+    const during = parsed.filter(s => isPulse(s) && s.ts >= startTime && s.ts <= endTime);
 
     if (baseline.length === 0 || during.length < 2) {
       // Sin baseline confiable o muy pocas muestras — no aprender (evita corromper el perfil)
@@ -7219,6 +7225,28 @@ async function mainLoop() {
   // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
   migrateSkillProfilesIfNeeded();
 
+  // #2891 PR-B — Arranque del detector de anomalías.
+  // Lee `anomaly_detector` de config.yaml y dispara un setInterval interno
+  // que persiste cada evaluación a `metrics-history.jsonl`. PR-B no engancha
+  // canales de alerta (eso es PR-C); aquí solo dejamos la maquinaria viva.
+  // Si el constructor tira (ej. require fallido), el pulpo sigue corriendo:
+  // el detector es accesorio, NO debe matar el loop.
+  let anomalyDetector = null;
+  try {
+    const cfgRoot = loadConfig();
+    const detectorCfg = (cfgRoot && cfgRoot.anomaly_detector) || {};
+    anomalyDetector = new AnomalyDetector({ config: detectorCfg });
+    for (const w of anomalyDetector.warnings) log('anomaly', `WARN: ${w}`);
+    anomalyDetector.on('evaluation', (e) => {
+      log('anomaly', `eval hour=${e.hour} actual=$${e.actual_usd} baseline=$${e.baseline_usd} ratio=${e.ratio} alerted=${e.alerted} reason=${e.reason}`);
+    });
+    anomalyDetector.on('error', (e) => log('anomaly', `ERROR: ${e.message}`));
+    anomalyDetector.start();
+    log('anomaly', `Detector iniciado: cada ${anomalyDetector.config.intervalMin}min, threshold +${Math.round(anomalyDetector.config.pctThreshold * 100)}%, warmup ${anomalyDetector.config.warmupDays}d`);
+  } catch (e) {
+    log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
+  }
+
   while (running) {
     try {
       checkPauseFile();
@@ -7287,6 +7315,7 @@ async function mainLoop() {
 // Graceful shutdown
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+// El timer del AnomalyDetector está `unref`'d → muere con el proceso.
 
 // --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
 // Uso: PULPO_NO_AUTOSTART=1 node -e "require('./pulpo.js').predictResourceImpact(...)"

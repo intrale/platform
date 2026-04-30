@@ -5924,6 +5924,12 @@ function getMetricsData() {
     }
   } catch {}
 
+  // El archivo `metrics-history.jsonl` mezcla dos shapes:
+  //   - pulse del Pulpo: { ts: number, cpu, mem, agents, level, ... }
+  //   - anomaly del detector (#2891): { type: 'anomaly', ts: ISO, hour, baseline_usd, ... }
+  // El dashboard solo consume las pulse → filtramos por shape.
+  snapshots = snapshots.filter(s => typeof s.cpu === 'number' && typeof s.mem === 'number' && typeof s.ts === 'number');
+
   // Si no hay snapshots del Pulpo, inferir actividad histórica desde archivos procesados
   // Esto da una timeline de cuándo hubo trabajo en cada fase
   if (snapshots.length < 10) {

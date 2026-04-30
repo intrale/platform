@@ -81,7 +81,10 @@ function getRecentMetrics(minutes) {
     for (const line of lines) {
       try {
         const s = JSON.parse(line);
-        if (s.ts >= cutoff) recent.push(s);
+        // Filtrar pulse del Pulpo (ts numérico ms + cpu/mem). Excluye anomaly
+        // entries del detector #2891 que viven en el mismo archivo con shape
+        // `{ type: 'anomaly', ts: ISO, ... }`.
+        if (typeof s.ts === 'number' && typeof s.cpu === 'number' && s.ts >= cutoff) recent.push(s);
       } catch {}
     }
     return recent;

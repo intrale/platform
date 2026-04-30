@@ -225,6 +225,25 @@ precheck:
   # - { category: aws,     host: s3.us-east-2.amazonaws.com,                     tlsPort: 443 }
   # - { category: backend, host: mgnr0htbvd.execute-api.us-east-2.amazonaws.com, tlsPort: 443 }
 
+# Detector de anomalías de consumo (#2891 PR-B) — baseline horario + threshold.
+# El detector lee `.pipeline/metrics/snapshot.json` y compara la hora actual
+# contra la baseline (rolling window de los últimos `lookbackDays` días). Cada
+# evaluación se persiste en `.pipeline/metrics-history.jsonl` con shape
+# `{ type: 'anomaly', ts, hour, baseline_usd, actual_usd, ratio, alerted }`.
+#
+# Esta historia (PR-B) NO dispara canales de alerta — eso es PR-C. Acá solo
+# se calibra la maquinaria de detección y se persiste el histórico.
+#
+# Rangos válidos: valores fuera de rango se reemplazan por defaults con
+# warning en stderr. NUNCA detiene el pipeline por config rota.
+anomaly_detector:
+  intervalMin: 10            # Cadencia del cron interno (rango 1-240)
+  pctThreshold: 0.5          # actual > baseline * (1 + 0.5) → +50% (rango 0.05-5.0)
+  warmupDays: 7              # Grace period: sin baseline confiable durante N días
+  lookbackDays: 7            # Días del rolling window para baseline (rango 7-14)
+  minUsdToAlert: 0.5         # Piso absoluto: si actual ≤ $0.50/h, no alerta nunca
+  minAbsUsdPerHour: 2.0      # Umbral grueso durante warmup (mientras no hay baseline)
+
 # Staleness (#2404) — evita rebotar a dev con `motivo_rechazo` que referencia un
 # build-log obsoleto. Si el log tiene mtime > umbral, NO se rebota al developer:
 # se resetea el contador del circuit breaker y se re-encola a `build` para que

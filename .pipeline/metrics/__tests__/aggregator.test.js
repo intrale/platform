@@ -180,3 +180,99 @@ test('by_issue queda vacío cuando no hay TTS (pero sí hay sesiones)', async ()
     // Pero el issue sí existe en snap.issues
     assert.ok(snap.issues.find(i => i.issue === 2900));
 });
+
+// =============================================================================
+// #2891 PR-B — Hourly baseline + currentHour
+// =============================================================================
+
+test('hourlySeries expone 24 entradas (00..23) incluso sin datos', async () => {
+    fs.writeFileSync(trace.LOG_FILE, '', 'utf8');
+    const snap = await aggregator.buildSnapshot({});
+    assert.ok(snap.hourlySeries, 'snapshot incluye hourlySeries');
+    const keys = Object.keys(snap.hourlySeries).sort();
+    assert.equal(keys.length, 24);
+    assert.equal(keys[0], '00');
+    assert.equal(keys[23], '23');
+    // Sin datos, todas las horas tienen ceros y samples=0
+    for (const k of keys) {
+        assert.equal(snap.hourlySeries[k].cost_usd, 0);
+        assert.equal(snap.hourlySeries[k].samples, 0);
+    }
+});
+
+test('hourlySeries promedia el costo por hora-del-día sobre días dentro del lookback', async () => {
+    // 2 días distintos, ambos con datos a las 14:xx UTC. nowMs en el día 3
+    // así que el lookback (7 días default) los incluye y el día actual queda fuera.
+    const day1 = '2026-04-23T14:30:00Z';
+    const day2 = '2026-04-24T14:45:00Z';
+    const day3 = '2026-04-25T10:00:00Z';
+    writeLog([
+        // Día 1, hora 14: cost ≈ $1
+        sessionEnd({ skill: 'qa', issue: 3001, phase: 'qa', model: 'claude-opus-4-7', tokens_in: 250000, tokens_out: 50000, ts: day1 }),
+        // Día 2, hora 14: cost ≈ $0.50
+        sessionEnd({ skill: 'qa', issue: 3002, phase: 'qa', model: 'claude-opus-4-7', tokens_in: 125000, tokens_out: 25000, ts: day2 }),
+    ]);
+    // nowMs forzado al día 3, así que día 1 y día 2 son baseline; día actual sería 25 → 14 estará vacía
+    const snap = await aggregator.buildSnapshot({ nowMs: Date.parse(day3) });
+    const hourly14 = snap.hourlySeries['14'];
+    assert.ok(hourly14, 'hourlySeries["14"] existe');
+    assert.equal(hourly14.samples, 2, 'se vieron 2 buckets en hora 14 dentro del lookback');
+    // El promedio cost_usd debería ser aproximadamente (1 + 0.5)/2 = 0.75
+    // pero depende de pricing exacto del modelo — basta con que sea > 0 y < total/1
+    assert.ok(hourly14.cost_usd > 0);
+});
+
+test('hourlySeries excluye el día actual del baseline', async () => {
+    // Si hoy a las 14h ya hay datos, NO deben contar para hourlySeries["14"].
+    // Eso evita auto-confirmar anomalías comparando contra sí mismo.
+    const today = new Date('2026-04-30T14:30:00Z');
+    writeLog([
+        sessionEnd({ skill: 'qa', issue: 3100, phase: 'qa', model: 'claude-opus-4-7', tokens_in: 1000000, ts: today.toISOString() }),
+    ]);
+    const snap = await aggregator.buildSnapshot({ nowMs: today.getTime() });
+    const hourly14 = snap.hourlySeries['14'];
+    assert.equal(hourly14.samples, 0, 'el día actual no entra a la baseline');
+    assert.equal(hourly14.cost_usd, 0);
+});
+
+test('currentHour refleja el costo acumulado de la hora-del-día en curso', async () => {
+    const today = new Date('2026-04-30T14:30:00Z');
+    writeLog([
+        // Mismo día, misma hora 14
+        sessionEnd({ skill: 'qa', issue: 3200, phase: 'qa', model: 'claude-opus-4-7', tokens_in: 100000, tokens_out: 20000, ts: '2026-04-30T14:05:00Z' }),
+        sessionEnd({ skill: 'qa', issue: 3200, phase: 'qa', model: 'claude-opus-4-7', tokens_in: 50000,  tokens_out: 10000, ts: '2026-04-30T14:25:00Z' }),
+        // Hora 13 — NO debe entrar al currentHour si nowMs es 14:30
+        sessionEnd({ skill: 'qa', issue: 3200, phase: 'qa', model: 'claude-opus-4-7', tokens_in: 100000, tokens_out: 20000, ts: '2026-04-30T13:45:00Z' }),
+    ]);
+    const snap = await aggregator.buildSnapshot({ nowMs: today.getTime() });
+    assert.equal(snap.currentHour.hour, '14');
+    assert.equal(snap.currentHour.date, '2026-04-30');
+    assert.equal(snap.currentHour.sessions, 2, 'solo las 2 sesiones de la hora 14');
+    assert.ok(snap.currentHour.cost_usd > 0);
+    assert.ok(snap.currentHour.tokens === 100000 + 20000 + 50000 + 10000);
+});
+
+test('hourlyMeta reporta daysWithData usado por el detector para gracePeriod', async () => {
+    const day1 = '2026-04-23T10:00:00Z';
+    const day2 = '2026-04-24T10:00:00Z';
+    const today = new Date('2026-04-30T15:00:00Z');
+    writeLog([
+        sessionEnd({ skill: 'qa', issue: 3300, phase: 'qa', model: 'deterministic', ts: day1 }),
+        sessionEnd({ skill: 'qa', issue: 3301, phase: 'qa', model: 'deterministic', ts: day2 }),
+    ]);
+    const snap = await aggregator.buildSnapshot({ nowMs: today.getTime() });
+    assert.ok(snap.hourlyMeta);
+    assert.equal(snap.hourlyMeta.daysWithData, 2, 'dos días distintos vistos en lookback');
+    assert.ok(snap.hourlyMeta.windowStart);
+    assert.ok(snap.hourlyMeta.windowEnd);
+});
+
+test('clampLookbackDays mantiene el rango [7, 14]', () => {
+    assert.equal(aggregator.clampLookbackDays(0), 7);
+    assert.equal(aggregator.clampLookbackDays(3), 7);
+    assert.equal(aggregator.clampLookbackDays(7), 7);
+    assert.equal(aggregator.clampLookbackDays(10), 10);
+    assert.equal(aggregator.clampLookbackDays(14), 14);
+    assert.equal(aggregator.clampLookbackDays(30), 14);
+    assert.equal(aggregator.clampLookbackDays('garbage'), 7);
+});

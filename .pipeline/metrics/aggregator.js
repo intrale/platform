@@ -22,6 +22,23 @@ const METRICS_DIR = path.join(REPO_ROOT, '.pipeline', 'metrics');
 const SNAPSHOT_FILE = path.join(METRICS_DIR, 'snapshot.json');
 const DEFAULT_REFRESH_MS = 60000;
 
+// Baseline horario (#2891 PR-B) — rolling window de 7-14 días.
+// El detector de anomalías usa hourlySeries["HH"].cost_usd como baseline para
+// la hora actual y currentHour.cost_usd como "actual". Default: 7 días.
+const DEFAULT_LOOKBACK_DAYS = 7;
+const MIN_LOOKBACK_DAYS = 7;
+const MAX_LOOKBACK_DAYS = 14;
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function clampLookbackDays(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return DEFAULT_LOOKBACK_DAYS;
+    if (n < MIN_LOOKBACK_DAYS) return MIN_LOOKBACK_DAYS;
+    if (n > MAX_LOOKBACK_DAYS) return MAX_LOOKBACK_DAYS;
+    return Math.floor(n);
+}
+
 // Normaliza el modelo a "deterministic" | "llm" para comparativa (#2488)
 function classifyExecutionMode(model) {
     const m = String(model || '').toLowerCase().trim();
@@ -90,8 +107,16 @@ function withAvg(bucket) {
 async function buildSnapshot(options) {
     options = options || {};
     const windowMs = parseWindow(options.window);
-    const nowMs = Date.now();
+    const nowMs = options.nowMs != null ? Number(options.nowMs) : Date.now();
     const cutoffMs = windowMs ? nowMs - windowMs : null;
+    const lookbackDays = clampLookbackDays(options.lookbackDays);
+    // Normalizar cutoff a start-of-day UTC: la semántica de "últimos 7 días"
+    // es por días calendario, no por hora exacta. Sin esto, eventos a las 10am
+    // de hace exactamente 7 días quedaban excluidos sólo porque la hora del
+    // pivot era 15:00 → desconcierta y rompe baselines tempranos.
+    const _now = new Date(nowMs);
+    const todayStartMs = Date.UTC(_now.getUTCFullYear(), _now.getUTCMonth(), _now.getUTCDate(), 0, 0, 0, 0);
+    const lookbackCutoffMs = todayStartMs - lookbackDays * 86400e3;
 
     const byAgent = new Map();        // skill → bucket
     const byPhase = new Map();        // phase → bucket
@@ -100,6 +125,7 @@ async function buildSnapshot(options) {
     const byAgentProvider = new Map();// `${skill}|${provider}` → bucket (TTS)
     const byAgentMode = new Map();    // `${skill}|${mode}` → bucket (#2488 — LLM vs determinístico)
     const dailySeries = new Map();    // YYYY-MM-DD → { cost_usd, tts_cost_usd, sessions } (para proyecciones)
+    const hourlyBuckets = new Map();  // "YYYY-MM-DD HH" → { cost_usd, tokens, sessions } (#2891 baseline horario)
 
     let totalEvents = 0;
     let v3Events = 0;
@@ -200,6 +226,26 @@ async function buildSnapshot(options) {
                 d.tts_audio_seconds += Number(evt.audio_seconds || 0);
             }
         }
+
+        // Buckets por (día, hora) para baseline horario (#2891 PR-B).
+        // Solo session:end aporta cost_usd; tts:generated lo contabilizamos también
+        // para tener el costo total por hora (cost_usd incluye tts).
+        if (evt.ts) {
+            const tsMs = Date.parse(evt.ts);
+            if (Number.isFinite(tsMs)) {
+                const d = new Date(tsMs);
+                const hourKey = `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}`;
+                if (!hourlyBuckets.has(hourKey)) hourlyBuckets.set(hourKey, { cost_usd: 0, tokens: 0, sessions: 0 });
+                const hb = hourlyBuckets.get(hourKey);
+                if (evt.event === 'session:end') {
+                    hb.cost_usd += estimateCostUsd(evt.model, evt);
+                    hb.tokens += Number(evt.tokens_in || 0) + Number(evt.tokens_out || 0);
+                    hb.sessions += 1;
+                } else if (evt.event === 'tts:generated') {
+                    hb.cost_usd += Number(evt.cost_estimate_usd || 0);
+                }
+            }
+        }
     }
 
     const agents = [...byAgent.entries()].map(([k, v]) => Object.assign({ skill: k }, withAvg(v)));
@@ -282,6 +328,13 @@ async function buildSnapshot(options) {
 
     const projections = computeProjections({ daily, now: new Date(nowMs) });
 
+    // Baseline horario y hora actual (#2891 PR-B).
+    // hourlySeries[HH] = promedio por hora-del-día calculado sobre los días en
+    // [lookbackCutoff, today_start). El día de hoy NO entra al baseline porque
+    // es la "actual" parcial — eso evita auto-confirmar anomalías.
+    const hourly = computeHourlySeries({ hourlyBuckets, nowMs, lookbackCutoffMs });
+    const currentHour = computeCurrentHour({ hourlyBuckets, nowMs });
+
     return {
         generated_at: new Date().toISOString(),
         window: options.window || 'all',
@@ -306,13 +359,88 @@ async function buildSnapshot(options) {
         llm_vs_deterministic: llmVsDeterministic,
         daily,
         projections,
+        hourlySeries: hourly.series,
+        hourlyMeta: hourly.meta,
+        currentHour,
         pricing: MODEL_PRICING,
     };
 }
 
-function emitEmptySnapshot(options) {
+// Calcula hourlySeries["HH"] como promedio cost_usd/tokens/sessions de la
+// hora-del-día sobre los días dentro de [lookbackCutoffMs, today_start).
+// Si una hora no fue observada en el window, devuelve ceros con samples=0.
+// El denominador es la cantidad de días distintos del window que tuvieron
+// cualquier dato — así no penalizamos pre-warmup con divisores grandes
+// artificiales (eso lo cubre la lógica de WARMUP_DAYS en el detector).
+function computeHourlySeries({ hourlyBuckets, nowMs, lookbackCutoffMs }) {
+    const today = new Date(nowMs);
+    const todayStartMs = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0);
+    const distinctDays = new Set();
+    const series = {};
+    const sums = {};
+    for (let h = 0; h < 24; h++) {
+        const HH = pad2(h);
+        sums[HH] = { cost_usd: 0, tokens: 0, sessions: 0, samples: 0 };
+    }
+    for (const [key, bucket] of hourlyBuckets) {
+        const [day, HH] = key.split(' ');
+        if (!HH || !sums[HH]) continue;
+        const dayMs = Date.parse(day + 'T00:00:00Z');
+        if (!Number.isFinite(dayMs)) continue;
+        if (dayMs < lookbackCutoffMs) continue;     // fuera del window
+        if (dayMs >= todayStartMs) continue;        // hoy es "actual", no baseline
+        sums[HH].cost_usd += bucket.cost_usd;
+        sums[HH].tokens += bucket.tokens;
+        sums[HH].sessions += bucket.sessions;
+        sums[HH].samples += 1;
+        distinctDays.add(day);
+    }
+    const denom = Math.max(1, distinctDays.size);
+    for (let h = 0; h < 24; h++) {
+        const HH = pad2(h);
+        const s = sums[HH];
+        series[HH] = {
+            cost_usd: Math.round((s.cost_usd / denom) * 10000) / 10000,
+            tokens: Math.round(s.tokens / denom),
+            sessions: Math.round((s.sessions / denom) * 100) / 100,
+            samples: s.samples,
+        };
+    }
     return {
-        generated_at: new Date().toISOString(),
+        series,
+        meta: {
+            lookbackDays: Math.round((nowMs - lookbackCutoffMs) / 86400e3),
+            daysWithData: distinctDays.size,
+            windowStart: new Date(lookbackCutoffMs).toISOString(),
+            windowEnd: new Date(todayStartMs).toISOString(),
+        },
+    };
+}
+
+function computeCurrentHour({ hourlyBuckets, nowMs }) {
+    const now = new Date(nowMs);
+    const HH = pad2(now.getUTCHours());
+    const date = `${now.getUTCFullYear()}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`;
+    const key = `${date} ${HH}`;
+    const b = hourlyBuckets.get(key) || { cost_usd: 0, tokens: 0, sessions: 0 };
+    return {
+        hour: HH,
+        date,
+        cost_usd: Math.round(b.cost_usd * 10000) / 10000,
+        tokens: b.tokens,
+        sessions: b.sessions,
+        ts: now.toISOString(),
+    };
+}
+
+function emitEmptySnapshot(options) {
+    const nowMs = (options && options.nowMs != null) ? Number(options.nowMs) : Date.now();
+    const lookbackDays = clampLookbackDays(options && options.lookbackDays);
+    const lookbackCutoffMs = nowMs - lookbackDays * 86400e3;
+    const hourly = computeHourlySeries({ hourlyBuckets: new Map(), nowMs, lookbackCutoffMs });
+    const currentHour = computeCurrentHour({ hourlyBuckets: new Map(), nowMs });
+    return {
+        generated_at: new Date(nowMs).toISOString(),
         window: (options && options.window) || 'all',
         cutoff_ts: null,
         totals: emptyBucket(),
@@ -320,7 +448,10 @@ function emitEmptySnapshot(options) {
         tts: { by_provider: [], by_agent: [], by_issue: [] },
         llm_vs_deterministic: [],
         daily: [],
-        projections: computeProjections({ daily: [], now: new Date() }),
+        projections: computeProjections({ daily: [], now: new Date(nowMs) }),
+        hourlySeries: hourly.series,
+        hourlyMeta: hourly.meta,
+        currentHour,
         pricing: MODEL_PRICING,
     };
 }
@@ -339,14 +470,15 @@ async function runOnce(options) {
 }
 
 function parseArgs(argv) {
-    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS };
+    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS, lookbackDays: DEFAULT_LOOKBACK_DAYS };
     for (let i = 2; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--once') args.once = true;
         else if (a === '--window' && argv[i + 1]) { args.window = argv[++i]; }
         else if (a === '--refresh' && argv[i + 1]) { args.refreshMs = Math.max(5000, parseInt(argv[++i], 10) || DEFAULT_REFRESH_MS); }
+        else if (a === '--lookback-days' && argv[i + 1]) { args.lookbackDays = clampLookbackDays(parseInt(argv[++i], 10)); }
         else if (a === '--help' || a === '-h') {
-            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms]\n');
+            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms] [--lookback-days 7-14]\n');
             process.exit(0);
         }
     }
@@ -379,4 +511,17 @@ if (require.main === module) {
     main().catch(e => { process.stderr.write(e.stack + '\n'); process.exit(1); });
 }
 
-module.exports = { buildSnapshot, runOnce, writeSnapshot, classifyExecutionMode, SNAPSHOT_FILE, METRICS_DIR };
+module.exports = {
+    buildSnapshot,
+    runOnce,
+    writeSnapshot,
+    classifyExecutionMode,
+    computeHourlySeries,
+    computeCurrentHour,
+    clampLookbackDays,
+    DEFAULT_LOOKBACK_DAYS,
+    MIN_LOOKBACK_DAYS,
+    MAX_LOOKBACK_DAYS,
+    SNAPSHOT_FILE,
+    METRICS_DIR,
+};
