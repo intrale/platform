@@ -241,8 +241,15 @@ function aggregateTestResults(results) {
 /**
  * Escanea un árbol `build/test-results/**\/TEST-*.xml` de un módulo Gradle
  * y devuelve todos los archivos encontrados.
+ *
+ * @param {string} moduleDir - Ruta absoluta del módulo Gradle.
+ * @param {Object} [options]
+ * @param {number} [options.minMtimeMs] - Si está definido, filtra archivos con
+ *   mtime menor al timestamp en ms. Útil para evitar leer XMLs stale dejados
+ *   por runs previos cuando el gradle actual abortó (issue #2892 rebote).
  */
-function findTestResultFiles(moduleDir) {
+function findTestResultFiles(moduleDir, options = {}) {
+    const { minMtimeMs } = options;
     const found = [];
     const roots = [
         path.join(moduleDir, 'build', 'test-results'),
@@ -257,7 +264,15 @@ function findTestResultFiles(moduleDir) {
             for (const ent of entries) {
                 const full = path.join(cur, ent.name);
                 if (ent.isDirectory()) stack.push(full);
-                else if (ent.isFile() && /^TEST-.*\.xml$/i.test(ent.name)) found.push(full);
+                else if (ent.isFile() && /^TEST-.*\.xml$/i.test(ent.name)) {
+                    if (typeof minMtimeMs === 'number') {
+                        try {
+                            const st = fs.statSync(full);
+                            if (st.mtimeMs < minMtimeMs) continue;
+                        } catch { continue; }
+                    }
+                    found.push(full);
+                }
             }
         }
     }
@@ -266,8 +281,14 @@ function findTestResultFiles(moduleDir) {
 
 /**
  * Escanea rutas estándar de reportes Kover. Devuelve archivos XML encontrados.
+ *
+ * @param {string} moduleDir - Ruta absoluta del módulo Gradle.
+ * @param {Object} [options]
+ * @param {number} [options.minMtimeMs] - Si está definido, filtra archivos con
+ *   mtime menor al timestamp en ms (anti-stale del rebote #2892).
  */
-function findKoverXmlFiles(moduleDir) {
+function findKoverXmlFiles(moduleDir, options = {}) {
+    const { minMtimeMs } = options;
     const found = [];
     const candidates = [
         path.join(moduleDir, 'build', 'reports', 'kover', 'report.xml'),
@@ -275,7 +296,14 @@ function findKoverXmlFiles(moduleDir) {
         path.join(moduleDir, 'build', 'reports', 'kover', 'xml', 'report.xml'),
     ];
     for (const c of candidates) {
-        if (fs.existsSync(c)) found.push(c);
+        if (!fs.existsSync(c)) continue;
+        if (typeof minMtimeMs === 'number') {
+            try {
+                const st = fs.statSync(c);
+                if (st.mtimeMs < minMtimeMs) continue;
+            } catch { continue; }
+        }
+        found.push(c);
     }
     return found;
 }

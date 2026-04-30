@@ -60,7 +60,14 @@ test('parseArgs — fallback a PIPELINE_ISSUE si no hay argumento posicional', (
 
 test('buildGradleCommand — module=all incluye los tres módulos + kover backend/app', () => {
     const c = tester.buildGradleCommand('all', true);
-    assert.equal(c.cmd, './gradlew');
+    // En Windows el cmd debe ser path absoluto a gradlew.bat (rebote #2892
+    // por cmd.exe no entiende `./gradlew`); en Unix sigue siendo `./gradlew`.
+    if (process.platform === 'win32') {
+        assert.match(c.cmd, /gradlew\.bat$/);
+        assert.ok(path.isAbsolute(c.cmd), `cmd debe ser absoluto en Windows, fue: ${c.cmd}`);
+    } else {
+        assert.equal(c.cmd, './gradlew');
+    }
     assert.ok(c.args.includes(':backend:test'));
     assert.ok(c.args.includes(':users:test'));
     assert.ok(c.args.includes(':app:composeApp:testDebugUnitTest'));
@@ -190,4 +197,243 @@ test('renderReport — verdict RECHAZADO con motivo cuando exitCode!=0', () => {
     assert.ok(report.includes('RECHAZADO'));
     assert.ok(report.includes('Motivo del rebote'));
     assert.ok(report.includes('2 failures'));
+});
+
+// ── findIssueWorktree (rebote #2892, técnica de #2893) ─────────────
+
+test('findIssueWorktree — devuelve null si no hay issue', () => {
+    assert.equal(tester.findIssueWorktree(TMP, null), null);
+    assert.equal(tester.findIssueWorktree(TMP, 0), null);
+    assert.equal(tester.findIssueWorktree(TMP, undefined), null);
+});
+
+test('findIssueWorktree — devuelve null si git falla / no hay worktrees', () => {
+    // En un dir cualquiera sin git, debe devolver null sin tirar excepción
+    const noGit = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-nogit-'));
+    assert.equal(tester.findIssueWorktree(noGit, 9999), null);
+});
+
+test('findIssueWorktree — encuentra worktree por convención platform.agent-<issue>-<skill>', () => {
+    // Crear un fake repo con git init y un worktree adicional simulado
+    const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-fakerepo-'));
+    const { execSync } = require('child_process');
+    try {
+        execSync('git init -q', { cwd: fakeRepo, windowsHide: true });
+        execSync('git config user.email "t@t"', { cwd: fakeRepo });
+        execSync('git config user.name "t"', { cwd: fakeRepo });
+        fs.writeFileSync(path.join(fakeRepo, 'README.md'), 'x');
+        execSync('git add -A && git commit -qm init', { cwd: fakeRepo, shell: true });
+        // Worktree con el naming que espera findIssueWorktree
+        const wtPath = path.join(path.dirname(fakeRepo), `platform.agent-7777-pipeline-dev-${Date.now()}`);
+        execSync(`git worktree add -q -b agent/7777-pipeline-dev "${wtPath}"`, { cwd: fakeRepo, shell: true });
+        try {
+            const found = tester.findIssueWorktree(fakeRepo, 7777);
+            assert.ok(found, 'Debe encontrar el worktree del issue 7777');
+            assert.ok(found.includes('platform.agent-7777-'), 'Debe contener el slug platform.agent-7777-');
+            // Issue distinto → no encuentra
+            assert.equal(tester.findIssueWorktree(fakeRepo, 9999), null);
+        } finally {
+            try { execSync(`git worktree remove --force "${wtPath}"`, { cwd: fakeRepo, shell: true, stdio: 'ignore' }); } catch {}
+        }
+    } catch (e) {
+        // Si git no está disponible (rare), el test no aplica
+        if (/not found|no such/i.test(e.message)) return;
+        throw e;
+    }
+});
+
+// ── collectTestReports — filtro mtime contra XMLs stale (rebote #2892) ─
+
+function setMtime(filePath, msAgo) {
+    const t = (Date.now() - msAgo) / 1000;
+    fs.utimesSync(filePath, t, t);
+}
+
+test('collectTestReports — minMtimeMs descarta XMLs stale (rebote #2892)', () => {
+    // Crear estructura backend/build/test-results/test/TEST-Stale.xml con
+    // un junit válido que reporta failures, marcado con mtime viejo.
+    // Sin filtro: lo lee y reporta failures. Con filtro: lo descarta.
+    const moduleDir = path.join(TMP, 'backend');
+    const dir = path.join(moduleDir, 'build', 'test-results', 'test');
+    fs.mkdirSync(dir, { recursive: true });
+    const xmlPath = path.join(dir, 'TEST-Stale.xml');
+    // JUnit con 1 failure
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+        '<testsuite name="StaleSuite" tests="1" failures="1" errors="0" skipped="0" time="0.1">\n' +
+        '<testcase classname="ui.sc.business.zones.DeliveryZonesViewModelTest" name="stale" time="0.05">' +
+        '<failure message="actual value is null" type="AssertionError">stack</failure>' +
+        '</testcase>\n' +
+        '</testsuite>\n';
+    fs.writeFileSync(xmlPath, xml);
+    setMtime(xmlPath, 60 * 60 * 1000); // 1h vieja
+
+    // Sin filtro → ve la falla
+    const sin = tester.collectTestReports(['backend']);
+    assert.equal(sin.valid, true);
+    assert.equal(sin.failures, 1);
+
+    // Con filtro de "hace 5 minutos" → no debe verla
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    const con = tester.collectTestReports(['backend'], { minMtimeMs: cutoff });
+    assert.equal(con.valid, false, 'No debe encontrar reportes válidos cuando el XML es stale');
+});
+
+// ── Detección pipeline-only (issue #2891) ─────────────────────────
+
+test('isPipelineOnlyChange — true cuando solo hay cambios en .pipeline/', () => {
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/anomaly-detector.js',
+        '.pipeline/tests/anomaly-detector.test.js',
+        '.pipeline/config.yaml',
+    ]), true);
+});
+
+test('isPipelineOnlyChange — true cuando combina .pipeline/ con docs/ y agents/', () => {
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/anomaly-detector.js',
+        'docs/pipeline/modo-descanso.md',
+        'agents/pipeline-dev.md',
+        '.github/workflows/ci.yml',
+    ]), true);
+});
+
+test('isPipelineOnlyChange — false si hay archivos Kotlin/Compose', () => {
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/anomaly-detector.js',
+        'app/composeApp/src/commonMain/kotlin/asdo/Foo.kt',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'backend/src/main/kotlin/Function.kt',
+    ]), false);
+});
+
+test('isPipelineOnlyChange — false con array vacío', () => {
+    assert.equal(tester.isPipelineOnlyChange([]), false);
+    assert.equal(tester.isPipelineOnlyChange(null), false);
+    assert.equal(tester.isPipelineOnlyChange(undefined), false);
+});
+
+test('isPipelineOnlyChange — paths fuera de los patrones permitidos rompen el match', () => {
+    // .claude/ NO está en pipeline-only (puede afectar build behavior)
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        '.claude/settings.json',
+    ]), false);
+    // README.md en raíz no está
+    assert.equal(tester.isPipelineOnlyChange(['README.md']), false);
+});
+
+test('parseNodeTestJunit — lee tests/pass/fail/skipped del comentario summary', () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+\t<testcase name="t1" time="0.001" classname="test" file="x.test.js"/>
+\t<testcase name="t2" time="0.002" classname="test" file="x.test.js"/>
+\t<!-- tests 2 -->
+\t<!-- pass 2 -->
+\t<!-- fail 0 -->
+\t<!-- skipped 0 -->
+\t<!-- duration_ms 50.5 -->
+</testsuites>`;
+    const r = tester.parseNodeTestJunit(xml);
+    assert.equal(r.valid, true);
+    assert.equal(r.tests, 2);
+    assert.equal(r.failures, 0);
+    assert.equal(r.skipped, 0);
+    assert.ok(r.time_seconds > 0);
+});
+
+test('parseNodeTestJunit — extrae failed_tests con name/classname/message', () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+\t<testcase name="ok" time="0.001" classname="test" file="x.test.js"/>
+\t<testcase name="rompe" time="0.002" classname="test" file="x.test.js">
+\t\t<failure type="testCodeFailure" message="expected 1 to equal 2">
+AssertionError: expected 1 to equal 2
+    at Test.<anonymous> (x.test.js:10:5)
+\t\t</failure>
+\t</testcase>
+\t<!-- tests 2 -->
+\t<!-- fail 1 -->
+</testsuites>`;
+    const r = tester.parseNodeTestJunit(xml);
+    assert.equal(r.tests, 2);
+    assert.equal(r.failures, 1);
+    assert.equal(r.failed_tests.length, 1);
+    assert.equal(r.failed_tests[0].name, 'rompe');
+    assert.equal(r.failed_tests[0].classname, 'test');
+    assert.ok(r.failed_tests[0].message.includes('expected 1 to equal 2'));
+});
+
+test('parseNodeTestJunit — XML vacío o malformado devuelve valid:false', () => {
+    assert.equal(tester.parseNodeTestJunit('').valid, false);
+    assert.equal(tester.parseNodeTestJunit(null).valid, false);
+    assert.equal(tester.parseNodeTestJunit('<not-xml').valid, false);
+});
+
+test('findNodeTestFiles — encuentra *.test.js dentro de .pipeline/ y excluye node_modules/desarrollo', () => {
+    // Crear estructura mock dentro de TMP
+    const pipeRoot = path.join(TMP, '.pipeline');
+    fs.mkdirSync(path.join(pipeRoot, 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(pipeRoot, 'metrics', '__tests__'), { recursive: true });
+    fs.mkdirSync(path.join(pipeRoot, 'node_modules', 'foo'), { recursive: true });
+    fs.mkdirSync(path.join(pipeRoot, 'desarrollo', 'dev', 'pendiente'), { recursive: true });
+    fs.writeFileSync(path.join(pipeRoot, 'tests', 'a.test.js'), '// test');
+    fs.writeFileSync(path.join(pipeRoot, 'metrics', '__tests__', 'b.test.js'), '// test');
+    fs.writeFileSync(path.join(pipeRoot, 'node_modules', 'foo', 'c.test.js'), '// excluded');
+    fs.writeFileSync(path.join(pipeRoot, 'desarrollo', 'dev', 'pendiente', 'd.test.js'), '// excluded');
+    fs.writeFileSync(path.join(pipeRoot, 'utils.js'), '// no test');
+
+    const found = tester.findNodeTestFiles(TMP).map((f) => path.relative(TMP, f).replace(/\\/g, '/'));
+    assert.ok(found.includes('.pipeline/tests/a.test.js'));
+    assert.ok(found.includes('.pipeline/metrics/__tests__/b.test.js'));
+    assert.ok(!found.some((f) => f.includes('node_modules')), 'node_modules debe estar excluido');
+    assert.ok(!found.some((f) => f.includes('desarrollo')), 'desarrollo/ debe estar excluido');
+});
+
+test('runNodeTests — sin tests detectados devuelve no_tests:true y exit_code:0', async () => {
+    // TMP en este punto puede tener tests del test anterior — usemos un repo fresco
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-fresh-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline'), { recursive: true });
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.no_tests, true);
+    assert.equal(r.exit_code, 0);
+    assert.equal(r.summary.valid, false);
+    assert.equal(r.summary.tests, 0);
+});
+
+test('runNodeTests — corre un test real, parsea JUnit y reporta tests/failures', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-real-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    const testFile = path.join(fresh, '.pipeline', 'tests', 'sample.test.js');
+    fs.writeFileSync(testFile, `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('suma básica', () => { assert.equal(1 + 1, 2); });
+test('multiplicación', () => { assert.equal(2 * 3, 6); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.no_tests, undefined);
+    assert.equal(r.exit_code, 0);
+    assert.equal(r.summary.valid, true);
+    assert.equal(r.summary.tests, 2);
+    assert.equal(r.summary.failures, 0);
+    assert.ok(r.report_file && fs.existsSync(r.report_file), 'report file debe existir');
+});
+
+test('runNodeTests — test fallido devuelve exit_code:1 y failures>0', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-fail-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    const testFile = path.join(fresh, '.pipeline', 'tests', 'fail.test.js');
+    fs.writeFileSync(testFile, `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('siempre rompe', () => { assert.equal(1, 2); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.exit_code, 1);
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.summary.failures, 1);
+    assert.equal(r.summary.failed_tests[0].name, 'siempre rompe');
 });
