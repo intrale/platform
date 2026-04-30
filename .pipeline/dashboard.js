@@ -4341,6 +4341,13 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </div>
   <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin:8px 0 4px" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">${ic('fase-build')} Consumo V3</a>
   <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
+  <!-- #2893 — Banner de deps faltantes en pausa parcial -->
+  <div id="partial-pause-deps-banner" role="alert" style="display:none;margin:8px 0 4px;padding:10px 14px;border-radius:8px;background:rgba(240,165,0,0.12);border:1px solid rgba(240,165,0,0.45);color:#f0a500;font-size:var(--fs-sm,0.85rem);">
+    <span style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">${ic('estado-partial-pause')} Pausa parcial trabada</span>
+    <span id="partial-pause-deps-msg" style="margin-left:10px;color:var(--text,#c9d1d9);"></span>
+    <button onclick="includeMissingDeps()" style="margin-left:12px;padding:4px 10px;background:#f0a500;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-weight:600;" title="Agregar todas las deps abiertas al allowlist">Agregar dependencias al allowlist</button>
+    <button onclick="dismissDepsBanner()" style="margin-left:6px;padding:4px 10px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;" title="Ocultar (volverá a aparecer en el próximo ciclo si persiste)">Ocultar</button>
+  </div>
   ${(() => {
     const pw = state.priorityWindows || {};
     const qaActive = pw.qa && pw.qa.active;
@@ -4905,6 +4912,141 @@ async function pauseAction(action) {
   } catch (e) {
     showToast('Error de conexión: ' + e.message, false);
   }
+}
+
+// #2893 — Activar pausa parcial con manejo de deps faltantes (modal de 3 opciones).
+async function setPartialPauseWithDeps(issues) {
+  try {
+    const resp = await fetch('/api/pause-partial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issues: issues, detectDeps: true })
+    });
+    if (resp.status === 409) {
+      const data = await resp.json();
+      if (data.code === 'MISSING_DEPS') {
+        showPartialPauseDepsModal(data.requestedIssues || issues, data.missing || {}, data.chains || {});
+        return;
+      }
+    }
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(function() { location.reload(); }, 1500);
+  } catch (e) {
+    showToast('Error: ' + e.message, false);
+  }
+}
+
+// Modal de confirmación con las 3 opciones del CA-3.
+function showPartialPauseDepsModal(requestedIssues, missing, chains) {
+  // Construir lista de deps faltantes (con título si lo conocemos).
+  const allDeps = new Set();
+  for (const deps of Object.values(missing || {})) {
+    for (const d of deps) allDeps.add(Number(d));
+  }
+  const depList = Array.from(allDeps).sort(function(a,b){return a-b;}).map(function(d) {
+    const c = (chains && chains[String(d)]) || {};
+    const t = c.title ? ' — ' + String(c.title).slice(0, 70) : '';
+    return '<li><a href="https://github.com/intrale/platform/issues/' + d + '" target="_blank" style="color:#58a6ff">#' + d + '</a>' + t + '</li>';
+  }).join('');
+  const requested = (requestedIssues || []).map(function(i){ return '#' + i; }).join(', ');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'pp-deps-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  overlay.innerHTML = '<div role="dialog" aria-modal="true" aria-labelledby="pp-deps-modal-title" style="background:#161b22;border:1px solid rgba(240,165,0,0.6);border-radius:10px;padding:20px;max-width:560px;width:92%;color:#c9d1d9;box-shadow:0 10px 40px rgba(0,0,0,0.6);">'
+    + '<h3 id="pp-deps-modal-title" style="margin:0 0 8px;color:#f0a500;">⚠️ Pausa parcial con dependencias abiertas</h3>'
+    + '<p style="margin:6px 0 8px;font-size:0.9rem;">Activaste pausa parcial para <strong>' + requested + '</strong>, pero hay dependencias abiertas que NO están en el allowlist:</p>'
+    + '<ul style="margin:6px 0 14px;padding-left:22px;font-size:0.85rem;">' + depList + '</ul>'
+    + '<p style="margin:8px 0 14px;font-size:0.8rem;opacity:0.8;">Si las dejás afuera, el issue habilitado quedará bloqueado por sus propias dependencias y el pipeline se trabará en silencio (incidente 2026-04-30).</p>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">'
+    + '<button id="pp-cancel" style="padding:8px 14px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:5px;cursor:pointer;">Cancelar</button>'
+    + '<button id="pp-only-original" style="padding:8px 14px;background:transparent;color:#f0a500;border:1px solid #f0a500;border-radius:5px;cursor:pointer;" title="Continuar con el allowlist original aceptando el riesgo">Solo el original (asumir riesgo)</button>'
+    + '<button id="pp-include-all" style="padding:8px 14px;background:#3fb950;color:#1c2128;border:0;border-radius:5px;cursor:pointer;font-weight:600;" title="Incluir las dependencias y activar la pausa parcial">Sí, incluir todas</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+
+  const closeModal = function() { try { overlay.remove(); } catch (_) {} };
+  overlay.querySelector('#pp-cancel').onclick = closeModal;
+  overlay.querySelector('#pp-include-all').onclick = async function() {
+    closeModal();
+    try {
+      const resp = await fetch('/api/pause-partial', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issues: requestedIssues, includeDeps: true })
+      });
+      const r = await resp.json();
+      showToast(r.msg, r.ok);
+      setTimeout(function() { location.reload(); }, 1500);
+    } catch (e) { showToast('Error: ' + e.message, false); }
+  };
+  overlay.querySelector('#pp-only-original').onclick = async function() {
+    closeModal();
+    try {
+      const resp = await fetch('/api/pause-partial', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issues: requestedIssues, acceptedDepRisk: true, detectDeps: false })
+      });
+      const r = await resp.json();
+      showToast(r.msg + ' (riesgo aceptado)', r.ok);
+      setTimeout(function() { location.reload(); }, 1500);
+    } catch (e) { showToast('Error: ' + e.message, false); }
+  };
+}
+
+// #2893 — Banner: "Agregar dependencias al allowlist".
+async function includeMissingDeps() {
+  try {
+    const resp = await fetch('/api/partial-pause/include-deps', { method: 'POST' });
+    const r = await resp.json();
+    showToast(r.msg, r.ok);
+    setTimeout(function() { location.reload(); }, 1500);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+function dismissDepsBanner() {
+  const el = document.getElementById('partial-pause-deps-banner');
+  if (el) el.style.display = 'none';
+  // Marcar dismiss en sessionStorage para no re-mostrar hasta refresh real.
+  try { sessionStorage.setItem('pp-deps-banner-dismissed', String(Date.now())); } catch (_) {}
+}
+
+async function refreshDepsBanner() {
+  try {
+    const resp = await fetch('/api/partial-pause/deps-state');
+    const data = await resp.json();
+    const banner = document.getElementById('partial-pause-deps-banner');
+    const msg = document.getElementById('partial-pause-deps-msg');
+    if (!banner || !msg) return;
+    if (!data.hasMissing) {
+      banner.style.display = 'none';
+      return;
+    }
+    // Si el operador hizo dismiss en esta sesión, respetarlo.
+    try {
+      const d = sessionStorage.getItem('pp-deps-banner-dismissed');
+      if (d && (Date.now() - Number(d)) < 5 * 60 * 1000) return;
+    } catch (_) {}
+    const allDeps = new Set();
+    for (const deps of Object.values(data.missing || {})) {
+      for (const d of deps) allDeps.add(Number(d));
+    }
+    const issuesAffected = Object.keys(data.missing || {});
+    const depList = Array.from(allDeps).sort(function(a,b){return a-b;}).map(function(d){ return '#' + d; }).join(', ');
+    msg.textContent = issuesAffected.map(function(i){ return '#' + i; }).join(', ') + ' depende' + (issuesAffected.length === 1 ? '' : 'n')
+      + ' de ' + depList + ' — agregalas o el pipeline se traba.';
+    banner.style.display = 'block';
+  } catch (_) {}
+}
+
+// Refresh inicial + cada 30s del banner.
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshDepsBanner();
+    setInterval(refreshDepsBanner, 30 * 1000);
+  });
 }
 
 // QA component action (individual or all)
@@ -7235,12 +7377,18 @@ const server = http.createServer((req, res) => {
   }
 
   // API: #2490 — Pausa parcial con allowlist de issues
+  // #2893 extiende:
+  //   - body.detectDeps=true (default)         → si hay deps abiertas faltantes, devolver
+  //                                              409 con la lista (el cliente decide qué hacer).
+  //   - body.includeDeps=true                  → unir el allowlist con las deps detectadas y persistir.
+  //   - body.acceptedDepRisk=true              → persistir solo el allowlist original con flag de riesgo.
   if (req.url === '/api/pause-partial' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const { issues } = JSON.parse(body || '{}');
+        const parsed = JSON.parse(body || '{}');
+        const { issues, detectDeps = true, includeDeps = false, acceptedDepRisk = false, source } = parsed;
         const { setPartialPause, clearPartialPause, getPipelineMode } = require('./lib/partial-pause');
         const list = Array.isArray(issues) ? issues : [];
         if (list.length === 0) {
@@ -7250,18 +7398,162 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ ok: true, msg: 'Pausa parcial desactivada', mode: 'running' }));
           return;
         }
-        const result = setPartialPause(list, { source: 'dashboard' });
+
+        // #2893 — Detectar deps abiertas faltantes ANTES de persistir.
+        // El cliente envía detectDeps:true por default; si encuentra deps faltantes
+        // y no especificó includeDeps/acceptedDepRisk, devolvemos 409 con la lista
+        // para que el modal muestre las 3 opciones al operador.
+        let depsDetection = null;
+        if (detectDeps && !includeDeps && !acceptedDepRisk) {
+          try {
+            const ppDeps = require('./lib/partial-pause-deps');
+            depsDetection = ppDeps.findMissingDeps(list);
+            if (Object.keys(depsDetection.missing || {}).length > 0) {
+              log(`Pausa parcial: deps abiertas detectadas — ${JSON.stringify(depsDetection.missing)}`);
+              res.writeHead(409, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                ok: false,
+                code: 'MISSING_DEPS',
+                msg: 'El allowlist tiene issues con dependencias abiertas no incluidas.',
+                missing: depsDetection.missing,
+                chains: depsDetection.chains,
+                truncated: depsDetection.truncated,
+                requestedIssues: list,
+              }));
+              return;
+            }
+          } catch (e) {
+            log(`Warning: deps detection falló (continúo sin gate): ${e.message}`);
+          }
+        }
+
+        // Camino "incluir todas las deps": unimos el allowlist con las deps abiertas.
+        let finalList = list;
+        const depSources = {};
+        if (includeDeps) {
+          try {
+            const ppDeps = require('./lib/partial-pause-deps');
+            const det = ppDeps.findMissingDeps(list);
+            finalList = ppDeps.allowlistWithDeps(list, det.missing || {});
+            for (const deps of Object.values(det.missing || {})) {
+              for (const d of deps) depSources[String(d)] = 'auto-deps';
+            }
+            log(`Pausa parcial: auto-incluyendo deps (${list.join(',')} → ${finalList.join(',')})`);
+          } catch (e) {
+            log(`Error en includeDeps (uso allowlist original): ${e.message}`);
+          }
+        }
+
+        const result = setPartialPause(finalList, {
+          source: source || (includeDeps ? 'dashboard-auto-deps' : 'dashboard'),
+          acceptedDepRisk: acceptedDepRisk === true,
+          depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+        });
         const state = getPipelineMode();
-        log(`Pausa parcial activada desde dashboard (${result.allowedIssues.join(',')})`);
+        log(`Pausa parcial activada desde dashboard (${result.allowedIssues.join(',')})${acceptedDepRisk ? ' [accepted_dep_risk]' : ''}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           ok: true,
           msg: result.msg,
           mode: state.mode,
           allowedIssues: state.allowedIssues,
+          acceptedDepRisk: state.acceptedDepRisk || false,
+          depSources: state.depSources || null,
         }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // #2893 — API: incluir las deps abiertas detectadas en el allowlist actual.
+  // Llamado desde el banner del dashboard cuando hay deps faltantes.
+  if (req.url === '/api/partial-pause/include-deps' && req.method === 'POST') {
+    try {
+      const { setPartialPause, getPipelineMode } = require('./lib/partial-pause');
+      const ppDeps = require('./lib/partial-pause-deps');
+      const state = getPipelineMode();
+      if (state.mode !== 'partial_pause') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: `Pipeline está en modo "${state.mode}", no en partial_pause` }));
+        return;
+      }
+      const det = ppDeps.findMissingDeps(state.allowedIssues);
+      const finalList = ppDeps.allowlistWithDeps(state.allowedIssues, det.missing || {});
+      const depSources = {};
+      for (const deps of Object.values(det.missing || {})) {
+        for (const d of deps) depSources[String(d)] = 'auto-deps';
+      }
+      // Preservar dep_sources existentes y agregar los nuevos.
+      if (state.depSources) {
+        for (const [k, v] of Object.entries(state.depSources)) {
+          if (!(k in depSources)) depSources[k] = v;
+        }
+      }
+      const result = setPartialPause(finalList, {
+        source: 'dashboard-auto-deps',
+        acceptedDepRisk: false, // al incluir deps, ya no hay riesgo aceptado.
+        depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+      });
+      // Limpiar el state de deps (ya no hay missing).
+      try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
+      log(`Pausa parcial: include-deps aplicado — allowlist final: ${result.allowedIssues.join(',')}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        msg: result.msg,
+        allowedIssues: result.allowedIssues,
+        addedDeps: Object.keys(depSources).map(Number).filter(Boolean).sort((a,b)=>a-b),
+      }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    }
+    return;
+  }
+
+  // #2893 — API: estado de detección de deps (alimenta el banner del dashboard).
+  if (req.url === '/api/partial-pause/deps-state' && req.method === 'GET') {
+    try {
+      const stateFile = path.join(PIPELINE, 'partial-pause-deps-state.json');
+      if (!fs.existsSync(stateFile)) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, hasMissing: false }));
+        return;
+      }
+      const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      const hasMissing = data.missing && Object.keys(data.missing).length > 0;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, hasMissing, ...data }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    }
+    return;
+  }
+
+  // #2893 — API: preview de deps detectadas para una allowlist arbitraria.
+  // Llamado desde el modal antes de confirmar la pausa parcial.
+  if (req.url === '/api/partial-pause/check-deps' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { issues } = JSON.parse(body || '{}');
+        const list = Array.isArray(issues) ? issues : [];
+        if (list.length === 0) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, missing: {}, chains: {}, truncated: false }));
+          return;
+        }
+        const ppDeps = require('./lib/partial-pause-deps');
+        const det = ppDeps.findMissingDeps(list);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...det }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
       }
     });

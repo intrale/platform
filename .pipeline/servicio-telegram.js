@@ -204,7 +204,13 @@ async function processQueue() {
         if (data.parse_mode) extra.parse_mode = data.parse_mode;
         await telegramSendMultipart('sendPhoto', 'photo', data.photo, extra);
       } else if (data.text) {
-        await telegramSend('sendMessage', { text: data.text, parse_mode: data.parse_mode || 'Markdown' });
+        const sendParams = { text: data.text, parse_mode: data.parse_mode || 'Markdown' };
+        // #2893: passthrough opcional de reply_markup para inline_keyboard / url buttons.
+        // No requiere callback_query handling cuando son botones tipo "url".
+        if (data.reply_markup && typeof data.reply_markup === 'object') {
+          sendParams.reply_markup = data.reply_markup;
+        }
+        await telegramSend('sendMessage', sendParams);
       }
 
       const listoPath = path.join(LISTO, file.name);
