@@ -303,7 +303,12 @@ function renderPipeline() {
 .pl-card-state-listo { border-color: var(--in-ok); }
 .pl-card-state-pendiente { border-color: var(--in-fg-soft); }
 .pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-.pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }`;
+.pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }
+/* #2900 — diferenciación visual intra-fase vs cross-phase y badge circuit-breaker */
+.pl-card-rebote.is-crossphase { color: var(--in-warn); border-color: var(--in-warn); background: rgba(187,128,9,.18); }
+.pl-card-rebote.is-circuit { color: #fff; background: var(--in-bad); border-color: var(--in-bad); }
+.pl-card-rebote-counter { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-fg-dim); margin-top: 3px; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.pl-card-rebote-counter.is-circuit { color: var(--in-bad); font-weight: 700; }`;
     const script = `
 function compareByPriority(orderMap){
     return (a, b) => {
@@ -342,6 +347,8 @@ async function tickPipeline(){
                 motivo_rechazo: data.motivo_rechazo,
                 rechazado_en_fase: data.rechazado_en_fase,
                 rechazado_skill_previo: data.rechazado_skill_previo,
+                rebote_numero: data.rebote_numero,
+                rebote_numero_max: data.rebote_numero_max,
             });
         }
     }
@@ -352,9 +359,32 @@ async function tickPipeline(){
         const cards = col.items.slice(0, 12).map(i => {
             const prio = orderMap.has(String(i.issue)) ? '#' + (orderMap.get(String(i.issue)) + 1) : '';
             const pausedBadge = i.paused ? '<span class="pl-card-paused-badge">⏸ pausado</span>' : '';
-            const reboteBadge = i.rebote
-              ? '<div class="pl-card-rebote" title="Rechazado en ' + escapeHtml(i.rechazado_en_fase||'?') + (i.rechazado_skill_previo?'/'+escapeHtml(i.rechazado_skill_previo):'') + ': ' + escapeHtml((i.motivo_rechazo||'').replace(/"/g,"\\u0027").slice(0,400)) + '">↩ rebote' + (i.rebote_tipo?' · '+escapeHtml(i.rebote_tipo):'') + '</div>'
-              : '';
+            // #2900 — badge enriquecido: "↩ rebote desde <skill>" + contador
+            // "N/M" + diferenciación visual intra/cross-phase + badge especial
+            // cuando se alcanzó el cap del circuit breaker (N==M).
+            let reboteBadge = '';
+            if (i.rebote) {
+                const isCross = i.rebote_tipo === 'crossphase';
+                const num = Number(i.rebote_numero) || 0;
+                const max = Number(i.rebote_numero_max) || 3;
+                const isCircuit = num >= max && max > 0;
+                const tooltip = 'Rechazado en ' + escapeHtml(i.rechazado_en_fase||'?')
+                    + (i.rechazado_skill_previo?'/'+escapeHtml(i.rechazado_skill_previo):'')
+                    + ': ' + escapeHtml((i.motivo_rechazo||'').replace(/"/g,"\\u0027").slice(0,400));
+                const cls = 'pl-card-rebote'
+                    + (isCross ? ' is-crossphase' : '')
+                    + (isCircuit ? ' is-circuit' : '');
+                const label = i.rechazado_skill_previo
+                    ? '↩ rebote desde ' + escapeHtml(i.rechazado_skill_previo)
+                    : '↩ rebote';
+                const tipoSuffix = isCross ? ' · cross-phase' : '';
+                const counter = num > 0
+                    ? '<span class="pl-card-rebote-counter' + (isCircuit?' is-circuit':'')
+                        + '" title="Cap del circuit breaker = ' + max + '">rebote ' + num + '/' + max + '</span>'
+                    : '';
+                reboteBadge = '<div class="' + cls + '" title="' + tooltip + '">'
+                    + label + tipoSuffix + '</div>' + counter;
+            }
             const pauseBtn = '<button class="pl-card-btn pause' + (i.paused?' paused':'') + '" data-issue="'+escapeHtml(i.issue)+'" data-action="' + (i.paused?'resume':'pause') + '" title="' + (i.paused?'Reanudar issue':'Pausar issue') + '">' + (i.paused?'▶':'⏸') + '</button>';
             return '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+'" data-issue="'+escapeHtml(i.issue)+'">'
               + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
@@ -592,6 +622,9 @@ function renderIssues() {
 .iss-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--in-fg-dim); }
 .iss-title.paused::before { content: "⏸ "; color: var(--in-warn); font-weight: 600; }
 .iss-rebote { display: inline-block; font-size: 10px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 5px; margin-right: 6px; cursor: help; }
+/* #2900 — diferenciación visual intra-fase vs cross-phase + circuit breaker */
+.iss-rebote.is-crossphase { color: var(--in-warn); border-color: var(--in-warn); background: rgba(187,128,9,.18); }
+.iss-rebote.is-circuit { color: #fff; background: var(--in-bad); border-color: var(--in-bad); }
 .iss-fase { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); }
 .iss-state { font-size: 11px; }
 .iss-state.trabajando { color: var(--in-accent); }
@@ -633,9 +666,27 @@ function renderIssuesTable(filter){
         const pauseIcon = paused ? '▶' : '⏸';
         const pauseTitle = paused ? 'Reanudar issue' : 'Pausar issue';
         const titleClass = paused ? 'iss-title paused' : 'iss-title';
-        const reboteChip = data.rebote
-          ? '<span class="iss-rebote" title="Rechazado en '+escapeHtml(data.rechazado_en_fase||'?')+(data.rechazado_skill_previo?'/'+escapeHtml(data.rechazado_skill_previo):'')+': '+escapeHtml((data.motivo_rechazo||'').replace(/"/g,"'").slice(0,300))+'">↩ rechazo</span>'
-          : '';
+        // #2900 — chip enriquecido: origen "desde <skill>" + contador
+        // "N/M" + diferenciación visual intra-fase vs cross-phase + circuit.
+        let reboteChip = '';
+        if (data.rebote) {
+            const isCross = data.rebote_tipo === 'crossphase';
+            const num = Number(data.rebote_numero) || 0;
+            const max = Number(data.rebote_numero_max) || 3;
+            const isCircuit = num >= max && max > 0;
+            const cls = 'iss-rebote'
+                + (isCross ? ' is-crossphase' : '')
+                + (isCircuit ? ' is-circuit' : '');
+            const tt = 'Rechazado en ' + escapeHtml(data.rechazado_en_fase||'?')
+                + (data.rechazado_skill_previo?'/'+escapeHtml(data.rechazado_skill_previo):'')
+                + ': ' + escapeHtml((data.motivo_rechazo||'').replace(/"/g,"'").slice(0,300))
+                + (num>0 ? ' · rebote '+num+'/'+max : '');
+            const lbl = data.rechazado_skill_previo
+                ? '↩ desde '+escapeHtml(data.rechazado_skill_previo)
+                : '↩ rechazo';
+            const cnt = num>0 ? ' '+num+'/'+max : '';
+            reboteChip = '<span class="'+cls+'" title="'+tt+'">'+lbl+cnt+'</span>';
+        }
         html += ''
           + '<div class="iss-row" data-issue="'+escapeHtml(id)+'">'
           +   '<div class="'+prioClass+'">'+escapeHtml(prio)+'</div>'

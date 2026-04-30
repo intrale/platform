@@ -208,7 +208,7 @@ function homeStyles() {
 }
 .line-row {
     display: grid;
-    grid-template-columns: 22px 70px 1fr auto auto auto;
+    grid-template-columns: 22px 70px 1fr auto auto auto auto;
     align-items: center;
     gap: 8px;
     padding: 7px 12px;
@@ -243,6 +243,15 @@ function homeStyles() {
     color: var(--in-fg-dim);
     font-variant-numeric: tabular-nums;
 }
+/* #2900 — destino del rebote en "Últimos 10 ejecutados". */
+.line-rebote {
+    font-size: 11px;
+    color: var(--in-bad);
+    font-weight: 600;
+    white-space: nowrap;
+}
+.line-rebote.is-crossphase { color: var(--in-warn); }
+.line-rebote::before { content: "→ "; opacity: 0.7; }
 .line-actions {
     display: flex;
     gap: 4px;
@@ -772,6 +781,18 @@ function renderLineRow(a, isQueue){
         const logBtn = a.hasLog ? '<a class="line-btn" href="/logs/view/'+(a.logFile||'')+'" target="_blank" rel="noopener" title="Ver log">📄</a>' : '';
         actions = logBtn+ghLink;
     }
+    // #2900 — Si el entry rechazado generó un rebote (intra-fase o cross-phase),
+    // mostrar destino con flecha "→ rebotó a <skill>". Estilo distinto para
+    // cross-phase. Sin rebote: span vacío para no romper grid layout.
+    let reboteCell = '';
+    if(!isQueue && a.resultado === 'rechazado' && a.reboteDestino){
+        const dest = a.reboteDestino;
+        const isCross = dest.tipo === 'crossphase';
+        const cls = 'line-rebote' + (isCross ? ' is-crossphase' : '');
+        const tipoSuffix = isCross ? ' (cross-phase)' : '';
+        const tt = 'Rebotó a '+(dest.pipeline||'?')+'/'+(dest.fase||'?')+'/'+(dest.skill||'?')+tipoSuffix;
+        reboteCell = '<span class="'+cls+'" title="'+tt.replace(/"/g,'&quot;')+'">rebotó a '+escapeHomeHtml(dest.skill||'?')+tipoSuffix+'</span>';
+    }
     return \`
         <div class="line-row" data-key="\${a.issue}-\${a.skill}-\${a.fase}"\${titleAttr}>
           <span class="line-icon">\${icon}</span>
@@ -779,9 +800,11 @@ function renderLineRow(a, isQueue){
           <span class="line-issue"><a href="https://github.com/intrale/platform/issues/\${a.issue}" target="_blank" rel="noopener">#\${a.issue}</a>\${titleText}</span>
           <span class="line-fase">\${a.fase}</span>
           <span class="line-time">\${time}</span>
+          \${reboteCell}
           <span class="line-actions">\${actions}</span>
         </div>\`;
 }
+function escapeHomeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
 
 function bindLineActions(container){
     container.querySelectorAll('.line-btn[data-action]').forEach(b => {

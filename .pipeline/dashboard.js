@@ -395,6 +395,9 @@ function getPipelineState() {
         // #2801 — Si el archivo en pendiente/trabajando tiene contexto de
         // rebote (sea por flujo normal o por re-intake), exponerlo a la UI
         // para que el operador sepa por qué este issue volvió a esta fase.
+        // #2900 — exponer también `rebote_numero` (intra-fase) y normalizar
+        // `rechazado_por_skill` (escrito por cross-phase, pulpo.js:2447) al
+        // mismo campo `rechazado_skill_previo` que ya consume la UI.
         if (estado === 'pendiente' || estado === 'trabajando') {
           const yamlData = readYamlSafe(filepath);
           if (yamlData && (yamlData.rebote || yamlData.motivo_rechazo)) {
@@ -402,7 +405,14 @@ function getPipelineState() {
             entry.rebote_tipo = yamlData.rebote_tipo || null;
             entry.motivo_rechazo = yamlData.motivo_rechazo || null;
             entry.rechazado_en_fase = yamlData.rechazado_en_fase || null;
-            entry.rechazado_skill_previo = yamlData.rechazado_skill_previo || null;
+            entry.rechazado_skill_previo = yamlData.rechazado_skill_previo
+              || yamlData.rechazado_por_skill
+              || null;
+            // Para crossphase el contador es `rebote_numero_crossphase`;
+            // para flujo normal es `rebote_numero`. Tomamos el que esté.
+            entry.rebote_numero = yamlData.rebote_numero
+              || yamlData.rebote_numero_crossphase
+              || null;
           }
         }
 
@@ -469,7 +479,10 @@ function getPipelineState() {
     data.bounces = bounces;
     // #2801 — surface info de rebote del archivo activo (pendiente/trabajando)
     // si el agente lo recibió con motivo_rechazo del intake o del barrido.
+    // #2900 — exponer contador `rebote_numero` y cap `MAX_REBOTES` (3) para
+    // que la card pueda mostrar "rebote N/M" + circuit-breaker badge si N==M.
     data.rebote = false;
+    data.rebote_numero_max = 3; // mismo cap que pulpo.js:2613
     for (const entries of Object.values(data.fases)) {
       const reboteEntry = entries.find(e => (e.estado === 'pendiente' || e.estado === 'trabajando') && e.rebote);
       if (reboteEntry) {
@@ -478,6 +491,7 @@ function getPipelineState() {
         data.motivo_rechazo = reboteEntry.motivo_rechazo || null;
         data.rechazado_en_fase = reboteEntry.rechazado_en_fase || null;
         data.rechazado_skill_previo = reboteEntry.rechazado_skill_previo || null;
+        data.rebote_numero = reboteEntry.rebote_numero || null;
         break;
       }
     }

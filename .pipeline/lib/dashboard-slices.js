@@ -42,13 +42,48 @@ function activeAgents(state) {
     return out;
 }
 
+// #2900 — helper para encontrar el destino del rebote dado un entry rechazado.
+// Recorre todas las fases del issue y devuelve el primer pendiente/trabajando
+// con `rebote=true` y `rechazado_en_fase` matchea la fase de origen del rechazo.
+// Diferencia intra-fase (mismo `pipeline/fase`) de cross-phase comparando
+// `rebote_tipo` o el destino real.
+function findReboteDestino(issueData, rejectedFase) {
+    if (!issueData || !issueData.fases) return null;
+    for (const [faseKey, entries] of Object.entries(issueData.fases)) {
+        for (const e of entries) {
+            if (e.estado !== 'pendiente' && e.estado !== 'trabajando') continue;
+            if (!e.rebote) continue;
+            if (e.rechazado_en_fase !== rejectedFase) continue;
+            // Cross-phase: el pulpo escribe `rebote_tipo: crossphase`. Si el
+            // pendiente está en una fase distinta de la rechazada, también lo
+            // tratamos como cross-phase (defensivo si rebote_tipo no está set).
+            const tipo = e.rebote_tipo === 'crossphase' || e.fase !== rejectedFase
+                ? 'crossphase'
+                : 'intra';
+            return {
+                pipeline: e.pipeline,
+                fase: e.fase,
+                skill: e.skill,
+                tipo,
+            };
+        }
+    }
+    return null;
+}
+
 function recentlyFinished(state, limit = 3) {
     const out = [];
-    for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
+    const matrix = state.issueMatrix || {};
+    for (const [issueId, data] of Object.entries(matrix)) {
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
                 if (e.estado !== 'listo' && e.estado !== 'procesado') continue;
                 if (!e.updatedAt) continue;
+                // #2900 — para entries rechazados, intentar encontrar el
+                // destino del rebote para mostrar "→ rebotó a <skill>" en home.
+                const reboteDestino = e.resultado === 'rechazado'
+                    ? findReboteDestino(data, e.fase)
+                    : null;
                 out.push({
                     issue: issueId,
                     title: data.title || '',
@@ -60,6 +95,7 @@ function recentlyFinished(state, limit = 3) {
                     finishedAt: e.updatedAt,
                     hasLog: !!e.hasLog,
                     logFile: e.logFile,
+                    reboteDestino,
                 });
             }
         }
@@ -354,6 +390,10 @@ function pipelineSlice(state, ctx) {
             motivo_rechazo: data.motivo_rechazo || null,
             rechazado_en_fase: data.rechazado_en_fase || null,
             rechazado_skill_previo: data.rechazado_skill_previo || null,
+            // #2900 — contador `rebote_numero` + cap (MAX_REBOTES=3) para que
+            // la card muestre "rebote N/M" y un badge especial cuando N==M.
+            rebote_numero: data.rebote_numero || null,
+            rebote_numero_max: data.rebote_numero_max || 3,
         };
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
@@ -443,4 +483,6 @@ module.exports = {
     opsSlice,
     historialSlice,
     quotaSlice,
+    // Exportado para tests (#2900) — find rebote destino dado un entry rechazado.
+    findReboteDestino,
 };
