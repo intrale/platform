@@ -34,6 +34,15 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
 
+// #2880 — capturar mtime de este archivo al cargarse, para detectar después
+// de syncWithMain() si el `git reset --hard FETCH_HEAD` cambió el código del
+// propio restart.js. Si cambió, re-exec con la versión nueva antes de
+// launchAll() para evitar el race entre código en memoria (viejo) y archivos
+// en disco (nuevos). Sin esto, cualquier merge que toque COMPONENTS rompe
+// el primer restart post-merge (incidente 2026-04-30 con svc-reconciler).
+let SELF_LOAD_MTIME_MS = 0;
+try { SELF_LOAD_MTIME_MS = fs.statSync(__filename).mtimeMs; } catch {}
+
 const COMPONENTS = [
   { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
   { name: 'listener', script: 'listener-telegram.js', pid: 'listener.pid' },
@@ -41,7 +50,6 @@ const COMPONENTS = [
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
   { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
-  { name: 'svc-reconciler', script: 'servicio-reconciler.js', pid: 'svc-reconciler.pid' },
   { name: 'dashboard', script: 'dashboard.js', pid: 'dashboard.pid' },
 ];
 
@@ -63,6 +71,31 @@ function syncWithMain() {
   } catch (e) {
     log(`Warning: no se pudo sincronizar con main: ${e.message.slice(0, 100)}`);
   }
+}
+
+// #2880 — si syncWithMain() trajo una versión nueva de restart.js al disco,
+// nuestro código en memoria está obsoleto (no conoce nuevos componentes ni
+// nuevas constantes). Re-exec con la versión nueva antes de launchAll() para
+// que use el lifecycle correcto. Limitado por --no-reexec para evitar loop
+// infinito si el archivo cambia en cada iteración (caso patológico).
+function reexecIfSelfChanged() {
+  if (process.argv.includes('--no-reexec')) {
+    log('Saltando self-reexec check (--no-reexec)');
+    return;
+  }
+  let currentMtime = 0;
+  try { currentMtime = fs.statSync(__filename).mtimeMs; } catch { return; }
+  if (currentMtime <= SELF_LOAD_MTIME_MS) return;
+
+  log(`restart.js cambió en disco (${Math.round(currentMtime - SELF_LOAD_MTIME_MS)}ms más nuevo) — re-exec con la versión nueva`);
+  // Preservar args originales + agregar --no-reexec --no-sync (kill/sync ya hechos en esta instancia).
+  const newArgs = process.argv.slice(2).concat(['--no-reexec', '--no-sync']);
+  const result = spawnSync(process.execPath, [__filename, ...newArgs], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  process.exit(result.status === null ? 1 : result.status);
 }
 
 // --- KILL: drástico — matar todo lo que sea del pipeline ---
@@ -394,6 +427,9 @@ switch (action) {
     killAll();
     if (!flagNoSync) syncWithMain();
     else log('Saltando sync con origin/main (--no-sync)');
+    // #2880 — si syncWithMain() cambió este propio archivo, re-exec antes de
+    // launchAll() para que la versión nueva sea la que lance los componentes.
+    reexecIfSelfChanged();
     if (flagPaused) {
       fs.writeFileSync(path.join(PIPELINE, '.paused'), new Date().toISOString());
       log('Modo PAUSADO — solo Telegram + dashboard activos (intake/lanzamiento deshabilitados)');
