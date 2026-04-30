@@ -1,4 +1,4 @@
-# Watchdog V2 — Vigila servicios del pipeline
+﻿# Watchdog V2 — Vigila servicios del pipeline
 # Se ejecuta cada 2 minutos via Windows Task Scheduler
 # Todo corre desde platform/ (repo principal, siempre en main)
 #
@@ -96,6 +96,7 @@ try {
 } catch {}
 
 $NodeModules = "$RepoRoot\node_modules"
+$env:NODE_PATH = $NodeModules
 
 foreach ($svcName in $dead) {
     $script = $ScriptMap[$svcName]
@@ -106,22 +107,19 @@ foreach ($svcName in $dead) {
         continue
     }
 
-    # Double-check justo antes de spawnear: el primer scan podría ser stale
-    # de 1-2s y el servicio puede haber arrancado en ese ínterin (por ejemplo,
-    # restart.js que largó los procesos entre que hicimos el scan y ahora).
+    # Double-check justo antes de spawnear: el primer scan podria ser stale
+    # de 1-2s y el servicio puede haber arrancado en ese interin (por ejemplo,
+    # restart.js que largo los procesos entre que hicimos el scan y ahora).
     if (Test-ServiceAlive $script) {
-        Write-Log "  $svcName : ya arrancó entre el scan y el spawn, skip"
+        Write-Log "  $svcName : ya arranco entre el scan y el spawn, skip"
         continue
     }
 
     try {
-        $cmd = "set `"NODE_PATH=$NodeModules`" && node `"$scriptPath`""
-        $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $cmd `
-            -WorkingDirectory $RepoRoot `
-            -WindowStyle Hidden `
-            -PassThru
-        Write-Log "  $svcName : levantado PID $($proc.Id)"
+        $proc = Start-Process -FilePath 'node' -ArgumentList @($scriptPath) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+        Write-Log ("  " + $svcName + " : levantado PID " + $proc.Id)
     } catch {
-        Write-Log "  $svcName : ERROR al levantar - $_"
+        $errMsg = $_.Exception.Message
+        Write-Log ("  " + $svcName + " : ERROR al levantar - " + $errMsg)
     }
 }
