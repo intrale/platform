@@ -41,6 +41,12 @@ try { v3Aggregator = require('./metrics/aggregator'); } catch { /* V3 no disponi
 let recommendationsLib = null;
 try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcional */ }
 
+// ETA helpers (issue #2895): cálculo de elapsed/remaining/absolute + stuck.
+// Best-effort require — si el módulo desaparece, el dashboard sigue funcionando
+// con `etaHTML = ''` para no romper el render por una utility opcional.
+let etaLib = null;
+try { etaLib = require('./lib/eta'); } catch { /* opcional */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -1499,9 +1505,9 @@ function generateHTML(state) {
   const laneCards = { def: [], dev: [], qa: [], done: [] };
   const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
   const laneStats = {
-    def: { running: 0, failed: 0, stale: 0, subCounts: {} },
-    dev: { running: 0, failed: 0, stale: 0, subCounts: {} },
-    qa:  { running: 0, failed: 0, stale: 0, subCounts: {} },
+    def: { running: 0, failed: 0, stale: 0, subCounts: {}, issuesEta: [] },
+    dev: { running: 0, failed: 0, stale: 0, subCounts: {}, issuesEta: [] },
+    qa:  { running: 0, failed: 0, stale: 0, subCounts: {}, issuesEta: [] },
   };
 
   let issueCards = '';
@@ -1517,36 +1523,38 @@ function generateHTML(state) {
     }).length;
     const pct = totalFases > 0 ? Math.round(completedFasesCount / totalFases * 100) : 0;
 
-    // ETA
-    let issueEtaMs = 0;
-    let hasEta = false;
-    for (const pl of ['definicion', 'desarrollo']) {
-      const fasesList = pl === 'definicion' ? defFases : devFases;
-      for (const faseName of fasesList) {
-        const key = `${pl}/${faseName}`;
-        const entries = data.fases[key] || [];
-        const hasPendingOrWorking = entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
-        const isDone = !hasPendingOrWorking && entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
-        if (isDone) continue;
-        const isWorking = entries.some(e => e.estado === 'trabajando');
-        if (isWorking) {
-          const workingEntry = entries.find(e => e.estado === 'trabajando');
-          const avgKey = `${faseName}/${workingEntry.skill}`;
-          const avg = state.etaAverages[avgKey] || state.etaAverages[faseName];
-          if (avg?.avgMs && workingEntry.durationMs) {
-            issueEtaMs += Math.max(0, avg.avgMs - workingEntry.durationMs);
-            hasEta = true;
-          }
-        } else {
-          const avg = state.etaAverages[faseName];
-          if (avg?.avgMs) { issueEtaMs += avg.avgMs; hasEta = true; }
-        }
-      }
-    }
+    // ETA — issue #2895: línea inferior con elapsed + remaining + absolute,
+    // más detección de "estancado" cuando un agente working pasa el threshold
+    // del promedio. Ver `.pipeline/lib/eta.js` para la lógica pura testeada.
+    const stuckThresholdPct = (state.config?.dashboard?.eta_stuck_threshold_pct) || 150;
+    const issueEta = etaLib ? etaLib.computeIssueEta({
+      issueData: data,
+      etaAverages: state.etaAverages,
+      allFases,
+      now: Date.now(),
+      stuckPct: stuckThresholdPct,
+    }) : { elapsedMs: null, remainingMs: null, absoluteMs: null, isStuck: false, hasEta: false };
+    // Guardamos el ETA del issue para el agregado por lane más abajo.
+    data._eta = issueEta;
+
     let etaHTML = '';
-    if (hasEta && issueEtaMs > 0) {
-      etaHTML = `<span class="ic-eta" title="ETA estimado">⏱ ~${fmtDuration(issueEtaMs)}</span>`;
+    if (issueEta.hasEta && issueEta.remainingMs > 0) {
+      // Caso normal: en curso, mostrar 3 badges (elapsed · remaining · absolute).
+      const parts = [];
+      if (issueEta.elapsedMs != null) {
+        parts.push(`<span class="ic-elapsed" title="Tiempo transcurrido del issue">⏱ ${fmtDuration(issueEta.elapsedMs)}</span>`);
+      }
+      parts.push(`<span class="ic-eta-rem" title="ETA restante">⏰ ~${fmtDuration(issueEta.remainingMs)}</span>`);
+      const absLabel = etaLib.fmtAbsoluteHHMM(issueEta.absoluteMs);
+      if (issueEta.isStuck) {
+        const overTxt = issueEta.stuckSkill ? `${issueEta.stuckSkill} lleva +${fmtDuration(issueEta.stuckOverMs)} sobre el promedio` : 'agente sobre el promedio';
+        parts.push(`<span class="ic-eta-abs ic-eta-stuck" title="${overTxt}">⚠ ${absLabel}</span>`);
+      } else {
+        parts.push(`<span class="ic-eta-abs" title="Hora estimada de finalización">🏁 ${absLabel}</span>`);
+      }
+      etaHTML = parts.join('');
     } else if (pct === 100) {
+      // Issue completo: tiempo total real (mantenido del comportamiento anterior).
       let minTs = Infinity, maxTs = 0;
       for (const entries of Object.values(data.fases)) {
         for (const e of entries) {
@@ -1555,8 +1563,11 @@ function generateHTML(state) {
         }
       }
       if (maxTs > minTs && minTs < Infinity) {
-        etaHTML = `<span class="ic-eta ic-done-time" title="Tiempo total">✓ ${fmtDuration(maxTs - minTs)}</span>`;
+        etaHTML = `<span class="ic-eta ic-done-time" title="Tiempo total">✓ Total: ${fmtDuration(maxTs - minTs)}</span>`;
       }
+    } else if (issueEta.elapsedMs != null && issueEta.elapsedMs > 0) {
+      // En curso pero sin histórico: al menos mostrar elapsed.
+      etaHTML = `<span class="ic-elapsed" title="Tiempo transcurrido del issue">⏱ ${fmtDuration(issueEta.elapsedMs)}</span>`;
     }
 
     // Block icons
@@ -1634,16 +1645,24 @@ function generateHTML(state) {
       // Data para popup solo si la fase tiene entries
       let popupAttr = '';
       if (entries.length > 0) {
-        const popupSkills = entries.map(e => ({
-          skill: e.skill,
-          estado: e.estado,
-          resultado: e.resultado || null,
-          dur: e.durationMs ? fmtDuration(e.durationMs) : null,
-          log: e.hasLog ? '/logs/view/' + e.logFile + (e.estado === 'trabajando' ? '?live=1' : '') : null,
-          pdf: e.hasRejectionPdf ? '/logs/' + e.rejectionPdf : null,
-          motivo: e.motivo ? e.motivo.slice(0, 160) : null,
-          retry: e._isRetry ? e._runTotal : null,
-        }));
+        const popupSkills = entries.map(e => {
+          // #2895 — para skills pendientes/en curso, exponer el promedio
+          // histórico para que el popup muestre `~15m promedio`. Reusamos el
+          // mismo lookup que computeIssueEta para consistencia.
+          const avgMs = etaLib ? etaLib.lookupAvgMs(state.etaAverages, fase, e.skill) : null;
+          const showAvg = (e.estado === 'pendiente') || (e.estado === 'trabajando');
+          return {
+            skill: e.skill,
+            estado: e.estado,
+            resultado: e.resultado || null,
+            dur: e.durationMs ? fmtDuration(e.durationMs) : null,
+            avgDur: (showAvg && avgMs) ? fmtDuration(avgMs) : null,
+            log: e.hasLog ? '/logs/view/' + e.logFile + (e.estado === 'trabajando' ? '?live=1' : '') : null,
+            pdf: e.hasRejectionPdf ? '/logs/' + e.rejectionPdf : null,
+            motivo: e.motivo ? e.motivo.slice(0, 160) : null,
+            retry: e._isRetry ? e._runTotal : null,
+          };
+        });
         const popupJson = JSON.stringify({ fase, pipeline, issue: issueNum, skills: popupSkills });
         popupAttr = ` data-popup="${popupJson.replace(/"/g, '&quot;').replace(/'/g, '&#39;')}"`;
       }
@@ -1771,6 +1790,10 @@ function generateHTML(state) {
       if (hasRejection) laneStats[lane].failed++;
       if (isStale) laneStats[lane].stale++;
       if (currentFase) laneStats[lane].subCounts[currentFase] = (laneStats[lane].subCounts[currentFase] || 0) + 1;
+      // #2895 — guardamos el ETA del issue para el "ETA vacío" del lane.
+      if (data._eta && data._eta.absoluteMs) {
+        laneStats[lane].issuesEta.push({ absoluteMs: data._eta.absoluteMs });
+      }
     }
     const laneElapsedCls = isStale ? 'lc-warn' : working ? 'lc-teal' : '';
     const laneElapsedTxt = complete ? 'completado'
@@ -1917,12 +1940,26 @@ function generateHTML(state) {
     if (stats.running > 0) metaBadges.push(`<span class="it-badge run">${stats.running} activo${stats.running > 1 ? 's' : ''}</span>`);
     if (stats.failed > 0) metaBadges.push(`<span class="it-badge fail">${stats.failed} failed</span>`);
     if (stats.stale > 0) metaBadges.push(`<span class="it-badge warn">${stats.stale} stale</span>`);
+    // #2895 — "ETA vacío" del lane: max(absoluteMs) de los issues activos.
+    // Es max y no Σ porque los issues corren en paralelo: el lane se vacía
+    // cuando termina el último, no la suma de todos.
+    let laneEtaHTML = '';
+    if (etaLib && stats.issuesEta && stats.issuesEta.length > 0) {
+      const laneEmpty = etaLib.computeLaneEmptyEta(stats.issuesEta);
+      if (laneEmpty) {
+        const remainingMs = Math.max(0, laneEmpty - Date.now());
+        const isLong = remainingMs > 4 * 60 * 60 * 1000; // >4h sugiere modo descanso (#2890)
+        const cls = isLong ? 'it-lane-eta it-lane-eta-long' : 'it-lane-eta';
+        laneEtaHTML = `<span class="${cls}" title="ETA hasta vaciar el lane (max de los issues activos)">🏁 ${etaLib.fmtAbsoluteHHMM(laneEmpty)} · ~${fmtDuration(remainingMs)}</span>`;
+      }
+    }
     return `<div class="it-lane it-lane-${k}" data-lane="${k}" style="--lane-color:${m.color}">
       <div class="it-lane-head">
         <span class="it-lane-name"><span class="it-lane-dot"></span>${m.label} <span class="it-lane-sub">${m.sub}</span></span>
         <div class="it-lane-meta">
           <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
           ${metaBadges.join('')}
+          ${laneEtaHTML}
         </div>
       </div>
       ${subBreakdown}
@@ -3196,6 +3233,26 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ic-pct-done{color:var(--gn)}
 .ic-eta{font-size:0.78em;color:var(--dim);font-weight:500}
 .ic-done-time{color:var(--gn)}
+/* #2895 — badges de tiempo en la card (elapsed · remaining · absolute).
+   Heredan tamaño/color de .ic-eta para consistencia visual; tabular-nums
+   para que los minutos se alineen entre cards. Separador "·" via gap del
+   contenedor padre .ic-meta. */
+.ic-elapsed,
+.ic-eta-rem,
+.ic-eta-abs{
+  font-size:0.78em;color:var(--dim);font-weight:500;
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.ic-eta-stuck{color:var(--wn,#d29922);font-weight:600}
+/* ETA aggregate del lane: badge sutil al header de la columna. Si supera
+   4h cambia a tono warning para sugerir modo descanso (#2890). */
+.it-lane-eta{
+  font-size:0.78em;color:var(--dim);font-weight:500;
+  font-variant-numeric:tabular-nums;
+  padding:1px 6px;border-radius:6px;
+  background:rgba(139,148,158,0.08);
+}
+.it-lane-eta-long{color:var(--wn,#d29922);background:rgba(210,153,34,0.1)}
 .ic-expand-btn{
   font-size:0.85em;color:var(--dim);transition:transform 0.2s;flex-shrink:0;
   width:20px;text-align:center;
@@ -5075,11 +5132,21 @@ function showDotPopup(event, dotEl) {
       var icon, cls;
       if (s.resultado === 'aprobado') { icon = '✓'; cls = 'ok'; }
       else if (s.resultado) { icon = '✗'; cls = 'fail'; }
-      else if (s.estado === 'trabajando') { icon = '▶'; cls = 'run'; }
+      else if (s.estado === 'trabajando') { icon = '⚙'; cls = 'run'; }
       else if (s.estado === 'listo' || s.estado === 'procesado') { icon = '✓'; cls = 'ok'; }
       else { icon = '○'; cls = 'pending'; }
       var retry = s.retry ? '<span class="dp-retry">×'+s.retry+'</span>' : '';
-      var dur = s.dur ? '<span class="dp-dur">'+s.dur+'</span>' : '';
+      // #2895 — duraciones contextuales:
+      //   - skill ejecutado:   "12m"           (s.dur, sin avg)
+      //   - skill en curso:    "8m / ~25m"     (s.dur + avg)
+      //   - skill pendiente:   "~15m"          (avg solo)
+      //   - skill sin datos:   "?"             (ningún dato)
+      var durTxt = '';
+      if (s.dur && s.avgDur) durTxt = s.dur + ' / ~' + s.avgDur;
+      else if (s.dur)        durTxt = s.dur;
+      else if (s.avgDur)     durTxt = '~' + s.avgDur;
+      else if (s.estado === 'pendiente') durTxt = '?';
+      var dur = durTxt ? '<span class="dp-dur">'+durTxt+'</span>' : '';
       var log = s.log ? '<a href="'+s.log+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
       var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
       var motivo = s.motivo ? '<div class="dp-motivo">' + s.motivo + '</div>' : '';

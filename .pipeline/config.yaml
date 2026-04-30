@@ -236,3 +236,11 @@ precheck:
 staleness:
   build_log_max_age_hours: 24     # Default — logs de build más viejos se consideran stale
   max_resets_per_issue: 5         # Tope duro: más de 5 resets por stale-log → escalar, no resetear
+
+# Dashboard — opciones del dashboard del pipeline
+dashboard:
+  # #2895 — Threshold (% del promedio histórico) a partir del cual un agente
+  # working se considera "estancado" y la card resalta el ETA con badge ⚠.
+  # Default 150 evita falsos positivos por varianza natural; subir a 200 si
+  # los promedios todavía son ruidosos por pocas muestras.
+  eta_stuck_threshold_pct: 150
