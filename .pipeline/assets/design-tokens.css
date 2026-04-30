@@ -79,6 +79,27 @@
   --teal-bg:            rgba(45, 212, 191, 0.14);
 
   /* ---------------------------------------------------------------------------
+   * 3.b SEMANTICOS DE OPERACION (estados del pipeline / ventanas)
+   * Reservados para superficies que comunican el estado operativo del
+   * sistema, no del trabajo del agente. Ej: modo descanso, alerta de
+   * consumo anomalo. Coherentes con la paleta existente, distintivos.
+   * #2882 — ventana modo descanso + alerta consumo anomalo.
+   * -------------------------------------------------------------------------- */
+  --rest-mode:          #7C5CFF;   /* indigo nocturno — modo descanso activo */
+  --rest-mode-dim:      #4B36B8;   /* borde/hover del indigo */
+  --rest-mode-bg:       rgba(124, 92, 255, 0.16);
+  --rest-mode-fg:       #C5B7FF;   /* texto sobre rest-mode-bg, contraste 7.4:1 */
+
+  --alert-anomaly:      #FF6B8A;   /* rosa-rojo distinguible del danger puro */
+  --alert-anomaly-dim:  #B8254A;
+  --alert-anomaly-bg:   rgba(255, 107, 138, 0.16);
+  --alert-anomaly-fg:   #FFD2DC;   /* texto sobre alert-anomaly-bg */
+  --alert-anomaly-glow: 0 0 12px rgba(255, 107, 138, 0.50);
+
+  --deterministic:      var(--text-secondary);  /* skill no-LLM (ejecuta sin tokens) */
+  --deterministic-bg:   rgba(177, 186, 196, 0.10);
+
+  /* ---------------------------------------------------------------------------
    * 4. ACENTOS POR LANE (board del dashboard)
    * Cada lane tiene un color distintivo para reforzar la identidad del flujo.
    * -------------------------------------------------------------------------- */
