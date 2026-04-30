@@ -29,7 +29,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFile, execSync } = require('child_process');
 const trace = require('../lib/traceability');
 const gradleParser = require('./lib/gradle-parser');
 const kover = require('./lib/kover-parser');
@@ -45,12 +45,252 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 // Umbral de cobertura por defecto (línea) — igual al skill LLM.
 const DEFAULT_COVERAGE_THRESHOLD = 80;
 
+// Anti-stale de XML reports (rebote #2892):
+// Cuando gradle aborta antes de ejecutar tests (ej. cmd.exe no entiende
+// `./gradlew` y devuelve `"." no se reconoce`), el exit_code es ≠0 y el
+// wall_ms es muy bajo. En ese caso, los reportes XML que existen en
+// `build/test-results/` pertenecen a runs PREVIOS y no reflejan el estado
+// actual del worktree. Estos dos thresholds permiten:
+//   1) Filtrar XMLs por mtime — solo tomar los escritos durante este run.
+//   2) Detectar gradle "no ejecutó nada" y emitir motivo claro en vez de
+//      reportar fallas de runs ajenos como propias.
+const STALE_XML_GRACE_MS = 1000;        // tolerancia de skew para mtime
+const GRADLE_INSTANT_FAIL_MS = 2000;    // <2s con exit≠0 = gradle no arrancó
+
 // Módulos Gradle que soportamos individualmente
 const MODULE_DIRS = {
     backend: 'backend',
     users: 'users',
     app: path.join('app', 'composeApp'),
 };
+
+// ── Detección de cambios pipeline-only (issue #2891) ────────────────
+// Para issues que solo tocan `.pipeline/`, `docs/`, `agents/` o `.github/`
+// no tiene sentido correr Gradle: no hay código Kotlin que testear y no
+// quedan reportes JUnit del build phase. En su lugar corremos `node --test`
+// sobre los tests del propio pipeline (Node 24+ soporta --test-reporter=junit).
+//
+// El protocolo del rol pipeline-dev (`.pipeline/roles/pipeline-dev.md`)
+// ya documenta este caso como `qa:skipped` con tests unitarios Node — acá
+// lo automatizamos en el tester determinístico.
+
+const PIPELINE_ONLY_PATTERNS = [
+    /^\.pipeline\//,    // pipeline V3 (Node.js)
+    /^docs\//,          // documentación pura
+    /^agents\//,        // reglas para agentes
+    /^\.github\//,      // GitHub Actions / templates
+];
+
+/**
+ * Descubre el worktree del agente para un issue dado vía `git worktree list`.
+ * Devuelve el path absoluto al worktree o `null` si no existe (rebote #2892
+ * + issue #2893): la fase `verificacion` corre en ROOT (main worktree) que
+ * está en main, así que el diff vs `origin/main` desde ahí siempre es vacío
+ * y la detección pipeline-only fallaría. Necesitamos hacer el diff desde el
+ * worktree del agente que SÍ tiene los commits del issue.
+ *
+ * Naming convention: los worktrees de agentes se llaman `platform.agent-<issue>-<skill>`
+ * (ver pulpo.js → spawnCwd = worktreePath).
+ */
+function findIssueWorktree(repoRoot, issue) {
+    if (!issue) return null;
+    let raw;
+    try {
+        raw = execSync('git worktree list --porcelain', {
+            cwd: repoRoot, encoding: 'utf8', timeout: 10000, windowsHide: true,
+        });
+    } catch {
+        return null;
+    }
+    const needle = `platform.agent-${issue}-`;
+    for (const line of raw.split('\n')) {
+        if (!line.startsWith('worktree ')) continue;
+        const wt = line.replace('worktree ', '').trim();
+        // El worktree path contiene el slug `platform.agent-<issue>-<skill>`.
+        if (wt && wt.includes(needle)) return wt;
+    }
+    return null;
+}
+
+/**
+ * Devuelve la lista de archivos cambiados respecto a `origin/main` o `null`
+ * si git no está disponible o el diff falla. Probamos varias bases en orden
+ * para cubrir worktrees recién clonados que no tengan `origin/main` local.
+ */
+function getChangedFilesVsMain(repoRoot) {
+    return new Promise((resolve) => {
+        const bases = ['origin/main', 'main', 'origin/HEAD'];
+        const tryNext = (idx) => {
+            if (idx >= bases.length) return resolve(null);
+            execFile('git', ['diff', '--name-only', `${bases[idx]}...HEAD`], {
+                cwd: repoRoot, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+            }, (err, stdout) => {
+                if (err) return tryNext(idx + 1);
+                const files = String(stdout).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+                resolve(files);
+            });
+        };
+        tryNext(0);
+    });
+}
+
+function isPipelineOnlyChange(files) {
+    if (!Array.isArray(files) || files.length === 0) return false;
+    return files.every((f) => PIPELINE_ONLY_PATTERNS.some((re) => re.test(f)));
+}
+
+/**
+ * Encuentra recursivamente los archivos *.test.js dentro de `.pipeline/`,
+ * excluyendo `node_modules` y directorios ocultos.
+ */
+function findNodeTestFiles(repoRoot) {
+    const out = [];
+    const root = path.join(repoRoot, '.pipeline');
+    if (!fs.existsSync(root)) return out;
+    const stack = [root];
+    while (stack.length > 0) {
+        const cur = stack.pop();
+        let entries;
+        try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+        for (const ent of entries) {
+            const full = path.join(cur, ent.name);
+            if (ent.isDirectory()) {
+                if (ent.name === 'node_modules' || ent.name.startsWith('.')) continue;
+                // Excluir backlogs/estado del pipeline (no contienen tests)
+                if (ent.name === 'desarrollo' || ent.name === 'definicion' || ent.name === 'logs') continue;
+                stack.push(full);
+            } else if (ent.isFile() && /\.test\.js$/i.test(ent.name)) {
+                out.push(full);
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * Parsea el reporte JUnit XML que escribe `node --test --test-reporter=junit`.
+ * El formato difiere del JUnit/Surefire de Gradle: usa `<testsuites>` (plural)
+ * sin el wrapper `<testsuite>` con totales. Los counters viajan en comentarios
+ * al final del documento.
+ */
+function parseNodeTestJunit(xml) {
+    const out = {
+        valid: false,
+        tests: 0,
+        failures: 0,
+        errors: 0,
+        skipped: 0,
+        time_seconds: 0,
+        suites: 1,
+        failed_tests: [],
+    };
+    if (!xml || typeof xml !== 'string') return out;
+
+    const tm = xml.match(/<!--\s*tests\s+(\d+)\s*-->/);
+    const fm = xml.match(/<!--\s*fail\s+(\d+)\s*-->/);
+    const sm = xml.match(/<!--\s*skipped\s+(\d+)\s*-->/);
+    const dm = xml.match(/<!--\s*duration_ms\s+([\d.]+)\s*-->/);
+
+    if (tm) out.tests = parseInt(tm[1], 10);
+    if (fm) out.failures = parseInt(fm[1], 10);
+    if (sm) out.skipped = parseInt(sm[1], 10);
+    if (dm) out.time_seconds = parseFloat(dm[1]) / 1000;
+    out.valid = !!tm;
+
+    // Recolectar testcases con <failure>/<error> para detalle del rebote
+    const tcRe = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
+    let m;
+    while ((m = tcRe.exec(xml)) !== null) {
+        const attrs = m[1] || '';
+        const body = m[2] || '';
+        const failMatch = body.match(/<failure\b([^>]*?)(?:\/>|>([\s\S]*?)<\/failure>)/);
+        const errMatch = body.match(/<error\b([^>]*?)(?:\/>|>([\s\S]*?)<\/error>)/);
+        if (!failMatch && !errMatch) continue;
+        const nameMatch = attrs.match(/\bname="([^"]*)"/);
+        const cnameMatch = attrs.match(/\bclassname="([^"]*)"/);
+        const fileMatch = attrs.match(/\bfile="([^"]*)"/);
+        const failAttrs = (failMatch || errMatch)[1] || '';
+        const msgMatch = failAttrs.match(/\bmessage="([^"]*)"/);
+        out.failed_tests.push({
+            classname: (cnameMatch && cnameMatch[1]) || (fileMatch && path.basename(fileMatch[1])) || 'node-test',
+            name: (nameMatch && nameMatch[1]) || '(sin nombre)',
+            time: 0,
+            type: errMatch ? 'error' : 'failure',
+            message: (msgMatch && msgMatch[1]) ? msgMatch[1].slice(0, 500) : '',
+            stack_snippet: ((failMatch || errMatch)[2] || '').trim().split(/\r?\n/).slice(0, 3).join(' | ').slice(0, 500),
+        });
+    }
+
+    return out;
+}
+
+/**
+ * Corre `node --test --test-reporter=junit` sobre los tests del pipeline.
+ * Devuelve resultado con shape compatible con `aggregateTestResults`.
+ */
+function runNodeTests(repoRoot, env) {
+    return new Promise((resolve) => {
+        const started = Date.now();
+        const files = findNodeTestFiles(repoRoot);
+        if (files.length === 0) {
+            return resolve({
+                exit_code: 0, no_tests: true,
+                stdout: '', stderr: '',
+                wall_ms: Date.now() - started,
+                report_file: null, files: [],
+                summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
+                           time_seconds: 0, suites: 0, failed_tests: [] },
+            });
+        }
+        const reportFile = path.join(repoRoot, '.pipeline', 'logs', 'node-tests-junit.xml');
+        try { fs.mkdirSync(path.dirname(reportFile), { recursive: true }); } catch {}
+        // Borrar reporte previo para evitar parsear cache de runs anteriores
+        try { fs.unlinkSync(reportFile); } catch {}
+
+        const args = [
+            '--test',
+            '--test-reporter=junit',
+            `--test-reporter-destination=${reportFile}`,
+            ...files,
+        ];
+        // Strip NODE_TEST_CONTEXT del env del child: si tester.js corre dentro
+        // de `node --test` (caso típico en self-tests), Node propaga esa env
+        // al child y el sub-runner rechaza ejecutar files con un warning
+        // "node:test run() is being called recursively". Limpiarlo deja al
+        // child correr como un top-level run.
+        const childEnv = { ...env };
+        delete childEnv.NODE_TEST_CONTEXT;
+        let stdout = '';
+        let stderr = '';
+        const child = spawn(process.execPath, args, {
+            cwd: repoRoot, env: childEnv, shell: false, windowsHide: true,
+        });
+        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
+        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.on('error', (e) => {
+            stderr += `\n[spawn-error] ${e.message}\n`;
+            resolve({
+                exit_code: 2, stdout, stderr,
+                wall_ms: Date.now() - started,
+                report_file: reportFile, files,
+                summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
+                           time_seconds: 0, suites: 0, failed_tests: [] },
+            });
+        });
+        child.on('exit', (code) => {
+            let xml = '';
+            try { xml = fs.readFileSync(reportFile, 'utf8'); } catch {}
+            const summary = parseNodeTestJunit(xml);
+            resolve({
+                exit_code: code == null ? 1 : code,
+                stdout, stderr,
+                wall_ms: Date.now() - started,
+                report_file: reportFile, files,
+                summary,
+            });
+        });
+    });
+}
 
 // ── Parseo de argumentos ────────────────────────────────────────────
 function parseArgs(argv) {
@@ -130,8 +370,18 @@ function buildGradleCommand(module, coverage) {
     }
     args.push('--no-daemon');
 
+    // Anti-stale + Windows fix (rebote #2892): el spawn corre con
+    // `shell: true` en win32, lo que pasa el comando por cmd.exe. cmd.exe NO
+    // entiende `./gradlew` (devuelve `"." no se reconoce`). Resultado: gradle
+    // nunca arranca, el wall_ms es <100ms, y el tester levantaba XMLs viejos
+    // de runs previos como si fueran del run actual. Solución: en Windows,
+    // ejecutar el wrapper `.bat` con path absoluto desde REPO_ROOT.
+    const cmd = process.platform === 'win32'
+        ? path.join(REPO_ROOT, 'gradlew.bat')
+        : './gradlew';
+
     return {
-        cmd: './gradlew',
+        cmd,
         args,
         label: `${module}${coverage ? '+cov' : ''}`,
         modules,
@@ -158,11 +408,15 @@ function runGradle({ cmd, args, cwd, env }) {
 }
 
 // ── Agregación de resultados de tests + kover ────────────────────────
-function collectTestReports(modules) {
+// `minMtimeMs` (opcional): solo considerar XMLs escritos en/después de ese
+// timestamp. Evita reportar fallas de runs anteriores como del run actual
+// cuando gradle abortó sin escribir nuevos resultados (rebote #2892).
+function collectTestReports(modules, options = {}) {
+    const { minMtimeMs } = options;
     const all = [];
     for (const m of modules) {
         const dir = path.join(REPO_ROOT, MODULE_DIRS[m] || m);
-        const files = kover.findTestResultFiles(dir);
+        const files = kover.findTestResultFiles(dir, { minMtimeMs });
         for (const f of files) {
             try {
                 const xml = fs.readFileSync(f, 'utf8');
@@ -173,12 +427,13 @@ function collectTestReports(modules) {
     return kover.aggregateTestResults(all);
 }
 
-function collectKoverReports(modules) {
+function collectKoverReports(modules, options = {}) {
+    const { minMtimeMs } = options;
     const parsed = [];
     const files = [];
     for (const m of modules) {
         const dir = path.join(REPO_ROOT, MODULE_DIRS[m] || m);
-        const found = kover.findKoverXmlFiles(dir);
+        const found = kover.findKoverXmlFiles(dir, { minMtimeMs });
         for (const f of found) {
             files.push({ module: m, file: f });
             try {
@@ -291,8 +546,35 @@ async function main() {
     const env = { ...process.env, JAVA_HOME: JAVA_HOME_DEFAULT };
     env.PATH = `${JAVA_HOME_DEFAULT}/bin${path.delimiter}${env.PATH || ''}`;
 
+    // ── Detección de cambios pipeline-only (issue #2891) ─────────────
+    // Si todo el diff vs origin/main toca solo `.pipeline/`, `docs/`,
+    // `agents/`, `.github/`, no tiene sentido correr Gradle: corremos
+    // los tests del propio pipeline con `node --test`.
+    //
+    // En `verificacion` el tester corre en REPO_ROOT (main worktree, en main),
+    // así que el diff desde ahí siempre sería vacío. Detectamos el worktree
+    // del agente vía `git worktree list` y hacemos el diff desde ahí
+    // (rebote #2892, técnica adoptada de #2893).
+    const issueWorktree = findIssueWorktree(REPO_ROOT, issue);
+    const diffCwd = issueWorktree || REPO_ROOT;
+    if (issueWorktree) {
+        logAppend(`[tester] worktree del agente detectado: ${issueWorktree}`);
+    }
+    const changedFiles = await getChangedFilesVsMain(diffCwd);
+    const pipelineOnly = isPipelineOnlyChange(changedFiles);
+    if (changedFiles) {
+        logAppend(`[tester] git diff vs main: ${changedFiles.length} archivos · pipeline_only=${pipelineOnly}`);
+        if (pipelineOnly) {
+            logAppend(`[tester] archivos: ${changedFiles.slice(0, 10).join(', ')}${changedFiles.length > 10 ? ' …' : ''}`);
+        }
+    } else {
+        logAppend('[tester] no se pudo determinar diff vs main; usando ruta gradle por defecto');
+    }
+
     const cmd = buildGradleCommand(args.module, args.coverage);
-    logAppend(`[tester] cmd="${cmd.cmd} ${cmd.args.join(' ')}" modules=${cmd.modules.join(',')}`);
+    if (!pipelineOnly) {
+        logAppend(`[tester] cmd="${cmd.cmd} ${cmd.args.join(' ')}" modules=${cmd.modules.join(',')}`);
+    }
 
     const hb = startHeartbeat(issue);
     const handle = trace.emitSessionStart({
@@ -307,49 +589,117 @@ async function main() {
     let artifacts = [];
     let exitCode = 0;
     let motivo = null;
+    let testRunner = pipelineOnly ? 'node-test' : 'gradle';
+
+    // Captura del timestamp ANTES de spawn — los XMLs escritos antes de este
+    // momento son de runs previos y no se deben mezclar con los del run actual
+    // (rebote #2892).
+    const gradleStartedAt = Date.now();
+    const minMtimeMs = gradleStartedAt - STALE_XML_GRACE_MS;
 
     try {
-        gradleResult = await runGradle({ cmd: cmd.cmd, args: cmd.args, cwd: REPO_ROOT, env });
-        logAppend(`[tester] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
-        logAppend('[tester] --- stdout (último 2000 chars) ---');
-        logAppend(gradleResult.stdout.slice(-2000));
-        logAppend('[tester] --- stderr (último 1000 chars) ---');
-        logAppend(gradleResult.stderr.slice(-1000));
+        if (pipelineOnly) {
+            // ── Ruta pipeline-only: node --test ───────────────────────
+            // Si el tester corre desde main worktree (verificacion), los
+            // *.test.js de main no tienen los cambios del issue. Correr desde
+            // el worktree del agente cuando esté disponible.
+            const nodeTestRoot = issueWorktree || REPO_ROOT;
+            const nodeRes = await runNodeTests(nodeTestRoot, env);
+            gradleResult = {
+                exit_code: nodeRes.exit_code, wall_ms: nodeRes.wall_ms,
+                stdout: nodeRes.stdout, stderr: nodeRes.stderr,
+            };
+            parsedGradle = { errors: [], warnings: [] };
+            tests = nodeRes.summary;
 
-        parsedGradle = gradleParser.parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
+            logAppend(`[tester] node --test exit_code=${nodeRes.exit_code} wall_ms=${nodeRes.wall_ms} files=${nodeRes.files.length}`);
+            logAppend(`[tester] node --test summary: tests=${tests.tests} failures=${tests.failures} skipped=${tests.skipped}`);
+            if (nodeRes.report_file) logAppend(`[tester] node --test report: ${nodeRes.report_file}`);
+            logAppend('[tester] --- stdout (último 2000 chars) ---');
+            logAppend((nodeRes.stdout || '').slice(-2000));
+            if (nodeRes.stderr) {
+                logAppend('[tester] --- stderr (último 1000 chars) ---');
+                logAppend(nodeRes.stderr.slice(-1000));
+            }
 
-        // Recolectar reportes XML sin depender del exit code de gradle
-        tests = collectTestReports(cmd.modules);
-        if (args.coverage) {
-            koverData = collectKoverReports(cmd.modules);
-            artifacts = copyArtifacts(koverData.files);
-        }
+            // Decisión de veredicto para pipeline-only:
+            // 1) tests fallidos → rechazado
+            // 2) sin tests encontrados → APROBADO con qa:skipped (cambio sin lógica testeable)
+            // 3) reporte no parseable pero exit 0 → APROBADO con warning
+            // 4) reporte no parseable y exit ≠ 0 → rechazado
+            if (tests.valid && (tests.failures > 0 || tests.errors > 0)) {
+                exitCode = 1;
+                motivo = `Tests Node fallidos: ${tests.failures} failures + ${tests.errors} errors sobre ${tests.tests} totales`;
+            } else if (nodeRes.no_tests) {
+                logAppend('[tester] pipeline-only sin tests Node detectados — aprobando con qa:skipped equivalente');
+                // tests.valid queda en false; el report lo muestra como "skipped"
+            } else if (!tests.valid && nodeRes.exit_code !== 0) {
+                exitCode = 1;
+                motivo = `node --test exit code ${nodeRes.exit_code} sin reporte JUnit parseable`;
+            } else if (!tests.valid) {
+                logAppend('[tester] WARNING: node --test exit 0 pero reporte no parseable; aprobando por exit code');
+            }
+            // else: tests OK, exit 0 → aprobado
+        } else {
+            // ── Ruta original: gradle ────────────────────────────────
+            gradleResult = await runGradle({ cmd: cmd.cmd, args: cmd.args, cwd: REPO_ROOT, env });
+            logAppend(`[tester] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
+            logAppend('[tester] --- stdout (último 2000 chars) ---');
+            logAppend(gradleResult.stdout.slice(-2000));
+            logAppend('[tester] --- stderr (último 1000 chars) ---');
+            logAppend(gradleResult.stderr.slice(-1000));
 
-        // Decisión de veredicto:
-        // 1) tests fallidos o errores → rechazado
-        // 2) cobertura < umbral (si se pidió coverage) → rechazado
-        // 3) gradle exit code ≠ 0 CON bloque de error clasificable → rechazado
-        // 4) gradle exit code ≠ 0 SIN bloque clasificable pero tests OK → APROBADO (los tests son fuente de verdad)
-        // 5) no hay reportes JUnit válidos → rechazado (config rota)
-        if (tests.valid && (tests.failures > 0 || tests.errors > 0)) {
-            exitCode = 1;
-            motivo = `Tests fallidos: ${tests.failures} failures + ${tests.errors} errors sobre ${tests.tests} totales`;
-        } else if (args.coverage && koverData.aggregate.valid && koverData.aggregate.total.line.percent < args.threshold) {
-            exitCode = 1;
-            motivo = `Cobertura de líneas ${koverData.aggregate.total.line.percent}% por debajo del umbral ${args.threshold}%`;
-        } else if (gradleResult.exit_code !== 0 && parsedGradle.errors[0]) {
-            // Solo rechazar cuando hay un bloque de error real — el exit code por sí solo
-            // puede venir de warnings o tasks que fallan post-tests sin afectar los resultados.
-            exitCode = 1;
-            const first = parsedGradle.errors[0];
-            motivo = `Gradle FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`;
-        } else if (!tests.valid) {
-            exitCode = 1;
-            motivo = 'No se encontraron reportes JUnit — posible configuración rota o tests omitidos';
-        } else if (gradleResult.exit_code !== 0) {
-            // Tests válidos, sin errores de test, sin bloque de error clasificable de gradle, pero exit != 0.
-            // Aprobar con warning — los tests son la fuente de verdad. Evita rebotes espurios.
-            logAppend(`[tester] WARNING: gradle exit ${gradleResult.exit_code} sin bloque clasificable, pero ${tests.tests} tests pasaron (${tests.failures} fails, ${tests.errors} errors). Aprobando — tests son fuente de verdad.`);
+            parsedGradle = gradleParser.parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
+
+            // Recolectar reportes XML, filtrando por mtime para evitar leer
+            // XMLs stale de runs previos (rebote #2892).
+            tests = collectTestReports(cmd.modules, { minMtimeMs });
+            if (args.coverage) {
+                koverData = collectKoverReports(cmd.modules, { minMtimeMs });
+                artifacts = copyArtifacts(koverData.files);
+            }
+
+            // Detección temprana: gradle abortó sin ejecutar tests.
+            // Síntoma: exit_code ≠ 0 + wall_ms muy bajo (típicamente <2s) +
+            // ningún XML fresco. Esto pasa cuando el shell no entiende
+            // `./gradlew` (ej. cmd.exe en Windows: `"." no se reconoce`).
+            // Sin este chequeo, el tester podría reportar fallas de runs
+            // anteriores como si fueran del run actual (rebote #2892).
+            const gradleAbortedEarly = gradleResult.exit_code !== 0
+                && gradleResult.wall_ms < GRADLE_INSTANT_FAIL_MS
+                && !tests.valid;
+
+            // Decisión de veredicto:
+            // 0) gradle abortó sin ejecutar tests → rechazado con motivo claro (rebote #2892)
+            // 1) tests fallidos o errores → rechazado
+            // 2) cobertura < umbral (si se pidió coverage) → rechazado
+            // 3) gradle exit code ≠ 0 CON bloque de error clasificable → rechazado
+            // 4) gradle exit code ≠ 0 SIN bloque clasificable pero tests OK → APROBADO (los tests son fuente de verdad)
+            // 5) no hay reportes JUnit válidos → rechazado (config rota)
+            if (gradleAbortedEarly) {
+                exitCode = 1;
+                const stderrTail = (gradleResult.stderr || '').trim().split('\n').slice(-3).join(' | ').slice(0, 300);
+                motivo = `Gradle no ejecutó tests (exit=${gradleResult.exit_code}, ${gradleResult.wall_ms}ms, sin XMLs nuevos). Probable problema de shell/PATH. stderr: ${stderrTail || '(vacío)'}`;
+            } else if (tests.valid && (tests.failures > 0 || tests.errors > 0)) {
+                exitCode = 1;
+                motivo = `Tests fallidos: ${tests.failures} failures + ${tests.errors} errors sobre ${tests.tests} totales`;
+            } else if (args.coverage && koverData.aggregate.valid && koverData.aggregate.total.line.percent < args.threshold) {
+                exitCode = 1;
+                motivo = `Cobertura de líneas ${koverData.aggregate.total.line.percent}% por debajo del umbral ${args.threshold}%`;
+            } else if (gradleResult.exit_code !== 0 && parsedGradle.errors[0]) {
+                // Solo rechazar cuando hay un bloque de error real — el exit code por sí solo
+                // puede venir de warnings o tasks que fallan post-tests sin afectar los resultados.
+                exitCode = 1;
+                const first = parsedGradle.errors[0];
+                motivo = `Gradle FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`;
+            } else if (!tests.valid) {
+                exitCode = 1;
+                motivo = 'No se encontraron reportes JUnit — posible configuración rota o tests omitidos';
+            } else if (gradleResult.exit_code !== 0) {
+                // Tests válidos, sin errores de test, sin bloque de error clasificable de gradle, pero exit != 0.
+                // Aprobar con warning — los tests son la fuente de verdad. Evita rebotes espurios.
+                logAppend(`[tester] WARNING: gradle exit ${gradleResult.exit_code} sin bloque clasificable, pero ${tests.tests} tests pasaron (${tests.failures} fails, ${tests.errors} errors). Aprobando — tests son fuente de verdad.`);
+            }
         }
     } catch (e) {
         exitCode = 2;
@@ -370,7 +720,18 @@ async function main() {
         // Escalación por tipo de fallo
         let escalateTo = null;
         if (exitCode !== 0) {
-            if (tests && tests.valid && (tests.failures > 0 || tests.errors > 0)) {
+            if (pipelineOnly) {
+                // Cualquier fallo en ruta pipeline-only escala a pipeline-dev (issue #2891)
+                escalateTo = 'pipeline-dev';
+            } else if (gradleResult
+                && gradleResult.exit_code !== 0
+                && gradleResult.wall_ms < GRADLE_INSTANT_FAIL_MS
+                && !(tests && tests.valid)
+            ) {
+                // Detectar gradle "instant fail" sin XMLs nuevos → es un problema de
+                // infra/shell del propio tester, escalar a pipeline-dev (rebote #2892).
+                escalateTo = 'pipeline-dev';
+            } else if (tests && tests.valid && (tests.failures > 0 || tests.errors > 0)) {
                 // Escalar al dev skill según el módulo del primer test fallido
                 const first = tests.failed_tests[0];
                 if (first && /app\./i.test(first.classname)) escalateTo = 'android-dev';
@@ -381,10 +742,23 @@ async function main() {
             }
         }
 
+        // Para pipeline-only sin tests, generamos un motivo "qa:skipped" explícito
+        let finalMotivo = motivo;
+        if (exitCode === 0 && pipelineOnly && !(tests && tests.valid)) {
+            finalMotivo = 'Pipeline-only sin tests Node ejecutables — qa:skipped equivalente';
+        } else if (exitCode === 0 && pipelineOnly) {
+            finalMotivo = `Tests Node verdes (${tests.tests} tests pasaron)`;
+        } else if (exitCode === 0 && !finalMotivo) {
+            finalMotivo = 'Tests verdes';
+        } else if (!finalMotivo) {
+            finalMotivo = 'Tests fallidos';
+        }
+
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
-            motivo: motivo || (exitCode === 0 ? 'Tests verdes' : 'Tests fallidos'),
-            tester_module: args.module,
+            motivo: finalMotivo,
+            tester_module: pipelineOnly ? 'pipeline' : args.module,
+            tester_runner: testRunner,
             tester_duration_ms: gradleResult ? gradleResult.wall_ms : 0,
             tester_tests_total: tests && tests.valid ? tests.tests : 0,
             tester_tests_failed: tests && tests.valid ? (tests.failures + tests.errors) : 0,
@@ -423,6 +797,14 @@ module.exports = {
     collectKoverReports,
     copyArtifacts,
     renderReport,
+    // Pipeline-only routing (issue #2891 + worktree fix #2892)
+    isPipelineOnlyChange,
+    findIssueWorktree,
+    findNodeTestFiles,
+    parseNodeTestJunit,
+    runNodeTests,
+    getChangedFilesVsMain,
+    PIPELINE_ONLY_PATTERNS,
     MODULE_DIRS,
     DEFAULT_COVERAGE_THRESHOLD,
 };

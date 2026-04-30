@@ -617,6 +617,15 @@ function sanitizeForTts(text) {
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
   // Headers (# ## ### al inicio de línea)
   s = s.replace(/^#{1,6}\s+/gm, '');
+  // Issue/PR refs "#1234" → "número 1234" (el TTS los lee "almohadilla", molesto)
+  s = s.replace(/#(\d+)/g, 'número $1');
+  // Emojis y símbolos visuales: el TTS los narra por nombre Unicode
+  // ("mano hacia la derecha", "casilla de verificación") y arruina el audio.
+  // Drop: pictographs/symbols/dingbats + variation selectors + ZWJ + checkbox-like.
+  s = s.replace(
+    /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{25A0}-\u{25FF}\u{2460}-\u{24FF}\u{2B00}-\u{2BFF}\u{20D0}-\u{20FF}\u{FE0E}\u{FE0F}\u{200D}]/gu,
+    ''
+  );
   // Blockquotes ">"
   s = s.replace(/^\s*>\s?/gm, '');
   // Tablas: separador --- | --- y filas con |
