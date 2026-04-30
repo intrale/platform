@@ -41,6 +41,7 @@ const COMPONENTS = [
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
   { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
+  { name: 'svc-reconciler', script: 'servicio-reconciler.js', pid: 'svc-reconciler.pid' },
   { name: 'dashboard', script: 'dashboard.js', pid: 'dashboard.pid' },
 ];
 

@@ -26,6 +26,25 @@ const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
 const BLOCK_SUBDIR = 'bloqueado-humano';
 const ACTIVE_STATES = ['pendiente', 'trabajando', 'listo'];
+const GH_QUEUE_DIR = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
+const NEEDS_HUMAN_LABEL = 'needs-human';
+
+// #2880 — encolar comando de label en la cola del servicio-github. Centralizar
+// acá la aplicación del label evita que cada caller (pause-all, scripts manuales,
+// pulpo en barrido) tenga que duplicar la lógica y olvide aplicarlo.
+function enqueueNeedsHumanLabel(issue) {
+    try {
+        fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
+        const filename = `${issue}-${NEEDS_HUMAN_LABEL}-block-${Date.now()}.json`;
+        fs.writeFileSync(
+            path.join(GH_QUEUE_DIR, filename),
+            JSON.stringify({ action: 'label', issue: Number(issue), label: NEEDS_HUMAN_LABEL }),
+        );
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 function emitBlocked(opts) {
     trace.appendEvent({
@@ -172,6 +191,13 @@ function reportHumanBlock(opts) {
     }, null, 2));
 
     emitBlocked({ issue, skill, phase, pipeline, reason, question });
+
+    // #2880 — aplicar label `needs-human` en GitHub. Sin esto el intake del
+    // pulpo no excluye al issue y vuelve a inyectarlo en pendiente/, dejando
+    // el bloqueo inconsistente entre filesystem y GitHub.
+    if (opts.skipGithubLabel !== true) {
+        enqueueNeedsHumanLabel(issue);
+    }
 
     return { issue, skill, phase, pipeline, marker_path: targetFile };
 }
@@ -387,8 +413,10 @@ module.exports = {
     isHumanBlockReason,
     inferHumanBlockQuestion,
     buildBlockedSummaryMarkdown,
+    enqueueNeedsHumanLabel,
     HUMAN_BLOCK_PATTERNS,
     PIPELINE_DIR,
     PIPELINES,
     BLOCK_SUBDIR,
+    NEEDS_HUMAN_LABEL,
 };

@@ -43,6 +43,7 @@ const DEFAULT_COMPONENTS = [
   'svc-github',
   'svc-drive',
   'svc-emulador',
+  'svc-reconciler',
   'dashboard',
 ];
 
