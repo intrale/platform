@@ -88,6 +88,7 @@ const COMPONENTS = [
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
   { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
+  { name: 'svc-reconciler', script: 'servicio-reconciler.js', pid: 'svc-reconciler.pid' },
   { name: 'outbox-drain', script: 'outbox-drain.js', pid: 'outbox-drain.pid' },
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
@@ -628,7 +629,7 @@ function getPipelineState() {
   // Procesos — descubiertos al vuelo desde el SO, no desde archivos .pid.
   state.procesos = {};
   invalidateCache();
-  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'outbox-drain', 'dashboard']) {
+  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'svc-reconciler', 'outbox-drain', 'dashboard']) {
     const found = findPidByComponent(comp);
     if (found && pidAlive(found.pid)) {
       const uptime = getProcessUptime(comp);

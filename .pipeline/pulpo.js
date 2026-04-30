@@ -2521,14 +2521,11 @@ function brazoBarrido(config) {
                 log('barrido', `❌ #${issue} reportHumanBlock falló: ${e.message}`);
               }
 
-              // Aplicar label needs-human en GitHub (servicio-github auto-crea el label).
+              // #2880 — Label needs-human: lo encola humanBlock.reportHumanBlock() arriba.
+              // Acá solo encolamos el comentario explicativo en el issue.
               try {
                 const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
                 fs.mkdirSync(ghQueueDir, { recursive: true });
-                fs.writeFileSync(
-                  path.join(ghQueueDir, `${issue}-needs-human-blockreason-${Date.now()}.json`),
-                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }),
-                );
                 const body = [
                   `## Pipeline pausó este issue: requiere intervención humana`,
                   '',
@@ -2551,7 +2548,7 @@ function brazoBarrido(config) {
                   JSON.stringify({ action: 'comment', issue: parseInt(issue), body }),
                 );
               } catch (e) {
-                log('barrido', `Error encolando needs-human para #${issue}: ${e.message}`);
+                log('barrido', `Error encolando comentario needs-human para #${issue}: ${e.message}`);
               }
 
               // Notificación Telegram con listado completo de incidentes.
