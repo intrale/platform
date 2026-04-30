@@ -12,12 +12,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
-// Modelo por defecto: medium — balance entre calidad y memoria. El large-v3-turbo
-// pide ~6-10 GB de RAM y crashea con ACCESS_VIOLATION (exit 0xC0000005) cuando la
-// máquina ya está cargada (CPU/RAM altos + audio largo). medium usa ~5 GB y
-// transcribe español rioplatense con buena calidad. Se puede pisar con
-// WHISPER_LOCAL_MODEL (small/medium/large-v3-turbo/large-v3).
-const DEFAULT_MODEL = process.env.WHISPER_LOCAL_MODEL || 'medium';
+// Modelo por defecto: small — la máquina con pipeline+builds tiene <3 GB libres
+// habitualmente, y medium (~5 GB) hace timeout o crashea (ACCESS_VIOLATION) cuando
+// el audio es largo. small (~2 GB) entra siempre y transcribe español rioplatense
+// con calidad aceptable. Si la máquina está libre y se quiere más calidad, pisar
+// con WHISPER_LOCAL_MODEL (small/medium/large-v3-turbo/large-v3).
+const DEFAULT_MODEL = process.env.WHISPER_LOCAL_MODEL || 'small';
 const DEFAULT_LANGUAGE = process.env.WHISPER_LOCAL_LANGUAGE || 'Spanish';
 const DEFAULT_THREADS = Number(process.env.WHISPER_LOCAL_THREADS || 4);
 const DEFAULT_TIMEOUT_MS = Number(process.env.WHISPER_LOCAL_TIMEOUT_MS || 300000); // 5 min
