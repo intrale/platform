@@ -136,10 +136,12 @@ scripts/planner-plan.json
 .pipeline/definicion/*/trabajando/*
 .pipeline/definicion/*/listo/*
 .pipeline/definicion/*/procesado/*
+.pipeline/definicion/*/bloqueado-humano/*
 .pipeline/desarrollo/*/pendiente/*
 .pipeline/desarrollo/*/trabajando/*
 .pipeline/desarrollo/*/listo/*
 .pipeline/desarrollo/*/procesado/*
+.pipeline/desarrollo/*/bloqueado-humano/*
 .pipeline/servicios/*/pendiente/*
 .pipeline/servicios/*/trabajando/*
 .pipeline/servicios/*/listo/*
