@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 06 — Banner de alerta de consumo anómalo (#2882 PR-B + PR-C)
+  Resolucion: 1440x900
+  Demuestra:
+    - Banner persistente (rojo) en el header con consumo actual vs esperado
+    - Mini-gráfico inline mostrando el pico
+    - Top 3 skills consumidores
+    - Botón de acuse + selector de snooze (1h/4h/24h)
+    - Mensaje Telegram preview a la derecha (sanitizado por lib/redact.js)
+    - Detalles del baseline horario debajo
+  Tokens: design-tokens.css (alert-anomaly + paleta)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad06" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="alertBannerGrad06" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF6B8A" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#FF6B8A" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="spikeGrad06" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FF6B8A" stop-opacity="0.50"/>
+      <stop offset="100%" stop-color="#FF6B8A" stop-opacity="0.0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- =============== HEADER (compacto) =============== -->
+  <rect x="0" y="0" width="1440" height="64" fill="#161B22"/>
+  <rect x="0" y="63" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(24, 14)">
+    <rect width="36" height="36" rx="9" fill="#0D274D"/>
+    <path d="M18 7 L5 30 L31 30 Z" fill="none" stroke="url(#brandGrad06)" stroke-width="2.5"
+          stroke-linejoin="round"/>
+    <path d="M18 16 L13 26 L23 26 Z" fill="url(#brandGrad06)"/>
+  </g>
+  <text x="72" y="32" fill="#E6EDF3" font-size="17" font-weight="700">Intrale Pipeline</text>
+  <text x="72" y="50" fill="#8B949E" font-size="10" font-weight="600" letter-spacing="1.4">DASHBOARD V3 · 14:32 LOCAL</text>
+
+  <!-- Status RUNNING -->
+  <g transform="translate(290, 20)">
+    <rect width="100" height="26" rx="13" fill="#3FB950" fill-opacity="0.15" stroke="#3FB950" stroke-opacity="0.4"/>
+    <circle cx="14" cy="13" r="3.5" fill="#3FB950"/>
+    <text x="26" y="17" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.4">RUNNING</text>
+  </g>
+
+  <!-- Pill de alerta (entrada al banner persistente) -->
+  <g transform="translate(404, 20)">
+    <rect width="240" height="26" rx="13" fill="#FF6B8A" fill-opacity="0.18" stroke="#FF6B8A" stroke-opacity="0.55"/>
+    <!-- Punto rojo pulsante (representado estatico) -->
+    <circle cx="14" cy="13" r="3.5" fill="#FF6B8A"/>
+    <circle cx="14" cy="13" r="6" fill="#FF6B8A" fill-opacity="0.25"/>
+    <text x="26" y="17" fill="#FFD2DC" font-size="11" font-weight="700" letter-spacing="1.2">CONSUMO ANÓMALO · +213%</text>
+  </g>
+
+  <!-- Reloj -->
+  <g transform="translate(1416, 30)" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+    <text x="0" y="0" fill="#E6EDF3" font-size="18" font-weight="700" letter-spacing="2">14:32:48</text>
+    <text x="0" y="16" fill="#8B949E" font-size="10">Vie 24 abr 2026</text>
+  </g>
+
+  <!-- =============== BANNER PERSISTENTE DE ALERTA =============== -->
+  <g transform="translate(0, 64)">
+    <rect width="1440" height="148" fill="url(#alertBannerGrad06)"/>
+    <rect width="4" height="148" fill="#FF6B8A"/>
+
+    <!-- Icono pico de consumo grande -->
+    <g transform="translate(32, 28)" fill="none" stroke="#FFD2DC" stroke-width="2">
+      <path d="M3 36 H44" stroke-opacity="0.5"/>
+      <path d="M3 28 H44" stroke-dasharray="3 3" stroke-opacity="0.6"/>
+      <path d="M3 28 L10 28 L14 27 L18 26 L22 8 L26 26 L30 27 L34 28 L44 28"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/>
+      <circle cx="22" cy="8" r="2.5" fill="#FFD2DC" stroke="none"/>
+    </g>
+
+    <!-- Texto principal -->
+    <text x="100" y="48" fill="#E6EDF3" font-size="17" font-weight="700">
+      Pico de consumo detectado — última hora 213% sobre el promedio histórico
+    </text>
+    <text x="100" y="72" fill="#FFD2DC" font-size="13" font-weight="600">
+      $4.72 USD/h consumidos · esperado $1.51 USD/h · franja 14:00–15:00 (rolling 7d)
+    </text>
+    <text x="100" y="92" fill="#B1BAC4" font-size="12">
+      Top 3 consumidores en esta franja:
+      <tspan fill="#E6EDF3" font-weight="600">android-dev</tspan> ($2.10) ·
+      <tspan fill="#E6EDF3" font-weight="600">backend-dev</tspan> ($1.34) ·
+      <tspan fill="#E6EDF3" font-weight="600">guru</tspan> ($0.78)
+    </text>
+    <text x="100" y="112" fill="#8B949E" font-size="11" font-style="italic">
+      Persistente hasta acuse manual o vuelta a baseline (2 chequeos consecutivos).
+    </text>
+
+    <!-- Mini-grafico inline a la derecha -->
+    <g transform="translate(800, 26)">
+      <rect width="220" height="100" rx="8" fill="#0D1117" stroke="#FF6B8A" stroke-opacity="0.35"/>
+      <text x="14" y="20" fill="#8B949E" font-size="10" letter-spacing="1.2">CONSUMO ÚLTIMAS 24H</text>
+      <!-- Eje base -->
+      <path d="M14 86 H206" stroke="#30363D" stroke-width="1"/>
+      <!-- Baseline punteado -->
+      <path d="M14 60 H206" stroke="#8B949E" stroke-width="1" stroke-dasharray="2 2.5" opacity="0.6"/>
+      <!-- Area bajo el pico -->
+      <path d="M14 86 L14 64 L40 62 L60 60 L80 58 L100 60 L120 62 L140 64 L160 60 L180 32 L194 86 Z"
+            fill="url(#spikeGrad06)"/>
+      <!-- Linea principal -->
+      <path d="M14 64 L40 62 L60 60 L80 58 L100 60 L120 62 L140 64 L160 60 L180 32 L194 80"
+            fill="none" stroke="#FF6B8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="180" cy="32" r="3.5" fill="#FF6B8A"/>
+      <text x="180" y="22" fill="#FFD2DC" font-size="10" font-weight="700" text-anchor="middle">+213%</text>
+      <text x="14" y="100" fill="#8B949E" font-size="9">14:30 hace 24h</text>
+      <text x="206" y="100" fill="#8B949E" font-size="9" text-anchor="end">ahora</text>
+    </g>
+
+    <!-- Acciones (acuse + snooze) -->
+    <g transform="translate(1052, 50)">
+      <text x="0" y="-12" fill="#8B949E" font-size="10" letter-spacing="1.4">ACCIONES</text>
+
+      <!-- Botón "Ya lo vi" -->
+      <g transform="translate(0, 0)">
+        <rect width="120" height="36" rx="8" fill="#FF6B8A" fill-opacity="0.18" stroke="#FF6B8A" stroke-opacity="0.55"/>
+        <g transform="translate(12, 8)" fill="none" stroke="#FFD2DC" stroke-width="1.6">
+          <circle cx="10" cy="10" r="8"/>
+          <path d="M6 10.5 L9 13.5 L14 7.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <text x="74" y="23" fill="#FFD2DC" font-size="12" font-weight="700" text-anchor="middle">Ya lo vi</text>
+      </g>
+
+      <!-- Selector snooze -->
+      <g transform="translate(132, 0)">
+        <rect width="240" height="36" rx="8" fill="#161B22" stroke="#30363D"/>
+        <!-- Icono campana + Z -->
+        <g transform="translate(12, 8)" fill="none" stroke="#B1BAC4" stroke-width="1.6">
+          <path d="M5 14 V10 A5 5 0 0 1 15 10 V14 L17 16 H3 Z" stroke-linejoin="round" stroke-linecap="round"/>
+          <path d="M14 2 H19 L14 7 H19" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <text x="40" y="23" fill="#B1BAC4" font-size="12">Silenciar</text>
+        <!-- Tres opciones -->
+        <g transform="translate(108, 6)">
+          <rect width="36" height="24" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+          <text x="18" y="16" fill="#B1BAC4" font-size="11" font-weight="600" text-anchor="middle">1h</text>
+        </g>
+        <g transform="translate(150, 6)">
+          <rect width="36" height="24" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+          <text x="18" y="16" fill="#B1BAC4" font-size="11" font-weight="600" text-anchor="middle">4h</text>
+        </g>
+        <g transform="translate(192, 6)">
+          <rect width="36" height="24" rx="6" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.55"/>
+          <text x="18" y="16" fill="#C5B7FF" font-size="11" font-weight="700" text-anchor="middle">24h</text>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- =============== H2 SECCION =============== -->
+  <text x="32" y="246" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    DETECTOR DE ANOMALÍAS — BASELINE HORARIO (ROLLING 7D)
+  </text>
+
+  <!-- =============== GRAFICO BASELINE 24H =============== -->
+  <g transform="translate(32, 264)">
+    <rect width="900" height="320" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="24" y="32" fill="#E6EDF3" font-size="15" font-weight="700">Consumo por hora vs baseline esperado</text>
+    <text x="24" y="52" fill="#8B949E" font-size="11">
+      Línea sólida: hoy · Línea punteada: promedio rolling 7d · Banda: ±50% (umbral default)
+    </text>
+
+    <!-- Y axis labels -->
+    <g font-size="10" fill="#8B949E">
+      <text x="60" y="92" text-anchor="end">$5</text>
+      <text x="60" y="142" text-anchor="end">$4</text>
+      <text x="60" y="192" text-anchor="end">$3</text>
+      <text x="60" y="242" text-anchor="end">$2</text>
+      <text x="60" y="292" text-anchor="end">$1</text>
+    </g>
+
+    <!-- Grid lines -->
+    <g stroke="#21262D" stroke-width="1">
+      <line x1="68" y1="88" x2="876" y2="88"/>
+      <line x1="68" y1="138" x2="876" y2="138"/>
+      <line x1="68" y1="188" x2="876" y2="188"/>
+      <line x1="68" y1="238" x2="876" y2="238"/>
+      <line x1="68" y1="288" x2="876" y2="288"/>
+    </g>
+
+    <!-- Banda de tolerancia (+/-50% sobre baseline) -->
+    <path d="M68 220 L101 218 L134 215 L167 212 L200 208 L233 200 L266 188 L299 180
+             L332 172 L365 168 L398 170 L431 175 L464 180 L497 188 L530 195 L563 205
+             L596 215 L629 220 L662 222 L695 224 L728 222 L761 220 L794 218 L827 218 L876 218
+             L876 270 L827 270 L794 268 L761 270 L728 272 L695 272 L662 274 L629 270
+             L596 264 L563 252 L530 244 L497 236 L464 228 L431 224 L398 222 L365 218 L332 222
+             L299 232 L266 240 L233 250 L200 258 L167 262 L134 264 L101 266 L68 268 Z"
+          fill="#FF6B8A" fill-opacity="0.05" stroke="none"/>
+
+    <!-- Baseline rolling 7d (punteada) -->
+    <path d="M68 245 L101 243 L134 240 L167 237 L200 233 L233 225 L266 213 L299 205
+             L332 197 L365 193 L398 195 L431 200 L464 205 L497 213 L530 220 L563 230
+             L596 240 L629 245 L662 247 L695 249 L728 247 L761 245 L794 243 L827 243 L876 243"
+          fill="none" stroke="#8B949E" stroke-width="1.8" stroke-dasharray="3 3" opacity="0.7"/>
+
+    <!-- Hoy (linea solida con pico) -->
+    <path d="M68 248 L101 245 L134 242 L167 240 L200 235 L233 228 L266 218 L299 210
+             L332 202 L365 198 L398 200 L431 205 L464 210 L497 218 L530 225 L563 234
+             L596 244 L629 250 L662 252 L695 254 L728 250 L761 245 L794 240
+             L827 100 L876 196"
+          fill="none" stroke="#FF6B8A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Pico actual (14:00 = 14h) -->
+    <circle cx="827" cy="100" r="5" fill="#FF6B8A"/>
+    <circle cx="827" cy="100" r="9" fill="#FF6B8A" fill-opacity="0.28"/>
+    <text x="827" y="86" fill="#FFD2DC" font-size="11" font-weight="700" text-anchor="middle">$4.72 · 14:00</text>
+
+    <!-- X axis labels -->
+    <g font-size="10" fill="#8B949E">
+      <text x="68" y="306" text-anchor="middle">00</text>
+      <text x="200" y="306" text-anchor="middle">04</text>
+      <text x="332" y="306" text-anchor="middle">08</text>
+      <text x="464" y="306" text-anchor="middle">12</text>
+      <text x="596" y="306" text-anchor="middle">16</text>
+      <text x="728" y="306" text-anchor="middle">20</text>
+      <text x="876" y="306" text-anchor="middle">23</text>
+    </g>
+
+    <!-- Leyenda -->
+    <g transform="translate(640, 20)" font-size="11">
+      <line x1="0" y1="6" x2="20" y2="6" stroke="#FF6B8A" stroke-width="2.4"/>
+      <text x="26" y="10" fill="#B1BAC4">hoy</text>
+      <line x1="64" y1="6" x2="84" y2="6" stroke="#8B949E" stroke-width="2" stroke-dasharray="3 3"/>
+      <text x="90" y="10" fill="#B1BAC4">baseline 7d</text>
+      <rect x="172" y="0" width="20" height="12" fill="#FF6B8A" fill-opacity="0.15"/>
+      <text x="198" y="10" fill="#B1BAC4">tolerancia ±50%</text>
+    </g>
+  </g>
+
+  <!-- =============== TELEGRAM PREVIEW =============== -->
+  <g transform="translate(956, 264)">
+    <rect width="452" height="320" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="24" y="32" fill="#E6EDF3" font-size="15" font-weight="700">Mensaje enviado a Telegram</text>
+    <text x="24" y="52" fill="#8B949E" font-size="11">
+      Sanitizado por
+      <tspan fill="#C5B7FF" font-family="'SF Mono', Consolas, monospace">lib/redact.js</tspan>
+      antes del envío (CA-Sec-A09)
+    </text>
+
+    <!-- Mock burbuja Telegram -->
+    <g transform="translate(24, 76)">
+      <rect width="404" height="218" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <!-- Header burbuja -->
+      <rect x="0" y="0" width="404" height="32" rx="10" fill="#1C2128"/>
+      <rect x="0" y="22" width="404" height="10" fill="#1C2128"/>
+      <text x="14" y="20" fill="#58A6FF" font-size="12" font-weight="700">Intrale Pipeline Bot</text>
+      <text x="390" y="20" fill="#8B949E" font-size="10" text-anchor="end">14:32</text>
+
+      <!-- Cuerpo del mensaje -->
+      <g transform="translate(14, 48)" font-size="12" fill="#E6EDF3">
+        <text x="0" y="0" font-weight="700">⚠ Consumo anómalo detectado</text>
+        <text x="0" y="22" fill="#B1BAC4">Franja 14:00–15:00 · ratio +213%</text>
+        <text x="0" y="46" fill="#B1BAC4">Actual: <tspan fill="#FF6B8A" font-weight="700">$4.72 USD/h</tspan></text>
+        <text x="0" y="64" fill="#B1BAC4">Esperado: <tspan fill="#E6EDF3" font-weight="700">$1.51 USD/h</tspan> (rolling 7d)</text>
+
+        <text x="0" y="92" fill="#8B949E" font-size="11" letter-spacing="1.2">TOP 3 SKILLS</text>
+        <text x="0" y="112" fill="#B1BAC4">
+          1. <tspan fill="#E6EDF3" font-weight="600">android-dev</tspan> — $2.10 (44%)
+        </text>
+        <text x="0" y="130" fill="#B1BAC4">
+          2. <tspan fill="#E6EDF3" font-weight="600">backend-dev</tspan> — $1.34 (28%)
+        </text>
+        <text x="0" y="148" fill="#B1BAC4">
+          3. <tspan fill="#E6EDF3" font-weight="600">guru</tspan> — $0.78 (16%)
+        </text>
+
+        <text x="0" y="172" fill="#8B949E" font-size="11">→ Ver detalle en el dashboard</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =============== METADATA / AUDIT =============== -->
+  <g transform="translate(32, 612)">
+    <text x="0" y="0" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+      AUDIT TRAIL — ÚLTIMA EVALUACIÓN
+    </text>
+
+    <g transform="translate(0, 24)" font-size="11" font-family="'SF Mono', Consolas, monospace">
+      <rect width="1376" height="240" rx="10" fill="#161B22" stroke="#30363D"/>
+
+      <g transform="translate(20, 28)" fill="#B1BAC4">
+        <text x="0" y="0" fill="#8B949E">// .pipeline/metrics-history.jsonl — append-only</text>
+        <text x="0" y="22"><tspan fill="#7C5CFF">{</tspan> "ts": <tspan fill="#3FB950">"2026-04-30T14:32:48Z"</tspan>, "hour": <tspan fill="#58A6FF">14</tspan>, "baseline_usd": <tspan fill="#58A6FF">1.51</tspan>, "actual_usd": <tspan fill="#FF6B8A" font-weight="700">4.72</tspan>, "ratio": <tspan fill="#FF6B8A" font-weight="700">2.13</tspan>, "alerted": <tspan fill="#3FB950">true</tspan> <tspan fill="#7C5CFF">}</tspan></text>
+        <text x="0" y="44"><tspan fill="#7C5CFF">{</tspan> "ts": <tspan fill="#3FB950">"2026-04-30T14:22:48Z"</tspan>, "hour": <tspan fill="#58A6FF">14</tspan>, "baseline_usd": <tspan fill="#58A6FF">1.51</tspan>, "actual_usd": <tspan fill="#58A6FF">1.62</tspan>, "ratio": <tspan fill="#58A6FF">1.07</tspan>, "alerted": <tspan fill="#F85149">false</tspan> <tspan fill="#7C5CFF">}</tspan></text>
+        <text x="0" y="66"><tspan fill="#7C5CFF">{</tspan> "ts": <tspan fill="#3FB950">"2026-04-30T14:12:48Z"</tspan>, "hour": <tspan fill="#58A6FF">14</tspan>, "baseline_usd": <tspan fill="#58A6FF">1.51</tspan>, "actual_usd": <tspan fill="#58A6FF">1.48</tspan>, "ratio": <tspan fill="#58A6FF">0.98</tspan>, "alerted": <tspan fill="#F85149">false</tspan> <tspan fill="#7C5CFF">}</tspan></text>
+      </g>
+
+      <rect x="20" y="120" width="1336" height="1" fill="#30363D"/>
+
+      <g transform="translate(20, 144)" fill="#B1BAC4">
+        <text x="0" y="0" fill="#8B949E">// .pipeline/rest-mode-audit.jsonl — append-only (CA-Sec-A08)</text>
+        <text x="0" y="22"><tspan fill="#7C5CFF">{</tspan> "updatedAt": <tspan fill="#3FB950">"2026-04-30T14:32:48Z"</tspan>, "actor": <tspan fill="#3FB950">"cron"</tspan>, "diff": <tspan fill="#3FB950">"alert_triggered: false → true"</tspan> <tspan fill="#7C5CFF">}</tspan></text>
+        <text x="0" y="44"><tspan fill="#7C5CFF">{</tspan> "updatedAt": <tspan fill="#3FB950">"2026-04-29T22:58:12Z"</tspan>, "actor": <tspan fill="#3FB950">"manual"</tspan>, "diff": <tspan fill="#3FB950">"end: 06:30 → 07:00"</tspan> <tspan fill="#7C5CFF">}</tspan></text>
+        <text x="0" y="66"><tspan fill="#7C5CFF">{</tspan> "updatedAt": <tspan fill="#3FB950">"2026-04-25T03:14:00Z"</tspan>, "actor": <tspan fill="#3FB950">"config-reload"</tspan>, "diff": <tspan fill="#3FB950">"days: [1,2,3,4,5] → [0,1,2,3,4,5,6]"</tspan> <tspan fill="#7C5CFF">}</tspan></text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =============== FOOTER =============== -->
+  <g transform="translate(0, 858)">
+    <rect width="1440" height="42" fill="#161B22"/>
+    <rect width="1440" height="1" fill="#30363D"/>
+    <text x="32" y="26" fill="#8B949E" font-size="11">
+      Detector de anomalías · intervalo 10min · umbral +50% · grace period 7d (warmup) · MIN_USD_TO_ALERT $0.50
+    </text>
+    <text x="1408" y="26" fill="#8B949E" font-size="11" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+      .pipeline/anomaly-detector.js
+    </text>
+  </g>
+
+</svg>
