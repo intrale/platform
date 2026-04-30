@@ -35,6 +35,8 @@ const qaEvidenceGate = require('./lib/qa-evidence-gate');
 const humanBlock = require('./lib/human-block');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+// #2893 — Detección de dependencias del allowlist en pausa parcial
+const partialPauseDeps = require('./lib/partial-pause-deps');
 // #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
@@ -558,6 +560,62 @@ function splitTextForTTSChunks(text, maxChars) {
 function log(brazo, msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [${brazo}] ${msg}`);
+}
+
+/**
+ * #2893 — Resolver el path del script determinístico (tester/builder/linter/
+ * delivery) preferiendo la copia del worktree del issue cuando existe, con
+ * fallback al script de ROOT (main).
+ *
+ * Motivación (chicken-and-egg): la fase verificacion corre desde ROOT (main),
+ * que tiene la versión vieja del script. Si un agente pipeline-dev modifica
+ * el propio script determinístico (ej: tester.js), su fix vive en la rama
+ * agent/<issue>-<skill> dentro del worktree y nunca toma efecto antes del
+ * merge → el issue se traba en rebote eterno hasta circuit breaker.
+ *
+ * Este resolver usa la copia del worktree cuando existe, así el agente puede
+ * verificar su propio fix antes del merge. Seguridad: el worktree pertenece
+ * a un agente que pasó validacion+dev del pipeline; PR review humano
+ * (CODEOWNERS @leitolarreta) sigue siendo gate antes del merge.
+ *
+ * Argumentos:
+ *   - skill: nombre del skill ("tester", "builder", "linter", "delivery").
+ *   - issue: número del issue.
+ *   - ROOT: path absoluto del repo principal.
+ *   - PIPELINE: path absoluto de .pipeline/ en ROOT.
+ *   - onWorktreeHit (opcional): callback(worktreePath) que se invoca cuando
+ *     se decide usar el script del worktree. Útil para logging.
+ *   - execSyncImpl (opcional): inyectable para tests.
+ *   - fsImpl (opcional): inyectable para tests (necesita existsSync).
+ *
+ * Retorna el path absoluto del script a ejecutar.
+ */
+function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl } = {}) {
+  const _execSync = execSyncImpl || execSync;
+  const _fs = fsImpl || fs;
+  const rootScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
+  if (!issue || !ROOT) return rootScript;
+  let issueWorktree = null;
+  try {
+    const needle = `platform.agent-${issue}-`;
+    const worktrees = _execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true });
+    for (const line of String(worktrees).split('\n')) {
+      if (line.startsWith('worktree ') && line.includes(needle)) {
+        issueWorktree = line.replace('worktree ', '').trim();
+        break;
+      }
+    }
+  } catch { /* sin worktree, fallback a ROOT */ }
+  if (issueWorktree) {
+    const wtScript = path.join(issueWorktree, '.pipeline', 'skills-deterministicos', `${skill}.js`);
+    if (_fs.existsSync(wtScript)) {
+      if (typeof onWorktreeHit === 'function') {
+        try { onWorktreeHit(issueWorktree); } catch { /* ignore */ }
+      }
+      return wtScript;
+    }
+  }
+  return rootScript;
 }
 
 function loadConfig() {
@@ -4700,7 +4758,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // (watchdog, on-exit, mover a listo/) funciona sin cambios.
   // Rollout reversible: borrar el archivo → fallback automático al agente LLM.
   const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
-  const deterministicScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
+
+  const deterministicScript = DETERMINISTIC_SKILLS.has(skill)
+    ? resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`) })
+    : path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
   const useDeterministicSkill = (DETERMINISTIC_SKILLS.has(skill) && fs.existsSync(deterministicScript));
 
   // Launcher detectado al boot (ver detectClaudeLauncher). Evita cmd.exe cuando es posible.
@@ -6606,6 +6667,12 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
 }
 
 function sendTelegram(text) {
+  return sendTelegramWithMarkup(text, null);
+}
+
+// #2893 — Variante que pasa reply_markup (inline_keyboard con url buttons).
+// El servicio-telegram hace passthrough del campo reply_markup al API.
+function sendTelegramWithMarkup(text, replyMarkup) {
   const token = getTelegramToken();
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return; }
@@ -6616,8 +6683,10 @@ function sendTelegram(text) {
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   const filename = `${Date.now()}-cmd.json`;
   try {
-    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify({ text: msg, parse_mode: 'Markdown' }));
-    log('telegram', `Encolado (${msg.length} chars) → ${filename}`);
+    const payload = { text: msg, parse_mode: 'Markdown' };
+    if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
+    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
+    log('telegram', `Encolado (${msg.length} chars${replyMarkup ? ', con reply_markup' : ''}) → ${filename}`);
   } catch (e) {
     // Fallback: envío directo con https (sin subproceso)
     const https = require('https');
@@ -7190,6 +7259,156 @@ async function brazoDesbloqueoImpl(config) {
   }
 }
 
+// =============================================================================
+// #2893 — Brazo de detección de deps faltantes en pausa parcial
+// =============================================================================
+//
+// Cuando el pipeline está en partial_pause, escaneamos el allowlist y
+// detectamos issues habilitados que tienen dependencias abiertas FUERA del
+// allowlist. Si encontramos:
+//   - Log structured a logs/partial-pause-deps.log (auditoría)
+//   - Alerta Telegram con cooldown 30 min por (issue, deps-set)
+//   - Marker JSON en .pipeline/partial-pause-deps-state.json para que el
+//     dashboard pueda mostrar el banner amarillo.
+//
+// Corre cada N=5 ciclos del Pulpo (config: partial_pause_deps.check_every_n_ticks).
+// Cooldown evita spamear cuando el operador "acepta el riesgo" y deja la pausa
+// activa con deps faltantes durante horas.
+
+const PARTIAL_PAUSE_DEPS_DEFAULTS = {
+  checkEveryNTicks: 5,
+  alertCooldownMs: 30 * 60 * 1000,  // 30 min
+  logFile: 'logs/partial-pause-deps.log',
+  stateFile: 'partial-pause-deps-state.json',
+};
+
+let partialPauseDepsTickCount = 0;
+const partialPauseDepsAlertCache = new Map();  // signature → ts
+let partialPauseDepsRunning = false;             // re-entry guard
+
+function partialPauseDepsConfig(config) {
+  const c = (config && config.partial_pause_deps) || {};
+  return {
+    checkEveryNTicks: Math.max(1, Number(c.check_every_n_ticks) || PARTIAL_PAUSE_DEPS_DEFAULTS.checkEveryNTicks),
+    alertCooldownMs: Math.max(60_000, Number(c.alert_cooldown_ms) || PARTIAL_PAUSE_DEPS_DEFAULTS.alertCooldownMs),
+  };
+}
+
+function appendPartialPauseDepsLog(entry) {
+  try {
+    const file = path.join(PIPELINE, PARTIAL_PAUSE_DEPS_DEFAULTS.logFile);
+    const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n';
+    fs.appendFileSync(file, line);
+  } catch (e) {
+    log('pulpo', `[partial-pause-deps] Warning: append log failed: ${e.message}`);
+  }
+}
+
+function writePartialPauseDepsState(state) {
+  try {
+    const file = path.join(PIPELINE, PARTIAL_PAUSE_DEPS_DEFAULTS.stateFile);
+    fs.writeFileSync(file, JSON.stringify(state, null, 2));
+  } catch (e) {
+    log('pulpo', `[partial-pause-deps] Warning: write state failed: ${e.message}`);
+  }
+}
+
+function clearPartialPauseDepsState() {
+  try {
+    const file = path.join(PIPELINE, PARTIAL_PAUSE_DEPS_DEFAULTS.stateFile);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  } catch {}
+}
+
+async function brazoPartialPauseDeps(config) {
+  // Re-entrada: si la corrida anterior aún está in-flight (gh lento), saltar.
+  if (partialPauseDepsRunning) return;
+
+  const ppCfg = partialPauseDepsConfig(config);
+  partialPauseDepsTickCount = (partialPauseDepsTickCount + 1) % 1_000_000;
+
+  // Solo cuando estamos en partial_pause.
+  const mode = partialPause.getPipelineMode();
+  if (mode.mode !== 'partial_pause') {
+    // Limpiar state si quedó de un partial_pause anterior.
+    clearPartialPauseDepsState();
+    return;
+  }
+
+  // Evaluar cada N ticks.
+  if ((partialPauseDepsTickCount % ppCfg.checkEveryNTicks) !== 0) return;
+
+  partialPauseDepsRunning = true;
+  try {
+    const result = partialPauseDeps.findMissingDeps(mode.allowedIssues);
+    const missingByIssue = result.missing || {};
+    const issuesWithMissing = Object.keys(missingByIssue);
+
+    if (issuesWithMissing.length === 0) {
+      // Todo OK — limpiar state si existía.
+      clearPartialPauseDepsState();
+      return;
+    }
+
+    // Persistir state para el banner del dashboard.
+    writePartialPauseDepsState({
+      detectedAt: new Date().toISOString(),
+      allowedIssues: mode.allowedIssues,
+      missing: missingByIssue,
+      chains: result.chains || {},
+      truncated: !!result.truncated,
+      acceptedDepRisk: !!mode.acceptedDepRisk,
+    });
+
+    // Alertar con cooldown por (issue, deps-set).
+    for (const [issueKey, deps] of Object.entries(missingByIssue)) {
+      const sig = partialPauseDeps.alertSignature(issueKey, deps);
+      const lastTs = partialPauseDepsAlertCache.get(sig) || 0;
+      const now = Date.now();
+      if (now - lastTs < ppCfg.alertCooldownMs) {
+        appendPartialPauseDepsLog({
+          issue: Number(issueKey),
+          missing_deps: deps,
+          action: 'detected_within_cooldown',
+        });
+        continue;
+      }
+      partialPauseDepsAlertCache.set(sig, now);
+      appendPartialPauseDepsLog({
+        issue: Number(issueKey),
+        missing_deps: deps,
+        action: 'alert_sent',
+      });
+      // Mensaje de Telegram (CA-2): texto + URL buttons al dashboard.
+      // No usamos callback_query para no acoplar al listener — los botones
+      // tipo "url" son handle del cliente Telegram → abre el dashboard.
+      const depList = deps.map(d => `#${d}`).join(', ');
+      const msg = `⚠️ *Pausa parcial trabada*\n\nEl issue *#${issueKey}* está habilitado pero depende de issues abiertas que NO están en el allowlist:\n\n  ${depList}\n\nElegí abajo cómo resolverlo (los botones abren el dashboard).`;
+      const dashUrl = process.env.DASHBOARD_URL || 'http://localhost:3200';
+      const replyMarkup = {
+        inline_keyboard: [
+          [
+            { text: '✅ Sí, incluir todas', url: `${dashUrl}/?action=include-deps&issue=${issueKey}` },
+            { text: `🎯 Solo #${issueKey}`, url: `${dashUrl}/?action=keep-original&issue=${issueKey}` },
+          ],
+          [
+            { text: '✕ Cancelar pausa parcial', url: `${dashUrl}/?action=cancel-partial-pause` },
+          ],
+        ],
+      };
+      try { sendTelegramWithMarkup(msg, replyMarkup); } catch (e) {
+        log('pulpo', `[partial-pause-deps] Error enviando Telegram: ${e.message}`);
+        // Fallback a texto plano sin markup.
+        try { sendTelegram(msg); } catch {}
+      }
+    }
+  } catch (e) {
+    log('pulpo', `[partial-pause-deps] ERROR: ${e.message}`);
+  } finally {
+    partialPauseDepsRunning = false;
+  }
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
@@ -7271,6 +7490,9 @@ async function mainLoop() {
         brazoBarrido(config);     // Cuarto: promover entre fases
         brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
         brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
+        // #2893: detección periódica de deps faltantes en pausa parcial (cada N ticks).
+        // Fire-and-forget: consulta gh con cache TTL 5min, no bloquea el loop.
+        brazoPartialPauseDeps(config).catch(e => log('pulpo', `[partial-pause-deps] error async: ${e.message}`));
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
@@ -7336,6 +7558,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _setQaCooldownUntil: (ts) => { qaCooldownUntil = ts; },
     _setQaPriorityActive: (active, activatedAt) => { qaPriorityActive = active; qaPriorityActivatedAt = activatedAt || (active ? Date.now() : 0); qaPriorityNotifiedTelegram = active; },
     _setBuildPriorityState: (active, manual) => { buildPriorityActive = active; buildPriorityManual = manual || false; },
+    // #2893 — resolver de script determinístico (preferencia worktree-first).
+    resolveDeterministicScript,
   };
   return; // No arrancar singleton ni mainLoop
 }

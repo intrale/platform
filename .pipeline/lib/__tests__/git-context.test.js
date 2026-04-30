@@ -19,7 +19,12 @@ const ctx = require('../delivery/git-context');
 
 function sh(cwd, args) {
     const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true });
-    if (r.status !== 0) throw new Error(`git ${args.join(' ')} fail: ${r.stderr}`);
+    // Rebote #2892 rev-2: mejor reporte de errores. Si el spawn falló por
+    // ENOENT (git no en PATH), `r.error` está seteado y `r.stderr` es undefined,
+    // lo cual disfraza el problema real como "fail: undefined". Surface el
+    // mensaje real para que el motivo del rebote sea accionable.
+    if (r.error) throw new Error(`git ${args.join(' ')} spawn error (${r.error.code || 'UNKNOWN'}): ${r.error.message}`);
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} fail (status=${r.status}): ${r.stderr}`);
     return r.stdout.trim();
 }
 
