@@ -1,0 +1,361 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 04 — Modo descanso ACTIVO (#2882 PR-A)
+  Resolucion: 1440x900
+  Demuestra:
+    - Pill "Modo descanso 23:00–07:00" en el header (indigo nocturno)
+    - Banner inferior al header con copy explicativo + countdown
+    - Lanes con tarjetas: skills determinísticos en curso (verde), skills LLM en cola (gris/indigo)
+    - Reloj 02:14 — corroborando que la ventana esta activa
+    - KPI "tokens hora" en cero (no hay LLM corriendo)
+  Tokens: design-tokens.css (rest-mode + paleta semantica)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad04" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="restHeaderGrad04" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1F1645" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="restBannerGrad04" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7C5CFF" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#7C5CFF" stop-opacity="0.06"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- Estrellas decorativas sutiles (refuerzan modo descanso, baja opacidad) -->
+  <g fill="#7C5CFF" opacity="0.18">
+    <circle cx="180" cy="40" r="1"/>
+    <circle cx="540" cy="22" r="0.8"/>
+    <circle cx="780" cy="50" r="1.2"/>
+    <circle cx="1100" cy="18" r="0.9"/>
+    <circle cx="1280" cy="60" r="1"/>
+  </g>
+
+  <!-- =============== HEADER =============== -->
+  <rect x="0" y="0" width="1440" height="92" fill="url(#restHeaderGrad04)"/>
+  <rect x="0" y="91" width="1440" height="1" fill="#30363D"/>
+
+  <!-- Logo + nombre -->
+  <g transform="translate(32, 26)">
+    <rect width="40" height="40" rx="10" fill="#0D274D"/>
+    <path d="M20 8 L6 33 L34 33 Z" fill="none" stroke="url(#brandGrad04)" stroke-width="3"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M20 18 L14.5 28 L25.5 28 Z" fill="url(#brandGrad04)"/>
+  </g>
+  <text x="84" y="42" fill="#E6EDF3" font-size="22" font-weight="700">Intrale Pipeline</text>
+  <text x="84" y="62" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1.5">
+    DASHBOARD V3 · localhost:3200
+  </text>
+
+  <!-- Badge V3 -->
+  <g transform="translate(260, 32)">
+    <rect width="40" height="24" rx="12" fill="#2DD4BF" fill-opacity="0.18" stroke="#2DD4BF" stroke-opacity="0.45"/>
+    <text x="20" y="16" fill="#2DD4BF" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1.2">V3</text>
+  </g>
+
+  <!-- Pill MODO DESCANSO ACTIVO (luna + texto) -->
+  <g transform="translate(320, 28)">
+    <rect width="246" height="32" rx="16" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.55"/>
+    <!-- Icono luna inline (simplificado del sprite) -->
+    <g transform="translate(11, 6)" fill="none" stroke="#C5B7FF" stroke-width="1.6">
+      <path d="M17 12 A7 7 0 1 1 10 5 A5.5 5.5 0 0 0 17 12 Z" stroke-linejoin="round"/>
+      <circle cx="14.5" cy="4.5" r="0.5" fill="#C5B7FF"/>
+      <circle cx="18.5" cy="8" r="0.4" fill="#C5B7FF"/>
+    </g>
+    <text x="38" y="20" fill="#C5B7FF" font-size="12" font-weight="700" letter-spacing="1.4">
+      MODO DESCANSO · 23:00–07:00
+    </text>
+  </g>
+
+  <!-- Pipeline status (still RUNNING — no esta paused, solo restringido) -->
+  <g transform="translate(580, 32)">
+    <rect width="108" height="24" rx="12" fill="#3FB950" fill-opacity="0.15" stroke="#3FB950" stroke-opacity="0.4"/>
+    <circle cx="14" cy="12" r="3.5" fill="#3FB950"/>
+    <text x="26" y="16" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.5">RUNNING</text>
+  </g>
+
+  <!-- KPIs header — agentes y tokens hora (cero porque LLM en pausa) -->
+  <g transform="translate(900, 32)" font-size="13" fill="#B1BAC4">
+    <g>
+      <path d="M4 9 a3 3 0 1 0 6 0 a3 3 0 1 0 -6 0 M0 22 C0 17 3 14 7 14 C11 14 14 17 14 22"
+            fill="none" stroke="#58A6FF" stroke-width="1.75" stroke-linecap="round"/>
+      <text x="22" y="17" fill="#E6EDF3" font-size="14" font-weight="700">2</text>
+      <text x="36" y="17" fill="#8B949E" font-size="11">determinísticos</text>
+    </g>
+    <g transform="translate(155, 0)">
+      <path d="M3 19 H21 M13 19 V6 M13 6 L9 10 M13 6 L17 10" fill="none" stroke="#7C5CFF"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="29" y="17" fill="#E6EDF3" font-size="14" font-weight="700">5</text>
+      <text x="43" y="17" fill="#8B949E" font-size="11">en cola</text>
+    </g>
+    <g transform="translate(255, 0)">
+      <path d="M3 19 H21 M3 14 H21" fill="none" stroke="#8B949E" stroke-width="1.2"
+            stroke-dasharray="2 2.5" stroke-linecap="round"/>
+      <path d="M3 14 L8 14 L11 13.5 L13 13 L15 13.5 L17 14 L21 14" fill="none"
+            stroke="#3FB950" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="29" y="17" fill="#E6EDF3" font-size="14" font-weight="700">$0.00</text>
+      <text x="65" y="17" fill="#8B949E" font-size="11">USD/h</text>
+    </g>
+  </g>
+
+  <!-- Clock — 02:14 (madrugada, dentro de la ventana) -->
+  <g transform="translate(1320, 30)" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+    <text x="100" y="22" fill="#E6EDF3" font-size="22" font-weight="700" letter-spacing="2">02:14:38</text>
+    <text x="100" y="38" fill="#8B949E" font-size="10" letter-spacing="0.5">Sab 25 abr 2026 · -05h05m</text>
+  </g>
+
+  <!-- =============== BANNER MODO DESCANSO =============== -->
+  <g transform="translate(0, 92)">
+    <rect width="1440" height="64" fill="url(#restBannerGrad04)"/>
+    <rect x="0" y="0" width="3" height="64" fill="#7C5CFF"/>
+
+    <!-- Icono luna grande -->
+    <g transform="translate(32, 18)" fill="none" stroke="#C5B7FF" stroke-width="1.75">
+      <path d="M21 16 A8.5 8.5 0 1 1 13 6 A6.5 6.5 0 0 0 21 16 Z" stroke-linejoin="round"/>
+      <path d="M18.5 7.5 L19.2 9 L20.7 9.7 L19.2 10.4 L18.5 11.9 L17.8 10.4 L16.3 9.7 L17.8 9 Z"
+            fill="#C5B7FF" stroke="none"/>
+      <circle cx="22.5" cy="12" r="0.6" fill="#C5B7FF"/>
+    </g>
+
+    <text x="80" y="36" fill="#E6EDF3" font-size="15" font-weight="600">
+      Pipeline en modo descanso — solo se ejecutan agentes determinísticos
+    </text>
+    <text x="80" y="54" fill="#B1BAC4" font-size="12">
+      Las solicitudes que requieran LLM (po, ux, guru, *-dev, qa, review) quedan en
+      <tspan fill="#C5B7FF" font-weight="600">cola</tspan>
+      hasta el cierre de la ventana. Bypass activo para
+      <tspan fill="#F85149" font-weight="600">priority:critical</tspan>.
+    </text>
+
+    <!-- Countdown a la derecha -->
+    <g transform="translate(1180, 14)">
+      <text x="0" y="14" fill="#8B949E" font-size="10" letter-spacing="1.5">REANUDA EN</text>
+      <text x="0" y="42" fill="#C5B7FF" font-size="22" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace" letter-spacing="1.5">04h 45m 22s</text>
+    </g>
+
+    <!-- Boton "Configurar" -->
+    <g transform="translate(1340, 18)">
+      <rect width="76" height="28" rx="8" fill="none" stroke="#7C5CFF" stroke-opacity="0.55"/>
+      <text x="38" y="18" fill="#C5B7FF" font-size="11" font-weight="600" text-anchor="middle"
+            letter-spacing="0.5">Configurar</text>
+    </g>
+  </g>
+
+  <!-- =============== H2 SECCION =============== -->
+  <text x="32" y="194" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    BOARD KANBAN — PIPELINE V3
+  </text>
+
+  <!-- =============== LANES =============== -->
+
+  <!-- === Lane 1: DEFINICION (todos en cola — LLM-only) === -->
+  <g transform="translate(32, 214)">
+    <rect width="445" height="48" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="48" rx="2" fill="#BC8CFF"/>
+    <text x="22" y="29" fill="#BC8CFF" font-size="13" font-weight="700" letter-spacing="1.2">DEFINICIÓN</text>
+    <text x="155" y="29" fill="#8B949E" font-size="11">3 issues · todos en cola</text>
+    <!-- Pill "EN COLA" -->
+    <g transform="translate(370, 13)">
+      <rect width="60" height="22" rx="11" fill="#7C5CFF" fill-opacity="0.18" stroke="#7C5CFF" stroke-opacity="0.45"/>
+      <text x="30" y="15" fill="#C5B7FF" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="0.8">EN COLA</text>
+    </g>
+
+    <!-- Card 1: po (LLM) -->
+    <g transform="translate(0, 60)">
+      <rect width="445" height="80" rx="10" fill="#161B22" stroke="#30363D" opacity="0.85"/>
+      <rect x="2" width="4" height="80" rx="2" fill="#BC8CFF" opacity="0.4"/>
+      <text x="20" y="24" fill="#E6EDF3" font-size="13" font-weight="700">#2917 — PO</text>
+      <text x="20" y="44" fill="#B1BAC4" font-size="12">Refinar criterios CTA pago carrito</text>
+      <!-- Status "esperando ventana" -->
+      <g transform="translate(280, 13)">
+        <rect width="148" height="22" rx="11" fill="#7C5CFF" fill-opacity="0.16" stroke="#7C5CFF" stroke-opacity="0.4"/>
+        <path d="M286 24 A4 4 0 1 1 282 28 A4 4 0 0 1 286 24 Z" fill="none" stroke="#C5B7FF" stroke-width="1.2" transform="translate(-282,-22)"/>
+        <text x="74" y="15" fill="#C5B7FF" font-size="10" font-weight="600" text-anchor="middle">esperando 04h45m</text>
+      </g>
+      <!-- Skill chip LLM -->
+      <g transform="translate(20, 56)">
+        <rect width="48" height="18" rx="9" fill="#1F6FEB" fill-opacity="0.16" stroke="#1F6FEB" stroke-opacity="0.4"/>
+        <text x="24" y="13" fill="#58A6FF" font-size="9" font-weight="700" text-anchor="middle">LLM</text>
+      </g>
+      <text x="74" y="69" fill="#8B949E" font-size="11">criterios → po · sonnet</text>
+    </g>
+
+    <!-- Card 2: guru (LLM) -->
+    <g transform="translate(0, 152)">
+      <rect width="445" height="80" rx="10" fill="#161B22" stroke="#30363D" opacity="0.85"/>
+      <rect x="2" width="4" height="80" rx="2" fill="#BC8CFF" opacity="0.4"/>
+      <text x="20" y="24" fill="#E6EDF3" font-size="13" font-weight="700">#2920 — GURU</text>
+      <text x="20" y="44" fill="#B1BAC4" font-size="12">Análisis técnico — pre-fetch issue summaries</text>
+      <g transform="translate(280, 13)">
+        <rect width="148" height="22" rx="11" fill="#7C5CFF" fill-opacity="0.16" stroke="#7C5CFF" stroke-opacity="0.4"/>
+        <text x="74" y="15" fill="#C5B7FF" font-size="10" font-weight="600" text-anchor="middle">esperando 04h45m</text>
+      </g>
+      <g transform="translate(20, 56)">
+        <rect width="48" height="18" rx="9" fill="#1F6FEB" fill-opacity="0.16" stroke="#1F6FEB" stroke-opacity="0.4"/>
+        <text x="24" y="13" fill="#58A6FF" font-size="9" font-weight="700" text-anchor="middle">LLM</text>
+      </g>
+      <text x="74" y="69" fill="#8B949E" font-size="11">analisis → guru · sonnet</text>
+    </g>
+  </g>
+
+  <!-- === Lane 2: DESARROLLO (mezcla — builder/tester corriendo, dev en cola) === -->
+  <g transform="translate(497, 214)">
+    <rect width="445" height="48" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="48" rx="2" fill="#58A6FF"/>
+    <text x="22" y="29" fill="#58A6FF" font-size="13" font-weight="700" letter-spacing="1.2">DESARROLLO</text>
+    <text x="160" y="29" fill="#8B949E" font-size="11">3 issues · 2 corriendo · 1 en cola</text>
+
+    <!-- Card 1: builder (DETERMINISTICO — corriendo) -->
+    <g transform="translate(0, 60)">
+      <rect width="445" height="80" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect x="2" width="4" height="80" rx="2" fill="#3FB950"/>
+      <text x="20" y="24" fill="#E6EDF3" font-size="13" font-weight="700">#2925 — BUILDER</text>
+      <text x="20" y="44" fill="#B1BAC4" font-size="12">composeApp:assembleClientDebug</text>
+      <!-- Status "corriendo 02:42" -->
+      <g transform="translate(310, 13)">
+        <rect width="118" height="22" rx="11" fill="#3FB950" fill-opacity="0.16" stroke="#3FB950" stroke-opacity="0.45"/>
+        <circle cx="11" cy="11" r="3" fill="#3FB950"/>
+        <text x="59" y="15" fill="#3FB950" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="0.5">CORRIENDO 02:42</text>
+      </g>
+      <!-- Skill chip DETERMINISTICO + engranaje -->
+      <g transform="translate(20, 56)">
+        <rect width="80" height="18" rx="9" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+        <g transform="translate(4, 3) scale(0.5)" fill="none" stroke="#B1BAC4" stroke-width="2.2">
+          <path d="M12 2.5 L13.4 4.6 L15.8 4.1 L16.3 6.5 L18.6 7.4 L17.8 9.7 L19.5 11.5
+                   L17.8 13.3 L18.6 15.6 L16.3 16.5 L15.8 18.9 L13.4 18.4 L12 20.5
+                   L10.6 18.4 L8.2 18.9 L7.7 16.5 L5.4 15.6 L6.2 13.3 L4.5 11.5
+                   L6.2 9.7 L5.4 7.4 L7.7 6.5 L8.2 4.1 L10.6 4.6 Z" stroke-linejoin="round"/>
+          <circle cx="12" cy="11.5" r="3"/>
+        </g>
+        <text x="48" y="13" fill="#B1BAC4" font-size="9" font-weight="700" text-anchor="middle">DETERMINÍSTICO</text>
+      </g>
+      <text x="106" y="69" fill="#8B949E" font-size="11">build → builder · 0 tokens</text>
+    </g>
+
+    <!-- Card 2: tester (DETERMINISTICO — corriendo) -->
+    <g transform="translate(0, 152)">
+      <rect width="445" height="80" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect x="2" width="4" height="80" rx="2" fill="#3FB950"/>
+      <text x="20" y="24" fill="#E6EDF3" font-size="13" font-weight="700">#2918 — TESTER</text>
+      <text x="20" y="44" fill="#B1BAC4" font-size="12">jvmTest cobertura kover</text>
+      <g transform="translate(310, 13)">
+        <rect width="118" height="22" rx="11" fill="#3FB950" fill-opacity="0.16" stroke="#3FB950" stroke-opacity="0.45"/>
+        <circle cx="11" cy="11" r="3" fill="#3FB950"/>
+        <text x="59" y="15" fill="#3FB950" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="0.5">CORRIENDO 00:48</text>
+      </g>
+      <g transform="translate(20, 56)">
+        <rect width="80" height="18" rx="9" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+        <g transform="translate(4, 3) scale(0.5)" fill="none" stroke="#B1BAC4" stroke-width="2.2">
+          <path d="M12 2.5 L13.4 4.6 L15.8 4.1 L16.3 6.5 L18.6 7.4 L17.8 9.7 L19.5 11.5
+                   L17.8 13.3 L18.6 15.6 L16.3 16.5 L15.8 18.9 L13.4 18.4 L12 20.5
+                   L10.6 18.4 L8.2 18.9 L7.7 16.5 L5.4 15.6 L6.2 13.3 L4.5 11.5
+                   L6.2 9.7 L5.4 7.4 L7.7 6.5 L8.2 4.1 L10.6 4.6 Z" stroke-linejoin="round"/>
+          <circle cx="12" cy="11.5" r="3"/>
+        </g>
+        <text x="48" y="13" fill="#B1BAC4" font-size="9" font-weight="700" text-anchor="middle">DETERMINÍSTICO</text>
+      </g>
+      <text x="106" y="69" fill="#8B949E" font-size="11">verificacion → tester · 0 tokens</text>
+    </g>
+
+    <!-- Card 3: android-dev (LLM — en cola) -->
+    <g transform="translate(0, 244)">
+      <rect width="445" height="80" rx="10" fill="#161B22" stroke="#30363D" opacity="0.85"/>
+      <rect x="2" width="4" height="80" rx="2" fill="#58A6FF" opacity="0.4"/>
+      <text x="20" y="24" fill="#E6EDF3" font-size="13" font-weight="700">#2912 — ANDROID-DEV</text>
+      <text x="20" y="44" fill="#B1BAC4" font-size="12">Producto Splash con identidad por flavor</text>
+      <g transform="translate(280, 13)">
+        <rect width="148" height="22" rx="11" fill="#7C5CFF" fill-opacity="0.16" stroke="#7C5CFF" stroke-opacity="0.4"/>
+        <text x="74" y="15" fill="#C5B7FF" font-size="10" font-weight="600" text-anchor="middle">esperando 04h45m</text>
+      </g>
+      <g transform="translate(20, 56)">
+        <rect width="48" height="18" rx="9" fill="#1F6FEB" fill-opacity="0.16" stroke="#1F6FEB" stroke-opacity="0.4"/>
+        <text x="24" y="13" fill="#58A6FF" font-size="9" font-weight="700" text-anchor="middle">LLM</text>
+      </g>
+      <text x="74" y="69" fill="#8B949E" font-size="11">dev → android-dev · sonnet</text>
+    </g>
+  </g>
+
+  <!-- === Lane 3: ENTREGA (delivery determinístico — corriendo) === -->
+  <g transform="translate(962, 214)">
+    <rect width="445" height="48" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="48" rx="2" fill="#3FB950"/>
+    <text x="22" y="29" fill="#3FB950" font-size="13" font-weight="700" letter-spacing="1.2">ENTREGA</text>
+    <text x="120" y="29" fill="#8B949E" font-size="11">1 issue · corriendo</text>
+
+    <!-- Card 1: delivery (DETERMINISTICO) -->
+    <g transform="translate(0, 60)">
+      <rect width="445" height="80" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect x="2" width="4" height="80" rx="2" fill="#3FB950"/>
+      <text x="20" y="24" fill="#E6EDF3" font-size="13" font-weight="700">#2904 — DELIVERY</text>
+      <text x="20" y="44" fill="#B1BAC4" font-size="12">Commit + push + PR — fix(pipeline) restart re-exec</text>
+      <g transform="translate(310, 13)">
+        <rect width="118" height="22" rx="11" fill="#3FB950" fill-opacity="0.16" stroke="#3FB950" stroke-opacity="0.45"/>
+        <circle cx="11" cy="11" r="3" fill="#3FB950"/>
+        <text x="59" y="15" fill="#3FB950" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="0.5">CORRIENDO 00:12</text>
+      </g>
+      <g transform="translate(20, 56)">
+        <rect width="80" height="18" rx="9" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+        <g transform="translate(4, 3) scale(0.5)" fill="none" stroke="#B1BAC4" stroke-width="2.2">
+          <path d="M12 2.5 L13.4 4.6 L15.8 4.1 L16.3 6.5 L18.6 7.4 L17.8 9.7 L19.5 11.5
+                   L17.8 13.3 L18.6 15.6 L16.3 16.5 L15.8 18.9 L13.4 18.4 L12 20.5
+                   L10.6 18.4 L8.2 18.9 L7.7 16.5 L5.4 15.6 L6.2 13.3 L4.5 11.5
+                   L6.2 9.7 L5.4 7.4 L7.7 6.5 L8.2 4.1 L10.6 4.6 Z" stroke-linejoin="round"/>
+          <circle cx="12" cy="11.5" r="3"/>
+        </g>
+        <text x="48" y="13" fill="#B1BAC4" font-size="9" font-weight="700" text-anchor="middle">DETERMINÍSTICO</text>
+      </g>
+      <text x="106" y="69" fill="#8B949E" font-size="11">entrega → delivery · 0 tokens</text>
+    </g>
+
+    <!-- Bypass card (priority:critical override) -->
+    <g transform="translate(0, 152)">
+      <rect width="445" height="80" rx="10" fill="#161B22" stroke="#F85149" stroke-opacity="0.45"/>
+      <rect x="2" width="4" height="80" rx="2" fill="#F85149"/>
+      <text x="20" y="24" fill="#E6EDF3" font-size="13" font-weight="700">#2932 — REVIEW (bypass)</text>
+      <text x="20" y="44" fill="#B1BAC4" font-size="12">Hotfix critico de auth — ejecuta aunque sea LLM</text>
+      <g transform="translate(310, 13)">
+        <rect width="118" height="22" rx="11" fill="#F85149" fill-opacity="0.16" stroke="#F85149" stroke-opacity="0.45"/>
+        <circle cx="11" cy="11" r="3" fill="#F85149"/>
+        <text x="59" y="15" fill="#F85149" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="0.5">CRITICAL · BYPASS</text>
+      </g>
+      <g transform="translate(20, 56)">
+        <rect width="98" height="18" rx="9" fill="#F85149" fill-opacity="0.16" stroke="#F85149" stroke-opacity="0.45"/>
+        <text x="49" y="13" fill="#F85149" font-size="9" font-weight="700" text-anchor="middle" letter-spacing="0.5">priority:critical</text>
+      </g>
+      <text x="124" y="69" fill="#8B949E" font-size="11">aprobacion → review · sonnet</text>
+    </g>
+
+    <!-- Footer info -->
+    <g transform="translate(0, 248)">
+      <text x="0" y="14" fill="#8B949E" font-size="11" font-style="italic">
+        Modo descanso reanudará el procesamiento LLM al cerrar la ventana.
+      </text>
+      <text x="0" y="32" fill="#8B949E" font-size="11" font-style="italic">
+        Concurrencia escalonada al despertar para evitar estampida.
+      </text>
+    </g>
+  </g>
+
+  <!-- =============== FOOTER =============== -->
+  <g transform="translate(0, 858)">
+    <rect width="1440" height="42" fill="#161B22"/>
+    <rect width="1440" height="1" fill="#30363D"/>
+    <text x="32" y="26" fill="#8B949E" font-size="11">
+      Modo descanso · ventana 23:00–07:00 · TZ America/Argentina/Buenos_Aires · días: lun–dom · bypass: priority:critical
+    </text>
+    <text x="1408" y="26" fill="#8B949E" font-size="11" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+      .pipeline/rest-mode.json
+    </text>
+  </g>
+
+</svg>
