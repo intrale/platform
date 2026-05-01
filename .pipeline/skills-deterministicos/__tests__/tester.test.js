@@ -247,8 +247,10 @@ test('findIssueWorktree — encuentra worktree por convención platform.agent-<i
             try { execSync(`git worktree remove --force "${wtPath}"`, { cwd: fakeRepo, shell: true, stdio: 'ignore' }); } catch {}
         }
     } catch (e) {
-        // Si git no está disponible (rare), el test no aplica
-        if (/not found|no such/i.test(e.message)) return;
+        // Si git no está disponible (rare), el test no aplica.
+        // Cubrimos mensajes en inglés y español (Windows localizado).
+        const m = e.message || '';
+        if (/not found|no such|ENOENT|no se reconoce|is not recognized/i.test(m)) return;
         throw e;
     }
 });
