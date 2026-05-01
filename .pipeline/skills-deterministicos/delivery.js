@@ -543,6 +543,42 @@ async function main() {
 }
 
 if (require.main === module) {
+    if (process.argv.includes('--self-check')) {
+        const { runSelfCheck } = require('./lib/self-check');
+        runSelfCheck('delivery', [
+            { name: 'parseArgs sin argumentos', fn: () => {
+                const a = parseArgs(['node', 'delivery.js']);
+                if (typeof a !== 'object' || a === null) throw new Error('parseArgs no devuelve objeto');
+                if (a.autoMerge !== true) throw new Error('autoMerge default debió ser true');
+            }},
+            { name: 'parseArgs con --no-auto-merge', fn: () => {
+                const a = parseArgs(['node', 'delivery.js', '1234', '--no-auto-merge']);
+                if (a.issue !== 1234) throw new Error(`issue esperado 1234 got ${a.issue}`);
+                if (a.autoMerge !== false) throw new Error('autoMerge debió ser false');
+            }},
+            { name: 'hasQaGate detecta qa:passed', fn: () => {
+                if (!hasQaGate(['foo', 'qa:passed'])) throw new Error('debió aceptar qa:passed');
+                if (!hasQaGate(['qa:skipped'])) throw new Error('debió aceptar qa:skipped');
+                if (hasQaGate(['qa:pending'])) throw new Error('NO debió aceptar qa:pending');
+                if (hasQaGate([])) throw new Error('NO debió aceptar lista vacía');
+            }},
+            { name: 'codeowners lib carga y matchea path', fn: () => {
+                const co = require('./lib/codeowners');
+                const rules = co.parseCodeowners('/.github/   @leitolarreta\n');
+                if (!rules.length) throw new Error('parseCodeowners no devuelve reglas');
+                const owners = co.resolveOwners(rules, ['.github/workflows/build.yml']);
+                if (!owners.includes('@leitolarreta')) throw new Error('debió resolver @leitolarreta para .github/');
+            }},
+            { name: 'codeowners NO matchea .pipeline/ con CODEOWNERS post-acción 3', fn: () => {
+                // Acción 3: solo .github/ requiere humano. .pipeline/ liberado.
+                const co = require('./lib/codeowners');
+                const rules = co.loadCodeowners(REPO_ROOT);
+                const humans = co.getHumanOwners(rules, ['.pipeline/skills-deterministicos/tester.js']);
+                if (humans.length) throw new Error(`.pipeline/ NO debería requerir humano: ${humans.join(',')}`);
+            }},
+        ]);
+        return;
+    }
     main().catch((e) => {
         process.stderr.write(`[delivery] fatal: ${e.stack || e.message}\n`);
         process.exit(2);

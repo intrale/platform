@@ -294,6 +294,38 @@ async function main() {
 
 // Ejecutar solo si es invocado como CLI (no cuando es require()eado en tests)
 if (require.main === module) {
+    if (process.argv.includes('--self-check')) {
+        const { runSelfCheck } = require('./lib/self-check');
+        runSelfCheck('builder', [
+            { name: 'parseArgs sin argumentos', fn: () => {
+                const a = parseArgs(['node', 'builder.js']);
+                if (typeof a !== 'object' || a === null) throw new Error('parseArgs no devuelve objeto');
+                if (a.scope !== 'smart') throw new Error(`scope default esperado 'smart' got '${a.scope}'`);
+            }},
+            { name: 'parseArgs con --clean', fn: () => {
+                const a = parseArgs(['node', 'builder.js', '1234', '--clean']);
+                if (a.issue !== 1234) throw new Error(`issue esperado 1234 got ${a.issue}`);
+                if (a.scope !== 'clean') throw new Error(`scope esperado 'clean' got '${a.scope}'`);
+            }},
+            { name: 'buildGradleCommand devuelve cmd/args válidos', fn: () => {
+                const r = buildGradleCommand('smart', null);
+                if (!r || typeof r.cmd !== 'string' || !Array.isArray(r.args)) {
+                    throw new Error(`buildGradleCommand devolvió ${JSON.stringify(r)}`);
+                }
+            }},
+            { name: 'buildGradleCommand --clean incluye build task', fn: () => {
+                const r = buildGradleCommand('clean', null);
+                if (!r.args.includes('build') || !r.args.includes('clean')) {
+                    throw new Error(`args sin clean+build: ${JSON.stringify(r.args)}`);
+                }
+            }},
+            { name: 'gradle-parser carga', fn: () => {
+                const gp = require('./lib/gradle-parser');
+                if (!gp || typeof gp !== 'object') throw new Error('gradle-parser no exporta objeto');
+            }},
+        ]);
+        return;
+    }
     main().catch((e) => {
         process.stderr.write(`[builder] fatal: ${e.stack || e.message}\n`);
         process.exit(2);
