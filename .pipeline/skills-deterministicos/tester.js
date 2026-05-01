@@ -57,6 +57,23 @@ const DEFAULT_COVERAGE_THRESHOLD = 80;
 const STALE_XML_GRACE_MS = 1000;        // tolerancia de skew para mtime
 const GRADLE_INSTANT_FAIL_MS = 2000;    // <2s con exit≠0 = gradle no arrancó
 
+// Rebote #2892 (rev-2 cross-phase): garantizar `git` en PATH del child node
+// que corre `node --test`. Cuando pulpo arranca desde un contexto donde el
+// PATH heredado no incluye el directorio de git.exe (por ejemplo restart
+// disparado desde un shell con PATH stripped, o Windows Service con system
+// PATH limitado), el child node no encuentra `git` y los tests del propio
+// pipeline que usan `spawnSync('git', …)` o `execSync('git …')` fallan
+// con "git no se reconoce como un comando interno o externo". Probamos
+// `where git` primero, y si eso falla, caemos a las rutas de instalación
+// estándar de Git for Windows.
+const GIT_FALLBACK_DIRS_WIN32 = [
+    'C:\\Program Files\\Git\\cmd',
+    'C:\\Program Files\\Git\\bin',
+    'C:\\Program Files\\Git\\mingw64\\bin',
+    'C:\\Program Files (x86)\\Git\\cmd',
+    'C:\\Program Files (x86)\\Git\\bin',
+];
+
 // Módulos Gradle que soportamos individualmente
 const MODULE_DIRS = {
     backend: 'backend',
@@ -80,6 +97,43 @@ const PIPELINE_ONLY_PATTERNS = [
     /^agents\//,        // reglas para agentes
     /^\.github\//,      // GitHub Actions / templates
 ];
+
+/**
+ * Resuelve el directorio que contiene `git.exe`/`git` para asegurarse de que
+ * los procesos hijos puedan ejecutar git aunque el PATH heredado del pulpo
+ * no lo incluya (rebote #2892 rev-2). Estrategia:
+ *   1) `where git` (Windows) o `which git` (Unix) usando el PATH actual.
+ *   2) Caída a paths estándar de Git for Windows si el lookup falla.
+ *   3) Devuelve `null` si nada funciona — el caller debe seguir adelante
+ *      sin asumir que git esté disponible (los tests de pipeline emitirán
+ *      fallas claras).
+ */
+function resolveGitDir() {
+    const lookup = process.platform === 'win32' ? 'where' : 'which';
+    try {
+        const r = require('child_process').spawnSync(lookup, ['git'], {
+            encoding: 'utf8', windowsHide: true, shell: false, timeout: 5000,
+        });
+        if (r && r.status === 0 && typeof r.stdout === 'string') {
+            const firstLine = r.stdout.split(/\r?\n/).map(s => s.trim()).find(Boolean);
+            if (firstLine) {
+                try {
+                    const stat = fs.statSync(firstLine);
+                    if (stat.isFile()) return path.dirname(firstLine);
+                } catch { /* ignore */ }
+            }
+        }
+    } catch { /* ignore */ }
+
+    if (process.platform === 'win32') {
+        for (const dir of GIT_FALLBACK_DIRS_WIN32) {
+            try {
+                if (fs.statSync(path.join(dir, 'git.exe')).isFile()) return dir;
+            } catch { /* ignore */ }
+        }
+    }
+    return null;
+}
 
 /**
  * Descubre el worktree del agente para un issue dado vía `git worktree list`.
@@ -555,6 +609,19 @@ async function main() {
     const env = { ...process.env, JAVA_HOME: JAVA_HOME_DEFAULT };
     env.PATH = `${JAVA_HOME_DEFAULT}/bin${path.delimiter}${env.PATH || ''}`;
 
+    // Rebote #2892 rev-2: garantizar `git` en PATH para los tests pipeline-only.
+    // Cuando pulpo arranca desde un contexto con PATH stripped, los tests del
+    // propio pipeline (git-context.test.js, backup-agent-branch.test.js,
+    // tester.test.js) que invocan git via spawnSync/execSync fallan con
+    // "git no se reconoce como un comando interno o externo".
+    const gitDir = resolveGitDir();
+    if (gitDir) {
+        env.PATH = `${gitDir}${path.delimiter}${env.PATH}`;
+        logAppend(`[tester] git detectado en ${gitDir} — agregado a PATH del child node`);
+    } else {
+        logAppend('[tester] WARNING: no se pudo localizar git.exe; los tests pipeline-only que dependen de git pueden fallar');
+    }
+
     // ── Detección de cambios pipeline-only (issue #2891) ─────────────
     // Si todo el diff vs origin/main toca solo `.pipeline/`, `docs/`,
     // `agents/`, `.github/`, no tiene sentido correr Gradle: corremos
@@ -813,7 +880,9 @@ module.exports = {
     parseNodeTestJunit,
     runNodeTests,
     getChangedFilesVsMain,
+    resolveGitDir,
     PIPELINE_ONLY_PATTERNS,
+    GIT_FALLBACK_DIRS_WIN32,
     MODULE_DIRS,
     DEFAULT_COVERAGE_THRESHOLD,
 };

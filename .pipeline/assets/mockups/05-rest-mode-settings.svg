@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 05 — Página de configuración "Modo descanso" (#2882 PR-A / Bloque 3)
+  Resolucion: 1440x900
+  Demuestra:
+    - Tab "Modo descanso" en navegación lateral del dashboard
+    - Form: toggle ON/OFF, hora inicio, hora fin, timezone, días, bypass labels
+    - Sección read-only para "skills determinísticos" + "skills LLM"
+    - Estado actual: ACTIVO con preview del countdown
+    - Banner de confirmación tras guardar (toast persistente abajo)
+  Tokens: design-tokens.css
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad05" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="restPanel05" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1F1645" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- =============== HEADER (compacto, igual al home) =============== -->
+  <rect x="0" y="0" width="1440" height="64" fill="#161B22"/>
+  <rect x="0" y="63" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(24, 14)">
+    <rect width="36" height="36" rx="9" fill="#0D274D"/>
+    <path d="M18 7 L5 30 L31 30 Z" fill="none" stroke="url(#brandGrad05)" stroke-width="2.5"
+          stroke-linejoin="round"/>
+    <path d="M18 16 L13 26 L23 26 Z" fill="url(#brandGrad05)"/>
+  </g>
+  <text x="72" y="32" fill="#E6EDF3" font-size="17" font-weight="700">Intrale Pipeline</text>
+  <text x="72" y="50" fill="#8B949E" font-size="10" font-weight="600" letter-spacing="1.4">SETTINGS · MODO DESCANSO</text>
+  <!-- Pill estado actual -->
+  <g transform="translate(280, 18)">
+    <rect width="178" height="28" rx="14" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.55"/>
+    <g transform="translate(10, 5)" fill="none" stroke="#C5B7FF" stroke-width="1.6">
+      <path d="M16 11 A6.5 6.5 0 1 1 9.5 5 A5 5 0 0 0 16 11 Z" stroke-linejoin="round"/>
+    </g>
+    <text x="36" y="18" fill="#C5B7FF" font-size="11" font-weight="700" letter-spacing="1.2">ACTIVO · 02:14 LOCAL</text>
+  </g>
+  <text x="1416" y="38" fill="#8B949E" font-size="11" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+    localhost:3200/settings/rest-mode
+  </text>
+
+  <!-- =============== SIDEBAR =============== -->
+  <rect x="0" y="64" width="220" height="836" fill="#161B22"/>
+  <rect x="220" y="64" width="1" height="836" fill="#30363D"/>
+
+  <!-- Items de navegación -->
+  <g font-size="13" fill="#B1BAC4" font-weight="500">
+    <text x="20" y="100" fill="#8B949E" font-size="10" letter-spacing="1.6">PIPELINE</text>
+    <g transform="translate(20, 116)">
+      <text x="0" y="14">Board</text>
+    </g>
+    <g transform="translate(20, 144)">
+      <text x="0" y="14">Issues</text>
+    </g>
+    <g transform="translate(20, 172)">
+      <text x="0" y="14">Consumo</text>
+    </g>
+
+    <text x="20" y="218" fill="#8B949E" font-size="10" letter-spacing="1.6">OPERACIÓN</text>
+
+    <!-- Item activo: Modo descanso -->
+    <g transform="translate(0, 234)">
+      <rect width="220" height="36" fill="#7C5CFF" fill-opacity="0.12"/>
+      <rect width="3" height="36" fill="#7C5CFF"/>
+      <g transform="translate(20, 8)" fill="none" stroke="#C5B7FF" stroke-width="1.6">
+        <path d="M16 11 A6.5 6.5 0 1 1 9.5 5 A5 5 0 0 0 16 11 Z" stroke-linejoin="round"/>
+        <circle cx="14" cy="4" r="0.5" fill="#C5B7FF"/>
+      </g>
+      <text x="48" y="22" fill="#C5B7FF" font-size="13" font-weight="700">Modo descanso</text>
+    </g>
+
+    <g transform="translate(20, 286)"><text x="0" y="14">Pausa parcial</text></g>
+    <g transform="translate(20, 314)"><text x="0" y="14">Ventanas QA/Build</text></g>
+    <g transform="translate(20, 342)"><text x="0" y="14">Bloqueado humano</text></g>
+
+    <text x="20" y="388" fill="#8B949E" font-size="10" letter-spacing="1.6">SISTEMA</text>
+    <g transform="translate(20, 404)"><text x="0" y="14">Salud</text></g>
+    <g transform="translate(20, 432)"><text x="0" y="14">Logs</text></g>
+  </g>
+
+  <!-- =============== MAIN CONTENT =============== -->
+  <g transform="translate(252, 96)">
+
+    <!-- Title + breadcrumb -->
+    <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="1.2">SETTINGS / OPERACIÓN /</text>
+    <text x="0" y="32" fill="#E6EDF3" font-size="26" font-weight="700">Modo descanso</text>
+    <text x="0" y="56" fill="#B1BAC4" font-size="13">
+      Definí una ventana horaria donde el pipeline solo ejecuta agentes determinísticos.
+      Los agentes LLM quedan en cola hasta que la ventana se cierra.
+    </text>
+
+    <!-- =============== CARD 1: TOGGLE + HORARIO =============== -->
+    <g transform="translate(0, 88)">
+      <rect width="780" height="280" rx="12" fill="url(#restPanel05)" stroke="#30363D"/>
+
+      <!-- Header card con toggle ON/OFF -->
+      <text x="24" y="36" fill="#E6EDF3" font-size="16" font-weight="700">Configuración de la ventana</text>
+
+      <!-- Toggle ON -->
+      <g transform="translate(710, 24)">
+        <rect width="46" height="24" rx="12" fill="#7C5CFF"/>
+        <circle cx="34" cy="12" r="9" fill="#FFFFFF"/>
+        <text x="0" y="-6" fill="#C5B7FF" font-size="10" font-weight="700" letter-spacing="1.2">ACTIVO</text>
+      </g>
+      <rect x="0" y="58" width="780" height="1" fill="#30363D"/>
+
+      <!-- Hora inicio + Hora fin -->
+      <g transform="translate(24, 84)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.8">HORA INICIO</text>
+        <rect x="0" y="10" width="120" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="60" y="36" fill="#E6EDF3" font-size="20" font-weight="700" text-anchor="middle"
+              font-family="'SF Mono', Consolas, monospace" letter-spacing="2">23:00</text>
+      </g>
+      <g transform="translate(170, 84)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.8">HORA FIN</text>
+        <rect x="0" y="10" width="120" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="60" y="36" fill="#E6EDF3" font-size="20" font-weight="700" text-anchor="middle"
+              font-family="'SF Mono', Consolas, monospace" letter-spacing="2">07:00</text>
+      </g>
+      <g transform="translate(316, 84)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.8">ZONA HORARIA</text>
+        <rect x="0" y="10" width="240" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="36" fill="#E6EDF3" font-size="13">America/Argentina/Buenos_Aires</text>
+        <path d="M222 30 L228 36 L234 30" fill="none" stroke="#8B949E" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+
+      <!-- Días aplicables -->
+      <g transform="translate(24, 156)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.8">DÍAS APLICABLES</text>
+        <!-- Day pills (todos activos) -->
+        <g transform="translate(0, 12)">
+          <g transform="translate(0, 0)">
+            <rect width="44" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.5"/>
+            <text x="22" y="22" fill="#C5B7FF" font-size="12" font-weight="700" text-anchor="middle">L</text>
+          </g>
+          <g transform="translate(52, 0)">
+            <rect width="44" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.5"/>
+            <text x="22" y="22" fill="#C5B7FF" font-size="12" font-weight="700" text-anchor="middle">M</text>
+          </g>
+          <g transform="translate(104, 0)">
+            <rect width="44" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.5"/>
+            <text x="22" y="22" fill="#C5B7FF" font-size="12" font-weight="700" text-anchor="middle">M</text>
+          </g>
+          <g transform="translate(156, 0)">
+            <rect width="44" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.5"/>
+            <text x="22" y="22" fill="#C5B7FF" font-size="12" font-weight="700" text-anchor="middle">J</text>
+          </g>
+          <g transform="translate(208, 0)">
+            <rect width="44" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.5"/>
+            <text x="22" y="22" fill="#C5B7FF" font-size="12" font-weight="700" text-anchor="middle">V</text>
+          </g>
+          <g transform="translate(260, 0)">
+            <rect width="44" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.5"/>
+            <text x="22" y="22" fill="#C5B7FF" font-size="12" font-weight="700" text-anchor="middle">S</text>
+          </g>
+          <g transform="translate(312, 0)">
+            <rect width="44" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.5"/>
+            <text x="22" y="22" fill="#C5B7FF" font-size="12" font-weight="700" text-anchor="middle">D</text>
+          </g>
+        </g>
+      </g>
+
+      <!-- Preview del countdown -->
+      <g transform="translate(580, 156)">
+        <rect width="176" height="84" rx="10" fill="#7C5CFF" fill-opacity="0.10" stroke="#7C5CFF" stroke-opacity="0.45"/>
+        <text x="14" y="22" fill="#8B949E" font-size="10" letter-spacing="1.5">REANUDA EN</text>
+        <text x="14" y="56" fill="#C5B7FF" font-size="22" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace" letter-spacing="1.5">04h 45m</text>
+        <text x="14" y="74" fill="#8B949E" font-size="10">basado en hora local actual</text>
+      </g>
+    </g>
+
+    <!-- =============== CARD 2: SKILLS DETERMINÍSTICOS / LLM (read-only) =============== -->
+    <g transform="translate(0, 392)">
+      <rect width="780" height="220" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="24" y="36" fill="#E6EDF3" font-size="16" font-weight="700">Skills clasificados</text>
+      <text x="24" y="58" fill="#B1BAC4" font-size="12">
+        Los skills determinísticos siguen ejecutando dentro de la ventana. Los LLM quedan en cola.
+      </text>
+      <text x="755" y="36" fill="#8B949E" font-size="11" text-anchor="end">desde config.yaml · read-only</text>
+
+      <!-- Columna determinísticos -->
+      <g transform="translate(24, 80)">
+        <text x="0" y="0" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.2">DETERMINÍSTICOS · CORREN EN VENTANA</text>
+        <g transform="translate(0, 16)" font-size="12">
+          <g><rect width="86" height="26" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+             <text x="43" y="17" fill="#B1BAC4" text-anchor="middle">delivery</text></g>
+          <g transform="translate(94, 0)"><rect width="86" height="26" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+             <text x="43" y="17" fill="#B1BAC4" text-anchor="middle">builder</text></g>
+          <g transform="translate(188, 0)"><rect width="86" height="26" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+             <text x="43" y="17" fill="#B1BAC4" text-anchor="middle">tester</text></g>
+          <g transform="translate(282, 0)"><rect width="86" height="26" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+             <text x="43" y="17" fill="#B1BAC4" text-anchor="middle">linter</text></g>
+        </g>
+      </g>
+
+      <!-- Columna LLM -->
+      <g transform="translate(24, 144)">
+        <text x="0" y="0" fill="#58A6FF" font-size="11" font-weight="700" letter-spacing="1.2">LLM · QUEDAN EN COLA</text>
+        <g transform="translate(0, 16)" font-size="12">
+          <g><rect width="60" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="30" y="16" fill="#58A6FF" text-anchor="middle">po</text></g>
+          <g transform="translate(68, 0)"><rect width="60" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="30" y="16" fill="#58A6FF" text-anchor="middle">ux</text></g>
+          <g transform="translate(136, 0)"><rect width="60" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="30" y="16" fill="#58A6FF" text-anchor="middle">guru</text></g>
+          <g transform="translate(204, 0)"><rect width="80" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="40" y="16" fill="#58A6FF" text-anchor="middle">security</text></g>
+          <g transform="translate(292, 0)"><rect width="80" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="40" y="16" fill="#58A6FF" text-anchor="middle">planner</text></g>
+          <g transform="translate(380, 0)"><rect width="100" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="50" y="16" fill="#58A6FF" text-anchor="middle">backend-dev</text></g>
+          <g transform="translate(488, 0)"><rect width="100" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="50" y="16" fill="#58A6FF" text-anchor="middle">android-dev</text></g>
+          <g transform="translate(596, 0)"><rect width="80" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="40" y="16" fill="#58A6FF" text-anchor="middle">web-dev</text></g>
+        </g>
+        <g transform="translate(0, 50)" font-size="12">
+          <g><rect width="100" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="50" y="16" fill="#58A6FF" text-anchor="middle">pipeline-dev</text></g>
+          <g transform="translate(108, 0)"><rect width="60" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="30" y="16" fill="#58A6FF" text-anchor="middle">qa</text></g>
+          <g transform="translate(176, 0)"><rect width="80" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="40" y="16" fill="#58A6FF" text-anchor="middle">review</text></g>
+          <g transform="translate(264, 0)"><rect width="80" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="40" y="16" fill="#58A6FF" text-anchor="middle">historia</text></g>
+          <g transform="translate(352, 0)"><rect width="80" height="24" rx="6" fill="#1F6FEB" fill-opacity="0.12" stroke="#1F6FEB" stroke-opacity="0.4"/>
+             <text x="40" y="16" fill="#58A6FF" text-anchor="middle">refinar</text></g>
+        </g>
+      </g>
+    </g>
+
+    <!-- =============== CARD 3: BYPASS LABELS (read-only) =============== -->
+    <g transform="translate(0, 636)">
+      <rect width="780" height="120" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="24" y="36" fill="#E6EDF3" font-size="16" font-weight="700">Bypass por label</text>
+      <text x="24" y="58" fill="#B1BAC4" font-size="12">
+        Issues con estos labels se ejecutan aunque la ventana esté activa y el skill sea LLM.
+      </text>
+      <text x="755" y="36" fill="#8B949E" font-size="11" text-anchor="end">solo desde config.yaml</text>
+
+      <g transform="translate(24, 78)">
+        <rect width="142" height="28" rx="14" fill="#F85149" fill-opacity="0.16" stroke="#F85149" stroke-opacity="0.45"/>
+        <text x="71" y="18" fill="#F85149" font-size="11" font-weight="700" text-anchor="middle">priority:critical</text>
+      </g>
+      <g transform="translate(180, 78)">
+        <rect width="80" height="28" rx="14" fill="none" stroke="#30363D" stroke-dasharray="3 3"/>
+        <text x="40" y="18" fill="#6E7681" font-size="11" text-anchor="middle">+ agregar</text>
+      </g>
+    </g>
+
+    <!-- ============== ACCIONES ============== -->
+    <g transform="translate(0, 776)">
+      <g transform="translate(620, 0)">
+        <rect width="76" height="36" rx="8" fill="none" stroke="#30363D"/>
+        <text x="38" y="23" fill="#B1BAC4" font-size="12" text-anchor="middle">Cancelar</text>
+      </g>
+      <g transform="translate(704, 0)">
+        <rect width="76" height="36" rx="8" fill="#7C5CFF"/>
+        <text x="38" y="23" fill="#FFFFFF" font-size="12" font-weight="700" text-anchor="middle">Guardar</text>
+      </g>
+    </g>
+
+  </g>
+
+  <!-- =============== TOAST DE CONFIRMACION =============== -->
+  <g transform="translate(996, 824)">
+    <rect width="412" height="60" rx="10" fill="#161B22" stroke="#3FB950" stroke-opacity="0.5"/>
+    <rect width="3" height="60" fill="#3FB950"/>
+    <g transform="translate(20, 18)" fill="none" stroke="#3FB950" stroke-width="1.75">
+      <circle cx="12" cy="12" r="9"/>
+      <path d="M8 12.5 L11 15.5 L16 9.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="56" y="28" fill="#E6EDF3" font-size="13" font-weight="700">Configuración guardada</text>
+    <text x="56" y="46" fill="#B1BAC4" font-size="11">Hot-reload aplicado · sin reinicio del pipeline</text>
+  </g>
+
+</svg>

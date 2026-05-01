@@ -1,0 +1,3362 @@
+{
+  "1121": {
+    "summary": "Funcionalidades Carrito y Pedidos del cliente — flujo de compra completo. NO tiene tests, ni video, ni reporte.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T13:10:44Z",
+        "preview": "⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-03-29T15:36:42Z",
+        "preview": "🎨 Criterios UX — Reporte PO+QA v2.0 (Carrito y Pedidos) Evaluación de la implementación actual La UI de Carrito (ClientCartScreen) y Pedidos (ClientOrdersScreen) presenta una impl"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-03-29T15:35:40Z",
+        "preview": "Criterios de aceptación — PO (Pipeline V2) Reporte PDF v2.0 [ ] Given se ejecuta el reporte QA para carrito y pedidos, When se genera el PDF, Then el documento sigue el template do"
+      }
+    ],
+    "fetchedAt": 1777557616943
+  },
+  "1123": {
+    "summary": "Funcionalidades DeliveryHome y DeliveryDashboard — operación del repartidor. NO tiene tests, ni video, ni reporte.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T00:06:17Z",
+        "preview": "🔒 Verificación de Seguridad — Pipeline de Desarrollo (verificacion) Resultado: ✅ Aprobado Verificación empírica del deliverable Este issue es de QA compliance / documentación — no"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T13:53:28Z",
+        "preview": "⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-01T22:43:20Z",
+        "preview": "📋 Criterios de Aceptación — PO (Pipeline Definición) CA-1: Reporte HTML v2.0 generado correctamente Given el template docs/qa/reporte-signup-flujos-y-casos.html como base v2.0 Whe"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-01T22:39:06Z",
+        "preview": "🔒 Análisis de Seguridad — Pipeline de Definición (Pasada 2) Resultado: ✅ Aprobado con observaciones Este issue es de QA compliance (reportes v2.0) y no introduce código nuevo. Rat"
+      }
+    ],
+    "fetchedAt": 1777557616943
+  },
+  "1879": {
+    "summary": "En el issue #740 se implementó el centro de notificaciones para repartidores. El ViewModel asigna correctamente errorMessage cuando la carga falla, pero la UI no lo muestra — el usuario ve un estado vacío sin distinguir si hay notificaciones o si hubo un error.",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "1918": {
+    "summary": "Como cliente quiero ver productos recomendados basados en mis compras anteriores para descubrir cosas que me pueden interesar sin buscar.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:30:58Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1919": {
+    "summary": "Como cliente quiero poder escribir en lenguaje natural lo que necesito (\"algo para hacer una pizza\") y que la app me sugiera los productos relevantes del catálogo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:30:58Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1921": {
+    "summary": "Como dueño de un negocio quiero recibir al final del día un resumen generado por IA con insights sobre mi operación para tomar mejores decisiones sin analizar datos yo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T23:44:20Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-01T17:32:27Z",
+        "preview": "🔒 Auditoría de Seguridad — Verificación #1921 Resultado: APROBADO ✅ Endpoints auditados /{business}/products/search-history (GET/POST/DELETE) /{business}/products/suggestions (GET"
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1925": {
+    "summary": "Como dueño de un negocio que atiende turistas quiero que mi catálogo se muestre automáticamente en el idioma del cliente para no perder ventas por barrera de idioma.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:31:33Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1926": {
+    "summary": "Como dueño de un negocio quiero recibir una sugerencia semanal de qué productos voy a necesitar más para planificar mi stock sin adivinar.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:31:42Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1927": {
+    "summary": "Como dueño de un negocio quiero que la app me sugiera promos automáticas para productos con baja rotación o stock por vencer para mover mercadería antes de perderla.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T23:46:13Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1928": {
+    "summary": "Como dueño de un negocio quiero ver un resumen de lo que dicen mis clientes sin tener que leer cada comentario individualmente.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:31:55Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1929": {
+    "summary": "Como dueño de un negocio no tech-savvy quiero poder dar de alta mi comercio hablándole a la app para no tener que llenar formularios complicados.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:32:02Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1930": {
+    "summary": "Como dueño de un negocio quiero recibir sugerencias de ajuste de precios según la demanda para maximizar ingresos sin perder clientes.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:32:16Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1931": {
+    "summary": "Como cliente quiero ver un estimado realista de cuánto va a tardar mi pedido para poder planificar sin ansiedad.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T16:59:40Z",
+        "preview": "✅ Issue desbloqueado automáticamente"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T23:48:56Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:42:11Z",
+        "preview": "✅ Issue desbloqueado automáticamente"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:09:53Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\nIssues creados automáticamente:\\n- #2458 — fix: Product Owner rechazó: Video de QA no demuestra los criterios de aceptación en l\\n\\nEs"
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1932": {
+    "summary": "Como dueño de un negocio gastronómico quiero que la app me sugiera un menú del día basado en mi stock y lo que más se vende para no tener que pensar qué ofrecer cada día.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T23:59:06Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1933": {
+    "summary": "Como plataforma quiero evaluar automáticamente la calidad de las fotos de productos para que los catálogos se vean profesionales y atractivos.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:29:43Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1934": {
+    "summary": "Como plataforma quiero que el chat entre negocio y repartidor traduzca automáticamente para que se comuniquen sin barrera de idioma.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:47:18Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\n\\nIssues existentes vinculados:\\n- #2401 — fix: android-dev rechazó: Rebote con motivo irresoluble desde android-dev.\\n\\nEste issue qu"
+      }
+    ],
+    "fetchedAt": 1777557616943
+  },
+  "1935": {
+    "summary": "Como dueño de un negocio quiero recibir un reporte semanal directo en mi celular con las métricas clave sin tener que abrir la app.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1936": {
+    "summary": "Como dueño de un negocio quiero registrar el stock de cada producto y recibir alerta cuando esté por agotarse para no quedarme sin mercadería.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1937": {
+    "summary": "Como dueño de un negocio quiero sacar una foto de la estantería y que la app cuente los productos visibles para actualizar el stock sin contar a mano.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1938": {
+    "summary": "Como dueño de un negocio quiero saber cuándo se me va a acabar un producto ANTES de que pase para poder reponer a tiempo.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1939": {
+    "summary": "Como dueño de un negocio quiero registrar cuando recibo mercadería para tener control de costos, márgenes y rotación de inventario.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1940": {
+    "summary": "Como dueño de un negocio quiero conocer el margen real de cada producto y recibir sugerencias de ajuste para maximizar rentabilidad sin perder clientes.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1941": {
+    "summary": "Como dueño de un negocio quiero que la app me genere una lista de compras basada en lo que necesito reponer para no olvidarme nada y comprar lo justo.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1942": {
+    "summary": "Como dueño de un negocio quiero detectar automáticamente productos que se están desperdiciando para reducir pérdidas.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1943": {
+    "summary": "Como dueño de un negocio quiero saber qué precios y promos tiene mi competencia para tomar decisiones informadas sobre mi propia estrategia comercial.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1944": {
+    "summary": "Como dueño de un negocio quiero recibir ideas creativas de promos que me diferencien de la competencia sin entrar en guerra de precios.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1945": {
+    "summary": "Como cliente quiero acumular puntos por mis compras y canjearlos por beneficios para tener incentivos a seguir comprando en el mismo negocio.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T18:52:07Z",
+        "preview": "🔁 Pipeline: security (fase desarrollo/verificacion) solicitó re-ejecución de android-dev (fase desarrollo/dev)."
+      }
+    ],
+    "fetchedAt": 1777557618217
+  },
+  "1946": {
+    "summary": "Como cliente quiero que la app me recuerde comprar lo que necesito en el momento justo para no quedarme sin mis productos habituales.",
+    "recent_events": [],
+    "fetchedAt": 1777557618217
+  },
+  "1947": {
+    "summary": "Como cliente quiero ver opiniones y fotos de otros compradores antes de comprar para tomar mejores decisiones.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:23:17Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\n\\nIssues existentes vinculados:\\n- #2402 — fix: android-dev rechazó: Rechazo del build (rebote #2) es un problema de infraestruc\\n\\nEs"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:15:57Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\nIssues creados automáticamente:\\n- #2402 — fix: android-dev rechazó: Rechazo del build (rebote #2) es un problema de infraestruc\\n\\nEs"
+      }
+    ],
+    "fetchedAt": 1777557618217
+  },
+  "1948": {
+    "summary": "Como cliente quiero compartir lo que pedí en redes sociales con una imagen atractiva para recomendar el negocio a mis contactos.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T12:38:56Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1950": {
+    "summary": "Como dueño de un negocio quiero que un asistente me guíe conversacionalmente para configurar mi comercio sin tener que navegar menús complicados.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T12:38:56Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "1951": {
+    "summary": "Como cliente quiero pagar mi pedido con Mercado Pago, tarjeta o transferencia para no depender de tener efectivo encima.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-13T14:52:36Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-13T14:21:33Z",
+        "preview": "🔒 Auditoría de Seguridad — Security (Verificación) Resultado: ✅ APROBADO Análisis realizado Autenticación y autorización: ClientPaymentStatus extiende SecuredFunction → JWT via Co"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-13T12:53:14Z",
+        "preview": "🔒 Auditoría de Seguridad — Issue #1951 (Pagos Digitales con Mercado Pago) Resultado: ✅ APROBADO Archivos revisados ClientPaymentStatus.kt (backend endpoint) PaymentStatusService.k"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-13T10:27:09Z",
+        "preview": "🔒 Auditoría de Seguridad — Verificación Resultado: ✅ APROBADO Checklist OWASP revisado Observaciones (no bloqueantes) El patrón X-Debug-User como fallback en resolveEmail() es deu"
+      }
+    ],
+    "fetchedAt": 1777557618217
+  },
+  "1953": {
+    "summary": "Como cliente quiero ver en un mapa dónde está el repartidor en tiempo real para saber cuánto falta para que llegue.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:35:09Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\nIssues creados automáticamente:\\n- #2403 — fix: Guru rechazó: Re-análisis tras rebote desde desarrollo/dev.\\n\\nEste issue queda bloque"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:34:00Z",
+        "preview": "🔬 Re-análisis Técnico — Guru (Rebote desde dev) Contexto del rebote: android-dev rebotó este issue desde desarrollo/dev reportando (a) fallo de infra del builder y (b) alcance fue"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:32:22Z",
+        "preview": "🔀 Reclasificación automática — android-dev en desarrollo/dev reportó que este issue está fuera de su alcance."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:31:50Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\n\\nIssues existentes vinculados:\\n- #2402 — fix: android-dev rechazó: Rechazo del build (rebote #2) es un problema de infraestruc\\n\\nEs"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "1954": {
+    "summary": "Como repartidor quiero que la app agrupe pedidos cercanos para hacer varias entregas en un mismo viaje y ser más eficiente.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:18:00Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:41:58Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\n\\nIssues existentes vinculados:\\n- #2407 — fix: android-dev rechazó: INFRA-BLOCKED (2do ciclo consecutivo con el mismo diagnosti\\n\\nEs"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:38:58Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\nIssues creados automáticamente:\\n- #2407 — fix: android-dev rechazó: INFRA-BLOCKED (2do ciclo consecutivo con el mismo diagnosti\\n\\nEs"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:35:58Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\n\\nIssues existentes vinculados:\\n- #2402 — fix: android-dev rechazó: Rechazo del build (rebote #2) es un problema de infraestruc\\n\\nEs"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "1955": {
+    "summary": "Como dueño de un negocio quiero configurar la facturación sacándole foto a mi inscripción AFIP para no tener que tipear datos fiscales manualmente.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:18:05Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "1956": {
+    "summary": "Como dueño de un negocio quiero que la app me genere posts listos para publicar en Instagram y Facebook para tener presencia en redes sin esfuerzo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:00:22Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "1957": {
+    "summary": "Como dueño de un negocio quiero que un bot responda automáticamente a clientes que me contactan por WhatsApp para no perder ventas cuando no puedo contestar.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:18:09Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T21:45:44Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\nIssues creados automáticamente:\\n- #2433 — fix: QA rechazó: QA-Android rechaza #1957: el feature \"Chatbot WhatsApp Business\" no \\n\\nEs"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T20:11:01Z",
+        "preview": "🔒 Security audit — fase verificación (pipeline desarrollo) Resultado: APROBADO Alcance revisado: scaffolding Compose del flavor Business (#1957, commit f5116804). Hallazgos OWASP "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T16:30:35Z",
+        "preview": "⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK."
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "1958": {
+    "summary": "Como dueño de un negocio quiero que mis clientes se clasifiquen automáticamente en segmentos para enviar promos dirigidas a cada grupo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:18:14Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "1959": {
+    "summary": "Como dueño de un negocio quiero detectar clientes que están dejando de comprar ANTES de que se vayan para poder reactivarlos a tiempo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:18:22Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2017": {
+    "summary": "Verificar que los flujos de autenticación existentes funcionan correctamente y generar evidencia en video.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-13T13:58:29Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-12T17:27:47Z",
+        "preview": "⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-10T21:51:09Z",
+        "preview": "⏪ QA requiere APK para este issue. Devuelto al builder automáticamente."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-08T14:25:37Z",
+        "preview": "🔒 Auditoría de Seguridad — Security (Verificación, pasada 3) Contexto Revisión incremental de 2 commits nuevos desde la última auditoría (pasada 2): 6e58922b — Migrar QA a backend"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2042": {
+    "summary": "Al repetir un pedido donde algunos productos no están disponibles, el Snackbar muestra solo \"Algunos productos no pudieron agregarse\" sin indicar cuáles productos fueron excluidos ni el motivo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-15T07:02:08Z",
+        "preview": "🔒 Auditoría de Seguridad — Fase Verificación Resultado: ✅ APROBADO Cambios revisados Vectores OWASP evaluados A01 Control de acceso: ✅ La lógica de auth (SecuredFunction/JWT) no s"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-15T07:00:02Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-15T03:41:44Z",
+        "preview": "⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK."
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2061": {
+    "summary": "Implementar el endpoint de consulta de disponibilidad de productos y enriquecer la lógica de DoRepeatOrder para incluir motivos de exclusión específicos.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-16T03:07:06Z",
+        "preview": "🔒 Verificación de Seguridad — Security (Pipeline V2, rebote #1) Resultado: ✅ APROBADO Revisión post-rebote del código en rama agent/2061-product-availability. Se verificaron los c"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-16T03:04:16Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-11T14:14:57Z",
+        "preview": "❌ QA-API — RECHAZADO (2026-04-11) Re-ejecución de QA detectó un defecto crítico funcional que no había sido reportado antes. Defecto crítico El endpoint POST /{business}/client/pro"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-11T14:14:29Z",
+        "preview": "Reabriendo — el issue fue cerrado por error el 2026-04-10 tras confundirse con el PR #2122 (fix de pipeline en rama agent/2061-fix-preflight-curl-windows, que es un tema totalmente"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2318": {
+    "summary": "Historia hija de #2314 (infra: Problema de red/DNS). Cubre la capa de seguridad y diagnóstico operativo: garantizar que los fallos de red nunca expongan secretos en logs/PDFs y que el operador tenga un health-check claro vía /checkup.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:20:04Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T13:54:36Z",
+        "preview": "🔗 Dependencias detectadas por el pipeline\\n\\n\\nIssues existentes vinculados:\\n- #2337 — [Split de #2329] Dashboard estado reintentando + choreografia temporal + metricas UX append"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T13:48:32Z",
+        "preview": "Security (fase: verificacion pipeline desarrollo) — RECHAZADO No hay código que auditar. La rama agent/2318-backend-dev está al mismo commit que origin/main (cero cambios, cero com"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T13:19:36Z",
+        "preview": "Validación Guru (pipeline desarrollo) — RECHAZADA La historia entró al pipeline de desarrollo pero no es implementable como unidad. Motivos: Bloqueador: historia dividida (label sp"
+      }
+    ],
+    "fetchedAt": 1777557616943
+  },
+  "2324": {
+    "summary": "Historia hija de #2318 (a su vez hija de #2314). Entrega el módulo sanitizer que redacta secretos en logs, rejection reports y mensajes de rebote, integrado en write-time (nunca deja secretos en disco, ni transitoriamente).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:20:27Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T14:05:24Z",
+        "preview": "Validación técnica (Guru — fase validacion, pipeline desarrollo) Resultado: RECHAZADO — no apto para desarrollo directo. Motivo Esta historia fue dividida por el Planner (comentari"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T13:23:26Z",
+        "preview": "Dimensionamiento (Planner — fase sizing) Tamaño original: GRANDE (>6 archivos afectados, capa de seguridad crítica con múltiples módulos, cobertura OWASP A02/A07/A09). Decisión: di"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T13:13:42Z",
+        "preview": "Análisis UX (fase: criterios) Aunque la historia es infraestructura pura (sin UI de app), el output del sanitizer sí tiene superficie de usuario: rejection reports PDF, mensajes Te"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2329": {
+    "summary": "Historia hija de #2319 (UX fallos infra), a su vez hija de #2314 (infra: Problema de red/DNS). Cubre la capa de feedback proactivo cuando la red se restaura: cómo el pipeline reencola los issues bloqueados y avisa a Leo sin generar spam ni gastar cuota de OpenAI TTS.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:20:42Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T14:11:35Z",
+        "preview": "🔬 Guru — Validación fase desarrollo Resultado: ❌ Rechazada para desarrollo directo Motivo Esta historia tiene label split y fue dividida en 3 hijas entregables por el planner (ver"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T13:32:49Z",
+        "preview": "Sizing: GRANDE -> dividida en 3 hijas Esta historia se evaluo como grande por: 12 CA detallados con sub-implementaciones independientes 6+ archivos afectados (nuevos + modificados)"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-17T13:23:43Z",
+        "preview": "Criterios de Aceptación (PO) Consolidación final de los CA para esta historia, incorporando los aportes de guru, security y UX. Todos los criterios DEBEN cumplirse para que la hist"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2399": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1923 ([IA] Optimización de ruta con múltiples entregas para repartidores).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1923 |\\n| Agente que falló | android-dev |\\n| Fase | dev |\\n| Prioridad | 🔴 Alta —…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:20:52Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T09:53:13Z",
+        "preview": "Validación técnica (guru · desarrollo) Revisado el issue antes de entrar a fase dev. Todo el contexto necesario está disponible: Riesgos no bloqueantes ya documentados Contaminació"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T09:49:43Z",
+        "preview": "Dimensionamiento (planner) Tamaño: MEDIO (size:medium) Justificación Scope alcanzado Entra como una única historia al pipeline de desarrollo, sin necesidad de dividir: brazoHuerfan"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T09:47:47Z",
+        "preview": "Análisis UX (operador del pipeline) Este issue es infra pura sin UI end-user. El usuario relevante es el operador del pipeline (Leito / Claudito / futuros devs), que consume la exp"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2402": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1947 (Valoraciones y reviews de productos con fotos).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1947 |\\n| Agente que falló | android-dev |\\n| Fase | dev |\\n| Prioridad | 🔴 Alta — bloqueo directo |\\n|…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:23:42Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:54:58Z",
+        "preview": "🔁 Nueva evidencia de rechazo\\n\\nEste problema bloqueó nuevamente al issue #1934 ([IA] Chat negocio-repartidor con traducción automática bidireccional) en la fase dev.\\n\\n| Campo |"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:38:33Z",
+        "preview": "Dimensionamiento — Planner Sizing: medio (size:medium) Justificación Archivos afectados según criterios PO + análisis Guru: .pipeline/connectivity-precheck.js — CA-1 (classifyError"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:35:48Z",
+        "preview": "🔁 Nueva evidencia de rechazo\\n\\nEste problema bloqueó nuevamente al issue #1954 ([IA] Agrupamiento inteligente de pedidos cercanos para repartidores) en la fase dev.\\n\\n| Campo | "
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2403": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1953 (Seguimiento en tiempo real del repartidor en mapa).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1953 |\\n| Agente que falló | guru |\\n| Fase | analisis |\\n| Prioridad | 🔴 Alta — bloqueo directo |\\n|…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:20:57Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:49:56Z",
+        "preview": "🎨 Análisis UX — UX (Fase Criterios) Veredicto: ✅ APROBADO Naturaleza del issue Meta-issue de coordinación que desbloquea #1953 (seguimiento en tiempo real del repartidor). Aunque "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:46:42Z",
+        "preview": "📋 Criterios de Aceptación — PO (Fase Criterios) Naturaleza del issue Meta-issue de coordinación/remediación (sin código propio). Desbloquea #1953. Los criterios validan acciones s"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T10:43:38Z",
+        "preview": "🔒 Análisis de Seguridad — Security (Fase Análisis) Veredicto: ✅ APROBADO Naturaleza del issue Meta-issue de remediación/coordinación (creado por rejection report v6 tras rebote de"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2406": {
+    "summary": "Historia hija de #2401 (ver diagnóstico completo y criterios del PO/Guru/Security/UX).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:21:02Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:22:06Z",
+        "preview": "Dependencias detectadas por el pipeline Historia dimensionada como grande y dividida en 2 historias hijas por el /planner: #2466 — recover.js + re-encolado escalonado + audit log ("
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:16:53Z",
+        "preview": "[PO] Fase criterios (definición) — rechazado Issue paraguas ya dividido. No corresponde escribir/revisar criterios de aceptación nuevamente. Estado verificado (2026-04-21): #2406: "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:14:33Z",
+        "preview": "UX — criterios (rechazo por paraguas dividido) Resultado: rechazado Rol: ux Fase: criterios (pipeline definicion) Fecha: 2026-04-21 Motivo Este issue es un paraguas ya dividido por"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2407": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1954 ([IA] Agrupamiento inteligente de pedidos cercanos para repartidores).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1954 |\\n| Agente que falló | android-dev |\\n| Fase | dev |\\n| Prioridad | 🔴 Alta —…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T21:00:59Z",
+        "preview": "Pipeline pausó este issue: requiere intervención humana\\n\\nEl agente pipeline-dev (fase desarrollo/dev) detectó que el avance depende de una acción humana — no es un bug del código"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T12:01:38Z",
+        "preview": "Auditoría de Seguridad — APROBADO Alcance: commit af2b329f (5 archivos de infra del pipeline, 324+/4-). OWASP Top 10 — sin hallazgos: A03 Injection: el bash usa comillas dobles en "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T21:45:10Z",
+        "preview": "🔁 Nueva evidencia de rechazo\\n\\nEste problema bloqueó nuevamente al issue #1952 (Zonas de delivery configurables con mapa interactivo) en la fase dev.\\n\\n| Campo | Valor |\\n|-----"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T19:09:32Z",
+        "preview": "🎨 Re-validación UX (fase: criterios, 2ª pasada) — UX Veredicto: APROBADO — el análisis UX publicado en mi pasada anterior sigue vigente. Re-verificación El alcance del issue no ca"
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "2410": {
+    "summary": "Historia hija de #2406 (que a su vez es hija de #2401). Cubre la experiencia del operador (Leo como scrum master en crisis) sobre las 4 superficies: CLI pulido (colores, diagnóstico), dashboard web, comentarios GitHub, notificaciones Telegram. También incluye la documentación…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:21:20Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T19:09:23Z",
+        "preview": "📐 Dimensionamiento (Planner — fase sizing, pipeline definición) Resultado: size:large → dividida en 3 historias hijas. Razón del split El scope abarca 10+ archivos (4 JS + 4 docs "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T17:05:41Z",
+        "preview": "✅ Criterios de Aceptación (PO — fase criterios, pipeline definición) Validación de valor: La historia entrega valor directo al operador (Leo como scrum master/dev en crisis): reduc"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T16:55:39Z",
+        "preview": "UX Analysis (fase criterios — pipeline definicion) Resultado: Aprobado. La historia ya contempla un scope UX extenso y bien estructurado (UX 1-15 distribuidos en entregables A-G). "
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2414": {
+    "summary": "Historia hija de #2410 (que a su vez es hija de #2406 / #2401). Cubre la documentación operativa completa del pipeline V2: clasificación de errores, allowlist JAVA_HOME, flujo de backups/restore y procedimiento sistémico de recovery tipo incidente 30/03 — con runbook imprimible…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:21:26Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:11:55Z",
+        "preview": "UX — Pasada 5 (confirmación sobre análisis pasada 6) Re-revisión UX sobre #2414 tras la pasada 6 de análisis (Guru + Security) y la pasada 6 del PO. No hay rebote ni cambios de sco"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:51:17Z",
+        "preview": "PO pasada 6 - aprobado (reconfirmacion estable) Historia #2414 - 100% documentacion (4 docs en docs/pipeline/ + diff acotado a seccion \"Lanzamiento de agentes\" de CLAUDE.md). Sin r"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:46:41Z",
+        "preview": "Revisión de seguridad — Pasada 6 (2026-04-21) Resultado: APROBADO (sin blockers). Postura de seguridad (sin cambios desde pasada 5) Historia 100% documentación (docs/pipeline/ + se"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2416": {
+    "summary": "Permitir al dueño del negocio (app Intrale Negocios, flavor business) dibujar y administrar sus zonas de cobertura en un mapa interactivo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T02:07:13Z",
+        "preview": "Pipeline pausó este issue: requiere intervención humana\\n\\nEl agente guru (fase desarrollo/validacion) detectó que el avance depende de una acción humana — no es un bug del código "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T02:05:52Z",
+        "preview": "Validación técnica (Guru) — fase: validacion (desarrollo) — 2026-04-29 (re-intake) Resultado: RECHAZADA nuevamente — la historia sigue sin corresponder a desarrollo directo El re-i"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:25:55Z",
+        "preview": "Validación técnica (Guru) — fase: validacion (desarrollo) — 2026-04-26 Resultado: RECHAZADA — la historia no debe entrar a desarrollo Esta historia llegó a la fase desarrollo/valid"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T21:12:56Z",
+        "preview": "Dimensionamiento (Planner) — fase: sizing Resultado: GRANDE → DIVIDIDA La historia toca 25+ archivos entre setup (GOOGLEMAPSKEY + manifest flavor business + dependencias), capas as"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2417": {
+    "summary": "Permitir al cliente (app Intrale flavor client) saber ANTES de armar el carrito si el negocio llega a su dirección y ver el costo de envío aplicado en el checkout.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T02:06:45Z",
+        "preview": "Pipeline pausó este issue: requiere intervención humana\\n\\nEl agente po (fase desarrollo/validacion) detectó que el avance depende de una acción humana — no es un bug del código ni"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T02:05:31Z",
+        "preview": "Bloqueo de pipeline — split parent Este issue es un split parent (label split) y NO debe ser procesado por el pipeline de desarrollo. El trabajo real está distribuido en 3 hijas: #"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T21:23:32Z",
+        "preview": "Sizing (Planner) — 2026-04-21 Resultado: GRANDE → dividida en 3 hijas. Justificación del sizing La historia supera los umbrales de medio en todos los ejes relevantes: Archivos nuev"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T21:14:30Z",
+        "preview": "Criterios de Aceptación (PO) — 2026-04-21 Consolidado de los CA heredados de #1952 (CA-5/6/7) más los requisitos de Security (OWASP/PII), los checkpoints técnicos de Guru y las gui"
+      }
+    ],
+    "fetchedAt": 1777557620943
+  },
+  "2420": {
+    "summary": "Permitir que el dueño del negocio (Intrale Negocios, flavor business) visualice sobre un mapa interactivo las zonas de cobertura ya configuradas por él, con empty state y modo offline funcional.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T21:24:41Z",
+        "preview": "⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T20:20:51Z",
+        "preview": "Validación técnica (desarrollo/validacion · guru) Re-verifico viabilidad técnica antes de entrar al desarrollo. Aprobado — la historia tiene contexto técnico suficiente y no hay bl"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:58:00Z",
+        "preview": "Asset visual entregado por UX (fase: validacion / desarrollo) — Split 1 de #2416 Como UX en pipeline desarrollo / validacion, dejo entregado el unico asset visual fisico que la his"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:48:48Z",
+        "preview": "Sizing (fase: sizing) Resultado: medio (size:medium) Analisis Scope real de la historia: ~11 archivos de produccion nuevos: 3 en asdo/business/delivery/, 5 en ext/business/, 4 en u"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2422": {
+    "summary": "Historia madre Split de #2417 — App Cliente: verificación de dirección pre-carrito y costo de envío por zona (que a su vez es split de #1952 — Zonas de delivery configurables con mapa interactivo).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:58:56Z",
+        "preview": "Sizing (Planner) — 2026-04-21 Tamaño: size:medium Justificación Esta es la Hija A del split de #2417 (que originalmente era grande). El scope ya está acotado a: Flujo core de verif"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:51:19Z",
+        "preview": "Análisis UX — 2026-04-21 Hija A de #2417. Acá aporto la mirada específica de experiencia: copy, microinteracciones, jerarquía, estados, fricción y accesibilidad. Los CA del PO cubr"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:35:50Z",
+        "preview": "Criterios de Aceptación (PO) — 2026-04-21 Esta es la Hija A de #2417. Alcance acotado: flujo core de verificación de dirección (app cliente, flavor client), sin mapa (Hija B) y sin"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:23:58Z",
+        "preview": "Auditoría de Seguridad (Security) — 2026-04-21 Hija A de #2417 (auditoría OWASP completa del feature vive en el comentario Security de #2417). Acá me concentro en el alcance acotad"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2423": {
+    "summary": "Historia madre Split de #2417 — App Cliente: verificación de dirección pre-carrito y costo de envío por zona (split de #1952).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T03:52:19Z",
+        "preview": "⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:01:40Z",
+        "preview": "Sizing (Planner) — medio Resultado: size:medium Analisis La historia ya viene de un split triple de la madre #2417 (Hija B de 3). Scope ya refinado por Guru + Security + PO + UX co"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:57:15Z",
+        "preview": "Analisis UX — Hija B: mapa read-only de zonas de cobertura Contexto UX El usuario llega a esta pantalla despues de una frustracion: ingreso una direccion y descubrio que el negocio"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T22:40:22Z",
+        "preview": "Criterios de aceptacion (PO) — Hija B: mapa read-only de zonas Contexto y valor Cuando un cliente verifica su direccion en la Hija A (#2422) y queda fuera de zona, hoy el flujo mue"
+      }
+    ],
+    "fetchedAt": 1777557616943
+  },
+  "2424": {
+    "summary": "Historia madre Split de #2417 — App Cliente: verificación de dirección pre-carrito y costo de envío por zona (split de #1952).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T21:02:27Z",
+        "preview": "Validación PO — fase validacion (pipeline desarrollo) Resultado: APROBADO Verificación de criterios de aceptación Los criterios CA-1 a CA-13 están en formato Given/When/Then verifi"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T20:36:36Z",
+        "preview": "Validación técnica (Guru) — fase validacion (pipeline desarrollo) Resultado: APROBADO Verifiqué empíricamente el estado actual del codebase y las dependencias: Contexto técnico ✅ A"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:08:30Z",
+        "preview": "Sizing (Planner) — fase sizing Tamaño: medium Análisis Esta hija C toca 8-9 archivos cruzando capas (DTO shared + asdo + ui VM + Compose screen + DI), pero: Sin breaking changes — "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:04:06Z",
+        "preview": "Análisis UX — fase criterios Resultado: APROBADO con guidelines UX obligatorias documentadas abajo. El alcance técnico y los criterios del PO son sólidos; esta revisión refina la e"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2427": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1949 (Multi-usuario para el negocio — roles y permisos de empleados).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1949 |\\n| Agente que falló | security |\\n| Fase | verificacion |\\n| Prioridad | 🔴 Alta —…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:24:54Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:29:34Z",
+        "preview": "📏 Dimensionado — Planner Sizing: Simple Este issue es un desbloqueador del rechazo de #1949. Su única tarea es splittear la historia paraguas en sub-historias acotadas con threat "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:18:53Z",
+        "preview": "🎨 Análisis UX — User Experience Contexto Este issue (#2427) desbloquea #1949 (multi-usuario / roles / permisos de empleados). Guru y security aprobaron la viabilidad técnica y el "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:01:20Z",
+        "preview": "📋 Criterios de aceptación — Product Owner Contexto Este issue (#2427) es un desbloqueador creado por el rejection report de security sobre #1949 (multi-usuario / roles / permisos)"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2431": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1952 (Zonas de delivery configurables con mapa interactivo).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1952 |\\n| Agente que falló | security |\\n| Fase | analisis |\\n| Prioridad | 🔴 Alta — bloqueo…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:24:50Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:53:30Z",
+        "preview": "Sizing (Planner — definición/sizing) Tamaño: Medio (size:medium) Justificación Toca 4-6 archivos JS del pipeline V2, sin cambios de dominio ni breaking changes de API pública. Cons"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:27:58Z",
+        "preview": "Análisis de Experiencia de Usuario (UX — definición/criterios) Scope UX real de esta historia Esta historia es infra pura del pipeline — no toca UI de producto (Business/Client/Del"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:19:32Z",
+        "preview": "Criterios de Aceptación (PO — definición/criterios) Criterios verificables que debe cumplir la implementación para cerrar este issue. Tamaño Medio consistente con el análisis de Gu"
+      }
+    ],
+    "fetchedAt": 1777557610829
+  },
+  "2433": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1957 ([IA] Chatbot para WhatsApp Business del negocio).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1957 |\\n| Agente que falló | qa |\\n| Fase | verificacion |\\n| Prioridad | 🔴 Alta — bloqueo directo |\\n|…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:25:25Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:17:48Z",
+        "preview": "Sizing (/planner — fase sizing) Dimensionado: medio (size:medium). Justificación No requiere código (AC-10 explicita: cero PRs, cero merges). Alcance puramente organizativo: ejecut"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T12:11:42Z",
+        "preview": "Análisis UX (/ux — fase criterios) Validé el análisis de /guru, /security y los criterios de /po. Confirmo que el alcance real de #2433 es organizativo (split de #1957), no código."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:03:05Z",
+        "preview": "Criterios de Aceptación (/po — fase criterios) Validé el análisis técnico de /guru y el análisis OWASP de /security. El alcance real de 2433 no es implementar el chatbot de WhatsAp"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2435": {
+    "summary": "Permitir al dueño del negocio dibujar zonas circulares desde un editor full-screen, con validaciones client-side, formulario de atributos (nombre, costo, tiempo estimado), undo de creación y tope de 10 zonas.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T21:00:41Z",
+        "preview": "Validación técnica (guru — fase desarrollo/validacion) — RECHAZADO Detecto dos blockers técnicos críticos al evaluar la entrada de #2435 al pipeline de desarrollo. Verificación emp"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:39:23Z",
+        "preview": "Historia dividida por sizing Esta historia fue dimensionada como grande (~11 archivos, 22 CA verificables, UI muy compleja con editor full-screen + mapa + gestos + bottom-sheet + u"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:32:04Z",
+        "preview": "Analisis UX - Issue #2435 (pipeline V2, fase criterios) Revision UX acotada a esta hija: editor base full-screen + modo circular unicamente + POST + undo de creacion + tope de 10 z"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:20:01Z",
+        "preview": "Criterios de aceptación — PO (pipeline V2, fase criterios) Historia: split 1 del split 2 (#2421) del #2416 — editor base full-screen + modo circular únicamente + POST + undo de cre"
+      }
+    ],
+    "fetchedAt": 1777557620943
+  },
+  "2439": {
+    "summary": "Parte (a) del split del rejection report #2426 (que a su vez es el rebote del feature original #1949 — Multi-usuario para el negocio).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:53:40Z",
+        "preview": "Sizing — Planner Veredicto: Medio — size:medium Justificación Esta historia es un split de #2426 (que era Grande) y representa una unidad coherente que no admite mayor división sin"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:51:19Z",
+        "preview": "Análisis UX — fase criterios Veredicto: aprobado — sin impacto visual en esta entrega Esta entrega es backend puro (endpoints REST + tabla DynamoDB + secret HMAC). No hay íconos, s"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:47:20Z",
+        "preview": "Criterios de Aceptación — PO Valor de negocio Esta entrega habilita la base segura del flujo multi-usuario por negocio: que un dueño/manager pueda incorporar empleados con roles di"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:35:50Z",
+        "preview": "🧠 Análisis técnico — Guru Veredicto: ✅ Aprobado — viable dentro del stack actual Este es el split (a) de #2426. El backend ya tiene los building blocks necesarios (SecuredFunction"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2440": {
+    "summary": "Parte (b) del split del rejection report #2426 (rebote del feature #1949 — Multi-usuario para el negocio).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T13:12:03Z",
+        "preview": "Sizing — Planner Resultado: size:medium Inventario de cambios Nuevos: 4 SecuredFunction (RevokeEmployee, ChangeEmployeeRole, ListEmployees, ListActivityLog), ActivityLogEntry (mode"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T12:30:15Z",
+        "preview": "Análisis UX — UX Fase: criterios (pipeline definición) Scope revisado: entrega (b) backend del split #2426 — admin de empleados + audit log inmutable. Evaluación de impacto en la e"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:09:11Z",
+        "preview": "Criterios de Aceptación — PO Fase: criterios (pipeline definición) Scope confirmado: entrega (b) backend del split #2426 — admin de empleados + audit log inmutable. Esta historia e"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T11:56:59Z",
+        "preview": "Análisis Técnico — Guru Fase: analisis (pipeline definición) Scope revisado: 4 funciones admin + helper logActivity + tabla activitylog + revocación efectiva. Viabilidad en el stac"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2442": {
+    "summary": "Split 1 de 4 de la historia paraguas #1949 — Multi-usuario para el negocio — roles y permisos de empleados, desbloqueada por #2427.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:03:46Z",
+        "preview": "📏 Sizing — Planner Veredicto: medio (size:medium) Justificación Alcance (delimitado por AC-07 scope-lock): 2 enums nuevos en users/ (BusinessRole + BusinessSection) Métodos canAcc"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T01:34:12Z",
+        "preview": "🧑‍💼 Criterios de aceptación — Product Owner Veredicto: ✅ Aprobado — pasar a sizing La historia está bien acotada, entrega valor de fundación bloqueante para las sub-historias #2/"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T00:32:00Z",
+        "preview": "🎨 Análisis UX — definicion/criterios Veredicto: ✅ Aprobado — pasar a sizing Esta sub-historia es fundación de dominio, sin pantallas propias. Pero define 4 artefactos que serán vi"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-21T23:45:55Z",
+        "preview": "🔒 Análisis de seguridad — Security Veredicto: ✅ Aprobado — pasar a po Sub-historia correctamente acotada: modelo de dominio + matriz + mapping, sin tocar el flujo de autorización "
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "2446": {
+    "summary": "Dejar la capa asdo + ext + geo lista y testeada para que cualquier UI (circular o futuro polígono) pueda persistir zonas vía POST con JWT Cognito.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-29T20:51:14Z",
+        "preview": "Re-validacion tecnica — Guru (fase: validacion, pipeline: desarrollo) Re-validacion en fase desarrollo. Resultado: aprobado — sin blockers tecnicos. Cambio relevante respecto a la "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T00:53:45Z",
+        "preview": "Sizing — Planner (fase: sizing, pipeline: definicion) Tamaño: size:medium (label ya aplicado). Inventario de archivos Total: ~10 archivos en 2 módulos (composeApp + shared). Justif"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T00:40:55Z",
+        "preview": "Analisis UX — UX (fase: criterios, pipeline: definicion) Veredicto APROBADO sin impacto UX directo, con 5 guidelines de contrato para la hermana #2447. Esta historia es capa asdo +"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T00:31:27Z",
+        "preview": "Criterios de aceptación — PO (fase: criterios, pipeline: definicion) Esta historia entrega la capa asdo + ext + geo sin UI para persistir zonas de entrega vía POST con JWT Cognito."
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2447": {
+    "summary": "Permitir al dueño del negocio dibujar zonas circulares desde un editor full-screen en la app Negocios (flavor business, source set androidBusiness), con validaciones client-side, formulario de atributos, undo de creación, tope de 10 zonas y accessibility completo.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T22:38:09Z",
+        "preview": "Validacion tecnica — Guru Resultado: APROBADO para entrar a dev La historia tiene contexto tecnico exhaustivo y completo. Todas las fases previas estan aprobadas con detalle accion"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T00:59:40Z",
+        "preview": "Sizing — Planner Resultado: MEDIO (size:medium) Analisis Historia hija del split de #2435 (que a su vez es split de #2421, split de #2416). Ya vienen acotados el scope y las depend"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T00:56:38Z",
+        "preview": "Analisis UX — UX Viabilidad: APROBADO con guidelines La historia tiene impacto visual alto (editor full-screen con mapa + bottom-sheet + slider + snackbar + chip flotante). PO ya c"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T00:42:14Z",
+        "preview": "Criterios de aceptacion — PO Set completo de CA verificables para esta historia hija (#2435). Cada CA es Given/When/Then o checklist accionable, con foco en lo que el dueno de nego"
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "2450": {
+    "summary": "Detectado en sesión de diagnóstico 2026-04-21 tras el merge del PR #2434 (fix YAML de config.yaml). Los servicios del pipeline estaban vivos y funcionales (Pulpo procesando 156 issues, listener recibiendo Telegram, etc.), pero smoke-test.js reportaba:",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:16:40Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:53:51Z",
+        "preview": "Code Review (semántico) — APROBADO Revisado commit 800200bf (rama agent/2450-marker-heartbeat-watchdog, ya integrado a main). Cobertura del issue Opción C (heartbeat) ✅ — lib/ready"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:41:42Z",
+        "preview": "Auditoría de Seguridad — APROBADO Revisado commit 800200bf (rama agent/2450-marker-heartbeat-watchdog). Análisis OWASP Patrones defensivos observados Todas las operaciones FS están"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T10:15:38Z",
+        "preview": "Análisis técnico — Guru (validación) Viabilidad: ✅ APROBADO Contexto verificado Todos los archivos mencionados existen: singleton.js, pulpo.js, listener-telegram.js, servicio-teleg"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2453": {
+    "summary": "Permitir al dueño del negocio eliminar una zona existente desde la lista (long-press / swipe) con diálogo de confirmación y snackbar de Deshacer de 5s; undo en memoria, nunca persistido.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-29T22:58:45Z",
+        "preview": "Re-validación técnica — Guru (fase: desarrollo/validacion) Veredicto: aprobado. Contexto técnico exhaustivo, sin blockers nuevos detectados respecto a la validación previa. Verific"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T18:42:38Z",
+        "preview": "Validación PO (fase: desarrollo/validacion) Veredicto: aprobado. Historia lista para Dev — todos los criterios de aceptación están presentes, los labels son correctos y los análisi"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T18:36:52Z",
+        "preview": "Validación técnica — Guru (fase: desarrollo/validacion) Veredicto: aprobado. La historia tiene contexto técnico exhaustivo y todos los blockers conocidos están documentados. Verifi"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T01:32:32Z",
+        "preview": "Sizing — Planner Tamaño: medio (label size:medium aplicado). Criterios considerados Desglose de archivos esperados asdo/business/delivery/: ToDoDeleteDeliveryZone + DoDeleteDeliver"
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2456": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1915 (Notificaciones sonoras de pedidos nuevos para el negocio).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1915 |\\n| Agente que falló | qa |\\n| Fase | verificacion |\\n| Prioridad | 🔴 Alta — bloqueo…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T18:39:24Z",
+        "preview": "Sizing — Planner Resultado: aprobado con división. Análisis de tamaño Basado en los análisis previos (guru, security, PO, UX) y el inventario de archivos afectados: Archivos afecta"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T18:32:46Z",
+        "preview": "Guidelines UX — UX Confirmadas las CAs del PO. La validación visual del fix se descompone así: un asset nuevo branded (entregado en agent/2456-ux-assets) + guidelines de implementa"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T15:57:50Z",
+        "preview": "Criterios de aceptación — PO Basado en el análisis técnico (guru) y de seguridad (security) ya aprobados, defino los criterios de aceptación verificables para este fix. Alcance aco"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T14:29:14Z",
+        "preview": "Análisis de seguridad — Security Revisión de implicaciones de seguridad del fix propuesto (navegación a BusinessSoundConfigScreen + funcionamiento en background). Vectores OWASP To"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2458": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1931 ([IA] Estimación inteligente de tiempo de entrega en tiempo real).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1931 |\\n| Agente que falló | po |\\n| Fase | aprobacion |\\n| Prioridad | 🔴 Alta — bloqueo…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:26:19Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:04:19Z",
+        "preview": "📏 Dimensionamiento — fase sizing (definicion) Veredicto: aprobado — size:medium. Criterios aplicados Por qué medio (no simple) Aunque el código nuevo es acotado (2 archivos Maestr"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T18:56:59Z",
+        "preview": "🎨 Evaluación UX — fase criterios (definicion) Veredicto: aprobado — los criterios CA-V1..CA-V7 del PO ya cubren la demostración visual de cada criterio del feature original. Mi ro"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:13:48Z",
+        "preview": "🎯 Criterios de aceptación — fase criterios (definicion) Veredicto: aprobado — la historia entrega valor real (desbloquear #1931 con evidencia visual irrefutable) y es viable según"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2459": {
+    "summary": "Sentar la infraestructura de persistencia versionada, el contrato polimórfico de mutación de zonas y el bus de eventos de sesión para que las hijas B (drain) y C (UI) puedan apoyarse sobre un contrato estable.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-29T23:41:41Z",
+        "preview": "Re-validación técnica (guru — fase desarrollo/validacion) — APROBADO Re-intake del issue a desarrollo/validacion (2026-04-29). El estado del issue no cambió respecto a la aprobació"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T20:45:18Z",
+        "preview": "Decisión PO — ownership del contrato ZoneMutation v1 (post-rebote crossphase desde validación) Contexto Esta historia llegó a definicion/criterios por rebote cross-phase desde desa"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T20:44:06Z",
+        "preview": "Validación técnica (guru — fase desarrollo/validacion) — APROBADO Re-validación post-edición del body por PO. La cross-phase request previa (19:40:39Z) fue atendida: el body de #24"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T19:40:39Z",
+        "preview": "🔁 Pipeline: guru (fase desarrollo/validacion) solicitó re-ejecución de po (fase definicion/criterios)."
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2460": {
+    "summary": "Implementar el drenado automático y resiliente de la queue, garantizando defensa en profundidad multi-tenant, seguridad (JWT re-inyectado, payload sanitizado) y calidad de servicio (backoff, TTL, last-write-wins).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T21:32:30Z",
+        "preview": "Validación técnica — Guru (pipeline desarrollo · fase validacion) Veredicto: ❌ Rechazado por bloqueantes técnicos no satisfechos. La historia no puede entrar a desarrollo sin sus t"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:18:44Z",
+        "preview": "Sizing — Planner Tamaño: size:medium Justificación Esta historia ya es la segunda hija del split de #2454, que a su vez es resultado de 4 niveles de splits anteriores (#2416 → #242"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:14:29Z",
+        "preview": "Análisis de Experiencia de Usuario — UX (definición) Veredicto: Aprobado para pasar a desarrollo. Historia sin UI directa, pero con alto impacto percibido por el usuario final: la "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:06:49Z",
+        "preview": "Criterios de aceptación — Product Owner Veredicto: Historia con valor de negocio claro y criterios verificables. Aprobada para pasar a desarrollo cuando #2435, #2415 y #2459 (hija "
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2461": {
+    "summary": "Cerrar el feature offline de zonas con la experiencia visual completa, accesible y validada por QA E2E. Esta hija es la que cierra parcialmente la historia madre #2437.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T19:49:47Z",
+        "preview": "UX — Rechazo en validacion (rebote re-intake) El issue volvió a entrar al pipeline desarrollo pero las 3 dependencias duras siguen OPEN. La situación NO cambió respecto del rechazo"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:54:32Z",
+        "preview": "📋 Criterios de aceptación — Product Owner (fase criterios) Veredicto: ✅ Aprobada. La hija entrega valor independiente y tangible al usuario: sin esta capa, la queue (hija A) y el "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:44:07Z",
+        "preview": "🎨 Análisis UX — Fase definición Veredicto: ✅ Aprobada. Esta historia es la cara visible del feature offline de zonas — recoge fielmente las guidelines del análisis UX de la madre "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-22T02:28:06Z",
+        "preview": "🔒 Análisis Security — Fase definición Veredicto: ✅ Aprobada. Historia UI de bajo riesgo directo (no agrega endpoints, no persiste credenciales, no hace I/O de red). Sin embargo, t"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2462": {
+    "summary": "Split 1 de 3 de #2443 — Cross-tenant guard en SecuredFunction (que a su vez es split 2 de 4 de #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:15:02Z",
+        "preview": "Sizing — Planner Resultado: size:medium Justificación Archivos impactados (~5 principales + tests): UserBusinessProfile.kt (anotaciones GSI + companion object con constante) UserBu"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:12:45Z",
+        "preview": "Criterios de aceptación consolidados — PO Resultado: ✅ Aprobado para pasar a desarrollo. Historia con valor claro (cierra bug cross-tenant OWASP A01 + vector DoS OWASP A04) y scope"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:07:42Z",
+        "preview": "Análisis UX — Impacto en experiencia de usuario Resultado: ✅ Aprobado para criterios. Issue de backend puro (GSI + bugfix util) sin componente visual directo, pero con cambio de se"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:05:07Z",
+        "preview": "Análisis de seguridad — Security Resultado: APROBADO para fase de desarrollo. La historia aborda directamente el bug cross-tenant (OWASP A01 — Broken Access Control) a nivel util y"
+      }
+    ],
+    "fetchedAt": 1777557606321
+  },
+  "2463": {
+    "summary": "Split 2 de 3 de #2443 — Cross-tenant guard en SecuredFunction (split 2 de 4 de #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T23:07:57Z",
+        "preview": "Validación técnica — Guru (fase desarrollo/validacion) Resultado: Aprobado para desarrollo. El issue tiene contexto técnico suficiente, los riesgos están documentados y las decisio"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:21:08Z",
+        "preview": "Validación UX — guidelines y criterios Resultado: Criterios aprobados con guidelines UX documentadas. Este issue es backend puro pero tiene impacto directo en la UX porque el 403 c"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:15:42Z",
+        "preview": "Validación PO — criterios de aceptación Resultado: Criterios aprobados con refinamientos. Esta historia es pura entrega de valor de seguridad al usuario del negocio — aunque no tie"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:09:43Z",
+        "preview": "Análisis de seguridad — Security Resultado: Aprobado con observaciones. El alcance cierra OWASP A01 (Broken Access Control) y suma hardening sobre A02 (Cryptographic Failures), A07"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2465": {
+    "summary": "Contexto\\n\\nDetectado al analizar el rechazo del issue #1931 ([IA] Estimación inteligente de tiempo de entrega en tiempo real).\\n\\n| Campo | Valor |\\n|-------|-------|\\n| Issue bloqueado | #1931 |\\n| Agente que falló | ux |\\n| Fase | aprobacion |\\n| Prioridad | 🔴 Alta — bloqueo…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:21:13Z",
+        "preview": "Sizing (/planner) — MEDIO Veredicto: size:medium Análisis del scope Issue de tipo enabler / QA evidence remediation. NO toca código del feature #1931 (ya aprobado por security/revi"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:05:26Z",
+        "preview": "Guidelines UX (/ux) — APROBADO Naturaleza del issue desde la lente UX Este issue NO requiere producción de assets visuales nuevos. Todos los componentes UX del feature #1931 ya exi"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:49:59Z",
+        "preview": "Criterios de aceptación (/po) — APROBADO Tipo de historia y valor entregado Issue de tipo enabler / QA evidence remediation. No entrega valor directo al usuario final pero desbloqu"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:09:35Z",
+        "preview": "Análisis técnico de viabilidad (/guru) — APROBADO Resumen Issue viable técnicamente. Es un rejection report de evidencia QA, no de código: el feature #1931 ya está implementado y a"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2469": {
+    "summary": "Sub-historia 2 de 3 del split de #2444 — feat: invitación de empleados con token HMAC.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T12:09:33Z",
+        "preview": "📏 Planner — Sizing Resultado: MEDIO (size:medium) Criterios aplicados Archivos estimados: 3-5 nuevos + 2 modificaciones (Application.kt, Modules.kt, nueva Function AcceptInvitatio"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T11:59:57Z",
+        "preview": "🎨 UX — Consideraciones sobre el contrato API Resultado: aprobado. Los ACs consolidados por PO cubren los requisitos funcionales y de seguridad. Agrego requisitos UX sobre el contr"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:21:19Z",
+        "preview": "🧩 PO — Criterios de aceptación aprobados Resultado: aprobado. Los ACs del body son correctos y consolido aquí los requisitos técnicos del Guru y los controles de Security como cri"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-24T02:15:43Z",
+        "preview": "🔐 Security — Análisis OWASP Resultado: aprobado con requisitos de seguridad explícitos. La historia ya identifica A04 y A07 como relevantes, pero falta detallar controles concreto"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2498": {
+    "summary": "Split 2 de 2 de #2464 - refactor: handlers reciben BusinessRole del guard, que a su vez es split 3 de 3 de #2443 (split 2 de 4 de #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:05:41Z",
+        "preview": "Pipeline pausó este issue: requiere intervención humana\\n\\nEl agente guru (fase desarrollo/validacion) detectó que el avance depende de una acción humana — no es un bug del código "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:02:00Z",
+        "preview": "Dimensionamiento (Planner) — pipeline definicion / fase sizing Veredicto: MEDIO (size:medium) Analisis Archivos a tocar (~6-7): backend/.../SecuredFunction.kt — emitir X-Business-R"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T13:46:45Z",
+        "preview": "Validacion UX (UX) — pipeline definicion / fase criterios Veredicto: APROBADO — sin observaciones bloqueantes Este split es backend puro sin impacto visual directo en el scope. La "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T13:41:54Z",
+        "preview": "Definicion de criterios (PO) — pipeline definicion / fase criterios Veredicto: APROBADO — historia lista para entrar al pipeline de desarrollo (cuando se desbloqueen las dependenci"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2501": {
+    "summary": "Sub-historia 1 de 3 del split de #2468 — feat(backend): servicio de email + token HMAC + endpoint invite (que a su vez es split de #2444 → #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:03:47Z",
+        "preview": "Sizing (planner — definicion/sizing) Veredicto: APROBADO — sizing medio. Análisis Justificación del veredicto Total ~6-8 archivos: encaja en rango medio (2-5 archivos principales +"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T13:46:55Z",
+        "preview": "Criterios de aceptación (PO — definicion/criterios) Veredicto: APROBADO. La historia entrega valor independiente (cimiento crypto + rate limit reutilizable) y queda lista para desa"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T13:41:50Z",
+        "preview": "Evaluación UX (criterios) Veredicto: APROBADO — historia puramente de backend (infra crypto + rate limit). No requiere assets visuales ni cambios en UI en este split. Análisis de i"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T13:33:47Z",
+        "preview": "Análisis de seguridad (security) Veredicto: APROBADO con recomendaciones — la historia tiene baseline sólido (HMAC-SHA256, key ≥256 bits, atomic UpdateItem, mask logging, normaliza"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2502": {
+    "summary": "Sub-historia 2 de 3 del split de #2468 — feat(backend): servicio de email + token HMAC + endpoint invite (que a su vez es split de #2444 → #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:10:38Z",
+        "preview": "Sizing — planner Veredicto: size:medium Archivos a tocar (~10): users/src/main/kotlin/.../CommEmailService.kt (interfaz nueva) users/src/main/kotlin/.../ClientSESService.kt (impl n"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:06:25Z",
+        "preview": "Issues de oportunidad UX registrados (no bloqueantes): #2605 — Sistema de plantillas de email con preview HTML para QA visual #2606 — Localización de templates de email (es-AR ↔ es"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:05:38Z",
+        "preview": "Análisis y guidelines UX — ux Veredicto: ✅ Aprobado para avanzar a desarrollo La historia tiene impacto visual real aunque no toca Compose: el template HTML del email es la primera"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T13:59:06Z",
+        "preview": "Validación PO — criterios de aceptación Veredicto: ✅ Aprobado para avanzar La historia entrega valor independiente y verificable: un servicio de email transaccional reutilizable + "
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2503": {
+    "summary": "Sub-historia 3 de 3 del split de #2468 — feat(backend): servicio de email + token HMAC + endpoint invite (que a su vez es split de #2444 → #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:17:03Z",
+        "preview": "[guru @ definicion/analisis] Rebote de routing — bloqueo por dependencias El pipeline rebotó este issue desde desarrollo/validacion de vuelta a definicion/analisis porque la implem"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:13:13Z",
+        "preview": "🔀 Reclasificación automática — guru en desarrollo/validacion reportó que este issue está fuera de su alcance."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:07:29Z",
+        "preview": "📏 Sizing — planner (fase: sizing · pipeline: definición) Veredicto: size:medium Archivos esperados (~5-6): EmployeeInviteFunction.kt (nuevo) — : SecuredFunction con la cadena de v"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:03:17Z",
+        "preview": "📋 Refinamiento de criterios — po (fase: criterios · pipeline: definición) Veredicto: ✅ Aprobado para avanzar a fase de desarrollo La historia está muy bien definida desde origen y"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2507": {
+    "summary": "Los agentes del pipeline V3 (UX, PO, Guru, Security, Review, etc.) a menudo identifican oportunidades de mejora no bloqueantes durante su análisis — por ejemplo el UX en su apartado \"Oportunidades de mejora UX (futuras — NO bloquean esta historia)\". Hoy esas recomendaciones…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T01:34:29Z",
+        "preview": "Re-validación UX — Agent: ux (fase: criterios, pasada 2) Re-ejecutado por el pipeline. Mi análisis anterior (#issuecomment-4329509414) sigue plenamente vigente. Aprobado sin observ"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T23:30:27Z",
+        "preview": "Re-validación de Criterios — Agent: po (fase: criterios, pasada 2) Re-ejecutado por el pipeline. Mi refinamiento anterior (#issuecomment-4322752804) sigue plenamente vigente. Aprob"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T22:58:43Z",
+        "preview": "Re-validación Técnica — Agent: guru (fase: analisis, pasada 2) Re-ejecutado por el pipeline. Mi análisis anterior (#issuecomment-4322692335) sigue siendo válido. Aprobado sin obser"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T21:34:53Z",
+        "preview": "Re-validación de Seguridad — Agent: security (fase: analisis, pasada 2) Re-ejecutado por el pipeline. Mi análisis anterior (#issuecomment-4322514888) sigue siendo válido: Los 5 hal"
+      }
+    ],
+    "fetchedAt": 1777557601962
+  },
+  "2510": {
+    "summary": "Durante la verificación del issue #2505 (íconos distintivos por flavor) se comprobó manualmente que los assets agregados cumplen los requisitos de seguridad declarados en la fase analisis:",
+    "recent_events": [],
+    "fetchedAt": 1777557612196
+  },
+  "2521": {
+    "summary": "El script qa/scripts/qa-narration.js genera el audio narrado del video QA con su propia implementación de TTS (llamadas directas a edge-tts / OpenAI TTS). En paralelo, el PR #2518 (mergeado) introdujo el helper .pipeline/lib/tts-generate.js que expone perfiles por agente (qa,…",
+    "recent_events": [],
+    "fetchedAt": 1777557612196
+  },
+  "2522": {
+    "summary": "Varios scripts del pipeline construyen mensajes para Telegram con parsemode: Markdown (legacy) o MarkdownV2, concatenando datos variables (títulos de issue, motivos de rechazo, nombres de archivos, paths, etc.). Ejemplos observados durante el análisis de #2519:",
+    "recent_events": [],
+    "fetchedAt": 1777557612196
+  },
+  "2524": {
+    "summary": "Durante el análisis técnico de #2520 detecté que el pipeline V3 tiene hoy dos archivos de métricas con nombres confusamente similares pero roles completamente distintos:",
+    "recent_events": [],
+    "fetchedAt": 1777557612196
+  },
+  "2526": {
+    "summary": "Como parte del rediseño del dashboard V3 (issue #2523), se va a establecer un design system con paleta, iconografía y componentes. Para mantener ese sistema vivo y detectar derivas (ej. un dev agrega un color ad-hoc), conviene exponer un endpoint /dashboard/styleguide que…",
+    "recent_events": [],
+    "fetchedAt": 1777557612196
+  },
+  "2527": {
+    "summary": "El issue #2523 establece como criterio de aceptación contraste WCAG AA en todas las superficies del dashboard V3. Esa validación hoy es manual / visual. Para que la regla no se degrade con el tiempo, conviene tener verificación automatizada.",
+    "recent_events": [],
+    "fetchedAt": 1777557612196
+  },
+  "2528": {
+    "summary": "Verificación empírica en .pipeline/dashboard-v2.js:6393:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2529": {
+    "summary": ".pipeline/dashboard-v2.js tiene ~6418 líneas, con varios bloques embebidos (al menos 3 detectados en líneas 2320, 5097, 5343, 5722). Esto: Dificulta mantener un design system unificado (cambios requieren editar el archivo gigante). Impide el cacheo HTTP del CSS (se re-envía en…",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2530": {
+    "summary": "El dashboard del pipeline no tiene tests automatizados (ni unitarios, ni visuales). Tras el rediseño del issue #2523 (paleta corporativa, iconografía SVG, lanes rediseñadas), cualquier cambio futuro a .pipeline/dashboard-v2.js podría introducir regresiones visuales silenciosas —…",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2531": {
+    "summary": "El criterio de aceptación #8 del issue #2523 exige accesibilidad WCAG AA (contraste, focus visible, alt/aria-label). Hoy no hay forma programática de verificar que el dashboard cumple esos estándares — cualquier cambio posterior podría degradar el contraste o perder labels sin…",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2532": {
+    "summary": "El dashboard del pipeline (.pipeline/dashboard-v2.js) renderiza HTML server-side con CSS y SVG inline y NO envía headers de seguridad:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2533": {
+    "summary": "El dashboard del pipeline levanta un servidor HTTP sin especificar host:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2534": {
+    "summary": "El issue #2523 propone crear iconografía SVG propia (.pipeline/assets/icons/*.svg) e incorporarla al dashboard como SVG inline (sprite o directo por card).",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2535": {
+    "summary": "Durante la revisión UX del issue #2519 (rediseño del mensaje QA en Telegram) detecté que cada skill del pipeline construye su propio template de mensaje de forma ad-hoc:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2538": {
+    "summary": "Split de la historia madre #2520 (grande) en 2 entregas independientes.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T21:34:37Z",
+        "preview": "[planner] Sizing — fase sizing / pipeline definicion Veredicto: size:medium Análisis Archivos afectados (~7-9 totales, mezcla feature + tests + doc): Por qué medium y no large Sin "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T21:26:54Z",
+        "preview": "[ux] Refinamiento UX — fase criterios / pipeline definicion TL;DR Aprobado, sin impacto visual. Esta hija backend de #2520 es infra pura del pipeline V3 (area:infra + area:pipeline"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T22:10:16Z",
+        "preview": "[po] Refinamiento de criterios — fase criterios / pipeline definicion TL;DR Aprobado. Historia hija backend de #2520 viable y entrega valor independiente: causa raíz del bug /consu"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:51:34Z",
+        "preview": "Recomendación de optimización futura creada como issue independiente: #2774 — Adoptar agregación incremental con offset persistido en metrics/aggregator. No bloquea a #2538 ni a #2"
+      }
+    ],
+    "fetchedAt": 1777557603165
+  },
+  "2539": {
+    "summary": "Split de la historia madre #2520 (grande) en 2 entregas independientes.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T22:28:30Z",
+        "preview": "Criterios de aceptación — /po (fase: criterios · pipeline definición) Historia bien encarada como entrega de valor independiente: hardening del dashboard /consumo (operación intern"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T20:24:31Z",
+        "preview": "Análisis técnico — /guru (fase: análisis · pipeline definición) Issue técnicamente viable y muy bien definido. La hija frontend (#2539) tiene scope acotado, dependencias claras y a"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T18:24:36Z",
+        "preview": "Recomendaciones de hardening generadas (no bloqueantes) Durante este análisis de seguridad se crearon 2 issues de recomendación (con label needs-human, no procesados automáticament"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T18:23:43Z",
+        "preview": "Análisis de seguridad — /security (fase: análisis · pipeline definición) Issue bien encarado desde el lado de seguridad: SEC-1 (XSS) está explícitamente reconocido y CA-9 lo eleva "
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2540": {
+    "summary": "Durante el code review del issue #2505, se detectó drift entre el script dev-time tools/generate-flavor-icons.js y los XMLs finalmente comiteados:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2541": {
+    "summary": "Durante la verificación de seguridad del PR del issue #2523 (rediseño visual del dashboard V3) se identificó un XSS vector pre-existente en el render del dashboard que NO fue introducido por #2523, pero que persiste tras su unificación de helpers de escape.",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2542": {
+    "summary": "Durante el code review del issue #2505 detecté que el generador tools/generate-flavor-icons.js está desincronizado con los XMLs vectoriales por flavor que ahora viven en disco.",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2543": {
+    "summary": "Durante la entrega del issue #2523 (rediseño visual del dashboard V3) el agente pipeline-dev detectó empíricamente un gap arquitectural del pipeline V3: no existe qaMode='web' ni qaMode='visual' que permita generar video QA narrado de dashboards / UIs web servidas en localhost.",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2544": {
+    "summary": "Durante el análisis de seguridad de #2505 (íconos distintivos por flavor) verifiqué empíricamente que los PNGs generados por tools/generate-flavor-icons.js no contienen chunks de metadata (tEXt/iTXt/zTXt/eXIf) — solo IHDR/bKGD/IDAT/IEND. Esto es bueno desde el punto de vista de…",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2545": {
+    "summary": "Verificación empírica sobre agent/2523-dashboard-visual-redesign @ HEAD 8877b1368 (que es la rama que entra a main por #2523):",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2546": {
+    "summary": "Verificación empírica sobre agent/2523-dashboard-visual-redesign @ HEAD 8877b1368:",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2548": {
+    "summary": "Durante el code review del PR de #2505 (íconos por flavor) detecté una divergencia entre el generador y el resultado committeado:",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2550": {
+    "summary": "El KPI \"Entregados 24h\" del dashboard V3 (http://localhost:3200/) cuenta cualquier issue con archivo en desarrollo/entrega/procesado/ como entregado, sin importar si el delivery aprobó o rechazó.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T01:47:53Z",
+        "preview": "Re-análisis técnico (guru) — verificación de vigencia Veredicto: aprobado — el análisis previo (issuecomment-4322980571) sigue 100% vigente. Re-verificación empírica hecha hoy: Bug"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T05:04:05Z",
+        "preview": "Criterios UX — pipeline definicion/criterios Veredicto: aprobado — sin produccion de assets nuevos. El sistema visual entregado en #2523 (design-tokens.css + sprite.svg + patron .k"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T22:31:38Z",
+        "preview": "Criterios de aceptación (PO) — pipeline definicion/criterios Veredicto: aprobado — la historia entrega valor independiente, alcance acotado a un solo PR, y los análisis previos (gu"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T20:54:12Z",
+        "preview": "Análisis técnico (guru) — Pipeline definición/análisis Veredicto: aprobado — viable, alcance acotado, sin blockers técnicos. Verificación empírica del bug → Hoy mismo hay 3 archivo"
+      }
+    ],
+    "fetchedAt": 1777557616943
+  },
+  "2551": {
+    "summary": "Delivery determinístico (.pipeline/skills-deterministicos/delivery.js) rechaza con error de git incluso cuando el código del issue está OK y aprobado por todas las fases previas.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T00:27:43Z",
+        "preview": "⏸ Pausado desde el dashboard Enviado a \"Necesitan humano\" por el usuario (source: dashboard:issue-tracker). El Pulpo deja de relanzar hasta que se reactive o desestime."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:36:54Z",
+        "preview": "Sizing — fase sizing (planner) Veredicto: size:medium Justificación Issue de fix infra del pipeline V3 con scope acotado a delivery.js + git-ops.js + tests. No es simple (más de 1 "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:20:47Z",
+        "preview": "Análisis UX — fase criterios Issue puramente de infra del pipeline V3 (delivery.js + git-ops.js). No tiene labels app:*, no afecta UI de usuario, no requiere assets visuales (ícono"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:58:20Z",
+        "preview": "Criterios de aceptación consolidados — fase criterios (PO) Como PO valido que la historia entrega valor real al pipeline: hoy delivery está bloqueando entregas a main (caso #2505 a"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2553": {
+    "summary": "Durante la definicion del issue #2475 (pantalla Actividad + export CSV en app:business), Security recomendo aplicar rate limiting al evento AUDIT_EXPORT en el backend.",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2554": {
+    "summary": "Durante el analisis tecnico del issue #2475 (pantalla Actividad), Guru detecto que PullToRefreshContainer / PullToRefreshBox (Material3) no estan disponibles en Compose Multiplatform 1.8.2 — requieren version 1.9+.",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2555": {
+    "summary": "Durante el analisis de seguridad de #2475 (detalle expandido del audit log), Security observo que el campo userAgent se muestra en la UI dentro del bottom sheet de detalle.",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2556": {
+    "summary": "Durante el análisis técnico de #2501 (RateLimitService) se detectó que el repo no tiene IaC (Terraform/CloudFormation/CDK) para tablas DynamoDB. La tabla inviteratelimits requiere:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2557": {
+    "summary": "Durante el análisis técnico de #2501 (HmacTokenGenerator) se identificó que la key HMAC (INVITATIONHMACKEY) se planea cargar desde env var, siguiendo el patrón actual de accessKeyId, secretAccessKey, etc. (ver UsersConfig.kt y Modules.kt).",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2559": {
+    "summary": "El comando \\/ghostbusters\\ actualmente vive en dos lugares: Telegram bot → handler \\cmdGhostbusters()\\ en \\.pipeline/pulpo.js\\ (línea 6191) Terminal directa → \\node .pipeline/ghostbusters.js\\ (script standalone)",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T22:31:45Z",
+        "preview": "🔍 Análisis técnico — fase definicion/analisis Veredicto: APROBADO — viable sin blockers técnicos. Viabilidad Esta historia es un wrapper delgado sobre infraestructura ya existente"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:55:31Z",
+        "preview": "🔒 Análisis de seguridad — fase definicion/analisis Veredicto: APROBADO — sin bloqueantes de seguridad para esta historia. Superficie de ataque El issue agrega un wrapper delgado ("
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2560": {
+    "summary": "Cuando el pipeline tiene muchos issues con label \\blocked:dependencies\\ (hoy ~26), \\brazoDesbloqueo\\ los procesa secuencialmente consultando GitHub con \\gh\\ para cada uno. Con throttle de \\gh\\ (~20s por consulta), un ciclo completo tarda ~7 minutos.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T01:48:19Z",
+        "preview": "🎨 Análisis UX — fase criterios Issue de infra del pipeline (area:pipeline, sin app:*): refactor de performance de brazoDesbloqueo. No hay impacto visual — no se producen íconos, s"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T00:57:05Z",
+        "preview": "🔒 Re-análisis de seguridad — fase analisis (re-validación) Re-evaluado contra el HEAD actual (post #2850). El refactor async-fire-and-forget ya mergeado no introduce nuevos vector"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-29T20:58:43Z",
+        "preview": "🔬 Re-análisis técnico — fase analisis (actualización) Re-evaluado el HEAD actual contra el análisis previo del 2026-04-26. Hubo avance parcial: el PR #2850 (commit 07f9b80d, issue"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T18:30:51Z",
+        "preview": "✅ Criterios de aceptación — fase criterios Validé que la historia entrega valor operativo claro: hoy un ciclo de desbloqueo de ~7 min congela el pulpo, bloquea la respuesta a /coma"
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2561": {
+    "summary": "A partir de #2498 las responses 2xx de SecuredFunction van a emitir un header X-Business-Role: con informacion sensible del usuario en el contexto del business (rol efectivo dentro del tenant). Si en el medio hay proxies cache (CDN, browser cache compartido, corporate proxy) y…",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2562": {
+    "summary": "CloudWatchEmfLogger.emitInvocation (backend/src/main/kotlin/ar/com/intrale/CloudWatchEmfLogger.kt) construye el JSON EMF via buildString { append(...) } con interpolacion directa de strings:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2563": {
+    "summary": "backend/src/main/kotlin/ar/com/intrale/LambdaRequestHandler.kt:55 y backend/src/main/kotlin/ar/com/intrale/Application.kt:62 setean:",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2564": {
+    "summary": "Durante el análisis técnico de #2502 (servicio de email + template invitación) se decidió que el AC-05 entregue solo un stub del handler de bounce/complaint de AWS SES (topic SNS + handler vacío). Esto deja sin cerrar el feedback loop real cuando un email rebota o el…",
+    "recent_events": [],
+    "fetchedAt": 1777557613088
+  },
+  "2566": {
+    "summary": "Durante el análisis técnico de #2502 (servicio de email + template invitación con AWS SES) se identificó que SES por defecto opera en sandbox mode: solo envía emails a destinatarios verificados. Esto es suficiente para dev/QA, pero bloquea el envío real a clientes invitados una…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2567": {
+    "summary": "La historia #2501 introduce HmacTokenGenerator con una sola key cargada de la env var INVITATIONHMACKEY. Hoy NO existe mecanismo para rotar la key sin invalidar todos los tokens activos.",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2568": {
+    "summary": "La historia #2501 introduce RateLimitService con clave email (PK: email_normalizado, SK: hour-bucket, límite 10/h). Buen mecanismo contra abuse de un email específico.",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2569": {
+    "summary": "La historia #2501 establece logging defensivo en aplicación (mask de email, no loguear token entero). Eso cubre operación normal.",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2570": {
+    "summary": "Split 1 de 3 de #2473 (que es split 1 de 3 de #2445, paraguas #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:46:46Z",
+        "preview": "Validacion UX Veredicto: APROBADO Esta es una sub-historia de infraestructura backend pura (tabla DynamoDB + helper + sanitizacion). No tiene UI directa al usuario final, por lo qu"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:35:53Z",
+        "preview": "Validación PO — Criterios de aceptación Valor para el usuario / negocio Esta hija no entrega UI directa al usuario final, pero habilita compliance y trazabilidad que son requisitos"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:14:58Z",
+        "preview": "Analisis de seguridad — security Veredicto: APROBADO con observaciones de hardening para incorporar durante development. Vectores OWASP cubiertos Hallazgos durante el analisis Defe"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:04:13Z",
+        "preview": "Analisis tecnico — guru Veredicto: VIABLE en el stack actual (Kotlin 2.2.21, Java 21, DynamoDB Enhanced 2.25.28, aws-lambda-java-events 3.11.4, Kodein 7.22.0). Verificacion empiric"
+      }
+    ],
+    "fetchedAt": 1777557603165
+  },
+  "2571": {
+    "summary": "Durante la fase de criterios del issue #2475 (pantalla Actividad / audit log) se definio que el tiempo absoluto debe mostrarse en long-press / tooltip sobre el item de la lista. Material3 1.8 expone PlainTooltipBox para este patron, pero su soporte en Compose Multiplatform puede…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2572": {
+    "summary": "Split 2 de 3 de #2473 (que es split 1 de 3 de #2445, paraguas #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:33:52Z",
+        "preview": "Pipeline pausó este issue: requiere intervención humana\\n\\nEl agente guru (fase desarrollo/validacion) detectó que el avance depende de una acción humana — no es un bug del código "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:32:49Z",
+        "preview": "Validación guru — fase desarrollo/validacion Veredicto: RECHAZADO — historia bien definida pero NO implementable hoy. Resumen El issue tiene contexto técnico excelente (analisis gu"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T12:07:15Z",
+        "preview": "Sizing — planner Veredicto: MEDIO (size:medium) Análisis Por qué medio y no grande Por conteo literal de archivos (6+) entraría en grande, pero los otros criterios apuntan a medio:"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T12:00:14Z",
+        "preview": "Validación UX — criterios Veredicto: APROBADO sin impacto visual directo en esta historia. Análisis de scope visual Esta sub-historia es integración backend pura (label area:backen"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2573": {
+    "summary": "Durante la definicion de criterios del issue #2475 (pantalla Actividad) se requirio que las animaciones respeten prefers-reduced-motion (AC-08 — accesibilidad). Compose Multiplatform 1.8.2 NO expone una API directa para detectar este flag; se requiere expect/actual por…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2574": {
+    "summary": "Split 3 de 3 de #2473 (que es split 1 de 3 de #2445, paraguas #1949).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:27:46Z",
+        "preview": "[guru] Análisis técnico del routing rebote (reboteroutingnumero=2) Recibo este issue por re-routing escalado desde desarrollo/validacion/ux a definicion/analisis/guru (reboteroutin"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:22:21Z",
+        "preview": "🔀 Reclasificación automática — ux en desarrollo/validacion reportó que este issue está fuera de su alcance."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T12:15:42Z",
+        "preview": "Sizing — #2574 Planner · Pipeline V3 · Fase: definición / sizing Tamaño: medio — size:medium aplicado. Justificación Alcance: backend-only (area:backend), un solo módulo (users). A"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T12:07:02Z",
+        "preview": "Validación UX — #2574 (Hija C de #2473) Especialista UX: agente ux · Pipeline V3 · Fase: definición / criterios Veredicto APROBADO sin impacto visual directo. El issue es estrictam"
+      }
+    ],
+    "fetchedAt": 1777557619972
+  },
+  "2575": {
+    "summary": "En la definicion del issue #2475 (audit log) se mapearon 4 niveles de severidad (critica / cambio / info / meta) a 6 acciones del diccionario actual (INVITEEMPLOYEE, ACCEPTINVITATION, CHANGEROLE, REVOKEEMPLOYEE, AUDITREAD, AUDITEXPORT).",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2576": {
+    "summary": "En #2502 (CommEmailService + template invitación), el AC-02 valida CRLF/RFC sólo sobre el campo to (destinatario). Sin embargo, otras tres variables controladas por el usuario terminan en headers/subject del email:",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2577": {
+    "summary": "Durante el refinamiento de los criterios de #2498 (split del padre #2464) se confirmo que la app mobile/web aun NO tiene historia que consuma el header X-Business-Role ni renderice el codigo de error MEMBERSHIPREVOKED. El issue #2498 entrega el contrato backend (header + codigo…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2578": {
+    "summary": "#2502 introduce ClientSESService que llamará a ses:SendEmail desde la Lambda kotlinTest. El issue documenta la decisión técnica (SES vs SendGrid) y configuración general, pero NO especifica la política IAM que debe tener el role de ejecución de la Lambda.",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2579": {
+    "summary": "#2502 (servicio de email + template) y la hija 1 del split de #2468 (token HMAC) generan un link tipo https://app.intrale.com.ar/accept-invite?token=. Ese token es una credencial de portador equivalente a una sesión temporal: quien lo posea puede aceptar la invitación y obtener…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2580": {
+    "summary": "Durante el analisis tecnico de #2498 (Guru R6) y de seguridad (#2563 Access-Control-Allow-Origin whitelist) quedo evidente que las cabeceras CORS estan duplicadas en dos lugares:",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2581": {
+    "summary": "Durante el análisis del issue #2503 (endpoint POST /{business}/employees/invite) se observó que la jerarquía actual de Response en el backend NO tiene una convención estable de code machine-readable + message localizable.",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2582": {
+    "summary": "Durante el análisis del issue #2503 (endpoint integrador de invitación de empleados) se identificó que su AC-11 limita la verificación a: Tests unitarios con MockK (mocks de SES, DynamoDB, Cognito). Test de integración manual con curl documentado en el PR.",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2583": {
+    "summary": "Durante el análisis del issue #2503 (AC-08) surge un requisito explícito de IAM:",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2584": {
+    "summary": "La pantalla de lista de invitaciones del dueño (#2558) muestra emails de empleados invitados — esto es PII (Información Personal Identificable). Actualmente Android permite por defecto que apps de captura, screen recorders, sistemas de mirroring (ej: scrcpy) o overlays…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2585": {
+    "summary": "Durante el análisis de seguridad de #2558 (UI del dueño para invitar empleados), se identificó un riesgo defensivo: si la red falla durante un POST /{business}/employees/invite y el cliente reintenta automáticamente (o el usuario hace doble-tap por latencia percibida), se pueden…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2587": {
+    "summary": "Split 2 de 3 de la sub-historia #2475 (que a su vez es split 3/3 de #2445).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T04:08:15Z",
+        "preview": "[guru · re-intake #3] Bloqueo upstream confirmado empíricamente Re-verifiqué los 3 claims del rebote previo en este ciclo. Los TRES siguen vigentes y coinciden con el veredicto del"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T03:49:21Z",
+        "preview": "[guru · re-intake #3] Rechazo confirmado — verificación empírica en este ciclo Re-verifiqué los 3 claims del rechazo previo. TODOS siguen vigentes. Ningún cambio upstream entre el "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T03:08:35Z",
+        "preview": "Re-verificación empírica del rechazo previo (este ciclo · guru) El issue volvió a entrar a validación sin que cambiara nada upstream. Re-corrí cada claim empíricamente y todos sigu"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:51:59Z",
+        "preview": "[guru · re-intake validación] Re-verificación post-rebote — RECHAZADO nuevamente El issue volvió a la fase validacion del pipeline de desarrollo (re-intake). Re-verifiqué empíricam"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2589": {
+    "summary": "Durante el análisis de seguridad de #2503 (endpoint POST /{business}/employees/invite) se identificó que el AC-08 documenta correctamente el requisito de IAM sin DeleteItem sobre la tabla employee_invites, pero no incluye UpdateItem ni la limitación a las operaciones…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2590": {
+    "summary": "Durante el análisis de seguridad de #2503 (endpoint POST /{business}/employees/invite) se observó que el AC-09 establece correctamente que el email completo solo aparece en logs de error/audit con retención controlada. Pero NO especifica cuál es esa retención, ni dónde se…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2591": {
+    "summary": "Cuando el pulpo lanza una fase con \\useExistingWorktree = true\\ (\\build\\, \\linteo\\, \\aprobacion\\, \\entrega\\), busca el worktree del issue con el patrón \\platform.agent--\\ (\\pulpo.js:4527\\). Si NO lo encuentra, cae en un fallback peligroso: usa \\ROOT\\ (el repo principal) como cwd…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:37:22Z",
+        "preview": "UX — ux (pipeline V2, fase criterios) Veredicto: Aprobado. Issue de infraestructura pura (area:infra + area:pipeline sin app:) — sin impacto visual ni UI. No hay assets que produci"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T18:30:15Z",
+        "preview": "Criterios de aceptación — po (pipeline V2, fase criterios) Veredicto: Historia validada. Entrega valor claro de integridad de datos del pipeline: prevenir commits cruzados entre br"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:58:01Z",
+        "preview": "🔬 Análisis técnico — guru (pipeline V2, fase analisis) Veredicto: ✅ Aprobado para pasar a desarrollo. Issue bien definido, causa raíz correctamente diagnosticada, fix propuesto es"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:30:14Z",
+        "preview": "🔒 Análisis de seguridad — Auditor security Veredicto: ✅ Aprobado para pasar a implementación, con requisitos de seguridad de defense-in-depth que deben quedar satisfechos en los C"
+      }
+    ],
+    "fetchedAt": 1777557603165
+  },
+  "2592": {
+    "summary": "Durante el análisis técnico del issue #2558 (UI invitación de empleados) se detectó que el repositorio no usa todavía pullRefresh/PullToRefresh/SwipeRefresh de Material3. Múltiples pantallas tipo lista (BusinessOrdersScreen, BusinessDeliveryPeopleScreen —si se crea—,…",
+    "recent_events": [],
+    "fetchedAt": 1777557613992
+  },
+  "2593": {
+    "summary": "Durante el análisis técnico del issue #2558 se detectó que el enum BusinessRole (que introduce la hija de backend #2468) no existe todavía en el codebase. Cuando exista, hay dos opciones:",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2594": {
+    "summary": "Detectado durante la definición de criterios de #2502 (servicio de email + template de invitación).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:48:26Z",
+        "preview": "🔒 Issue de hardening creado como mejora independiente: #2642 — política de retención de datos comportamentales/PII a nivel plataforma. No bloquea a #2594."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-25T14:47:45Z",
+        "preview": "🔒 Análisis de seguridad — fase analisis Como auditor de seguridad reviso este issue de métricas de conversión del CTA de invitación. Identifico los vectores principales (mapeados "
+      }
+    ],
+    "fetchedAt": 1777557614854
+  },
+  "2595": {
+    "summary": "Detectado durante la definición de criterios de #2502 (servicio de email + template de invitación).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T12:03:30Z",
+        "preview": "Análisis de seguridad — OWASP Top 10 Análisis completado para esta historia (UI de listado/reenvío/cancelación de invitaciones pendientes). Hereda el contrato de seguridad ya defin"
+      }
+    ],
+    "fetchedAt": 1777557614854
+  },
+  "2596": {
+    "summary": "Durante el análisis UX del issue #2503 (endpoint POST /{business}/employees/invite) se detectó que los mensajes de respuesta de la API tienen un buen tono general (voseo argentino, claros, accionables), pero arrastran patrones repetidos que conviene resolver de forma transversal:",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2597": {
+    "summary": "Detectado durante la definición de criterios de #2502 (servicio de email + template de invitación).",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2598": {
+    "summary": "Durante el análisis UX del issue #2503 se observó que el mensaje genérico para errores 5xx (INVITATIONINTERNALERROR: \\\"No pudimos enviar la invitación. Intentalo de nuevo en unos minutos.\\\") tiene buen tono empático pero deja al usuario sin salida si el problema persiste.",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2599": {
+    "summary": "El Issue Tracker del dashboard muestra un ETA estimado por issue (badge \\⏱ ~Xm\\ al lado del título). Hoy el ETA refleja básicamente lo que falta del agente activo en la fase actual, no el costo total restante del pipeline. Esto le da al usuario una expectativa engañosa: ve \\\"⏱…",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-30T01:04:06Z",
+        "preview": "Re-validación de seguridad — security agent Veredicto: APROBADO (consistente con análisis previo en comentario anterior). Verificación empírica El issue no cambió desde la primera "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T22:26:38Z",
+        "preview": "Análisis técnico — guru agent Veredicto: APROBADO. Cambio viable dentro del stack actual sin blockers. Stack y alcance verificado 100% Node.js puro — no toca Kotlin/Compose/Gradle."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:03:42Z",
+        "preview": "Análisis de Seguridad — security agent Veredicto: APROBADO sin bloqueos. Superficie de ataque evaluada El cambio está acotado a .pipeline/dashboard-v2.js (dashboard interno local) "
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2600": {
+    "summary": "Detectado durante el análisis de seguridad de #2565 (UI del invitado del flujo de invitacion HMAC). Los CTAs criticos del flavor business (Aceptar invitacion, Rechazar invitacion, Cancelar invitacion, signup inline) no tienen proteccion explicita contra tapjacking (overlay…",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2601": {
+    "summary": "Detectado durante el analisis de seguridad de #2565 (UI del invitado con Android App Links sobre invite.intrale.com.ar).",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2602": {
+    "summary": "Durante el analisis del issue #2570 (split 1 de #2473 — infra base AuditLog) detectamos que el helper logAuditEvent se va a integrar manualmente acción-por-acción en la Hija B (#2572) para las 4 acciones sensibles (INVITEEMPLOYEE, ACCEPTINVITATION, CHANGEROLE, REVOKEEMPLOYEE).",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2603": {
+    "summary": "Durante el analisis del issue #2570 (split 1 de #2473 — infra base AuditLog) detectamos que el codebase no tiene precedente de PutItem con conditionExpression(attributenotexists(...)). Todos los putItem(...) actuales son no-condicionales:",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2604": {
+    "summary": "Durante el analisis del issue #2570 (split 1 de #2473 — infra base AuditLog) detectamos que el codebase ya usa CloudWatch EMF para invocaciones HTTP via CloudWatchEmfLogger.emitInvocation(...) (visible en backend/src/main/kotlin/ar/com/intrale/LambdaRequestHandler.kt:139).",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2605": {
+    "summary": "Detectado durante el análisis UX de #2502 (servicio de email + template de invitación).",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2606": {
+    "summary": "Detectado durante el análisis UX de #2502 (template de invitación en español rioplatense).",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2607": {
+    "summary": "Detectado durante el análisis UX de #2502.",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2608": {
+    "summary": "En el split 2/3 de la pantalla Actividad (issue #2587) se agrega un botón \\\"Copiar ID de evento\\\" que copia el eventId al clipboard del sistema. Hoy eventId es un UUID opaco — bajo riesgo. Sin embargo, el patrón de \\\"copiar al clipboard\\\" probablemente se extienda en el futuro a:",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2609": {
+    "summary": "El audit log accesible por OWNERs (issues #2475, #2587) permite filtrar por rango temporal, acción y empleado específico. Un OWNER legítimo usa estos filtros ocasionalmente para investigar incidentes o revisar la actividad reciente.",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2610": {
+    "summary": "Durante el análisis técnico del issue #2440 (admin de empleados + audit log), el agente Guru detectó que el repo no tiene infraestructura como código (Terraform / CDK / SAM). Cada nueva tabla DynamoDB (ej. activitylog) y cada cambio de IAM policy de Lambda (ej. permisos…",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2611": {
+    "summary": "En la entrega multi-usuario para negocios (#1949 → split #2440), las funciones RevokeEmployee y ChangeEmployeeRole cambian el estado / rol de un empleado en UserBusinessProfile y registran el evento en activity_log. Sin embargo, el empleado afectado no recibe ninguna…",
+    "recent_events": [],
+    "fetchedAt": 1777557614854
+  },
+  "2612": {
+    "summary": "Detectado durante el analisis de seguridad del issue #2570 (AuditLog).",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2613": {
+    "summary": "Hoy PushDeepLinkStore (app/composeApp/src/commonMain/kotlin/ext/push/PushDeepLinkStore.kt) maneja un único caso: un String? de orderId para navegación desde notificaciones push. Con la llegada del flujo de invitación de empleados (#2565) habrá un segundo store funcionalmente…",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2614": {
+    "summary": "El proyecto define 3 product flavors en Android (client, business, delivery) pero NO tiene source sets dedicados en app/composeApp/src/:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2615": {
+    "summary": "AC-07 del issue #2565 (y el comment de Security correspondiente) establece que el logger de la app NUNCA debe emitir el token HMAC de invitación completo. La sanitización propuesta es reemplazar el query token=... por token=*** antes de loggear el deeplink.",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2616": {
+    "summary": "Detectado durante el analisis de seguridad del issue #2570 (AuditLog tabla + helper logAuditEvent).",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2617": {
+    "summary": "Durante el analisis UX del issue #2558 (UI dueño · invitar empleados) se observo que el componente generico ui/cp/loading/EmptyState.kt NO soporta ilustracion. Hoy las pantallas que necesitan empty state con identidad visual (ClientCartEmptyState en ClientCartScreen.kt:590,…",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2618": {
+    "summary": "Durante el analisis UX del issue #2558 (UI dueño · invitar empleados) se observo que cada pantalla con listas o formularios implementa los anuncios programaticos de TalkBack ad-hoc:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2619": {
+    "summary": "Durante el analisis UX del issue #2558 (UI dueño · invitar empleados) se observo que cada historia define su propio microcopy en español, lo que genera variaciones de tono entre pantallas:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2620": {
+    "summary": "Detectada durante la definicion de criterios del issue #2565 (UI del invitado).",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2621": {
+    "summary": "Detectada durante la definicion de criterios del issue #2565 (UI del invitado).",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2622": {
+    "summary": "Detectada durante la definicion de criterios del issue #2565 (UI del invitado).",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2623": {
+    "summary": "Durante el análisis técnico de #2572 (integración fail-closed WAL del audit log con 4 acciones sensibles) se observó que cada una de las 4 funciones (InviteEmployee, AcceptInvitation, ChangeRole, RevokeEmployee) deberá implementar el mismo patrón WAL repetitivo:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2624": {
+    "summary": "El patrón WAL fail-closed que se implementa en #2572 garantiza que cada acción sensible deja un evento PENDING antes del cambio, seguido de un SUCCESS o FAILED con relatedEventId. Pero la propia historia reconoce el escenario \"outcome desconocido\": si la Lambda muere entre el…",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2625": {
+    "summary": "El patrón WAL fail-closed de #2572 (escribir PENDING → ejecutar cambio → escribir SUCCESS|FAILED) es necesario cuando el cambio incluye un side effect en Cognito (que no es transaccional con DynamoDB). Aceptar invitación, invitar empleado, cambiar rol y revocar empleado tocan…",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2626": {
+    "summary": "Cuando se ejecute anonymizeUser(userId) (definido en #2574, hija C de #2473), la propia operación de anonimización no quedará trazada en el audit log salvo que se registre explícitamente. Esto crea un agujero de cumplimiento GDPR / forense:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2627": {
+    "summary": "anonymizeUser(userId) definido en #2574 reemplaza únicamente el campo userId de los eventos del audit log. Sin embargo, la metadata sanitizada (Hija A #2570) puede contener referencias indirectas al usuario anonimizado:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2628": {
+    "summary": "El runbook de #2574 cubre PITR (35 días de rollback) y DynamoDB Streams + alarmas para detección de tampering. Sin embargo, no cubre escenarios de:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2629": {
+    "summary": "El secret HMAC de Secrets Manager (definido en #2574) es invocado únicamente por anonymizeUser, que es una operación administrativa manual de baja frecuencia (estimado <10 veces al año en condiciones normales). Cualquier desviación sobre ese baseline indica:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2630": {
+    "summary": "Detectado durante el analisis de seguridad de #2572 (integracion fail-closed del audit log con 4 acciones sensibles). El diseno WAL fail-closed garantiza append-only a nivel aplicacion (el codigo nunca hace UpdateItem sobre AuditLog), pero un actor con acceso directo a DynamoDB…",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2631": {
+    "summary": "Sub-historia A1 de 2 del split de #2558 — UI del dueño · form invitación + lista de empleados (que a su vez es split de #2470, split de #2444).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T02:19:12Z",
+        "preview": "Pipeline pausó este issue: requiere intervención humana\\n\\nEl agente po (fase desarrollo/validacion) detectó que el avance depende de una acción humana — no es un bug del código ni"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T14:37:53Z",
+        "preview": "Sizing — Planner (definicion · sizing) Resultado: MEDIO ✅ — label size:medium aplicado. Justificacion Aplicando los criterios del rol Planner: Conteo estimado de archivos (1 modulo"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T14:30:53Z",
+        "preview": "Validacion UX — UX (definicion · criterios) Resultado: APROBADO — la historia esta correctamente especificada desde la perspectiva de UX. AC-01 (form + snackbar undo) y AC-05 (acce"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T13:12:36Z",
+        "preview": "Validación de criterios de aceptación — PO (definicion · criterios) Resultado: APROBADO ✅ — los criterios AC-01 a AC-05 son claros, verificables y entregan valor independiente al u"
+      }
+    ],
+    "fetchedAt": 1777557612196
+  },
+  "2632": {
+    "summary": "El proyecto coexiste con dos generaciones del SDK de AWS:",
+    "recent_events": [],
+    "fetchedAt": 1777557615856
+  },
+  "2633": {
+    "summary": "El issue #2574 introduce el primer uso de AWS Secrets Manager en el proyecto (para el HMAC del audit log). En el corto plazo, otros casos de uso van a requerir el mismo patrón:",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2634": {
+    "summary": "El issue #2574 implementa la función anonymizeUser(userId) como uso administrativo manual sin endpoint público. Esto es correcto desde la postura de seguridad (evita exposición), pero deja una pregunta operativa abierta:",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2636": {
+    "summary": "Durante el análisis UX del flujo de invitación de empleados (#2565), se definió un placeholder visual icbusinessavatar_placeholder.xml para el onboarding del invitado (screen 1 \"Bienvenida\") que renderiza un círculo con la inicial del nombre del negocio.",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2637": {
+    "summary": "Durante el análisis UX del flujo de invitación de empleados (#2565), se identificó la oportunidad de ofrecer al invitado, después del onboarding inicial, un toggle opt-in para recibir tips de uso contextuales (notificaciones in-app o push educativas sobre las features del rol…",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2638": {
+    "summary": "Durante el análisis UX del flujo de invitación de empleados (#2565), se identificó que el primer login del invitado post-onboarding (cuando vuelve a abrir la app después del onboarding inicial) es un momento emocional clave que no debería ser idéntico a un login regular.",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2639": {
+    "summary": "Durante el análisis UX del flujo de invitación de empleados (#2565), se identificó la oportunidad de cerrar el loop fuera de la app con un email de bienvenida post-aceptación dirigido al invitado, con resumen del rol aceptado, links útiles (ayuda, primeros pasos, contacto del…",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2640": {
+    "summary": "Detectado durante el analisis de seguridad de #2588 (export CSV de audit log).",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2641": {
+    "summary": "Detectado durante el analisis de seguridad de #2588 (export CSV de audit log).",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2642": {
+    "summary": "Detectado durante el análisis de seguridad de #2594 (métricas de conversión del CTA de invitación). El issue introduce tracking comportamental (timestamps de click, tiempo hasta aceptación, IPs del clicker para deduplicación). En el análisis salió que no existe a nivel…",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2643": {
+    "summary": "Sub-historia 1 de 3 del split de #2565 — UI del invitado: landing + onboarding + App Links. Cadena de splits: #2444 → #2470 → #2565 → (esta hija).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T03:52:37Z",
+        "preview": "Validación técnica — fase validacion (desarrollo) Veredicto: Aprobado para pasar a desarrollo. La historia tiene contexto técnico suficiente y no detecto blockers nuevos respecto a"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:07:59Z",
+        "preview": "Sizing — fase sizing (definicion) Veredicto: size:medium (medio). Justificación Aplicando los criterios del Planner contra el alcance verificado del issue: Por qué medio y no grand"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:04:05Z",
+        "preview": "Recomendaciones pendientes de aprobacion humana: #2712, #2713, #2714."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:02:20Z",
+        "preview": "Validacion UX — fase criterios (definicion) Veredicto: Aprobado para pasar a desarrollo. Los criterios visuales del cuerpo del issue son completos y verificables; el brief padre #2"
+      }
+    ],
+    "fetchedAt": 1777557603165
+  },
+  "2644": {
+    "summary": "Sub-historia 2 de 3 del split de #2565 — UI del invitado: landing + onboarding + App Links. Cadena de splits: #2444 → #2470 → #2565 → (esta hija).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T03:59:37Z",
+        "preview": "Validacion tecnica desarrollo/validacion — guru Veredicto: APROBADO para pasar a fase dev. Re-verificacion empirica de claims del analisis previo Contexto consolidado de fases ante"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:39:47Z",
+        "preview": "Sizing del Planner: Medio Análisis del alcance: ~14 archivos nuevos sumativos: InviteOnboardingScreen, InviteOnboardingViewModel, InviteOnboardingUIState, InvitePostAcceptStore (Ko"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:14:57Z",
+        "preview": "Recomendaciones pendientes de aprobacion humana: #2716, #2717, #2718."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:13:35Z",
+        "preview": "Análisis UX — sub-historia 2 (onboarding post-aceptación) del split #2565 Resultado: APROBADO — Brief vinculante para android-dev + /claude-design + microcopy completo + refinos de"
+      }
+    ],
+    "fetchedAt": 1777557603165
+  },
+  "2645": {
+    "summary": "Sub-historia 3 de 3 del split de #2565 — UI del invitado: landing + onboarding + App Links. Cadena de splits: #2444 → #2470 → #2565 → (esta hija).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:44:36Z",
+        "preview": "Recomendaciones pendientes de aprobacion humana: #2721, #2722, #2723."
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:43:12Z",
+        "preview": "Validación UX — Registro inline del invitado (hija 3 de #2565) Veredicto: Aprobado desde UX. Esta pantalla es la pieza más sensible del flow del invitado: si al usuario le da fricc"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T15:04:26Z",
+        "preview": "Validación PO — Criterios de aceptación (hija 3 de #2565) Veredicto: Aprobado como entrega de valor independiente. Esta hija cierra el camino del invitado sin cuenta previa: en un "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T14:35:11Z",
+        "preview": "Aclaración del análisis previo — los issues de recomendación creados son: #2696 — [guru] Definir URL canonical de T&C por flavor + helper LegalLinkText #2697 — [guru] Decisión arqu"
+      }
+    ],
+    "fetchedAt": 1777557603165
+  },
+  "2646": {
+    "summary": "El endpoint GET /{business}/audit (parte de #2445 split 2 / #2474) expone el log de auditoria del negocio al rol OWNER. El log contiene PII y trazabilidad operacional sensible (quien invito a quien, cambios de rol, revocaciones, lecturas previas).",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2647": {
+    "summary": "La pantalla Actividad (#2586) renderiza eventos de auditoria con actor, target, roles, severidad y metadata. Si el ViewModel o servicios usan logger.info(\"event: $event\") o similar, los logs locales (ADB / file appender / crash reporter) pueden terminar conteniendo PII y…",
+    "recent_events": [],
+    "fetchedAt": 1777557616943
+  },
+  "2648": {
+    "summary": "Durante el analisis de #2587 (filtros y detalle expandido en pantalla Actividad de app:business) se identifico que el AC-05 requiere respetar prefers-reduced-motion para usuarios con sensibilidad a animaciones. El AC del split tiene una salida via \"fallback snap\" (animacion…",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2649": {
+    "summary": "Durante el analisis de #2587 se identifico que el AC-04 (detalle expandido) requiere mostrar el campo metadata como JSON formateado y colapsable dentro de un ModalBottomSheet. No existe componente previo en el repo para esto. Cada pantalla que necesite mostrar JSON estructurado…",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2650": {
+    "summary": "Durante el analisis de #2587 se identifico que BusinessOrdersScreen.kt:111-140 declara los chips de filtro como item normal dentro del LazyColumn, lo cual hace que scrolleen junto con la lista en lugar de quedar fijos debajo del topbar. Esto es inconsistente con el patron que se…",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2657": {
+    "summary": "Detectado durante el análisis de seguridad de #2595 (UI para reenviar invitaciones pendientes).",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2658": {
+    "summary": "Detectado durante el análisis de seguridad de #2595 (UI para reenviar/cancelar invitaciones pendientes).",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2659": {
+    "summary": "Detectado durante el análisis de seguridad de #2595 (UI para reenviar invitaciones pendientes).",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2660": {
+    "summary": "Durante el analisis tecnico de #2588 (export CSV de audit log multiplataforma) se detecto que no hay observability del nuevo endpoint de export. Una vez en produccion, no podriamos saber:",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2661": {
+    "summary": "El analisis tecnico de #2588 establece un limite duro de 10k filas exportables (alineado con la observacion de Security sobre DoS). Esto evita freeze en cliente Wasm y deja el endpoint manageable, pero deja afuera el caso de exports legitimos sobre periodos largos (ej. anio…",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2662": {
+    "summary": "El analisis tecnico de #2588 identifico que la serializacion CSV en Wasm corre en el main thread del navegador. Para el limite actual (10k filas) es aceptable (~200ms), pero si en el futuro se levanta el limite o las filas crecen en tamano (ej. metadata mas detallada por nuevas…",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2663": {
+    "summary": "El \\AndroidManifest.xml\\ compartido (\\app/composeApp/src/androidMain/AndroidManifest.xml:8\\) declara \\android:allowBackup=\\\"true\\\"\\ sin un \\android:dataExtractionRules\\ ni \\android:fullBackupContent\\ que defina qué datos quedan excluidos del backup automático de Google Drive.",
+    "recent_events": [],
+    "fetchedAt": 1777557620943
+  },
+  "2664": {
+    "summary": "Durante el análisis UX del issue #2440 (admin de empleados + audit log) detecté que los endpoints devuelven códigos de error tipo string (ej. cannotrevokelastowner, permissiondenied) sin un contrato formal que la UI pueda consumir para mostrar mensajes traducidos y accionables…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2665": {
+    "summary": "El endpoint ListActivityLog (issue #2440) devuelve eventos crudos con actorUserId, targetUserId y action (enum corto: invite|accept|revoke|change_role|login). Para que la UI muestre un timeline humano del estilo \"María Pérez invitó a Juan Gómez como CAJERO el 25/04 a las 14:32\",…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2668": {
+    "summary": "Durante el análisis del form de invitación individual (#2631 — split A1 de #2558), se identificó que el flujo actual envía una invitación a la vez (email + rol + enviar). Para negocios con varios empleados (restaurantes con cocineros + cajeros + repartidores, locales con turnos…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2669": {
+    "summary": "En el form de invitación individual (#2631 — split A1 de #2558), tras enviar una invitación exitosa, el flujo actual cierra el form y muestra un snackbar con \"Deshacer\". Si el dueño quiere invitar a un segundo empleado, debe volver a abrir el form desde la lista (#2632 — A2).",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2671": {
+    "summary": "Durante el análisis UX de #2587 (filtros del audit log) se observó que los chips dropdown ('Todas las acciones', 'Todos los empleados') no comunican visualmente cuántos filtros están aplicados sin abrir el bottom sheet. El usuario debe abrir cada sheet para verificar la…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2672": {
+    "summary": "En #2587, AC-02 define un OutlinedTextField de búsqueda dentro del bottom sheet de empleados con LazyColumn filtrada client-side. La implementación base muestra el subset filtrado pero no resalta visualmente la coincidencia dentro de cada nombre/email del empleado.",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2673": {
+    "summary": "En #2587 (filtros + persistencia + detalle expandido) y en el split 1 #2586 (pantalla base) no hay mecanismo manual de refresh. El fetch se dispara al cambiar filtros, pero si el OWNER está investigando un incidente en tiempo real (e.g. siguiendo a un empleado activo) y quiere…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2677": {
+    "summary": "Durante el analisis UX del split #2587 (filtros + detalle expandido en pantalla Actividad) se identifico que el patron actual solo expone interaccion tap = abrir detalle. En auditoria, el caso de uso \"vi un evento sospechoso, quiero filtrar todos los eventos de este empleado\" es…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2678": {
+    "summary": "Durante el analisis UX del split #2587 (filtros + persistencia en pantalla Actividad) se identifico que la persistencia entregada cubre solo el ultimo filtro aplicado. Los OWNERs que hacen auditoria recurrente (ej. \"reviso semanal de actividad de RRHH\", \"reviso quincenal de…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2679": {
+    "summary": "Durante el analisis UX del split #2587 se identifico que la pantalla Actividad muestra eventos heterogeneos (cambios de rol, modificaciones de zona, ediciones de horario, eventos de seguridad) sin diferenciacion visual entre categorias. En una lista densa, el OWNER que escanea…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2680": {
+    "summary": "La hija #2643 (deeplink + landing del invitado) requiere que Android autoverifique el host invite.intrale.com.ar con android:autoVerify=\\\"true\\\". Para que la verificación pase y el SO abra la app sin chooser (incluso compitiendo con apps maliciosas que declaren intent-filter…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2681": {
+    "summary": "La hija #2643 (deeplink + landing del invitado) define en AC-01 un fallback explícito: \\\"Fallback a https://invite.intrale.com.ar/accept?token=... si la app no está instalada\\\". Hoy ese host no existe — el deeplink desde el email aterrizaría en un 404/dominio inexistente para…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2682": {
+    "summary": "Durante el análisis de seguridad de #2645 (registro inline del invitado, hija 3 de #2565) se identificó que el control de \\\"email read-only\\\" en el cliente Compose es un control de UX, no de seguridad. Un cliente modificado, un Accessibility Service malicioso o un debug build…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2683": {
+    "summary": "Al analizar #2643 detectamos que estamos por crear un segundo singleton de deep link (InviteDeepLinkStore) que es prácticamente idéntico a ext/push/PushDeepLinkStore.kt:",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2684": {
+    "summary": "Durante el análisis de #2645 (registro inline del invitado) se identificaron oportunidades de hardening en los inputs sensibles (password, confirm-password) del flavor business — y por extensión, aplicables a todos los flavors cuando hay flujos de registro/cambio de contraseña.",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2685": {
+    "summary": "Durante el análisis de #2645 se identificó un gap en la trazabilidad forense del flujo de invitaciones:",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2686": {
+    "summary": "Detectado al analizar issue #2458 (rechazo del PO sobre #1931). El issue propone forzar isDelayed=true para que la UI lo muestre durante la grabación QA, mediante \\\"manipulación de timestamp o flag en el DTO de respuesta\\\". Esa frase, sin un mecanismo formalizado, abre la puerta…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2687": {
+    "summary": "Detectado al analizar issue #2458. El issue exige re-grabar el video QA de #1931 mostrando la card de estimación, factores contextuales (activeOrders, distanceKm), barra de progreso y aviso de demora. Para hacerlo se debe loguear con una cuenta QA real contra el ambiente AWS de…",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2688": {
+    "summary": "El proyecto convive con dos sistemas de strings simultáneos:",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2689": {
+    "summary": "CommonRouter (app/composeApp/src/commonMain/kotlin/ui/ro/CommonRouter.kt) registra rutas como strings literales sin parámetros (ej. /client/onboarding, /login). Cuando una pantalla necesita pasar datos a otra, hoy se usa uno de estos patrones:",
+    "recent_events": [],
+    "fetchedAt": 1777557621739
+  },
+  "2690": {
+    "summary": "Compose Multiplatform no expone un equivalente de AccessibilityManager.isReduceMotionEnabled en commonMain. Hoy ningún screen del proyecto consulta la preferencia del sistema de \\\"reducir movimiento\\\":",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2693": {
+    "summary": "Durante el analisis UX del issue #2631 (form de invitacion de empleado en flavor business), detectamos que el selector de rol con default CASHIER puede ser dificil de entender para duenos primerizos: que puede hacer un CASHIER vs otros roles (MANAGER, DELIVERY_PERSON, etc.) no…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2695": {
+    "summary": "Sub-split 3b de 2 del issue #2588 (que es split 3/3 de #2475, sub-historia de #2445).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:13:20Z",
+        "preview": "Sizing — Planner Tamaño: medio Justificación 3 archivos principales: CsvExporter.ios.kt, CsvExporter.desktop.kt, CsvExporter.wasmJs.kt. Posibles 1-2 archivos auxiliares: bridge par"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T17:04:21Z",
+        "preview": "Validacion UX — Guidelines de experiencia Resumen Sub-split 3b de #2588 — implementa los actual de CsvExporter para iOS, Desktop/JVM y Wasm. Sin impacto visual propio: todos los fl"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T16:29:41Z",
+        "preview": "Validacion PO — Criterios de aceptacion Resumen Sub-split 3b de #2588 — completa la cobertura cross-platform agregando los actual de CsvExporter para iOS, Desktop/JVM y Wasm. La lo"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T15:58:19Z",
+        "preview": "Analisis Tecnico — Guru Resumen Sub-split 3b de #2588 — agrega los actual de CsvExporter para iOS, Desktop/JVM y Wasm. Tecnicamente viable dentro del stack actual (Kotlin 2.2.21 + "
+      }
+    ],
+    "fetchedAt": 1777557603165
+  },
+  "2696": {
+    "summary": "Durante el análisis de #2645 se detectó que NO existe en el codebase una URL canonical (ni helper de configuración) para Términos y Condiciones del producto. El AC-03 de #2645 pide:",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2697": {
+    "summary": "Durante el análisis de #2645 (Registro inline del invitado) se detectó un gap de definición sobre el endpoint backend que el cliente debe consumir. El issue declara depender de #2469 (accept-invitation) para \"endpoint signup-with-invitation que reciba { email, name, password,…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2698": {
+    "summary": "Detectado durante el analisis de seguridad de #2695 (sub-split 3b de export CSV — actuals iOS/Desktop/Wasm de #2588).",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2699": {
+    "summary": "Detectado durante el análisis UX de #2635 (lista de invitaciones del dueño): el AC pide CircularProgressIndicator para el loading inicial, pero la percepción de carga es pobre cuando el usuario ya sabe que va a ver una lista (cards). Hoy varias pantallas con listas…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2700": {
+    "summary": "Detectado durante el análisis UX de #2635 (lista de invitaciones): el AC pide \"NO UI optimista\" + \"refetch obligatorio tras mutación\". Esto significa que cuando el dueño cancela o reenvía una invitación, la card permanece intacta hasta que el server responde 200 y luego el…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2701": {
+    "summary": "Durante el analisis de #2694 (export CSV foundation + Android, sub-split de #2588) se verifico que el codebase no tiene tabla DynamoDB de auditoria. El logging actual es CloudWatch EMF (metricas estructuradas, no eventos consultables) via…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2702": {
+    "summary": "Durante el analisis de #2694 se verifico que el backend no tiene precedente de escrituras atomicas multi-item en DynamoDB (TransactWriteItems / BatchWriteItem). La busqueda en el codebase devolvio cero resultados. La unica mencion de \"batch\" en ClientProductsAvailability.kt es…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2703": {
+    "summary": "El CA-01a de #2694 obliga a soportar dos rutas de almacenamiento de archivos en Android: API 29+ (Android 10+): MediaStore.Downloads + ContentResolver.insert. API 24-28 (Android 7-9): fallback Intent.ACTIONCREATEDOCUMENT (Storage Access Framework).",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2704": {
+    "summary": "Detectado al analizar el issue #2465 (rejection report de #1931). El plan de remediación propone seedear pedidos en QA mediante AWS CLI DynamoDB put-item directo o ad-hoc en qa-android.sh. Esta práctica, repetida en otros rejection reports, presenta riesgos de seguridad:",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2709": {
+    "summary": "Detectado durante la definición de criterios del issue #2456 (fix de notificaciones sonoras de pedidos para el negocio).",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2710": {
+    "summary": "Durante el analisis de seguridad del issue #2694 (export CSV de audit log, sub-split 3a) detectamos que el archivo CSV exportado a MediaStore.Downloads (API 29+) o via ACTIONCREATEDOCUMENT (API 24-28) queda en almacenamiento compartido del dispositivo Android.",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2711": {
+    "summary": "Durante el analisis de seguridad del issue #2694 (export CSV de audit log, sub-split 3a) detectamos que el endpoint GET /{business}/audit?export=true devuelve bytes CSV pero no se especifican headers HTTP defensivos.",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2712": {
+    "summary": "Durante la validacion UX del issue #2643 (landing del invitado + deeplink) se identifico que los 5 estados de edge case de la landing (expired, cancelled, invalid, wrongaccount, alreadymember) + el nuevo network_error propuesto comparten estructura visual identica:",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2713": {
+    "summary": "Durante la validacion UX del issue #2643 (landing del invitado) se observo que el contador \"Este link expira en {hours}h {minutes}m\" usa un LaunchedEffect con tick de 1 minuto. Si el usuario abre el deeplink y se queda viendo la pantalla mas alla del tiempo de expiracion sin…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2714": {
+    "summary": "Durante la validacion UX del issue #2643 (landing del invitado + deeplink infra) se evaluo el escenario \"usuario tapea Aceptar pero el deeplink llego mientras el dispositivo estaba offline\" (vector real: el usuario abre el mail desde la PC, lo manda al celular via…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2715": {
+    "summary": "Durante el análisis de seguridad del issue #2551 (fix de delivery determinístico que loguea git status para diagnóstico), identifiqué que el pipeline V3 actualmente no tiene un filtro estandarizado de redacción para datos potencialmente sensibles que aparecen en:",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2716": {
+    "summary": "Durante el análisis UX del split #2565 detecté que dos pantallas distintas comparten el mismo shape de onboarding con HorizontalPager:",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2717": {
+    "summary": "Durante el análisis UX del split #2565 detecté que los nombres humanizados de roles del backend (BusinessAdmin → \"Administrador de negocio\", Saler → \"Vendedor\", Delivery → \"Repartidor\", Client → \"Cliente\", PlatformAdmin → \"Administrador de plataforma\") van a aparecer en…",
+    "recent_events": [],
+    "fetchedAt": 1777557622498
+  },
+  "2718": {
+    "summary": "Durante el análisis UX del split #2565 noté que los onboardings actuales del repo (ClientOnboardingScreen y el nuevo InviteOnboardingScreen de #2644) renderizan los hero illustrations estáticos al entrar a cada page del HorizontalPager. Funciona, pero pierde una oportunidad de…",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2719": {
+    "summary": "Durante el análisis del issue #2439 (split (a) de #2426 — backend de invitación de empleados) se detectó un patrón de deuda técnica creciente: cada feature backend que requiere una nueva tabla DynamoDB o policy IAM no tiene tracking declarativo en el repo.",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2720": {
+    "summary": "Durante el análisis del issue #2441 se detectó que el codebase no tiene ninguna implementación de paginación para listas largas:",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2721": {
+    "summary": "Durante el analisis UX del issue #2645 (Registro inline del invitado), el flow de la hija 3 entrega valor 100% funcional usando solo componentes existentes (IntralePrimaryButton, TextField, etc) + microcopy en espanol natural. La pantalla cumple AC-08 sin assets visuales nuevos.",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2722": {
+    "summary": "Durante el analisis UX del issue #2645 (Registro inline del invitado), defini un breadcrumb de 3 pasos en el header (Invitacion -> Crear cuenta -> Aceptando) que indica al usuario donde esta y cuanto le falta.",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2723": {
+    "summary": "Durante el analisis UX del issue #2645 (Registro inline del invitado), defini un header con tres elementos que se repetiran en las 3 hijas de #2565:",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2724": {
+    "summary": "Durante la definicion del split 3a del export CSV de auditoria (#2694), PO fijo el formato de nombre de archivo como audit--.csv (CA-06.1).",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2725": {
+    "summary": "Durante la definicion del split 3a del export CSV de auditoria (#2694), PO fijo en CA-08 el comportamiento de truncacion + header X-Audit-Truncated: true cuando se hit el limite de 10000 filas, con mensaje en el preview modal y accion Ajustar filtros.",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2726": {
+    "summary": "Durante la definicion del split 3a del export CSV de auditoria (#2694), PO fijo en CA-02 que cuando el OWNER hit el limite de 10000 filas, el modal muestra un mensaje + accion Ajustar filtros que cierra el modal y devuelve foco al panel de filtros del timeline.",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2728": {
+    "summary": "Detectado durante el análisis técnico del issue #2458 (re-QA de #1931 — estimación inteligente de tiempo de entrega).",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2729": {
+    "summary": "Detectado durante el análisis técnico del issue #2458 (re-QA de #1931).",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2731": {
+    "summary": "Detectado durante el análisis técnico del rejection report #2465 (re-ejecución QA E2E del feature de estimación de entrega #1931).",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2732": {
+    "summary": "Detectado durante el análisis técnico del rejection report #2465 — el QA E2E es la única manera actual de validar visualmente componentes Compose como DeliveryEstimationCard (jerarquía tipográfica, color error, altura del LinearProgressIndicator, contraste WCAG AA del aviso de…",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2734": {
+    "summary": "Durante el análisis de seguridad de #2538 (split backend de #2520) se observó que el parser de eventos V3 en .pipeline/metrics/aggregator.js consume campos del JSON parseado sin validar shape ni tipo:",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2735": {
+    "summary": "Durante el analisis tecnico de #2730 (export CSV de auditoria) se detecto una limitacion del framework backend Intrale:",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2736": {
+    "summary": "Durante el analisis tecnico de #2730 (export CSV con limite 10000 filas server-side) se confirmo que el codebase NO tiene precedente de QueryRequest con Limit aplicado a nivel SDK:",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2737": {
+    "summary": "Durante el analisis tecnico de #2730 se reviso backend/src/test/kotlin/.../SecuredFunctionTest.kt y los tests del modulo users/:",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2738": {
+    "summary": "Detectado durante el análisis UX de #2439 (split a de #2426 — backend de invitaciones).",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2739": {
+    "summary": "Detectado durante el análisis UX de #2439 (split a de #2426 — backend de invitaciones).",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2740": {
+    "summary": "Múltiples historias del backlog (incluyendo #2441, #2426, #1949, varios issues de empty states) referencian a Murble como \\\"companion blob\\\" o mascota narrativa de Intrale. La memoria \\feedbackmurble-spanish.md\\ establece que Murble debe hablar siempre en español, y…",
+    "recent_events": [],
+    "fetchedAt": 1777557623451
+  },
+  "2741": {
+    "summary": "Durante el análisis técnico del issue #2591 (fallback peligroso de pulpo a ROOT), el auditor security señaló que pulpo.js tiene múltiples execSync con interpolación directa de variables (issue, skill, branch, paths) sin validación previa contra command injection. El fix…",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2742": {
+    "summary": "pulpo.js cruzó las 5000 líneas. La lógica de resolución de worktree (pulpo.js:4587-4629) y otras secciones autocontenidas (stale-log circuit breaker, sweep de rebote_tipo:infra, dedup Telegram) están entrelazadas en el mismo archivo monolítico, lo que dificulta:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2744": {
+    "summary": "Hoy, cuando un agente del pipeline (ux, po, guru, security, review) crea un issue de oportunidad bajo el \"Protocolo de oportunidades de mejora\" (issue #2507), la única evidencia de qué agente creó qué issue vive en el cuerpo del issue creado, en texto libre del estilo:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2745": {
+    "summary": "Durante el análisis de seguridad del issue #2539 (XSS-safe rendering en /consumo) se observó que el servidor del dashboard (.pipeline/dashboard-v2.js) no setea ningún header de seguridad estándar:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2746": {
+    "summary": "El feature #2507 vive como 5 copias del mismo snippet distribuidas en .pipeline/roles/{ux,po,guru,security,review}.md. AC#3 prohíbe expreso \"Sin incluir/import de otros archivos\", lo que es razonable porque mantiene cada rol auto-contenido para el LLM, pero introduce un riesgo…",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2747": {
+    "summary": "Durante el análisis de seguridad del issue #2539 (XSS-safe en /consumo) se confirmó la vulnerabilidad SEC-1: 6 tabs del /consumo interpolan strings del aggregator sin pasar por escapeHtml. El fix de #2539 cubre sólo renderConsumoHtml y su client-side JS.",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2749": {
+    "summary": "El acceptance criterion AC#5 de #2507 dice textualmente:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2751": {
+    "summary": "Durante el análisis de seguridad de #2743 (infra de roles + BusinessSelector + selectedBusinessId persistente) se identificó que el SessionStore actual del flavor business (y por simetría client y delivery) persiste datos de sesión en SharedPreferences planas.",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2752": {
+    "summary": "#2743 introduce la persistencia de selectedBusinessId y el consumo de /me/businesses para resolver el rol vigente. Las invalidaciones definidas (onResume, cambio de negocio, 401/403) cubren los casos típicos, pero no hay una política explícita de TTL ni un mecanismo unificado de…",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2753": {
+    "summary": "Las historias #2426 → #2441 → #2743 incorporan progresivamente lógica sensible al cliente (gestión de roles, persistencia de session, deep links de invitación). Hoy el repo no tiene un job automatizado de CVE scan sobre las dependencias del cliente (Compose Multiplatform, Ktor…",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2754": {
+    "summary": "Hoy el codebase tiene ext/push/PushDeepLinkStore.kt + handler en MainActivity.handlePushDeepLink para deep links de notificaciones push. Con #2748 se va a sumar un segundo flujo de deep links (intrale://invitation?token=...) que necesita su propio store + handler. Si en el…",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2755": {
+    "summary": "El proyecto ya usa deep links (push notifications, próximamente invitación de empleados #2748). El patrón es:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2756": {
+    "summary": "Historia hija de #2456 (que a su vez desbloquea #1915 — notificaciones sonoras de pedidos nuevos para el negocio).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T17:41:36Z",
+        "preview": "Sizing — Aprobado Skill: planner · Fase: definicion/sizing · Tamaño: medio Análisis Historia hija de #2456 — navegación pura a BusinessSoundConfigScreen desde Dashboard y Orders. V"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T17:28:13Z",
+        "preview": "Guidelines de UX — Aprobado Skill: ux · Fase: definicion/criterios · Hereda de: #2456 Este split es navegación pura, sin assets nuevos: usa Icons.Default.NotificationsActive (Mater"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:37:09Z",
+        "preview": "Criterios de aceptación — Aprobados por PO Skill: po · Fase: definicion/criterios · Hereda de: #2456 Los criterios de aceptación heredados de la historia madre #2456 son claros, ve"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:00:46Z",
+        "preview": "Análisis técnico — Guru Skill: guru · Fase: definicion/analisis · Hereda de: #2456 Este split entrega solo navegación. El análisis técnico de la historia madre #2456 ya cubrió viab"
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2757": {
+    "summary": "La historia #2748 (frontend equipo + invitacion + aceptacion por deep link) implementa el deep link como custom scheme intrale://invitation?token=... con android:autoVerify=\"false\".",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2758": {
+    "summary": "El issue #2730 entrega el endpoint GET /{business}/audit?export=true que retorna un CSV con:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2759": {
+    "summary": "Los backends #2439 (InviteEmployee/AcceptInvitation) y #2440 (ListEmployees/RevokeEmployee/ChangeEmployeeRole) que sirven a #2748 son endpoints autenticados pero, a la fecha del analisis, no se encontro especificacion de rate limiting ni proteccion contra enumeracion.",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2760": {
+    "summary": "La historia #2748 introduce nuevas clases con LoggerFactory.default.newLogger() (cliente) y los backends correspondientes #2439 + #2440 ya usan LoggerFactory.getLogger(\"ar.com.intrale\"). Operaciones como invitar/listar/revocar/aceptar manejan PII sensible:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2761": {
+    "summary": "Historia hija de #2456 (que a su vez desbloquea #1915 — notificaciones sonoras de pedidos nuevos para el negocio).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T19:17:59Z",
+        "preview": "Validación PO — fase criterios (definición) — re-pasada de cierre Product Owner: agente po · Pipeline V2 Re-pasada de cierre sobre criterios para sellar la definición y promover a "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T17:45:38Z",
+        "preview": "Validación UX — fase criterios (definición) Diseñador: agente ux · Pipeline V2 Verificación empírica del asset entregado El issue declara que el asset visual del split fue entregad"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T20:52:48Z",
+        "preview": "Validación PO — fase criterios (definición) Product Owner: agente po · Pipeline V2 Validación de valor al usuario El issue entrega valor concreto y atómico al comerciante (app:busi"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-26T19:19:51Z",
+        "preview": "Recomendaciones futuras (no bloqueantes) Durante el análisis técnico se identificaron 2 oportunidades de mejora que NO bloquean este split y se registran como recomendaciones indep"
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2762": {
+    "summary": "Durante el análisis técnico de #2743 (/me/businesses + SessionStore persistente) se detectó que el proyecto no tiene infraestructura multiplataforma de almacenamiento de preferencias:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2763": {
+    "summary": "Durante el análisis técnico de #2743 (chips de rol con contraste WCAG AA bloqueante) se detectó que el proyecto no tiene infraestructura de visual/snapshot testing:",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2764": {
+    "summary": "Detectado al analizar la DeliveryEstimationCard (creada en agent/1931-android-dev) durante el procesamiento del issue #2458 (re-grabación del video QA de #1931).",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2765": {
+    "summary": "Detectado al analizar la DeliveryEstimationCard durante el procesamiento del issue #2458 (re-grabación del video QA de #1931).",
+    "recent_events": [],
+    "fetchedAt": 1777557624223
+  },
+  "2766": {
+    "summary": "Detectada durante el análisis PO de #2743 (infra de roles + BusinessSelector + gating en home del flavor business).",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2767": {
+    "summary": "Detectada durante el análisis PO de #2743.",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2768": {
+    "summary": "Detectada durante el análisis PO de #2743.",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2769": {
+    "summary": "brazoDesbloqueo (en .pipeline/pulpo.js líneas 6845 y 6991) escribe .pipeline/blocked-issues.json con fs.writeFileSync(...) directo sobre el path final.",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2770": {
+    "summary": "brazoDesbloqueo consulta GitHub con:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2771": {
+    "summary": "El fallback de brazoDesbloqueo (.pipeline/pulpo.js ~linea 6889) concatena body + comments de los issues:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2772": {
+    "summary": "Durante el análisis de #2761 (Foreground Service Android para alertas de pedidos en background) se observó que el polling del FGS está fijado a un intervalo configurable estático (default 30s, alineado con repeatIntervalSeconds existente). En condiciones reales del comerciante:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2773": {
+    "summary": "Durante el análisis de #2761 (Foreground Service Android para alertas de pedidos en background) se observó que CA-5 cubre el caso \"battery saver / Doze mode mata el FGS sin avisar\" sólo de forma paliativa: muestra un Snackbar al volver a foreground informando que el sistema mató…",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2774": {
+    "summary": "Detectado durante el análisis técnico del issue #2538 (split backend de #2520).",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2775": {
+    "summary": "ghostbusters.js ejecuta acciones destructivas reales sobre el sistema: taskkill /F /PID (zombies Gradle/Kotlin, emuladores fantasma) git worktree remove \"\" --force + git branch -D ... (worktrees abandonados)",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2776": {
+    "summary": "ghostbusters.js (.pipeline/ghostbusters.js) tiene varias llamadas a execSync con interpolación de strings que, aunque hoy operan sobre datos controlados, son tech-debt defensivo:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2777": {
+    "summary": "dashboard-v2.js tiene ~5800 líneas y la lógica de cálculo de KPIs (\\\"Definidos\\\", \\\"Entregados\\\", \\\"Entregados 24h\\\", \\\"Rechazados\\\", ttData de cada uno) está inline. Es difícil de testear y de mantener: el bug de #2550 (\\\"Entregados 24h\\\" cuenta deliveries rechazados) es…",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2778": {
+    "summary": ".pipeline/dashboard-v2.js es el componente más grande del pipeline V3 (~5800 LOC) y no tiene tests propios. Verificado:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2779": {
+    "summary": "ghThrottle() en .pipeline/pulpo.js (línea ~110) implementa el rate-limit de GitHub con un busy-wait síncrono:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2780": {
+    "summary": "brazoDesbloqueo no es el único brazo del pulpo que itera issues con gh issue view secuencial. El mismo patrón aparece en:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2781": {
+    "summary": "brazoDesbloqueo (y otros brazos del pulpo) leen N issues con N invocaciones independientes de gh issue view --json .... Cada invocación es: Un proceso hijo (execSync con gh.exe) → ~200-500ms de overhead solo de spawn. Una llamada HTTP a la REST API de GitHub. Sujeta a rate-limit…",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2782": {
+    "summary": "En la implementacion del issue #2415 (zonas de delivery) los campos coordsJson y boundingBoxJson de DeliveryZoneEntity se serializan/deserializan con Gson + TypeToken> y TypeToken>>.",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2783": {
+    "summary": "El TokenBucketRateLimiter introducido en el issue #2415 (users/src/main/kotlin/ar/com/intrale/geo/RateLimiter.kt) usa un ConcurrentHashMap indexado por IP, sin politica de eviction.",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2784": {
+    "summary": "Hoy state.etaAverages (.pipeline/dashboard-v2.js líneas 399-430) calcula únicamente promedio aritmético de duraciones por fase/skill, derivando del filesystem (ctimeMs - birthtimeMs) en cada refresh del dashboard. Esto:",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2785": {
+    "summary": "Durante el analisis UX del issue #2743 (BusinessSelector multi-negocio + gating por rol) se observo que la primera vez que un usuario tiene 2 o mas memberships y aterriza en el home business, la presencia del dropdown del BusinessSelector puede pasar desapercibida —…",
+    "recent_events": [],
+    "fetchedAt": 1777557625147
+  },
+  "2786": {
+    "summary": "La matriz de cards aprobada en #2743 (CA-10) deja a los roles CASHIER y STOCKER viendo una sola card en el home — Ventas para CASHIER, Stock para STOCKER. Esto es correcto para evitar ruido y errores de tap accidental, pero el home queda visualmente vacio y puede confundir al…",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2787": {
+    "summary": "El BusinessHomeScreen que entrega #2743 muestra hasta 5 cards (Ventas, Stock, Equipo, Actividad, Configuracion) en un grid M3 sin diferenciar visualmente entre cards operativas (Ventas, Stock — accion del dia a dia) y cards administrativas (Equipo, Actividad, Configuracion —…",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2788": {
+    "summary": "Parte a del split de #2743, que es split de #2441 (c.1) → split de #2426 → feature original #1949 (Multi-usuario para el negocio).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T23:02:04Z",
+        "preview": "Sizing — Planner (definicion/sizing) Veredicto: size:medium (label ya aplicado, confirmado). Criterio aplicado No simple: el scope abarca más de un archivo principal (modelo + acci"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T22:58:28Z",
+        "preview": "UX — Re-validación (definicion/criterios, pasada 2) Re-evaluación UX del split #2788 (hija a del paraguas #2743). Confirma el análisis UX previo publicado en https://github.com/int"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T18:26:19Z",
+        "preview": "UX — Análisis (definicion/criterios) Validación UX del split #2788 (hija a del paraguas #2743). Historia tech enabler de capa de datos transversal (modelo BusinessRole/BusinessMemb"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T18:04:07Z",
+        "preview": "Criterios de aceptación — PO (definicion/criterios) Validación PO del split #2788 (hija a del paraguas #2743). Historia de tech enabler: capa de datos transversal del flavor busine"
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2789": {
+    "summary": "Parte b del split de #2743, que es split de #2441 (c.1) → split de #2426 → feature original #1949.",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T23:38:10Z",
+        "preview": "Re-confirmación de guidelines UX — agente ux (fase: criterios, pasada 2) Resultado: aprobado (re-confirmación, sin hallazgos nuevos). Verificación empírica 5 vector drawables (icro"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T22:58:49Z",
+        "preview": "Re-confirmación de criterios — agente po (fase: criterios, pasada 2) Resultado: aprobado (re-confirmación, sin hallazgos nuevos). Verificación Issue body NO cambió desde la pasada "
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T21:26:26Z",
+        "preview": "Re-análisis técnico — agente guru (fase: análisis, pasada 3) Resultado: aprobado (re-confirmación, sin hallazgos nuevos). Verificación empírica Issue body NO cambió desde pasadas 1"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-27T19:19:04Z",
+        "preview": "Re-análisis técnico — agente guru (fase: análisis, pasada 2) Resultado: aprobado (re-confirmación). Esta es una segunda pasada del análisis técnico sobre #2789. Verifiqué empíricam"
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2802": {
+    "summary": ".pipeline/dashboard-v2.js ya pesa 7735 líneas con responsabilidades mezcladas: server HTTP, routing, rendering HTML server-side de múltiples vistas + agregaciones de estado.",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2803": {
+    "summary": "\\getPipelineState()\\ en \\.pipeline/dashboard-v2.js:315\\ recorre todo el filesystem (\\.pipeline/{definicion,desarrollo}/{fase}/{estado}/*.{skill}\\) cada vez que se invoca, construye \\issueMatrix\\, agrega timestamps, lee YAMLs de listo/procesado, y verifica existencia de logs y…",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2817": {
+    "summary": "Durante el análisis del issue #2789 (componentes UI reutilizables del modelo multi-rol — RequireRole, RoleChip, RoleColors) se identifica un riesgo transversal de info leak por logs: cualquier componente de gating en cliente que loguee mensajes con userId, selectedBusinessId o…",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2820": {
+    "summary": "Parte (c.2.a) del split de #2748, que a su vez es parte del split del rejection report #2426 (rebote del feature #1949 — Multi-usuario para el negocio).",
+    "recent_events": [
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-29T16:19:02Z",
+        "preview": "Validación técnica (fase desarrollo/validacion) — Guru Veredicto: RECHAZADO — los bloqueos duros documentados en el análisis técnico previo siguen empíricamente activos en origin/m"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-29T16:13:59Z",
+        "preview": "▶ Reactivado desde el dashboard Skill: guru · Fase: validacion → validacion Orientación del operador: en condiciones de continuar"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T01:17:42Z",
+        "preview": "Sizing — Planner Veredicto: MEDIO (label size:medium aplicado) Análisis Por qué MEDIO y no GRANDE pese al conteo de archivos El criterio de sizing privilegia complejidad y riesgo s"
+      },
+      {
+        "author": "leitolarreta",
+        "when": "2026-04-28T01:01:36Z",
+        "preview": "Guidelines UX consolidadas + assets entregados Veredicto: APROBADO — historia con alto impacto visual aprobada con assets físicos entregados (no brief textual). Los drawables y el "
+      }
+    ],
+    "fetchedAt": 1777557604667
+  },
+  "2823": {
+    "summary": "Durante el análisis técnico del issue #2789 (componentes UI RequireRole/RoleChip/RoleColors) detectamos que la paleta semántica de roles fue verificada manualmente por UX en una tabla del issue (par container/onContainer por rol, light + dark, ratios reportados como WCAG AA).",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2824": {
+    "summary": "Durante el análisis técnico del issue #2789 detectamos que la infraestructura de tests UI Compose existe solo en app/composeApp/src/desktopTest/ (uso de runComposeUiTest { ... } y createComposeRule).",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2830": {
+    "summary": "Como parte del feature #2507 (recomendaciones de agentes como issues independientes), el label tipo:recomendacion es la marca primaria que indica \"issue pendiente de aprobación humana antes de entrar al pipeline\". Hoy ese label tiene color #FBCA04 (amarillo PR) y descripción…",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2831": {
+    "summary": "Como parte del feature #2507, cada agente (UX/PO/Guru/Security/Review) que crea issues de oportunidad debe agregar al final de su comentario en el issue origen la frase canónica Recomendaciones pendientes de aprobación humana: #xxxx, #xxxx. (CA-6 del refinamiento del PO).",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2839": {
+    "summary": "Durante la ejecución del QA E2E del issue #1097 (evidencia en video de la pantalla de pedidos cliente), al cargarse ui/sc/client/ClientOrdersScreen.kt por primera vez con backend remoto (Lambda AWS), se vio brevemente un snackbar de error con el siguiente mensaje:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2840": {
+    "summary": "Durante el análisis de #2820 (CRUD de empleados con snackbar de éxito enmascarando email j@.com), se observa que el repo no tiene un helper compartido para enmascarar PII. El patrón se va a repetir en:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2841": {
+    "summary": "Durante el análisis de #2820 (pantalla Equipo con chips M3 por rol y por estado de invitación), se observa que la app va a tener al menos tres pantallas con la misma necesidad de chips coloreados consistentes:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2843": {
+    "summary": "Durante la consolidación de criterios PO de #2820 (Pantalla Equipo + CRUD empleados) detecté un escenario natural no cubierto en el scope:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2844": {
+    "summary": "Durante la consolidación de criterios PO de #2820 (Pantalla Equipo + CRUD empleados) noté que el backend ya genera un audit log (criterio del issue #2440) pero ese historial NO está expuesto al OWNER/MANAGER en la UI.",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2845": {
+    "summary": "Durante la verificación del issue #1123 (reporte QA compliance v2.0 de Delivery Home/Dashboard), el Security Agent confirmó dos vulnerabilidades críticas pre-existentes en DeliveryOrdersFunction:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2846": {
+    "summary": "Durante la verificación del issue #1123, el Security Agent confirmó la siguiente vulnerabilidad alta pre-existente:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2847": {
+    "summary": "Durante la verificación del issue #1123, el Security Agent confirmó la siguiente vulnerabilidad alta pre-existente:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2851": {
+    "summary": "Durante la grabación del video QA del issue #1097 (evidencia de pedidos cliente), en la primera carga de la pantalla ClientOrdersScreen apareció brevemente un snackbar de error con el siguiente mensaje técnico expuesto al usuario final:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2853": {
+    "summary": "El intake del pulpo (.pipeline/pulpo.js) actualmente sólo bloquea un issue del pipeline si tiene el label blocked:dependencies directo. Si un issue no tiene el label pero su única dependencia declarada en el cuerpo (ej. \\\"Depende de: #2586\\\") sí lo tiene, el intake lo deja pasar…",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2879": {
+    "summary": "Durante el análisis UX del issue #2560 (paralelización de brazoDesbloqueo + caché TTL + métrica + Telegram alert), detectamos que la única visibilidad operativa propuesta es:",
+    "recent_events": [],
+    "fetchedAt": 1777557625933
+  },
+  "2887": {
+    "summary": "Hoy DETERMINISTIC_SKILLS = new Set(['builder','tester','delivery','linter']) está hardcoded en .pipeline/pulpo.js:4702. La clasificación se duplica implícitamente en skills-deterministicos/ (filesystem). Cualquier nuevo skill determinístico requiere edición manual de la…",
+    "recent_events": [],
+    "fetchedAt": 1777557626569
+  },
+  "2888": {
+    "summary": ".pipeline/metrics/aggregator.js (línea 102) agrega series por día (dailySeries: Map), pero no por franja horaria. La detección de anomalías horarias requiere baseline por hora-del-día (rolling 7-14 días) para comparar la franja actual contra su histórico esperado.",
+    "recent_events": [],
+    "fetchedAt": 1777557626569
+  },
+  "2889": {
+    "summary": "Una alerta de consumo anómalo que no se puede silenciar genera fatiga (operador la ignora) o ruido (varias notificaciones por el mismo pico). El issue #2882 menciona que hay que \\\"definir si se silencia hasta que pase el pico o requiere click manual\\\" — esta recomendación…",
+    "recent_events": [],
+    "fetchedAt": 1777557626569
+  },
+  "2897": {
+    "summary": "Durante el análisis técnico del issue #2895 (mostrar tiempos por agente y ETA en cards del dashboard) detectamos que hoy las duraciones por agente se infieren de:",
+    "recent_events": [],
+    "fetchedAt": 1777557626569
+  },
+  "2898": {
+    "summary": "El issue #2895 propone calcular el ETA de un issue como:",
+    "recent_events": [],
+    "fetchedAt": 1777557626569
+  },
+  "2899": {
+    "summary": "Durante la decisión visual del #2895 (tiempos por agente + ETA en cards), el caso de uso 3 menciona explícitamente: \\\"¿Conviene dejarlo correr o pausar? Si ETA total > 2h y estoy por dormir, activo modo descanso (#2890)\\\".",
+    "recent_events": [],
+    "fetchedAt": 1777557626569
+  }
+}

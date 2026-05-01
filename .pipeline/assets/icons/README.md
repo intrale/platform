@@ -70,6 +70,15 @@ cada icono se referencia via `<svg><use href="#ic-*" /></svg>`:
 | `ic-agents-count`   | Siluetas agrupadas  | KPI: N agentes activos            |
 | `ic-issues-count`   | Layers / pila       | KPI: N issues en curso            |
 
+### Modo descanso y alertas de consumo (#2882)
+
+| ID                    | Nombre                  | Uso                                                           |
+|-----------------------|-------------------------|---------------------------------------------------------------|
+| `ic-rest-mode`        | Luna + estrellas        | Pill del header / banner cuando modo descanso esta activo     |
+| `ic-cost-anomaly`     | Linea con pico          | Banner persistente de alerta de consumo anomalo               |
+| `ic-snooze`           | Campana + Z             | Boton/menu de snooze de alerta (1h/4h/24h)                    |
+| `ic-deterministic`    | Engranaje               | Marca skills que corren durante modo descanso (sin LLM)       |
+
 ## Convenciones de diseno
 
 - **ViewBox**: 24x24 uniforme.

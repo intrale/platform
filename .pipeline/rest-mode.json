@@ -1,0 +1,14 @@
+{
+  "alert": {
+    "active": false,
+    "raised_at": null,
+    "hour": null,
+    "actual_usd": 0,
+    "baseline_usd": 0,
+    "ratio": null,
+    "top_skills": [],
+    "acked_at": null,
+    "snoozed_until": null,
+    "consecutive_baseline_checks": 0
+  }
+}

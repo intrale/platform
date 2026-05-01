@@ -6,11 +6,15 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const os = require('os');
+
 const {
     parseKoverXml,
     parseTestResultsXml,
     aggregateKover,
     aggregateTestResults,
+    findTestResultFiles,
+    findKoverXmlFiles,
     renderCoverageSection,
     renderTestsSection,
     percent,
@@ -189,4 +193,79 @@ test('renderTestsSection — con fallos → lista los tests fallidos con mensaje
 test('renderTestsSection — sin reporte valido → skip message', () => {
     const md = renderTestsSection({ valid: false, failed_tests: [] });
     assert.match(md, /No se encontraron reportes JUnit/);
+});
+
+// ── findTestResultFiles / findKoverXmlFiles — filtro mtime (rebote #2892) ─
+
+function setMtime(filePath, msAgo) {
+    const t = (Date.now() - msAgo) / 1000;
+    fs.utimesSync(filePath, t, t);
+}
+
+test('findTestResultFiles — descubre TEST-*.xml en build/test-results', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'find-tests-'));
+    const dir = path.join(tmp, 'build', 'test-results', 'test');
+    fs.mkdirSync(dir, { recursive: true });
+    const f1 = path.join(dir, 'TEST-Foo.xml');
+    const f2 = path.join(dir, 'TEST-Bar.xml');
+    const f3 = path.join(dir, 'NOT-A-TEST.xml');
+    fs.writeFileSync(f1, '<x/>');
+    fs.writeFileSync(f2, '<x/>');
+    fs.writeFileSync(f3, '<x/>');
+    const found = findTestResultFiles(tmp);
+    assert.equal(found.length, 2);
+    assert.ok(found.includes(f1));
+    assert.ok(found.includes(f2));
+});
+
+test('findTestResultFiles — minMtimeMs filtra XMLs stale (rebote #2892)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'find-tests-mtime-'));
+    const dir = path.join(tmp, 'build', 'test-results', 'test');
+    fs.mkdirSync(dir, { recursive: true });
+    const stale = path.join(dir, 'TEST-Stale.xml');
+    const fresh = path.join(dir, 'TEST-Fresh.xml');
+    fs.writeFileSync(stale, '<x/>');
+    fs.writeFileSync(fresh, '<x/>');
+    // Marcar el stale con mtime de hace 1h, el fresh con mtime actual
+    setMtime(stale, 60 * 60 * 1000);
+    setMtime(fresh, 0);
+    // Threshold: hace 5 minutos — solo el fresh debería pasar
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    const found = findTestResultFiles(tmp, { minMtimeMs: cutoff });
+    assert.equal(found.length, 1);
+    assert.equal(found[0], fresh);
+});
+
+test('findTestResultFiles — sin minMtimeMs devuelve todos (compat)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'find-tests-compat-'));
+    const dir = path.join(tmp, 'build', 'test-results', 'test');
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, 'TEST-Old.xml');
+    fs.writeFileSync(f, '<x/>');
+    setMtime(f, 24 * 60 * 60 * 1000); // 1 día viejo
+    const found = findTestResultFiles(tmp);
+    assert.equal(found.length, 1);
+});
+
+test('findKoverXmlFiles — descubre report.xml en build/reports/kover', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'find-kover-'));
+    const dir = path.join(tmp, 'build', 'reports', 'kover');
+    fs.mkdirSync(dir, { recursive: true });
+    const report = path.join(dir, 'report.xml');
+    fs.writeFileSync(report, '<x/>');
+    const found = findKoverXmlFiles(tmp);
+    assert.equal(found.length, 1);
+    assert.equal(found[0], report);
+});
+
+test('findKoverXmlFiles — minMtimeMs filtra report stale (rebote #2892)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'find-kover-mtime-'));
+    const dir = path.join(tmp, 'build', 'reports', 'kover');
+    fs.mkdirSync(dir, { recursive: true });
+    const report = path.join(dir, 'report.xml');
+    fs.writeFileSync(report, '<x/>');
+    setMtime(report, 60 * 60 * 1000); // 1h vieja
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    const found = findKoverXmlFiles(tmp, { minMtimeMs: cutoff });
+    assert.equal(found.length, 0);
 });

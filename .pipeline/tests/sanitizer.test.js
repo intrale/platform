@@ -406,21 +406,27 @@ test('stream-filter: flush por newline', async () => {
 });
 
 // =============================================================================
-// Performance: 10MB adversarial en <2000ms
+// Performance: 10MB adversarial sin catastrophic backtracking
 //
-// El budget original de 500ms era brittle bajo carga: cuando el tester corre
-// los 47 archivos `.test.js` del pipeline en paralelo (`node --test` hace
-// pool de workers), un sanitize de 10MB que en aislado tarda ~150ms puede
-// trepar a >500ms por CPU contention en la máquina del CI/agente — y el
-// test fallaba sin que hubiera regresión real (rebote tester #2891 / #2894).
+// El objetivo del test es detectar catastrophic backtracking en los regex de
+// sanitización (que costaría segundos o minutos), NO enforcear una SLA exacta
+// de wall-clock. En idle un sanitize() de 10MB toma ~150-200ms, pero el tester
+// del pipeline corre 49 archivos `*.test.js` en paralelo via `node --test`, y
+// bajo esa contención de CPU el elapsed puede superar 500ms aunque el regex
+// engine esté funcionando perfectamente. Eso producía un flake reproducible
+// (issue #2906) donde sanitizer.test.js fallaba esporádicamente solo por
+// concurrencia. El umbral 2000ms sigue cazando backtracking real (que es
+// órdenes de magnitud peor) y es robusto al paralelismo del runner.
 //
-// Subimos el threshold a 2000ms: sigue siendo 13x más rápido que un O(n²)
-// catastrófico (que tardaría >>30s en 10MB), así que cubre la regresión
-// que el test quería atajar; pero ahora tolera la variabilidad del entorno
-// paralelo del tester sin generar falsos positivos.
+// Contexto adicional del rebote tester #2891 / #2894: el budget original de
+// 500ms era brittle bajo carga porque `node --test` hace pool de workers y un
+// sanitize de 10MB que en aislado tarda ~150ms puede trepar a >500ms por CPU
+// contention. El umbral 2000ms es 13x más rápido que un O(n²) catastrófico
+// (que tardaría >>30s en 10MB), así que cubre la regresión que el test quería
+// atajar pero tolera la variabilidad del entorno paralelo del tester.
 // =============================================================================
 
-test('performance: 10MB adversarial en <2000ms', () => {
+test('performance: 10MB adversarial sin catastrophic backtracking', () => {
     // Texto construido con muchas ocurrencias de patrones cortos para forzar
     // trabajo real del regex engine.
     const block = `row ${FAKE_AWS_AK} | auth: Bearer ${FAKE_JWT} | key=${FAKE_GITHUB}\n`;
@@ -434,7 +440,9 @@ test('performance: 10MB adversarial en <2000ms', () => {
     const elapsed = Date.now() - t0;
 
     assert.ok(out.includes('[REDACTED:AWS_ACCESS_KEY]'));
-    assert.ok(elapsed < 2000, `elapsed=${elapsed}ms (regresión catastrófica O(n²)?)`);
+    // Umbral generoso (2000ms) para tolerar concurrencia del runner;
+    // catastrophic backtracking sería >>10s, así que igual lo cazamos.
+    assert.ok(elapsed < 2000, `elapsed=${elapsed}ms (sospecha de catastrophic backtracking)`);
 });
 
 // =============================================================================
