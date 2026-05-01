@@ -197,14 +197,23 @@ function parseNodeTestJunit(xml) {
     if (dm) out.time_seconds = parseFloat(dm[1]) / 1000;
     out.valid = !!tm;
 
-    // Recolectar testcases con <failure>/<error> para detalle del rebote
-    const tcRe = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
+    // Recolectar testcases con <failure>/<error> para detalle del rebote.
+    // Los atributos pueden contener `>` literal dentro de un valor quoted
+    // (p. ej. `name="conserva &amp;quot;> Task ... FAILED&amp;quot;"`), así
+    // que NO se puede usar `[^>]*?` para los atributos: trunca al primer `>`,
+    // los matches subsiguientes pierden alineación y el reporte termina con
+    // `name=(sin nombre)`. Permitimos cualquier secuencia de strings quoted
+    // o caracteres no-`>` fuera de comillas.
+    const ATTRS = `(?:"[^"]*"|'[^']*'|[^>"'])*?`;
+    const tcRe = new RegExp(`<testcase\\b(${ATTRS})(?:\\/>|>([\\s\\S]*?)<\\/testcase>)`, 'g');
+    const failRe = new RegExp(`<failure\\b(${ATTRS})(?:\\/>|>([\\s\\S]*?)<\\/failure>)`);
+    const errRe = new RegExp(`<error\\b(${ATTRS})(?:\\/>|>([\\s\\S]*?)<\\/error>)`);
     let m;
     while ((m = tcRe.exec(xml)) !== null) {
         const attrs = m[1] || '';
         const body = m[2] || '';
-        const failMatch = body.match(/<failure\b([^>]*?)(?:\/>|>([\s\S]*?)<\/failure>)/);
-        const errMatch = body.match(/<error\b([^>]*?)(?:\/>|>([\s\S]*?)<\/error>)/);
+        const failMatch = body.match(failRe);
+        const errMatch = body.match(errRe);
         if (!failMatch && !errMatch) continue;
         const nameMatch = attrs.match(/\bname="([^"]*)"/);
         const cnameMatch = attrs.match(/\bclassname="([^"]*)"/);

@@ -364,6 +364,33 @@ AssertionError: expected 1 to equal 2
     assert.ok(r.failed_tests[0].message.includes('expected 1 to equal 2'));
 });
 
+test('parseNodeTestJunit — atributo name con `>` literal no rompe el parser (regresión #2892)', () => {
+    // node --test escribe el name del test sin escapar `>` (XML lo permite
+    // dentro de values de atributos). Antes del fix, el regex `[^>]*?`
+    // truncaba el match al primer `>` y los testcases siguientes perdían
+    // name/classname → el reporte mostraba "(sin nombre) > test failed"
+    // y el dev no podía saber qué archivo abrir.
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+\t<testcase name="conserva &amp;quot;> Task :xxx FAILED&amp;quot;" time="0.001" classname="test" file="apk.test.js"/>
+\t<testcase name="C:\\\\repo\\\\.pipeline\\\\tests\\\\sanitizer.test.js" time="0.7" classname="test" file="C:\\\\repo\\\\.pipeline\\\\tests\\\\sanitizer.test.js" failure="test failed">
+\t\t<failure type="testCodeFailure" message="test failed">
+[Error: test failed] { code: 'ERR_TEST_FAILURE' }
+\t\t</failure>
+\t</testcase>
+\t<!-- tests 2 -->
+\t<!-- fail 1 -->
+</testsuites>`;
+    const r = tester.parseNodeTestJunit(xml);
+    assert.equal(r.failures, 1);
+    assert.equal(r.failed_tests.length, 1);
+    assert.ok(r.failed_tests[0].name.endsWith('sanitizer.test.js'),
+        `name debería contener sanitizer.test.js, fue: ${r.failed_tests[0].name}`);
+    assert.equal(r.failed_tests[0].classname, 'test');
+    assert.equal(r.failed_tests[0].message, 'test failed');
+    assert.ok(r.failed_tests[0].stack_snippet.includes('ERR_TEST_FAILURE'));
+});
+
 test('parseNodeTestJunit — XML vacío o malformado devuelve valid:false', () => {
     assert.equal(tester.parseNodeTestJunit('').valid, false);
     assert.equal(tester.parseNodeTestJunit(null).valid, false);

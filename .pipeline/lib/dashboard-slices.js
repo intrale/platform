@@ -369,6 +369,119 @@ function equipoSlice(state) {
     return { skills };
 }
 
+// #2894 — Resolución del skill efectivo para fase `dev` cuando todavía no
+// hay marker en el filesystem. Replica el algoritmo del intake: respeta
+// `dev_routing_priority`, cae a `dev_skill_mapping.default` si no hay match.
+function resolveDevSkillFromLabels(config, labels) {
+    if (!config) return null;
+    const priority = Array.isArray(config.dev_routing_priority) ? config.dev_routing_priority : [];
+    const mapping = config.dev_skill_mapping || {};
+    const labelSet = new Set(labels || []);
+    for (const lab of priority) {
+        if (labelSet.has(lab) && mapping[lab]) return mapping[lab];
+    }
+    // Fallback: cualquier label en mapping (sin orden de prioridad).
+    for (const lab of labelSet) {
+        if (mapping[lab]) return mapping[lab];
+    }
+    return mapping.default || null;
+}
+
+// #2894 — Para cada issue, computar el listado de agentes esperados en la
+// fase activa con su estado UI (☑ listo / ► trabajando / ☐ pendiente /
+// ⚠ bloqueado / ✗ fallido). Solo expone la fase activa para mantener
+// el payload acotado (el dashboard solo renderea la card de esa fase).
+function buildAgentsForActiveFase(issueId, data, state) {
+    if (!data.faseActual) return { agents: [], expectedSkills: [] };
+    const [pName, fName] = data.faseActual.split('/');
+    const skillsByFase = state.config?.pipelines?.[pName]?.skills_por_fase || {};
+    const allExpected = Array.isArray(skillsByFase[fName]) ? skillsByFase[fName] : [];
+    const entries = data.fases[data.faseActual] || [];
+
+    // Para cada skill, consolidar el entry más reciente (los moves entre
+    // pendiente/trabajando/listo dejan un único entry por skill, pero ante
+    // posibles duplicados nos quedamos con el de updatedAt mayor).
+    const bySkill = new Map();
+    for (const e of entries) {
+        const prev = bySkill.get(e.skill);
+        if (!prev || (e.updatedAt || 0) >= (prev.updatedAt || 0)) {
+            bySkill.set(e.skill, e);
+        }
+    }
+
+    let expectedSkills;
+    if (fName === 'dev') {
+        // Dev = un solo skill por historia. Si hay marker, ese es el skill.
+        // Si todavía no hay marker (raro pero posible), resolver desde labels.
+        if (bySkill.size > 0) {
+            expectedSkills = [...bySkill.keys()];
+        } else {
+            const resolved = resolveDevSkillFromLabels(state.config, data.labels || []);
+            expectedSkills = resolved ? [resolved] : [];
+        }
+    } else {
+        // Otras fases: criterio del issue → "no aplica = no mostrar".
+        // Mostramos solo skills configurados que tienen marker en esta fase.
+        // Excepción: si la fase está activa pero todavía no hay markers
+        // (caso edge: issue recién encolado), mostrar todos los esperados
+        // como pendientes para que el operador vea qué falta.
+        const present = allExpected.filter(s => bySkill.has(s));
+        if (present.length > 0) {
+            expectedSkills = present;
+        } else {
+            expectedSkills = allExpected;
+        }
+    }
+
+    // Mapa de bloqueos humanos por (issue, fase, skill) → indicador.
+    // El listado vive en state.bloqueados (lo construye dashboard.js a
+    // partir de human-block.listBlockedIssues()).
+    const bloqueadosKey = new Set();
+    for (const b of (state.bloqueados || [])) {
+        if (String(b.issue) === String(issueId)) {
+            bloqueadosKey.add(`${b.pipeline}|${b.phase}|${b.skill}`);
+        }
+    }
+
+    const labels = data.labels || [];
+    const issueNeedsHuman = labels.includes('needs-human');
+
+    const agents = expectedSkills.map(skill => {
+        const entry = bySkill.get(skill);
+        let estado = 'pendiente';
+        let ageMin = null;
+        let hasLog = false;
+        let logFile = null;
+        let resultado = null;
+        let motivo = null;
+        if (entry) {
+            estado = entry.estado || 'pendiente';
+            ageMin = entry.ageMin || 0;
+            hasLog = !!entry.hasLog;
+            logFile = entry.logFile || null;
+            resultado = entry.resultado || null;
+            motivo = entry.motivo || null;
+            // Un YAML en `listo/procesado` con `resultado: rechazado`
+            // viene del agente reciclado pero el rebote ya quedó.
+            // Para UX = ✗ fallido.
+            if (resultado === 'rechazado') estado = 'fallido';
+        }
+        // Override por bloqueado-humano específico (tiene precedencia
+        // sobre el estado del marker normal porque el marker queda
+        // "congelado" en pendiente/ mientras human-block está activo).
+        const blKey = `${pName}|${fName}|${skill}`;
+        if (bloqueadosKey.has(blKey)) {
+            estado = 'bloqueado';
+        } else if (!entry && issueNeedsHuman) {
+            // Sin entrada específica + label needs-human global = bloqueado.
+            estado = 'bloqueado';
+        }
+        return { skill, estado, ageMin, hasLog, logFile, resultado, motivo };
+    });
+
+    return { agents, expectedSkills };
+}
+
 function pipelineSlice(state, ctx) {
     const matrix = {};
     // matrixCounts[faseKey][skill] = N — cuántos issues activos hay en cada
@@ -377,7 +490,29 @@ function pipelineSlice(state, ctx) {
     // ya salieron del flujo.
     const matrixCounts = {};
     const ACTIVE_STATES = new Set(['pendiente', 'trabajando', 'listo']);
+    // #2894 — Umbral para marcar un issue como "estancado" en su fase
+    // actual. Configurable vía env para que el operador pueda calibrar
+    // sin redeploy. Default 30 min según el issue.
+    const STALE_THRESHOLD_MIN = Number(process.env.PIPELINE_STALE_MIN_THRESHOLD) || 30;
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
+        // #2894 — Lista de agentes en la fase activa con su estado UI.
+        const { agents, expectedSkills } = buildAgentsForActiveFase(issueId, data, state);
+
+        // #2894 — Detección de issue estancado: el agente más viejo de la
+        // fase activa que NO está listo/fallido. Si su ageMin supera el
+        // umbral, el issue es stale y ese agente es el "blocker" visual.
+        let blockerSkill = null;
+        let blockerAgeMin = 0;
+        for (const a of agents) {
+            if (a.estado === 'listo' || a.estado === 'fallido') continue;
+            const age = a.ageMin || 0;
+            if (age > blockerAgeMin) {
+                blockerAgeMin = age;
+                blockerSkill = a.skill;
+            }
+        }
+        const stale = blockerAgeMin >= STALE_THRESHOLD_MIN;
+
         matrix[issueId] = {
             title: data.title,
             labels: data.labels,
@@ -394,6 +529,14 @@ function pipelineSlice(state, ctx) {
             // la card muestre "rebote N/M" y un badge especial cuando N==M.
             rebote_numero: data.rebote_numero || null,
             rebote_numero_max: data.rebote_numero_max || 3,
+            // #2894 — agents = listado de agentes esperados en la fase
+            // activa con su estado UI. expectedSkills facilita el debug
+            // sin tener que reconstruir desde agents en el cliente.
+            agents,
+            expectedSkills,
+            stale,
+            blockerSkill: stale ? blockerSkill : null,
+            blockerAgeMin: stale ? blockerAgeMin : 0,
         };
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
@@ -411,7 +554,13 @@ function pipelineSlice(state, ctx) {
         const data = issueOrder.load();
         priorityOrder = (data && Array.isArray(data.order)) ? data.order.map(String) : [];
     } catch { /* lib no disponible */ }
-    return { matrix, fases: state.allFases, priorityOrder, matrixCounts };
+    return {
+        matrix,
+        fases: state.allFases,
+        priorityOrder,
+        matrixCounts,
+        staleThresholdMin: STALE_THRESHOLD_MIN,
+    };
 }
 
 function bloqueadosSlice(state) {
@@ -485,4 +634,7 @@ module.exports = {
     quotaSlice,
     // Exportado para tests (#2900) — find rebote destino dado un entry rechazado.
     findReboteDestino,
+    // #2894 — exports internos para testing
+    _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
+    _buildAgentsForActiveFase: buildAgentsForActiveFase,
 };
