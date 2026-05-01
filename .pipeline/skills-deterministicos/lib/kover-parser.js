@@ -352,10 +352,17 @@ function renderTestsSection(tests) {
     lines.push(`- Tiempo total: ${tests.time_seconds.toFixed(1)}s  ·  Suites: ${tests.suites}`);
     if (tests.failed_tests.length > 0) {
         lines.push('- Tests fallidos:');
+        const path = require('path');
         for (const ft of tests.failed_tests.slice(0, 10)) {
-            const loc = `${ft.classname} > ${ft.name}`;
+            // node --test reporta a veces el archivo entero como un testcase
+            // con name = ruta absoluta cuando el archivo falla a nivel global.
+            // Mostrar basename para que sea legible en el rejection report.
+            const isFileLevel = typeof ft.name === 'string' && /[\\/]/.test(ft.name);
+            const displayName = isFileLevel ? `${path.basename(ft.name)} (archivo entero)` : ft.name;
+            const loc = `${ft.classname} > ${displayName}`;
             lines.push(`  - **${loc}**`);
             if (ft.message) lines.push(`    - ${ft.message.split('\n')[0].slice(0, 200)}`);
+            if (ft.stack_snippet) lines.push(`    - \`${ft.stack_snippet.slice(0, 300)}\``);
         }
         if (tests.failed_tests.length > 10) {
             lines.push(`  - _(…${tests.failed_tests.length - 10} más)_`);
