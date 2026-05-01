@@ -119,16 +119,138 @@ loop principal.
 ```
 .pipeline/tests/anomaly-detector.test.js              (18 tests)
 .pipeline/metrics/__tests__/aggregator.test.js        (15 tests, 6 nuevos)
+.pipeline/lib/__tests__/cost-anomaly-alert.test.js    (12 tests, PR-C)
+.pipeline/lib/__tests__/rest-mode-state.test.js       (23 tests, PR-C)
 ```
 
 Cubren CA-2.1 (hourlySeries shape), CA-2.2 (warmup grace period), CA-2.3
-(intervalo configurable + clamp), CA-2.4 (threshold relativo + mínimo absoluto)
-y CA-2.5 (persistencia con shape canónico).
+(intervalo configurable + clamp), CA-2.4 (threshold relativo + mínimo
+absoluto), CA-2.5 (persistencia con shape canónico), CA-2.6 (formato del
+mensaje Telegram), CA-2.7 (auto-clear con 2 chequeos consecutivos), CA-2.8
++ CA-Sec-A04b (snooze cap 24h), CA-5.5 (snapshot del payload sanitizado).
 
-### Roadmap PR-C
+## Alertas de consumo anómalo (canales + snooze) — PR-C #2892
 
-- Engancha `detector.on('anomaly', ...)` para enviar Telegram via
-  `servicios/telegram/`.
-- Banner persistente en dashboard mientras `alerted=true` esté vigente.
-- Snooze por hora (botón `/anomaly snooze 1h` desde Telegram).
-- Sanitización del record antes de persistir (CA-2 seguridad PR-C).
+Cuando el detector dispara (`alerted: true`), el Pulpo enchufa dos canales
+de alerta para que el operador se entere:
+
+### Canal 1 — Telegram
+
+El handler `pulpo.js::anomalyDetector.on('anomaly')` invoca
+`lib/cost-anomaly-alert.js::sendTelegramAlert()`, que:
+
+1. Lee el snapshot actual de `metrics/snapshot.json` para extraer top 3 skills.
+2. Construye el mensaje en Markdown con el formato del mockup
+   `assets/mockups/06-cost-anomaly-alert.svg`:
+
+   ```
+   ⚠ *Consumo anómalo detectado*
+   Franja 14:00–15:00 · ratio +213%
+   Actual: *$4.72 USD/h*
+   Esperado: *$1.51 USD/h* (rolling 7d)
+
+   *TOP 3 SKILLS*
+   1. *android-dev* — $2.10 (44%)
+   2. *backend-dev* — $1.34 (28%)
+   3. *guru* — $0.78 (17%)
+
+   → Ver detalle en el dashboard
+   ```
+
+3. **Sanitiza el payload** ANTES del envío (CA-Sec-A09):
+   - `sanitizer.js::sanitize()` — reemplaza tokens (`sk-`, `ghp_`, `xoxb-`,
+     AKIA, JWT, telegram bot tokens, AWS, paths absolutos `C:\...`) por
+     placeholders `[REDACTED:<TIPO>]`. Maneja homoglifos y normaliza UTF-8.
+   - `lib/redact.js::redactSensitive()` — enmascara emails y strippa
+     userinfo de URLs.
+   - Skill names se filtran con whitelist `^[a-zA-Z0-9_-]{1,40}$`. Skills
+     que no matcheen se reemplazan por `[skill_invalid]`.
+
+4. Encola el mensaje en `.pipeline/servicios/telegram/pendiente/` para que
+   `svc-telegram` lo despache fire-and-forget. El servicio aplica
+   `sanitizeTelegramPayload` una segunda vez como defensa final.
+
+5. **Anti-spam**: solo se notifica la PRIMERA emisión de la racha. Si el
+   detector sigue tickeando cada 10min con la misma anomalía,
+   `restModeState.raiseAlert()` detecta `wasAlreadyActive` y devuelve
+   `shouldNotify=false`. Solo después de un acuse manual o auto-clear
+   se vuelve a notificar.
+
+### Canal 2 — Banner persistente en dashboard
+
+El estado vive en `.pipeline/rest-mode.json` (compartido con la ventana
+de modo descanso de PR-A — campos coexisten):
+
+```json
+{
+  "window_start": "21:00",          // (PR-A — modo descanso)
+  "window_end": "08:00",            // (PR-A)
+  "alert": {                        // (PR-C — alerta de consumo)
+    "active": true,
+    "raised_at": "2026-04-30T14:32:00.000Z",
+    "hour": "14",
+    "actual_usd": 4.72,
+    "baseline_usd": 1.51,
+    "ratio": 3.13,
+    "top_skills": [
+      { "skill": "android-dev", "cost_usd": 2.10, "share_pct": 44 },
+      { "skill": "backend-dev", "cost_usd": 1.34, "share_pct": 28 },
+      { "skill": "guru", "cost_usd": 0.78, "share_pct": 17 }
+    ],
+    "acked_at": null,
+    "snoozed_until": null,
+    "consecutive_baseline_checks": 0
+  }
+}
+```
+
+El dashboard lee `state.costAnomaly` y renderiza:
+
+- **Pill compacta** en el header — `CONSUMO ANÓMALO · +213%` con el
+  ícono `ic-cost-anomaly` (línea con pico). Pulsa suavemente. Al hacer
+  click, scrollea al banner.
+- **Banner persistente** (rosa-rojo, color token `--alert-anomaly`) con:
+  - Headline + detalle (consumo actual vs esperado, franja, lookback).
+  - Top 3 skills consumidores en chips.
+  - Botón **"Ya lo vi"** (acuse manual → limpia estado).
+  - Selector de snooze: 1h, 4h, **24h** (max destacado en indigo).
+
+### Endpoints API (consume el frontend)
+
+| Endpoint | Método | Body | Respuesta |
+|---|---|---|---|
+| `/api/cost-anomaly/state` | GET | — | `{ ok, state, visible, max_snooze_hours }` |
+| `/api/cost-anomaly/ack` | POST | `{}` | `{ ok, acked, state }` |
+| `/api/cost-anomaly/snooze` | POST | `{ hours: 1\|4\|24 }` | `{ ok, state }` o `422 { reason: 'exceeds_cap' }` |
+
+### Snooze cap (CA-2.8 + CA-Sec-A04b)
+
+- Cap fijo: **`MAX_SNOOZE_HOURS = 24`** — hardcoded en
+  `lib/rest-mode-state.js`. NO es configurable desde `config.yaml`
+  (un config malicioso no debe poder subirlo a 9999h).
+- Backend valida en `snoozeAlert(hours)`: payloads con `hours > 24`
+  devuelven `{ ok: false, reason: 'exceeds_cap', cap_hours: 24 }` con
+  HTTP 422. NO se clampea silenciosamente.
+- Auto-clear: cuando el detector emite 2 evaluaciones consecutivas con
+  `alerted: false`, `recordBaselineCheck()` limpia la alerta sola
+  (`CONSECUTIVE_BASELINE_CHECKS_TO_CLEAR = 2`, CA-2.7).
+- "Ya lo vi" (`ackAlert`) limpia inmediatamente sin importar snooze
+  ni contador.
+
+### Tests específicos PR-C
+
+El **snapshot del payload sanitizado** (CA-5.5 / CA-Sec-A09) está
+committeado al test como `EXPECTED_SNAPSHOT` en
+`lib/__tests__/cost-anomaly-alert.test.js`. Cualquier cambio al formato
+debe actualizar el snapshot explícitamente — esa es la barrera contra
+cambios accidentales que rompan el contrato de seguridad.
+
+### Anti-patterns (importante)
+
+- **NO** sumar nuevos canales de alerta sin pasar por `redactSensitive` +
+  `sanitize`. La regla de oro es "no inventar lógica de sanitización".
+- **NO** modificar `MAX_SNOOZE_HOURS` ni `CONSECUTIVE_BASELINE_CHECKS_TO_CLEAR`
+  para "casos puntuales". Si surge una necesidad genuina, abrir un issue
+  específico con justificación funcional + de seguridad.
+- **NO** acoplar el banner a un `setTimeout` que lo cierre solo. La regla
+  es: persistente hasta acuse manual / snooze expirado / auto-clear.

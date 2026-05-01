@@ -4,6 +4,11 @@
 
 'use strict';
 
+// Rebote #2892 rev-8: garantizar git en PATH antes de execSync('git …').
+// El tester de main puede correr sin Git for Windows en PATH; este helper
+// resuelve el directorio de git y lo prepende a process.env.PATH.
+require('../lib/_test-helpers/ensure-git-on-path');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');

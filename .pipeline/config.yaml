@@ -244,6 +244,28 @@ anomaly_detector:
   minUsdToAlert: 0.5         # Piso absoluto: si actual ≤ $0.50/h, no alerta nunca
   minAbsUsdPerHour: 2.0      # Umbral grueso durante warmup (mientras no hay baseline)
 
+# (#2892 PR-C) Alertas de consumo anómalo: canales y snooze.
+# El pulpo enchufa el detector con dos canales: Telegram (mensaje sanitizado
+# via lib/redact.js + lib/sanitize-payload.js) y banner persistente en el
+# dashboard (con pill compacta en header + selector de snooze 1h/4h/24h).
+#
+# Reglas:
+#   - max_snooze_hours: cap absoluto. La UI solo expone 1/4/24, pero el
+#     backend valida explicitamente que cualquier payload > este valor sea
+#     RECHAZADO (CA-Sec-A04b). NO clampea: devuelve error.
+#   - consecutive_baseline_checks_to_clear: cantidad de chequeos consecutivos
+#     en baseline (alerted=false) necesarios para auto-clear (CA-2.7).
+#
+# Estos parametros viven en el codigo (constants en lib/rest-mode-state.js)
+# para evitar que un config malicioso suba el cap a 9999h. Se documentan
+# aca para visibilidad pero NO son configurables sin tocar codigo.
+cost_anomaly_alert:
+  max_snooze_hours: 24                          # CAP HARDCODED, doc-only
+  consecutive_baseline_checks_to_clear: 2       # CAP HARDCODED, doc-only
+  channels:
+    telegram: true            # Encolar en .pipeline/servicios/telegram/pendiente/
+    dashboard_banner: true    # Renderizar banner + pill en /
+
 # Staleness (#2404) — evita rebotar a dev con `motivo_rechazo` que referencia un
 # build-log obsoleto. Si el log tiene mtime > umbral, NO se rebota al developer:
 # se resetea el contador del circuit breaker y se re-encola a `build` para que

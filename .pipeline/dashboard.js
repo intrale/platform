@@ -41,6 +41,10 @@ try { v3Aggregator = require('./metrics/aggregator'); } catch { /* V3 no disponi
 let recommendationsLib = null;
 try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcional */ }
 
+// #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
+let restModeState = null;
+try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -676,6 +680,22 @@ function getPipelineState() {
     if (pwData.qa) state.priorityWindows.qa = pwData.qa;
     if (pwData.build) state.priorityWindows.build = pwData.build;
   } catch {}
+
+  // (#2892 PR-C) Estado de la alerta de consumo anómalo. La pulpo persiste
+  // a `rest-mode.json` cuando dispara una anomalía; acá lo exponemos al
+  // render del dashboard para pintar pill + banner + selector de snooze.
+  state.costAnomaly = { active: false, visible: false, alert: null };
+  if (restModeState) {
+    try {
+      const alert = restModeState.getAlertState({ pipelineDir: PIPELINE });
+      const visible = restModeState.shouldShowBanner(alert);
+      state.costAnomaly = {
+        active: !!alert.active,
+        visible,
+        alert,
+      };
+    } catch {}
+  }
 
   // Rechazos recientes
   state.rechazos = [];
@@ -2685,6 +2705,56 @@ ${loadDesignTokens()}
 .pipe-status-running:hover{background:rgba(63,185,80,0.22)}
 .pipe-status-paused{background:rgba(240,165,0,0.18);color:#F0A500;border-color:rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
 .pipe-status-partial{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
+
+/* (#2892 PR-C) — Pill compacta de alerta de consumo anómalo en el header.
+ * Usa los tokens --alert-anomaly-* del design system (fuente: assets/design-tokens.css).
+ * Pulsa suavemente para llamar la atención sin ser invasiva (CA-3.1, CA-3.4). */
+.anomaly-pill{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs,0.75rem);font-weight:var(--fw-bold,700);letter-spacing:1.2px;padding:4px 12px;border-radius:var(--radius-full,9999px);cursor:pointer;background:var(--alert-anomaly-bg,rgba(255,107,138,0.16));color:var(--alert-anomaly-fg,#FFD2DC);border:1px solid var(--alert-anomaly,#FF6B8A);animation:anomalyPulse 2.4s ease-in-out infinite;box-shadow:var(--alert-anomaly-glow,0 0 12px rgba(255,107,138,0.50))}
+.anomaly-pill:hover{filter:brightness(1.10)}
+.anomaly-pill .pl-ic{width:14px;height:14px;color:var(--alert-anomaly,#FF6B8A)}
+@keyframes anomalyPulse{
+  0%,100%{box-shadow:0 0 8px rgba(255,107,138,0.40)}
+  50%    {box-shadow:0 0 16px rgba(255,107,138,0.65)}
+}
+
+/* (#2892 PR-C) — Banner persistente de alerta de consumo (rosa-rojo).
+ * Mockup: assets/mockups/06-cost-anomaly-alert.svg. Tokens: --alert-anomaly*. */
+.cost-anomaly-banner{
+  display:flex;align-items:flex-start;gap:var(--space-3,12px);
+  margin:8px 0 12px;padding:14px 18px 12px 0;
+  background:linear-gradient(90deg,rgba(255,107,138,0.22) 0%,rgba(255,107,138,0.06) 100%);
+  border:1px solid rgba(255,107,138,0.30);border-radius:var(--radius-md,10px);
+  position:relative;overflow:hidden;
+}
+.cost-anomaly-banner .ca-rail{position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--alert-anomaly,#FF6B8A)}
+.cost-anomaly-banner .ca-icon{flex:none;width:48px;display:flex;align-items:flex-start;justify-content:center;padding-top:4px;margin-left:18px;color:var(--alert-anomaly-fg,#FFD2DC)}
+.cost-anomaly-banner .ca-icon .pl-ic{width:36px;height:36px}
+.cost-anomaly-banner .ca-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.cost-anomaly-banner .ca-headline{color:var(--text-primary,var(--tx));font-size:var(--fs-md,1rem);font-weight:var(--fw-bold,700);line-height:1.3}
+.cost-anomaly-banner .ca-detail{color:var(--alert-anomaly-fg,#FFD2DC);font-size:var(--fs-sm,0.875rem);font-weight:var(--fw-semibold,600)}
+.cost-anomaly-banner .ca-skills{color:var(--text-secondary,var(--tx));font-size:var(--fs-sm,0.8125rem);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.cost-anomaly-banner .ca-skill{display:inline-flex;align-items:center;gap:5px;background:rgba(0,0,0,0.20);padding:2px 8px;border-radius:var(--radius-full,9999px);font-size:0.85em}
+.cost-anomaly-banner .ca-skill-rank{color:var(--text-dim,var(--dim));font-weight:600;font-size:0.85em}
+.cost-anomaly-banner .ca-skill-name{color:var(--text-primary,var(--tx));font-weight:600}
+.cost-anomaly-banner .ca-skill-cost{color:var(--alert-anomaly-fg,#FFD2DC);font-variant-numeric:tabular-nums}
+.cost-anomaly-banner .ca-empty{color:var(--text-dim,var(--dim));font-style:italic;font-size:0.85em}
+.cost-anomaly-banner .ca-foot{color:var(--text-dim,var(--dim));font-size:var(--fs-xs,0.75rem);font-style:italic;margin-top:2px}
+.cost-anomaly-banner .ca-actions{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:6px;padding-right:14px}
+.cost-anomaly-banner .ca-actions-label{color:var(--text-dim,var(--dim));font-size:var(--fs-xs,0.7rem);font-weight:600;letter-spacing:1.2px}
+.cost-anomaly-banner .ca-btn-ack{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--alert-anomaly-bg,rgba(255,107,138,0.16));color:var(--alert-anomaly-fg,#FFD2DC);border:1px solid var(--alert-anomaly,#FF6B8A);border-radius:var(--radius-md,8px);font-size:var(--fs-xs,0.75rem);font-weight:var(--fw-bold,700);cursor:pointer;transition:filter var(--motion-base,200ms)}
+.cost-anomaly-banner .ca-btn-ack:hover{filter:brightness(1.15)}
+.cost-anomaly-banner .ca-btn-ack .pl-ic{width:14px;height:14px}
+.cost-anomaly-banner .ca-snooze{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:var(--surface-1,var(--sf));border:1px solid var(--border,var(--bd));border-radius:var(--radius-md,8px)}
+.cost-anomaly-banner .ca-snooze-icon{color:var(--text-secondary,var(--tx));display:inline-flex}
+.cost-anomaly-banner .ca-snooze-icon .pl-ic{width:14px;height:14px}
+.cost-anomaly-banner .ca-snooze-label{color:var(--text-secondary,var(--tx));font-size:var(--fs-xs,0.75rem)}
+.cost-anomaly-banner .ca-snooze-btn{padding:3px 10px;background:rgba(177,186,196,0.10);color:var(--text-secondary,var(--tx));border:1px solid rgba(72,79,88,0.55);border-radius:var(--radius-sm,6px);font-size:var(--fs-xs,0.7rem);font-weight:var(--fw-semibold,600);cursor:pointer;font-family:inherit;transition:filter var(--motion-base,150ms)}
+.cost-anomaly-banner .ca-snooze-btn:hover{filter:brightness(1.20)}
+.cost-anomaly-banner .ca-snooze-btn.ca-snooze-max{background:rgba(124,92,255,0.20);color:var(--rest-mode-fg,#C5B7FF);border-color:rgba(124,92,255,0.55)}
+@media (max-width: 900px){
+  .cost-anomaly-banner{flex-wrap:wrap}
+  .cost-anomaly-banner .ca-actions{align-items:flex-start;padding:10px 14px}
+}
 /* Badges de estado transversales para cards (CA-5 — rebote vs cross-phase con DIBUJO distinto, no solo color) */
 .lc-state-badge{display:inline-flex;align-items:center;gap:5px;font-size:0.7em;font-weight:var(--fw-bold,700);letter-spacing:0.5px;padding:2px 9px;border-radius:var(--radius-full,9999px);border:1px solid transparent}
 .lc-state-badge .pl-ic{width:13px;height:13px}
@@ -4312,6 +4382,19 @@ body.standalone .section-collapsed .section-body{display:block !important}
               : ic('health-ok', 'sano') + '<span>Running</span>'}
         </button>
         ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:var(--warning-bg,rgba(240,165,0,0.15));color:var(--warning,#f0a500);border-color:rgba(240,165,0,0.4);" aria-label="Issues permitidos: ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}">${ic('estado-partial-pause')} ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
+        ${(() => {
+          // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%"
+          // visible cuando hay alerta activa NO snoozed. Si está snoozed, la
+          // pill desaparece pero el alert sigue activo bajo el capó (vuelve
+          // a aparecer cuando expire el snooze o el operador haga ack manual).
+          const ca = state.costAnomaly || {};
+          if (!ca.visible) return '';
+          const a = ca.alert || {};
+          const pctStr = (a.ratio != null && Number.isFinite(a.ratio))
+            ? `+${Math.round((a.ratio - 1) * 100)}%`
+            : '+?%';
+          return `<button class="anomaly-pill" onclick="document.getElementById('cost-anomaly-banner')?.scrollIntoView({behavior:'smooth',block:'start'})" title="Pico de consumo detectado · click para ver detalle" aria-label="Consumo anómalo detectado, click para ver detalle">${ic('cost-anomaly')}<span>CONSUMO ANÓMALO · ${esc(pctStr)}</span></button>`;
+        })()}
         <button id="autorefresh-btn" class="badge-autorefresh ar-off" onclick="toggleAutoRefresh()" title="Auto-refresh desactivado — click para activar" aria-label="Auto-refresh desactivado">↻ AUTO</button>
       </div>
     </div>
@@ -4339,6 +4422,48 @@ body.standalone .section-collapsed .section-body{display:block !important}
       <div class="hdr-date" id="hdr-date"></div>
     </div>
   </div>
+  ${(() => {
+    // (#2892 PR-C / CA-2.7, CA-3.4) Banner persistente de alerta de consumo
+    // anómalo. Se muestra cuando hay alerta activa Y NO está snoozed. Se
+    // cierra por: (a) acuse manual ("Ya lo vi"), (b) expira el snooze, o
+    // (c) auto-clear cuando vuelve a baseline 2 chequeos consecutivos.
+    const ca = state.costAnomaly || {};
+    if (!ca.visible) return '';
+    const a = ca.alert || {};
+    const HH = String(a.hour || '').padStart(2, '0');
+    const nextHH = String((Number(HH) + 1) % 24).padStart(2, '0');
+    const pctStr = (a.ratio != null && Number.isFinite(a.ratio))
+      ? `+${Math.round((a.ratio - 1) * 100)}%`
+      : '+?%';
+    const actualUsd = Number(a.actual_usd || 0).toFixed(2);
+    const baselineUsd = Number(a.baseline_usd || 0).toFixed(2);
+    const top = Array.isArray(a.top_skills) ? a.top_skills.slice(0, 3) : [];
+    const topHtml = top.length === 0
+      ? '<span class="ca-empty">sin desglose por skill (snapshot vacío)</span>'
+      : top.map((s, i) => `<span class="ca-skill"><span class="ca-skill-rank">${i + 1}</span><span class="ca-skill-name">${esc(String(s.skill || ''))}</span><span class="ca-skill-cost">$${Number(s.cost_usd || 0).toFixed(2)}</span></span>`).join('');
+    return `
+  <section id="cost-anomaly-banner" class="cost-anomaly-banner" role="alert" aria-live="assertive" aria-label="Alerta de consumo anómalo">
+    <div class="ca-rail" aria-hidden="true"></div>
+    <div class="ca-icon" aria-hidden="true">${ic('cost-anomaly', 'Pico de consumo')}</div>
+    <div class="ca-body">
+      <div class="ca-headline">Pico de consumo detectado — última hora ${esc(pctStr)} sobre el promedio histórico</div>
+      <div class="ca-detail">$${actualUsd} USD/h consumidos · esperado $${baselineUsd} USD/h · franja ${HH}:00–${nextHH}:00 (rolling 7d)</div>
+      <div class="ca-skills">Top 3 consumidores: ${topHtml}</div>
+      <div class="ca-foot">Persistente hasta acuse manual o vuelta a baseline (2 chequeos consecutivos).</div>
+    </div>
+    <div class="ca-actions">
+      <span class="ca-actions-label">ACCIONES</span>
+      <button class="ca-btn-ack" onclick="costAnomalyAck()" title="Marcar la alerta como vista — la pill y el banner desaparecen">${ic('health-ok', 'check')}<span>Ya lo vi</span></button>
+      <div class="ca-snooze">
+        <span class="ca-snooze-icon" aria-hidden="true">${ic('snooze')}</span>
+        <span class="ca-snooze-label">Silenciar</span>
+        <button class="ca-snooze-btn" onclick="costAnomalySnooze(1)" title="Silenciar 1 hora">1h</button>
+        <button class="ca-snooze-btn" onclick="costAnomalySnooze(4)" title="Silenciar 4 horas">4h</button>
+        <button class="ca-snooze-btn ca-snooze-max" onclick="costAnomalySnooze(24)" title="Silenciar 24 horas (cap máximo permitido)">24h</button>
+      </div>
+    </div>
+  </section>`;
+  })()}
   <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin:8px 0 4px" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">${ic('fase-build')} Consumo V3</a>
   <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
   ${(() => {
@@ -4902,6 +5027,56 @@ async function pauseAction(action) {
     const result = await resp.json();
     showToast(result.msg, result.ok);
     setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
+}
+
+// (#2892 PR-C) — "Ya lo vi": acuse manual del banner de alerta de consumo.
+// El banner desaparece y la pill del header también. Idempotente — si ya
+// estaba acusado, no rompe nada.
+async function costAnomalyAck() {
+  try {
+    const resp = await fetch('/api/cost-anomaly/ack', { method: 'POST' });
+    const result = await resp.json();
+    if (result.ok) {
+      showToast('Alerta de consumo acusada — el banner se cierra hasta el próximo pico', true);
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      showToast('Error acusando alerta: ' + (result.msg || 'desconocido'), false);
+    }
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
+}
+
+// (#2892 PR-C / CA-2.8) — Snooze del banner de alerta. La UI nunca llama
+// con > 24h (los botones son 1/4/24); aún así el backend valida cap.
+async function costAnomalySnooze(hours) {
+  const n = Number(hours);
+  if (!Number.isFinite(n) || n <= 0 || n > 24) {
+    showToast('Snooze inválido: máximo 24 horas (CA-Sec-A04b)', false);
+    return;
+  }
+  try {
+    const resp = await fetch('/api/cost-anomaly/snooze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hours: n })
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      const until = result.state && result.state.snoozed_until ? new Date(result.state.snoozed_until).toLocaleString('es-AR') : '';
+      showToast('Alerta silenciada ' + n + 'h · vuelve si supera el threshold después de ' + until, true);
+      setTimeout(() => location.reload(), 1200);
+    } else if (result.reason === 'exceeds_cap') {
+      showToast('No se permite snooze mayor a ' + result.cap_hours + 'h (cap fijo)', false);
+    } else if (result.reason === 'no_active_alert') {
+      showToast('No hay alerta activa para silenciar', false);
+      setTimeout(() => location.reload(), 800);
+    } else {
+      showToast('Error silenciando: ' + (result.reason || result.msg || 'desconocido'), false);
+    }
   } catch (e) {
     showToast('Error de conexión: ' + e.message, false);
   }
@@ -7405,6 +7580,95 @@ const server = http.createServer((req, res) => {
     }).catch(e => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, msg: e.message }));
+    });
+    return;
+  }
+
+  // =========================================================================
+  // #2892 PR-C — Banner de alerta de consumo anómalo (CA-2.7, CA-2.8, CA-3.4).
+  // GET  /api/cost-anomaly/state    → estado actual { active, raised_at,
+  //                                    actual_usd, baseline_usd, ratio,
+  //                                    top_skills, snoozed_until, ... }
+  // POST /api/cost-anomaly/ack      → "Ya lo vi" → limpia el banner
+  // POST /api/cost-anomaly/snooze   → body { hours: 1|4|24 }, cap 24h
+  // =========================================================================
+  if (req.url === '/api/cost-anomaly/state' && req.method === 'GET') {
+    if (!restModeState) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
+      return;
+    }
+    try {
+      const state = restModeState.getAlertState({ pipelineDir: PIPELINE });
+      const visible = restModeState.shouldShowBanner(state);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        state,
+        visible,
+        max_snooze_hours: restModeState.MAX_SNOOZE_HOURS,
+      }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    }
+    return;
+  }
+
+  if (req.url === '/api/cost-anomaly/ack' && req.method === 'POST') {
+    if (!restModeState) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
+      return;
+    }
+    // No body necesario — el ack es siempre el mismo gesto idempotente.
+    try {
+      const result = restModeState.ackAlert({ pipelineDir: PIPELINE });
+      log(`Cost-anomaly ack desde dashboard (acked=${result.acked})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, acked: result.acked, state: result.state }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    }
+    return;
+  }
+
+  if (req.url === '/api/cost-anomaly/snooze' && req.method === 'POST') {
+    if (!restModeState) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        const hours = Number(payload.hours);
+        // CA-Sec-A04b — el backend RECHAZA snooze > MAX_SNOOZE_HOURS aun
+        // cuando la UI debiera filtrarlos. snoozeAlert() devuelve ok:false
+        // con reason 'exceeds_cap' para esos casos.
+        const result = restModeState.snoozeAlert(hours, { pipelineDir: PIPELINE });
+        if (!result.ok) {
+          // 422 si el payload viene roto (cap superado, alert no activa,
+          // hours inválido). El frontend muestra un toast.
+          res.writeHead(422, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: false,
+            reason: result.reason,
+            cap_hours: result.cap_hours || restModeState.MAX_SNOOZE_HOURS,
+            state: result.state,
+          }));
+          return;
+        }
+        log(`Cost-anomaly snooze desde dashboard (hours=${hours}, until=${result.state.snoozed_until})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, state: result.state }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
     });
     return;
   }
