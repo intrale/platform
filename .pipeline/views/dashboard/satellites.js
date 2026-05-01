@@ -303,7 +303,26 @@ function renderPipeline() {
 .pl-card-state-listo { border-color: var(--in-ok); }
 .pl-card-state-pendiente { border-color: var(--in-fg-soft); }
 .pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-.pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }`;
+.pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }
+/* #2894 — Pills de agentes esperados en la fase activa (ux spec) */
+.pl-card-agents { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 0; padding-top: 6px; border-top: 1px dashed var(--in-border-soft); }
+.pl-card-agent { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--in-bg-3); border: 1px solid var(--in-border); cursor: pointer; transition: background 0.15s, border-color 0.15s, transform 0.15s; font-variant-numeric: tabular-nums; text-decoration: none; color: var(--in-fg); }
+.pl-card-agent.no-log { cursor: default; }
+.pl-card-agent:hover { border-color: var(--in-accent); background: var(--in-bg); transform: translateY(-1px); }
+.pl-card-agent-icon { font-size: 11px; line-height: 1; }
+.pl-card-agent-state { font-size: 10px; line-height: 1; font-weight: 600; }
+.pl-card-agent.state-listo { border-color: var(--in-ok); }
+.pl-card-agent.state-listo .pl-card-agent-state { color: var(--in-ok); }
+.pl-card-agent.state-trabajando { border-color: var(--in-accent); animation: pl-agent-pulse 1.6s ease-in-out infinite; }
+.pl-card-agent.state-trabajando .pl-card-agent-state { color: var(--in-accent); }
+.pl-card-agent.state-pendiente .pl-card-agent-state { color: var(--in-fg-soft); }
+.pl-card-agent.state-bloqueado { border-color: var(--in-warn); }
+.pl-card-agent.state-bloqueado .pl-card-agent-state { color: var(--in-warn); }
+.pl-card-agent.state-fallido { border-color: var(--in-bad); background: var(--in-bad-soft); }
+.pl-card-agent.state-fallido .pl-card-agent-state { color: var(--in-bad); }
+.pl-card-agent.is-blocker { box-shadow: 0 0 0 1px var(--in-warn); }
+@keyframes pl-agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+.pl-card-stale-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 600; color: var(--in-warn); border: 1px solid var(--in-warn); background: var(--in-warn-soft); border-radius: 3px; padding: 1px 5px; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; width: fit-content; }`;
     const script = `
 function compareByPriority(orderMap){
     return (a, b) => {
@@ -342,10 +361,44 @@ async function tickPipeline(){
                 motivo_rechazo: data.motivo_rechazo,
                 rechazado_en_fase: data.rechazado_en_fase,
                 rechazado_skill_previo: data.rechazado_skill_previo,
+                // #2894 — agentes esperados en la fase actual + flags de stale
+                agents: data.agents || [],
+                stale: !!data.stale,
+                blockerSkill: data.blockerSkill || null,
+                blockerAgeMin: data.blockerAgeMin || 0,
             });
         }
     }
     const cmp = compareByPriority(orderMap);
+    // #2894 — glifos de estado (pills) — coinciden con la spec del UX en el issue
+    const AGENT_STATE_GLYPH = { listo:'☑', trabajando:'►', pendiente:'☐', bloqueado:'⚠', fallido:'✗' };
+    const AGENT_STATE_LABEL = { listo:'listo', trabajando:'trabajando', pendiente:'pendiente', bloqueado:'bloqueado', fallido:'fallido' };
+    function renderAgentPills(item){
+        if(!item.agents || item.agents.length === 0) return '';
+        const pills = item.agents.map(a => {
+            const icon = SKILL_ICONS[a.skill] || '·';
+            const glyph = AGENT_STATE_GLYPH[a.estado] || '?';
+            const label = AGENT_STATE_LABEL[a.estado] || a.estado;
+            const ageStr = (a.ageMin != null && a.ageMin > 0) ? (' · ' + a.ageMin + 'm') : '';
+            const motivoStr = (a.estado === 'fallido' && a.motivo) ? ' · ' + String(a.motivo).slice(0, 60) : '';
+            const tip = a.skill + ' · ' + label + ageStr + motivoStr;
+            const isBlocker = item.stale && item.blockerSkill === a.skill;
+            const cls = ['pl-card-agent', 'state-' + a.estado];
+            if(isBlocker) cls.push('is-blocker');
+            if(!a.hasLog) cls.push('no-log');
+            const dataLog = a.hasLog && a.logFile ? ' data-log="'+escapeHtml(a.logFile)+'"' : '';
+            return '<span class="'+cls.join(' ')+'" data-skill="'+escapeHtml(a.skill)+'"'+dataLog+' title="'+escapeHtml(tip)+'">'
+                + '<span class="pl-card-agent-icon">'+icon+'</span>'
+                + '<span class="pl-card-agent-state">'+glyph+'</span>'
+                + '</span>';
+        }).join('');
+        return '<div class="pl-card-agents">' + pills + '</div>';
+    }
+    function renderStaleBadge(item){
+        if(!item.stale) return '';
+        const tip = 'Sin avance en la fase hace '+item.blockerAgeMin+'m'+(item.blockerSkill?' (bloqueador: '+item.blockerSkill+')':'');
+        return '<div class="pl-card-stale-badge" title="'+escapeHtml(tip)+'">⏱ estancado · '+item.blockerAgeMin+'m</div>';
+    }
     let html = '';
     for(const [key, col] of Object.entries(cols)){
         col.items.sort(cmp);
@@ -360,6 +413,8 @@ async function tickPipeline(){
               + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
               + '<div class="pl-card-title" title="'+escapeHtml(i.title||'')+'">'+escapeHtml((i.title||'').slice(0,60))+'</div>'
               + reboteBadge
+              + renderAgentPills(i)
+              + renderStaleBadge(i)
               + '<div class="pl-card-actions">'
               +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-top" title="Máxima prioridad">⏫</button>'
               +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-up" title="Subir">▲</button>'
@@ -381,6 +436,16 @@ async function tickPipeline(){
                 const issue = b.dataset.issue;
                 if(action === 'pause' || action === 'resume') return pauseIssue(issue, action === 'resume');
                 return moveIssue(issue, action);
+            });
+        });
+        // #2894 — Click en pill = abrir log del agente en nueva pestaña.
+        // Event delegation: un solo listener en el board basta para todas las cards.
+        board.querySelectorAll('.pl-card-agent[data-log]').forEach(p => {
+            p.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const log = p.dataset.log;
+                if(log) window.open('/logs/'+encodeURIComponent(log), '_blank', 'noopener');
             });
         });
     }
