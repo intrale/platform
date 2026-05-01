@@ -13,6 +13,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
+// Asegura que `git` esté en PATH antes de invocarlo desde los tests
+// (rebote #2893: tester deployado en main no siempre patchea PATH).
+const { ensureGitOnPath } = require('./_test-helpers');
+const GIT_AVAILABLE = ensureGitOnPath();
+
 const ctx = require('../delivery/git-context');
 
 // ---- Helpers ----------------------------------------------------------------

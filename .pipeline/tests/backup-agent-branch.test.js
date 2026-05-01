@@ -11,6 +11,11 @@ const fs = require('fs');
 const os = require('os');
 const { execSync } = require('child_process');
 
+// Asegura que `git` esté en PATH antes de invocarlo desde los tests
+// (rebote #2893: tester deployado en main no siempre patchea PATH).
+const { ensureGitOnPath } = require('../lib/__tests__/_test-helpers');
+ensureGitOnPath();
+
 const {
   backupAgentBranch,
   cleanBackupTags,

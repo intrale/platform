@@ -9,6 +9,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Asegura que `git` esté en PATH antes de invocarlo desde los tests
+// (rebote #2893: tester deployado en main no siempre patchea PATH).
+const { ensureGitOnPath } = require('../../lib/__tests__/_test-helpers');
+ensureGitOnPath();
+
 // Aislar REPO_ROOT a un tmp — el módulo resuelve paths a partir de env vars.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-'));
 fs.mkdirSync(path.join(TMP, '.claude', 'hooks'), { recursive: true });
@@ -236,8 +241,10 @@ test('findIssueWorktree — encuentra worktree por convención platform.agent-<i
             try { execSync(`git worktree remove --force "${wtPath}"`, { cwd: fakeRepo, shell: true, stdio: 'ignore' }); } catch {}
         }
     } catch (e) {
-        // Si git no está disponible (rare), el test no aplica
-        if (/not found|no such/i.test(e.message)) return;
+        // Si git no está disponible (rare), el test no aplica.
+        // Cubrimos mensajes en inglés y español (Windows localizado).
+        const m = e.message || '';
+        if (/not found|no such|ENOENT|no se reconoce|is not recognized/i.test(m)) return;
         throw e;
     }
 });
