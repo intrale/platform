@@ -56,12 +56,15 @@ Antes de ejecutar greps o clasificacion manual, **invocar siempre el script corr
 
 | Subtarea | Script | Reemplaza paso |
 |---|---|---|
+| Smart-skip del modo `gate` (skip determinista si no hay sensibles) | `node .pipeline/scripts-security/security-gate.js [base-ref]` | Modo `gate` (preprocesador) |
 | Clasificar archivos del diff por riesgo | `node .pipeline/scripts-security/classify-diff.js [base-ref]` | S2 |
 | Buscar patrones OWASP A01-A09 en codigo | `node .pipeline/scripts-security/scan-owasp-patterns.js [path]` | S3 (greps por checklist) |
 | Detectar secrets hardcodeados | `node .pipeline/scripts-security/scan-secrets.js [path]` | S4 |
 | Listar dependencias para CVE check | `node .pipeline/scripts-security/check-dependencies.js` | AU1 |
 
 Todos devuelven JSON con `findings[]` (o `dependencies[]`) y exit codes consistentes (`0` sin findings bloqueantes, `1` con findings, `2` error de uso). El agente solo razona sobre los findings y arma el reporte/issue — no ejecuta el grep.
+
+`security-gate.js` es especial: usa exit `0` para skip determinista (status `pass`) y exit `100` para senalizar al caller que debe invocar al LLM. Detalles en la seccion "Modo: `gate`".
 
 ---
 
@@ -212,14 +215,30 @@ Para cada finding `Critical`/`High` crear issue automático (template en `docs/s
 
 ## Modo: `gate` — Gate pre-delivery (FASE 3)
 
-Verificación rápida para `delivery-gate.js`. Salida estructurada:
+Verificación rápida para `delivery-gate.js`. Salida estructurada.
 
-1. Ejecutar `classify-diff.js`. Si `sensitive: false` → emitir pass directo:
-   ```
-   SECURITY_GATE_RESULT: {"gate":"security","status":"pass","critical":0,"high":0,"blockers":[],"reason":"diff sin archivos sensibles"}
-   ```
-2. Si hay archivos sensibles → ejecutar S3 + S4 con foco en A01, A02, A03, A07.
-3. Producir salida JSON al stdout:
+### Smart-skip determinista (preferido)
+
+**El caller del gate (delivery-gate.js, hooks o invocacion manual) DEBE ejecutar primero el wrapper determinista**:
+
+```bash
+node .pipeline/scripts-security/security-gate.js [base-ref]
+```
+
+Comportamiento:
+
+| Exit | Significado | Que hace el caller |
+|---|---|---|
+| `0` | Smart-skip: el diff no toca archivos sensibles. El stdout ya trae el JSON `status:"pass"` final. | Reusar el JSON. **No invocar al LLM.** |
+| `100` | Hay archivos sensibles o falla detectada. El stdout trae `status:"needs_llm"` con la lista de archivos sensibles. | Invocar al agente `/security gate` con el LLM (este SKILL.md). |
+| otro | Error inesperado. | Fail-safe: invocar al LLM igual. |
+
+El wrapper es fail-safe: si `classify-diff.js` falla por cualquier motivo, devuelve exit 100 con `reason:"classify-diff-error"` para que el caller no se saltee la auditoria por error de infra.
+
+### Cuando el wrapper devuelve `needs_llm` (este SKILL toma el control)
+
+1. Ejecutar S3 + S4 con foco en A01, A02, A03, A07 sobre los archivos `sensitive_files` del JSON del wrapper.
+2. Producir salida JSON al stdout:
 
 ```
 SECURITY_GATE_RESULT: {"gate":"security","status":"pass|fail","critical":0,"high":0,"blockers":[]}
