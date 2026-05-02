@@ -48,6 +48,20 @@ Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan.
 
 **Protocolo de sub-pasos:** Cuando una tarea tiene pasos internos verificables, codificalos en `metadata.steps` al crearla. Al avanzar, actualizá `metadata.current_step` + `metadata.completed_steps` y reflejá el progreso en `activeForm`: `"Ejecutando tests API (paso 2/5 · 40%)…"`.
 
+## Subtareas determinísticas (preferir scripts sobre lógica inline)
+
+Para tareas mecánicas, **invocar estos scripts en lugar de razonar paso a paso**. Reducen tool calls y evitan releer logs/XMLs.
+
+| Tarea | Script | Output |
+|---|---|---|
+| Localizar APK del flavor client | `bash qa/scripts/qa-find-apk.sh` | path absoluto en stdout, exit 1 si no existe |
+| Validar video Maestro (size, integridad básica) | `node qa/scripts/qa-validate-video.js <path>` | JSON `{valid, size_bytes, warnings, errors}` |
+| Localizar reportes JUnit/Maestro/desktop | `node qa/scripts/qa-find-reports.js` | JSON con paths existentes |
+| Extraer issue # del branch actual | `bash qa/scripts/qa-issue-from-branch.sh` | número de issue en stdout |
+| Aplicar label `qa:passed`/`qa:failed`/`qa:skipped` | `bash qa/scripts/qa-apply-verdict-label.sh <verdict> [issue#]` | label aplicado + log |
+
+**Regla:** si el script existe, no reimplementar la lógica con `Read`/`Bash` adhoc.
+
 ## Paso 1: Setup del entorno
 
 ```bash
