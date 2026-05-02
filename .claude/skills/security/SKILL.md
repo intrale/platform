@@ -76,6 +76,21 @@ export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 
 ---
 
+## Subtareas determinisicas
+
+Antes de ejecutar greps o clasificacion manual, **invocar siempre el script correspondiente** y razonar sobre el JSON resultante. Reduce tool_calls y cache_read sin perder cobertura.
+
+| Subtarea | Script | Reemplaza paso |
+|---|---|---|
+| Clasificar archivos del diff por riesgo | `node .pipeline/scripts-security/classify-diff.js [base-ref]` | S2 |
+| Buscar patrones OWASP A01-A09 en codigo | `node .pipeline/scripts-security/scan-owasp-patterns.js [path]` | S3 (greps por checklist) |
+| Detectar secrets hardcodeados | `node .pipeline/scripts-security/scan-secrets.js [path]` | S4 |
+| Listar dependencias para CVE check | `node .pipeline/scripts-security/check-dependencies.js` | AU1 |
+
+Todos devuelven JSON con `findings[]` (o `dependencies[]`) y exit codes consistentes (`0` sin findings bloqueantes, `1` con findings, `2` error de uso). El agente solo razona sobre los findings y arma el reporte/issue — no ejecuta el grep.
+
+---
+
 ## Modo: `analyze #N` — Análisis de issue (FASE 1)
 
 Analizar el issue antes de comenzar el desarrollo para identificar la superficie de ataque.
