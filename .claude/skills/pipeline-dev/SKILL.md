@@ -106,6 +106,20 @@ node --test .pipeline/tests/*.test.js
 bash .pipeline/smoke-test.sh
 ```
 
+## Subtareas determinísticas (preferir scripts a razonamiento LLM)
+
+Antes de razonar manualmente sobre tareas mecánicas, invocá los scripts puros en `.pipeline/scripts-pipeline-dev/`. Son determinísticos, devuelven JSON y exit codes:
+
+| Necesito… | Invocación | Exit codes |
+|---|---|---|
+| Validar sintaxis JS de uno o varios archivos | `node .pipeline/scripts-pipeline-dev/check-syntax.js <archivo.js> [...]` | 0 ok / 1 error |
+| Localizar hooks/scripts que matchean un patrón | `node .pipeline/scripts-pipeline-dev/find-hooks.js <pattern> [--regex]` | 0 con matches / 1 sin matches |
+| Verificar que un `.pid` está vivo | `node .pipeline/scripts-pipeline-dev/check-pid.js <archivo.pid>` | 0 vivo / 1 muerto / 2 inválido |
+| Validar formato JSON de configs | `node .pipeline/scripts-pipeline-dev/validate-json.js <archivo.json> [...]` | 0 ok / 1 error |
+| Reiniciar un componente residente del pipeline | `node .pipeline/scripts-pipeline-dev/restart-component.js <pulpo\|dashboard\|listener\|watchdog\|multimedia>` | 0 señal enviada / 1 error |
+
+> **Regla:** si una tarea está cubierta por uno de estos scripts, llamarlo en lugar de hacer Glob+Grep iterativo, lectura+razonamiento de JSON, o secuencias Bash. Reduce tool calls y cache_read sin perder rigor.
+
 ## Paso 7: Commit y push
 
 ```bash
