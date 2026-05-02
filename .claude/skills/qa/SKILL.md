@@ -185,32 +185,32 @@ Si `android` no está disponible (sin emulador), reportar pero NO bloquear el ve
 
 ## Paso 3: Analizar resultados
 
-### Si todos los tests pasan
+**Pre-procesar reportes con script determinístico** (preferir sobre lectura manual de XMLs):
 
-Reportar:
-- Cantidad de tests ejecutados por plataforma
-- Tiempo total
-- Plataformas verificadas
-
-### Si hay fallos
-
-Para cada test fallido:
-1. Leer el stack trace completo del output
-2. Identificar si es un error del backend, del test, o de infraestructura
-3. Si hay recordings en `qa/recordings/`, reportar la ruta
-4. Diagnosticar causa raíz
-5. Proponer corrección
-
-Buscar reportes de tests:
 ```bash
-# Reportes JUnit en build
-ls -la qa/build/reports/tests/test/ 2>/dev/null || echo "Sin reportes HTML"
-ls -la qa/build/test-results/test/ 2>/dev/null || echo "Sin resultados XML"
-# Reportes desktop
-ls -la app/composeApp/build/reports/tests/desktopTest/ 2>/dev/null || echo "Sin reportes desktop"
-# Reportes Maestro
-ls -la qa/recordings/maestro-results.xml 2>/dev/null || echo "Sin reportes Maestro"
+node qa/scripts/qa-summarize-results.js --out qa/evidence/<issue>/qa-results-summary.json
 ```
+
+Devuelve y persiste JSON con:
+- `summary`: total / passed / failed / skipped / duration_ms / platforms
+- `failures[]`: por test fallido — class, name, duration_ms, reason, stack_top
+- `slow_tests[]`: top 5 tests > 5s
+- `warnings[]`: si no hay reportes o algún XML no es legible
+- `sources`: paths de los XMLs encontrados
+
+**Trabajar sobre el JSON** — solo abrir XMLs/HTMLs originales si el `stack_top` no alcanza para diagnosticar.
+
+### Si todos los tests pasan (`summary.failed == 0`)
+
+Reportar usando los campos de `summary`: cantidad, plataformas, tiempo total.
+
+### Si hay fallos (`summary.failed > 0`)
+
+Para cada item de `failures[]`:
+1. Identificar si es un error del backend, del test, o de infraestructura — usar `reason` y `stack_top`.
+2. Si hay recordings en `qa/recordings/`, reportar la ruta.
+3. Diagnosticar causa raíz — solo abrir el XML original si `stack_top` no alcanza.
+4. Proponer corrección.
 
 ## Paso 4: Limpiar entorno
 
