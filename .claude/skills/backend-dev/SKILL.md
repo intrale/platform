@@ -51,6 +51,10 @@ Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan.
 Antes de escribir una línea de código, leer la spec OpenAPI para identificar el contrato del endpoint a implementar o modificar.
 
 ```bash
+# Endpoint puntual (recomendado, menos tokens):
+bash .pipeline/scripts-backend/openapi-show-endpoint.sh /signin
+
+# Spec completa (cuando el cambio toca varios endpoints):
 cat docs/api/openapi.yaml
 ```
 
@@ -74,8 +78,7 @@ Buscar en la spec:
 ## Paso 1: Setup del entorno
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
-export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+source .pipeline/scripts-backend/backend-env.sh
 ```
 
 ## Paso 2: Entender el contexto
@@ -138,8 +141,9 @@ class MiFunctionTest {
 ### 4.2 Verificar que los tests FALLAN (Red Phase)
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :backend:test 2>&1 | tail -30
+bash .pipeline/scripts-backend/backend-test.sh
+# Si la tarea toca el modulo :users:
+bash .pipeline/scripts-backend/users-test.sh
 ```
 
 **Esperado:** los tests deben FALLAR con errores de compilacion o de ejecucion (clases no existen aun).
@@ -193,8 +197,9 @@ El `statusCode` SIEMPRE debe incluir valor numérico y descripción.
 Despues de implementar el codigo de produccion, verificar que los tests pasan:
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :backend:test 2>&1 | tail -50
+bash .pipeline/scripts-backend/backend-test.sh
+# Si la tarea toca el modulo :users:
+bash .pipeline/scripts-backend/users-test.sh
 ```
 
 **Esperado:** todos los tests deben PASAR. Si alguno falla, corregir la implementacion (no los tests).
@@ -208,8 +213,14 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
 ## Paso 7: Verificar build completo
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :backend:build 2>&1 | tail -50
+# Ciclo completo (tests :backend + tests :users + build :backend):
+bash .pipeline/scripts-backend/backend-verify.sh
+
+# Solo build (cuando los tests ya pasaron en Paso 6):
+bash .pipeline/scripts-backend/backend-build.sh
+
+# Lambda artifact (cuando el cambio se deploya a AWS):
+bash .pipeline/scripts-backend/users-shadow-jar.sh
 ```
 
 Si el build falla, leer el error, corregir y volver a intentar hasta que pase.
