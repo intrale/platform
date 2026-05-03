@@ -178,8 +178,7 @@ class DoMiActionTest {
 ### 4.2 Verificar que los tests FALLAN (Red Phase)
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :app:composeApp:testDebugUnitTest 2>&1 | tail -30
+.pipeline/scripts-android/android-test.sh
 ```
 
 **Esperado:** los tests deben FALLAR con errores de compilacion o ejecucion (clases no existen aun).
@@ -272,8 +271,7 @@ AsyncImage(
 Despues de implementar el codigo de produccion, verificar que los tests pasan:
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :app:composeApp:testDebugUnitTest 2>&1 | tail -50
+.pipeline/scripts-android/android-test.sh
 ```
 
 **Esperado:** todos los tests deben PASAR. Si alguno falla, corregir la implementacion (no los tests).
@@ -287,20 +285,16 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
 ## Paso 7: Verificar build completo
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :app:composeApp:build 2>&1 | tail -80
+.pipeline/scripts-android/android-build-verify.sh
+```
 
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :app:composeApp:testDebugUnitTest 2>&1 | tail -50
+Corre los 5 gates en secuencia (build, tests, no-legacy-strings,
+validate-resources, ascii-fallbacks) y resume cada uno. Exit no-cero si
+alguno falla.
 
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew verifyNoLegacyStrings 2>&1 | tail -30
-
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :app:composeApp:validateComposeResources 2>&1 | tail -30
-
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :app:composeApp:scanNonAsciiFallbacks 2>&1 | tail -30
+Para instalar el APK en el emulador conectado:
+```bash
+.pipeline/scripts-android/android-install-apk.sh <client|business|delivery>
 ```
 
 ## Paso 8: Reporte
