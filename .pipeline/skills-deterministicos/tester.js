@@ -29,10 +29,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, execFile, execSync } = require('child_process');
+const os = require('os');
+const { spawn, execFile, execSync, spawnSync } = require('child_process');
 const trace = require('../lib/traceability');
 const gradleParser = require('./lib/gradle-parser');
 const kover = require('./lib/kover-parser');
+const { ensureGitInEnv } = require('../lib/ensure-git-in-path');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -234,6 +236,26 @@ function parseNodeTestJunit(xml) {
 }
 
 /**
+ * Garantiza que `git` sea ejecutable desde el child spawn (rebote #2891 rev-2/rev-3).
+ *
+ * Cuando el pulpo corre como servicio Windows, su `process.env.PATH` puede no
+ * incluir el directorio de Git (`C:\Program Files\Git\cmd`). Los tests del
+ * pipeline (ej. `git-context.test.js`, `backup-agent-branch.test.js`) hacen
+ * `spawnSync('git', ...)` con `shell: false` y fallan con
+ * `'git' no se reconoce como un comando interno o externo` o `r.stderr === undefined`.
+ *
+ * Wrapper sobre `ensureGitInEnv` (en `.pipeline/lib/ensure-git-in-path.js`)
+ * para mantener compatibilidad con tests del tester. La implementación real
+ * vive en el helper compartido para que los archivos de tests puedan importarla
+ * directamente sin depender del tester (ver `.pipeline/lib/ensure-git-in-path.js`).
+ *
+ * Devuelve el env (mutado) listo para spawn.
+ */
+function ensureGitInPath(env) {
+    return ensureGitInEnv(env);
+}
+
+/**
  * Corre `node --test --test-reporter=junit` sobre los tests del pipeline.
  * Devuelve resultado con shape compatible con `aggregateTestResults`.
  */
@@ -269,6 +291,12 @@ function runNodeTests(repoRoot, env) {
         // child correr como un top-level run.
         const childEnv = { ...env };
         delete childEnv.NODE_TEST_CONTEXT;
+        // Garantizar que `git` esté accesible para los tests que hacen
+        // `spawnSync('git', ...)` (rebote #2891 rev-2). Cuando el pulpo corre
+        // como service Windows, el PATH no incluye `C:\Program Files\Git\cmd`
+        // y todos los tests basados en repos temporales fallan con
+        // `'git' no se reconoce como un comando interno o externo`.
+        ensureGitInPath(childEnv);
         let stdout = '';
         let stderr = '';
         const child = spawn(process.execPath, args, {
@@ -812,6 +840,7 @@ module.exports = {
     findNodeTestFiles,
     parseNodeTestJunit,
     runNodeTests,
+    ensureGitInPath,
     getChangedFilesVsMain,
     PIPELINE_ONLY_PATTERNS,
     MODULE_DIRS,
