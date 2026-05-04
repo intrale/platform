@@ -7,13 +7,17 @@ no bocetos de baja fidelidad). Cada mockup usa los tokens reales de
 
 ## Inventario
 
-| Archivo                       | Resolucion | Contenido                                      |
-|-------------------------------|------------|------------------------------------------------|
-| `01-home-dashboard.svg`       | 1440x900   | Home con 3 lanes, header de identidad, KPIs, badges diferenciados rebote vs cross-phase |
-| `02-issue-drilldown.svg`      | 1440x900   | Drilldown de issue individual: breadcrumb, KPIs, timeline vertical, panel voz narrando |
-| `03-consumo.svg`              | 1440x900   | Pagina `/consumo` (coordinada con #2520): KPIs, grafico de barras por fase, tabla top 5 |
-| `narrativa-lili.md`           | —          | Script narrado del sistema (texto que Lili dice)     |
-| `narrativa-lili.mp3`          | 4m 42s     | Audio TTS generado con `es-AR-ElenaNeural` (perfil ux — Lili, pitch +10Hz) |
+| Archivo                          | Resolucion | Contenido                                      |
+|----------------------------------|------------|------------------------------------------------|
+| `01-home-dashboard.svg`          | 1440x900   | Home con 3 lanes, header de identidad, KPIs, badges diferenciados rebote vs cross-phase |
+| `02-issue-drilldown.svg`         | 1440x900   | Drilldown de issue individual: breadcrumb, KPIs, timeline vertical, panel voz narrando |
+| `03-consumo.svg`                 | 1440x900   | Pagina `/consumo` (coordinada con #2520): KPIs, grafico de barras por fase, tabla top 5 |
+| `04-rest-mode-active.svg`        | 1440x900   | Modo descanso ACTIVO (#2882): pill header indigo, banner explicativo, lanes con LLM en cola, bypass critical visible |
+| `05-rest-mode-settings.svg`      | 1440x900   | Settings → Operación → Modo descanso: form (toggle, horarios, TZ, días), skills clasificados read-only, bypass labels, toast de confirmación |
+| `06-cost-anomaly-alert.svg`      | 1440x900   | Banner persistente de alerta de consumo anómalo (#2882): pill +213%, mini-gráfico, top 3 skills, acuse + snooze, preview Telegram, audit trail |
+| `narrativa-lili.md`              | —          | Script narrado del sistema visual base (mockups 01-03) |
+| `narrativa-lili.mp3`             | 4m 42s     | Audio TTS de la narrativa base, voz `es-AR-ElenaNeural` |
+| `narrativa-modo-descanso.md`     | —          | Script narrado del modo descanso (#2882, mockups 04-06) — generar mp3 en fase `dev` |
 
 ## Ver los mockups
 
