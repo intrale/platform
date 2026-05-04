@@ -41,6 +41,9 @@ const partialPause = require('./lib/partial-pause');
 const trace = require('./lib/traceability');
 // #2891 PR-B — Detector de anomalías de consumo (cron interno).
 const { AnomalyDetector } = require('./anomaly-detector');
+// #2892 PR-C — Canal Telegram + estado del banner de alerta.
+const costAnomalyAlert = require('./lib/cost-anomaly-alert');
+const restModeState = require('./lib/rest-mode-state');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -7225,10 +7228,15 @@ async function mainLoop() {
   // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
   migrateSkillProfilesIfNeeded();
 
-  // #2891 PR-B — Arranque del detector de anomalías.
+  // #2891 PR-B + #2892 PR-C — Arranque del detector de anomalías.
   // Lee `anomaly_detector` de config.yaml y dispara un setInterval interno
-  // que persiste cada evaluación a `metrics-history.jsonl`. PR-B no engancha
-  // canales de alerta (eso es PR-C); aquí solo dejamos la maquinaria viva.
+  // que persiste cada evaluación a `metrics-history.jsonl`. PR-C engancha
+  // canales de alerta:
+  //   - on 'anomaly' → raiseAlert() en rest-mode.json + sendTelegramAlert()
+  //     (solo la primera vez de la racha; raiseAlert detecta wasAlreadyActive
+  //      y devuelve shouldNotify=false en evaluaciones consecutivas).
+  //   - on 'evaluation' (sin alerted) → recordBaselineCheck() para auto-clear
+  //     cuando el consumo vuelve a baseline durante 2 chequeos consecutivos.
   // Si el constructor tira (ej. require fallido), el pulpo sigue corriendo:
   // el detector es accesorio, NO debe matar el loop.
   let anomalyDetector = null;
@@ -7239,6 +7247,44 @@ async function mainLoop() {
     for (const w of anomalyDetector.warnings) log('anomaly', `WARN: ${w}`);
     anomalyDetector.on('evaluation', (e) => {
       log('anomaly', `eval hour=${e.hour} actual=$${e.actual_usd} baseline=$${e.baseline_usd} ratio=${e.ratio} alerted=${e.alerted} reason=${e.reason}`);
+      // CA-2.7 — auto-clear: si el chequeo NO está alertando y hay una
+      // alerta activa, incrementamos el contador. A los 2 baseline checks
+      // consecutivos, recordBaselineCheck() limpia la alerta solo.
+      if (!e.alerted) {
+        try {
+          const result = restModeState.recordBaselineCheck({ pipelineDir: PIPELINE });
+          if (result.cleared) {
+            log('anomaly', `Auto-clear: alerta resuelta tras 2 chequeos consecutivos en baseline.`);
+          }
+        } catch (err) {
+          log('anomaly', `recordBaselineCheck error: ${err.message}`);
+        }
+      }
+    });
+    anomalyDetector.on('anomaly', (e) => {
+      // CA-2.6 + CA-2.7 — anomalía detectada. Persistimos el banner state
+      // y, si es la primera vez de la racha (no estaba activo y no está
+      // snoozed), encolamos un Telegram. Las re-emisiones de la MISMA
+      // anomalía (cron sigue tickeando cada 10min) NO renotifican: queda
+      // a cargo del operador acuse o silenciar.
+      let snapshot = {};
+      try {
+        snapshot = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'metrics', 'snapshot.json'), 'utf8')) || {};
+      } catch (_e) { /* snapshot ausente: top_skills vacío, alerta sigue */ }
+      try {
+        const { state, shouldNotify } = restModeState.raiseAlert(e, snapshot, { pipelineDir: PIPELINE });
+        log('anomaly', `Banner activo (raised_at=${state.raised_at}, snoozed=${state.snoozed_until || 'no'}). shouldNotify=${shouldNotify}`);
+        if (shouldNotify) {
+          const result = costAnomalyAlert.sendTelegramAlert(e, snapshot, { pipelineDir: PIPELINE });
+          if (result.ok) {
+            log('anomaly', `Telegram alert encolado: ${path.basename(result.file)} (${result.text.length} chars)`);
+          } else {
+            log('anomaly', `Telegram alert NO encolado: ${result.reason}`);
+          }
+        }
+      } catch (err) {
+        log('anomaly', `raiseAlert/send error: ${err.message}`);
+      }
     });
     anomalyDetector.on('error', (e) => log('anomaly', `ERROR: ${e.message}`));
     anomalyDetector.start();

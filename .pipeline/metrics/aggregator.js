@@ -126,6 +126,9 @@ async function buildSnapshot(options) {
     const byAgentMode = new Map();    // `${skill}|${mode}` → bucket (#2488 — LLM vs determinístico)
     const dailySeries = new Map();    // YYYY-MM-DD → { cost_usd, tts_cost_usd, sessions } (para proyecciones)
     const hourlyBuckets = new Map();  // "YYYY-MM-DD HH" → { cost_usd, tokens, sessions } (#2891 baseline horario)
+    // Top consumidores por hora-del-dia (#2892 PR-C). Bucket "YYYY-MM-DD HH|skill" → cost_usd.
+    // Permite que el alert builder de Telegram extraiga top 3 de la franja anómala.
+    const hourlyBySkill = new Map();  // "YYYY-MM-DD HH|skill" → cost_usd acumulado
 
     let totalEvents = 0;
     let v3Events = 0;
@@ -244,6 +247,16 @@ async function buildSnapshot(options) {
                 } else if (evt.event === 'tts:generated') {
                     hb.cost_usd += Number(evt.cost_estimate_usd || 0);
                 }
+                // (#2892 PR-C) breakdown por skill dentro de la franja, para el
+                // mensaje "Top 3 skills consumidores" del Telegram alert.
+                const bySkillKey = `${hourKey}|${skill}`;
+                let bySkillCost = hourlyBySkill.get(bySkillKey) || 0;
+                if (evt.event === 'session:end') {
+                    bySkillCost += estimateCostUsd(evt.model, evt);
+                } else if (evt.event === 'tts:generated') {
+                    bySkillCost += Number(evt.cost_estimate_usd || 0);
+                }
+                hourlyBySkill.set(bySkillKey, bySkillCost);
             }
         }
     }
@@ -333,7 +346,7 @@ async function buildSnapshot(options) {
     // [lookbackCutoff, today_start). El día de hoy NO entra al baseline porque
     // es la "actual" parcial — eso evita auto-confirmar anomalías.
     const hourly = computeHourlySeries({ hourlyBuckets, nowMs, lookbackCutoffMs });
-    const currentHour = computeCurrentHour({ hourlyBuckets, nowMs });
+    const currentHour = computeCurrentHour({ hourlyBuckets, hourlyBySkill, nowMs });
 
     return {
         generated_at: new Date().toISOString(),
@@ -417,12 +430,27 @@ function computeHourlySeries({ hourlyBuckets, nowMs, lookbackCutoffMs }) {
     };
 }
 
-function computeCurrentHour({ hourlyBuckets, nowMs }) {
+function computeCurrentHour({ hourlyBuckets, hourlyBySkill, nowMs }) {
     const now = new Date(nowMs);
     const HH = pad2(now.getUTCHours());
     const date = `${now.getUTCFullYear()}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`;
     const key = `${date} ${HH}`;
     const b = hourlyBuckets.get(key) || { cost_usd: 0, tokens: 0, sessions: 0 };
+    // (#2892 PR-C) bySkill: array ordenado desc por cost_usd, en la franja
+    // actual. El alert builder de Telegram extrae los top-N de acá. Si la
+    // hora actual aún no tiene buckets, devuelve [].
+    let bySkill = [];
+    if (hourlyBySkill instanceof Map) {
+        const prefix = key + '|';
+        const entries = [];
+        for (const [k, v] of hourlyBySkill.entries()) {
+            if (typeof k === 'string' && k.startsWith(prefix)) {
+                entries.push({ skill: k.slice(prefix.length), cost_usd: Math.round(Number(v) * 10000) / 10000 });
+            }
+        }
+        entries.sort((x, y) => y.cost_usd - x.cost_usd);
+        bySkill = entries;
+    }
     return {
         hour: HH,
         date,
@@ -430,6 +458,7 @@ function computeCurrentHour({ hourlyBuckets, nowMs }) {
         tokens: b.tokens,
         sessions: b.sessions,
         ts: now.toISOString(),
+        bySkill,
     };
 }
 
@@ -438,7 +467,7 @@ function emitEmptySnapshot(options) {
     const lookbackDays = clampLookbackDays(options && options.lookbackDays);
     const lookbackCutoffMs = nowMs - lookbackDays * 86400e3;
     const hourly = computeHourlySeries({ hourlyBuckets: new Map(), nowMs, lookbackCutoffMs });
-    const currentHour = computeCurrentHour({ hourlyBuckets: new Map(), nowMs });
+    const currentHour = computeCurrentHour({ hourlyBuckets: new Map(), hourlyBySkill: new Map(), nowMs });
     return {
         generated_at: new Date(nowMs).toISOString(),
         window: (options && options.window) || 'all',
