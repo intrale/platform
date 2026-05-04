@@ -819,6 +819,49 @@ async function main() {
 }
 
 if (require.main === module) {
+    if (process.argv.includes('--self-check')) {
+        const { runSelfCheck } = require('./lib/self-check');
+        runSelfCheck('tester', [
+            { name: 'parseArgs sin argumentos', fn: () => {
+                const a = parseArgs(['node', 'tester.js']);
+                if (typeof a !== 'object' || a === null) throw new Error('parseArgs no devuelve objeto');
+            }},
+            { name: 'parseArgs con issue', fn: () => {
+                const a = parseArgs(['node', 'tester.js', '1234', '--no-coverage']);
+                if (a.issue !== 1234) throw new Error(`issue esperado 1234 got ${a.issue}`);
+                if (a.coverage !== false) throw new Error('coverage debió quedar false');
+            }},
+            { name: 'gradle-parser carga', fn: () => {
+                const gp = require('./lib/gradle-parser');
+                if (!gp || typeof gp !== 'object') throw new Error('gradle-parser no exporta objeto');
+            }},
+            { name: 'kover-parser carga y parsea testsuite mínimo', fn: () => {
+                const kp = require('./lib/kover-parser');
+                const sample = '<?xml version="1.0"?><testsuite name="x" tests="1" failures="0" errors="0" skipped="0"></testsuite>';
+                const r = kp.parseTestResultsXml(sample);
+                if (!r || !r.valid || r.tests !== 1) throw new Error(`parseTestResultsXml devolvió ${JSON.stringify(r)}`);
+            }},
+            { name: 'kover-parser detecta failures con < y > en stack', fn: () => {
+                const kp = require('./lib/kover-parser');
+                const sample = '<?xml version="1.0"?><testsuite name="x" tests="1" failures="1" errors="0" skipped="0">'
+                    + '<testcase classname="c" name="t" time="0.1">'
+                    + '<failure message="boom" type="Error">at Promise.&lt;anonymous&gt; (foo.js:1:1)</failure>'
+                    + '</testcase></testsuite>';
+                const r = kp.parseTestResultsXml(sample);
+                if (r.failed_tests.length !== 1) throw new Error('debió detectar 1 failed_test');
+                if (r.failed_tests[0].name !== 't') throw new Error(`name esperado 't' got '${r.failed_tests[0].name}'`);
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta .pipeline/', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'docs/bar.md']);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS NO detecta cambio mixto', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'app/composeApp/x.kt']);
+                if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only (mixto)');
+            }},
+        ]);
+        return;
+    }
     main().catch((e) => {
         process.stderr.write(`[tester] fatal: ${e.stack || e.message}\n`);
         process.exit(2);
