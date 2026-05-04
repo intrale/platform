@@ -28,6 +28,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { spawnSync } = require('child_process');
 const { componentState, waitForMarkers } = require('./lib/ready-marker');
 
 const PIPELINE_DIR = __dirname;
@@ -47,8 +48,19 @@ const DEFAULT_COMPONENTS = [
   'dashboard',
 ];
 
+// Skills determinísticos a verificar con --self-check (acción 3 — relax CODEOWNERS).
+// Si alguno falla, el smoke test rebota → restart dispara rollback al tag pipeline-stable.
+// Esto es el reemplazo del bloqueo CODEOWNERS sobre `.pipeline/`: el rollback cubre
+// componentes residentes Y skills determinísticos.
+const SELF_CHECK_SKILLS = [
+  { name: 'tester',   path: 'skills-deterministicos/tester.js' },
+  { name: 'builder',  path: 'skills-deterministicos/builder.js' },
+  { name: 'delivery', path: 'skills-deterministicos/delivery.js' },
+  { name: 'linter',   path: 'skills-deterministicos/linter.js' },
+];
+
 function parseArgs(argv) {
-  const args = { timeoutMs: 60000, components: null, http: true };
+  const args = { timeoutMs: 60000, components: null, http: true, selfCheck: true };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--timeout' && argv[i + 1]) { args.timeoutMs = parseInt(argv[++i], 10) * 1000; }
@@ -56,8 +68,33 @@ function parseArgs(argv) {
     else if (a === '--components' && argv[i + 1]) { args.components = argv[++i].split(','); }
     else if (a.startsWith('--components=')) { args.components = a.split('=')[1].split(','); }
     else if (a === '--no-http') { args.http = false; }
+    else if (a === '--no-self-check') { args.selfCheck = false; }
   }
   return args;
+}
+
+function runSelfChecks() {
+  const failed = [];
+  for (const skill of SELF_CHECK_SKILLS) {
+    const scriptPath = path.join(PIPELINE_DIR, skill.path);
+    if (!fs.existsSync(scriptPath)) {
+      log(`  SKIP ${skill.name} (script no existe: ${skill.path})`);
+      continue;
+    }
+    const r = spawnSync(process.execPath, [scriptPath, '--self-check'], {
+      cwd: PIPELINE_DIR,
+      timeout: 30000,
+      encoding: 'utf8',
+    });
+    if (r.status === 0) {
+      log(`  OK self-check ${skill.name}`);
+    } else {
+      const tail = ((r.stdout || '') + (r.stderr || '')).split('\n').filter(Boolean).slice(-5).join(' | ');
+      log(`  FAIL self-check ${skill.name} (exit ${r.status}): ${tail.slice(0, 300)}`);
+      failed.push(skill.name);
+    }
+  }
+  return failed;
 }
 
 function log(msg) {
@@ -155,6 +192,16 @@ async function main() {
       }
     }
   } catch {}
+
+  // 5) Self-checks de skills determinísticos. Cobertura post-merge para
+  // cambios en .pipeline/ que el rollback de componentes residentes no toca.
+  if (args.selfCheck) {
+    log('Ejecutando self-checks de skills determinísticos...');
+    const failed = runSelfChecks();
+    if (failed.length > 0) {
+      fail(`Self-checks fallaron: ${failed.join(', ')}`, 4);
+    }
+  }
 
   log('=== SMOKE TEST OK ===');
   process.exit(0);

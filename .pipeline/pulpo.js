@@ -39,6 +39,11 @@ const partialPause = require('./lib/partial-pause');
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
 const trace = require('./lib/traceability');
+// #2891 PR-B — Detector de anomalías de consumo (cron interno).
+const { AnomalyDetector } = require('./anomaly-detector');
+// #2892 PR-C — Canal Telegram + estado del banner de alerta.
+const costAnomalyAlert = require('./lib/cost-anomaly-alert');
+const restModeState = require('./lib/rest-mode-state');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -864,10 +869,14 @@ function recordSkillResourceUsage(skill, startTime, endTime) {
       try { parsed.push(JSON.parse(line)); } catch {}
     }
 
-    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s)
-    const baseline = parsed.filter(s => s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
+    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s).
+    // Filtramos por presencia de cpu numérico para excluir entries de
+    // anomaly-detector (#2891 PR-B) que comparten el mismo archivo pero con
+    // shape distinta `{ type: 'anomaly', ts ISO, ... }` y sin cpu/mem.
+    const isPulse = (s) => typeof s.cpu === 'number' && typeof s.mem === 'number' && typeof s.ts === 'number';
+    const baseline = parsed.filter(s => isPulse(s) && s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
     // Durante: muestras mientras el agente estuvo vivo
-    const during = parsed.filter(s => s.ts >= startTime && s.ts <= endTime);
+    const during = parsed.filter(s => isPulse(s) && s.ts >= startTime && s.ts <= endTime);
 
     if (baseline.length === 0 || during.length < 2) {
       // Sin baseline confiable o muy pocas muestras — no aprender (evita corromper el perfil)
@@ -7219,6 +7228,71 @@ async function mainLoop() {
   // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
   migrateSkillProfilesIfNeeded();
 
+  // #2891 PR-B + #2892 PR-C — Arranque del detector de anomalías.
+  // Lee `anomaly_detector` de config.yaml y dispara un setInterval interno
+  // que persiste cada evaluación a `metrics-history.jsonl`. PR-C engancha
+  // canales de alerta:
+  //   - on 'anomaly' → raiseAlert() en rest-mode.json + sendTelegramAlert()
+  //     (solo la primera vez de la racha; raiseAlert detecta wasAlreadyActive
+  //      y devuelve shouldNotify=false en evaluaciones consecutivas).
+  //   - on 'evaluation' (sin alerted) → recordBaselineCheck() para auto-clear
+  //     cuando el consumo vuelve a baseline durante 2 chequeos consecutivos.
+  // Si el constructor tira (ej. require fallido), el pulpo sigue corriendo:
+  // el detector es accesorio, NO debe matar el loop.
+  let anomalyDetector = null;
+  try {
+    const cfgRoot = loadConfig();
+    const detectorCfg = (cfgRoot && cfgRoot.anomaly_detector) || {};
+    anomalyDetector = new AnomalyDetector({ config: detectorCfg });
+    for (const w of anomalyDetector.warnings) log('anomaly', `WARN: ${w}`);
+    anomalyDetector.on('evaluation', (e) => {
+      log('anomaly', `eval hour=${e.hour} actual=$${e.actual_usd} baseline=$${e.baseline_usd} ratio=${e.ratio} alerted=${e.alerted} reason=${e.reason}`);
+      // CA-2.7 — auto-clear: si el chequeo NO está alertando y hay una
+      // alerta activa, incrementamos el contador. A los 2 baseline checks
+      // consecutivos, recordBaselineCheck() limpia la alerta solo.
+      if (!e.alerted) {
+        try {
+          const result = restModeState.recordBaselineCheck({ pipelineDir: PIPELINE });
+          if (result.cleared) {
+            log('anomaly', `Auto-clear: alerta resuelta tras 2 chequeos consecutivos en baseline.`);
+          }
+        } catch (err) {
+          log('anomaly', `recordBaselineCheck error: ${err.message}`);
+        }
+      }
+    });
+    anomalyDetector.on('anomaly', (e) => {
+      // CA-2.6 + CA-2.7 — anomalía detectada. Persistimos el banner state
+      // y, si es la primera vez de la racha (no estaba activo y no está
+      // snoozed), encolamos un Telegram. Las re-emisiones de la MISMA
+      // anomalía (cron sigue tickeando cada 10min) NO renotifican: queda
+      // a cargo del operador acuse o silenciar.
+      let snapshot = {};
+      try {
+        snapshot = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'metrics', 'snapshot.json'), 'utf8')) || {};
+      } catch (_e) { /* snapshot ausente: top_skills vacío, alerta sigue */ }
+      try {
+        const { state, shouldNotify } = restModeState.raiseAlert(e, snapshot, { pipelineDir: PIPELINE });
+        log('anomaly', `Banner activo (raised_at=${state.raised_at}, snoozed=${state.snoozed_until || 'no'}). shouldNotify=${shouldNotify}`);
+        if (shouldNotify) {
+          const result = costAnomalyAlert.sendTelegramAlert(e, snapshot, { pipelineDir: PIPELINE });
+          if (result.ok) {
+            log('anomaly', `Telegram alert encolado: ${path.basename(result.file)} (${result.text.length} chars)`);
+          } else {
+            log('anomaly', `Telegram alert NO encolado: ${result.reason}`);
+          }
+        }
+      } catch (err) {
+        log('anomaly', `raiseAlert/send error: ${err.message}`);
+      }
+    });
+    anomalyDetector.on('error', (e) => log('anomaly', `ERROR: ${e.message}`));
+    anomalyDetector.start();
+    log('anomaly', `Detector iniciado: cada ${anomalyDetector.config.intervalMin}min, threshold +${Math.round(anomalyDetector.config.pctThreshold * 100)}%, warmup ${anomalyDetector.config.warmupDays}d`);
+  } catch (e) {
+    log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
+  }
+
   while (running) {
     try {
       checkPauseFile();
@@ -7287,6 +7361,7 @@ async function mainLoop() {
 // Graceful shutdown
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+// El timer del AnomalyDetector está `unref`'d → muere con el proceso.
 
 // --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
 // Uso: PULPO_NO_AUTOSTART=1 node -e "require('./pulpo.js').predictResourceImpact(...)"

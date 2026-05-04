@@ -23,6 +23,7 @@ require('./lib/sanitize-console').install();
 // viaja al API externo DEBE ir sanitizado.
 const { sanitize } = require('./sanitizer');
 const { sanitizeTelegramPayload } = require('./lib/sanitize-payload');
+const { splitLongMessage } = require('./lib/split-long-message');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
@@ -204,7 +205,13 @@ async function processQueue() {
         if (data.parse_mode) extra.parse_mode = data.parse_mode;
         await telegramSendMultipart('sendPhoto', 'photo', data.photo, extra);
       } else if (data.text) {
-        await telegramSend('sendMessage', { text: data.text, parse_mode: data.parse_mode || 'Markdown' });
+        // #2921: partir mensajes largos en chunks <= 3500 chars con prefijo (i/N).
+        // Telegram API limita sendMessage a 4096; antes se truncaba silenciosamente.
+        const parseMode = data.parse_mode || 'Markdown';
+        const chunks = splitLongMessage(data.text);
+        for (const chunk of chunks) {
+          await telegramSend('sendMessage', { text: chunk, parse_mode: parseMode });
+        }
       }
 
       const listoPath = path.join(LISTO, file.name);

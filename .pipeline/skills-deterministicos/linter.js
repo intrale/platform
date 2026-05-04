@@ -265,6 +265,29 @@ async function main() {
 }
 
 if (require.main === module) {
+    if (process.argv.includes('--self-check')) {
+        const { runSelfCheck } = require('./lib/self-check');
+        runSelfCheck('linter', [
+            { name: 'parseArgs sin argumentos', fn: () => {
+                const a = parseArgs(['node', 'linter.js']);
+                if (typeof a !== 'object' || a === null) throw new Error('parseArgs no devuelve objeto');
+                if (a.base !== 'origin/main') throw new Error(`base default esperado 'origin/main' got '${a.base}'`);
+            }},
+            { name: 'parseArgs con --base', fn: () => {
+                const a = parseArgs(['node', 'linter.js', '1234', '--base=origin/develop']);
+                if (a.issue !== 1234) throw new Error(`issue esperado 1234 got ${a.issue}`);
+                if (a.base !== 'origin/develop') throw new Error(`base esperado 'origin/develop' got '${a.base}'`);
+            }},
+            { name: 'static-checks lib carga', fn: () => {
+                const sc = require('./lib/static-checks');
+                if (!sc || typeof sc !== 'object') throw new Error('static-checks no exporta objeto');
+            }},
+            { name: 'runAllChecks es función', fn: () => {
+                if (typeof runAllChecks !== 'function') throw new Error('runAllChecks no es función');
+            }},
+        ]);
+        return;
+    }
     main().catch((e) => {
         process.stderr.write(`[linter] fatal: ${e.stack || e.message}\n`);
         process.exit(2);

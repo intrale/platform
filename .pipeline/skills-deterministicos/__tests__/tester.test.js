@@ -3,11 +3,22 @@
 // updateMarker, copyArtifacts y renderReport con filesystem aislado.
 'use strict';
 
+// Rebote #2892 rev-8: garantizar git en PATH antes de execSync('git …').
+// El tester de main puede correr sin Git for Windows en PATH; este helper
+// resuelve el directorio de git y lo prepende a process.env.PATH.
+require('../../lib/_test-helpers/ensure-git-on-path');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+// rebote #2891 rev-3: garantizar git en PATH antes de invocar `execSync('git ...')`.
+// El test `findIssueWorktree` arma un repo temporal con `git init` y depende
+// de que git esté en el PATH del proceso. Cuando el tester corre desde el
+// pulpo como servicio Windows, el PATH heredado puede no incluir Git.
+require('../../lib/ensure-git-in-path').ensureGitInProcessPath();
 
 // Aislar REPO_ROOT a un tmp — el módulo resuelve paths a partir de env vars.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-'));
@@ -463,4 +474,88 @@ test('siempre rompe', () => { assert.equal(1, 2); });
     assert.equal(r.summary.tests, 1);
     assert.equal(r.summary.failures, 1);
     assert.equal(r.summary.failed_tests[0].name, 'siempre rompe');
+});
+
+// ── ensureGitInPath (rebote #2891 rev-2) ─────────────────────────────
+// Cuando el pulpo corre como service Windows, el PATH del child puede no
+// incluir Git. Los tests del pipeline que hacen `spawnSync('git', ...)`
+// fallan con `'git' no se reconoce`. ensureGitInPath debe garantizar que
+// git sea ejecutable en el env devuelto.
+
+test('ensureGitInPath — env con git en PATH lo deja inalterado', () => {
+    // El env del runner ya tiene git (sino node --test no encontraría tampoco).
+    const envBefore = { ...process.env };
+    const pathBefore = envBefore.PATH;
+    const result = tester.ensureGitInPath(envBefore);
+    // Mismo objeto (mutable) y mismo PATH si git ya funciona.
+    assert.equal(result, envBefore);
+    assert.equal(result.PATH, pathBefore);
+});
+
+test('ensureGitInPath — sin git en PATH, prepende ubicación conocida (Windows)', () => {
+    if (process.platform !== 'win32') {
+        // En Linux/macOS las rutas de fallback son /usr/bin etc; el test
+        // tiene sentido principalmente en Windows donde git suele NO estar
+        // en system PATH para servicios.
+        return;
+    }
+    // Construir un env "limpio": PATH sin Git, pero Git existe en el sistema.
+    const cleanPath = (process.env.PATH || '')
+        .split(';')
+        .filter((seg) => !/[\\/]Git[\\/]/i.test(seg))
+        .join(';');
+    const env = { PATH: cleanPath };
+    // Verificar pre-condición: git no debería ser visible.
+    const { spawnSync } = require('child_process');
+    const probeBefore = spawnSync('git', ['--version'], {
+        env, shell: false, windowsHide: true, encoding: 'utf8',
+    });
+    if (probeBefore.status === 0) {
+        // El sistema tiene git en una ubicación rara que sobrevive al filter;
+        // skip silencioso para no fallar por entorno.
+        return;
+    }
+    const result = tester.ensureGitInPath(env);
+    // Debe haber agregado al menos un dir conocido al PATH.
+    assert.ok(result.PATH.length > cleanPath.length, 'ensureGitInPath debe prepender al PATH');
+    // Y git debe ser ejecutable ahora (si está instalado en una de las rutas conocidas).
+    const probeAfter = spawnSync('git', ['--version'], {
+        env: result, shell: false, windowsHide: true, encoding: 'utf8',
+    });
+    assert.equal(probeAfter.status, 0, 'git debe ser ejecutable después de ensureGitInPath');
+});
+
+// ── resolveGitDir (rebote #2892 rev-2) ──────────────────────────────
+// Garantiza que el helper localice git.exe — vía `where`/`which` o caída
+// a paths estándar de Git for Windows — para que el child node de
+// `node --test` siempre tenga git accesible aunque el PATH heredado del
+// pulpo lo haya perdido.
+
+test('resolveGitDir — devuelve un directorio que contiene git.exe (o git en POSIX)', () => {
+    const dir = tester.resolveGitDir();
+    // En el entorno de CI/dev de Intrale git siempre está instalado;
+    // si no se resuelve, el flow de tester pipeline-only se rompe y no
+    // queremos enmascararlo con un test demasiado tolerante.
+    assert.ok(dir, 'resolveGitDir debería localizar git en el entorno de tests');
+    const gitBin = path.join(dir, process.platform === 'win32' ? 'git.exe' : 'git');
+    assert.ok(fs.existsSync(gitBin), `${gitBin} debe existir`);
+});
+
+test('resolveGitDir — el directorio resuelto sirve para spawnear `git --version`', () => {
+    const dir = tester.resolveGitDir();
+    if (!dir) return; // ya cubierto por el test anterior; no duplicamos failure
+    const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH || ''}` };
+    const r = require('child_process').spawnSync('git', ['--version'], {
+        env, encoding: 'utf8', shell: false, windowsHide: true,
+    });
+    assert.equal(r.status, 0, `git --version debe correr OK (status=${r.status}, error=${r.error && r.error.message})`);
+    assert.match(r.stdout, /git version/);
+});
+
+test('GIT_FALLBACK_DIRS_WIN32 — incluye Git for Windows estándar', () => {
+    // Exporto la lista para auditoría. Si Git for Windows cambia de
+    // ubicación canónica, este test forzará revisar la lista.
+    assert.ok(Array.isArray(tester.GIT_FALLBACK_DIRS_WIN32));
+    assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\cmd'));
+    assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\mingw64\\bin'));
 });

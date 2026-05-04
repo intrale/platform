@@ -29,10 +29,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, execFile, execSync } = require('child_process');
+const os = require('os');
+const { spawn, execFile, execSync, spawnSync } = require('child_process');
 const trace = require('../lib/traceability');
 const gradleParser = require('./lib/gradle-parser');
 const kover = require('./lib/kover-parser');
+const { ensureGitInEnv } = require('../lib/ensure-git-in-path');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -57,6 +59,23 @@ const DEFAULT_COVERAGE_THRESHOLD = 80;
 const STALE_XML_GRACE_MS = 1000;        // tolerancia de skew para mtime
 const GRADLE_INSTANT_FAIL_MS = 2000;    // <2s con exit≠0 = gradle no arrancó
 
+// Rebote #2892 (rev-2 cross-phase): garantizar `git` en PATH del child node
+// que corre `node --test`. Cuando pulpo arranca desde un contexto donde el
+// PATH heredado no incluye el directorio de git.exe (por ejemplo restart
+// disparado desde un shell con PATH stripped, o Windows Service con system
+// PATH limitado), el child node no encuentra `git` y los tests del propio
+// pipeline que usan `spawnSync('git', …)` o `execSync('git …')` fallan
+// con "git no se reconoce como un comando interno o externo". Probamos
+// `where git` primero, y si eso falla, caemos a las rutas de instalación
+// estándar de Git for Windows.
+const GIT_FALLBACK_DIRS_WIN32 = [
+    'C:\\Program Files\\Git\\cmd',
+    'C:\\Program Files\\Git\\bin',
+    'C:\\Program Files\\Git\\mingw64\\bin',
+    'C:\\Program Files (x86)\\Git\\cmd',
+    'C:\\Program Files (x86)\\Git\\bin',
+];
+
 // Módulos Gradle que soportamos individualmente
 const MODULE_DIRS = {
     backend: 'backend',
@@ -80,6 +99,43 @@ const PIPELINE_ONLY_PATTERNS = [
     /^agents\//,        // reglas para agentes
     /^\.github\//,      // GitHub Actions / templates
 ];
+
+/**
+ * Resuelve el directorio que contiene `git.exe`/`git` para asegurarse de que
+ * los procesos hijos puedan ejecutar git aunque el PATH heredado del pulpo
+ * no lo incluya (rebote #2892 rev-2). Estrategia:
+ *   1) `where git` (Windows) o `which git` (Unix) usando el PATH actual.
+ *   2) Caída a paths estándar de Git for Windows si el lookup falla.
+ *   3) Devuelve `null` si nada funciona — el caller debe seguir adelante
+ *      sin asumir que git esté disponible (los tests de pipeline emitirán
+ *      fallas claras).
+ */
+function resolveGitDir() {
+    const lookup = process.platform === 'win32' ? 'where' : 'which';
+    try {
+        const r = require('child_process').spawnSync(lookup, ['git'], {
+            encoding: 'utf8', windowsHide: true, shell: false, timeout: 5000,
+        });
+        if (r && r.status === 0 && typeof r.stdout === 'string') {
+            const firstLine = r.stdout.split(/\r?\n/).map(s => s.trim()).find(Boolean);
+            if (firstLine) {
+                try {
+                    const stat = fs.statSync(firstLine);
+                    if (stat.isFile()) return path.dirname(firstLine);
+                } catch { /* ignore */ }
+            }
+        }
+    } catch { /* ignore */ }
+
+    if (process.platform === 'win32') {
+        for (const dir of GIT_FALLBACK_DIRS_WIN32) {
+            try {
+                if (fs.statSync(path.join(dir, 'git.exe')).isFile()) return dir;
+            } catch { /* ignore */ }
+        }
+    }
+    return null;
+}
 
 /**
  * Descubre el worktree del agente para un issue dado vía `git worktree list`.
@@ -234,6 +290,26 @@ function parseNodeTestJunit(xml) {
 }
 
 /**
+ * Garantiza que `git` sea ejecutable desde el child spawn (rebote #2891 rev-2/rev-3).
+ *
+ * Cuando el pulpo corre como servicio Windows, su `process.env.PATH` puede no
+ * incluir el directorio de Git (`C:\Program Files\Git\cmd`). Los tests del
+ * pipeline (ej. `git-context.test.js`, `backup-agent-branch.test.js`) hacen
+ * `spawnSync('git', ...)` con `shell: false` y fallan con
+ * `'git' no se reconoce como un comando interno o externo` o `r.stderr === undefined`.
+ *
+ * Wrapper sobre `ensureGitInEnv` (en `.pipeline/lib/ensure-git-in-path.js`)
+ * para mantener compatibilidad con tests del tester. La implementación real
+ * vive en el helper compartido para que los archivos de tests puedan importarla
+ * directamente sin depender del tester (ver `.pipeline/lib/ensure-git-in-path.js`).
+ *
+ * Devuelve el env (mutado) listo para spawn.
+ */
+function ensureGitInPath(env) {
+    return ensureGitInEnv(env);
+}
+
+/**
  * Corre `node --test --test-reporter=junit` sobre los tests del pipeline.
  * Devuelve resultado con shape compatible con `aggregateTestResults`.
  */
@@ -269,6 +345,12 @@ function runNodeTests(repoRoot, env) {
         // child correr como un top-level run.
         const childEnv = { ...env };
         delete childEnv.NODE_TEST_CONTEXT;
+        // Garantizar que `git` esté accesible para los tests que hacen
+        // `spawnSync('git', ...)` (rebote #2891 rev-2). Cuando el pulpo corre
+        // como service Windows, el PATH no incluye `C:\Program Files\Git\cmd`
+        // y todos los tests basados en repos temporales fallan con
+        // `'git' no se reconoce como un comando interno o externo`.
+        ensureGitInPath(childEnv);
         let stdout = '';
         let stderr = '';
         const child = spawn(process.execPath, args, {
@@ -555,6 +637,19 @@ async function main() {
     const env = { ...process.env, JAVA_HOME: JAVA_HOME_DEFAULT };
     env.PATH = `${JAVA_HOME_DEFAULT}/bin${path.delimiter}${env.PATH || ''}`;
 
+    // Rebote #2892 rev-2: garantizar `git` en PATH para los tests pipeline-only.
+    // Cuando pulpo arranca desde un contexto con PATH stripped, los tests del
+    // propio pipeline (git-context.test.js, backup-agent-branch.test.js,
+    // tester.test.js) que invocan git via spawnSync/execSync fallan con
+    // "git no se reconoce como un comando interno o externo".
+    const gitDir = resolveGitDir();
+    if (gitDir) {
+        env.PATH = `${gitDir}${path.delimiter}${env.PATH}`;
+        logAppend(`[tester] git detectado en ${gitDir} — agregado a PATH del child node`);
+    } else {
+        logAppend('[tester] WARNING: no se pudo localizar git.exe; los tests pipeline-only que dependen de git pueden fallar');
+    }
+
     // ── Detección de cambios pipeline-only (issue #2891) ─────────────
     // Si todo el diff vs origin/main toca solo `.pipeline/`, `docs/`,
     // `agents/`, `.github/`, no tiene sentido correr Gradle: corremos
@@ -791,6 +886,49 @@ async function main() {
 }
 
 if (require.main === module) {
+    if (process.argv.includes('--self-check')) {
+        const { runSelfCheck } = require('./lib/self-check');
+        runSelfCheck('tester', [
+            { name: 'parseArgs sin argumentos', fn: () => {
+                const a = parseArgs(['node', 'tester.js']);
+                if (typeof a !== 'object' || a === null) throw new Error('parseArgs no devuelve objeto');
+            }},
+            { name: 'parseArgs con issue', fn: () => {
+                const a = parseArgs(['node', 'tester.js', '1234', '--no-coverage']);
+                if (a.issue !== 1234) throw new Error(`issue esperado 1234 got ${a.issue}`);
+                if (a.coverage !== false) throw new Error('coverage debió quedar false');
+            }},
+            { name: 'gradle-parser carga', fn: () => {
+                const gp = require('./lib/gradle-parser');
+                if (!gp || typeof gp !== 'object') throw new Error('gradle-parser no exporta objeto');
+            }},
+            { name: 'kover-parser carga y parsea testsuite mínimo', fn: () => {
+                const kp = require('./lib/kover-parser');
+                const sample = '<?xml version="1.0"?><testsuite name="x" tests="1" failures="0" errors="0" skipped="0"></testsuite>';
+                const r = kp.parseTestResultsXml(sample);
+                if (!r || !r.valid || r.tests !== 1) throw new Error(`parseTestResultsXml devolvió ${JSON.stringify(r)}`);
+            }},
+            { name: 'kover-parser detecta failures con < y > en stack', fn: () => {
+                const kp = require('./lib/kover-parser');
+                const sample = '<?xml version="1.0"?><testsuite name="x" tests="1" failures="1" errors="0" skipped="0">'
+                    + '<testcase classname="c" name="t" time="0.1">'
+                    + '<failure message="boom" type="Error">at Promise.&lt;anonymous&gt; (foo.js:1:1)</failure>'
+                    + '</testcase></testsuite>';
+                const r = kp.parseTestResultsXml(sample);
+                if (r.failed_tests.length !== 1) throw new Error('debió detectar 1 failed_test');
+                if (r.failed_tests[0].name !== 't') throw new Error(`name esperado 't' got '${r.failed_tests[0].name}'`);
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta .pipeline/', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'docs/bar.md']);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS NO detecta cambio mixto', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'app/composeApp/x.kt']);
+                if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only (mixto)');
+            }},
+        ]);
+        return;
+    }
     main().catch((e) => {
         process.stderr.write(`[tester] fatal: ${e.stack || e.message}\n`);
         process.exit(2);
@@ -812,8 +950,11 @@ module.exports = {
     findNodeTestFiles,
     parseNodeTestJunit,
     runNodeTests,
+    ensureGitInPath,
     getChangedFilesVsMain,
+    resolveGitDir,
     PIPELINE_ONLY_PATTERNS,
+    GIT_FALLBACK_DIRS_WIN32,
     MODULE_DIRS,
     DEFAULT_COVERAGE_THRESHOLD,
 };
