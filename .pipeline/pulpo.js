@@ -1763,8 +1763,14 @@ function readManualPriorityOverrides() {
 
 /**
  * Contar issues pendientes en fase verificación (todas las pipelines).
+ *
+ * En modo `partial_pause`, filtra los issues fuera del allowlist: la cola
+ * "lógica" excluye lo que la pausa parcial nunca va a dejar lanzar (#2957).
+ * Acepta `pipelineState` por override para tests.
  */
-function countPendingVerificacion(config) {
+function countPendingVerificacion(config, overrides = {}) {
+  const state = overrides.pipelineState || partialPause.getPipelineMode();
+  const filterByAllowlist = state && state.mode === 'partial_pause';
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('verificacion')) continue;
@@ -1772,6 +1778,7 @@ function countPendingVerificacion(config) {
     const files = listWorkFiles(pendDir);
     for (const f of files) {
       const issue = issueFromFile(f.name);
+      if (filterByAllowlist && !partialPause.isIssueAllowedInState(issue, state)) continue;
       const labels = getIssueLabels(issue);
       if (!labels.includes('blocked:dependencies')) count++;
     }
@@ -1959,8 +1966,13 @@ function evaluateQaPriority(config, overrides = {}) {
 
 /**
  * Contar issues pendientes en fase build (todas las pipelines).
+ *
+ * En modo `partial_pause`, filtra los issues fuera del allowlist (#2957).
+ * Acepta `pipelineState` por override para tests.
  */
-function countPendingBuild(config) {
+function countPendingBuild(config, overrides = {}) {
+  const state = overrides.pipelineState || partialPause.getPipelineMode();
+  const filterByAllowlist = state && state.mode === 'partial_pause';
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('build')) continue;
@@ -1968,6 +1980,7 @@ function countPendingBuild(config) {
     const files = listWorkFiles(pendDir);
     for (const f of files) {
       const issue = issueFromFile(f.name);
+      if (filterByAllowlist && !partialPause.isIssueAllowedInState(issue, state)) continue;
       const labels = getIssueLabels(issue);
       if (!labels.includes('blocked:dependencies')) count++;
     }
@@ -7635,6 +7648,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _setBuildPriorityState: (active, manual) => { buildPriorityActive = active; buildPriorityManual = manual || false; },
     // #2893 — resolver de script determinístico (preferencia worktree-first).
     resolveDeterministicScript,
+    // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
+    countPendingBuild,
   };
   return; // No arrancar singleton ni mainLoop
 }
