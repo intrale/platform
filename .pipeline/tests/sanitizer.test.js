@@ -412,7 +412,8 @@ test('stream-filter: flush por newline', async () => {
 // los 47 archivos `.test.js` del pipeline en paralelo (`node --test` hace
 // pool de workers), un sanitize de 10MB que en aislado tarda ~150ms puede
 // trepar a >500ms por CPU contention en la máquina del CI/agente — y el
-// test fallaba sin que hubiera regresión real (rebote tester #2891 / #2894).
+// test fallaba sin que hubiera regresión real (rebote tester rev-3
+// #2891 / #2894).
 //
 // Subimos el threshold a 2000ms: sigue siendo 13x más rápido que un O(n²)
 // catastrófico (que tardaría >>30s en 10MB), así que cubre la regresión

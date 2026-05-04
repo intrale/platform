@@ -11,6 +11,11 @@ const fs = require('fs');
 const os = require('os');
 const { execSync } = require('child_process');
 
+// rebote #2891 rev-3: garantizar git en PATH antes de invocar `execSync('git ...')`.
+// Cuando el tester corre desde el pulpo como servicio Windows, el PATH
+// heredado puede no incluir Git, y todos los `git init` del setup fallan.
+require('../lib/ensure-git-in-path').ensureGitInProcessPath();
+
 const {
   backupAgentBranch,
   cleanBackupTags,
