@@ -19,6 +19,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
+// rebote #2891 rev-3: garantizar git en PATH antes de invocar `spawnSync('git ...')`.
+// Cuando el tester corre desde el pulpo como servicio Windows, el PATH
+// heredado puede no incluir Git, y `git init -q -b main` falla con ENOENT.
+require('../ensure-git-in-path').ensureGitInProcessPath();
+
 const ctx = require('../delivery/git-context');
 
 // ---- Helpers ----------------------------------------------------------------
