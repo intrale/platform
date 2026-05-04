@@ -108,12 +108,26 @@ function getPipelineMode() {
  * @returns {boolean}
  */
 function isIssueAllowed(issue) {
+    return isIssueAllowedInState(issue, getPipelineMode());
+}
+
+/**
+ * Variante pura de `isIssueAllowed` que recibe el estado ya leído (#2957).
+ *
+ * Pensada para callers que iteran muchos issues en un mismo tick (counters
+ * de cola, reconciler) y no quieren pagar el costo de releer el filesystem
+ * por cada uno. La política es la misma que `isIssueAllowed`.
+ *
+ * @param {number|string} issue
+ * @param {ReturnType<typeof getPipelineMode>} state
+ * @returns {boolean}
+ */
+function isIssueAllowedInState(issue, state) {
     const n = normalizeIssue(issue);
     if (!n) return false;
-    const state = getPipelineMode();
-    if (state.mode === 'paused') return false;
+    if (!state || state.mode === 'paused') return false;
     if (state.mode === 'running') return true;
-    return state.allowedIssues.includes(n);
+    return Array.isArray(state.allowedIssues) && state.allowedIssues.includes(n);
 }
 
 /**
@@ -194,6 +208,7 @@ function resumeAll() {
 module.exports = {
     getPipelineMode,
     isIssueAllowed,
+    isIssueAllowedInState,
     setPartialPause,
     clearPartialPause,
     resumeAll,

@@ -159,3 +159,47 @@ test('isIssueAllowed(null|undefined|"abc") retorna false sin error', () => {
     assert.equal(pp.isIssueAllowed(undefined), false);
     assert.equal(pp.isIssueAllowed('abc'), false);
 });
+
+// ----- isIssueAllowedInState (#2957) ------------------------------------------
+//
+// La variante "in state" no toca filesystem: recibe el estado ya leído. Permite
+// a callers que iteran muchos issues en un mismo tick (counters de cola)
+// reutilizar la misma decisión sin pagar IO por elemento.
+
+test('isIssueAllowedInState — modo running deja pasar todo', () => {
+    const state = { mode: 'running', allowedIssues: [] };
+    assert.equal(pp.isIssueAllowedInState(2490, state), true);
+    assert.equal(pp.isIssueAllowedInState('#9999', state), true);
+});
+
+test('isIssueAllowedInState — modo paused bloquea todo', () => {
+    const state = { mode: 'paused', allowedIssues: [] };
+    assert.equal(pp.isIssueAllowedInState(2490, state), false);
+    assert.equal(pp.isIssueAllowedInState('#9999', state), false);
+});
+
+test('isIssueAllowedInState — modo partial_pause respeta allowlist', () => {
+    const state = { mode: 'partial_pause', allowedIssues: [2891] };
+    assert.equal(pp.isIssueAllowedInState(2891, state), true);
+    assert.equal(pp.isIssueAllowedInState('2891', state), true);
+    assert.equal(pp.isIssueAllowedInState('#2891', state), true);
+    // Issues fuera del allowlist (caso del bug #2957: contadores incluían estos)
+    assert.equal(pp.isIssueAllowedInState(2892, state), false);
+    assert.equal(pp.isIssueAllowedInState(2893, state), false);
+    assert.equal(pp.isIssueAllowedInState(2914, state), false);
+});
+
+test('isIssueAllowedInState — entradas inválidas no rompen', () => {
+    const state = { mode: 'partial_pause', allowedIssues: [2891] };
+    assert.equal(pp.isIssueAllowedInState(null, state), false);
+    assert.equal(pp.isIssueAllowedInState(undefined, state), false);
+    assert.equal(pp.isIssueAllowedInState('abc', state), false);
+    // state inválido también es seguro
+    assert.equal(pp.isIssueAllowedInState(2891, null), false);
+    assert.equal(pp.isIssueAllowedInState(2891, {}), false);
+});
+
+test('isIssueAllowedInState — partial_pause con allowedIssues no-array es seguro', () => {
+    const state = { mode: 'partial_pause' };
+    assert.equal(pp.isIssueAllowedInState(2891, state), false);
+});
