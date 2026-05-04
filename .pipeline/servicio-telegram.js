@@ -207,10 +207,17 @@ async function processQueue() {
       } else if (data.text) {
         // #2921: partir mensajes largos en chunks <= 3500 chars con prefijo (i/N).
         // Telegram API limita sendMessage a 4096; antes se truncaba silenciosamente.
+        // #2893: passthrough opcional de reply_markup (inline_keyboard / url buttons)
+        // — se adjunta solo al último chunk para que los botones queden al final.
         const parseMode = data.parse_mode || 'Markdown';
         const chunks = splitLongMessage(data.text);
-        for (const chunk of chunks) {
-          await telegramSend('sendMessage', { text: chunk, parse_mode: parseMode });
+        const hasReplyMarkup = data.reply_markup && typeof data.reply_markup === 'object';
+        for (let i = 0; i < chunks.length; i++) {
+          const params = { text: chunks[i], parse_mode: parseMode };
+          if (hasReplyMarkup && i === chunks.length - 1) {
+            params.reply_markup = data.reply_markup;
+          }
+          await telegramSend('sendMessage', params);
         }
       }
 
