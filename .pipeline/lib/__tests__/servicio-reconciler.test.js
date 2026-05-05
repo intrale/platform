@@ -193,3 +193,154 @@ test('enqueueLabelApply genera JSON con shape correcto', () => {
     const cmd = JSON.parse(fs.readFileSync(path.join(GH_QUEUE, files[0]), 'utf8'));
     assert.deepEqual(cmd, { action: 'label', issue: 1234, label: 'needs-human' });
 });
+
+// =============================================================================
+// #2994 — CA1/CA2: enqueueLabelApply persiste metadata + reconcileMarkerToLabel
+// la pasa para que el worker pueda hacer guardia idempotente.
+// =============================================================================
+
+test('#2994 enqueueLabelApply persiste meta opcional (marker_path/snapshot_at/mtime)', () => {
+    clearGhQueue();
+    const meta = {
+        marker_path: '/tmp/fake-marker',
+        snapshot_at: '2026-05-05T19:30:00Z',
+        marker_mtime: 1714935000000.5,
+    };
+    reconciler.enqueueLabelApply(5555, 'needs-human', meta);
+    const files = fs.readdirSync(GH_QUEUE).filter(f => f.endsWith('.json'));
+    const cmd = JSON.parse(fs.readFileSync(path.join(GH_QUEUE, files[0]), 'utf8'));
+    assert.equal(cmd.marker_path, '/tmp/fake-marker');
+    assert.equal(cmd.snapshot_at, '2026-05-05T19:30:00Z');
+    assert.equal(cmd.marker_mtime, 1714935000000.5);
+});
+
+test('#2994 enqueueLabelApply ignora meta no-objeto (backward-compat)', () => {
+    clearGhQueue();
+    reconciler.enqueueLabelApply(5556, 'needs-human', null);
+    const files = fs.readdirSync(GH_QUEUE).filter(f => f.endsWith('.json'));
+    const cmd = JSON.parse(fs.readFileSync(path.join(GH_QUEUE, files[0]), 'utf8'));
+    // Sin meta → shape clásico exacto, sin campos extra.
+    assert.deepEqual(cmd, { action: 'label', issue: 5556, label: 'needs-human' });
+});
+
+test('#2994 reconcileMarkerToLabel persiste marker_path/mtime de cada marker', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    const dir = path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano');
+    const markerFile = path.join(dir, '8800.po');
+    fs.writeFileSync(markerFile, '');
+    fs.writeFileSync(markerFile + '.reason.json', '{}');
+
+    const markers = [{ issue: 8800, skill: 'po', phase: 'validacion', pipeline: 'desarrollo' }];
+    const enqueued = reconciler.reconcileMarkerToLabel(markers, new Set(), () => 'OPEN');
+    assert.equal(enqueued, 1);
+
+    const files = fs.readdirSync(GH_QUEUE).filter(f => f.endsWith('.json'));
+    const cmd = JSON.parse(fs.readFileSync(path.join(GH_QUEUE, files[0]), 'utf8'));
+    assert.equal(cmd.marker_path, markerFile);
+    assert.ok(typeof cmd.marker_mtime === 'number' && cmd.marker_mtime > 0);
+    assert.ok(typeof cmd.snapshot_at === 'string' && /^\d{4}-/.test(cmd.snapshot_at));
+});
+
+// =============================================================================
+// #2994 — CA3: reconcileHumanUnblockDetected detecta destrabe humano y mueve
+// el marker fuera de bloqueado-humano/ siguiendo a GitHub como autoritativo.
+// =============================================================================
+
+test('#2994 CA3 detecta destrabe humano: label ausente + blocked_at viejo + no svc-reconciler', () => {
+    clearAllMarkers();
+    const dir = path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano');
+    const pendDir = path.join(PIPELINE, 'desarrollo', 'validacion', 'pendiente');
+    fs.mkdirSync(pendDir, { recursive: true });
+    const markerFile = path.join(dir, '4400.po');
+    fs.writeFileSync(markerFile, '');
+    // blocked_at hace 5 min — bien fuera de la ventana de gracia (60s)
+    const oldTs = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    fs.writeFileSync(markerFile + '.reason.json', JSON.stringify({
+        issue: 4400, skill: 'po', phase: 'validacion', pipeline: 'desarrollo',
+        blocked_at: oldTs, blocked_by: 'po', // skill original, NO reconciler
+    }));
+
+    const markers = [{ issue: 4400, skill: 'po', phase: 'validacion', pipeline: 'desarrollo' }];
+    const ghIssueSet = new Set([]); // label NO está en GitHub
+    const result = reconciler.reconcileHumanUnblockDetected(markers, ghIssueSet);
+
+    assert.equal(result.detected, 1);
+    assert.equal(result.movedIssues.has(4400), true);
+    assert.equal(fs.existsSync(markerFile), false, 'marker debe haberse movido');
+    assert.equal(fs.existsSync(path.join(pendDir, '4400.po')), true, 'marker debe estar en pendiente/');
+    assert.equal(fs.existsSync(markerFile + '.reason.json'), false, 'reason.json eliminado');
+});
+
+test('#2994 CA3 NO destraba placeholders del propio reconciler (blocked_by=svc-reconciler)', () => {
+    clearAllMarkers();
+    const dir = path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano');
+    const markerFile = path.join(dir, '4401.guru');
+    fs.writeFileSync(markerFile, '');
+    const oldTs = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    fs.writeFileSync(markerFile + '.reason.json', JSON.stringify({
+        issue: 4401, skill: 'guru', phase: 'validacion', pipeline: 'desarrollo',
+        blocked_at: oldTs, blocked_by: 'svc-reconciler',
+    }));
+
+    const markers = [{ issue: 4401, skill: 'guru', phase: 'validacion', pipeline: 'desarrollo' }];
+    const result = reconciler.reconcileHumanUnblockDetected(markers, new Set([]));
+    assert.equal(result.detected, 0);
+    assert.equal(fs.existsSync(markerFile), true, 'placeholder propio NO debe moverse');
+});
+
+test('#2994 CA3 respeta ventana de gracia de 60s (blocked_at reciente)', () => {
+    clearAllMarkers();
+    const dir = path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano');
+    const markerFile = path.join(dir, '4402.po');
+    fs.writeFileSync(markerFile, '');
+    const recentTs = new Date(Date.now() - 10 * 1000).toISOString(); // 10s atrás
+    fs.writeFileSync(markerFile + '.reason.json', JSON.stringify({
+        issue: 4402, skill: 'po', phase: 'validacion', pipeline: 'desarrollo',
+        blocked_at: recentTs, blocked_by: 'po',
+    }));
+
+    const markers = [{ issue: 4402, skill: 'po', phase: 'validacion', pipeline: 'desarrollo' }];
+    const result = reconciler.reconcileHumanUnblockDetected(markers, new Set([]));
+    assert.equal(result.detected, 0);
+    assert.equal(fs.existsSync(markerFile), true, 'marker fresco NO debe destrabarse');
+});
+
+test('#2994 CA3 no toca markers cuyo label sí está en GitHub', () => {
+    clearAllMarkers();
+    const dir = path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano');
+    const markerFile = path.join(dir, '4403.po');
+    fs.writeFileSync(markerFile, '');
+    fs.writeFileSync(markerFile + '.reason.json', JSON.stringify({
+        issue: 4403, blocked_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        blocked_by: 'po',
+    }));
+    const markers = [{ issue: 4403, skill: 'po', phase: 'validacion', pipeline: 'desarrollo' }];
+    const result = reconciler.reconcileHumanUnblockDetected(markers, new Set([4403]));
+    assert.equal(result.detected, 0);
+});
+
+// =============================================================================
+// #2994 — CA5: appendStaleOrderLog escribe JSONL en logs/stale-orders.log
+// =============================================================================
+
+test('#2994 CA5 appendStaleOrderLog persiste línea JSONL', () => {
+    const logFile = path.join(PIPELINE, 'logs', 'stale-orders.log');
+    try { fs.unlinkSync(logFile); } catch {}
+    reconciler.appendStaleOrderLog({
+        reason: 'stale-mtime',
+        issue: 9999,
+        label: 'needs-human',
+        snapshot_at: '2026-05-05T19:30:00Z',
+        current_mtime: 12345.67,
+        detail: 'test',
+    });
+    const raw = fs.readFileSync(logFile, 'utf8').trim();
+    const ev = JSON.parse(raw);
+    assert.equal(ev.reason, 'stale-mtime');
+    assert.equal(ev.issue, 9999);
+    assert.equal(ev.label, 'needs-human');
+    assert.equal(ev.current_mtime, 12345.67);
+    assert.equal(ev.snapshot_at, '2026-05-05T19:30:00Z');
+    assert.ok(/^\d{4}-/.test(ev.ts));
+});

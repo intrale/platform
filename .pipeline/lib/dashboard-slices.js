@@ -713,6 +713,61 @@ function quotaExhaustedSlice(state) {
     };
 }
 
+// =============================================================================
+// #2994 — reconcilerStaleOrdersSlice: contador de órdenes descartadas por stale.
+//
+// El servicio-github.js + servicio-reconciler.js escriben una línea JSONL en
+// `.pipeline/logs/stale-orders.log` cada vez que se descarta una orden por
+// alguno de estos motivos:
+//
+//   - stale-marker-missing   (worker: marker_path ya no existe)
+//   - stale-mtime            (worker: marker_mtime cambió desde snapshot)
+//   - human-unblock-detected (reconciler: detectó destrabe humano y movió marker)
+//
+// Este slice lee el log, filtra eventos de las últimas 24h y devuelve total +
+// breakdown. El dashboard lo muestra en el tab Ops bajo "Reconciler health".
+//
+// Performance: lectura streaming-friendly de un archivo append-only. Cap a
+// las últimas N líneas para no leer un log que crece sin bound. En operación
+// normal el descarte es esporádico (≈ 1-5 por día), así que 5000 líneas
+// cubren ~3 años de log sin problema.
+// =============================================================================
+const STALE_ORDERS_LOG_NAME = 'stale-orders.log';
+const STALE_ORDERS_MAX_LINES = 5000;
+
+function reconcilerStaleOrdersSlice(state, ctx) {
+    const PIPELINE = (ctx && ctx.PIPELINE) || process.env.PIPELINE_STATE_DIR;
+    if (!PIPELINE) {
+        return { total_24h: 0, by_reason: {}, updated_at: new Date().toISOString() };
+    }
+    const logPath = path.join(PIPELINE, 'logs', STALE_ORDERS_LOG_NAME);
+    let raw;
+    try { raw = fs.readFileSync(logPath, 'utf8'); }
+    catch { return { total_24h: 0, by_reason: {}, updated_at: new Date().toISOString() }; }
+
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    // Tomar solo las últimas N líneas — el archivo es append-only y nunca
+    // queremos parsear más de eso por request del dashboard.
+    const tail = lines.slice(-STALE_ORDERS_MAX_LINES);
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    const byReason = {};
+    let total = 0;
+    for (const line of tail) {
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        const ts = ev.ts ? Date.parse(ev.ts) : NaN;
+        if (!Number.isFinite(ts) || ts < cutoff) continue;
+        const reason = String(ev.reason || 'unknown');
+        byReason[reason] = (byReason[reason] || 0) + 1;
+        total++;
+    }
+    return {
+        total_24h: total,
+        by_reason: byReason,
+        updated_at: new Date().toISOString(),
+    };
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -726,6 +781,7 @@ module.exports = {
     historialSlice,
     quotaSlice,
     quotaExhaustedSlice,
+    reconcilerStaleOrdersSlice,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,

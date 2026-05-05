@@ -28,6 +28,8 @@
 //   GET /api/dash/bloqueados          {bloqueados:[]}
 //   GET /api/dash/ops                 {procesos, servicios, ...}
 //   GET /api/dash/historial           {actividad:[]}
+//   GET /api/dash/reconciler-stale-orders        {total_24h, by_reason}
+//   GET /api/diagnostico/reconciler-stale-orders {total_24h, by_reason}  (alias)
 
 'use strict';
 
@@ -76,6 +78,13 @@ const API_ROUTES = {
     // #2976 — banner amarillo de cuota Anthropic agotada (modo determinístico).
     // Polling natural del dashboard cubre aparición/desaparición sin reload.
     '/api/dash/quota-exhausted': (state) => slices.quotaExhaustedSlice(state),
+    // #2994 — Contador de órdenes del reconciler descartadas por stale.
+    // Mismo handler bajo dos paths: el `/api/dash/*` sigue la convención del
+    // dashboard kiosk y `/api/diagnostico/*` es el alias documentado en CA5
+    // para que humanos puedan consultarlo con `curl` sin acordarse del
+    // namespace interno.
+    '/api/dash/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
+    '/api/diagnostico/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
 };
 
 function sendJson(res, payload, status = 200) {
