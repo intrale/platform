@@ -50,6 +50,10 @@ const costAnomalyAlert = require('./lib/cost-anomaly-alert');
 const restModeState = require('./lib/rest-mode-state');
 // #2890 PR-A — Gating horario del modo descanso (ventana + bypass labels).
 const restModeWindow = require('./lib/rest-mode-window');
+// #2975 — Notificador Telegram del modo cuota Anthropic agotada (lifecycle:
+// inicial + recordatorios A→B→C→D rotando + cierre + canned a texto libre).
+// Depende del flag .pipeline/quota-exhausted.json producido por #2974.
+const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/quota-notifier');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -6643,6 +6647,35 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     return;
   }
 
+  // --- #2975 — GATE DE CUOTA ANTHROPIC AGOTADA (CA-9/CA-10/CA-11) ---
+  // Si el flag está activo, los comandos nativos del switch case YA respondieron
+  // arriba (sin pasar por LLM, garantizado por construcción — CA-3 hereditario).
+  // Acá interceptamos texto libre ANTES de `ejecutarClaude` y respondemos canned
+  // con debounce 2 min, sin interpolar input del usuario (CA-S7).
+  if (textoLibre.length > 0 && quotaNotifier.getState().active) {
+    const gate = quotaNotifier.handleCommanderFreeText();
+    if (gate.gated) {
+      log('commander', `Gate de cuota activo — ${gate.debounced ? 'debounced' : 'canned response enviada'}`);
+      // Loguear input del usuario (REDACTADO) para auditoría sin echo en respuesta.
+      try {
+        const audit = textoLibre.map((m, i) => {
+          const safe = redact(m._textoFinal || '');
+          return `[Mensaje ${i + 1}${m._esAudio ? ' (audio)' : ''}]: ${safe}`;
+        }).join('\n\n');
+        fs.appendFileSync(historyFile, JSON.stringify({
+          direction: 'in_quota_blocked',
+          text: audit,
+          debounced: gate.debounced,
+          timestamp: new Date().toISOString(),
+        }) + '\n');
+      } catch {}
+      // Mover mensajes a listo y abortar el flujo de Claude.
+      for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+      saveSession(session);
+      return;
+    }
+  }
+
   // --- PROCESAR TEXTO LIBRE CONSOLIDADO (una sola llamada a Claude) ---
   if (textoLibre.length > 0) {
     const esAudio = textoLibre.some(m => m._esAudio);
@@ -6827,20 +6860,30 @@ function sendTelegram(text) {
   return sendTelegramWithMarkup(text, null);
 }
 
+// #2975 — Variante texto plano (CA-13): omite `parse_mode: 'Markdown'` para
+// que la respuesta canned de cuota agotada NO interprete caracteres
+// potencialmente injectados. Defensa en profundidad — el canned es texto fijo
+// y NO interpola input usuario, pero si por bug futuro entrara, no se renderiza.
+function sendTelegramPlain(text) {
+  return sendTelegramWithMarkup(text, null, { plain: true });
+}
+
 // #2893 — Variante que pasa reply_markup (inline_keyboard con url buttons).
 // El servicio-telegram hace passthrough del campo reply_markup al API.
-function sendTelegramWithMarkup(text, replyMarkup) {
+// #2975 — Tercer arg `opts.plain=true` desactiva `parse_mode: 'Markdown'`.
+function sendTelegramWithMarkup(text, replyMarkup, opts) {
   const token = getTelegramToken();
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return; }
 
   const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
+  const plain = !!(opts && opts.plain);
 
   // Encolar en el servicio de telegram (fire-and-forget via filesystem)
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   const filename = `${Date.now()}-cmd.json`;
   try {
-    const payload = { text: msg, parse_mode: 'Markdown' };
+    const payload = plain ? { text: msg } : { text: msg, parse_mode: 'Markdown' };
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
     log('telegram', `Encolado (${msg.length} chars${replyMarkup ? ', con reply_markup' : ''}) → ${filename}`);
@@ -7125,6 +7168,77 @@ const PAUSE_FILE = path.join(PIPELINE, '.paused');
 
 function checkPauseFile() {
   paused = fs.existsSync(PAUSE_FILE);
+}
+
+// =============================================================================
+// #2975 — Notifier de cuota Anthropic agotada (lifecycle Telegram)
+//
+// El flag `.pipeline/quota-exhausted.json` lo escribe/borra el detector de
+// #2974. Acá poleamos por transición y delegamos al notifier (lib/quota-
+// notifier.js) que maneja inicial + recordatorios A→B→C→D + cierre + canned.
+// =============================================================================
+const QUOTA_FLAG_PATH = path.join(PIPELINE, 'quota-exhausted.json');
+
+function readQuotaFlag() {
+  try {
+    if (!fs.existsSync(QUOTA_FLAG_PATH)) return null;
+    return JSON.parse(fs.readFileSync(QUOTA_FLAG_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cuenta archivos LLM encolados en `pendiente/` de fases que llaman a Claude.
+ * Aproximación buena para el copy "Drenando cola de N agentes encolados" sin
+ * tener que tocar el writer del flag (#2974). Si el filesystem cambia, la
+ * cuenta puede subir/bajar entre lecturas — aceptable para un mensaje informativo.
+ */
+function countQueuedLlmAgents() {
+  const llmFases = ['validacion', 'dev', 'verificacion', 'aprobacion'];
+  let total = 0;
+  for (const fase of llmFases) {
+    const dir = path.join(PIPELINE, 'desarrollo', fase, 'pendiente');
+    try {
+      const files = fs.readdirSync(dir).filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep'));
+      total += files.length;
+    } catch { /* dir no existe — sumar 0 */ }
+  }
+  return total;
+}
+
+const quotaNotifier = createQuotaNotifier({
+  sendMessage: (text, opts) => {
+    if (opts && opts.plain) sendTelegramPlain(text);
+    else sendTelegram(text);
+  },
+  log: (msg) => log('quota', msg),
+  getReminderIntervalMin: () => {
+    try {
+      const cfg = loadConfig();
+      const v = cfg && cfg.quota_detector && Number(cfg.quota_detector.reminder_interval_minutes);
+      if (Number.isFinite(v) && v > 0) return v;
+    } catch {}
+    return DEFAULT_REMINDER_INTERVAL_MIN;
+  },
+  getQueuedAgentsCount: () => countQueuedLlmAgents(),
+});
+
+let lastQuotaFlagPresent = false;
+
+/**
+ * Tick de poll del flag de cuota — llamado desde el loop principal del pulpo.
+ * Detecta transiciones ausente↔presente y dispara los lifecycle del notifier.
+ */
+function pollQuotaFlag() {
+  const flag = readQuotaFlag();
+  const present = flag !== null;
+  if (present && !lastQuotaFlagPresent) {
+    quotaNotifier.onFlagSet(flag);
+  } else if (!present && lastQuotaFlagPresent) {
+    quotaNotifier.onFlagCleared();
+  }
+  lastQuotaFlagPresent = present;
 }
 
 // Rotación del historial del commander (descartar > 24hs)
@@ -7689,6 +7803,11 @@ async function mainLoop() {
       evaluateQaPriority(config);
       evaluateBuildPriority(config);
 
+      // #2975 — Poll del flag de cuota Anthropic. Corre SIEMPRE (incluso
+      // pausado) para que el notifier dispare cierre cuando se borra el flag,
+      // independiente del estado de pausa del pipeline.
+      try { pollQuotaFlag(); } catch (e) { log('quota', `pollQuotaFlag error: ${e.message}`); }
+
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
@@ -7729,8 +7848,16 @@ async function mainLoop() {
 }
 
 // Graceful shutdown
-process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
-process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+process.on('SIGINT', () => {
+  log('pulpo', 'SIGINT recibido — cerrando');
+  try { quotaNotifier.dispose(); } catch {}
+  running = false;
+});
+process.on('SIGTERM', () => {
+  log('pulpo', 'SIGTERM recibido — cerrando');
+  try { quotaNotifier.dispose(); } catch {}
+  running = false;
+});
 // El timer del AnomalyDetector está `unref`'d → muere con el proceso.
 
 // --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
