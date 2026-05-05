@@ -96,6 +96,21 @@
   --alert-anomaly-fg:   #FFD2DC;   /* texto sobre alert-anomaly-bg */
   --alert-anomaly-glow: 0 0 12px rgba(255, 107, 138, 0.50);
 
+  /* Cuota Anthropic agotada — pipeline degradado a modo deterministico (#2955).
+   * Ambar calido distinto de --warning (stale generico) y --retry (reintento
+   * single-agent): comunica "sigue operativo, pero sin LLM hasta el reset".
+   * Contraste sobre surface-0:
+   *   - quota-degraded (#F0A500) sobre surface-0 = 7.6:1 (icono y texto AA Large)
+   *   - quota-degraded-fg (#FFE5A8) sobre surface-0 = 13.5:1 (texto sobre fondo
+   *     oscuro, AAA)
+   *   - quota-degraded-fg sobre quota-degraded-bg (alpha 0.16) ~= 11.8:1 (AAA)
+   */
+  --quota-degraded:      #F0A500;   /* ambar — modo deterministico activo */
+  --quota-degraded-dim:  #B57700;   /* hover/border del ambar */
+  --quota-degraded-bg:   rgba(240, 165, 0, 0.16);
+  --quota-degraded-fg:   #FFE5A8;   /* texto sobre quota-degraded-bg */
+  --quota-degraded-glow: 0 0 12px rgba(240, 165, 0, 0.45);
+
   --deterministic:      var(--text-secondary);  /* skill no-LLM (ejecuta sin tokens) */
   --deterministic-bg:   rgba(177, 186, 196, 0.10);
 

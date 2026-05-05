@@ -36,6 +36,15 @@ const slices = require('./dashboard-slices');
 const home = require('../views/dashboard/home');
 const sat = require('../views/dashboard/satellites');
 
+// #2976 — Lectura defensiva del flag de cuota Anthropic agotada.
+// El módulo `./quota-exhausted-state` envuelve a `./quota-exhausted` (#2974,
+// PR #2990 ya en main). El try/catch es defensa de cinturón en caso de que
+// se ejecute sobre un checkout que aún no incluya esos assets (edge muy
+// raro; en main siempre está). Usado por el SSR del banner: `curl /` debe
+// devolver "cuota Anthropic" SOLO cuando el flag está activo (CA-14).
+let quotaExhaustedState = null;
+try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
+
 const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
     '/pipeline': sat.renderPipeline,
@@ -64,6 +73,9 @@ const API_ROUTES = {
     '/api/dash/ops': (state) => slices.opsSlice(state),
     '/api/dash/historial': (state) => slices.historialSlice(state),
     '/api/dash/quota': (state, ctx) => slices.quotaSlice(state, ctx),
+    // #2976 — banner amarillo de cuota Anthropic agotada (modo determinístico).
+    // Polling natural del dashboard cubre aparición/desaparición sin reload.
+    '/api/dash/quota-exhausted': (state) => slices.quotaExhaustedSlice(state),
 };
 
 function sendJson(res, payload, status = 200) {
@@ -96,7 +108,16 @@ function handle(req, res, ctx) {
     // El render legacy se preserva en `/legacy` (servido por el catch-all
     // de dashboard.js — no se matchea aquí).
     if (url === '/' || url === '' || url === '/v3' || url === '/v3/') {
-        sendHtml(res, home.renderHomeHTML());
+        // #2976 — SSR del banner de cuota agotada: leemos el flag una
+        // vez por request y se lo pasamos a `renderHomeHTML` para que
+        // el HTML inicial contenga "cuota Anthropic" SOLO cuando el
+        // flag está activo (CA-14). El polling client-side actualiza
+        // el banner después del primer render sin reload (CA-2).
+        let quotaState = null;
+        if (quotaExhaustedState) {
+            try { quotaState = quotaExhaustedState.getQuotaState(); } catch { quotaState = null; }
+        }
+        sendHtml(res, home.renderHomeHTML({ quotaState }));
         return true;
     }
 

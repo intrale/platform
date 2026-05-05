@@ -1,0 +1,374 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 07 — Banner de cuota Anthropic agotada → modo deterministico (#2955)
+  Resolucion: 1440x900
+  Demuestra:
+    - Pill amarillo en header "MODO DETERMINISTICO · Reset 21:00 (en 3h 24m)"
+    - Banner persistente amarillo con countdown live actualizado al refresh
+    - Lanes mostrando agentes deterministicos (engranaje verde) trabajando
+      vs agentes LLM en cola (hourglass ambar) hasta volver la cuota
+    - Telegram preview con notificacion inicial + recordatorio de las 2h
+    - Indicador del flag .pipeline/quota-exhausted.json (lectura defensiva)
+    - Audit log preview (.pipeline/logs/quota-detector-YYYY-MM-DD.log)
+  Tokens: design-tokens.css (--quota-degraded-* + paleta existente)
+  WCAG AA verificado:
+    - Texto principal #FFE5A8 sobre #0D1117      = 13.5:1 (AAA)
+    - Texto principal #E6EDF3 sobre #0D1117      = 14.8:1 (AAA)
+    - Texto secundario #B1BAC4 sobre #0D1117     =  9.7:1 (AAA)
+    - Pill amarillo #F0A500 sobre fill-opacity   = ratio efectivo > 4.5:1
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad07" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="quotaBannerGrad07" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#F0A500" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#F0A500" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="countdownGrad07" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#F0A500" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#F0A500" stop-opacity="0.0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- =============== HEADER (compacto) =============== -->
+  <rect x="0" y="0" width="1440" height="64" fill="#161B22"/>
+  <rect x="0" y="63" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(24, 14)">
+    <rect width="36" height="36" rx="9" fill="#0D274D"/>
+    <path d="M18 7 L5 30 L31 30 Z" fill="none" stroke="url(#brandGrad07)" stroke-width="2.5"
+          stroke-linejoin="round"/>
+    <path d="M18 16 L13 26 L23 26 Z" fill="url(#brandGrad07)"/>
+  </g>
+  <text x="72" y="32" fill="#E6EDF3" font-size="17" font-weight="700">Intrale Pipeline</text>
+  <text x="72" y="50" fill="#8B949E" font-size="10" font-weight="600" letter-spacing="1.4">DASHBOARD V3 · 17:36 LOCAL</text>
+
+  <!-- Status RUNNING — el pipeline NO esta caido, solo degradado -->
+  <g transform="translate(290, 20)">
+    <rect width="100" height="26" rx="13" fill="#3FB950" fill-opacity="0.15" stroke="#3FB950" stroke-opacity="0.4"/>
+    <circle cx="14" cy="13" r="3.5" fill="#3FB950"/>
+    <text x="26" y="17" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.4">RUNNING</text>
+  </g>
+
+  <!-- Pill de modo deterministico (entrada al banner persistente) -->
+  <g transform="translate(404, 20)">
+    <rect width="320" height="26" rx="13" fill="#F0A500" fill-opacity="0.18" stroke="#F0A500" stroke-opacity="0.55"/>
+    <!-- Icono reloj de arena (currentColor = ambar) -->
+    <g transform="translate(8, 4)" fill="none" stroke="#FFE5A8" stroke-width="1.5">
+      <path d="M5 2 H13 M5 16 H13"/>
+      <path d="M5 2 L13 2 L9.5 8 L13 16 L5 16 L8.5 9.5 Z" stroke-linejoin="round"/>
+      <path d="M6.2 14.5 L11.8 14.5 L10 10.7 L8 10.7 Z" fill="#FFE5A8" stroke="none"/>
+    </g>
+    <text x="32" y="17" fill="#FFE5A8" font-size="11" font-weight="700" letter-spacing="1.2">MODO DETERMINISTICO · RESET 21:00 (3h 24m)</text>
+  </g>
+
+  <!-- Reloj -->
+  <g transform="translate(1416, 30)" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+    <text x="0" y="0" fill="#E6EDF3" font-size="18" font-weight="700" letter-spacing="2">17:36:12</text>
+    <text x="0" y="16" fill="#8B949E" font-size="10">Lun 04 may 2026</text>
+  </g>
+
+  <!-- =============== BANNER PERSISTENTE DE CUOTA AGOTADA =============== -->
+  <g transform="translate(0, 64)">
+    <rect width="1440" height="148" fill="url(#quotaBannerGrad07)"/>
+    <rect width="4" height="148" fill="#F0A500"/>
+
+    <!-- Icono reloj de arena grande -->
+    <g transform="translate(32, 28)" fill="none" stroke="#FFE5A8" stroke-width="2.2">
+      <path d="M10 4 H38 M10 44 H38"/>
+      <path d="M10 4 L38 4 L26 22 L38 44 L10 44 L22 26 Z" stroke-linejoin="round"/>
+      <path d="M14 40 L34 40 L29 30 L19 30 Z" fill="#FFE5A8" stroke="none"/>
+      <line x1="24" y1="25" x2="24" y2="29" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M18 9 L30 9 L27 15 L21 15 Z" fill="#FFE5A8" stroke="none" opacity="0.55"/>
+    </g>
+
+    <!-- Texto principal -->
+    <text x="100" y="48" fill="#E6EDF3" font-size="17" font-weight="700">
+      Cuota Anthropic agotada — pipeline en modo deterministico hasta el reset
+    </text>
+    <text x="100" y="72" fill="#FFE5A8" font-size="13" font-weight="600">
+      Reset estimado: 21:00 (en <tspan font-family="'SF Mono', Consolas, monospace" font-weight="700">3h 24m 18s</tspan>) · Detectado: 17:34:42 · Patron: usage_limit_error
+    </text>
+    <text x="100" y="92" fill="#B1BAC4" font-size="12">
+      Skills determinisicos siguen procesando:
+      <tspan fill="#E6EDF3" font-weight="600">builder</tspan>,
+      <tspan fill="#E6EDF3" font-weight="600">linter</tspan>,
+      <tspan fill="#E6EDF3" font-weight="600">tester</tspan>,
+      <tspan fill="#E6EDF3" font-weight="600">delivery</tspan>
+      · Skills LLM encolados:
+      <tspan fill="#FFE5A8" font-weight="700">7 archivos</tspan> en pendiente/.
+    </text>
+    <text x="100" y="112" fill="#8B949E" font-size="11" font-style="italic">
+      Auto-drenado al volver la cuota — sin intervencion manual. Comandos /status, /metrics, /dashboard, /intake, /pause, /ghostbusters siguen respondiendo.
+    </text>
+
+    <!-- Mini countdown grafico a la derecha -->
+    <g transform="translate(820, 22)">
+      <rect width="220" height="108" rx="8" fill="#0D1117" stroke="#F0A500" stroke-opacity="0.40"/>
+      <text x="14" y="20" fill="#8B949E" font-size="10" letter-spacing="1.2">COUNTDOWN AL RESET</text>
+
+      <!-- Numero grande del countdown -->
+      <text x="110" y="58" fill="#FFE5A8" font-size="30" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace" text-anchor="middle"
+            letter-spacing="1">3:24:18</text>
+      <text x="110" y="76" fill="#8B949E" font-size="10" text-anchor="middle"
+            letter-spacing="1.2">HH:MM:SS</text>
+
+      <!-- Barra de progreso al reset (10% transcurrido del wait time) -->
+      <rect x="14" y="86" width="192" height="6" rx="3" fill="#21262D"/>
+      <rect x="14" y="86" width="19" height="6" rx="3" fill="url(#countdownGrad07)"/>
+      <rect x="14" y="86" width="19" height="6" rx="3" fill="#F0A500" fill-opacity="0.85"/>
+      <text x="110" y="103" fill="#8B949E" font-size="9" text-anchor="middle">10% del wait transcurrido</text>
+    </g>
+
+    <!-- Acciones: solo informativa "ver audit log" (no hay acuse manual — el flag se borra solo) -->
+    <g transform="translate(1064, 50)">
+      <text x="0" y="-12" fill="#8B949E" font-size="10" letter-spacing="1.4">DETALLE</text>
+
+      <!-- Boton "Ver audit log" -->
+      <g transform="translate(0, 0)">
+        <rect width="160" height="36" rx="8" fill="#161B22" stroke="#F0A500" stroke-opacity="0.45"/>
+        <g transform="translate(12, 8)" fill="none" stroke="#FFE5A8" stroke-width="1.6">
+          <path d="M3 4 H17 M3 10 H17 M3 16 H13" stroke-linecap="round"/>
+        </g>
+        <text x="38" y="23" fill="#FFE5A8" font-size="12" font-weight="700">Ver audit log</text>
+      </g>
+
+      <!-- Indicador de flag activo -->
+      <g transform="translate(176, 0)">
+        <rect width="180" height="36" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <circle cx="14" cy="18" r="4" fill="#F0A500"/>
+        <circle cx="14" cy="18" r="7" fill="#F0A500" fill-opacity="0.30"/>
+        <text x="28" y="16" fill="#B1BAC4" font-size="10">.pipeline/</text>
+        <text x="28" y="28" fill="#FFE5A8" font-size="10" font-family="'SF Mono', Consolas, monospace">quota-exhausted.json</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =============== H2 SECCION: AGENTES POR ESTADO =============== -->
+  <text x="32" y="246" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    AGENTES — DETERMINISTICOS PROCESANDO · LLM ENCOLADOS
+  </text>
+
+  <!-- =============== PANEL DETERMINISTICOS =============== -->
+  <g transform="translate(32, 264)">
+    <rect width="660" height="320" rx="12" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Header del panel -->
+    <g transform="translate(20, 20)">
+      <g fill="none" stroke="#3FB950" stroke-width="1.65">
+        <path d="M12 2.5 L13.4 4.6 L15.8 4.1 L16.3 6.5 L18.6 7.4 L17.8 9.7 L19.5 11.5
+                 L17.8 13.3 L18.6 15.6 L16.3 16.5 L15.8 18.9 L13.4 18.4 L12 20.5
+                 L10.6 18.4 L8.2 18.9 L7.7 16.5 L5.4 15.6 L6.2 13.3 L4.5 11.5
+                 L6.2 9.7 L5.4 7.4 L7.7 6.5 L8.2 4.1 L10.6 4.6 Z" stroke-linejoin="round"/>
+        <circle cx="12" cy="11.5" r="3"/>
+      </g>
+      <text x="32" y="16" fill="#E6EDF3" font-size="15" font-weight="700">Determinisicos · 4 corriendo</text>
+    </g>
+    <text x="20" y="60" fill="#8B949E" font-size="11">No requieren LLM. El modo deterministico no los frena.</text>
+
+    <!-- Lista de skills deterministicos -->
+    <g transform="translate(20, 84)">
+      <!-- builder -->
+      <g transform="translate(0, 0)">
+        <rect width="620" height="48" rx="8" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.30"/>
+        <circle cx="22" cy="24" r="5" fill="#3FB950"/>
+        <text x="42" y="22" fill="#E6EDF3" font-size="13" font-weight="700">builder</text>
+        <text x="42" y="36" fill="#B1BAC4" font-size="11">Compilando #2944 · :app:composeApp:assembleClientDebug · 02:18</text>
+        <rect x="540" y="14" width="60" height="20" rx="10" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-opacity="0.50"/>
+        <text x="570" y="28" fill="#3FB950" font-size="10" font-weight="700" text-anchor="middle">RUNNING</text>
+      </g>
+      <!-- linter -->
+      <g transform="translate(0, 56)">
+        <rect width="620" height="48" rx="8" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.30"/>
+        <circle cx="22" cy="24" r="5" fill="#3FB950"/>
+        <text x="42" y="22" fill="#E6EDF3" font-size="13" font-weight="700">linter</text>
+        <text x="42" y="36" fill="#B1BAC4" font-size="11">verifyNoLegacyStrings + scanNonAsciiFallbacks · #2932 · 00:42</text>
+        <rect x="540" y="14" width="60" height="20" rx="10" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-opacity="0.50"/>
+        <text x="570" y="28" fill="#3FB950" font-size="10" font-weight="700" text-anchor="middle">RUNNING</text>
+      </g>
+      <!-- tester -->
+      <g transform="translate(0, 112)">
+        <rect width="620" height="48" rx="8" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.30"/>
+        <circle cx="22" cy="24" r="5" fill="#3FB950"/>
+        <text x="42" y="22" fill="#E6EDF3" font-size="13" font-weight="700">tester</text>
+        <text x="42" y="36" fill="#B1BAC4" font-size="11">:check + Kover · #2925 · 04:01 (running)</text>
+        <rect x="540" y="14" width="60" height="20" rx="10" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-opacity="0.50"/>
+        <text x="570" y="28" fill="#3FB950" font-size="10" font-weight="700" text-anchor="middle">RUNNING</text>
+      </g>
+      <!-- delivery -->
+      <g transform="translate(0, 168)">
+        <rect width="620" height="48" rx="8" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.30"/>
+        <circle cx="22" cy="24" r="5" fill="#3FB950"/>
+        <text x="42" y="22" fill="#E6EDF3" font-size="13" font-weight="700">delivery</text>
+        <text x="42" y="36" fill="#B1BAC4" font-size="11">commit + push + PR #2949 · usando handoff payload del issue · 00:11</text>
+        <rect x="540" y="14" width="60" height="20" rx="10" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-opacity="0.50"/>
+        <text x="570" y="28" fill="#3FB950" font-size="10" font-weight="700" text-anchor="middle">RUNNING</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =============== PANEL LLM ENCOLADOS =============== -->
+  <g transform="translate(708, 264)">
+    <rect width="700" height="320" rx="12" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Header del panel -->
+    <g transform="translate(20, 20)">
+      <g fill="none" stroke="#F0A500" stroke-width="1.55">
+        <line x1="2" y1="12" x2="20" y2="12" stroke-dasharray="2 2.5" opacity="0.55"/>
+        <circle cx="5"  cy="12" r="2.1"/>
+        <circle cx="11" cy="12" r="2.1"/>
+        <circle cx="17" cy="12" r="2.1"/>
+        <circle cx="5" cy="12" r="0.85" fill="#F0A500" stroke="none"/>
+        <path d="M20 9.5 L22.5 12 L20 14.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="32" y="16" fill="#E6EDF3" font-size="15" font-weight="700">LLM encolados · 7 esperando</text>
+    </g>
+    <text x="20" y="60" fill="#8B949E" font-size="11">No se spawnean hasta que el flag se borre. FIFO + prioridad existente al volver la cuota.</text>
+
+    <!-- Lista de skills LLM encolados -->
+    <g transform="translate(20, 84)">
+      <!-- po -->
+      <g transform="translate(0, 0)">
+        <rect width="660" height="40" rx="8" fill="#0D1117" stroke="#F0A500" stroke-opacity="0.25"/>
+        <g transform="translate(16, 12)" fill="none" stroke="#FFE5A8" stroke-width="1.4">
+          <path d="M3 1 H13 M3 15 H13" stroke-linecap="round"/>
+          <path d="M3 1 L13 1 L9.5 7 L13 15 L3 15 L6.5 8.5 Z" stroke-linejoin="round"/>
+          <path d="M4.5 13 L11.5 13 L10 9 L6 9 Z" fill="#FFE5A8" stroke="none"/>
+        </g>
+        <text x="42" y="20" fill="#E6EDF3" font-size="12" font-weight="700">po</text>
+        <text x="42" y="33" fill="#B1BAC4" font-size="10">#2965 · criterios · espera 14m</text>
+        <rect x="560" y="10" width="84" height="20" rx="10" fill="#F0A500" fill-opacity="0.16" stroke="#F0A500" stroke-opacity="0.45"/>
+        <text x="602" y="24" fill="#FFE5A8" font-size="10" font-weight="700" text-anchor="middle">EN COLA</text>
+      </g>
+      <!-- guru -->
+      <g transform="translate(0, 48)">
+        <rect width="660" height="40" rx="8" fill="#0D1117" stroke="#F0A500" stroke-opacity="0.25"/>
+        <g transform="translate(16, 12)" fill="none" stroke="#FFE5A8" stroke-width="1.4">
+          <path d="M3 1 H13 M3 15 H13" stroke-linecap="round"/>
+          <path d="M3 1 L13 1 L9.5 7 L13 15 L3 15 L6.5 8.5 Z" stroke-linejoin="round"/>
+          <path d="M4.5 13 L11.5 13 L10 9 L6 9 Z" fill="#FFE5A8" stroke="none"/>
+        </g>
+        <text x="42" y="20" fill="#E6EDF3" font-size="12" font-weight="700">guru</text>
+        <text x="42" y="33" fill="#B1BAC4" font-size="10">#2966 · analisis · espera 12m</text>
+        <rect x="560" y="10" width="84" height="20" rx="10" fill="#F0A500" fill-opacity="0.16" stroke="#F0A500" stroke-opacity="0.45"/>
+        <text x="602" y="24" fill="#FFE5A8" font-size="10" font-weight="700" text-anchor="middle">EN COLA</text>
+      </g>
+      <!-- android-dev -->
+      <g transform="translate(0, 96)">
+        <rect width="660" height="40" rx="8" fill="#0D1117" stroke="#F0A500" stroke-opacity="0.25"/>
+        <g transform="translate(16, 12)" fill="none" stroke="#FFE5A8" stroke-width="1.4">
+          <path d="M3 1 H13 M3 15 H13" stroke-linecap="round"/>
+          <path d="M3 1 L13 1 L9.5 7 L13 15 L3 15 L6.5 8.5 Z" stroke-linejoin="round"/>
+          <path d="M4.5 13 L11.5 13 L10 9 L6 9 Z" fill="#FFE5A8" stroke="none"/>
+        </g>
+        <text x="42" y="20" fill="#E6EDF3" font-size="12" font-weight="700">android-dev</text>
+        <text x="42" y="33" fill="#B1BAC4" font-size="10">#2964 · desarrollo · espera 9m</text>
+        <rect x="560" y="10" width="84" height="20" rx="10" fill="#F0A500" fill-opacity="0.16" stroke="#F0A500" stroke-opacity="0.45"/>
+        <text x="602" y="24" fill="#FFE5A8" font-size="10" font-weight="700" text-anchor="middle">EN COLA</text>
+      </g>
+      <!-- backend-dev -->
+      <g transform="translate(0, 144)">
+        <rect width="660" height="40" rx="8" fill="#0D1117" stroke="#F0A500" stroke-opacity="0.25"/>
+        <g transform="translate(16, 12)" fill="none" stroke="#FFE5A8" stroke-width="1.4">
+          <path d="M3 1 H13 M3 15 H13" stroke-linecap="round"/>
+          <path d="M3 1 L13 1 L9.5 7 L13 15 L3 15 L6.5 8.5 Z" stroke-linejoin="round"/>
+          <path d="M4.5 13 L11.5 13 L10 9 L6 9 Z" fill="#FFE5A8" stroke="none"/>
+        </g>
+        <text x="42" y="20" fill="#E6EDF3" font-size="12" font-weight="700">backend-dev</text>
+        <text x="42" y="33" fill="#B1BAC4" font-size="10">#2967 · desarrollo · espera 7m</text>
+        <rect x="560" y="10" width="84" height="20" rx="10" fill="#F0A500" fill-opacity="0.16" stroke="#F0A500" stroke-opacity="0.45"/>
+        <text x="602" y="24" fill="#FFE5A8" font-size="10" font-weight="700" text-anchor="middle">EN COLA</text>
+      </g>
+      <!-- + 3 mas (resumen) -->
+      <g transform="translate(0, 192)">
+        <rect width="660" height="32" rx="8" fill="#0D1117" stroke="#30363D" stroke-dasharray="3 3"/>
+        <text x="20" y="20" fill="#8B949E" font-size="11" font-style="italic">+ 3 mas: review (#2962), security (#2963), qa (#2960)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =============== TELEGRAM PREVIEW =============== -->
+  <g transform="translate(32, 604)">
+    <rect width="828" height="266" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="24" y="32" fill="#E6EDF3" font-size="15" font-weight="700">Mensajes Telegram</text>
+    <text x="24" y="52" fill="#8B949E" font-size="11">
+      Sanitizados por
+      <tspan fill="#C5B7FF" font-family="'SF Mono', Consolas, monospace">lib/redact.js</tspan>
+      antes del envio (CA-S3) · respuesta canned NO interpola input del usuario (CA-S7)
+    </text>
+
+    <!-- Mensaje 1: notificacion inicial -->
+    <g transform="translate(24, 70)">
+      <rect width="380" height="78" rx="10" fill="#0D1117" stroke="#F0A500" stroke-opacity="0.40"/>
+      <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">17:34:42 · NOTIFICACION INICIAL</text>
+      <text x="14" y="40" fill="#FFE5A8" font-size="11" font-weight="700">Cuota Anthropic agotada.</text>
+      <text x="14" y="56" fill="#E6EDF3" font-size="11">Pipeline en modo deterministico. Reset estimado:</text>
+      <text x="14" y="70" fill="#E6EDF3" font-size="11"><tspan font-family="'SF Mono', Consolas, monospace" font-weight="700">21:00 (en 3h 25m)</tspan>.</text>
+    </g>
+
+    <!-- Mensaje 2: respuesta canned a texto libre -->
+    <g transform="translate(424, 70)">
+      <rect width="380" height="78" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">17:42:08 · RESPUESTA A TEXTO LIBRE</text>
+      <text x="14" y="38" fill="#E6EDF3" font-size="11">Cuota Anthropic agotada hasta las <tspan font-family="'SF Mono', Consolas, monospace" font-weight="700">21:00</tspan>.</text>
+      <text x="14" y="54" fill="#E6EDF3" font-size="11">Pipeline operando en modo deterministico.</text>
+      <text x="14" y="70" fill="#B1BAC4" font-size="10">Comandos: /status /metrics /dashboard /intake /pause...</text>
+    </g>
+
+    <!-- Mensaje 3: recordatorio cada 2h -->
+    <g transform="translate(24, 162)">
+      <rect width="380" height="78" rx="10" fill="#0D1117" stroke="#F0A500" stroke-opacity="0.30"/>
+      <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">19:34:42 · RECORDATORIO (2H)</text>
+      <text x="14" y="40" fill="#FFE5A8" font-size="11" font-weight="700">Cuota sigue agotada.</text>
+      <text x="14" y="56" fill="#E6EDF3" font-size="11">Faltan <tspan font-family="'SF Mono', Consolas, monospace" font-weight="700">1h 25m</tspan> para el reset (21:00).</text>
+      <text x="14" y="70" fill="#B1BAC4" font-size="10">Pipeline deterministico: 4 skills procesando.</text>
+    </g>
+
+    <!-- Mensaje 4: cuota restaurada -->
+    <g transform="translate(424, 162)">
+      <rect width="380" height="78" rx="10" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.40"/>
+      <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">21:00:14 · CUOTA RESTAURADA</text>
+      <text x="14" y="40" fill="#3FB950" font-size="11" font-weight="700">Cuota Anthropic restaurada.</text>
+      <text x="14" y="56" fill="#E6EDF3" font-size="11">Drenando cola de <tspan font-weight="700">7 agentes</tspan> encolados.</text>
+      <text x="14" y="70" fill="#B1BAC4" font-size="10">Pipeline volviendo a operacion full.</text>
+    </g>
+  </g>
+
+  <!-- =============== AUDIT LOG PREVIEW =============== -->
+  <g transform="translate(876, 604)">
+    <rect width="532" height="266" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="32" fill="#E6EDF3" font-size="15" font-weight="700">Audit log del detector</text>
+    <text x="20" y="52" fill="#8B949E" font-size="11">
+      <tspan font-family="'SF Mono', Consolas, monospace" fill="#FFE5A8">.pipeline/logs/quota-detector-2026-05-04.log</tspan>
+    </text>
+
+    <!-- Lineas del log -->
+    <g transform="translate(20, 70)" font-family="'SF Mono', Consolas, monospace" font-size="10">
+      <rect width="492" height="180" rx="8" fill="#0D1117" stroke="#30363D"/>
+
+      <text x="14" y="22" fill="#8B949E">{</text>
+      <text x="14" y="38" fill="#B1BAC4">  "timestamp": <tspan fill="#3FB950">"2026-05-04T17:34:42.118Z"</tspan>,</text>
+      <text x="14" y="54" fill="#B1BAC4">  "agent": <tspan fill="#FFE5A8">"po"</tspan>,</text>
+      <text x="14" y="70" fill="#B1BAC4">  "error_type": <tspan fill="#FFE5A8">"usage_limit_error"</tspan>,</text>
+      <text x="14" y="86" fill="#B1BAC4">  "raw_excerpt": <tspan fill="#B1BAC4">"You're out of extra usage..."</tspan>,</text>
+      <text x="14" y="102" fill="#B1BAC4">  "flag_set": <tspan fill="#FFE5A8">true</tspan>,</text>
+      <text x="14" y="118" fill="#B1BAC4">  "resets_at": <tspan fill="#3FB950">"2026-05-04T21:00:00Z"</tspan>,</text>
+      <text x="14" y="134" fill="#B1BAC4">  "resets_at_source": <tspan fill="#FFE5A8">"parsed_hint"</tspan></text>
+      <text x="14" y="150" fill="#8B949E">}</text>
+
+      <line x1="14" y1="158" x2="478" y2="158" stroke="#21262D"/>
+      <text x="14" y="172" fill="#8B949E" font-style="italic" font-family="-apple-system, system-ui, sans-serif" font-size="10">
+        + 6 entradas mas (otros agentes que intentaron despues del bloqueo)
+      </text>
+    </g>
+  </g>
+
+</svg>
