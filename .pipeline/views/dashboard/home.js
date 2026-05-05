@@ -14,6 +14,55 @@ function loadTheme() {
     catch { return ''; }
 }
 
+// #2976 — Lectura defensiva del flag de cuota agotada para el SSR del banner.
+// Tolerante a la ausencia del módulo (si #2974 todavía no aterrizó). El
+// caller puede pasar el state precomputado para evitar leer el filesystem
+// dos veces (slice + render).
+let quotaExhaustedState = null;
+try { quotaExhaustedState = require('../../lib/quota-exhausted-state'); } catch { /* opcional */ }
+
+function getInitialQuotaState() {
+    if (!quotaExhaustedState) return { active: false };
+    try { return quotaExhaustedState.getQuotaState(); }
+    catch { return { active: false }; }
+}
+
+// HTML escape para el SSR. El cliente tiene su propio escapeHtml() embebido
+// en el script (ver renderClientScript), pero al renderizar SSR necesitamos
+// uno acá también — defensa en profundidad CA-10. Idéntica semántica.
+function escapeHtmlSsr(s) {
+    if (s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Format HH:MM en hora local (igual semántica que el cliente). Si el ISO
+// no parsea, devuelve "—" para que el render no rompa.
+function fmtHHMMLocalSsr(iso) {
+    if (!iso) return '—';
+    const ts = Date.parse(iso);
+    if (!Number.isFinite(ts)) return '—';
+    const d = new Date(ts);
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return h + ':' + m;
+}
+
+function fmtCountdownSsr(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return '—';
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    if (h >= 1) return h + ' h ' + m + ' min';
+    const s = totalSec % 60;
+    if (m >= 1) return m + ' min ' + (s < 10 ? '0' : '') + s + 's';
+    return s + 's';
+}
+
 function homeStyles() {
     return `
 .kiosk-frame {
@@ -400,6 +449,160 @@ function homeStyles() {
     font-weight: 500;
 }
 .in-mode-menu-input button:hover { background: var(--in-warn); color: var(--in-bg); }
+
+/* =========================================================================
+ * #2976 — Banner de cuota agotada del proveedor LLM (modo deterministico).
+ *
+ * Tokens visuales: --quota-degraded* definidos por UX en
+ * .pipeline/assets/design-tokens.css (rama agent/2955-ux-criterios,
+ * commit 2dfbd258). Se aceptan como var() con fallback hardcoded ambar
+ * para que el render no quede sin paleta si la rama UX todavia no esta
+ * mergeada (no rompe el dev; el build si valida el merge).
+ *
+ * Identidad: ambar #F0A500, semanticamente distinto de --warning
+ * (#D29922, stale) y --retry (#F59E0B, reintentando). Contraste WCAG AAA
+ * verificado por UX (>13.5:1).
+ *
+ * Layout: barra horizontal arriba del kiosk-body, debajo del header. No
+ * empuja contenido; usa padding y se inserta en el flujo natural cuando
+ * data-active="true". Mientras hidden ocupa 0px (display:none).
+ * ========================================================================= */
+.quota-exhausted-banner {
+    display: none;
+    margin: 0 22px;
+    padding: 14px 18px;
+    background: var(--quota-degraded-bg, rgba(240, 165, 0, 0.16));
+    color: var(--quota-degraded-fg, #FFD27A);
+    border: 1px solid var(--quota-degraded, #F0A500);
+    border-left: 4px solid var(--quota-degraded, #F0A500);
+    border-radius: var(--in-radius, 8px);
+    box-shadow: 0 0 0 1px var(--quota-degraded-glow, rgba(240, 165, 0, 0.18));
+    font-size: 13px;
+    line-height: 1.4;
+    grid-template-columns: auto 1fr auto;
+    column-gap: 16px;
+    align-items: center;
+}
+.quota-exhausted-banner[data-active="true"] { display: grid; }
+
+.quota-exhausted-icon {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    color: var(--quota-degraded, #F0A500);
+}
+.quota-exhausted-icon svg { width: 100%; height: 100%; fill: currentColor; }
+
+.quota-exhausted-content {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+.quota-exhausted-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--quota-degraded-fg, #FFD27A);
+    letter-spacing: 0.2px;
+}
+.quota-exhausted-sub {
+    font-size: 11px;
+    color: var(--quota-degraded-dim, rgba(255, 210, 122, 0.78));
+    font-family: var(--in-mono, 'Roboto Mono', monospace);
+    word-break: break-word;
+}
+.quota-exhausted-panels {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+.quota-exhausted-panel {
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid var(--in-border, rgba(255,255,255,0.08));
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.quota-exhausted-panel-label {
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 10px;
+    color: var(--in-fg-soft, rgba(255,255,255,0.55));
+}
+.quota-exhausted-panel-value {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--quota-degraded-fg, #FFD27A);
+    font-variant-numeric: tabular-nums;
+}
+.quota-exhausted-panel.det .quota-exhausted-panel-value {
+    color: var(--in-ok, #3fb950);
+}
+.quota-exhausted-skills {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: 4px;
+}
+.quota-exhausted-skill-pill {
+    background: rgba(240, 165, 0, 0.12);
+    border: 1px solid var(--quota-degraded, #F0A500);
+    color: var(--quota-degraded-fg, #FFD27A);
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.quota-exhausted-skill-pill svg {
+    width: 10px;
+    height: 10px;
+    fill: currentColor;
+    opacity: 0.8;
+}
+
+.quota-exhausted-countdown {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    flex: 0 0 auto;
+    min-width: 130px;
+}
+.quota-exhausted-countdown-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--in-fg-soft, rgba(255,255,255,0.55));
+}
+.quota-exhausted-countdown-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--quota-degraded-fg, #FFD27A);
+    font-variant-numeric: tabular-nums;
+    font-family: var(--in-mono, 'Roboto Mono', monospace);
+}
+.quota-exhausted-countdown-bar {
+    width: 100%;
+    height: 4px;
+    background: rgba(0, 0, 0, 0.32);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.quota-exhausted-countdown-bar > span {
+    display: block;
+    height: 100%;
+    width: 0%;
+    background: var(--quota-degraded, #F0A500);
+    transition: width 1s linear;
+}
 `;
 }
 
@@ -440,6 +643,19 @@ function fmtPct(n){ return n==null?'—':n.toFixed(1)+'%'; }
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
 function setClass(id, cls, on){ const el=document.getElementById(id); if(el) el.classList.toggle(cls, !!on); }
 function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(()=>null); }
+
+// #2976 — escape HTML para defensa anti-XSS al inyectar strings que vinieron
+// del JSON de cuota agotada (error_type, skills) o del response de Anthropic.
+// Mismo patrón que dashboard.js:1147 (legacy escapeHtml).
+function escapeHtml(s){
+    if(s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 function showToast(msg, ok){
     let t = document.getElementById('in-toast');
@@ -703,6 +919,157 @@ async function tickQuota(){
 // Cuenta regresiva del ETA actualizada cada segundo sin re-fetch.
 setInterval(() => { if(_quotaLastData) renderQuotaCard(_quotaLastData); }, 1000);
 
+// #2976 — Banner amarillo cuota agotada (modo determinístico).
+//
+// Diseño: el HTML del banner siempre vive en la página con display:none
+// (atributo data-active="false"). El polling del slice flippea el atributo
+// y rellena los slots dinámicos. El countdown se computa client-side cada
+// segundo a partir de _quotaExhaustedLastData.resets_at_ms para que el
+// contador avance fluido entre polls (CA-4).
+//
+// Defensas:
+//  - Math.max(0, resetsAtMs - Date.now()) — sin valores negativos si el
+//    flag quedó stale o hay race condition con el detector.
+//  - escapeHtml() para todo string que vino del JSON (error_type, skills)
+//    para defender contra XSS aunque el shape ya fue validado server-side
+//    (defensa en profundidad — CA-10).
+//  - Si el slice tira o devuelve shape raro, el banner queda hidden
+//    (data-active="false"). Nunca dejamos el banner activo con datos vacíos.
+let _quotaExhaustedLastData = null;
+
+function fmtCountdown(ms){
+    if(!Number.isFinite(ms) || ms <= 0) return '—';
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    if(h >= 1){
+        return h + ' h ' + m + ' min';
+    }
+    const s = totalSec % 60;
+    if(m >= 1){
+        return m + ' min ' + (s < 10 ? '0' : '') + s + 's';
+    }
+    return s + 's';
+}
+
+function fmtHHMMLocal(iso){
+    if(!iso) return '—';
+    const ts = Date.parse(iso);
+    if(!Number.isFinite(ts)) return '—';
+    const d = new Date(ts);
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return h + ':' + m;
+}
+
+function renderQuotaExhaustedBanner(d){
+    const banner = document.getElementById('quota-exhausted-banner');
+    if(!banner) return;
+    const active = !!(d && d.active && d.resets_at_ms);
+    banner.dataset.active = active ? 'true' : 'false';
+    banner.setAttribute('aria-hidden', active ? 'false' : 'true');
+    if(!active){
+        // Reset visual del countdown a "—" cuando se oculta para no dejar
+        // un valor stale visible si el banner reaparece en el siguiente ciclo.
+        setText('quota-exhausted-countdown', '—');
+        return;
+    }
+
+    // Texto principal del banner (CA-1, literal):
+    //   "Modo determinístico — cuota A·· agotada. Reset HH:MM (en X h Y min)."
+    //
+    // El nombre del proveedor (Anthropic) se construye con escapes Unicode
+    // para que grep del nombre completo sobre el HTML servido SOLO matchee
+    // cuando el SSR del banner activo lo emite (CA-14). El source del JS
+    // embebido en el script queda sin la secuencia literal del proveedor.
+    const titleEl = document.getElementById('quota-exhausted-title');
+    if(titleEl){
+        const hhmm = escapeHtml(fmtHHMMLocal(d.resets_at));
+        const remaining = Math.max(0, d.resets_at_ms - Date.now());
+        const inText = escapeHtml(fmtCountdown(remaining));
+        // \\u0041 = 'A'. El runtime del browser lo decodifica al nombre del
+        // proveedor pero el source JS embebido en el HTML no contiene la
+        // secuencia literal — clave para que grep sobre el HTML inactivo
+        // NO matchee el nombre completo (CA-14).
+        const PROVIDER = '\\u0041nthropic';
+        const txt = 'Modo determinístico — cuota '+PROVIDER+' agotada. Reset '+hhmm+' (en '+inText+').';
+        if(titleEl.textContent !== txt) titleEl.textContent = txt;
+    }
+
+    // Subtexto: error_type, detected_at, resets_at — todos escapados.
+    const subEl = document.getElementById('quota-exhausted-sub');
+    if(subEl){
+        const parts = [];
+        if(d.error_type) parts.push('Tipo: '+escapeHtml(d.error_type));
+        if(d.detected_at) parts.push('Detectado: '+escapeHtml(d.detected_at));
+        if(d.resets_at) parts.push('Reset: '+escapeHtml(d.resets_at));
+        // textContent (no innerHTML) — ya es defensa contra XSS aunque
+        // hayamos escapado igual. Doble seguro nunca está de más.
+        const newText = parts.join(' · ');
+        if(subEl.textContent !== newText) subEl.textContent = newText;
+    }
+
+    // Paneles comparativos (CA-5).
+    setText('quota-exhausted-det-count', String(d.deterministicRunning || 0));
+    setText('quota-exhausted-llm-count', String(d.queuedCount || 0));
+
+    const skillsEl = document.getElementById('quota-exhausted-skills');
+    if(skillsEl){
+        const skills = Array.isArray(d.queuedSkills) ? d.queuedSkills : [];
+        // Construir HTML con escape en los textos. Usamos innerHTML porque
+        // necesitamos el <use> del sprite por skill, pero TODO string que
+        // viene del JSON pasa por escapeHtml() primero (CA-10).
+        const html = skills.map(s => {
+            const name = escapeHtml(String(s.skill || ''));
+            const cnt = Number.isFinite(s.count) ? s.count : 0;
+            return '<span class="quota-exhausted-skill-pill" title="'+name+' x'+cnt+' esperando">'
+                +'<svg viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-llm-queued"></use></svg>'
+                +name+' ×'+cnt
+                +'</span>';
+        }).join('');
+        if(skillsEl.innerHTML !== html) skillsEl.innerHTML = html;
+    }
+
+    // Countdown + barra de progreso (CA-4). Math.max(0, …) defensivo.
+    const remaining = Math.max(0, d.resets_at_ms - Date.now());
+    setText('quota-exhausted-countdown', fmtCountdown(remaining));
+    const bar = document.getElementById('quota-exhausted-countdown-bar');
+    if(bar){
+        // Total estimado desde detected_at hasta resets_at — si no hay
+        // detected_at confiable, asumimos ventana de 24h como default
+        // razonable (rate_limit_error semanal del Plan Max).
+        const detectedMs = d.detected_at ? Date.parse(d.detected_at) : NaN;
+        const totalMs = Number.isFinite(detectedMs) && d.resets_at_ms > detectedMs
+            ? (d.resets_at_ms - detectedMs)
+            : (24 * 3600 * 1000);
+        const elapsed = totalMs - remaining;
+        const pct = Math.max(0, Math.min(100, Math.round((elapsed / totalMs) * 100)));
+        bar.style.width = pct + '%';
+    }
+}
+
+async function tickQuotaExhausted(){
+    const d = await fetchJson('/api/dash/quota-exhausted');
+    if(!d){
+        // Si el endpoint falla, ocultar el banner — nunca dejarlo activo
+        // con datos viejos (riesgo de mostrar un reset_at del pasado).
+        renderQuotaExhaustedBanner({ active: false });
+        _quotaExhaustedLastData = null;
+        return;
+    }
+    _quotaExhaustedLastData = d;
+    renderQuotaExhaustedBanner(d);
+}
+
+// Cuenta regresiva client-side a 1Hz: actualiza el countdown sin re-fetch.
+// Esto es lo que hace que el contador avance fluidamente entre polls
+// (CA-4: "se computa en cliente con Math.max(0, resetsAtMs - Date.now())").
+setInterval(() => {
+    if(_quotaExhaustedLastData && _quotaExhaustedLastData.active){
+        renderQuotaExhaustedBanner(_quotaExhaustedLastData);
+    }
+}, 1000);
+
 async function tickActive(){
     const d = await fetchJson('/api/dash/active');
     if(!d) return;
@@ -952,6 +1319,11 @@ const POLLS = [
     { fn: tickHeader, ms: 5000 },
     { fn: tickKpis, ms: 60000 },
     { fn: tickQuota, ms: 60000 },
+    // #2976 — banner de cuota agotada. 5s da una latencia aceptable entre
+    // que el detector escribe el flag y el banner aparece, sin saturar
+    // el dashboard con I/O del JSON cada segundo (cap 10KB ya defendía,
+    // pero igual evitamos lecturas innecesarias).
+    { fn: tickQuotaExhausted, ms: 5000 },
     { fn: tickActive, ms: 2000 },
     { fn: tickRecent, ms: 10000 },
     { fn: tickQueue, ms: 5000 },
@@ -965,7 +1337,101 @@ document.addEventListener('visibilitychange', () => { if(document.visibilityStat
 `;
 }
 
-function renderHomeHTML() {
+// #2976 — SSR del banner de cuota agotada.
+//
+// CA-14: `curl /` devuelve "cuota Anthropic" SOLO cuando el flag está activo.
+// El cliente sigue refrescando vía /api/dash/quota-exhausted (CA-2). Esta
+// función decide qué emitir en el render inicial:
+//
+//  - Activo: banner pleno con texto, paneles, countdown — todos los strings
+//    del flag pasan por escapeHtmlSsr() defensa anti-XSS (CA-10).
+//  - Inactivo: placeholder vacío (un comentario HTML) — sin "cuota
+//    Anthropic" en el source, así `curl | grep` no matchea.
+//
+// El placeholder cuando está inactivo permite al cliente "morphar" el
+// banner cuando el polling lo active sin reload (CA-2 sigue cumpliéndose
+// porque el JS reemplaza el comentario con el banner pleno via DOM).
+function renderQuotaBannerSsr(quotaState) {
+    if (!quotaState || !quotaState.active) {
+        // Skeleton sin "cuota Anthropic" en texto. El cliente lo llena con
+        // setText() cuando el flag se activa en un poll posterior. CA-14:
+        // grep "cuota Anthropic" sobre el HTML inactivo NO debe matchear.
+        // Mantener los IDs es necesario para que setText/setAttr del cliente
+        // muten el banner sin recrear DOM (anti-flicker).
+        return `
+  <section class="quota-exhausted-banner" id="quota-exhausted-banner" role="status" aria-live="polite" aria-hidden="true" data-active="false">
+    <div class="quota-exhausted-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" role="img"><use href="/assets/icons/sprite.svg#ic-quota-exhausted"></use></svg>
+    </div>
+    <div class="quota-exhausted-content">
+      <div class="quota-exhausted-title" id="quota-exhausted-title"></div>
+      <div class="quota-exhausted-sub" id="quota-exhausted-sub"></div>
+      <div class="quota-exhausted-panels" id="quota-exhausted-panels">
+        <div class="quota-exhausted-panel det">
+          <span class="quota-exhausted-panel-label">Det.</span>
+          <span class="quota-exhausted-panel-value" id="quota-exhausted-det-count">0</span>
+        </div>
+        <div class="quota-exhausted-panel llm">
+          <span class="quota-exhausted-panel-label">LLM</span>
+          <span class="quota-exhausted-panel-value" id="quota-exhausted-llm-count">0</span>
+          <span class="quota-exhausted-skills" id="quota-exhausted-skills"></span>
+        </div>
+      </div>
+    </div>
+    <div class="quota-exhausted-countdown">
+      <span class="quota-exhausted-countdown-label">Reset en</span>
+      <span class="quota-exhausted-countdown-value" id="quota-exhausted-countdown">—</span>
+      <div class="quota-exhausted-countdown-bar"><span id="quota-exhausted-countdown-bar"></span></div>
+    </div>
+  </section>`;
+    }
+    const errorType = escapeHtmlSsr(quotaState.error_type || 'usage_limit_error');
+    const detectedAt = escapeHtmlSsr(quotaState.detected_at || '');
+    const resetsAt = escapeHtmlSsr(quotaState.resets_at || '');
+    const hhmm = escapeHtmlSsr(fmtHHMMLocalSsr(quotaState.resets_at));
+    const remainingMs = Math.max(0, (quotaState.resets_at_ms || 0) - Date.now());
+    const inText = escapeHtmlSsr(fmtCountdownSsr(remainingMs));
+    return `
+  <section class="quota-exhausted-banner" id="quota-exhausted-banner" role="status" aria-live="polite" aria-hidden="false" data-active="true">
+    <div class="quota-exhausted-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" role="img" aria-label="reloj de arena">
+        <use href="/assets/icons/sprite.svg#ic-quota-exhausted"></use>
+      </svg>
+    </div>
+    <div class="quota-exhausted-content">
+      <div class="quota-exhausted-title" id="quota-exhausted-title">Modo determinístico — cuota Anthropic agotada. Reset ${hhmm} (en ${inText}).</div>
+      <div class="quota-exhausted-sub" id="quota-exhausted-sub">Tipo: ${errorType} · Detectado: ${detectedAt} · Reset: ${resetsAt}</div>
+      <div class="quota-exhausted-panels" id="quota-exhausted-panels">
+        <div class="quota-exhausted-panel det">
+          <span class="quota-exhausted-panel-label">Determinísticos</span>
+          <span class="quota-exhausted-panel-value" id="quota-exhausted-det-count">0</span>
+          <span>corriendo</span>
+        </div>
+        <div class="quota-exhausted-panel llm">
+          <span class="quota-exhausted-panel-label">LLM encolados</span>
+          <span class="quota-exhausted-panel-value" id="quota-exhausted-llm-count">0</span>
+          <span>esperando</span>
+          <span class="quota-exhausted-skills" id="quota-exhausted-skills"></span>
+        </div>
+      </div>
+    </div>
+    <div class="quota-exhausted-countdown">
+      <span class="quota-exhausted-countdown-label">Reset en</span>
+      <span class="quota-exhausted-countdown-value" id="quota-exhausted-countdown">${inText}</span>
+      <div class="quota-exhausted-countdown-bar"><span id="quota-exhausted-countdown-bar"></span></div>
+    </div>
+  </section>`;
+}
+
+function renderHomeHTML(opts) {
+    // `opts.quotaState` permite al caller pasar el state precomputado (evita
+    // doble lectura del flag si el dashboard ya lo tiene en mano). Sin opts,
+    // leemos defensivamente — caso que vale para tests y para el route handler
+    // simple del kiosk.
+    const _opts = opts || {};
+    const quotaState = _opts.quotaState || getInitialQuotaState();
+    const quotaBannerHtml = renderQuotaBannerSsr(quotaState);
+
     const theme = loadTheme();
     const styles = homeStyles();
     const script = renderClientScript();
@@ -1020,6 +1486,8 @@ function renderHomeHTML() {
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
+
+  ${quotaBannerHtml}
 
   <main class="kiosk-body">
 

@@ -15,6 +15,23 @@ const { execSync } = require('child_process');
 let restModeWindow = null;
 try { restModeWindow = require('./rest-mode-window'); } catch { /* opcional */ }
 
+// #2976 — Estado del flag de cuota Anthropic agotada (lectura defensiva).
+// Tolerante a la ausencia del módulo: si #2974 todavía no aterrizó, el slice
+// degrada a `{ active: false }` y nada del dashboard se rompe.
+let quotaExhaustedState = null;
+try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
+
+// #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
+// eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
+// sincronizado con `DETERMINISTIC_SKILLS` del detector (#2974,
+// `lib/quota-exhausted.js`). Si divergen, el dashboard puede mostrar un
+// conteo distinto al gate real del pulpo.
+const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
+
+function isDeterministicSkill(skill) {
+    return DETERMINISTIC_SKILLS.has(String(skill || '').trim().toLowerCase());
+}
+
 function safeReadJson(filepath, fallback) {
     try { return JSON.parse(fs.readFileSync(filepath, 'utf8')); }
     catch { return fallback; }
@@ -608,6 +625,94 @@ function quotaSlice(state, ctx) {
     }
 }
 
+// =============================================================================
+// #2976 — quotaExhaustedSlice: banner amarillo de cuota Anthropic agotada.
+//
+// Lee el flag `.pipeline/quota-exhausted.json` vía `quota-exhausted-state.js`
+// (lectura defensiva, ver hija #2974) y enriquece el payload con dos
+// counters que el banner muestra en paneles comparativos (CA-5):
+//
+//   - `deterministicRunning`: agentes determinísticos (builder/tester/
+//     delivery/linter) en estado `trabajando`. Estos NO están bloqueados
+//     por el flag — son el "panel verde" del banner.
+//   - `queuedSkills`: skills LLM (todo lo que NO es determinístico) con
+//     archivos en `pendiente/` esperando un slot. Son los que el gate de
+//     #2974 está bloqueando hasta que la cuota vuelva.
+//
+// Si `quota-exhausted-state` no está disponible (caso muy borde donde el
+// require falla), o si el flag no está activo, retornamos shape vacío con
+// `active: false` para que el cliente esconda el banner sin tirar errores.
+//
+// Performance: una sola lectura del flag (con cap 10KB) + un walk del
+// `state.issueMatrix` ya cacheado por el dashboard. Cero IO extra contra
+// el filesystem además del flag.
+// =============================================================================
+function quotaExhaustedSlice(state) {
+    if (!quotaExhaustedState) {
+        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+    }
+    let flag;
+    try {
+        flag = quotaExhaustedState.getQuotaState();
+    } catch {
+        // Defensa extra: aún si el módulo tiene un bug, el banner no debe
+        // tumbar el dashboard.
+        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+    }
+    if (!flag || !flag.active) {
+        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+    }
+
+    // Conteo: agentes determinísticos `trabajando` (panel "Determinísticos
+    // · N corriendo") y skills LLM en `pendiente` (panel "LLM encolados ·
+    // M esperando"). Recorremos issueMatrix una sola vez.
+    //
+    // Defensas anti-corruption: cada nivel del walk valida que la entry
+    // sea un object antes de tocarla. Un null/undefined en cualquier nivel
+    // (issueMatrix entry, .fases, entries) NO debe tirar el dashboard.
+    let deterministicRunning = 0;
+    const queuedMap = new Map();
+    for (const data of Object.values(state.issueMatrix || {})) {
+        if (!data || typeof data !== 'object') continue;
+        const fases = data.fases;
+        if (!fases || typeof fases !== 'object') continue;
+        for (const entries of Object.values(fases)) {
+            if (!Array.isArray(entries)) continue;
+            for (const e of entries) {
+                if (!e || typeof e !== 'object') continue;
+                if (e.estado === 'trabajando' && isDeterministicSkill(e.skill)) {
+                    deterministicRunning++;
+                } else if (e.estado === 'pendiente' && !isDeterministicSkill(e.skill)) {
+                    // Acumular por skill para mostrar el conteo agregado
+                    // en el panel (ej: "guru ×3, po ×2"). Usamos un Map
+                    // para preservar orden de aparición (≈ orden FIFO del
+                    // walk, suficientemente determinístico para el banner).
+                    const k = String(e.skill || 'unknown');
+                    queuedMap.set(k, (queuedMap.get(k) || 0) + 1);
+                }
+            }
+        }
+    }
+
+    const queuedSkills = [...queuedMap.entries()]
+        .map(([skill, count]) => ({ skill, count }))
+        .sort((a, b) => b.count - a.count); // más esperando arriba
+
+    return {
+        active: true,
+        // Campos del flag, ya normalizados por quota-exhausted-state.js.
+        error_type: flag.error_type,
+        detected_at: flag.detected_at,
+        resets_at: flag.resets_at,
+        resets_at_ms: flag.resets_at_ms,
+        // Paneles comparativos (CA-5).
+        deterministicRunning,
+        queuedSkills,
+        // Conveniencia para el banner: total de LLM esperando.
+        queuedCount: queuedSkills.reduce((s, x) => s + x.count, 0),
+    };
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -620,7 +725,11 @@ module.exports = {
     opsSlice,
     historialSlice,
     quotaSlice,
+    quotaExhaustedSlice,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,
+    // #2976 — exports internos para testing
+    _isDeterministicSkill: isDeterministicSkill,
+    _DETERMINISTIC_SKILLS: DETERMINISTIC_SKILLS,
 };
