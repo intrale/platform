@@ -37,8 +37,10 @@ const home = require('../views/dashboard/home');
 const sat = require('../views/dashboard/satellites');
 
 // #2976 — Lectura defensiva del flag de cuota Anthropic agotada.
-// Tolerante a la ausencia del módulo (caso muy borde si #2974 todavía
-// no aterrizó en `main`). Usado por el SSR del banner: `curl /` debe
+// El módulo `./quota-exhausted-state` envuelve a `./quota-exhausted` (#2974,
+// PR #2990 ya en main). El try/catch es defensa de cinturón en caso de que
+// se ejecute sobre un checkout que aún no incluya esos assets (edge muy
+// raro; en main siempre está). Usado por el SSR del banner: `curl /` debe
 // devolver "cuota Anthropic" SOLO cuando el flag está activo (CA-14).
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }

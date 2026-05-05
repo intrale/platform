@@ -454,14 +454,14 @@ function homeStyles() {
  * #2976 — Banner de cuota agotada del proveedor LLM (modo deterministico).
  *
  * Tokens visuales: --quota-degraded* definidos por UX en
- * .pipeline/assets/design-tokens.css (rama agent/2955-ux-criterios,
- * commit 2dfbd258). Se aceptan como var() con fallback hardcoded ambar
- * para que el render no quede sin paleta si la rama UX todavia no esta
- * mergeada (no rompe el dev; el build si valida el merge).
+ * .pipeline/assets/design-tokens.css (assets cherry-pickeados desde el
+ * commit UX 2dfbd258 al rebote ux/aprobacion del rev-1 — ahora viven en
+ * esta misma rama, ver CA-7). Sin fallbacks hex hardcoded: la paleta es
+ * la fuente de verdad y CA-7 obliga a no hardcodear ambar.
  *
- * Identidad: ambar #F0A500, semanticamente distinto de --warning
- * (#D29922, stale) y --retry (#F59E0B, reintentando). Contraste WCAG AAA
- * verificado por UX (>13.5:1).
+ * Identidad: ambar #F0A500 (en design-tokens.css), semanticamente distinto
+ * de --warning (#D29922, stale) y --retry (#F59E0B, reintentando).
+ * Contraste WCAG AAA verificado por UX (>13.5:1).
  *
  * Layout: barra horizontal arriba del kiosk-body, debajo del header. No
  * empuja contenido; usa padding y se inserta en el flujo natural cuando
@@ -471,12 +471,12 @@ function homeStyles() {
     display: none;
     margin: 0 22px;
     padding: 14px 18px;
-    background: var(--quota-degraded-bg, rgba(240, 165, 0, 0.16));
-    color: var(--quota-degraded-fg, #FFD27A);
-    border: 1px solid var(--quota-degraded, #F0A500);
-    border-left: 4px solid var(--quota-degraded, #F0A500);
+    background: var(--quota-degraded-bg);
+    color: var(--quota-degraded-fg);
+    border: 1px solid var(--quota-degraded);
+    border-left: 4px solid var(--quota-degraded);
     border-radius: var(--in-radius, 8px);
-    box-shadow: 0 0 0 1px var(--quota-degraded-glow, rgba(240, 165, 0, 0.18));
+    box-shadow: var(--quota-degraded-glow);
     font-size: 13px;
     line-height: 1.4;
     grid-template-columns: auto 1fr auto;
@@ -489,7 +489,7 @@ function homeStyles() {
     width: 28px;
     height: 28px;
     flex: 0 0 28px;
-    color: var(--quota-degraded, #F0A500);
+    color: var(--quota-degraded);
 }
 .quota-exhausted-icon svg { width: 100%; height: 100%; fill: currentColor; }
 
@@ -502,12 +502,12 @@ function homeStyles() {
 .quota-exhausted-title {
     font-size: 14px;
     font-weight: 700;
-    color: var(--quota-degraded-fg, #FFD27A);
+    color: var(--quota-degraded-fg);
     letter-spacing: 0.2px;
 }
 .quota-exhausted-sub {
     font-size: 11px;
-    color: var(--quota-degraded-dim, rgba(255, 210, 122, 0.78));
+    color: var(--quota-degraded-dim);
     font-family: var(--in-mono, 'Roboto Mono', monospace);
     word-break: break-word;
 }
@@ -537,7 +537,7 @@ function homeStyles() {
 .quota-exhausted-panel-value {
     font-size: 13px;
     font-weight: 700;
-    color: var(--quota-degraded-fg, #FFD27A);
+    color: var(--quota-degraded-fg);
     font-variant-numeric: tabular-nums;
 }
 .quota-exhausted-panel.det .quota-exhausted-panel-value {
@@ -550,9 +550,9 @@ function homeStyles() {
     margin-left: 4px;
 }
 .quota-exhausted-skill-pill {
-    background: rgba(240, 165, 0, 0.12);
-    border: 1px solid var(--quota-degraded, #F0A500);
-    color: var(--quota-degraded-fg, #FFD27A);
+    background: var(--quota-degraded-bg);
+    border: 1px solid var(--quota-degraded);
+    color: var(--quota-degraded-fg);
     border-radius: 12px;
     padding: 2px 8px;
     font-size: 10px;
@@ -585,7 +585,7 @@ function homeStyles() {
 .quota-exhausted-countdown-value {
     font-size: 18px;
     font-weight: 700;
-    color: var(--quota-degraded-fg, #FFD27A);
+    color: var(--quota-degraded-fg);
     font-variant-numeric: tabular-nums;
     font-family: var(--in-mono, 'Roboto Mono', monospace);
 }
@@ -600,7 +600,7 @@ function homeStyles() {
     display: block;
     height: 100%;
     width: 0%;
-    background: var(--quota-degraded, #F0A500);
+    background: var(--quota-degraded);
     transition: width 1s linear;
 }
 `;
