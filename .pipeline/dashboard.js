@@ -45,6 +45,10 @@ try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcion
 let restModeState = null;
 try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */ }
 
+// #2890 PR-A — Ventana del modo descanso (gating horario).
+let restModeWindow = null;
+try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -7899,6 +7903,86 @@ const server = http.createServer((req, res) => {
     }).catch(e => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, msg: e.message }));
+    });
+    return;
+  }
+
+  // =========================================================================
+  // #2890 PR-A — Modo descanso (ventana horaria + bypass labels).
+  // GET  /api/rest-mode    → { ok, window: { active, start, end, timezone,
+  //                              days, manual, updatedAt }, bypassLabels,
+  //                              isWithinWindow, now }
+  // POST /api/rest-mode    → body { active, start, end, timezone, days, manual }.
+  //                          Solo loopback (CA-Sec-A01). Validación estricta
+  //                          (CA-Sec-A03). Audit trail en rest-mode-audit.jsonl
+  //                          (CA-Sec-A08). bypass_labels NO editable (CA-Sec-A04a).
+  // =========================================================================
+  if (req.url === '/api/rest-mode' && req.method === 'GET') {
+    if (!restModeWindow) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-window no disponible' }));
+      return;
+    }
+    try {
+      const cfg = (loadConfig() || {}).rest_mode || {};
+      const window = restModeWindow.getWindow({ pipelineDir: PIPELINE });
+      const now = Date.now();
+      const within = restModeWindow.isWithinWindow(window, now);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        window,
+        bypassLabels: Array.isArray(cfg.bypass_labels) ? cfg.bypass_labels : ['priority:critical'],
+        isWithinWindow: within,
+        now: new Date(now).toISOString(),
+      }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    }
+    return;
+  }
+
+  if (req.url === '/api/rest-mode' && req.method === 'POST') {
+    if (!restModeWindow) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-window no disponible' }));
+      return;
+    }
+    // CA-Sec-A01 — solo loopback. El servidor escucha en 0.0.0.0 por default
+    // y queremos que un POST desde otra IP (LAN, túnel, etc.) sea rechazado
+    // explícitamente con 403, sin parsear body.
+    const remote = (req.socket && req.socket.remoteAddress) || '';
+    const isLoopback = remote === '127.0.0.1'
+        || remote === '::1'
+        || remote === '::ffff:127.0.0.1'
+        || remote.startsWith('127.');
+    if (!isLoopback) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: `loopback-only endpoint, got remote=${remote}` }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        const result = restModeWindow.setWindow(payload, {
+          pipelineDir: PIPELINE,
+          actor: 'api',
+        });
+        if (!result.ok) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, errors: result.errors }));
+          return;
+        }
+        log(`rest-mode window actualizada via /api/rest-mode (active=${result.state.active}, start=${result.state.start}, end=${result.state.end}, tz=${result.state.timezone}, days=[${result.state.days.join(',')}])`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, state: result.state }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
     });
     return;
   }

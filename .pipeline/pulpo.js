@@ -46,6 +46,8 @@ const { AnomalyDetector } = require('./anomaly-detector');
 // #2892 PR-C — Canal Telegram + estado del banner de alerta.
 const costAnomalyAlert = require('./lib/cost-anomaly-alert');
 const restModeState = require('./lib/rest-mode-state');
+// #2890 PR-A — Gating horario del modo descanso (ventana + bypass labels).
+const restModeWindow = require('./lib/rest-mode-window');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -3617,8 +3619,33 @@ function brazoLanzamiento(config) {
       continue;
     }
 
-    // 0b. BLOCKED: no lanzar issues con blocked:dependencies
+    // Labels del issue: se consumen en el gate de modo descanso (#2890) y
+    // luego en BLOCKED / NEEDS-HUMAN. Una sola lectura por iteración.
     const issueLbls = getIssueLabels(issue);
+
+    // 0a-bis. MODO DESCANSO (#2890 PR-A): si la ventana horaria está activa y
+    // el skill no es determinístico ni el issue tiene bypass label, saltar.
+    // El archivo se queda en pendiente/ sin penalizar (CA-1.5). Cuando la
+    // ventana cierre, el siguiente tick del pulpo lo lanza respetando
+    // concurrencia (CA-1.8).
+    try {
+      const restCfg = (loadConfig() || {}).rest_mode || {};
+      const verdict = restModeWindow.isSkillAllowedNow(skill, Date.now(), {
+        cfg: restCfg,
+        bypassLabels: issueLbls,
+        pipelineDir: PIPELINE,
+      });
+      if (!verdict.allowed) {
+        log('lanzamiento', `#${issue} skipped by rest-mode (skill=${skill}, reason=${verdict.reason})`);
+        continue;
+      }
+    } catch (e) {
+      // Fail-open: si el gate falla, no bloqueamos el pipeline. El pipeline
+      // no puede morir por un bug en este módulo.
+      log('lanzamiento', `rest-mode gate error (fail-open): ${e.message}`);
+    }
+
+    // 0b. BLOCKED: no lanzar issues con blocked:dependencies
     if (issueLbls.includes('blocked:dependencies')) {
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
       continue;

@@ -266,6 +266,27 @@ cost_anomaly_alert:
     telegram: true            # Encolar en .pipeline/servicios/telegram/pendiente/
     dashboard_banner: true    # Renderizar banner + pill en /
 
+# Modo descanso (#2890 PR-A, parte del épico #2882) — gating horario.
+# Durante la ventana configurada, sólo corren los skills determinísticos
+# (delivery, builder, linter, tester). El resto queda en `pendiente/` sin
+# penalización (no consume rebote).
+#
+# La configuración funcional (active, start, end, timezone, days, manual)
+# vive en `.pipeline/rest-mode.json` y se edita desde el dashboard. Acá sólo
+# vive lo que tiene impacto de seguridad y NO debe ser editable desde la UI.
+#
+# Reglas:
+#   - bypass_labels: si el issue tiene cualquiera de estos labels, el gate
+#     se ignora y el agente arranca aun dentro de la ventana. La UI NO
+#     edita esta lista (CA-Sec-A04a) — un attacker con acceso al dashboard
+#     no debería poder bajar el guardrail. Tocar este YAML requiere CODEOWNERS.
+#   - max_window_changes_per_hour: rate limit suave del endpoint POST. Por
+#     encima de este número se devuelve 429 (anti-spam, no anti-abuso).
+rest_mode:
+  bypass_labels:
+    - "priority:critical"
+  max_window_changes_per_hour: 30
+
 # Staleness (#2404) — evita rebotar a dev con `motivo_rechazo` que referencia un
 # build-log obsoleto. Si el log tiene mtime > umbral, NO se rebota al developer:
 # se resetea el contador del circuit breaker y se re-encola a `build` para que

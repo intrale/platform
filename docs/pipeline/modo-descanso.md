@@ -4,13 +4,155 @@ Doc del épico [#2882](https://github.com/intrale/platform/issues/2882). Esta
 historia se entrega en 3 PRs independientemente mergeables:
 
 - **PR-A (#2890)** — Modo descanso (gating horario + persistencia + UI básica).
-- **PR-B (#2891)** — Hourly baseline + detector de anomalías de consumo (este).
+- **PR-B (#2891)** — Hourly baseline + detector de anomalías de consumo.
 - **PR-C** — Canales de alerta (Telegram + banner UI + snooze).
 
-> **Esta versión del documento sólo cubre la sección de Detector de anomalías
-> (PR-B).** PR-A integrará en este mismo archivo las secciones de gating
-> horario, persistencia de `.pipeline/rest-mode.json` y la UI del modo descanso
-> cuando se mergee.
+---
+
+## Gating horario (PR-A)
+
+Durante una ventana configurable, el pipeline **sólo** ejecuta los skills
+**determinísticos** (`delivery`, `builder`, `linter`, `tester`). El resto de
+skills (los que invocan al LLM: `po`, `ux`, `guru`, `security`, `planner`,
+`qa`, `review`, `android-dev`, `backend-dev`, `web-dev`, `pipeline-dev`)
+queda en `pendiente/` sin penalización (no consume rebote, no archiva).
+Cuando la ventana cierra, el siguiente tick del pulpo los lanza respetando
+los slots de concurrencia normales.
+
+### Configuración
+
+La configuración funcional vive en `.pipeline/rest-mode.json` y se edita
+desde el dashboard (`/modo-descanso`) o vía `POST /api/rest-mode`:
+
+```json
+{
+  "active": true,
+  "start": "21:00",
+  "end": "08:00",
+  "timezone": "America/Argentina/Buenos_Aires",
+  "days": [0, 1, 2, 3, 4, 5, 6],
+  "manual": true,
+  "updatedAt": "2026-05-04T22:30:00.000Z"
+}
+```
+
+| Campo       | Tipo      | Descripción                                                            |
+|-------------|-----------|------------------------------------------------------------------------|
+| `active`    | bool      | Master switch. `false` → gate desactivado, pipeline opera sin restricciones. |
+| `start`     | `HH:MM`   | Inicio de la ventana (formato 24h).                                    |
+| `end`       | `HH:MM`   | Fin de la ventana. Si `end < start`, la ventana cruza medianoche.      |
+| `timezone`  | string    | Zona IANA. Validada contra `Intl.supportedValuesOf('timeZone')` + alias engine. |
+| `days`      | int[0..6] | Días activos. 0 = domingo, 1 = lunes, …, 6 = sábado (consistente con `Date.getDay`). |
+| `manual`    | bool      | Marca si el usuario lo configuró manualmente desde la UI.              |
+| `updatedAt` | ISO8601   | Última modificación (lo escribe el backend automáticamente).           |
+
+El archivo se **escribe atómicamente** (`fs.writeFileSync(tmp)` →
+`fs.renameSync(tmp, file)`) para que un crash en medio de la operación
+no deje un JSON corrupto. Lectura y escritura son tolerantes: archivo
+inexistente o corrupto → ventana inactiva (fail-open). El módulo NUNCA
+detiene el pipeline.
+
+### Bypass labels (config.yaml — read-only desde UI)
+
+```yaml
+rest_mode:
+  bypass_labels:
+    - "priority:critical"
+  max_window_changes_per_hour: 30
+```
+
+Los issues con cualquiera de los `bypass_labels` ignoran el gate y arrancan
+aun dentro de la ventana. La UI **no** edita esta lista (CA-Sec-A04a) —
+agregar un label nuevo requiere abrir un PR sobre `config.yaml`, lo cual
+pasa por CODEOWNERS.
+
+### Integración en el pulpo
+
+El gate vive en `pulpo.js::isIssueAllowed()` justo después de
+`partialPause.isIssueAllowed`. Si el verdict es bloqueado, se loguea y se
+hace `continue` sin tocar el archivo de pendiente:
+
+```js
+const restCfg = (loadConfig() || {}).rest_mode || {};
+const verdict = restModeWindow.isSkillAllowedNow(skill, Date.now(), {
+    cfg: restCfg,
+    bypassLabels: issueLbls,
+    pipelineDir: PIPELINE,
+});
+if (!verdict.allowed) {
+    log('lanzamiento', `#${issue} skipped by rest-mode (skill=${skill}, reason=${verdict.reason})`);
+    continue;
+}
+```
+
+`reason` puede ser uno de: `outside_window`, `deterministic_skill`,
+`bypass_label`, `within_window_non_deterministic` — útil para
+diagnóstico desde el log.
+
+### Hot-reload
+
+No hay watcher: cada tick del pulpo lee el archivo fresco vía
+`getWindow()`. Cualquier cambio guardado por el dashboard impacta en el
+siguiente tick (~30s) sin reiniciar el pipeline (CA-3.3).
+
+### Endpoints API
+
+| Endpoint           | Método | Body                                                       | Auth      | Respuesta                                              |
+|--------------------|--------|------------------------------------------------------------|-----------|--------------------------------------------------------|
+| `/api/rest-mode`   | GET    | —                                                          | abierto   | `{ ok, window, bypassLabels, isWithinWindow, now }`     |
+| `/api/rest-mode`   | POST   | `{ active, start, end, timezone, days, manual }`           | loopback  | `{ ok, state }` o `400 { ok:false, errors:[...] }`     |
+
+- `POST` solo acepta loopback (`127.0.0.1` / `::1`) — desde otra IP
+  responde `403` antes de parsear body (CA-Sec-A01).
+- Body inválido: `400 { ok:false, errors:[<lista>] }`. Cada validación
+  produce un error humano ("start debe ser HH:MM …", "timezone X no esta
+  en Intl.supportedValuesOf('timeZone')", "days contiene valores fuera
+  de [0..6]", etc.) — CA-Sec-A03.
+
+### Audit trail (`.pipeline/rest-mode-audit.jsonl`)
+
+Cada cambio se appendea con shape:
+
+```json
+{
+  "ts": "2026-05-04T22:30:00.000Z",
+  "actor": "api",
+  "prev": { "active": false, "start": "21:00", "end": "08:00", "timezone": "...", "days": [0,1,2,3,4,5,6], "manual": false },
+  "next": { "active": true,  "start": "21:00", "end": "08:00", "timezone": "...", "days": [0,1,2,3,4,5,6], "manual": true  }
+}
+```
+
+`actor` puede ser `manual`, `api`, `cron`, `config-reload` o `init`. El
+archivo crece append-only — no se rota en este PR (CA-Sec-A08). Si crece
+mucho con el tiempo abrir un issue específico para rotar.
+
+### UI
+
+- **Pill en el header** (kiosk `/`): solo visible cuando `active=true`
+  con start/end configurados. Texto: `🌙 Modo descanso · HH:MM-HH:MM ·
+  ahora|programada`. Color indigo del token `--rest-mode` (UX #2896).
+- **Tab "Modo descanso"** en la sidebar (`/modo-descanso`): form con
+  toggle `active`, inputs `start`/`end`, datalist de timezones (poblada
+  desde `Intl.supportedValuesOf('timeZone')`), checkboxes de días,
+  botón guardar. Bloque de meta read-only con `bypass_labels` y
+  `updatedAt`.
+
+### Tests
+
+- `lib/__tests__/rest-mode-window.test.js` — 28 tests (CA-5.1 +
+  validaciones de seguridad).
+- `lib/__tests__/rest-mode-window.integration.test.js` — 6 tests
+  (CA-5.3, CA-5.4, CA-1.5, CA-1.9, CA-1.4 — escenarios end-to-end del
+  gate emulando el composer del pulpo).
+
+### Coexistencia con PR-C (cost-anomaly alert)
+
+`.pipeline/rest-mode.json` es compartido: PR-A escribe los campos
+`active/start/end/timezone/days/manual/updatedAt`, PR-C escribe el
+campo `alert` (banner de consumo anómalo). Ambos módulos leen el
+archivo entero y preservan los campos del otro al escribir. La regla
+es "tocá solo lo tuyo" — explícito en el comment del header de cada
+módulo.
 
 ---
 

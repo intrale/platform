@@ -1311,6 +1311,198 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
     return pageShell('Costos', 'Cuota Plan Max + tokens y consumo', body, script, css);
 }
 
+// ─────────────────── Modo descanso (#2890 PR-A) ───────────────────
+function renderModoDescanso() {
+    const body = `
+<section class="in-section">
+  <h2 class="in-section-title"><span class="in-section-title-icon">🌙</span>Modo descanso · gating horario</h2>
+  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">
+    Durante la ventana configurada, sólo corren los <strong>skills determinísticos</strong>
+    (delivery, builder, linter, tester). El resto se queda en cola y arranca al cerrar la ventana.
+    Los issues con label <code>priority:critical</code> hacen bypass del gate.
+  </p>
+  <div id="rm-status" class="rm-status">…</div>
+  <form id="rm-form" class="rm-form" novalidate>
+    <div class="rm-row">
+      <label class="rm-label">
+        <input type="checkbox" id="rm-active"> <strong>Activar modo descanso</strong>
+      </label>
+      <span class="rm-hint">Si destildás, el pipeline opera sin restricciones (CA-1.9).</span>
+    </div>
+    <div class="rm-row rm-row-grid">
+      <label>
+        <span class="rm-label-text">Inicio (HH:MM)</span>
+        <input type="time" id="rm-start" required>
+      </label>
+      <label>
+        <span class="rm-label-text">Fin (HH:MM)</span>
+        <input type="time" id="rm-end" required>
+      </label>
+      <label>
+        <span class="rm-label-text">Timezone</span>
+        <input type="text" id="rm-timezone" placeholder="America/Argentina/Buenos_Aires" list="rm-tz-list">
+        <datalist id="rm-tz-list"></datalist>
+      </label>
+    </div>
+    <div class="rm-row">
+      <span class="rm-label-text">Días activos</span>
+      <div class="rm-days" id="rm-days">
+        <label><input type="checkbox" data-day="1"> Lun</label>
+        <label><input type="checkbox" data-day="2"> Mar</label>
+        <label><input type="checkbox" data-day="3"> Mié</label>
+        <label><input type="checkbox" data-day="4"> Jue</label>
+        <label><input type="checkbox" data-day="5"> Vie</label>
+        <label><input type="checkbox" data-day="6"> Sáb</label>
+        <label><input type="checkbox" data-day="0"> Dom</label>
+      </div>
+    </div>
+    <div class="rm-row rm-actions">
+      <button type="submit" class="in-btn rm-save">💾 Guardar configuración</button>
+      <span id="rm-msg" class="rm-msg"></span>
+    </div>
+  </form>
+  <div class="rm-meta">
+    <p><strong>Bypass labels</strong> (read-only, viven en <code>config.yaml</code>):
+      <span id="rm-bypass">…</span></p>
+    <p><strong>Última actualización:</strong> <span id="rm-updated">—</span></p>
+  </div>
+</section>`;
+    const css = `
+.rm-status { padding: 12px 16px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); background: var(--in-bg-3); margin-bottom: 16px; font-size: 13px; }
+.rm-status.rm-active { border-color: rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); background: var(--rest-mode-bg, rgba(124,92,255,0.16)); }
+.rm-status.rm-inactive { color: var(--in-fg-dim); }
+.rm-form { display: flex; flex-direction: column; gap: 14px; }
+.rm-row { display: flex; flex-direction: column; gap: 6px; }
+.rm-row-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.rm-row label { font-size: 12px; color: var(--in-fg); display: flex; flex-direction: column; gap: 4px; }
+.rm-label { flex-direction: row !important; align-items: center; gap: 8px !important; }
+.rm-label-text { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); letter-spacing: 0.5px; }
+.rm-hint { font-size: 11px; color: var(--in-fg-soft); }
+.rm-form input[type="time"], .rm-form input[type="text"] { padding: 7px 9px; background: var(--in-bg); color: var(--in-fg); border: 1px solid var(--in-border); border-radius: 4px; font-family: var(--in-mono); font-size: 12px; }
+.rm-form input:focus { outline: none; border-color: var(--in-accent); }
+.rm-days { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 0; }
+.rm-days label { flex-direction: row !important; align-items: center; gap: 5px !important; font-size: 12px; color: var(--in-fg); }
+.rm-actions { flex-direction: row !important; align-items: center; gap: 14px; padding-top: 8px; }
+.rm-save { background: var(--rest-mode-bg, rgba(124,92,255,0.16)); border-color: rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); padding: 8px 16px; }
+.rm-save:hover { filter: brightness(1.18); }
+.rm-msg { font-size: 12px; color: var(--in-fg-dim); }
+.rm-msg.rm-ok { color: var(--in-ok); }
+.rm-msg.rm-err { color: var(--in-bad); }
+.rm-meta { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--in-border); font-size: 12px; color: var(--in-fg-dim); }
+.rm-meta p { margin: 4px 0; }
+.rm-meta code { font-family: var(--in-mono); background: var(--in-bg-3); padding: 1px 6px; border-radius: 3px; }`;
+    const script = `
+const TZ_DEFAULTS = ['America/Argentina/Buenos_Aires','UTC','America/New_York','America/Mexico_City','America/Sao_Paulo','Europe/Madrid','Europe/London'];
+
+function setMsg(text, kind){
+    const el = document.getElementById('rm-msg');
+    if(!el) return;
+    el.textContent = text || '';
+    el.classList.remove('rm-ok','rm-err');
+    if(kind === 'ok') el.classList.add('rm-ok');
+    if(kind === 'err') el.classList.add('rm-err');
+}
+
+function renderStatus(payload){
+    const status = document.getElementById('rm-status');
+    if(!status || !payload) return;
+    const w = payload.window || {};
+    status.classList.remove('rm-active','rm-inactive');
+    if(w.active && w.start && w.end){
+        status.classList.add('rm-active');
+        const within = payload.isWithinWindow ? '· **AHORA** dentro de la ventana' : '· programada';
+        status.innerHTML = '🌙 <strong>Activa</strong> '+escapeHtml(w.start)+'–'+escapeHtml(w.end)+' ('+escapeHtml(w.timezone||'')+') '+within.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+    } else {
+        status.classList.add('rm-inactive');
+        status.textContent = '○ Inactivo · pipeline opera sin restricciones.';
+    }
+    document.getElementById('rm-bypass').textContent = (payload.bypassLabels || []).join(', ') || '(ninguno)';
+    document.getElementById('rm-updated').textContent = w.updatedAt ? new Date(w.updatedAt).toLocaleString('es-AR') : '—';
+}
+
+function syncFormFromState(payload){
+    const w = (payload && payload.window) || {};
+    document.getElementById('rm-active').checked = !!w.active;
+    if(w.start) document.getElementById('rm-start').value = w.start;
+    if(w.end) document.getElementById('rm-end').value = w.end;
+    document.getElementById('rm-timezone').value = w.timezone || '';
+    const days = Array.isArray(w.days) ? w.days : [0,1,2,3,4,5,6];
+    document.querySelectorAll('#rm-days input[type=checkbox]').forEach(cb => {
+        const d = parseInt(cb.dataset.day, 10);
+        cb.checked = days.indexOf(d) >= 0;
+    });
+}
+
+function buildTimezoneList(){
+    const list = document.getElementById('rm-tz-list');
+    if(!list) return;
+    let zones = TZ_DEFAULTS;
+    try {
+        if(typeof Intl.supportedValuesOf === 'function'){
+            const all = Intl.supportedValuesOf('timeZone');
+            if(Array.isArray(all) && all.length) zones = all;
+        }
+    } catch(e){}
+    list.innerHTML = zones.map(z => '<option value="'+escapeHtml(z)+'"></option>').join('');
+}
+
+async function fetchRestMode(){
+    const r = await fetch('/api/rest-mode', {cache:'no-store'});
+    if(!r.ok) return null;
+    return r.json();
+}
+
+async function tickRestMode(){
+    const d = await fetchRestMode();
+    if(!d || !d.ok) return;
+    renderStatus(d);
+    if(!document.activeElement || !document.activeElement.closest('#rm-form')){
+        // Solo morphear el form si el usuario no está editando.
+        syncFormFromState(d);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    buildTimezoneList();
+    const form = document.getElementById('rm-form');
+    if(form){
+        form.addEventListener('submit', async (ev) => {
+            ev.preventDefault();
+            const days = [...document.querySelectorAll('#rm-days input[type=checkbox]')]
+                .filter(cb => cb.checked)
+                .map(cb => parseInt(cb.dataset.day, 10));
+            const payload = {
+                active: document.getElementById('rm-active').checked,
+                start: document.getElementById('rm-start').value,
+                end: document.getElementById('rm-end').value,
+                timezone: document.getElementById('rm-timezone').value || 'America/Argentina/Buenos_Aires',
+                days: days.length ? days : [0,1,2,3,4,5,6],
+                manual: true,
+            };
+            setMsg('Guardando…');
+            try {
+                const r = await fetch('/api/rest-mode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+                const j = await r.json();
+                if(j.ok){
+                    setMsg('✓ Guardado · hot-reload sin reinicio del pipeline (CA-3.3).', 'ok');
+                    tickRestMode();
+                } else {
+                    setMsg('✗ '+(j.errors ? j.errors.join(' · ') : (j.msg || 'Error')), 'err');
+                }
+            } catch(e){
+                setMsg('✗ Error de red: '+e.message, 'err');
+            }
+        });
+    }
+});
+
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickRestMode, ms: 8000 }];
+async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
+runAll();
+for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
+    return pageShell('Modo descanso', 'Ventana horaria · gating de skills LLM', body, script, css);
+}
+
 module.exports = {
     renderEquipo,
     renderPipeline,
@@ -1321,4 +1513,5 @@ module.exports = {
     renderKpisDetail,
     renderHistorial,
     renderCostos,
+    renderModoDescanso,
 };

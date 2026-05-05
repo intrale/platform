@@ -46,6 +46,7 @@ const HTML_ROUTES = {
     '/kpis': sat.renderKpisDetail,
     '/historial': sat.renderHistorial,
     '/costos': sat.renderCostos,
+    '/modo-descanso': sat.renderModoDescanso,
 };
 
 const API_ROUTES = {
