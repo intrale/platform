@@ -35,6 +35,8 @@ const qaEvidenceGate = require('./lib/qa-evidence-gate');
 const humanBlock = require('./lib/human-block');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+
+const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #2893 — Detección de dependencias del allowlist en pausa parcial
 const partialPauseDeps = require('./lib/partial-pause-deps');
 // #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
@@ -4553,6 +4555,39 @@ function requestEmulator(action, requester, issue, reason) {
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
+  // #2974 — GATE DETERMINÍSTICO PRE-SPAWN: si la cuota Anthropic está agotada
+  // (flag persistido en `.pipeline/quota-exhausted.json` con `resets_at` futuro),
+  // NO spawneamos claude.exe para skills LLM. Skills determinísticos
+  // (builder/tester/linter/delivery) siguen corriendo en Node puro sin tokens.
+  // El archivo de trabajo permanece en `trabajando/` — el orphan-timeout lo
+  // devuelve a `pendiente/` naturalmente, y cuando el flag se borre (drenado
+  // post-reset o spawn exitoso), el filesystem-como-cola los recoge sin lógica
+  // adicional. CA-1/CA-2 del issue.
+  try {
+    if (quotaExhausted.shouldGateSpawn(skill)) {
+      log('lanzamiento', `🚫 ${skill}:#${issue} bloqueado por quota-exhausted (LLM, flag activo) — devuelvo a pendiente/`);
+      try {
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        moveFile(trabajandoPath, pendienteDir);
+      } catch {}
+      try {
+        quotaExhausted.appendAudit({
+          event: 'gate_blocked_spawn',
+          agent: skill,
+          error_type: null,
+          raw_excerpt: `issue=${issue} fase=${fase} pipeline=${pipeline}`,
+          flag_set: true,
+        });
+      } catch {}
+      return;
+    }
+  } catch (gateErr) {
+    // Best-effort: si el gate falla por bug, NO bloqueamos el spawn — preferimos
+    // que el pipeline siga operativo aún con detector roto. El siguiente result
+    // event con is_error=true volverá a setear el flag.
+    log('lanzamiento', `⚠️ gate quota-exhausted falló para ${skill}:#${issue}: ${gateErr.message} — continúo con spawn`);
+  }
+
   // INVARIANTE CRÍTICO: el skill debe pertenecer a skills_por_fase[fase] de este pipeline.
   // Ningún agente puede correr en una fase que no es la suya, ni siquiera por excepción
   // (incidentes previos: project_apk-builder-responsibility, project_build-bypass-agent).
@@ -4983,6 +5018,54 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     clearTimeout(watchdog);
 
     const elapsedSec = (Date.now() - launchTime) / 1000;
+
+    // #2974 — Detector de cuota agotada sobre el log del agente. Buscamos un
+    // result event con shape estructurado (CA-1) y, si match, seteamos el flag
+    // para gatear futuros spawns LLM. Si el spawn fue exitoso (exit 0 sin
+    // result is_error), drenado proactivo del flag (CA-3 del padre).
+    // SIEMPRE best-effort: el detector NUNCA puede romper el lifecycle del agente.
+    if (!useDeterministicSkill) {
+      try {
+        const cfg = (loadConfig() || {}).quota_detector || {};
+        const auditEnabled = cfg.audit_log_enabled !== false;
+        const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
+        let raw = '';
+        try { raw = fs.readFileSync(logPath, 'utf8'); } catch {}
+        let matched = false;
+        let matchedLine = '';
+        let matchedDetail = null;
+        if (raw) {
+          for (const line of raw.split('\n')) {
+            if (!line.startsWith('{')) continue;
+            let evt;
+            try { evt = JSON.parse(line); } catch { continue; }
+            const det = quotaExhausted.detectFromResultEvent(evt, cfg);
+            if (det.matched) {
+              matched = true;
+              matchedLine = line;
+              matchedDetail = { evt, errorType: det.errorType };
+              break;
+            }
+          }
+        }
+        if (matched) {
+          log('lanzamiento', `🚫 ${skill}:#${issue} reportó cuota agotada (error_type="${matchedDetail.errorType}") — seteando flag`);
+          quotaExhausted.setFlag({
+            errorType: matchedDetail.errorType,
+            resetsAt: matchedDetail.evt.resets_at,
+            maxDays: cfg.resets_at_cap_max_days,
+            agent: skill,
+            rawExcerpt: matchedLine,
+            auditLogEnabled: auditEnabled,
+          });
+        } else if (code === 0) {
+          // CA-3 del padre: spawn exitoso → drenado proactivo del flag.
+          try { quotaExhausted.clearFlag({ event: 'success_spawn', reason: `${skill}:#${issue}` }); } catch {}
+        }
+      } catch (qErr) {
+        log('lanzamiento', `quota_detector (agent log) falló (best-effort) para ${skill}:#${issue}: ${qErr.message}`);
+      }
+    }
 
     // #2801 — emit session:end para agentes Claude. Damos un pequeño delay
     // para que el writer termine de flushear el último chunk del log antes
@@ -6117,6 +6200,31 @@ function ejecutarClaude(prompt, textoOriginal) {
           }
         } else if (evt.type === 'result') {
           finalResult = evt;
+          // #2974 — Detector de cuota agotada (CA-1, anti-prompt-injection).
+          // Match estructurado por shape del JSON stream — NUNCA por substring
+          // sobre texto libre. Si match, setear flag y dejar que pulpo gatee
+          // futuros spawns LLM. Skills determinísticos siguen corriendo.
+          try {
+            const cfg = (loadConfig() || {}).quota_detector || {};
+            const det = quotaExhausted.detectFromResultEvent(evt, cfg);
+            if (det.matched) {
+              log('commander', `🚫 quota_detector: error_type="${det.errorType}" detectado — seteando flag`);
+              quotaExhausted.setFlag({
+                errorType: det.errorType,
+                resetsAt: evt.resets_at,
+                maxDays: cfg.resets_at_cap_max_days,
+                agent: 'commander',
+                rawExcerpt: line,
+                auditLogEnabled: cfg.audit_log_enabled !== false,
+              });
+            } else if (evt.is_error !== true) {
+              // CA-3 (issue padre): un spawn exitoso prueba que la cuota volvió
+              // antes del resets_at calculado → drenado proactivo.
+              try { quotaExhausted.clearFlag({ event: 'success_spawn', reason: 'commander_success' }); } catch {}
+            }
+          } catch (qErr) {
+            log('commander', `quota_detector falló (best-effort): ${qErr.message}`);
+          }
           // WORKAROUND para bug claude-code#25629: CLI no termina después del result event.
           // Dar 3s de gracia para que el proceso salga solo, si no: matarlo.
           log('commander', 'Result event recibido — esperando 3s para exit limpio...');
