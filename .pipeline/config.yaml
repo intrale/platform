@@ -324,3 +324,9 @@ quota_detector:
   # Útil para apagar audit en caso de problema de espacio en disco — no debería
   # ser necesario nunca con la rotación normal.
   audit_log_enabled: true
+  # (#2975) Cadencia de recordatorios del notifier mientras el flag está activo.
+  # Default 120 min = 2h. Mínimo efectivo 1 min (clamp en código). Valores <= 0
+  # caen al default. Subir mucho aleja al usuario del estado real; bajarlo
+  # demasiado spamea (memoria `feedback_telegram-messages-natural`). El rango
+  # razonable está documentado en #2979 — validación pendiente como hardening.
+  reminder_interval_minutes: 120
