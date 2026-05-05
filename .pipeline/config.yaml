@@ -298,3 +298,29 @@ rest_mode:
 staleness:
   build_log_max_age_hours: 24     # Default — logs de build más viejos se consideran stale
   max_resets_per_issue: 5         # Tope duro: más de 5 resets por stale-log → escalar, no resetear
+
+# =============================================================================
+# Detector de cuota Anthropic agotada (#2974, hija de #2955)
+# =============================================================================
+# Cuando el CLI claude-code reporta cuota agotada, el pulpo persiste un flag
+# en `.pipeline/quota-exhausted.json` y gatea futuros spawns LLM. Skills
+# determinísticos (builder/tester/linter/delivery) siguen corriendo.
+#
+# CA-1 (anti prompt-injection): la detección SOLO matchea por shape estructurado
+# del JSON stream del CLI (`type:'result' && is_error:true && error_type ∈ allowlist`).
+# NUNCA matchea por substring sobre texto libre.
+#
+# Kill-switch operacional: `rm .pipeline/quota-exhausted.json` desbloquea.
+quota_detector:
+  # Allowlist estricta de error_type que activan el flag (CA-1, CA-8 PO).
+  # `rate_limit_error` (429 transitorio) NO va acá — se maneja con backoff/retry.
+  error_types:
+    - usage_limit_error
+    - weekly_quota_exhausted
+  # CA-5: cap superior del campo `resets_at`. Fuera de [now+5min, now+max] usa
+  # `getNextWeeklyResetMs()` como fallback. 7 días cubre el ciclo semanal del Plan Max.
+  resets_at_cap_max_days: 7
+  # Si `false`, el detector funciona pero no escribe `.pipeline/logs/quota-detector-*.log`.
+  # Útil para apagar audit en caso de problema de espacio en disco — no debería
+  # ser necesario nunca con la rotación normal.
+  audit_log_enabled: true
