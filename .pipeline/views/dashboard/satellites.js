@@ -829,6 +829,16 @@ function renderOps() {
   <h2 class="in-section-title"><span class="in-section-title-icon">🛠</span>Procesos del pipeline</h2>
   <div id="ops-procesos" class="ops-grid"></div>
 </section>
+<section class="in-section" aria-label="Métrica de salud del reconciler GitHub">
+  <h2 class="in-section-title"><span class="in-section-title-icon">⏳</span>Reconciler · órdenes descartadas (stale)</h2>
+  <div class="stale-orders-panel" id="stale-orders-panel">
+    <div class="stale-orders-main">
+      <div class="stale-orders-count" id="stale-orders-count">…</div>
+      <div class="stale-orders-caption">últimas 24h</div>
+    </div>
+    <div class="stale-orders-breakdown" id="stale-orders-breakdown"></div>
+  </div>
+</section>
 <section class="in-section">
   <h2 class="in-section-title"><span class="in-section-title-icon">📡</span>QA Environment</h2>
   <pre id="ops-qaenv" class="ops-pre"></pre>
@@ -851,7 +861,19 @@ function renderOps() {
 .ops-banner-hidden { display: none; }
 .ops-banner { display: block; padding: 12px 16px; margin-bottom: 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-bad); background: var(--in-bad-soft); color: var(--in-bad); font-weight: 600; }
 .ops-banner-sub { font-weight: 400; font-size: 12px; color: var(--in-fg-dim); margin-top: 4px; font-family: var(--in-mono); }
-.ops-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 280px; border: 1px solid var(--in-border); }`;
+.ops-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 280px; border: 1px solid var(--in-border); }
+/* #2994 — panel del reconciler stale orders. Reusa --warning/--font-mono.
+   Estado vacío: número 0 en --in-fg-dim para señalar salud sin alarma. */
+.stale-orders-panel { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); min-width: 260px; }
+.stale-orders-main { display: flex; flex-direction: column; gap: 2px; }
+.stale-orders-count { font-family: var(--in-mono, var(--font-mono, monospace)); font-size: 32px; font-weight: 600; color: var(--warning, var(--in-warn, #D29922)); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stale-orders-count.is-zero { color: var(--in-fg-dim); }
+.stale-orders-caption { font-size: 12px; color: var(--in-fg-dim); }
+.stale-orders-breakdown { display: flex; flex-direction: column; gap: 4px; }
+.stale-orders-breakdown-row { display: flex; justify-content: space-between; gap: 12px; font-family: var(--in-mono, monospace); font-size: 12px; font-variant-numeric: tabular-nums; padding: 2px 0; }
+.stale-orders-breakdown-reason { color: var(--in-fg-default, var(--in-fg)); }
+.stale-orders-breakdown-value { color: var(--warning, var(--in-warn, #D29922)); font-weight: 600; }
+.stale-orders-empty { color: var(--in-fg-dim); font-size: 12px; }`;
     const script = `
 const PROC_QUEUES = {
     'listener': ['commander', 'telegram'],
@@ -935,7 +957,32 @@ async function tickOps(){
         if(pre.textContent !== txt) pre.textContent = txt;
     }
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickOps, ms: 5000 }];
+async function tickStaleOrders(){
+    const d = await fetchJson('/api/dash/reconciler-stale-orders');
+    if(!d) return;
+    const countEl = document.getElementById('stale-orders-count');
+    const breakdownEl = document.getElementById('stale-orders-breakdown');
+    if(!countEl || !breakdownEl) return;
+    const total = Number(d.total_24h) || 0;
+    const txt = String(total);
+    if(countEl.textContent !== txt) countEl.textContent = txt;
+    countEl.className = total === 0 ? 'stale-orders-count is-zero' : 'stale-orders-count';
+    const reasons = d.by_reason || {};
+    let html = '';
+    if(total === 0){
+        html = '<div class="stale-orders-empty">Sin descartes en 24h — saludable</div>';
+    } else {
+        const entries = Object.entries(reasons).sort((a,b) => b[1] - a[1]);
+        for(const [reason, n] of entries){
+            html += '<div class="stale-orders-breakdown-row">'
+                + '<span class="stale-orders-breakdown-reason">— '+escapeHtml(reason)+'</span>'
+                + '<span class="stale-orders-breakdown-value">'+(Number(n)||0)+'</span>'
+                + '</div>';
+        }
+    }
+    if(breakdownEl.innerHTML !== html) breakdownEl.innerHTML = html;
+}
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickOps, ms: 5000 }, { fn: tickStaleOrders, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;

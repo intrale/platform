@@ -18,7 +18,9 @@ const { sanitize } = require('./sanitizer');
 const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
-const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
+// #2994 — `GH_BIN_OVERRIDE` permite a los tests E2E de la cola apuntar a un
+// stub de `gh` en disco sin tocar el sistema. En producción se ignora.
+const GH_BIN = process.env.GH_BIN_OVERRIDE || 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github');
 const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
@@ -27,6 +29,7 @@ const LISTO = path.join(QUEUE_DIR, 'listo');
 const FALLIDO = path.join(QUEUE_DIR, 'fallido');
 const MAX_RETRIES = 3;
 const LOG_DIR = path.join(PIPELINE, 'logs');
+const STALE_ORDERS_LOG = path.join(LOG_DIR, 'stale-orders.log');
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -236,6 +239,62 @@ function ensureLabels(labelsStr) {
   }
 }
 
+// =============================================================================
+// #2994 — Guardia idempotente contra órdenes stale (TOCTOU mitigation)
+// =============================================================================
+//
+// El reconciler encola órdenes basadas en un snapshot del FS. Entre el
+// snapshot y la ejecución, alguien (humano destrabando, /unblock automático)
+// puede haber cambiado el estado. Si re-aplicamos el label sobre un issue
+// que ya fue destrabado, lo re-bloqueamos sin justificación (incidente
+// 2026-05-05 con #2975).
+//
+// La guardia se aplica SOLO a órdenes con metadata. Órdenes legacy sin
+// `marker_path`/`marker_mtime` ejecutan SIN guardia (degradado seguro,
+// comportamiento idéntico al pre-deploy).
+//
+// Devuelve `null` si la orden está fresca (ejecutar normalmente) o un
+// objeto `{reason, current_mtime}` describiendo por qué descartar.
+function validateOrderFresh(data) {
+    if (!data || data.action !== 'label') return null;
+    if (!data.marker_path) return null; // sin metadata = legacy / sin guardia
+
+    if (!fs.existsSync(data.marker_path)) {
+        return { reason: 'stale-marker-missing', current_mtime: null };
+    }
+    if (typeof data.marker_mtime === 'number') {
+        let currentMtime;
+        try { currentMtime = fs.statSync(data.marker_path).mtimeMs; }
+        catch { return { reason: 'stale-marker-missing', current_mtime: null }; }
+        // Tolerancia mínima: NTFS reporta mtimeMs en ms, pero filesystems
+        // remotos pueden tener ruido sub-ms. 5ms es suficientemente grande
+        // para absorber jitter sin enmascarar cambios reales (un destrabe
+        // humano modifica el inode y la diferencia es siempre >> 5ms).
+        if (currentMtime > data.marker_mtime + 5) {
+            return { reason: 'stale-mtime', current_mtime: currentMtime };
+        }
+    }
+    return null;
+}
+
+function logStaleOrder(entry) {
+    try {
+        fs.mkdirSync(LOG_DIR, { recursive: true });
+        const line = JSON.stringify({
+            ts: new Date().toISOString(),
+            reason: entry.reason || 'unknown',
+            issue: entry.issue || null,
+            label: entry.label || null,
+            snapshot_at: entry.snapshot_at || null,
+            current_mtime: entry.current_mtime ?? null,
+            detail: entry.detail || null,
+        }) + '\n';
+        fs.appendFileSync(STALE_ORDERS_LOG, line);
+    } catch {
+        // best-effort — no tirar el worker por un fallo de logging
+    }
+}
+
 // --- Procesamiento de cola ---
 function processQueue() {
   const files = listWorkFiles(PENDIENTE);
@@ -260,13 +319,35 @@ function processQueue() {
           log(`Comentario en #${data.issue}`);
           break;
 
-        case 'label':
+        case 'label': {
+          // #2994 — guardia idempotente: si la orden trae `marker_path`/
+          // `marker_mtime`, validar que el FS sigue justificándola antes
+          // de invocar `gh`. Si está stale, descartar + log + `discarded:`.
+          const stale = validateOrderFresh(data);
+          if (stale) {
+            data.discarded = stale.reason;
+            data.discarded_at = new Date().toISOString();
+            data.current_mtime = stale.current_mtime;
+            logStaleOrder({
+              reason: stale.reason,
+              issue: data.issue,
+              label: data.label,
+              snapshot_at: data.snapshot_at || null,
+              current_mtime: stale.current_mtime,
+              detail: data.marker_path,
+            });
+            log(`Orden stale descartada: #${data.issue} label=${data.label} reason=${stale.reason}`);
+            // Salir del switch sin invocar `gh`. El bloque común de abajo
+            // moverá el JSON a `listo/` con el campo `discarded` ya seteado.
+            break;
+          }
           ensureLabels(data.label);
           execSync(`"${GH_BIN}" issue edit ${data.issue} --add-label "${esc(data.label)}"`, {
             cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
           });
           log(`Label "${data.label}" → #${data.issue}`);
           break;
+        }
 
         case 'remove-label':
           execSync(`"${GH_BIN}" issue edit ${data.issue} --remove-label "${esc(data.label)}"`, {
@@ -361,23 +442,47 @@ function main() {
   }, 10000);
 }
 
-fs.writeFileSync(path.join(PIPELINE, 'svc-github.pid'), String(process.pid));
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+// #2994 — Side-effects de arranque (escritura del PID, signal/crash handlers)
+// SOLO cuando este archivo es el entrypoint. Si lo `require()` un test, no
+// queremos tocar el FS real ni registrar handlers contra el process global.
+function installSignalHandlers() {
+  fs.writeFileSync(path.join(PIPELINE, 'svc-github.pid'), String(process.pid));
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
 
-// Crash handlers
-process.on('uncaughtException', (err) => {
-  // #2334: sanitizar antes de persistir stack a disco.
-  const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`);
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
-  console.error(msg);
-  process.exit(1);
-});
-process.on('unhandledRejection', (reason) => {
-  const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
-  console.error(msg);
-  process.exit(1);
-});
+  process.on('uncaughtException', (err) => {
+    // #2334: sanitizar antes de persistir stack a disco.
+    const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`);
+    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+    console.error(msg);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
+    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+    console.error(msg);
+    process.exit(1);
+  });
+}
 
-main();
+// #2994 — Sólo arrancar el daemon cuando el archivo se ejecuta como entrypoint.
+// `require()` desde tests E2E debe poder llamar a `processQueue()` sin disparar
+// el setInterval/registrar handlers globales contra el FS real.
+if (require.main === module) {
+  installSignalHandlers();
+  main();
+}
+
+module.exports = {
+  processQueue,
+  validateOrderFresh,
+  logStaleOrder,
+  STALE_ORDERS_LOG,
+  // Constantes que los tests necesitan (resueltas a partir de PIPELINE_STATE_DIR
+  // si se setea antes del require).
+  PENDIENTE,
+  TRABAJANDO,
+  LISTO,
+  FALLIDO,
+  LOG_DIR,
+};
