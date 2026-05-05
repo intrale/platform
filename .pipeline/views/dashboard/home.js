@@ -322,6 +322,16 @@ function homeStyles() {
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
 
+/* Rest mode pill (#2890 PR-A) — indigo nocturno cuando la ventana está activa.
+   Token --rest-mode viene del UX (#2896, design-tokens.css:88). */
+#hdr-rest-mode {
+    color: var(--rest-mode-fg, #C5B7FF);
+    border-color: rgba(124,92,255,0.55);
+    background: var(--rest-mode-bg, rgba(124,92,255,0.16));
+    cursor: pointer;
+}
+#hdr-rest-mode:hover { filter: brightness(1.18); }
+
 /* Mode pill — clickeable con dropdown */
 .in-pill[data-mode-toggle] { cursor: pointer; user-select: none; position: relative; }
 .in-pill[data-mode-toggle]:hover { filter: brightness(1.15); }
@@ -416,6 +426,7 @@ const AREAS = [
     { key: 'kpis', label: 'KPIs', icon: '📊', sub: 'Métricas detalladas', href: '/kpis' },
     { key: 'historial', label: 'Historial', icon: '📜', sub: 'Actividad reciente', href: '/historial' },
     { key: 'costos', label: 'Costos', icon: '💰', sub: 'Tokens y consumo', href: '/costos' },
+    { key: 'modo-descanso', label: 'Descanso', icon: '🌙', sub: 'Ventana horaria', href: '/modo-descanso' },
 ];
 
 function renderClientScript() {
@@ -553,6 +564,20 @@ async function tickHeader(){
     }
     setWindowPill('hdr-window-qa', pw.qa, 'QA');
     setWindowPill('hdr-window-build', pw.build, 'Build');
+
+    // Modo descanso (#2890 PR-A): pill solo visible cuando la ventana está
+    // activa Y configurada con horarios. Texto "Modo descanso · HH:MM-HH:MM".
+    const rm = d.restMode || {};
+    const restPill = document.getElementById('hdr-rest-mode');
+    if(restPill){
+        const visible = !!(rm.active && rm.start && rm.end);
+        restPill.style.display = visible ? '' : 'none';
+        if(visible){
+            const within = rm.isWithinWindow ? '· ahora' : '· programada';
+            restPill.textContent = '🌙 Modo descanso · '+rm.start+'–'+rm.end+' '+within;
+            restPill.title = 'Modo descanso configurado · '+rm.start+'–'+rm.end+' ('+(rm.timezone||'')+'). Click para configurar.';
+        }
+    }
     // Recursos: CPU/RAM con coloreo según umbrales.
     const res = d.resources;
     const resPill = document.getElementById('hdr-resources');
@@ -989,6 +1014,7 @@ function renderHomeHTML() {
       </span>
       <span class="in-pill" id="hdr-window-qa" title="Click para activar/desactivar la QA Priority Window">…</span>
       <span class="in-pill" id="hdr-window-build" title="Click para activar/desactivar la Build Priority Window">…</span>
+      <a class="in-pill" id="hdr-rest-mode" href="/modo-descanso" target="_blank" rel="noopener" style="display:none;text-decoration:none" title="Modo descanso activo. Click para configurar.">…</a>
       <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema">…</span>
       <span class="in-pill" id="hdr-pulpo">…</span>
       <span class="in-clock" id="hdr-clock">…</span>

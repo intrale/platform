@@ -11,6 +11,10 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// #2890 PR-A — Modo descanso (ventana horaria).
+let restModeWindow = null;
+try { restModeWindow = require('./rest-mode-window'); } catch { /* opcional */ }
+
 function safeReadJson(filepath, fallback) {
     try { return JSON.parse(fs.readFileSync(filepath, 'utf8')); }
     catch { return fallback; }
@@ -185,6 +189,29 @@ function headerSlice(state, ctx) {
         maxMem: r.maxMem ?? 70,
     };
 
+    // #2890 PR-A — Modo descanso: pill indigo en header (CA-3.1) cuando la
+    // ventana está activa. Devolvemos `restMode` aun cuando esté inactivo
+    // para que el cliente pueda morphear sin re-fetchear otra cosa.
+    let restMode = { active: false };
+    if (restModeWindow) {
+        try {
+            const w = restModeWindow.getWindow({ pipelineDir: PIPELINE });
+            const within = restModeWindow.isWithinWindow(w, Date.now());
+            restMode = {
+                active: !!w.active,
+                start: w.start || null,
+                end: w.end || null,
+                timezone: w.timezone || null,
+                days: Array.isArray(w.days) ? w.days : [],
+                manual: !!w.manual,
+                isWithinWindow: within,
+                updatedAt: w.updatedAt || null,
+            };
+        } catch (e) {
+            restMode = { active: false, error: e.message };
+        }
+    }
+
     return {
         mode,
         allowedIssues,
@@ -200,6 +227,7 @@ function headerSlice(state, ctx) {
         },
         priorityWindows,
         resources,
+        restMode,
         timestamp: Date.now(),
     };
 }
