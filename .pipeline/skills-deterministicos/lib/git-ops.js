@@ -96,6 +96,98 @@ function resolveGhPath() {
 // Para tests: limpiar la cache y forzar re-resolución.
 function clearGhPathCache() { _ghPathCache = undefined; }
 
+// #2895 (rebote rev-1): resolver el directorio que contiene `git.exe` en
+// Windows. Mismo patrón que resolveGhPath pero para git.
+//
+// Síntoma: en el rebote del 2026-04-30 los tests Node fallaron en producción
+// con "git no se reconoce" / spawn ENOENT, aunque en local pasan. Causa:
+// cuando el pulpo arranca como servicio Windows (no desde un shell con git
+// en PATH) y spawnea tester.js, el env heredado puede no incluir
+// `C:\Program Files\Git\cmd`. Al spawnear `node --test` con ese env, los
+// test child processes que usan `spawnSync('git', ...)` o `execSync('git ...')`
+// fallan con ENOENT — mismo bug que tuvimos con `gh.exe` (#2523 rev-4).
+//
+// La memoria `bash-limitations.md` documenta que el pipeline corre desde Node
+// con cmd.exe como shell — no podemos asumir que PATH tenga git.
+//
+// Estrategia (orden):
+//   1. Si `process.env.PATH` ya tiene `git.exe`, devolver ese directorio.
+//   2. Probar ubicaciones conocidas de Git for Windows.
+//   3. Si nada matchea, devolver `null` — el caller decide cómo seguir.
+//
+// El resultado se cachea por proceso. `clearGitDirCache()` lo resetea para tests.
+let _gitDirCache;
+function resolveGitDir() {
+    if (process.platform !== 'win32') return null;
+    if (_gitDirCache !== undefined) return _gitDirCache;
+
+    const isFile = (p) => {
+        try { return fs.statSync(p).isFile(); } catch { return false; }
+    };
+
+    // 1) Buscar en PATH actual
+    const rawPath = process.env.PATH || process.env.Path || '';
+    for (const dir of rawPath.split(path.delimiter).filter(Boolean)) {
+        if (isFile(path.join(dir, 'git.exe'))) {
+            _gitDirCache = dir;
+            return dir;
+        }
+    }
+
+    // 2) Ubicaciones conocidas de Git for Windows
+    const known = [
+        'C:\\Program Files\\Git\\cmd',
+        'C:\\Program Files\\Git\\mingw64\\bin',
+        'C:\\Program Files (x86)\\Git\\cmd',
+        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'cmd'),
+        process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Git', 'cmd'),
+    ].filter(Boolean);
+    for (const dir of known) {
+        if (isFile(path.join(dir, 'git.exe'))) {
+            _gitDirCache = dir;
+            return dir;
+        }
+    }
+
+    // 3) Fallback: null. El caller puede decidir si tirar o seguir sin git.
+    _gitDirCache = null;
+    return null;
+}
+function clearGitDirCache() { _gitDirCache = undefined; }
+
+// #2895: devuelve un nuevo objeto env con git.exe accesible vía PATH.
+// No muta el env recibido. Idempotente: si git ya está en PATH, no lo agrega
+// dos veces. Si resolveGitDir devuelve null (no encontró git), devuelve el
+// env tal cual (la falla seguirá siendo visible en el child con el mismo
+// error que antes — no peor que sin el helper).
+//
+// Importante para Windows: si el env tenía claves `Path` y `PATH` con casing
+// distinto, las normalizamos a `PATH` para evitar el caso ambiguo donde
+// CreateProcess elige una de las dos.
+function ensureGitInPath(env) {
+    const out = { ...env };
+    const gitDir = resolveGitDir();
+    if (!gitDir) return out;
+
+    // Normalizar a una sola key PATH (case-insensitive en Windows pero
+    // case-sensitive en el objeto JS — dos keys con casing distinto en el
+    // env que se pasa a spawn pueden producir resultados impredecibles).
+    let currentPath = '';
+    if ('PATH' in out) currentPath = out.PATH || '';
+    else if ('Path' in out) currentPath = out.Path || '';
+    else if ('path' in out) currentPath = out.path || '';
+
+    const dirs = currentPath.split(path.delimiter).filter(Boolean);
+    const lc = gitDir.toLowerCase();
+    const alreadyIn = dirs.some((d) => d.toLowerCase() === lc);
+
+    out.PATH = alreadyIn ? currentPath : `${gitDir}${path.delimiter}${currentPath}`;
+    // Borrar variantes de casing para que el child reciba sólo una PATH.
+    if ('Path' in out && out.Path !== out.PATH) delete out.Path;
+    if ('path' in out && out.path !== out.PATH) delete out.path;
+    return out;
+}
+
 function runGh(args, opts = {}) {
     const ghPath = resolveGhPath();
     // #2523 (rev-4): cuando resolvimos a una ruta absoluta, deshabilitamos
@@ -324,6 +416,9 @@ module.exports = {
     runGh,
     resolveGhPath,
     clearGhPathCache,
+    resolveGitDir,
+    clearGitDirCache,
+    ensureGitInPath,
     getCurrentBranch,
     getCurrentSha,
     getChangedFiles,

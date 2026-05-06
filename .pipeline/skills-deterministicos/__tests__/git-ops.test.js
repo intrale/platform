@@ -286,3 +286,143 @@ test('#2523 rev-4 — exporta resolveGhPath y clearGhPathCache', () => {
     assert.equal(typeof ops.resolveGhPath, 'function');
     assert.equal(typeof ops.clearGhPathCache, 'function');
 });
+
+// #2895 (rebote rev-1) — resolveGitDir + ensureGitInPath cubren el rebote del
+// 2026-04-30: 19 tests Node fallaron en producción con "git no se reconoce" /
+// spawn ENOENT, aunque en local pasaban. El pulpo arranca como servicio
+// Windows sin git en el PATH heredado; al spawnear node --test, los test child
+// processes que invocan git directo fallan. ensureGitInPath se llama en
+// tester.js antes del spawn para garantizar que git esté disponible.
+
+test('#2895 rev-1 — resolveGitDir en non-Windows devuelve null sin tocar FS', () => {
+    if (process.platform === 'win32') return;
+    ops.clearGitDirCache();
+    assert.equal(ops.resolveGitDir(), null);
+});
+
+test('#2895 rev-1 — resolveGitDir encuentra git.exe via PATH override', () => {
+    if (process.platform !== 'win32') return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-resolve-'));
+    const fakeGit = path.join(tmpDir, 'git.exe');
+    fs.writeFileSync(fakeGit, '@echo off\r\n');
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${tmpDir}${path.delimiter}${prevPath || ''}`;
+    try {
+        ops.clearGitDirCache();
+        const resolved = ops.resolveGitDir();
+        assert.equal(resolved, tmpDir, 'debe resolver al directorio del git.exe del PATH override');
+    } finally {
+        process.env.PATH = prevPath;
+        ops.clearGitDirCache();
+        try { fs.unlinkSync(fakeGit); } catch {}
+        try { fs.rmdirSync(tmpDir); } catch {}
+    }
+});
+
+test('#2895 rev-1 — resolveGitDir cachea el resultado entre llamadas', () => {
+    if (process.platform !== 'win32') return;
+    ops.clearGitDirCache();
+    const first = ops.resolveGitDir();
+    const second = ops.resolveGitDir();
+    assert.equal(first, second);
+});
+
+test('#2895 rev-1 — ensureGitInPath agrega el directorio de git al PATH si falta', () => {
+    if (process.platform !== 'win32') return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ensure-'));
+    const fakeGit = path.join(tmpDir, 'git.exe');
+    fs.writeFileSync(fakeGit, '@echo off\r\n');
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${tmpDir}${path.delimiter}${prevPath || ''}`;
+    try {
+        ops.clearGitDirCache();
+        // Env de partida que NO tiene git en PATH (simulando el caso producción)
+        const startingEnv = { PATH: 'C:\\windows\\system32', FOO: 'bar' };
+        const out = ops.ensureGitInPath(startingEnv);
+        assert.ok(out.PATH.startsWith(tmpDir + path.delimiter),
+            `PATH debe empezar con ${tmpDir}, fue: ${out.PATH.slice(0, 100)}`);
+        assert.equal(out.FOO, 'bar', 'preserva otras keys del env');
+        // No debe mutar el env original
+        assert.equal(startingEnv.PATH, 'C:\\windows\\system32');
+    } finally {
+        process.env.PATH = prevPath;
+        ops.clearGitDirCache();
+        try { fs.unlinkSync(fakeGit); } catch {}
+        try { fs.rmdirSync(tmpDir); } catch {}
+    }
+});
+
+test('#2895 rev-1 — ensureGitInPath es idempotente: no duplica entrada si ya estaba', () => {
+    if (process.platform !== 'win32') return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-idem-'));
+    const fakeGit = path.join(tmpDir, 'git.exe');
+    fs.writeFileSync(fakeGit, '@echo off\r\n');
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${tmpDir}${path.delimiter}${prevPath || ''}`;
+    try {
+        ops.clearGitDirCache();
+        const startingEnv = { PATH: `${tmpDir};C:\\windows\\system32` };
+        const out = ops.ensureGitInPath(startingEnv);
+        // Contar cuántas veces aparece tmpDir en out.PATH (case-insensitive)
+        const count = out.PATH.toLowerCase().split(path.delimiter)
+            .filter((d) => d === tmpDir.toLowerCase()).length;
+        assert.equal(count, 1, 'no debe duplicar la entrada del git.exe en PATH');
+    } finally {
+        process.env.PATH = prevPath;
+        ops.clearGitDirCache();
+        try { fs.unlinkSync(fakeGit); } catch {}
+        try { fs.rmdirSync(tmpDir); } catch {}
+    }
+});
+
+test('#2895 rev-1 — ensureGitInPath consolida Path/PATH en una sola key uppercase', () => {
+    if (process.platform !== 'win32') return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-case-'));
+    const fakeGit = path.join(tmpDir, 'git.exe');
+    fs.writeFileSync(fakeGit, '@echo off\r\n');
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${tmpDir}${path.delimiter}${prevPath || ''}`;
+    try {
+        ops.clearGitDirCache();
+        // Simulación: el spread inherence de process.env podría exponer Path
+        // (mixed case) en vez de PATH (caso reportado en algunos shells de
+        // Windows). El helper debe normalizar a PATH y eliminar Path duplicada.
+        const startingEnv = { Path: 'C:\\windows', OTHER: 'x' };
+        const out = ops.ensureGitInPath(startingEnv);
+        assert.ok(out.PATH, 'debe haber PATH (mayúsculas)');
+        assert.ok(!('Path' in out), 'no debe haber Path (mixed case) duplicado');
+        assert.ok(out.PATH.toLowerCase().includes(tmpDir.toLowerCase()),
+            'PATH debe contener el directorio resuelto de git');
+    } finally {
+        process.env.PATH = prevPath;
+        ops.clearGitDirCache();
+        try { fs.unlinkSync(fakeGit); } catch {}
+        try { fs.rmdirSync(tmpDir); } catch {}
+    }
+});
+
+test('#2895 rev-1 — ensureGitInPath devuelve env tal cual si resolveGitDir es null', () => {
+    // Simulamos no-Windows o git ausente forzando la cache a null
+    ops.clearGitDirCache();
+    if (process.platform === 'win32') {
+        // En Windows hay que mockear el FS — más simple: si el process actual
+        // tiene git resuelto, validamos en el branch de Windows con su valor.
+        // Acá asegamos al menos que devuelve un objeto nuevo (no muta).
+        const startingEnv = { PATH: 'C:\\windows', FOO: 'bar' };
+        const out = ops.ensureGitInPath(startingEnv);
+        assert.notStrictEqual(out, startingEnv, 'debe devolver un objeto nuevo');
+        assert.equal(out.FOO, 'bar');
+    } else {
+        // En non-Windows, resolveGitDir devuelve null → env tal cual (con clone)
+        const startingEnv = { PATH: '/usr/bin', FOO: 'bar' };
+        const out = ops.ensureGitInPath(startingEnv);
+        assert.equal(out.PATH, '/usr/bin');
+        assert.equal(out.FOO, 'bar');
+    }
+});
+
+test('#2895 rev-1 — exporta resolveGitDir, clearGitDirCache y ensureGitInPath', () => {
+    assert.equal(typeof ops.resolveGitDir, 'function');
+    assert.equal(typeof ops.clearGitDirCache, 'function');
+    assert.equal(typeof ops.ensureGitInPath, 'function');
+});

@@ -46,16 +46,40 @@ for (const d of [PENDIENTE, TRABAJANDO, LISTO, FALLIDO, LOG_DIR]) {
 // usar el shebang nativo en POSIX, pero en Windows execSync usa cmd.exe
 // que NO respeta shebangs. Solución: el override apunta a un .cmd que
 // reenvía a node con un .js helper.
+//
+// #2895 (rebote rev-1): hardening del stub para evitar flakiness bajo carga.
+// Cuando `node --test` corre 65 archivos en paralelo (947 tests totales en
+// ~72s), el OS spawnea cientos de child processes. Bajo esa contención:
+//   1) PATH lookup de `node` desde cmd.exe puede fallar transitoriamente.
+//      → Usamos `process.execPath` (ruta absoluta del node padre).
+//   2) appendFileSync puede chocar con EBUSY/EACCES en NTFS bajo concurrencia.
+//      → Retry interno en el stub con backoff.
+//   3) NTFS metadata flush puede atrasarse → getGhCalls() no ve el write.
+//      → Helper waitForGhCalls() con retry breve antes de assertions.
+// Sin el hardening, los tests CA1/Backward-compat fallaban con `calls=[]`
+// solo bajo ejecución completa del tester, no en isolation.
 const STUB_DIR = path.join(TMP_DIR, 'stub-gh');
 fs.mkdirSync(STUB_DIR, { recursive: true });
 const GH_CALLS_LOG = path.join(STUB_DIR, 'gh-calls.log');
 const STUB_JS = path.join(STUB_DIR, 'gh-stub.js');
 fs.writeFileSync(STUB_JS, `
 // Registra cada invocación con argv y exit 0.
+// Retry en appendFileSync para sobrevivir EBUSY/EACCES en NTFS bajo carga.
 const fs = require('fs');
 const path = require('path');
 const line = JSON.stringify({ ts: Date.now(), argv: process.argv.slice(2) }) + '\\n';
-fs.appendFileSync(${JSON.stringify(GH_CALLS_LOG)}, line);
+const TARGET = ${JSON.stringify(GH_CALLS_LOG)};
+let lastErr = null;
+for (let i = 0; i < 5; i++) {
+    try { fs.appendFileSync(TARGET, line); lastErr = null; break; }
+    catch (e) { lastErr = e; const t = Date.now() + 20 * (i + 1); while (Date.now() < t) {} }
+}
+if (lastErr) {
+    // Best-effort fallback: escribir a un archivo siblings con sufijo del PID
+    // para no perder evidencia silenciosamente. getGhCalls() también
+    // recoge esos archivos.
+    try { fs.writeFileSync(TARGET + '.' + process.pid, line); } catch {}
+}
 process.exit(0);
 `, 'utf8');
 
@@ -63,13 +87,17 @@ process.exit(0);
 // se ejecutan principalmente en Windows según el entorno del proyecto.
 // execSync usa cmd.exe en Windows así que .cmd funciona; en POSIX caería
 // a sh que no entiende .cmd, así que damos también una variante .sh.
+//
+// #2895 rev-1: usamos `process.execPath` en lugar de `node` para evitar
+// dependencia del PATH del child cmd.exe — bajo carga el PATH lookup falla
+// con "node no se reconoce" y execSync devuelve error, dejando calls=[].
 const STUB_CMD = path.join(STUB_DIR, 'gh.cmd');
 fs.writeFileSync(STUB_CMD,
-    `@echo off\r\nnode "${STUB_JS}" %*\r\n`,
+    `@echo off\r\n"${process.execPath}" "${STUB_JS}" %*\r\n`,
     'utf8');
 const STUB_SH = path.join(STUB_DIR, 'gh');
 fs.writeFileSync(STUB_SH,
-    `#!/bin/sh\nexec node "${STUB_JS}" "$@"\n`,
+    `#!/bin/sh\nexec "${process.execPath}" "${STUB_JS}" "$@"\n`,
     'utf8');
 try { fs.chmodSync(STUB_SH, 0o755); } catch {}
 
@@ -88,11 +116,39 @@ const svc = require('../servicio-github');
 
 function clearGhCalls() {
     try { fs.unlinkSync(GH_CALLS_LOG); } catch {}
+    // #2895 rev-1: limpiar también los fallback files con sufijo .pid que
+    // el stub crea cuando appendFileSync no pudo escribir al log principal.
+    try {
+        for (const f of fs.readdirSync(STUB_DIR)) {
+            if (f.startsWith('gh-calls.log.')) {
+                try { fs.unlinkSync(path.join(STUB_DIR, f)); } catch {}
+            }
+        }
+    } catch {}
 }
 
 function getGhCalls() {
-    try { return fs.readFileSync(GH_CALLS_LOG, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); }
-    catch { return []; }
+    const out = [];
+    // 1) Archivo principal del stub.
+    try {
+        for (const l of fs.readFileSync(GH_CALLS_LOG, 'utf8').split('\n').filter(Boolean)) {
+            try { out.push(JSON.parse(l)); } catch {}
+        }
+    } catch {}
+    // 2) Fallback files (gh-calls.log.<pid>) creados cuando appendFileSync
+    //    falló bajo contención de FS — recolectarlos también para no perder
+    //    evidencia de invocaciones (#2895 rev-1).
+    try {
+        for (const f of fs.readdirSync(STUB_DIR)) {
+            if (!f.startsWith('gh-calls.log.') || f === 'gh-calls.log') continue;
+            try {
+                for (const l of fs.readFileSync(path.join(STUB_DIR, f), 'utf8').split('\n').filter(Boolean)) {
+                    try { out.push(JSON.parse(l)); } catch {}
+                }
+            } catch {}
+        }
+    } catch {}
+    return out;
 }
 
 function clearQueues() {
