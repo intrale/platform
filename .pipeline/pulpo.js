@@ -3215,9 +3215,26 @@ function brazoBarrido(config) {
             fs.writeFileSync(rmLabelFile, JSON.stringify({ action: 'remove-label', issue: parseInt(issue), label: 'needs-definition' }));
           }
 
-          // Si es pipeline de desarrollo → notificar por telegram
+          // Si es pipeline de desarrollo → notificar por telegram con estado
+          // real del PR (#3030). Antes mandaba siempre "Listo para merge" sin
+          // verificar — confuso porque muchos PRs ya estaban mergeados, otros
+          // tenían checks pendientes o estaban cerrados sin merge.
           if (pipelineName === 'desarrollo') {
-            sendTelegram(`✅ #${issue} completó el pipeline de desarrollo. Listo para merge.`);
+            try {
+              const { fetchPrInfoForIssue } = require('./lib/pr-info-fetcher');
+              const { buildCompletionMessage, summarizePrInfoForLog } = require('./lib/pr-status-message');
+              const prInfo = fetchPrInfoForIssue(issue, { ghBin: GH_BIN, cwd: ROOT, timeoutMs: 5000 });
+              const { text, replyMarkup } = buildCompletionMessage(issue, prInfo);
+              if (replyMarkup) sendTelegramWithMarkup(text, replyMarkup);
+              else sendTelegram(text);
+              const sum = summarizePrInfoForLog(prInfo);
+              log('barrido', `#${issue} notificación cierre — prState=${sum.prState} rollupState=${sum.rollupState} prUrl=${sum.prUrl || '-'}`);
+            } catch (e) {
+              // Defensa última: si algo falla en el helper, mandamos el texto
+              // legacy + sufijo. Nunca dejar al issue sin notificación.
+              log('barrido', `#${issue} ERROR resolviendo prState: ${e.message}`);
+              sendTelegram(`✅ #${issue} completó el pipeline de desarrollo. (estado del PR no verificable)`);
+            }
           }
 
           // Cleanup: eliminar worktree del issue si existe
