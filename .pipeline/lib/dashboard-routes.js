@@ -85,6 +85,13 @@ const API_ROUTES = {
     // namespace interno.
     '/api/dash/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
     '/api/diagnostico/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
+    // #2993 — widget de handoff cross-agente. CA-C2: % hit rate, ahorro USD
+    // estimado mensual, sparkline 7d. Refresh natural cada 30s desde el
+    // cliente (el endpoint es stateless). Bajo `/api/dash/*` para seguir la
+    // convención del kiosk vertical y `/api/handoff-metrics` como alias
+    // documentado en CA-C2 (nombre humano-friendly para curl/debug).
+    '/api/dash/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
+    '/api/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
 };
 
 function sendJson(res, payload, status = 200) {

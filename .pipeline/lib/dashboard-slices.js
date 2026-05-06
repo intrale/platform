@@ -768,6 +768,128 @@ function reconcilerStaleOrdersSlice(state, ctx) {
     };
 }
 
+// =============================================================================
+// #2993 — Slice del widget de handoff cross-agente.
+//
+// Lee `.claude/activity-log.jsonl` (donde `lib/traceability.js` escribe los
+// eventos `session:end`) y agrega:
+//   - hit_rate_7d:  % de invocaciones que recibieron handoff válido (>0
+//                   secciones inyectadas) sobre el total de session:end con
+//                   feature activo en los últimos 7 días.
+//   - tokens_in_24h: tokens estimados ahorrados por handoff inyectado en 24h.
+//   - bytes_out_7d:  bytes totales escritos al handoff en 7 días (proxy del
+//                    "trabajo capturado" por agentes).
+//   - usd_saved_estimate: tokens_in_24h × precio Sonnet (proxy conservador).
+//   - sparkline_7d: array de % hit-rate por día (longitud 7).
+//   - kill_switch:  estado del flag (`config.handoff.kill_switch || !enabled`).
+//
+// CA-C1: nunca incluir contenido del handoff ni excerpts.
+// CA-C2: refresh cada 30s lo manejará el cliente (este endpoint es stateless).
+//
+// Costo de I/O: el archivo es append-only; cap a STALE_ORDERS_MAX_LINES (5000)
+// porque el slice anterior ya validó esta heurística para el mismo tipo de
+// archivo. Activity-log puede crecer más, pero las últimas 5000 líneas cubren
+// >24h de operación normal del pipeline.
+// =============================================================================
+const HANDOFF_ACTIVITY_LOG = path.join('.claude', 'activity-log.jsonl');
+const HANDOFF_MAX_LINES = 10000;
+
+function readActivityLog(repoRoot) {
+    const file = path.join(repoRoot, HANDOFF_ACTIVITY_LOG);
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); }
+    catch { return []; }
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const tail = lines.slice(-HANDOFF_MAX_LINES);
+    const events = [];
+    for (const line of tail) {
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        if (evt && evt.event === 'session:end') events.push(evt);
+    }
+    return events;
+}
+
+function handoffMetricsSlice(state, ctx) {
+    const repoRoot = (ctx && ctx.REPO_ROOT)
+        || process.env.PIPELINE_REPO_ROOT
+        || process.env.CLAUDE_PROJECT_DIR
+        || path.resolve(__dirname, '..', '..');
+
+    // Config: enabled / kill_switch a partir del config.yaml ya cargado por ctx
+    // (si está disponible). Fallback a defaults.
+    let cfg = { enabled: false, kill_switch: false };
+    try {
+        const handoff = require('./handoff');
+        const raw = (ctx && ctx.config && ctx.config.handoff) || {};
+        cfg = handoff.resolveConfig(raw);
+    } catch { /* módulo opcional para tests aislados */ }
+
+    const events = readActivityLog(repoRoot);
+    const now = Date.now();
+    const day = 24 * 3600 * 1000;
+    const cutoff7d = now - 7 * day;
+    const cutoff24h = now - 1 * day;
+
+    let total7d = 0, withHandoff7d = 0;
+    let tokensIn24h = 0;
+    let bytesOut7d = 0;
+    const perDay = new Map(); // day-bucket → { total, withHandoff }
+    const fallbackPhases = new Set();
+
+    for (const evt of events) {
+        const ts = evt.ts ? Date.parse(evt.ts) : NaN;
+        if (!Number.isFinite(ts) || ts < cutoff7d) continue;
+        total7d++;
+        const sectionsIn = Number(evt.handoff_sections_in || 0);
+        const tokensInThis = Number(evt.handoff_in_tokens || 0);
+        const bytesOutThis = Number(evt.handoff_out_bytes || 0);
+        if (sectionsIn > 0 || tokensInThis > 0) withHandoff7d++;
+        else fallbackPhases.add(evt.phase || 'unknown');
+        if (ts >= cutoff24h) tokensIn24h += tokensInThis;
+        bytesOut7d += bytesOutThis;
+        // bucket por día (resolución día calendario UTC)
+        const dayKey = new Date(ts).toISOString().slice(0, 10);
+        if (!perDay.has(dayKey)) perDay.set(dayKey, { total: 0, withHandoff: 0 });
+        const bucket = perDay.get(dayKey);
+        bucket.total++;
+        if (sectionsIn > 0 || tokensInThis > 0) bucket.withHandoff++;
+    }
+
+    // Sparkline: últimos 7 días, día más viejo primero.
+    const sparkline = [];
+    for (let i = 6; i >= 0; i--) {
+        const d = new Date(now - i * day).toISOString().slice(0, 10);
+        const b = perDay.get(d) || { total: 0, withHandoff: 0 };
+        const pct = b.total === 0 ? 0 : Math.round((b.withHandoff / b.total) * 1000) / 10;
+        sparkline.push({ day: d, pct, total: b.total, with_handoff: b.withHandoff });
+    }
+
+    // Estimación USD: usamos pricing de Sonnet como cota inferior porque la
+    // mayoría de los agentes corren Sonnet/Haiku, y queremos NO sobreestimar
+    // el ahorro. 24h × ~30 días = mensual; expresamos por mes para el widget.
+    const PRICE_INPUT_PER_M = 3.0; // USD/1M tokens, Sonnet 4.6
+    const usdSavedDay = (tokensIn24h * PRICE_INPUT_PER_M) / 1e6;
+    const usdSavedMonthly = Math.round(usdSavedDay * 30 * 100) / 100;
+
+    const hitRate = total7d === 0 ? 0 : Math.round((withHandoff7d / total7d) * 1000) / 10;
+    const fallbackPct = total7d === 0 ? 0 : Math.round(((total7d - withHandoff7d) / total7d) * 1000) / 10;
+
+    return {
+        enabled: cfg.enabled,
+        kill_switch: !!cfg.kill_switch,
+        sample_window: '7d',
+        sample_size: total7d,
+        hit_rate_pct: hitRate,
+        fallback_pct: fallbackPct,
+        tokens_in_24h: tokensIn24h,
+        bytes_out_7d: bytesOut7d,
+        usd_saved_estimate_monthly: usdSavedMonthly,
+        sparkline,
+        updated_at: new Date().toISOString(),
+    };
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -782,6 +904,8 @@ module.exports = {
     quotaSlice,
     quotaExhaustedSlice,
     reconcilerStaleOrdersSlice,
+    // #2993 — widget de handoff
+    handoffMetricsSlice,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,

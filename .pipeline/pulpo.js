@@ -46,6 +46,10 @@ const partialPauseDeps = require('./lib/partial-pause-deps');
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
 const trace = require('./lib/traceability');
+// #2993 — handoff cross-agente por issue. Lectura inyectada al userPrompt del
+// próximo agente; escritura post-exit reusa el mismo mecanismo. Default OFF
+// (rollout gradual via config.yaml → handoff.enabled).
+const handoff = require('./lib/handoff');
 // #2891 PR-B — Detector de anomalías de consumo (cron interno).
 const { AnomalyDetector } = require('./anomaly-detector');
 // #2892 PR-C — Canal Telegram + estado del banner de alerta.
@@ -4636,6 +4640,36 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Construir user prompt — enriquecer si es un rebote con contexto del rechazo
   let userPrompt = `Archivo de trabajo: ${path.basename(trabajandoPath)}\nPath: ${trabajandoPath}\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;
 
+  // #2993 — Inyectar handoff cross-agente al userPrompt. Solo si:
+  //   1) `handoff.enabled: true` y `kill_switch: false` en config.yaml, y
+  //   2) la fase actual está en `handoff.inject_in_phases`.
+  // Default OFF (rollout gradual). El bloque va envuelto en
+  // `<handoff_externo>` con instructivo de no-autoritatividad (CA-A2/CA-A4 + CA-B1).
+  // Las CAs de seguridad (sanitización, redacción) se aplican en `lib/handoff.js`
+  // tanto al leer como al escribir.
+  let handoffStats = { total_sections: 0, total_bytes: 0, in_tokens: 0 };
+  try {
+    const cfgRaw = (loadConfig() || {}).handoff;
+    const cfg = handoff.resolveConfig(cfgRaw);
+    if (handoff.shouldInject(fase, cfg)) {
+      const built = handoff.buildPromptBlock(issue, {
+        retentionDays: cfg.retention_days,
+      });
+      if (built.block) {
+        userPrompt += built.block;
+        handoffStats = {
+          total_sections: built.stats.total_sections || 0,
+          total_bytes: built.stats.total_bytes || 0,
+          in_tokens: handoff.estimateTokens(built.block),
+        };
+        log('lanzamiento', `📎 ${skill}:#${issue} handoff inyectado (${handoffStats.total_sections} secciones, ${handoffStats.total_bytes}B, ~${handoffStats.in_tokens} tokens)`);
+      }
+    }
+  } catch (e) {
+    // Handoff es best-effort: NUNCA bloquear el spawn por bugs en el módulo.
+    log('lanzamiento', `⚠️ ${skill}:#${issue} handoff inject falló (best-effort): ${e.message}`);
+  }
+
   // #2801 — Si el issue fue desbloqueado manualmente con orientación humana,
   // human-block deja un archivo `<marker>.guidance.txt` junto al archivo de
   // trabajo. Lo inyectamos al prompt como bloque destacado para que el
@@ -4928,6 +4962,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       PIPELINE_TRABAJANDO: trabajandoPath,
       PIPELINE_WORKTREE: spawnCwd,
       PIPELINE_REPO_ROOT: ROOT,
+      // #2993 — el agente usa estos para escribir su sección de handoff antes
+      // de salir (paso 7.5 de roles/_base.md). Si `ENABLED=0`, el agente NO
+      // escribe — kill-switch global desde config.yaml → handoff.enabled.
+      PIPELINE_HANDOFF_PATH: handoff.handoffPathFor(issue),
+      PIPELINE_HANDOFF_ENABLED: (() => {
+        try {
+          const cfg = handoff.resolveConfig((loadConfig() || {}).handoff);
+          return cfg.enabled ? '1' : '0';
+        } catch { return '0'; }
+      })(),
       ...extraEnv,
     },
   });
@@ -5082,6 +5126,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         try {
           const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
           const tk = parseTokensFromLog(logPath);
+          // #2993 — telemetría de handoff sin contenido (CA-C1):
+          //   handoff_in_tokens: tokens estimados del bloque inyectado al prompt.
+          //   handoff_out_bytes: bytes de la sección que escribió este skill,
+          //                       leídos del archivo post-exit.
+          let handoffOutBytes = 0;
+          try {
+            const ho = handoff.readHandoff(issue);
+            const mine = ho.sections.find(s => s.skill === skill);
+            if (mine) handoffOutBytes = mine.byteLength || 0;
+          } catch {}
           trace.emitSessionEnd(traceHandle, {
             tokens_in: tk.input,
             tokens_out: tk.output,
@@ -5090,6 +5144,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             tool_calls: tk.tool_calls,
             exit_code: code == null ? -1 : code,
             duration_ms: Math.round(elapsedSec * 1000),
+            handoff_in_tokens: handoffStats.in_tokens || 0,
+            handoff_out_bytes: handoffOutBytes,
+            handoff_sections_in: handoffStats.total_sections || 0,
           });
         } catch (e) {
           log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);

@@ -338,3 +338,57 @@ quota_detector:
   # demasiado spamea (memoria `feedback_telegram-messages-natural`). El rango
   # razonable está documentado en #2979 — validación pendiente como hardening.
   reminder_interval_minutes: 120
+
+# =============================================================================
+# Handoff cross-agente (#2993)
+# =============================================================================
+# Cuando un issue pasa por varias fases (analisis → criterios → validacion →
+# dev → build → verificacion → aprobacion → entrega), cada agente vuelve a
+# cargar el contexto completo del issue (CLAUDE.md, MEMORY, body+comments).
+# El handoff es un artefacto markdown liviano por issue donde cada agente
+# deja una sección descriptiva al cerrar fase, y el próximo lo recibe ya
+# inyectado en su userPrompt.
+#
+# Reglas de seguridad fundamentales (lib/handoff.js):
+#   - Sanitización contra prompt-injection (CA-B1, BLOCKER): denylist
+#     hardcoded en código. NO configurable desde acá.
+#   - Filtrado de secrets/PII (CA-B3): reusa lib/redact.js + patrones extra.
+#     NO configurable desde acá.
+#   - Validación de issue_id (CA-B4): /^\d+$/. NO configurable.
+#   - Atomic write + lock por issue (CA-B5).
+#   - Audit log a `.pipeline/logs/handoff-audit.jsonl` (CA-B7) sin contenido.
+#
+# Lo que SÍ es configurable acá:
+#   - enabled:          flag global de rollout. Default OFF (false). Activar
+#                       solo después de validar telemetría y ausencia de
+#                       falsos positivos en el detector de prompt-injection.
+#   - kill_switch:      si está en true, override de enabled (apagado total).
+#                       Permite cortar inmediato sin rebootear el pulpo.
+#   - max_section_kb:   tope por skill. Sobre eso, se trunca con marcador.
+#                       Default 10. Mitiga DoS por handoff inflado (CA-B6)
+#                       y crecimiento sin tope (RT-1 del análisis de guru).
+#   - retention_days:   ventana de validez por sección. Las secciones más
+#                       viejas se ignoran al leer (CA-A5). Default 30.
+#   - inject_in_phases: lista explícita de fases que reciben inyección.
+#                       Permite arrancar con un subset (ej. solo verificacion
+#                       y aprobacion) y ampliar después de validar.
+#
+# Rollout sugerido (operacional):
+#   1. Mergear con `enabled: false`. Validar tests unitarios + smoke test.
+#   2. Activar en una fase aislada (`inject_in_phases: [verificacion]`) +
+#      `enabled: true`. Observar `/api/handoff-metrics` y logs de auditoría
+#      durante ≥3 días.
+#   3. Ampliar progresivamente. Si aparece `injection_blocked` en audit,
+#      `kill_switch: true` y revisar el origen.
+handoff:
+  enabled: false
+  kill_switch: false
+  max_section_kb: 10
+  retention_days: 30
+  inject_in_phases:
+    - validacion
+    - criterios
+    - sizing
+    - verificacion
+    - aprobacion
+    - entrega
