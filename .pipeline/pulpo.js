@@ -37,6 +37,9 @@ const humanBlock = require('./lib/human-block');
 const partialPause = require('./lib/partial-pause');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
+// #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
+// Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
+const { parseDependencyComment } = require('./lib/dep-comment-parser');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
 const partialPauseDeps = require('./lib/partial-pause-deps');
 // #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
@@ -7400,37 +7403,43 @@ async function brazoDesbloqueoImpl(config) {
 
     for (const issue of blockedIssues) {
       try {
-        // 2. Leer comentarios del issue para encontrar dependencias creadas por el pipeline
+        // 2. Leer comentarios del issue (#3002 — JSON estructurado, NO `--jq
+        // .comments[].body`). Necesitamos `createdAt` para escoger el marker
+        // más reciente cuando hay múltiples (CA-7) y `body` por separado por
+        // comentario para que el parser pueda hacer match line-based.
         ghThrottle();
-        const { stdout: comments } = await ghDesbloqueoCall(
-          ['issue', 'view', String(issue.number), '--json', 'comments', '--jq', '.comments[].body', '--repo', 'intrale/platform']
+        const { stdout: rawComments } = await ghDesbloqueoCall(
+          ['issue', 'view', String(issue.number), '--json', 'comments', '--repo', 'intrale/platform']
         );
-
-        // Buscar el comentario de dependencias del pipeline
-        const depCommentMatch = comments.match(/Dependencias detectadas por el pipeline[\s\S]*?(?=\n\n|\Z)/);
-        let depIssueNumbers = [];
-        if (depCommentMatch) {
-          depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)]
-            .map(m => m[1])
-            .filter(n => n !== String(issue.number));
+        let commentsArray = [];
+        try {
+          const parsed = JSON.parse(rawComments || '{}');
+          commentsArray = Array.isArray(parsed.comments) ? parsed.comments : [];
+        } catch (e) {
+          // Si gh devolvió algo que no es JSON, fail-closed: no podemos
+          // garantizar que las deps estén bien parseadas → no tocar labels.
+          log('desbloqueo', `#${issue.number}: respuesta de gh no parseable como JSON — skip ciclo`);
+          continue;
         }
 
-        // Fallback: si no hay deps en el comentario del pipeline, buscar en body + todos los comentarios
-        if (depIssueNumbers.length === 0) {
-          try {
-            ghThrottle();
-            const { stdout: fullData } = await ghDesbloqueoCall(
-              ['issue', 'view', String(issue.number), '--json', 'body,comments', '--jq', '[.body, .comments[].body] | join("\\n")', '--repo', 'intrale/platform']
-            );
-            const allRefs = [...fullData.matchAll(/#(\d+)/g)]
-              .map(m => m[1])
-              .filter(n => n !== String(issue.number));
-            depIssueNumbers = [...new Set(allRefs)]; // dedup
-          } catch {}
+        // #3002 — Parser robusto del marker "Dependencias detectadas por el
+        // pipeline". Reemplaza la regex inline rota + el fallback de "todos
+        // los #N del body+comments" que arrastraba menciones fantasma.
+        // null = no marker → fail-closed (CA-6); [] = marker pero sin nums.
+        const parsed = parseDependencyComment(commentsArray, issue.number);
+        if (parsed === null) {
+          // CA-6: NO desbloquear, NO auto-cerrar. Mantener label puesto y
+          // dejar el issue para revisión humana en próxima iteración.
+          log('desbloqueo', `#${issue.number}: no se encontró marker "Dependencias detectadas por el pipeline" en ningún comentario — fail-closed, skip ciclo`);
+          // No tocar blockedBy: si lo registramos como [] el dashboard lo
+          // muestra como "sin deps" y la siguiente iteración lo auto-cierra
+          // por allClosed=true. Mejor dejarlo fuera del mapa hasta que
+          // aparezca el marker o un humano intervenga.
+          continue;
         }
-
+        const depIssueNumbers = parsed.map(String);
         if (depIssueNumbers.length === 0) {
-          log('desbloqueo', `#${issue.number}: label blocked:dependencies sin dependencias detectables — registrado sin deps`);
+          log('desbloqueo', `#${issue.number}: marker presente pero sin issue numbers reconocibles — registrado sin deps`);
           blockedBy[issue.number] = [];
           continue;
         }
