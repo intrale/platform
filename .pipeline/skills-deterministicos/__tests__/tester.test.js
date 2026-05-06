@@ -81,11 +81,31 @@ test('buildGradleCommand — module=all incluye los tres módulos + kover backen
     }
     assert.ok(c.args.includes(':backend:test'));
     assert.ok(c.args.includes(':users:test'));
-    assert.ok(c.args.includes(':app:composeApp:testDebugUnitTest'));
+    // app/composeApp tiene product flavors (Business/Client/Delivery), por lo
+    // que `testDebugUnitTest` es ambiguo y Gradle aborta el build (rebote
+    // #3002). Enumeramos las tres tareas de flavor explícitamente.
+    assert.ok(c.args.includes(':app:composeApp:testClientDebugUnitTest'));
+    assert.ok(c.args.includes(':app:composeApp:testBusinessDebugUnitTest'));
+    assert.ok(c.args.includes(':app:composeApp:testDeliveryDebugUnitTest'));
+    assert.ok(!c.args.includes(':app:composeApp:testDebugUnitTest'),
+        'no debe incluirse la tarea ambigua sin flavor');
     assert.ok(c.args.includes(':backend:koverXmlReport'));
     assert.ok(c.args.includes(':app:composeApp:koverXmlReport'));
     assert.ok(c.args.includes('--no-daemon'));
     assert.deepEqual(c.modules, ['backend', 'users', 'app']);
+});
+
+test('buildGradleCommand — module=app enumera las tres tareas de flavor (anti-ambiguity #3002)', () => {
+    const c = tester.buildGradleCommand('app', false);
+    // Con product flavors activos, `:app:composeApp:testDebugUnitTest` no
+    // existe — Gradle aborta con "task is ambiguous" listando las 3 variantes.
+    // Verificamos que las 3 variantes se incluyan y que la tarea ambigua NO.
+    assert.ok(c.args.includes(':app:composeApp:testClientDebugUnitTest'));
+    assert.ok(c.args.includes(':app:composeApp:testBusinessDebugUnitTest'));
+    assert.ok(c.args.includes(':app:composeApp:testDeliveryDebugUnitTest'));
+    assert.ok(!c.args.includes(':app:composeApp:testDebugUnitTest'),
+        'no debe incluirse la tarea ambigua sin flavor');
+    assert.deepEqual(c.modules, ['app']);
 });
 
 test('buildGradleCommand — module=backend incluye :backend:test + :backend:koverXmlReport', () => {
