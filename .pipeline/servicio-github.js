@@ -2,6 +2,15 @@
 // =============================================================================
 // Servicio GitHub — Cola con retry, create-issue y condensador generico
 // Procesa cola de servicios/github/pendiente/
+//
+// #3025 — Inyección de dependencia funcional para `gh` (ghClient).
+// El worker delega cada operación a un cliente inyectable (`defaultGhClient`
+// por default), lo que permite a los tests usar un mock JS puro en vez de un
+// stub `gh.cmd` que invoca a Node y escribe a un log compartido. Bajo carga
+// concurrente (947 tests en paralelo), el stub original era flaky por
+// contención NTFS / EBUSY / resolución de PATH desde cmd.exe. La inyección
+// elimina por completo esa superficie sin cambiar el comportamiento de
+// producción (el `defaultGhClient` envuelve los `execSync` 1:1).
 // =============================================================================
 
 const { execSync, spawn } = require('child_process');
@@ -20,6 +29,8 @@ const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 // #2994 — `GH_BIN_OVERRIDE` permite a los tests E2E de la cola apuntar a un
 // stub de `gh` en disco sin tocar el sistema. En producción se ignora.
+// #3025 — Sigue siendo el resolver del binario para `defaultGhClient`. Los
+// tests unit-puros usan `ghClient` mockeado y NO tocan este path.
 const GH_BIN = process.env.GH_BIN_OVERRIDE || 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github');
@@ -30,6 +41,8 @@ const FALLIDO = path.join(QUEUE_DIR, 'fallido');
 const MAX_RETRIES = 3;
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const STALE_ORDERS_LOG = path.join(LOG_DIR, 'stale-orders.log');
+
+const DEFAULT_REPO = 'intrale/platform';
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -52,6 +65,86 @@ function esc(str) {
     .replace(/\n/g, '\\n')
     .replace(/\r/g, '');
 }
+
+// =============================================================================
+// #3025 — defaultGhClient: cliente real que envuelve `execSync` 1:1 al binario
+// `gh`. La forma de cada método es la API estable que consume `processQueue`,
+// `refreshLabelCache` y `ensureLabels`. Tests inyectan un mock JS puro con la
+// misma forma; no hay diferencia funcional para producción.
+//
+// Salvaguardas preservadas:
+//   - `GH_BIN_OVERRIDE` sigue resolviendo el binario (futuros smoke tests E2E
+//     reales pueden apuntar a stubs sin tocar este código).
+//   - `createLabel` mantiene la idempotencia: detecta "already exists" en el
+//     stderr/message y devuelve `{ alreadyExists: true }` sin arrojar. Es
+//     crítico para creación concurrente de labels.
+//   - `sanitizeGithubPayload(data)` se sigue invocando ANTES del client en el
+//     call site del worker (no se mueve dentro del client) — defensa explícita
+//     para que cualquier caller del client tenga que sanitizar primero.
+// =============================================================================
+const defaultGhClient = {
+  editIssue(issueNumber, { addLabel, removeLabel } = {}) {
+    if (addLabel) {
+      execSync(`"${GH_BIN}" issue edit ${issueNumber} --add-label "${esc(addLabel)}"`, {
+        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+      });
+    }
+    if (removeLabel) {
+      execSync(`"${GH_BIN}" issue edit ${issueNumber} --remove-label "${esc(removeLabel)}"`, {
+        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+      });
+    }
+  },
+
+  commentIssue(issueNumber, body) {
+    execSync(`"${GH_BIN}" issue comment ${issueNumber} -b "${esc(body)}"`, {
+      cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+    });
+  },
+
+  createIssue({ title, body, labels, repo } = {}) {
+    const targetRepo = repo || DEFAULT_REPO;
+    const output = execSync(
+      `"${GH_BIN}" issue create --title "${esc(title)}" --body "${esc(body)}" --label "${esc(labels)}" --repo ${targetRepo}`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 20000, windowsHide: true },
+    ).trim();
+    const urlMatch = output.match(/\/(\d+)\s*$/);
+    return {
+      number: urlMatch ? parseInt(urlMatch[1], 10) : null,
+      url: output,
+    };
+  },
+
+  listLabels({ repo, limit } = {}) {
+    const targetRepo = repo || DEFAULT_REPO;
+    const targetLimit = limit || 200;
+    const raw = execSync(
+      `"${GH_BIN}" label list --json name --limit ${targetLimit} --repo ${targetRepo}`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true },
+    );
+    return JSON.parse(raw || '[]');
+  },
+
+  createLabel(name, color, { repo } = {}) {
+    const targetRepo = repo || DEFAULT_REPO;
+    try {
+      execSync(
+        `"${GH_BIN}" label create "${esc(name)}" --color "${color}" --repo ${targetRepo}`,
+        { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true },
+      );
+      return { created: true, alreadyExists: false };
+    } catch (e) {
+      // Idempotencia: si el label ya existe (carrera concurrente de varios
+      // workers), tratarlo como éxito. Mismo patrón que tenía el código
+      // anterior — preservar es CRÍTICO.
+      const msg = (e && (e.stderr ? String(e.stderr) : e.message)) || '';
+      if (msg.includes('already exists')) {
+        return { created: false, alreadyExists: true };
+      }
+      throw e;
+    }
+  },
+};
 
 // --- Recovery: mover orphans de trabajando/ a pendiente/ al arrancar ---
 function recoverOrphans() {
@@ -194,14 +287,11 @@ let labelCache = new Set();
 let labelCacheTs = 0;
 const LABEL_CACHE_TTL = 10 * 60 * 1000;
 
-function refreshLabelCache() {
+function refreshLabelCache(ghClient = defaultGhClient) {
   if (Date.now() - labelCacheTs < LABEL_CACHE_TTL && labelCache.size > 0) return;
   try {
-    const raw = execSync(`"${GH_BIN}" label list --json name --limit 200 --repo intrale/platform`, {
-      cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-    });
-    const labels = JSON.parse(raw || '[]');
-    labelCache = new Set(labels.map(l => l.name));
+    const labels = ghClient.listLabels({ repo: DEFAULT_REPO, limit: 200 });
+    labelCache = new Set((labels || []).map(l => l.name));
     labelCacheTs = Date.now();
     log(`Label cache refrescado: ${labelCache.size} labels`);
   } catch (e) {
@@ -216,27 +306,31 @@ const LABEL_COLORS = {
   'needs-human': 'B60205',   // #2405 CA-4 — circuit breaker infra escalado a humano
 };
 
-function ensureLabels(labelsStr) {
+function ensureLabels(labelsStr, ghClient = defaultGhClient) {
   if (!labelsStr) return;
-  refreshLabelCache();
+  refreshLabelCache(ghClient);
   const names = labelsStr.split(',').map(s => s.trim()).filter(Boolean);
   for (const name of names) {
     if (labelCache.has(name)) continue;
     const color = LABEL_COLORS[name] || 'ededed';
     try {
-      execSync(`"${GH_BIN}" label create "${esc(name)}" --color "${color}" --repo intrale/platform`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true
-      });
+      const result = ghClient.createLabel(name, color, { repo: DEFAULT_REPO });
       labelCache.add(name);
-      log(`Label "${name}" creado automáticamente`);
-    } catch (e) {
-      if (e.message && e.message.includes('already exists')) {
-        labelCache.add(name);
-      } else {
-        log(`Error creando label "${name}": ${e.message}`);
+      // result.alreadyExists === true es éxito silencioso (carrera con
+      // otro worker). result.created === true loggea creación nueva.
+      if (result && result.created) {
+        log(`Label "${name}" creado automáticamente`);
       }
+    } catch (e) {
+      log(`Error creando label "${name}": ${e.message}`);
     }
   }
+}
+
+// Helper para tests: invalida la cache de labels (estado módulo).
+function _resetLabelCacheForTests() {
+  labelCache = new Set();
+  labelCacheTs = 0;
 }
 
 // =============================================================================
@@ -296,7 +390,11 @@ function logStaleOrder(entry) {
 }
 
 // --- Procesamiento de cola ---
-function processQueue() {
+//
+// #3025 — Acepta `{ ghClient = defaultGhClient }` para que los tests puedan
+// inyectar un fake JS puro. En producción no se pasa nada y se usa
+// `defaultGhClient` (mismo `execSync` que antes).
+function processQueue({ ghClient = defaultGhClient } = {}) {
   const files = listWorkFiles(PENDIENTE);
   if (files.length === 0) return;
 
@@ -307,15 +405,16 @@ function processQueue() {
     let data;
     try {
       const rawData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
-      // #2334: sanitizar body/title/label ANTES del execSync a `gh`.
+      // #2334: sanitizar body/title/label ANTES de invocar al ghClient.
       // El body viaja a la API pública de GitHub, visible por cualquiera.
+      // (CA-4 #3025: la sanitización se queda en el call site del worker —
+      // NO se mueve dentro del client para que cualquier caller futuro
+      // tenga que sanitizar primero.)
       data = sanitizeGithubPayload(rawData);
 
       switch (data.action) {
         case 'comment':
-          execSync(`"${GH_BIN}" issue comment ${data.issue} -b "${esc(data.body)}"`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-          });
+          ghClient.commentIssue(data.issue, data.body);
           log(`Comentario en #${data.issue}`);
           break;
 
@@ -323,6 +422,8 @@ function processQueue() {
           // #2994 — guardia idempotente: si la orden trae `marker_path`/
           // `marker_mtime`, validar que el FS sigue justificándola antes
           // de invocar `gh`. Si está stale, descartar + log + `discarded:`.
+          //
+          // CA-5 #3025: la guardia se ejecuta ANTES de tocar el ghClient.
           const stale = validateOrderFresh(data);
           if (stale) {
             data.discarded = stale.reason;
@@ -341,29 +442,26 @@ function processQueue() {
             // moverá el JSON a `listo/` con el campo `discarded` ya seteado.
             break;
           }
-          ensureLabels(data.label);
-          execSync(`"${GH_BIN}" issue edit ${data.issue} --add-label "${esc(data.label)}"`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-          });
+          ensureLabels(data.label, ghClient);
+          ghClient.editIssue(data.issue, { addLabel: data.label });
           log(`Label "${data.label}" → #${data.issue}`);
           break;
         }
 
         case 'remove-label':
-          execSync(`"${GH_BIN}" issue edit ${data.issue} --remove-label "${esc(data.label)}"`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-          });
+          ghClient.editIssue(data.issue, { removeLabel: data.label });
           log(`Label "${data.label}" removido de #${data.issue}`);
           break;
 
         case 'create-issue': {
-          ensureLabels(data.labels);
-          const output = execSync(
-            `"${GH_BIN}" issue create --title "${esc(data.title)}" --body "${esc(data.body)}" --label "${esc(data.labels)}" --repo ${data.repo || 'intrale/platform'}`,
-            { cwd: ROOT, encoding: 'utf8', timeout: 20000, windowsHide: true }
-          ).trim();
-          const urlMatch = output.match(/\/(\d+)\s*$/);
-          data.result = { number: urlMatch ? parseInt(urlMatch[1]) : null, url: output };
+          ensureLabels(data.labels, ghClient);
+          const created = ghClient.createIssue({
+            title: data.title,
+            body: data.body,
+            labels: data.labels,
+            repo: data.repo,
+          });
+          data.result = created;
           log(`Issue creado: #${data.result.number} — ${data.title}`);
 
           // Defensa anti-deadlock en pausa parcial (fix #2505):
@@ -485,4 +583,9 @@ module.exports = {
   LISTO,
   FALLIDO,
   LOG_DIR,
+  // #3025 — exposición del cliente default y helpers de testing.
+  defaultGhClient,
+  refreshLabelCache,
+  ensureLabels,
+  _resetLabelCacheForTests,
 };
