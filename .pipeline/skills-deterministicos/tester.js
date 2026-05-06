@@ -439,11 +439,26 @@ function startHeartbeat(issue) {
 
 // ── Decisión de tasks Gradle según módulo + coverage ─────────────────
 function buildGradleCommand(module, coverage) {
-    // Tareas base por módulo
+    // Tareas base por módulo.
+    //
+    // app: el módulo `:app:composeApp` define product flavors (Business,
+    // Client, Delivery — ver `app/composeApp/build.gradle.kts:335`). Con
+    // flavors activos, la tarea `testDebugUnitTest` no existe directamente
+    // — Gradle genera `test<Flavor>DebugUnitTest` por flavor. Si pedimos
+    // `:app:composeApp:testDebugUnitTest` Gradle aborta con
+    //   "task 'testDebugUnitTest' is ambiguous … Candidates are:
+    //    testBusinessDebugUnitTest, testClientDebugUnitTest, testDeliveryDebugUnitTest"
+    // (rebote #3002). Solución: enumerar las tres tareas de flavor
+    // explícitamente para cubrir todo el código Android del módulo y evitar
+    // ambigüedad en la línea de comandos.
     const testTask = {
         backend: [':backend:test'],
         users:   [':users:test'],
-        app:     [':app:composeApp:testDebugUnitTest'],
+        app:     [
+            ':app:composeApp:testClientDebugUnitTest',
+            ':app:composeApp:testBusinessDebugUnitTest',
+            ':app:composeApp:testDeliveryDebugUnitTest',
+        ],
     };
     // Kover XML — solo módulos que lo tienen configurado (backend, app).
     // users hereda del backend y no expone koverXmlReport propio.
