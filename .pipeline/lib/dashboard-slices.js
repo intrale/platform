@@ -836,6 +836,13 @@ function handoffMetricsSlice(state, ctx) {
     let bytesOut7d = 0;
     const perDay = new Map(); // day-bucket → { total, withHandoff }
     const fallbackPhases = new Set();
+    // #2993 rev-2: agregados por issue para el panel "Top issues por ahorro"
+    // del widget. Solo metadata (issue#, skills, contadores) — NUNCA contenido
+    // del handoff (CA-C1 verificada via whitelist en test).
+    const perIssue = new Map(); // issue → { tokens_in, bytes_out, sections_in, skills:Set, hasHandoff, hasFallback }
+    // #2993 rev-2: últimas N invocaciones para la banda de auditoría.
+    // Mantenemos solo metadata: ts, skill, phase, status (OK/FALLBACK/REDACTED).
+    const auditCandidates = [];
 
     for (const evt of events) {
         const ts = evt.ts ? Date.parse(evt.ts) : NaN;
@@ -844,7 +851,8 @@ function handoffMetricsSlice(state, ctx) {
         const sectionsIn = Number(evt.handoff_sections_in || 0);
         const tokensInThis = Number(evt.handoff_in_tokens || 0);
         const bytesOutThis = Number(evt.handoff_out_bytes || 0);
-        if (sectionsIn > 0 || tokensInThis > 0) withHandoff7d++;
+        const hasHandoff = sectionsIn > 0 || tokensInThis > 0;
+        if (hasHandoff) withHandoff7d++;
         else fallbackPhases.add(evt.phase || 'unknown');
         if (ts >= cutoff24h) tokensIn24h += tokensInThis;
         bytesOut7d += bytesOutThis;
@@ -853,7 +861,52 @@ function handoffMetricsSlice(state, ctx) {
         if (!perDay.has(dayKey)) perDay.set(dayKey, { total: 0, withHandoff: 0 });
         const bucket = perDay.get(dayKey);
         bucket.total++;
-        if (sectionsIn > 0 || tokensInThis > 0) bucket.withHandoff++;
+        if (hasHandoff) bucket.withHandoff++;
+
+        // #2993 rev-2: agregar por issue para top issues table.
+        const issueNum = Number(evt.issue || 0);
+        if (issueNum > 0) {
+            if (!perIssue.has(issueNum)) {
+                perIssue.set(issueNum, {
+                    issue: issueNum,
+                    tokens_in: 0,
+                    bytes_out: 0,
+                    sections_in: 0,
+                    skills: new Set(),
+                    has_handoff: false,
+                    has_fallback: false,
+                });
+            }
+            const ie = perIssue.get(issueNum);
+            ie.tokens_in += tokensInThis;
+            ie.bytes_out += bytesOutThis;
+            ie.sections_in += sectionsIn;
+            if (evt.skill) ie.skills.add(String(evt.skill));
+            if (hasHandoff) ie.has_handoff = true;
+            else ie.has_fallback = true;
+        }
+
+        // #2993 rev-2: candidato para banda de auditoría.
+        // Status derivado solo de campos numéricos del evento — NO de contenido
+        // (CA-C1).
+        let status = 'OK';
+        if (!hasHandoff && (evt.phase === 'aprobacion' || evt.phase === 'verificacion')) {
+            status = 'FALLBACK';
+        }
+        // CA-B6: si se reportó truncado (asume campo opcional `handoff_truncated`
+        // como bool numérico/contador), marcamos TRUNCATED.
+        if (Number(evt.handoff_truncated || 0) > 0) status = 'TRUNCATED';
+        // CA-B3: si se reportaron secrets redactados, marcamos REDACTED.
+        if (Number(evt.handoff_secrets_redacted || 0) > 0) status = 'REDACTED';
+        auditCandidates.push({
+            ts: evt.ts || new Date(ts).toISOString(),
+            ts_ms: ts,
+            agent: String(evt.skill || 'unknown'),
+            phase: String(evt.phase || ''),
+            issue: issueNum || null,
+            status,
+            sections_in: sectionsIn,
+        });
     }
 
     // Sparkline: últimos 7 días, día más viejo primero.
@@ -875,6 +928,34 @@ function handoffMetricsSlice(state, ctx) {
     const hitRate = total7d === 0 ? 0 : Math.round((withHandoff7d / total7d) * 1000) / 10;
     const fallbackPct = total7d === 0 ? 0 : Math.round(((total7d - withHandoff7d) / total7d) * 1000) / 10;
 
+    // #2993 rev-2: top issues por ahorro estimado (proxy: tokens_in inyectados
+    // — son los tokens que el agente NO tuvo que recargar del issue completo).
+    // Solo metadata: issue#, skills (lista corta), tokens, sections, status.
+    // NO incluye títulos del issue ni contenido de handoff (CA-C1).
+    const topIssues = Array.from(perIssue.values())
+        .sort((a, b) => b.tokens_in - a.tokens_in)
+        .slice(0, 5)
+        .map(ie => ({
+            issue: ie.issue,
+            skills: Array.from(ie.skills).sort(),
+            sections_in: ie.sections_in,
+            tokens_in: ie.tokens_in,
+            bytes_out: ie.bytes_out,
+            status: ie.has_handoff && !ie.has_fallback ? 'activo'
+                : ie.has_handoff ? 'parcial'
+                : 'fallback',
+        }));
+
+    // #2993 rev-2: banda de auditoría = últimos 4 eventos (orden cronológico
+    // descendente). Limitamos a 4 (lo que entra en el mockup) y deduplicamos
+    // por agent+status para no spamear con runs idénticos.
+    const auditEvents = auditCandidates
+        .sort((a, b) => b.ts_ms - a.ts_ms)
+        .slice(0, 4)
+        .map(({ ts, agent, phase, issue, status, sections_in }) => ({
+            ts, agent, phase, issue, status, sections_in,
+        }));
+
     return {
         enabled: cfg.enabled,
         kill_switch: !!cfg.kill_switch,
@@ -886,6 +967,10 @@ function handoffMetricsSlice(state, ctx) {
         bytes_out_7d: bytesOut7d,
         usd_saved_estimate_monthly: usdSavedMonthly,
         sparkline,
+        // #2993 rev-2 — datos para tabla y banda del widget.
+        // Whitelist de campos validada en test CA-C1.
+        top_issues: topIssues,
+        audit_events: auditEvents,
         updated_at: new Date().toISOString(),
     };
 }
