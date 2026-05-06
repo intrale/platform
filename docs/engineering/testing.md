@@ -125,3 +125,28 @@ Los reportes HTML se generan en:
 ## CI
 
 En `pr-checks.yml`, el paso `./gradlew clean build` ejecuta automáticamente `koverVerify` como parte de `check`, lo que garantiza que los umbrales se cumplan en cada PR.
+
+## Tests del pipeline (Node.js)
+
+El pipeline V2 (`.pipeline/`) corre sobre Node.js puro y usa `node:test` + `node:assert/strict` (built-in, sin dependencias externas). Los archivos viven en:
+
+- `.pipeline/__tests__/` — tests E2E del worker principal.
+- `.pipeline/tests/` — tests genéricos del pipeline.
+- `.pipeline/lib/__tests__/` — tests de utilidades de `lib/`.
+- `.pipeline/skills-deterministicos/__tests__/` — tests de skills determinísticos.
+- `.pipeline/metrics/__tests__/` — tests de métricas/agregación.
+
+### Comando de ejecución
+
+```bash
+cd .pipeline
+find . -name "*.test.js" -not -path "*/node_modules/*" | xargs node --test
+```
+
+La suite completa (~957 tests) corre en ~72 s en Windows.
+
+### Inyección de dependencias para workers
+
+Workers que invocan binarios externos (`gh`, `tg`, etc.) usan **inyección de dependencia funcional** en lugar de stubear el binario en disco. Eso elimina la flakiness por concurrencia NTFS / `cmd.exe` que afectaba a tests E2E históricos.
+
+Ver el patrón completo en [inyeccion-dependencias-workers.md](inyeccion-dependencias-workers.md).
