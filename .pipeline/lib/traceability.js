@@ -98,6 +98,12 @@ function emitSessionEnd(handle, metrics) {
         duration_ms: Number(metrics.duration_ms || (Date.now() - startMs)),
         tool_calls: Number(metrics.tool_calls || 0),
         exit_code: metrics.exit_code === undefined ? null : Number(metrics.exit_code),
+        // #2993 — telemetría de handoff cross-agente. Solo contadores, NUNCA
+        // contenido del handoff ni hashes que permitan reconstruirlo (CA-C1).
+        // Ausentes (=0) cuando el feature está OFF o la fase no recibe inyección.
+        handoff_in_tokens: Number(metrics.handoff_in_tokens || 0),
+        handoff_out_bytes: Number(metrics.handoff_out_bytes || 0),
+        handoff_sections_in: Number(metrics.handoff_sections_in || 0),
         ts: new Date().toISOString(),
         pid: handle.pid || process.pid,
     };

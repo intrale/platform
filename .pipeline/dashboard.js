@@ -6816,6 +6816,10 @@ function renderConsumoHtml() {
 <meta charset="UTF-8">
 <title>Consumo V3 — Pipeline Intrale</title>
 <style>
+  /* #2993 — design-tokens del repo (var(--teal), var(--warning), var(--quota-degraded), etc.).
+   * Se inyectan al principio para que el widget de Handoff los consuma sin depender
+   * de la paleta legacy de la página de Consumo. */
+${loadDesignTokens()}
   :root {
     --bg: #0a0e27; --fg: #e0e6ed; --card: #141b3a; --border: #2a3560;
     --accent: #4a9eff; --dim: #8592a8; --danger: #ff5a5a; --ok: #5aff8a;
@@ -6855,9 +6859,116 @@ function renderConsumoHtml() {
   .empty { color: var(--dim); padding: 20px; text-align: center; }
   .footer { color: var(--dim); font-size: 11px; margin-top: 24px; padding-top: 10px; border-top: 1px solid var(--border); }
   .footer a { color: var(--accent); }
+
+  /* #2993 — Widget de Handoff cross-agente (CA-C2). Reuso 100% de design-tokens
+   * inyectados arriba: --teal (acento), --warning (fallback), --quota-degraded
+   * (kill-switch ON), --surface-0/1 (fondo). Mockup: assets/mockups/09-handoff-widget.svg. */
+  .ho-widget { color: var(--text-primary, var(--fg)); }
+  .ho-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
+             border-radius: 14px; background: var(--surface-1, var(--card));
+             border: 1px solid var(--border-default, var(--border));
+             font-size: 12px; color: var(--text-secondary, var(--dim)); }
+  .ho-pill .ho-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .ho-pill.ho-active .ho-dot { background: var(--success, #3FB950); }
+  .ho-pill.ho-killed { background: var(--quota-degraded-bg, rgba(240,165,0,0.14));
+                       border-color: var(--quota-degraded, #F0A500);
+                       color: var(--quota-degraded-fg, #FFE5A8); }
+  .ho-pill.ho-killed .ho-dot { background: var(--quota-degraded, #F0A500); }
+  .ho-kpis { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr));
+             gap: 12px; margin: 18px 0; }
+  .ho-kpi { position: relative; background: var(--surface-1, var(--card));
+            border: 1px solid var(--border-default, var(--border));
+            border-radius: 10px; padding: 14px 16px 14px 16px;
+            min-height: 110px; overflow: hidden; }
+  .ho-kpi::before { content: ''; position: absolute; left: 0; top: 0; right: 0;
+                    height: 4px; background: var(--teal, #2DD4BF); border-radius: 10px 10px 0 0; }
+  .ho-kpi.ho-kpi-tokens::before { background: var(--info, #58A6FF); }
+  .ho-kpi.ho-kpi-issues::before { background: var(--purple, #BC8CFF); }
+  .ho-kpi.ho-kpi-audit::before { background: var(--success, #3FB950); }
+  .ho-kpi-label { font-size: 11px; color: var(--text-secondary, var(--dim));
+                  letter-spacing: 1px; font-weight: 600; text-transform: uppercase;
+                  margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .ho-kpi-label svg { width: 16px; height: 16px; }
+  .ho-kpi-tokens .ho-kpi-label { color: var(--info, #58A6FF); }
+  .ho-kpi-tokens .ho-kpi-label svg { color: var(--info, #58A6FF); }
+  .ho-kpi-hitrate .ho-kpi-label svg { color: var(--teal, #2DD4BF); }
+  .ho-kpi-value { font-size: 28px; font-weight: 700;
+                  color: var(--text-primary, var(--fg));
+                  font-variant-numeric: tabular-nums; }
+  .ho-kpi-sub { font-size: 11px; color: var(--text-secondary, var(--dim));
+                margin-top: 6px; }
+  .ho-kpi-sub .ho-mini { display: inline-block; width: 10px; height: 10px;
+                         border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .ho-kpi-sub .ho-mini-ok { background: var(--teal, #2DD4BF); }
+  .ho-kpi-sub .ho-mini-fb { background: var(--warning, #D29922); }
+  .ho-trend { background: var(--surface-1, var(--card));
+              border: 1px solid var(--border-default, var(--border));
+              border-radius: 10px; padding: 14px 16px; margin-bottom: 18px; }
+  .ho-trend-title { font-size: 11px; color: var(--text-secondary, var(--dim));
+                    letter-spacing: 2px; font-weight: 600; text-transform: uppercase;
+                    margin-bottom: 10px; }
+  .ho-trend svg { width: 100%; height: auto; max-height: 200px; }
+  .ho-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+  .ho-grid > section { background: var(--surface-1, var(--card));
+                       border: 1px solid var(--border-default, var(--border));
+                       border-radius: 10px; padding: 14px 16px; }
+  .ho-grid h3 { margin: 0 0 10px; font-size: 11px;
+                color: var(--text-secondary, var(--dim));
+                letter-spacing: 2px; font-weight: 600; text-transform: uppercase; }
+  .ho-table { width: 100%; border-collapse: collapse; }
+  .ho-table th { background: transparent; padding: 6px 8px; font-size: 10px;
+                 letter-spacing: 1px; color: var(--text-secondary, var(--dim));
+                 border-bottom: 1px solid var(--border-default, var(--border)); }
+  .ho-table td { padding: 8px; border-bottom: 1px solid var(--border-default, var(--border));
+                 font-size: 12px; color: var(--text-secondary, var(--fg)); }
+  .ho-table .ho-issue { color: var(--text-primary, var(--fg)); font-weight: 600; }
+  .ho-table .ho-skills { color: var(--text-secondary, var(--dim)); font-size: 11px; }
+  .ho-table .ho-tokens { text-align: right; font-variant-numeric: tabular-nums;
+                         color: var(--teal, #2DD4BF); font-weight: 600; }
+  .ho-table .ho-tokens.ho-fb { color: var(--warning, #D29922); }
+  .ho-status { display: inline-block; padding: 2px 10px; border-radius: 11px;
+               font-size: 11px; font-weight: 600; }
+  .ho-status.ho-st-active { background: rgba(45,212,191,0.14);
+                            border: 1px solid rgba(45,212,191,0.35);
+                            color: var(--teal, #2DD4BF); }
+  .ho-status.ho-st-fallback { background: rgba(210,153,34,0.14);
+                              border: 1px solid rgba(210,153,34,0.35);
+                              color: var(--warning, #D29922); }
+  .ho-status.ho-st-partial { background: rgba(188,140,255,0.14);
+                             border: 1px solid rgba(188,140,255,0.35);
+                             color: var(--purple, #BC8CFF); }
+  .ho-audit { background: var(--surface-1, var(--card));
+              border: 1px solid var(--border-default, var(--border));
+              border-radius: 10px; padding: 14px 16px; }
+  .ho-audit h3 { margin: 0 0 10px; font-size: 11px;
+                 color: var(--text-secondary, var(--dim));
+                 letter-spacing: 1px; font-weight: 600; text-transform: uppercase; }
+  .ho-audit-rows { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; }
+  .ho-audit-row { font-size: 12px; display: flex; align-items: center; gap: 8px; }
+  .ho-audit-row .ho-bullet { width: 8px; height: 8px; border-radius: 50%;
+                             flex-shrink: 0; background: var(--success, #3FB950); }
+  .ho-audit-row.ho-ev-FALLBACK .ho-bullet,
+  .ho-audit-row.ho-ev-REDACTED .ho-bullet,
+  .ho-audit-row.ho-ev-TRUNCATED .ho-bullet { background: var(--warning, #D29922); }
+  .ho-audit-row .ho-ts { color: var(--text-secondary, var(--dim)); min-width: 48px; }
+  .ho-audit-row .ho-agent { color: var(--text-primary, var(--fg)); font-weight: 600; }
+  .ho-audit-row .ho-msg { color: var(--text-secondary, var(--dim)); flex: 1; }
+  .ho-audit-row .ho-tag { font-size: 10px; font-weight: 700; letter-spacing: 1px;
+                          color: var(--success, #3FB950); }
+  .ho-audit-row.ho-ev-FALLBACK .ho-tag,
+  .ho-audit-row.ho-ev-REDACTED .ho-tag,
+  .ho-audit-row.ho-ev-TRUNCATED .ho-tag { color: var(--warning, #D29922); }
+  .ho-empty { padding: 16px; text-align: center; color: var(--text-secondary, var(--dim));
+              font-size: 12px; }
+  @media (max-width: 1100px) {
+    .ho-kpis { grid-template-columns: repeat(2, 1fr); }
+    .ho-grid { grid-template-columns: 1fr; }
+    .ho-audit-rows { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
+${loadIconSprite()}
   <h1>📊 Consumo V3 — Pipeline</h1>
   <div class="subtitle">Métricas extendidas (tokens, duración, TTS) por agente, fase e issue. Contrato issue #2477.</div>
 
@@ -6883,6 +6994,8 @@ function renderConsumoHtml() {
     <button class="tab" data-panel="projections">Proyecciones</button>
     <button class="tab" data-panel="llmvsdet">LLM vs Determinístico</button>
     <button class="tab" data-panel="ttsissues">TTS por issue</button>
+    <!-- #2993 — sub-sección Handoff cross-agente (CA-C2). -->
+    <button class="tab" data-panel="handoff" data-test-id="tab-handoff">Handoff</button>
   </div>
 
   <div class="panel active" id="panel-agents">
@@ -6935,6 +7048,102 @@ function renderConsumoHtml() {
     <div class="drilldown" id="tts-drilldown">
       <h3 id="tts-dd-title">Providers</h3>
       <div id="tts-dd-body"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       #2993 · Widget de Handoff cross-agente (CA-C2)
+       Sub-sección de /consumo (NO ruta nueva — narrativa-handoff-widget.md).
+       Mockup: .pipeline/assets/mockups/09-handoff-widget.svg
+       Endpoint: /api/dash/handoff-metrics (alias /api/handoff-metrics)
+       Polling: cada 30s (ver loop refreshHandoff() abajo).
+       ============================================================ -->
+  <div class="panel" id="panel-handoff" data-test-id="panel-handoff">
+    <div class="ho-widget" data-widget="handoff">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:12px;">
+        <div>
+          <div style="font-size:18px;font-weight:700;color:var(--text-primary,var(--fg));display:flex;align-items:center;gap:10px;">
+            <svg width="20" height="20" aria-hidden="true" style="color:var(--teal,#2DD4BF);"><use href="#ic-handoff" /></svg>
+            Handoff cross-agente
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary,var(--dim));margin-top:4px;">
+            Telemetría sin contenido · ventana 7 días · refresh 30s · CA-C2
+          </div>
+        </div>
+        <!-- Pill kill-switch (CA-B7) — refleja config.handoff.kill_switch -->
+        <div id="ho-pill" class="ho-pill ho-active" data-test-id="ho-pill" aria-live="polite">
+          <span class="ho-dot" aria-hidden="true"></span>
+          <span>handoff:</span>
+          <strong id="ho-pill-state">activo</strong>
+          <span style="opacity:0.7;">· kill-switch <span id="ho-pill-killswitch">OFF</span></span>
+        </div>
+      </div>
+
+      <!-- 4 KPI cards -->
+      <div class="ho-kpis" data-test-id="ho-kpis">
+        <div class="ho-kpi ho-kpi-hitrate">
+          <div class="ho-kpi-label">
+            <svg aria-hidden="true"><use href="#ic-handoff" /></svg>
+            Hit rate handoff
+          </div>
+          <div class="ho-kpi-value" id="ho-hitrate">—</div>
+          <div class="ho-kpi-sub" id="ho-hitrate-sub">cargando…</div>
+        </div>
+        <div class="ho-kpi ho-kpi-tokens">
+          <div class="ho-kpi-label">
+            <svg aria-hidden="true"><use href="#ic-tokens-saved" /></svg>
+            Tokens ahorrados
+          </div>
+          <div class="ho-kpi-value" id="ho-tokens">—</div>
+          <div class="ho-kpi-sub" id="ho-tokens-sub" style="color:var(--info,#58A6FF);">≈ US$ — / mes estimado</div>
+        </div>
+        <div class="ho-kpi ho-kpi-issues">
+          <div class="ho-kpi-label">Issues procesados</div>
+          <div class="ho-kpi-value" id="ho-issues">—</div>
+          <div class="ho-kpi-sub">
+            <span class="ho-mini ho-mini-ok"></span><span id="ho-issues-ok">— con handoff válido</span><br>
+            <span class="ho-mini ho-mini-fb"></span><span id="ho-issues-fb">— cayeron a fallback</span>
+          </div>
+        </div>
+        <div class="ho-kpi ho-kpi-audit">
+          <div class="ho-kpi-label">Auditoría · 7 días</div>
+          <div class="ho-kpi-value" id="ho-audit-count">—</div>
+          <div class="ho-kpi-sub" id="ho-audit-sub">prompt-injection / redact / truncated</div>
+        </div>
+      </div>
+
+      <!-- Sparkline de tendencia 7 días -->
+      <div class="ho-trend" data-test-id="ho-trend">
+        <div class="ho-trend-title">Hit rate del handoff · tendencia 7 días</div>
+        <div id="ho-spark" style="min-height:120px;"></div>
+      </div>
+
+      <!-- Top issues por ahorro + Auditoría -->
+      <div class="ho-grid">
+        <section data-test-id="ho-top-issues">
+          <h3>Top 5 issues por ahorro</h3>
+          <table class="ho-table">
+            <thead><tr>
+              <th>Issue</th><th>Skills</th><th class="num" style="text-align:right;">Ahorro</th><th>Estado</th>
+            </tr></thead>
+            <tbody id="ho-top-tbody">
+              <tr><td colspan="4" class="ho-empty">Cargando…</td></tr>
+            </tbody>
+          </table>
+        </section>
+        <section class="ho-audit" data-test-id="ho-audit-band">
+          <h3>Auditoría — últimos eventos</h3>
+          <div class="ho-audit-rows" id="ho-audit-rows">
+            <div class="ho-empty">Cargando…</div>
+          </div>
+        </section>
+      </div>
+
+      <div style="font-size:11px;color:var(--text-secondary,var(--dim));margin-top:8px;">
+        Última actualización: <span id="ho-updated-at">—</span> · Endpoint:
+        <a href="/api/handoff-metrics" style="color:var(--info,#58A6FF);">/api/handoff-metrics</a>
+        · CA-C1/C2 · sin contenido del handoff
+      </div>
     </div>
   </div>
 
@@ -7182,6 +7391,192 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 document.getElementById('window').addEventListener('change', refresh);
 refresh();
 setInterval(refresh, 60000);
+
+// ============================================================
+// #2993 — Widget Handoff cross-agente: fetch + render + polling 30s.
+// CA-C2 dice "actualización cada 30s". El endpoint es stateless así
+// que el cliente lo polea; cuando la pestaña no está visible,
+// document.hidden suspende el ciclo para no quemar tokens del browser.
+// CA-C1: el endpoint NUNCA expone contenido del handoff — solo
+// metadata. El widget refleja eso 1:1 (no hay innerHTML con datos
+// del handoff, solo números y enums de status).
+// ============================================================
+function fmtPct(n) {
+  n = Number(n || 0);
+  return n.toFixed(1).replace(/\.0$/, '') + ' %';
+}
+function fmtKtokens(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(0) + ' k';
+  return String(Math.round(n));
+}
+function escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function renderHandoffSparkline(spark) {
+  if (!Array.isArray(spark) || spark.length === 0) {
+    return '<svg width="100%" height="120" viewBox="0 0 700 120" preserveAspectRatio="none">'
+      + '<line x1="0" y1="60" x2="700" y2="60" stroke="var(--teal,#2DD4BF)" stroke-opacity="0.2" stroke-dasharray="4 4"/>'
+      + '<text x="350" y="64" text-anchor="middle" fill="var(--text-secondary,#8B949E)" font-size="12">sin datos</text>'
+      + '</svg>';
+  }
+  const W = 700, H = 120, pad = 24;
+  const usable = W - pad * 2, vstep = H - pad * 2;
+  const n = spark.length;
+  const stepX = usable / Math.max(1, n - 1);
+  const ptsArr = spark.map((d, i) => {
+    const v = Math.max(0, Math.min(100, Number(d.pct || 0)));
+    const x = pad + i * stepX;
+    const y = pad + (vstep - (v / 100) * vstep);
+    return [x.toFixed(1), y.toFixed(1), v, d.day];
+  });
+  const polyline = ptsArr.map(p => p[0] + ',' + p[1]).join(' ');
+  const areaPts = pad + ',' + (H - pad) + ' ' + polyline + ' ' + (pad + (n - 1) * stepX).toFixed(1) + ',' + (H - pad);
+  const dots = ptsArr.map(p =>
+    '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="3" fill="var(--surface-0,#0D1117)" stroke="var(--teal,#2DD4BF)" stroke-width="2"/>'
+  ).join('');
+  // umbral del 50% (configurable via design tokens)
+  const yThresh = pad + (vstep * 0.5);
+  return '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-label="Tendencia hit rate handoff 7 días">'
+    + '<defs><linearGradient id="hospk" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0%" stop-color="var(--teal,#2DD4BF)" stop-opacity="0.45"/>'
+    + '<stop offset="100%" stop-color="var(--teal,#2DD4BF)" stop-opacity="0"/></linearGradient></defs>'
+    + '<line x1="' + pad + '" y1="' + yThresh.toFixed(1) + '" x2="' + (W - pad) + '" y2="' + yThresh.toFixed(1) + '" '
+    + 'stroke="var(--warning,#D29922)" stroke-width="1" stroke-dasharray="4 3" opacity="0.6"/>'
+    + '<text x="' + (W - pad) + '" y="' + (yThresh - 4).toFixed(1) + '" text-anchor="end" '
+    + 'fill="var(--warning,#D29922)" font-size="10" opacity="0.85">umbral 50%</text>'
+    + '<polygon points="' + areaPts + '" fill="url(#hospk)"/>'
+    + '<polyline points="' + polyline + '" fill="none" stroke="var(--teal,#2DD4BF)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+    + dots
+    + '</svg>';
+}
+function renderHandoff(metrics) {
+  if (!metrics) return;
+  // Pill de kill-switch (CA-B7).
+  const pill = document.getElementById('ho-pill');
+  const stateEl = document.getElementById('ho-pill-state');
+  const ksEl = document.getElementById('ho-pill-killswitch');
+  if (pill && stateEl && ksEl) {
+    if (metrics.kill_switch) {
+      pill.classList.remove('ho-active'); pill.classList.add('ho-killed');
+      stateEl.textContent = 'desactivado';
+      ksEl.textContent = 'ON';
+    } else {
+      pill.classList.remove('ho-killed'); pill.classList.add('ho-active');
+      stateEl.textContent = metrics.enabled ? 'activo' : 'inactivo';
+      ksEl.textContent = 'OFF';
+    }
+  }
+  // KPI 1 — hit rate.
+  const hr = document.getElementById('ho-hitrate');
+  if (hr) hr.textContent = fmtPct(metrics.hit_rate_pct);
+  const hrSub = document.getElementById('ho-hitrate-sub');
+  if (hrSub) {
+    const total = Number(metrics.sample_size || 0);
+    const withH = Math.round((Number(metrics.hit_rate_pct || 0) / 100) * total);
+    hrSub.textContent = total + ' invocaciones · ' + withH + ' leyeron handoff válido';
+  }
+  // KPI 2 — tokens ahorrados (proxy).
+  const tk = document.getElementById('ho-tokens');
+  if (tk) tk.textContent = fmtKtokens(metrics.tokens_in_24h * 7); // 24h × 7 ≈ ventana 7d
+  const tkSub = document.getElementById('ho-tokens-sub');
+  if (tkSub) tkSub.textContent = '≈ US$ ' + Number(metrics.usd_saved_estimate_monthly || 0).toFixed(2) + ' / mes estimado';
+  // KPI 3 — issues procesados.
+  const total = Number(metrics.sample_size || 0);
+  const fbPct = Number(metrics.fallback_pct || 0);
+  const fbCount = Math.round((fbPct / 100) * total);
+  const okCount = total - fbCount;
+  const issuesEl = document.getElementById('ho-issues');
+  if (issuesEl) issuesEl.textContent = String(total);
+  const okEl = document.getElementById('ho-issues-ok');
+  if (okEl) okEl.textContent = okCount + ' con handoff válido';
+  const fbEl = document.getElementById('ho-issues-fb');
+  if (fbEl) fbEl.textContent = fbCount + ' cayeron a fallback';
+  // KPI 4 — auditoría.
+  const auditEvents = Array.isArray(metrics.audit_events) ? metrics.audit_events : [];
+  const auditAlerts = auditEvents.filter(e => e.status !== 'OK').length;
+  const auditCountEl = document.getElementById('ho-audit-count');
+  if (auditCountEl) auditCountEl.textContent = String(auditAlerts);
+  const auditSubEl = document.getElementById('ho-audit-sub');
+  if (auditSubEl) auditSubEl.textContent = (auditAlerts === 0
+    ? 'sin alertas en la ventana'
+    : auditAlerts + ' eventos · redact / fallback / truncated');
+  // Sparkline 7d.
+  const sparkEl = document.getElementById('ho-spark');
+  if (sparkEl) sparkEl.innerHTML = renderHandoffSparkline(metrics.sparkline);
+  // Tabla top issues.
+  const tbody = document.getElementById('ho-top-tbody');
+  if (tbody) {
+    const rows = Array.isArray(metrics.top_issues) ? metrics.top_issues : [];
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="ho-empty">Sin issues con handoff en la ventana</td></tr>';
+    } else {
+      tbody.innerHTML = rows.map(function(r) {
+        const status = String(r.status || 'activo');
+        const cls = status === 'fallback' ? 'ho-st-fallback'
+          : status === 'partial' ? 'ho-st-partial' : 'ho-st-active';
+        const tokensCls = status === 'fallback' ? 'ho-tokens ho-fb' : 'ho-tokens';
+        const skills = Array.isArray(r.skills) ? r.skills.slice(0, 4).join('·') : '';
+        return '<tr><td class="ho-issue">#' + Number(r.issue || 0) + '</td>'
+          + '<td class="ho-skills">' + escHtml(skills) + '</td>'
+          + '<td class="' + tokensCls + '">' + fmtKtokens(r.tokens_in) + '</td>'
+          + '<td><span class="ho-status ' + cls + '">' + escHtml(status) + '</span></td></tr>';
+      }).join('');
+    }
+  }
+  // Banda de auditoría.
+  const auditEl = document.getElementById('ho-audit-rows');
+  if (auditEl) {
+    if (!auditEvents.length) {
+      auditEl.innerHTML = '<div class="ho-empty">Sin eventos de auditoría en la ventana</div>';
+    } else {
+      auditEl.innerHTML = auditEvents.map(function(e) {
+        const status = String(e.status || 'OK');
+        const ts = String(e.ts || '').slice(11, 16); // HH:MM
+        const issuePart = e.issue ? ' en #' + Number(e.issue) : '';
+        const summary = (status === 'FALLBACK')
+          ? 'fallback al issue completo' + issuePart
+          : (status === 'REDACTED')
+            ? 'secrets redactados' + issuePart
+            : (status === 'TRUNCATED')
+              ? 'sección truncada por tamaño' + issuePart
+              : 'escribió sección' + issuePart;
+        return '<div class="ho-audit-row ho-ev-' + escHtml(status) + '">'
+          + '<span class="ho-bullet" aria-hidden="true"></span>'
+          + '<span class="ho-ts">' + escHtml(ts) + '</span>'
+          + '<span class="ho-agent">' + escHtml(e.agent || 'unknown') + '</span>'
+          + '<span class="ho-msg">' + escHtml(summary) + '</span>'
+          + '<span class="ho-tag">' + escHtml(status) + '</span>'
+          + '</div>';
+      }).join('');
+    }
+  }
+  // Last updated stamp.
+  const upd = document.getElementById('ho-updated-at');
+  if (upd) {
+    try {
+      const d = metrics.updated_at ? new Date(metrics.updated_at) : new Date();
+      upd.textContent = d.toLocaleTimeString('es-AR');
+    } catch (_) { upd.textContent = '—'; }
+  }
+}
+async function refreshHandoff() {
+  if (document.hidden) return; // no quemar polling cuando el tab no está visible
+  try {
+    const r = await fetch('/api/dash/handoff-metrics', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderHandoff(data);
+  } catch (e) {
+    const upd = document.getElementById('ho-updated-at');
+    if (upd) upd.textContent = 'error: ' + e.message;
+  }
+}
+refreshHandoff();
+setInterval(refreshHandoff, 30 * 1000); // CA-C2: refresh cada 30s
 </script>
 </body></html>`;
 }
