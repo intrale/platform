@@ -257,7 +257,8 @@ function homeStyles() {
 }
 .line-row {
     display: grid;
-    grid-template-columns: 22px 70px 1fr auto auto auto;
+    /* #3035 — Grid extendido: icon | skill | issue+title | fase | timestamp-fin | duración | actions */
+    grid-template-columns: 28px 70px 1fr auto 110px auto auto;
     align-items: center;
     gap: 8px;
     padding: 7px 12px;
@@ -266,7 +267,34 @@ function homeStyles() {
     transition: background 0.15s;
 }
 .line-row:hover { background: var(--in-bg); }
-.line-icon { font-size: 14px; }
+.line-icon {
+    /* #3035 — chip circular para reforzar contraste a 1+ metro (kiosk).
+     * El glyph + el background-soft hacen distinguible ✓/✗ sin depender
+     * solo del color (cumple WCAG 1.4.1 "use of color"). */
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    flex-shrink: 0;
+    color: var(--in-fg-dim);
+    background: transparent;
+}
+.line-icon--success {
+    color: var(--in-ok);
+    background: var(--in-ok-soft);
+}
+.line-icon--error {
+    color: var(--in-bad);
+    background: var(--in-bad-soft);
+}
+.line-icon--neutral {
+    color: var(--in-fg-dim);
+    background: transparent;
+}
 .line-skill {
     font-size: 11px;
     color: var(--in-fg-dim);
@@ -291,6 +319,70 @@ function homeStyles() {
     font-size: 12px;
     color: var(--in-fg-dim);
     font-variant-numeric: tabular-nums;
+}
+/* #3035 — Timestamp absoluto de fin de ejecución, formato dd/MM HH:mm:ss.
+ * Mono + tabular-nums para que las cifras no salten al actualizar. */
+.line-time-end {
+    font-family: var(--in-mono);
+    font-size: 11.5px;
+    color: var(--in-fg-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* #3035 — Header del apartado con toggle a la derecha del título.
+ * Mantiene la semántica de .in-section-title (uppercase + spacing) y
+ * empuja el toggle al final del eje. */
+.in-section-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 14px 0;
+}
+.in-section-title-row .in-section-title {
+    margin: 0;
+    flex: 1;
+}
+.in-section-title-row .in-pill-toggle { margin-left: auto; }
+
+/* #3035 — Pill toggle "Solo con error" — variante de .in-pill con
+ * estados OFF/ON. Cumple touch-target ≥ 28px y contraste AA. */
+.in-pill-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    background: var(--in-bg-3);
+    border: 1px solid var(--in-border);
+    color: var(--in-fg-dim);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    user-select: none;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    min-height: 28px;
+    line-height: 1;
+}
+.in-pill-toggle:hover {
+    background: var(--in-bg);
+    border-color: var(--in-fg-dim);
+    color: var(--in-fg);
+}
+.in-pill-toggle[aria-checked="true"] {
+    background: var(--in-bad-soft);
+    border-color: var(--in-bad);
+    color: var(--in-bad);
+}
+.in-pill-toggle[aria-checked="true"]:hover {
+    background: var(--in-bad-soft);
+    border-color: var(--in-bad);
+    color: var(--in-bad);
+    filter: brightness(1.05);
+}
+.in-pill-toggle:focus-visible {
+    outline: 2px solid var(--in-accent);
+    outline-offset: 2px;
 }
 .line-actions {
     display: flex;
@@ -638,6 +730,16 @@ const SKILL_ICONS = ${JSON.stringify(SKILL_ICONS)};
 const SKILL_COLORS = ${JSON.stringify(SKILL_COLORS)};
 
 function fmtDur(ms){ if(!ms||ms<0) return '—'; const s=Math.round(ms/1000); if(s<60) return s+'s'; const m=Math.floor(s/60), r=s%60; if(m<60) return m+'m '+r+'s'; const h=Math.floor(m/60), rm=m%60; return h+'h '+rm+'m'; }
+// #3035 — Formato dd/MM HH:mm:ss en hora local para timestamp de fin.
+// Si el input no parsea, devuelve "—" para que el render no rompa.
+function fmtFinishedAt(ts){
+    if(!ts) return '—';
+    const n = typeof ts === 'number' ? ts : Date.parse(ts);
+    if(!Number.isFinite(n) || n <= 0) return '—';
+    const d = new Date(n);
+    const pad = (v) => (v < 10 ? '0' : '') + v;
+    return pad(d.getDate())+'/'+pad(d.getMonth()+1)+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+}
 function fmtNum(n){ if(n==null||isNaN(n)) return '—'; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'k'; return String(n); }
 function fmtPct(n){ return n==null?'—':n.toFixed(1)+'%'; }
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
@@ -1144,12 +1246,37 @@ async function tickActive(){
 }
 
 function renderLineRow(a, isQueue){
-    const icon = isQueue ? (a.slotFree ? '→' : '⏸') : (a.resultado === 'aprobado' ? '✓' : a.resultado === 'rechazado' ? '✗' : '·');
+    // #3035 — Diferenciación visual ✓/✗ por color + chip soft circular.
+    // Para queue (no es un resultado, es un estado de slot) mantenemos
+    // la clase neutral (gris) para no inducir falsa señal de éxito/error.
+    let icon;
+    let iconClass;
+    if(isQueue){
+        icon = a.slotFree ? '→' : '⏸';
+        iconClass = 'line-icon--neutral';
+    } else if(a.resultado === 'aprobado'){
+        icon = '✓';
+        iconClass = 'line-icon--success';
+    } else if(a.resultado === 'rechazado'){
+        icon = '✗';
+        iconClass = 'line-icon--error';
+    } else {
+        icon = '·';
+        iconClass = 'line-icon--neutral';
+    }
+    const iconAriaLabel = isQueue
+        ? (a.slotFree ? 'Slot libre' : 'En espera')
+        : (a.resultado === 'aprobado' ? 'Aprobado' : a.resultado === 'rechazado' ? 'Rechazado' : 'Sin resultado');
     const time = isQueue
         ? (a.slotFree ? 'libre · '+a.slotInfo : '⏸ '+a.slotInfo)
         : fmtDur(a.durationMs);
-    const titleAttr = a.title ? ' title="'+a.title.replace(/"/g,'&quot;')+'"' : '';
-    const titleText = a.title ? ' · '+a.title.slice(0, 50) : '';
+    // #3035 — Timestamp de fin (solo para items finalizados, no queue).
+    // Formato dd/MM HH:mm:ss en hora local. fmtFinishedAt() vive más abajo.
+    const finishedHtml = isQueue
+        ? '<span class="line-time-end" aria-hidden="true"></span>'
+        : '<span class="line-time-end" title="'+escapeHtml(new Date(a.finishedAt || 0).toISOString())+'">'+escapeHtml(fmtFinishedAt(a.finishedAt))+'</span>';
+    const titleAttr = a.title ? ' title="'+escapeHtml(a.title)+'"' : '';
+    const titleText = a.title ? ' · '+escapeHtml(a.title.slice(0, 50)) : '';
     const ghLink = '<a class="line-btn" href="https://github.com/intrale/platform/issues/'+a.issue+'" target="_blank" rel="noopener" title="Abrir issue en GitHub">↗</a>';
     let actions = '';
     if(isQueue){
@@ -1161,15 +1288,16 @@ function renderLineRow(a, isQueue){
           + '<button class="line-btn" data-issue="'+a.issue+'" data-action="pause" title="Pausar issue (label blocked:dependencies)">⏸</button>'
           + ghLink;
     } else {
-        const logBtn = a.hasLog ? '<a class="line-btn" href="/logs/view/'+(a.logFile||'')+'" target="_blank" rel="noopener" title="Ver log">📄</a>' : '';
+        const logBtn = a.hasLog ? '<a class="line-btn" href="/logs/view/'+escapeHtml(a.logFile||'')+'" target="_blank" rel="noopener" title="Ver log">📄</a>' : '';
         actions = logBtn+ghLink;
     }
     return \`
         <div class="line-row" data-key="\${a.issue}-\${a.skill}-\${a.fase}"\${titleAttr}>
-          <span class="line-icon">\${icon}</span>
-          <span class="line-skill">\${a.skill}</span>
+          <span class="line-icon \${iconClass}" role="img" aria-label="\${iconAriaLabel}">\${icon}</span>
+          <span class="line-skill">\${escapeHtml(a.skill)}</span>
           <span class="line-issue"><a href="https://github.com/intrale/platform/issues/\${a.issue}" target="_blank" rel="noopener">#\${a.issue}</a>\${titleText}</span>
-          <span class="line-fase">\${a.fase}</span>
+          <span class="line-fase">\${escapeHtml(a.fase)}</span>
+          \${finishedHtml}
           <span class="line-time">\${time}</span>
           <span class="line-actions">\${actions}</span>
         </div>\`;
@@ -1187,13 +1315,26 @@ function bindLineActions(container){
     });
 }
 
+// #3035 — Estado del filtro "Solo con error" en memoria del cliente.
+// NO persiste en localStorage/sessionStorage/cookies (CA-3 + security review).
+// Cada refresh de página vuelve a OFF.
+let recentErrorsOnly = false;
+
 async function tickRecent(){
-    const d = await fetchJson('/api/dash/recent');
+    // #3035 — Propagar el flag al endpoint en cada poll para que el filtro
+    // se mantenga consistente con los ticks subsiguientes (cada 10s).
+    const url = recentErrorsOnly ? '/api/dash/recent?errorsOnly=1' : '/api/dash/recent';
+    const d = await fetchJson(url);
     if(!d) return;
     const container = document.getElementById('recent-list');
     if(!container) return;
     const arr = (d.recent || []).slice(0, 10);
-    if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Sin actividad reciente</div>'; return; }
+    if(arr.length === 0){
+        // #3035 — Empty state diferenciado por filtro activo.
+        const emptyMsg = recentErrorsOnly ? 'Sin rechazos recientes' : 'Sin actividad reciente';
+        container.innerHTML = '<div class="in-empty">'+escapeHtml(emptyMsg)+'</div>';
+        return;
+    }
     const seen = new Set();
     for(const a of arr){
         const key = a.issue+'-'+a.skill+'-'+a.fase;
@@ -1209,6 +1350,31 @@ async function tickRecent(){
         if(!seen.has(row.dataset.key)) row.remove();
     }
     bindLineActions(container);
+}
+
+// #3035 — Bind del toggle "Solo con error" al click + teclado (Enter/Space).
+// El toggle vive en el header de la sección "Últimos 10 ejecutados" y al
+// cambiar dispara un re-render limpio (innerHTML='') para evitar rows
+// fantasma del set anterior.
+function bindRecentFilter(){
+    const t = document.getElementById('recent-filter-errors');
+    if(!t || t.dataset._bound) return;
+    t.dataset._bound = '1';
+    const apply = () => {
+        recentErrorsOnly = !recentErrorsOnly;
+        t.setAttribute('aria-checked', recentErrorsOnly ? 'true' : 'false');
+        t.textContent = recentErrorsOnly ? '✗ Solo con error' : 'Solo con error';
+        const container = document.getElementById('recent-list');
+        if(container) container.innerHTML = '';
+        tickRecent().catch(()=>{});
+    };
+    t.addEventListener('click', (ev) => { ev.preventDefault(); apply(); });
+    t.addEventListener('keydown', (ev) => {
+        if(ev.key === 'Enter' || ev.key === ' '){
+            ev.preventDefault();
+            apply();
+        }
+    });
 }
 
 async function tickQueue(){
@@ -1329,6 +1495,9 @@ const POLLS = [
     { fn: tickQueue, ms: 5000 },
 ];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
+// #3035 — Bind del toggle "Solo con error" antes del primer poll para
+// que el handler ya esté escuchando si el usuario hace click apenas carga.
+bindRecentFilter();
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
 
@@ -1550,10 +1719,22 @@ function renderHomeHTML(opts) {
     </section>
 
     <section class="in-section">
-      <h2 class="in-section-title">
-        <span class="in-section-title-icon">⏪</span>
-        Últimos 10 ejecutados
-      </h2>
+      <div class="in-section-title-row">
+        <h2 class="in-section-title">
+          <span class="in-section-title-icon">⏪</span>
+          Últimos 10 ejecutados
+        </h2>
+        <!-- #3035 — Toggle "Solo con error". Default OFF (no persiste entre refreshes, CA-3). -->
+        <button type="button"
+                class="in-pill-toggle"
+                id="recent-filter-errors"
+                role="switch"
+                aria-checked="false"
+                tabindex="0"
+                title="Mostrar solo los últimos 10 rechazados del histórico">
+          Solo con error
+        </button>
+      </div>
       <div class="line-list" id="recent-list"></div>
     </section>
 
