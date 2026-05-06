@@ -158,6 +158,9 @@ scripts/planner-plan.json
 .pipeline/.tts-state.json
 # #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
 .pipeline/recommendations-cache.json
+# #2895 — caches de issue title/summary (refresca desde gh) — efímero
+.pipeline/.issue-title-cache.json
+.pipeline/.issue-summary-cache.json
 # #2477/#2488 — código fuente del aggregator V3 sí se commitea (snapshot/.last-cleanup quedan ignorados)
 .pipeline/metrics/*
 !.pipeline/metrics/aggregator.js

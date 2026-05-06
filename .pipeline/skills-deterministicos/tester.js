@@ -93,11 +93,34 @@ const MODULE_DIRS = {
 // ya documenta este caso como `qa:skipped` con tests unitarios Node — acá
 // lo automatizamos en el tester determinístico.
 
+// Rebote #2895 rev-2: incluir archivos root-level que no afectan compilación
+// Kotlin ni cobertura Kover. Síntoma: un commit que sumaba `.gitignore` a la
+// par de cambios bajo `.pipeline/` rompía el match `every` y forzaba la ruta
+// gradle completa, que rebotaba por cobertura Kotlin baseline (35.95% < 80%)
+// totalmente ajena al cambio. Verificación empírica del rebote en
+// .pipeline/logs/2895-tester.log:
+//
+//   [tester] git diff vs main: 10 archivos · pipeline_only=false
+//   ...
+//   - Cobertura de líneas 35.95% por debajo del umbral 80%
+//
+// Los archivos agregados acá NO pueden afectar Kotlin/coverage:
+//   .gitignore       → solo afecta `git status`/staging, no compilación.
+//   .gitattributes   → solo afecta diff/checkout/EOL, no compilación.
+//   .editorconfig    → solo afecta editores; no genera bytecode ni cambia tests.
+//
+// Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
+// `settings.gradle.kts`, `build.gradle.kts`, `.claude/` (todos pueden afectar
+// build/coverage). El test `paths fuera de los patrones permitidos rompen
+// el match` documenta y protege esa frontera.
 const PIPELINE_ONLY_PATTERNS = [
-    /^\.pipeline\//,    // pipeline V3 (Node.js)
-    /^docs\//,          // documentación pura
-    /^agents\//,        // reglas para agentes
-    /^\.github\//,      // GitHub Actions / templates
+    /^\.pipeline\//,        // pipeline V3 (Node.js)
+    /^docs\//,              // documentación pura
+    /^agents\//,            // reglas para agentes
+    /^\.github\//,          // GitHub Actions / templates
+    /^\.gitignore$/,        // gitignore root — no afecta compilación Kotlin
+    /^\.gitattributes$/,    // git attributes — no afecta compilación Kotlin
+    /^\.editorconfig$/,     // editor config — no afecta cobertura
 ];
 
 /**
@@ -343,13 +366,22 @@ function runNodeTests(repoRoot, env) {
         // al child y el sub-runner rechaza ejecutar files con un warning
         // "node:test run() is being called recursively". Limpiarlo deja al
         // child correr como un top-level run.
-        const childEnv = { ...env };
+        //
+        // #2895 (rebote rev-1): además, garantizamos que `git.exe` esté en
+        // PATH para los test child processes. Cuando el pulpo arranca como
+        // servicio Windows, su PATH heredado puede no incluir `Program Files\
+        // Git\cmd`, y los tests que hacen `spawnSync('git', ...)` o
+        // `execSync('git ...')` fallan con ENOENT / "no se reconoce". El
+        // helper resolveGitDir busca git.exe en PATH y en ubicaciones
+        // conocidas y lo prepende. Idempotente y no muta el env recibido.
+        let childEnv = { ...env };
         delete childEnv.NODE_TEST_CONTEXT;
         // Garantizar que `git` esté accesible para los tests que hacen
-        // `spawnSync('git', ...)` (rebote #2891 rev-2). Cuando el pulpo corre
-        // como service Windows, el PATH no incluye `C:\Program Files\Git\cmd`
-        // y todos los tests basados en repos temporales fallan con
-        // `'git' no se reconoce como un comando interno o externo`.
+        // `spawnSync('git', ...)` (rebote #2891 rev-2 + #2895 rev-1). Cuando
+        // el pulpo corre como service Windows, el PATH no incluye
+        // `C:\Program Files\Git\cmd` y todos los tests basados en repos
+        // temporales fallan con `'git' no se reconoce como un comando interno
+        // o externo`. ensureGitInPath es un wrapper local sobre ensureGitInEnv.
         ensureGitInPath(childEnv);
         let stdout = '';
         let stderr = '';
