@@ -768,6 +768,213 @@ function reconcilerStaleOrdersSlice(state, ctx) {
     };
 }
 
+// =============================================================================
+// #2993 — Slice del widget de handoff cross-agente.
+//
+// Lee `.claude/activity-log.jsonl` (donde `lib/traceability.js` escribe los
+// eventos `session:end`) y agrega:
+//   - hit_rate_7d:  % de invocaciones que recibieron handoff válido (>0
+//                   secciones inyectadas) sobre el total de session:end con
+//                   feature activo en los últimos 7 días.
+//   - tokens_in_24h: tokens estimados ahorrados por handoff inyectado en 24h.
+//   - bytes_out_7d:  bytes totales escritos al handoff en 7 días (proxy del
+//                    "trabajo capturado" por agentes).
+//   - usd_saved_estimate: tokens_in_24h × precio Sonnet (proxy conservador).
+//   - sparkline_7d: array de % hit-rate por día (longitud 7).
+//   - kill_switch:  estado del flag (`config.handoff.kill_switch || !enabled`).
+//
+// CA-C1: nunca incluir contenido del handoff ni excerpts.
+// CA-C2: refresh cada 30s lo manejará el cliente (este endpoint es stateless).
+//
+// Costo de I/O: el archivo es append-only; cap a STALE_ORDERS_MAX_LINES (5000)
+// porque el slice anterior ya validó esta heurística para el mismo tipo de
+// archivo. Activity-log puede crecer más, pero las últimas 5000 líneas cubren
+// >24h de operación normal del pipeline.
+// =============================================================================
+const HANDOFF_ACTIVITY_LOG = path.join('.claude', 'activity-log.jsonl');
+const HANDOFF_MAX_LINES = 10000;
+
+function readActivityLog(repoRoot) {
+    const file = path.join(repoRoot, HANDOFF_ACTIVITY_LOG);
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); }
+    catch { return []; }
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const tail = lines.slice(-HANDOFF_MAX_LINES);
+    const events = [];
+    for (const line of tail) {
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        if (evt && evt.event === 'session:end') events.push(evt);
+    }
+    return events;
+}
+
+function handoffMetricsSlice(state, ctx) {
+    const repoRoot = (ctx && ctx.REPO_ROOT)
+        || process.env.PIPELINE_REPO_ROOT
+        || process.env.CLAUDE_PROJECT_DIR
+        || path.resolve(__dirname, '..', '..');
+
+    // Config: enabled / kill_switch a partir del config.yaml ya cargado por ctx
+    // (si está disponible). Fallback a defaults.
+    let cfg = { enabled: false, kill_switch: false };
+    try {
+        const handoff = require('./handoff');
+        const raw = (ctx && ctx.config && ctx.config.handoff) || {};
+        cfg = handoff.resolveConfig(raw);
+    } catch { /* módulo opcional para tests aislados */ }
+
+    const events = readActivityLog(repoRoot);
+    const now = Date.now();
+    const day = 24 * 3600 * 1000;
+    const cutoff7d = now - 7 * day;
+    const cutoff24h = now - 1 * day;
+
+    let total7d = 0, withHandoff7d = 0;
+    let tokensIn24h = 0;
+    let bytesOut7d = 0;
+    const perDay = new Map(); // day-bucket → { total, withHandoff }
+    const fallbackPhases = new Set();
+    // #2993 rev-2: agregados por issue para el panel "Top issues por ahorro"
+    // del widget. Solo metadata (issue#, skills, contadores) — NUNCA contenido
+    // del handoff (CA-C1 verificada via whitelist en test).
+    const perIssue = new Map(); // issue → { tokens_in, bytes_out, sections_in, skills:Set, hasHandoff, hasFallback }
+    // #2993 rev-2: últimas N invocaciones para la banda de auditoría.
+    // Mantenemos solo metadata: ts, skill, phase, status (OK/FALLBACK/REDACTED).
+    const auditCandidates = [];
+
+    for (const evt of events) {
+        const ts = evt.ts ? Date.parse(evt.ts) : NaN;
+        if (!Number.isFinite(ts) || ts < cutoff7d) continue;
+        total7d++;
+        const sectionsIn = Number(evt.handoff_sections_in || 0);
+        const tokensInThis = Number(evt.handoff_in_tokens || 0);
+        const bytesOutThis = Number(evt.handoff_out_bytes || 0);
+        const hasHandoff = sectionsIn > 0 || tokensInThis > 0;
+        if (hasHandoff) withHandoff7d++;
+        else fallbackPhases.add(evt.phase || 'unknown');
+        if (ts >= cutoff24h) tokensIn24h += tokensInThis;
+        bytesOut7d += bytesOutThis;
+        // bucket por día (resolución día calendario UTC)
+        const dayKey = new Date(ts).toISOString().slice(0, 10);
+        if (!perDay.has(dayKey)) perDay.set(dayKey, { total: 0, withHandoff: 0 });
+        const bucket = perDay.get(dayKey);
+        bucket.total++;
+        if (hasHandoff) bucket.withHandoff++;
+
+        // #2993 rev-2: agregar por issue para top issues table.
+        const issueNum = Number(evt.issue || 0);
+        if (issueNum > 0) {
+            if (!perIssue.has(issueNum)) {
+                perIssue.set(issueNum, {
+                    issue: issueNum,
+                    tokens_in: 0,
+                    bytes_out: 0,
+                    sections_in: 0,
+                    skills: new Set(),
+                    has_handoff: false,
+                    has_fallback: false,
+                });
+            }
+            const ie = perIssue.get(issueNum);
+            ie.tokens_in += tokensInThis;
+            ie.bytes_out += bytesOutThis;
+            ie.sections_in += sectionsIn;
+            if (evt.skill) ie.skills.add(String(evt.skill));
+            if (hasHandoff) ie.has_handoff = true;
+            else ie.has_fallback = true;
+        }
+
+        // #2993 rev-2: candidato para banda de auditoría.
+        // Status derivado solo de campos numéricos del evento — NO de contenido
+        // (CA-C1).
+        let status = 'OK';
+        if (!hasHandoff && (evt.phase === 'aprobacion' || evt.phase === 'verificacion')) {
+            status = 'FALLBACK';
+        }
+        // CA-B6: si se reportó truncado (asume campo opcional `handoff_truncated`
+        // como bool numérico/contador), marcamos TRUNCATED.
+        if (Number(evt.handoff_truncated || 0) > 0) status = 'TRUNCATED';
+        // CA-B3: si se reportaron secrets redactados, marcamos REDACTED.
+        if (Number(evt.handoff_secrets_redacted || 0) > 0) status = 'REDACTED';
+        auditCandidates.push({
+            ts: evt.ts || new Date(ts).toISOString(),
+            ts_ms: ts,
+            agent: String(evt.skill || 'unknown'),
+            phase: String(evt.phase || ''),
+            issue: issueNum || null,
+            status,
+            sections_in: sectionsIn,
+        });
+    }
+
+    // Sparkline: últimos 7 días, día más viejo primero.
+    const sparkline = [];
+    for (let i = 6; i >= 0; i--) {
+        const d = new Date(now - i * day).toISOString().slice(0, 10);
+        const b = perDay.get(d) || { total: 0, withHandoff: 0 };
+        const pct = b.total === 0 ? 0 : Math.round((b.withHandoff / b.total) * 1000) / 10;
+        sparkline.push({ day: d, pct, total: b.total, with_handoff: b.withHandoff });
+    }
+
+    // Estimación USD: usamos pricing de Sonnet como cota inferior porque la
+    // mayoría de los agentes corren Sonnet/Haiku, y queremos NO sobreestimar
+    // el ahorro. 24h × ~30 días = mensual; expresamos por mes para el widget.
+    const PRICE_INPUT_PER_M = 3.0; // USD/1M tokens, Sonnet 4.6
+    const usdSavedDay = (tokensIn24h * PRICE_INPUT_PER_M) / 1e6;
+    const usdSavedMonthly = Math.round(usdSavedDay * 30 * 100) / 100;
+
+    const hitRate = total7d === 0 ? 0 : Math.round((withHandoff7d / total7d) * 1000) / 10;
+    const fallbackPct = total7d === 0 ? 0 : Math.round(((total7d - withHandoff7d) / total7d) * 1000) / 10;
+
+    // #2993 rev-2: top issues por ahorro estimado (proxy: tokens_in inyectados
+    // — son los tokens que el agente NO tuvo que recargar del issue completo).
+    // Solo metadata: issue#, skills (lista corta), tokens, sections, status.
+    // NO incluye títulos del issue ni contenido de handoff (CA-C1).
+    const topIssues = Array.from(perIssue.values())
+        .sort((a, b) => b.tokens_in - a.tokens_in)
+        .slice(0, 5)
+        .map(ie => ({
+            issue: ie.issue,
+            skills: Array.from(ie.skills).sort(),
+            sections_in: ie.sections_in,
+            tokens_in: ie.tokens_in,
+            bytes_out: ie.bytes_out,
+            status: ie.has_handoff && !ie.has_fallback ? 'activo'
+                : ie.has_handoff ? 'parcial'
+                : 'fallback',
+        }));
+
+    // #2993 rev-2: banda de auditoría = últimos 4 eventos (orden cronológico
+    // descendente). Limitamos a 4 (lo que entra en el mockup) y deduplicamos
+    // por agent+status para no spamear con runs idénticos.
+    const auditEvents = auditCandidates
+        .sort((a, b) => b.ts_ms - a.ts_ms)
+        .slice(0, 4)
+        .map(({ ts, agent, phase, issue, status, sections_in }) => ({
+            ts, agent, phase, issue, status, sections_in,
+        }));
+
+    return {
+        enabled: cfg.enabled,
+        kill_switch: !!cfg.kill_switch,
+        sample_window: '7d',
+        sample_size: total7d,
+        hit_rate_pct: hitRate,
+        fallback_pct: fallbackPct,
+        tokens_in_24h: tokensIn24h,
+        bytes_out_7d: bytesOut7d,
+        usd_saved_estimate_monthly: usdSavedMonthly,
+        sparkline,
+        // #2993 rev-2 — datos para tabla y banda del widget.
+        // Whitelist de campos validada en test CA-C1.
+        top_issues: topIssues,
+        audit_events: auditEvents,
+        updated_at: new Date().toISOString(),
+    };
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -782,6 +989,8 @@ module.exports = {
     quotaSlice,
     quotaExhaustedSlice,
     reconcilerStaleOrdersSlice,
+    // #2993 — widget de handoff
+    handoffMetricsSlice,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,
