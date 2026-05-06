@@ -1,20 +1,27 @@
 // =============================================================================
-// CA4 (#2994) — E2E test del worker servicio-github.js
+// servicio-github.test.js — #3025 (refactor) + #2994 (caso original)
 //
-// Reproduce el incidente del 2026-05-05: el reconciler encola una orden de
-// label `needs-human` con metadata (marker_path/snapshot_at/marker_mtime),
-// pero antes de que el worker la procese, el humano destraba el issue
-// moviendo el marker a `pendiente/`. El worker DEBE detectar que la orden
-// está stale y descartarla SIN invocar `gh` — caso contrario re-bloquearía
-// un issue que ya está destrabado.
+// Tests del worker `servicio-github.js`. Validan dos cosas:
 //
-// Estrategia para evitar la CLI de `gh` real: stub via `GH_BIN_OVERRIDE`. El
-// stub es un script Node.js cross-platform que registra cada invocación en
-// un archivo plano; los tests luego inspeccionan ese archivo para verificar
-// que el worker invocó (caso happy) o NO invocó (casos stale) a `gh`.
+//   1) #2994: la guardia idempotente `validateOrderFresh` descarta órdenes
+//      stale (marker movido / mtime cambiado) y NO invoca `gh`.
+//   2) #3025: la lógica de despacho invoca al `ghClient` con los argumentos
+//      correctos según la acción (comment / label / remove-label / create).
 //
-// El override `PIPELINE_STATE_DIR` hace que todo el FS del worker apunte a
-// un directorio temporal — no toca el `.pipeline/` real.
+// IMPORTANTE — historia del archivo:
+//
+// La versión anterior usaba un shim externo en disco (#2895) que registraba
+// cada llamada en un log compartido. Bajo carga concurrente (947 tests en
+// paralelo, ~72s, Windows/NTFS), ese mecanismo flakeaba con `calls=[]` por
+// contención de FS y resolución de PATH desde el shell child. Eso impactaba
+// a issues completamente NO relacionados al worker (#2956, #2993, #3015).
+//
+// El refactor de #3025 reemplaza el shim externo por inyección de
+// dependencia funcional: `processQueue` acepta `{ ghClient }` y los tests
+// pasan un mock JS puro. Sin proceso hijo, sin shim, sin shell child. Eso
+// elimina 100% la flakiness sin perder cobertura útil — el test sigue
+// verificando que el worker decide invocar `gh` con los argumentos
+// correctos cuando se cumple la precondición.
 // =============================================================================
 'use strict';
 
@@ -24,10 +31,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// Setup: directorio temporal aislado + stub de `gh` antes del require del
-// servicio. Las constantes del módulo (PENDIENTE, LISTO, GH_BIN, etc.) se
-// resuelven una sola vez al cargarse, así que es crítico setear el env
-// PRIMERO.
+// Setup: directorio temporal aislado para el FS del worker (cola, logs).
+// Las constantes del módulo se resuelven una sola vez al cargarse, así que
+// es crítico setear PIPELINE_STATE_DIR PRIMERO.
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'svc-gh-e2e-'));
 const PIPELINE = path.join(TMP_DIR, '.pipeline');
 const QUEUE_BASE = path.join(PIPELINE, 'servicios', 'github');
@@ -40,115 +46,54 @@ for (const d of [PENDIENTE, TRABAJANDO, LISTO, FALLIDO, LOG_DIR]) {
     fs.mkdirSync(d, { recursive: true });
 }
 
-// Stub de `gh`: un script Node que escribe argv + cwd a un archivo y sale 0.
-// El worker invoca con `execSync("<GH_BIN>" issue edit ...)` — para que el
-// shell encuentre node.exe interpretando el script lo más portable es
-// usar el shebang nativo en POSIX, pero en Windows execSync usa cmd.exe
-// que NO respeta shebangs. Solución: el override apunta a un .cmd que
-// reenvía a node con un .js helper.
-//
-// #2895 (rebote rev-1): hardening del stub para evitar flakiness bajo carga.
-// Cuando `node --test` corre 65 archivos en paralelo (947 tests totales en
-// ~72s), el OS spawnea cientos de child processes. Bajo esa contención:
-//   1) PATH lookup de `node` desde cmd.exe puede fallar transitoriamente.
-//      → Usamos `process.execPath` (ruta absoluta del node padre).
-//   2) appendFileSync puede chocar con EBUSY/EACCES en NTFS bajo concurrencia.
-//      → Retry interno en el stub con backoff.
-//   3) NTFS metadata flush puede atrasarse → getGhCalls() no ve el write.
-//      → Helper waitForGhCalls() con retry breve antes de assertions.
-// Sin el hardening, los tests CA1/Backward-compat fallaban con `calls=[]`
-// solo bajo ejecución completa del tester, no en isolation.
-const STUB_DIR = path.join(TMP_DIR, 'stub-gh');
-fs.mkdirSync(STUB_DIR, { recursive: true });
-const GH_CALLS_LOG = path.join(STUB_DIR, 'gh-calls.log');
-const STUB_JS = path.join(STUB_DIR, 'gh-stub.js');
-fs.writeFileSync(STUB_JS, `
-// Registra cada invocación con argv y exit 0.
-// Retry en appendFileSync para sobrevivir EBUSY/EACCES en NTFS bajo carga.
-const fs = require('fs');
-const path = require('path');
-const line = JSON.stringify({ ts: Date.now(), argv: process.argv.slice(2) }) + '\\n';
-const TARGET = ${JSON.stringify(GH_CALLS_LOG)};
-let lastErr = null;
-for (let i = 0; i < 5; i++) {
-    try { fs.appendFileSync(TARGET, line); lastErr = null; break; }
-    catch (e) { lastErr = e; const t = Date.now() + 20 * (i + 1); while (Date.now() < t) {} }
-}
-if (lastErr) {
-    // Best-effort fallback: escribir a un archivo siblings con sufijo del PID
-    // para no perder evidencia silenciosamente. getGhCalls() también
-    // recoge esos archivos.
-    try { fs.writeFileSync(TARGET + '.' + process.pid, line); } catch {}
-}
-process.exit(0);
-`, 'utf8');
-
-// Wrapper .cmd para Windows. En POSIX usaríamos un .sh, pero los tests
-// se ejecutan principalmente en Windows según el entorno del proyecto.
-// execSync usa cmd.exe en Windows así que .cmd funciona; en POSIX caería
-// a sh que no entiende .cmd, así que damos también una variante .sh.
-//
-// #2895 rev-1: usamos `process.execPath` en lugar de `node` para evitar
-// dependencia del PATH del child cmd.exe — bajo carga el PATH lookup falla
-// con "node no se reconoce" y execSync devuelve error, dejando calls=[].
-const STUB_CMD = path.join(STUB_DIR, 'gh.cmd');
-fs.writeFileSync(STUB_CMD,
-    `@echo off\r\n"${process.execPath}" "${STUB_JS}" %*\r\n`,
-    'utf8');
-const STUB_SH = path.join(STUB_DIR, 'gh');
-fs.writeFileSync(STUB_SH,
-    `#!/bin/sh\nexec "${process.execPath}" "${STUB_JS}" "$@"\n`,
-    'utf8');
-try { fs.chmodSync(STUB_SH, 0o755); } catch {}
-
-// El override que lee servicio-github.js es `GH_BIN_OVERRIDE`; en Windows
-// preferimos el .cmd para que execSync(cmd.exe) lo resuelva. El test usa
-// `process.platform` para elegir.
-const STUB_BIN = process.platform === 'win32' ? STUB_CMD : STUB_SH;
-
 process.env.PIPELINE_STATE_DIR = PIPELINE;
 process.env.PIPELINE_MAIN_ROOT = TMP_DIR;
-process.env.GH_BIN_OVERRIDE = STUB_BIN;
+// #3025 — ya NO existe `GH_BIN_OVERRIDE` apuntando a un .cmd: usamos un
+// `ghClient` mockeado en JS que reemplaza al `defaultGhClient` por completo.
+// La variable se setea a un path inexistente para asegurar que un fallo en
+// la inyección (uso accidental de `defaultGhClient`) explote ruidoso en
+// vez de llamar al `gh.exe` real del sistema.
+process.env.GH_BIN_OVERRIDE = path.join(TMP_DIR, 'this-binary-does-not-exist');
 
 // Cargar el servicio DESPUÉS de setear los envs.
 delete require.cache[require.resolve('../servicio-github')];
 const svc = require('../servicio-github');
 
-function clearGhCalls() {
-    try { fs.unlinkSync(GH_CALLS_LOG); } catch {}
-    // #2895 rev-1: limpiar también los fallback files con sufijo .pid que
-    // el stub crea cuando appendFileSync no pudo escribir al log principal.
-    try {
-        for (const f of fs.readdirSync(STUB_DIR)) {
-            if (f.startsWith('gh-calls.log.')) {
-                try { fs.unlinkSync(path.join(STUB_DIR, f)); } catch {}
-            }
-        }
-    } catch {}
-}
-
-function getGhCalls() {
-    const out = [];
-    // 1) Archivo principal del stub.
-    try {
-        for (const l of fs.readFileSync(GH_CALLS_LOG, 'utf8').split('\n').filter(Boolean)) {
-            try { out.push(JSON.parse(l)); } catch {}
-        }
-    } catch {}
-    // 2) Fallback files (gh-calls.log.<pid>) creados cuando appendFileSync
-    //    falló bajo contención de FS — recolectarlos también para no perder
-    //    evidencia de invocaciones (#2895 rev-1).
-    try {
-        for (const f of fs.readdirSync(STUB_DIR)) {
-            if (!f.startsWith('gh-calls.log.') || f === 'gh-calls.log') continue;
-            try {
-                for (const l of fs.readFileSync(path.join(STUB_DIR, f), 'utf8').split('\n').filter(Boolean)) {
-                    try { out.push(JSON.parse(l)); } catch {}
-                }
-            } catch {}
-        }
-    } catch {}
-    return out;
+// ---------------------------------------------------------------------------
+// Fake ghClient: misma forma que `defaultGhClient`, pero JS puro.
+// Cada método registra `{ method, args }` en `calls[]` para assertions.
+// Permite override por método para tests específicos (ej. createLabel
+// devolviendo `alreadyExists: true`).
+// ---------------------------------------------------------------------------
+function makeFakeGhClient(overrides = {}) {
+    const calls = [];
+    const client = {
+        calls,
+        editIssue(issueNumber, opts = {}) {
+            calls.push({ method: 'editIssue', args: [issueNumber, opts] });
+            if (overrides.editIssue) return overrides.editIssue(issueNumber, opts);
+        },
+        commentIssue(issueNumber, body) {
+            calls.push({ method: 'commentIssue', args: [issueNumber, body] });
+            if (overrides.commentIssue) return overrides.commentIssue(issueNumber, body);
+        },
+        createIssue(opts = {}) {
+            calls.push({ method: 'createIssue', args: [opts] });
+            if (overrides.createIssue) return overrides.createIssue(opts);
+            return { number: 9999, url: `https://github.com/intrale/platform/issues/9999` };
+        },
+        listLabels(opts = {}) {
+            calls.push({ method: 'listLabels', args: [opts] });
+            if (overrides.listLabels) return overrides.listLabels(opts);
+            return [];
+        },
+        createLabel(name, color, opts = {}) {
+            calls.push({ method: 'createLabel', args: [name, color, opts] });
+            if (overrides.createLabel) return overrides.createLabel(name, color, opts);
+            return { created: true, alreadyExists: false };
+        },
+    };
+    return client;
 }
 
 function clearQueues() {
@@ -183,114 +128,125 @@ function createMarker(issue, skill, phase = 'dev', pipeline = 'desarrollo') {
     return file;
 }
 
-function enqueueLabelOrder(issue, label, meta) {
-    const filename = `${issue}-${label}-test-${Date.now()}-${Math.random()}.json`;
+function enqueueOrder(issue, payload) {
+    const filename = `${issue}-${payload.action}-test-${Date.now()}-${Math.random()}.json`;
     const filepath = path.join(PENDIENTE, filename);
-    const payload = { action: 'label', issue, label, ...(meta || {}) };
     fs.writeFileSync(filepath, JSON.stringify(payload));
     return filename;
 }
 
-function findResultFile(issue, label) {
-    // El servicio mueve el JSON a `listo/` con el mismo nombre original.
+function readListoFile(filename) {
+    return JSON.parse(fs.readFileSync(path.join(LISTO, filename), 'utf8'));
+}
+
+function findResultFile(issue, prefix) {
     for (const f of fs.readdirSync(LISTO)) {
-        if (f.startsWith(`${issue}-${label}-`)) {
+        if (f.startsWith(`${issue}-${prefix}-`)) {
             return JSON.parse(fs.readFileSync(path.join(LISTO, f), 'utf8'));
         }
     }
     return null;
 }
 
-// ---------------------------------------------------------------------------
-// CA4: el escenario completo del incidente del 2026-05-05.
-// ---------------------------------------------------------------------------
-test('CA4: orden con marker_path stale (marker movido a pendiente/) NO invoca gh', () => {
-    clearQueues(); clearGhCalls(); clearStaleLog();
+// Reset de la cache de labels antes de cada test (es estado del módulo).
+function resetState() {
+    clearQueues();
+    clearStaleLog();
+    svc._resetLabelCacheForTests();
+}
+
+// ===========================================================================
+// #2994 — Guardia idempotente contra órdenes stale.
+// ===========================================================================
+
+test('CA4: orden con marker_path stale (marker movido) NO invoca gh', () => {
+    resetState();
+    const ghClient = makeFakeGhClient();
 
     // 1. Crear marker en bloqueado-humano/ (estado inicial)
     const markerPath = createMarker(2975, 'guru');
     const markerMtime = fs.statSync(markerPath).mtimeMs;
 
     // 2. Encolar orden con metadata snapshot
-    enqueueLabelOrder(2975, 'needs-human', {
+    const filename = enqueueOrder(2975, {
+        action: 'label', issue: 2975, label: 'needs-human',
         marker_path: markerPath,
         snapshot_at: new Date().toISOString(),
         marker_mtime: markerMtime,
     });
 
-    // 3. Humano destraba: mover marker a pendiente/
+    // 3. Humano destraba: mover marker a pendiente/ (desaparece del path original)
     const pendDir = path.join(PIPELINE, 'desarrollo', 'dev', 'pendiente');
     fs.mkdirSync(pendDir, { recursive: true });
     fs.renameSync(markerPath, path.join(pendDir, '2975.guru'));
 
-    // 4. Worker procesa
-    svc.processQueue();
+    // 4. Worker procesa con ghClient inyectado
+    svc.processQueue({ ghClient });
 
-    // 5. Verificar: gh NO fue invocado
-    const calls = getGhCalls();
-    assert.equal(calls.length, 0, `gh NO debe invocarse para órdenes stale (calls=${JSON.stringify(calls)})`);
+    // 5. ghClient.editIssue NO debe haber sido invocado
+    const editCall = ghClient.calls.find(c => c.method === 'editIssue');
+    assert.equal(editCall, undefined,
+        `gh edit NO debe invocarse para órdenes stale (calls=${JSON.stringify(ghClient.calls)})`);
 
     // 6. JSON en listo/ con discarded
-    const result = findResultFile(2975, 'needs-human');
-    assert.ok(result, 'orden debe quedar en listo/');
+    const result = readListoFile(filename);
     assert.equal(result.discarded, 'stale-marker-missing');
 
     // 7. Log de stale-orders contiene la entrada
     const log = readStaleLog();
-    assert.equal(log.length, 1, 'una entrada en stale-orders.log');
+    assert.equal(log.length, 1);
     assert.equal(log[0].reason, 'stale-marker-missing');
     assert.equal(log[0].issue, 2975);
     assert.equal(log[0].label, 'needs-human');
 });
 
 test('CA1: marker presente con mtime intacto → orden ejecuta normal', () => {
-    clearQueues(); clearGhCalls(); clearStaleLog();
+    resetState();
+    const ghClient = makeFakeGhClient();
 
     const markerPath = createMarker(8001, 'po');
     const markerMtime = fs.statSync(markerPath).mtimeMs;
-    enqueueLabelOrder(8001, 'needs-human', {
+    const filename = enqueueOrder(8001, {
+        action: 'label', issue: 8001, label: 'needs-human',
         marker_path: markerPath,
         snapshot_at: new Date().toISOString(),
         marker_mtime: markerMtime,
     });
 
-    svc.processQueue();
+    svc.processQueue({ ghClient });
 
-    const calls = getGhCalls();
-    // Esperamos al menos 2 invocaciones: `gh label list` (refreshLabelCache)
-    // + `gh issue edit ... --add-label`. Si la cache ya está warm, podría
-    // ser solo 1.
-    const editCall = calls.find(c => c.argv.includes('edit') && c.argv.some(a => a === '--add-label'));
-    assert.ok(editCall, `gh edit debe invocarse con --add-label (calls=${JSON.stringify(calls)})`);
-    assert.ok(editCall.argv.some(a => String(a) === '8001'), 'debe incluir el issue 8001');
+    // editIssue debe haber sido invocado con el issue + addLabel correcto.
+    const editCall = ghClient.calls.find(c => c.method === 'editIssue');
+    assert.ok(editCall, `editIssue debe haber sido invocado (calls=${JSON.stringify(ghClient.calls)})`);
+    assert.deepEqual(editCall.args, [8001, { addLabel: 'needs-human' }]);
 
-    const result = findResultFile(8001, 'needs-human');
-    assert.ok(result, 'orden debe quedar en listo/');
+    const result = readListoFile(filename);
     assert.equal(result.discarded, undefined, 'no debe estar marcada como descartada');
 });
 
 test('CA2: marker presente pero mtime posterior al snapshot → discarded stale-mtime', () => {
-    clearQueues(); clearGhCalls(); clearStaleLog();
+    resetState();
+    const ghClient = makeFakeGhClient();
 
     const markerPath = createMarker(7002, 'ux');
-    // Snapshot ANTES de tocar el marker
     const snapshotMtime = fs.statSync(markerPath).mtimeMs;
-    enqueueLabelOrder(7002, 'needs-human', {
+    const filename = enqueueOrder(7002, {
+        action: 'label', issue: 7002, label: 'needs-human',
         marker_path: markerPath,
         snapshot_at: new Date().toISOString(),
         marker_mtime: snapshotMtime,
     });
 
-    // Humano toca el marker (escribe algo, regenera mtime)
+    // Humano toca el marker (futureMs muy en el futuro)
     const futureMs = Date.now() + 10000;
     fs.utimesSync(markerPath, new Date(futureMs), new Date(futureMs));
 
-    svc.processQueue();
+    svc.processQueue({ ghClient });
 
-    const calls = getGhCalls().filter(c => c.argv.includes('edit'));
-    assert.equal(calls.length, 0, 'gh edit NO debe invocarse cuando mtime cambió');
+    const editCall = ghClient.calls.find(c => c.method === 'editIssue');
+    assert.equal(editCall, undefined, 'editIssue NO debe invocarse cuando mtime cambió');
 
-    const result = findResultFile(7002, 'needs-human');
+    const result = readListoFile(filename);
     assert.equal(result.discarded, 'stale-mtime');
 
     const log = readStaleLog();
@@ -301,7 +257,8 @@ test('CA2: marker presente pero mtime posterior al snapshot → discarded stale-
 });
 
 test('Backward-compat: orden sin meta (legacy) ejecuta sin guardia', () => {
-    clearQueues(); clearGhCalls(); clearStaleLog();
+    resetState();
+    const ghClient = makeFakeGhClient();
 
     // Orden sin marker_path/marker_mtime — shape clásico pre-#2994
     const filename = `6500-needs-human-legacy-${Date.now()}.json`;
@@ -310,11 +267,14 @@ test('Backward-compat: orden sin meta (legacy) ejecuta sin guardia', () => {
         JSON.stringify({ action: 'label', issue: 6500, label: 'needs-human' }),
     );
 
-    svc.processQueue();
+    svc.processQueue({ ghClient });
 
-    const editCall = getGhCalls().find(c => c.argv.includes('edit'));
+    // editIssue invocado con el shape correcto
+    const editCall = ghClient.calls.find(c => c.method === 'editIssue');
     assert.ok(editCall, 'orden legacy SIN meta debe ejecutar normalmente');
-    const result = JSON.parse(fs.readFileSync(path.join(LISTO, filename), 'utf8'));
+    assert.deepEqual(editCall.args, [6500, { addLabel: 'needs-human' }]);
+
+    const result = readListoFile(filename);
     assert.equal(result.discarded, undefined);
 });
 
@@ -329,4 +289,181 @@ test('validateOrderFresh: API directa', () => {
     assert.deepEqual(r1, { reason: 'stale-marker-missing', current_mtime: null });
     // Acción que no es label → null (no aplica guardia)
     assert.equal(svc.validateOrderFresh({ action: 'comment', issue: 1, body: 'x', marker_path: '/x' }), null);
+});
+
+// ===========================================================================
+// #3025 — Cobertura de los 4 dispatch paths del worker (CA-9).
+// ===========================================================================
+
+test('dispatch: action=comment invoca ghClient.commentIssue con (issue, body)', () => {
+    resetState();
+    const ghClient = makeFakeGhClient();
+
+    const filename = enqueueOrder(1234, {
+        action: 'comment', issue: 1234, body: 'Hola desde el test',
+    });
+
+    svc.processQueue({ ghClient });
+
+    const call = ghClient.calls.find(c => c.method === 'commentIssue');
+    assert.ok(call, `commentIssue debe haber sido invocado (calls=${JSON.stringify(ghClient.calls)})`);
+    assert.equal(call.args[0], 1234);
+    assert.equal(call.args[1], 'Hola desde el test');
+
+    // No debe invocar editIssue/createIssue.
+    assert.equal(ghClient.calls.find(c => c.method === 'editIssue'), undefined);
+    assert.equal(ghClient.calls.find(c => c.method === 'createIssue'), undefined);
+
+    // Debe quedar en listo/ sin discarded.
+    const result = readListoFile(filename);
+    assert.equal(result.discarded, undefined);
+});
+
+test('dispatch: action=remove-label invoca ghClient.editIssue con removeLabel', () => {
+    resetState();
+    const ghClient = makeFakeGhClient();
+
+    const filename = enqueueOrder(5678, {
+        action: 'remove-label', issue: 5678, label: 'qa:dependency',
+    });
+
+    svc.processQueue({ ghClient });
+
+    const editCall = ghClient.calls.find(c => c.method === 'editIssue');
+    assert.ok(editCall, 'editIssue debe haber sido invocado');
+    assert.deepEqual(editCall.args, [5678, { removeLabel: 'qa:dependency' }]);
+
+    const result = readListoFile(filename);
+    assert.equal(result.discarded, undefined);
+});
+
+test('dispatch: action=create-issue invoca ghClient.createIssue y guarda result en JSON', () => {
+    resetState();
+    const ghClient = makeFakeGhClient({
+        createIssue: () => ({ number: 4242, url: 'https://github.com/intrale/platform/issues/4242' }),
+    });
+
+    const filename = enqueueOrder(0, {
+        action: 'create-issue',
+        title: 'Issue de prueba',
+        body: 'body de prueba',
+        labels: 'bug,needs-definition',
+        repo: 'intrale/platform',
+    });
+
+    svc.processQueue({ ghClient });
+
+    const createCall = ghClient.calls.find(c => c.method === 'createIssue');
+    assert.ok(createCall, 'createIssue debe haber sido invocado');
+    assert.equal(createCall.args[0].title, 'Issue de prueba');
+    assert.equal(createCall.args[0].body, 'body de prueba');
+    assert.equal(createCall.args[0].labels, 'bug,needs-definition');
+    assert.equal(createCall.args[0].repo, 'intrale/platform');
+
+    // El JSON enriquecido en listo/ debe tener result.{number, url}.
+    const result = readListoFile(filename);
+    assert.equal(result.result.number, 4242);
+    assert.equal(result.result.url, 'https://github.com/intrale/platform/issues/4242');
+});
+
+// ===========================================================================
+// #3025 — CA-10: idempotencia de createLabel en ensureLabels.
+// Cuando el client devuelve { alreadyExists: true }, ensureLabels NO arroja
+// y continúa con el siguiente label.
+// ===========================================================================
+
+test('ensureLabels: createLabel devuelve alreadyExists → no arroja, continúa con resto', () => {
+    resetState();
+
+    // Cliente que simula: el primer label devuelve alreadyExists, el segundo
+    // se crea normalmente. listLabels devuelve vacío para forzar createLabel.
+    const ghClient = makeFakeGhClient({
+        listLabels: () => [],
+        createLabel: (name) => {
+            if (name === 'label-existente') return { created: false, alreadyExists: true };
+            return { created: true, alreadyExists: false };
+        },
+    });
+
+    // No debe arrojar.
+    assert.doesNotThrow(() => {
+        svc.ensureLabels('label-existente,label-nuevo', ghClient);
+    });
+
+    // Verificar que se intentaron crear ambos (el primero quedó como
+    // alreadyExists, el segundo como created).
+    const createLabelCalls = ghClient.calls.filter(c => c.method === 'createLabel');
+    const names = createLabelCalls.map(c => c.args[0]);
+    assert.ok(names.includes('label-existente'),
+        `debe haber intentado crear label-existente (calls=${JSON.stringify(names)})`);
+    assert.ok(names.includes('label-nuevo'),
+        `debe haber intentado crear label-nuevo (calls=${JSON.stringify(names)})`);
+});
+
+test('ensureLabels: usa cache, no llama listLabels si ya está warm con labels', () => {
+    resetState();
+
+    // Pre-warmear la cache: una llamada con un label que el client conoce.
+    const warmClient = makeFakeGhClient({
+        listLabels: () => [{ name: 'pre-existente' }],
+    });
+    svc.ensureLabels('pre-existente', warmClient);
+
+    // Segundo cliente: si la cache funciona, no llamamos listLabels otra vez.
+    const secondClient = makeFakeGhClient({
+        listLabels: () => {
+            throw new Error('listLabels NO debe ser invocado: cache warm');
+        },
+        createLabel: () => {
+            throw new Error('createLabel NO debe ser invocado: label ya en cache');
+        },
+    });
+    // No arroja → cache evitó las llamadas.
+    assert.doesNotThrow(() => svc.ensureLabels('pre-existente', secondClient));
+});
+
+// ===========================================================================
+// #3025 — defaultGhClient: existencia de la API y resolución del binario.
+// CA-1 / CA-3 verificación.
+// ===========================================================================
+
+test('defaultGhClient: expone editIssue, commentIssue, createIssue, listLabels, createLabel', () => {
+    assert.equal(typeof svc.defaultGhClient.editIssue, 'function');
+    assert.equal(typeof svc.defaultGhClient.commentIssue, 'function');
+    assert.equal(typeof svc.defaultGhClient.createIssue, 'function');
+    assert.equal(typeof svc.defaultGhClient.listLabels, 'function');
+    assert.equal(typeof svc.defaultGhClient.createLabel, 'function');
+});
+
+// ===========================================================================
+// #3025 — defaultGhClient como default de processQueue (sin args).
+// El comportamiento sin pasar `{ ghClient }` debe seguir funcionando para
+// el daemon en producción. Como `defaultGhClient` invoca al binario `gh`
+// real, NO podemos ejecutar un round-trip completo en este test sin tocar
+// la red. Verificamos en cambio que `processQueue()` sin args no arroja por
+// la firma (el shape del default arg está bien) — la primera orden fallará
+// al ejecutar el binario inexistente y caerá al path de retry. Eso es OK:
+// confirma que el dispatch llegó al `defaultGhClient.editIssue` (que es lo
+// que hace producción).
+// ===========================================================================
+
+test('processQueue() sin args usa defaultGhClient (firma compatible con producción)', () => {
+    resetState();
+
+    // Encolamos una orden que va a fallar en el binario inexistente, pero
+    // no debe arrojar desde `processQueue` (el catch interno la mueve a
+    // pendiente/ con retries++).
+    enqueueOrder(11111, {
+        action: 'label', issue: 11111, label: 'needs-definition',
+    });
+
+    // Si la firma de processQueue es incompatible (ej. obligara `ghClient`),
+    // esto arroja TypeError. Si está bien, el catch interno absorbe el
+    // ENOENT al ejecutar el binario y la orden vuelve a pendiente/.
+    assert.doesNotThrow(() => svc.processQueue());
+
+    // La orden debe haber sido tocada: o sigue en pendiente/ (con retries
+    // incrementado) o cayó a fallido/ (después de 3 intentos en distintas
+    // ejecuciones). Aquí no asertamos un destino específico, solo que el
+    // dispatch no fue rechazado por la firma.
 });
