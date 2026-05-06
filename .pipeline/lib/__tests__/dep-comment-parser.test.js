@@ -130,6 +130,12 @@ test('CA-5 · el código del módulo NO usa el anchor `\\Z` en regex ejecutables
     const fs = require('fs');
     const path = require('path');
     let src = fs.readFileSync(path.join(__dirname, '..', 'dep-comment-parser.js'), 'utf8');
+    // Normalizar CRLF → LF antes de procesar. En Windows el archivo puede
+    // tener `\r\n`; sin esta normalización `.` (regex) no matchea `\r` y
+    // `$` no ancla antes de `\r`, dejando los comentarios `//` intactos
+    // y produciendo un falso positivo cuando el header documenta el bug
+    // viejo citando literalmente `\Z`.
+    src = src.replace(/\r\n/g, '\n');
     // Quitar comentarios de bloque /* ... */ y de línea // ... antes de chequear.
     src = src.replace(/\/\*[\s\S]*?\*\//g, '');
     src = src.split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
