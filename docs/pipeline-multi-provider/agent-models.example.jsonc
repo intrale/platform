@@ -1,0 +1,114 @@
+// Ejemplo de configuración multi-proveedor para el pipeline V3 — issue #2956.
+//
+// IMPORTANTE: este archivo es un ANEXO del documento docs/pipeline-multi-provider.md.
+// El archivo canónico se llamará `.pipeline/agent-models.json` y será creado por el
+// issue hijo H1 enumerado en la sección 5 del documento. Este archivo NO es leído
+// por el pipeline en su estado actual.
+//
+// Convención de extensión .jsonc: permite comentarios para que el operador anote
+// por qué eligió cada provider/modelo por skill. La validación schema (issue S3)
+// debe aceptar tanto .json como .jsonc en la ubicación canónica.
+
+{
+  "$schema": "./agent-models.schema.json",
+
+  // Provider por default cuando un skill no tiene override en la sección "skills".
+  "default_provider": "anthropic",
+
+  // Definición de cada provider disponible. Cada entrada describe cómo lanzar
+  // un agente con ese provider, cómo parsear su output y cómo detectar cuota.
+  "providers": {
+
+    "anthropic": {
+      "launcher": "claude",
+      "model": "claude-opus-4-7",
+      "spawn_args_template": [
+        "-p", "{user_prompt}",
+        "--system-prompt-file", "{system_file}",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--permission-mode", "bypassPermissions"
+      ],
+      "output_parser": "anthropic-stream-json",
+      "quota_error_types": ["usage_limit_error", "weekly_quota_exhausted"],
+      "supports_tool_use": true,
+      "prompt_caching": {
+        "supported": true,
+        "ttl_seconds_default": 300,
+        "ttl_seconds_extended": 3600
+      },
+      "credentials_env": ["ANTHROPIC_API_KEY"],
+      "permissions_mode": "bypassPermissions"
+    },
+
+    "openai-codex": {
+      "launcher": "codex",
+      "model": "gpt-5-codex",
+      // El template de args de codex es ilustrativo. Ajustar al CLI real cuando
+      // se implemente el adaptador (issue H3).
+      "spawn_args_template": [
+        "exec",
+        "--prompt", "{user_prompt}",
+        "--system-prompt-file", "{system_file}",
+        "--stream",
+        "--no-confirm"
+      ],
+      "output_parser": "openai-sse",
+      "quota_error_types": ["insufficient_quota", "rate_limit_exceeded"],
+      // "limited" porque tool use cross-provider queda para fase 2 (ver §4 del doc).
+      "supports_tool_use": "limited",
+      "prompt_caching": { "supported": true, "auto": true },
+      "credentials_env": ["OPENAI_API_KEY"],
+      "permissions_mode": "no-confirm"
+    },
+
+    // Provider sintético: skills que NO usan LLM (builder, tester, delivery, linter).
+    // Reemplaza el `DETERMINISTIC_SKILLS` hardcoded de pulpo.js:4851 (acoplamiento A9).
+    "deterministic": {
+      "launcher": "node",
+      "model": "deterministic",
+      "spawn_args_template": [
+        "{script_path}",
+        "{issue}",
+        "--trabajando={trabajando_path}"
+      ],
+      "output_parser": "none",
+      "quota_error_types": [],
+      "supports_tool_use": false,
+      "prompt_caching": { "supported": false }
+    }
+  },
+
+  // Asignación skill → provider. "model_override" es opcional y permite usar un
+  // modelo distinto al "model" default del provider (útil para abaratar skills
+  // de baja criticidad sin cambiar de provider).
+  "skills": {
+    // Dev de código: Sonnet 4.7 alcanza para backend en la mayoría de los casos
+    // y baja el costo ~5x respecto de Opus 4.7.
+    "backend-dev":  { "provider": "anthropic", "model_override": "claude-sonnet-4-7" },
+
+    // Android, web y pipeline-dev mantienen Opus 4.7 (default del provider).
+    "android-dev":  { "provider": "anthropic" },
+    "web-dev":      { "provider": "anthropic" },
+    "pipeline-dev": { "provider": "anthropic" },
+
+    // QA: skill de baja criticidad LLM (clasifica, etiqueta, narra). OpenAI/Codex
+    // alcanza y baja costo. Si rebote sube, revertir a Sonnet.
+    "qa": { "provider": "openai-codex" },
+
+    // Refinamiento: tarea de razonamiento, mantener Opus 4.7 para calidad.
+    "refinar": { "provider": "anthropic", "model_override": "claude-opus-4-7" },
+
+    "guru":     { "provider": "anthropic" },
+    "po":       { "provider": "anthropic", "model_override": "claude-sonnet-4-7" },
+    "ux":       { "provider": "anthropic" },
+    "review":   { "provider": "anthropic" },
+    "security": { "provider": "anthropic" },
+
+    // Skills determinísticos — sin LLM, dispatcheados al provider sintético.
+    "builder":  { "provider": "deterministic" },
+    "tester":   { "provider": "deterministic" },
+    "delivery": { "provider": "deterministic" },
+    "linter":   { "provider": "deterministic" }
+  }
+}
