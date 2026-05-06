@@ -354,6 +354,55 @@ test('isPipelineOnlyChange — paths fuera de los patrones permitidos rompen el 
     ]), false);
     // README.md en raíz no está
     assert.equal(tester.isPipelineOnlyChange(['README.md']), false);
+    // gradle.properties / build.gradle.kts SÍ pueden afectar build, no son pipeline-only
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'gradle.properties',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'build.gradle.kts',
+    ]), false);
+});
+
+// #2895 rev-2 — regresión: cuando un commit toca `.gitignore` junto a
+// archivos pipeline, el tester rebotaba porque `.gitignore` rompía el
+// match `every` y caía a la ruta gradle, que rebotaba por cobertura
+// Kotlin baseline (35.95% < 80%) ajena al cambio. Verificado en
+// .pipeline/logs/2895-tester.log (pipeline_only=false con esos 10 archivos).
+test('#2895 rev-2 — isPipelineOnlyChange acepta .gitignore root', () => {
+    // .gitignore solo (sin código) → pipeline-only
+    assert.equal(tester.isPipelineOnlyChange(['.gitignore']), true);
+    // .gitignore + cambios .pipeline → pipeline-only (caso real del rebote)
+    assert.equal(tester.isPipelineOnlyChange([
+        '.gitignore',
+        '.pipeline/dashboard.js',
+        '.pipeline/lib/eta.js',
+        '.pipeline/lib/__tests__/eta.test.js',
+        '.pipeline/skills-deterministicos/tester.js',
+    ]), true);
+});
+
+test('#2895 rev-2 — isPipelineOnlyChange acepta .gitattributes y .editorconfig root', () => {
+    assert.equal(tester.isPipelineOnlyChange(['.gitattributes']), true);
+    assert.equal(tester.isPipelineOnlyChange(['.editorconfig']), true);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.editorconfig',
+        '.gitattributes',
+        '.pipeline/config.yaml',
+    ]), true);
+});
+
+test('#2895 rev-2 — isPipelineOnlyChange NO confunde .gitignore en subdirectorios fuera de raíz', () => {
+    // El patrón es `^\.gitignore$` — si alguien tiene un `.gitignore` adentro
+    // de un módulo (ej. `app/.gitignore`), igual debe caer a la ruta gradle.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'app/.gitignore',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'backend/.gitignore',
+    ]), false);
 });
 
 test('parseNodeTestJunit — lee tests/pass/fail/skipped del comentario summary', () => {
@@ -496,6 +545,42 @@ test('siempre rompe', () => { assert.equal(1, 2); });
     assert.equal(r.summary.tests, 1);
     assert.equal(r.summary.failures, 1);
     assert.equal(r.summary.failed_tests[0].name, 'siempre rompe');
+});
+
+// #2895 (rebote rev-1): regresión empírica del rebote del 2026-04-30.
+// Los tests del pipeline fallaban en producción cuando el pulpo arrancaba
+// como servicio sin git en el PATH heredado. Este test simula ese caso
+// empíricamente: spawnea node --test desde runNodeTests con un PATH
+// inicialmente sin git, y verifica que el test child puede igual ejecutar
+// `git --version` (porque ensureGitInPath lo prepende).
+test('#2895 rev-1 — runNodeTests garantiza git accesible aunque PATH inicial no lo tenga', async () => {
+    if (process.platform !== 'win32') return; // bug específico de Windows
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-gitpath-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    const testFile = path.join(fresh, '.pipeline', 'tests', 'git-needed.test.js');
+    // Test que requiere git: si el child no tiene git en PATH, este test falla.
+    fs.writeFileSync(testFile, `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { spawnSync } = require('child_process');
+test('git --version disponible en el child', () => {
+    const r = spawnSync('git', ['--version'], { encoding: 'utf8' });
+    assert.equal(r.status, 0, 'git debe estar accesible. stderr=' + r.stderr + ' error=' + (r.error && r.error.code));
+    assert.match(r.stdout || '', /git version/);
+});
+`);
+    // Env tipo "pulpo arrancado como servicio Windows": PATH mínimo sin git
+    const minimalEnv = {
+        SystemRoot: process.env.SystemRoot || 'C:\\Windows',
+        // PATH sin git (sólo system32 para que node y cmd.exe arranquen)
+        PATH: 'C:\\Windows\\System32;C:\\Windows',
+    };
+    const r = await tester.runNodeTests(fresh, minimalEnv);
+    assert.equal(r.summary.failures, 0,
+        `el test debe pasar gracias a ensureGitInPath. failed_tests=${JSON.stringify(r.summary.failed_tests)}`);
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.exit_code, 0);
 });
 
 // ── ensureGitInPath (rebote #2891 rev-2) ─────────────────────────────
