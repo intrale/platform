@@ -55,6 +55,12 @@ try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opc
 let quotaSnapshotIntegration = null;
 try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catch { /* opcional */ }
 
+// #3023 — Lectura del modo de pausa para filtrar la cola "Próximos 10" por
+// allowlist. Lectura defensiva: si el módulo no carga, el endpoint omite el
+// flag `partialPause.active` (degrada a comportamiento running, sin filtro).
+let partialPause = null;
+try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
+
 const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
     '/pipeline': sat.renderPipeline,
@@ -84,7 +90,23 @@ const API_ROUTES = {
         const onlyRejected = v === '1' || v === 'true';
         return { recent: slices.recentlyFinished(state, 10, { onlyRejected }) };
     },
-    '/api/dash/queue': (state, ctx) => ({ queue: slices.nextInQueue(state, ctx, 10) }),
+    // #3023 — La cola "Próximos 10" se filtra por allowlist cuando el
+    // pipeline está en `partial_pause`. Leemos el modo una sola vez por
+    // request y lo pasamos al slice (evita doble FS read) + lo exponemos
+    // en el payload para que el front renderice el badge "filtrado por
+    // pausa parcial" sin re-pegarle al header. El payload sólo expone
+    // `{ active, allowedIssues }` — omite `source`/`createdAt`/`depSources`
+    // por minimización (security review).
+    '/api/dash/queue': (state, ctx) => {
+        let pipelineMode = null;
+        if (partialPause && typeof partialPause.getPipelineMode === 'function') {
+            try { pipelineMode = partialPause.getPipelineMode(); } catch { pipelineMode = null; }
+        }
+        const queue = slices.nextInQueue(state, ctx, 10, { pipelineMode });
+        const active = !!(pipelineMode && pipelineMode.mode === 'partial_pause');
+        const allowedIssues = active ? pipelineMode.allowedIssues : [];
+        return { queue, partialPause: { active, allowedIssues } };
+    },
     '/api/dash/equipo': (state) => slices.equipoSlice(state),
     '/api/dash/pipeline': (state) => slices.pipelineSlice(state),
     '/api/dash/bloqueados': (state) => slices.bloqueadosSlice(state),

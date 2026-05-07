@@ -28,6 +28,12 @@ try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opc
 // conteo distinto al gate real del pulpo.
 const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
 
+// #3023 — Filtro de la cola "Próximos 10" por allowlist de pausa parcial.
+// Importación defensiva: si el módulo no está disponible (edge: checkout
+// pre-#2490), `nextInQueue` degrada a comportamiento running (sin filtro).
+let partialPause = null;
+try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
+
 function isDeterministicSkill(skill) {
     return DETERMINISTIC_SKILLS.has(String(skill || '').trim().toLowerCase());
 }
@@ -95,7 +101,23 @@ function recentlyFinished(state, limit = 3, opts = {}) {
     return out.slice(0, limit);
 }
 
-function nextInQueue(state, ctx, limit = 3) {
+// #3023 — Si está en pausa parcial, filtra `items` dejando sólo los que
+// están en la allowlist; otros estados (running/paused) NO filtran (la
+// pausa total se renderiza con el banner global, fuera de alcance).
+//
+// Usa `isIssueAllowedInState` para evitar la trampa string↔number: los
+// items de cola exponen `item.issue` como string (`f.split('.')[0]`) pero
+// `allowedIssues` viene como `number[]`. La función helper hace
+// `normalizeIssue()` por dentro y resuelve la coerción correctamente.
+function applyPartialPauseFilter(items, ppState) {
+    if (!ppState || ppState.mode !== 'partial_pause') return items;
+    if (!partialPause || typeof partialPause.isIssueAllowedInState !== 'function') {
+        return items;
+    }
+    return items.filter(item => partialPause.isIssueAllowedInState(item.issue, ppState));
+}
+
+function nextInQueue(state, ctx, limit = 3, opts = {}) {
     const PIPELINE = ctx.PIPELINE;
     const out = [];
     const concurrencia = state.config.concurrencia || {};
@@ -143,11 +165,25 @@ function nextInQueue(state, ctx, limit = 3) {
         }
         if (out.length >= limit * 4) break;
     }
-    out.sort((a, b) => {
+
+    // #3023 — Filtrar por allowlist ANTES del sort para no descartar items
+    // priorizados. En la práctica el sort es estable y da el mismo resultado,
+    // pero conceptualmente: filtrar primero, sortear después.
+    //
+    // `opts.pipelineMode` permite a callers (route handler, tests) inyectar
+    // el modo ya leído. Si no se pasa, se lee del filesystem vía el módulo
+    // `partial-pause` (lectura barata, dos `existsSync` + un `readFileSync`).
+    let ppState = opts.pipelineMode || null;
+    if (!ppState && partialPause && typeof partialPause.getPipelineMode === 'function') {
+        try { ppState = partialPause.getPipelineMode(); } catch { ppState = null; }
+    }
+    const filtered = applyPartialPauseFilter(out, ppState);
+
+    filtered.sort((a, b) => {
         if (a.slotFree !== b.slotFree) return a.slotFree ? -1 : 1;
         return (b.bounces || 0) - (a.bounces || 0);
     });
-    return out.slice(0, limit);
+    return filtered.slice(0, limit);
 }
 
 function headerSlice(state, ctx) {
