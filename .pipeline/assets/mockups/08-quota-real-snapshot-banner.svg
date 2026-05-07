@@ -1,0 +1,317 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 08 — Banner de cuota Anthropic con dato REAL granular (#3008).
+  Resolucion: 1440x900.
+
+  Hijo visual del mockup 07 (quota-exhausted-banner). Diferencias clave:
+    - El banner amarillo de "exhausted" sigue intacto (no se reescribe).
+    - Se agrega un PANEL SECUNDARIO debajo con los 6 buckets reales del
+      snapshot del cliente Claude Desktop (sesion / weekly all / weekly
+      sonnet / weekly design / daily routines / api overage USD).
+    - Cada bucket tiene su umbral semantico (verde/ambar/rojo).
+    - Pill BADGE "DATO REAL · hace 12 min" o "ESTIMADO · sin snapshot
+      reciente" como diferenciador inequivoco entre fuente real y
+      heuristica.
+    - Indicador de frescura del snapshot (timestamp relativo + warning
+      cuando supera TTL configurable).
+
+  Tokens de design-tokens.css (ningun hex hardcoded fuera del SVG):
+    --quota-degraded (#F0A500), --quota-degraded-fg (#FFE5A8),
+    --success (#3FB950), --warning (#D29922), --danger (#F85149),
+    --info (#58A6FF), --text-primary (#E6EDF3), --text-secondary (#B1BAC4),
+    --text-dim (#8B949E), --surface-0 (#0D1117), --surface-1 (#161B22),
+    --border (#30363D).
+
+  Convencion accesibilidad WCAG AA (verificada):
+    - texto principal #E6EDF3 sobre #0D1117 = 14.8:1 (AAA)
+    - badge "DATO REAL" #FFE5A8 sobre tono ambar = 11.8:1 (AAA)
+    - umbrales semanticos NUNCA solo por color: ademas del fill,
+      cada bucket tiene icono y label textual ("OK"/"Atencion"/"Critico").
+
+  Estados representados (pegados verticalmente para que se lean en una
+  sola toma):
+    1) Snapshot fresco (< TTL) → datos visibles + pill verde "DATO REAL".
+    2) Snapshot stale (> TTL) → datos atenuados + pill ambar "STALE".
+    3) Sin snapshot → fallback al heuristico + pill gris "ESTIMADO".
+    4) Parser failures (>= 3 consecutivos) → row de alerta + pill rojo
+       "PARSER OFFLINE".
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad08" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="quotaPanelGrad08" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#F0A500" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#F0A500" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- =============== HEADER (compacto) =============== -->
+  <rect x="0" y="0" width="1440" height="64" fill="#161B22"/>
+  <rect x="0" y="63" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(24, 14)">
+    <rect width="36" height="36" rx="9" fill="#0D274D"/>
+    <path d="M18 7 L5 30 L31 30 Z" fill="none" stroke="url(#brandGrad08)" stroke-width="2.5"
+          stroke-linejoin="round"/>
+    <path d="M18 16 L13 26 L23 26 Z" fill="url(#brandGrad08)"/>
+  </g>
+  <text x="72" y="32" fill="#E6EDF3" font-size="17" font-weight="700">Intrale Pipeline</text>
+  <text x="72" y="50" fill="#8B949E" font-size="10" font-weight="600" letter-spacing="1.4">DASHBOARD V3 · 14:23 LOCAL · CUOTA · DATO REAL</text>
+
+  <!-- Status RUNNING -->
+  <g transform="translate(310, 20)">
+    <rect width="100" height="26" rx="13" fill="#3FB950" fill-opacity="0.15" stroke="#3FB950" stroke-opacity="0.4"/>
+    <circle cx="14" cy="13" r="3.5" fill="#3FB950"/>
+    <text x="26" y="17" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.4">RUNNING</text>
+  </g>
+
+  <!-- Pill global "% real" -->
+  <g transform="translate(424, 20)">
+    <rect width="280" height="26" rx="13" fill="#3FB950" fill-opacity="0.16" stroke="#3FB950" stroke-opacity="0.45"/>
+    <circle cx="14" cy="13" r="4" fill="#3FB950"/>
+    <text x="26" y="17" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.2">DATO REAL · SNAPSHOT HACE 12 MIN · 67% SEM</text>
+  </g>
+
+  <!-- Reloj -->
+  <g transform="translate(1416, 30)" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+    <text x="0" y="0" fill="#E6EDF3" font-size="18" font-weight="700" letter-spacing="2">14:23:08</text>
+    <text x="0" y="16" fill="#8B949E" font-size="10">Mar 06 may 2026</text>
+  </g>
+
+  <!-- =============== H2 SECCION =============== -->
+  <text x="32" y="100" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    CUOTA ANTHROPIC — DATO REAL DEL CLIENTE DESKTOP (CADA 60 MIN)
+  </text>
+
+  <!-- =============== ESTADO 1: SNAPSHOT FRESCO (DATO REAL) =============== -->
+  <g transform="translate(32, 120)">
+    <rect width="1376" height="156" rx="12" fill="url(#quotaPanelGrad08)" stroke="#3FB950" stroke-opacity="0.40"/>
+    <rect width="4" height="156" fill="#3FB950" rx="2"/>
+
+    <!-- Header del panel: badge + frescura -->
+    <g transform="translate(24, 18)">
+      <rect width="124" height="24" rx="12" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-opacity="0.50"/>
+      <circle cx="12" cy="12" r="3.5" fill="#3FB950"/>
+      <text x="22" y="16" fill="#3FB950" font-size="10" font-weight="700" letter-spacing="1.2">DATO REAL</text>
+    </g>
+    <text x="160" y="34" fill="#B1BAC4" font-size="11">
+      Capturado del cliente Claude Desktop (Windows) ·
+      <tspan font-family="'SF Mono', Consolas, monospace" fill="#FFE5A8">14:11:42</tspan> · hace
+      <tspan font-family="'SF Mono', Consolas, monospace" fill="#FFE5A8" font-weight="700">11 min 26 s</tspan>
+    </text>
+    <text x="1352" y="34" fill="#8B949E" font-size="10" text-anchor="end" font-style="italic">
+      Cuenta validada: leito.larreta@gmail.com
+    </text>
+
+    <!-- 6 buckets en grid 6 columnas -->
+    <g transform="translate(24, 60)">
+      <!-- 1: Sesion actual -->
+      <g transform="translate(0, 0)">
+        <rect width="216" height="80" rx="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">SESION ACTUAL</text>
+        <text x="14" y="48" fill="#3FB950" font-size="26" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">42%</text>
+        <!-- Barra de progreso -->
+        <rect x="14" y="56" width="188" height="4" rx="2" fill="#21262D"/>
+        <rect x="14" y="56" width="79" height="4" rx="2" fill="#3FB950"/>
+        <text x="14" y="74" fill="#B1BAC4" font-size="10">Reset en
+          <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">3 h 0 min</tspan></text>
+      </g>
+
+      <!-- 2: Semanal todos los modelos -->
+      <g transform="translate(228, 0)">
+        <rect width="216" height="80" rx="10" fill="#0D1117" stroke="#D29922" stroke-opacity="0.30"/>
+        <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">SEMANAL — TODOS LOS MODELOS</text>
+        <text x="14" y="48" fill="#D29922" font-size="26" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">67%</text>
+        <rect x="14" y="56" width="188" height="4" rx="2" fill="#21262D"/>
+        <rect x="14" y="56" width="126" height="4" rx="2" fill="#D29922"/>
+        <text x="14" y="74" fill="#B1BAC4" font-size="10">Atencion · supera 65%</text>
+      </g>
+
+      <!-- 3: Semanal Sonnet -->
+      <g transform="translate(456, 0)">
+        <rect width="216" height="80" rx="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">SEMANAL — SOLO SONNET</text>
+        <text x="14" y="48" fill="#3FB950" font-size="26" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">52%</text>
+        <rect x="14" y="56" width="188" height="4" rx="2" fill="#21262D"/>
+        <rect x="14" y="56" width="98" height="4" rx="2" fill="#3FB950"/>
+        <text x="14" y="74" fill="#B1BAC4" font-size="10">OK · debajo de 65%</text>
+      </g>
+
+      <!-- 4: Semanal Claude Design -->
+      <g transform="translate(684, 0)">
+        <rect width="216" height="80" rx="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">SEMANAL — CLAUDE DESIGN</text>
+        <text x="14" y="48" fill="#3FB950" font-size="26" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">12%</text>
+        <rect x="14" y="56" width="188" height="4" rx="2" fill="#21262D"/>
+        <rect x="14" y="56" width="23" height="4" rx="2" fill="#3FB950"/>
+        <text x="14" y="74" fill="#B1BAC4" font-size="10">OK · uso bajo</text>
+      </g>
+
+      <!-- 5: Rutinas diarias -->
+      <g transform="translate(912, 0)">
+        <rect width="216" height="80" rx="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">RUTINAS DIARIAS</text>
+        <text x="14" y="48" fill="#3FB950" font-size="26" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">3<tspan fill="#8B949E" font-weight="400">/15</tspan></text>
+        <rect x="14" y="56" width="188" height="4" rx="2" fill="#21262D"/>
+        <rect x="14" y="56" width="38" height="4" rx="2" fill="#3FB950"/>
+        <text x="14" y="74" fill="#B1BAC4" font-size="10">OK · 12 disponibles hoy</text>
+      </g>
+
+      <!-- 6: Overage USD -->
+      <g transform="translate(1140, 0)">
+        <rect width="212" height="80" rx="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">OVERAGE API (USD)</text>
+        <text x="14" y="48" fill="#3FB950" font-size="22" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">$0<tspan fill="#8B949E" font-weight="400" font-size="14"> / $50</tspan></text>
+        <rect x="14" y="56" width="184" height="4" rx="2" fill="#21262D"/>
+        <text x="14" y="74" fill="#B1BAC4" font-size="10">OK · sin overage activo</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =============== ESTADO 2: SNAPSHOT STALE =============== -->
+  <text x="32" y="306" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    SNAPSHOT STALE (TTL SUPERADO) — SE MANTIENE VISIBLE PERO ATENUADO
+  </text>
+
+  <g transform="translate(32, 326)">
+    <rect width="1376" height="80" rx="12" fill="url(#quotaPanelGrad08)" stroke="#D29922" stroke-opacity="0.40"/>
+    <rect width="4" height="80" fill="#D29922" rx="2"/>
+
+    <g transform="translate(24, 16)">
+      <rect width="148" height="24" rx="12" fill="#D29922" fill-opacity="0.18" stroke="#D29922" stroke-opacity="0.50"/>
+      <g transform="translate(8, 6)" fill="none" stroke="#D29922" stroke-width="1.5">
+        <circle cx="6" cy="6" r="5"/>
+        <line x1="6" y1="3" x2="6" y2="6"/>
+        <line x1="6" y1="6" x2="8.5" y2="7.5"/>
+      </g>
+      <text x="22" y="16" fill="#D29922" font-size="10" font-weight="700" letter-spacing="1.2">SNAPSHOT STALE · 2 H 14 MIN</text>
+    </g>
+    <text x="184" y="32" fill="#B1BAC4" font-size="11">
+      Captura mas reciente: <tspan font-family="'SF Mono', Consolas, monospace" fill="#FFE5A8">12:09:44</tspan> ·
+      Excede TTL configurado (<tspan font-family="'SF Mono', Consolas, monospace">QUOTA_BANNER_TTL_MIN=90</tspan>)
+    </text>
+    <text x="24" y="62" fill="#E6EDF3" font-size="12">
+      Banner muestra el ultimo dato real con opacidad reducida; el detector cae a heuristico para gates en tiempo real.
+    </text>
+    <text x="1352" y="62" fill="#8B949E" font-size="10" text-anchor="end" font-style="italic">
+      Reintento de captura programado en 4 min
+    </text>
+  </g>
+
+  <!-- =============== ESTADO 3: SIN SNAPSHOT — HEURISTICO PURO =============== -->
+  <text x="32" y="436" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    SIN SNAPSHOT (BOOT INICIAL O CAPTURA DESHABILITADA) — FALLBACK HEURISTICO
+  </text>
+
+  <g transform="translate(32, 456)">
+    <rect width="1376" height="80" rx="12" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="80" fill="#8B949E" rx="2"/>
+
+    <g transform="translate(24, 16)">
+      <rect width="116" height="24" rx="12" fill="#8B949E" fill-opacity="0.18" stroke="#8B949E" stroke-opacity="0.40"/>
+      <g transform="translate(8, 6)" fill="none" stroke="#B1BAC4" stroke-width="1.5">
+        <path d="M2 8 L6 4 L10 8" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="22" y="16" fill="#B1BAC4" font-size="10" font-weight="700" letter-spacing="1.2">ESTIMADO</text>
+    </g>
+    <text x="152" y="32" fill="#B1BAC4" font-size="11">
+      Sin snapshots persistidos · Banner usa heuristica de
+      <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">lib/weekly-quota.js</tspan>
+      (cero regresion vs pre-feature)
+    </text>
+    <text x="24" y="62" fill="#E6EDF3" font-size="12">
+      Estimacion semanal: <tspan font-weight="700" font-family="'SF Mono', Consolas, monospace">~58%</tspan> ·
+      Captura siguiente: en
+      <tspan font-family="'SF Mono', Consolas, monospace">42 min</tspan> ·
+      Estado: <tspan fill="#3FB950" font-weight="700">scheduler corriendo</tspan>
+    </text>
+    <text x="1352" y="62" fill="#8B949E" font-size="10" text-anchor="end" font-style="italic">
+      QUOTA_SNAPSHOT_ENABLED=true
+    </text>
+  </g>
+
+  <!-- =============== ESTADO 4: PARSER OFFLINE =============== -->
+  <text x="32" y="566" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    PARSER OFFLINE (>= 3 FALLOS CONSECUTIVOS) — ALERTA UNICA + FALLBACK HEURISTICO
+  </text>
+
+  <g transform="translate(32, 586)">
+    <rect width="1376" height="92" rx="12" fill="#161B22" stroke="#F85149" stroke-opacity="0.40"/>
+    <rect width="4" height="92" fill="#F85149" rx="2"/>
+
+    <g transform="translate(24, 16)">
+      <rect width="156" height="24" rx="12" fill="#F85149" fill-opacity="0.18" stroke="#F85149" stroke-opacity="0.50"/>
+      <g transform="translate(8, 5)" fill="none" stroke="#F85149" stroke-width="1.7">
+        <circle cx="7" cy="7" r="6"/>
+        <line x1="7" y1="3" x2="7" y2="8"/>
+        <circle cx="7" cy="11" r="0.8" fill="#F85149"/>
+      </g>
+      <text x="22" y="16" fill="#F85149" font-size="10" font-weight="700" letter-spacing="1.2">PARSER OFFLINE · 3 FALLOS</text>
+    </g>
+    <text x="192" y="32" fill="#B1BAC4" font-size="11">
+      Causa probable: layout drift del cliente Desktop o sesion desconectada (RDP)
+    </text>
+    <text x="24" y="58" fill="#E6EDF3" font-size="12">
+      Alerta Telegram enviada (sin PII, solo categoria). Sistema continua con heuristico.
+      PNG conservado intacto en
+      <tspan font-family="'SF Mono', Consolas, monospace" fill="#FFE5A8">.pipeline/quota-snapshots/</tspan>
+      para reentrenar parser sin perder historico.
+    </text>
+    <text x="24" y="78" fill="#8B949E" font-size="11" font-style="italic">
+      Una sola alerta hasta que vuelva a parsear OK (anti-spam) · Detalle:
+      <tspan font-family="'SF Mono', Consolas, monospace" fill="#FFE5A8">.pipeline/logs/quota-parser-2026-05-06.log</tspan>
+    </text>
+  </g>
+
+  <!-- =============== TELEGRAM PREVIEW (microcopy de alertas) =============== -->
+  <g transform="translate(32, 700)">
+    <rect width="1376" height="170" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="28" fill="#E6EDF3" font-size="14" font-weight="700">Mensajes Telegram — coherentes con narrativa-quota-exhausted.md</text>
+    <text x="20" y="46" fill="#8B949E" font-size="11">
+      Sin PII (cero porcentajes, cero email, cero contenido del PNG en errores) · CA-11 + CA-S3
+    </text>
+
+    <!-- Mensaje 1: alerta umbral 90% (NUEVA — gate antes del 429) -->
+    <g transform="translate(20, 64)">
+      <rect width="442" height="92" rx="10" fill="#0D1117" stroke="#D29922" stroke-opacity="0.45"/>
+      <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">14:23:08 · UMBRAL 90% SEMANAL ALCANZADO</text>
+      <text x="14" y="40" fill="#FFE5A8" font-size="11" font-weight="700">Cuota semanal al 90% segun snapshot real.</text>
+      <text x="14" y="56" fill="#E6EDF3" font-size="11">Pausando spawn de skills LLM para evitar 429.</text>
+      <text x="14" y="72" fill="#E6EDF3" font-size="11">Reset semanal estimado: <tspan font-family="'SF Mono', Consolas, monospace" font-weight="700">domingo 10/05 21:00 (en 4 d 6 h)</tspan>.</text>
+      <text x="14" y="86" fill="#B1BAC4" font-size="10">Determinisicos siguen procesando.</text>
+    </g>
+
+    <!-- Mensaje 2: parser offline (NUEVA) -->
+    <g transform="translate(482, 64)">
+      <rect width="442" height="92" rx="10" fill="#0D1117" stroke="#F85149" stroke-opacity="0.40"/>
+      <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">14:23:14 · PARSER OFFLINE</text>
+      <text x="14" y="40" fill="#F85149" font-size="11" font-weight="700">Lectura del cliente Claude Desktop fallo 3 veces seguidas.</text>
+      <text x="14" y="56" fill="#E6EDF3" font-size="11">Pipeline cae a heuristico para gates de cuota.</text>
+      <text x="14" y="72" fill="#E6EDF3" font-size="11">Causa probable: <tspan font-family="'SF Mono', Consolas, monospace">layout_drift | session_disconnected</tspan>.</text>
+      <text x="14" y="86" fill="#B1BAC4" font-size="10">Detalle en logs · Una sola alerta hasta que vuelva.</text>
+    </g>
+
+    <!-- Mensaje 3: cuenta no esperada (NUEVA) -->
+    <g transform="translate(944, 64)">
+      <rect width="412" height="92" rx="10" fill="#0D1117" stroke="#F85149" stroke-opacity="0.40"/>
+      <text x="14" y="20" fill="#8B949E" font-size="9" letter-spacing="1.2">14:23:21 · CUENTA NO ESPERADA</text>
+      <text x="14" y="40" fill="#F85149" font-size="11" font-weight="700">Snapshot capturado de una cuenta distinta a la esperada.</text>
+      <text x="14" y="56" fill="#E6EDF3" font-size="11">Descartado · no se contamina la calibracion.</text>
+      <text x="14" y="72" fill="#B1BAC4" font-size="11">Verifica login en Claude Desktop.</text>
+      <text x="14" y="86" fill="#8B949E" font-size="10" font-style="italic">EXPECTED_CLAUDE_ACCOUNT no coincide con account_handle.</text>
+    </g>
+  </g>
+</svg>
