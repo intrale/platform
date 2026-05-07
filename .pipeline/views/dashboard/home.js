@@ -431,10 +431,17 @@ function homeStyles() {
 }
 .line-btn:hover { background: var(--in-bg-3); border-color: var(--in-accent); color: var(--in-accent); }
 
-/* Áreas — botonera horizontal compacta con badges de conteo */
+/* Áreas — botonera horizontal compacta con badges de conteo.
+   #3045 — auto-fit con minmax(96px, 1fr) en lugar de repeat(9, 1fr):
+   - resiste el crecimiento del array AREAS (hoy son 10, no 9) sin que
+     el último ítem se vaya a una segunda fila;
+   - degrada con gracia si el viewport baja (operador con la ventana
+     achicada en monitor secundario);
+   - 96px es suficiente para los labels más largos ("Bloqueados", 10ch
+     a 11px de font-size) sin truncar ni activar text-overflow. */
 .areas-bar {
     display: grid;
-    grid-template-columns: repeat(9, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
     gap: 8px;
 }
 .area-pill {
