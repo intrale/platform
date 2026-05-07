@@ -67,7 +67,15 @@ const API_ROUTES = {
         const agents = slices.activeAgents(state);
         return { agents, totalRunning: agents.length };
     },
-    '/api/dash/recent': (state) => ({ recent: slices.recentlyFinished(state, 10) }),
+    // #3035 — `?errorsOnly=1` filtra en server por `resultado === 'rechazado'`.
+    // Parseo defensivo: solo los strings literales '1' o 'true' activan el
+    // filtro. Cualquier otro valor (incluyendo ausente, 0, false, null) →
+    // vista mezclada por defecto. Evita inyección por coerción débil.
+    '/api/dash/recent': (state, ctx, query) => {
+        const v = query && query.get('errorsOnly');
+        const onlyRejected = v === '1' || v === 'true';
+        return { recent: slices.recentlyFinished(state, 10, { onlyRejected }) };
+    },
     '/api/dash/queue': (state, ctx) => ({ queue: slices.nextInQueue(state, ctx, 10) }),
     '/api/dash/equipo': (state) => slices.equipoSlice(state),
     '/api/dash/pipeline': (state) => slices.pipelineSlice(state),
@@ -141,7 +149,18 @@ function handle(req, res, ctx) {
     if (API_ROUTES[apiPath]) {
         try {
             const state = ctx.getState();
-            const payload = API_ROUTES[apiPath](state, ctx);
+            // #3035 — Parseo del query string con URLSearchParams para que
+            // los handlers que necesiten leer params (ej. errorsOnly) lo
+            // hagan de forma segura. URL base inerte (`http://x`), no se
+            // resuelve contra red. Si la URL viene mal formada, query =
+            // URLSearchParams vacío para que los handlers degraden a default.
+            let query;
+            try {
+                query = new URL(url, 'http://x').searchParams;
+            } catch {
+                query = new URLSearchParams();
+            }
+            const payload = API_ROUTES[apiPath](state, ctx, query);
             sendJson(res, payload);
         } catch (e) {
             sendJson(res, { error: e.message || String(e) }, 500);
