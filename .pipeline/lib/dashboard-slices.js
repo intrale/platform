@@ -63,13 +63,19 @@ function activeAgents(state) {
     return out;
 }
 
-function recentlyFinished(state, limit = 3) {
+// #3035 — Flag opcional `onlyRejected`: si está en true, retorna solo
+// entries con `resultado === 'rechazado'`. Filtrado en server (CA-7,
+// defense-in-depth) — el cliente NO recibe la lista completa para
+// filtrar localmente.
+function recentlyFinished(state, limit = 3, opts = {}) {
+    const onlyRejected = !!(opts && opts.onlyRejected);
     const out = [];
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
                 if (e.estado !== 'listo' && e.estado !== 'procesado') continue;
                 if (!e.updatedAt) continue;
+                if (onlyRejected && e.resultado !== 'rechazado') continue;
                 out.push({
                     issue: issueId,
                     title: data.title || '',
