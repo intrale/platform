@@ -123,6 +123,7 @@ scripts/planner-plan.json
 .pipeline/*.pid
 .pipeline/.paused
 .pipeline/.partial-pause.json
+.pipeline/rest-mode.json
 .pipeline/blocked-issues.json
 .pipeline/cooldowns.json
 .pipeline/last-restart.json
