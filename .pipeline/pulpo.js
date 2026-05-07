@@ -7421,6 +7421,13 @@ function persistMetricsSnapshot(config) {
 let lastUnblockTime = 0;
 const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
 
+// #3059 — Watchdog del guard: si la ejecución previa nunca terminó (ej. gh.exe
+// wedged en una syscall de Windows que el `timeout` de child_process no logra
+// matar), el `_unblockRunning` queda en true para siempre y el brazo se vuelve
+// silencioso. Liberamos a la fuerza pasados 10 min y matamos el pid wedged.
+const UNBLOCK_WEDGE_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
+const REENTRY_LOG_COOLDOWN_MS = 10 * 60 * 1000;  // log skip cada 10 min, no spam
+
 // #2801 — `brazoDesbloqueo` se hizo async para no bloquear el event loop.
 // Antes: 5 execSync (gh issue list/view/edit/comment/close) que con 46 issues
 // y ~6 calls cada uno = ~30 min de pulpo bloqueado consultando GitHub. Mientras
@@ -7432,19 +7439,192 @@ const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
 // pulpo invoca este brazo sin await ('fire and forget') así que el lanzamiento
 // no se atrasa por el desbloqueo. El guard `lastUnblockTime` y `_unblockRunning`
 // previenen entrar dos veces a la vez.
+//
+// #3059 — El estado del guard pasa a un objeto de módulo-level con tres campos:
+//   - running: true mientras `brazoDesbloqueoImpl` está en vuelo.
+//   - startedAt: ts en que se entró a la ejecución (para watchdog).
+//   - activePid: pid del child `gh.exe` actualmente activo (para taskkill).
+// El watchdog inspecciona estos tres campos al inicio de cada tick.
 let _unblockRunning = false;
+let _unblockStartedAt = 0;
+let _unblockActivePid = null;
+let _unblockReentryLastWarn = 0;
+
+/**
+ * #3059 — Sanitización de args sensibles antes de loguearlos.
+ * El gh-cli actual no recibe tokens por flag, pero un cambio futuro
+ * que agregue --token / --auth / --password no debe filtrar el secreto
+ * en `logs/pulpo.log` cuando el wrapper logea el comando wedged.
+ * Recomendación de security en el análisis de #3059.
+ */
+function _sanitizeGhArgs(args) {
+  const DENY = new Set(['--token', '--auth', '--password', '-p', '--api-token']);
+  const out = [];
+  let redactNext = false;
+  for (const a of args) {
+    if (redactNext) { out.push('***'); redactNext = false; continue; }
+    out.push(a);
+    if (DENY.has(a)) redactNext = true;
+  }
+  return out.join(' ');
+}
+
+/**
+ * #3059 — Wrapper robusto de `execFile` con timeout que SÍ rechaza la promise
+ * y mata al proceso hijo en Windows con `taskkill /F /T /PID <pid>`.
+ *
+ * Por qué: `child_process.execFile({ timeout })` en Windows no garantiza
+ * matar al binario si éste quedó wedged en una syscall (DNS lento, named
+ * pipe colgado, gh-cli sin cerrar stdout). La promise queda pendiente
+ * para siempre y el caller nunca libera su guard de re-entry.
+ *
+ * Garantías:
+ *   - Si el proceso resuelve antes del timeout → resolve normal, timer
+ *     cancelado con clearTimeout (sin leak).
+ *   - Si excede timeout → reject con error.code = 'GH_CALL_TIMEOUT' Y
+ *     `taskkill /F /T /PID` sobre el pid (idempotente, log distingue
+ *     "matado por timeout" vs "ya había muerto solo").
+ *   - PID validado con `Number.isInteger(pid) && pid > 0` antes de
+ *     ejecutar taskkill (defense-in-depth recomendado por security).
+ *   - Mientras el proceso está vivo, su pid queda registrado en
+ *     `_unblockActivePid` para que el watchdog del brazo pueda matarlo
+ *     si el race promise/timer mismo se cuelga.
+ */
+function _ghCallWithTimeout(bin, args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    let pid = null;
+
+    const proc = execFile(bin, args, {
+      cwd: ROOT,
+      windowsHide: true,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      if (settled) return;
+      settled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (_unblockActivePid === pid) _unblockActivePid = null;
+      if (err) return reject(err);
+      resolve({ stdout, stderr });
+    });
+
+    pid = proc && Number.isInteger(proc.pid) ? proc.pid : null;
+    if (pid && pid > 0) _unblockActivePid = pid;
+
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      timer = null;
+
+      let killStatus = 'sin pid registrado';
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+          killStatus = `matado por timeout (pid ${pid})`;
+        } catch {
+          // taskkill sobre pid muerto retorna no-zero pero es benigno: el
+          // proceso ya había terminado por su cuenta entre el race y el kill.
+          killStatus = `pid ${pid} ya había muerto solo`;
+        }
+      }
+      if (_unblockActivePid === pid) _unblockActivePid = null;
+
+      log('desbloqueo', `[WARN] gh-call-timeout (${timeoutMs}ms) — args: ${_sanitizeGhArgs(args)} — ${killStatus}`);
+
+      const err = new Error(`gh-call-timeout: ${timeoutMs}ms`);
+      err.code = 'GH_CALL_TIMEOUT';
+      err.pid = pid;
+      err.killStatus = killStatus;
+      err.args = args.slice();
+      reject(err);
+    }, timeoutMs);
+    // No queremos que el timer mantenga vivo el proceso del pulpo.
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  });
+}
 
 async function ghDesbloqueoCall(args, timeout = 15000) {
-  return execFileAsync(GH_BIN, args, { cwd: ROOT, timeout, windowsHide: true, encoding: 'utf8' });
+  return _ghCallWithTimeout(GH_BIN, args, timeout);
+}
+
+/**
+ * #3059 — Watchdog del guard `_unblockRunning`.
+ *
+ * Si la ejecución previa lleva > UNBLOCK_WEDGE_TIMEOUT_MS sin terminar:
+ *   - mata el `gh.exe` activo (si existe) con taskkill /F /T
+ *   - libera _unblockRunning + resetea _unblockStartedAt + _unblockActivePid
+ *   - resetea lastUnblockTime = 0 para que el próximo tick arranque INMEDIATO
+ *     (sin tener que esperar otros 30 min adicionales después del wedge —
+ *     observación crítica de guru en el análisis técnico de #3059)
+ *   - logea un warning explícito que un humano puede grepear.
+ *
+ * Devuelve null si no hay wedge, o un objeto descriptivo si lo había.
+ */
+function _checkAndResetUnblockWedge() {
+  if (!_unblockRunning || _unblockStartedAt === 0) return null;
+  const wedgeMs = Date.now() - _unblockStartedAt;
+  if (wedgeMs <= UNBLOCK_WEDGE_TIMEOUT_MS) return null;
+
+  let killMsg = 'sin pid activo';
+  let killedPid = null;
+  if (Number.isInteger(_unblockActivePid) && _unblockActivePid > 0) {
+    killedPid = _unblockActivePid;
+    try {
+      execSync(`taskkill /F /T /PID ${_unblockActivePid}`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+      killMsg = `mato pid ${_unblockActivePid}`;
+    } catch {
+      killMsg = `pid ${_unblockActivePid} ya estaba muerto solo`;
+    }
+  }
+  log('desbloqueo', `[WARN] brazo desbloqueo wedged > ${Math.round(wedgeMs / 60000)}min — forzando reset del guard, ${killMsg}`);
+  _unblockRunning = false;
+  _unblockStartedAt = 0;
+  _unblockActivePid = null;
+  lastUnblockTime = 0;
+  return { wedgeMs, killedPid, killMsg };
+}
+
+/**
+ * #3059 — Log observable del re-entry skip, con cooldown de 10 min para
+ * no spamear el log cuando el ciclo anterior sigue corriendo dentro de
+ * los límites razonables.
+ *
+ * Devuelve true si logueó, false si fue silenciado por cooldown.
+ */
+function _maybeLogReentrySkip() {
+  const now = Date.now();
+  if (now - _unblockReentryLastWarn <= REENTRY_LOG_COOLDOWN_MS) return false;
+  _unblockReentryLastWarn = now;
+  const ageMs = _unblockStartedAt > 0 ? now - _unblockStartedAt : 0;
+  log('desbloqueo', `[INFO] brazo desbloqueo skip — ciclo anterior sigue activo desde hace ${Math.round(ageMs / 60000)} min`);
+  return true;
 }
 
 async function brazoDesbloqueo(config) {
-  if (_unblockRunning) return;
+  // #3059 — Watchdog ANTES del guard: si la ejecución anterior nunca
+  // terminó (gh.exe wedged en Windows con timeout que no garantiza kill),
+  // liberamos el guard a la fuerza, matamos el pid y reseteamos
+  // lastUnblockTime para arrancar inmediato en este mismo tick.
+  _checkAndResetUnblockWedge();
+
+  if (_unblockRunning) {
+    // #3059 — el guard NO es silencioso: logueamos que estamos salteando
+    // (con cooldown de 10 min para no spamear).
+    _maybeLogReentrySkip();
+    return;
+  }
   if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
   lastUnblockTime = Date.now();
   _unblockRunning = true;
+  _unblockStartedAt = Date.now();
   try { await brazoDesbloqueoImpl(config); }
-  finally { _unblockRunning = false; }
+  finally {
+    _unblockRunning = false;
+    _unblockStartedAt = 0;
+    _unblockActivePid = null;
+  }
 }
 
 async function brazoDesbloqueoImpl(config) {
@@ -8008,6 +8188,27 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     resolveDeterministicScript,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
     countPendingBuild,
+    // #3059 — wrapper robusto + watchdog del brazo de desbloqueo (testing).
+    _ghCallWithTimeout,
+    _sanitizeGhArgs,
+    _checkAndResetUnblockWedge,
+    _maybeLogReentrySkip,
+    UNBLOCK_WEDGE_TIMEOUT_MS,
+    REENTRY_LOG_COOLDOWN_MS,
+    _getUnblockState: () => ({
+      running: _unblockRunning,
+      startedAt: _unblockStartedAt,
+      activePid: _unblockActivePid,
+      reentryLastWarn: _unblockReentryLastWarn,
+    }),
+    _setUnblockState: (s) => {
+      if ('running' in s) _unblockRunning = !!s.running;
+      if ('startedAt' in s) _unblockStartedAt = Number(s.startedAt) || 0;
+      if ('activePid' in s) _unblockActivePid = s.activePid === null ? null : (Number.isInteger(s.activePid) ? s.activePid : null);
+      if ('reentryLastWarn' in s) _unblockReentryLastWarn = Number(s.reentryLastWarn) || 0;
+    },
+    _getLastUnblockTime: () => lastUnblockTime,
+    _setLastUnblockTime: (ts) => { lastUnblockTime = Number(ts) || 0; },
   };
   return; // No arrancar singleton ni mainLoop
 }
