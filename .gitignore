@@ -162,6 +162,13 @@ scripts/planner-plan.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero
 .pipeline/.issue-title-cache.json
 .pipeline/.issue-summary-cache.json
+# #3012 — snapshots de cuota Claude Desktop (PNG + JSONL + lockfile + estado alerter)
+# CA-7: PNG con email Max + % uso + USD overage NO se commitea (PII at-rest).
+.pipeline/quota-snapshots/
+.pipeline/.quota-history.jsonl
+.pipeline/.quota-history.*.jsonl.gz
+.pipeline/.quota-snapshot.lock
+.pipeline/.quota-alerter-state.json
 # #2477/#2488 — código fuente del aggregator V3 sí se commitea (snapshot/.last-cleanup quedan ignorados)
 .pipeline/metrics/*
 !.pipeline/metrics/aggregator.js
