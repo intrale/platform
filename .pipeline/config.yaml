@@ -392,3 +392,27 @@ handoff:
     - verificacion
     - aprobacion
     - entrega
+
+# #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
+#
+# Cuando `env_isolation_enabled: true`, el pulpo filtra `process.env` antes de
+# pasarlo al child del agente: solo viaja la API key del provider declarado
+# por el skill (Anthropic xor OpenAI), las variables del sistema en allowlist
+# (PATH, SystemRoot, ComSpec, etc.), todas las PIPELINE_*, y los scopes que el
+# skill declara via `requires_credentials` (github / aws / gradle-android /
+# telegram-hooks).
+#
+# Cuando `false` (default rollout), el pulpo conserva el comportamiento previo
+# al issue #3085: hereda TODO el `process.env` al child. Esto preserva
+# regresión cero corriendo solo Anthropic.
+#
+# Plan de rollout:
+#   1. Mergear con `false` y telemetría 1 sprint para detectar skills que
+#      rompen por falta de credencial cuando se flippea.
+#   2. Flippear a `true` después de validar que ningún hook ni skill quedó
+#      sin credencial necesaria (ver tests de #3085 + ejecución empírica de
+#      builder/tester/delivery con scope `gradle-android`/`github`).
+#
+# Ver: docs/pipeline-multi-provider.md §5.2 (acoplamiento A16).
+pipeline:
+  env_isolation_enabled: false

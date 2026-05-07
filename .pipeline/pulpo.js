@@ -65,6 +65,13 @@ const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/qu
 // deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
 // que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
 const { launchAgent } = require('./lib/agent-launcher');
+// #3085 / S7 multi-provider: aislamiento de credenciales por proceso. Filtra
+// `process.env` con allowlist mínima + scope del skill antes de pasarlo al
+// child. Eliminar `OPENAI_API_KEY` del env de un agente Anthropic (y viceversa)
+// reduce blast radius si el CLI third-party hace panic dump del env.
+// Activación por flag `pipeline.env_isolation_enabled` en config.yaml (default
+// false durante el rollout — ver CA-11 del issue #3085).
+const buildChildEnvLib = require('./lib/build-child-env');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -4913,31 +4920,69 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // respetan el cwd del spawn salvo que se les diga explícitamente. Pasarlo como
   // env evita que vuelvan a leer la rama del checkout principal por accidente.
   const spawnCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
+
+  // #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
+  //
+  // pipelineExtras = vars de contexto del child (PIPELINE_*, handoff, extras
+  // específicos del skill). Se pasan SIEMPRE — son inocuas y necesarias para
+  // que el agente sepa qué issue/fase/skill está procesando.
+  const pipelineExtras = {
+    PIPELINE_ISSUE: issue,
+    PIPELINE_SKILL: skill,
+    PIPELINE_FASE: fase,
+    PIPELINE_PIPELINE: pipeline,
+    PIPELINE_TRABAJANDO: trabajandoPath,
+    PIPELINE_WORKTREE: spawnCwd,
+    PIPELINE_REPO_ROOT: ROOT,
+    // #2993 — el agente usa estos para escribir su sección de handoff antes
+    // de salir (paso 7.5 de roles/_base.md). Si `ENABLED=0`, el agente NO
+    // escribe — kill-switch global desde config.yaml → handoff.enabled.
+    PIPELINE_HANDOFF_PATH: handoff.handoffPathFor(issue),
+    PIPELINE_HANDOFF_ENABLED: (() => {
+      try {
+        const cfg = handoff.resolveConfig((loadConfig() || {}).handoff);
+        return cfg.enabled ? '1' : '0';
+      } catch { return '0'; }
+    })(),
+    ...extraEnv,
+  };
+
+  // Resolver env del child:
+  //   - Flag `pipeline.env_isolation_enabled: true` → filtrado por
+  //     buildChildEnv (allowlist mínima + scope del skill + provider key).
+  //   - Flag false (default rollout) → comportamiento previo: heredar TODO
+  //     `process.env`. Preserva regresión cero hasta que validemos en
+  //     producción que ningún hook/skill rompa por falta de credencial.
+  let childEnv;
+  let envIsolationEnabled = false;
+  try {
+    const cfgRoot = loadConfig() || {};
+    envIsolationEnabled = !!(cfgRoot.pipeline && cfgRoot.pipeline.env_isolation_enabled);
+  } catch { /* sin config legible: default false (preserva legacy) */ }
+  if (envIsolationEnabled) {
+    try {
+      childEnv = buildChildEnvLib.buildChildEnv({
+        skill,
+        pipelineDir: PIPELINE,
+        processEnv: process.env,
+        pipelineExtras,
+      });
+    } catch (e) {
+      // Fail-fast: si la API key del provider falta, NO arrancar el child.
+      // Loguear con mensaje accionable y propagar el error para que el caller
+      // (lanzarAgenteClaude) marque el archivo como fallo de infra.
+      log('lanzamiento', `❌ env-isolation rechazó spawn de ${skill}:#${issue}: ${e.message}`);
+      throw e;
+    }
+  } else {
+    childEnv = { ...process.env, ...pipelineExtras };
+  }
+
   const launchResult = launchAgent({
     skill, issue, trabajandoPath, fase, pipeline,
     args,
     cwd: spawnCwd,
-    env: {
-      ...process.env,
-      PIPELINE_ISSUE: issue,
-      PIPELINE_SKILL: skill,
-      PIPELINE_FASE: fase,
-      PIPELINE_PIPELINE: pipeline,
-      PIPELINE_TRABAJANDO: trabajandoPath,
-      PIPELINE_WORKTREE: spawnCwd,
-      PIPELINE_REPO_ROOT: ROOT,
-      // #2993 — el agente usa estos para escribir su sección de handoff antes
-      // de salir (paso 7.5 de roles/_base.md). Si `ENABLED=0`, el agente NO
-      // escribe — kill-switch global desde config.yaml → handoff.enabled.
-      PIPELINE_HANDOFF_PATH: handoff.handoffPathFor(issue),
-      PIPELINE_HANDOFF_ENABLED: (() => {
-        try {
-          const cfg = handoff.resolveConfig((loadConfig() || {}).handoff);
-          return cfg.enabled ? '1' : '0';
-        } catch { return '0'; }
-      })(),
-      ...extraEnv,
-    },
+    env: childEnv,
     PIPELINE,
     ROOT,
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
@@ -6204,7 +6249,41 @@ function ejecutarClaude(prompt, textoOriginal) {
       '--permission-mode', 'bypassPermissions'
     ];
 
-    const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+    // #3085 / S7 multi-provider — aislamiento de credenciales también para
+    // el commander singleton. El commander es Claude operando el pulpo (chat
+    // del operador) — NO es un skill de pipeline pero es un proceso LLM con
+    // las mismas implicancias de seguridad. Bajo flag, le pasamos un env
+    // mínimo + scope github (postea al issue tracker) + telegram (always-on).
+    let cleanEnv;
+    let commanderEnvIsolation = false;
+    try {
+      const cfgRoot = loadConfig() || {};
+      commanderEnvIsolation = !!(cfgRoot.pipeline && cfgRoot.pipeline.env_isolation_enabled);
+    } catch { /* default false */ }
+    if (commanderEnvIsolation) {
+      try {
+        cleanEnv = buildChildEnvLib.buildChildEnv({
+          skill: 'commander',
+          pipelineDir: PIPELINE,
+          processEnv: process.env,
+          pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
+          // El commander no está en DEFAULT_REQUIRES_BY_SKILL, así que
+          // pasamos override explícito con el provider Anthropic + scopes
+          // github (necesita gh CLI para responder sobre issues).
+          skillConfigOverride: {
+            skill: { provider: 'anthropic', requires_credentials: ['github'] },
+            providers: { anthropic: { credentials_env: 'ANTHROPIC_API_KEY' } },
+          },
+        });
+      } catch (e) {
+        log('commander', `❌ env-isolation rechazó spawn del commander: ${e.message}`);
+        throw e;
+      }
+    } else {
+      cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+    }
+    // CLAUDECODE se borra siempre — Claude Code lo setea internamente y heredarlo
+    // confunde al child sobre si ya está en una sesión activa.
     delete cleanEnv.CLAUDECODE;
 
     const cmdSpawn = CLAUDE_LAUNCHER.cmd;
@@ -7941,6 +8020,28 @@ async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
   log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
+
+  // #3085 / S7 — audit trail one-shot al boot: registrar qué env vars del
+  // operador NO entraron en allowlist/scopes. Sin valores, solo nombre + hash
+  // truncado SHA-256-12 para forensia (CA-10). Se escribe SIEMPRE (incluso
+  // con env_isolation_enabled=false) — sirve como baseline para comparar
+  // antes/después del flip a true.
+  try {
+    const dropped = buildChildEnvLib.auditDroppedEnvVars(process.env);
+    const entry = buildChildEnvLib.formatAuditLogEntry({
+      pid: process.pid,
+      nodeVersion: process.version,
+      osInfo: `${process.platform}-${process.arch}`,
+      dropped,
+    });
+    const auditPath = path.join(LOG_DIR, 'env-allowlist-audit.log');
+    try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+    fs.appendFileSync(auditPath, entry);
+    log('pulpo', `env-allowlist-audit: ${dropped.length} vars descartadas registradas en ${auditPath}`);
+  } catch (e) {
+    // Best-effort: si falla el audit, NO matar al pulpo. Es accesorio.
+    log('pulpo', `WARN env-allowlist-audit falló: ${e.message}`);
+  }
 
   // Confirmar restart solicitado desde Telegram. El pulpo anterior murió a
   // mitad del restart.js (cadena: pulpo → cmd → node restart.js, matada por
