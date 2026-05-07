@@ -38,16 +38,43 @@ const SKILL_COLORS = {
     linter:'#8b949e', build:'#ffa657', delivery:'#2ee6c1', commander:'#f778ba'
 };
 
+// #3045 — cache compartido entre tickHeader y tickPipeline para evitar un
+// segundo round-trip y mantener fuera de localStorage un estado que vive 5s.
+// Se sanea acá para que cualquier consumidor reciba ya integers > 0
+// (defensa en profundidad sobre lo que enforza headerSlice server-side).
+let pipelineModeState = { mode: 'running', allowedIssues: [] };
+function _saneAllowedIssues(arr){
+    if(!Array.isArray(arr)) return [];
+    const out = [];
+    for(const v of arr){
+        const n = Number(v);
+        if(Number.isInteger(n) && n > 0) out.push(n);
+    }
+    return out;
+}
+
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
     setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
+    // #3045 — actualizar el cache compartido ANTES del render del modePill,
+    // así el render del próximo tickPipeline (que puede dispararse en paralelo)
+    // ya ve el estado fresco.
+    pipelineModeState = {
+        mode: d.mode || 'running',
+        allowedIssues: _saneAllowedIssues(d.allowedIssues),
+    };
     const modePill = document.getElementById('hdr-mode');
     if(modePill){
         modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
         if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+d.allowedIssues.length+' issues'; }
+        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+pipelineModeState.allowedIssues.length+' issues'; }
         else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
+    }
+    // #3045 — Si el filtro de allowlist está montado en la Pipeline view,
+    // refrescar su visibilidad cuando cambia el modo (running ⇄ partial_pause).
+    if(typeof refreshAllowlistToggleVisibility === 'function'){
+        try { refreshAllowlistToggleVisibility(); } catch{}
     }
 }
 
@@ -275,12 +302,68 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
 
 // ─────────────────── Pipeline ───────────────────
 function renderPipeline() {
+    // #3045 — Toggle de filtro "solo issues habilitados" (allowlist de la
+    // pausa parcial). Markup accesible (role=switch, aria-checked, foco
+    // visible). Hidden por default — refreshAllowlistToggleVisibility lo
+    // muestra cuando pipelineModeState.mode === 'partial_pause'.
     const body = `
 <section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">🔄</span>Pipeline · issues por fase</h2>
+  <div class="pl-section-head">
+    <h2 class="in-section-title"><span class="in-section-title-icon">🔄</span>Pipeline · issues por fase</h2>
+    <div class="pl-allowlist-toggle" id="pl-allowlist-toggle" role="switch"
+         aria-checked="false" tabindex="0"
+         title="Mostrar solo los issues incluidos en la pausa parcial activa"
+         style="display:none">
+      <span class="pl-toggle-track"><span class="pl-toggle-thumb"></span></span>
+      <span class="pl-toggle-label">Solo issues habilitados</span>
+    </div>
+  </div>
   <div id="pipeline-board" class="pl-board"></div>
 </section>`;
     const css = `
+/* #3045 — Header de la sección con título a la izquierda y toggle a la derecha. */
+.pl-section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.pl-section-head .in-section-title { margin: 0; }
+.pl-allowlist-toggle {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    cursor: pointer;
+    user-select: none;
+    border-radius: 999px;
+    padding: 4px 8px;
+    transition: color 0.15s, background 0.15s;
+}
+.pl-allowlist-toggle:hover { color: var(--in-fg); background: var(--in-bg-3); }
+.pl-allowlist-toggle:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
+.pl-allowlist-toggle[aria-checked="true"] { color: var(--in-ok); }
+.pl-allowlist-toggle .pl-toggle-track {
+    width: 28px; height: 14px;
+    background: var(--in-bg-3);
+    border: 1px solid var(--in-border);
+    border-radius: 999px;
+    position: relative;
+    transition: background 0.15s, border-color 0.15s;
+    flex: 0 0 28px;
+}
+.pl-allowlist-toggle[aria-checked="true"] .pl-toggle-track {
+    background: var(--in-ok-soft);
+    border-color: var(--in-ok);
+}
+.pl-allowlist-toggle .pl-toggle-thumb {
+    position: absolute; top: 1px; left: 1px;
+    width: 10px; height: 10px;
+    background: var(--in-fg-soft);
+    border-radius: 50%;
+    transition: left 0.15s, background 0.15s;
+}
+.pl-allowlist-toggle[aria-checked="true"] .pl-toggle-thumb {
+    left: 15px;
+    background: var(--in-ok);
+}
 .pl-board { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
 .pl-col { min-width: 220px; flex: 1; background: var(--in-bg-3); border-radius: var(--in-radius-sm); padding: 10px; border: 1px solid var(--in-border); }
 .pl-col-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-dim); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--in-border); }
@@ -302,6 +385,27 @@ function renderPipeline() {
 .pl-card-state-trabajando { border-color: var(--in-accent); }
 .pl-card-state-listo { border-color: var(--in-ok); }
 .pl-card-state-pendiente { border-color: var(--in-fg-soft); }
+/* #3045 — Card "habilitada" por la pausa parcial activa. Borde verde +
+   halo sutil para que se distinga a la distancia (operación en kiosko).
+   Si la card está simultáneamente "trabajando" Y "allowlisted", la spec UX
+   prioriza el borde de estado de flujo (trabajando, accent) — la clase
+   .pl-card-state-allowlisted se aplica SOLO cuando el estado del flujo
+   no es trabajando, para evitar el ruido visual de dos bordes en pugna. */
+.pl-card-state-allowlisted { border-color: var(--in-ok); box-shadow: 0 0 0 1px var(--in-ok-soft); }
+.pl-card-allowlist-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--in-ok);
+    background: var(--in-ok-soft);
+    border: 1px solid var(--in-ok);
+    border-radius: 3px;
+    padding: 0 5px;
+    margin-left: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    line-height: 1.4;
+}
 .pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
 .pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }
 /* #2894 — Pills de agentes esperados en la fase activa (ux spec) */
@@ -335,6 +439,57 @@ function compareByPriority(orderMap){
         if(ob != null) return 1;
         return Number(a.issue) - Number(b.issue);
     };
+}
+
+// #3045 — Estado del filtro de allowlist. NO se persiste en localStorage:
+// el modo del pipeline cambia entre sesiones y un valor stale ahí confunde
+// al operador. Booleano en memoria de módulo, REQ-SEC-3 enforced
+// (no se interpola crudo a HTML; se escribe vía aria-checked + classList).
+let onlyAllowlistFilter = false;
+
+// #3045 — Issue está en la allowlist activa? Coerción estricta a integer > 0
+// (REQ-SEC-2). Sin partial_pause, NO matchea: el badge sigue oculto en running.
+function _allowlistOk(issue){
+    if(pipelineModeState.mode !== 'partial_pause') return false;
+    const n = Number(issue);
+    if(!Number.isInteger(n) || n <= 0) return false;
+    return pipelineModeState.allowedIssues.includes(n);
+}
+
+// #3045 — Mostrar/ocultar el toggle según el modo. Llamada desde tickHeader
+// cuando muta pipelineModeState; idempotente.
+function refreshAllowlistToggleVisibility(){
+    const toggle = document.getElementById('pl-allowlist-toggle');
+    if(!toggle) return;
+    const visible = pipelineModeState.mode === 'partial_pause'
+        && pipelineModeState.allowedIssues.length > 0;
+    toggle.style.display = visible ? 'inline-flex' : 'none';
+    if(!visible && onlyAllowlistFilter){
+        // Si dejó de haber pausa parcial, desactivar el filtro para no
+        // ocultar issues "fantasma" en running.
+        onlyAllowlistFilter = false;
+        toggle.setAttribute('aria-checked', 'false');
+        // Re-renderizar con el filtro apagado.
+        if(typeof tickPipeline === 'function') tickPipeline().catch(()=>{});
+    }
+}
+
+// #3045 — Wiring del toggle. Single source of truth: el atributo aria-checked
+// del propio elemento. Soporta click + Space + Enter (CA-UX-2).
+function wireAllowlistToggle(){
+    const toggle = document.getElementById('pl-allowlist-toggle');
+    if(!toggle || toggle.dataset.wired === '1') return;
+    toggle.dataset.wired = '1';
+    function flip(){
+        if(toggle.style.display === 'none') return; // oculto = no operable
+        onlyAllowlistFilter = !onlyAllowlistFilter;
+        toggle.setAttribute('aria-checked', onlyAllowlistFilter ? 'true' : 'false');
+        if(typeof tickPipeline === 'function') tickPipeline().catch(()=>{});
+    }
+    toggle.addEventListener('click', (ev) => { ev.preventDefault(); flip(); });
+    toggle.addEventListener('keydown', (ev) => {
+        if(ev.key === ' ' || ev.key === 'Enter'){ ev.preventDefault(); flip(); }
+    });
 }
 
 async function tickPipeline(){
@@ -402,15 +557,30 @@ async function tickPipeline(){
     let html = '';
     for(const [key, col] of Object.entries(cols)){
         col.items.sort(cmp);
-        const cards = col.items.slice(0, 12).map(i => {
+        // #3045 — Filtro "solo issues habilitados". Se aplica POR COLUMNA antes
+        // del slice(0, 12) — si filtramos después del slice, perderíamos cards
+        // habilitadas que cayeron fuera del top 12 de la columna.
+        const visible = onlyAllowlistFilter
+            ? col.items.filter(i => _allowlistOk(i.issue))
+            : col.items;
+        const cards = visible.slice(0, 12).map(i => {
             const prio = orderMap.has(String(i.issue)) ? '#' + (orderMap.get(String(i.issue)) + 1) : '';
             const pausedBadge = i.paused ? '<span class="pl-card-paused-badge">⏸ pausado</span>' : '';
+            // #3045 — Badge "✅ habilitado" + clase de borde verde cuando el
+            // issue está en la allowlist activa. Si simultáneamente está
+            // "trabajando", priorizamos el borde de estado del flujo (accent)
+            // y el badge sigue siendo señal suficiente — UX-5.
+            const isAllowed = _allowlistOk(i.issue);
+            const allowlistBadge = isAllowed
+              ? '<span class="pl-card-allowlist-badge" title="Habilitado por la pausa parcial activa">✅ habilitado</span>'
+              : '';
+            const allowlistCls = (isAllowed && i.estado !== 'trabajando') ? ' pl-card-state-allowlisted' : '';
             const reboteBadge = i.rebote
               ? '<div class="pl-card-rebote" title="Rechazado en ' + escapeHtml(i.rechazado_en_fase||'?') + (i.rechazado_skill_previo?'/'+escapeHtml(i.rechazado_skill_previo):'') + ': ' + escapeHtml((i.motivo_rechazo||'').replace(/"/g,"\\u0027").slice(0,400)) + '">↩ rebote' + (i.rebote_tipo?' · '+escapeHtml(i.rebote_tipo):'') + '</div>'
               : '';
             const pauseBtn = '<button class="pl-card-btn pause' + (i.paused?' paused':'') + '" data-issue="'+escapeHtml(i.issue)+'" data-action="' + (i.paused?'resume':'pause') + '" title="' + (i.paused?'Reanudar issue':'Pausar issue') + '">' + (i.paused?'▶':'⏸') + '</button>';
-            return '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+'" data-issue="'+escapeHtml(i.issue)+'">'
-              + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
+            return '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+allowlistCls+'" data-issue="'+escapeHtml(i.issue)+'">'
+              + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+allowlistBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
               + '<div class="pl-card-title" title="'+escapeHtml(i.title||'')+'">'+escapeHtml((i.title||'').slice(0,60))+'</div>'
               + reboteBadge
               + renderAgentPills(i)
@@ -424,7 +594,12 @@ async function tickPipeline(){
               + '</div>'
               + '</div>';
         }).join('');
-        html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+col.items.length+'</span></div>'+(cards || '<div class="in-empty" style="padding:14px 4px;font-size:11px">vacío</div>')+'</div>';
+        // #3045 — Cuenta visible vs total cuando hay filtro activo, para
+        // que el operador entienda por qué la columna se ve "vacía".
+        const countLabel = (onlyAllowlistFilter && visible.length !== col.items.length)
+            ? (visible.length + '/' + col.items.length)
+            : String(col.items.length);
+        html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+countLabel+'</span></div>'+(cards || '<div class="in-empty" style="padding:14px 4px;font-size:11px">vacío</div>')+'</div>';
     }
     if(board.innerHTML !== html){
         board.innerHTML = html;
@@ -452,6 +627,9 @@ async function tickPipeline(){
 }
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickPipeline, ms: 5000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
+// #3045 — Wirear el toggle ANTES del primer poll para que cuando tickHeader
+// llame a refreshAllowlistToggleVisibility() ya exista el handler.
+wireAllowlistToggle();
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
     return pageShell('Pipeline', 'Issues distribuidos por fase', body, script, css);
