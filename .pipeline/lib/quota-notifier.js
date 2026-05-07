@@ -62,6 +62,23 @@ const QUOTA_COPY = {
     'Cuota Anthropic restaurada.\n' +
     'No habia agentes encolados — pipeline directo a operacion full.\n' +
     'Pipeline volviendo a operacion full.',
+  // §3013 — alerta de umbral 90% por snapshot real (CA-UX-7 / narrativa §4.1).
+  // Microcopy literal, sin interpolar PII. Las variables {date}, {hhmm} y
+  // {countdown} las resuelve quota-snapshot-integration con el reset semanal
+  // calculado por weekly-quota.js (no del snapshot, para no leakear).
+  weeklyGateSnapshot:
+    'Cuota semanal al 90% segun snapshot real.\n' +
+    'Pausando spawn de skills LLM para evitar 429.\n' +
+    'Reset semanal estimado: {date} {hhmm} (en {countdown}).\n' +
+    'Determinisicos siguen procesando.',
+  // §3013 — alerta de cuenta no esperada (CA-UX-7 / narrativa §4.3).
+  // CRÍTICO: NO se interpolan emails (ni esperado ni real). El operador
+  // busca el detalle en .pipeline/logs/quota-parser-*.log.
+  accountMismatchSnapshot:
+    'Snapshot capturado de una cuenta distinta a la esperada.\n' +
+    'Descartado · no se contamina la calibracion.\n' +
+    'Verifica login en Claude Desktop.\n' +
+    'EXPECTED_CLAUDE_ACCOUNT no coincide con account_handle.',
 };
 
 // Etiquetas para logging (mapean rotationIndex → letra)

@@ -695,6 +695,122 @@ function homeStyles() {
     background: var(--quota-degraded);
     transition: width 1s linear;
 }
+
+/* =========================================================================
+ * #3013 — Banner real-snapshot de cuota (4 estados, narrativa §2.1).
+ *
+ * CA-UX-9 (WCAG AA mínimo): cada estado distingue por borde + pill +
+ * microcopy + ícono distintivo. Cero reliance en color solo.
+ * CA-UX-5: cero hex hardcoded, sólo tokens semánticos de design-tokens.css.
+ *
+ * Posición: debajo del banner exhausted (narrativa §6). Cuando data-state
+ * es 'missing' ocupa 0px (display:none) → CA-15 pre-feature behavior.
+ * ========================================================================= */
+.quota-snapshot-banner {
+    display: none;
+    margin: 0 22px;
+    padding: 10px 14px;
+    border: 1px solid var(--in-border, rgba(255,255,255,0.12));
+    border-left-width: 4px;
+    border-radius: var(--in-radius, 8px);
+    background: var(--surface-1, var(--in-surface-2, #161b22));
+    font-size: 12px;
+    line-height: 1.45;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 14px;
+    align-items: center;
+}
+/* Estados — borde lateral cambia + pill cambia (cero reliance en color solo). */
+.quota-snapshot-banner[data-state="missing"]    { display: none; }
+.quota-snapshot-banner[data-state="fresh"]      { display: grid; border-left-color: var(--success, #3fb950); }
+.quota-snapshot-banner[data-state="stale"]      { display: grid; border-left-color: var(--warning, #d29922); }
+.quota-snapshot-banner[data-state="parser-offline"] { display: grid; border-left-color: var(--danger, #f85149); }
+
+.quota-snapshot-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    font-family: var(--in-mono, 'Roboto Mono', monospace);
+    border: 1px solid transparent;
+}
+.quota-snapshot-banner[data-state="fresh"] .quota-snapshot-pill {
+    background: var(--success-bg, rgba(63, 185, 80, 0.16));
+    color: var(--success, #3fb950);
+    border-color: var(--success, #3fb950);
+}
+.quota-snapshot-banner[data-state="stale"] .quota-snapshot-pill {
+    background: var(--warning-bg, rgba(210, 153, 34, 0.16));
+    color: var(--warning, #d29922);
+    border-color: var(--warning, #d29922);
+}
+.quota-snapshot-banner[data-state="parser-offline"] .quota-snapshot-pill {
+    background: var(--danger-bg, rgba(248, 81, 73, 0.16));
+    color: var(--danger, #f85149);
+    border-color: var(--danger, #f85149);
+}
+.quota-snapshot-pill-icon {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    /* Ícono concreto se setea por CSS por estado para no depender de SVG inline. */
+}
+.quota-snapshot-banner[data-state="fresh"] .quota-snapshot-pill-icon::before     { content: '\\2713'; font-size: 11px; }
+.quota-snapshot-banner[data-state="stale"] .quota-snapshot-pill-icon::before     { content: '\\23F3'; font-size: 11px; }
+.quota-snapshot-banner[data-state="parser-offline"] .quota-snapshot-pill-icon::before { content: '\\26A0'; font-size: 11px; }
+
+.quota-snapshot-buckets {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+}
+.quota-snapshot-bucket {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid var(--border, rgba(255,255,255,0.06));
+    border-left-width: 3px;
+    min-width: 0;
+}
+.quota-snapshot-bucket[data-status="ok"]      { border-left-color: var(--success, #3fb950); }
+.quota-snapshot-bucket[data-status="warn"]    { border-left-color: var(--warning, #d29922); }
+.quota-snapshot-bucket[data-status="crit"]    { border-left-color: var(--danger, #f85149); }
+.quota-snapshot-bucket[data-status="unknown"] { border-left-color: var(--text-dim, rgba(255,255,255,0.32)); }
+
+.quota-snapshot-bucket-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--text-secondary, rgba(255,255,255,0.6));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.quota-snapshot-bucket-value {
+    font-size: 14px;
+    font-weight: 700;
+    font-family: var(--in-mono, 'Roboto Mono', monospace);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary, #e6edf3);
+}
+.quota-snapshot-bucket-microcopy {
+    font-size: 9px;
+    color: var(--text-dim, rgba(255,255,255,0.45));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 `;
 }
 
@@ -1163,6 +1279,155 @@ async function tickQuotaExhausted(){
     renderQuotaExhaustedBanner(d);
 }
 
+// ====== #3013 — Banner real-snapshot (4 estados) ============================
+//
+// CA-UX-1 a CA-UX-3, CA-UX-9. Render defensivo: TODOS los strings que
+// vienen del JSON pasan por escapeHtml() o textContent (CA-S3 XSS prevention).
+// Cero interpolación de account_handle (el slice del backend ya lo eliminó).
+//
+// Microcopy de los 6 buckets (literal, narrativa §2.3) + estados textuales
+// (CA-UX-6). Umbrales semánticos por bucket (CA-UX-4) — los aplica el slice
+// del backend si está disponible; el cliente sólo confía en el campo
+// status que viene en cada bucket. Si no viene, fallback a 'unknown'.
+function fmtAge(ageMs){
+    if(!Number.isFinite(ageMs) || ageMs < 0) return '--';
+    const totalMin = Math.round(ageMs / 60000);
+    if(totalMin < 1) return 'hace seg';
+    if(totalMin < 60) return 'hace ' + totalMin + ' min';
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    if(h < 24) return m > 0 ? ('hace ' + h + ' h ' + m + ' min') : ('hace ' + h + ' h');
+    const d = Math.floor(h / 24);
+    const hh = h % 24;
+    return hh > 0 ? ('hace ' + d + ' d ' + hh + ' h') : ('hace ' + d + ' d');
+}
+function pillTextFor(state, ageMs){
+    if(state === 'fresh') return 'DATO REAL · ' + fmtAge(ageMs);
+    if(state === 'stale') return 'SNAPSHOT STALE · ' + fmtAge(ageMs);
+    if(state === 'parser-offline') return 'PARSER OFFLINE';
+    return 'ESTIMADO';
+}
+function classifyPctClient(pct){
+    if(!Number.isFinite(pct)) return 'unknown';
+    if(pct >= 90) return 'crit';
+    if(pct >= 65) return 'warn';
+    return 'ok';
+}
+function microcopyPctClient(pct){
+    const s = classifyPctClient(pct);
+    if(s === 'crit') return 'Critico · supera 90%';
+    if(s === 'warn') return 'Atencion · supera 65%';
+    if(s === 'ok' && pct < 25) return 'OK · uso bajo';
+    if(s === 'ok') return 'OK · uso normal';
+    return 'Sin dato';
+}
+function classifyRoutinesClient(used){
+    if(!Number.isFinite(used)) return 'unknown';
+    if(used >= 14) return 'crit';
+    if(used >= 10) return 'warn';
+    return 'ok';
+}
+function classifyOverageClient(used, cap){
+    if(!Number.isFinite(used) || used < 0) return 'unknown';
+    if(!Number.isFinite(cap) || cap <= 0) return used === 0 ? 'ok' : 'warn';
+    const pct = (used / cap) * 100;
+    if(pct >= 80) return 'crit';
+    if(pct >= 1) return 'warn';
+    return 'ok';
+}
+function pctTextClient(n){ return Number.isFinite(n) ? (Math.round(n) + '%') : '--%'; }
+
+function renderQuotaSnapshotBanner(d){
+    const banner = document.getElementById('quota-snapshot-banner');
+    if(!banner) return;
+    const state = (d && typeof d.state === 'string') ? d.state : 'missing';
+    banner.dataset.state = state;
+    banner.setAttribute('aria-hidden', state === 'missing' ? 'true' : 'false');
+
+    // Pill (DATO REAL / SNAPSHOT STALE / PARSER OFFLINE / ESTIMADO).
+    const pillText = document.getElementById('quota-snapshot-pill-text');
+    if(pillText){
+        const txt = pillTextFor(state, d && d.ageMs);
+        if(pillText.textContent !== txt) pillText.textContent = txt;
+    }
+
+    // Buckets (sólo render cuando hay snapshot — fresh / stale / parser-offline
+    // tienen último dato; missing no muestra buckets).
+    const bucketsEl = document.getElementById('quota-snapshot-buckets');
+    if(!bucketsEl) return;
+    if(state === 'missing'){
+        if(bucketsEl.innerHTML !== '') bucketsEl.innerHTML = '';
+        return;
+    }
+    const snap = (d && d.lastSnapshot) || {};
+    const buckets = [
+        {
+            label: 'SESION',
+            value: pctTextClient(snap.session_pct),
+            status: classifyPctClient(snap.session_pct),
+            micro: Number.isFinite(snap.session_minutes_to_reset)
+                ? ('Reset en ' + Math.max(0, Math.round(snap.session_minutes_to_reset / 60)) + ' h')
+                : microcopyPctClient(snap.session_pct),
+        },
+        {
+            label: 'SEMANAL TODOS',
+            value: pctTextClient(snap.weekly_all_models_pct),
+            status: classifyPctClient(snap.weekly_all_models_pct),
+            micro: microcopyPctClient(snap.weekly_all_models_pct),
+        },
+        {
+            label: 'SEMANAL SONNET',
+            value: pctTextClient(snap.weekly_sonnet_pct),
+            status: classifyPctClient(snap.weekly_sonnet_pct),
+            micro: microcopyPctClient(snap.weekly_sonnet_pct),
+        },
+        {
+            label: 'SEMANAL DESIGN',
+            value: pctTextClient(snap.weekly_design_pct),
+            status: classifyPctClient(snap.weekly_design_pct),
+            micro: microcopyPctClient(snap.weekly_design_pct),
+        },
+        {
+            label: 'RUTINAS',
+            value: (Number.isFinite(snap.daily_routines_used) ? snap.daily_routines_used : 0)
+                + ' / ' + (Number.isFinite(snap.daily_routines_max) ? snap.daily_routines_max : 15),
+            status: classifyRoutinesClient(snap.daily_routines_used),
+            micro: Number.isFinite(snap.daily_routines_max)
+                ? (Math.max(0, (snap.daily_routines_max || 15) - (snap.daily_routines_used || 0)) + ' disponibles hoy')
+                : 'Sin dato',
+        },
+        {
+            label: 'OVERAGE',
+            value: '$' + (Number.isFinite(snap.api_overage_used_usd) ? snap.api_overage_used_usd : 0)
+                + ' / $' + (Number.isFinite(snap.api_overage_cap_usd) ? snap.api_overage_cap_usd : 0),
+            status: classifyOverageClient(snap.api_overage_used_usd, snap.api_overage_cap_usd),
+            micro: (snap.api_overage_used_usd === 0) ? 'OK · sin overage activo' : 'Atencion · overage activo',
+        },
+    ];
+    // Construir HTML con escape estricto (CA-S3): TODO valor textual va por
+    // escapeHtml() (label/value/micro), data-status va por whitelist de strings.
+    const STATUS_OK = new Set(['ok', 'warn', 'crit', 'unknown']);
+    const html = buckets.map(b => {
+        const status = STATUS_OK.has(b.status) ? b.status : 'unknown';
+        return '<div class="quota-snapshot-bucket" data-status="' + status + '">'
+            + '<span class="quota-snapshot-bucket-label">' + escapeHtml(String(b.label)) + '</span>'
+            + '<span class="quota-snapshot-bucket-value">' + escapeHtml(String(b.value)) + '</span>'
+            + '<span class="quota-snapshot-bucket-microcopy">' + escapeHtml(String(b.micro)) + '</span>'
+            + '</div>';
+    }).join('');
+    if(bucketsEl.innerHTML !== html) bucketsEl.innerHTML = html;
+}
+
+async function tickQuotaSnapshot(){
+    const d = await fetchJson('/api/dash/quota-snapshot');
+    if(!d){
+        // Endpoint falla → degradar a 'missing' (no romper, no mostrar stale).
+        renderQuotaSnapshotBanner({ state: 'missing' });
+        return;
+    }
+    renderQuotaSnapshotBanner(d);
+}
+
 // Cuenta regresiva client-side a 1Hz: actualiza el countdown sin re-fetch.
 // Esto es lo que hace que el contador avance fluidamente entre polls
 // (CA-4: "se computa en cliente con Math.max(0, resetsAtMs - Date.now())").
@@ -1490,6 +1755,12 @@ const POLLS = [
     // el dashboard con I/O del JSON cada segundo (cap 10KB ya defendía,
     // pero igual evitamos lecturas innecesarias).
     { fn: tickQuotaExhausted, ms: 5000 },
+    // #3013 — banner real-snapshot. Polling 60s alineado con el TTL del
+    // snapshot (default 90 min) — no necesita más frecuencia. Si el JSONL
+    // no existe (pre-merge de #3012), el endpoint devuelve state:'missing'
+    // y el banner queda hidden — comportamiento idéntico al pre-feature
+    // (CA-15).
+    { fn: tickQuotaSnapshot, ms: 60000 },
     { fn: tickActive, ms: 2000 },
     { fn: tickRecent, ms: 10000 },
     { fn: tickQueue, ms: 5000 },
@@ -1657,6 +1928,23 @@ function renderHomeHTML(opts) {
   </header>
 
   ${quotaBannerHtml}
+
+  <!--
+    #3013 — Banner real-snapshot (4 estados: fresh, stale, missing,
+    parser-offline). Vive debajo del banner exhausted (narrativa §6). Cuando
+    data-state="missing" ocupa 0px (display:none) y el dashboard se ve idéntico
+    al pre-feature (CA-15). Polling cada 60s desde tickQuotaSnapshot. Cada
+    estado distingue por borde + pill + microcopy + ícono — cero reliance
+    en color solo (CA-UX-9, WCAG AA).
+  -->
+  <section class="quota-snapshot-banner" id="quota-snapshot-banner"
+           role="status" aria-live="polite" aria-hidden="true" data-state="missing">
+    <div class="quota-snapshot-pill" id="quota-snapshot-pill">
+      <span class="quota-snapshot-pill-icon" id="quota-snapshot-pill-icon" aria-hidden="true"></span>
+      <span class="quota-snapshot-pill-text" id="quota-snapshot-pill-text">ESTIMADO</span>
+    </div>
+    <div class="quota-snapshot-buckets" id="quota-snapshot-buckets"></div>
+  </section>
 
   <main class="kiosk-body">
 
