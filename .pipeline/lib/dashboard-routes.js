@@ -30,6 +30,7 @@
 //   GET /api/dash/historial           {actividad:[]}
 //   GET /api/dash/reconciler-stale-orders        {total_24h, by_reason}
 //   GET /api/diagnostico/reconciler-stale-orders {total_24h, by_reason}  (alias)
+//   GET /api/dash/quota-snapshot      {state, ageMs, ttlMin, staleMaxHours, lastSnapshot, parserState}  (#3013)
 
 'use strict';
 
@@ -46,6 +47,13 @@ const sat = require('../views/dashboard/satellites');
 // devolver "cuota Anthropic" SOLO cuando el flag está activo (CA-14).
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
+
+// #3013 — Banner real-snapshot (depende del JSONL de #3012). Mismo patrón
+// defensivo: si el módulo no carga (pre-merge), el endpoint devuelve estado
+// 'missing' y el banner queda invisible — comportamiento idéntico al
+// pre-feature (CA-15 / CA-S6).
+let quotaSnapshotIntegration = null;
+try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catch { /* opcional */ }
 
 const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
@@ -86,6 +94,21 @@ const API_ROUTES = {
     // #2976 — banner amarillo de cuota Anthropic agotada (modo determinístico).
     // Polling natural del dashboard cubre aparición/desaparición sin reload.
     '/api/dash/quota-exhausted': (state) => slices.quotaExhaustedSlice(state),
+    // #3013 — banner real-snapshot (4 estados: fresh / stale / missing /
+    // parser-offline). El módulo es read-only (sólo `getBannerState`), no
+    // muta ni dispara gates. Si el módulo no se cargó (pre-merge de #3012)
+    // o el kill-switch está off, devuelve estado 'missing' — el banner queda
+    // hidden y el dashboard se ve idéntico al pre-feature (CA-15).
+    '/api/dash/quota-snapshot': () => {
+        if (!quotaSnapshotIntegration) {
+            return { state: 'missing', ageMs: null, ttlMin: 90, staleMaxHours: 6, lastSnapshot: null, parserState: null, reason: 'module_unavailable' };
+        }
+        try { return quotaSnapshotIntegration.getBannerState(); }
+        catch (e) {
+            // R8: race en lectura → fallback silencioso a missing.
+            return { state: 'missing', ageMs: null, ttlMin: 90, staleMaxHours: 6, lastSnapshot: null, parserState: null, reason: 'io_error' };
+        }
+    },
     // #2994 — Contador de órdenes del reconciler descartadas por stale.
     // Mismo handler bajo dos paths: el `/api/dash/*` sigue la convención del
     // dashboard kiosk y `/api/diagnostico/*` es el alias documentado en CA5

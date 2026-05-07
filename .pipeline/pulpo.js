@@ -5550,6 +5550,19 @@ async function cmdStatus(config) {
     lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
+  // #3013 — bloque de snapshot fresco (narrativa §3, CA-UX-8). Sólo se
+  // agrega si hay snapshot real fresco; sin él, el `/status` queda
+  // idéntico al pre-feature (CA-15).
+  try {
+    const snapshotIntegration = require('./lib/quota-snapshot-integration');
+    const snapBlock = snapshotIntegration.buildStatusSnapshotBlock();
+    if (snapBlock) {
+      lines.push('\n' + snapBlock);
+    }
+  } catch (e) {
+    // Módulo no disponible o error de IO → silently skip (CA-15).
+  }
+
   // PRs mergeados hoy
   try {
     const today = new Date().toISOString().slice(0, 10);

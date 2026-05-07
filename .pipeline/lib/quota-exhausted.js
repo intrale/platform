@@ -92,9 +92,15 @@ const RAW_EXCERPT_MAX_CHARS = 200;
 // Allowlist por DEFAULT (CA-1, CA-8). Configurable vía config.yaml.
 // IMPORTANTE: `rate_limit_error` (429 transitorio) NO entra acá — eso se
 // maneja con backoff/retry, no con flag global del pipeline.
+//
+// `snapshot_threshold_90` (#3013, CA-12): trigger emitido por
+// quota-snapshot-integration cuando el snapshot real reporta
+// `weekly_all_models_pct >= 90`. Permite gatear el pipeline ANTES de que
+// el CLI devuelva el 429. Documentado en docs/quota-tracking.md §3.
 const DEFAULT_ERROR_TYPES = Object.freeze([
     'usage_limit_error',
     'weekly_quota_exhausted',
+    'snapshot_threshold_90',
 ]);
 
 // -----------------------------------------------------------------------------
