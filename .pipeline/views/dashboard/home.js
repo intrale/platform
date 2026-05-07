@@ -384,6 +384,30 @@ function homeStyles() {
     outline: 2px solid var(--in-accent);
     outline-offset: 2px;
 }
+/* #3023 — Badge informativo "filtrado por pausa parcial" en el header de
+ * "Próximos 10 en cola". NO interactivo (cursor:default), reusa amber
+ * coherente con .in-mode-partial del header global y .pl-card-stale-badge
+ * de satellites. Se muestra solo cuando el endpoint expone
+ * partialPause.active === true (CA-5). Toggle vía display:none/inline-flex
+ * desde tickQueue() — sin redibujar el header. */
+.in-pill-partial-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--in-warn-soft);
+    color: var(--in-warn);
+    border: 1px solid var(--in-warn);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    line-height: 1;
+    min-height: 22px;
+    margin-left: auto;
+    cursor: default;
+    white-space: nowrap;
+}
 .line-actions {
     display: flex;
     gap: 4px;
@@ -1647,8 +1671,27 @@ async function tickQueue(){
     if(!d) return;
     const container = document.getElementById('queue-list');
     if(!container) return;
+    // #3023 — Badge "filtrado por pausa parcial" en el header de la sección.
+    // Toggle vía display sin redibujar (preserva accesibilidad / focus).
+    const partialActive = !!(d.partialPause && d.partialPause.active);
+    const badge = document.getElementById('queue-partial-filter-badge');
+    if(badge){ badge.style.display = partialActive ? 'inline-flex' : 'none'; }
     const arr = (d.queue || []).slice(0, 10);
-    if(arr.length === 0){ container.innerHTML = '<div class="in-empty">Cola vacía</div>'; return; }
+    if(arr.length === 0){
+        // #3023 — Empty state diferenciado: distinguir "cola realmente vacía"
+        // (pipeline ocioso) de "filtrada a 0 por pausa parcial" (configuración
+        // del operador). Reusa .in-empty + .in-empty-strong de theme.css.
+        if(partialActive){
+            container.innerHTML =
+                '<div class="in-empty">' +
+                  '<div class="in-empty-strong">Sin issues habilitados en pausa parcial</div>' +
+                  '<div>La allowlist activa no incluye ningún issue encolable.</div>' +
+                '</div>';
+        } else {
+            container.innerHTML = '<div class="in-empty">Cola vacía</div>';
+        }
+        return;
+    }
     const seen = new Set();
     for(const a of arr){
         const key = a.issue+'-'+a.skill+'-'+a.fase;
@@ -2027,10 +2070,20 @@ function renderHomeHTML(opts) {
     </section>
 
     <section class="in-section">
-      <h2 class="in-section-title">
-        <span class="in-section-title-icon">⏩</span>
-        Próximos 10 en cola
-      </h2>
+      <div class="in-section-title-row">
+        <h2 class="in-section-title">
+          <span class="in-section-title-icon">⏩</span>
+          Próximos 10 en cola
+        </h2>
+        <!-- #3023 — Badge "filtrado por pausa parcial". Hidden por
+             default, tickQueue() lo muestra cuando partialPause.active. -->
+        <span class="in-pill-partial-filter"
+              id="queue-partial-filter-badge"
+              style="display:none"
+              title="Mostrando solo issues de la allowlist activa. Levantá la pausa para ver el top 10 completo.">
+          ⏸ filtrado por pausa parcial
+        </span>
+      </div>
       <div class="line-list" id="queue-list"></div>
     </section>
 
