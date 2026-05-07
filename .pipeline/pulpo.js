@@ -61,6 +61,10 @@ const restModeWindow = require('./lib/rest-mode-window');
 // inicial + recordatorios A→B→C→D rotando + cierre + canned a texto libre).
 // Depende del flag .pipeline/quota-exhausted.json producido por #2974.
 const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/quota-notifier');
+// #3074 / H2 multi-provider: dispatcher de spawn por provider (anthropic /
+// deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
+// que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
+const { launchAgent } = require('./lib/agent-launcher');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
@@ -4893,83 +4897,26 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  // #2476 / #2482 / #2484 — bypass al LLM para skills determinísticos: si el skill
-  // tiene un script Node en `.pipeline/skills-deterministicos/<skill>.js`, lo corremos
-  // con Node puro (cero tokens). El script implementa el mismo contrato (marker,
-  // heartbeat, eventos V3, exit 0=aprobado/1=rebote) por lo que el resto del flujo
-  // (watchdog, on-exit, mover a listo/) funciona sin cambios.
-  // Rollout reversible: borrar el archivo → fallback automático al agente LLM.
-  const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
-
-  const deterministicScript = DETERMINISTIC_SKILLS.has(skill)
-    ? resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`) })
-    : path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
-  const useDeterministicSkill = (DETERMINISTIC_SKILLS.has(skill) && fs.existsSync(deterministicScript));
-
-  // Launcher detectado al boot (ver detectClaudeLauncher). Evita cmd.exe cuando es posible.
-  const spawnCmd = useDeterministicSkill ? process.execPath : CLAUDE_LAUNCHER.cmd;
-  const spawnArgs = useDeterministicSkill
-    ? [deterministicScript, String(issue), `--trabajando=${trabajandoPath}`]
-    : [...CLAUDE_LAUNCHER.prefixArgs, ...args];
-
-  if (useDeterministicSkill) {
-    log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
-  }
-
-  // #2801 — parsea el log stream-json del agente Claude y suma tokens de
-  // cada turno `assistant.usage`. Stream JSON line por línea — algunas
-  // líneas son truncadas o quedan a mitad por timeouts; el try/catch las
-  // descarta sin afectar el resto.
-  function parseTokensFromLog(logPath) {
-    const totals = { input: 0, output: 0, cache_read: 0, cache_create: 0, tool_calls: 0 };
-    try {
-      const raw = fs.readFileSync(logPath, 'utf8');
-      for (const line of raw.split('\n')) {
-        if (!line.startsWith('{')) continue;
-        let obj;
-        try { obj = JSON.parse(line); } catch { continue; }
-        if (obj.type === 'assistant' && obj.message && obj.message.usage) {
-          const u = obj.message.usage;
-          totals.input += Number(u.input_tokens || 0);
-          totals.output += Number(u.output_tokens || 0);
-          totals.cache_read += Number(u.cache_read_input_tokens || 0);
-          totals.cache_create += Number(u.cache_creation_input_tokens || 0);
-          if (Array.isArray(obj.message.content)) {
-            totals.tool_calls += obj.message.content.filter(c => c.type === 'tool_use').length;
-          }
-        }
-      }
-    } catch { /* log no existe o ilegible */ }
-    return totals;
-  }
-
-  // #2801 — emit session:start para agentes Claude (LLM). Los skills
-  // determinísticos emiten su propio par session:start/end internamente,
-  // así que solo cubrimos el path LLM acá. El handle se usa luego en
-  // child.on('exit') para emitir session:end con tokens parseados del log.
-  let traceHandle = null;
-  if (!useDeterministicSkill) {
-    try {
-      traceHandle = trace.emitSessionStart({
-        skill, issue: parseInt(issue), phase: fase, model: 'claude-opus-4-7',
-      });
-    } catch (e) {
-      log('lanzamiento', `traceability emitSessionStart falló: ${e.message}`);
-    }
-  }
-
-  // PIPELINE_WORKTREE: refuerzo defensivo del cwd. Algunos skills
-  // determinísticos (linter.js #2523 rev-1) precomputan rutas absolutas en
-  // tiempo de carga del módulo y no respetan el cwd del spawn salvo que se
-  // les diga explícitamente. Pasarlo como env evita que vuelvan a leer la
-  // rama del checkout principal por accidente.
+  // #3074 / H2 multi-provider — el spawn del agente (LLM o determinístico) se
+  // delega al wrapper `launchAgent` (`lib/agent-launcher.js`). El dispatcher
+  // resuelve el provider según `agent-models.json` (skill → provider+modelo);
+  // si el archivo no existe, defaultea a Anthropic con modelo legacy
+  // ("claude-opus-4-7") preservando regresión cero corriendo solo Anthropic.
+  //
+  // Skills determinísticos (allowlist hardcoded: builder/tester/delivery/linter)
+  // siempre van por provider="deterministic" y corren `skills-deterministicos/<skill>.js`
+  // con Node puro. Si el script fue removido (rollout reversible #2476), el
+  // wrapper cae a Anthropic LLM automáticamente.
+  //
+  // PIPELINE_WORKTREE: refuerzo defensivo del cwd. Algunos skills determinísticos
+  // (linter.js #2523 rev-1) precomputan rutas absolutas en tiempo de carga y no
+  // respetan el cwd del spawn salvo que se les diga explícitamente. Pasarlo como
+  // env evita que vuelvan a leer la rama del checkout principal por accidente.
   const spawnCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
-  const child = spawn(spawnCmd, spawnArgs, {
+  const launchResult = launchAgent({
+    skill, issue, trabajandoPath, fase, pipeline,
+    args,
     cwd: spawnCwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
-    shell: useDeterministicSkill ? false : CLAUDE_LAUNCHER.shell,
-    windowsHide: true,
     env: {
       ...process.env,
       PIPELINE_ISSUE: issue,
@@ -4991,7 +4938,41 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       })(),
       ...extraEnv,
     },
+    PIPELINE,
+    ROOT,
+    onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
+    onLog: log,
   });
+  const child = launchResult.child;
+  const useDeterministicSkill = (launchResult.provider === 'deterministic');
+  if (useDeterministicSkill) {
+    log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
+  }
+
+  // #2801 — parseTokensFromLog delega ahora al handler del provider resuelto
+  // por `launchAgent`. Cada provider trae su propia implementación (Anthropic
+  // parsea stream-json; deterministic devuelve zeros — no consume LLM tokens).
+  function parseTokensFromLog(logPath) {
+    return launchResult.handler.parseTokensFromLog(logPath);
+  }
+
+  // #2801 — emit session:start para agentes Claude (LLM). Los skills
+  // determinísticos emiten su propio par session:start/end internamente,
+  // así que solo cubrimos el path LLM acá. El handle se usa luego en
+  // child.on('exit') para emitir session:end con tokens parseados del log.
+  // #3074 — el `model` ahora viene resuelto del dispatcher (agent-models.json
+  // o fallback legacy), eliminando el hardcode previo.
+  let traceHandle = null;
+  if (!useDeterministicSkill) {
+    try {
+      traceHandle = trace.emitSessionStart({
+        skill, issue: parseInt(issue), phase: fase,
+        model: launchResult.model || 'claude-opus-4-7',
+      });
+    } catch (e) {
+      log('lanzamiento', `traceability emitSessionStart falló: ${e.message}`);
+    }
+  }
 
   // #2334 / CA6: piping stdout/stderr → sanitizeStream → file.
   // Montamos un único writer compartido para preservar el orden
