@@ -1,6 +1,17 @@
 {
+  "name": "intrale-platform-pipeline",
+  "private": true,
+  "scripts": {
+    "prepare": "husky || true",
+    "validate:agent-models": "node .pipeline/lib/agent-models-validate.js",
+    "test:pipeline": "node --test .pipeline/lib/__tests__ .pipeline/tests"
+  },
   "dependencies": {
     "canvas": "^3.2.1",
     "tesseract.js": "5.1.1"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "husky": "^9.1.7"
   }
 }

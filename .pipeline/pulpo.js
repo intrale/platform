@@ -8194,6 +8194,32 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
   return; // No arrancar singleton ni mainLoop
 }
 
+// --- VALIDACIÓN agent-models.json (#3081, multi-provider §6.6/§6.9/§6.10) ---
+// Boot fail-fast antes de adquirir el singleton: si agent-models.json no parsea,
+// no valida contra el schema, o tiene cross-references rotas (default_provider,
+// skill→provider, placeholders, denylist de flags), abortar con exit code 2 y
+// mensaje accionable de 4 líneas. El operador corrige el JSON y reintenta.
+//
+// Escape hatch: PULPO_SKIP_AGENT_MODELS_VALIDATE=1 salta la validación. Sólo
+// para recuperación de emergencia — registra un warning visible para que
+// nadie lo use de default.
+if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
+  try {
+    const agentModelsValidate = require('./lib/agent-models-validate');
+    agentModelsValidate.validateOrExit({
+      contextLabel: 'boot abortado',
+    });
+  } catch (err) {
+    // Si el módulo de validación mismo crasha (no debería: ajv/loadSchema están
+    // todos try/catch internos), abortar con exit 1 (excepción no controlada)
+    // antes que dejar el pulpo corriendo con config no validada.
+    process.stderr.write(`[validate] FATAL excepción cargando agent-models-validate: ${err.stack || err.message}\n`);
+    process.exit(1);
+  }
+} else {
+  process.stderr.write('[validate] WARN agent-models validation SKIPPED via PULPO_SKIP_AGENT_MODELS_VALIDATE=1\n');
+}
+
 // --- SINGLETON ---
 require('./singleton')('pulpo');
 
