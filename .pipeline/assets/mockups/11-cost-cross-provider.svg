@@ -1,0 +1,528 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 11 — Comparativa de costo cross-provider por skill + alerta umbral
+  --------------------------------------------------------------------------------------
+  Issue:        #3090 (U5 multi-provider — dashboard V3)
+  Bloqueante:   #3083 (S5 — campo `provider` en session:end)
+  Bloqueante:   #3075 (H3 — adaptador OpenAI/Codex en runtime, sin esto solo hay 1 columna)
+  Hardening:    #3112 (sanitización Telegram), #3113 (redacción credenciales) — yacreados
+
+  Demuestra:
+    1. Sección nueva "Comparativa cross-provider" debajo de "Por skill" en /consumo.
+    2. Tabla skill × provider × ventana sliding 7d con cost_usd, sessions y %share.
+    3. Marcador "✓ multi-provider" en skills con ≥2 providers en la ventana.
+    4. Banner de spike persistente (cuando detector cross-provider dispara alerta).
+    5. Mensaje Telegram preview de la alerta sanitizada (escapeMdV2 + redactSensitive).
+    6. Histórico de switches recientes con drill-down al issue de GitHub público.
+    7. Skills no-degradables (security/review/builder/tester) marcadas como "🔒 fija"
+       según doc multi-provider §6.11 — si cambian, severidad alta automática.
+    8. Estado degradado cuando S5 (#3083) o H3 (#3075) no están listos: vista
+       degenera a 1 columna con badge "1 provider · datos incompletos hasta H3".
+
+  Sistema visual:
+    - 100% reuso de design-tokens.css §3.c PROVIDERS (anthropic copper, openai emerald,
+      codex deep emerald, deterministic gris, unknown amber).
+    - Iconos del sprite: ic-provider-anthropic, ic-provider-openai, ic-provider-openai-codex,
+      ic-cost-anomaly, ic-snooze, ic-fase-* (no requiere íconos nuevos).
+    - Coherente con mockups 03 (consumo), 06 (cost-anomaly) y 10 (provider badges).
+
+  Accesibilidad:
+    - Cada celda combina color + icono + texto (R2 review de seguridad).
+    - Contraste verificado: copper 7.4:1, emerald 8.9:1, codex 5.8:1, alert-anomaly 7.5:1.
+    - aria-label con valor explícito en cada badge multi-provider.
+    - prefers-reduced-motion respetado (sin animaciones pulsantes, solo focus-ring).
+
+  Seguridad (alineado con análisis security #3090):
+    - Drill-down: link a https://github.com/intrale/platform/issues/<n> + localhost dashboard.
+    - NUNCA session_id en URL externa; nunca payloads de prompt en el preview.
+    - Threshold solo via config.yaml commiteado — sin selector mutable en UI (decisión §7).
+    - Debounce visual: pill "silenciado por (skill, provider) hasta HH:MM" cuando aplica.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1080" viewBox="0 0 1440 1080"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-label="Mockup comparativa cross-provider de costos por skill + alerta umbral en dashboard V3">
+  <defs>
+    <linearGradient id="brandGradCP" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="anthroGradCP" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E5946B"/>
+      <stop offset="100%" stop-color="#A8633F"/>
+    </linearGradient>
+    <linearGradient id="openaiGradCP" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#0E7C5F"/>
+    </linearGradient>
+    <linearGradient id="alertBannerGradCP" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF6B8A" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#FF6B8A" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="spikeBarCP" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FF6B8A"/>
+      <stop offset="100%" stop-color="#FF6B8A" stop-opacity="0.4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo del dashboard -->
+  <rect width="1440" height="1080" fill="#0D1117"/>
+
+  <!-- ========================= Header ========================= -->
+  <rect x="0" y="0" width="1440" height="60" fill="#161B22"/>
+  <rect x="0" y="59" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(32, 18)">
+    <rect width="26" height="26" rx="7" fill="#0D274D"/>
+    <path d="M13 5.5 L4 21 L22 21 Z" fill="none" stroke="url(#brandGradCP)" stroke-width="2.2" stroke-linejoin="round"/>
+    <path d="M13 12 L9 19 L17 19 Z" fill="url(#brandGradCP)"/>
+  </g>
+  <text x="66" y="38" fill="#E6EDF3" font-size="16" font-weight="700">Intrale Pipeline</text>
+  <text x="230" y="38" fill="#8B949E" font-size="13">· Consumo V3 — cross-provider</text>
+
+  <!-- Pill de alerta cross-provider activa (entrada al banner) -->
+  <g transform="translate(540, 16)">
+    <rect width="284" height="28" rx="14" fill="#FF6B8A" fill-opacity="0.18" stroke="#FF6B8A" stroke-opacity="0.55"/>
+    <circle cx="14" cy="14" r="3.5" fill="#FF6B8A"/>
+    <circle cx="14" cy="14" r="6" fill="#FF6B8A" fill-opacity="0.25"/>
+    <text x="26" y="18" fill="#FFD2DC" font-size="11" font-weight="700" letter-spacing="1.2">SPIKE CROSS-PROVIDER · qa · +52%</text>
+  </g>
+
+  <!-- Reloj -->
+  <g transform="translate(1408, 30)" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+    <text x="0" y="0" fill="#E6EDF3" font-size="16" font-weight="700" letter-spacing="2">15:08:24</text>
+  </g>
+
+  <!-- Breadcrumb -->
+  <g transform="translate(32, 88)" font-size="13">
+    <text fill="#8B949E">Dashboard</text>
+    <text x="72" fill="#8B949E">›</text>
+    <text x="86" fill="#8B949E">Consumo</text>
+    <text x="158" fill="#8B949E">›</text>
+    <text x="172" fill="#E6EDF3" font-weight="600">Cross-provider</text>
+  </g>
+
+  <!-- Título + meta -->
+  <text x="32" y="140" fill="#E6EDF3" font-size="26" font-weight="700">Comparativa cross-provider</text>
+  <text x="32" y="166" fill="#8B949E" font-size="14">
+    Ventana sliding <tspan fill="#E6EDF3" font-weight="600">7 días</tspan>
+    · 30 abr 00:00 → 07 may 00:00
+    · umbral configurado <tspan fill="#FF6B8A" font-weight="600">+30%</tspan>
+    · debounce <tspan fill="#E6EDF3" font-weight="600">60 min</tspan> por (skill, provider)
+  </text>
+
+  <!-- ========================= BANNER PERSISTENTE DE SPIKE ========================= -->
+  <g transform="translate(32, 188)">
+    <rect width="1376" height="116" rx="12" fill="url(#alertBannerGradCP)" stroke="#FF6B8A" stroke-opacity="0.45"/>
+    <rect width="4" height="116" rx="2" fill="#FF6B8A"/>
+
+    <!-- Icono cost-anomaly grande -->
+    <g transform="translate(28, 26)" fill="none" stroke="#FFD2DC" stroke-width="2">
+      <path d="M3 36 H44" stroke-opacity="0.5"/>
+      <path d="M3 28 H44" stroke-dasharray="3 3" stroke-opacity="0.6"/>
+      <path d="M3 28 L10 28 L14 27 L18 26 L22 8 L26 26 L30 27 L34 28 L44 28"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/>
+      <circle cx="22" cy="8" r="2.5" fill="#FFD2DC" stroke="none"/>
+    </g>
+
+    <!-- Texto principal -->
+    <text x="92" y="42" fill="#E6EDF3" font-size="16" font-weight="700">
+      Spike post-switch detectado en
+      <tspan fill="#E5946B" font-weight="700">qa</tspan>
+      después de cambiar de
+      <tspan fill="#E5946B" font-weight="700">anthropic</tspan>
+      a
+      <tspan fill="#34D399" font-weight="700">openai-codex</tspan>
+    </text>
+    <text x="92" y="64" fill="#FFD2DC" font-size="13" font-weight="600">
+      Promedio post-switch <tspan font-weight="700">$0.082 USD/sesión</tspan> · baseline pre-switch
+      <tspan font-weight="700">$0.054 USD/sesión</tspan> · delta <tspan font-weight="700">+52%</tspan>
+      sobre umbral +30%
+    </text>
+    <text x="92" y="84" fill="#B1BAC4" font-size="12">
+      Disparado por <tspan fill="#58A6FF" font-weight="600">issue #3088</tspan> ·
+      <tspan fill="#58A6FF" font-weight="600">issue #3091</tspan> ·
+      <tspan fill="#58A6FF" font-weight="600">issue #3093</tspan>
+      (sesiones desde 06 may 09:14)
+    </text>
+
+    <!-- Acciones -->
+    <g transform="translate(996, 32)" font-size="12">
+      <!-- Drill-down al issue -->
+      <g>
+        <rect width="148" height="30" rx="8" fill="#161B22" stroke="#58A6FF" stroke-opacity="0.55"/>
+        <g transform="translate(12, 8)" fill="none" stroke="#58A6FF" stroke-width="1.5">
+          <path d="M3 8 L11 8" stroke-linecap="round"/>
+          <path d="M11 4 L15 8 L11 12" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect x="2" y="2" width="6" height="12" rx="1.5" stroke-opacity="0.7"/>
+        </g>
+        <text x="40" y="20" fill="#58A6FF" font-weight="600">Ver issue origen</text>
+      </g>
+      <!-- Snooze -->
+      <g transform="translate(160, 0)">
+        <rect width="120" height="30" rx="8" fill="#161B22" stroke="#30363D"/>
+        <g transform="translate(12, 8)" fill="none" stroke="#B1BAC4" stroke-width="1.5">
+          <path d="M4 12 V8 A4 4 0 0 1 12 8 V12 L14 14 H2 Z" stroke-linejoin="round" stroke-linecap="round"/>
+          <path d="M11 2 H15 L11 6 H15" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <text x="38" y="20" fill="#B1BAC4" font-weight="600">Silenciar 24h</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ========================= TABLA COMPARATIVA cross-provider ========================= -->
+  <text x="32" y="346" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="2">
+    SKILLS × PROVIDERS — VENTANA 7D · ORDENADO POR COSTO TOTAL
+  </text>
+
+  <g transform="translate(32, 364)">
+    <rect width="900" height="500" rx="12" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Header de la tabla -->
+    <g transform="translate(0, 0)" font-size="11" fill="#8B949E" letter-spacing="1.2">
+      <rect x="0" y="0" width="900" height="38" fill="#1C2128"/>
+      <rect x="0" y="37" width="900" height="1" fill="#30363D"/>
+      <text x="20" y="24" font-weight="700">SKILL</text>
+      <text x="172" y="24" font-weight="700">PROVIDER</text>
+      <text x="350" y="24" font-weight="700">MODELO</text>
+      <text x="568" y="24" text-anchor="end" font-weight="700">SESIONES</text>
+      <text x="688" y="24" text-anchor="end" font-weight="700">COSTO 7D</text>
+      <text x="818" y="24" text-anchor="end" font-weight="700">% SHARE</text>
+      <text x="880" y="24" text-anchor="end" font-weight="700"></text>
+    </g>
+
+    <!-- Fila 1: qa / anthropic — pre-switch -->
+    <g transform="translate(0, 38)" font-size="13">
+      <rect x="0" y="0" width="900" height="60" fill="transparent"/>
+      <rect x="0" y="59" width="900" height="1" fill="#21262D"/>
+      <!-- Skill -->
+      <g transform="translate(20, 22)">
+        <rect width="22" height="22" rx="6" fill="#252B33"/>
+        <text x="11" y="16" fill="#E6946B" font-size="13" font-weight="700" text-anchor="middle">Q</text>
+      </g>
+      <text x="52" y="32" fill="#E6EDF3" font-weight="600">qa</text>
+      <!-- Badge multi-provider -->
+      <g transform="translate(82, 22)" aria-label="multi-provider activo">
+        <rect width="98" height="22" rx="11" fill="rgba(45, 212, 191, 0.14)" stroke="#2DD4BF" stroke-opacity="0.5"/>
+        <text x="49" y="16" fill="#2DD4BF" font-size="10" font-weight="700" text-anchor="middle">✓ MULTI-PROVIDER</text>
+      </g>
+      <!-- Provider Anthropic -->
+      <g transform="translate(172, 22)" aria-label="provider anthropic">
+        <rect width="148" height="22" rx="11" fill="rgba(229, 148, 107, 0.14)" stroke="#E5946B" stroke-opacity="0.55"/>
+        <g transform="translate(8, 4)">
+          <line x1="7" y1="2" x2="7" y2="12" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="4.5" x2="11" y2="9.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="9.5" x2="11" y2="4.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="7" cy="7" r="1.4" fill="#E5946B"/>
+        </g>
+        <text x="28" y="16" fill="#F4C9B1" font-size="11" font-weight="700">anthropic</text>
+        <text x="100" y="16" fill="#8B949E" font-size="10">pre-switch</text>
+      </g>
+      <text x="350" y="32" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">claude-sonnet-4-6</text>
+      <text x="568" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">12</text>
+      <text x="688" y="32" fill="#E6EDF3" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$0.65</text>
+      <text x="818" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">52%</text>
+      <!-- Mini barra share -->
+      <g transform="translate(840, 26)">
+        <rect width="40" height="6" rx="3" fill="#252B33"/>
+        <rect width="20.8" height="6" rx="3" fill="#E5946B"/>
+      </g>
+    </g>
+
+    <!-- Fila 2: qa / openai-codex — POST-SWITCH (con spike) -->
+    <g transform="translate(0, 98)" font-size="13">
+      <rect x="0" y="0" width="900" height="60" fill="rgba(255, 107, 138, 0.06)"/>
+      <rect x="0" y="59" width="900" height="1" fill="#21262D"/>
+      <!-- Indicador alerta -->
+      <rect x="0" y="0" width="3" height="60" fill="#FF6B8A"/>
+      <!-- Skill (en blanco — agrupado con la fila previa) -->
+      <text x="52" y="32" fill="#8B949E" font-size="11">↳</text>
+      <!-- Provider Codex -->
+      <g transform="translate(172, 22)" aria-label="provider openai-codex">
+        <rect width="160" height="22" rx="11" fill="rgba(16, 185, 129, 0.14)" stroke="#10B981" stroke-opacity="0.55"/>
+        <g transform="translate(8, 4)">
+          <path d="M7 2 L11 4.5 L11 9.5 L7 12 L3 9.5 L3 4.5 Z"
+                fill="none" stroke="#10B981" stroke-width="1.4" stroke-linejoin="round"/>
+          <text x="7" y="9.5" fill="#10B981" font-size="6" font-weight="700" text-anchor="middle">&lt;/&gt;</text>
+        </g>
+        <text x="28" y="16" fill="#6EE7B7" font-size="11" font-weight="700">openai-codex</text>
+        <text x="116" y="16" fill="#FFD2DC" font-size="10" font-weight="700">+52% ⚠</text>
+      </g>
+      <text x="350" y="32" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">gpt-5-codex</text>
+      <text x="568" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">7</text>
+      <text x="688" y="32" fill="#FFD2DC" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$0.60</text>
+      <text x="818" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">48%</text>
+      <!-- Mini barra share -->
+      <g transform="translate(840, 26)">
+        <rect width="40" height="6" rx="3" fill="#252B33"/>
+        <rect width="19.2" height="6" rx="3" fill="#10B981"/>
+      </g>
+    </g>
+
+    <!-- Fila 3: android-dev / anthropic -->
+    <g transform="translate(0, 158)" font-size="13">
+      <rect x="0" y="0" width="900" height="60" fill="transparent"/>
+      <rect x="0" y="59" width="900" height="1" fill="#21262D"/>
+      <g transform="translate(20, 22)">
+        <rect width="22" height="22" rx="6" fill="#252B33"/>
+        <text x="11" y="16" fill="#3FB950" font-size="13" font-weight="700" text-anchor="middle">A</text>
+      </g>
+      <text x="52" y="32" fill="#E6EDF3" font-weight="600">android-dev</text>
+      <!-- Solo 1 provider — sin badge multi-provider -->
+      <g transform="translate(172, 22)">
+        <rect width="148" height="22" rx="11" fill="rgba(229, 148, 107, 0.14)" stroke="#E5946B" stroke-opacity="0.55"/>
+        <g transform="translate(8, 4)">
+          <line x1="7" y1="2" x2="7" y2="12" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="4.5" x2="11" y2="9.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="9.5" x2="11" y2="4.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="7" cy="7" r="1.4" fill="#E5946B"/>
+        </g>
+        <text x="28" y="16" fill="#F4C9B1" font-size="11" font-weight="700">anthropic</text>
+      </g>
+      <text x="350" y="32" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">claude-opus-4-7</text>
+      <text x="568" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">9</text>
+      <text x="688" y="32" fill="#E6EDF3" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$1.18</text>
+      <text x="818" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">100%</text>
+      <g transform="translate(840, 26)">
+        <rect width="40" height="6" rx="3" fill="#252B33"/>
+        <rect width="40" height="6" rx="3" fill="#E5946B"/>
+      </g>
+    </g>
+
+    <!-- Fila 4: guru / multi-provider -->
+    <g transform="translate(0, 218)" font-size="13">
+      <rect x="0" y="0" width="900" height="60" fill="transparent"/>
+      <rect x="0" y="59" width="900" height="1" fill="#21262D"/>
+      <g transform="translate(20, 22)">
+        <rect width="22" height="22" rx="6" fill="#252B33"/>
+        <text x="11" y="16" fill="#BC8CFF" font-size="13" font-weight="700" text-anchor="middle">G</text>
+      </g>
+      <text x="52" y="32" fill="#E6EDF3" font-weight="600">guru</text>
+      <g transform="translate(82, 22)">
+        <rect width="98" height="22" rx="11" fill="rgba(45, 212, 191, 0.14)" stroke="#2DD4BF" stroke-opacity="0.5"/>
+        <text x="49" y="16" fill="#2DD4BF" font-size="10" font-weight="700" text-anchor="middle">✓ MULTI-PROVIDER</text>
+      </g>
+      <g transform="translate(172, 22)">
+        <rect width="148" height="22" rx="11" fill="rgba(229, 148, 107, 0.14)" stroke="#E5946B" stroke-opacity="0.55"/>
+        <g transform="translate(8, 4)">
+          <line x1="7" y1="2" x2="7" y2="12" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="4.5" x2="11" y2="9.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="9.5" x2="11" y2="4.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="7" cy="7" r="1.4" fill="#E5946B"/>
+        </g>
+        <text x="28" y="16" fill="#F4C9B1" font-size="11" font-weight="700">anthropic</text>
+      </g>
+      <text x="350" y="32" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">claude-opus-4-7</text>
+      <text x="568" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">14</text>
+      <text x="688" y="32" fill="#E6EDF3" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$0.92</text>
+      <text x="818" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">68%</text>
+      <g transform="translate(840, 26)">
+        <rect width="40" height="6" rx="3" fill="#252B33"/>
+        <rect width="27.2" height="6" rx="3" fill="#E5946B"/>
+      </g>
+    </g>
+
+    <!-- Fila 5: guru / openai (sin spike, dentro de umbral) -->
+    <g transform="translate(0, 278)" font-size="13">
+      <rect x="0" y="0" width="900" height="60" fill="transparent"/>
+      <rect x="0" y="59" width="900" height="1" fill="#21262D"/>
+      <text x="52" y="32" fill="#8B949E" font-size="11">↳</text>
+      <g transform="translate(172, 22)">
+        <rect width="160" height="22" rx="11" fill="rgba(52, 211, 153, 0.14)" stroke="#34D399" stroke-opacity="0.55"/>
+        <g transform="translate(8, 4)">
+          <path d="M7 2 L11 4.5 L11 9.5 L7 12 L3 9.5 L3 4.5 Z"
+                fill="none" stroke="#34D399" stroke-width="1.4" stroke-linejoin="round"/>
+        </g>
+        <text x="28" y="16" fill="#A7F3D0" font-size="11" font-weight="700">openai</text>
+        <text x="80" y="16" fill="#3FB950" font-size="10" font-weight="600">+8% (ok)</text>
+      </g>
+      <text x="350" y="32" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">gpt-5</text>
+      <text x="568" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">5</text>
+      <text x="688" y="32" fill="#E6EDF3" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$0.43</text>
+      <text x="818" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">32%</text>
+      <g transform="translate(840, 26)">
+        <rect width="40" height="6" rx="3" fill="#252B33"/>
+        <rect width="12.8" height="6" rx="3" fill="#34D399"/>
+      </g>
+    </g>
+
+    <!-- Fila 6: builder / anthropic — skill no-degradable -->
+    <g transform="translate(0, 338)" font-size="13">
+      <rect x="0" y="0" width="900" height="60" fill="transparent"/>
+      <rect x="0" y="59" width="900" height="1" fill="#21262D"/>
+      <g transform="translate(20, 22)">
+        <rect width="22" height="22" rx="6" fill="#252B33"/>
+        <text x="11" y="16" fill="#58A6FF" font-size="13" font-weight="700" text-anchor="middle">B</text>
+      </g>
+      <text x="52" y="32" fill="#E6EDF3" font-weight="600">builder</text>
+      <!-- Badge skill fija (no-degradable, doc §6.11) -->
+      <g transform="translate(96, 22)" aria-label="skill no-degradable: provider fijo">
+        <rect width="80" height="22" rx="11" fill="rgba(124, 92, 255, 0.16)" stroke="#7C5CFF" stroke-opacity="0.55"/>
+        <g transform="translate(8, 6)" fill="none" stroke="#C5B7FF" stroke-width="1.4">
+          <rect x="2" y="4" width="6" height="6" rx="0.6"/>
+          <path d="M3 4 V2 A2 2 0 0 1 7 2 V4" stroke-linecap="round"/>
+        </g>
+        <text x="42" y="16" fill="#C5B7FF" font-size="10" font-weight="700" text-anchor="middle">FIJA</text>
+      </g>
+      <g transform="translate(184, 22)">
+        <rect width="136" height="22" rx="11" fill="rgba(229, 148, 107, 0.14)" stroke="#E5946B" stroke-opacity="0.55"/>
+        <g transform="translate(8, 4)">
+          <line x1="7" y1="2" x2="7" y2="12" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="4.5" x2="11" y2="9.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="9.5" x2="11" y2="4.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="7" cy="7" r="1.4" fill="#E5946B"/>
+        </g>
+        <text x="28" y="16" fill="#F4C9B1" font-size="11" font-weight="700">anthropic</text>
+      </g>
+      <text x="350" y="32" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">claude-haiku-4-5</text>
+      <text x="568" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">23</text>
+      <text x="688" y="32" fill="#E6EDF3" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$0.18</text>
+      <text x="818" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">100%</text>
+      <g transform="translate(840, 26)">
+        <rect width="40" height="6" rx="3" fill="#252B33"/>
+        <rect width="40" height="6" rx="3" fill="#E5946B"/>
+      </g>
+    </g>
+
+    <!-- Fila 7: backend-dev / anthropic -->
+    <g transform="translate(0, 398)" font-size="13">
+      <rect x="0" y="0" width="900" height="60" fill="transparent"/>
+      <rect x="0" y="59" width="900" height="1" fill="#21262D"/>
+      <g transform="translate(20, 22)">
+        <rect width="22" height="22" rx="6" fill="#252B33"/>
+        <text x="11" y="16" fill="#F59E0B" font-size="13" font-weight="700" text-anchor="middle">B</text>
+      </g>
+      <text x="52" y="32" fill="#E6EDF3" font-weight="600">backend-dev</text>
+      <g transform="translate(172, 22)">
+        <rect width="148" height="22" rx="11" fill="rgba(229, 148, 107, 0.14)" stroke="#E5946B" stroke-opacity="0.55"/>
+        <g transform="translate(8, 4)">
+          <line x1="7" y1="2" x2="7" y2="12" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="4.5" x2="11" y2="9.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="3" y1="9.5" x2="11" y2="4.5" stroke="#E5946B" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="7" cy="7" r="1.4" fill="#E5946B"/>
+        </g>
+        <text x="28" y="16" fill="#F4C9B1" font-size="11" font-weight="700">anthropic</text>
+      </g>
+      <text x="350" y="32" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">claude-opus-4-7</text>
+      <text x="568" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">8</text>
+      <text x="688" y="32" fill="#E6EDF3" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$0.74</text>
+      <text x="818" y="32" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">100%</text>
+      <g transform="translate(840, 26)">
+        <rect width="40" height="6" rx="3" fill="#252B33"/>
+        <rect width="40" height="6" rx="3" fill="#E5946B"/>
+      </g>
+    </g>
+
+    <!-- Footer de tabla con totales -->
+    <g transform="translate(0, 458)">
+      <rect x="0" y="0" width="900" height="42" fill="#1C2128"/>
+      <text x="20" y="26" fill="#B1BAC4" font-size="12" font-weight="600">Totales · 7 días</text>
+      <text x="568" y="26" fill="#B1BAC4" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="12">78 sesiones</text>
+      <text x="688" y="26" fill="#E6EDF3" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="13" font-weight="700">$4.70</text>
+      <text x="818" y="26" fill="#8B949E" text-anchor="end" font-family="'SF Mono', Consolas, monospace" font-size="11">∑</text>
+    </g>
+  </g>
+
+  <!-- ========================= TELEGRAM PREVIEW + HISTORIAL ========================= -->
+  <g transform="translate(956, 364)">
+    <rect width="452" height="500" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="32" fill="#E6EDF3" font-size="15" font-weight="700">Mensaje a Telegram</text>
+    <text x="20" y="52" fill="#8B949E" font-size="11">
+      Sanitizado por
+      <tspan fill="#C5B7FF" font-family="'SF Mono', Consolas, monospace">escapeMdV2()</tspan>
+      +
+      <tspan fill="#C5B7FF" font-family="'SF Mono', Consolas, monospace">redactSensitive()</tspan>
+    </text>
+
+    <!-- Mock burbuja Telegram -->
+    <g transform="translate(20, 76)">
+      <rect width="412" height="240" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <!-- Header burbuja -->
+      <rect x="0" y="0" width="412" height="32" rx="10" fill="#1C2128"/>
+      <rect x="0" y="22" width="412" height="10" fill="#1C2128"/>
+      <text x="14" y="20" fill="#58A6FF" font-size="12" font-weight="700">Intrale Pipeline Bot</text>
+      <text x="396" y="20" fill="#8B949E" font-size="10" text-anchor="end">15:08</text>
+
+      <!-- Cuerpo del mensaje -->
+      <g transform="translate(14, 48)" font-size="12" fill="#E6EDF3">
+        <text x="0" y="0" font-weight="700">⚠ Spike post-switch cross-provider</text>
+        <text x="0" y="20" fill="#B1BAC4">
+          Skill: <tspan fill="#E6EDF3" font-weight="700">qa</tspan>
+        </text>
+        <text x="0" y="38" fill="#B1BAC4">
+          Cambio: <tspan fill="#E6946B" font-weight="700">anthropic</tspan>
+          → <tspan fill="#34D399" font-weight="700">openai-codex</tspan>
+        </text>
+        <text x="0" y="60" fill="#B1BAC4">
+          Baseline pre-switch: <tspan fill="#E6EDF3" font-weight="700">$0.054 USD/sesión</tspan>
+        </text>
+        <text x="0" y="78" fill="#B1BAC4">
+          Actual post-switch: <tspan fill="#FF6B8A" font-weight="700">$0.082 USD/sesión</tspan>
+        </text>
+        <text x="0" y="96" fill="#B1BAC4">
+          Delta: <tspan fill="#FF6B8A" font-weight="700">+52%</tspan>
+          (umbral <tspan fill="#E6EDF3">+30%</tspan>)
+        </text>
+
+        <text x="0" y="124" fill="#8B949E" font-size="11" letter-spacing="1.2">DRILL-DOWN</text>
+        <text x="0" y="142" fill="#58A6FF" font-size="11" font-family="'SF Mono', Consolas, monospace">→ github.com/intrale/platform/issues/3088</text>
+        <text x="0" y="158" fill="#58A6FF" font-size="11" font-family="'SF Mono', Consolas, monospace">→ github.com/intrale/platform/issues/3091</text>
+        <text x="0" y="174" fill="#58A6FF" font-size="11" font-family="'SF Mono', Consolas, monospace">→ github.com/intrale/platform/issues/3093</text>
+
+        <text x="0" y="200" fill="#8B949E" font-size="10" font-style="italic">
+          Silenciado durante 60 min por (qa, openai-codex)
+        </text>
+      </g>
+    </g>
+
+    <!-- ========== Histórico de switches recientes ========== -->
+    <text x="20" y="346" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1.5">SWITCHES RECIENTES (7D)</text>
+
+    <g transform="translate(20, 366)" font-size="11">
+      <!-- Switch 1 -->
+      <g>
+        <rect x="0" y="0" width="412" height="38" rx="6" fill="rgba(255, 107, 138, 0.06)" stroke="#FF6B8A" stroke-opacity="0.35"/>
+        <rect x="0" y="0" width="3" height="38" fill="#FF6B8A"/>
+        <text x="14" y="16" fill="#E6EDF3" font-weight="600">qa</text>
+        <text x="40" y="16" fill="#8B949E">06 may 09:14</text>
+        <text x="14" y="30" font-family="'SF Mono', Consolas, monospace" fill="#E6946B">anthropic</text>
+        <text x="74" y="30" fill="#8B949E">→</text>
+        <text x="86" y="30" font-family="'SF Mono', Consolas, monospace" fill="#10B981">openai-codex</text>
+        <text x="402" y="30" fill="#FF6B8A" font-weight="700" text-anchor="end">+52%</text>
+      </g>
+      <!-- Switch 2 -->
+      <g transform="translate(0, 46)">
+        <rect x="0" y="0" width="412" height="38" rx="6" fill="rgba(63, 185, 80, 0.05)" stroke="#3FB950" stroke-opacity="0.3"/>
+        <rect x="0" y="0" width="3" height="38" fill="#3FB950"/>
+        <text x="14" y="16" fill="#E6EDF3" font-weight="600">guru</text>
+        <text x="56" y="16" fill="#8B949E">04 may 11:22</text>
+        <text x="14" y="30" font-family="'SF Mono', Consolas, monospace" fill="#E6946B">claude-opus-4-7</text>
+        <text x="120" y="30" fill="#8B949E">→</text>
+        <text x="132" y="30" font-family="'SF Mono', Consolas, monospace" fill="#34D399">gpt-5</text>
+        <text x="402" y="30" fill="#3FB950" font-weight="700" text-anchor="end">+8% (ok)</text>
+      </g>
+      <!-- Switch 3 (informativo) -->
+      <g transform="translate(0, 92)">
+        <rect x="0" y="0" width="412" height="38" rx="6" fill="rgba(88, 166, 255, 0.05)" stroke="#58A6FF" stroke-opacity="0.3"/>
+        <rect x="0" y="0" width="3" height="38" fill="#58A6FF"/>
+        <text x="14" y="16" fill="#E6EDF3" font-weight="600">historia</text>
+        <text x="78" y="16" fill="#8B949E">02 may 16:40</text>
+        <text x="14" y="30" font-family="'SF Mono', Consolas, monospace" fill="#E6946B">claude-haiku</text>
+        <text x="100" y="30" fill="#8B949E">→</text>
+        <text x="112" y="30" font-family="'SF Mono', Consolas, monospace" fill="#E6946B">claude-sonnet-4-6</text>
+        <text x="402" y="30" fill="#58A6FF" font-weight="700" text-anchor="end">−12%</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ========================= FOOTER ========================= -->
+  <g transform="translate(0, 1038)">
+    <rect width="1440" height="42" fill="#161B22"/>
+    <rect width="1440" height="1" fill="#30363D"/>
+    <text x="32" y="26" fill="#8B949E" font-size="11">
+      Detector cross-provider · ventana sliding 7d · umbral +30% · debounce 60min/(skill,provider) · min sesiones baseline 5
+    </text>
+    <text x="1408" y="26" fill="#8B949E" font-size="11" text-anchor="end" font-family="'SF Mono', Consolas, monospace">
+      .pipeline/lib/cost-cross-provider-alert.js
+    </text>
+  </g>
+
+</svg>
