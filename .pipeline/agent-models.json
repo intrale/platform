@@ -1,5 +1,6 @@
 {
   "$schema": "./agent-models.schema.json",
+  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5). Documento canónico: docs/pipeline-multi-provider.md §3.1 + §3.5. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077).",
 
   "default_provider": "anthropic",
 
@@ -15,7 +16,8 @@
         "--permission-mode", "bypassPermissions"
       ],
       "output_parser": "anthropic-stream-json",
-      "quota_error_types": ["usage_limit_error", "weekly_quota_exhausted"],
+      "quota_error_types": ["usage_limit_error", "weekly_quota_exhausted", "snapshot_threshold_90"],
+      "resets_at_cap_max_days": 7,
       "supports_tool_use": true,
       "prompt_caching": {
         "supported": true,
@@ -23,6 +25,27 @@
         "ttl_seconds_extended": 3600
       },
       "credentials_env": ["ANTHROPIC_API_KEY"],
+      "permissions_mode": "bypassPermissions"
+    },
+
+    "openai-codex": {
+      "launcher": "codex",
+      "model": "gpt-5-codex",
+      "spawn_args_template": [
+        "exec", "--full-auto",
+        "--model", "{model}",
+        "--system", "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "openai-sse",
+      "quota_error_types": ["insufficient_quota", "billing_hard_limit_reached"],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": true,
+      "prompt_caching": {
+        "supported": true,
+        "auto": true
+      },
+      "credentials_env": ["OPENAI_API_KEY"],
       "permissions_mode": "bypassPermissions"
     },
 

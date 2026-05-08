@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/intrale/platform/.pipeline/agent-models.schema.json",
-  "title": "agent-models.json — schema multi-proveedor del pipeline V3 (#3081 + #3065)",
-  "description": "Schema canónico para .pipeline/agent-models.json. Source-of-truth del enum de 'launcher' y 'output_parser' es lib/agent-models-validate.js — el validador inyecta los enums programáticamente al cargar el schema (composición), evitando drift schema↔código.",
+  "title": "agent-models.json — schema multi-proveedor del pipeline V3 (#3081 + #3065 + #3077)",
+  "description": "Schema canónico para .pipeline/agent-models.json. Source-of-truth del enum de 'launcher' y 'output_parser' es lib/agent-models-validate.js — el validador inyecta los enums programáticamente al cargar el schema (composición), evitando drift schema↔código. La cross-validación de quota_error_types contra la meta-allowlist por provider vive en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — #3077 SEC-2 (defensa anti-supply-chain).",
   "type": "object",
   "required": ["default_provider", "providers", "skills"],
   "additionalProperties": false,
@@ -10,6 +10,10 @@
     "$schema": {
       "type": "string",
       "description": "Ref al schema. Conveniencia para IDEs."
+    },
+    "_doc": {
+      "type": "string",
+      "description": "Puntero a la documentación canónica (docs/pipeline-multi-provider.md §3.1) para que el operador encuentre rápido el contexto al editar este archivo."
     },
     "default_provider": {
       "type": "string",
@@ -68,8 +72,14 @@
         },
         "quota_error_types": {
           "type": "array",
-          "description": "Lista de strings que marca el detector de cuota (lib/quota-exhausted.js) como 'cuota agotada' para este provider. Vacío si el provider no tiene cuota.",
+          "description": "Lista de strings que marca el detector de cuota (lib/quota-exhausted.js) como 'cuota agotada' para este provider. Vacío si el provider no tiene cuota. Cada item se cross-valida contra la meta-allowlist por provider (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER en lib/quota-exhausted.js) — #3077 SEC-2 (defensa anti-supply-chain).",
           "items": { "type": "string", "minLength": 1 }
+        },
+        "resets_at_cap_max_days": {
+          "type": "integer",
+          "description": "Cap superior (en días) para el campo 'resets_at' cuando el provider reporta cuota agotada. Default 7 (cuota semanal Plan Max Anthropic). OpenAI suele usar cuotas mensuales — declarar 31. Aplicado en capResetsAt() para evitar 'falso drenado natural' cuando un evento legítimo declara un reset_at lejano. #3077 SEC-6.",
+          "minimum": 1,
+          "maximum": 366
         },
         "supports_tool_use": {
           "description": "Soporte de tool use / function calling. true = paridad funcional con Anthropic; 'limited' = soporte parcial con traducción; false = sin soporte.",
@@ -126,7 +136,7 @@
         },
         "model_override": {
           "type": "string",
-          "description": "Modelo específico que sobrescribe el 'model' default del provider.",
+          "description": "Modelo específico que sobrescribe el 'model' default del provider. La cross-validación contra la allowlist de modelos por launcher (ALLOWED_MODELS_BY_LAUNCHER) se hace en lib/agent-models-validate.js durante el boot.",
           "minLength": 1
         }
       }

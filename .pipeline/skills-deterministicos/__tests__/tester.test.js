@@ -405,13 +405,53 @@ test('#2895 rev-2 — isPipelineOnlyChange NO confunde .gitignore en subdirector
     ]), false);
 });
 
-// #3072 rev-1 / #3081 rev-2 — regresión: cuando un commit toca `.husky/`,
-// `package.json` o `package-lock.json` junto a archivos `.pipeline/` y `docs/`,
-// el tester rebotaba porque esos archivos rompían el match `every` y caía a la
-// ruta gradle. Gradle no encuentra Kotlin que compilar (cero diffs Kotlin) y
-// no escribe XMLs JUnit, así que el tester rebotaba con "No se encontraron
-// reportes JUnit". Verificado tanto en logs de #3072 (multi-provider H1, ajv
-// como dep nueva) como en logs de #3081 (security S3, husky pre-commit nuevo).
+// #3072 rev-1 + #3081 rev-2 — regresión combinada: el H1 multi-provider (#3072)
+// agregó `ajv` como dependencia npm necesaria para validar el schema, metiendo
+// package.json + package-lock.json en el diff. Después #3081 (S3 multi-provider)
+// sumó `.husky/pre-commit` por integrar la validación schema en el git hook.
+// Ambos rompían el match `every` (los archivos no estaban en allowlist) y forzaban
+// la ruta gradle. Gradle no encuentra Kotlin que compilar (cero diffs Kotlin),
+// no escribe XMLs JUnit y el tester rebotaba con "No se encontraron reportes JUnit".
+// Verificado:
+//   .pipeline/logs/3072-tester.log:
+//     [tester] git diff vs main: 7 archivos · pipeline_only=false
+//     [tester] gradle exit_code=0 wall_ms=64180 (todo UP-TO-DATE)
+//     ⏭️ No se encontraron reportes JUnit
+//   .pipeline/logs/3081-tester.log:
+//     [tester] git diff vs main: 8 archivos · pipeline_only=false
+//     - No se encontraron reportes JUnit — posible configuración rota o tests omitidos
+//
+// El monorepo Intrale no usa npm desde Gradle: ningún build.gradle.kts referencia
+// package.json. Por lo tanto package.json + package-lock.json + .husky/ son 100% pipeline.
+test('#3072 rev-1 — isPipelineOnlyChange acepta package.json y package-lock.json root', () => {
+    // package.json solo (cambio puro de deps npm del pipeline) → pipeline-only
+    assert.equal(tester.isPipelineOnlyChange(['package.json']), true);
+    assert.equal(tester.isPipelineOnlyChange(['package-lock.json']), true);
+    // Caso real del rebote: H1 multi-provider con ajv como dep nueva
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/agent-models.json',
+        '.pipeline/agent-models.schema.json',
+        '.pipeline/lib/__tests__/agent-models.test.js',
+        '.pipeline/lib/agent-models.js',
+        '.pipeline/pulpo.js',
+        'package.json',
+        'package-lock.json',
+    ]), true);
+});
+
+test('#3072 rev-1 — isPipelineOnlyChange NO confunde package.json en subdirectorios', () => {
+    // El patrón es `^package\.json$` — si algún módulo tuviera un package.json
+    // local (no es el caso hoy, pero defensa en profundidad), debería caer a
+    // la ruta gradle por las dudas.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'app/composeApp/package.json',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'tools/package-lock.json',
+    ]), false);
+});
+
 test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/, package.json y package-lock.json', () => {
     // Cada uno aislado debe dar pipeline-only.
     assert.equal(tester.isPipelineOnlyChange(['.husky/pre-commit']), true);
@@ -428,14 +468,6 @@ test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/, package.json y packag
         'docs/pipeline-multi-provider.md',
         'package-lock.json',
         'package.json',
-    ]), true);
-    // Caso real del rebote #3072: H1 multi-provider con ajv como dep nueva.
-    assert.equal(tester.isPipelineOnlyChange([
-        '.pipeline/agent-models.json',
-        '.pipeline/agent-models.schema.json',
-        '.pipeline/pulpo.js',
-        'package.json',
-        'package-lock.json',
     ]), true);
 });
 

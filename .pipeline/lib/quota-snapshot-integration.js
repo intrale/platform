@@ -647,6 +647,12 @@ function evaluateSnapshotAndGate(snapshot, opts = {}) {
         try {
             quotaExhausted.setFlag({
                 errorType: 'snapshot_threshold_90',
+                // #3077 SEC-8 / CA-9: snapshot_threshold_90 es un trigger
+                // específico de Claude Desktop snapshot (#3013) — pertenece
+                // al provider Anthropic SIEMPRE, INDEPENDIENTEMENTE del
+                // provider del skill que esté corriendo en ese momento.
+                // No debe propagarse a OpenAI / Gemini.
+                provider: 'anthropic',
                 resetsAt: weeklyResetMs,
                 now,
                 agent: 'quota-snapshot-integration',

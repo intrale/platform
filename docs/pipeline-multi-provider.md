@@ -302,6 +302,38 @@ Se propone publicar `docs/pipeline-multi-provider/agent-models.schema.json` en e
 
 Hoy `pulpo.js:4851` define `DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter'])` hardcoded. Con `agent-models.json`, ese set deja de existir como constante: cualquier skill cuyo `model` resuelva a un proveedor con `output_parser: "none"` y `supports_tool_use: false` se considera determinístico. Esto resuelve A9 sin tabla aparte.
 
+### 3.7 Contrato `quota_error_types` por proveedor (#3077 / H5)
+
+`providers.<id>.quota_error_types` es la lista de strings que `lib/quota-exhausted.js` reconoce como "cuota agotada" para ese provider. El detector usa un **dispatcher por shape estructural** según el `output_parser` del provider — NUNCA matchea por substring sobre texto libre (CWE-185 / prompt-injection):
+
+| Provider | Output parser | Shape estructural | Ejemplos legítimos |
+|---|---|---|---|
+| `anthropic` | `anthropic-stream-json` | `evt.type === 'result' && evt.is_error === true && evt.error_type ∈ allowlist` | `usage_limit_error`, `weekly_quota_exhausted`, `snapshot_threshold_90` |
+| `openai-codex` | `openai-sse` | `evt.event === 'error' && evt.data.error.type ∈ allowlist` (canónico)<br>`evt.type === 'response.error' && evt.error.type ∈ allowlist` (alternativo) | `insufficient_quota`, `billing_hard_limit_reached`, `tokens_exhausted` |
+| `gemini` | `gemini-stream` | (reservado, adaptador no entregado) | `quota_exceeded`, `resource_exhausted` |
+| `deterministic`, `ollama` | `none` | sin detección de cuota basada en eventos | `[]` |
+
+**Tipos "externos" vs "internos"**: los strings que vienen del CLI del provider son externos (ej. `usage_limit_error`). Los strings emitidos por integraciones del propio pipeline son internos — el caso canónico es `snapshot_threshold_90`, emitido por `quota-snapshot-integration.js` cuando el snapshot real reporta `weekly_all_models_pct >= 90` (#3013). Los internos pertenecen al provider Anthropic exclusivamente y NO se propagan a OpenAI ni Gemini (#3077 SEC-8).
+
+**Meta-allowlist** (#3077 SEC-2): cada string declarado en `quota_error_types` se cross-valida en `lib/agent-models.js.loadAndValidate()` contra `KNOWN_QUOTA_ERROR_TYPES_BY_LAUNCHER` (hardcoded). Si un PR introduce un valor opaco fuera de la meta-allowlist → boot fail-fast con mensaje accionable. Defensa anti-supply-chain. Para ampliar la meta-allowlist se requiere review humano explícito (PR a `lib/agent-models.js` + `lib/quota-exhausted.js`).
+
+**`resets_at_cap_max_days` por provider** (#3077 SEC-6): cada provider declara su cap superior en días para el campo `resets_at` reportado por el CLI. Anthropic = 7 (cuota semanal Plan Max). OpenAI = 31 (cuota mensual). Sin esto, un evento OpenAI legítimo declarando un reset_at a 21 días sería truncado al cap default de 7 días → falso "drenado natural" en una semana. Configurable, opcional (default 7). Validado por schema en rango `[1, 366]`.
+
+**Scoping del flag por provider** (#3077 SEC-1, SEC-5):
+
+- `setFlag({ provider, ... })` persiste el flag con el campo `provider` indicando qué proveedor reportó la cuota agotada.
+- `shouldGateSpawn(skill, { provider })` gatea SOLO si el provider del skill coincide con el provider del flag activo. Anthropic agotado NO bloquea skills configurados con OpenAI o Google.
+- `clearFlag({ provider })` solo limpia si el provider matchea (un spawn exitoso de OpenAI no limpia el flag de Anthropic).
+- `detectQuotaError(parsedEvent, providerDef)` matchea SOLO contra el `quota_error_types` del provider en uso; un evento Anthropic con string OpenAI (`insufficient_quota`) NO activa el flag.
+
+**Backward-compat** (#3077 CA-14): los flags persistidos pre-#3077 no tienen el campo `provider`. Al leerlos, `validateFlagShape` los normaliza a `provider: 'anthropic'` (único provider activo antes del rediseño). Schema migración silenciosa, sin manejo manual.
+
+**Audit log enriquecido** (#3077 SEC-7): cada línea de `.pipeline/logs/quota-detector-YYYY-MM-DD.log` incluye `provider` y `model` para debugging multi-provider. Sin estos campos era imposible saber qué proveedor disparó el flag cuando había mix de providers corriendo.
+
+**Sanitización del `raw_excerpt`** (#3077 SEC-4): el campo `raw_excerpt` del audit log pasa por `lib/redact.js` y por una segunda capa de patrones de API keys multi-proveedor (`sk-`, `sk-ant-`, `AIza`, `ya29.`, `Bearer`, JWT) ANTES de logear. Cierra el vector "OpenAI emite eventos de error con context que contiene fragmentos de la API key o del system prompt → audit log se vuelve vector de exfiltración pasivo". S2 (#3073) generaliza esta defensa a sanitizer extendido global.
+
+**Fuente de verdad y deprecación**: `agent-models.json` es la fuente canónica. `config.yaml:quota_detector.error_types` y `config.yaml:quota_detector.resets_at_cap_max_days` quedan como `@deprecated` para callers legacy de `detectFromResultEvent(evt, cfg)` que aún no resuelvan `providerDef`. Se eliminarán en una historia de cleanup posterior, después de migrar todos los callers a `detectQuotaError(evt, providerDef)`.
+
 ---
 
 ## 4) Plan de implementación en fases (cross-MODELO primero, cross-PROVIDER después)

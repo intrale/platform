@@ -46,12 +46,14 @@ const partialPauseDeps = require('./lib/partial-pause-deps');
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
 const trace = require('./lib/traceability');
-// #3072 — modelo por skill desde .pipeline/agent-models.json (multi-provider H1).
-// Reemplaza el hardcode 'claude-opus-4-7' que estaba en lanzarAgenteClaude. El
-// dispatcher por skill vive en lib/agent-launcher/resolve-provider.js (#3125 H2),
-// y la validación canónica del JSON al boot vive en lib/agent-models-validate.js
-// (#3081 S3) — ambos leen agent-models.json desde disco; este módulo no necesita
-// mantener un singleton en memoria.
+// #3072 / #3077 — modelo por skill desde .pipeline/agent-models.json
+// (multi-provider H1 + H5). La validación canónica al boot vive en
+// lib/agent-models-validate.js (#3081 S3). Acá hacemos un parseo defensivo
+// post-validación para resolver provider/model/providerDef en runtime sin
+// reabrir el archivo en cada gate. La carga real ocurre tras el bloque de
+// validación (loadAgentModelsRuntime, ver más abajo) — required acá sólo
+// para mantener el orden de imports en cabecera.
+const fsForAgentModels = require('node:fs');
 // #2993 — handoff cross-agente por issue. Lectura inyectada al userPrompt del
 // próximo agente; escritura post-exit reusa el mismo mecanismo. Default OFF
 // (rollout gradual via config.yaml → handoff.enabled).
@@ -149,6 +151,50 @@ function detectClaudeLauncher() {
 
 const CLAUDE_LAUNCHER = detectClaudeLauncher();
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
+
+// #3072 / #3077 — Singleton runtime de agent-models. La VALIDACIÓN del JSON
+// se hace más abajo en el boot (validateOrExit del módulo agent-models-validate
+// — #3081 S3). Acá hacemos un parseo defensivo post-validación: si falla, se
+// degrada a {} para que las resoluciones devuelvan defaults seguros y no maten
+// el proceso (validateOrExit ya cubre el fail-fast). Las funciones resuelven
+// `provider`, `model` y `providerDef` para el quota gate multi-provider sin
+// reabrir el archivo en cada llamada.
+let AGENT_MODELS = null;
+function loadAgentModelsRuntime() {
+  try {
+    const p = path.join(__dirname, 'agent-models.json');
+    AGENT_MODELS = JSON.parse(fsForAgentModels.readFileSync(p, 'utf8'));
+  } catch (e) {
+    AGENT_MODELS = null;
+    try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+      `[${new Date().toISOString()}] [pulpo] WARN agent-models.json no se pudo parsear en runtime: ${e.message}\n`); } catch {}
+  }
+}
+loadAgentModelsRuntime();
+
+// Resolvers locales para evitar reabrir el JSON en cada gate. NULL-safe:
+// si AGENT_MODELS no está disponible (pre-boot, error de IO), devuelven null
+// y el caller cae al gate global / config legacy.
+function resolveSkillProvider(skill) {
+  if (!AGENT_MODELS) return null;
+  const skillCfg = AGENT_MODELS.skills && AGENT_MODELS.skills[skill];
+  if (!skillCfg) return null;
+  return skillCfg.provider || AGENT_MODELS.default_provider || 'anthropic';
+}
+function resolveSkillModel(skill) {
+  if (!AGENT_MODELS) return null;
+  const skillCfg = AGENT_MODELS.skills && AGENT_MODELS.skills[skill];
+  if (!skillCfg) return null;
+  if (skillCfg.model_override) return skillCfg.model_override;
+  const providerName = resolveSkillProvider(skill);
+  if (!providerName) return null;
+  const providerDef = AGENT_MODELS.providers && AGENT_MODELS.providers[providerName];
+  return (providerDef && providerDef.model) || null;
+}
+function getSkillProviderDef(providerName) {
+  if (!AGENT_MODELS || !providerName) return null;
+  return (AGENT_MODELS.providers && AGENT_MODELS.providers[providerName]) || null;
+}
 
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
 let lastGhCallTime = 0;
@@ -4609,8 +4655,18 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // post-reset o spawn exitoso), el filesystem-como-cola los recoge sin lógica
   // adicional. CA-1/CA-2 del issue.
   try {
-    if (quotaExhausted.shouldGateSpawn(skill)) {
-      log('lanzamiento', `🚫 ${skill}:#${issue} bloqueado por quota-exhausted (LLM, flag activo) — devuelvo a pendiente/`);
+    // #3077 CA-7 / SEC-5: scope por provider. Resolvemos el provider del skill
+    // desde agent-models.json y lo pasamos al gate. Si el flag activo es de un
+    // provider distinto al del skill, el gate deja pasar — multi-provider real.
+    let skillProvider = null;
+    let skillModel = null;
+    try {
+      skillProvider = resolveSkillProvider(skill);
+      skillModel = resolveSkillModel(skill);
+    } catch { /* defensa: si la resolución falla, caemos al gate global */ }
+
+    if (quotaExhausted.shouldGateSpawn(skill, { provider: skillProvider })) {
+      log('lanzamiento', `🚫 ${skill}:#${issue} bloqueado por quota-exhausted (LLM, flag activo, provider=${skillProvider || 'unknown'}) — devuelvo a pendiente/`);
       try {
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         moveFile(trabajandoPath, pendienteDir);
@@ -4619,6 +4675,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         quotaExhausted.appendAudit({
           event: 'gate_blocked_spawn',
           agent: skill,
+          provider: skillProvider,
+          model: skillModel,
           error_type: null,
           raw_excerpt: `issue=${issue} fase=${fase} pipeline=${pipeline}`,
           flag_set: true,
@@ -5131,6 +5189,19 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
         let raw = '';
         try { raw = fs.readFileSync(logPath, 'utf8'); } catch {}
+
+        // #3077 CA-4 / CA-5: dispatcher por provider. Resolvemos el providerDef
+        // del skill y usamos el handler correcto (anthropic-stream-json u
+        // openai-sse). Caer a Anthropic legacy si el skill no tiene resolución.
+        let skillProvider = null;
+        let skillModel = null;
+        let providerDef = null;
+        try {
+          skillProvider = resolveSkillProvider(skill);
+          skillModel = resolveSkillModel(skill);
+          providerDef = getSkillProviderDef(skillProvider);
+        } catch { /* defensa */ }
+
         let matched = false;
         let matchedLine = '';
         let matchedDetail = null;
@@ -5139,7 +5210,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             if (!line.startsWith('{')) continue;
             let evt;
             try { evt = JSON.parse(line); } catch { continue; }
-            const det = quotaExhausted.detectFromResultEvent(evt, cfg);
+            // Si tenemos providerDef, dispatcher por provider; sino legacy.
+            const det = providerDef
+              ? quotaExhausted.detectQuotaError(evt, providerDef)
+              : quotaExhausted.detectFromResultEvent(evt, cfg);
             if (det.matched) {
               matched = true;
               matchedLine = line;
@@ -5149,18 +5223,33 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           }
         }
         if (matched) {
-          log('lanzamiento', `🚫 ${skill}:#${issue} reportó cuota agotada (error_type="${matchedDetail.errorType}") — seteando flag`);
+          log('lanzamiento', `🚫 ${skill}:#${issue} reportó cuota agotada (provider=${skillProvider || 'unknown'}, error_type="${matchedDetail.errorType}") — seteando flag`);
           quotaExhausted.setFlag({
             errorType: matchedDetail.errorType,
+            // #3077 SEC-1 / SEC-7: provider/model del skill que disparó.
+            provider: skillProvider,
+            model: skillModel,
             resetsAt: matchedDetail.evt.resets_at,
-            maxDays: cfg.resets_at_cap_max_days,
+            // #3077 SEC-6: cap configurable por provider (Anthropic 7d,
+            // OpenAI 31d). Si providerDef define resets_at_cap_max_days, se
+            // usa; sino caemos al cfg legacy de config.yaml.
+            maxDays: (providerDef && providerDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
             agent: skill,
             rawExcerpt: matchedLine,
             auditLogEnabled: auditEnabled,
           });
         } else if (code === 0) {
           // CA-3 del padre: spawn exitoso → drenado proactivo del flag.
-          try { quotaExhausted.clearFlag({ event: 'success_spawn', reason: `${skill}:#${issue}` }); } catch {}
+          // #3077 CA-8: scope por provider — si el flag activo es de otro
+          // provider, NO se limpia.
+          try {
+            quotaExhausted.clearFlag({
+              event: 'success_spawn',
+              reason: `${skill}:#${issue}`,
+              provider: skillProvider,
+              model: skillModel,
+            });
+          } catch {}
         }
       } catch (qErr) {
         log('lanzamiento', `quota_detector (agent log) falló (best-effort) para ${skill}:#${issue}: ${qErr.message}`);
@@ -6366,13 +6455,28 @@ function ejecutarClaude(prompt, textoOriginal) {
           // futuros spawns LLM. Skills determinísticos siguen corriendo.
           try {
             const cfg = (loadConfig() || {}).quota_detector || {};
-            const det = quotaExhausted.detectFromResultEvent(evt, cfg);
+            // #3077 CA-4 / CA-5: el commander corre siempre como provider
+            // anthropic (Claude Desktop), así que resolvemos su providerDef
+            // explícito para usar el dispatcher correcto.
+            let cmdProviderDef = null;
+            let cmdProvider = 'anthropic';
+            let cmdModel = null;
+            try {
+              cmdProviderDef = getSkillProviderDef('anthropic');
+              cmdModel = cmdProviderDef ? cmdProviderDef.model : null;
+            } catch { /* defensa */ }
+
+            const det = cmdProviderDef
+              ? quotaExhausted.detectQuotaError(evt, cmdProviderDef)
+              : quotaExhausted.detectFromResultEvent(evt, cfg);
             if (det.matched) {
-              log('commander', `🚫 quota_detector: error_type="${det.errorType}" detectado — seteando flag`);
+              log('commander', `🚫 quota_detector: provider=${cmdProvider}, error_type="${det.errorType}" detectado — seteando flag`);
               quotaExhausted.setFlag({
                 errorType: det.errorType,
+                provider: cmdProvider,
+                model: cmdModel,
                 resetsAt: evt.resets_at,
-                maxDays: cfg.resets_at_cap_max_days,
+                maxDays: (cmdProviderDef && cmdProviderDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
                 agent: 'commander',
                 rawExcerpt: line,
                 auditLogEnabled: cfg.audit_log_enabled !== false,
@@ -6380,7 +6484,15 @@ function ejecutarClaude(prompt, textoOriginal) {
             } else if (evt.is_error !== true) {
               // CA-3 (issue padre): un spawn exitoso prueba que la cuota volvió
               // antes del resets_at calculado → drenado proactivo.
-              try { quotaExhausted.clearFlag({ event: 'success_spawn', reason: 'commander_success' }); } catch {}
+              // #3077 CA-8: scope por provider — solo limpia flag de anthropic.
+              try {
+                quotaExhausted.clearFlag({
+                  event: 'success_spawn',
+                  reason: 'commander_success',
+                  provider: cmdProvider,
+                  model: cmdModel,
+                });
+              } catch {}
             }
           } catch (qErr) {
             log('commander', `quota_detector falló (best-effort): ${qErr.message}`);
