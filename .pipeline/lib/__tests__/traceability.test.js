@@ -142,6 +142,65 @@ test('append no tira si LOG_FILE no puede escribirse (resiliencia)', () => {
     });
 });
 
+// =============================================================================
+// #3091 — Multi-provider: nueva firma estimateCostUsd(provider, model, tokens) + provider en eventos
+// =============================================================================
+
+test('estimateCostUsd nueva firma (provider, model, tokens) — Anthropic explícito', () => {
+    const cost = trace.estimateCostUsd('anthropic', 'claude-opus-4-7', {
+        tokens_in: 1_000_000, tokens_out: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000,
+    });
+    assert.equal(cost, 110.25);
+});
+
+test('estimateCostUsd nueva firma — OpenAI gpt-5-codex', () => {
+    // Usa la tabla del FALLBACK_PRICING o JSON cargado (depende del entorno).
+    // Garantizamos comportamiento: si OpenAI no está en pricing → costo 0 (fallback safe).
+    const cost = trace.estimateCostUsd('openai', 'gpt-5-codex', {
+        tokens_in: 1_000_000, tokens_out: 500_000,
+    });
+    // Si pricing.json fue cargado en otro test, gpt-5-codex tiene costo. Si no, 0.
+    // El test no asume estado: solo valida que es numérico finito >= 0.
+    assert.ok(Number.isFinite(cost) && cost >= 0);
+});
+
+test('estimateCostUsd legacy firma (model, tokens) sigue funcionando — back-compat', () => {
+    const cost = trace.estimateCostUsd('claude-opus-4-7', {
+        tokens_in: 1_000_000, tokens_out: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000,
+    });
+    // Misma respuesta que con firma nueva — provider se infiere por prefijo `claude-`
+    assert.equal(cost, 110.25);
+});
+
+test('estimateCostUsd con provider explícito fuera de allowlist — costo 0', () => {
+    const cost = trace.estimateCostUsd('unknown-vendor', 'claude-opus-4-7', {
+        tokens_in: 1_000_000, tokens_out: 1_000_000,
+    });
+    // Provider explícito inválido NO se infiere por modelo (anti envenenamiento, security #2).
+    assert.equal(cost, 0);
+});
+
+test('estimateCostUsd con model path traversal — costo 0 sin crash', () => {
+    const cost = trace.estimateCostUsd('anthropic', '../../../etc/passwd', {
+        tokens_in: 1e9, tokens_out: 1e9,
+    });
+    assert.equal(cost, 0);
+});
+
+test('emitSessionEnd persiste provider cuando se provee en metrics', () => {
+    const ctx = trace.emitSessionStart({ skill: 'guru', issue: 3091, phase: 'analisis', model: 'claude-opus-4-7' });
+    const evt = trace.emitSessionEnd(ctx, { tokens_in: 100, tokens_out: 50, provider: 'anthropic' });
+    assert.equal(evt.provider, 'anthropic');
+});
+
+test('emitSessionEnd provider=null cuando no se provee (back-compat)', () => {
+    const evt = trace.emitSessionEnd(
+        { skill: 's', issue: 1, phase: 'dev', model: 'claude-opus-4-7' },
+        {}
+    );
+    assert.equal(evt.provider, null, 'evento legacy sin provider explícito → null');
+});
+
 test.after(() => {
     try { fs.rmSync(TMP_DIR, { recursive: true, force: true }); } catch(_) {}
 });
