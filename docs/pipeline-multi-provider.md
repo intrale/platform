@@ -594,6 +594,49 @@ Hoy `pulpo.js:4922-4933` propaga `process.env` completo al child. Con multi-prov
 - Drop de env: filtrar `process.env` a un allowlist mínimo (PATH, HOME, USERPROFILE, APPDATA, PIPELINE_*) + la key específica del provider del skill.
 - Aislamiento es **obligatorio** — si OpenAI key viaja en el env de un agente Anthropic, una panic dump del CLI puede filtrarla al log.
 
+#### Implementación entregada (issue #3085 / S7)
+
+**Helper**: `.pipeline/lib/build-child-env.js` — función pura `buildChildEnv({ skill, processEnv, pipelineExtras, ... })` que devuelve el objeto env mínimo. Patrón idiomático del codebase (mismo estilo que `lib/handoff.js`, `lib/redact.js`, `lib/partial-pause.js`): puro, sin side-effects, con inyectables (`fsImpl`, `skillConfigOverride`) para tests.
+
+**Estrategia de filtrado** (en orden):
+1. `SYSTEM_ALLOWLIST` hardcoded — variables del sistema permitidas a TODOS los childs (PATH, SystemRoot, ComSpec, PATHEXT, NODE_*, locale, paths Windows).
+2. Todas las `PIPELINE_*` del `processEnv` (siempre — son contexto del child).
+3. Una sola API key del LLM, la del provider declarado por el skill (Anthropic xor OpenAI; deterministic NO recibe ninguna).
+4. Scopes adicionales (`requires_credentials` en `agent-models.json` o `DEFAULT_REQUIRES_BY_SKILL` hardcoded por skill cuando el archivo no existe).
+5. `SCOPES_ALWAYS_ON` — `telegram-hooks` siempre, en todos los childs (los hooks `agent-concurrency-check.js` y `worktree-guard.js` corren dentro del child y disparan alertas vía Telegram).
+
+**Tabla de scopes** (constante exportada `CREDENTIAL_SCOPES`):
+
+| Scope | Variables incluidas | Skills que lo declaran (defaults) |
+|-------|---------------------|-----------------------------------|
+| `github` | `GH_TOKEN`, `GITHUB_TOKEN` | `security`, `delivery`, `refinar`, `priorizar`, `po`, `historia`, `doc`, `scrum`, `review`, `guru`, `ux`, `planner`, `pipeline-dev`, `android-dev`, `backend-dev`, `web-dev`, `qa` |
+| `aws` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_PROFILE` | `qa`, `backend-dev` |
+| `gradle-android` | `JAVA_HOME`, `GRADLE_USER_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_AVD_HOME` | `builder`, `tester`, `qa`, `build`, `android-dev`, `backend-dev`, `web-dev` |
+| `telegram-hooks` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | TODOS (always-on) |
+
+**Fail-fast**: si el `provider` declarado por el skill tiene una `credentials_env` declarada (en `agent-models.json` o `PROVIDER_DEFAULT_CREDENTIAL_ENV`) y la var no está en `process.env` del pulpo, `buildChildEnv()` **throwa** con mensaje accionable en español:
+
+> *"Skill 'X' configurado para provider 'Y', pero VAR_NAME no está en el env del pulpo. Definila como variable de entorno o cambiá el 'provider' del skill en agent-models.json. Ver docs/pipeline-multi-provider.md §5.2."*
+
+**Rollout con flag**: `pipeline.env_isolation_enabled` en `.pipeline/config.yaml` (default `false`). Cuando `false`, el pulpo conserva el comportamiento previo (heredar `process.env` completo) — preserva regresión cero corriendo solo Anthropic. Cuando `true`, usa `buildChildEnv()`.
+
+Plan de rollout:
+1. Mergear con flag en `false` y telemetría 1 sprint (revisar el log de auditoría + skills que rompen al flippear puntualmente para test).
+2. Flippear a `true` cuando se valide que ningún hook ni skill rompió por falta de credencial necesaria.
+3. Después del flip, considerar mover este control a "always on" + sacar el flag.
+
+**Audit trail** (`.pipeline/logs/env-allowlist-audit.log`): el pulpo, al boot, escribe una línea por arranque con qué keys de `process.env` quedaron fuera del allowlist (sin valores — solo nombre + hash truncado SHA-256-12). Sirve para forensia: si aparece una credencial nueva en el env del operador y nadie la mete en allowlist/scope, queda registrada. Formato humano-legible (CA-10b del UX), una variable por línea con padding alfabético + hash entre paréntesis.
+
+**Aplicación a call sites**: el helper se invoca desde:
+- `pulpo.js` línea ~4920 (spawn del agente LLM o determinístico — todos los skills).
+- `pulpo.js` línea ~6210 (spawn del commander singleton — chat de Claude del operador).
+
+Ambos respetan el flag y caen al comportamiento legacy si `env_isolation_enabled=false`.
+
+**Cobertura de tests**: `.pipeline/tests/build-child-env.test.js` con 34 tests (CA-2 + CA-3 + CA-4 + CA-5 + CA-7 + CA-10 + tests defensivos de consistencia interna). Sin regresión sobre tests E2E del pipeline.
+
+**Complementario al sanitizer (#2334)**: el aislamiento evita que la key llegue al child; el sanitizer evita que aparezca en logs si igual entró por otro canal. **Ninguno reemplaza al otro** — son dos capas independientes. Un agente Anthropic con env limpio igual debe sanitizar su stdout/stderr porque el LLM puede generarla por alucinación o porque el operador la pegó en un prompt.
+
 ### 6.4 Política de TOS / data residency por proveedor
 
 > Esta política aplica solamente cuando hay cambio de proveedor (Política B). Cross-MODELO dentro del mismo proveedor (Política A) NO toca TOS/DPA — Opus, Sonnet y Haiku comparten el mismo contrato Anthropic.
