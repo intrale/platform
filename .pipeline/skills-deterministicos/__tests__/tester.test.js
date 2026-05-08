@@ -405,6 +405,61 @@ test('#2895 rev-2 — isPipelineOnlyChange NO confunde .gitignore en subdirector
     ]), false);
 });
 
+// #3081 rev-2 — regresión: cuando un commit toca `.husky/`, `package.json` y
+// `package-lock.json` junto a archivos `.pipeline/` y `docs/`, el tester
+// rebotaba porque esos tres archivos rompían el match `every` y caía a la
+// ruta gradle. Gradle no encuentra Kotlin que compilar (cero diffs Kotlin)
+// y no escribe XMLs JUnit, así que el tester rebotaba con "No se encontraron
+// reportes JUnit". Verificado en .pipeline/logs/3081-tester.log:
+//   [tester] git diff vs main: 8 archivos · pipeline_only=false
+//   ...
+//   - No se encontraron reportes JUnit — posible configuración rota o tests omitidos
+test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/, package.json y package-lock.json', () => {
+    // Cada uno aislado debe dar pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange(['.husky/pre-commit']), true);
+    assert.equal(tester.isPipelineOnlyChange(['.husky/pre-push']), true);
+    assert.equal(tester.isPipelineOnlyChange(['package.json']), true);
+    assert.equal(tester.isPipelineOnlyChange(['package-lock.json']), true);
+    // Caso real del rebote #3081: 8 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.husky/pre-commit',
+        '.pipeline/agent-models.schema.json',
+        '.pipeline/lib/__tests__/agent-models-validate.test.js',
+        '.pipeline/lib/agent-models-validate.js',
+        '.pipeline/pulpo.js',
+        'docs/pipeline-multi-provider.md',
+        'package-lock.json',
+        'package.json',
+    ]), true);
+});
+
+test('#3081 rev-2 — isPipelineOnlyChange NO acepta package.json en subdirectorios', () => {
+    // El patrón es `^package\.json$` — un package.json dentro de un módulo Node
+    // anidado en el repo (ej. `tools/forbidden-strings-processor/package.json`)
+    // debe caer a la ruta gradle por las dudas: cualquier package.json fuera
+    // de la raíz no es Node infra del pipeline y puede tener implicaciones
+    // distintas (toolchain de KSP, plugins Gradle con npm wrapper, etc.).
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'tools/foo/package.json',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/composeApp/package.json',
+    ]), false);
+});
+
+test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/ con sub-archivos pero no app/.husky/', () => {
+    // El patrón `^\.husky\/` ancla a raíz del repo. Un `.husky/` dentro de
+    // un submódulo (improbable pero posible) NO debe disparar pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.husky/pre-commit',
+        '.husky/_/husky.sh',
+    ]), true);
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/.husky/pre-commit',
+    ]), false);
+});
+
 test('parseNodeTestJunit — lee tests/pass/fail/skipped del comentario summary', () => {
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <testsuites>
