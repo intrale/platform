@@ -29,6 +29,22 @@ const DEFAULT_LOOKBACK_DAYS = 7;
 const MIN_LOOKBACK_DAYS = 7;
 const MAX_LOOKBACK_DAYS = 14;
 
+// Cross-provider window (#3090) — sliding window configurable, default 7d.
+// Coherente con la decisión PO de NO usar "sprint" sino ventana sliding en
+// Kanban continuo (config: cost_cross_provider.window_days).
+// Min 1 día (debug), max 30 días (smoothing). Default 7d (CA-10).
+const DEFAULT_CROSS_PROVIDER_WINDOW_DAYS = 7;
+const MIN_CROSS_PROVIDER_WINDOW_DAYS = 1;
+const MAX_CROSS_PROVIDER_WINDOW_DAYS = 30;
+
+function clampCrossProviderWindowDays(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return DEFAULT_CROSS_PROVIDER_WINDOW_DAYS;
+    if (n < MIN_CROSS_PROVIDER_WINDOW_DAYS) return MIN_CROSS_PROVIDER_WINDOW_DAYS;
+    if (n > MAX_CROSS_PROVIDER_WINDOW_DAYS) return MAX_CROSS_PROVIDER_WINDOW_DAYS;
+    return Math.floor(n);
+}
+
 function pad2(n) { return String(n).padStart(2, '0'); }
 
 function clampLookbackDays(value) {
@@ -130,6 +146,16 @@ async function buildSnapshot(options) {
     // Permite que el alert builder de Telegram extraiga top 3 de la franja anómala.
     const hourlyBySkill = new Map();  // "YYYY-MM-DD HH|skill" → cost_usd acumulado
 
+    // (#3090) Cross-provider data por skill — solo session:end dentro de la
+    // ventana sliding de cost_cross_provider.window_days (default 7d).
+    // - byCrossProviderSkill: skill → { sessions: [{ts, provider, model, cost_usd, issue, session_id}] }
+    // - El campo `provider` puede ser null/undefined si #3083 (S5) no cerró:
+    //   el aggregator hace fallback a 'unknown' para que el bucket exista
+    //   y la UI pueda mostrar el badge ámbar de estado degradado (CA-9).
+    const cpWindowDays = clampCrossProviderWindowDays(options.crossProviderWindowDays);
+    const cpCutoffMs = nowMs - cpWindowDays * 86400e3;
+    const byCrossProviderSkill = new Map(); // skill → { sessions: [...] }
+
     let totalEvents = 0;
     let v3Events = 0;
 
@@ -213,6 +239,27 @@ async function buildSnapshot(options) {
             const key = `${skill}|${mode}`;
             if (!byAgentMode.has(key)) byAgentMode.set(key, emptyBucket());
             addToBucket(byAgentMode.get(key), evt);
+        }
+
+        // (#3090) Cross-provider — solo session:end dentro de la ventana sliding.
+        // Si #3083 (S5) no cerró, evt.provider == null/undefined → fallback a
+        // 'unknown' para que la UI muestre el estado degradado (CA-9).
+        if (evt.event === 'session:end' && evt.ts) {
+            const tsMs = Date.parse(evt.ts);
+            if (Number.isFinite(tsMs) && tsMs >= cpCutoffMs) {
+                if (!byCrossProviderSkill.has(skill)) {
+                    byCrossProviderSkill.set(skill, { sessions: [] });
+                }
+                byCrossProviderSkill.get(skill).sessions.push({
+                    ts: evt.ts,
+                    ts_ms: tsMs,
+                    provider: provider || 'unknown',  // pre-S5: 'unknown'
+                    model: evt.model || 'unknown',
+                    cost_usd: estimateCostUsd(evt.model, evt),
+                    issue: issue || null,
+                    sessions: 1,
+                });
+            }
         }
 
         // Serie temporal diaria para proyecciones (#2488)
@@ -348,6 +395,14 @@ async function buildSnapshot(options) {
     const hourly = computeHourlySeries({ hourlyBuckets, nowMs, lookbackCutoffMs });
     const currentHour = computeCurrentHour({ hourlyBuckets, hourlyBySkill, nowMs });
 
+    // (#3090) Cross-provider — derivar providers[], switches[], degradado.
+    const crossProvider = computeCrossProvider({
+        byCrossProviderSkill,
+        windowDays: cpWindowDays,
+        fromMs: cpCutoffMs,
+        toMs: nowMs,
+    });
+
     return {
         generated_at: new Date().toISOString(),
         window: options.window || 'all',
@@ -375,6 +430,7 @@ async function buildSnapshot(options) {
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,
         currentHour,
+        crossProvider,
         pricing: MODEL_PRICING,
     };
 }
@@ -462,12 +518,215 @@ function computeCurrentHour({ hourlyBuckets, hourlyBySkill, nowMs }) {
     };
 }
 
+// (#3090) Cross-provider — calcula providers[], switches[] y estado degradado.
+//
+// Inputs:
+//   byCrossProviderSkill: Map<skill, { sessions: [{ts, ts_ms, provider, model, cost_usd, issue, sessions:1}] }>
+//   windowDays: number (días de ventana sliding)
+//   fromMs / toMs: epoch ms del inicio/fin de la ventana
+//
+// Output (CA-1):
+//   {
+//     windowDays, from, to,
+//     bySkill: [
+//       {
+//         skill,
+//         providers: [{ provider, model, sessions, cost_usd, share_pct, fixed }],
+//         switches: [{ ts, from: 'p/m', to: 'p/m', issue, delta_pct }],
+//         spike: null,                 // el detector lo llena después
+//         post_switch_sessions,        // cantidad de sesiones después del último switch
+//         pre_switch_sessions,         // cantidad de sesiones antes del último switch
+//         pre_switch_avg_cost_usd,     // promedio costo/sesión PRE último switch
+//         post_switch_avg_cost_usd,    // promedio costo/sesión POST último switch
+//         multi_provider,              // true si providers.length >= 2
+//         fixed,                       // true si el skill es no-degradable (security/review/builder/tester)
+//       }
+//     ],
+//     degraded: {
+//       reason: 'no-provider-field' | 'single-provider' | null,
+//       message,                       // texto humano-readable para badge ámbar / banner info
+//     }
+//   }
+//
+// CA-9 — estado degradado:
+//   - Si TODOS los buckets tienen provider='unknown' (pre #3083 S5 sin campo
+//     `provider` en session:end) → degraded.reason = 'no-provider-field'.
+//     El detector NO debe disparar alertas en este estado.
+//   - Si hay un solo provider real (no 'unknown') en TODA la ventana
+//     (pre #3075 H3) → degraded.reason = 'single-provider'.
+//     El detector tampoco dispara (no hay con qué comparar).
+//   - Si hay ≥2 providers reales (no 'unknown') → degraded.reason = null
+//     y el detector evalúa normalmente.
+
+// Skills no-degradables (doc/pipeline-multi-provider.md §6.11). Si una de
+// estas cambia de provider, severidad SIEMPRE alta + label needs-human (CA-8).
+const FIXED_SKILLS = new Set(['security', 'review', 'builder', 'tester']);
+
+function isFixedSkill(skill) {
+    return FIXED_SKILLS.has(String(skill || '').toLowerCase());
+}
+
+function computeCrossProvider({ byCrossProviderSkill, windowDays, fromMs, toMs }) {
+    const bySkill = [];
+    let hasAnyRealProvider = false;
+    let totalProvidersAcrossSkills = new Set();
+
+    for (const [skill, entry] of byCrossProviderSkill) {
+        // Sort sessions ascendentes por ts (cronológico).
+        const sessions = (entry.sessions || []).slice()
+            .sort((a, b) => a.ts_ms - b.ts_ms);
+
+        if (sessions.length === 0) continue;
+
+        // Agregar por (provider, model).
+        const byPm = new Map();    // 'provider|model' → bucket
+        let totalCost = 0;
+        for (const s of sessions) {
+            const key = `${s.provider}|${s.model}`;
+            if (!byPm.has(key)) {
+                byPm.set(key, {
+                    provider: s.provider,
+                    model: s.model,
+                    sessions: 0,
+                    cost_usd: 0,
+                });
+            }
+            const b = byPm.get(key);
+            b.sessions += 1;
+            b.cost_usd += s.cost_usd;
+            totalCost += s.cost_usd;
+            if (s.provider !== 'unknown') {
+                hasAnyRealProvider = true;
+                totalProvidersAcrossSkills.add(s.provider);
+            }
+        }
+
+        const providers = [...byPm.values()].map(p => ({
+            provider: p.provider,
+            model: p.model,
+            sessions: p.sessions,
+            cost_usd: Math.round(p.cost_usd * 10000) / 10000,
+            share_pct: totalCost > 0 ? Math.round((p.cost_usd / totalCost) * 1000) / 10 : 0,
+        }));
+        providers.sort((a, b) => b.cost_usd - a.cost_usd);
+
+        // Detectar switches: pares consecutivos de sesiones donde cambia
+        // (provider, model). El switch se atribuye al timestamp/issue de la
+        // sesión NUEVA (la primera con la combinación distinta).
+        const switches = [];
+        for (let i = 1; i < sessions.length; i++) {
+            const prev = sessions[i - 1];
+            const curr = sessions[i];
+            const prevPm = `${prev.provider}/${prev.model}`;
+            const currPm = `${curr.provider}/${curr.model}`;
+            if (prevPm !== currPm) {
+                switches.push({
+                    ts: curr.ts,
+                    ts_ms: curr.ts_ms,
+                    from: prevPm,
+                    to: currPm,
+                    issue: curr.issue,
+                    // delta_pct se calcula globalmente (último switch) abajo,
+                    // acá lo dejamos null por simplicidad — el detector usa
+                    // pre_switch_avg_cost_usd / post_switch_avg_cost_usd.
+                    delta_pct: null,
+                });
+            }
+        }
+
+        // Pre/post último switch (CA-4).
+        let preSwitchSessions = 0;
+        let postSwitchSessions = 0;
+        let preSwitchCost = 0;
+        let postSwitchCost = 0;
+        if (switches.length > 0) {
+            const lastSwitchMs = switches[switches.length - 1].ts_ms;
+            for (const s of sessions) {
+                if (s.ts_ms < lastSwitchMs) {
+                    preSwitchSessions += 1;
+                    preSwitchCost += s.cost_usd;
+                } else {
+                    postSwitchSessions += 1;
+                    postSwitchCost += s.cost_usd;
+                }
+            }
+        }
+
+        const preAvg = preSwitchSessions > 0 ? preSwitchCost / preSwitchSessions : 0;
+        const postAvg = postSwitchSessions > 0 ? postSwitchCost / postSwitchSessions : 0;
+        const deltaPct = preAvg > 0 ? ((postAvg - preAvg) / preAvg) : null;
+
+        // Annotate switch[last] con delta_pct calculado (info ya queda en row).
+        if (switches.length > 0 && deltaPct != null) {
+            switches[switches.length - 1].delta_pct = Math.round(deltaPct * 1000) / 1000;
+        }
+
+        bySkill.push({
+            skill,
+            providers,
+            switches: switches.map(s => ({
+                ts: s.ts,
+                from: s.from,
+                to: s.to,
+                issue: s.issue,
+                delta_pct: s.delta_pct,
+            })),
+            spike: null,
+            pre_switch_sessions: preSwitchSessions,
+            post_switch_sessions: postSwitchSessions,
+            pre_switch_avg_cost_usd: Math.round(preAvg * 10000) / 10000,
+            post_switch_avg_cost_usd: Math.round(postAvg * 10000) / 10000,
+            multi_provider: providers.filter(p => p.provider !== 'unknown').length >= 2,
+            fixed: isFixedSkill(skill),
+        });
+    }
+
+    bySkill.sort((a, b) => {
+        // Skills con switches primero, luego por costo total.
+        if ((b.switches.length > 0) !== (a.switches.length > 0)) {
+            return b.switches.length - a.switches.length;
+        }
+        const aCost = a.providers.reduce((s, p) => s + p.cost_usd, 0);
+        const bCost = b.providers.reduce((s, p) => s + p.cost_usd, 0);
+        return bCost - aCost;
+    });
+
+    // Estado degradado (CA-9).
+    let degraded = { reason: null, message: null };
+    if (!hasAnyRealProvider && bySkill.length > 0) {
+        degraded = {
+            reason: 'no-provider-field',
+            message: 'Datos incompletos — esperando #3083 (S5 emit provider)',
+        };
+    } else if (totalProvidersAcrossSkills.size === 1) {
+        degraded = {
+            reason: 'single-provider',
+            message: '1 provider activo · datos completos cuando #3075 cierre',
+        };
+    }
+
+    return {
+        windowDays,
+        from: new Date(fromMs).toISOString(),
+        to: new Date(toMs).toISOString(),
+        bySkill,
+        degraded,
+    };
+}
+
 function emitEmptySnapshot(options) {
     const nowMs = (options && options.nowMs != null) ? Number(options.nowMs) : Date.now();
     const lookbackDays = clampLookbackDays(options && options.lookbackDays);
     const lookbackCutoffMs = nowMs - lookbackDays * 86400e3;
     const hourly = computeHourlySeries({ hourlyBuckets: new Map(), nowMs, lookbackCutoffMs });
     const currentHour = computeCurrentHour({ hourlyBuckets: new Map(), hourlyBySkill: new Map(), nowMs });
+    const cpWindowDays = clampCrossProviderWindowDays(options && options.crossProviderWindowDays);
+    const crossProvider = computeCrossProvider({
+        byCrossProviderSkill: new Map(),
+        windowDays: cpWindowDays,
+        fromMs: nowMs - cpWindowDays * 86400e3,
+        toMs: nowMs,
+    });
     return {
         generated_at: new Date(nowMs).toISOString(),
         window: (options && options.window) || 'all',
@@ -481,6 +740,7 @@ function emitEmptySnapshot(options) {
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,
         currentHour,
+        crossProvider,
         pricing: MODEL_PRICING,
     };
 }
@@ -547,10 +807,17 @@ module.exports = {
     classifyExecutionMode,
     computeHourlySeries,
     computeCurrentHour,
+    computeCrossProvider,
     clampLookbackDays,
+    clampCrossProviderWindowDays,
+    isFixedSkill,
     DEFAULT_LOOKBACK_DAYS,
     MIN_LOOKBACK_DAYS,
     MAX_LOOKBACK_DAYS,
+    DEFAULT_CROSS_PROVIDER_WINDOW_DAYS,
+    MIN_CROSS_PROVIDER_WINDOW_DAYS,
+    MAX_CROSS_PROVIDER_WINDOW_DAYS,
+    FIXED_SKILLS,
     SNAPSHOT_FILE,
     METRICS_DIR,
 };

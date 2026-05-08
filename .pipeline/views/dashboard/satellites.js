@@ -1298,6 +1298,16 @@ function renderCostos() {
 <section class="in-section">
   <h2 class="in-section-title"><span class="in-section-title-icon">📋</span>Por skill</h2>
   <pre id="costos-detail" class="kp-pre"></pre>
+</section>
+<!-- (#3090) Cross-provider · comparativa por skill + alerta de spike post-switch -->
+<section class="in-section">
+  <h2 class="in-section-title"><span class="in-section-title-icon">🔀</span>Cross-provider · ventana sliding</h2>
+  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Comparativa de costo cuando un skill corre con varios providers. Detecta spikes ≥ <code>threshold_pct</code> después de un switch (config en <code>config.yaml:cost_cross_provider</code>).</p>
+  <div id="cp-degraded" class="cp-degraded" style="display:none"></div>
+  <div id="cp-empty" class="in-empty" style="display:none">Aún no hay datos cross-provider en la ventana. Esperá a que termine algún agente.</div>
+  <div id="cp-spike-banner" class="cp-spike-banner" style="display:none"></div>
+  <div id="cp-table-wrap"></div>
+  <div id="cp-meta" style="margin-top:10px;font-size:11px;color:var(--in-fg-dim)"></div>
 </section>`;
     const css = `
 .kp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
@@ -1313,7 +1323,29 @@ function renderCostos() {
 .quota-bar-label { font-size: 11px; color: var(--in-fg-dim); margin-top: 6px; display: flex; justify-content: space-between; }
 .kp-tile.kp-warn .kp-tile-value { color: var(--in-warn); }
 .kp-tile.kp-bad .kp-tile-value { color: var(--in-bad); }
-.kp-tile.kp-ok .kp-tile-value { color: var(--in-ok); }`;
+.kp-tile.kp-ok .kp-tile-value { color: var(--in-ok); }
+/* (#3090) Cross-provider styles */
+.cp-degraded { padding: 10px 14px; border-radius: var(--in-radius-sm); border: 1px solid rgba(255,177,42,0.45); background: rgba(255,177,42,0.10); color: var(--in-warn,#FFB12A); margin-bottom: 14px; font-size: 12px; }
+.cp-degraded.cp-info { border-color: rgba(58,180,219,0.45); background: rgba(58,180,219,0.10); color: var(--in-accent,#3AB4DB); }
+.cp-spike-banner { padding: 14px 16px; border-radius: var(--in-radius-sm); border: 1px solid var(--alert-anomaly,#FF6B8A); border-left-width: 4px; background: rgba(255,107,138,0.06); margin-bottom: 14px; }
+.cp-spike-banner .cp-spike-headline { font-weight: 700; color: var(--alert-anomaly-fg,#FFD2DC); display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.cp-spike-banner .cp-spike-detail { color: var(--in-fg); font-size: 12px; margin-top: 4px; }
+.cp-spike-banner .cp-spike-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.cp-spike-banner .cp-spike-item { font-size: 12px; color: var(--in-fg); }
+.cp-spike-banner .cp-spike-item .cp-spike-skill { font-weight: 600; color: var(--alert-anomaly-fg,#FFD2DC); }
+.cp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cp-table th { text-align: left; padding: 6px 10px; color: var(--in-fg-dim); border-bottom: 1px solid var(--in-border); font-weight: 600; }
+.cp-table td { padding: 6px 10px; border-bottom: 1px solid var(--in-border); vertical-align: top; }
+.cp-table tr.cp-row-spike { background: rgba(255,107,138,0.06); border-left: 3px solid var(--alert-anomaly,#FF6B8A); }
+.cp-table tr.cp-row-sub td { padding-top: 0; padding-bottom: 4px; color: var(--in-fg-dim); font-size: 11px; }
+.cp-table .cp-arrow { color: var(--in-fg-soft); margin-right: 4px; }
+.cp-table .cp-num { font-variant-numeric: tabular-nums; text-align: right; }
+.cp-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; margin-left: 6px; }
+.cp-badge-multi { background: rgba(45,212,191,0.18); color: #5EEAD4; border: 1px solid rgba(45,212,191,0.45); }
+.cp-badge-fixed { background: rgba(124,92,255,0.18); color: #C5B7FF; border: 1px solid rgba(124,92,255,0.45); }
+.cp-badge-spike { background: rgba(255,107,138,0.20); color: var(--alert-anomaly-fg,#FFD2DC); border: 1px solid var(--alert-anomaly,#FF6B8A); }
+.cp-provider-pill { display: inline-block; padding: 1px 8px; border-radius: 9999px; font-size: 11px; background: var(--in-bg-3); border: 1px solid var(--in-border); color: var(--in-fg); }
+.cp-provider-pill.cp-unknown { color: var(--in-warn,#FFB12A); border-color: rgba(255,177,42,0.45); }`;
     const script = `
 async function tickQuota(){
     const d = await fetchJson('/api/dash/quota');
@@ -1529,7 +1561,108 @@ async function tickCostos(){
         }
     }
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn: tickCostos, ms: 60000 }];
+// (#3090) Cross-provider · render
+async function tickCrossProvider(){
+    const data = await fetchJson('/api/dash/cost/cross-provider');
+    const empty = document.getElementById('cp-empty');
+    const wrap = document.getElementById('cp-table-wrap');
+    const degraded = document.getElementById('cp-degraded');
+    const spikeBanner = document.getElementById('cp-spike-banner');
+    const meta = document.getElementById('cp-meta');
+    if(!data || !data.ok || !data.crossProvider){
+        if(empty) empty.style.display = '';
+        if(wrap) wrap.innerHTML = '';
+        return;
+    }
+    const cp = data.crossProvider;
+    const skills = Array.isArray(cp.bySkill) ? cp.bySkill : [];
+
+    // Estado degradado (CA-9)
+    if(degraded){
+        if(cp.degraded && cp.degraded.reason){
+            degraded.style.display = '';
+            degraded.classList.toggle('cp-info', cp.degraded.reason === 'single-provider');
+            const icon = cp.degraded.reason === 'single-provider' ? 'ℹ' : '⚠';
+            degraded.innerHTML = icon + ' ' + escapeHtml(cp.degraded.message || cp.degraded.reason);
+        } else {
+            degraded.style.display = 'none';
+        }
+    }
+
+    // Banner de spike (suma de spikes activos del detector)
+    if(spikeBanner){
+        const sp = Array.isArray(data.spikes) ? data.spikes : [];
+        if(sp.length === 0){
+            spikeBanner.style.display = 'none';
+        } else {
+            spikeBanner.style.display = '';
+            const items = sp.map(s => {
+                const sev = s.severity === 'high' ? '🔴' : '⚠';
+                const fixed = s.fixed ? '<span class="cp-badge cp-badge-fixed">FIJA</span>' : '';
+                const pct = (s.delta_pct >= 0 ? '+' : '') + Math.round((s.delta_pct||0)*100) + '%';
+                const issue = s.issue_origen ? ' · #' + s.issue_origen : '';
+                return '<div class="cp-spike-item">'+sev+' <span class="cp-spike-skill">'+escapeHtml(s.skill||'?')+'</span>'+fixed+
+                    ' · '+escapeHtml(s.provider_from||'?')+' → '+escapeHtml(s.provider_to||'?')+
+                    ' · delta '+pct+escapeHtml(issue)+'</div>';
+            }).join('');
+            spikeBanner.innerHTML = '<div class="cp-spike-headline">⚠ '+sp.length+' spike'+(sp.length===1?'':'s')+' cross-provider activo'+(sp.length===1?'':'s')+'</div>'+
+                '<div class="cp-spike-detail">Cambios de provider con delta de costo encima del umbral configurado.</div>'+
+                '<div class="cp-spike-list">'+items+'</div>';
+        }
+    }
+
+    // Tabla
+    if(empty) empty.style.display = skills.length === 0 ? '' : 'none';
+    if(wrap){
+        if(skills.length === 0){ wrap.innerHTML = ''; }
+        else {
+            const rows = [];
+            rows.push('<table class="cp-table"><thead><tr>'+
+                '<th>Skill</th><th>Provider · modelo</th><th class="cp-num">Sesiones</th><th class="cp-num">Costo USD</th><th class="cp-num">Share</th><th>Switches</th></tr></thead><tbody>');
+            for(const s of skills){
+                const fixed = s.fixed ? '<span class="cp-badge cp-badge-fixed" title="Skill no-degradable: contrato de calidad fijo">FIJA</span>' : '';
+                const multi = s.multi_provider ? '<span class="cp-badge cp-badge-multi" title="Skill corrió con varios providers en la ventana">MULTI</span>' : '';
+                const spikeBadge = (Array.isArray(data.spikes) && data.spikes.find(x => x.skill === s.skill)) ? '<span class="cp-badge cp-badge-spike">SPIKE</span>' : '';
+                const rowCls = spikeBadge ? 'cp-row-spike' : '';
+                const switches = (s.switches || []).length;
+                const switchTxt = switches === 0 ? '—' : (switches + ' switch' + (switches===1?'':'es'));
+                const providers = s.providers || [];
+                const main = providers[0] || { provider: '—', model: '—', sessions: 0, cost_usd: 0, share_pct: 0 };
+                const providerCls = main.provider === 'unknown' ? 'cp-provider-pill cp-unknown' : 'cp-provider-pill';
+                rows.push('<tr class="'+rowCls+'">'+
+                    '<td><strong>'+escapeHtml(s.skill||'?')+'</strong>'+fixed+multi+spikeBadge+'</td>'+
+                    '<td><span class="'+providerCls+'">'+escapeHtml(main.provider)+' · '+escapeHtml(main.model||'?')+'</span></td>'+
+                    '<td class="cp-num">'+(main.sessions||0)+'</td>'+
+                    '<td class="cp-num">$'+(main.cost_usd||0).toFixed(2)+'</td>'+
+                    '<td class="cp-num">'+(main.share_pct||0).toFixed(0)+'%</td>'+
+                    '<td>'+escapeHtml(switchTxt)+'</td>'+
+                    '</tr>');
+                // Sub-filas para providers adicionales (≥ 2)
+                for(let i=1;i<providers.length;i++){
+                    const p = providers[i];
+                    const subCls = p.provider === 'unknown' ? 'cp-provider-pill cp-unknown' : 'cp-provider-pill';
+                    rows.push('<tr class="cp-row-sub"><td></td>'+
+                        '<td><span class="cp-arrow">↳</span><span class="'+subCls+'">'+escapeHtml(p.provider)+' · '+escapeHtml(p.model||'?')+'</span></td>'+
+                        '<td class="cp-num">'+(p.sessions||0)+'</td>'+
+                        '<td class="cp-num">$'+(p.cost_usd||0).toFixed(2)+'</td>'+
+                        '<td class="cp-num">'+(p.share_pct||0).toFixed(0)+'%</td>'+
+                        '<td></td></tr>');
+                }
+            }
+            rows.push('</tbody></table>');
+            const html = rows.join('');
+            if(wrap.innerHTML !== html) wrap.innerHTML = html;
+        }
+    }
+
+    if(meta){
+        const fmt = (s) => s ? new Date(s).toISOString().slice(0,10) : '?';
+        const txt = 'Ventana: '+(cp.windowDays||7)+'d · '+fmt(cp.from)+' → '+fmt(cp.to)+' · '+skills.length+' skill'+(skills.length===1?'':'s');
+        if(meta.textContent !== txt) meta.textContent = txt;
+    }
+}
+
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn: tickCostos, ms: 60000 }, { fn: tickCrossProvider, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;

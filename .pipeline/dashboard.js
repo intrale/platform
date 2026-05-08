@@ -8457,6 +8457,50 @@ const server = http.createServer((req, res) => {
   // POST /api/cost-anomaly/ack      → "Ya lo vi" → limpia el banner
   // POST /api/cost-anomaly/snooze   → body { hours: 1|4|24 }, cap 24h
   // =========================================================================
+  // =========================================================================
+  // (#3090) Cross-provider — vista comparativa de costo cross-provider por
+  // skill + estado de spike. Sin auth (mismo binding `localhost:*` que el
+  // resto del dashboard). Lectura del snapshot del aggregator.
+  // GET /api/dash/cost/cross-provider
+  // =========================================================================
+  if (req.url === '/api/dash/cost/cross-provider' && req.method === 'GET') {
+    try {
+      v3Aggregator.buildSnapshot({ window: 'all' }).then(snap => {
+        const cp = (snap && snap.crossProvider) || {
+          windowDays: 7,
+          from: null,
+          to: null,
+          bySkill: [],
+          degraded: { reason: null, message: null },
+        };
+        // Evaluar spikes en vivo (no muta state — solo info para la UI).
+        let spikes = [];
+        try {
+          const cpAlert = require('./lib/cost-cross-provider-alert');
+          const cfgYaml = loadConfig() || {};
+          spikes = cpAlert.evaluateSpikes(cp, cfgYaml.cost_cross_provider || {});
+        } catch (e) {
+          // Si falla la carga del módulo, devolvemos el snapshot crudo igual.
+          try { process.stderr.write('[dashboard] cross-provider eval failed: ' + e.message + '\n'); } catch (_) {}
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          generated_at: snap.generated_at,
+          crossProvider: cp,
+          spikes,
+        }, null, 2));
+      }).catch(e => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      });
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: e.message }));
+    }
+    return;
+  }
+
   if (req.url === '/api/cost-anomaly/state' && req.method === 'GET') {
     if (!restModeState) {
       res.writeHead(503, { 'Content-Type': 'application/json' });

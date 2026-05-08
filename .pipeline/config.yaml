@@ -266,6 +266,34 @@ cost_anomaly_alert:
     telegram: true            # Encolar en .pipeline/servicios/telegram/pendiente/
     dashboard_banner: true    # Renderizar banner + pill en /
 
+# (#3090 / U5 multi-provider) Cross-provider — comparativa por skill + alerta
+# cuando un cambio de provider produce spike de costo.
+#
+# Ventana sliding (NO sprint — proyecto Kanban continuo, decisión PO #3090):
+# default 7 días, configurable hasta 30. Coherente con la maquinaria del
+# anomaly_detector.lookbackDays.
+#
+# Reglas críticas (CA-10):
+#   - threshold_pct, window_days, min_sessions_for_baseline y
+#     debounce_min_per_pair se editan SOLO en este YAML commiteado a git.
+#     NO hay endpoint mutable runtime ni edición desde UI. Audit por git
+#     history.
+#   - Skills no-degradables (security/review/builder/tester) están
+#     hardcodeadas en lib/cost-cross-provider-alert.js (FIXED_SKILLS) — un
+#     attacker con acceso al config NO puede sacar una skill del set.
+#   - El detector NO dispara en estado degradado (CA-9): pre #3083 (sin
+#     campo `provider`) o pre #3075 (1 solo provider activo) silencia las
+#     alertas hasta que la maquinaria upstream produzca datos comparables.
+cost_cross_provider:
+  enabled: true                  # Master switch del feature
+  window_days: 7                 # Ventana sliding (rango 1-30, default 7)
+  threshold_pct: 0.30            # Spike: post_avg > pre_avg × (1 + 0.30) → +30%
+  min_sessions_for_baseline: 5   # Piso de sesiones pre Y post switch para evaluar
+  debounce_min_per_pair: 60      # Anti-tormenta por (skill, provider_to) — minutos
+  channels:
+    telegram: true               # Encolar alerta en servicios/telegram/pendiente/
+    dashboard_banner: true       # Banner spike en /consumo
+
 # Modo descanso (#2890 PR-A, parte del épico #2882) — gating horario.
 # Durante la ventana configurada, sólo corren los skills determinísticos
 # (delivery, builder, linter, tester). El resto queda en `pendiente/` sin

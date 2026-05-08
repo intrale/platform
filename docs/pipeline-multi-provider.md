@@ -544,6 +544,13 @@ Empezar con cross-MODELO Anthropic en Fase 1, agregar 1 adaptador delgado OpenAI
 - [#3067](https://github.com/intrale/platform/issues/3067) — Integridad verificable de `activity-log.jsonl` (HMAC o hash chain) — cubre §6.8.2. Gana relevancia con H1.
 - [#3068](https://github.com/intrale/platform/issues/3068) — Audit log tamper-evident de switches automáticos con verificador de cadena — cubre §6.8.3. Gana relevancia con H1+S5.
 
+**Controles de seguridad ya implementados en U5 (#3090, ver §7.5.4):**
+
+- **Threshold cross-provider sólo via `config.yaml` commiteado.** No hay endpoint mutable runtime; cambios pasan por git history (audit trail trivial). Un attacker con acceso al dashboard NO puede subir el threshold para silenciar alertas.
+- **Skills no-degradables hardcodeadas** en `lib/cost-cross-provider-alert.js:FIXED_SKILLS`. Cubre `security`, `review`, `builder`, `tester`. NO son configurables desde YAML — coherente con #3066.
+- **Sanitización Telegram** vía `sanitize()` + `redactSensitive()` antes de encolar el mensaje (defensa en profundidad — el queue del svc-telegram también sanitiza al final). Whitelist de chars en skill/provider/model (`^[a-zA-Z0-9_/.-]{1,80}$`). Helper local `escapeMdV2()` se reemplazará por el módulo central cuando #3112 cierre.
+- **Drill-down sin session_id**: las URLs en mensajes Telegram apuntan a `https://github.com/intrale/platform/issues/<n>` (issue público autenticado por GH). Prohibido `session_id` en URL externa, prohibido prompt/respuesta del provider en el payload (whitelist explícita: `provider_id`, `skill`, `tokens_in`, `tokens_out`, `cost_usd`, `delta_pct`, `issue`).
+
 ### 5.4 Resumen
 
 **Total: 21 issues hijos enumerados**, distribuidos:
@@ -843,8 +850,38 @@ El comando es exactamente el mismo que corre el pre-commit hook, así que reprod
 ### 7.5 Dashboard de costos cross-modelo + cross-provider
 
 - Costos normalizados **por skill por issue** (no agregados por provider) — input directo para baseline horario #2891.
-- Comparativa visual cuando un skill ha corrido con múltiples modelos en el sprint (ej. *"qa: 5 issues con sonnet ($0.40), 12 con haiku ($0.10) — 2 switches automáticos esta semana"*).
-- Alerta cuando un cambio de modelo o provider produce costo inesperado (umbral configurable en `config.yaml`).
+- Comparativa visual cuando un skill ha corrido con múltiples modelos en una **ventana sliding configurable** (default 7d, key `cost_cross_provider.window_days`). El proyecto trabaja en Kanban continuo: NO hay sprint cerrado, así que la "comparativa por sprint" del issue original se traduce explícitamente a "comparativa por ventana sliding" (decisión PO #3090).
+- Alerta cuando un cambio de modelo o provider produce costo inesperado (umbral configurable en `config.yaml:cost_cross_provider.threshold_pct`, default `+30%`).
+
+#### 7.5.1 Implementación (#3090) — telemetría + detector + UI
+
+- **Aggregator** (`metrics/aggregator.js`): agrega bloque `crossProvider` al snapshot con shape `{ windowDays, from, to, bySkill[], degraded }` donde cada skill expone `providers[]` (cada uno con `provider`, `model`, `sessions`, `cost_usd`, `share_pct`), `switches[]` (cada uno con `from`, `to`, `issue`, `delta_pct`), `pre_switch_*`, `post_switch_*`, `multi_provider`, `fixed`.
+- **Detector** (`lib/cost-cross-provider-alert.js`): evalúa spike post-switch cuando `post_switch_avg > pre_switch_avg × (1 + threshold_pct)` y ambos lados tienen ≥ `min_sessions_for_baseline` sesiones (default 5). Debounce por `(skill, provider_to)` ≥ `debounce_min_per_pair` minutos (default 60) — evita tormenta de alertas tras un switch real.
+- **UI**: vista en `/consumo` debajo de "Por skill", tabla skill × provider × {sessions, cost_usd, share_pct}, badge `MULTI` (teal) cuando hay ≥2 providers y `FIJA` (indigo) cuando el skill es no-degradable. Filas con spike marcadas con borde rojo izquierdo + fondo sutil. Banner consolidando todos los spikes activos.
+- **Endpoint** (`GET /api/dash/cost/cross-provider`): devuelve `{ ok, generated_at, crossProvider, spikes }`. Sin auth (mismo binding `localhost:*` que el resto del dashboard).
+
+#### 7.5.2 Severidad de skills no-degradables
+
+Si un skill marcado como FIJA (`security`, `review`, `builder`, `tester` — §6.11) cambia de provider, la alerta:
+
+1. Severidad logueada como `high` (vs `medium` para skills degradables).
+2. Mensaje Telegram con prefijo `🔴 SKILL FIJA — CONTRATO DE CALIDAD ROTO`.
+3. Label `needs-human` aplicado automáticamente al issue origen via `gh issue edit`.
+
+Razón de negocio (decisión PO #3090): en esas skills el contrato de calidad es más fuerte que el de costo. Un switch no-autorizado debe escalar a humano siempre, independiente del delta de costo.
+
+#### 7.5.3 Estados degradados (CA-9)
+
+Mientras las dependencias #3083 y #3075 no cierran, el feature opera en estado degradado **visible**:
+
+- **Sin #3083 (S5)** — `session:end` no tiene campo `provider`. El aggregator hace fallback a `provider: 'unknown'`. La UI muestra badge ámbar global `⚠ Datos incompletos — esperando #3083`. **El detector NO dispara alertas** (sin baseline confiable cross-provider).
+- **Sin #3075 (H3)** — solo Anthropic activo. La tabla degenera a 1 columna por skill. La UI muestra banner informativo `ℹ 1 provider activo · datos completos cuando #3075 cierre`. Sin alertas posibles.
+
+Esto permite que la maquinaria quede lista y se active automáticamente cuando los upstream cierren, sin bloquear el desarrollo paralelo.
+
+#### 7.5.4 Política de configuración (CA-10)
+
+`config.yaml:cost_cross_provider` se edita **solo a mano + commit a git**. NO hay endpoint mutable runtime (`POST/PUT/PATCH /api/cost-cross-provider/config` no existe ni va a existir). Audit history queda en `git log`. Las skills no-degradables están **hardcodeadas** en `lib/cost-cross-provider-alert.js` (constante `FIXED_SKILLS`) y NO son configurables desde YAML — un attacker con acceso al config no puede sacar `security` del set.
 
 ### 7.6 Plantillas de mensajes Telegram
 
