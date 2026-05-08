@@ -423,4 +423,84 @@
           stroke-linecap="round" stroke-linejoin="round"/>
   </symbol>
 
+  <!-- =========================================================================
+       PROVIDERS DE LLM (#3086 / U1 multi-provider)
+       Glyphs simbolicos NO oficiales — son representaciones genericas
+       inspiradas en los marks publicos pero simplificadas a stroke 1.75.
+       Se renderizan junto al texto `provider:model` para refuerzo visual
+       y cumplen R2 del review de seguridad: nunca informacion solo por color.
+       ========================================================================= -->
+
+  <!-- ic-provider-anthropic: asterisco/spark de 6 puntas (mark de Anthropic).
+       Aproximacion al "starburst" radial caracteristico de la marca, simplificado
+       a 3 lineas que se cruzan en el centro. -->
+  <symbol id="ic-provider-anthropic" viewBox="0 0 24 24">
+    <line x1="12" y1="3.5" x2="12" y2="20.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    <line x1="5" y1="7.5"  x2="19" y2="16.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    <line x1="5" y1="16.5" x2="19" y2="7.5"  stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-provider-openai: anillo hexagonal (knot simplificado).
+       Aproximacion al hex-knot/spirograph de OpenAI: 2 hexagonos rotados 30deg
+       que sugieren entrelazado sin replicar el logo oficial. -->
+  <symbol id="ic-provider-openai" viewBox="0 0 24 24">
+    <!-- Hexagono 1 (vertical) -->
+    <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+    <!-- Hexagono 2 (rotado 30deg) sugiere knot sin saturar -->
+    <path d="M12 6.5 L17 9.5 L17 14.5 L12 17.5 L7 14.5 L7 9.5 Z"
+          fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"
+          opacity="0.55"/>
+  </symbol>
+
+  <!-- ic-provider-openai-codex: hex-knot con chevron `< >` central.
+       Hereda el hexagono exterior de OpenAI (pertenencia al mismo arbol)
+       y agrega el chevron de codigo para diferenciar el deployment. -->
+  <symbol id="ic-provider-openai-codex" viewBox="0 0 24 24">
+    <!-- Hexagono exterior (heredado de OpenAI) -->
+    <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+    <!-- Chevron `<` -->
+    <path d="M10.5 9.5 L8 12 L10.5 14.5"
+          fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Chevron `>` -->
+    <path d="M13.5 9.5 L16 12 L13.5 14.5"
+          fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-provider-unknown: signo de pregunta dentro de circulo (R6 — fallback).
+       Se usa cuando el audit trail no reporta provider o el valor cae fuera
+       de la allowlist. Combinado con --provider-unknown (warning amber). -->
+  <symbol id="ic-provider-unknown" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+    <path d="M9.5 9.5 C9.5 8 10.7 7 12 7 C13.4 7 14.5 8 14.5 9.3
+             C14.5 10.6 13.5 11 12.5 11.6 C12 12 12 12.5 12 13.2"
+          fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="12" cy="16.5" r="1" fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-provider-deterministic: chip / circuito (skill ejecuta sin LLM).
+       Reaprovecha la metafora de --deterministic ya usada en el dashboard:
+       cuadrado con 4 pines que sugiere chip integrado. -->
+  <symbol id="ic-provider-deterministic" viewBox="0 0 24 24">
+    <rect x="6" y="6" width="12" height="12" rx="1.5" fill="none"
+          stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+    <!-- Pines superior/inferior -->
+    <line x1="9.5"  y1="3"  x2="9.5"  y2="6"  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="14.5" y1="3"  x2="14.5" y2="6"  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="9.5"  y1="18" x2="9.5"  y2="21" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="14.5" y1="18" x2="14.5" y2="21" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Pines izquierda/derecha -->
+    <line x1="3"  y1="9.5"  x2="6"  y2="9.5"  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="3"  y1="14.5" x2="6"  y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="18" y1="9.5"  x2="21" y2="9.5"  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="18" y1="14.5" x2="21" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Punto central (nucleo del chip) -->
+    <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+  </symbol>
+
 </svg>

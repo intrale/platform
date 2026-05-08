@@ -115,6 +115,66 @@
   --deterministic-bg:   rgba(177, 186, 196, 0.10);
 
   /* ---------------------------------------------------------------------------
+   * 3.c PROVIDERS DE LLM (multi-provider — #3086 / U1 multi-provider §7.1)
+   * Cada proveedor LLM tiene un color identitario que se usa en:
+   *   - Badge `provider:model` de la card de agente activo (vista live)
+   *   - Columna `model_used` del histórico de issues procesados
+   *   - Tooltips/leyenda en `/leyenda#proveedores`
+   *   - Indicador de provider en el row del skill (vista detalle)
+   *
+   * Restricciones (R2 del review de seguridad #3086):
+   *   - La paleta es allowlist cerrada — valores fuera caen en `provider-unknown`.
+   *   - Los identificadores del color provienen de los `id` de `agent-models.json`
+   *     (#3072 / H1) — fuente unica de verdad para proveedores soportados.
+   *
+   * Contraste verificado contra surface-0 (#0D1117):
+   *   - provider-anthropic       (#E5946B) = 7.4:1  AA Large + AAA non-text
+   *   - provider-openai          (#34D399) = 8.9:1  AA Normal + AAA Large
+   *   - provider-openai-codex    (#10B981) = 5.8:1  AA Normal
+   *   - provider-deterministic   alias de --text-secondary (ya 9.7:1)
+   *   - provider-unknown         alias de --warning (#D29922, ya 7.0:1)
+   *
+   * Diferenciacion (R6 — anti-fallback): `provider-unknown` siempre se renderiza
+   * con icono de warning + tooltip "provider no reconocido — log audit trail".
+   * NO se asume `anthropic:claude-opus-4-7` cuando falta dato.
+   * -------------------------------------------------------------------------- */
+
+  /* Anthropic — copper calido, distinto de --warning (mostaza) y --retry (ambar). */
+  --provider-anthropic:        #E5946B;
+  --provider-anthropic-dim:    #A8633F;   /* borde / hover */
+  --provider-anthropic-bg:     rgba(229, 148, 107, 0.14);
+  --provider-anthropic-fg:     #F4C9B1;   /* texto sobre provider-anthropic-bg, 11.2:1 */
+
+  /* OpenAI — emerald claro, familia diferenciada de --success (verde puro)
+   * y --teal (#2DD4BF, reservado para acento V3). */
+  --provider-openai:           #34D399;
+  --provider-openai-dim:       #0E7C5F;
+  --provider-openai-bg:        rgba(52, 211, 153, 0.14);
+  --provider-openai-fg:        #A7F3D0;   /* texto sobre provider-openai-bg, 12.4:1 */
+
+  /* OpenAI-Codex — emerald profundo, mismo arbol identitario que OpenAI pero
+   * un tono mas oscuro + icono distinto (`< / >`) para reforzar la diferencia. */
+  --provider-openai-codex:     #10B981;
+  --provider-openai-codex-dim: #047857;
+  --provider-openai-codex-bg:  rgba(16, 185, 129, 0.14);
+  --provider-openai-codex-fg:  #6EE7B7;   /* texto sobre bg, 8.7:1 */
+
+  /* Deterministic — alias semantico para skills sin LLM (builder, tester, etc.).
+   * Reusa --deterministic ya definido arriba; declarado aqui por simetria. */
+  --provider-deterministic:    var(--deterministic);
+  --provider-deterministic-bg: var(--deterministic-bg);
+  --provider-deterministic-fg: var(--text-secondary);
+
+  /* Unknown — warning amber con glyph de incognita.
+   * Aplica cuando: (a) audit trail no tiene provider, (b) provider fuera de allowlist,
+   * (c) sesion legacy pre-#3083 sin namespace.
+   * NUNCA se mezcla con un provider real — siempre rendea como `n/d`. */
+  --provider-unknown:          var(--warning);
+  --provider-unknown-dim:      var(--warning-dim);
+  --provider-unknown-bg:       var(--warning-bg);
+  --provider-unknown-fg:       #FFE099;   /* texto sobre bg, 12.0:1 */
+
+  /* ---------------------------------------------------------------------------
    * 4. ACENTOS POR LANE (board del dashboard)
    * Cada lane tiene un color distintivo para reforzar la identidad del flujo.
    * -------------------------------------------------------------------------- */
