@@ -1,0 +1,60 @@
+#!/usr/bin/env sh
+# =============================================================================
+# .husky/pre-commit — Validación de agent-models.json (#3081 CA-5)
+#
+# Comportamiento defensivo:
+#   - Happy path (validación OK): silencioso o una sola línea "[validate] OK".
+#   - Path con error: 4-line error UX format + exit code != 0 (rechaza commit).
+#   - Toolchain ausente (node_modules sin ajv): warning + exit 0 (no bloquea
+#     commits legítimos en clones frescos sin npm install).
+#
+# Re-usa exactamente el mismo módulo que el boot del pulpo (DRY).
+# =============================================================================
+
+# Decidir cuándo validar:
+#   - Si se stage agent-models.json → validar SIEMPRE (es lo que estamos commiteando).
+#   - Si se stage solo el schema o el validador → validar solo si agent-models.json
+#     YA existe en disco. Esto evita la chicken-and-egg cuando #3072 todavía
+#     no mergeó (caso CA-2: archivo ausente con mensaje accionable).
+#   - Caso contrario → no validar (evita ruido en commits que no tocan el área).
+TOUCHED_FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+
+RUN_VALIDATE=0
+case "$TOUCHED_FILES" in
+  *".pipeline/agent-models.json"*) RUN_VALIDATE=1 ;;
+esac
+
+if [ "$RUN_VALIDATE" = "0" ]; then
+  case "$TOUCHED_FILES" in
+    *".pipeline/agent-models.schema.json"*|*".pipeline/lib/agent-models-validate.js"*)
+      if [ -f ".pipeline/agent-models.json" ]; then
+        RUN_VALIDATE=1
+      fi
+      ;;
+  esac
+fi
+
+if [ "$RUN_VALIDATE" = "0" ]; then
+  exit 0
+fi
+
+# Bootstrapping defensivo: si node_modules/ajv no existe, NO bloquear el commit.
+# Esto cubre clones frescos y ramas que aún no corrieron `npm install`.
+# El operador queda avisado para correr npm install cuando pueda.
+if [ ! -d "node_modules/ajv" ]; then
+  printf '[warn] agent-models validate skip: falta "ajv" (correr "npm install" para activar)\n' >&2
+  exit 0
+fi
+
+# Validación real — el módulo se encarga del formato de error y exit code.
+node .pipeline/lib/agent-models-validate.js --quiet
+EXIT=$?
+
+# Exit code 3 = toolchain ausente runtime → trasladar a warning + exit 0.
+# Exit code 2 = config inválida → propagar (rechaza commit).
+# Exit code 0 = OK → propagar.
+if [ "$EXIT" = "3" ]; then
+  printf '[warn] agent-models validate skip: toolchain incompleto (correr "npm install")\n' >&2
+  exit 0
+fi
+exit $EXIT

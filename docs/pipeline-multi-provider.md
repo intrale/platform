@@ -807,6 +807,39 @@ El schema funciona pero la **experiencia de editar** importa:
 - Permitir extensión `.jsonc` con comentarios para que el operador anote *por qué* eligió tal provider para tal skill.
 - Script `node .pipeline/validate-agent-models.js` (issue U4) que valide schema + verifique que las credenciales de los providers configurados están disponibles en env, **antes del boot del pulpo**. Falla rápido con mensaje accionable (ej. *"provider `openai-codex` configurado pero `OPENAI_API_KEY` no está en env"*).
 
+#### 7.4.1 Si tu commit/boot fue rechazado por `agent-models`, leé esto (#3081 CA-7)
+
+El boot del pulpo y el pre-commit hook validan `.pipeline/agent-models.json` contra `lib/agent-models-validate.js`. Si te rechaza, mirá primero la línea `problema:` del mensaje. Acá están los 5 errores más comunes y cómo arreglarlos:
+
+| Síntoma del mensaje | Qué pasó | Cómo se arregla |
+|---|---|---|
+| `launcher "X" no está en allowlist [claude, codex, gemini, ollama, node]` | El launcher declarado no es uno de los binarios permitidos | Editar el campo a uno del set, o agregar el nuevo a `ALLOWED_LAUNCHERS` en `.pipeline/lib/agent-models-validate.js` (requiere PR + review de Security: §6.6 + §6.10) |
+| `placeholder "{X}" no está en allowlist` | Un `{nombre}` dentro de `spawn_args_template` no está en el set fijo `ALLOWED_PLACEHOLDERS` | Usar solo `{user_prompt, system_file, script_path, issue, trabajando_path}`. Si necesitás otro, editar `ALLOWED_PLACEHOLDERS` en el validador y revisar §3.4 |
+| `flag peligroso "--api-base" / "--proxy" / ... en denylist` | El template incluye un flag que permite secuestrar el destino de red, la config o el runtime de node | Eliminar el flag. La denylist es `--api-base, --proxy, --http-proxy, --https-proxy, --config, --inspect, --inspect-brk, --require, -r, -e, --eval` (§6.10) |
+| `must NOT have additional properties` con `additionalProperty: "onSpawn"` (o similar) | Hay un campo no declarado en el schema (`additionalProperties: false`) | Eliminar el campo extra. Si es legítimo, agregarlo al schema en `.pipeline/agent-models.schema.json` con tipo y description |
+| `default_provider "fake" no es key de providers` o `provider "fake" no es key de providers` | Un provider referenciado en `default_provider` o en `skills.<x>.provider` no existe en la sección `providers` | Declarar el provider en la sección `providers`, o cambiar el assignment del skill |
+
+**Reproducción local del rechazo**:
+
+```bash
+node .pipeline/lib/agent-models-validate.js
+# o con archivo custom:
+node .pipeline/lib/agent-models-validate.js --file ruta/a/agent-models.json
+```
+
+El comando es exactamente el mismo que corre el pre-commit hook, así que reproducís el rechazo sin tener que commitear.
+
+**Exit codes** del validador (CA-2):
+
+| Código | Significado | Quién lo arregla |
+|---|---|---|
+| `0` | OK | — |
+| `1` | Excepción no controlada (stack trace) | Reportar como bug del validador |
+| `2` | Config inválida | Editar `agent-models.json` siguiendo el mensaje |
+| `3` | Toolchain ausente (no se pudo cargar `ajv`) | Correr `npm install` en la raíz del repo |
+
+**Escape hatch** (sólo emergencia): si necesitás bootear el pulpo sin validar (recuperación urgente, NO uso normal), `PULPO_SKIP_AGENT_MODELS_VALIDATE=1`. Imprime un warning visible para que nadie lo deje activo por accidente.
+
 ### 7.5 Dashboard de costos cross-modelo + cross-provider
 
 - Costos normalizados **por skill por issue** (no agregados por provider) — input directo para baseline horario #2891.

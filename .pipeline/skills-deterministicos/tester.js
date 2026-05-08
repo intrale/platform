@@ -109,6 +109,24 @@ const MODULE_DIRS = {
 //   .gitattributes   → solo afecta diff/checkout/EOL, no compilación.
 //   .editorconfig    → solo afecta editores; no genera bytecode ni cambia tests.
 //
+// Rebote #3081 rev-2 (mismo síntoma, archivos distintos): el issue de
+// security pipeline (validación de schema + allowlist) cambió
+// `.husky/pre-commit`, `package.json` y `package-lock.json` junto con
+// archivos `.pipeline/` y `docs/`. Estos tres NO afectan compilación
+// Kotlin/Java ni cobertura Kover:
+//   .husky/          → git hooks (Node.js); se ejecutan en `git commit`,
+//                      no participan del classpath ni del build Gradle.
+//   package.json     → metadata npm para el toolchain Node del pipeline;
+//                      Gradle no lo lee. Verificado: `grep` por package*.json
+//                      en *.gradle.kts/*.kt devuelve 0 referencias.
+//   package-lock.json→ lockfile de npm; ídem. Solo lo consume `npm ci/install`.
+// Verificación empírica del rebote en .pipeline/logs/3081-tester.log:
+//   [tester] git diff vs main: 8 archivos · pipeline_only=false
+//   ...
+//   - No se encontraron reportes JUnit — posible configuración rota o tests omitidos
+// La cadena completa cae a la ruta gradle, gradle no encuentra Kotlin a
+// compilar (cero diffs Kotlin), no escribe XMLs JUnit y rebota.
+//
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
 // `settings.gradle.kts`, `build.gradle.kts`, `.claude/` (todos pueden afectar
 // build/coverage). El test `paths fuera de los patrones permitidos rompen
@@ -121,6 +139,9 @@ const PIPELINE_ONLY_PATTERNS = [
     /^\.gitignore$/,        // gitignore root — no afecta compilación Kotlin
     /^\.gitattributes$/,    // git attributes — no afecta compilación Kotlin
     /^\.editorconfig$/,     // editor config — no afecta cobertura
+    /^\.husky\//,           // husky git hooks (Node.js) — fuera de classpath Gradle
+    /^package\.json$/,      // npm metadata root — no consumido por Gradle
+    /^package-lock\.json$/, // npm lockfile root — no consumido por Gradle
 ];
 
 /**

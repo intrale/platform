@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/intrale/platform/.pipeline/agent-models.schema.json",
+  "title": "agent-models.json — schema multi-proveedor del pipeline V3 (#3081 + #3065)",
+  "description": "Schema canónico para .pipeline/agent-models.json. Source-of-truth del enum de 'launcher' y 'output_parser' es lib/agent-models-validate.js — el validador inyecta los enums programáticamente al cargar el schema (composición), evitando drift schema↔código.",
+  "type": "object",
+  "required": ["default_provider", "providers", "skills"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Ref al schema. Conveniencia para IDEs."
+    },
+    "default_provider": {
+      "type": "string",
+      "description": "Provider por default cuando un skill no tiene override. DEBE existir en la sección 'providers' (validación cruzada en lib/agent-models-validate.js).",
+      "minLength": 1
+    },
+    "providers": {
+      "type": "object",
+      "description": "Definición de cada provider disponible. Llave = nombre interno del provider (ej. 'anthropic', 'openai-codex', 'deterministic').",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/providerDef" }
+    },
+    "skills": {
+      "type": "object",
+      "description": "Asignación skill → provider. Llave = nombre del skill (ej. 'backend-dev', 'qa', 'builder').",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/skillAssignment" }
+    }
+  },
+
+  "$defs": {
+
+    "providerDef": {
+      "type": "object",
+      "required": [
+        "launcher",
+        "model",
+        "spawn_args_template",
+        "output_parser",
+        "quota_error_types",
+        "supports_tool_use",
+        "prompt_caching"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "launcher": {
+          "type": "string",
+          "description": "Alias del launcher. DEBE estar dentro de ALLOWED_LAUNCHERS (lib/agent-models-validate.js). El enum se inyecta programáticamente al cargar el schema; el literal abajo es informativo.",
+          "enum": ["claude", "codex", "gemini", "ollama", "node"]
+        },
+        "model": {
+          "type": "string",
+          "description": "Modelo default del provider. Puede ser sobrescrito por skill via 'model_override'.",
+          "minLength": 1
+        },
+        "spawn_args_template": {
+          "type": "array",
+          "description": "Plantilla de argv para el spawn. Las claves entre llaves ({user_prompt}, {system_file}, {script_path}, {issue}, {trabajando_path}) son sustituidas por la engine de spawn al lanzar el agente. La sustitución es 1:1 a un elemento del argv (NUNCA concatenación con shell). Set permitido: ALLOWED_PLACEHOLDERS en lib/agent-models-validate.js. Denylist de flags: DENIED_FLAGS.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "output_parser": {
+          "type": "string",
+          "description": "Parser que normaliza el output del CLI al shape común. 'none' para providers determinísticos sin LLM. Enum inyectado programáticamente desde ALLOWED_OUTPUT_PARSERS.",
+          "enum": ["anthropic-stream-json", "openai-sse", "gemini-stream", "ollama-jsonl", "none"]
+        },
+        "quota_error_types": {
+          "type": "array",
+          "description": "Lista de strings que marca el detector de cuota (lib/quota-exhausted.js) como 'cuota agotada' para este provider. Vacío si el provider no tiene cuota.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "supports_tool_use": {
+          "description": "Soporte de tool use / function calling. true = paridad funcional con Anthropic; 'limited' = soporte parcial con traducción; false = sin soporte.",
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "string", "enum": ["limited"] }
+          ]
+        },
+        "prompt_caching": {
+          "type": "object",
+          "description": "Capacidades de prompt caching. Necesario para normalizar costos cross-provider.",
+          "required": ["supported"],
+          "additionalProperties": false,
+          "properties": {
+            "supported": { "type": "boolean" },
+            "auto": {
+              "type": "boolean",
+              "description": "Si true, el provider cachea automáticamente sin que el cliente especifique. OpenAI cumple; Anthropic NO (requiere cache_control)."
+            },
+            "ttl_seconds_default": {
+              "type": "integer",
+              "description": "TTL default del cache en segundos. Anthropic = 300.",
+              "minimum": 1
+            },
+            "ttl_seconds_extended": {
+              "type": "integer",
+              "description": "TTL extendido (si el provider lo soporta). Anthropic = 3600.",
+              "minimum": 1
+            }
+          }
+        },
+        "credentials_env": {
+          "type": "array",
+          "description": "Lista de env vars que deben existir al boot del pulpo si este provider está referenciado por algún skill.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "permissions_mode": {
+          "type": "string",
+          "description": "Modo de permisos del CLI. Mapeado en la tabla §6.7 del doc multi-provider.",
+          "minLength": 1
+        }
+      }
+    },
+
+    "skillAssignment": {
+      "type": "object",
+      "required": ["provider"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider asignado al skill. DEBE existir en la sección 'providers' (validación cruzada en lib/agent-models-validate.js).",
+          "minLength": 1
+        },
+        "model_override": {
+          "type": "string",
+          "description": "Modelo específico que sobrescribe el 'model' default del provider.",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
