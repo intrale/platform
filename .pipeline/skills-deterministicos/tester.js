@@ -109,23 +109,28 @@ const MODULE_DIRS = {
 //   .gitattributes   → solo afecta diff/checkout/EOL, no compilación.
 //   .editorconfig    → solo afecta editores; no genera bytecode ni cambia tests.
 //
-// Rebote #3081 rev-2 (mismo síntoma, archivos distintos): el issue de
-// security pipeline (validación de schema + allowlist) cambió
-// `.husky/pre-commit`, `package.json` y `package-lock.json` junto con
-// archivos `.pipeline/` y `docs/`. Estos tres NO afectan compilación
-// Kotlin/Java ni cobertura Kover:
+// Rebote #3072 rev-1 / #3081 rev-2 (mismo síntoma, archivos distintos):
+//   - #3072 (multi-provider H1) agregó `ajv` como dep npm → diff con
+//     package.json + package-lock.json, fuerza ruta gradle, rebote.
+//   - #3081 (security S3) cambió `.husky/pre-commit` + package*.json
+//     junto a `.pipeline/`/`docs/` → mismo rebote por mismo motivo.
+//
+// Estos tres NO afectan compilación Kotlin/Java ni cobertura Kover:
 //   .husky/          → git hooks (Node.js); se ejecutan en `git commit`,
 //                      no participan del classpath ni del build Gradle.
 //   package.json     → metadata npm para el toolchain Node del pipeline;
 //                      Gradle no lo lee. Verificado: `grep` por package*.json
 //                      en *.gradle.kts/*.kt devuelve 0 referencias.
 //   package-lock.json→ lockfile de npm; ídem. Solo lo consume `npm ci/install`.
-// Verificación empírica del rebote en .pipeline/logs/3081-tester.log:
-//   [tester] git diff vs main: 8 archivos · pipeline_only=false
-//   ...
-//   - No se encontraron reportes JUnit — posible configuración rota o tests omitidos
-// La cadena completa cae a la ruta gradle, gradle no encuentra Kotlin a
-// compilar (cero diffs Kotlin), no escribe XMLs JUnit y rebota.
+//
+// Verificación empírica de los rebotes:
+//   [tester] git diff vs main: N archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 (BUILD SUCCESSFUL, todo UP-TO-DATE)
+//   ⏭️ No se encontraron reportes JUnit → rebote
+//
+// El monorepo Intrale usa Gradle para todo Kotlin/JVM y npm SOLO para
+// `.pipeline/` (Node.js). NINGÚN módulo Gradle (backend/users/app/buildSrc/
+// tools) consume package.json. Por eso los tres son 100% pipeline-only.
 //
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
 // `settings.gradle.kts`, `build.gradle.kts`, `.claude/` (todos pueden afectar
@@ -993,6 +998,19 @@ if (require.main === module) {
             { name: 'PIPELINE_ONLY_PATTERNS NO detecta cambio mixto', fn: () => {
                 const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'app/composeApp/x.kt']);
                 if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only (mixto)');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta package.json + package-lock.json junto con .pipeline/ (rebote #3072)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.pipeline/lib/agent-models.js',
+                    '.pipeline/agent-models.json',
+                    'package.json',
+                    'package-lock.json',
+                ]);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con npm manifest/lockfile');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS sigue rechazando build.gradle.kts (frontera Kotlin)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'app/composeApp/build.gradle.kts']);
+                if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con build.gradle.kts');
             }},
         ]);
         return;
