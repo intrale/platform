@@ -1,0 +1,84 @@
+{
+  "$schema": "./data-residency-exclusions.schema.json",
+  "version": "2026-05-08",
+  "doc_ref": "docs/pipeline-multi-provider/data-residency.md",
+
+  "default_policy": {
+    "anthropic": "passthrough",
+    "deterministic": "passthrough",
+    "non_anthropic": "filter"
+  },
+
+  "exclusions": [
+    {
+      "pattern": "**/.env*",
+      "providers": ["non_anthropic"],
+      "motivo": "archivos .env con secrets de runtime (AWS, Cognito, tokens)"
+    },
+    {
+      "pattern": "**/secrets/**",
+      "providers": ["non_anthropic"],
+      "motivo": "directorio convencional de secrets"
+    },
+    {
+      "pattern": ".pipeline/secrets/**",
+      "providers": ["non_anthropic"],
+      "motivo": "secrets del pipeline (no debería existir pero defensa anti-hallazgo histórico)"
+    },
+    {
+      "pattern": "users/src/main/resources/application.conf",
+      "providers": ["non_anthropic"],
+      "motivo": "config de Lambda con secrets AWS y Cognito"
+    },
+    {
+      "pattern": "**/application.conf",
+      "providers": ["non_anthropic"],
+      "motivo": "variantes de application.conf en otros módulos Ktor"
+    },
+    {
+      "pattern": "**/credentials",
+      "providers": ["non_anthropic"],
+      "motivo": "archivos de credenciales sin extensión (estilo ~/.aws/credentials)"
+    },
+    {
+      "pattern": "**/credentials.json",
+      "providers": ["non_anthropic"],
+      "motivo": "credenciales de servicio (Google, AWS, etc.)"
+    },
+    {
+      "pattern": "**/*.pem",
+      "providers": ["non_anthropic"],
+      "motivo": "claves criptográficas privadas en formato PEM"
+    },
+    {
+      "pattern": "**/*.key",
+      "providers": ["non_anthropic"],
+      "motivo": "claves privadas (RSA/EC/etc.)"
+    },
+    {
+      "pattern": "**/*.p12",
+      "providers": ["non_anthropic"],
+      "motivo": "keystores PKCS#12 con material privado"
+    },
+    {
+      "pattern": "**/*.jks",
+      "providers": ["non_anthropic"],
+      "motivo": "Java keystores con material privado"
+    },
+    {
+      "pattern": ".pipeline/quota-exhausted.json",
+      "providers": ["non_anthropic"],
+      "motivo": "estado operacional cross-provider — no se expone a un provider distinto"
+    },
+    {
+      "pattern": ".pipeline/audit/**",
+      "providers": ["non_anthropic"],
+      "motivo": "audit logs internos del pipeline (incluye hash chains, switches de modelo, etc.)"
+    },
+    {
+      "pattern": ".pipeline/logs/env-allowlist-audit.log",
+      "providers": ["non_anthropic"],
+      "motivo": "audit del allowlist de env vars (S7) — contiene hashes de keys del operador"
+    }
+  ]
+}
