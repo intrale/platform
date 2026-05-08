@@ -46,6 +46,12 @@ const partialPauseDeps = require('./lib/partial-pause-deps');
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
 const trace = require('./lib/traceability');
+// #3072 — modelo por skill desde .pipeline/agent-models.json (multi-provider H1).
+// Reemplaza el hardcode 'claude-opus-4-7' que estaba en lanzarAgenteClaude. El
+// dispatcher por skill vive en lib/agent-launcher/resolve-provider.js (#3125 H2),
+// y la validación canónica del JSON al boot vive en lib/agent-models-validate.js
+// (#3081 S3) — ambos leen agent-models.json desde disco; este módulo no necesita
+// mantener un singleton en memoria.
 // #2993 — handoff cross-agente por issue. Lectura inyectada al userPrompt del
 // próximo agente; escritura post-exit reusa el mismo mecanismo. Default OFF
 // (rollout gradual via config.yaml → handoff.enabled).

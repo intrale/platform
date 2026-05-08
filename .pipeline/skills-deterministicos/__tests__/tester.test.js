@@ -405,15 +405,13 @@ test('#2895 rev-2 — isPipelineOnlyChange NO confunde .gitignore en subdirector
     ]), false);
 });
 
-// #3081 rev-2 — regresión: cuando un commit toca `.husky/`, `package.json` y
-// `package-lock.json` junto a archivos `.pipeline/` y `docs/`, el tester
-// rebotaba porque esos tres archivos rompían el match `every` y caía a la
-// ruta gradle. Gradle no encuentra Kotlin que compilar (cero diffs Kotlin)
-// y no escribe XMLs JUnit, así que el tester rebotaba con "No se encontraron
-// reportes JUnit". Verificado en .pipeline/logs/3081-tester.log:
-//   [tester] git diff vs main: 8 archivos · pipeline_only=false
-//   ...
-//   - No se encontraron reportes JUnit — posible configuración rota o tests omitidos
+// #3072 rev-1 / #3081 rev-2 — regresión: cuando un commit toca `.husky/`,
+// `package.json` o `package-lock.json` junto a archivos `.pipeline/` y `docs/`,
+// el tester rebotaba porque esos archivos rompían el match `every` y caía a la
+// ruta gradle. Gradle no encuentra Kotlin que compilar (cero diffs Kotlin) y
+// no escribe XMLs JUnit, así que el tester rebotaba con "No se encontraron
+// reportes JUnit". Verificado tanto en logs de #3072 (multi-provider H1, ajv
+// como dep nueva) como en logs de #3081 (security S3, husky pre-commit nuevo).
 test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/, package.json y package-lock.json', () => {
     // Cada uno aislado debe dar pipeline-only.
     assert.equal(tester.isPipelineOnlyChange(['.husky/pre-commit']), true);
@@ -430,6 +428,14 @@ test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/, package.json y packag
         'docs/pipeline-multi-provider.md',
         'package-lock.json',
         'package.json',
+    ]), true);
+    // Caso real del rebote #3072: H1 multi-provider con ajv como dep nueva.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/agent-models.json',
+        '.pipeline/agent-models.schema.json',
+        '.pipeline/pulpo.js',
+        'package.json',
+        'package-lock.json',
     ]), true);
 });
 

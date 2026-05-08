@@ -1,0 +1,66 @@
+{
+  "$schema": "./agent-models.schema.json",
+
+  "default_provider": "anthropic",
+
+  "providers": {
+    "anthropic": {
+      "launcher": "claude",
+      "model": "claude-opus-4-7",
+      "spawn_args_template": [
+        "-p", "{user_prompt}",
+        "--system-prompt-file", "{system_file}",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--permission-mode", "bypassPermissions"
+      ],
+      "output_parser": "anthropic-stream-json",
+      "quota_error_types": ["usage_limit_error", "weekly_quota_exhausted"],
+      "supports_tool_use": true,
+      "prompt_caching": {
+        "supported": true,
+        "ttl_seconds_default": 300,
+        "ttl_seconds_extended": 3600
+      },
+      "credentials_env": ["ANTHROPIC_API_KEY"],
+      "permissions_mode": "bypassPermissions"
+    },
+
+    "deterministic": {
+      "launcher": "node",
+      "model": "deterministic",
+      "spawn_args_template": [
+        "{script_path}",
+        "{issue}",
+        "--trabajando={trabajando_path}"
+      ],
+      "output_parser": "none",
+      "quota_error_types": [],
+      "supports_tool_use": false,
+      "prompt_caching": { "supported": false }
+    }
+  },
+
+  "skills": {
+    "guru":         { "provider": "anthropic" },
+    "security":     { "provider": "anthropic" },
+    "po":           { "provider": "anthropic" },
+    "ux":           { "provider": "anthropic" },
+    "planner":      { "provider": "anthropic" },
+    "review":       { "provider": "anthropic" },
+    "refinar":      { "provider": "anthropic" },
+
+    "backend-dev":  { "provider": "anthropic" },
+    "android-dev":  { "provider": "anthropic" },
+    "web-dev":      { "provider": "anthropic" },
+    "pipeline-dev": { "provider": "anthropic" },
+
+    "tester":       { "provider": "deterministic" },
+    "qa":           { "provider": "anthropic" },
+
+    "build":        { "provider": "anthropic" },
+    "linter":       { "provider": "deterministic" },
+    "delivery":     { "provider": "deterministic" },
+    "builder":      { "provider": "deterministic" }
+  }
+}
