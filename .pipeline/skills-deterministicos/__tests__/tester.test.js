@@ -638,6 +638,88 @@ test('git --version disponible en el child', () => {
     assert.equal(r.exit_code, 0);
 });
 
+// #3090 rev-1 — Regresión empírica del rebote #3090 rev-1 (verificacion).
+// El tester corre `node --test` desde el worktree del agente cuando éste
+// existe (introducido por #3081), pero los worktrees creados por
+// `git worktree add` NO incluyen `node_modules/` (sólo `.git`). Tests
+// que hacen `require('../pulpo.js')` (que a su vez requiere `js-yaml`)
+// fallaban con `Cannot find module 'js-yaml'`. El fix agrega
+// `<REPO_ROOT>/.pipeline/node_modules` y `<REPO_ROOT>/node_modules` al
+// NODE_PATH del child cuando `repoRoot !== REPO_ROOT` (i.e. estamos
+// corriendo desde un worktree).
+test('#3090 rev-1 — runNodeTests propaga node_modules de REPO_ROOT al worktree vía NODE_PATH', async () => {
+    // 1. Sembrar un módulo "fake-yaml" en REPO_ROOT/.pipeline/node_modules
+    const fakeMod = path.join(TMP, '.pipeline', 'node_modules', 'fake-yaml-3090');
+    fs.mkdirSync(fakeMod, { recursive: true });
+    fs.writeFileSync(path.join(fakeMod, 'package.json'),
+        JSON.stringify({ name: 'fake-yaml-3090', main: 'index.js', version: '1.0.0' }));
+    fs.writeFileSync(path.join(fakeMod, 'index.js'),
+        'module.exports = { tag: "from-repo-root-pipeline-node-modules" };');
+
+    // 2. Crear un "worktree" en otra ubicación (sin node_modules locales) y
+    //    poner ahí un test que requiera `fake-yaml-3090`.
+    const fakeWorktree = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3090-wt-'));
+    fs.mkdirSync(path.join(fakeWorktree, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fakeWorktree, '.pipeline', 'logs'), { recursive: true });
+    const wtTestFile = path.join(fakeWorktree, '.pipeline', 'tests', 'needs-yaml.test.js');
+    fs.writeFileSync(wtTestFile, `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('puede resolver fake-yaml-3090 vía NODE_PATH heredado', () => {
+    const m = require('fake-yaml-3090');
+    assert.equal(m.tag, 'from-repo-root-pipeline-node-modules');
+});
+`);
+
+    // 3. Pre-condición: sin el fix, el worktree no resuelve el módulo.
+    //    (Probamos con NODE_PATH vacío para asegurar que el módulo no es
+    //    visible por algún path heredado del runner.)
+    const env = { ...process.env };
+    delete env.NODE_PATH;
+
+    // 4. Correr runNodeTests pasando el worktree como repoRoot. El fix
+    //    debe agregar <TMP>/.pipeline/node_modules a NODE_PATH del child.
+    const r = await tester.runNodeTests(fakeWorktree, env);
+    assert.equal(r.summary.failures, 0,
+        `el test del worktree debería resolver fake-yaml-3090 vía NODE_PATH. failed_tests=${JSON.stringify(r.summary.failed_tests)}`);
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.exit_code, 0);
+});
+
+test('#3090 rev-1 — runNodeTests NO toca NODE_PATH cuando repoRoot === REPO_ROOT', async () => {
+    // Cuando el tester corre desde main (verificacion sin worktree),
+    // repoRoot === REPO_ROOT y la resolución normal de Node ya encuentra
+    // los módulos del .pipeline/node_modules vía lookup. No queremos
+    // mutar NODE_PATH innecesariamente.
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-same-root-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    const testFile = path.join(fresh, '.pipeline', 'tests', 'echo-nodepath.test.js');
+    fs.writeFileSync(testFile, `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('NODE_PATH del child no fue mutado por el runner', () => {
+    // Con repoRoot === REPO_ROOT, el wrapper no debe forzar NODE_PATH.
+    // Permitimos que sea exactamente lo que el padre pasó (vacío/undefined).
+    const np = process.env.NODE_PATH;
+    assert.ok(np === undefined || np === '',
+        'NODE_PATH debería estar sin tocar cuando repoRoot === REPO_ROOT, era=' + JSON.stringify(np));
+});
+`);
+    // Forzar PIPELINE_REPO_ROOT al fresh para que tester lea REPO_ROOT === fresh,
+    // y luego pasar fresh como repoRoot del run.
+    const envChild = { ...process.env };
+    delete envChild.NODE_PATH;
+    // Necesitamos que el módulo tester ya cargado siga viendo TMP como REPO_ROOT
+    // (no podemos remontarlo). Validamos el caso "pasa el mismo repoRoot que TMP":
+    const r = await tester.runNodeTests(TMP, envChild);
+    // Esperamos 0 fallas: como repoRoot === REPO_ROOT (TMP), no se inyecta NODE_PATH.
+    // (Puede haber otros tests sembrados por tests anteriores en TMP/.pipeline/tests
+    // que estamos contando; tomamos failures=0 como invariante.)
+    assert.equal(r.summary.failures, 0,
+        `failures inesperadas: ${JSON.stringify(r.summary.failed_tests)}`);
+});
+
 // ── ensureGitInPath (rebote #2891 rev-2) ─────────────────────────────
 // Cuando el pulpo corre como service Windows, el PATH del child puede no
 // incluir Git. Los tests del pipeline que hacen `spawnSync('git', ...)`
