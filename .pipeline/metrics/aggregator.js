@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { LOG_FILE, REPO_ROOT, estimateCostUsd, MODEL_PRICING } = require('../lib/traceability');
+const pricing = require('../lib/pricing');
 const { computeProjections } = require('./projections');
 
 const METRICS_DIR = path.join(REPO_ROOT, '.pipeline', 'metrics');
@@ -84,7 +85,9 @@ function addToBucket(b, evt) {
         b.cache_write += Number(evt.cache_write || 0);
         b.duration_ms += Number(evt.duration_ms || 0);
         b.tool_calls += Number(evt.tool_calls || 0);
-        b.cost_usd += estimateCostUsd(evt.model, evt);
+        // (#3091) Pasar provider explícito si el evento lo trae; sino,
+        // estimateCostUsd lo infiere por prefijo de model (back-compat).
+        b.cost_usd += estimateCostUsd(evt.provider || null, evt.model, evt);
     } else if (evt.event === 'tts:generated') {
         b.tts_chars += Number(evt.chars || 0);
         b.tts_audio_seconds += Number(evt.audio_seconds || 0);
@@ -106,6 +109,10 @@ function withAvg(bucket) {
 
 async function buildSnapshot(options) {
     options = options || {};
+    // (#3091) Refrescar la tabla de pricing en cada tick. NO watch de filesystem
+    // (security #5) — invalidamos cache y recargamos lazy. Lectura barata: una
+    // vez por refresh del aggregator (por defecto cada 60s).
+    pricing.invalidateCache();
     const windowMs = parseWindow(options.window);
     const nowMs = options.nowMs != null ? Number(options.nowMs) : Date.now();
     const cutoffMs = windowMs ? nowMs - windowMs : null;
@@ -192,7 +199,7 @@ async function buildSnapshot(options) {
                 tokens: evt.event === 'session:end' ? (Number(evt.tokens_in || 0) + Number(evt.tokens_out || 0)) : null,
                 cache: evt.event === 'session:end' ? (Number(evt.cache_read || 0) + Number(evt.cache_write || 0)) : null,
                 duration_ms: evt.event === 'session:end' ? Number(evt.duration_ms || 0) : null,
-                cost_usd: evt.event === 'session:end' ? estimateCostUsd(evt.model, evt) : Number(evt.cost_estimate_usd || 0),
+                cost_usd: evt.event === 'session:end' ? estimateCostUsd(evt.provider || null, evt.model, evt) : Number(evt.cost_estimate_usd || 0),
                 tts_chars: evt.event === 'tts:generated' ? Number(evt.chars || 0) : null,
                 tts_audio_seconds: evt.event === 'tts:generated' ? Number(evt.audio_seconds || 0) : null,
                 model: evt.model || provider || null,
@@ -221,7 +228,7 @@ async function buildSnapshot(options) {
             if (!dailySeries.has(day)) dailySeries.set(day, { cost_usd: 0, tts_cost_usd: 0, sessions: 0, tts_chars: 0, tts_audio_seconds: 0 });
             const d = dailySeries.get(day);
             if (evt.event === 'session:end') {
-                d.cost_usd += estimateCostUsd(evt.model, evt);
+                d.cost_usd += estimateCostUsd(evt.provider || null, evt.model, evt);
                 d.sessions += 1;
             } else if (evt.event === 'tts:generated') {
                 d.tts_cost_usd += Number(evt.cost_estimate_usd || 0);
@@ -241,7 +248,7 @@ async function buildSnapshot(options) {
                 if (!hourlyBuckets.has(hourKey)) hourlyBuckets.set(hourKey, { cost_usd: 0, tokens: 0, sessions: 0 });
                 const hb = hourlyBuckets.get(hourKey);
                 if (evt.event === 'session:end') {
-                    hb.cost_usd += estimateCostUsd(evt.model, evt);
+                    hb.cost_usd += estimateCostUsd(evt.provider || null, evt.model, evt);
                     hb.tokens += Number(evt.tokens_in || 0) + Number(evt.tokens_out || 0);
                     hb.sessions += 1;
                 } else if (evt.event === 'tts:generated') {
@@ -252,7 +259,7 @@ async function buildSnapshot(options) {
                 const bySkillKey = `${hourKey}|${skill}`;
                 let bySkillCost = hourlyBySkill.get(bySkillKey) || 0;
                 if (evt.event === 'session:end') {
-                    bySkillCost += estimateCostUsd(evt.model, evt);
+                    bySkillCost += estimateCostUsd(evt.provider || null, evt.model, evt);
                 } else if (evt.event === 'tts:generated') {
                     bySkillCost += Number(evt.cost_estimate_usd || 0);
                 }
@@ -375,7 +382,14 @@ async function buildSnapshot(options) {
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,
         currentHour,
-        pricing: MODEL_PRICING,
+        // (#3091) Tabla de pricing exportada al snapshot:
+        //   - `pricing` queda flat-merged para back-compat con dashboard #2891 (CA-3).
+        //   - `pricing_by_provider` shape nested para upstream consumer #3090.
+        //   - `pricing_meta` con version/updated_at/source/source_kind para
+        //     auditoría visible y para el alerta de staleness #3126.
+        pricing: pricing.flatMergedPricing(),
+        pricing_by_provider: pricing.pricingByProvider(),
+        pricing_meta: pricing.pricingMeta(),
     };
 }
 
@@ -481,7 +495,11 @@ function emitEmptySnapshot(options) {
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,
         currentHour,
-        pricing: MODEL_PRICING,
+        // (#3091) Mismos campos que buildSnapshot — pricing.flatMergedPricing
+        // mantiene back-compat aunque el snapshot esté vacío.
+        pricing: pricing.flatMergedPricing(),
+        pricing_by_provider: pricing.pricingByProvider(),
+        pricing_meta: pricing.pricingMeta(),
     };
 }
 

@@ -85,12 +85,16 @@ function emitSessionEnd(handle, metrics) {
     metrics = metrics || {};
     const env = envCtx();
     const startMs = handle.start_ts || Date.now();
+    // #3091 — `provider` opcional. Si el caller no lo pasa, queda `null` y el
+    // aggregator infiere por prefijo del `model` (back-compat con eventos legacy).
+    const provider = pick(metrics, 'provider', pick(handle, 'provider', null));
     const evt = {
         event: 'session:end',
         skill: pick(handle, 'skill', env.skill),
         issue: pick(handle, 'issue', env.issue),
         phase: pick(handle, 'phase', env.phase),
         model: pick(handle, 'model', 'deterministic'),
+        provider: provider,
         tokens_in: Number(metrics.tokens_in || 0),
         tokens_out: Number(metrics.tokens_out || 0),
         cache_read: Number(metrics.cache_read || 0),
@@ -112,18 +116,39 @@ function emitSessionEnd(handle, metrics) {
 }
 
 // Helper pricing (input/output/cache read/cache write) — USD por 1M tokens
-// Fuente: pricing público Anthropic. Actualizar acá si cambian precios.
-const MODEL_PRICING = {
-    'claude-opus-4-7':    { in: 15.00, out: 75.00, cache_read: 1.50,  cache_write: 18.75 },
-    'claude-opus-4-6':    { in: 15.00, out: 75.00, cache_read: 1.50,  cache_write: 18.75 },
-    'claude-sonnet-4-6':  { in:  3.00, out: 15.00, cache_read: 0.30,  cache_write:  3.75 },
-    'claude-haiku-4-5':   { in:  1.00, out:  5.00, cache_read: 0.10,  cache_write:  1.25 },
-    'deterministic':      { in:  0.00, out:  0.00, cache_read: 0.00,  cache_write:  0.00 },
-};
+// Fuente real: `.pipeline/metrics/pricing.json` (multi-provider, externalizado #3091).
+// Si el JSON falla, `lib/pricing.js` cae a tabla hardcoded de fallback.
+//
+// `MODEL_PRICING` se expone como **getter flat-merged** para back-compat con
+// el dashboard #2891: `{ <model>: { in, out, cache_read, cache_write } }`.
+const pricing = require('./pricing');
 
-function estimateCostUsd(model, tokens) {
-    const key = String(model || '').toLowerCase().replace(/-\d{8}$/, '').trim();
-    const p = MODEL_PRICING[key] || MODEL_PRICING['deterministic'];
+/**
+ * Calcula el costo estimado en USD a partir del modelo y los tokens.
+ *
+ * Soporta dos firmas para back-compat (#3091):
+ *   - estimateCostUsd(model, tokens)               (legacy — infiere provider por prefijo)
+ *   - estimateCostUsd(provider, model, tokens)     (nuevo — provider explícito)
+ *
+ * Sanitización defensiva: si `provider` o `model` no matchean la allowlist /
+ * regex, cae a deterministic (costo 0). NUNCA throw — la traza no debe romper
+ * un skill (security #2 + #5).
+ */
+function estimateCostUsd(arg1, arg2, arg3) {
+    let provider = null;
+    let model = null;
+    let tokens = null;
+    if (arg3 !== undefined) {
+        provider = arg1;
+        model = arg2;
+        tokens = arg3;
+    } else {
+        // legacy: estimateCostUsd(model, tokens). Provider se infiere por prefijo.
+        model = arg1;
+        tokens = arg2;
+        provider = null;
+    }
+    const p = pricing.getPricing(provider, model);
     const ti = Number(tokens && tokens.tokens_in || 0);
     const to = Number(tokens && tokens.tokens_out || 0);
     const cr = Number(tokens && tokens.cache_read || 0);
@@ -131,6 +156,29 @@ function estimateCostUsd(model, tokens) {
     const cost = (ti * p.in + to * p.out + cr * p.cache_read + cw * p.cache_write) / 1e6;
     return Math.round(cost * 10000) / 10000; // 4 decimales
 }
+
+// Proxy lazy: cada acceso a `MODEL_PRICING[<key>]` o `Object.keys(MODEL_PRICING)`
+// dispara `flatMergedPricing()` con la tabla actual cargada por pricing.js. Eso
+// preserva el contrato histórico para `aggregator.js` y para tests.
+const MODEL_PRICING = new Proxy({}, {
+    get(_target, key) {
+        const flat = pricing.flatMergedPricing();
+        return flat[key];
+    },
+    has(_target, key) {
+        return Object.prototype.hasOwnProperty.call(pricing.flatMergedPricing(), key);
+    },
+    ownKeys() {
+        return Reflect.ownKeys(pricing.flatMergedPricing());
+    },
+    getOwnPropertyDescriptor(_target, key) {
+        const flat = pricing.flatMergedPricing();
+        if (Object.prototype.hasOwnProperty.call(flat, key)) {
+            return { enumerable: true, configurable: true, value: flat[key], writable: false };
+        }
+        return undefined;
+    },
+});
 
 module.exports = {
     emitSessionStart,

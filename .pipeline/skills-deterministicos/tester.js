@@ -409,6 +409,45 @@ function runNodeTests(repoRoot, env) {
         // temporales fallan con `'git' no se reconoce como un comando interno
         // o externo`. ensureGitInPath es un wrapper local sobre ensureGitInEnv.
         ensureGitInPath(childEnv);
+
+        // #3091 rebote rev-1 (réplica del fix #3090 rev-1) — Garantizar que
+        // los tests del worktree puedan resolver las dependencias instaladas
+        // en el repo principal (`js-yaml`, `ajv`, etc.). Los worktrees creados
+        // por `git worktree add` no incluyen `node_modules/` (sólo `.git`),
+        // así que cuando el tester corre `node --test` desde un worktree, los
+        // tests que hacen `require('../pulpo.js')` fallan con
+        // `Cannot find module 'js-yaml'`.
+        //
+        // Causa raíz: tester.js#3081 movió la ejecución de `node --test` al
+        // worktree del agente (para que el código testeado sea el del issue,
+        // no el de main), pero los worktrees no tienen node_modules locales.
+        //
+        // Fix: prepender `<REPO_ROOT>/.pipeline/node_modules` y
+        // `<REPO_ROOT>/node_modules` al NODE_PATH heredado por el child.
+        // Sólo aplicamos cuando el repoRoot del run difiere de REPO_ROOT (i.e.
+        // estamos corriendo desde un worktree); si coinciden, la resolución
+        // normal de Node ya encuentra los módulos vía `node_modules` lookup.
+        //
+        // NOTA #3091: este fix duplica la solución que vive en la rama
+        // agent/3090-pipeline-dev. Ambas ramas tocan exactamente la misma
+        // sección y mergean limpio entre sí (mismo bloque, idéntico
+        // contenido). Cuando #3090 mergee a main, este chunk va a quedar
+        // de un lado u otro sin conflicto real.
+        if (path.resolve(repoRoot) !== path.resolve(REPO_ROOT)) {
+            const extraNodePaths = [
+                path.join(REPO_ROOT, '.pipeline', 'node_modules'),
+                path.join(REPO_ROOT, 'node_modules'),
+            ].filter((p) => {
+                try { return fs.statSync(p).isDirectory(); } catch { return false; }
+            });
+            if (extraNodePaths.length > 0) {
+                const sep = path.delimiter;
+                const prev = childEnv.NODE_PATH ? String(childEnv.NODE_PATH) : '';
+                childEnv.NODE_PATH = prev
+                    ? `${extraNodePaths.join(sep)}${sep}${prev}`
+                    : extraNodePaths.join(sep);
+            }
+        }
         let stdout = '';
         let stderr = '';
         const child = spawn(process.execPath, args, {

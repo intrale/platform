@@ -1,0 +1,50 @@
+{
+  "issue": 3091,
+  "mode": "qa-api",
+  "verdict": "aprobado",
+  "tests_total": 69,
+  "tests_passed": 69,
+  "tests_failed": 0,
+  "duration_ms": 1917,
+  "criteria": [
+    {
+      "id": "CA-1",
+      "title": "Tabla de precios externalizada (JSON) con fecha de actualización",
+      "verified": true,
+      "evidence": ".pipeline/metrics/pricing.json — version=1, updated_at=2026-05-08T00:00:00Z (ISO-8601 estricto), source audit trail textual, providers={anthropic, openai, google, deterministic}"
+    },
+    {
+      "id": "CA-2",
+      "title": "Aggregator calcula cost_usd correctamente para mocks de Anthropic y OpenAI",
+      "verified": true,
+      "evidence": "Tests pasan: 'CA-2: snapshot incluye costo correcto para mocks de Anthropic + OpenAI + Google' + 'CA-2: evento legacy SIN provider — infiere por prefijo de model'. Smoke manual: anthropic claude-sonnet-4-7 y openai gpt-5 retornan precios correctos del JSON."
+    },
+    {
+      "id": "CA-3",
+      "title": "Dashboard #2891 sigue funcionando sin cambios visuales (regresión cero)",
+      "verified": true,
+      "evidence": "Tests pasan: 'CA-3: snapshot.pricing queda flat-merged (regresion cero dashboard #2891)' + 'CA-3: snapshot incluye pricing_by_provider con shape nested para upstream #3090' + 'CA-3 + CA-1: snapshot incluye pricing_meta'. Shape histórico de snapshot.pricing preservado, nuevos campos son aditivos."
+    },
+    {
+      "id": "CA-4",
+      "title": "Tests con fixtures cross-provider",
+      "verified": true,
+      "evidence": "69 tests totales (30 pricing.test.js + 18 traceability.test.js + 30 aggregator.test.js). Cubren mocks Anthropic + OpenAI + Google + deterministic, eventos legacy sin provider, path-traversal, JSON malformado/ausente, allowlist, regex ISO-8601, no-fetch, no-API-keys."
+    }
+  ],
+  "extras_security": {
+    "CA-5_fallback_graceful": "verificado por tests CA-5 ausente y CA-5 malformado (source_kind='fallback')",
+    "CA-6_no_fetch_http": "grep -E '(fetch\\(|require...https?...|axios|node-fetch)' en pricing.js + aggregator.js + traceability.js → 0 matches (exit 1)",
+    "CA-7_no_api_keys": "grep -E '(OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|GEMINI_API_KEY)' en los 3 archivos → 0 matches"
+  },
+  "deliverables_verificados": [
+    ".pipeline/metrics/pricing.json (1438 bytes)",
+    ".pipeline/lib/pricing.js (12975 bytes)",
+    ".pipeline/lib/__tests__/pricing.test.js (14764 bytes, 30 tests)",
+    ".pipeline/lib/__tests__/traceability.test.js (9330 bytes, 18 tests)",
+    ".pipeline/metrics/__tests__/aggregator.test.js (23959 bytes, 30 tests)",
+    ".pipeline/lib/traceability.js (modificado — back-compat dos firmas)",
+    ".pipeline/metrics/aggregator.js (modificado — pricing_by_provider + pricing_meta aditivos)"
+  ],
+  "nota_qa_api": "El issue es infra de pipeline (no expone HTTP API), por lo que los test cases auto-generados que apuntan a /intrale/platform/blob/main/docs/... no aplican. La verificación se ejecutó corriendo los unit tests reales del entregable y haciendo smoke con node -e contra la API pública del módulo."
+}

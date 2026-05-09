@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "updated_at": "2026-05-08T00:00:00Z",
+  "source": "anthropic.com/pricing | openai.com/pricing | ai.google.dev/pricing",
+  "providers": {
+    "anthropic": {
+      "claude-opus-4-7":   { "in": 15.00, "out": 75.00, "cache_read": 1.50,  "cache_write": 18.75 },
+      "claude-opus-4-6":   { "in": 15.00, "out": 75.00, "cache_read": 1.50,  "cache_write": 18.75 },
+      "claude-sonnet-4-7": { "in":  3.00, "out": 15.00, "cache_read": 0.30,  "cache_write":  3.75 },
+      "claude-sonnet-4-6": { "in":  3.00, "out": 15.00, "cache_read": 0.30,  "cache_write":  3.75 },
+      "claude-haiku-4-5":  { "in":  1.00, "out":  5.00, "cache_read": 0.10,  "cache_write":  1.25 },
+      "claude-haiku-4-x":  { "in":  0.80, "out":  4.00, "cache_read": 0.08,  "cache_write":  1.00 }
+    },
+    "openai": {
+      "gpt-5":          { "in": 1.25, "out": 10.00, "cache_read": 0.00, "cache_write": 0.00 },
+      "gpt-5-codex":    { "in": 1.25, "out": 10.00, "cache_read": 0.00, "cache_write": 0.00 },
+      "gpt-5-mini":     { "in": 0.25, "out":  2.00, "cache_read": 0.00, "cache_write": 0.00 }
+    },
+    "google": {
+      "gemini-2-5-pro":   { "in": 1.25, "out": 10.00, "cache_read": 0.00, "cache_write": 0.31 },
+      "gemini-2-5-flash": { "in": 0.30, "out":  2.50, "cache_read": 0.00, "cache_write": 0.00 }
+    },
+    "deterministic": {
+      "deterministic": { "in": 0.00, "out": 0.00, "cache_read": 0.00, "cache_write": 0.00 }
+    }
+  }
+}

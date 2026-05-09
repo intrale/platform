@@ -276,3 +276,171 @@ test('clampLookbackDays mantiene el rango [7, 14]', () => {
     assert.equal(aggregator.clampLookbackDays(30), 14);
     assert.equal(aggregator.clampLookbackDays('garbage'), 7);
 });
+
+// =============================================================================
+// #3091 — Cross-provider cost normalization (multi-provider M1)
+// =============================================================================
+
+const PRICING_FILE = path.join(TMP_DIR, '.pipeline', 'metrics', 'pricing.json');
+
+const VALID_CROSS_PROVIDER_PRICING = {
+    version: 1,
+    updated_at: '2026-05-08T00:00:00Z',
+    source: 'test fixtures',
+    providers: {
+        anthropic: {
+            'claude-opus-4-7':   { in: 15.00, out: 75.00, cache_read: 1.50, cache_write: 18.75 },
+            'claude-sonnet-4-7': { in:  3.00, out: 15.00, cache_read: 0.30, cache_write:  3.75 },
+        },
+        openai: {
+            'gpt-5-codex': { in: 1.25, out: 10.00, cache_read: 0.00, cache_write: 0.00 },
+        },
+        google: {
+            'gemini-2-5-pro': { in: 1.25, out: 10.00, cache_read: 0.00, cache_write: 0.31 },
+        },
+        deterministic: {
+            'deterministic': { in: 0, out: 0, cache_read: 0, cache_write: 0 },
+        },
+    },
+};
+
+function writePricing(obj) {
+    fs.writeFileSync(PRICING_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    // Forzar invalidación: aggregator llama invalidateCache() en cada buildSnapshot.
+}
+
+function rmPricing() {
+    try { fs.unlinkSync(PRICING_FILE); } catch(_) {}
+}
+
+test('CA-2: snapshot incluye costo correcto para mocks de Anthropic + OpenAI + Google', async () => {
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    writeLog([
+        // 3 eventos Anthropic (provider explícito)
+        { event: 'session:end', skill: 'guru', issue: 4001, phase: 'analisis', model: 'claude-opus-4-7',   provider: 'anthropic', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:00:00Z' },
+        { event: 'session:end', skill: 'guru', issue: 4001, phase: 'analisis', model: 'claude-opus-4-7',   provider: 'anthropic', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:01:00Z' },
+        { event: 'session:end', skill: 'guru', issue: 4001, phase: 'analisis', model: 'claude-opus-4-7',   provider: 'anthropic', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:02:00Z' },
+        // 3 eventos OpenAI
+        { event: 'session:end', skill: 'tester', issue: 4002, phase: 'test', model: 'gpt-5-codex', provider: 'openai', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T11:00:00Z' },
+        { event: 'session:end', skill: 'tester', issue: 4002, phase: 'test', model: 'gpt-5-codex', provider: 'openai', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T11:01:00Z' },
+        { event: 'session:end', skill: 'tester', issue: 4002, phase: 'test', model: 'gpt-5-codex', provider: 'openai', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T11:02:00Z' },
+        // 1 evento Google
+        { event: 'session:end', skill: 'qa', issue: 4003, phase: 'qa', model: 'gemini-2-5-pro', provider: 'google', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T12:00:00Z' },
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    // Costo manual con redondeo a 4 decimales por sesión (estimateCostUsd):
+    //   Anthropic claude-opus-4-7 — 3 sesiones × 0.0525 = 0.1575
+    //   OpenAI gpt-5-codex        — 3 sesiones × 0.0063 (= round(0.00625, 4)) = 0.0189
+    //   Google gemini-2-5-pro     — 1 sesión × 0.0063 = 0.0063
+    // Total esperado tras redondeo final: 0.1575 + 0.0189 + 0.0063 = 0.1827
+    assert.equal(snap.totals.cost_usd, 0.1827);
+    assert.equal(snap.totals.sessions, 7);
+});
+
+test('CA-2: evento legacy SIN provider — infiere por prefijo de model', async () => {
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    writeLog([
+        // Sin provider → infiere anthropic por prefijo `claude-`
+        sessionEnd({ skill: 'guru', issue: 4100, phase: 'analisis', model: 'claude-opus-4-7', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:00:00Z' }),
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    // Mismo costo que con provider: 0.0525
+    assert.equal(snap.totals.cost_usd, 0.0525);
+});
+
+test('CA-3: snapshot.pricing queda flat-merged (regresion cero dashboard #2891)', async () => {
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    fs.writeFileSync(trace.LOG_FILE, '', 'utf8');
+    const snap = await aggregator.buildSnapshot({});
+    assert.ok(snap.pricing, 'snapshot.pricing existe');
+    // Shape flat — todos los modelos en un solo dict
+    assert.ok(snap.pricing['claude-opus-4-7']);
+    assert.ok(snap.pricing['gpt-5-codex']);
+    assert.ok(snap.pricing['gemini-2-5-pro']);
+    assert.ok(snap.pricing['deterministic']);
+    // Mantiene el shape histórico { in, out, cache_read, cache_write }
+    assert.equal(typeof snap.pricing['claude-opus-4-7'].in, 'number');
+    assert.equal(typeof snap.pricing['claude-opus-4-7'].out, 'number');
+    assert.equal(typeof snap.pricing['claude-opus-4-7'].cache_read, 'number');
+    assert.equal(typeof snap.pricing['claude-opus-4-7'].cache_write, 'number');
+});
+
+test('CA-3: snapshot incluye pricing_by_provider con shape nested para upstream #3090', async () => {
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    fs.writeFileSync(trace.LOG_FILE, '', 'utf8');
+    const snap = await aggregator.buildSnapshot({});
+    assert.ok(snap.pricing_by_provider, 'snapshot.pricing_by_provider existe');
+    assert.ok(snap.pricing_by_provider.anthropic['claude-opus-4-7']);
+    assert.ok(snap.pricing_by_provider.openai['gpt-5-codex']);
+    assert.ok(snap.pricing_by_provider.google['gemini-2-5-pro']);
+});
+
+test('CA-3 + CA-1: snapshot incluye pricing_meta con version/updated_at/source_kind', async () => {
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    fs.writeFileSync(trace.LOG_FILE, '', 'utf8');
+    const snap = await aggregator.buildSnapshot({});
+    assert.ok(snap.pricing_meta);
+    assert.equal(snap.pricing_meta.version, 1);
+    assert.equal(snap.pricing_meta.updated_at, '2026-05-08T00:00:00Z');
+    assert.equal(snap.pricing_meta.source_kind, 'json');
+    assert.deepEqual(snap.pricing_meta.providers_loaded.sort(), ['anthropic', 'deterministic', 'google', 'openai']);
+});
+
+test('CA-4: evento con model path-traversal NO crashea, costo cae a 0', async () => {
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    writeLog([
+        // Modelo con path traversal — sanitizer rechaza, costo 0
+        { event: 'session:end', skill: 'guru', issue: 4200, phase: 'analisis', model: '../../../etc/passwd', provider: 'anthropic', tokens_in: 1e9, tokens_out: 1e9, ts: '2026-05-01T10:00:00Z' },
+        // Modelo con whitespace — rechazado
+        { event: 'session:end', skill: 'guru', issue: 4201, phase: 'analisis', model: 'claude opus', provider: 'anthropic', tokens_in: 1e9, tokens_out: 1e9, ts: '2026-05-01T10:01:00Z' },
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    // 2 sesiones, costo total 0 (sanitizer las rechazó)
+    assert.equal(snap.totals.sessions, 2);
+    assert.equal(snap.totals.cost_usd, 0);
+});
+
+test('CA-4: provider explícito fuera de allowlist — costo cae a 0 (NO se infiere por modelo)', async () => {
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    writeLog([
+        // Provider explícito malicioso — sanitizer lo rechaza Y no infiere por modelo
+        { event: 'session:end', skill: 'guru', issue: 4300, phase: 'analisis', model: 'claude-opus-4-7', provider: 'unknown-vendor', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:00:00Z' },
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    // Provider explícito inválido → costo 0 (anti envenenamiento de eventos)
+    assert.equal(snap.totals.cost_usd, 0);
+});
+
+test('CA-5: pricing.json ausente — aggregator usa tabla hardcoded, dashboard sigue funcionando', async () => {
+    rmPricing();
+    writeLog([
+        sessionEnd({ skill: 'guru', issue: 4400, phase: 'analisis', model: 'claude-opus-4-7', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:00:00Z' }),
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    // Tabla hardcoded de fallback tiene claude-opus-4-7 con mismos precios (15/75)
+    assert.equal(snap.totals.cost_usd, 0.0525);
+    assert.equal(snap.pricing_meta.source_kind, 'fallback');
+    // pricing flat sigue accesible
+    assert.ok(snap.pricing['claude-opus-4-7']);
+});
+
+test('CA-5: pricing.json malformado — aggregator usa fallback, source_kind="fallback"', async () => {
+    fs.writeFileSync(PRICING_FILE, '{ esto no es JSON', 'utf8');
+    fs.writeFileSync(trace.LOG_FILE, '', 'utf8');
+    const snap = await aggregator.buildSnapshot({});
+    assert.equal(snap.pricing_meta.source_kind, 'fallback');
+});
+
+test('CA-7: aggregator NO referencia API keys en su código fuente', () => {
+    const aggSrc = fs.readFileSync(path.join(__dirname, '..', 'aggregator.js'), 'utf8');
+    assert.equal(/OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|GEMINI_API_KEY/.test(aggSrc), false,
+        'aggregator.js no debe leer API keys');
+});
+
+test('CA-6: aggregator NO hace fetch HTTP de pricing', () => {
+    const aggSrc = fs.readFileSync(path.join(__dirname, '..', 'aggregator.js'), 'utf8');
+    // Buscamos uso de fetch / require('http') / require('https') / axios
+    assert.equal(/require\(['"]https?['"]\)/.test(aggSrc), false);
+    assert.equal(/\bfetch\s*\(/.test(aggSrc), false);
+    assert.equal(/require\(['"]axios['"]\)/.test(aggSrc), false);
+});
