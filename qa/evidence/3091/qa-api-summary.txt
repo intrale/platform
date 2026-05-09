@@ -1,0 +1,52 @@
+QA-API Report — Issue #3091 — Multi-provider cost normalization en metrics/aggregator.js
+==========================================================================================
+
+VEREDICTO: APROBADO
+
+Tests:    69 passed / 0 failed (1917ms)
+Branch:   agent/3091-pipeline-dev
+Commit:   b441f6df
+
+Criterios de aceptación (issue body)
+-------------------------------------
+
+[OK] CA-1 — Tabla de precios externalizada (JSON) con fecha de actualización
+     pricing.json: version=1, updated_at=2026-05-08T00:00:00Z (ISO-8601 estricto),
+     source audit trail textual, providers={anthropic, openai, google, deterministic}.
+
+[OK] CA-2 — Aggregator calcula cost_usd correctamente para mocks de Anthropic y OpenAI
+     Test "CA-2: snapshot incluye costo correcto para mocks de Anthropic + OpenAI + Google"
+     pasa. Smoke: anthropic claude-sonnet-4-7 ($3 in / $15 out per 1M) y openai gpt-5
+     ($1.25 in / $10 out per 1M) retornan precios correctos del JSON. Firma legacy
+     (model, tokens) y nueva (provider, model, tokens) ambas funcionan.
+
+[OK] CA-3 — Dashboard #2891 sigue funcionando sin cambios visuales (regresión cero)
+     Test "CA-3: snapshot.pricing queda flat-merged (regresion cero dashboard #2891)"
+     pasa. Shape histórico {<model>:{in,out,cache_read,cache_write}} preservado.
+     Nuevos campos snapshot.pricing_by_provider y snapshot.pricing_meta son aditivos.
+
+[OK] CA-4 — Tests con fixtures cross-provider
+     69 tests totales: 30 pricing.test.js + 18 traceability.test.js + 30 aggregator.test.js.
+     Fixtures: Anthropic + OpenAI + Google + deterministic, eventos legacy sin provider,
+     path-traversal, JSON ausente/malformado, allowlist violation, regex ISO-8601.
+
+Criterios extra (security review por leitolarreta)
+---------------------------------------------------
+
+[OK] CA-5 — Fallback graceful cuando pricing.json ausente o inválido
+     Tests CA-5 (ausente) y CA-5 (malformado) pasan, source_kind='fallback'.
+
+[OK] CA-6 — NO fetch HTTP de pricing
+     grep -E '(fetch\(|require...https?...|axios|node-fetch)' en pricing.js +
+     aggregator.js + traceability.js → 0 matches.
+
+[OK] CA-7 — NO referencias a API keys
+     grep -E '(OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|GEMINI_API_KEY)'
+     en los 3 archivos → 0 matches.
+
+Nota sobre el modo QA-API
+-------------------------
+El issue es infra de pipeline interno (no expone HTTP API), por lo que los test cases
+auto-generados en qa/test-cases/3091.json (que apuntan a /intrale/platform/blob/main/docs/...)
+no aplican. La verificación se ejecutó corriendo los unit tests reales del entregable
+con `node --test` y haciendo smoke con `node -e` contra la API pública del módulo.

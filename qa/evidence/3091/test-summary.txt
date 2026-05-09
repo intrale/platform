@@ -1,0 +1,20 @@
+fatal: not a git repository (or any of the parent directories): .git
+✔ CA-4: evento con model path-traversal NO crashea, costo cae a 0 (70.1986ms)
+fatal: not a git repository (or any of the parent directories): .git
+✔ CA-4: provider explícito fuera de allowlist — costo cae a 0 (NO se infiere por modelo) (61.388ms)
+fatal: not a git repository (or any of the parent directories): .git
+[pricing] pricing.json ausente en 'C:\Users\ADMINI~1\AppData\Local\Temp\v3-agg-siSDpo\.pipeline\metrics\pricing.json' — usando tabla hardcoded de fallback
+✔ CA-5: pricing.json ausente — aggregator usa tabla hardcoded, dashboard sigue funcionando (70.9567ms)
+fatal: not a git repository (or any of the parent directories): .git
+[pricing] pricing.json malformado (JSON inválido: Expected property name or '}' in JSON at position 2 (line 1 column 3)) — usando tabla hardcoded de fallback
+✔ CA-5: pricing.json malformado — aggregator usa fallback, source_kind="fallback" (64.2257ms)
+✔ CA-7: aggregator NO referencia API keys en su código fuente (0.8205ms)
+✔ CA-6: aggregator NO hace fetch HTTP de pricing (0.6583ms)
+ℹ tests 69
+ℹ suites 0
+ℹ pass 69
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1917.6212
