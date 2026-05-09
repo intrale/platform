@@ -320,13 +320,24 @@ dashboard:
 #
 # Kill-switch operacional: `rm .pipeline/quota-exhausted.json` desbloquea.
 quota_detector:
+  # @deprecated #3077 (H5 multi-provider): la fuente de verdad pasó a
+  # `.pipeline/agent-models.json` → `providers.<id>.quota_error_types`.
+  # Esta clave queda como fallback para callers legacy de
+  # `quotaExhausted.detectFromResultEvent(evt, cfg)` que no resuelven
+  # providerDef desde agent-models. Se eliminará en una historia siguiente
+  # cuando todos los callers migren a `detectQuotaError(evt, providerDef)`.
+  # Documentado en docs/pipeline-multi-provider.md §3 (contrato quota_error_types).
+  #
   # Allowlist estricta de error_type que activan el flag (CA-1, CA-8 PO).
   # `rate_limit_error` (429 transitorio) NO va acá — se maneja con backoff/retry.
   error_types:
     - usage_limit_error
     - weekly_quota_exhausted
-  # CA-5: cap superior del campo `resets_at`. Fuera de [now+5min, now+max] usa
-  # `getNextWeeklyResetMs()` como fallback. 7 días cubre el ciclo semanal del Plan Max.
+  # @deprecated #3077: cap por provider en agent-models.json
+  # (`providers.<id>.resets_at_cap_max_days`). Mantenemos este valor como
+  # fallback para callers legacy. 7 días cubre el ciclo semanal del Plan Max
+  # Anthropic. OpenAI suele usar cuotas mensuales (31 días) — declarado en
+  # agent-models.json:providers.openai-codex.resets_at_cap_max_days.
   resets_at_cap_max_days: 7
   # Si `false`, el detector funciona pero no escribe `.pipeline/logs/quota-detector-*.log`.
   # Útil para apagar audit en caso de problema de espacio en disco — no debería

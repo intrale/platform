@@ -1,31 +1,42 @@
 // =============================================================================
-// quota-exhausted.js — Detector de cuota Anthropic agotada (#2974, hija de #2955)
+// quota-exhausted.js — Detector de cuota agotada multi-proveedor (#2974, #3077)
 //
-// Núcleo del modo fallback determinístico del pipeline V3. Cuando el CLI
-// claude-code reporta cuota agotada (Plan Max), este módulo:
+// Núcleo del modo fallback determinístico del pipeline V3. Cuando un CLI
+// de un provider de IA reporta cuota agotada, este módulo:
 //
 //   1. Persiste un flag JSON en `.pipeline/quota-exhausted.json` con
-//      `{ exhausted, resets_at, detected_at, pattern_matched }`.
-//   2. El pulpo consulta `isQuotaExhausted()` antes de cada spawn LLM.
-//      Skills determinísticos (`builder/tester/linter/delivery`) NO se gatean.
-//   3. Cuando `Date.now() > resets_at`, la lectura defensiva devuelve
+//      `{ exhausted, provider, model, resets_at, detected_at, pattern_matched }`.
+//   2. El pulpo consulta `shouldGateSpawn(skill, { provider })` antes de
+//      cada spawn LLM. Skills determinísticos
+//      (`builder/tester/linter/delivery`) NO se gatean.
+//   3. **Scope por provider** (#3077 SEC-1, SEC-5): si el flag activo es
+//      del provider X y un skill corre con provider Y, el spawn pasa.
+//      Esto da valor real al rediseño multi-provider — cuando Anthropic se
+//      agota, los skills configurados con OpenAI siguen corriendo.
+//   4. Cuando `Date.now() > resets_at`, la lectura defensiva devuelve
 //      `exhausted: false` y el módulo borra el flag (drenado natural).
-//      No hay loop de retry: el filesystem-como-cola hace el resto.
 //
-// CRITERIOS DE ACEPTACIÓN (referencia: issue #2974):
+// HISTORIA:
+// - #2974 (hija de #2955): detector inicial Anthropic-only.
+// - #3077 (H5 multi-provider): generalización con tabla `quota_error_types`
+//   por proveedor + scope per-provider + dispatcher por shape estructural.
 //
-//   CA-1 detectFromResultEvent SOLO matchea por shape estructurado del JSON
-//        stream (`type:'result' && is_error:true && error_type ∈ allowlist`).
-//        PROHIBIDO matching por substring sobre texto libre.
-//   CA-4 readDefensive: si el archivo está corrupto o manipulado,
-//        devuelve safe-default `{ exhausted: false }` y registra incidente.
-//   CA-5 capResetsAt: `resets_at` se acota en [now+5min, now+7d]; fuera
-//        de rango usa `getNextWeeklyResetMs()` como fallback.
-//   CA-6 writeJsonAtomic: write-tmp + fsync + rename, mode 0o600.
-//        ÚNICO ESCRITOR LEGÍTIMO: pulpo.js. Documentado como invariante.
-//   CA-7 audit log con sanitización (`raw_excerpt` sin `\n\r\t`).
-//   CA-11 KILL-SWITCH OPERACIONAL: si por bug el flag queda persistente,
-//         `rm .pipeline/quota-exhausted.json` desbloquea el pipeline.
+// CRITERIOS DE ACEPTACIÓN ACTIVOS:
+//
+//   CA-4 (#3077 SEC-3): dispatcher por provider con shape estructural
+//        explícito. Anthropic: stream-json. OpenAI/Codex: SSE.
+//        PROHIBIDO matchear por substring sobre texto libre.
+//   CA-5 (#3077 SEC-1): match cross-provider PROHIBIDO. detectQuotaError
+//        recibe `provider` y matchea SOLO contra el set del provider en uso.
+//   CA-7 (#3077 SEC-5): shouldGateSpawn consulta el provider del skill y
+//        gatea SOLO si coincide con el provider del flag activo.
+//   CA-9 (#3077 SEC-8): snapshot_threshold_90 queda exclusivamente en
+//        provider=anthropic. quota-snapshot-integration pasa el provider
+//        explícito al setFlag.
+//   CA-10 (#3077 SEC-7): cada línea del audit log incluye `provider` y `model`.
+//   CA-11 (#3077 SEC-4): raw_excerpt pasa por lib/redact.js antes de logear.
+//   CA-14 (#3077): backward-compat — flag persistido sin campo `provider`
+//        se lee como `provider: 'anthropic'` (default histórico pre-migración).
 //
 // INVARIANTE DE RACE (documentado por guru y security en el issue):
 //   El flag previene FUTUROS spawns, NO mata los in-flight. Los procesos
@@ -33,13 +44,18 @@
 //   error similar). Si el siguiente spawn también dispara el flag, set/set
 //   son idempotentes. No hay corrupción posible.
 //
-// SCHEMA del archivo `.pipeline/quota-exhausted.json`:
+// SCHEMA del archivo `.pipeline/quota-exhausted.json` (post-#3077):
 //   {
-//     exhausted: true,                              // siempre true cuando existe
-//     resets_at: "2026-05-12T00:00:00.000Z",        // ISO8601, dentro de [now+5min, now+7d]
+//     exhausted: true,
+//     provider: "anthropic",                        // (opcional, default 'anthropic' para backward-compat)
+//     model: "claude-opus-4-7",                     // (opcional, informativo)
+//     resets_at: "2026-05-12T00:00:00.000Z",        // ISO8601, dentro de [now+5min, now+maxDays]
 //     detected_at: "2026-05-05T03:14:22.123Z",      // ISO8601 del momento de detección
 //     pattern_matched: "usage_limit_error"          // valor de error_type del CLI
 //   }
+//
+// KILL-SWITCH OPERACIONAL: si por bug el flag queda persistente,
+//   `rm .pipeline/quota-exhausted.json` desbloquea el pipeline.
 //
 // Sin nuevas dependencias externas (Node puro: fs, path).
 // =============================================================================
@@ -51,6 +67,20 @@ const path = require('path');
 
 // Reutilizamos el helper canónico de getNextWeeklyResetMs (CA-5 fallback).
 const { getNextWeeklyResetMs } = require('./weekly-quota');
+
+// CA-11 (#3077 SEC-4): sanitizar raw_excerpt para evitar exfiltración pasiva
+// de keys/prompts en el audit log.
+let _redact = null;
+function getRedact() {
+    if (_redact) return _redact;
+    try {
+        _redact = require('./redact');
+    } catch {
+        // Defensa: si el módulo no carga (no debería), null-op.
+        _redact = { redactSensitive: (s) => s };
+    }
+    return _redact;
+}
 
 // -----------------------------------------------------------------------------
 // Paths y constantes
@@ -89,19 +119,62 @@ const DEFAULT_MAX_RESETS_AT_DAYS = 7;
 // CA-7: cap de raw_excerpt en log (defensa anti DoS de log size).
 const RAW_EXCERPT_MAX_CHARS = 200;
 
-// Allowlist por DEFAULT (CA-1, CA-8). Configurable vía config.yaml.
-// IMPORTANTE: `rate_limit_error` (429 transitorio) NO entra acá — eso se
-// maneja con backoff/retry, no con flag global del pipeline.
+// #3077 CA-6 (editorial): cap de pattern_matched en payload persistido.
+// 64 era suficiente para Anthropic; OpenAI/Codex puede emitir codes largos
+// como `tokens_per_minute_rate_limit_exceeded_for_organization_xxxxxx`.
+const PATTERN_MATCHED_MAX_CHARS = 128;
+
+// Default provider para backward-compat (#3077 CA-14): flags persistidos
+// pre-migración no tienen el campo `provider`. Al leer, los normalizamos a
+// `anthropic` (único provider activo antes de #3077).
+const DEFAULT_PROVIDER = 'anthropic';
+
+// Allowlist por DEFAULT (Anthropic-only — backward-compat #2974).
+// CONFIGURABLE: cuando se invoca con providerDef de agent-models.json, se
+// usa providerDef.quota_error_types en lugar de este default. Mantener este
+// constante por compatibilidad con tests/callers que llaman sin provider.
 //
-// `snapshot_threshold_90` (#3013, CA-12): trigger emitido por
+// `rate_limit_error` (429 transitorio) NO entra acá — eso se maneja con
+// backoff/retry, no con flag global del pipeline.
+//
+// `snapshot_threshold_90` (#3013): trigger emitido por
 // quota-snapshot-integration cuando el snapshot real reporta
-// `weekly_all_models_pct >= 90`. Permite gatear el pipeline ANTES de que
-// el CLI devuelva el 429. Documentado en docs/quota-tracking.md §3.
+// `weekly_all_models_pct >= 90`. Es Anthropic-específico (#3077 SEC-8).
 const DEFAULT_ERROR_TYPES = Object.freeze([
     'usage_limit_error',
     'weekly_quota_exhausted',
     'snapshot_threshold_90',
 ]);
+
+// #3077 SEC-2: meta-allowlist hardcoded de tipos de error de cuota por
+// provider. Si agent-models.json declara un valor fuera de este set, el caller
+// (lib/agent-models-validate.js → validateCrossReferences) hace fail-fast al
+// boot. Esta es la fuente única de verdad: los tests verifican que cada
+// provider en agent-models.json sólo declara error_types que existen acá.
+//
+// Tipos "externos" vienen del CLI del provider; tipos "internos" son emitidos
+// por integraciones del propio pipeline (snapshot_threshold_90).
+const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
+    anthropic: Object.freeze([
+        // Externos (CLI claude-code)
+        'usage_limit_error',
+        'weekly_quota_exhausted',
+        // Internos (#3013 snapshot integration)
+        'snapshot_threshold_90',
+        // Reservados para futuras extensiones documentadas
+        'plan_max_reset_required',
+    ]),
+    'openai-codex': Object.freeze([
+        // Externos (CLI codex / OpenAI)
+        'insufficient_quota',
+        'billing_hard_limit_reached',
+        'tokens_exhausted',
+    ]),
+    gemini: Object.freeze([
+        'quota_exceeded',
+        'resource_exhausted',
+    ]),
+});
 
 // -----------------------------------------------------------------------------
 // IO atómica (CA-6)
@@ -143,24 +216,65 @@ function writeJsonAtomic(filepath, data) {
 }
 
 // -----------------------------------------------------------------------------
-// Sanitización (CA-7)
+// Sanitización (CA-7 + #3077 CA-11/SEC-4)
 // -----------------------------------------------------------------------------
 
+// Patrones de API keys multi-proveedor — defensa en profundidad para
+// raw_excerpt de eventos del CLI (SSE de OpenAI/Codex puede emitir errores
+// con context que contiene fragmentos de la API key cuando el cliente
+// configuró auth incorrectamente). El módulo lib/redact.js no captura
+// patrones en texto libre — esta lista es complemento explícito hasta que
+// S2 (#3073) generalice la sanitización con regex multi-proveedor.
+//
+// Cada patrón es conservador: requiere prefijo + longitud mínima, evita
+// falsos positivos contra texto natural. Si un nuevo provider agrega un
+// patrón propio, sumarlo acá con review humano.
+const API_KEY_PATTERNS = [
+    // Anthropic + OpenAI (`sk-...`, 20+ chars opacos)
+    /\bsk-[A-Za-z0-9_\-]{16,}\b/g,
+    // Anthropic específico (`sk-ant-...`)
+    /\bsk-ant-[A-Za-z0-9_\-]{16,}\b/g,
+    // Google API keys (`AIza...`, 35 chars en total)
+    /\bAIza[0-9A-Za-z_\-]{30,}\b/g,
+    // Google OAuth tokens (`ya29...`)
+    /\bya29\.[0-9A-Za-z_\-]{20,}\b/g,
+    // Bearer token genérico (más permisivo: cualquier token opaco después de Bearer)
+    /\bBearer\s+[A-Za-z0-9_\-\.]{16,}/gi,
+    // JWT (3 segmentos base64url separados por puntos)
+    /\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b/g,
+];
+
 /**
- * Sanitiza el raw_excerpt antes de loguearlo (CWE-117 log injection).
- * Convierte CR/LF/TAB en espacio para que cada línea del audit log siga
- * siendo una entrada JSON válida e inyectable solo dentro de su propio
- * contexto.
+ * Sanitiza el raw_excerpt antes de loguearlo. Tres pasos:
+ *
+ *   1. Pasar por lib/redact.js (#3077 SEC-4): redacta JSON keys sensibles,
+ *      emails, query params, URL userinfo, paths absolutos.
+ *   2. Aplicar patrones de API keys multi-proveedor (sk-..., AIza..., Bearer)
+ *      como defensa en profundidad para texto libre (lib/redact no captura
+ *      patrones en strings sueltos). Cierra el vector "OpenAI emite eventos
+ *      de error con context que contiene la API key → audit log se vuelve
+ *      vector de exfiltración pasivo".
+ *   3. Strip de CR/LF/TAB (CWE-117 log injection): cada línea del audit
+ *      log debe seguir siendo una entrada JSON válida.
+ *   4. Truncar a RAW_EXCERPT_MAX_CHARS para defensa anti-DoS de log size.
  */
 function sanitizeRawExcerpt(raw) {
     if (raw == null) return '';
-    return String(raw)
-        .replace(/[\r\n\t]/g, ' ')
-        .slice(0, RAW_EXCERPT_MAX_CHARS);
+    let str = String(raw);
+    // 1. Redactar secretos JSON / headers / emails / URLs vía lib/redact.
+    str = String(getRedact().redactSensitive(str));
+    // 2. Redactar patrones de API keys en texto libre (multi-proveedor).
+    for (const pattern of API_KEY_PATTERNS) {
+        str = str.replace(pattern, '[REDACTED]');
+    }
+    // 3. Strip CR/LF/TAB.
+    str = str.replace(/[\r\n\t]/g, ' ');
+    // 4. Truncar.
+    return str.slice(0, RAW_EXCERPT_MAX_CHARS);
 }
 
 // -----------------------------------------------------------------------------
-// Schema validation y cap (CA-5)
+// Schema validation y cap (CA-5 + #3077 SEC-6)
 // -----------------------------------------------------------------------------
 
 /**
@@ -170,6 +284,10 @@ function sanitizeRawExcerpt(raw) {
  * usa `getNextWeeklyResetMs()` como fallback siempre que ese fallback esté
  * dentro del rango. Si el fallback también está fuera (improbable, pero por
  * defensa) se acota al límite superior.
+ *
+ * #3077 SEC-6: el `maxDays` ahora es obligatoriamente configurable por
+ * provider — Anthropic mantiene 7 días (semanal); OpenAI debe usar 31 días
+ * (mensual). El caller pasa el valor correcto desde providerDef.
  *
  * @param {string|number|Date} input candidato del CLI o del archivo persistido
  * @param {object} opts
@@ -214,6 +332,10 @@ function capResetsAt(input, opts = {}) {
 /**
  * Valida el shape del flag persistido. Devuelve `null` si no es válido.
  * No matchea por substring — solo valida tipos y rangos.
+ *
+ * #3077 CA-14: campo `provider` es opcional para backward-compat. Si no
+ * está presente, se asume `anthropic` (único provider activo antes de #3077).
+ * Análogamente, `model` es opcional/informativo.
  */
 function validateFlagShape(parsed) {
     if (!parsed || typeof parsed !== 'object') return null;
@@ -223,6 +345,14 @@ function validateFlagShape(parsed) {
     if (typeof parsed.pattern_matched !== 'string') return null;
     if (!Number.isFinite(Date.parse(parsed.resets_at))) return null;
     if (!Number.isFinite(Date.parse(parsed.detected_at))) return null;
+    // #3077: provider es opcional pero si está, debe ser string no vacío.
+    if (parsed.provider !== undefined) {
+        if (typeof parsed.provider !== 'string' || parsed.provider.length === 0) return null;
+    }
+    // model análogo: opcional, si está debe ser string.
+    if (parsed.model !== undefined) {
+        if (typeof parsed.model !== 'string') return null;
+    }
     return parsed;
 }
 
@@ -239,6 +369,9 @@ function validateFlagShape(parsed) {
  *   - Si `resets_at` ya pasó → `{ exhausted: false, reason: 'expired' }`,
  *     borra el archivo (drenado natural CA-7 del issue padre).
  *   - Si todo OK → `{ exhausted: true, ...payload }`.
+ *
+ * #3077 CA-14: el campo `provider` se rellena con DEFAULT_PROVIDER si el
+ * flag persistido viene sin él (backward-compat).
  */
 function readDefensive(opts = {}) {
     const file = flagFile();
@@ -292,6 +425,10 @@ function readDefensive(opts = {}) {
         return { exhausted: false, reason: 'schema_invalid' };
     }
 
+    // Backward-compat: provider opcional → default 'anthropic'.
+    const provider = valid.provider || DEFAULT_PROVIDER;
+    const model = valid.model || null;
+
     const resetsAtMs = Date.parse(valid.resets_at);
     if (now >= resetsAtMs) {
         // CA-7 del issue padre: drenado natural post-reset.
@@ -299,16 +436,20 @@ function readDefensive(opts = {}) {
         if (auditEnabled) {
             appendAudit({
                 event: 'drained_post_reset',
+                provider,
+                model,
                 error_type: valid.pattern_matched,
                 raw_excerpt: `resets_at=${valid.resets_at}`,
                 flag_set: false,
             });
         }
-        return { exhausted: false, reason: 'expired' };
+        return { exhausted: false, reason: 'expired', provider, model };
     }
 
     return {
         exhausted: true,
+        provider,
+        model,
         resets_at: valid.resets_at,
         detected_at: valid.detected_at,
         pattern_matched: valid.pattern_matched,
@@ -329,10 +470,46 @@ function isQuotaExhausted(opts = {}) {
  *   1. Drenado por `readDefensive` cuando `resets_at` ya pasó.
  *   2. Drenado proactivo cuando un spawn LLM termina exitoso (probó que
  *      la cuota volvió antes del `resets_at` calculado).
+ *
+ * #3077 CA-8: scope por provider — si el flag activo es de provider X y el
+ * caller intenta limpiar con provider Y, el flag NO se borra. Esto cierra
+ * el vector "spawn exitoso de OpenAI limpia el flag de Anthropic". Si el
+ * caller no pasa `provider`, conserva el comportamiento previo (limpia
+ * cualquier flag).
  */
 function clearFlag(opts = {}) {
     const file = flagFile();
     const auditEnabled = opts.auditLogEnabled !== false;
+    const callerProvider = opts.provider || null;
+
+    // #3077 CA-8: si pasaron provider, validar scope antes de borrar.
+    if (callerProvider) {
+        // Leer el flag actual sin disparar audit ni drenado por fecha.
+        try {
+            const raw = fs.readFileSync(file, 'utf8');
+            const parsed = JSON.parse(raw);
+            const flagProvider = (parsed && parsed.provider) || DEFAULT_PROVIDER;
+            if (flagProvider !== callerProvider) {
+                if (auditEnabled) {
+                    appendAudit({
+                        event: 'clear_skipped_provider_mismatch',
+                        provider: callerProvider,
+                        model: opts.model || null,
+                        error_type: null,
+                        raw_excerpt: `flag_provider=${flagProvider} caller_provider=${callerProvider}`,
+                        flag_set: true,
+                    });
+                }
+                return false;
+            }
+        } catch (e) {
+            // ENOENT / parse_error → caer al unlink (idempotente).
+            if (e && e.code !== 'ENOENT') {
+                // No-op para otros errores.
+            }
+        }
+    }
+
     let existed = false;
     try {
         fs.unlinkSync(file);
@@ -345,6 +522,8 @@ function clearFlag(opts = {}) {
     if (existed && auditEnabled) {
         appendAudit({
             event: opts.event || 'cleared',
+            provider: callerProvider,
+            model: opts.model || null,
             error_type: null,
             raw_excerpt: opts.reason || 'manual_or_post_success',
             flag_set: false,
@@ -361,21 +540,33 @@ function clearFlag(opts = {}) {
  * Persiste el flag de cuota agotada. Idempotente: escribir dos veces con el
  * mismo `pattern_matched` no rompe nada (CA-S4: race detector ↔ gate).
  *
+ * #3077:
+ *   - Acepta `provider` y `model` (opcionales, persistidos en el flag).
+ *   - `errorType` truncado a 128 chars (CA-6 editorial) para acomodar codes
+ *     largos de OpenAI tipo `tokens_per_minute_rate_limit_exceeded_for_org_x`.
+ *   - Si `provider` viene, se pasa también al audit log (CA-10 / SEC-7).
+ *
  * @param {object} opts
  * @param {string} opts.errorType valor del error_type del CLI (debe estar en allowlist)
+ * @param {string} [opts.provider] provider del agente (default DEFAULT_PROVIDER)
+ * @param {string} [opts.model] model del agente (informativo)
  * @param {string|number|Date} [opts.resetsAt] candidato; si falta o malformado, fallback
- * @param {number} [opts.maxDays] cap superior (default 7)
+ * @param {number} [opts.maxDays] cap superior (default DEFAULT_MAX_RESETS_AT_DAYS)
  * @param {number} [opts.now] Date.now() override (tests)
  * @param {boolean} [opts.auditLogEnabled] (default true)
  * @param {string} [opts.agent] skill del agente que disparó (para audit log)
  * @returns {{ flagPath: string, payload: object, source: 'input'|'fallback'|'cap_max' }}
  */
 function setFlag(opts = {}) {
-    const errorType = String(opts.errorType || '').slice(0, 64);
+    const errorType = String(opts.errorType || '').slice(0, PATTERN_MATCHED_MAX_CHARS);
+    const provider = opts.provider || DEFAULT_PROVIDER;
+    const model = opts.model || null;
     const now = Number.isFinite(opts.now) ? opts.now : Date.now();
     const cap = capResetsAt(opts.resetsAt, { maxDays: opts.maxDays, now });
     const payload = {
         exhausted: true,
+        provider,
+        ...(model ? { model } : {}),
         resets_at: cap.iso,
         detected_at: new Date(now).toISOString(),
         pattern_matched: errorType,
@@ -385,6 +576,8 @@ function setFlag(opts = {}) {
         appendAudit({
             event: 'flag_set',
             agent: opts.agent || null,
+            provider,
+            model,
             error_type: errorType,
             raw_excerpt: opts.rawExcerpt || `resets_at_source=${cap.source}`,
             flag_set: true,
@@ -394,13 +587,16 @@ function setFlag(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
-// Audit log (CA-7 del issue, CA-11 del padre)
+// Audit log (CA-7 del issue, CA-11 del padre, #3077 SEC-7)
 // -----------------------------------------------------------------------------
 
 /**
  * Append una entrada al audit log diario. Cada línea es JSON con shape
  * sanitizado. Best-effort: errores de IO se silencian para no romper el
  * pipeline (el detector NUNCA debe ser el causante de un crash).
+ *
+ * #3077 CA-10 / SEC-7: cada entry incluye `provider` y `model` para
+ * debugging multi-provider ("se gateó pero no sé quién").
  */
 function appendAudit(entry, opts = {}) {
     try {
@@ -409,6 +605,8 @@ function appendAudit(entry, opts = {}) {
             timestamp: ts,
             event: entry.event || null,
             agent: entry.agent || null,
+            provider: entry.provider || null,
+            model: entry.model || null,
             error_type: entry.error_type || null,
             raw_excerpt: sanitizeRawExcerpt(entry.raw_excerpt),
             flag_set: entry.flag_set === true,
@@ -422,31 +620,123 @@ function appendAudit(entry, opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
-// Detector estructurado (CA-1) — anti prompt-injection
+// Detector estructurado (CA-1, CA-4) — anti prompt-injection, multi-provider
 // -----------------------------------------------------------------------------
 
 /**
- * Detecta si un evento `result` del JSON stream del CLI claude-code indica
- * cuota agotada. SOLO matchea por shape estructurado. NUNCA matchea por
- * substring sobre texto libre.
+ * Handler Anthropic: matchea el shape del JSON stream del CLI claude-code.
  *
  *   Match: `evt.type === 'result' && evt.is_error === true && evt.error_type ∈ allowlist`
- *
- * @param {object} evt evento parseado del stream-json
- * @param {object} cfg config quota_detector (si null, usa defaults)
- * @returns {{ matched: boolean, errorType?: string }}
  */
-function detectFromResultEvent(evt, cfg = null) {
+function _detectAnthropic(evt, allowlist) {
     if (!evt || typeof evt !== 'object') return { matched: false };
     if (evt.type !== 'result') return { matched: false };
     if (evt.is_error !== true) return { matched: false };
     const errorType = typeof evt.error_type === 'string' ? evt.error_type : null;
     if (!errorType) return { matched: false };
+    if (!allowlist.includes(errorType)) return { matched: false };
+    return { matched: true, errorType };
+}
+
+/**
+ * Handler OpenAI/Codex: matchea el shape SSE del CLI codex.
+ *
+ *   Shape canónico (a confirmar/refinar cuando #3075 H3 desbloquee con CLI real):
+ *   `evt.event === 'error' && typeof evt.data === 'object' && evt.data.error.type ∈ allowlist`
+ *
+ *   Alternativa observada en algunos clientes OpenAI:
+ *   `evt.type === 'response.error' && evt.error.type ∈ allowlist`
+ *
+ * Soportamos ambos shapes para tolerancia. PROHIBIDO matchear por substring
+ * sobre texto libre. PROHIBIDO matchear contra campos controlados por el
+ * modelo (canal de contenido).
+ */
+function _detectOpenAI(evt, allowlist) {
+    if (!evt || typeof evt !== 'object') return { matched: false };
+
+    // Shape SSE canónico: { event: 'error', data: { error: { type, message } } }
+    if (evt.event === 'error' && evt.data && typeof evt.data === 'object') {
+        const errType = evt.data.error && typeof evt.data.error.type === 'string'
+            ? evt.data.error.type
+            : null;
+        if (errType && allowlist.includes(errType)) {
+            return { matched: true, errorType: errType };
+        }
+    }
+
+    // Shape alternativo: { type: 'response.error', error: { type } }
+    if (evt.type === 'response.error' && evt.error && typeof evt.error === 'object') {
+        const errType = typeof evt.error.type === 'string' ? evt.error.type : null;
+        if (errType && allowlist.includes(errType)) {
+            return { matched: true, errorType: errType };
+        }
+    }
+
+    return { matched: false };
+}
+
+/**
+ * Dispatcher por provider. Resuelve el handler por launcher/output_parser y
+ * matchea el evento contra el set de quota_error_types del provider en uso.
+ *
+ * #3077 SEC-1: PROHIBIDO match cross-provider. Si el provider del flag activo
+ * es X y el evento viene de un skill con provider Y, el match SOLO usa el
+ * allowlist de Y (no la unión de ambos).
+ *
+ * @param {object} parsedEvent evento parseado del stream del CLI
+ * @param {object} providerDef providerDef desde agent-models.json
+ * @param {object} [opts] reservado
+ * @returns {{ matched: boolean, errorType?: string, provider?: string }}
+ */
+function detectQuotaError(parsedEvent, providerDef, opts = {}) {
+    if (!providerDef || typeof providerDef !== 'object') {
+        return { matched: false };
+    }
+    const allowlist = Array.isArray(providerDef.quota_error_types)
+        ? providerDef.quota_error_types
+        : [];
+    if (allowlist.length === 0) return { matched: false };
+
+    const parser = providerDef.output_parser;
+    let result;
+    if (parser === 'anthropic-stream-json') {
+        result = _detectAnthropic(parsedEvent, allowlist);
+    } else if (parser === 'openai-sse') {
+        result = _detectOpenAI(parsedEvent, allowlist);
+    } else {
+        // Provider sin handler conocido (deterministic, gemini, ollama):
+        // no aplica detección de cuota basada en eventos.
+        return { matched: false };
+    }
+
+    if (result.matched && providerDef.launcher) {
+        // Inferir nombre de provider para info de retorno (informativo).
+        // El caller pasa el providerDef por nombre; acá solo devolvemos el
+        // launcher como hint. El nombre canónico lo conoce el caller.
+        return { ...result, launcherUsed: providerDef.launcher };
+    }
+    return result;
+}
+
+/**
+ * Detector legacy (#2974) — backward-compat para callers que aún no migraron
+ * a `detectQuotaError(evt, providerDef)`.
+ *
+ * Si `cfg` viene con `error_types` array, lo usa como allowlist (config legacy
+ * de config.yaml:quota_detector.error_types). Si no, usa DEFAULT_ERROR_TYPES.
+ *
+ * Asume shape Anthropic — para multi-provider los callers DEBEN migrar a
+ * detectQuotaError(evt, providerDef).
+ *
+ * @param {object} evt evento parseado del stream-json
+ * @param {object} cfg config quota_detector (legacy; si null, usa defaults)
+ * @returns {{ matched: boolean, errorType?: string }}
+ */
+function detectFromResultEvent(evt, cfg = null) {
     const allowlist = (cfg && Array.isArray(cfg.error_types) && cfg.error_types.length > 0)
         ? cfg.error_types
         : DEFAULT_ERROR_TYPES;
-    if (!allowlist.includes(errorType)) return { matched: false };
-    return { matched: true, errorType };
+    return _detectAnthropic(evt, allowlist);
 }
 
 /**
@@ -464,20 +754,39 @@ function isDeterministicSkill(skill) {
 
 /**
  * Decide si el spawn de un skill se debe gatear (es decir, NO spawnear).
+ *
+ * #3077 CA-7 / SEC-5: scope por provider. Si el caller pasa `provider`, el
+ * gate dispara SOLO si el flag activo es del MISMO provider. Esto da valor
+ * real al multi-provider — Anthropic agotado NO bloquea skills configurados
+ * con OpenAI o Google.
+ *
+ * Si el caller NO pasa provider, conserva el comportamiento previo (gate si
+ * cualquier flag activo) — backward-compat con callers sin migrar.
+ *
  * Uso típico en pulpo.js antes del `spawn(claude.exe, ...)`:
  *
- *     if (shouldGateSpawn(skill)) {
+ *     const skillProvider = agentModels.resolveProvider(skill);
+ *     if (shouldGateSpawn(skill, { provider: skillProvider })) {
  *         // dejar archivo en pendiente/, no spawnear, opcional notificar.
  *         return;
  *     }
  *
  * @param {string} skill
- * @param {object} [opts] mismo shape que readDefensive
+ * @param {object} [opts]
+ * @param {string} [opts.provider] provider del skill (para scope)
+ * @param {number} [opts.now] Date.now() override (tests)
  * @returns {boolean}
  */
 function shouldGateSpawn(skill, opts = {}) {
     if (isDeterministicSkill(skill)) return false;
-    return isQuotaExhausted(opts);
+    const flag = readDefensive(opts);
+    if (flag.exhausted !== true) return false;
+    // #3077 CA-7: si el caller pasó provider, requerir match exacto.
+    if (opts.provider) {
+        return flag.provider === opts.provider;
+    }
+    // Sin provider del caller: comportamiento legacy (cualquier flag bloquea).
+    return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -490,7 +799,8 @@ module.exports = {
     readDefensive,
     setFlag,
     clearFlag,
-    detectFromResultEvent,
+    detectFromResultEvent, // legacy (Anthropic-only)
+    detectQuotaError,      // #3077 — dispatcher por provider
     shouldGateSpawn,
     isDeterministicSkill,
     appendAudit,
@@ -503,9 +813,12 @@ module.exports = {
     // Constantes públicas
     DEFAULT_ERROR_TYPES,
     DEFAULT_MAX_RESETS_AT_DAYS,
+    DEFAULT_PROVIDER,
     MIN_RESETS_AT_MS,
     RAW_EXCERPT_MAX_CHARS,
+    PATTERN_MATCHED_MAX_CHARS,
     DETERMINISTIC_SKILLS,
+    KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
 
     // Paths (útiles para tests)
     flagFile,
@@ -514,4 +827,6 @@ module.exports = {
 
     // Hooks internos para tests (prefijo _)
     _writeJsonAtomic: writeJsonAtomic,
+    _detectAnthropic,
+    _detectOpenAI,
 };

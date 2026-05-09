@@ -43,12 +43,20 @@ const SHELL_REQUIRED_LAUNCHERS = Object.freeze([]);
 
 // Placeholders válidos en spawn_args_template. Cualquier {nombre} fuera de este
 // set hace fail-fast en boot (refinamiento Guru #3, CA-4).
+//
+// `model` se agregó en #3077 H5 para que el provider openai-codex pueda pasar
+// el modelo resuelto (default o model_override) al CLI con `--model {model}`.
+// El valor de model viene del propio agent-models.json (campos `model` /
+// `model_override`), que ya está validado contra ALLOWED_MODELS_BY_LAUNCHER en
+// este mismo módulo (validateCrossReferences) — no es input de usuario, no
+// abre vector de injection.
 const ALLOWED_PLACEHOLDERS = Object.freeze([
   'user_prompt',
   'system_file',
   'script_path',
   'issue',
   'trabajando_path',
+  'model',
 ]);
 
 // Denylist de flags peligrosos en spawn_args_template. Bloquea inyección de
@@ -239,6 +247,34 @@ function validateCrossReferences(config) {
           message: `provider "${skillDef.provider}" no es key de providers (válidos: [${providerKeys.join(', ')}])`,
           fix: `declarar el provider en la sección providers o cambiar el assignment del skill`,
         });
+      }
+    }
+  }
+
+  // #3077 SEC-2 — quota_error_types declarados por cada provider deben pertenecer
+  // a la meta-allowlist hardcoded en lib/quota-exhausted.js (defensa anti
+  // supply-chain: un atacante con permiso de PR no puede silenciar el detector
+  // declarando un error_type vacío o irrelevante). Carga lazy del módulo para
+  // evitar require-cycle al boot.
+  if (config.providers && typeof config.providers === 'object') {
+    let knownByProvider = null;
+    try {
+      knownByProvider = require('./quota-exhausted').KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
+    } catch { /* sin allowlist disponible no validamos cross — degradamos */ }
+    if (knownByProvider) {
+      for (const [providerKey, providerDef] of Object.entries(config.providers)) {
+        if (!providerDef || !Array.isArray(providerDef.quota_error_types)) continue;
+        const allowed = knownByProvider[providerKey];
+        if (!allowed) continue; // provider sin meta-allowlist (ej. deterministic) — no validamos
+        for (const errType of providerDef.quota_error_types) {
+          if (!allowed.includes(errType)) {
+            errors.push({
+              path: `#/providers/${providerKey}/quota_error_types`,
+              message: `error_type "${errType}" no está en la meta-allowlist de quota-exhausted.js (provider="${providerKey}", válidos: [${allowed.join(', ')}])`,
+              fix: `quitar "${errType}" de quota_error_types o agregarlo a KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER en lib/quota-exhausted.js`,
+            });
+          }
+        }
       }
     }
   }
