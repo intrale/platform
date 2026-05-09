@@ -34,7 +34,11 @@ const DEFAULT_PIPELINE_DIR = path.resolve(__dirname, '..');
 // Mismo set que pulpo.js — duplicado a propósito para no introducir un
 // require circular (pulpo → este módulo → pulpo). Si se cambia uno, cambiar
 // el otro. Test de coherencia en `__tests__/rest-mode-window.test.js`.
-const DETERMINISTIC_SKILLS = Object.freeze(['delivery', 'builder', 'linter', 'tester']);
+// El nombre del skill `build` viene de `config.yaml::pipelines.desarrollo.skills_por_fase.build`
+// — no es `builder`, aunque el script en disco se llame `skills-deterministicos/builder.js`.
+// Si esto se desincroniza con el set de pulpo.js, los builds quedan bloqueados durante
+// la ventana de descanso (regresión observada 2026-05-08).
+const DETERMINISTIC_SKILLS = Object.freeze(['delivery', 'build', 'linter', 'tester']);
 
 const DEFAULT_TIMEZONE = 'America/Argentina/Buenos_Aires';
 const DEFAULT_DAYS = Object.freeze([0, 1, 2, 3, 4, 5, 6]);

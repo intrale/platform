@@ -268,7 +268,7 @@ cost_anomaly_alert:
 
 # Modo descanso (#2890 PR-A, parte del épico #2882) — gating horario.
 # Durante la ventana configurada, sólo corren los skills determinísticos
-# (delivery, builder, linter, tester). El resto queda en `pendiente/` sin
+# (delivery, build, linter, tester). El resto queda en `pendiente/` sin
 # penalización (no consume rebote).
 #
 # La configuración funcional (active, start, end, timezone, days, manual)
