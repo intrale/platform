@@ -8250,6 +8250,50 @@ async function mainLoop() {
     log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
   }
 
+  // #3087 — Cron interno autoritativo para alertas de cambios en agent-models.json.
+  // Tickea cada AGENT_MODELS_CHECK_INTERVAL_MIN minutos. La idempotencia se basa
+  // en el cursor `agent-models-last-notified.json` que el módulo persiste solo:
+  // si HEAD == last_notified_sha → no re-emite. Sobrevive a reinicios sin perder
+  // ni duplicar avisos (CA-A-1 / CA-A-2 / CA-S6).
+  //
+  // El módulo es accesorio: si tira excepción, el pulpo SIGUE corriendo. La
+  // alerta es no-crítica para el funcionamiento del pipeline.
+  const AGENT_MODELS_CHECK_INTERVAL_MIN = 5;
+  let agentModelsTimer = null;
+  try {
+    const agentModelsAlert = require('./lib/agent-models-change-alert');
+    const tickAgentModels = () => {
+      try {
+        const prev = agentModelsAlert.readLastNotifiedSha(PIPELINE);
+        // HEAD del cwd del pulpo. La rama "protegida" la define el operador
+        // por convención (main); el cursor evita re-emitir en branch hopping.
+        let headSha = null;
+        try {
+          headSha = require('child_process').execFileSync(
+            'git',
+            ['rev-parse', 'HEAD'],
+            { cwd: ROOT, encoding: 'utf8', windowsHide: true }
+          ).trim();
+        } catch (_) { return; }
+        if (!headSha || headSha === prev) return;
+        const result = agentModelsAlert.sendAlert(prev, headSha, { pipelineDir: PIPELINE, cwd: ROOT });
+        if (result && result.alerts && result.alerts.length > 0) {
+          for (const a of result.alerts) {
+            log('agent-models', `Alerta encolada: from=${a.firstSha?.slice(0,7)} to=${a.lastSha?.slice(0,7)} commits=${a.commitCount} skills=[${a.skills_affected || ''}] coCommit=${a.coCommitSensitive}`);
+          }
+        }
+      } catch (err) {
+        log('agent-models', `tick error: ${err.message}`);
+      }
+    };
+    // Primer tick post-arranque (delay corto), después intervalo regular.
+    setTimeout(tickAgentModels, 30 * 1000);
+    agentModelsTimer = setInterval(tickAgentModels, AGENT_MODELS_CHECK_INTERVAL_MIN * 60 * 1000);
+    log('agent-models', `Cron iniciado: cada ${AGENT_MODELS_CHECK_INTERVAL_MIN}min, cursor en .pipeline/agent-models-last-notified.json`);
+  } catch (e) {
+    log('agent-models', `No se pudo iniciar el cron: ${e.message}`);
+  }
+
   while (running) {
     try {
       checkPauseFile();
