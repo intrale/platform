@@ -282,8 +282,26 @@ function isWorktreeSafeToDelete(wtPath, branch) {
     }).trim();
     const relevantChanges = status.split('\n').filter(l => {
       if (!l.trim()) return false;
-      const filepath = l.substring(3).trim();
-      return !filepath.startsWith('.claude/') && !filepath.startsWith('.claude\\');
+      // git status --porcelain: "XY filename" (2 status chars + space + path).
+      // Parseo robusto: descarta primeros 2 chars y limpia el separador opcional.
+      const filepath = l.length > 2 ? l.slice(2).replace(/^\s+/, '').replace(/^"|"$/g, '') : l.trim();
+      const norm = filepath.replace(/\\/g, '/');
+      // Patrones ignorables: artefactos generados por agentes/build, no son trabajo real.
+      const ignored = [
+        /^\.claude\//,
+        /^\.gradle\//,
+        /^\.gradle-temp\//,
+        /^\.kotlin\//,
+        /^node_modules\//,
+        /(^|\/)build\//,
+        /(^|\/)\.idea\//,
+        /(^|\/)\.DS_Store$/,
+        /(^|\/)Thumbs\.db$/i,
+        /(^|\/)bash\.exe\.stackdump$/i,
+        /\.pyc$/,
+        /\.log$/,
+      ];
+      return !ignored.some(re => re.test(norm));
     });
     if (relevantChanges.length > 0) return { safe: false, reason: `${relevantChanges.length} archivo(s) sin commitear` };
 
