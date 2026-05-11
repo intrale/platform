@@ -8537,11 +8537,10 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
     const agentModelsValidate = require('./lib/agent-models-validate');
     agentModelsValidate.validateOrExit({
       contextLabel: 'boot abortado',
-      // #3080 / S1 CA-2: fail-fast TOTAL al boot — si algún provider
-      // referenciado por un skill declara `credentials_env` y la env var no
-      // está en process.env, abortar antes de mainLoop. NO loguea valores
-      // (anti-leak): sólo nombres de env vars + paths jsonPointer.
-      checkEnv: true,
+      // checkEnv quedó en false (default): el setup actual autentica los
+      // skills LLM vía OAuth del CLI `claude` (Claude Max), no por env var.
+      // Activarlo rompe el boot del pulpo. Ver issue de seguimiento para
+      // reintroducirlo con awareness de launcher (claude=OAuth, otros=env).
     });
   } catch (err) {
     // Si el módulo de validación mismo crasha (no debería: ajv/loadSchema están
