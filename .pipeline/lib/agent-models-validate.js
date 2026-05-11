@@ -84,6 +84,57 @@ const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'none',
 ]);
 
+// Patrones de secrets hardcoded prohibidos en cualquier string del JSON
+// (#3080 / S1 multi-provider). Cubre prefijos públicos conocidos de
+// Anthropic, OpenAI, Google, GitHub, Slack, AWS, Telegram. Si alguien escribe
+// el valor crudo del secret en agent-models.json, la validación rechaza con
+// mensaje accionable.
+//
+// Defensa en profundidad complementaria a `additionalProperties:false`:
+// el schema ya impide agregar campos como `api_key` libres, pero un atacante
+// motivado podría intentar embedderlo en un campo válido tipo `model` o
+// `permissions_mode`. Esta lista lo bloquea por valor.
+//
+// IMPORTANTE: NO incluir prefijos genéricos que pueden aparecer
+// legítimamente en otros contextos (ej: `Bearer`, `eyJ` JWT) porque
+// generan falsos positivos. Cada entry acá es **prefijo público anunciado
+// por el provider** y no aparece en valores legítimos de configuración.
+const HARDCODED_SECRET_PATTERNS = Object.freeze([
+  { name: 'Anthropic key (sk-ant-)', re: /^sk-ant-[A-Za-z0-9_-]{6,}/ },
+  { name: 'OpenAI project key (sk-proj-)', re: /^sk-proj-[A-Za-z0-9_-]{6,}/ },
+  { name: 'OpenAI key (sk-)', re: /^sk-(?!ant-|proj-)[A-Za-z0-9_-]{6,}/ },
+  { name: 'Google API key (AIza)', re: /^AIza[A-Za-z0-9_-]{6,}/ },
+  { name: 'GitHub PAT (ghp_)', re: /^ghp_[A-Za-z0-9]{6,}/ },
+  { name: 'GitHub OAuth (gho_)', re: /^gho_[A-Za-z0-9]{6,}/ },
+  { name: 'GitHub user-to-server (ghu_)', re: /^ghu_[A-Za-z0-9]{6,}/ },
+  { name: 'GitHub server-to-server (ghs_)', re: /^ghs_[A-Za-z0-9]{6,}/ },
+  { name: 'GitHub refresh (ghr_)', re: /^ghr_[A-Za-z0-9]{6,}/ },
+  { name: 'Google OAuth (ya29.)', re: /^ya29\.[A-Za-z0-9_-]{6,}/ },
+  { name: 'Slack bot (xoxb-)', re: /^xoxb-[A-Za-z0-9-]{6,}/ },
+  { name: 'Slack user (xoxp-)', re: /^xoxp-[A-Za-z0-9-]{6,}/ },
+  { name: 'AWS access key (AKIA/ASIA)', re: /^(AKIA|ASIA)[A-Z0-9]{14,}$/ },
+  { name: 'Telegram bot token', re: /^\d{8,}:[A-Za-z0-9_-]{30,}$/ },
+  { name: 'Claude internal (claude_)', re: /^claude_[A-Za-z0-9_-]{6,}/ },
+]);
+
+// Allowlist de env vars referenciables vía `${VAR}` en `credentials_env`
+// del JSON. Evita que un atacante con write-access al config declare
+// `${PATH}`, `${AWS_SECRET_ACCESS_KEY}` u otra var sensible y la exfiltre
+// al spawn del provider equivocado (refinamiento Security #3 de #3080).
+//
+// Convención: VAR de credenciales del provider — siempre termina en
+// `_API_KEY`, `_TOKEN` o equivalente reconocible. Las vars del SO (PATH,
+// HOME, etc.) NO van acá: las gestiona `build-child-env.js` vía SYSTEM_ALLOWLIST.
+const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'OLLAMA_HOST',
+]);
+
 // Exit codes accionables (CA-2 + UX guideline).
 const EXIT_CODES = Object.freeze({
   OK: 0,
@@ -208,10 +259,87 @@ function validateSpawnArgsTemplate(template, providerKey) {
 }
 
 /**
+ * Camina recursivamente el config buscando strings que matcheen patrones de
+ * secrets hardcoded conocidos (#3080 / S1). Devuelve errores con jsonPath
+ * estilo JSON Pointer.
+ *
+ * NO loguea el valor encontrado — sólo el nombre del patrón y el path.
+ * Razón: la salida de validate() puede llegar a Telegram/PDF/dashboard, y
+ * si imprimimos el valor estamos exfiltrando lo que veníamos a proteger.
+ */
+function validateNoHardcodedSecrets(node, errors, currentPath) {
+  if (typeof node === 'string') {
+    for (const { name, re } of HARDCODED_SECRET_PATTERNS) {
+      if (re.test(node)) {
+        errors.push({
+          path: currentPath || '#/',
+          message: `valor hardcoded prohibido: parece un ${name}. Usar referencia env var "\${VAR_NAME}" en su lugar`,
+          fix: 'eliminar el valor literal y declarar la credencial vía env var (ver docs/secrets-inventory.md)',
+        });
+        break; // un match por string es suficiente, no spamear con N matches del mismo string
+      }
+    }
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      validateNoHardcodedSecrets(node[i], errors, `${currentPath}/${i}`);
+    }
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const key of Object.keys(node)) {
+      // Skip $schema — ref a schema con URL, no es valor de credencial.
+      if (key === '$schema' && currentPath === '#') continue;
+      validateNoHardcodedSecrets(node[key], errors, `${currentPath}/${key}`);
+    }
+  }
+}
+
+/**
+ * Wrapper que devuelve el array de errores (ergonómico para tests). El walker
+ * principal `validateNoHardcodedSecrets` modifica un array por side-effect
+ * para evitar concatenación recursiva costosa con árboles grandes.
+ */
+function findHardcodedSecrets(node) {
+  const errors = [];
+  validateNoHardcodedSecrets(node, errors, '#');
+  return errors;
+}
+
+/**
+ * Valida que cada string en `credentials_env` esté en
+ * ALLOWED_CREDENTIAL_ENV_VARS. Bloquea declaraciones tipo `PATH`,
+ * `AWS_SECRET_ACCESS_KEY` que exfiltrarían vars sensibles del operador al
+ * child del provider equivocado (refinamiento Security #3 de #3080).
+ */
+function validateCredentialsEnvAllowlist(config) {
+  const errors = [];
+  if (!config || !config.providers || typeof config.providers !== 'object') return errors;
+  for (const [providerKey, providerDef] of Object.entries(config.providers)) {
+    if (!providerDef || !Array.isArray(providerDef.credentials_env)) continue;
+    for (let i = 0; i < providerDef.credentials_env.length; i++) {
+      const v = providerDef.credentials_env[i];
+      if (typeof v !== 'string') continue;
+      if (!ALLOWED_CREDENTIAL_ENV_VARS.includes(v)) {
+        errors.push({
+          path: `#/providers/${providerKey}/credentials_env/${i}`,
+          message: `env var "${v}" no está en ALLOWED_CREDENTIAL_ENV_VARS (válidas: [${ALLOWED_CREDENTIAL_ENV_VARS.join(', ')}])`,
+          fix: 'usar una env var de credenciales conocida o agregar la nueva a ALLOWED_CREDENTIAL_ENV_VARS en lib/agent-models-validate.js (decisión de seguridad — requiere review)',
+        });
+      }
+    }
+  }
+  return errors;
+}
+
+/**
  * Cross-checks que JSON Schema vanilla no expresa (refinamiento Guru #2):
  *   - default_provider debe ser key de providers.
  *   - skills.<x>.provider debe ser key de providers.
  *   - placeholders + denylist en spawn_args_template (delegado a validateSpawnArgsTemplate).
+ *   - secrets hardcoded en cualquier string (validateNoHardcodedSecrets).
+ *   - credentials_env contra allowlist (validateCredentialsEnvAllowlist).
  */
 function validateCrossReferences(config) {
   const errors = [];
@@ -251,6 +379,12 @@ function validateCrossReferences(config) {
     }
   }
 
+  // Denylist anti-secret-hardcoded (#3080 / S1 CA-3).
+  validateNoHardcodedSecrets(config, errors, '#');
+
+  // Allowlist de env vars de credenciales (#3080 / S1 CA-3 refinamiento).
+  errors.push(...validateCredentialsEnvAllowlist(config));
+
   // #3077 SEC-2 — quota_error_types declarados por cada provider deben pertenecer
   // a la meta-allowlist hardcoded en lib/quota-exhausted.js (defensa anti
   // supply-chain: un atacante con permiso de PR no puede silenciar el detector
@@ -282,14 +416,73 @@ function validateCrossReferences(config) {
   return errors;
 }
 
+/**
+ * Verifica que cada `credentials_env` declarada por un provider efectivamente
+ * referenciado por algún skill esté presente en `processEnv`. Boot fail-fast
+ * (#3080 / S1 CA-2): si falta una credencial, abortar antes de adquirir el
+ * singleton del pulpo, con mensaje accionable.
+ *
+ * Razón "efectivamente referenciado": un provider declarado pero sin skills
+ * asignados (ej: openai-codex en rollout futuro) NO requiere credencial
+ * inyectada al boot. Esto evita rebote falso para el operador que tenga
+ * agent-models.json con providers preparados pero no en uso.
+ *
+ * Devuelve array de errores con shape estándar (path, message, fix).
+ *
+ * REGLAS DE NO-LEAK:
+ *   - El mensaje NUNCA contiene el valor de una env var (ni presente ni esperado).
+ *   - El mensaje sólo nombra la env var faltante.
+ *   - El caller NO debe agregar `process.env` al panic dump.
+ */
+function validateCredentialsEnvPresence(config, processEnv) {
+  const errors = [];
+  if (!config || !config.providers || !config.skills) return errors;
+  if (!processEnv || typeof processEnv !== 'object') return errors;
+
+  // Set de providers efectivamente referenciados por algún skill.
+  const referencedProviders = new Set();
+  if (config.default_provider) referencedProviders.add(config.default_provider);
+  for (const [, skillDef] of Object.entries(config.skills)) {
+    if (skillDef && typeof skillDef.provider === 'string') {
+      referencedProviders.add(skillDef.provider);
+    }
+  }
+
+  for (const providerName of referencedProviders) {
+    const providerDef = config.providers[providerName];
+    if (!providerDef) continue; // ya lo agarra validateCrossReferences
+    if (!Array.isArray(providerDef.credentials_env)) continue;
+    for (const envVar of providerDef.credentials_env) {
+      if (typeof envVar !== 'string' || !envVar) continue;
+      // Presencia en processEnv. Una string vacía NO cuenta como "seteada"
+      // — hace fail-fast igual (es lo que pasa cuando alguien hace
+      // `export ANTHROPIC_API_KEY=` sin valor por error).
+      if (processEnv[envVar] === undefined || processEnv[envVar] === '') {
+        errors.push({
+          path: `#/providers/${providerName}/credentials_env`,
+          message: `provider "${providerName}" requiere env var ${envVar} pero no está presente en process.env`,
+          fix: `setear ${envVar} antes de arrancar el pulpo, o cambiar agent-models.json para asignar los skills a un provider con credencial disponible. Ver docs/runbooks/credential-rotation.md`,
+        });
+      }
+    }
+  }
+  return errors;
+}
+
 // ─── API principal: validate(jsonPath) ───────────────────────────────────────
 
 /**
  * Valida `agent-models.json` contra el schema y los cross-checks.
  * Devuelve `{ ok, errors, exitCode, config }` sin lanzar (CA-2: el caller decide).
+ *
+ * Opciones:
+ *   - `schemaPath`: ruta al schema (default: CANONICAL_SCHEMA_PATH).
+ *   - `processEnv`: si se pasa, ejecuta validateCredentialsEnvPresence.
+ *     Si no, salta (útil para CLI / pre-commit donde no aplica chequeo de env).
  */
 function validate(jsonPath = CANONICAL_JSON_PATH, options = {}) {
   const schemaPath = options.schemaPath || CANONICAL_SCHEMA_PATH;
+  const processEnv = options.processEnv;
 
   // 1. Toolchain check — ajv disponible.
   const ajvResult = tryLoadAjv();
@@ -388,7 +581,13 @@ function validate(jsonPath = CANONICAL_JSON_PATH, options = {}) {
   // 6. Cross-validations (independiente del schema, siempre corre).
   const crossErrors = validateCrossReferences(config);
 
-  const allErrors = [...schemaErrors, ...crossErrors];
+  // 7. Validación de env vars presentes (sólo si el caller pasó processEnv).
+  //    Boot del pulpo lo activa; CLI/pre-commit lo deja en undefined.
+  const envErrors = processEnv
+    ? validateCredentialsEnvPresence(config, processEnv)
+    : [];
+
+  const allErrors = [...schemaErrors, ...crossErrors, ...envErrors];
 
   return {
     ok: allErrors.length === 0,
@@ -509,9 +708,17 @@ function validateOrExit(options = {}) {
     contextLabel = 'boot abortado',
     onErrorWrite = (msg) => { process.stderr.write(msg + '\n'); },
     exitFn = (code) => process.exit(code),
+    // #3080 / S1 CA-2: si checkEnv:true, valida `credentials_env` contra
+    // process.env. Default false para mantener backwards-compat con tests
+    // y CLI; el boot del pulpo lo setea a true.
+    checkEnv = false,
+    processEnv = process.env,
   } = options;
 
-  const result = validate(jsonPath, { schemaPath });
+  const result = validate(jsonPath, {
+    schemaPath,
+    processEnv: checkEnv ? processEnv : undefined,
+  });
   if (result.ok) return result;
 
   const msg = formatAllErrors(result.errors, { contextLabel, filePath: jsonPath });
@@ -650,6 +857,8 @@ module.exports = {
   ALLOWED_PLACEHOLDERS,
   DENIED_FLAGS,
   ALLOWED_OUTPUT_PARSERS,
+  HARDCODED_SECRET_PATTERNS,
+  ALLOWED_CREDENTIAL_ENV_VARS,
   EXIT_CODES,
   CANONICAL_SCHEMA_PATH,
   CANONICAL_JSON_PATH,
@@ -664,6 +873,10 @@ module.exports = {
   getEffectiveSchema,
   validateSpawnArgsTemplate,
   validateCrossReferences,
+  validateNoHardcodedSecrets,
+  findHardcodedSecrets,
+  validateCredentialsEnvAllowlist,
+  validateCredentialsEnvPresence,
   formatError,
   formatAllErrors,
   parseJsonOrJsonc,

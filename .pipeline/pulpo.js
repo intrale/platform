@@ -8250,6 +8250,45 @@ async function mainLoop() {
     log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
   }
 
+  // #3080 / S1 multi-provider — Cron de rotación de credenciales.
+  // Tick interno cada `credential_rotation.tick_ms` (default 1h). Lee
+  // `docs/secrets-inventory.md`, calcula T-14/T-7/T-3/T-1/T-0 contra
+  // `expires_at` (UTC), notifica al owner por Telegram. Idempotente:
+  // estado en `.pipeline/credential-reminder-state.json`.
+  // Si la primera evaluación falla (ej: inventory no existe en main aún),
+  // NO matamos el pulpo — el cron es accesorio.
+  try {
+    const credentialRotationCron = require('./lib/credential-rotation-cron');
+    const cfgRoot = loadConfig() || {};
+    const tickMs = (cfgRoot.credential_rotation && cfgRoot.credential_rotation.tick_ms)
+      || (60 * 60 * 1000);  // 1h default
+    const runTick = () => {
+      try {
+        const result = credentialRotationCron.runRotationTick({
+          pipelineDir: PIPELINE,
+          now: new Date(),
+          sendTelegramFn: sendTelegram,
+          log: (msg) => log('credential-rotation', msg.replace(/^\[rotation-cron\] /, '')),
+        });
+        if (result.alerts && result.alerts.length > 0) {
+          log('credential-rotation', `Tick generó ${result.alerts.length} alerta(s)`);
+        }
+        for (const e of result.errors || []) {
+          log('credential-rotation', `WARN ${e.stage}: ${e.message}`);
+        }
+      } catch (err) {
+        log('credential-rotation', `Tick excepción no capturada: ${err.message}`);
+      }
+    };
+    // Primera evaluación al arrancar — útil cuando el pulpo restartea cerca
+    // de un threshold y el operador no espera 1h por el aviso.
+    runTick();
+    setInterval(runTick, tickMs);
+    log('credential-rotation', `Cron iniciado: tick cada ${Math.round(tickMs / 60000)}min`);
+  } catch (e) {
+    log('credential-rotation', `No se pudo iniciar el cron: ${e.message}`);
+  }
+
   // #3087 — Cron interno autoritativo para alertas de cambios en agent-models.json.
   // Tickea cada AGENT_MODELS_CHECK_INTERVAL_MIN minutos. La idempotencia se basa
   // en el cursor `agent-models-last-notified.json` que el módulo persiste solo:
@@ -8482,6 +8521,11 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
     const agentModelsValidate = require('./lib/agent-models-validate');
     agentModelsValidate.validateOrExit({
       contextLabel: 'boot abortado',
+      // #3080 / S1 CA-2: fail-fast TOTAL al boot — si algún provider
+      // referenciado por un skill declara `credentials_env` y la env var no
+      // está en process.env, abortar antes de mainLoop. NO loguea valores
+      // (anti-leak): sólo nombres de env vars + paths jsonPointer.
+      checkEnv: true,
     });
   } catch (err) {
     // Si el módulo de validación mismo crasha (no debería: ajv/loadSchema están
