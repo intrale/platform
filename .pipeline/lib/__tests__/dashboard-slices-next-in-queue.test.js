@@ -194,6 +194,111 @@ test('nextInQueue: limit recorta despues del filtrado por allowlist', () => {
     }
 });
 
+// =============================================================================
+// Regresión #3145 — Artifacts auxiliares no son markers de skill.
+//
+// `nextInQueue` listaba `3076.po.comment.md` como agente "po.comment.md" en
+// la cola (caso real visto el 2026-05-11). El listador filtra ahora cualquier
+// archivo con > 2 segmentos, además de los sufijos típicos.
+// =============================================================================
+test('nextInQueue: ignora .comment.md como marker fantasma', () => {
+    clearPause();
+    const PIPELINE = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-niq-artifact-'));
+    try {
+        const sub = path.join(PIPELINE, 'definicion', 'criterios', 'pendiente');
+        fs.mkdirSync(sub, { recursive: true });
+        // Marker real + artifact con > 2 segmentos
+        fs.writeFileSync(path.join(sub, '3076.pipeline-dev'), '');
+        fs.writeFileSync(path.join(sub, '3076.po.comment.md'), 'criterios');
+        const state = {
+            config: { concurrencia: { 'pipeline-dev': 2 } },
+            allFases: [{ pipeline: 'definicion', fase: 'criterios' }],
+            issueMatrix: { '3076': { title: 'x', bounces: 0, fases: {} } },
+            etaAverages: {},
+        };
+        const out = slices.nextInQueue(state, { PIPELINE }, 10);
+        assert.equal(out.length, 1, 'solo el marker real debe aparecer');
+        assert.equal(out[0].skill, 'pipeline-dev');
+        assert.equal(out.find(o => o.skill === 'po.comment.md'), undefined);
+    } finally {
+        try { fs.rmSync(PIPELINE, { recursive: true, force: true }); } catch {}
+    }
+});
+
+test('nextInQueue: ignora .guidance.txt y .reason.json como markers fantasma', () => {
+    clearPause();
+    const PIPELINE = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-niq-artifact2-'));
+    try {
+        const sub = path.join(PIPELINE, 'desarrollo', 'dev', 'pendiente');
+        fs.mkdirSync(sub, { recursive: true });
+        fs.writeFileSync(path.join(sub, '3075.pipeline-dev'), '');
+        fs.writeFileSync(path.join(sub, '3075.pipeline-dev.guidance.txt'), 'pista');
+        fs.writeFileSync(path.join(sub, '3075.pipeline-dev.reason.json'), '{}');
+        const state = {
+            config: { concurrencia: { 'pipeline-dev': 2 } },
+            allFases: [{ pipeline: 'desarrollo', fase: 'dev' }],
+            issueMatrix: { '3075': { title: 'x', bounces: 0, fases: {} } },
+            etaAverages: {},
+        };
+        const out = slices.nextInQueue(state, { PIPELINE }, 10);
+        assert.equal(out.length, 1, 'solo el marker real debe aparecer');
+        assert.equal(out[0].skill, 'pipeline-dev');
+    } finally {
+        try { fs.rmSync(PIPELINE, { recursive: true, force: true }); } catch {}
+    }
+});
+
+// =============================================================================
+// Regresión #3145 (Bug 2) — Early-break no se consume con items fuera de allowlist.
+//
+// Antes del fix: `if (out.length >= limit * 4) break;` se evaluaba ANTES de
+// filtrar por allowlist. Una fase con >= limit*4 items legacy fuera de
+// allowlist comía el early-break y ocultaba items reales de fases posteriores.
+//
+// Ahora el filtro de allowlist está dentro del loop, así que items
+// descartados ni se cuentan para el early-break.
+// =============================================================================
+test('nextInQueue: backlog legacy fuera de allowlist no oculta items reales de otras fases', () => {
+    clearPause();
+    // limit=2 → early-break en out.length >= 8
+    // Simulamos 12 items legacy en validacion/pendiente (todos fuera de allowlist)
+    // + 1 item real en desarrollo/dev/pendiente (dentro de allowlist)
+    const PIPELINE = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-niq-earlybreak-'));
+    try {
+        const legacyDir = path.join(PIPELINE, 'desarrollo', 'validacion', 'pendiente');
+        fs.mkdirSync(legacyDir, { recursive: true });
+        for (let i = 1; i <= 12; i++) {
+            fs.writeFileSync(path.join(legacyDir, `${1000 + i}.ux`), '');
+        }
+        const devDir = path.join(PIPELINE, 'desarrollo', 'dev', 'pendiente');
+        fs.mkdirSync(devDir, { recursive: true });
+        fs.writeFileSync(path.join(devDir, '3075.pipeline-dev'), '');
+
+        pp.setPartialPause([3075], { source: 'test' });
+
+        const issueMatrix = { '3075': { title: 'real', bounces: 0, fases: {} } };
+        for (let i = 1; i <= 12; i++) {
+            issueMatrix[String(1000 + i)] = { title: `legacy ${i}`, bounces: 0, fases: {} };
+        }
+        const state = {
+            config: { concurrencia: { 'pipeline-dev': 2, ux: 1 } },
+            // OJO: orden importa — validacion se procesa ANTES que dev
+            allFases: [
+                { pipeline: 'desarrollo', fase: 'validacion' },
+                { pipeline: 'desarrollo', fase: 'dev' },
+            ],
+            issueMatrix,
+            etaAverages: {},
+        };
+        const out = slices.nextInQueue(state, { PIPELINE }, 2);
+        assert.equal(out.length, 1, 'el item real de la fase posterior debe aparecer');
+        assert.equal(out[0].issue, '3075');
+    } finally {
+        clearPause();
+        try { fs.rmSync(PIPELINE, { recursive: true, force: true }); } catch {}
+    }
+});
+
 // Cleanup: evita dejar el TMP_DIR colgando en /tmp después de los tests.
 test.after(() => {
     try { fs.rmSync(TMP_DIR, { recursive: true, force: true }); } catch {}

@@ -34,6 +34,19 @@ const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 
+// Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
+// y cualquier filename con > 2 segmentos). Compartido con human-block para
+// que ambos listadores excluyan los mismos fantasmas. Fallback defensivo si
+// el módulo no carga.
+let isMarkerArtifact;
+try { ({ isMarkerArtifact } = require('./human-block')); } catch { /* opcional */ }
+if (typeof isMarkerArtifact !== 'function') {
+    isMarkerArtifact = (name) => name.split('.').length > 2
+        || name.endsWith('.reason.json')
+        || name.endsWith('.guidance.txt')
+        || name.endsWith('.comment.md');
+}
+
 function isDeterministicSkill(skill) {
     return DETERMINISTIC_SKILLS.has(String(skill || '').trim().toLowerCase());
 }
@@ -101,22 +114,6 @@ function recentlyFinished(state, limit = 3, opts = {}) {
     return out.slice(0, limit);
 }
 
-// #3023 — Si está en pausa parcial, filtra `items` dejando sólo los que
-// están en la allowlist; otros estados (running/paused) NO filtran (la
-// pausa total se renderiza con el banner global, fuera de alcance).
-//
-// Usa `isIssueAllowedInState` para evitar la trampa string↔number: los
-// items de cola exponen `item.issue` como string (`f.split('.')[0]`) pero
-// `allowedIssues` viene como `number[]`. La función helper hace
-// `normalizeIssue()` por dentro y resuelve la coerción correctamente.
-function applyPartialPauseFilter(items, ppState) {
-    if (!ppState || ppState.mode !== 'partial_pause') return items;
-    if (!partialPause || typeof partialPause.isIssueAllowedInState !== 'function') {
-        return items;
-    }
-    return items.filter(item => partialPause.isIssueAllowedInState(item.issue, ppState));
-}
-
 function nextInQueue(state, ctx, limit = 3, opts = {}) {
     const PIPELINE = ctx.PIPELINE;
     const out = [];
@@ -135,17 +132,43 @@ function nextInQueue(state, ctx, limit = 3, opts = {}) {
         }
     }
 
+    // Resolver pipelineMode UNA vez antes del loop. Necesario para filtrar
+    // inline contra la allowlist (ver más abajo) y evitar que el early-break
+    // de `out.length >= limit * 4` se consuma con items que después van a
+    // descartarse por pausa parcial.
+    //
+    // `opts.pipelineMode` permite a callers (route handler, tests) inyectar
+    // el modo ya leído. Si no se pasa, se lee del filesystem vía el módulo
+    // `partial-pause` (lectura barata, dos `existsSync` + un `readFileSync`).
+    let ppState = opts.pipelineMode || null;
+    if (!ppState && partialPause && typeof partialPause.getPipelineMode === 'function') {
+        try { ppState = partialPause.getPipelineMode(); } catch { ppState = null; }
+    }
+    const ppActive = !!(ppState && ppState.mode === 'partial_pause'
+        && partialPause && typeof partialPause.isIssueAllowedInState === 'function');
+
     const seen = new Set();
     for (const { pipeline: pName, fase } of state.allFases || []) {
         const dir = path.join(PIPELINE, pName, fase, 'pendiente');
         let files = [];
-        try { files = fs.readdirSync(dir).filter(f => !f.startsWith('.')); } catch { continue; }
+        // Filtrar artifacts (.guidance.txt, .reason.json, .comment.md, etc.)
+        // para que no se traten como markers fantasma (ej: `3076.po.comment.md`
+        // aparecía como agente "po.comment.md" en la cola).
+        try { files = fs.readdirSync(dir).filter(f => !f.startsWith('.') && !isMarkerArtifact(f)); } catch { continue; }
         for (const f of files) {
             const issue = f.split('.')[0];
             const skill = f.split('.').slice(1).join('.');
             const key = `${issue}.${skill}`;
             if (seen.has(key)) continue;
             seen.add(key);
+
+            // Si hay pausa parcial, filtrar inline ANTES del push. Si no
+            // filtramos acá, una fase con muchos items fuera de allowlist
+            // (típico: `validacion/pendiente/` con backlog histórico de
+            // ~40 issues legacy) consume el early-break y oculta items
+            // reales de fases posteriores (dev, aprobación, etc.).
+            if (ppActive && !partialPause.isIssueAllowedInState(issue, ppState)) continue;
+
             const data = state.issueMatrix?.[issue];
             const load = skillLoad[skill] || { running: 0, max: 0 };
             const slotFree = load.running < load.max;
@@ -166,24 +189,11 @@ function nextInQueue(state, ctx, limit = 3, opts = {}) {
         if (out.length >= limit * 4) break;
     }
 
-    // #3023 — Filtrar por allowlist ANTES del sort para no descartar items
-    // priorizados. En la práctica el sort es estable y da el mismo resultado,
-    // pero conceptualmente: filtrar primero, sortear después.
-    //
-    // `opts.pipelineMode` permite a callers (route handler, tests) inyectar
-    // el modo ya leído. Si no se pasa, se lee del filesystem vía el módulo
-    // `partial-pause` (lectura barata, dos `existsSync` + un `readFileSync`).
-    let ppState = opts.pipelineMode || null;
-    if (!ppState && partialPause && typeof partialPause.getPipelineMode === 'function') {
-        try { ppState = partialPause.getPipelineMode(); } catch { ppState = null; }
-    }
-    const filtered = applyPartialPauseFilter(out, ppState);
-
-    filtered.sort((a, b) => {
+    out.sort((a, b) => {
         if (a.slotFree !== b.slotFree) return a.slotFree ? -1 : 1;
         return (b.bounces || 0) - (a.bounces || 0);
     });
-    return filtered.slice(0, limit);
+    return out.slice(0, limit);
 }
 
 function headerSlice(state, ctx) {
