@@ -1,120 +1,72 @@
-QA Structural Validation — Issue #3092
-=======================================
-
-Issue: feat(metrics): migrar weekly-quota.js a quotaUsage(provider, ...) [M2 multi-provider]
-Labels: enhancement, Ready, tipo:infra, priority:medium, area:backend, size:medium, area:pipeline
-QA_MODE asignado por pulpo: api  (override → structural por tipo:infra)
-Branch dev: agent/3092-pipeline-dev @ 7c47fccf
-
-NOTA SOBRE EL MODO
-==================
-El pulpo asignó QA_MODE=api por el label area:backend, pero el issue es de pipeline
-interno (Node.js puro, modificación de .pipeline/lib/weekly-quota.js). No tiene
-endpoint HTTP que ejercitar contra Lambda. Los test cases generados como fallback
-en qa/test-cases/3092.json apuntan a URLs aleatorias de github.com (inservibles).
-
-Validación correcta: structural (verificación de archivos + tests del módulo).
-
-CRITERIOS DE ACEPTACIÓN — VERIFICACIÓN EMPÍRICA
-================================================
-
-CA-1: Función `quotaUsage(provider, sessionData)` exportada
------------------------------------------------------------
-$ grep -n "quotaUsage" .pipeline/lib/quota-adapters/index.js | head -5
-67: * @param {string} provider     Debe estar en ALLOWED_PROVIDERS.
-80: function quotaUsage(provider, sessionData) {
-122: module.exports = { quotaUsage, ALLOWED_PROVIDERS };
-
-$ grep -n "quotaUsage" .pipeline/lib/weekly-quota.js | grep export
-513:    quotaUsage,
-
-→ APROBADO. Exportada en lib/quota-adapters/index.js (fuente canónica) y
-re-exportada en lib/weekly-quota.js para migración progresiva.
-
-CA-2: `weekly-quota.js` no usa `duration_ms` como proxy
---------------------------------------------------------
-La API multi-provider canónica quotaUsage(provider, ...) NO impone duration_ms
-como abstracción universal. Cada adapter elige su propia unidad:
-  - anthropic.js: usa duration_ms (única señal disponible — Plan Max no expone API)
-  - openai-codex.js: tokens × precio mensual (stub, M2b)
-  - gemini.js, ollama.js, deterministic.js: stubs not_implemented / no_quota
-
-La función legacy computeQuota se mantiene para regresión cero del banner.
-
-→ APROBADO. El refactor desacopla duration_ms del namespace canónico
-(quedó encapsulado en el adapter Anthropic).
-
-CA-3: Tests con fixtures por provider
---------------------------------------
-$ ls .pipeline/lib/__tests__/quota-adapters/
-anthropic.test.js dispatch.test.js no-quota.test.js openai-codex.test.js
-
-$ node --test .pipeline/lib/__tests__/quota-adapters/*.test.js
-ℹ tests 24
-ℹ pass 24
-ℹ fail 0
-
-→ APROBADO. 24 tests cubriendo Anthropic, OpenAI/Codex stub, Gemini, Ollama,
-deterministic, dispatch + allowlist + fail-secure. Cubre los vectores de
-seguridad (CA-#1, #2, #3) y de UX (G1).
-
-CA-4: Banner del dashboard de cuota sigue mostrando datos consistentes
-   (regresión cero)
------------------------------------------------------------------------
-$ node --test .pipeline/lib/__tests__/weekly-quota.test.js
-ℹ tests 9
-ℹ pass 9
-ℹ fail 0
-
-Test específico (linea ~108): "regresión cero del banner: quotaUsage(anthropic)
-wrappea computeQuota sin alterar campos legacy" — compara byte-a-byte 22
-campos consumidos por quotaExhaustedState entre quotaUsage('anthropic', ...) y
-computeQuota legacy.
-
-→ APROBADO. Regresión cero garantizada por test de contrato.
-
-VERIFICACIÓN DE NO REGRESIÓN GLOBAL
+QA STRUCTURAL — Issue #3092 (rev-6)
 ====================================
+Branch: agent/3092-pipeline-dev
+HEAD: e748aa2a (Merge origin/main into agent/3092-pipeline-dev)
+Last approved commit (rev-5): f3285a40 (merge a main vía PR #3092)
+Previous tested commit (rev-4): 382efd9e
 
-$ node --test .pipeline/lib/__tests__/*.test.js
-ℹ tests 760
-ℹ pass 760
-ℹ fail 0
+DELTA M2 (commits desde último aprobado):
+  $ git diff f3285a40..e748aa2a -- \
+      .pipeline/lib/quota-adapters/ \
+      .pipeline/lib/__tests__/quota-adapters/ \
+      .pipeline/lib/weekly-quota.js \
+      .pipeline/lib/__tests__/weekly-quota.test.js | wc -l
+  0  ← M2 byte-idéntico al último aprobado.
 
-$ node --test .pipeline/lib/__tests__/quota-adapters/*.test.js
-ℹ tests 24
-ℹ pass 24
-ℹ fail 0
+Commits agregados (no afectan M2):
+  e748aa2a Merge origin/main
+  2f0a6ebc U2 multi-provider: notificar cambios de provider/model (#3149)
+  3c7ea589 fix(reconciler): no crear placeholders fantasma (#3148)
 
-$ node --test .pipeline/tests/*.test.js
-ℹ tests 201
-ℹ pass 198
-ℹ fail 3
+JUSTIFICACIÓN STRUCTURAL OVERRIDE:
+  Issue tipo:infra + area:pipeline. Módulo Node.js interno del pipeline
+  (.pipeline/lib/weekly-quota.js + quota-adapters/). NO tiene endpoint
+  HTTP — los test cases generados como fallback por qa-api.sh apuntan
+  a URLs de github.com docs, no a APIs del backend. Mismo override
+  aplicado en rev-3, rev-4, rev-5.
 
-Total módulos lib: 760 + 24 = 784 tests pasan, 0 fallos.
-Tests fallidos en .pipeline/tests/ (3): brazo-desbloqueo-wedge, qa-priority-window,
-resolve-deterministic-script. CONFIRMADO: fallan en MAIN también con el mismo error
-(`Cannot find module './pricing'` desde lib/traceability.js). NO son regresión del
-refactor #3092 — son un problema preexistente de un módulo faltante en otro scope.
+CRITERIOS DE ACEPTACIÓN — verificados empíricamente en e748aa2a:
 
-REFINAMIENTOS DE SEGURIDAD/UX/GURU CUBIERTOS
-=============================================
-[✓] CA-#1 (security): provider validado contra ALLOWED_PROVIDERS hardcoded ANTES
-    de cualquier dispatch. Lista freezada con Object.freeze.
-[✓] CA-#2 (security): Hard cap MAX_MONTHLY_BUDGET_USD en openai-codex stub.
-[✓] CA-#3 (security): fail-secure — adapter falla → adapterStatus='error' con
-    pct=null, NO 0%. Banner debe distinguir "0% real" de "estado degradado".
-[✓] CA-#7 (security): test de regresión byte-a-byte vs computeQuota legacy.
-[✓] schema_version: 2 (guru) con migración lazy desde v1.
-[✓] Estados discriminados (UX G1): ok / unknown / error / not_implemented / no_quota.
-[✓] breakdown[] forward-compat para Fase 2 cross-provider (UX G2).
-[✓] Documentación: matriz provider → fuente_de_verdad → reset_semantics
-    (docs/operacion-pipeline.md sección "Cuota multi-provider").
+CA-1 [OK] Función quotaUsage(provider, sessionData) exportada
+  $ grep -n "function quotaUsage\|module.exports" .pipeline/lib/quota-adapters/index.js
+  78:function quotaUsage(provider, sessionData) {
+  122:module.exports = { quotaUsage, ALLOWED_PROVIDERS };
 
-DECISIÓN
-========
-APROBADO. Los 4 CAs originales están cubiertos con evidencia empírica y test
-de regresión byte-a-byte. Refinamientos cross-cutting (security/UX/guru) también
-fueron incorporados. M2a queda cerrado; M2b (adapter OpenAI/Codex real) queda
-fuera de scope hasta que #3075 destrabe.
+CA-2 [OK] weekly-quota.js no usa duration_ms como proxy (en API canónica)
+  Las únicas ocurrencias de duration_ms en weekly-quota.js corresponden
+  a la función legacy computeQuota() PRESERVADA POR DISEÑO para backward-
+  compat. La nueva API canónica quotaUsage(provider, sessionData) dispatch
+  a quota-adapters/, donde anthropic.js wrappea la lógica legacy SOLO para
+  el provider Anthropic (no como proxy genérico). Esto fue auditado por
+  review en rev-4 ("`computeQuota` legacy queda intacta y `weekly-quota.js`
+  re-exporta `quotaUsage` mediante lazy require").
 
+CA-3 [OK] Tests con fixtures por provider (33 tests, 0 fallos)
+  $ ls .pipeline/lib/__tests__/quota-adapters/
+  anthropic.test.js  dispatch.test.js  no-quota.test.js  openai-codex.test.js
+
+  $ node --test .pipeline/lib/__tests__/quota-adapters/*.test.js \
+      .pipeline/lib/__tests__/weekly-quota.test.js
+  ℹ tests 33 / pass 33 / fail 0 / duration_ms 171.0147
+
+CA-4 [OK] Banner del dashboard mantiene regresión cero
+  Test "regresión cero del banner: quotaUsage(anthropic) wrappea
+  computeQuota sin alterar campos legacy" PASSED (3.7684ms).
+  Compara byte-a-byte 22 campos consumidos por quotaExhaustedState.
+
+REFINAMIENTOS security/UX/guru — TODOS COBERTOS (re-verificados en HEAD):
+  [OK] ALLOWED_PROVIDERS hardcoded con Object.freeze (security CA-#1)
+  [OK] Allowlist validada PRE-dispatch (rechaza fuera)
+  [OK] MAX_MONTHLY_BUDGET_USD = 1000 hard cap (security CA-#2)
+  [OK] adapterStatus discriminado (ok/unknown/error/not_implemented/no_quota)
+  [OK] errorReason sanitizado .slice(0, 200) (anti log-injection)
+  [OK] Fail-secure try/catch (security CA-#3)
+  [OK] Cero requests live a APIs (security CA-#6)
+  [OK] schema_version: 2 con migración lazy desde v1 (guru CA)
+  [OK] breakdown[] forward-compat (UX G2)
+  [OK] Docs matriz provider→fuente_de_verdad→reset_semantics
+
+VEREDICTO: aprobado (structural).
+Los 4 CAs verificados empíricamente en commit e748aa2a, M2 byte-idéntico
+al último aprobado (f3285a40 == rev-5 aprobado y mergeado a main vía PR #3092),
+33 tests verdes. Issue ya cerrado en main vía PR #3092 mergeado.
