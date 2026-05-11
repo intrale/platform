@@ -498,3 +498,347 @@ test('CA-3 · si schema literal disagrees con ALLOWED_LAUNCHERS, runtime gana (c
   // En cualquier caso, ALLOWED_LAUNCHERS sigue intacto (Object.freeze).
   assert.equal(validateMod.ALLOWED_LAUNCHERS.length, 5);
 });
+
+// =============================================================================
+// CA-3 (#3080 / S1) · Denylist anti-secret-hardcoded en cualquier campo string
+// =============================================================================
+
+test('CA-3 · valor sk-ant- hardcoded en cualquier campo → rechazado', () => {
+  const cfg = baseValid();
+  // Hipotético atacante mete la key cruda en un campo válido del schema.
+  cfg.providers.anthropic.permissions_mode = 'sk-ant-fake-1234567890';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => /Anthropic key/.test(er.message));
+    assert.ok(e, `debe haber error mencionando Anthropic key: ${JSON.stringify(r.errors)}`);
+    // Anti-leak: el mensaje NO contiene el valor (sólo el nombre del patrón).
+    const allMsgs = r.errors.map((er) => er.message).join(' ');
+    assert.doesNotMatch(allMsgs, /fake-1234567890/, 'mensaje no debe filtrar valor');
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · valor sk- (OpenAI) hardcoded → rechazado', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.model = 'sk-fake-openai-1234567890abcdef';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => /OpenAI key/.test(er.message));
+    assert.ok(e, `debe haber error mencionando OpenAI: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · valor sk-proj- (OpenAI project) hardcoded → rechazado', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.model = 'sk-proj-fake-1234567890';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => /OpenAI project key/.test(er.message));
+    assert.ok(e, `debe haber error mencionando OpenAI project: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · valor AIza (Google API) hardcoded → rechazado', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.permissions_mode = 'AIzaSyFakeFakeFakeFakeFakeFakeFake';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => /Google API key/.test(er.message));
+    assert.ok(e, 'debe rechazar AIza prefix');
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · valores ghp_ / gho_ / ghu_ / ghs_ / ghr_ → rechazados', () => {
+  const prefixes = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_'];
+  for (const prefix of prefixes) {
+    const cfg = baseValid();
+    cfg.providers.anthropic.permissions_mode = `${prefix}fakeFakeFakeFake`;
+    const file = tmpFile(cfg);
+    try {
+      const r = validateMod.validate(file);
+      assert.equal(r.ok, false, `${prefix} debe ser rechazado`);
+      const e = r.errors.find((er) => /GitHub/.test(er.message));
+      assert.ok(e, `debe rechazar ${prefix}`);
+    } finally { fs.unlinkSync(file); }
+  }
+});
+
+test('CA-3 · valor ya29. (Google OAuth) hardcoded → rechazado', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.permissions_mode = 'ya29.fake-google-oauth-token';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    assert.match(JSON.stringify(r.errors), /Google OAuth/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · valor xoxb- (Slack bot) hardcoded → rechazado', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.permissions_mode = 'xoxb-fake-slack-token-1234';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    assert.match(JSON.stringify(r.errors), /Slack/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · valor AKIA (AWS access key) hardcoded → rechazado', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.permissions_mode = 'AKIAFAKEFAKEFAKE1234';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    assert.match(JSON.stringify(r.errors), /AWS/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · valor token Telegram (digits:base64) hardcoded → rechazado', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.permissions_mode = '1234567890:fakeFakeFakeFakeFakeFakeFakeFakeFak';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    assert.match(JSON.stringify(r.errors), /Telegram/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · referencia ${ANTHROPIC_API_KEY} en credentials_env → válido (no es valor literal)', () => {
+  // Si bien `credentials_env` es array de nombres (no de refs), este caso
+  // confirma que la denylist NO confunde nombres de env vars con valores
+  // literales. Los nombres tipo `ANTHROPIC_API_KEY` no matchean ningún
+  // patrón de la denylist.
+  const cfg = baseValid();
+  // baseValid ya tiene credentials_env: ['ANTHROPIC_API_KEY']
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · findHardcodedSecrets aplicado al config canónico no detecta secrets', () => {
+  // El archivo canónico en main NO debe tener secrets hardcoded — guardrail.
+  const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  const cfg = JSON.parse(raw);
+  const hits = validateMod.findHardcodedSecrets(cfg);
+  assert.deepEqual(hits, [], `agent-models.json canónico tiene secrets hardcoded: ${JSON.stringify(hits)}`);
+});
+
+test('CA-3 · credentials_env con env var fuera de allowlist → rechazado', () => {
+  const cfg = baseValid();
+  // Atacante intenta declarar PATH para exfiltrar al child.
+  cfg.providers.anthropic.credentials_env = ['ANTHROPIC_API_KEY', 'PATH'];
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => /PATH.*ALLOWED_CREDENTIAL_ENV_VARS|allowlist/.test(er.message));
+    assert.ok(e, `debe rechazar credentials_env=PATH: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · credentials_env con AWS_SECRET_ACCESS_KEY → rechazado (vector exfiltración)', () => {
+  const cfg = baseValid();
+  cfg.providers.anthropic.credentials_env = ['ANTHROPIC_API_KEY', 'AWS_SECRET_ACCESS_KEY'];
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    assert.match(JSON.stringify(r.errors), /AWS_SECRET_ACCESS_KEY/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-3 · ALLOWED_CREDENTIAL_ENV_VARS expone vars conocidas y NO incluye PATH', () => {
+  const allowed = validateMod.ALLOWED_CREDENTIAL_ENV_VARS;
+  assert.ok(allowed.includes('ANTHROPIC_API_KEY'));
+  assert.ok(allowed.includes('OPENAI_API_KEY'));
+  assert.ok(!allowed.includes('PATH'));
+  assert.ok(!allowed.includes('AWS_SECRET_ACCESS_KEY'));
+  assert.ok(Object.isFrozen(allowed));
+});
+
+test('CA-3 · HARDCODED_SECRET_PATTERNS está congelado (inmutabilidad)', () => {
+  assert.ok(Object.isFrozen(validateMod.HARDCODED_SECRET_PATTERNS));
+  // Cada patrón debe tener name + re.
+  for (const p of validateMod.HARDCODED_SECRET_PATTERNS) {
+    assert.equal(typeof p.name, 'string');
+    assert.ok(p.re instanceof RegExp);
+  }
+});
+
+// =============================================================================
+// CA-2 (#3080 / S1) · Boot fail-fast por env var faltante
+// =============================================================================
+
+test('CA-2 #3080 · validate con processEnv vacío → falla por ANTHROPIC_API_KEY', () => {
+  const file = tmpFile(baseValid());
+  try {
+    const r = validateMod.validate(file, { processEnv: {} });
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => er.message.includes('ANTHROPIC_API_KEY'));
+    assert.ok(e, `debe fallar por env var faltante: ${JSON.stringify(r.errors)}`);
+    assert.match(e.message, /no está presente en process\.env/);
+    assert.equal(r.exitCode, 2);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · validate con processEnv válido → ok', () => {
+  const file = tmpFile(baseValid());
+  try {
+    const r = validateMod.validate(file, { processEnv: { ANTHROPIC_API_KEY: 'sk-ant-fake-not-real-1234567890' } });
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · validate con env var presente pero vacía → falla', () => {
+  const file = tmpFile(baseValid());
+  try {
+    const r = validateMod.validate(file, { processEnv: { ANTHROPIC_API_KEY: '' } });
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => er.message.includes('ANTHROPIC_API_KEY'));
+    assert.ok(e, 'env vacía debe fallar igual que ausente');
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · validate sin processEnv → NO valida env vars (backwards compat)', () => {
+  const file = tmpFile(baseValid());
+  try {
+    // Sin processEnv → no debe disparar el check de env vars.
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · validateOrExit con checkEnv:true sin env var → exit 2', () => {
+  const file = tmpFile(baseValid());
+  let exitCode = null;
+  let stderrMsg = '';
+  try {
+    validateMod.validateOrExit({
+      jsonPath: file,
+      checkEnv: true,
+      processEnv: {},  // vacío adrede
+      onErrorWrite: (m) => { stderrMsg += m + '\n'; },
+      exitFn: (c) => { exitCode = c; },
+    });
+    assert.equal(exitCode, 2);
+    assert.match(stderrMsg, /ANTHROPIC_API_KEY/);
+    assert.match(stderrMsg, /no está presente en process\.env/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · provider declarado pero sin skill referenciado → no exige env var', () => {
+  // Edge case: provider opcional declarado pero sin skill asignado (rollout
+  // futuro). NO debe exigir credencial al boot. Default_provider y skills
+  // efectivos sí se chequean.
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = {
+    launcher: 'codex',
+    model: 'gpt-4o',
+    spawn_args_template: ['-p', '{user_prompt}'],
+    output_parser: 'openai-sse',
+    quota_error_types: [],
+    supports_tool_use: true,
+    prompt_caching: { supported: false },
+    credentials_env: ['OPENAI_API_KEY'],
+  };
+  // No agregamos skill para openai-codex.
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file, {
+      processEnv: { ANTHROPIC_API_KEY: 'sk-ant-fake-1234567890' },
+    });
+    assert.equal(r.ok, true, `provider sin skill no debe exigir env: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · provider con skill asignado → exige todas sus credentials_env', () => {
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = {
+    launcher: 'codex',
+    model: 'gpt-4o',
+    spawn_args_template: ['-p', '{user_prompt}'],
+    output_parser: 'openai-sse',
+    quota_error_types: [],
+    supports_tool_use: true,
+    prompt_caching: { supported: false },
+    credentials_env: ['OPENAI_API_KEY'],
+  };
+  cfg.skills.qa.provider = 'openai-codex';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file, {
+      processEnv: { ANTHROPIC_API_KEY: 'sk-ant-fake-1234567890' },
+    });
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => er.message.includes('OPENAI_API_KEY'));
+    assert.ok(e, `debe exigir OPENAI_API_KEY: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · mensaje de fail-fast NO contiene valor del env (anti-leak)', () => {
+  const file = tmpFile(baseValid());
+  // Setear una env var con un valor que reconoceríamos si filtrara.
+  const sentinel = 'SENTINEL-VALUE-1234567890-DO-NOT-LEAK';
+  try {
+    // El test es: si SOMEHOW el código loguea el valor presente o esperado,
+    // el sentinel aparecería. Ejecutamos un caso negativo (env vacía) y
+    // verificamos que el output no contiene NADA parecido a un secret.
+    const r = validateMod.validate(file, { processEnv: { OTHER_VAR: sentinel } });
+    assert.equal(r.ok, false);
+    const allMsgs = JSON.stringify(r.errors);
+    assert.doesNotMatch(allMsgs, new RegExp(sentinel), 'no debe filtrar valor de env vars');
+  } finally { fs.unlinkSync(file); }
+});
+
+test('CA-2 #3080 · validateCredentialsEnvPresence función pura, testable sin filesystem', () => {
+  const cfg = {
+    default_provider: 'p1',
+    providers: {
+      p1: { credentials_env: ['VAR_A'] },
+      p2: { credentials_env: ['VAR_B'] },
+    },
+    skills: { s1: { provider: 'p1' } },  // p2 NO referenciado
+  };
+  // VAR_A presente: ok. p2 no se chequea (sin skill).
+  const errs1 = validateMod.validateCredentialsEnvPresence(cfg, { VAR_A: 'x' });
+  assert.deepEqual(errs1, []);
+  // VAR_A ausente: falla.
+  const errs2 = validateMod.validateCredentialsEnvPresence(cfg, {});
+  assert.equal(errs2.length, 1);
+  assert.match(errs2[0].message, /VAR_A/);
+});
+
+// =============================================================================
+// findHardcodedSecrets — wrapper testable
+// =============================================================================
+
+test('findHardcodedSecrets · objeto sin secrets → array vacío', () => {
+  const r = validateMod.findHardcodedSecrets({ a: 'hello', b: { c: 'world' } });
+  assert.deepEqual(r, []);
+});
+
+test('findHardcodedSecrets · detecta secret nested y devuelve path', () => {
+  const r = validateMod.findHardcodedSecrets({ a: { b: ['ok', 'sk-ant-fakeFakeFake'] } });
+  assert.equal(r.length, 1);
+  assert.match(r[0].path, /\/a\/b\/1$/);
+  assert.match(r[0].message, /Anthropic key/);
+});
+
+test('findHardcodedSecrets · ignora $schema en raíz (URL legítima)', () => {
+  const cfg = { $schema: 'https://json-schema.org/draft/2020-12/schema', a: 'ok' };
+  const r = validateMod.findHardcodedSecrets(cfg);
+  assert.deepEqual(r, []);
+});

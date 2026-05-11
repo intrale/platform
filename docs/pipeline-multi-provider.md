@@ -606,10 +606,13 @@ H1 sigue siendo **prerrequisito directo de la mayoría**.
 
 ### 6.2 Gestión de secretos
 
-- **Inventario completo de credenciales** por proveedor en `docs/secrets-inventory.md` (issue S1).
-- **Política de rotación** ≤90 días por convención.
-- **Almacenamiento**: prohibido poner API keys en `agent-models.json`. Sólo refs a env vars (`${ANTHROPIC_API_KEY}`, `${OPENAI_API_KEY}`).
-- **Boot fail-fast**: si el provider configurado en `agent-models.json` no tiene su credencial inyectada, el pulpo NO arranca (no degrada silenciosamente al default).
+- **Inventario completo de credenciales** por proveedor en [`docs/secrets-inventory.md`](secrets-inventory.md) (issue S1, #3080).
+- **Política de rotación** ≤90 días por convención. Runbook operativo en [`docs/runbooks/credential-rotation.md`](runbooks/credential-rotation.md).
+- **Almacenamiento**: prohibido poner API keys en `agent-models.json`. Sólo nombres de env vars en `credentials_env` (ej: `["ANTHROPIC_API_KEY"]`). El validador `lib/agent-models-validate.js` impone:
+  - **Denylist de prefijos hardcoded** — rechaza `sk-ant-`, `sk-`, `sk-proj-`, `AIza`, `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `ya29.`, `xoxb-`, `xoxp-`, `AKIA`/`ASIA`, tokens Telegram, `claude_`. Defensa en profundidad además de `additionalProperties:false`.
+  - **Allowlist `ALLOWED_CREDENTIAL_ENV_VARS`** — bloquea declaraciones tipo `PATH`, `AWS_SECRET_ACCESS_KEY` que exfiltrarían vars sensibles del operador al child del provider equivocado.
+- **Boot fail-fast**: si un provider efectivamente referenciado por algún skill (incluido `default_provider`) declara `credentials_env` y la env var no está presente en `process.env`, `pulpo.js` aborta con exit 2 antes de adquirir el singleton. El mensaje no contiene valores (anti-leak).
+- **Cron de rotación**: `lib/credential-rotation-cron.js` corre dentro del loop principal del pulpo cada hora (configurable vía `credential_rotation.tick_ms`). Lee el inventario, calcula T-14/T-7/T-3/T-1/T-0 contra `expires_at` (UTC), notifica al owner por Telegram con idempotencia persistida en `.pipeline/credential-reminder-state.json`. T-0 (expirada) genera ruido sostenido hasta que el operador rote y commitee `last_rotated`.
 
 ### 6.3 Aislamiento de credenciales por proceso
 
@@ -786,6 +789,8 @@ Sin este audit log, reconstruir forensia post-incidente requiere cruzar múltipl
 - Un atacante con permiso de PR puede inyectar `agent-models.json` apuntando a un launcher arbitrario (`launcher: "curl"`). **Mitigación**: allowlist hardcoded en `pulpo.js` (`ALLOWED_LAUNCHERS = new Set(['claude', 'codex', 'gemini', 'ollama', 'node'])`) + verificación de hash del binario detectado al boot (opcional, fase 3).
 - Un atacante puede modificar `spawn_args_template` para incluir flags peligrosos (e.g. `--api-base http://attacker.com`). **Mitigación**: allowlist de flags por proveedor + validación schema rechaza flags fuera de allowlist.
 - Un atacante puede agregar variables de env al `extraEnv` del spawn que filtren credenciales. **Mitigación**: §6.3 (allowlist de env del child).
+- Un atacante puede pegar un secret literal en cualquier campo string de `agent-models.json` (ej: `permissions_mode: "sk-ant-..."`). **Mitigación** (S1, #3080): el validador walks recursivamente el JSON con denylist de prefijos públicos (`HARDCODED_SECRET_PATTERNS` en `lib/agent-models-validate.js`). El mensaje de rechazo nombra el patrón (ej: "Anthropic key (sk-ant-)") sin pegar el valor.
+- Un atacante puede declarar `credentials_env: ["AWS_SECRET_ACCESS_KEY"]` en un provider para exfiltrar AWS creds al child del provider equivocado. **Mitigación** (S1, #3080): allowlist `ALLOWED_CREDENTIAL_ENV_VARS` en el validador acepta sólo nombres conocidos de credenciales LLM (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, etc.); cualquier otra var es rechazada al boot.
 
 #### 6.10.1 Disciplina anti path-traversal al generalizar el flag de cuota
 
