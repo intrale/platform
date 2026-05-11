@@ -237,8 +237,13 @@ test('H-7 · modelo NO en MODEL_PRICING → "no disponible (modelo no en pricing
     const logFile = path.join(dir, 'activity-log.jsonl');
     fs.writeFileSync(logFile, activityLogFile('backend-dev', 10));
     try {
-        // gpt-5-codex no está en MODEL_PRICING (solo Anthropic + deterministic).
-        const cost = alert.renderCostLine('backend-dev', 'claude-opus-4-7', 'gpt-5-codex', { logFile });
+        // Nota: post merge con #3091 (M1) el pricing se externalizó a
+        // .pipeline/metrics/pricing.json e incluye OpenAI/Codex. Por eso ya NO
+        // podemos usar 'gpt-5-codex' como fixture de "modelo desconocido" —
+        // usamos un nombre claramente sintético que jamás existirá en pricing
+        // real. La mitigación CA-C-4 en renderCostLine queda como safety net
+        // por si pricing.json no carga o queda corrupto.
+        const cost = alert.renderCostLine('backend-dev', 'claude-opus-4-7', 'fake-test-model-not-in-pricing-x', { logFile });
         assert.equal(cost.severity, 'unknown');
         assert.match(cost.line, /no disponible \(modelo no en pricing table\)/);
         // No mostrar $0.00 ni +/-∞%.
@@ -322,6 +327,16 @@ test('H-1 integrado · cambio provider → mensaje single-change con prefijo cor
     const fromCfg = baseConfig();
     const toCfg = baseConfig();
     toCfg.skills['backend-dev'] = { provider: 'openai-codex' };
+    // Post merge con #3091 (M1) el pricing externalizó OpenAI/Codex, así que
+    // 'gpt-5-codex' tiene tarifa conocida. Para seguir cubriendo el caso
+    // "modelo destino sin pricing" cambiamos el `model` del provider
+    // openai-codex en el config de destino a un nombre sintético que no exista
+    // en MODEL_PRICING. Esto fuerza la rama CA-C-4 del runtime (safety net) y
+    // mantiene H-7 cubierto a nivel integrado.
+    toCfg.providers['openai-codex'] = {
+        ...toCfg.providers['openai-codex'],
+        model: 'fake-test-model-not-in-pricing-x',
+    };
     const fakeExec = makeFakeGit({
         commits: [
             { sha: 'aaaa', ts: '2026-05-08T10:00:00Z', parents: ['bbbb'], files: ['.pipeline/agent-models.json'] },
@@ -341,8 +356,9 @@ test('H-1 integrado · cambio provider → mensaje single-change con prefijo cor
         // El "/" no es un especial MdV2, así que NO va escapado.
         assert.match(msg, /🔄 Cambio de provider\/model commiteado/, 'prefijo single-change');
         assert.match(msg, /backend\\-dev/, 'skill mencionado (escapeMdV2)');
-        // gpt-5-codex no está en MODEL_PRICING → debe decir "no disponible (modelo no en pricing table)".
-        // Los paréntesis están escapados en MdV2 → buscamos el texto interior sin paren.
+        // El modelo destino sintético no está en MODEL_PRICING → debe decir
+        // "no disponible (modelo no en pricing table)". Los paréntesis están
+        // escapados en MdV2 → buscamos el texto interior sin paren.
         assert.match(msg, /no disponible.*modelo no en pricing table/);
     } finally { rmr(dir); }
 });
