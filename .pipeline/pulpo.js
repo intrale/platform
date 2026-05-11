@@ -8250,6 +8250,61 @@ async function mainLoop() {
     log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
   }
 
+  // #3087 — Cron interno autoritativo para alertas de cambios en agent-models.json.
+  // Tickea cada AGENT_MODELS_CHECK_INTERVAL_MIN minutos. La idempotencia se basa
+  // en el cursor `agent-models-last-notified.json` que el módulo persiste solo:
+  // si HEAD == last_notified_sha → no re-emite. Sobrevive a reinicios sin perder
+  // ni duplicar avisos (CA-A-1 / CA-A-2 / CA-S6).
+  //
+  // El módulo es accesorio: si tira excepción, el pulpo SIGUE corriendo. La
+  // alerta es no-crítica para el funcionamiento del pipeline.
+  const AGENT_MODELS_CHECK_INTERVAL_MIN = 5;
+  let agentModelsTimer = null;
+  try {
+    const agentModelsAlert = require('./lib/agent-models-change-alert');
+    const tickAgentModels = () => {
+      try {
+        const prev = agentModelsAlert.readLastNotifiedSha(PIPELINE);
+        // CA-H-10 (post-rebote review #2): leer origin/main, NO HEAD local.
+        // Si el pulpo arranca en una feature branch (caso real: agent/<n>-...),
+        // HEAD apunta a commits que NUNCA llegaron a main y emitiríamos
+        // alertas espurias. La rama protegida es origin/main por convención.
+        //
+        // Si origin/main no es resolvible (clones shallow, fetch fallido, repo
+        // sin remote), salimos del tick — el cron es accesorio, mejor silenciar
+        // que arriesgar falso positivo o falso negativo. El próximo tick reintenta.
+        let headSha = null;
+        try {
+          headSha = require('child_process').execFileSync(
+            'git',
+            ['rev-parse', 'origin/main'],
+            { cwd: ROOT, encoding: 'utf8', windowsHide: true }
+          ).trim();
+        } catch (e) {
+          log('agent-models', `tick skip: no pude resolver origin/main (${e.message})`);
+          return;
+        }
+        if (!headSha || headSha === prev) return;
+        const result = agentModelsAlert.sendAlert(prev, headSha, { pipelineDir: PIPELINE, cwd: ROOT });
+        if (result && result.alerts && result.alerts.length > 0) {
+          for (const a of result.alerts) {
+            // skills_affected viene del alertResult (review #3 / contrato sendAlert↔caller).
+            const skills = Array.isArray(a.skills_affected) ? a.skills_affected.join(',') : '';
+            log('agent-models', `Alerta encolada: from=${a.firstSha?.slice(0,7)} to=${a.lastSha?.slice(0,7)} commits=${a.commitCount} skills=[${skills}] coCommit=${a.coCommitSensitive}`);
+          }
+        }
+      } catch (err) {
+        log('agent-models', `tick error: ${err.message}`);
+      }
+    };
+    // Primer tick post-arranque (delay corto), después intervalo regular.
+    setTimeout(tickAgentModels, 30 * 1000);
+    agentModelsTimer = setInterval(tickAgentModels, AGENT_MODELS_CHECK_INTERVAL_MIN * 60 * 1000);
+    log('agent-models', `Cron iniciado: cada ${AGENT_MODELS_CHECK_INTERVAL_MIN}min, cursor en .pipeline/agent-models-last-notified.json`);
+  } catch (e) {
+    log('agent-models', `No se pudo iniciar el cron: ${e.message}`);
+  }
+
   while (running) {
     try {
       checkPauseFile();

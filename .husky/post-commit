@@ -1,0 +1,44 @@
+#!/usr/bin/env sh
+# =============================================================================
+# .husky/post-commit — Fast-path para alertar cambios en agent-models.json (#3087 A-2)
+#
+# Trigger inmediato local cuando un developer commitea cambios sobre
+# `.pipeline/agent-models.json`. La fuente AUTORITATIVA sigue siendo el cron
+# interno del pulpo (CA-A-2): este hook es solo un "feedback rápido" para que
+# el developer/operador local vea el aviso sin esperar al próximo tick del cron.
+#
+# Idempotencia:
+#   - El módulo lee `last_notified_sha` y compara con HEAD. Si son iguales
+#     (hook ya disparó, o el cron lo notificó antes), no re-emite.
+#
+# Comportamiento defensivo:
+#   - Si node no está disponible o el módulo falla, el hook NO bloquea el
+#     commit (es post-commit, ya estamos pasados ese punto, y la alerta es
+#     accesoria — el cron del pulpo va a recuperar la notificación al siguiente
+#     tick aunque este hook falle).
+# =============================================================================
+
+# Solo correr si el último commit tocó agent-models.json. Evita ruido en
+# commits que no tocan el área (la mayoría).
+TOUCHED=$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null || true)
+case "$TOUCHED" in
+  *".pipeline/agent-models.json"*) ;;
+  *) exit 0 ;;
+esac
+
+# Best-effort: si node no existe o el módulo no está, salir limpio.
+if ! command -v node >/dev/null 2>&1; then
+  exit 0
+fi
+
+# Disparar la alerta en background. Timeout corto (15s) para que un eventual
+# bug del módulo no congele el flujo de commits.
+node .pipeline/lib/agent-models-change-alert.js >/dev/null 2>&1 &
+HOOK_PID=$!
+
+# No esperamos al hijo más de 15s. Si todavía corre, lo dejamos zombie y
+# salimos (post-commit no debería bloquear). En POSIX puro no hay timeout
+# nativo; usamos un sleep+kill simple.
+( sleep 15 && kill -9 $HOOK_PID 2>/dev/null ) &
+
+exit 0
