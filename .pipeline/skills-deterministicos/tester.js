@@ -132,10 +132,28 @@ const MODULE_DIRS = {
 //                      en *.gradle.kts/*.kt devuelve 0 referencias.
 //   package-lock.json→ lockfile de npm; ídem. Solo lo consume `npm ci/install`.
 //
+// Rebote #3092 rev-1 (mismo síntoma, archivo distinto):
+//   - #3092 (M2 multi-provider) trajo cambios puros bajo `.pipeline/lib/` +
+//     `docs/operacion-pipeline.md` + un reporte de QA estructural commiteado
+//     bajo `qa/evidence/3092/qa-structural-report.txt`. Ese único path bajo
+//     `qa/evidence/` rompió el match `every` y forzó la ruta gradle, que
+//     rebotó por cobertura Kotlin baseline (35.95% < 80%) ajena al cambio.
+//     Verificación empírica en `.pipeline/logs/3092-tester.log`:
+//       [tester] git diff vs main: 15 archivos · pipeline_only=false
+//       [tester] gradle exit_code=0 wall_ms=96944 (BUILD SUCCESSFUL)
+//       - Cobertura de líneas 35.95% por debajo del umbral 80%
+//
+//   `qa/evidence/`  → artifacts de corridas QA (videos, screenshots, reportes
+//                     estructurales generados por el agente `qa`). No los
+//                     consume Gradle ni participan del classpath/coverage.
+//                     Verificado: `grep` por `qa/evidence` en *.gradle.kts/*.kt
+//                     devuelve 0 referencias.
+//
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
-// `settings.gradle.kts`, `build.gradle.kts`, `.claude/` (todos pueden afectar
-// build/coverage). El test `paths fuera de los patrones permitidos rompen
-// el match` documenta y protege esa frontera.
+// `settings.gradle.kts`, `build.gradle.kts`, `.claude/`, `qa/build.gradle.kts`,
+// `qa/src/`, `qa/scripts/`, `qa/test-cases/`, `qa/regression-suite.json` (todos
+// pueden afectar build/coverage o testing real). El test `paths fuera de los
+// patrones permitidos rompen el match` documenta y protege esa frontera.
 const PIPELINE_ONLY_PATTERNS = [
     /^\.pipeline\//,        // pipeline V3 (Node.js)
     /^docs\//,              // documentación pura
@@ -147,6 +165,7 @@ const PIPELINE_ONLY_PATTERNS = [
     /^\.husky\//,           // husky git hooks (Node.js) — fuera de classpath Gradle
     /^package\.json$/,      // npm manifest — usado solo por `.pipeline/` Node.js
     /^package-lock\.json$/, // npm lockfile — usado solo por `.pipeline/` Node.js
+    /^qa\/evidence\//,      // QA artifacts (video/screenshots/reports) — fuera de Gradle
 ];
 
 /**

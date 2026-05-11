@@ -208,3 +208,70 @@ Revisar scope:
 ```bash
 gh auth status
 ```
+
+---
+
+## Cuota multi-provider — fuente de verdad y reset semantics {#quota-multi-provider}
+
+Desde M2 (#3092 + #3065 §5.4) cada provider tiene su propia estrategia de medición y de reset. El módulo `lib/quota-adapters/` dispatcha al adapter correspondiente y devuelve un shape uniforme con `adapterStatus` discriminado.
+
+### Matriz provider → fuente de verdad → reset semantics
+
+| Provider | Fuente de verdad | Unidad medida | Reset | Estado en M2a |
+|----------|------------------|---------------|-------|---------------|
+| `anthropic` | `activity-log.jsonl` (proxy `duration_ms`) + snapshots Claude Desktop (#3055/#3057) | horas | semanal · domingo 21:00 hora local (ART por default; configurable vía `QUOTA_TZ_OFFSET_MIN`) | **operativo** |
+| `openai-codex` | `activity-log.jsonl` + tabla de precios local + budget USD (cap hard `MAX_MONTHLY_BUDGET_USD = 1000`) | tokens × precio → USD | mensual · día 1 calendario | stub `not_implemented` (M2b · ver #3075) |
+| `gemini` | TBD (post-M2) | TBD | mensual día 1 (Gemini API paga) | stub `not_implemented` |
+| `ollama` | — (corre local) | — | — | `no_quota` (sin cuota remota) |
+| `deterministic` | — (sin LLM) | — | — | `no_quota` |
+
+### Estados que devuelve el adapter
+
+`adapterStatus` (estado del adapter):
+- `ok` — datos confiables, banner muestra cuota normal.
+- `unknown` — adapter no pudo calcular (datos faltantes). Banner muestra estado degradado en gris (`--in-fg-dim`), NO ámbar de cuota agotada.
+- `error` — adapter falló (parser roto, archivo corrupto). Banner muestra estado degradado + `errorReason` accionable.
+- `not_implemented` — provider declarado pero adapter pendiente. Banner muestra "Cuota \<provider\>: pendiente de implementar — ver #N".
+- `no_quota` — provider sin cuota (Ollama local, deterministic). Banner oculta esta entrada del agregado (no la cuenta como 0%).
+
+`status` (cuota propiamente dicha — solo válido cuando `adapterStatus === 'ok'`):
+- `ok` < 50% < `normal` < 75% ≤ `warning` < 90% ≤ `critical`
+- `unknown` cuando el adapter falló (propagado desde `adapterStatus`).
+- `no_quota` cuando el provider no tiene cuota.
+
+### Diferencia clave: "0% real" vs "estado degradado"
+
+**Nunca** confundir `pct: 0` con `pct: null`:
+
+- `pct: 0` (con `adapterStatus: 'ok'`) → cuota no consumida, todo bien.
+- `pct: null` (con `adapterStatus: 'unknown'|'error'|'not_implemented'|'no_quota'`) → no sabemos cuánta cuota hay; el operador debe revisar.
+
+Para el operador, "0% real" y "estado degradado" son situaciones distintas con respuesta operativa distinta. Devolver `0%` silencioso cuando el adapter falla es bug grave: el operador asume cuota infinita y el sistema sigue gastando.
+
+### Tests de fixtures por provider
+
+Cada adapter tiene tests en `lib/__tests__/quota-adapters/`:
+- `dispatch.test.js` — allowlist + fail-secure
+- `anthropic.test.js` — adapter Anthropic (incluye boundary de reset, JSONL corrupto, exclusión de `model:deterministic`)
+- `openai-codex.test.js` — stub + hard cap del budget
+- `no-quota.test.js` — Ollama, deterministic, Gemini
+
+La regresión cero del banner está cubierta en `lib/__tests__/weekly-quota.test.js` con assertions byte-a-byte sobre los campos consumidos por `quotaExhaustedState`.
+
+### Cómo migrar callers de `computeQuota` a `quotaUsage`
+
+**Antes (legacy Anthropic-only):**
+```js
+const wq = require('./lib/weekly-quota');
+const result = wq.computeQuota(metricsDir, activityLogPath);
+```
+
+**Después (multi-provider):**
+```js
+const { quotaUsage } = require('./lib/quota-adapters');
+const result = quotaUsage('anthropic', { metricsDir, activityLogPath });
+// `result` incluye los mismos campos que computeQuota más:
+//   provider, adapterStatus, errorReason, schemaVersion, breakdown[]
+```
+
+`computeQuota` se mantiene durante la migración progresiva — no rompe callers existentes. La fuente única de la lógica vive en `lib/quota-adapters/`.

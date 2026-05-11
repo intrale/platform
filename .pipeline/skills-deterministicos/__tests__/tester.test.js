@@ -498,6 +498,85 @@ test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/ con sub-archivos pero 
     ]), false);
 });
 
+// ── Rebote #3092 rev-1 ────────────────────────────────────────────
+// El M2 multi-provider commiteó un reporte estructural de QA bajo
+// `qa/evidence/3092/qa-structural-report.txt`. Ese único path bajo
+// `qa/evidence/` rompió el match `every` y forzó la ruta gradle, que
+// rebotó por cobertura Kotlin baseline (35.95% < 80%) ajena al cambio.
+// Verificación empírica en `.pipeline/logs/3092-tester.log`.
+test('#3092 rev-1 — isPipelineOnlyChange acepta qa/evidence/<issue>/*', () => {
+    // Reporte estructural solo (cambio puro de QA artifact) → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/evidence/3092/qa-structural-report.txt',
+    ]), true);
+    // Combinado con cambios .pipeline + docs (caso real del rebote #3092: 15
+    // archivos del diff M2 multi-provider).
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/lib/__tests__/quota-adapters/anthropic.test.js',
+        '.pipeline/lib/__tests__/quota-adapters/dispatch.test.js',
+        '.pipeline/lib/__tests__/quota-adapters/no-quota.test.js',
+        '.pipeline/lib/__tests__/quota-adapters/openai-codex.test.js',
+        '.pipeline/lib/__tests__/weekly-quota.test.js',
+        '.pipeline/lib/quota-adapters/_shape.js',
+        '.pipeline/lib/quota-adapters/anthropic.js',
+        '.pipeline/lib/quota-adapters/deterministic.js',
+        '.pipeline/lib/quota-adapters/gemini.js',
+        '.pipeline/lib/quota-adapters/index.js',
+        '.pipeline/lib/quota-adapters/ollama.js',
+        '.pipeline/lib/quota-adapters/openai-codex.js',
+        '.pipeline/lib/weekly-quota.js',
+        'docs/operacion-pipeline.md',
+        'qa/evidence/3092/qa-structural-report.txt',
+    ]), true);
+    // Múltiples issues acumulando evidencia QA.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/evidence/3092/qa-structural-report.txt',
+        'qa/evidence/3092/screenshot.png',
+    ]), true);
+});
+
+test('#3092 rev-1 — isPipelineOnlyChange NO acepta otros subdirectorios de qa/', () => {
+    // El patrón `^qa\/evidence\/` ancla SOLO al directorio de artifacts. Otros
+    // contenidos de `qa/` pueden afectar build/coverage o testing real y NO
+    // deben caer en pipeline-only:
+    //   qa/build.gradle.kts         → módulo Gradle real (afecta build)
+    //   qa/src/test/                → código Kotlin/JS de test
+    //   qa/scripts/                 → scripts de QA ejecutados por gradlew
+    //   qa/test-cases/<id>.json     → casos consumidos por scripts QA
+    //   qa/regression-suite.json    → catálogo de regresión
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'qa/build.gradle.kts',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'qa/src/test/foo.kt',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'qa/scripts/qa-android.sh',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'qa/test-cases/3092.json',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'qa/regression-suite.json',
+    ]), false);
+});
+
+test('#3092 rev-1 — isPipelineOnlyChange NO confunde qa/evidence en subdirectorios anidados', () => {
+    // El patrón `^qa\/evidence\/` ancla a raíz. Un `qa/evidence/` dentro de
+    // un módulo (improbable pero posible) NO debe disparar pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/qa/evidence/foo.png',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'backend/qa/evidence/log.txt',
+    ]), false);
+});
+
 test('parseNodeTestJunit — lee tests/pass/fail/skipped del comentario summary', () => {
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <testsuites>
