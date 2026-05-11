@@ -716,11 +716,27 @@ function writeYaml(filepath, data) {
   fs.writeFileSync(filepath, yaml.dump(data, { lineWidth: -1 }));
 }
 
-/** Listar archivos de trabajo (no .gitkeep) en una carpeta */
+// Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
+// .reason.resolved-*.json, etc.). Reutilizamos el helper canónico de
+// `lib/human-block.js` para mantener una única definición. Sin este filtro el
+// pulpo levantaba `<issue>.<skill>.guidance.txt` como si fuera un marker de
+// agente, alcanzaba el invariante "skill no autorizado para esa fase" y mandaba
+// alerta Telegram falsa (incidente 2026-05-11 con #3073.pipeline-dev.guidance.txt).
+let _isMarkerArtifactPulpo;
+try { ({ isMarkerArtifact: _isMarkerArtifactPulpo } = require('./lib/human-block')); } catch { /* opcional */ }
+function isMarkerArtifactPulpo(name) {
+  if (typeof _isMarkerArtifactPulpo === 'function') return _isMarkerArtifactPulpo(name);
+  if (name.split('.').length > 2) return true;
+  return name.endsWith('.reason.json')
+    || name.endsWith('.guidance.txt')
+    || name.endsWith('.comment.md');
+}
+
+/** Listar archivos de trabajo (no .gitkeep, ni artifacts auxiliares) en una carpeta */
 function listWorkFiles(dir) {
   try {
     return fs.readdirSync(dir)
-      .filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep'))
+      .filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep') && !isMarkerArtifactPulpo(f))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
 }
@@ -7468,7 +7484,7 @@ function countQueuedLlmAgents() {
   for (const fase of llmFases) {
     const dir = path.join(PIPELINE, 'desarrollo', fase, 'pendiente');
     try {
-      const files = fs.readdirSync(dir).filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep'));
+      const files = fs.readdirSync(dir).filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep') && !isMarkerArtifactPulpo(f));
       total += files.length;
     } catch { /* dir no existe — sumar 0 */ }
   }
