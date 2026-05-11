@@ -42,6 +42,18 @@ const GH_QUEUE = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
 const RECONCILE_INTERVAL_MS = parseInt(process.env.RECONCILER_INTERVAL_MS || '300000', 10); // 5 min default
 const RECONCILER_LABEL = 'needs-human';
 
+// Labels que indican que `needs-human` está pegado por origen de recomendación
+// (security/guru/planner generan issues auto y los marcan así para triaje humano
+// futuro). NO hay un agente real bloqueado trabajando esos issues — son backlog
+// pendiente de decisión. El reconciler NO debe inventar placeholders en
+// bloqueado-humano/ para estos casos: el placeholder dispara alerta Telegram y
+// los muestra en `/bloqueados` como si fueran agentes fantasma esperando
+// destrabe, cuando en realidad son sugerencias que esperan triaje.
+//
+// Mantenemos el label `needs-human` en GitHub (visibilidad para `/doc priorizar`).
+// Solo cortamos la creación automática de markers en filesystem.
+const RECOMMENDATION_LABELS = new Set(['source:recommendation', 'tipo:recomendacion']);
+
 function log(msg) {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
     console.log(`[${ts}] [svc-reconciler] ${msg}`);
@@ -135,10 +147,26 @@ function decidirFasePlaceholder(labels) {
 // Reconciliación: las 3 reglas
 // -----------------------------------------------------------------------------
 
+function isRecommendationIssue(labels) {
+    if (!Array.isArray(labels)) return false;
+    for (const l of labels) {
+        if (RECOMMENDATION_LABELS.has(l)) return true;
+    }
+    return false;
+}
+
 function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
     let created = 0;
+    let skippedRecommendations = 0;
     for (const issue of ghIssues) {
         if (blockedByIssue.has(issue.number)) continue;
+        // Skip: recomendaciones auto-generadas (security/guru/planner) que
+        // tienen `needs-human` para triaje futuro pero no son agentes bloqueados.
+        // Inventar marker fantasma confunde al dashboard y dispara alerta Telegram.
+        if (isRecommendationIssue(issue.labels)) {
+            skippedRecommendations++;
+            continue;
+        }
         // Issue tiene label `needs-human` pero no hay marker físico → crear placeholder
         const { pipeline, phase, skill } = decidirFasePlaceholder(issue.labels);
         const targetDir = path.join(PIPELINE, pipeline, phase, humanBlock.BLOCK_SUBDIR);
@@ -161,6 +189,9 @@ function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
         } catch (e) {
             log(`Error creando placeholder #${issue.number}: ${e.message.slice(0, 120)}`);
         }
+    }
+    if (skippedRecommendations > 0) {
+        log(`Skipped ${skippedRecommendations} issues con labels de recomendación (no se crean placeholders)`);
     }
     return created;
 }
@@ -462,6 +493,8 @@ module.exports = {
     reconcileClosedMarkers,
     reconcileHumanUnblockDetected,
     decidirFasePlaceholder,
+    isRecommendationIssue,
+    RECOMMENDATION_LABELS,
     listGhIssuesWithLabel,
     getIssueState,
     enqueueLabelApply,

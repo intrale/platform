@@ -92,6 +92,47 @@ test('reconcileLabelToFilesystem crea placeholder cuando label sin marker', () =
     assert.match(reason.reason, /placeholder/i);
 });
 
+test('reconcileLabelToFilesystem NO crea placeholder para issues con source:recommendation', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    const ghIssues = [
+        { number: 3146, labels: ['enhancement', 'source:recommendation', 'needs-human', 'tipo:recomendacion'] },
+        { number: 3147, labels: ['ready', 'source:recommendation', 'needs-human'] },
+        { number: 9999, labels: ['ready', 'needs-human'] }, // este sí debería crearse
+    ];
+    const created = reconciler.reconcileLabelToFilesystem(ghIssues, new Map());
+
+    assert.equal(created, 1, 'solo el issue sin label de recomendación crea placeholder');
+    const m3146 = path.join(PIPELINE, 'definicion', 'analisis', 'bloqueado-humano', '3146.guru');
+    const m3147 = path.join(PIPELINE, 'desarrollo', 'dev', 'bloqueado-humano', '3147.guru');
+    const m9999 = path.join(PIPELINE, 'desarrollo', 'dev', 'bloqueado-humano', '9999.guru');
+    assert.equal(fs.existsSync(m3146), false, '#3146 no debe tener marker fantasma (es recomendación)');
+    assert.equal(fs.existsSync(m3147), false, '#3147 no debe tener marker fantasma (es recomendación)');
+    assert.equal(fs.existsSync(m9999), true, '#9999 sí debe tener placeholder (agente real bloqueado)');
+});
+
+test('reconcileLabelToFilesystem también skipea tipo:recomendacion (alias en español)', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    const ghIssues = [
+        { number: 4242, labels: ['tipo:recomendacion', 'needs-human'] },
+    ];
+    const created = reconciler.reconcileLabelToFilesystem(ghIssues, new Map());
+    assert.equal(created, 0);
+    const m = path.join(PIPELINE, 'definicion', 'analisis', 'bloqueado-humano', '4242.guru');
+    assert.equal(fs.existsSync(m), false);
+});
+
+test('isRecommendationIssue detecta los dos labels de recomendación', () => {
+    assert.equal(reconciler.isRecommendationIssue(['source:recommendation']), true);
+    assert.equal(reconciler.isRecommendationIssue(['tipo:recomendacion']), true);
+    assert.equal(reconciler.isRecommendationIssue(['enhancement', 'source:recommendation']), true);
+    assert.equal(reconciler.isRecommendationIssue(['ready', 'app:client']), false);
+    assert.equal(reconciler.isRecommendationIssue([]), false);
+    assert.equal(reconciler.isRecommendationIssue(undefined), false);
+    assert.equal(reconciler.isRecommendationIssue(null), false);
+});
+
 test('reconcileLabelToFilesystem omite issues que ya tienen marker', () => {
     clearAllMarkers();
     clearGhQueue();
