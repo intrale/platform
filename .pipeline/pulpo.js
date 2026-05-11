@@ -8265,21 +8265,32 @@ async function mainLoop() {
     const tickAgentModels = () => {
       try {
         const prev = agentModelsAlert.readLastNotifiedSha(PIPELINE);
-        // HEAD del cwd del pulpo. La rama "protegida" la define el operador
-        // por convención (main); el cursor evita re-emitir en branch hopping.
+        // CA-H-10 (post-rebote review #2): leer origin/main, NO HEAD local.
+        // Si el pulpo arranca en una feature branch (caso real: agent/<n>-...),
+        // HEAD apunta a commits que NUNCA llegaron a main y emitiríamos
+        // alertas espurias. La rama protegida es origin/main por convención.
+        //
+        // Si origin/main no es resolvible (clones shallow, fetch fallido, repo
+        // sin remote), salimos del tick — el cron es accesorio, mejor silenciar
+        // que arriesgar falso positivo o falso negativo. El próximo tick reintenta.
         let headSha = null;
         try {
           headSha = require('child_process').execFileSync(
             'git',
-            ['rev-parse', 'HEAD'],
+            ['rev-parse', 'origin/main'],
             { cwd: ROOT, encoding: 'utf8', windowsHide: true }
           ).trim();
-        } catch (_) { return; }
+        } catch (e) {
+          log('agent-models', `tick skip: no pude resolver origin/main (${e.message})`);
+          return;
+        }
         if (!headSha || headSha === prev) return;
         const result = agentModelsAlert.sendAlert(prev, headSha, { pipelineDir: PIPELINE, cwd: ROOT });
         if (result && result.alerts && result.alerts.length > 0) {
           for (const a of result.alerts) {
-            log('agent-models', `Alerta encolada: from=${a.firstSha?.slice(0,7)} to=${a.lastSha?.slice(0,7)} commits=${a.commitCount} skills=[${a.skills_affected || ''}] coCommit=${a.coCommitSensitive}`);
+            // skills_affected viene del alertResult (review #3 / contrato sendAlert↔caller).
+            const skills = Array.isArray(a.skills_affected) ? a.skills_affected.join(',') : '';
+            log('agent-models', `Alerta encolada: from=${a.firstSha?.slice(0,7)} to=${a.lastSha?.slice(0,7)} commits=${a.commitCount} skills=[${skills}] coCommit=${a.coCommitSensitive}`);
           }
         }
       } catch (err) {

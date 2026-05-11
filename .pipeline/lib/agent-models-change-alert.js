@@ -570,6 +570,16 @@ function formatTelegramMessage(bucket) {
         return '';
     }
 
+    // Sanitizador de valores escalares ANTES de pasar por escapeMdV2 (review #2 / CA-B-2).
+    // Si fromM/toM contienen un secret (ej. sk-token mal puesto en model_override),
+    // hay que redactarlo antes de escapar MdV2 — sino los regex aguas abajo dejan
+    // pasar `sk\-test\-...` (Telegram colapsa los `\-` al renderizar).
+    const sanitizeScalar = (v) => {
+        if (v == null) return v;
+        const s = typeof v === 'string' ? v : String(v);
+        return redactSensitive(sanitize(applyLocalExtraSanitization(s)));
+    };
+
     const isConsolidated = bucket.commitCount > 1 || bucket.changes.length > 1;
     const lines = [];
 
@@ -590,8 +600,9 @@ function formatTelegramMessage(bucket) {
         const change = bucket.changes[0];
         const skill = safeSkillName(change.skill);
         const modelChange = change.changes.model || change.changes.model_override;
-        const fromM = modelChange ? modelChange.from : null;
-        const toM = modelChange ? modelChange.to : null;
+        // Sanitizar ANTES de escapar MdV2 — review #2 / CA-B-2 / CA-S2.
+        const fromM = modelChange ? sanitizeScalar(modelChange.from) : null;
+        const toM = modelChange ? sanitizeScalar(modelChange.to) : null;
 
         lines.push(`*skill*: \`${escapeMdV2(skill)}\``);
         if (fromM != null && toM != null && fromM !== toM) {
@@ -612,8 +623,11 @@ function formatTelegramMessage(bucket) {
         for (const f of fields) {
             const c = change.changes[f];
             if (!c) continue;
-            const a = c.from == null ? '—' : String(c.from);
-            const b = c.to == null ? '—' : String(c.to);
+            // Sanitizar los valores del bloque code-fenced — defensa en profundidad.
+            // Dentro de ``` MdV2 no escapa, pero el regex de redacción canónico
+            // sí matchea — aplicamos antes de imprimir.
+            const a = c.from == null ? '—' : sanitizeScalar(String(c.from));
+            const b = c.to == null ? '—' : sanitizeScalar(String(c.to));
             rows.push({ field: f, from: a, to: b });
             widths.from = Math.max(widths.from, a.length);
             widths.to = Math.max(widths.to, b.length);
@@ -649,8 +663,9 @@ function formatTelegramMessage(bucket) {
         for (const change of trimmed) {
             const skill = safeSkillName(change.skill);
             const mc = change.changes.model || change.changes.model_override;
-            const fromM = mc ? (mc.from == null ? '—' : String(mc.from)) : '—';
-            const toM = mc ? (mc.to == null ? '—' : String(mc.to)) : '—';
+            // Sanitizar ANTES de meter al bloque code-fenced — defensa en profundidad.
+            const fromM = mc ? (mc.from == null ? '—' : sanitizeScalar(String(mc.from))) : '—';
+            const toM = mc ? (mc.to == null ? '—' : sanitizeScalar(String(mc.to))) : '—';
             const c = change.costRender;
             const deltaText = c && c.line.includes('(')
                 ? c.line.match(/\(([^)]+)\)/)?.[1] || ''
@@ -668,7 +683,10 @@ function formatTelegramMessage(bucket) {
 
     const raw = lines.join('\n');
 
-    // Pipeline canónico de sanitización ANTES del envío (CA-S2).
+    // Pipeline canónico de sanitización al final como red de seguridad (CA-S2).
+    // Los escalares user-controlled (fromM/toM, valores de tabla) YA fueron
+    // saneados arriba — esto es defensa en profundidad por si algún literal
+    // futuro se cuela sin pasar por sanitizeScalar.
     //   1) applyLocalExtraSanitization → cubre sk-/xoxb-/ghp_ mientras S2 no esté.
     //   2) sanitizer.js::sanitize  → reemplaza tokens (AIza, AKIA*, JWT, telegram, ...)
     //   3) lib/redact.js::redactSensitive → emails, URLs con userinfo, etc.
@@ -954,6 +972,10 @@ function sendAlert(prevSha, headSha, opts) {
             commitCount: bucket.commitCount,
             coCommitSensitive: bucket.coCommitSensitive,
             sensitiveInputDetected,
+            // Contrato sendAlert↔caller (review #3): exponemos la lista de skills
+            // afectados para que el caller pueda loggear/auditar sin reinspeccionar
+            // el bucket. Mismo dato que va al audit log (línea de skills_affected).
+            skills_affected: bucket.changes.map((c) => c.skill),
         };
 
         if (!dryRun) {

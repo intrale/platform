@@ -11,7 +11,8 @@
 //   H-7  modelo no en MODEL_PRICING → "no disponible (modelo no en pricing table)"
 //   H-8  co-commit con application.conf → flag warning + audit co_commit_sensitive
 //   H-9  idempotencia con last_notified_sha (reinicio entre commits)
-//   H-10 (cobertura via opts del cron — no se simula rama, se cubre en buildBucket)
+//   H-10 cron lee origin/main, no HEAD local — contract test sobre pulpo.js
+//        (post-rebote review #2: el detector NO debe emitir desde feature branch).
 // =============================================================================
 'use strict';
 
@@ -426,10 +427,68 @@ test('H-3 · valor con `sk-...` mal puesto en el JSON → output sanitiza', () =
         const bucket = alert.buildBucket(commits, { execFile: fakeExec, cwd: dir });
         assert.ok(bucket);
         const msg = alert.formatTelegramMessage(bucket);
-        // El sanitizer debe redactar la cadena `sk-...`. Verificamos que no aparezca
-        // textual el secret completo en el mensaje sanitizado.
+
+        // Check #1 — el secret no aparece textual en los BYTES del mensaje.
         assert.ok(!msg.includes('sk-test-1234567890abcdef1234567890abcdef'),
-            'sk-token NO debe aparecer crudo en el mensaje');
+            'sk-token NO debe aparecer crudo en los bytes del mensaje');
+
+        // Check #2 (post-rebote review #2 / CA-B-2) — revertir los escapes MdV2 y
+        // verificar contra el RENDER de Telegram. Si el secret está escapado como
+        // `sk\-test\-...`, el cliente colapsa los `\-` a `-` y el operador ve el
+        // token completo. Este check protege contra ese caso.
+        //
+        // Reversor mínimo: para los chars `[_*\[\]()~`>#+\-=|{}.!\\]` (los que
+        // escapaMdV2 escapa con \), revertimos `\X` → `X`. NO es un parser MdV2
+        // completo, solo simula el render visual desde el punto de vista del usuario.
+        const mdv2RevertEscape = (s) => s.replace(/\\([_*\[\]()~`>#+\-=|{}.!\\])/g, '$1');
+        const rendered = mdv2RevertEscape(msg);
+
+        assert.ok(!rendered.includes('sk-test-'),
+            'el prefijo sk-test- NO debe aparecer en el render post-MdV2');
+        assert.ok(!rendered.includes('1234567890abcdef1234567890abcdef'),
+            'la cola del sk-token NO debe aparecer en el render post-MdV2');
+        // El marcador de redacción SÍ debe estar presente — prueba que la sanitización corrió.
+        assert.ok(rendered.includes('[REDACTED:SK_TOKEN]') || rendered.includes('[REDACTED'),
+            'el output debe contener al menos un marcador de redacción');
+    } finally { rmr(dir); }
+});
+
+// H-3b — caso adicional explícito: secret en la línea de transición (fuera del
+// code block). Verifica que el path "fromM → toM" se sanitice antes de escapeMdV2.
+test('H-3b · sk-token en model_override → secret no aparece en línea de transición fuera del code-block', () => {
+    const fromCfg = baseConfig();
+    fromCfg.skills['backend-dev'] = { provider: 'anthropic', model_override: 'claude-opus-4-7' };
+    const toCfg = baseConfig();
+    toCfg.skills['backend-dev'] = {
+        provider: 'anthropic',
+        model_override: 'sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH',
+    };
+
+    const fakeExec = makeFakeGit({
+        commits: [
+            { sha: 'aaaa', ts: '2026-05-08T10:00:00Z', parents: ['bbbb'], files: ['.pipeline/agent-models.json'] },
+        ],
+        blobs: { aaaa: toCfg, bbbb: fromCfg },
+    });
+
+    const dir = tmpDir('alert-h3b');
+    try {
+        const commits = [{ sha: 'aaaa', ts: '2026-05-08T10:00:00Z', parents: ['bbbb'], files: ['.pipeline/agent-models.json'] }];
+        const bucket = alert.buildBucket(commits, { execFile: fakeExec, cwd: dir });
+        const msg = alert.formatTelegramMessage(bucket);
+
+        // Aislar la línea de transición (`from\` → \`to\`) — está FUERA del code block.
+        // Buscamos la línea que contiene la flecha unicode →.
+        const transitionLine = msg.split('\n').find((l) => l.includes('→'));
+        assert.ok(transitionLine, 'debe existir línea de transición fromM → toM');
+
+        const mdv2RevertEscape = (s) => s.replace(/\\([_*\[\]()~`>#+\-=|{}.!\\])/g, '$1');
+        const renderedLine = mdv2RevertEscape(transitionLine);
+
+        assert.ok(!renderedLine.includes('sk-proj-'),
+            'la línea de transición NO debe contener sk-proj- después del render MdV2');
+        assert.ok(!renderedLine.includes('AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH'),
+            'la línea de transición NO debe contener el body del token');
     } finally { rmr(dir); }
 });
 
@@ -631,4 +690,76 @@ test('safeSkillName filtra basura y permite skills limpios', () => {
     assert.equal(alert.safeSkillName(''), '[skill_invalid]');
     assert.equal(alert.safeSkillName(null), '[skill_invalid]');
     assert.equal(alert.safeSkillName(123), '[skill_invalid]');
+});
+
+// -----------------------------------------------------------------------------
+// Contrato sendAlert↔caller — skills_affected (review #3 post-rebote)
+// -----------------------------------------------------------------------------
+
+test('sendAlert · alertResult expone skills_affected (review #3 / contrato caller)', () => {
+    const fromCfg = baseConfig();
+    const toCfg = baseConfig();
+    toCfg.skills['backend-dev'] = { provider: 'anthropic', model_override: 'claude-haiku-4-5' };
+    toCfg.skills['ux'] = { provider: 'anthropic', model_override: 'claude-sonnet-4-6' };
+
+    const fakeExec = makeFakeGit({
+        commits: [{
+            sha: 'aaaa', ts: '2026-05-08T10:00:00Z', parents: ['bbbb'],
+            files: ['.pipeline/agent-models.json'],
+        }],
+        blobs: { aaaa: toCfg, bbbb: fromCfg },
+    });
+
+    const dir = tmpDir('alert-skills-affected');
+    const pipelineDir = path.join(dir, '.pipeline');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+    try {
+        const result = alert.sendAlert('bbbb', 'aaaa', {
+            execFile: fakeExec,
+            cwd: dir,
+            pipelineDir,
+            now: () => 1746710400000,
+            dryRun: true,
+        });
+        assert.ok(result.ok);
+        assert.equal(result.alerts.length, 1);
+        const a = result.alerts[0];
+        assert.ok(Array.isArray(a.skills_affected),
+            'skills_affected debe ser array (contrato con caller pulpo.js)');
+        // Orden no importa — comparamos por contenido.
+        const sortedSkills = [...a.skills_affected].sort();
+        assert.deepEqual(sortedSkills, ['backend-dev', 'ux'],
+            'skills_affected debe contener todos los skills cambiados');
+    } finally { rmr(dir); }
+});
+
+// -----------------------------------------------------------------------------
+// H-10 · Cron lee origin/main, no HEAD local — contract test post-rebote review #2
+// -----------------------------------------------------------------------------
+
+test('H-10 · pulpo cron usa origin/main, no HEAD local (CA-H-10)', () => {
+    // Contract test estático: verifica que el cron en pulpo.js NO toma HEAD del
+    // cwd (que en feature branch divergiría de main y dispararía falsos positivos),
+    // sino que resuelve origin/main. Si alguien refactoriza el cron y vuelve a
+    // poner `rev-parse HEAD`, este test falla.
+    const pulpoPath = path.resolve(__dirname, '..', '..', 'pulpo.js');
+    const src = fs.readFileSync(pulpoPath, 'utf8');
+
+    // Aislar el bloque del cron de agent-models (entre el comentario tag #3087
+    // y el setInterval que lo registra).
+    const startMarker = src.indexOf('#3087 — Cron interno autoritativo para alertas');
+    assert.ok(startMarker > 0, 'no encontré el bloque del cron en pulpo.js');
+    // Buscamos el cierre del bloque try/catch del registro del cron.
+    const endMarker = src.indexOf('No se pudo iniciar el cron', startMarker);
+    assert.ok(endMarker > startMarker, 'no encontré el cierre del bloque cron');
+    const block = src.slice(startMarker, endMarker);
+
+    assert.ok(block.includes("'rev-parse', 'origin/main'") || block.includes('"rev-parse", "origin/main"'),
+        'el cron debe usar `git rev-parse origin/main` (CA-H-10)');
+    // El check negativo es más sutil: no debe haber un rev-parse HEAD plano.
+    // Permitimos comentarios que mencionen HEAD para context, pero no la invocación.
+    const codeLines = block.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'));
+    const codeOnly = codeLines.join('\n');
+    assert.ok(!codeOnly.includes("'rev-parse', 'HEAD'") && !codeOnly.includes('"rev-parse", "HEAD"'),
+        'el cron NO debe usar `git rev-parse HEAD` (regresión review #2)');
 });
