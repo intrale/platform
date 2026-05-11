@@ -6,6 +6,33 @@
 //     (los emitidos por el pulpo desde el fix #2801) en una ventana
 //     deslizante de 7 días → horas reales de uso.
 //
+// Multi-provider (M2 #3092 + #3065 §5.4):
+//
+//   * Este archivo mantiene la API legacy `computeQuota(metricsDir, log)`
+//     intacta — sigue siendo Anthropic-only y respeta el contrato byte-a-
+//     byte que consume el banner del dashboard (regresión cero).
+//
+//   * La API multi-provider canónica vive en `lib/quota-adapters/`:
+//
+//       const { quotaUsage } = require('./lib/quota-adapters');
+//       const result = quotaUsage('anthropic', { metricsDir, activityLogPath });
+//
+//     `quotaUsage` valida `provider` contra una allowlist hardcoded, dispatcha
+//     al adapter correspondiente y devuelve un shape uniforme con
+//     `adapterStatus` discriminado (ok/unknown/error/not_implemented/no_quota).
+//
+//   * Para conveniencia y para que callers existentes puedan migrar progresivo
+//     sin importar dos paquetes, este módulo re-exporta `quotaUsage`. El
+//     dispatch es idéntico, la lógica vive en quota-adapters/ — fuente única.
+//
+// Schema versioning del state (`weekly-quota.json`):
+//
+//   * Antes de M2 los archivos persistidos no tenían `schema_version`. Se
+//     considera schema v1 implícito.
+//   * Desde M2 escribimos `schema_version: 2` explícito; en lectura se
+//     completa lazy con default = 2 si falta. Esto habilita futuras
+//     migraciones sin romper instalaciones existentes.
+//
 //  2. Comparamos contra un límite estimado configurable
 //     (default 40h/semana basado en consenso de comunidad de Claude Code).
 //
@@ -77,6 +104,11 @@ function quotaFile(metricsDir) {
     return path.join(metricsDir, 'weekly-quota.json');
 }
 
+// Schema version del state persistido. Antes de M2 (#3092) los archivos no
+// tenían version explícito (= "v1 implícito"). Desde M2 se persiste explícito.
+// La migración es lazy y aditiva — no hay rename ni drop de campos.
+const STATE_SCHEMA_VERSION = 2;
+
 function loadState(metricsDir) {
     try {
         const raw = fs.readFileSync(quotaFile(metricsDir), 'utf8');
@@ -84,9 +116,14 @@ function loadState(metricsDir) {
         // Defaults para campos nuevos en estados viejos
         if (!parsed.calibration) parsed.calibration = null;
         if (!parsed.calibrations) parsed.calibrations = [];
+        // Migración lazy v1 → v2: si no hay schema_version, asumimos v1 y
+        // promovemos a v2 SIN tocar más campos (la nueva API multi-provider
+        // no requiere reformato del legacy).
+        if (!parsed.schema_version) parsed.schema_version = STATE_SCHEMA_VERSION;
         return parsed;
     } catch {
         return {
+            schema_version: STATE_SCHEMA_VERSION,
             config_limit_hours: DEFAULT_LIMIT_HOURS,
             effective_limit_hours: DEFAULT_LIMIT_HOURS,
             observed_max_hours: 0,
@@ -451,6 +488,18 @@ function computeQuota(metricsDir, activityLogPath, opts = {}) {
     };
 }
 
+// API multi-provider — dispatch a adapters/. Re-exportado acá para que
+// callers que migran de `computeQuota` a `quotaUsage` no necesiten cambiar
+// el require path de un solo paso. Fuente única de la lógica vive en
+// quota-adapters/index.js (con allowlist + fail-secure).
+let _adaptersDispatch = null;
+function quotaUsage(provider, sessionData) {
+    if (!_adaptersDispatch) {
+        _adaptersDispatch = require('./quota-adapters').quotaUsage;
+    }
+    return _adaptersDispatch(provider, sessionData);
+}
+
 module.exports = {
     computeQuota,
     computeUsage,
@@ -461,6 +510,8 @@ module.exports = {
     saveState,
     saveCalibration,
     clearCalibration,
+    quotaUsage,
     DEFAULT_LIMIT_HOURS,
     DEFAULT_SESSION_LIMIT_HOURS,
+    STATE_SCHEMA_VERSION,
 };
