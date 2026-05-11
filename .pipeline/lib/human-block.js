@@ -89,6 +89,14 @@ function emitDismissed(opts) {
     });
 }
 
+// Artifacts auxiliares (.reason.json metadata, .guidance.txt de destrabe humano)
+// no son markers de skill. Si se cuentan como markers, el listado devuelve dos
+// entradas por issue (la real y la fantasma), el reconciler no encuentra
+// reason válido para la fantasma, y termina re-aplicando el label needs-human.
+function isMarkerArtifact(name) {
+    return name.endsWith('.reason.json') || name.endsWith('.guidance.txt');
+}
+
 function findActiveMarker(issue) {
     const prefix = String(issue) + '.';
     for (const pipeline of PIPELINES) {
@@ -102,7 +110,7 @@ function findActiveMarker(issue) {
                 let entries = [];
                 try { entries = fs.readdirSync(dir); } catch { continue; }
                 for (const f of entries) {
-                    if (f.startsWith(prefix) && f !== '.gitkeep') {
+                    if (f.startsWith(prefix) && f !== '.gitkeep' && !isMarkerArtifact(f)) {
                         return {
                             pipeline, phase, state,
                             skill: f.slice(prefix.length),
@@ -128,7 +136,7 @@ function findBlockedMarker(issue) {
             let entries = [];
             try { entries = fs.readdirSync(dir); } catch { continue; }
             for (const f of entries) {
-                if (f.startsWith(prefix) && f !== '.gitkeep') {
+                if (f.startsWith(prefix) && f !== '.gitkeep' && !isMarkerArtifact(f)) {
                     return {
                         pipeline, phase,
                         skill: f.slice(prefix.length),
@@ -214,7 +222,7 @@ function listBlockedIssues() {
             let entries = [];
             try { entries = fs.readdirSync(dir); } catch { continue; }
             for (const f of entries) {
-                if (f === '.gitkeep' || f.endsWith('.reason.json')) continue;
+                if (f === '.gitkeep' || isMarkerArtifact(f)) continue;
                 const dot = f.indexOf('.');
                 if (dot <= 0) continue;
                 const issue = Number(f.slice(0, dot));

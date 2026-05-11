@@ -246,6 +246,49 @@ test('listBlockedIssues ignora archivos .reason.json y .gitkeep', () => {
     assert.equal(list.find(i => String(i.issue) === '.gitkeep'), undefined);
 });
 
+// Regresión: cuando un humano deja un `.guidance.txt` al lado de un marker
+// bloqueado, el listador NO debe tratarlo como un segundo marker fantasma.
+// Si lo hacía, el reconciler veía dos entradas para el mismo issue, no
+// encontraba reason.json válido para la guidance, y terminaba re-aplicando
+// el label needs-human aunque el humano lo hubiera quitado en GitHub.
+test('listBlockedIssues ignora .guidance.txt como marker fantasma', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 3075, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'Bloqueante mergeado, requiere relanzar',
+        question: '¿Volvemos a encolar a dev?',
+    });
+    // Simula el archivo de guidance que cargo manualmente al destrabar.
+    const dir = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'bloqueado-humano');
+    fs.writeFileSync(path.join(dir, '3075.pipeline-dev.guidance.txt'), 'Encoda al toque');
+
+    const list = hb.listBlockedIssues();
+    const matches = list.filter(i => i.issue === 3075);
+    assert.equal(matches.length, 1, 'solo un marker real, no debe incluir guidance.txt');
+    assert.equal(matches[0].skill, 'pipeline-dev');
+});
+
+test('findBlockedMarker ignora .guidance.txt y .reason.json al buscar', () => {
+    resetFs();
+    const dir = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'bloqueado-humano');
+    fs.mkdirSync(dir, { recursive: true });
+    // Crear solo artifacts, sin marker real.
+    fs.writeFileSync(path.join(dir, '7777.po.guidance.txt'), 'g');
+    fs.writeFileSync(path.join(dir, '7777.po.reason.json'), '{}');
+    assert.equal(hb.findBlockedMarker(7777), null, 'sin marker real, debe devolver null');
+});
+
+test('findActiveMarker ignora .guidance.txt en estados activos', () => {
+    resetFs();
+    const dir = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'pendiente');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '8888.po'), '');
+    fs.writeFileSync(path.join(dir, '8888.po.guidance.txt'), 'g');
+    const found = hb.findActiveMarker(8888);
+    assert.ok(found);
+    assert.equal(found.skill, 'po', 'debe devolver el marker real, no el guidance');
+});
+
 // =============================================================================
 // #2549 — isHumanBlockReason: detección de motivos de bloqueo humano en rechazos
 // =============================================================================
