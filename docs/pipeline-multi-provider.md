@@ -666,23 +666,16 @@ Ambos respetan el flag y caen al comportamiento legacy si `env_isolation_enabled
 
 > Esta política aplica solamente cuando hay cambio de proveedor (Política B). Cross-MODELO dentro del mismo proveedor (Política A) NO toca TOS/DPA — Opus, Sonnet y Haiku comparten el mismo contrato Anthropic.
 
-Tabla obligatoria en `docs/pipeline-multi-provider/data-residency.md` (issue S6):
+**Decisión documentada en [`docs/pipeline-multi-provider/data-residency.md`](pipeline-multi-provider/data-residency.md)** (issue [S6 / #3084](https://github.com/intrale/platform/issues/3084)).
 
-| Proveedor | Training opt-out por default | Región de procesamiento | BAA / DPA disponible | Retención logs lado proveedor |
-|-----------|-------------------------------|------------------------|--------------------|-----------------------------|
-| Anthropic API | sí (no entrena con datos API) | US (default), EU opcional | sí (Enterprise) | 30 días default |
-| Anthropic Plan Max | sí | US | no aplica | n/a (no logs lado servidor) |
-| OpenAI API | configurable (opt-out manual en settings) | US (default), EU opcional | sí (Enterprise) | 30 días default |
-| OpenAI tier free | NO (entrena con datos) | US | no | indefinido |
-| Google Gemini API paga | configurable | US/EU | sí | 30 días default |
-| Google Gemini tier free | NO (entrena con datos) | US | no | indefinido |
-| Ollama local | n/a (datos no salen) | local | n/a | local indefinido |
+Resumen de salida:
 
-**Decisión a documentar (issue S6, requiere input del operador)**: qué información del repo NO debe mandarse a proveedores no-Anthropic. Candidatos a excluir hoy:
-
-- `.pipeline/secrets/` (no debería existir en repo, pero en caso de hallazgo histórico).
-- `users/src/main/resources/application.conf` (config con secrets AWS).
-- AWS SDK creds (`~/.aws/credentials` no está en repo, pero hay pruebas que las usan).
+- **Tabla por proveedor**: relevamiento al 2026-05-08 con columnas obligatorias (training opt-out, región, BAA/DPA, retención, URLs TOS/DPA, fecha verificación).
+- **Lista explícita de archivos excluidos**: vive como código en [`.pipeline/data-residency-exclusions.json`](../.pipeline/data-residency-exclusions.json) (sidecar JSON validado por schema al boot).
+- **Enforcement**: [`.pipeline/lib/data-residency-filter.js`](../.pipeline/lib/data-residency-filter.js) — fail-closed al boot, audit log con `path_hash` (SHA-256-12, no path crudo) en `.pipeline/audit/data-residency-filter.jsonl`.
+- **Tests**: 25 casos en [`.pipeline/lib/__tests__/data-residency-filter.test.js`](../.pipeline/lib/__tests__/data-residency-filter.test.js) (CA-4 + CA-5 + glob compiler + integración con sidecar canónico).
+- **Anti path-traversal**: schema rechaza prefijos absolutos, `..`, `~/`, `\\` (consistente con §6.10.1).
+- **Independencia del sanitizer (§6.5)**: este filtro defiende el lado de **input** al modelo; el sanitizer defiende el **output** al log.
 
 ### 6.5 Sanitizado universal de output
 

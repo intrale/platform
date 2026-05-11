@@ -8439,6 +8439,29 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
   process.stderr.write('[validate] WARN agent-models validation SKIPPED via PULPO_SKIP_AGENT_MODELS_VALIDATE=1\n');
 }
 
+// --- VALIDACIÓN data-residency-exclusions.json (#3084, multi-provider §6.4) ---
+// Boot fail-closed antes de adquirir el singleton: si el sidecar de exclusiones
+// data-residency no carga, no parsea o no valida contra el schema, abortar con
+// exit code 2 y mensaje accionable. Coherente con la disciplina del filtro
+// (data-residency-filter.js): el adapter no-Anthropic NUNCA arranca con sidecar
+// inválido — política de fail-closed para evitar leaks silenciosos.
+//
+// Escape hatch: PULPO_SKIP_DATA_RESIDENCY_VALIDATE=1 salta la validación. Sólo
+// para recuperación de emergencia.
+if (process.env.PULPO_SKIP_DATA_RESIDENCY_VALIDATE !== '1') {
+  try {
+    const dataResidencyFilter = require('./lib/data-residency-filter');
+    dataResidencyFilter.validateOrExit({
+      contextLabel: 'boot abortado',
+    });
+  } catch (err) {
+    process.stderr.write(`[data-residency] FATAL excepción cargando data-residency-filter: ${err.stack || err.message}\n`);
+    process.exit(1);
+  }
+} else {
+  process.stderr.write('[data-residency] WARN data-residency validation SKIPPED via PULPO_SKIP_DATA_RESIDENCY_VALIDATE=1\n');
+}
+
 // --- SINGLETON ---
 require('./singleton')('pulpo');
 

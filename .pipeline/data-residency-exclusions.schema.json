@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/intrale/platform/.pipeline/data-residency-exclusions.schema.json",
+  "title": "data-residency-exclusions.json — schema canónico (#3084 / S6 multi-provider)",
+  "description": "Schema del sidecar de exclusiones de paths que NO se envían a providers no-Anthropic. Los patrones son globs estilo POSIX. Disciplina anti path-traversal: prohíbe absolutos, `..`, `~/`, y patrones que escapan del repo.",
+  "type": "object",
+  "required": ["version", "doc_ref", "default_policy", "exclusions"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Ref al schema. Conveniencia para IDEs."
+    },
+    "version": {
+      "type": "string",
+      "description": "Fecha del último relevamiento de la política (formato ISO YYYY-MM-DD).",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "doc_ref": {
+      "type": "string",
+      "description": "Path al documento de gobernanza (data-residency.md) que justifica las exclusiones.",
+      "minLength": 1
+    },
+    "default_policy": {
+      "type": "object",
+      "description": "Política por default de cada categoría de provider. `passthrough` no aplica filtro; `filter` excluye los paths matchados de cualquier patrón con providers que incluya la categoría.",
+      "required": ["anthropic", "deterministic", "non_anthropic"],
+      "additionalProperties": false,
+      "properties": {
+        "anthropic": { "type": "string", "enum": ["passthrough", "filter"] },
+        "deterministic": { "type": "string", "enum": ["passthrough", "filter"] },
+        "non_anthropic": { "type": "string", "enum": ["passthrough", "filter"] }
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "description": "Lista de exclusiones. Cada entrada: pattern + providers + motivo.",
+      "items": { "$ref": "#/$defs/exclusionEntry" },
+      "minItems": 0
+    }
+  },
+
+  "$defs": {
+    "exclusionEntry": {
+      "type": "object",
+      "required": ["pattern", "providers", "motivo"],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Glob relativo al root del repo. Soporta `**`, `*`, `?`. PROHIBIDO: prefijo `/`, `\\`, `~/`, segmentos `..`. El validador los rechaza al boot.",
+          "minLength": 1,
+          "maxLength": 256,
+          "not": {
+            "anyOf": [
+              { "pattern": "^[/\\\\]" },
+              { "pattern": "^~" },
+              { "pattern": "(^|/)\\.\\.(/|$)" },
+              { "pattern": "\\\\\\\\" }
+            ]
+          }
+        },
+        "providers": {
+          "type": "array",
+          "description": "Categorías o nombres de providers a los que aplica esta exclusión. Categorías: `anthropic`, `deterministic`, `non_anthropic`. También puede listar providers nombrados (`openai-codex`, `gemini`, `ollama`, etc.) — el validador cruza contra el allowlist de agent-models.json.",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "motivo": {
+          "type": "string",
+          "description": "Razón corta (1 línea) por la que el path/patrón se excluye. Visible en audit log y en data-residency.md.",
+          "minLength": 3,
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}
