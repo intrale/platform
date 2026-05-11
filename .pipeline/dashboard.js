@@ -55,6 +55,19 @@ try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */
 let restModeWindow = null;
 try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional */ }
 
+// Detector de artifacts auxiliares compartido con human-block.js: excluye
+// `.guidance.txt`, `.reason.json`, `.comment.md` y cualquier filename con
+// > 2 segmentos del listado de markers, así no aparecen como agentes fantasma.
+let _isMarkerArtifact;
+try { ({ isMarkerArtifact: _isMarkerArtifact } = require('./lib/human-block')); } catch { /* opcional */ }
+function isMarkerArtifact(name) {
+  if (typeof _isMarkerArtifact === 'function') return _isMarkerArtifact(name);
+  return name.split('.').length > 2
+      || name.endsWith('.reason.json')
+      || name.endsWith('.guidance.txt')
+      || name.endsWith('.comment.md');
+}
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -304,8 +317,15 @@ function loadConfig() {
 }
 
 function listWorkFiles(dir) {
-  try { return fs.readdirSync(dir).filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep')); }
-  catch { return []; }
+  try {
+    return fs.readdirSync(dir).filter(f => {
+      if (f.startsWith('.') || f.endsWith('.gitkeep')) return false;
+      // Excluir artifacts (.guidance.txt, .reason.json, .comment.md, etc.)
+      // que no son markers de skill — evita que aparezcan como agentes fantasma
+      // en issueMatrix y en los conteos del dashboard.
+      return !isMarkerArtifact(f);
+    });
+  } catch { return []; }
 }
 
 function readYamlSafe(filepath) {

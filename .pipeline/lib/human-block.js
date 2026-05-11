@@ -89,12 +89,20 @@ function emitDismissed(opts) {
     });
 }
 
-// Artifacts auxiliares (.reason.json metadata, .guidance.txt de destrabe humano)
-// no son markers de skill. Si se cuentan como markers, el listado devuelve dos
-// entradas por issue (la real y la fantasma), el reconciler no encuentra
-// reason válido para la fantasma, y termina re-aplicando el label needs-human.
+// Artifacts auxiliares (.reason.json metadata, .guidance.txt de destrabe humano,
+// .comment.md de criterios PO, etc.) no son markers de skill. Si se cuentan
+// como markers, los listados devuelven entradas fantasma que el reconciler
+// no puede resolver (reaplicando needs-human, mostrando "po.comment.md" como
+// agente en la cola, etc.).
+//
+// Detección estructural: un marker válido tiene formato exacto `<issue>.<skill>`
+// con exactamente 2 segmentos separados por punto. Los skills configurados en
+// config.yaml (po, ux, guru, security, planner, backend-dev, android-dev,
+// web-dev, pipeline-dev, build, tester, qa, linter, review, delivery) no
+// contienen puntos. Cualquier filename con > 2 segmentos es artifact.
 function isMarkerArtifact(name) {
-    return name.endsWith('.reason.json') || name.endsWith('.guidance.txt');
+    if (name.split('.').length > 2) return true;
+    return name.endsWith('.reason.json') || name.endsWith('.guidance.txt') || name.endsWith('.comment.md');
 }
 
 function findActiveMarker(issue) {
@@ -427,4 +435,5 @@ module.exports = {
     PIPELINES,
     BLOCK_SUBDIR,
     NEEDS_HUMAN_LABEL,
+    isMarkerArtifact,
 };
