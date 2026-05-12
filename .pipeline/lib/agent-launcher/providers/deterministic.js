@@ -21,7 +21,7 @@ const { execSync } = require('node:child_process');
 // NUNCA cambiar a require dinámico sobre `skill`: si un atacante con permiso de
 // PR edita esto, podría inyectar un script fuera de skills-deterministicos/.
 // -----------------------------------------------------------------------------
-const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
+const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 
 function isDeterministic(skill) {
     return DETERMINISTIC_SKILLS.has(skill);

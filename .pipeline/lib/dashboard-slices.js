@@ -26,7 +26,7 @@ try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opc
 // sincronizado con `DETERMINISTIC_SKILLS` del detector (#2974,
 // `lib/quota-exhausted.js`). Si divergen, el dashboard puede mostrar un
 // conteo distinto al gate real del pulpo.
-const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
+const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 
 // #3023 — Filtro de la cola "Próximos 10" por allowlist de pausa parcial.
 // Importación defensiva: si el módulo no está disponible (edge: checkout
