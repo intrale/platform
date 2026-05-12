@@ -54,9 +54,54 @@ test('parseArgs — fallback a PIPELINE_ISSUE si no hay argumento posicional', (
 
 test('buildGradleCommand — smart por defecto usa scripts/smart-build.sh', () => {
     const c = builder.buildGradleCommand('smart', null);
-    assert.equal(c.cmd, 'bash');
+    // En Windows, cmd puede ser el path absoluto a Git Bash (resolución explícita
+    // para evitar WSL relay — regresión #3078). En otros OS o si Git Bash no está
+    // instalado, queda como literal 'bash'.
+    if (process.platform === 'win32' && path.isAbsolute(c.cmd)) {
+        assert.ok(c.cmd.toLowerCase().endsWith('bash.exe'),
+            `cmd path absoluto debe terminar en bash.exe, fue: ${c.cmd}`);
+    } else {
+        assert.equal(c.cmd, 'bash');
+    }
     assert.deepEqual(c.args, ['scripts/smart-build.sh']);
     assert.equal(c.label, 'smart');
+});
+
+test('resolveBashOnWindows — en non-Windows devuelve null', () => {
+    if (process.platform === 'win32') return; // skip en Windows
+    assert.equal(builder.resolveBashOnWindows(), null);
+});
+
+test('resolveBashOnWindows — en Windows prefiere Git Bash sobre PATH (regresión #3078)', () => {
+    if (process.platform !== 'win32') return; // skip fuera de Windows
+    const resolved = builder.resolveBashOnWindows();
+    // Si resuelve, debe ser path absoluto a un .exe existente; nunca el bash de WSL.
+    if (resolved !== null) {
+        assert.ok(path.isAbsolute(resolved), `path no absoluto: ${resolved}`);
+        assert.ok(fs.existsSync(resolved), `bash.exe resuelto no existe: ${resolved}`);
+        const lower = resolved.toLowerCase();
+        assert.ok(!lower.includes('\\windows\\system32\\bash.exe'),
+            'NO debe resolver al WSL relay (windows/system32/bash.exe)');
+        assert.ok(!lower.includes('\\windowsapps\\bash.exe'),
+            'NO debe resolver al stub WSL en WindowsApps');
+    }
+    // null es aceptable si Git Bash no está instalado: build.js cae a literal 'bash'.
+});
+
+test('resolveBashOnWindows — GIT_BASH env override gana sobre paths default', () => {
+    if (process.platform !== 'win32') return;
+    const saved = process.env.GIT_BASH;
+    // Punto a un archivo que sí existe para que la primera iteración matche.
+    const fakeBash = path.join(os.tmpdir(), 'fake-bash-' + Date.now() + '.exe');
+    fs.writeFileSync(fakeBash, 'FAKE');
+    try {
+        process.env.GIT_BASH = fakeBash;
+        assert.equal(builder.resolveBashOnWindows(), fakeBash);
+    } finally {
+        if (saved === undefined) delete process.env.GIT_BASH;
+        else process.env.GIT_BASH = saved;
+        try { fs.unlinkSync(fakeBash); } catch {}
+    }
 });
 
 test('buildGradleCommand — clean usa ./gradlew clean build --no-daemon', () => {

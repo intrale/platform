@@ -80,25 +80,52 @@ function startHeartbeat(issue) {
     };
 }
 
+// ── Resolución explícita de bash en Windows ─────────────────────────
+//
+// Problema: en Windows, spawn('bash', ..., { shell: true }) pasa por cmd.exe,
+// que resuelve `bash` por PATH y suele encontrar `C:\Windows\System32\bash.exe`
+// (relay a WSL) antes que `C:\Program Files\Git\bin\bash.exe` (Git Bash).
+// Si la distro WSL no está sana, el spawn falla con:
+//   <3>WSL (9 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+// y el build crashea sin clasificación (regresión observada en #3078 build phase).
+//
+// Solución: resolver bash explícitamente a Git Bash cuando estamos en Windows.
+// Si no está en los paths conocidos, caemos a 'bash' (comportamiento previo).
+// La variable GIT_BASH permite override manual desde el entorno.
+function resolveBashOnWindows() {
+    if (process.platform !== 'win32') return null;
+    const candidates = [
+        process.env.GIT_BASH,
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+    ].filter(Boolean);
+    for (const p of candidates) {
+        try { if (fs.existsSync(p)) return p; } catch {}
+    }
+    return null;
+}
+
 // ── Decisión de scope → comando Gradle ───────────────────────────────
 function buildGradleCommand(scope, mod) {
-    // Devuelve { cmd, args, label } — cmd es 'bash' o './gradlew'
+    // Devuelve { cmd, args, label } — cmd es path a bash (explícito en Windows) o './gradlew'
     if (mod) {
         const moduleTask = mod === 'app' ? ':app:composeApp:check' : `:${mod}:check`;
         return { cmd: './gradlew', args: [moduleTask, '--no-daemon'], label: `module:${mod}` };
     }
+    const bashCmd = resolveBashOnWindows() || 'bash';
     switch (scope) {
         case 'clean':
             return { cmd: './gradlew', args: ['clean', 'build', '--no-daemon'], label: 'clean-build' };
         case 'fast':
             return { cmd: './gradlew', args: [':app:composeApp:compileKotlinJvm', '--no-daemon'], label: 'fast' };
         case 'all':
-            return { cmd: 'bash', args: ['scripts/smart-build.sh', '--all'], label: 'all' };
+            return { cmd: bashCmd, args: ['scripts/smart-build.sh', '--all'], label: 'all' };
         case 'verify':
             return { cmd: './gradlew', args: ['verifyNoLegacyStrings', ':app:composeApp:validateComposeResources', ':app:composeApp:scanNonAsciiFallbacks', '--no-daemon'], label: 'verify' };
         case 'smart':
         default:
-            return { cmd: 'bash', args: ['scripts/smart-build.sh'], label: 'smart' };
+            return { cmd: bashCmd, args: ['scripts/smart-build.sh'], label: 'smart' };
     }
 }
 
@@ -108,7 +135,12 @@ function runGradle({ cmd, args, cwd, env }) {
         const started = Date.now();
         let stdout = '';
         let stderr = '';
-        const child = spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
+        // shell:true en Windows es necesario para resolver './gradlew' → gradlew.bat.
+        // Pero si cmd ya es un path absoluto (ej. Git Bash resuelto explícitamente),
+        // shell:false evita que cmd.exe re-resuelva 'bash' por PATH y caiga en WSL
+        // relay (regresión #3078 build phase).
+        const useShell = process.platform === 'win32' && !path.isAbsolute(cmd);
+        const child = spawn(cmd, args, { cwd, env, shell: useShell, windowsHide: true });
         if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
         if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (e) => {
@@ -338,6 +370,7 @@ if (require.main === module) {
 module.exports = {
     parseArgs,
     buildGradleCommand,
+    resolveBashOnWindows,
     startHeartbeat,
     copyArtifacts,
     updateMarker,
