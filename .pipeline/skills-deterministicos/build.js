@@ -28,7 +28,22 @@ const trace = require('../lib/traceability');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
 
 // ── Constantes y paths ──────────────────────────────────────────────
+// REPO_ROOT: main checkout (shared outputs — logs, QA artifacts, hooks).
+// WORKTREE_ROOT: agent's worktree (compilation source, gradle cwd, artifact sources).
+// Cuando no hay worktree (test, scope all desde root) cae a REPO_ROOT.
+//
+// CRÍTICO: hasta este fix gradle se ejecutaba en cwd=REPO_ROOT siempre. Eso
+// causaba dos regresiones acopladas (rebote build #3073 rev-1, 2026-05-12):
+//   1. smart-build.sh calculaba `git diff origin/main...HEAD` desde el main
+//      checkout (rama distinta a la del agente) → detectaba 1156 archivos
+//      falsos y disparaba `./gradlew check` aunque el agente solo tocara
+//      `.pipeline/*`.
+//   2. Varios builds concurrentes compartían `platform/.gradle/` → colisión
+//      en el lock `buildOutputCleanup` (PID 6400 vs 10720 en el incidente).
+// Con PIPELINE_WORKTREE como cwd, cada worktree usa su propio `.gradle/`
+// y el diff de smart-build resuelve contra la rama del agente.
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+const WORKTREE_ROOT = process.env.PIPELINE_WORKTREE || REPO_ROOT;
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
 const LOG_DIR = path.join(REPO_ROOT, '.pipeline', 'logs');
 const QA_ARTIFACTS_DIR = path.join(REPO_ROOT, 'qa', 'artifacts');
@@ -102,13 +117,58 @@ function buildGradleCommand(scope, mod) {
     }
 }
 
+// ── Resolución de `bash` en Windows ──────────────────────────────────
+// Cuando `spawn('bash', args, { shell: true })` corre en Windows, Node
+// delega a `cmd.exe /d /s /c "bash ..."`. cmd.exe busca `bash` en el PATH
+// del sistema, donde típicamente aparece primero `C:\Windows\System32\
+// bash.exe` (wrapper a WSL). Si la máquina no tiene una distro Linux
+// instalada en WSL, ese wrapper falla con:
+//   <3>WSL (9 - Relay) ERROR: CreateProcessCommon:818:
+//     execvpe(/bin/bash) failed: No such file or directory
+// y el build muere en ~4s sin output (regresión vista en builds desde
+// que `build` pasó a determinístico — #3157).
+//
+// Solución: en Windows, resolver explícitamente a Git Bash (que viene
+// con Git for Windows y está instalado en todos los workstations del
+// pipeline). Se usa `shell: false` cuando hay path absoluto a bash.exe
+// para que cmd.exe no se entrometa con la resolución (y para que no
+// rompa el path con espacios de "Program Files").
+//
+// Devuelve { cmd, useShell } — el caller debe usar ambos al spawn.
+function resolveBashCommand(cmd) {
+    if (process.platform !== 'win32') {
+        return { cmd, useShell: false };
+    }
+    if (cmd !== 'bash') {
+        // ./gradlew y otros: usar shell para que cmd.exe encuentre .bat
+        return { cmd, useShell: true };
+    }
+    const candidates = [
+        process.env.GIT_BASH_PATH,
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        try {
+            if (fs.existsSync(candidate)) {
+                return { cmd: candidate, useShell: false };
+            }
+        } catch {}
+    }
+    // No se encontró Git Bash — fallback a 'bash' por PATH (puede caer
+    // en WSL bash). Mejor fallar con stack trace claro que silenciosamente.
+    return { cmd, useShell: true };
+}
+
 // ── Spawn con captura completa ───────────────────────────────────────
 function runGradle({ cmd, args, cwd, env }) {
     return new Promise((resolve) => {
         const started = Date.now();
         let stdout = '';
         let stderr = '';
-        const child = spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
+        const { cmd: resolvedCmd, useShell } = resolveBashCommand(cmd);
+        const child = spawn(resolvedCmd, args, { cwd, env, shell: useShell, windowsHide: true });
         if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
         if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (e) => {
@@ -137,15 +197,18 @@ function copyArtifacts(result) {
         }
     };
 
+    // Source paths viven en el worktree (la build corrió ahí); destino en el
+    // main checkout (qa/artifacts/ es compartido). En tests sin PIPELINE_WORKTREE
+    // WORKTREE_ROOT === REPO_ROOT, así que se mantiene compat con fixtures.
     if (result.modules.includes('users')) {
-        tryCopy(path.join(REPO_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
+        tryCopy(path.join(WORKTREE_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
             path.join(QA_ARTIFACTS_DIR, 'users-all.jar'));
     }
 
     if (result.modules.includes('app')) {
         // Buscar primer APK client debug
         try {
-            const apkDir = path.join(REPO_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
+            const apkDir = path.join(WORKTREE_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
             if (fs.existsSync(apkDir)) {
                 const apk = fs.readdirSync(apkDir).find((f) => f.endsWith('.apk'));
                 if (apk) tryCopy(path.join(apkDir, apk), path.join(QA_ARTIFACTS_DIR, 'composeApp-client-debug.apk'));
@@ -233,7 +296,9 @@ async function main() {
     let motivo = null;
 
     try {
-        gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
+        // cwd: WORKTREE_ROOT — gradle corre en la rama del agente, no en main.
+        // Ver constantes arriba para el contexto del incidente que motivó este split.
+        gradleResult = await runGradle({ cmd, args: gArgs, cwd: WORKTREE_ROOT, env });
         logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
         logAppend('[build] --- stdout (último 2000 chars) ---');
         logAppend(gradleResult.stdout.slice(-2000));
@@ -241,6 +306,15 @@ async function main() {
         logAppend(gradleResult.stderr.slice(-1000));
 
         parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
+
+        // Guard defensivo: si Gradle salió 0 pero el parser no detectó status,
+        // asumimos no-op (smart-build sin módulos compilables). Evita rebote
+        // espurio por output no reconocido. Si exit_code != 0, sí es fallo real.
+        if (gradleResult.exit_code === 0 && parsed.build_status === 'UNKNOWN') {
+            parsed.success = true;
+            parsed.build_status = 'NO_OP';
+            logAppend('[build] no-op detectado por exit_code=0 sin BUILD SUCCESSFUL/FAILED (heurística defensiva)');
+        }
 
         if (parsed.success) {
             artifacts = copyArtifacts(parsed);
@@ -335,7 +409,11 @@ if (require.main === module) {
 module.exports = {
     parseArgs,
     buildGradleCommand,
+    resolveBashCommand,
     startHeartbeat,
     copyArtifacts,
     updateMarker,
+    // Exportados para tests de regresión del split REPO_ROOT/WORKTREE_ROOT
+    // (rebote build #3073 rev-1).
+    _paths: { REPO_ROOT, WORKTREE_ROOT, QA_ARTIFACTS_DIR, LOG_DIR },
 };

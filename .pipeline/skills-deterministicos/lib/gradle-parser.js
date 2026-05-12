@@ -22,6 +22,9 @@ const RE_FAILURE_HEADER = /^FAILURE: Build failed with an exception\./;
 const RE_WHAT_WENT_WRONG = /^\* What went wrong:\s*$/;
 const RE_WHERE = /^\* Where:\s*$/;
 const RE_EXECUTION_FAILED = /Execution failed for task '(:[\w:-]+)'\./;
+// Marcadores de no-op del smart-build.sh: el script salió 0 porque no hay nada
+// que compilar (cambios solo en docs/, .pipeline/, scripts/, etc.). No es fallo.
+const RE_SMART_BUILD_NOOP = /(Sin cambios detectados\. Nada que compilar\.|Los cambios no afectan m[oó]dulos compilables)/i;
 
 // ── Clasificación de errores conocidos ────────────────────────────────
 const ERROR_PATTERNS = [
@@ -162,7 +165,7 @@ function parseGradleOutput(stdout = '', stderr = '') {
 
   const result = {
     success: false,
-    build_status: 'UNKNOWN', // SUCCESSFUL | FAILED | UNKNOWN
+    build_status: 'UNKNOWN', // SUCCESSFUL | FAILED | NO_OP | UNKNOWN
     duration_ms: 0,
     modules: [],
     tasks: { total: 0, executed: 0, up_to_date: 0, from_cache: 0 },
@@ -174,6 +177,15 @@ function parseGradleOutput(stdout = '', stderr = '') {
     errors: [],
     raw_length: combined.length,
   };
+
+  // ── No-op de smart-build (sin módulos compilables) ──
+  // Si el output contiene los marcadores de "no hay nada que compilar",
+  // es éxito legítimo: salir antes de intentar parsear bloques Gradle.
+  if (RE_SMART_BUILD_NOOP.test(combined)) {
+    result.success = true;
+    result.build_status = 'NO_OP';
+    return result;
+  }
 
   const executedTasks = new Set();
   const failedTasks = new Set();
@@ -276,7 +288,12 @@ function parseGradleOutput(stdout = '', stderr = '') {
  */
 function renderMarkdownReport(result, meta = {}) {
   const { issue = null, scope = 'default', duration_override_ms = null } = meta;
-  const verdict = result.success ? 'EXITOSO ✅' : 'FALLIDO ❌';
+  let verdict;
+  if (result.build_status === 'NO_OP') {
+    verdict = 'SIN CAMBIOS COMPILABLES ⏭️';
+  } else {
+    verdict = result.success ? 'EXITOSO ✅' : 'FALLIDO ❌';
+  }
   const durMs = duration_override_ms != null ? duration_override_ms : result.duration_ms;
   const mins = Math.floor(durMs / 60000);
   const secs = Math.floor((durMs % 60000) / 1000);
@@ -292,7 +309,10 @@ function renderMarkdownReport(result, meta = {}) {
   lines.push('');
   lines.push('### Compilacion');
   lines.push(`- Modulo(s): ${result.modules.join(', ') || 'n/a'}`);
-  lines.push(`- Resultado: ${result.success ? 'OK' : 'FALLO'}`);
+  let resultadoText;
+  if (result.build_status === 'NO_OP') resultadoText = 'OMITIDO (sin módulos afectados)';
+  else resultadoText = result.success ? 'OK' : 'FALLO';
+  lines.push(`- Resultado: ${resultadoText}`);
   lines.push(`- Tiempo: ${durStr}`);
   lines.push(`- Scope: ${scope}${issue ? ` · issue #${issue}` : ''}`);
   lines.push(`- Tareas: ${result.tasks.executed} ejecutadas · ${result.tasks.up_to_date} up-to-date · ${result.tasks.from_cache} desde caché`);
@@ -316,9 +336,13 @@ function renderMarkdownReport(result, meta = {}) {
   }
 
   lines.push('### Veredicto del Builder');
-  lines.push(result.success
-    ? 'Build exitoso — artefactos listos para la siguiente fase.'
-    : 'Hay errores que corregir antes de continuar. Rebote al dev skill correspondiente.');
+  if (result.build_status === 'NO_OP') {
+    lines.push('Sin cambios que afecten módulos compilables (solo docs, scripts o .pipeline/). Se aprueba sin compilar.');
+  } else if (result.success) {
+    lines.push('Build exitoso — artefactos listos para la siguiente fase.');
+  } else {
+    lines.push('Hay errores que corregir antes de continuar. Rebote al dev skill correspondiente.');
+  }
 
   return lines.join('\n');
 }

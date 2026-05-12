@@ -460,6 +460,236 @@ test('sanitizeSecrets: expuesto para tests y es puro', () => {
     assert.strictEqual(once, twice);
 });
 
+// =============================================================================
+// Multi-provider LLM API keys (issue #3073, S2 multi-provider)
+//
+// Cobertura: Anthropic, OpenAI clásico, OpenAI project, Google OAuth access.
+// Tests exigidos por security review (#3073 → comentario "Análisis de
+// seguridad"): positivos por proveedor, orden mixto, prefijo malicioso,
+// idempotencia, chunk-split, anti-bypass, panic dump, falso positivo en
+// código legítimo.
+// =============================================================================
+
+// Secretos ficticios (forma correcta, ninguno es real).
+const FAKE_ANTHROPIC = 'sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH_-AAAA';
+const FAKE_ANTHROPIC_SID = 'sk-ant-sid01-IIIIJJJJKKKKLLLLMMMMNNNNOOOOPPPP_xx';
+const FAKE_OPENAI_CLASSIC = 'sk-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLL'; // 48 chars after sk-
+const FAKE_OPENAI_PROJECT = 'sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJ_KKKK';
+const FAKE_GOOGLE_OAUTH_ACCESS = 'ya29.A0AfH6SMBAAAABBBBCCCCDDDDEEEEFFFFGGGG';
+
+// ─── Positivos por proveedor (CA1 + CA2 del PO) ─────────────────────────────
+
+test('ANTHROPIC_KEY positivo: sk-ant-api03-... redacted con placeholder propio', () => {
+    const out = sanitize(`token=${FAKE_ANTHROPIC}`);
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_ANTHROPIC), `leak: ${out}`);
+});
+
+test('ANTHROPIC_KEY positivo: variante sid01 (admin)', () => {
+    const out = sanitize(`x=${FAKE_ANTHROPIC_SID}`);
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_ANTHROPIC_SID));
+});
+
+test('OPENAI_PROJECT_KEY positivo: sk-proj-... redacted', () => {
+    const out = sanitize(`OPENAI_API_KEY ${FAKE_OPENAI_PROJECT}`);
+    assert.ok(out.includes('[REDACTED:OPENAI_PROJECT_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_OPENAI_PROJECT));
+});
+
+test('OPENAI_KEY positivo: sk-<48 chars> clásico redacted', () => {
+    const out = sanitize(`bearer ${FAKE_OPENAI_CLASSIC}`);
+    assert.ok(out.includes('[REDACTED:OPENAI_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_OPENAI_CLASSIC));
+});
+
+test('GOOGLE_OAUTH_TOKEN positivo: ya29.... redacted', () => {
+    const out = sanitize(`access_token=${FAKE_GOOGLE_OAUTH_ACCESS}`);
+    assert.ok(out.includes('[REDACTED:GOOGLE_OAUTH_TOKEN]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_GOOGLE_OAUTH_ACCESS));
+});
+
+// ─── Orden mixto (test crítico exigido por security punto 4) ────────────────
+
+test('orden: sk-ant-... y sk-... clásico se redactan con sus placeholders distintos', () => {
+    const input = `key1=${FAKE_ANTHROPIC} key2=${FAKE_OPENAI_CLASSIC}`;
+    const out = sanitize(input);
+    // Ambos placeholders presentes
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'), `falta ANTHROPIC_KEY: ${out}`);
+    assert.ok(out.includes('[REDACTED:OPENAI_KEY]'), `falta OPENAI_KEY: ${out}`);
+    // Ningún leak
+    assert.ok(!out.includes(FAKE_ANTHROPIC), `leak Anthropic: ${out}`);
+    assert.ok(!out.includes(FAKE_OPENAI_CLASSIC), `leak OpenAI: ${out}`);
+    // Forensia: el orden en el output preserva el orden del input
+    const idxAnt = out.indexOf('[REDACTED:ANTHROPIC_KEY]');
+    const idxOai = out.indexOf('[REDACTED:OPENAI_KEY]');
+    assert.ok(idxAnt < idxOai, `orden invertido: ant=${idxAnt} oai=${idxOai}`);
+});
+
+test('orden: sk-proj-... antes que sk-... clásico no se confunden', () => {
+    const input = `${FAKE_OPENAI_PROJECT} | ${FAKE_OPENAI_CLASSIC}`;
+    const out = sanitize(input);
+    assert.ok(out.includes('[REDACTED:OPENAI_PROJECT_KEY]'), `falta OPENAI_PROJECT_KEY: ${out}`);
+    assert.ok(out.includes('[REDACTED:OPENAI_KEY]'), `falta OPENAI_KEY: ${out}`);
+    assert.ok(!out.includes('[REDACTED:OPENAI_KEY] '));  // sólo una vez
+});
+
+test('orden: input con los 4 providers a la vez, cada uno con su placeholder', () => {
+    const input = [
+        `anth=${FAKE_ANTHROPIC}`,
+        `oai_proj=${FAKE_OPENAI_PROJECT}`,
+        `oai=${FAKE_OPENAI_CLASSIC}`,
+        `goog=${FAKE_GOOGLE_OAUTH_ACCESS}`,
+    ].join(' ');
+    const out = sanitize(input);
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'));
+    assert.ok(out.includes('[REDACTED:OPENAI_PROJECT_KEY]'));
+    assert.ok(out.includes('[REDACTED:OPENAI_KEY]'));
+    assert.ok(out.includes('[REDACTED:GOOGLE_OAUTH_TOKEN]'));
+    assert.ok(!out.includes(FAKE_ANTHROPIC));
+    assert.ok(!out.includes(FAKE_OPENAI_PROJECT));
+    assert.ok(!out.includes(FAKE_OPENAI_CLASSIC));
+    assert.ok(!out.includes(FAKE_GOOGLE_OAUTH_ACCESS));
+});
+
+// ─── Prefijo malicioso (test exigido por security punto 5) ──────────────────
+
+test('prefijo malicioso: sk-ant-AAA (corto) NO matchea ningún placeholder', () => {
+    const out = sanitize('debug: sk-ant-AAA observed');
+    assert.ok(!out.includes('[REDACTED:ANTHROPIC_KEY]'), `falso positivo: ${out}`);
+    assert.ok(!out.includes('[REDACTED:OPENAI_KEY]'), `falso positivo: ${out}`);
+    assert.ok(!out.includes('[REDACTED:OPENAI_PROJECT_KEY]'), `falso positivo: ${out}`);
+});
+
+test('prefijo malicioso: sk-proj-AAA (corto) NO matchea ningún placeholder', () => {
+    const out = sanitize('id=sk-proj-AAA');
+    assert.ok(!out.includes('[REDACTED:OPENAI_PROJECT_KEY]'), `falso positivo: ${out}`);
+    assert.ok(!out.includes('[REDACTED:OPENAI_KEY]'), `falso positivo: ${out}`);
+});
+
+test('prefijo malicioso: sk-AAAA (4 chars) NO matchea OpenAI clásico', () => {
+    const out = sanitize('css class sk-AAAA-button');
+    assert.ok(!out.includes('[REDACTED:OPENAI_KEY]'), `falso positivo: ${out}`);
+});
+
+// ─── Falsos positivos sobre código legítimo (security punto 3) ──────────────
+
+test('no falso positivo: clase CSS Tailwind sk-button-primary', () => {
+    const out = sanitize('<div class="sk-button-primary">click</div>');
+    assert.ok(!out.includes('[REDACTED:OPENAI_KEY]'), `falso positivo: ${out}`);
+    assert.ok(!out.includes('[REDACTED:ANTHROPIC_KEY]'), `falso positivo: ${out}`);
+    assert.ok(out.includes('sk-button-primary'), `texto removido sin razón: ${out}`);
+});
+
+test('no falso positivo: identificador interno claude_session_id', () => {
+    const out = sanitize('const claude_session_id = "abc123"');
+    assert.ok(!out.includes('[REDACTED:'), `falso positivo: ${out}`);
+});
+
+test('no falso positivo: slug SEO sk-thumbnail-default', () => {
+    const out = sanitize('GET /static/sk-thumbnail-default.png HTTP/1.1');
+    assert.ok(!out.includes('[REDACTED:OPENAI_KEY]'), `falso positivo: ${out}`);
+});
+
+test('no falso positivo: prefijo ya29 sin punto (sólo "ya29" suelto)', () => {
+    const out = sanitize('build version ya29 release');
+    assert.ok(!out.includes('[REDACTED:GOOGLE_OAUTH_TOKEN]'));
+});
+
+test('no falso positivo: id alfanumérico de 48 chars que empieza con sk-', () => {
+    // El charset de OPENAI_KEY excluye `_-`, así que un id con guiones medios
+    // no matchea aunque tenga 48+ chars de longitud total.
+    const out = sanitize('build-id sk-ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ01-2345-6789-ABCD');
+    assert.ok(!out.includes('[REDACTED:OPENAI_KEY]'), `falso positivo: ${out}`);
+});
+
+// ─── Idempotencia con providers nuevos (security punto §6.5) ────────────────
+
+test('idempotencia multi-provider: doble pasada no altera placeholders', () => {
+    const input = [
+        `anth=${FAKE_ANTHROPIC}`,
+        `oai_proj=${FAKE_OPENAI_PROJECT}`,
+        `oai=${FAKE_OPENAI_CLASSIC}`,
+        `goog=${FAKE_GOOGLE_OAUTH_ACCESS}`,
+    ].join(' ');
+    const once = sanitize(input);
+    const twice = sanitize(once);
+    assert.strictEqual(once, twice, 'idempotencia rota');
+});
+
+// ─── Anti-bypass: ZWSP en medio de sk-ant- ──────────────────────────────────
+
+test('bypass ZWSP en sk-ant-: se redacta igual (NFC + zero-width strip)', () => {
+    const zwsp = '​';
+    const poisoned = `sk-${zwsp}ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH_-AAAA`;
+    const out = sanitize(poisoned);
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'), `out=${out}`);
+});
+
+// ─── Stream chunk-split (CA4 del PO) ────────────────────────────────────────
+
+test('stream-filter: sk-ant-... partido en 2 chunks se redacta', async () => {
+    const input = `header line\nsecret prefix ${FAKE_ANTHROPIC} suffix\ntail line\n`;
+    // Forzamos el split en el medio del token Anthropic.
+    const splitAt = input.indexOf('sk-ant-') + 4;  // dentro del prefijo
+    const chunks = [input.slice(0, splitAt), input.slice(splitAt)];
+    const stream = createSanitizeStream({ minBufferBytes: 256 });
+    let out = '';
+    stream.on('data', (d) => { out += d.toString(); });
+    for (const c of chunks) stream.write(c);
+    await new Promise((resolve, reject) => {
+        stream.end();
+        stream.on('end', resolve);
+        stream.on('error', reject);
+    });
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_ANTHROPIC), `leak: ${out}`);
+});
+
+test('stream-filter: ya29.... partido en 3 chunks se redacta', async () => {
+    const input = `pre ${FAKE_GOOGLE_OAUTH_ACCESS} post\n`;
+    const chunks = [input.slice(0, 8), input.slice(8, 16), input.slice(16)];
+    const stream = createSanitizeStream({ minBufferBytes: 256 });
+    let out = '';
+    stream.on('data', (d) => { out += d.toString(); });
+    for (const c of chunks) stream.write(c);
+    await new Promise((r) => { stream.end(); stream.on('end', r); });
+    assert.ok(out.includes('[REDACTED:GOOGLE_OAUTH_TOKEN]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_GOOGLE_OAUTH_ACCESS), `leak: ${out}`);
+});
+
+// ─── Panic dump simulado (security punto §2 "Adversarial: dump del CLI") ────
+
+test('panic dump simulado: stack trace con sk-ant-... como string literal', () => {
+    const stack = [
+        'Error: 401 Unauthorized',
+        '    at processResponse (provider/anthropic.js:42:13)',
+        `    at validate(token = "${FAKE_ANTHROPIC}")`,
+        '    at <anonymous>',
+    ].join('\n');
+    const out = sanitize(stack);
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_ANTHROPIC), `leak en stack: ${out}`);
+});
+
+test('panic dump simulado: header x-api-key con sk-ant-... cae en HEADER_X_API_KEY genérico', () => {
+    // Comportamiento aceptado (security punto §9): el patrón estructural de
+    // header redacta primero. El secreto NO leakea, sólo pierde el detalle
+    // de provider — aceptable y documentado.
+    const out = sanitize(`x-api-key: ${FAKE_ANTHROPIC}\n`);
+    assert.ok(out.includes('[REDACTED:API_KEY]') || out.includes('[REDACTED:ANTHROPIC_KEY]'));
+    assert.ok(!out.includes(FAKE_ANTHROPIC), `leak en header: ${out}`);
+});
+
+test('panic dump simulado: apiKey="sk-ant-..." cae con placeholder específico', () => {
+    // El patrón ANTHROPIC_KEY corre antes que CONF_STRUCTURED, así que el
+    // valor queda con placeholder por proveedor — preserva forensia.
+    const input = `apiKey="${FAKE_ANTHROPIC}"`;
+    const out = sanitize(input);
+    assert.ok(out.includes('[REDACTED:ANTHROPIC_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_ANTHROPIC));
+});
+
 // ─── run ────────────────────────────────────────────────────────────────────
 runAll().catch((e) => {
     // eslint-disable-next-line no-console
