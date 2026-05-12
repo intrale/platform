@@ -378,3 +378,119 @@ test('cleanupOrphanGradleDaemons — no rompe en invocaciones repetidas', () => 
     const r2 = builder.cleanupOrphanGradleDaemons();
     assert.ok(r2 && typeof r2.killed === 'number' && typeof r2.attempted === 'number');
 });
+
+// ── Tests de syncLocalMainRef (regresión #3078 cuarto rebote) ────────────────
+// Verifican que el sync actualiza local main cuando origin/main está adelante,
+// reproduciendo el escenario real del rebote: worktree de larga vida con local
+// main stale → smart-build.sh ve diff inflado → ./gradlew check completo → OOM
+// en compileTestDevelopmentExecutableKotlinWasmJs.
+
+const { execFileSync } = require('child_process');
+
+// Helper: monta un repo git aislado con N commits, opcionalmente con un remote
+// `origin` que avanzó M commits adicionales (simulando worktree stale).
+function mountFakeRepo({ originExtraCommits }) {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-build-sync-'));
+    const upstream = path.join(tmpRoot, 'upstream.git');
+    const workTree = path.join(tmpRoot, 'work');
+
+    // 1) Bare repo "upstream" que simula GitHub.
+    fs.mkdirSync(upstream, { recursive: true });
+    execFileSync('git', ['init', '--bare', '-b', 'main', upstream], { stdio: 'pipe' });
+
+    // 2) Clone local que será nuestro worktree.
+    execFileSync('git', ['clone', upstream, workTree], { stdio: 'pipe' });
+    execFileSync('git', ['-C', workTree, 'config', 'user.email', 'test@intrale.com'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', workTree, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
+    // Commit inicial.
+    fs.writeFileSync(path.join(workTree, 'README.md'), 'initial\n');
+    execFileSync('git', ['-C', workTree, 'add', 'README.md'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', workTree, 'commit', '-m', 'initial'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', workTree, 'push', 'origin', 'main'], { stdio: 'pipe' });
+
+    // 3) Avanzar origin con M commits que el local no va a fetchear → simula stale.
+    if (originExtraCommits > 0) {
+        // Clonar un workspace temporal solo para empujar al upstream.
+        const pusher = path.join(tmpRoot, 'pusher');
+        execFileSync('git', ['clone', upstream, pusher], { stdio: 'pipe' });
+        execFileSync('git', ['-C', pusher, 'config', 'user.email', 'test@intrale.com'], { stdio: 'pipe' });
+        execFileSync('git', ['-C', pusher, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
+        for (let i = 1; i <= originExtraCommits; i++) {
+            fs.writeFileSync(path.join(pusher, `f${i}.txt`), `commit ${i}\n`);
+            execFileSync('git', ['-C', pusher, 'add', `f${i}.txt`], { stdio: 'pipe' });
+            execFileSync('git', ['-C', pusher, 'commit', '-m', `extra ${i}`], { stdio: 'pipe' });
+        }
+        execFileSync('git', ['-C', pusher, 'push', 'origin', 'main'], { stdio: 'pipe' });
+
+        // 4) Fetch en el worktree para que origin/main esté avanzado pero local
+        // main NO (= worktree stale como en el pulpo).
+        execFileSync('git', ['-C', workTree, 'fetch', 'origin', 'main'], { stdio: 'pipe' });
+    }
+
+    return { tmpRoot, workTree, upstream };
+}
+
+test('syncLocalMainRef — actualiza local main cuando origin/main avanzó (regresión #3078 wasm-OOM)', () => {
+    const { workTree, tmpRoot } = mountFakeRepo({ originExtraCommits: 3 });
+
+    // Pre: local main está 3 commits atrás de origin/main.
+    const stale = execFileSync('git', ['-C', workTree, 'rev-list', '--count', 'main..origin/main'], {
+        encoding: 'utf8', stdio: 'pipe',
+    }).trim();
+    assert.equal(stale, '3', 'setup: local main debe estar 3 commits stale');
+
+    // Apuntar el builder a este worktree y reimportarlo.
+    process.env.PIPELINE_REPO_ROOT = workTree;
+    delete require.cache[require.resolve('../build')];
+    const isolated = require('../build');
+
+    const res = isolated.syncLocalMainRef();
+
+    assert.equal(res.synced, true, 'debe haber sincronizado');
+    assert.equal(res.reason, null, 'sin reason de error');
+    assert.equal(res.stale_commits, 3, 'debe reportar los 3 commits stale');
+
+    // Post: local main == origin/main.
+    const post = execFileSync('git', ['-C', workTree, 'rev-list', '--count', 'main..origin/main'], {
+        encoding: 'utf8', stdio: 'pipe',
+    }).trim();
+    assert.equal(post, '0', 'tras el sync, local main debe estar al día');
+
+    // Cleanup + restaurar env del módulo principal.
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    process.env.PIPELINE_REPO_ROOT = TMP;
+    delete require.cache[require.resolve('../build')];
+});
+
+test('syncLocalMainRef — no-op cuando local main ya está al día', () => {
+    const { workTree, tmpRoot } = mountFakeRepo({ originExtraCommits: 0 });
+
+    process.env.PIPELINE_REPO_ROOT = workTree;
+    delete require.cache[require.resolve('../build')];
+    const isolated = require('../build');
+
+    const res = isolated.syncLocalMainRef();
+
+    assert.equal(res.synced, false, 'sin updates no se sincroniza');
+    assert.equal(res.reason, 'already-fresh', 'debe reportar already-fresh');
+    assert.equal(res.stale_commits, 0);
+
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    process.env.PIPELINE_REPO_ROOT = TMP;
+    delete require.cache[require.resolve('../build')];
+});
+
+test('syncLocalMainRef — best-effort cuando no hay origin/main', () => {
+    // El TMP base no es un git repo: el sync debe degradar sin tirar excepción.
+    process.env.PIPELINE_REPO_ROOT = TMP;
+    delete require.cache[require.resolve('../build')];
+    const isolated = require('../build');
+
+    const res = isolated.syncLocalMainRef();
+
+    assert.equal(res.synced, false, 'sin origin/main no sincroniza');
+    assert.equal(res.reason, 'no-origin-main', 'debe reportar no-origin-main');
+    assert.equal(res.stale_commits, 0);
+
+    delete require.cache[require.resolve('../build')];
+});

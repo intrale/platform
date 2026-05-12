@@ -320,6 +320,89 @@ function releaseBuildLock(lockPath) {
     try { fs.unlinkSync(lockPath); return true; } catch { return false; }
 }
 
+// ── Sync del ref local `main` antes de smart-build (regresión #3078 rebote 2) ──
+//
+// Problema: en worktrees de agentes, el ref local `main` no se actualiza con
+// cada `git fetch origin main`. El pulpo crea el worktree apuntando a una
+// branch base, y dentro del worktree el ref local `main` queda fijo en el
+// commit que tenía cuando se creó el worktree. Si el agente vive horas/días,
+// origin/main avanza N commits y el local main queda stale.
+//
+// `scripts/smart-build.sh` compara HEAD contra `main` (preferido) con
+// fallback a `origin/main`. Cuando local main está stale, `git diff
+// --name-only main...HEAD` devuelve todos los archivos que cambiaron en
+// origin/main desde el fetch original (cientos a miles), inflando la lista
+// de "archivos cambiados" hasta incluir `app/*`, `backend/*`, etc. — aunque
+// el branch del agente solo haya tocado `.pipeline/*`.
+//
+// Resultado del bug: smart-build.sh dispara `./gradlew :app:composeApp:check`
+// completo, que arrastra `compileTestDevelopmentExecutableKotlinWasmJs` y
+// OOMea en el linker de Wasm (>6GB de heap por una limitación preexistente
+// del compilador Kotlin/Wasm).
+//
+// Verificación empírica en el worktree del rebote 2 de #3078:
+//   $ git rev-list --count main..origin/main         # 150 commits stale
+//   $ git diff --name-only main...HEAD | wc -l       # 1178 archivos (falso)
+//   $ git diff --name-only origin/main...HEAD | wc -l #   10 archivos (real)
+//   $ git update-ref refs/heads/main origin/main
+//   $ git diff --name-only main...HEAD | wc -l       #   10 archivos (correcto)
+//   $ bash scripts/smart-build.sh
+//   >> Los cambios no afectan módulos compilables (docs, scripts, etc.)
+//   exit 0
+//
+// El mismo bug se observó en #3073 y se intentó parchar en `smart-build.sh`
+// (commit e075be5f en `agent/3073-pipeline-dev`) invirtiendo el orden de
+// preferencia a `origin/main` primero. Ese parche nunca llegó a main, así
+// que arreglamos acá desde el lado del skill (que SÍ está bajo control de
+// pipeline-dev). Esto cubre cualquier consumidor de smart-build.sh, incluso
+// si #3073 no se mergea nunca.
+//
+// La sincronización es defensiva:
+//   - No falla el build si git update-ref falla (best-effort).
+//   - No toca el HEAD ni el working tree — solo el ref `refs/heads/main`.
+//   - Solo corre si origin/main existe (sino smart-build.sh tiene su propio
+//     fallback a "cambios uncommitted" y este sync no aporta nada).
+//
+// @returns {{synced: boolean, reason: string|null, stale_commits: number}}
+function syncLocalMainRef() {
+    const cwd = REPO_ROOT;
+    try {
+        // 1) ¿Existe origin/main? Si no, no hay nada con qué sincronizar.
+        try {
+            execFileSync('git', ['rev-parse', '--verify', 'origin/main'], {
+                cwd, stdio: 'pipe', timeout: 5_000,
+            });
+        } catch {
+            return { synced: false, reason: 'no-origin-main', stale_commits: 0 };
+        }
+
+        // 2) ¿Cuántos commits está atrasado el local main vs origin/main?
+        let staleCommits = 0;
+        try {
+            const out = execFileSync('git', ['rev-list', '--count', 'main..origin/main'], {
+                cwd, encoding: 'utf8', stdio: 'pipe', timeout: 5_000,
+            });
+            staleCommits = parseInt(String(out).trim(), 10) || 0;
+        } catch {
+            // Si main local no existe, rev-list falla. update-ref lo crea.
+        }
+
+        // 3) Si ya está al día, no-op.
+        if (staleCommits === 0) {
+            return { synced: false, reason: 'already-fresh', stale_commits: 0 };
+        }
+
+        // 4) Update-ref (no toca working tree).
+        execFileSync('git', ['update-ref', 'refs/heads/main', 'origin/main'], {
+            cwd, stdio: 'pipe', timeout: 5_000,
+        });
+        return { synced: true, reason: null, stale_commits: staleCommits };
+    } catch (e) {
+        // best-effort: cualquier error se reporta pero no aborta el build.
+        return { synced: false, reason: `error:${e.code || e.message || 'unknown'}`, stale_commits: 0 };
+    }
+}
+
 // ── Resolución explícita de bash en Windows ─────────────────────────
 //
 // Problema: en Windows, spawn('bash', ..., { shell: true }) pasa por cmd.exe,
@@ -525,6 +608,25 @@ async function main() {
         } else {
             logAppend(`[build] Lock adquirido tras ${buildLock.waited_ms}ms${buildLock.stolen ? ' (lock stale robado)' : ''}.`);
 
+            // Preflight: sincronizar el ref local `main` con origin/main
+            // ANTES de que smart-build.sh haga su `git diff main...HEAD`.
+            // Si local main está stale (caso típico en worktrees de larga
+            // vida del pulpo), smart-build.sh ve cientos de archivos falsos
+            // como "cambiados" y dispara ./gradlew check completo —
+            // que OOMea en compileTestDevelopmentExecutableKotlinWasmJs.
+            // Ver comentario gigante junto a `syncLocalMainRef` para detalle.
+            // Solo aplica para scopes que delegan a smart-build.sh.
+            if (label === 'smart' || label === 'all') {
+                const syncRes = syncLocalMainRef();
+                if (syncRes.synced) {
+                    logAppend(`[build] sync main ref: actualizado (${syncRes.stale_commits} commits stale).`);
+                } else if (syncRes.reason === 'already-fresh') {
+                    logAppend(`[build] sync main ref: ya estaba al día.`);
+                } else {
+                    logAppend(`[build] sync main ref: skip (${syncRes.reason}).`);
+                }
+            }
+
             // Preflight: matar daemons Gradle huérfanos antes del spawn.
             // Estamos dentro del mutex, así que no hay otro build legítimo
             // del pipeline corriendo: cualquier GradleDaemon vivo es residual
@@ -661,4 +763,6 @@ module.exports = {
     // Cleanup de daemons Gradle huérfanos (regresión #3078 tercer rebote).
     listOrphanGradleDaemons,
     cleanupOrphanGradleDaemons,
+    // Sync del ref local `main` (regresión #3078 cuarto rebote — Wasm OOM por diff inflado).
+    syncLocalMainRef,
 };
