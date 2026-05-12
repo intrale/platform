@@ -135,3 +135,57 @@ test('ERROR_PATTERNS — cada patrón tiene type, regex, fix y severity', () => 
         assert.ok(p.severity, `pattern sin severity: ${p.type}`);
     }
 });
+
+// ── smart-build no-op (issue #3078 — rebote 3) ───────────────────────
+// Regression: cuando los cambios no afectan módulos Gradle (típico en issues
+// que solo tocan .pipeline/* o docs/), smart-build.sh sale con exit 0 sin
+// invocar Gradle, así que NO aparece "BUILD SUCCESSFUL" en stdout. Antes del
+// fix el parser dejaba success=false por default y el build skill rebotaba
+// con "Build FAILED sin error clasificado".
+
+test('parseGradleOutput — smart-build no-op "Sin cambios detectados" se clasifica como NO_OP exitoso', () => {
+    const stdout = '>> Smart Build — detectando módulos afectados\n>> Sin cambios detectados. Nada que compilar.\n';
+    const r = parseGradleOutput(stdout);
+    assert.equal(r.success, true);
+    assert.equal(r.build_status, 'NO_OP');
+    assert.equal(r.errors.length, 0);
+});
+
+test('parseGradleOutput — smart-build no-op "no afectan módulos compilables" se clasifica como NO_OP', () => {
+    const stdout = '>> Smart Build — detectando módulos afectados\n>> Archivos cambiados:\nscripts/foo.sh\n>> Los cambios no afectan módulos compilables (docs, scripts, etc.)\n';
+    const r = parseGradleOutput(stdout);
+    assert.equal(r.success, true);
+    assert.equal(r.build_status, 'NO_OP');
+    assert.equal(r.errors.length, 0);
+});
+
+test('parseGradleOutput — BUILD SUCCESSFUL real convive con frase NO_OP en el output sin romper', () => {
+    // Si el output contiene ambos (ej. logs concatenados), igual debe
+    // clasificar como éxito. La precedencia exacta no importa mientras
+    // success=true.
+    const stdout = 'Sin cambios detectados. Nada que compilar.\n> Task :backend:compileKotlin\nBUILD SUCCESSFUL in 5s\n';
+    const r = parseGradleOutput(stdout);
+    assert.equal(r.success, true);
+    assert.ok(r.build_status === 'NO_OP' || r.build_status === 'SUCCESSFUL');
+});
+
+test('parseGradleOutput — output sin BUILD SUCCESSFUL ni NO_OP sigue UNKNOWN/success=false (no regresión)', () => {
+    // Salvaguarda: el fix no debe romper el caso histórico de output
+    // truncado/vacío. build.js tiene defensa adicional por exit_code === 0
+    // para esos casos.
+    const r = parseGradleOutput('algun output random sin keywords\n');
+    assert.equal(r.success, false);
+    assert.equal(r.build_status, 'UNKNOWN');
+});
+
+test('renderMarkdownReport — NO_OP usa veredicto específico, no "FALLIDO"', () => {
+    const stdout = '>> Sin cambios detectados. Nada que compilar.\n';
+    const r = parseGradleOutput(stdout);
+    const md = renderMarkdownReport(r, { issue: 3078, scope: 'smart' });
+    assert.ok(md.includes('NO-OP'), `Esperaba "NO-OP" en el reporte: ${md}`);
+    assert.ok(!md.includes('FALLIDO'), `No debería decir "FALLIDO" para no-op: ${md}`);
+    assert.ok(
+        md.includes('no afectan módulos') || md.includes('sin compilar'),
+        `Veredicto debería explicar el no-op: ${md}`
+    );
+});

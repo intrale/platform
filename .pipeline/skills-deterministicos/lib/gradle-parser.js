@@ -23,6 +23,12 @@ const RE_WHAT_WENT_WRONG = /^\* What went wrong:\s*$/;
 const RE_WHERE = /^\* Where:\s*$/;
 const RE_EXECUTION_FAILED = /Execution failed for task '(:[\w:-]+)'\./;
 
+// smart-build.sh corta temprano sin invocar Gradle cuando los cambios no afectan
+// módulos compilables (ej. issues que solo tocan .pipeline/* o docs/). En ese caso
+// no hay línea "BUILD SUCCESSFUL" pero el exit code del script es 0 y el
+// comportamiento es correcto. Reconocemos esos mensajes como un build no-op exitoso.
+const RE_SMART_BUILD_NOOP = /(Sin cambios detectados\. Nada que compilar\.|Los cambios no afectan módulos compilables)/;
+
 // ── Clasificación de errores conocidos ────────────────────────────────
 const ERROR_PATTERNS = [
   {
@@ -162,7 +168,7 @@ function parseGradleOutput(stdout = '', stderr = '') {
 
   const result = {
     success: false,
-    build_status: 'UNKNOWN', // SUCCESSFUL | FAILED | UNKNOWN
+    build_status: 'UNKNOWN', // SUCCESSFUL | NO_OP | FAILED | UNKNOWN
     duration_ms: 0,
     modules: [],
     tasks: { total: 0, executed: 0, up_to_date: 0, from_cache: 0 },
@@ -187,6 +193,17 @@ function parseGradleOutput(stdout = '', stderr = '') {
       result.success = true;
       result.build_status = 'SUCCESSFUL';
       result.duration_ms = durationMs(successMatch[1], successMatch[2]);
+      continue;
+    }
+
+    // smart-build.sh no-op (sin cambios que afecten módulos Gradle).
+    // No invoca a Gradle, así que no aparece "BUILD SUCCESSFUL" pero el script
+    // termina con exit 0 y es un resultado válido. Lo tratamos como éxito y
+    // dejamos build_status='NO_OP' para que el reporte lo distinga.
+    // Solo aplicamos si NO se reportó previamente BUILD SUCCESSFUL/FAILED.
+    if (result.build_status === 'UNKNOWN' && RE_SMART_BUILD_NOOP.test(line)) {
+      result.success = true;
+      result.build_status = 'NO_OP';
       continue;
     }
 
@@ -276,7 +293,14 @@ function parseGradleOutput(stdout = '', stderr = '') {
  */
 function renderMarkdownReport(result, meta = {}) {
   const { issue = null, scope = 'default', duration_override_ms = null } = meta;
-  const verdict = result.success ? 'EXITOSO ✅' : 'FALLIDO ❌';
+  let verdict;
+  if (result.build_status === 'NO_OP') {
+    verdict = 'NO-OP ✅ (sin cambios que compilar)';
+  } else if (result.success) {
+    verdict = 'EXITOSO ✅';
+  } else {
+    verdict = 'FALLIDO ❌';
+  }
   const durMs = duration_override_ms != null ? duration_override_ms : result.duration_ms;
   const mins = Math.floor(durMs / 60000);
   const secs = Math.floor((durMs % 60000) / 1000);
@@ -287,12 +311,16 @@ function renderMarkdownReport(result, meta = {}) {
     return v ? '✅' : '❌';
   };
 
+  const resultadoLabel = result.build_status === 'NO_OP'
+    ? 'NO-OP'
+    : (result.success ? 'OK' : 'FALLO');
+
   const lines = [];
   lines.push(`## Build: ${verdict}`);
   lines.push('');
   lines.push('### Compilacion');
   lines.push(`- Modulo(s): ${result.modules.join(', ') || 'n/a'}`);
-  lines.push(`- Resultado: ${result.success ? 'OK' : 'FALLO'}`);
+  lines.push(`- Resultado: ${resultadoLabel}`);
   lines.push(`- Tiempo: ${durStr}`);
   lines.push(`- Scope: ${scope}${issue ? ` · issue #${issue}` : ''}`);
   lines.push(`- Tareas: ${result.tasks.executed} ejecutadas · ${result.tasks.up_to_date} up-to-date · ${result.tasks.from_cache} desde caché`);
@@ -316,9 +344,13 @@ function renderMarkdownReport(result, meta = {}) {
   }
 
   lines.push('### Veredicto del Builder');
-  lines.push(result.success
-    ? 'Build exitoso — artefactos listos para la siguiente fase.'
-    : 'Hay errores que corregir antes de continuar. Rebote al dev skill correspondiente.');
+  if (result.build_status === 'NO_OP') {
+    lines.push('Build no-op — los cambios del issue no afectan módulos Gradle (typical en cambios de pipeline/docs). Pasa a la siguiente fase sin compilar.');
+  } else if (result.success) {
+    lines.push('Build exitoso — artefactos listos para la siguiente fase.');
+  } else {
+    lines.push('Hay errores que corregir antes de continuar. Rebote al dev skill correspondiente.');
+  }
 
   return lines.join('\n');
 }

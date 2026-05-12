@@ -652,6 +652,19 @@ async function main() {
                 artifacts = copyArtifacts(parsed);
                 logAppend(`[build] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
                 exitCode = 0;
+                if (parsed.build_status === 'NO_OP') {
+                    motivo = 'Build no-op: los cambios del issue no afectan módulos Gradle';
+                    logAppend('[build] NO_OP detectado: smart-build cortó temprano sin invocar Gradle (cambios fuera de módulos compilables).');
+                }
+            } else if (gradleResult.exit_code === 0 && parsed.build_status === 'UNKNOWN' && parsed.errors.length === 0) {
+                // Defensa adicional: si Gradle/smart-build salió 0 pero el parser no
+                // encontró ni BUILD SUCCESSFUL ni un patrón conocido de no-op, NO
+                // rebotamos. Tratamos como éxito y registramos para que el caso
+                // quede visible en logs. Esto evita falsos positivos por cambios
+                // futuros en mensajes de smart-build que el parser todavía no conoce.
+                exitCode = 0;
+                motivo = 'Build sin output reconocible pero exit 0 (treated as success)';
+                logAppend('[build] WARN: exit 0 sin BUILD SUCCESSFUL ni NO_OP detectado — tratado como éxito defensivo.');
             } else {
                 exitCode = 1;
                 const first = parsed.errors[0];
