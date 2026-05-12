@@ -307,6 +307,15 @@ async function main() {
 
         parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
 
+        // Guard defensivo: si Gradle salió 0 pero el parser no detectó status,
+        // asumimos no-op (smart-build sin módulos compilables). Evita rebote
+        // espurio por output no reconocido. Si exit_code != 0, sí es fallo real.
+        if (gradleResult.exit_code === 0 && parsed.build_status === 'UNKNOWN') {
+            parsed.success = true;
+            parsed.build_status = 'NO_OP';
+            logAppend('[build] no-op detectado por exit_code=0 sin BUILD SUCCESSFUL/FAILED (heurística defensiva)');
+        }
+
         if (parsed.success) {
             artifacts = copyArtifacts(parsed);
             logAppend(`[build] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
