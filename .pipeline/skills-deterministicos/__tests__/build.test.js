@@ -17,6 +17,9 @@ fs.mkdirSync(path.join(TMP, '.pipeline', 'desarrollo', 'build', 'trabajando'), {
 fs.mkdirSync(path.join(TMP, 'qa', 'artifacts'), { recursive: true });
 process.env.PIPELINE_REPO_ROOT = TMP;
 process.env.CLAUDE_PROJECT_DIR = TMP;
+// Asegurar que PIPELINE_WORKTREE no contamine el módulo (el pulpo lo setea cuando
+// lanza al agente, pero los tests deben verse a sí mismos en un entorno limpio).
+delete process.env.PIPELINE_WORKTREE;
 
 delete require.cache[require.resolve('../build')];
 const builder = require('../build');
@@ -209,4 +212,45 @@ test('copyArtifacts — escribe BUILD_TIMESTAMP siempre', () => {
     const artifacts = builder.copyArtifacts({ modules: [] });
     assert.ok(artifacts.includes('BUILD_TIMESTAMP'));
     assert.equal(fs.existsSync(ts), true);
+});
+
+// ── Regresión: split REPO_ROOT / WORKTREE_ROOT (rebote build #3073 rev-1) ────
+// El bug original ejecutaba gradle en cwd=REPO_ROOT (main checkout), lo que
+// (a) generaba diffs falsos en smart-build.sh contra una rama distinta a la
+// del agente, y (b) hacía que builds concurrentes colisionaran sobre el
+// mismo `.gradle/buildOutputCleanup`. El fix introduce WORKTREE_ROOT como
+// cwd para gradle y para los sources de artefactos, dejando QA_ARTIFACTS_DIR
+// y LOG_DIR en REPO_ROOT (compartidos).
+test('paths — WORKTREE_ROOT default = REPO_ROOT cuando no hay PIPELINE_WORKTREE', () => {
+    // En este test no seteamos PIPELINE_WORKTREE, así que ambos deben coincidir.
+    assert.equal(builder._paths.WORKTREE_ROOT, builder._paths.REPO_ROOT);
+});
+
+test('paths — QA_ARTIFACTS_DIR y LOG_DIR cuelgan de REPO_ROOT (no de WORKTREE_ROOT)', () => {
+    assert.ok(builder._paths.QA_ARTIFACTS_DIR.startsWith(builder._paths.REPO_ROOT));
+    assert.ok(builder._paths.LOG_DIR.startsWith(builder._paths.REPO_ROOT));
+});
+
+test('paths — WORKTREE_ROOT respeta PIPELINE_WORKTREE cuando está seteado', () => {
+    // Recargar el módulo con PIPELINE_WORKTREE seteado a un valor distinto.
+    const fakeWorktree = path.join(TMP, 'fake-worktree');
+    fs.mkdirSync(fakeWorktree, { recursive: true });
+    const saved = process.env.PIPELINE_WORKTREE;
+    process.env.PIPELINE_WORKTREE = fakeWorktree;
+    try {
+        delete require.cache[require.resolve('../build')];
+        const reloaded = require('../build');
+        assert.equal(reloaded._paths.WORKTREE_ROOT, fakeWorktree);
+        // REPO_ROOT sigue siendo TMP (PIPELINE_REPO_ROOT no cambió).
+        assert.equal(reloaded._paths.REPO_ROOT, TMP);
+        // QA_ARTIFACTS_DIR sigue colgando de REPO_ROOT, no de WORKTREE_ROOT.
+        assert.ok(reloaded._paths.QA_ARTIFACTS_DIR.startsWith(TMP));
+        assert.ok(!reloaded._paths.QA_ARTIFACTS_DIR.startsWith(fakeWorktree));
+    } finally {
+        if (saved === undefined) delete process.env.PIPELINE_WORKTREE;
+        else process.env.PIPELINE_WORKTREE = saved;
+        // Restaurar el module cache para tests siguientes
+        delete require.cache[require.resolve('../build')];
+        require('../build');
+    }
 });

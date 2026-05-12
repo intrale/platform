@@ -28,7 +28,22 @@ const trace = require('../lib/traceability');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
 
 // ── Constantes y paths ──────────────────────────────────────────────
+// REPO_ROOT: main checkout (shared outputs — logs, QA artifacts, hooks).
+// WORKTREE_ROOT: agent's worktree (compilation source, gradle cwd, artifact sources).
+// Cuando no hay worktree (test, scope all desde root) cae a REPO_ROOT.
+//
+// CRÍTICO: hasta este fix gradle se ejecutaba en cwd=REPO_ROOT siempre. Eso
+// causaba dos regresiones acopladas (rebote build #3073 rev-1, 2026-05-12):
+//   1. smart-build.sh calculaba `git diff origin/main...HEAD` desde el main
+//      checkout (rama distinta a la del agente) → detectaba 1156 archivos
+//      falsos y disparaba `./gradlew check` aunque el agente solo tocara
+//      `.pipeline/*`.
+//   2. Varios builds concurrentes compartían `platform/.gradle/` → colisión
+//      en el lock `buildOutputCleanup` (PID 6400 vs 10720 en el incidente).
+// Con PIPELINE_WORKTREE como cwd, cada worktree usa su propio `.gradle/`
+// y el diff de smart-build resuelve contra la rama del agente.
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+const WORKTREE_ROOT = process.env.PIPELINE_WORKTREE || REPO_ROOT;
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
 const LOG_DIR = path.join(REPO_ROOT, '.pipeline', 'logs');
 const QA_ARTIFACTS_DIR = path.join(REPO_ROOT, 'qa', 'artifacts');
@@ -182,15 +197,18 @@ function copyArtifacts(result) {
         }
     };
 
+    // Source paths viven en el worktree (la build corrió ahí); destino en el
+    // main checkout (qa/artifacts/ es compartido). En tests sin PIPELINE_WORKTREE
+    // WORKTREE_ROOT === REPO_ROOT, así que se mantiene compat con fixtures.
     if (result.modules.includes('users')) {
-        tryCopy(path.join(REPO_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
+        tryCopy(path.join(WORKTREE_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
             path.join(QA_ARTIFACTS_DIR, 'users-all.jar'));
     }
 
     if (result.modules.includes('app')) {
         // Buscar primer APK client debug
         try {
-            const apkDir = path.join(REPO_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
+            const apkDir = path.join(WORKTREE_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
             if (fs.existsSync(apkDir)) {
                 const apk = fs.readdirSync(apkDir).find((f) => f.endsWith('.apk'));
                 if (apk) tryCopy(path.join(apkDir, apk), path.join(QA_ARTIFACTS_DIR, 'composeApp-client-debug.apk'));
@@ -278,7 +296,9 @@ async function main() {
     let motivo = null;
 
     try {
-        gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
+        // cwd: WORKTREE_ROOT — gradle corre en la rama del agente, no en main.
+        // Ver constantes arriba para el contexto del incidente que motivó este split.
+        gradleResult = await runGradle({ cmd, args: gArgs, cwd: WORKTREE_ROOT, env });
         logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
         logAppend('[build] --- stdout (último 2000 chars) ---');
         logAppend(gradleResult.stdout.slice(-2000));
@@ -384,4 +404,7 @@ module.exports = {
     startHeartbeat,
     copyArtifacts,
     updateMarker,
+    // Exportados para tests de regresión del split REPO_ROOT/WORKTREE_ROOT
+    // (rebote build #3073 rev-1).
+    _paths: { REPO_ROOT, WORKTREE_ROOT, QA_ARTIFACTS_DIR, LOG_DIR },
 };
