@@ -73,6 +73,12 @@ const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/qu
 // deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
 // que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
 const { launchAgent } = require('./lib/agent-launcher');
+// #3155: creación de worktree con recovery de branches huérfanas. Reemplaza
+// el bloque inline previo (`git worktree add -b ... origin/main`) que fallaba
+// cada vez que una iteración anterior dejaba la branch `agent/<n>-<skill>`
+// huérfana en local — el `-b` rebotaba con "branch already exists" y el
+// issue quedaba dando vueltas en cola sin avanzar.
+const { ensureLaunchWorktree, WorktreeLaunchError } = require('./lib/worktree-launcher');
 // #3085 / S7 multi-provider: aislamiento de credenciales por proceso. Filtra
 // `process.env` con allowlist mínima + scope del skill antes de pasarlo al
 // child. Eliminar `OPENAI_API_KEY` del env de un agente Anthropic (y viceversa)
@@ -4905,17 +4911,20 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   if (needsWorktree) {
     try {
-      worktreeBranch = `agent/${issue}-${skill}`;
-      worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
-
-      if (!fs.existsSync(worktreePath)) {
-        execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main`, {
-          cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-        });
-        log('lanzamiento', `Worktree creado: ${worktreePath}`);
+      const result = ensureLaunchWorktree({
+        ROOT,
+        issue,
+        skill,
+        log: (msg) => log('lanzamiento', msg),
+      });
+      worktreePath = result.worktreePath;
+      worktreeBranch = result.worktreeBranch;
+      if (result.recovered) {
+        log('lanzamiento', `♻️ Branch huérfana recuperada para #${issue} antes de crear el worktree`);
       }
     } catch (e) {
-      log('lanzamiento', `Error creando worktree para #${issue}: ${e.message}`);
+      const code = (e instanceof WorktreeLaunchError) ? e.code : 'UNKNOWN';
+      log('lanzamiento', `Error creando worktree para #${issue} [${code}]: ${e.message}`);
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       moveFile(trabajandoPath, pendienteDir);
       return;
