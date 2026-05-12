@@ -35,6 +35,30 @@ const QA_ARTIFACTS_DIR = path.join(REPO_ROOT, 'qa', 'artifacts');
 const JAVA_HOME_DEFAULT = process.env.JAVA_HOME || '/c/Users/Administrator/.jdks/temurin-21.0.7';
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
+// ── Mutex de build (regresión #3078 segundo rebote) ─────────────────
+//
+// Problema: el pipeline puede lanzar builds en paralelo para distintos issues
+// (cada uno en su worktree), pero todos invocan `./gradlew` contra el mismo
+// REPO_ROOT/.gradle/. Cuando dos Gradle corren al mismo tiempo, el primero
+// toma el lock de Build Output Cleanup Cache; el segundo timeoutea en ~60s
+// con:
+//   Timeout waiting to lock Build Output Cleanup Cache
+//   (REPO_ROOT/.gradle/buildOutputCleanup). It is currently in use by
+//   another Gradle instance. Owner PID: X Our PID: Y
+// y rebota el issue por un fallo de infraestructura (no del código).
+//
+// Solución: serializar los builds a nivel pipeline con un lockfile en
+// REPO_ROOT/.pipeline/build-skill.lock. El segundo build espera a que el
+// primero libere antes de invocar gradle. Si el holder murió (process no
+// existe), el lock se roba para evitar deadlock por procesos zombi.
+const BUILD_LOCK_PATH = path.join(REPO_ROOT, '.pipeline', 'build-skill.lock');
+const BUILD_LOCK_TIMEOUT_MS = Number(process.env.BUILD_LOCK_TIMEOUT_MS) > 0
+    ? Number(process.env.BUILD_LOCK_TIMEOUT_MS)
+    : 30 * 60 * 1000; // 30 min: cubre 2 builds largos seguidos.
+const BUILD_LOCK_POLL_MS = Number(process.env.BUILD_LOCK_POLL_MS) > 0
+    ? Number(process.env.BUILD_LOCK_POLL_MS)
+    : 500;
+
 // ── Parseo de argumentos ────────────────────────────────────────────
 function parseArgs(argv) {
     const args = { issue: null, scope: 'smart', module: null, trabajando: null };
@@ -78,6 +102,116 @@ function startHeartbeat(issue) {
             try { fs.unlinkSync(hbFile); } catch {}
         },
     };
+}
+
+// ── Helpers de mutex ────────────────────────────────────────────────
+function isPidAlive(pid) {
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    try {
+        // Signal 0 no envía señal, solo testea existencia/permiso.
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        // EPERM = el proceso existe pero no podemos señalizarlo → vivo.
+        // ESRCH = no existe → muerto.
+        return e.code === 'EPERM';
+    }
+}
+
+/**
+ * Adquiere el lock global del skill build. Espera hasta `timeoutMs` si otro
+ * build lo tiene tomado, o roba el lock si el holder ya no existe.
+ *
+ * @returns {{lockPath: string|null, waited_ms: number, stolen: boolean, timedOut: boolean}}
+ *   - lockPath: path al lockfile (para pasarlo a releaseBuildLock), o null si timeout.
+ *   - waited_ms: tiempo total esperando.
+ *   - stolen: true si se reclamó un lock stale.
+ *   - timedOut: true si no se logró adquirir antes de timeoutMs.
+ */
+function acquireBuildLock(issue, opts) {
+    const lockPath = (opts && opts.lockPath) || BUILD_LOCK_PATH;
+    const timeoutMs = (opts && Number.isFinite(opts.timeoutMs)) ? opts.timeoutMs : BUILD_LOCK_TIMEOUT_MS;
+    const pollMs = (opts && Number.isFinite(opts.pollMs)) ? opts.pollMs : BUILD_LOCK_POLL_MS;
+    const start = Date.now();
+    const myPid = process.pid;
+    let stolen = false;
+
+    try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch {}
+
+    while (true) {
+        try {
+            // wx = exclusive create; falla con EEXIST si ya existe.
+            const fd = fs.openSync(lockPath, 'wx');
+            fs.writeSync(fd, JSON.stringify({
+                pid: myPid,
+                issue: issue || null,
+                skill: 'build',
+                ts: Date.now(),
+                iso: new Date().toISOString(),
+            }));
+            fs.closeSync(fd);
+            return {
+                lockPath,
+                waited_ms: Date.now() - start,
+                stolen,
+                timedOut: false,
+            };
+        } catch (e) {
+            if (e.code !== 'EEXIST') throw e;
+
+            // Lock existe — chequear si el holder está vivo.
+            let holderPid = null;
+            try {
+                const raw = fs.readFileSync(lockPath, 'utf8');
+                const meta = JSON.parse(raw || '{}');
+                holderPid = Number(meta.pid);
+            } catch {
+                // Lock corrupto o ilegible: borrarlo defensivamente y reintentar.
+                try { fs.unlinkSync(lockPath); } catch {}
+                stolen = true;
+                continue;
+            }
+
+            if (Number.isFinite(holderPid) && holderPid > 0 && !isPidAlive(holderPid)) {
+                // Holder muerto → robar lock.
+                try { fs.unlinkSync(lockPath); } catch {}
+                stolen = true;
+                continue;
+            }
+
+            // Holder vivo — esperar.
+            if (Date.now() - start > timeoutMs) {
+                return {
+                    lockPath: null,
+                    waited_ms: Date.now() - start,
+                    stolen: false,
+                    timedOut: true,
+                };
+            }
+            // Sleep no-bloqueante (sin event loop): sleep nativo.
+            const until = Date.now() + pollMs;
+            while (Date.now() < until) {
+                // Busy wait acotado a pollMs (típicamente 500ms).
+            }
+        }
+    }
+}
+
+function releaseBuildLock(lockPath) {
+    if (!lockPath) return false;
+    try {
+        // Solo liberar si el lock es nuestro (defensivo — no borrar el de otro
+        // proceso si por alguna razón nos pisaron).
+        const raw = fs.readFileSync(lockPath, 'utf8');
+        const meta = JSON.parse(raw || '{}');
+        if (meta.pid && Number(meta.pid) !== process.pid) {
+            // No es nuestro — no tocar.
+            return false;
+        }
+    } catch {
+        // Si no podemos leer, intentamos borrarlo igual (best-effort).
+    }
+    try { fs.unlinkSync(lockPath); return true; } catch { return false; }
 }
 
 // ── Resolución explícita de bash en Windows ─────────────────────────
@@ -266,42 +400,65 @@ async function main() {
     let artifacts = [];
     let exitCode = 0;
     let motivo = null;
+    let buildLock = null;
 
     try {
-        gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
-        logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
-        logAppend('[build] --- stdout (último 2000 chars) ---');
-        logAppend(gradleResult.stdout.slice(-2000));
-        logAppend('[build] --- stderr (último 1000 chars) ---');
-        logAppend(gradleResult.stderr.slice(-1000));
-
-        parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
-
-        if (parsed.success) {
-            artifacts = copyArtifacts(parsed);
-            logAppend(`[build] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
-            exitCode = 0;
-        } else {
+        // Adquirir mutex de build antes de spawnear gradle (regresión #3078).
+        // Sin esto, dos builds concurrentes contienden por el lock del
+        // buildOutputCleanup cache y el segundo timeoutea en ~60s.
+        const lockStartLog = `[build] Intentando adquirir mutex de build (${BUILD_LOCK_PATH})…`;
+        logAppend(lockStartLog);
+        buildLock = acquireBuildLock(issue, {});
+        if (buildLock.timedOut) {
+            logAppend(`[build] LOCK TIMEOUT tras ${buildLock.waited_ms}ms — abortando build con motivo claro (sin invocar gradle, evita rebote por error genérico).`);
+            motivo = `Build mutex timeout (${buildLock.waited_ms}ms): otro build sigue tomando el lock ${BUILD_LOCK_PATH}. Posible build hung del pipeline.`;
             exitCode = 1;
-            const first = parsed.errors[0];
-            motivo = first
-                ? `Build FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`
-                : 'Build FAILED sin error clasificado';
-        }
+            parsed = { success: false, modules: [], errors: [{ classification: 'pipeline-lock-timeout', message: motivo, escalate_to: 'pipeline-dev' }] };
+            report = `## Build: BLOQUEADO ⏳\n\n${motivo}`;
+            // Saltar el resto del try; el finally hace el cleanup.
+        } else {
+            logAppend(`[build] Lock adquirido tras ${buildLock.waited_ms}ms${buildLock.stolen ? ' (lock stale robado)' : ''}.`);
+            gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
+            logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
+            logAppend('[build] --- stdout (último 2000 chars) ---');
+            logAppend(gradleResult.stdout.slice(-2000));
+            logAppend('[build] --- stderr (último 1000 chars) ---');
+            logAppend(gradleResult.stderr.slice(-1000));
 
-        report = renderMarkdownReport(parsed, {
-            issue, scope: label, duration_override_ms: gradleResult.wall_ms,
-        });
-        // Escribir reporte al log + a disco
-        logAppend('[build] --- REPORTE ---');
-        logAppend(report);
-        const reportPath = path.join(LOG_DIR, `build-${issue}-report.md`);
-        try { fs.writeFileSync(reportPath, report); } catch {}
+            parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
+
+            if (parsed.success) {
+                artifacts = copyArtifacts(parsed);
+                logAppend(`[build] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
+                exitCode = 0;
+            } else {
+                exitCode = 1;
+                const first = parsed.errors[0];
+                motivo = first
+                    ? `Build FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`
+                    : 'Build FAILED sin error clasificado';
+            }
+
+            report = renderMarkdownReport(parsed, {
+                issue, scope: label, duration_override_ms: gradleResult.wall_ms,
+            });
+            // Escribir reporte al log + a disco
+            logAppend('[build] --- REPORTE ---');
+            logAppend(report);
+            const reportPath = path.join(LOG_DIR, `build-${issue}-report.md`);
+            try { fs.writeFileSync(reportPath, report); } catch {}
+        }
     } catch (e) {
         exitCode = 2;
         motivo = `Excepción en build.js: ${e.message}`;
         logAppend(`[build] EXCEPTION: ${e.stack || e.message}`);
     } finally {
+        // Liberar el mutex de build (idempotente, defensivo).
+        if (buildLock && buildLock.lockPath) {
+            const released = releaseBuildLock(buildLock.lockPath);
+            logAppend(`[build] Mutex liberado: ${released ? 'OK' : 'no-op'} (path=${buildLock.lockPath})`);
+        }
+
         // Actualizar marker con resultado
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
@@ -311,6 +468,8 @@ async function main() {
             build_classification: parsed && parsed.errors[0] ? parsed.errors[0].classification : null,
             build_escalate_to: parsed && parsed.errors[0] ? parsed.errors[0].escalate_to : null,
             build_mode: 'deterministic',
+            build_lock_waited_ms: buildLock ? buildLock.waited_ms : 0,
+            build_lock_stolen: buildLock ? buildLock.stolen : false,
         });
 
         // session:end
@@ -374,4 +533,10 @@ module.exports = {
     startHeartbeat,
     copyArtifacts,
     updateMarker,
+    // Mutex de build (regresión #3078 segundo rebote).
+    acquireBuildLock,
+    releaseBuildLock,
+    isPidAlive,
+    BUILD_LOCK_PATH,
+    BUILD_LOCK_TIMEOUT_MS,
 };

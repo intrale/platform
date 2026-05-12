@@ -183,3 +183,153 @@ test('copyArtifacts — escribe BUILD_TIMESTAMP siempre', () => {
     assert.ok(artifacts.includes('BUILD_TIMESTAMP'));
     assert.equal(fs.existsSync(ts), true);
 });
+
+// ── Mutex de build (regresión #3078 segundo rebote) ─────────────────
+// Causa raíz: dos builds concurrentes contendían por el lock del
+// `.gradle/buildOutputCleanup` cache del REPO_ROOT compartido. El segundo
+// timeouteaba en ~60s y rebotaba el issue por un fallo de infra (no de
+// código). Estos tests cubren el mutex que previene esa contención.
+
+test('isPidAlive — process.pid actual está vivo', () => {
+    assert.equal(builder.isPidAlive(process.pid), true);
+});
+
+test('isPidAlive — PIDs inválidos o muertos devuelven false', () => {
+    assert.equal(builder.isPidAlive(null), false);
+    assert.equal(builder.isPidAlive(0), false);
+    assert.equal(builder.isPidAlive(-1), false);
+    assert.equal(builder.isPidAlive(NaN), false);
+    // PID muy alto que casi seguro no existe.
+    assert.equal(builder.isPidAlive(2147483646), false);
+});
+
+test('acquireBuildLock — crea el lockfile con metadata del proceso', () => {
+    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}.lock`);
+    try { fs.unlinkSync(lockPath); } catch {}
+
+    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 1000 });
+    try {
+        assert.equal(r.timedOut, false);
+        assert.equal(r.lockPath, lockPath);
+        assert.equal(fs.existsSync(lockPath), true);
+        const meta = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        assert.equal(meta.pid, process.pid);
+        assert.equal(meta.issue, 3078);
+        assert.equal(meta.skill, 'build');
+        assert.ok(typeof meta.ts === 'number' && meta.ts > 0);
+    } finally {
+        builder.releaseBuildLock(lockPath);
+    }
+});
+
+test('acquireBuildLock — segundo intento timeouts si el primero no se libera', () => {
+    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-a.lock`);
+    try { fs.unlinkSync(lockPath); } catch {}
+
+    // Tomamos el lock simulando otro proceso vivo (este proceso).
+    const first = builder.acquireBuildLock(1, { lockPath, timeoutMs: 1000 });
+    try {
+        assert.equal(first.timedOut, false);
+        // Segundo intento con timeout corto debería timeoutear (mismo PID ⇒ vivo).
+        const second = builder.acquireBuildLock(2, { lockPath, timeoutMs: 500, pollMs: 50 });
+        assert.equal(second.timedOut, true);
+        assert.equal(second.lockPath, null);
+        assert.ok(second.waited_ms >= 500, `esperó al menos 500ms, midió ${second.waited_ms}ms`);
+    } finally {
+        builder.releaseBuildLock(first.lockPath);
+    }
+});
+
+test('acquireBuildLock — roba lock stale (holder PID muerto)', () => {
+    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-b.lock`);
+    try { fs.unlinkSync(lockPath); } catch {}
+
+    // Escribimos manualmente un lock con un PID muy alto que casi seguro no existe.
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({
+        pid: 2147483646,
+        issue: 9999,
+        skill: 'build',
+        ts: Date.now() - 60_000,
+    }));
+
+    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 5000, pollMs: 50 });
+    try {
+        assert.equal(r.timedOut, false);
+        assert.equal(r.stolen, true, 'debe marcar stolen=true cuando reclama lock muerto');
+        const meta = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        assert.equal(meta.pid, process.pid, 'el lock ahora pertenece a este proceso');
+    } finally {
+        builder.releaseBuildLock(r.lockPath);
+    }
+});
+
+test('acquireBuildLock — repara lockfile corrupto en vez de deadlockear', () => {
+    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-c.lock`);
+    try { fs.unlinkSync(lockPath); } catch {}
+
+    // Lock con JSON inválido (corrupto).
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, 'NO ES JSON {{{');
+
+    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 1000, pollMs: 50 });
+    try {
+        assert.equal(r.timedOut, false);
+        assert.equal(r.stolen, true, 'lock corrupto se considera stale y se reclama');
+        const meta = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        assert.equal(meta.pid, process.pid);
+    } finally {
+        builder.releaseBuildLock(r.lockPath);
+    }
+});
+
+test('releaseBuildLock — idempotente: no rompe si el lock no existe', () => {
+    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-d.lock`);
+    // No existe — primer release debe ser no-op safe.
+    assert.equal(builder.releaseBuildLock(lockPath), false);
+    // Segundo release tampoco.
+    assert.equal(builder.releaseBuildLock(lockPath), false);
+    // releaseBuildLock(null/undefined) tampoco rompe.
+    assert.equal(builder.releaseBuildLock(null), false);
+    assert.equal(builder.releaseBuildLock(undefined), false);
+});
+
+test('releaseBuildLock — borra lock propio del proceso actual', () => {
+    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-e.lock`);
+    try { fs.unlinkSync(lockPath); } catch {}
+
+    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 1000 });
+    assert.equal(fs.existsSync(lockPath), true);
+    const released = builder.releaseBuildLock(r.lockPath);
+    assert.equal(released, true);
+    assert.equal(fs.existsSync(lockPath), false);
+});
+
+test('releaseBuildLock — no toca lock de otro proceso (defensivo)', () => {
+    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-f.lock`);
+    try { fs.unlinkSync(lockPath); } catch {}
+
+    // Lock con PID distinto al actual.
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    const otherPid = process.pid === 1 ? 2 : 1;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: otherPid, issue: 1, skill: 'build', ts: Date.now() }));
+
+    const released = builder.releaseBuildLock(lockPath);
+    assert.equal(released, false, 'no debe borrar lock que no es nuestro');
+    assert.equal(fs.existsSync(lockPath), true, 'el lock sigue ahí');
+    // Cleanup.
+    try { fs.unlinkSync(lockPath); } catch {}
+});
+
+test('BUILD_LOCK_PATH — está bajo REPO_ROOT/.pipeline/', () => {
+    assert.ok(builder.BUILD_LOCK_PATH.includes(path.join('.pipeline', 'build-skill.lock')) ||
+        builder.BUILD_LOCK_PATH.endsWith('build-skill.lock'),
+        `BUILD_LOCK_PATH inesperado: ${builder.BUILD_LOCK_PATH}`);
+});
+
+test('BUILD_LOCK_TIMEOUT_MS — default suficientemente largo para 2 builds (>=10min)', () => {
+    // El bug original fue Gradle timeouteando en ~60s. Nuestro mutex debe
+    // esperar bastante más que un build promedio (5-10 min).
+    assert.ok(builder.BUILD_LOCK_TIMEOUT_MS >= 10 * 60 * 1000,
+        `timeout default debe ser >=10min, fue ${builder.BUILD_LOCK_TIMEOUT_MS}ms`);
+});
