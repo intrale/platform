@@ -81,9 +81,8 @@
     "tester":       { "provider": "deterministic" },
     "qa":           { "provider": "anthropic" },
 
-    "build":        { "provider": "anthropic" },
+    "build":        { "provider": "deterministic" },
     "linter":       { "provider": "deterministic" },
-    "delivery":     { "provider": "deterministic" },
-    "builder":      { "provider": "deterministic" }
+    "delivery":     { "provider": "deterministic" }
   }
 }

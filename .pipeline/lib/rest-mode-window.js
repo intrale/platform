@@ -34,7 +34,7 @@ const DEFAULT_PIPELINE_DIR = path.resolve(__dirname, '..');
 // Mismo set que pulpo.js — duplicado a propósito para no introducir un
 // require circular (pulpo → este módulo → pulpo). Si se cambia uno, cambiar
 // el otro. Test de coherencia en `__tests__/rest-mode-window.test.js`.
-const DETERMINISTIC_SKILLS = Object.freeze(['delivery', 'builder', 'linter', 'tester']);
+const DETERMINISTIC_SKILLS = Object.freeze(['delivery', 'build', 'linter', 'tester']);
 
 const DEFAULT_TIMEZONE = 'America/Argentina/Buenos_Aires';
 const DEFAULT_DAYS = Object.freeze([0, 1, 2, 3, 4, 5, 6]);

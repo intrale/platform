@@ -1,7 +1,7 @@
 // =============================================================================
 // providers/deterministic.js — Handler para skills determinísticos (Node puro).
 //
-// Bypass al LLM: los skills `builder`, `tester`, `delivery`, `linter`
+// Bypass al LLM: los skills `build`, `tester`, `delivery`, `linter`
 // implementan su lógica en `.pipeline/skills-deterministicos/<skill>.js` y
 // corren con Node directo, sin gastar tokens. Cada script implementa el mismo
 // contrato (marker, heartbeat, eventos V3, exit 0/1) que el resto del flujo
@@ -21,7 +21,7 @@ const { execSync } = require('node:child_process');
 // NUNCA cambiar a require dinámico sobre `skill`: si un atacante con permiso de
 // PR edita esto, podría inyectar un script fuera de skills-deterministicos/.
 // -----------------------------------------------------------------------------
-const DETERMINISTIC_SKILLS = new Set(['builder', 'tester', 'delivery', 'linter']);
+const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 
 function isDeterministic(skill) {
     return DETERMINISTIC_SKILLS.has(skill);

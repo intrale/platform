@@ -174,7 +174,7 @@ test('isSkillAllowedNow bloquea skill no determinístico dentro de la ventana', 
 
 test('isSkillAllowedNow permite skill determinístico dentro de la ventana', () => {
     const window = { active: true, start: '13:00', end: '17:00', timezone: 'UTC', days: [0, 1, 2, 3, 4, 5, 6] };
-    for (const skill of ['delivery', 'builder', 'linter', 'tester']) {
+    for (const skill of ['delivery', 'build', 'linter', 'tester']) {
         const r = rmw.isSkillAllowedNow(skill, Date.UTC(2026, 0, 5, 14, 0, 0), { window });
         assert.equal(r.allowed, true, `${skill} debería pasar`);
         assert.equal(r.reason, 'deterministic_skill');
@@ -321,7 +321,7 @@ test('DETERMINISTIC_SKILLS coincide con el set documentado', () => {
     // Si pulpo.js cambia su set, este test obliga a actualizar el módulo.
     assert.deepEqual(
         [...rmw.DETERMINISTIC_SKILLS].sort(),
-        ['builder', 'delivery', 'linter', 'tester'].sort()
+        ['build', 'delivery', 'linter', 'tester'].sort()
     );
 });
 

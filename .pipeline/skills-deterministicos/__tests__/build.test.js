@@ -1,4 +1,4 @@
-// Tests unitarios de .pipeline/skills-deterministicos/builder.js (issue #2476)
+// Tests unitarios de .pipeline/skills-deterministicos/build.js (issue #2476, rename #3157)
 // No lanzamos gradle real: validamos parseArgs, buildGradleCommand, heartbeat,
 // updateMarker y copyArtifacts con filesystem aislado.
 'use strict';
@@ -10,7 +10,7 @@ const os = require('os');
 const path = require('path');
 
 // Aislar REPO_ROOT a un tmp — el módulo resuelve paths a partir de env vars.
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-builder-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-build-'));
 fs.mkdirSync(path.join(TMP, '.claude', 'hooks'), { recursive: true });
 fs.mkdirSync(path.join(TMP, '.pipeline', 'logs'), { recursive: true });
 fs.mkdirSync(path.join(TMP, '.pipeline', 'desarrollo', 'build', 'trabajando'), { recursive: true });
@@ -18,11 +18,11 @@ fs.mkdirSync(path.join(TMP, 'qa', 'artifacts'), { recursive: true });
 process.env.PIPELINE_REPO_ROOT = TMP;
 process.env.CLAUDE_PROJECT_DIR = TMP;
 
-delete require.cache[require.resolve('../builder')];
-const builder = require('../builder');
+delete require.cache[require.resolve('../build')];
+const builder = require('../build');
 
 test('parseArgs — issue posicional + scope por defecto smart', () => {
-    const a = builder.parseArgs(['node', 'builder.js', '2476']);
+    const a = builder.parseArgs(['node', 'build.js', '2476']);
     assert.equal(a.issue, 2476);
     assert.equal(a.scope, 'smart');
     assert.equal(a.module, null);
@@ -157,7 +157,7 @@ test('startHeartbeat — escribe archivo agent-<issue>.heartbeat y lo limpia al 
     assert.equal(fs.existsSync(hbFile), true);
     const content = JSON.parse(fs.readFileSync(hbFile, 'utf8').trim());
     assert.equal(content.issue, 2476);
-    assert.equal(content.skill, 'builder');
+    assert.equal(content.skill, 'build');
     assert.equal(content.model, 'deterministic');
     hb.stop();
     assert.equal(fs.existsSync(hbFile), false);
@@ -170,14 +170,14 @@ test('startHeartbeat — issue null es no-op', () => {
 });
 
 test('updateMarker — escribe resultado y motivo al YAML', () => {
-    const marker = path.join(TMP, '.pipeline', 'desarrollo', 'build', 'trabajando', '2476.builder');
+    const marker = path.join(TMP, '.pipeline', 'desarrollo', 'build', 'trabajando', '2476.build');
     fs.writeFileSync(marker, 'issue: 2476\npipeline: desarrollo\n');
-    builder.updateMarker(marker, { resultado: 'aprobado', motivo: 'Build exitoso', builder_mode: 'deterministic' });
+    builder.updateMarker(marker, { resultado: 'aprobado', motivo: 'Build exitoso', build_mode: 'deterministic' });
     const after = fs.readFileSync(marker, 'utf8');
     assert.ok(after.includes('resultado:'));
     assert.ok(after.includes('"aprobado"'));
     assert.ok(after.includes('"Build exitoso"'));
-    assert.ok(after.includes('builder_mode:'));
+    assert.ok(after.includes('build_mode:'));
     // No duplicó issue/pipeline
     const issueLines = after.split('\n').filter((l) => l.startsWith('issue:'));
     assert.equal(issueLines.length, 1);

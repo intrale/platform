@@ -54,7 +54,7 @@ const DEFAULT_COMPONENTS = [
 // componentes residentes Y skills determinísticos.
 const SELF_CHECK_SKILLS = [
   { name: 'tester',   path: 'skills-deterministicos/tester.js' },
-  { name: 'builder',  path: 'skills-deterministicos/builder.js' },
+  { name: 'build',    path: 'skills-deterministicos/build.js' },
   { name: 'delivery', path: 'skills-deterministicos/delivery.js' },
   { name: 'linter',   path: 'skills-deterministicos/linter.js' },
 ];
