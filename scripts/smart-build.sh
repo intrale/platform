@@ -49,12 +49,21 @@ if $FORCE_ALL; then
 fi
 
 # ── Detectar archivos cambiados ──────────────────────────────────
-if git rev-parse --verify "$BASE_BRANCH" > /dev/null 2>&1; then
-  changed=$(git diff --name-only "$BASE_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD)
-elif git rev-parse --verify "origin/$BASE_BRANCH" > /dev/null 2>&1; then
+# IMPORTANTE: preferimos `origin/<base>` sobre el ref local porque en
+# worktrees de agentes el ref local `main` suele quedar stale (no se
+# actualiza con cada `git fetch origin main`). Si comparamos contra un
+# `main` stale, el diff incluye TODO lo que origin/main avanzó desde
+# entonces (cientos de archivos en módulos no tocados), y smart-build
+# termina disparando `./gradlew check` completo aunque el agente solo
+# haya tocado `.pipeline/`. Esto se observó en el rebote del issue
+# #3073 (ref local main = fa71bdb1 vs origin/main = 520880f8, diff =
+# 1179 archivos vs los 7 reales contra origin/main).
+if git rev-parse --verify "origin/$BASE_BRANCH" > /dev/null 2>&1; then
   changed=$(git diff --name-only "origin/$BASE_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD)
+elif git rev-parse --verify "$BASE_BRANCH" > /dev/null 2>&1; then
+  changed=$(git diff --name-only "$BASE_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD)
 else
-  echo -e "${YELLOW}>> No se encontró rama base '$BASE_BRANCH', usando cambios uncommitted${NC}"
+  echo -e "${YELLOW}>> No se encontró rama base '$BASE_BRANCH' ni 'origin/$BASE_BRANCH', usando cambios uncommitted${NC}"
   changed=$(git diff --name-only HEAD)
 fi
 
