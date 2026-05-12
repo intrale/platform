@@ -135,7 +135,7 @@ test('launchAgent cae a Anthropic si el script determinístico fue removido (rol
     });
 
     const result = launchAgent({
-        skill: 'builder',
+        skill: 'build',
         issue: 9999,
         args: ['-p'],
         cwd: ROOT,
@@ -345,9 +345,9 @@ test('launchAgent maneja JSON inválido en agent-models.json sin crashear (fallb
 // -----------------------------------------------------------------------------
 // 10. Test sanity del resolveProviderForSkill (puro, sin spawn).
 // -----------------------------------------------------------------------------
-test('resolveProviderForSkill: builder/tester/delivery/linter siempre son deterministic', () => {
+test('resolveProviderForSkill: build/tester/delivery/linter siempre son deterministic', () => {
     const fsi = fakeFs([]);
-    for (const skill of ['builder', 'tester', 'delivery', 'linter']) {
+    for (const skill of ['build', 'tester', 'delivery', 'linter']) {
         const r = resolveProviderForSkill(skill, { pipelineDir: PIPELINE, fsImpl: fsi });
         assert.equal(r.provider, 'deterministic', `skill ${skill} debería ser deterministic`);
         assert.equal(r.handler, PROVIDERS.deterministic);
@@ -362,11 +362,11 @@ test('resolveProviderForSkill: skills determinísticos ignoran agent-models.json
     const modelsPath = path.join(PIPELINE, 'agent-models.json');
     const fsi = fakeFs([modelsPath], {
         [modelsPath]: JSON.stringify({
-            skills: { builder: { provider: 'anthropic', model: 'claude-opus-4-7' } },
+            skills: { build: { provider: 'anthropic', model: 'claude-opus-4-7' } },
         }),
     });
-    const r = resolveProviderForSkill('builder', { pipelineDir: PIPELINE, fsImpl: fsi });
-    // builder está en la allowlist → siempre deterministic, agent-models.json ignorado.
+    const r = resolveProviderForSkill('build', { pipelineDir: PIPELINE, fsImpl: fsi });
+    // build está en la allowlist → siempre deterministic, agent-models.json ignorado.
     assert.equal(r.provider, 'deterministic');
     assert.equal(r.source, 'deterministic-allowlist');
 });

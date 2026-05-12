@@ -101,7 +101,7 @@ test('CA-1.5: dentro de la ventana, sólo delivery/builder/linter/tester pasan',
     const cfg = { bypass_labels: ['priority:critical'] };
 
     // Determinísticos pasan.
-    for (const skill of ['delivery', 'builder', 'linter', 'tester']) {
+    for (const skill of ['delivery', 'build', 'linter', 'tester']) {
         const r = simulatePulpoGate(skill, [], now, { cfg, pipelineDir: dir });
         assert.equal(r.advances, true, `${skill} debería pasar`);
     }

@@ -745,7 +745,7 @@ function detectFromResultEvent(evt, cfg = null) {
  * corren en Node puro sin tokens LLM.
  */
 const DETERMINISTIC_SKILLS = Object.freeze(
-    new Set(['builder', 'tester', 'delivery', 'linter'])
+    new Set(['build', 'tester', 'delivery', 'linter'])
 );
 
 function isDeterministicSkill(skill) {

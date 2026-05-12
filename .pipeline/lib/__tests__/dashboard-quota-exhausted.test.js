@@ -82,7 +82,7 @@ test('CA-2: sin flag → slice.active=false con counters en cero', () => {
 // CA-5 — slice cuenta determinísticos corriendo y LLM esperando
 // -----------------------------------------------------------------------------
 
-test('CA-5: con flag activo, contar builder/tester/delivery/linter como determinísticos', () => {
+test('CA-5: con flag activo, contar build/tester/delivery/linter como determinísticos', () => {
     writeFlag({
         exhausted: true,
         resets_at: new Date(Date.now() + 3600000).toISOString(),
@@ -92,7 +92,7 @@ test('CA-5: con flag activo, contar builder/tester/delivery/linter como determin
     try {
         const out = slices.quotaExhaustedSlice(fakeState({
             trabajando: [
-                { skill: 'builder' },
+                { skill: 'build' },
                 { skill: 'tester' },
                 { skill: 'delivery' },
                 { skill: 'linter' },
@@ -102,7 +102,7 @@ test('CA-5: con flag activo, contar builder/tester/delivery/linter como determin
                 { skill: 'guru' },
                 { skill: 'guru' },
                 { skill: 'po' },
-                { skill: 'builder' }, // determinístico en pendiente, no debe contar
+                { skill: 'build' }, // determinístico en pendiente, no debe contar
             ],
         }));
         assert.equal(out.active, true);
@@ -112,9 +112,9 @@ test('CA-5: con flag activo, contar builder/tester/delivery/linter como determin
         const po = out.queuedSkills.find(x => x.skill === 'po');
         assert.ok(guru && guru.count === 2);
         assert.ok(po && po.count === 1);
-        // Builder NO debe estar (es determinístico, no se "encola por
+        // build NO debe estar (es determinístico, no se "encola por
         // falta de cuota").
-        assert.equal(out.queuedSkills.find(x => x.skill === 'builder'), undefined);
+        assert.equal(out.queuedSkills.find(x => x.skill === 'build'), undefined);
         assert.equal(out.queuedCount, 3);
         assert.equal(out.error_type, 'usage_limit_error');
     } finally {

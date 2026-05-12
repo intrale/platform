@@ -337,7 +337,7 @@ test('CA-2 · shouldGateSpawn=false para skills determinísticos aún con flag a
     const now = Date.parse('2026-05-05T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     q.setFlag({ errorType: 'usage_limit_error', resetsAt, now });
-    for (const skill of ['builder', 'tester', 'linter', 'delivery']) {
+    for (const skill of ['build', 'tester', 'linter', 'delivery']) {
         assert.equal(q.shouldGateSpawn(skill, { now }), false, `${skill} es determinístico, NO debe gatearse`);
     }
 });
@@ -424,7 +424,7 @@ test('lifecycle · set flag → gate LLM → resets_at expira → drenado', () =
     q.setFlag({ errorType: 'usage_limit_error', resetsAt, now, agent: 'po' });
     assert.equal(q.isQuotaExhausted({ now }), true);
     assert.equal(q.shouldGateSpawn('po', { now }), true);
-    assert.equal(q.shouldGateSpawn('builder', { now }), false);
+    assert.equal(q.shouldGateSpawn('build', { now }), false);
 
     // 2. resets_at expira
     const future = now + 2 * 60 * 60 * 1000; // +2 horas (después del reset)
@@ -699,7 +699,7 @@ test('CA-7 #3077 · skills determinísticos NO se gatean nunca, sin importar pro
     const now = Date.parse('2026-05-05T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt, now });
-    for (const skill of ['builder', 'tester', 'linter', 'delivery']) {
+    for (const skill of ['build', 'tester', 'linter', 'delivery']) {
         assert.equal(q.shouldGateSpawn(skill, { provider: 'anthropic', now }), false);
         assert.equal(q.shouldGateSpawn(skill, { provider: 'openai-codex', now }), false);
         assert.equal(q.shouldGateSpawn(skill, { now }), false);
@@ -1012,7 +1012,7 @@ test('lifecycle multi-provider · flag anthropic + skill openai pasa + skill ant
     assert.equal(q.shouldGateSpawn('qa', { provider: 'openai-codex', now }), false);
 
     // 4. Skill determinístico siempre pasa
-    assert.equal(q.shouldGateSpawn('builder', { provider: 'deterministic', now }), false);
+    assert.equal(q.shouldGateSpawn('build', { provider: 'deterministic', now }), false);
 
     // 5. clearFlag con openai-codex NO limpia
     assert.equal(q.clearFlag({ provider: 'openai-codex' }), false);

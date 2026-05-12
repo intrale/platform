@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * builder.js — Skill determinístico /builder (issue #2476)
+ * build.js — Skill determinístico /build (issue #2476, rename #3157)
  *
- * Reemplaza al skill LLM `builder` dentro del flujo del Pulpo para eliminar
+ * Reemplaza al skill LLM `build` dentro del flujo del Pulpo para eliminar
  * el gasto de tokens en un proceso 100% mecánico: setup JAVA_HOME → correr
  * Gradle → parsear output → generar reporte → copiar artefactos QA.
  *
  * Contrato idéntico al skill LLM:
- *   - Marker en `trabajando/<issue>.builder` (lo lee y actualiza con resultado)
+ *   - Marker en `trabajando/<issue>.build` (lo lee y actualiza con resultado)
  *   - Heartbeat `agent-<issue>.heartbeat` cada 30s
  *   - Eventos `session:start` / `session:end` en activity-log
  *   - Exit code 0 = build OK (marker → aprobado), 1 = build FAIL (rebote)
  *
  * CLI:
- *   node builder.js <issue> [--scope=smart|clean|fast|all] [--module=<name>] [--trabajando=<path>]
+ *   node build.js <issue> [--scope=smart|clean|fast|all] [--module=<name>] [--trabajando=<path>]
  *
  * Env vars (pasadas por el Pulpo):
  *   PIPELINE_ISSUE, PIPELINE_SKILL, PIPELINE_FASE, PIPELINE_TRABAJANDO, PIPELINE_PIPELINE
@@ -64,7 +64,7 @@ function startHeartbeat(issue) {
     const writeHb = () => {
         try {
             fs.writeFileSync(hbFile, JSON.stringify({
-                issue, skill: 'builder', pid: process.pid, model: 'deterministic',
+                issue, skill: 'build', pid: process.pid, model: 'deterministic',
                 ts: new Date().toISOString(),
             }) + '\n');
         } catch {}
@@ -187,7 +187,7 @@ function updateMarker(trabajandoPath, payload) {
         }
         fs.writeFileSync(trabajandoPath, [...kept, ...appended].join('\n') + '\n', 'utf8');
     } catch (e) {
-        process.stderr.write(`[builder] No se pudo actualizar marker: ${e.message}\n`);
+        process.stderr.write(`[build] No se pudo actualizar marker: ${e.message}\n`);
     }
 }
 
@@ -198,17 +198,17 @@ async function main() {
     const scope = args.scope;
 
     if (!issue) {
-        process.stderr.write('[builder] Falta issue (CLI o env PIPELINE_ISSUE).\n');
+        process.stderr.write('[build] Falta issue (CLI o env PIPELINE_ISSUE).\n');
         process.exit(2);
     }
 
     // Log header al agent log
     try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
-    const agentLog = path.join(LOG_DIR, `${issue}-builder.log`);
+    const agentLog = path.join(LOG_DIR, `${issue}-build.log`);
     const logAppend = (msg) => {
         try { fs.appendFileSync(agentLog, msg + '\n'); } catch {}
     };
-    logAppend(`--- builder:#${issue} (deterministic) scope=${scope} ${new Date().toISOString()} ---`);
+    logAppend(`--- build:#${issue} (deterministic) scope=${scope} ${new Date().toISOString()} ---`);
 
     // Env con JAVA_HOME
     const env = { ...process.env, JAVA_HOME: JAVA_HOME_DEFAULT };
@@ -216,12 +216,12 @@ async function main() {
     env.PATH = `${JAVA_HOME_DEFAULT}/bin${path.delimiter}${env.PATH || ''}`;
 
     const { cmd, args: gArgs, label } = buildGradleCommand(scope, args.module);
-    logAppend(`[builder] scope=${label} cmd="${cmd} ${gArgs.join(' ')}"`);
+    logAppend(`[build] scope=${label} cmd="${cmd} ${gArgs.join(' ')}"`);
 
     // Heartbeat + session:start
     const hb = startHeartbeat(issue);
     const handle = trace.emitSessionStart({
-        skill: 'builder', issue, phase: process.env.PIPELINE_FASE || 'build',
+        skill: 'build', issue, phase: process.env.PIPELINE_FASE || 'build',
         model: 'deterministic',
     });
 
@@ -234,17 +234,17 @@ async function main() {
 
     try {
         gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
-        logAppend(`[builder] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
-        logAppend('[builder] --- stdout (último 2000 chars) ---');
+        logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
+        logAppend('[build] --- stdout (último 2000 chars) ---');
         logAppend(gradleResult.stdout.slice(-2000));
-        logAppend('[builder] --- stderr (último 1000 chars) ---');
+        logAppend('[build] --- stderr (último 1000 chars) ---');
         logAppend(gradleResult.stderr.slice(-1000));
 
         parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
 
         if (parsed.success) {
             artifacts = copyArtifacts(parsed);
-            logAppend(`[builder] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
+            logAppend(`[build] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
             exitCode = 0;
         } else {
             exitCode = 1;
@@ -258,24 +258,24 @@ async function main() {
             issue, scope: label, duration_override_ms: gradleResult.wall_ms,
         });
         // Escribir reporte al log + a disco
-        logAppend('[builder] --- REPORTE ---');
+        logAppend('[build] --- REPORTE ---');
         logAppend(report);
         const reportPath = path.join(LOG_DIR, `build-${issue}-report.md`);
         try { fs.writeFileSync(reportPath, report); } catch {}
     } catch (e) {
         exitCode = 2;
-        motivo = `Excepción en builder.js: ${e.message}`;
-        logAppend(`[builder] EXCEPTION: ${e.stack || e.message}`);
+        motivo = `Excepción en build.js: ${e.message}`;
+        logAppend(`[build] EXCEPTION: ${e.stack || e.message}`);
     } finally {
         // Actualizar marker con resultado
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
             motivo: motivo || (exitCode === 0 ? 'Build exitoso' : 'Build fallido'),
-            builder_scope: label,
-            builder_duration_ms: gradleResult ? gradleResult.wall_ms : 0,
-            builder_classification: parsed && parsed.errors[0] ? parsed.errors[0].classification : null,
-            builder_escalate_to: parsed && parsed.errors[0] ? parsed.errors[0].escalate_to : null,
-            builder_mode: 'deterministic',
+            build_scope: label,
+            build_duration_ms: gradleResult ? gradleResult.wall_ms : 0,
+            build_classification: parsed && parsed.errors[0] ? parsed.errors[0].classification : null,
+            build_escalate_to: parsed && parsed.errors[0] ? parsed.errors[0].escalate_to : null,
+            build_mode: 'deterministic',
         });
 
         // session:end
@@ -296,14 +296,14 @@ async function main() {
 if (require.main === module) {
     if (process.argv.includes('--self-check')) {
         const { runSelfCheck } = require('./lib/self-check');
-        runSelfCheck('builder', [
+        runSelfCheck('build', [
             { name: 'parseArgs sin argumentos', fn: () => {
-                const a = parseArgs(['node', 'builder.js']);
+                const a = parseArgs(['node', 'build.js']);
                 if (typeof a !== 'object' || a === null) throw new Error('parseArgs no devuelve objeto');
                 if (a.scope !== 'smart') throw new Error(`scope default esperado 'smart' got '${a.scope}'`);
             }},
             { name: 'parseArgs con --clean', fn: () => {
-                const a = parseArgs(['node', 'builder.js', '1234', '--clean']);
+                const a = parseArgs(['node', 'build.js', '1234', '--clean']);
                 if (a.issue !== 1234) throw new Error(`issue esperado 1234 got ${a.issue}`);
                 if (a.scope !== 'clean') throw new Error(`scope esperado 'clean' got '${a.scope}'`);
             }},
@@ -327,7 +327,7 @@ if (require.main === module) {
         return;
     }
     main().catch((e) => {
-        process.stderr.write(`[builder] fatal: ${e.stack || e.message}\n`);
+        process.stderr.write(`[build] fatal: ${e.stack || e.message}\n`);
         process.exit(2);
     });
 }
