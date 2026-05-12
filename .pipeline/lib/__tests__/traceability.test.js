@@ -194,11 +194,73 @@ test('emitSessionEnd persiste provider cuando se provee en metrics', () => {
 });
 
 test('emitSessionEnd provider=null cuando no se provee (back-compat)', () => {
-    const evt = trace.emitSessionEnd(
-        { skill: 's', issue: 1, phase: 'dev', model: 'claude-opus-4-7' },
-        {}
-    );
-    assert.equal(evt.provider, null, 'evento legacy sin provider explícito → null');
+    // Limpiar PIPELINE_PROVIDER del env para test aislado (#3078).
+    const savedEnv = process.env.PIPELINE_PROVIDER;
+    delete process.env.PIPELINE_PROVIDER;
+    try {
+        const evt = trace.emitSessionEnd(
+            { skill: 's', issue: 1, phase: 'dev', model: 'claude-opus-4-7' },
+            {}
+        );
+        assert.equal(evt.provider, null, 'evento legacy sin provider explícito → null');
+    } finally {
+        if (savedEnv !== undefined) process.env.PIPELINE_PROVIDER = savedEnv;
+    }
+});
+
+// (#3078) emitSessionStart propaga `provider` por simetría con emitSessionEnd.
+test('emitSessionStart persiste provider en el evento y handle', () => {
+    const ctx = trace.emitSessionStart({
+        skill: 'guru', issue: 3078, phase: 'analisis',
+        model: 'claude-opus-4-7', provider: 'anthropic',
+    });
+    assert.equal(ctx.provider, 'anthropic', 'handle contiene provider');
+
+    // El evento persistido también lo trae
+    const lines = fs.readFileSync(trace.LOG_FILE, 'utf8').trim().split('\n');
+    const evt = JSON.parse(lines[lines.length - 1]);
+    assert.equal(evt.event, 'session:start');
+    assert.equal(evt.provider, 'anthropic');
+});
+
+test('emitSessionStart toma provider de PIPELINE_PROVIDER env si no se pasa explícito', () => {
+    const savedEnv = process.env.PIPELINE_PROVIDER;
+    process.env.PIPELINE_PROVIDER = 'openai-codex';
+    try {
+        const ctx = trace.emitSessionStart({
+            skill: 'tester', issue: 3078, phase: 'verificacion',
+            model: 'gpt-5-codex',
+            // sin provider explícito → toma del env
+        });
+        assert.equal(ctx.provider, 'openai-codex');
+    } finally {
+        if (savedEnv !== undefined) process.env.PIPELINE_PROVIDER = savedEnv;
+        else delete process.env.PIPELINE_PROVIDER;
+    }
+});
+
+test('emitSessionEnd hereda provider del handle (firma sin metrics.provider)', () => {
+    const ctx = trace.emitSessionStart({
+        skill: 'tester', issue: 3078, phase: 'verificacion',
+        model: 'deterministic', provider: 'deterministic',
+    });
+    // El caller NO repite provider en metrics — debe heredarse del handle.
+    const evt = trace.emitSessionEnd(ctx, { tokens_in: 0, tokens_out: 0 });
+    assert.equal(evt.provider, 'deterministic');
+});
+
+test('emitSessionEnd: metrics.provider gana sobre handle.provider y env', () => {
+    const savedEnv = process.env.PIPELINE_PROVIDER;
+    process.env.PIPELINE_PROVIDER = 'anthropic';
+    try {
+        const handle = { skill: 's', issue: 1, phase: 'dev', model: 'gpt-5-codex', provider: 'openai-codex' };
+        const evt = trace.emitSessionEnd(handle, { provider: 'google' });
+        // metrics > handle > env > null
+        assert.equal(evt.provider, 'google');
+    } finally {
+        if (savedEnv !== undefined) process.env.PIPELINE_PROVIDER = savedEnv;
+        else delete process.env.PIPELINE_PROVIDER;
+    }
 });
 
 test.after(() => {

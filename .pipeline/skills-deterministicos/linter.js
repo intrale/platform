@@ -181,6 +181,8 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'linter', issue, phase: process.env.PIPELINE_FASE || 'linteo',
         model: 'deterministic',
+        // (#3078) Provider explícito para el dispatch del classifier por allowlist.
+        provider: 'deterministic',
     });
 
     const startedAt = Date.now();

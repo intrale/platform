@@ -286,6 +286,7 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'build', issue, phase: process.env.PIPELINE_FASE || 'build',
         model: 'deterministic',
+        provider: 'deterministic',
     });
 
     let gradleResult;

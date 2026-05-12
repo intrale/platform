@@ -815,6 +815,8 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'tester', issue, phase: process.env.PIPELINE_FASE || 'verificacion',
         model: 'deterministic',
+        // (#3078) Provider explícito para el dispatch del classifier por allowlist.
+        provider: 'deterministic',
     });
 
     let gradleResult;

@@ -40,10 +40,55 @@ function clampLookbackDays(value) {
     return Math.floor(n);
 }
 
-// Normaliza el modelo a "deterministic" | "llm" para comparativa (#2488)
-function classifyExecutionMode(model) {
+// Allowlist congelada provider → modo de ejecución (#3078).
+// La dispatch es por provider explícito en lugar de inferir por substring del
+// nombre del modelo (fragil + fail-open). Cualquier provider fuera de esta
+// tabla cae a `unknown` para que el dashboard lo evidencie sin degradar
+// silenciosamente.
+//
+// `openai-codex` es el nombre real del provider en `agent-models.json`; los
+// alias `openai`/`google`/`ollama` están listados por forward-compat (multi-
+// provider §5.1) — agregar aliases nuevos requiere actualizar también la
+// allowlist del schema en `agent-models.schema.json`.
+const PROVIDER_MODES = Object.freeze({
+    anthropic: 'llm',
+    'openai-codex': 'llm',
+    openai: 'llm',
+    google: 'llm',
+    ollama: 'llm',
+    deterministic: 'deterministic',
+});
+
+const VALID_EXECUTION_MODES = Object.freeze(['llm', 'deterministic', 'legacy_llm', 'unknown']);
+
+// Normaliza un evento a su modo de ejecución (#2488 + #3078).
+//
+// Firma nueva: `classifyExecutionMode({ provider, model })`
+// Firma legacy: `classifyExecutionMode(model)` — soportada para back-compat.
+//
+// Reglas:
+//  1. Provider explícito en allowlist → mapea a `llm` o `deterministic`.
+//  2. Provider explícito fuera de allowlist → `unknown` (NO degrada a `llm`).
+//  3. Sin provider, model='deterministic' → `deterministic` (legacy det).
+//  4. Sin provider, modelo no determinístico → `legacy_llm` (subtipo de llm,
+//     visible como distinto en métricas históricas pero combinado en
+//     comparativas LLM-vs-det para no romper continuidad).
+function classifyExecutionMode(input) {
+    // Back-compat: arg primitivo o null/undefined = firma legacy (solo model).
+    const args = (input == null || typeof input === 'string' || typeof input === 'number')
+        ? { model: input }
+        : input;
+    const provider = args && args.provider;
+    const model = args && args.model;
+
+    if (provider && Object.prototype.hasOwnProperty.call(PROVIDER_MODES, provider)) {
+        return PROVIDER_MODES[provider];
+    }
+    if (provider) return 'unknown';
+
     const m = String(model || '').toLowerCase().trim();
-    return m === 'deterministic' ? 'deterministic' : 'llm';
+    if (m === 'deterministic') return 'deterministic';
+    return 'legacy_llm';
 }
 
 function ensureDir(dir) {
@@ -165,7 +210,11 @@ async function buildSnapshot(options) {
         const phase = evt.phase || 'unknown';
         const issue = evt.issue || null;
         const provider = evt.provider || null;
-        const mode = evt.event === 'session:end' ? classifyExecutionMode(evt.model) : null;
+        // (#3078) Dispatch por `provider` explícito en lugar de inferir por
+        // string del modelo. Mantiene compat para eventos legacy sin provider.
+        const mode = evt.event === 'session:end'
+            ? classifyExecutionMode({ provider: evt.provider, model: evt.model })
+            : null;
 
         if (!byAgent.has(skill)) byAgent.set(skill, emptyBucket());
         addToBucket(byAgent.get(skill), evt);
@@ -316,16 +365,23 @@ async function buildSnapshot(options) {
         modeBySkill[row.skill] = modeBySkill[row.skill] || {};
         modeBySkill[row.skill][row.execution_mode] = row;
     }
+    // (#3078) Para la comparativa LLM-vs-det combinamos `llm` (eventos con
+    // provider conocido en la allowlist) + `legacy_llm` (eventos históricos
+    // sin provider). Mantiene la métrica estable para usuarios del dashboard
+    // mientras el subtipo sigue distinguible en el timeline por issue.
     const llmVsDeterministic = Object.entries(modeBySkill).map(([skill, byMode]) => {
-        const llm = byMode.llm || null;
+        const llmFresh = byMode.llm || null;
+        const llmLegacy = byMode.legacy_llm || null;
         const det = byMode.deterministic || null;
-        const llmAvgCost = llm && llm.sessions > 0 ? llm.cost_usd / llm.sessions : 0;
+        const llmSessions = (llmFresh ? llmFresh.sessions : 0) + (llmLegacy ? llmLegacy.sessions : 0);
+        const llmCostUsd = (llmFresh ? llmFresh.cost_usd : 0) + (llmLegacy ? llmLegacy.cost_usd : 0);
+        const llmAvgCost = llmSessions > 0 ? llmCostUsd / llmSessions : 0;
         const detSessions = det ? det.sessions : 0;
         const savingsUsd = Math.round(detSessions * llmAvgCost * 10000) / 10000;
         return {
             skill,
-            llm_sessions: llm ? llm.sessions : 0,
-            llm_cost_usd: llm ? llm.cost_usd : 0,
+            llm_sessions: llmSessions,
+            llm_cost_usd: Math.round(llmCostUsd * 10000) / 10000,
             llm_avg_cost_per_session: Math.round(llmAvgCost * 10000) / 10000,
             deterministic_sessions: detSessions,
             deterministic_cost_usd: det ? det.cost_usd : 0,
@@ -563,6 +619,8 @@ module.exports = {
     runOnce,
     writeSnapshot,
     classifyExecutionMode,
+    PROVIDER_MODES,
+    VALID_EXECUTION_MODES,
     computeHourlySeries,
     computeCurrentHour,
     clampLookbackDays,
