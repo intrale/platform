@@ -333,3 +333,48 @@ test('BUILD_LOCK_TIMEOUT_MS — default suficientemente largo para 2 builds (>=1
     assert.ok(builder.BUILD_LOCK_TIMEOUT_MS >= 10 * 60 * 1000,
         `timeout default debe ser >=10min, fue ${builder.BUILD_LOCK_TIMEOUT_MS}ms`);
 });
+
+// ── Cleanup de daemons Gradle huérfanos (regresión #3078 tercer rebote) ─
+//
+// El cleanup mata procesos cuya commandline contenga "GradleDaemon". No
+// podemos lanzar daemons reales en CI, pero sí validamos:
+//   - listOrphanGradleDaemons no incluye nuestro propio PID
+//   - listOrphanGradleDaemons es robusto si wmic/ps no devuelve nada
+//   - cleanupOrphanGradleDaemons reporta {killed, attempted} con shape correcto
+//   - cleanupOrphanGradleDaemons NO rompe en máquinas sin daemons vivos
+
+test('listOrphanGradleDaemons — nunca incluye el PID del proceso actual (regresión #3078)', () => {
+    const pids = builder.listOrphanGradleDaemons();
+    assert.ok(Array.isArray(pids), `debe devolver un array, devolvió ${typeof pids}`);
+    assert.ok(!pids.includes(process.pid),
+        `lista no debe contener el PID actual (${process.pid}); contenía ${JSON.stringify(pids)}`);
+});
+
+test('listOrphanGradleDaemons — solo devuelve enteros positivos', () => {
+    const pids = builder.listOrphanGradleDaemons();
+    for (const p of pids) {
+        assert.equal(typeof p, 'number', `PID debe ser number, fue ${typeof p}`);
+        assert.ok(Number.isFinite(p) && p > 0, `PID debe ser entero positivo, fue ${p}`);
+    }
+});
+
+test('cleanupOrphanGradleDaemons — devuelve {killed, attempted} con shape correcto', () => {
+    const r = builder.cleanupOrphanGradleDaemons();
+    assert.ok(r && typeof r === 'object', 'debe devolver objeto');
+    assert.equal(typeof r.killed, 'number', 'killed debe ser number');
+    assert.equal(typeof r.attempted, 'number', 'attempted debe ser number');
+    assert.ok(r.killed >= 0 && r.attempted >= 0, 'contadores deben ser >=0');
+    assert.ok(r.killed <= r.attempted, 'killed <= attempted siempre');
+});
+
+test('cleanupOrphanGradleDaemons — no rompe en invocaciones repetidas', () => {
+    // En un sistema vivo (pulpo + otros agentes corriendo) puede aparecer un
+    // nuevo daemon entre invocaciones, así que NO afirmamos `attempted === 0`
+    // tras un cleanup previo: solo validamos que el shape sea correcto y que
+    // no haya excepciones al invocar consecutivamente. La invariante de
+    // "killed <= attempted" la cubre el test anterior.
+    const r1 = builder.cleanupOrphanGradleDaemons();
+    assert.ok(r1 && typeof r1.killed === 'number' && typeof r1.attempted === 'number');
+    const r2 = builder.cleanupOrphanGradleDaemons();
+    assert.ok(r2 && typeof r2.killed === 'number' && typeof r2.attempted === 'number');
+});

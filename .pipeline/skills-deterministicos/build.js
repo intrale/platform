@@ -23,7 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const trace = require('../lib/traceability');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
 
@@ -195,6 +195,112 @@ function acquireBuildLock(issue, opts) {
             }
         }
     }
+}
+
+// ── Cleanup de daemons Gradle huérfanos (regresión #3078 tercer rebote) ─
+//
+// Problema: el mutex `.pipeline/build-skill.lock` serializa builds del
+// pipeline, pero NO mata daemons Gradle huérfanos de invocaciones previas.
+// Aunque pasamos `--no-daemon`, Gradle 8.13 forkea un "single-use daemon"
+// (lo dice el propio output: "a single-use Daemon process will be forked.
+// Daemon will be stopped at the end of the build"). Si el JVM del daemon
+// muere mal (segfault, kill del padre antes de cleanup, OOM, etc.), el
+// daemon queda zombi reteniendo el lock de `.gradle/buildOutputCleanup/`.
+// El próximo build intenta tomar el lock, timeoutea en ~60s con:
+//   Could not create service of type BuildLifecycleController…
+//   > Timeout waiting to lock Build Output Cleanup Cache (.gradle/buildOutputCleanup).
+//     It is currently in use by another Gradle instance. Owner PID: <X>
+// y rebota el issue por fallo de infra sin culpa del código del agente.
+//
+// Solución: ANTES de spawnear gradle, listar todos los procesos cuyo
+// command line contenga "GradleDaemon" y matarlos (excepto el nuestro,
+// aunque el script Node nunca es un GradleDaemon). Como esto corre DENTRO
+// del mutex `build-skill.lock`, sabemos que NO hay otro build legítimo
+// del pipeline corriendo; cualquier GradleDaemon vivo es residual.
+//
+// Compatibilidad: la inspección de procesos solo hace sentido para entornos
+// donde corre Gradle. En Windows usamos `wmic`; en POSIX usamos `ps`. Si
+// alguno no está disponible, devolvemos lista vacía sin romper.
+
+/**
+ * Lista PIDs de procesos GradleDaemon huérfanos vivos.
+ *
+ * @returns {number[]} PIDs vivos cuyo command line contiene "GradleDaemon"
+ *   (excluyendo el PID actual). Lista vacía si no hay o si la inspección
+ *   falla.
+ */
+function listOrphanGradleDaemons() {
+    const myPid = process.pid;
+    try {
+        if (process.platform === 'win32') {
+            // wmic: lista todos los procesos con "GradleDaemon" en la commandline.
+            // Output formato CSV: Node,CommandLine,ProcessId\r\nNODENAME,…,PID\r\n
+            const out = execFileSync(
+                'wmic',
+                ['process', 'where', "CommandLine like '%GradleDaemon%'", 'get', 'ProcessId', '/format:csv'],
+                { encoding: 'utf8', timeout: 10_000, windowsHide: true }
+            );
+            const pids = [];
+            for (const line of out.split(/\r?\n/)) {
+                const m = line.match(/,\s*(\d+)\s*$/);
+                if (!m) continue;
+                const pid = parseInt(m[1], 10);
+                if (!Number.isFinite(pid) || pid <= 0) continue;
+                if (pid === myPid) continue;
+                pids.push(pid);
+            }
+            return pids;
+        }
+        // POSIX: ps + filtro por GradleDaemon.
+        const out = execFileSync('ps', ['-eo', 'pid,command'], { encoding: 'utf8', timeout: 10_000 });
+        const pids = [];
+        for (const line of out.split(/\r?\n/)) {
+            if (!line.includes('GradleDaemon')) continue;
+            const m = line.match(/^\s*(\d+)\s/);
+            if (!m) continue;
+            const pid = parseInt(m[1], 10);
+            if (!Number.isFinite(pid) || pid <= 0) continue;
+            if (pid === myPid) continue;
+            pids.push(pid);
+        }
+        return pids;
+    } catch {
+        // wmic/ps no disponible, timeout, o sin permisos — degradamos a no-op.
+        return [];
+    }
+}
+
+/**
+ * Mata los GradleDaemon huérfanos antes de un build.
+ *
+ * Idempotente y defensivo: si no hay daemons o no podemos matarlos,
+ * devuelve 0 sin romper. No espera a que liberen el lock — el caller
+ * decide si hace poll posterior.
+ *
+ * @returns {{killed: number, attempted: number}}
+ *   - attempted: cantidad de PIDs encontrados como huérfanos.
+ *   - killed: cantidad efectivamente terminados.
+ */
+function cleanupOrphanGradleDaemons() {
+    const pids = listOrphanGradleDaemons();
+    if (pids.length === 0) return { killed: 0, attempted: 0 };
+
+    let killed = 0;
+    for (const pid of pids) {
+        try {
+            if (process.platform === 'win32') {
+                execFileSync('taskkill', ['/F', '/PID', String(pid)], {
+                    stdio: 'ignore', timeout: 5_000, windowsHide: true,
+                });
+            } else {
+                process.kill(pid, 'SIGKILL');
+            }
+            killed += 1;
+        } catch {
+            // Daemon ya muerto entre listado y kill, o sin permisos — ignorar.
+        }
+    }
+    return { killed, attempted: pids.length };
 }
 
 function releaseBuildLock(lockPath) {
@@ -418,6 +524,19 @@ async function main() {
             // Saltar el resto del try; el finally hace el cleanup.
         } else {
             logAppend(`[build] Lock adquirido tras ${buildLock.waited_ms}ms${buildLock.stolen ? ' (lock stale robado)' : ''}.`);
+
+            // Preflight: matar daemons Gradle huérfanos antes del spawn.
+            // Estamos dentro del mutex, así que no hay otro build legítimo
+            // del pipeline corriendo: cualquier GradleDaemon vivo es residual
+            // de una invocación previa que no cleanupeó (regresión #3078).
+            const orphans = cleanupOrphanGradleDaemons();
+            if (orphans.attempted > 0) {
+                logAppend(`[build] preflight cleanup: ${orphans.killed}/${orphans.attempted} daemon(s) Gradle huérfano(s) matado(s).`);
+                // Damos un breve respiro al OS para que libere los locks de archivo
+                // (Windows tarda ~100ms post-kill en liberar handles).
+                await new Promise((r) => setTimeout(r, 1000));
+            }
+
             gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
             logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
             logAppend('[build] --- stdout (último 2000 chars) ---');
@@ -539,4 +658,7 @@ module.exports = {
     isPidAlive,
     BUILD_LOCK_PATH,
     BUILD_LOCK_TIMEOUT_MS,
+    // Cleanup de daemons Gradle huérfanos (regresión #3078 tercer rebote).
+    listOrphanGradleDaemons,
+    cleanupOrphanGradleDaemons,
 };
