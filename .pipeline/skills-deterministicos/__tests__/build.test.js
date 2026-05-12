@@ -17,6 +17,9 @@ fs.mkdirSync(path.join(TMP, '.pipeline', 'desarrollo', 'build', 'trabajando'), {
 fs.mkdirSync(path.join(TMP, 'qa', 'artifacts'), { recursive: true });
 process.env.PIPELINE_REPO_ROOT = TMP;
 process.env.CLAUDE_PROJECT_DIR = TMP;
+// Asegurar que PIPELINE_WORKTREE no contamine el módulo (el pulpo lo setea cuando
+// lanza al agente, pero los tests deben verse a sí mismos en un entorno limpio).
+delete process.env.PIPELINE_WORKTREE;
 
 delete require.cache[require.resolve('../build')];
 const builder = require('../build');
@@ -54,54 +57,9 @@ test('parseArgs — fallback a PIPELINE_ISSUE si no hay argumento posicional', (
 
 test('buildGradleCommand — smart por defecto usa scripts/smart-build.sh', () => {
     const c = builder.buildGradleCommand('smart', null);
-    // En Windows, cmd puede ser el path absoluto a Git Bash (resolución explícita
-    // para evitar WSL relay — regresión #3078). En otros OS o si Git Bash no está
-    // instalado, queda como literal 'bash'.
-    if (process.platform === 'win32' && path.isAbsolute(c.cmd)) {
-        assert.ok(c.cmd.toLowerCase().endsWith('bash.exe'),
-            `cmd path absoluto debe terminar en bash.exe, fue: ${c.cmd}`);
-    } else {
-        assert.equal(c.cmd, 'bash');
-    }
+    assert.equal(c.cmd, 'bash');
     assert.deepEqual(c.args, ['scripts/smart-build.sh']);
     assert.equal(c.label, 'smart');
-});
-
-test('resolveBashOnWindows — en non-Windows devuelve null', () => {
-    if (process.platform === 'win32') return; // skip en Windows
-    assert.equal(builder.resolveBashOnWindows(), null);
-});
-
-test('resolveBashOnWindows — en Windows prefiere Git Bash sobre PATH (regresión #3078)', () => {
-    if (process.platform !== 'win32') return; // skip fuera de Windows
-    const resolved = builder.resolveBashOnWindows();
-    // Si resuelve, debe ser path absoluto a un .exe existente; nunca el bash de WSL.
-    if (resolved !== null) {
-        assert.ok(path.isAbsolute(resolved), `path no absoluto: ${resolved}`);
-        assert.ok(fs.existsSync(resolved), `bash.exe resuelto no existe: ${resolved}`);
-        const lower = resolved.toLowerCase();
-        assert.ok(!lower.includes('\\windows\\system32\\bash.exe'),
-            'NO debe resolver al WSL relay (windows/system32/bash.exe)');
-        assert.ok(!lower.includes('\\windowsapps\\bash.exe'),
-            'NO debe resolver al stub WSL en WindowsApps');
-    }
-    // null es aceptable si Git Bash no está instalado: build.js cae a literal 'bash'.
-});
-
-test('resolveBashOnWindows — GIT_BASH env override gana sobre paths default', () => {
-    if (process.platform !== 'win32') return;
-    const saved = process.env.GIT_BASH;
-    // Punto a un archivo que sí existe para que la primera iteración matche.
-    const fakeBash = path.join(os.tmpdir(), 'fake-bash-' + Date.now() + '.exe');
-    fs.writeFileSync(fakeBash, 'FAKE');
-    try {
-        process.env.GIT_BASH = fakeBash;
-        assert.equal(builder.resolveBashOnWindows(), fakeBash);
-    } finally {
-        if (saved === undefined) delete process.env.GIT_BASH;
-        else process.env.GIT_BASH = saved;
-        try { fs.unlinkSync(fakeBash); } catch {}
-    }
 });
 
 test('buildGradleCommand — clean usa ./gradlew clean build --no-daemon', () => {
@@ -122,6 +80,78 @@ test('buildGradleCommand — module=app mapea a :app:composeApp:check', () => {
 test('buildGradleCommand — module=backend mapea a :backend:check', () => {
     const c = builder.buildGradleCommand('smart', 'backend');
     assert.ok(c.args.includes(':backend:check'));
+});
+
+test('resolveBashCommand — en no-Windows devuelve cmd original sin shell', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+        const r = builder.resolveBashCommand('bash');
+        assert.equal(r.cmd, 'bash');
+        assert.equal(r.useShell, false);
+        const r2 = builder.resolveBashCommand('./gradlew');
+        assert.equal(r2.cmd, './gradlew');
+        assert.equal(r2.useShell, false);
+    } finally {
+        Object.defineProperty(process, 'platform', original);
+    }
+});
+
+test('resolveBashCommand — Windows + cmd != bash mantiene shell:true', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+        const r = builder.resolveBashCommand('./gradlew');
+        assert.equal(r.cmd, './gradlew');
+        assert.equal(r.useShell, true);
+    } finally {
+        Object.defineProperty(process, 'platform', original);
+    }
+});
+
+test('resolveBashCommand — Windows + bash + GIT_BASH_PATH override resuelve al path', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const savedGitBash = process.env.GIT_BASH_PATH;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // Crear un fake bash.exe en TMP para que existsSync devuelva true
+    const fakeBash = path.join(TMP, 'fake-bash.exe');
+    fs.writeFileSync(fakeBash, 'fake');
+    process.env.GIT_BASH_PATH = fakeBash;
+    try {
+        const r = builder.resolveBashCommand('bash');
+        assert.equal(r.cmd, fakeBash);
+        assert.equal(r.useShell, false);
+    } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        if (savedGitBash === undefined) delete process.env.GIT_BASH_PATH;
+        else process.env.GIT_BASH_PATH = savedGitBash;
+    }
+});
+
+test('resolveBashCommand — Windows + bash sin Git Bash cae a shell:true fallback', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const savedGitBash = process.env.GIT_BASH_PATH;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // Apuntar GIT_BASH_PATH a un archivo inexistente para que ningún candidato pase
+    process.env.GIT_BASH_PATH = path.join(TMP, 'no-existe-bash-' + Date.now() + '.exe');
+    // Trampear los demás candidatos hardcoded: si el sistema real tiene Git Bash
+    // en "C:\\Program Files\\Git\\bin\\bash.exe", el test no puede simular su
+    // ausencia. Por eso solo validamos: si NO se encuentra nada, fallback OK.
+    // En máquinas con Git Bash instalado, el test verifica el camino feliz.
+    try {
+        const r = builder.resolveBashCommand('bash');
+        // O bien resuelve a un path absoluto (Git Bash instalado), o cae a fallback.
+        if (r.useShell === true) {
+            assert.equal(r.cmd, 'bash');
+        } else {
+            assert.ok(r.cmd.endsWith('bash.exe'), `esperaba .exe, got: ${r.cmd}`);
+            assert.equal(r.useShell, false);
+        }
+    } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        if (savedGitBash === undefined) delete process.env.GIT_BASH_PATH;
+        else process.env.GIT_BASH_PATH = savedGitBash;
+    }
 });
 
 test('startHeartbeat — escribe archivo agent-<issue>.heartbeat y lo limpia al stop', () => {
@@ -184,313 +214,43 @@ test('copyArtifacts — escribe BUILD_TIMESTAMP siempre', () => {
     assert.equal(fs.existsSync(ts), true);
 });
 
-// ── Mutex de build (regresión #3078 segundo rebote) ─────────────────
-// Causa raíz: dos builds concurrentes contendían por el lock del
-// `.gradle/buildOutputCleanup` cache del REPO_ROOT compartido. El segundo
-// timeouteaba en ~60s y rebotaba el issue por un fallo de infra (no de
-// código). Estos tests cubren el mutex que previene esa contención.
-
-test('isPidAlive — process.pid actual está vivo', () => {
-    assert.equal(builder.isPidAlive(process.pid), true);
+// ── Regresión: split REPO_ROOT / WORKTREE_ROOT (rebote build #3073 rev-1) ────
+// El bug original ejecutaba gradle en cwd=REPO_ROOT (main checkout), lo que
+// (a) generaba diffs falsos en smart-build.sh contra una rama distinta a la
+// del agente, y (b) hacía que builds concurrentes colisionaran sobre el
+// mismo `.gradle/buildOutputCleanup`. El fix introduce WORKTREE_ROOT como
+// cwd para gradle y para los sources de artefactos, dejando QA_ARTIFACTS_DIR
+// y LOG_DIR en REPO_ROOT (compartidos).
+test('paths — WORKTREE_ROOT default = REPO_ROOT cuando no hay PIPELINE_WORKTREE', () => {
+    // En este test no seteamos PIPELINE_WORKTREE, así que ambos deben coincidir.
+    assert.equal(builder._paths.WORKTREE_ROOT, builder._paths.REPO_ROOT);
 });
 
-test('isPidAlive — PIDs inválidos o muertos devuelven false', () => {
-    assert.equal(builder.isPidAlive(null), false);
-    assert.equal(builder.isPidAlive(0), false);
-    assert.equal(builder.isPidAlive(-1), false);
-    assert.equal(builder.isPidAlive(NaN), false);
-    // PID muy alto que casi seguro no existe.
-    assert.equal(builder.isPidAlive(2147483646), false);
+test('paths — QA_ARTIFACTS_DIR y LOG_DIR cuelgan de REPO_ROOT (no de WORKTREE_ROOT)', () => {
+    assert.ok(builder._paths.QA_ARTIFACTS_DIR.startsWith(builder._paths.REPO_ROOT));
+    assert.ok(builder._paths.LOG_DIR.startsWith(builder._paths.REPO_ROOT));
 });
 
-test('acquireBuildLock — crea el lockfile con metadata del proceso', () => {
-    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}.lock`);
-    try { fs.unlinkSync(lockPath); } catch {}
-
-    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 1000 });
+test('paths — WORKTREE_ROOT respeta PIPELINE_WORKTREE cuando está seteado', () => {
+    // Recargar el módulo con PIPELINE_WORKTREE seteado a un valor distinto.
+    const fakeWorktree = path.join(TMP, 'fake-worktree');
+    fs.mkdirSync(fakeWorktree, { recursive: true });
+    const saved = process.env.PIPELINE_WORKTREE;
+    process.env.PIPELINE_WORKTREE = fakeWorktree;
     try {
-        assert.equal(r.timedOut, false);
-        assert.equal(r.lockPath, lockPath);
-        assert.equal(fs.existsSync(lockPath), true);
-        const meta = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-        assert.equal(meta.pid, process.pid);
-        assert.equal(meta.issue, 3078);
-        assert.equal(meta.skill, 'build');
-        assert.ok(typeof meta.ts === 'number' && meta.ts > 0);
+        delete require.cache[require.resolve('../build')];
+        const reloaded = require('../build');
+        assert.equal(reloaded._paths.WORKTREE_ROOT, fakeWorktree);
+        // REPO_ROOT sigue siendo TMP (PIPELINE_REPO_ROOT no cambió).
+        assert.equal(reloaded._paths.REPO_ROOT, TMP);
+        // QA_ARTIFACTS_DIR sigue colgando de REPO_ROOT, no de WORKTREE_ROOT.
+        assert.ok(reloaded._paths.QA_ARTIFACTS_DIR.startsWith(TMP));
+        assert.ok(!reloaded._paths.QA_ARTIFACTS_DIR.startsWith(fakeWorktree));
     } finally {
-        builder.releaseBuildLock(lockPath);
+        if (saved === undefined) delete process.env.PIPELINE_WORKTREE;
+        else process.env.PIPELINE_WORKTREE = saved;
+        // Restaurar el module cache para tests siguientes
+        delete require.cache[require.resolve('../build')];
+        require('../build');
     }
-});
-
-test('acquireBuildLock — segundo intento timeouts si el primero no se libera', () => {
-    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-a.lock`);
-    try { fs.unlinkSync(lockPath); } catch {}
-
-    // Tomamos el lock simulando otro proceso vivo (este proceso).
-    const first = builder.acquireBuildLock(1, { lockPath, timeoutMs: 1000 });
-    try {
-        assert.equal(first.timedOut, false);
-        // Segundo intento con timeout corto debería timeoutear (mismo PID ⇒ vivo).
-        const second = builder.acquireBuildLock(2, { lockPath, timeoutMs: 500, pollMs: 50 });
-        assert.equal(second.timedOut, true);
-        assert.equal(second.lockPath, null);
-        assert.ok(second.waited_ms >= 500, `esperó al menos 500ms, midió ${second.waited_ms}ms`);
-    } finally {
-        builder.releaseBuildLock(first.lockPath);
-    }
-});
-
-test('acquireBuildLock — roba lock stale (holder PID muerto)', () => {
-    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-b.lock`);
-    try { fs.unlinkSync(lockPath); } catch {}
-
-    // Escribimos manualmente un lock con un PID muy alto que casi seguro no existe.
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({
-        pid: 2147483646,
-        issue: 9999,
-        skill: 'build',
-        ts: Date.now() - 60_000,
-    }));
-
-    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 5000, pollMs: 50 });
-    try {
-        assert.equal(r.timedOut, false);
-        assert.equal(r.stolen, true, 'debe marcar stolen=true cuando reclama lock muerto');
-        const meta = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-        assert.equal(meta.pid, process.pid, 'el lock ahora pertenece a este proceso');
-    } finally {
-        builder.releaseBuildLock(r.lockPath);
-    }
-});
-
-test('acquireBuildLock — repara lockfile corrupto en vez de deadlockear', () => {
-    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-c.lock`);
-    try { fs.unlinkSync(lockPath); } catch {}
-
-    // Lock con JSON inválido (corrupto).
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, 'NO ES JSON {{{');
-
-    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 1000, pollMs: 50 });
-    try {
-        assert.equal(r.timedOut, false);
-        assert.equal(r.stolen, true, 'lock corrupto se considera stale y se reclama');
-        const meta = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-        assert.equal(meta.pid, process.pid);
-    } finally {
-        builder.releaseBuildLock(r.lockPath);
-    }
-});
-
-test('releaseBuildLock — idempotente: no rompe si el lock no existe', () => {
-    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-d.lock`);
-    // No existe — primer release debe ser no-op safe.
-    assert.equal(builder.releaseBuildLock(lockPath), false);
-    // Segundo release tampoco.
-    assert.equal(builder.releaseBuildLock(lockPath), false);
-    // releaseBuildLock(null/undefined) tampoco rompe.
-    assert.equal(builder.releaseBuildLock(null), false);
-    assert.equal(builder.releaseBuildLock(undefined), false);
-});
-
-test('releaseBuildLock — borra lock propio del proceso actual', () => {
-    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-e.lock`);
-    try { fs.unlinkSync(lockPath); } catch {}
-
-    const r = builder.acquireBuildLock(3078, { lockPath, timeoutMs: 1000 });
-    assert.equal(fs.existsSync(lockPath), true);
-    const released = builder.releaseBuildLock(r.lockPath);
-    assert.equal(released, true);
-    assert.equal(fs.existsSync(lockPath), false);
-});
-
-test('releaseBuildLock — no toca lock de otro proceso (defensivo)', () => {
-    const lockPath = path.join(TMP, '.pipeline', `build-skill-test-${Date.now()}-f.lock`);
-    try { fs.unlinkSync(lockPath); } catch {}
-
-    // Lock con PID distinto al actual.
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    const otherPid = process.pid === 1 ? 2 : 1;
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: otherPid, issue: 1, skill: 'build', ts: Date.now() }));
-
-    const released = builder.releaseBuildLock(lockPath);
-    assert.equal(released, false, 'no debe borrar lock que no es nuestro');
-    assert.equal(fs.existsSync(lockPath), true, 'el lock sigue ahí');
-    // Cleanup.
-    try { fs.unlinkSync(lockPath); } catch {}
-});
-
-test('BUILD_LOCK_PATH — está bajo REPO_ROOT/.pipeline/', () => {
-    assert.ok(builder.BUILD_LOCK_PATH.includes(path.join('.pipeline', 'build-skill.lock')) ||
-        builder.BUILD_LOCK_PATH.endsWith('build-skill.lock'),
-        `BUILD_LOCK_PATH inesperado: ${builder.BUILD_LOCK_PATH}`);
-});
-
-test('BUILD_LOCK_TIMEOUT_MS — default suficientemente largo para 2 builds (>=10min)', () => {
-    // El bug original fue Gradle timeouteando en ~60s. Nuestro mutex debe
-    // esperar bastante más que un build promedio (5-10 min).
-    assert.ok(builder.BUILD_LOCK_TIMEOUT_MS >= 10 * 60 * 1000,
-        `timeout default debe ser >=10min, fue ${builder.BUILD_LOCK_TIMEOUT_MS}ms`);
-});
-
-// ── Cleanup de daemons Gradle huérfanos (regresión #3078 tercer rebote) ─
-//
-// El cleanup mata procesos cuya commandline contenga "GradleDaemon". No
-// podemos lanzar daemons reales en CI, pero sí validamos:
-//   - listOrphanGradleDaemons no incluye nuestro propio PID
-//   - listOrphanGradleDaemons es robusto si wmic/ps no devuelve nada
-//   - cleanupOrphanGradleDaemons reporta {killed, attempted} con shape correcto
-//   - cleanupOrphanGradleDaemons NO rompe en máquinas sin daemons vivos
-
-test('listOrphanGradleDaemons — nunca incluye el PID del proceso actual (regresión #3078)', () => {
-    const pids = builder.listOrphanGradleDaemons();
-    assert.ok(Array.isArray(pids), `debe devolver un array, devolvió ${typeof pids}`);
-    assert.ok(!pids.includes(process.pid),
-        `lista no debe contener el PID actual (${process.pid}); contenía ${JSON.stringify(pids)}`);
-});
-
-test('listOrphanGradleDaemons — solo devuelve enteros positivos', () => {
-    const pids = builder.listOrphanGradleDaemons();
-    for (const p of pids) {
-        assert.equal(typeof p, 'number', `PID debe ser number, fue ${typeof p}`);
-        assert.ok(Number.isFinite(p) && p > 0, `PID debe ser entero positivo, fue ${p}`);
-    }
-});
-
-test('cleanupOrphanGradleDaemons — devuelve {killed, attempted} con shape correcto', () => {
-    const r = builder.cleanupOrphanGradleDaemons();
-    assert.ok(r && typeof r === 'object', 'debe devolver objeto');
-    assert.equal(typeof r.killed, 'number', 'killed debe ser number');
-    assert.equal(typeof r.attempted, 'number', 'attempted debe ser number');
-    assert.ok(r.killed >= 0 && r.attempted >= 0, 'contadores deben ser >=0');
-    assert.ok(r.killed <= r.attempted, 'killed <= attempted siempre');
-});
-
-test('cleanupOrphanGradleDaemons — no rompe en invocaciones repetidas', () => {
-    // En un sistema vivo (pulpo + otros agentes corriendo) puede aparecer un
-    // nuevo daemon entre invocaciones, así que NO afirmamos `attempted === 0`
-    // tras un cleanup previo: solo validamos que el shape sea correcto y que
-    // no haya excepciones al invocar consecutivamente. La invariante de
-    // "killed <= attempted" la cubre el test anterior.
-    const r1 = builder.cleanupOrphanGradleDaemons();
-    assert.ok(r1 && typeof r1.killed === 'number' && typeof r1.attempted === 'number');
-    const r2 = builder.cleanupOrphanGradleDaemons();
-    assert.ok(r2 && typeof r2.killed === 'number' && typeof r2.attempted === 'number');
-});
-
-// ── Tests de syncLocalMainRef (regresión #3078 cuarto rebote) ────────────────
-// Verifican que el sync actualiza local main cuando origin/main está adelante,
-// reproduciendo el escenario real del rebote: worktree de larga vida con local
-// main stale → smart-build.sh ve diff inflado → ./gradlew check completo → OOM
-// en compileTestDevelopmentExecutableKotlinWasmJs.
-
-const { execFileSync } = require('child_process');
-
-// Helper: monta un repo git aislado con N commits, opcionalmente con un remote
-// `origin` que avanzó M commits adicionales (simulando worktree stale).
-function mountFakeRepo({ originExtraCommits }) {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-build-sync-'));
-    const upstream = path.join(tmpRoot, 'upstream.git');
-    const workTree = path.join(tmpRoot, 'work');
-
-    // 1) Bare repo "upstream" que simula GitHub.
-    fs.mkdirSync(upstream, { recursive: true });
-    execFileSync('git', ['init', '--bare', '-b', 'main', upstream], { stdio: 'pipe' });
-
-    // 2) Clone local que será nuestro worktree.
-    execFileSync('git', ['clone', upstream, workTree], { stdio: 'pipe' });
-    execFileSync('git', ['-C', workTree, 'config', 'user.email', 'test@intrale.com'], { stdio: 'pipe' });
-    execFileSync('git', ['-C', workTree, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
-    // Commit inicial.
-    fs.writeFileSync(path.join(workTree, 'README.md'), 'initial\n');
-    execFileSync('git', ['-C', workTree, 'add', 'README.md'], { stdio: 'pipe' });
-    execFileSync('git', ['-C', workTree, 'commit', '-m', 'initial'], { stdio: 'pipe' });
-    execFileSync('git', ['-C', workTree, 'push', 'origin', 'main'], { stdio: 'pipe' });
-
-    // 3) Avanzar origin con M commits que el local no va a fetchear → simula stale.
-    if (originExtraCommits > 0) {
-        // Clonar un workspace temporal solo para empujar al upstream.
-        const pusher = path.join(tmpRoot, 'pusher');
-        execFileSync('git', ['clone', upstream, pusher], { stdio: 'pipe' });
-        execFileSync('git', ['-C', pusher, 'config', 'user.email', 'test@intrale.com'], { stdio: 'pipe' });
-        execFileSync('git', ['-C', pusher, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
-        for (let i = 1; i <= originExtraCommits; i++) {
-            fs.writeFileSync(path.join(pusher, `f${i}.txt`), `commit ${i}\n`);
-            execFileSync('git', ['-C', pusher, 'add', `f${i}.txt`], { stdio: 'pipe' });
-            execFileSync('git', ['-C', pusher, 'commit', '-m', `extra ${i}`], { stdio: 'pipe' });
-        }
-        execFileSync('git', ['-C', pusher, 'push', 'origin', 'main'], { stdio: 'pipe' });
-
-        // 4) Fetch en el worktree para que origin/main esté avanzado pero local
-        // main NO (= worktree stale como en el pulpo).
-        execFileSync('git', ['-C', workTree, 'fetch', 'origin', 'main'], { stdio: 'pipe' });
-    }
-
-    return { tmpRoot, workTree, upstream };
-}
-
-test('syncLocalMainRef — actualiza local main cuando origin/main avanzó (regresión #3078 wasm-OOM)', () => {
-    const { workTree, tmpRoot } = mountFakeRepo({ originExtraCommits: 3 });
-
-    // Pre: local main está 3 commits atrás de origin/main.
-    const stale = execFileSync('git', ['-C', workTree, 'rev-list', '--count', 'main..origin/main'], {
-        encoding: 'utf8', stdio: 'pipe',
-    }).trim();
-    assert.equal(stale, '3', 'setup: local main debe estar 3 commits stale');
-
-    // Apuntar el builder a este worktree y reimportarlo.
-    process.env.PIPELINE_REPO_ROOT = workTree;
-    delete require.cache[require.resolve('../build')];
-    const isolated = require('../build');
-
-    const res = isolated.syncLocalMainRef();
-
-    assert.equal(res.synced, true, 'debe haber sincronizado');
-    assert.equal(res.reason, null, 'sin reason de error');
-    assert.equal(res.stale_commits, 3, 'debe reportar los 3 commits stale');
-
-    // Post: local main == origin/main.
-    const post = execFileSync('git', ['-C', workTree, 'rev-list', '--count', 'main..origin/main'], {
-        encoding: 'utf8', stdio: 'pipe',
-    }).trim();
-    assert.equal(post, '0', 'tras el sync, local main debe estar al día');
-
-    // Cleanup + restaurar env del módulo principal.
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
-    process.env.PIPELINE_REPO_ROOT = TMP;
-    delete require.cache[require.resolve('../build')];
-});
-
-test('syncLocalMainRef — no-op cuando local main ya está al día', () => {
-    const { workTree, tmpRoot } = mountFakeRepo({ originExtraCommits: 0 });
-
-    process.env.PIPELINE_REPO_ROOT = workTree;
-    delete require.cache[require.resolve('../build')];
-    const isolated = require('../build');
-
-    const res = isolated.syncLocalMainRef();
-
-    assert.equal(res.synced, false, 'sin updates no se sincroniza');
-    assert.equal(res.reason, 'already-fresh', 'debe reportar already-fresh');
-    assert.equal(res.stale_commits, 0);
-
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
-    process.env.PIPELINE_REPO_ROOT = TMP;
-    delete require.cache[require.resolve('../build')];
-});
-
-test('syncLocalMainRef — best-effort cuando no hay origin/main', () => {
-    // El TMP base no es un git repo: el sync debe degradar sin tirar excepción.
-    process.env.PIPELINE_REPO_ROOT = TMP;
-    delete require.cache[require.resolve('../build')];
-    const isolated = require('../build');
-
-    const res = isolated.syncLocalMainRef();
-
-    assert.equal(res.synced, false, 'sin origin/main no sincroniza');
-    assert.equal(res.reason, 'no-origin-main', 'debe reportar no-origin-main');
-    assert.equal(res.stale_commits, 0);
-
-    delete require.cache[require.resolve('../build')];
 });

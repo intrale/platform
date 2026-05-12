@@ -23,41 +23,32 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, execFileSync } = require('child_process');
+const { spawn } = require('child_process');
 const trace = require('../lib/traceability');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
 
 // ── Constantes y paths ──────────────────────────────────────────────
+// REPO_ROOT: main checkout (shared outputs — logs, QA artifacts, hooks).
+// WORKTREE_ROOT: agent's worktree (compilation source, gradle cwd, artifact sources).
+// Cuando no hay worktree (test, scope all desde root) cae a REPO_ROOT.
+//
+// CRÍTICO: hasta este fix gradle se ejecutaba en cwd=REPO_ROOT siempre. Eso
+// causaba dos regresiones acopladas (rebote build #3073 rev-1, 2026-05-12):
+//   1. smart-build.sh calculaba `git diff origin/main...HEAD` desde el main
+//      checkout (rama distinta a la del agente) → detectaba 1156 archivos
+//      falsos y disparaba `./gradlew check` aunque el agente solo tocara
+//      `.pipeline/*`.
+//   2. Varios builds concurrentes compartían `platform/.gradle/` → colisión
+//      en el lock `buildOutputCleanup` (PID 6400 vs 10720 en el incidente).
+// Con PIPELINE_WORKTREE como cwd, cada worktree usa su propio `.gradle/`
+// y el diff de smart-build resuelve contra la rama del agente.
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+const WORKTREE_ROOT = process.env.PIPELINE_WORKTREE || REPO_ROOT;
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
 const LOG_DIR = path.join(REPO_ROOT, '.pipeline', 'logs');
 const QA_ARTIFACTS_DIR = path.join(REPO_ROOT, 'qa', 'artifacts');
 const JAVA_HOME_DEFAULT = process.env.JAVA_HOME || '/c/Users/Administrator/.jdks/temurin-21.0.7';
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
-
-// ── Mutex de build (regresión #3078 segundo rebote) ─────────────────
-//
-// Problema: el pipeline puede lanzar builds en paralelo para distintos issues
-// (cada uno en su worktree), pero todos invocan `./gradlew` contra el mismo
-// REPO_ROOT/.gradle/. Cuando dos Gradle corren al mismo tiempo, el primero
-// toma el lock de Build Output Cleanup Cache; el segundo timeoutea en ~60s
-// con:
-//   Timeout waiting to lock Build Output Cleanup Cache
-//   (REPO_ROOT/.gradle/buildOutputCleanup). It is currently in use by
-//   another Gradle instance. Owner PID: X Our PID: Y
-// y rebota el issue por un fallo de infraestructura (no del código).
-//
-// Solución: serializar los builds a nivel pipeline con un lockfile en
-// REPO_ROOT/.pipeline/build-skill.lock. El segundo build espera a que el
-// primero libere antes de invocar gradle. Si el holder murió (process no
-// existe), el lock se roba para evitar deadlock por procesos zombi.
-const BUILD_LOCK_PATH = path.join(REPO_ROOT, '.pipeline', 'build-skill.lock');
-const BUILD_LOCK_TIMEOUT_MS = Number(process.env.BUILD_LOCK_TIMEOUT_MS) > 0
-    ? Number(process.env.BUILD_LOCK_TIMEOUT_MS)
-    : 30 * 60 * 1000; // 30 min: cubre 2 builds largos seguidos.
-const BUILD_LOCK_POLL_MS = Number(process.env.BUILD_LOCK_POLL_MS) > 0
-    ? Number(process.env.BUILD_LOCK_POLL_MS)
-    : 500;
 
 // ── Parseo de argumentos ────────────────────────────────────────────
 function parseArgs(argv) {
@@ -104,352 +95,70 @@ function startHeartbeat(issue) {
     };
 }
 
-// ── Helpers de mutex ────────────────────────────────────────────────
-function isPidAlive(pid) {
-    if (!Number.isFinite(pid) || pid <= 0) return false;
-    try {
-        // Signal 0 no envía señal, solo testea existencia/permiso.
-        process.kill(pid, 0);
-        return true;
-    } catch (e) {
-        // EPERM = el proceso existe pero no podemos señalizarlo → vivo.
-        // ESRCH = no existe → muerto.
-        return e.code === 'EPERM';
-    }
-}
-
-/**
- * Adquiere el lock global del skill build. Espera hasta `timeoutMs` si otro
- * build lo tiene tomado, o roba el lock si el holder ya no existe.
- *
- * @returns {{lockPath: string|null, waited_ms: number, stolen: boolean, timedOut: boolean}}
- *   - lockPath: path al lockfile (para pasarlo a releaseBuildLock), o null si timeout.
- *   - waited_ms: tiempo total esperando.
- *   - stolen: true si se reclamó un lock stale.
- *   - timedOut: true si no se logró adquirir antes de timeoutMs.
- */
-function acquireBuildLock(issue, opts) {
-    const lockPath = (opts && opts.lockPath) || BUILD_LOCK_PATH;
-    const timeoutMs = (opts && Number.isFinite(opts.timeoutMs)) ? opts.timeoutMs : BUILD_LOCK_TIMEOUT_MS;
-    const pollMs = (opts && Number.isFinite(opts.pollMs)) ? opts.pollMs : BUILD_LOCK_POLL_MS;
-    const start = Date.now();
-    const myPid = process.pid;
-    let stolen = false;
-
-    try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch {}
-
-    while (true) {
-        try {
-            // wx = exclusive create; falla con EEXIST si ya existe.
-            const fd = fs.openSync(lockPath, 'wx');
-            fs.writeSync(fd, JSON.stringify({
-                pid: myPid,
-                issue: issue || null,
-                skill: 'build',
-                ts: Date.now(),
-                iso: new Date().toISOString(),
-            }));
-            fs.closeSync(fd);
-            return {
-                lockPath,
-                waited_ms: Date.now() - start,
-                stolen,
-                timedOut: false,
-            };
-        } catch (e) {
-            if (e.code !== 'EEXIST') throw e;
-
-            // Lock existe — chequear si el holder está vivo.
-            let holderPid = null;
-            try {
-                const raw = fs.readFileSync(lockPath, 'utf8');
-                const meta = JSON.parse(raw || '{}');
-                holderPid = Number(meta.pid);
-            } catch {
-                // Lock corrupto o ilegible: borrarlo defensivamente y reintentar.
-                try { fs.unlinkSync(lockPath); } catch {}
-                stolen = true;
-                continue;
-            }
-
-            if (Number.isFinite(holderPid) && holderPid > 0 && !isPidAlive(holderPid)) {
-                // Holder muerto → robar lock.
-                try { fs.unlinkSync(lockPath); } catch {}
-                stolen = true;
-                continue;
-            }
-
-            // Holder vivo — esperar.
-            if (Date.now() - start > timeoutMs) {
-                return {
-                    lockPath: null,
-                    waited_ms: Date.now() - start,
-                    stolen: false,
-                    timedOut: true,
-                };
-            }
-            // Sleep no-bloqueante (sin event loop): sleep nativo.
-            const until = Date.now() + pollMs;
-            while (Date.now() < until) {
-                // Busy wait acotado a pollMs (típicamente 500ms).
-            }
-        }
-    }
-}
-
-// ── Cleanup de daemons Gradle huérfanos (regresión #3078 tercer rebote) ─
-//
-// Problema: el mutex `.pipeline/build-skill.lock` serializa builds del
-// pipeline, pero NO mata daemons Gradle huérfanos de invocaciones previas.
-// Aunque pasamos `--no-daemon`, Gradle 8.13 forkea un "single-use daemon"
-// (lo dice el propio output: "a single-use Daemon process will be forked.
-// Daemon will be stopped at the end of the build"). Si el JVM del daemon
-// muere mal (segfault, kill del padre antes de cleanup, OOM, etc.), el
-// daemon queda zombi reteniendo el lock de `.gradle/buildOutputCleanup/`.
-// El próximo build intenta tomar el lock, timeoutea en ~60s con:
-//   Could not create service of type BuildLifecycleController…
-//   > Timeout waiting to lock Build Output Cleanup Cache (.gradle/buildOutputCleanup).
-//     It is currently in use by another Gradle instance. Owner PID: <X>
-// y rebota el issue por fallo de infra sin culpa del código del agente.
-//
-// Solución: ANTES de spawnear gradle, listar todos los procesos cuyo
-// command line contenga "GradleDaemon" y matarlos (excepto el nuestro,
-// aunque el script Node nunca es un GradleDaemon). Como esto corre DENTRO
-// del mutex `build-skill.lock`, sabemos que NO hay otro build legítimo
-// del pipeline corriendo; cualquier GradleDaemon vivo es residual.
-//
-// Compatibilidad: la inspección de procesos solo hace sentido para entornos
-// donde corre Gradle. En Windows usamos `wmic`; en POSIX usamos `ps`. Si
-// alguno no está disponible, devolvemos lista vacía sin romper.
-
-/**
- * Lista PIDs de procesos GradleDaemon huérfanos vivos.
- *
- * @returns {number[]} PIDs vivos cuyo command line contiene "GradleDaemon"
- *   (excluyendo el PID actual). Lista vacía si no hay o si la inspección
- *   falla.
- */
-function listOrphanGradleDaemons() {
-    const myPid = process.pid;
-    try {
-        if (process.platform === 'win32') {
-            // wmic: lista todos los procesos con "GradleDaemon" en la commandline.
-            // Output formato CSV: Node,CommandLine,ProcessId\r\nNODENAME,…,PID\r\n
-            const out = execFileSync(
-                'wmic',
-                ['process', 'where', "CommandLine like '%GradleDaemon%'", 'get', 'ProcessId', '/format:csv'],
-                { encoding: 'utf8', timeout: 10_000, windowsHide: true }
-            );
-            const pids = [];
-            for (const line of out.split(/\r?\n/)) {
-                const m = line.match(/,\s*(\d+)\s*$/);
-                if (!m) continue;
-                const pid = parseInt(m[1], 10);
-                if (!Number.isFinite(pid) || pid <= 0) continue;
-                if (pid === myPid) continue;
-                pids.push(pid);
-            }
-            return pids;
-        }
-        // POSIX: ps + filtro por GradleDaemon.
-        const out = execFileSync('ps', ['-eo', 'pid,command'], { encoding: 'utf8', timeout: 10_000 });
-        const pids = [];
-        for (const line of out.split(/\r?\n/)) {
-            if (!line.includes('GradleDaemon')) continue;
-            const m = line.match(/^\s*(\d+)\s/);
-            if (!m) continue;
-            const pid = parseInt(m[1], 10);
-            if (!Number.isFinite(pid) || pid <= 0) continue;
-            if (pid === myPid) continue;
-            pids.push(pid);
-        }
-        return pids;
-    } catch {
-        // wmic/ps no disponible, timeout, o sin permisos — degradamos a no-op.
-        return [];
-    }
-}
-
-/**
- * Mata los GradleDaemon huérfanos antes de un build.
- *
- * Idempotente y defensivo: si no hay daemons o no podemos matarlos,
- * devuelve 0 sin romper. No espera a que liberen el lock — el caller
- * decide si hace poll posterior.
- *
- * @returns {{killed: number, attempted: number}}
- *   - attempted: cantidad de PIDs encontrados como huérfanos.
- *   - killed: cantidad efectivamente terminados.
- */
-function cleanupOrphanGradleDaemons() {
-    const pids = listOrphanGradleDaemons();
-    if (pids.length === 0) return { killed: 0, attempted: 0 };
-
-    let killed = 0;
-    for (const pid of pids) {
-        try {
-            if (process.platform === 'win32') {
-                execFileSync('taskkill', ['/F', '/PID', String(pid)], {
-                    stdio: 'ignore', timeout: 5_000, windowsHide: true,
-                });
-            } else {
-                process.kill(pid, 'SIGKILL');
-            }
-            killed += 1;
-        } catch {
-            // Daemon ya muerto entre listado y kill, o sin permisos — ignorar.
-        }
-    }
-    return { killed, attempted: pids.length };
-}
-
-function releaseBuildLock(lockPath) {
-    if (!lockPath) return false;
-    try {
-        // Solo liberar si el lock es nuestro (defensivo — no borrar el de otro
-        // proceso si por alguna razón nos pisaron).
-        const raw = fs.readFileSync(lockPath, 'utf8');
-        const meta = JSON.parse(raw || '{}');
-        if (meta.pid && Number(meta.pid) !== process.pid) {
-            // No es nuestro — no tocar.
-            return false;
-        }
-    } catch {
-        // Si no podemos leer, intentamos borrarlo igual (best-effort).
-    }
-    try { fs.unlinkSync(lockPath); return true; } catch { return false; }
-}
-
-// ── Sync del ref local `main` antes de smart-build (regresión #3078 rebote 2) ──
-//
-// Problema: en worktrees de agentes, el ref local `main` no se actualiza con
-// cada `git fetch origin main`. El pulpo crea el worktree apuntando a una
-// branch base, y dentro del worktree el ref local `main` queda fijo en el
-// commit que tenía cuando se creó el worktree. Si el agente vive horas/días,
-// origin/main avanza N commits y el local main queda stale.
-//
-// `scripts/smart-build.sh` compara HEAD contra `main` (preferido) con
-// fallback a `origin/main`. Cuando local main está stale, `git diff
-// --name-only main...HEAD` devuelve todos los archivos que cambiaron en
-// origin/main desde el fetch original (cientos a miles), inflando la lista
-// de "archivos cambiados" hasta incluir `app/*`, `backend/*`, etc. — aunque
-// el branch del agente solo haya tocado `.pipeline/*`.
-//
-// Resultado del bug: smart-build.sh dispara `./gradlew :app:composeApp:check`
-// completo, que arrastra `compileTestDevelopmentExecutableKotlinWasmJs` y
-// OOMea en el linker de Wasm (>6GB de heap por una limitación preexistente
-// del compilador Kotlin/Wasm).
-//
-// Verificación empírica en el worktree del rebote 2 de #3078:
-//   $ git rev-list --count main..origin/main         # 150 commits stale
-//   $ git diff --name-only main...HEAD | wc -l       # 1178 archivos (falso)
-//   $ git diff --name-only origin/main...HEAD | wc -l #   10 archivos (real)
-//   $ git update-ref refs/heads/main origin/main
-//   $ git diff --name-only main...HEAD | wc -l       #   10 archivos (correcto)
-//   $ bash scripts/smart-build.sh
-//   >> Los cambios no afectan módulos compilables (docs, scripts, etc.)
-//   exit 0
-//
-// El mismo bug se observó en #3073 y se intentó parchar en `smart-build.sh`
-// (commit e075be5f en `agent/3073-pipeline-dev`) invirtiendo el orden de
-// preferencia a `origin/main` primero. Ese parche nunca llegó a main, así
-// que arreglamos acá desde el lado del skill (que SÍ está bajo control de
-// pipeline-dev). Esto cubre cualquier consumidor de smart-build.sh, incluso
-// si #3073 no se mergea nunca.
-//
-// La sincronización es defensiva:
-//   - No falla el build si git update-ref falla (best-effort).
-//   - No toca el HEAD ni el working tree — solo el ref `refs/heads/main`.
-//   - Solo corre si origin/main existe (sino smart-build.sh tiene su propio
-//     fallback a "cambios uncommitted" y este sync no aporta nada).
-//
-// @returns {{synced: boolean, reason: string|null, stale_commits: number}}
-function syncLocalMainRef() {
-    const cwd = REPO_ROOT;
-    try {
-        // 1) ¿Existe origin/main? Si no, no hay nada con qué sincronizar.
-        try {
-            execFileSync('git', ['rev-parse', '--verify', 'origin/main'], {
-                cwd, stdio: 'pipe', timeout: 5_000,
-            });
-        } catch {
-            return { synced: false, reason: 'no-origin-main', stale_commits: 0 };
-        }
-
-        // 2) ¿Cuántos commits está atrasado el local main vs origin/main?
-        let staleCommits = 0;
-        try {
-            const out = execFileSync('git', ['rev-list', '--count', 'main..origin/main'], {
-                cwd, encoding: 'utf8', stdio: 'pipe', timeout: 5_000,
-            });
-            staleCommits = parseInt(String(out).trim(), 10) || 0;
-        } catch {
-            // Si main local no existe, rev-list falla. update-ref lo crea.
-        }
-
-        // 3) Si ya está al día, no-op.
-        if (staleCommits === 0) {
-            return { synced: false, reason: 'already-fresh', stale_commits: 0 };
-        }
-
-        // 4) Update-ref (no toca working tree).
-        execFileSync('git', ['update-ref', 'refs/heads/main', 'origin/main'], {
-            cwd, stdio: 'pipe', timeout: 5_000,
-        });
-        return { synced: true, reason: null, stale_commits: staleCommits };
-    } catch (e) {
-        // best-effort: cualquier error se reporta pero no aborta el build.
-        return { synced: false, reason: `error:${e.code || e.message || 'unknown'}`, stale_commits: 0 };
-    }
-}
-
-// ── Resolución explícita de bash en Windows ─────────────────────────
-//
-// Problema: en Windows, spawn('bash', ..., { shell: true }) pasa por cmd.exe,
-// que resuelve `bash` por PATH y suele encontrar `C:\Windows\System32\bash.exe`
-// (relay a WSL) antes que `C:\Program Files\Git\bin\bash.exe` (Git Bash).
-// Si la distro WSL no está sana, el spawn falla con:
-//   <3>WSL (9 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
-// y el build crashea sin clasificación (regresión observada en #3078 build phase).
-//
-// Solución: resolver bash explícitamente a Git Bash cuando estamos en Windows.
-// Si no está en los paths conocidos, caemos a 'bash' (comportamiento previo).
-// La variable GIT_BASH permite override manual desde el entorno.
-function resolveBashOnWindows() {
-    if (process.platform !== 'win32') return null;
-    const candidates = [
-        process.env.GIT_BASH,
-        'C:\\Program Files\\Git\\bin\\bash.exe',
-        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
-        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-    ].filter(Boolean);
-    for (const p of candidates) {
-        try { if (fs.existsSync(p)) return p; } catch {}
-    }
-    return null;
-}
-
 // ── Decisión de scope → comando Gradle ───────────────────────────────
 function buildGradleCommand(scope, mod) {
-    // Devuelve { cmd, args, label } — cmd es path a bash (explícito en Windows) o './gradlew'
+    // Devuelve { cmd, args, label } — cmd es 'bash' o './gradlew'
     if (mod) {
         const moduleTask = mod === 'app' ? ':app:composeApp:check' : `:${mod}:check`;
         return { cmd: './gradlew', args: [moduleTask, '--no-daemon'], label: `module:${mod}` };
     }
-    const bashCmd = resolveBashOnWindows() || 'bash';
     switch (scope) {
         case 'clean':
             return { cmd: './gradlew', args: ['clean', 'build', '--no-daemon'], label: 'clean-build' };
         case 'fast':
             return { cmd: './gradlew', args: [':app:composeApp:compileKotlinJvm', '--no-daemon'], label: 'fast' };
         case 'all':
-            return { cmd: bashCmd, args: ['scripts/smart-build.sh', '--all'], label: 'all' };
+            return { cmd: 'bash', args: ['scripts/smart-build.sh', '--all'], label: 'all' };
         case 'verify':
             return { cmd: './gradlew', args: ['verifyNoLegacyStrings', ':app:composeApp:validateComposeResources', ':app:composeApp:scanNonAsciiFallbacks', '--no-daemon'], label: 'verify' };
         case 'smart':
         default:
-            return { cmd: bashCmd, args: ['scripts/smart-build.sh'], label: 'smart' };
+            return { cmd: 'bash', args: ['scripts/smart-build.sh'], label: 'smart' };
     }
+}
+
+// ── Resolución de `bash` en Windows ──────────────────────────────────
+// Cuando `spawn('bash', args, { shell: true })` corre en Windows, Node
+// delega a `cmd.exe /d /s /c "bash ..."`. cmd.exe busca `bash` en el PATH
+// del sistema, donde típicamente aparece primero `C:\Windows\System32\
+// bash.exe` (wrapper a WSL). Si la máquina no tiene una distro Linux
+// instalada en WSL, ese wrapper falla con:
+//   <3>WSL (9 - Relay) ERROR: CreateProcessCommon:818:
+//     execvpe(/bin/bash) failed: No such file or directory
+// y el build muere en ~4s sin output (regresión vista en builds desde
+// que `build` pasó a determinístico — #3157).
+//
+// Solución: en Windows, resolver explícitamente a Git Bash (que viene
+// con Git for Windows y está instalado en todos los workstations del
+// pipeline). Se usa `shell: false` cuando hay path absoluto a bash.exe
+// para que cmd.exe no se entrometa con la resolución (y para que no
+// rompa el path con espacios de "Program Files").
+//
+// Devuelve { cmd, useShell } — el caller debe usar ambos al spawn.
+function resolveBashCommand(cmd) {
+    if (process.platform !== 'win32') {
+        return { cmd, useShell: false };
+    }
+    if (cmd !== 'bash') {
+        // ./gradlew y otros: usar shell para que cmd.exe encuentre .bat
+        return { cmd, useShell: true };
+    }
+    const candidates = [
+        process.env.GIT_BASH_PATH,
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        try {
+            if (fs.existsSync(candidate)) {
+                return { cmd: candidate, useShell: false };
+            }
+        } catch {}
+    }
+    // No se encontró Git Bash — fallback a 'bash' por PATH (puede caer
+    // en WSL bash). Mejor fallar con stack trace claro que silenciosamente.
+    return { cmd, useShell: true };
 }
 
 // ── Spawn con captura completa ───────────────────────────────────────
@@ -458,12 +167,8 @@ function runGradle({ cmd, args, cwd, env }) {
         const started = Date.now();
         let stdout = '';
         let stderr = '';
-        // shell:true en Windows es necesario para resolver './gradlew' → gradlew.bat.
-        // Pero si cmd ya es un path absoluto (ej. Git Bash resuelto explícitamente),
-        // shell:false evita que cmd.exe re-resuelva 'bash' por PATH y caiga en WSL
-        // relay (regresión #3078 build phase).
-        const useShell = process.platform === 'win32' && !path.isAbsolute(cmd);
-        const child = spawn(cmd, args, { cwd, env, shell: useShell, windowsHide: true });
+        const { cmd: resolvedCmd, useShell } = resolveBashCommand(cmd);
+        const child = spawn(resolvedCmd, args, { cwd, env, shell: useShell, windowsHide: true });
         if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
         if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (e) => {
@@ -492,15 +197,18 @@ function copyArtifacts(result) {
         }
     };
 
+    // Source paths viven en el worktree (la build corrió ahí); destino en el
+    // main checkout (qa/artifacts/ es compartido). En tests sin PIPELINE_WORKTREE
+    // WORKTREE_ROOT === REPO_ROOT, así que se mantiene compat con fixtures.
     if (result.modules.includes('users')) {
-        tryCopy(path.join(REPO_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
+        tryCopy(path.join(WORKTREE_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
             path.join(QA_ARTIFACTS_DIR, 'users-all.jar'));
     }
 
     if (result.modules.includes('app')) {
         // Buscar primer APK client debug
         try {
-            const apkDir = path.join(REPO_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
+            const apkDir = path.join(WORKTREE_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
             if (fs.existsSync(apkDir)) {
                 const apk = fs.readdirSync(apkDir).find((f) => f.endsWith('.apk'));
                 if (apk) tryCopy(path.join(apkDir, apk), path.join(QA_ARTIFACTS_DIR, 'composeApp-client-debug.apk'));
@@ -578,8 +286,6 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'build', issue, phase: process.env.PIPELINE_FASE || 'build',
         model: 'deterministic',
-        // (#3078) Provider explícito para que el aggregator dispatchee por
-        // allowlist en vez de inferir por nombre del modelo.
         provider: 'deterministic',
     });
 
@@ -589,110 +295,53 @@ async function main() {
     let artifacts = [];
     let exitCode = 0;
     let motivo = null;
-    let buildLock = null;
 
     try {
-        // Adquirir mutex de build antes de spawnear gradle (regresión #3078).
-        // Sin esto, dos builds concurrentes contienden por el lock del
-        // buildOutputCleanup cache y el segundo timeoutea en ~60s.
-        const lockStartLog = `[build] Intentando adquirir mutex de build (${BUILD_LOCK_PATH})…`;
-        logAppend(lockStartLog);
-        buildLock = acquireBuildLock(issue, {});
-        if (buildLock.timedOut) {
-            logAppend(`[build] LOCK TIMEOUT tras ${buildLock.waited_ms}ms — abortando build con motivo claro (sin invocar gradle, evita rebote por error genérico).`);
-            motivo = `Build mutex timeout (${buildLock.waited_ms}ms): otro build sigue tomando el lock ${BUILD_LOCK_PATH}. Posible build hung del pipeline.`;
-            exitCode = 1;
-            parsed = { success: false, modules: [], errors: [{ classification: 'pipeline-lock-timeout', message: motivo, escalate_to: 'pipeline-dev' }] };
-            report = `## Build: BLOQUEADO ⏳\n\n${motivo}`;
-            // Saltar el resto del try; el finally hace el cleanup.
-        } else {
-            logAppend(`[build] Lock adquirido tras ${buildLock.waited_ms}ms${buildLock.stolen ? ' (lock stale robado)' : ''}.`);
+        // cwd: WORKTREE_ROOT — gradle corre en la rama del agente, no en main.
+        // Ver constantes arriba para el contexto del incidente que motivó este split.
+        gradleResult = await runGradle({ cmd, args: gArgs, cwd: WORKTREE_ROOT, env });
+        logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
+        logAppend('[build] --- stdout (último 2000 chars) ---');
+        logAppend(gradleResult.stdout.slice(-2000));
+        logAppend('[build] --- stderr (último 1000 chars) ---');
+        logAppend(gradleResult.stderr.slice(-1000));
 
-            // Preflight: sincronizar el ref local `main` con origin/main
-            // ANTES de que smart-build.sh haga su `git diff main...HEAD`.
-            // Si local main está stale (caso típico en worktrees de larga
-            // vida del pulpo), smart-build.sh ve cientos de archivos falsos
-            // como "cambiados" y dispara ./gradlew check completo —
-            // que OOMea en compileTestDevelopmentExecutableKotlinWasmJs.
-            // Ver comentario gigante junto a `syncLocalMainRef` para detalle.
-            // Solo aplica para scopes que delegan a smart-build.sh.
-            if (label === 'smart' || label === 'all') {
-                const syncRes = syncLocalMainRef();
-                if (syncRes.synced) {
-                    logAppend(`[build] sync main ref: actualizado (${syncRes.stale_commits} commits stale).`);
-                } else if (syncRes.reason === 'already-fresh') {
-                    logAppend(`[build] sync main ref: ya estaba al día.`);
-                } else {
-                    logAppend(`[build] sync main ref: skip (${syncRes.reason}).`);
-                }
-            }
+        parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
 
-            // Preflight: matar daemons Gradle huérfanos antes del spawn.
-            // Estamos dentro del mutex, así que no hay otro build legítimo
-            // del pipeline corriendo: cualquier GradleDaemon vivo es residual
-            // de una invocación previa que no cleanupeó (regresión #3078).
-            const orphans = cleanupOrphanGradleDaemons();
-            if (orphans.attempted > 0) {
-                logAppend(`[build] preflight cleanup: ${orphans.killed}/${orphans.attempted} daemon(s) Gradle huérfano(s) matado(s).`);
-                // Damos un breve respiro al OS para que libere los locks de archivo
-                // (Windows tarda ~100ms post-kill en liberar handles).
-                await new Promise((r) => setTimeout(r, 1000));
-            }
-
-            gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
-            logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
-            logAppend('[build] --- stdout (último 2000 chars) ---');
-            logAppend(gradleResult.stdout.slice(-2000));
-            logAppend('[build] --- stderr (último 1000 chars) ---');
-            logAppend(gradleResult.stderr.slice(-1000));
-
-            parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
-
-            if (parsed.success) {
-                artifacts = copyArtifacts(parsed);
-                logAppend(`[build] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
-                exitCode = 0;
-                if (parsed.build_status === 'NO_OP') {
-                    motivo = 'Build no-op: los cambios del issue no afectan módulos Gradle';
-                    logAppend('[build] NO_OP detectado: smart-build cortó temprano sin invocar Gradle (cambios fuera de módulos compilables).');
-                }
-            } else if (gradleResult.exit_code === 0 && parsed.build_status === 'UNKNOWN' && parsed.errors.length === 0) {
-                // Defensa adicional: si Gradle/smart-build salió 0 pero el parser no
-                // encontró ni BUILD SUCCESSFUL ni un patrón conocido de no-op, NO
-                // rebotamos. Tratamos como éxito y registramos para que el caso
-                // quede visible en logs. Esto evita falsos positivos por cambios
-                // futuros en mensajes de smart-build que el parser todavía no conoce.
-                exitCode = 0;
-                motivo = 'Build sin output reconocible pero exit 0 (treated as success)';
-                logAppend('[build] WARN: exit 0 sin BUILD SUCCESSFUL ni NO_OP detectado — tratado como éxito defensivo.');
-            } else {
-                exitCode = 1;
-                const first = parsed.errors[0];
-                motivo = first
-                    ? `Build FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`
-                    : 'Build FAILED sin error clasificado';
-            }
-
-            report = renderMarkdownReport(parsed, {
-                issue, scope: label, duration_override_ms: gradleResult.wall_ms,
-            });
-            // Escribir reporte al log + a disco
-            logAppend('[build] --- REPORTE ---');
-            logAppend(report);
-            const reportPath = path.join(LOG_DIR, `build-${issue}-report.md`);
-            try { fs.writeFileSync(reportPath, report); } catch {}
+        // Guard defensivo: si Gradle salió 0 pero el parser no detectó status,
+        // asumimos no-op (smart-build sin módulos compilables). Evita rebote
+        // espurio por output no reconocido. Si exit_code != 0, sí es fallo real.
+        if (gradleResult.exit_code === 0 && parsed.build_status === 'UNKNOWN') {
+            parsed.success = true;
+            parsed.build_status = 'NO_OP';
+            logAppend('[build] no-op detectado por exit_code=0 sin BUILD SUCCESSFUL/FAILED (heurística defensiva)');
         }
+
+        if (parsed.success) {
+            artifacts = copyArtifacts(parsed);
+            logAppend(`[build] artefactos copiados: ${artifacts.join(', ') || '(ninguno)'}`);
+            exitCode = 0;
+        } else {
+            exitCode = 1;
+            const first = parsed.errors[0];
+            motivo = first
+                ? `Build FAILED (${first.classification}): ${(first.message || '').split('\n').slice(0, 3).join(' | ').slice(0, 500)}`
+                : 'Build FAILED sin error clasificado';
+        }
+
+        report = renderMarkdownReport(parsed, {
+            issue, scope: label, duration_override_ms: gradleResult.wall_ms,
+        });
+        // Escribir reporte al log + a disco
+        logAppend('[build] --- REPORTE ---');
+        logAppend(report);
+        const reportPath = path.join(LOG_DIR, `build-${issue}-report.md`);
+        try { fs.writeFileSync(reportPath, report); } catch {}
     } catch (e) {
         exitCode = 2;
         motivo = `Excepción en build.js: ${e.message}`;
         logAppend(`[build] EXCEPTION: ${e.stack || e.message}`);
     } finally {
-        // Liberar el mutex de build (idempotente, defensivo).
-        if (buildLock && buildLock.lockPath) {
-            const released = releaseBuildLock(buildLock.lockPath);
-            logAppend(`[build] Mutex liberado: ${released ? 'OK' : 'no-op'} (path=${buildLock.lockPath})`);
-        }
-
         // Actualizar marker con resultado
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
@@ -702,8 +351,6 @@ async function main() {
             build_classification: parsed && parsed.errors[0] ? parsed.errors[0].classification : null,
             build_escalate_to: parsed && parsed.errors[0] ? parsed.errors[0].escalate_to : null,
             build_mode: 'deterministic',
-            build_lock_waited_ms: buildLock ? buildLock.waited_ms : 0,
-            build_lock_stolen: buildLock ? buildLock.stolen : false,
         });
 
         // session:end
@@ -763,19 +410,11 @@ if (require.main === module) {
 module.exports = {
     parseArgs,
     buildGradleCommand,
-    resolveBashOnWindows,
+    resolveBashCommand,
     startHeartbeat,
     copyArtifacts,
     updateMarker,
-    // Mutex de build (regresión #3078 segundo rebote).
-    acquireBuildLock,
-    releaseBuildLock,
-    isPidAlive,
-    BUILD_LOCK_PATH,
-    BUILD_LOCK_TIMEOUT_MS,
-    // Cleanup de daemons Gradle huérfanos (regresión #3078 tercer rebote).
-    listOrphanGradleDaemons,
-    cleanupOrphanGradleDaemons,
-    // Sync del ref local `main` (regresión #3078 cuarto rebote — Wasm OOM por diff inflado).
-    syncLocalMainRef,
+    // Exportados para tests de regresión del split REPO_ROOT/WORKTREE_ROOT
+    // (rebote build #3073 rev-1).
+    _paths: { REPO_ROOT, WORKTREE_ROOT, QA_ARTIFACTS_DIR, LOG_DIR },
 };

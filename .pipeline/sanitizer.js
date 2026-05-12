@@ -39,6 +39,10 @@ const P = {
     TELEGRAM_BOT_TOKEN: '[REDACTED:TELEGRAM_BOT_TOKEN]',
     GOOGLE_API_KEY: '[REDACTED:GOOGLE_API_KEY]',
     GOOGLE_OAUTH_REFRESH: '[REDACTED:GOOGLE_OAUTH_REFRESH]',
+    GOOGLE_OAUTH_TOKEN: '[REDACTED:GOOGLE_OAUTH_TOKEN]',
+    ANTHROPIC_KEY: '[REDACTED:ANTHROPIC_KEY]',
+    OPENAI_KEY: '[REDACTED:OPENAI_KEY]',
+    OPENAI_PROJECT_KEY: '[REDACTED:OPENAI_PROJECT_KEY]',
     COGNITO_SECRET: '[REDACTED:COGNITO_SECRET]',
     PRIVATE_KEY: '[REDACTED:PRIVATE_KEY]',
     BASIC_AUTH: '[REDACTED:BASIC_AUTH]',
@@ -238,6 +242,72 @@ const PATTERNS = [
         name: 'GOOGLE_OAUTH_REFRESH',
         re: /\b1\/\/[0-9A-Za-z_-]{43,}\b/g,
         replace: () => P.GOOGLE_OAUTH_REFRESH,
+    },
+
+    // -------------------------------------------------------------------------
+    // Multi-provider LLM API keys (issue #3073, S2 multi-provider)
+    //
+    // Orden interno crítico: las variantes con prefijo más específico
+    // (`sk-ant-`, `sk-proj-`) DEBEN ir ANTES que el patrón genérico `sk-`
+    // de OpenAI clásico, sino el genérico se "come" parte del prefijo y
+    // rompe la atribución por proveedor (test "orden mixto sk-ant + sk-").
+    //
+    // Anchors: usamos lookbehind/lookahead negativos sobre el charset del
+    // secreto en lugar de `\b`, porque `_` es word-char y `-` no lo es,
+    // entonces `\b` se vuelve frágil si la key termina en `-` o si está
+    // pegada a otro token alfanumérico. Los anchors explícitos garantizan
+    // que el match está delimitado por separadores claros (espacio,
+    // puntuación, fin de línea, comillas).
+    // -------------------------------------------------------------------------
+
+    // Anthropic API key — formato `sk-ant-<variant>-<base64url>`.
+    // Variantes oficiales: `sk-ant-api03-...`, `sk-ant-sid01-...`, etc.
+    // Mínimo 20 chars después del prefijo para evitar falsos positivos
+    // tipo `sk-ant-AAA` (inputs maliciosos cortos).
+    // Fuente: https://docs.anthropic.com/claude/reference/getting-started-with-the-api
+    {
+        name: 'ANTHROPIC_KEY',
+        re: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.ANTHROPIC_KEY,
+    },
+
+    // OpenAI project-scoped key — formato `sk-proj-<base64url>` (>=40 chars
+    // después del prefijo). Introducido por OpenAI en 2024 para keys
+    // restringidas a un proyecto. Va ANTES que `sk-` clásico porque
+    // comparte el prefijo `sk-`.
+    // Fuente: https://platform.openai.com/docs/api-reference/authentication
+    {
+        name: 'OPENAI_PROJECT_KEY',
+        re: /(?<![A-Za-z0-9_-])sk-proj-[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.OPENAI_PROJECT_KEY,
+    },
+
+    // OpenAI classic API key — formato `sk-<48+ chars base62 estricto>`.
+    // Negative lookahead `(?!ant-|proj-)` evita matchear las variantes
+    // específicas de Anthropic/proyecto (que ya quedaron redactadas arriba
+    // con su placeholder por proveedor; este patrón no debería verlas en
+    // input limpio, pero el lookahead es defensa adicional).
+    // Charset estricto `[A-Za-z0-9]` (sin `_-`) y longitud mínima 48 evitan
+    // falsos positivos sobre código legítimo (clases CSS Tailwind tipo
+    // `sk-button-primary`, slugs SEO `sk-thumbnail-default`, identificadores
+    // tipo `sk-key`, etc., que nunca llegan a 48 chars alfanuméricos sólidos).
+    // Fuente: https://platform.openai.com/docs/api-reference/authentication
+    {
+        name: 'OPENAI_KEY',
+        re: /(?<![A-Za-z0-9_-])sk-(?!ant-|proj-)[A-Za-z0-9]{48,}(?![A-Za-z0-9])/g,
+        replace: () => P.OPENAI_KEY,
+    },
+
+    // Google OAuth access token — formato `ya29.<base64url>`. Diferente
+    // del refresh token (`1//...`, ya cubierto arriba) y del API key
+    // (`AIza...`, también arriba). Aparece en headers `Authorization: Bearer`
+    // (cubierto por HEADER_AUTHORIZATION → BEARER_TOKEN) y en cuerpos JSON
+    // de respuestas OAuth.
+    // Fuente: https://developers.google.com/identity/protocols/oauth2
+    {
+        name: 'GOOGLE_OAUTH_TOKEN',
+        re: /(?<![A-Za-z0-9_-])ya29\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.GOOGLE_OAUTH_TOKEN,
     },
 
     // Cognito client secret (AWS Cognito típico: 52 base64url chars en config).

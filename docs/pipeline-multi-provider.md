@@ -682,16 +682,50 @@ Resumen de salida:
 
 ### 6.5 Sanitizado universal de output
 
-Estado actual: `lib/sanitize-log-stream.js` usa `createSanitizeStream` (#2334) — funciona para Anthropic. Multi-proveedor exige extender el set de regex:
+**Estado: S2 ABSORBIDO en issue #3073 / PR `agent/3073-pipeline-dev`** (mayo 2026).
 
-| Proveedor | Regex sugerido |
-|-----------|---------------|
-| Anthropic | `claude_[A-Za-z0-9_-]+`, `sk-ant-[A-Za-z0-9_-]+` |
-| OpenAI | `sk-[A-Za-z0-9]{48,}`, `sk-proj-[A-Za-z0-9_-]+` |
-| Google | `AIza[A-Za-z0-9_-]{35}`, OAuth tokens `ya29\.[A-Za-z0-9_-]+` |
-| GitHub | `ghp_[A-Za-z0-9]{36}`, `gho_[A-Za-z0-9]{36}` (ya existen pero dejamos explícito) |
+El sanitizer central (`.pipeline/sanitizer.js`) y el módulo satélite de filenames (`.pipeline/lib/sanitize-payload.js::FILENAME_SECRET_RE`) cubren ahora los siguientes proveedores LLM. Los placeholders son específicos por proveedor para preservar forensia ("¿qué provider hay que rotar?") y consistencia visual con los 13 placeholders previos del sanitizer.
 
-Tests de regresión obligatorios (issue S2): **stub de cada parser que reciba una API key embedida en el output** del proveedor → verificar que NO aparece en el log final.
+| Proveedor | Regex (sobre texto NFC + zero-width strip + homoglyph fold) | Placeholder | Fuente del formato |
+|-----------|---|---|---|
+| Anthropic | `(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])` | `[REDACTED:ANTHROPIC_KEY]` | <https://docs.anthropic.com/claude/reference/getting-started-with-the-api> |
+| OpenAI project | `(?<![A-Za-z0-9_-])sk-proj-[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])` | `[REDACTED:OPENAI_PROJECT_KEY]` | <https://platform.openai.com/docs/api-reference/authentication> |
+| OpenAI clásico | `(?<![A-Za-z0-9_-])sk-(?!ant-\|proj-)[A-Za-z0-9]{48,}(?![A-Za-z0-9])` | `[REDACTED:OPENAI_KEY]` | <https://platform.openai.com/docs/api-reference/authentication> |
+| Google OAuth access | `(?<![A-Za-z0-9_-])ya29\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])` | `[REDACTED:GOOGLE_OAUTH_TOKEN]` | <https://developers.google.com/identity/protocols/oauth2> |
+| Google API key | `\bAIza[0-9A-Za-z_-]{35}\b` (preexistente) | `[REDACTED:GOOGLE_API_KEY]` | preexistente |
+| Google OAuth refresh | `\b1//[0-9A-Za-z_-]{43,}\b` (preexistente) | `[REDACTED:GOOGLE_OAUTH_REFRESH]` | preexistente |
+| GitHub | `gh[pousr]_[A-Za-z0-9]{30,}` / `github_pat_[A-Za-z0-9_]{80,}` (preexistente) | `[REDACTED:GITHUB_TOKEN]` | preexistente |
+
+**Orden de evaluación crítico** (`.pipeline/sanitizer.js::PATTERNS`): los patrones con prefijo más específico corren ANTES que los genéricos para preservar la atribución por proveedor:
+
+1. `sk-ant-…` (Anthropic)
+2. `sk-proj-…` (OpenAI project)
+3. `sk-…` clásico (OpenAI, con negative lookahead `(?!ant-|proj-)`)
+4. `ya29.…` (Google OAuth access)
+
+Si un patrón estructural anterior (`HEADER_AUTHORIZATION`, `HEADER_X_API_KEY`, `CONF_STRUCTURED`) matchea primero, el secreto queda redactado con el placeholder genérico (`BEARER_TOKEN`, `API_KEY`, `CONF_VALUE`) — es comportamiento aceptado: no leak, sólo pierde detalle de provider en algunos contextos. Para `apiKey="sk-ant-…"` el patrón Anthropic sí gana primero (preserva forensia).
+
+**Anchors** (lookbehind/lookahead negativos sobre `[A-Za-z0-9_-]` en lugar de `\b`): se usan así porque `_` es word-char y `-` no, lo que vuelve a `\b` frágil cuando una key termina en `-` o aparece pegada a otro identificador. Los anchors explícitos garantizan match sólo cuando hay separador claro alrededor (espacio, comilla, igual, punto y coma, salto de línea, fin de string).
+
+**Tests obligatorios** (cubiertos en `.pipeline/tests/sanitizer.test.js` + `.pipeline/tests/sanitize-payload.test.js`):
+
+- Positivos por proveedor (Anthropic / OpenAI clásico / OpenAI project / Google OAuth access).
+- Orden mixto: input con `sk-ant-X` + `sk-Y` redacta cada uno con su placeholder (no se pisan).
+- Prefijo malicioso: `sk-ant-AAA` corto NO matchea como OpenAI clásico ni como Anthropic.
+- Falsos positivos en código legítimo: `sk-button-primary` (Tailwind), `sk-thumbnail-default` (slug), `claude_session_id` (identificador), `ya29` suelto sin punto.
+- Idempotencia: doble pasada sobre output ya saneado no altera placeholders.
+- Anti-bypass: ZWSP en medio de `sk-ant-` → se redacta gracias a normalización NFC + strip de zero-width.
+- Chunk-split en `createSanitizeStream`: secreto Anthropic / Google partido en 2-3 chunks → se redacta correctamente con la ventana deslizante de 256 bytes.
+- Panic dump simulado: stack trace con la key como string literal y header `x-api-key` con la key → ambos casos redactados antes de tocar disco.
+- Filenames de Drive (`FILENAME_SECRET_RE`): `dump-sk-ant-X.log`, `qa-${ya29}-X.txt`, `oai-sk-Y.log`, `leak-sk-proj-X.txt` → renombrados a `redacted-<hash8>.<ext>` antes del upload.
+
+**Cobertura de salidas** (CA3 del PO):
+
+- Logs (`logs/*.log`) — `sanitize-log-stream.js` heredan del core.
+- Telegram (`text`, `caption`, filenames) — `sanitize-payload.js::sanitizeTelegramPayload` + `sanitizeDriveFilename`.
+- Rejection report PDF — `rejection-report.js:1512` aplica `sanitizeReportText` antes del HTML→PDF.
+- Audit trail (`lib/traceability.js`) — verificado: ningún `prompt` plaintext se persiste; los hashes son SHA-256.
+- Drive (descripción, título, filenames) — `sanitize-payload.js::sanitizeDrivePayload` + `sanitizeDriveFilename`.
 
 ### 6.6 Anti command-injection del template de spawn args
 
