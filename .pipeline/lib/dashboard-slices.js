@@ -684,7 +684,7 @@ function quotaSlice(state, ctx) {
 // (lectura defensiva, ver hija #2974) y enriquece el payload con dos
 // counters que el banner muestra en paneles comparativos (CA-5):
 //
-//   - `deterministicRunning`: agentes determinísticos (builder/tester/
+//   - `deterministicRunning`: agentes determinísticos (build/tester/
 //     delivery/linter) en estado `trabajando`. Estos NO están bloqueados
 //     por el flag — son el "panel verde" del banner.
 //   - `queuedSkills`: skills LLM (todo lo que NO es determinístico) con

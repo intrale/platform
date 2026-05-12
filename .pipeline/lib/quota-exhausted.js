@@ -8,7 +8,7 @@
 //      `{ exhausted, provider, model, resets_at, detected_at, pattern_matched }`.
 //   2. El pulpo consulta `shouldGateSpawn(skill, { provider })` antes de
 //      cada spawn LLM. Skills determinísticos
-//      (`builder/tester/linter/delivery`) NO se gatean.
+//      (`build/tester/linter/delivery`) NO se gatean.
 //   3. **Scope por provider** (#3077 SEC-1, SEC-5): si el flag activo es
 //      del provider X y un skill corre con provider Y, el spawn pasa.
 //      Esto da valor real al rediseño multi-provider — cuando Anthropic se
