@@ -102,13 +102,58 @@ function buildGradleCommand(scope, mod) {
     }
 }
 
+// ── Resolución de `bash` en Windows ──────────────────────────────────
+// Cuando `spawn('bash', args, { shell: true })` corre en Windows, Node
+// delega a `cmd.exe /d /s /c "bash ..."`. cmd.exe busca `bash` en el PATH
+// del sistema, donde típicamente aparece primero `C:\Windows\System32\
+// bash.exe` (wrapper a WSL). Si la máquina no tiene una distro Linux
+// instalada en WSL, ese wrapper falla con:
+//   <3>WSL (9 - Relay) ERROR: CreateProcessCommon:818:
+//     execvpe(/bin/bash) failed: No such file or directory
+// y el build muere en ~4s sin output (regresión vista en builds desde
+// que `build` pasó a determinístico — #3157).
+//
+// Solución: en Windows, resolver explícitamente a Git Bash (que viene
+// con Git for Windows y está instalado en todos los workstations del
+// pipeline). Se usa `shell: false` cuando hay path absoluto a bash.exe
+// para que cmd.exe no se entrometa con la resolución (y para que no
+// rompa el path con espacios de "Program Files").
+//
+// Devuelve { cmd, useShell } — el caller debe usar ambos al spawn.
+function resolveBashCommand(cmd) {
+    if (process.platform !== 'win32') {
+        return { cmd, useShell: false };
+    }
+    if (cmd !== 'bash') {
+        // ./gradlew y otros: usar shell para que cmd.exe encuentre .bat
+        return { cmd, useShell: true };
+    }
+    const candidates = [
+        process.env.GIT_BASH_PATH,
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        try {
+            if (fs.existsSync(candidate)) {
+                return { cmd: candidate, useShell: false };
+            }
+        } catch {}
+    }
+    // No se encontró Git Bash — fallback a 'bash' por PATH (puede caer
+    // en WSL bash). Mejor fallar con stack trace claro que silenciosamente.
+    return { cmd, useShell: true };
+}
+
 // ── Spawn con captura completa ───────────────────────────────────────
 function runGradle({ cmd, args, cwd, env }) {
     return new Promise((resolve) => {
         const started = Date.now();
         let stdout = '';
         let stderr = '';
-        const child = spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
+        const { cmd: resolvedCmd, useShell } = resolveBashCommand(cmd);
+        const child = spawn(resolvedCmd, args, { cwd, env, shell: useShell, windowsHide: true });
         if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
         if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (e) => {
@@ -335,6 +380,7 @@ if (require.main === module) {
 module.exports = {
     parseArgs,
     buildGradleCommand,
+    resolveBashCommand,
     startHeartbeat,
     copyArtifacts,
     updateMarker,

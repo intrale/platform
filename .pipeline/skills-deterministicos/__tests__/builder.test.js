@@ -79,6 +79,78 @@ test('buildGradleCommand — module=backend mapea a :backend:check', () => {
     assert.ok(c.args.includes(':backend:check'));
 });
 
+test('resolveBashCommand — en no-Windows devuelve cmd original sin shell', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+        const r = builder.resolveBashCommand('bash');
+        assert.equal(r.cmd, 'bash');
+        assert.equal(r.useShell, false);
+        const r2 = builder.resolveBashCommand('./gradlew');
+        assert.equal(r2.cmd, './gradlew');
+        assert.equal(r2.useShell, false);
+    } finally {
+        Object.defineProperty(process, 'platform', original);
+    }
+});
+
+test('resolveBashCommand — Windows + cmd != bash mantiene shell:true', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+        const r = builder.resolveBashCommand('./gradlew');
+        assert.equal(r.cmd, './gradlew');
+        assert.equal(r.useShell, true);
+    } finally {
+        Object.defineProperty(process, 'platform', original);
+    }
+});
+
+test('resolveBashCommand — Windows + bash + GIT_BASH_PATH override resuelve al path', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const savedGitBash = process.env.GIT_BASH_PATH;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // Crear un fake bash.exe en TMP para que existsSync devuelva true
+    const fakeBash = path.join(TMP, 'fake-bash.exe');
+    fs.writeFileSync(fakeBash, 'fake');
+    process.env.GIT_BASH_PATH = fakeBash;
+    try {
+        const r = builder.resolveBashCommand('bash');
+        assert.equal(r.cmd, fakeBash);
+        assert.equal(r.useShell, false);
+    } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        if (savedGitBash === undefined) delete process.env.GIT_BASH_PATH;
+        else process.env.GIT_BASH_PATH = savedGitBash;
+    }
+});
+
+test('resolveBashCommand — Windows + bash sin Git Bash cae a shell:true fallback', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const savedGitBash = process.env.GIT_BASH_PATH;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // Apuntar GIT_BASH_PATH a un archivo inexistente para que ningún candidato pase
+    process.env.GIT_BASH_PATH = path.join(TMP, 'no-existe-bash-' + Date.now() + '.exe');
+    // Trampear los demás candidatos hardcoded: si el sistema real tiene Git Bash
+    // en "C:\\Program Files\\Git\\bin\\bash.exe", el test no puede simular su
+    // ausencia. Por eso solo validamos: si NO se encuentra nada, fallback OK.
+    // En máquinas con Git Bash instalado, el test verifica el camino feliz.
+    try {
+        const r = builder.resolveBashCommand('bash');
+        // O bien resuelve a un path absoluto (Git Bash instalado), o cae a fallback.
+        if (r.useShell === true) {
+            assert.equal(r.cmd, 'bash');
+        } else {
+            assert.ok(r.cmd.endsWith('bash.exe'), `esperaba .exe, got: ${r.cmd}`);
+            assert.equal(r.useShell, false);
+        }
+    } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        if (savedGitBash === undefined) delete process.env.GIT_BASH_PATH;
+        else process.env.GIT_BASH_PATH = savedGitBash;
+    }
+});
+
 test('startHeartbeat — escribe archivo agent-<issue>.heartbeat y lo limpia al stop', () => {
     const hb = builder.startHeartbeat(2476);
     const hbFile = path.join(TMP, '.claude', 'hooks', 'agent-2476.heartbeat');
