@@ -53,6 +53,9 @@ function envCtx() {
         skill: process.env.PIPELINE_SKILL || null,
         issue: process.env.PIPELINE_ISSUE ? Number(process.env.PIPELINE_ISSUE) : null,
         phase: process.env.PIPELINE_FASE || process.env.PIPELINE_PHASE || null,
+        // (#3078) `provider` también se propaga via env para skills determinísticos
+        // y para callers que no lo pasan explícito — paralelo a PIPELINE_SKILL.
+        provider: process.env.PIPELINE_PROVIDER || null,
     };
 }
 
@@ -65,6 +68,10 @@ function emitSessionStart(opts) {
         issue: pick(opts, 'issue', env.issue),
         phase: pick(opts, 'phase', env.phase),
         model: pick(opts, 'model', 'deterministic'),
+        // (#3078) `provider` agregado por simetría con emitSessionEnd y para que
+        // el handle lo propague sin que el caller lo repita. NUNCA un objeto:
+        // debe ser un enum string corto (security: no metadata sensible acá).
+        provider: pick(opts, 'provider', env.provider),
         ts: new Date().toISOString(),
         pid: process.pid,
     };
@@ -75,6 +82,7 @@ function emitSessionStart(opts) {
         issue: ctx.issue,
         phase: ctx.phase,
         model: ctx.model,
+        provider: ctx.provider,
         start_ts: Date.now(),
         pid: ctx.pid,
     };
@@ -85,9 +93,12 @@ function emitSessionEnd(handle, metrics) {
     metrics = metrics || {};
     const env = envCtx();
     const startMs = handle.start_ts || Date.now();
-    // #3091 — `provider` opcional. Si el caller no lo pasa, queda `null` y el
-    // aggregator infiere por prefijo del `model` (back-compat con eventos legacy).
-    const provider = pick(metrics, 'provider', pick(handle, 'provider', null));
+    // #3091 + #3078 — `provider` propagado desde:
+    //   1) `metrics.provider` (caller explícito en emitSessionEnd)
+    //   2) `handle.provider` (resuelto en emitSessionStart)
+    //   3) `process.env.PIPELINE_PROVIDER` (paralelo a PIPELINE_SKILL)
+    //   4) null → aggregator clasifica como legacy_llm (back-compat eventos pre-#3078)
+    const provider = pick(metrics, 'provider', pick(handle, 'provider', env.provider || null));
     const evt = {
         event: 'session:end',
         skill: pick(handle, 'skill', env.skill),

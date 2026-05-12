@@ -208,6 +208,8 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'delivery', issue, phase: process.env.PIPELINE_FASE || 'entrega',
         model: 'deterministic',
+        // (#3078) Provider explícito para el dispatch del classifier por allowlist.
+        provider: 'deterministic',
     });
 
     const startedAt = Date.now();

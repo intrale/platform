@@ -223,6 +223,9 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'build', issue, phase: process.env.PIPELINE_FASE || 'build',
         model: 'deterministic',
+        // (#3078) Provider explícito para que el aggregator dispatchee por
+        // allowlist en vez de inferir por nombre del modelo.
+        provider: 'deterministic',
     });
 
     let gradleResult;

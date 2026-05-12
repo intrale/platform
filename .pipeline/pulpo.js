@@ -5102,6 +5102,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       traceHandle = trace.emitSessionStart({
         skill, issue: parseInt(issue), phase: fase,
         model: launchResult.model || 'claude-opus-4-7',
+        // (#3078) `provider` viene resuelto por agent-launcher
+        // (#3074 / agent-models.json). Lo propagamos al evento session:start
+        // y el handle lo lleva al session:end para que el classifier dispatchee
+        // por provider explícito en lugar de inferir por substring del modelo.
+        provider: launchResult.provider || 'anthropic',
       });
     } catch (e) {
       log('lanzamiento', `traceability emitSessionStart falló: ${e.message}`);

@@ -51,13 +51,61 @@ function ttsGen({ skill, issue, phase, provider, chars, audio_seconds, cost, ts 
     };
 }
 
-test('classifyExecutionMode distingue deterministic vs llm', () => {
+// (#3078) Tests del classifier — back-compat firma legacy + nueva firma con provider.
+test('classifyExecutionMode (legacy signature) distingue deterministic vs legacy_llm', () => {
+    // Firma legacy: string model. Sin provider → eventos pre-#3078 caen a legacy_llm.
     assert.equal(aggregator.classifyExecutionMode('deterministic'), 'deterministic');
     assert.equal(aggregator.classifyExecutionMode('DETERMINISTIC'), 'deterministic');
-    assert.equal(aggregator.classifyExecutionMode('claude-opus-4-7'), 'llm');
-    assert.equal(aggregator.classifyExecutionMode('claude-sonnet-4-6'), 'llm');
-    assert.equal(aggregator.classifyExecutionMode(null), 'llm');
-    assert.equal(aggregator.classifyExecutionMode(''), 'llm');
+    assert.equal(aggregator.classifyExecutionMode('claude-opus-4-7'), 'legacy_llm');
+    assert.equal(aggregator.classifyExecutionMode('claude-sonnet-4-6'), 'legacy_llm');
+    assert.equal(aggregator.classifyExecutionMode('gpt-5-codex'), 'legacy_llm');
+    assert.equal(aggregator.classifyExecutionMode(null), 'legacy_llm');
+    assert.equal(aggregator.classifyExecutionMode(''), 'legacy_llm');
+});
+
+test('classifyExecutionMode: provider Anthropic conocido → llm', () => {
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'anthropic', model: 'claude-opus-4-7' }), 'llm');
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'anthropic', model: 'claude-sonnet-4-6' }), 'llm');
+});
+
+test('classifyExecutionMode: provider OpenAI conocido → llm', () => {
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'openai-codex', model: 'gpt-5-codex' }), 'llm');
+    // El alias `openai` también es válido por forward-compat multi-provider.
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'openai', model: 'gpt-5-codex' }), 'llm');
+});
+
+test('classifyExecutionMode: provider deterministic → deterministic', () => {
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'deterministic', model: 'deterministic' }), 'deterministic');
+    // El provider domina sobre el campo model.
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'deterministic', model: 'cualquier-cosa' }), 'deterministic');
+});
+
+test('classifyExecutionMode: provider fuera de allowlist → unknown (NO degrada silenciosamente a llm)', () => {
+    // CA-6 — security: provider provisto pero malicioso/desconocido NO se infiere por modelo
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'unknown-vendor', model: 'claude-opus-4-7' }), 'unknown');
+    assert.equal(aggregator.classifyExecutionMode({ provider: '../../../etc/passwd', model: 'cualquier' }), 'unknown');
+    assert.equal(aggregator.classifyExecutionMode({ provider: 'fake-provider' }), 'unknown');
+});
+
+test('classifyExecutionMode: evento legacy sin provider → legacy_llm (subtipo distinguible de llm)', () => {
+    // CA-7 — back-compat con activity-log.jsonl histórico
+    assert.equal(aggregator.classifyExecutionMode({ provider: null, model: 'claude-opus-4-7' }), 'legacy_llm');
+    assert.equal(aggregator.classifyExecutionMode({ provider: undefined, model: 'gpt-5-codex' }), 'legacy_llm');
+    assert.equal(aggregator.classifyExecutionMode({ model: 'claude-opus-4-7' }), 'legacy_llm');
+    // Pero deterministic legacy sigue clasificado bien
+    assert.equal(aggregator.classifyExecutionMode({ provider: null, model: 'deterministic' }), 'deterministic');
+});
+
+test('classifyExecutionMode: PROVIDER_MODES y VALID_EXECUTION_MODES exportados como Object.freeze', () => {
+    // CA-2 — allowlist congelada (Object.freeze)
+    assert.ok(Object.isFrozen(aggregator.PROVIDER_MODES));
+    assert.ok(Object.isFrozen(aggregator.VALID_EXECUTION_MODES));
+    assert.equal(aggregator.PROVIDER_MODES.anthropic, 'llm');
+    assert.equal(aggregator.PROVIDER_MODES.deterministic, 'deterministic');
+    // Intentar mutar no debe afectar (silently in non-strict, throws in strict)
+    const before = aggregator.PROVIDER_MODES.anthropic;
+    try { aggregator.PROVIDER_MODES.anthropic = 'tampered'; } catch (_) { /* strict mode throws */ }
+    assert.equal(aggregator.PROVIDER_MODES.anthropic, before);
 });
 
 test('buildSnapshot genera llm_vs_deterministic con ahorro estimado', async () => {
@@ -443,4 +491,87 @@ test('CA-6: aggregator NO hace fetch HTTP de pricing', () => {
     assert.equal(/require\(['"]https?['"]\)/.test(aggSrc), false);
     assert.equal(/\bfetch\s*\(/.test(aggSrc), false);
     assert.equal(/require\(['"]axios['"]\)/.test(aggSrc), false);
+});
+
+// =============================================================================
+// #3078 — Dispatch del classifier por `provider` en session:end
+// =============================================================================
+
+function sessionEndV3({ skill, issue, phase, provider, model, tokens_in, tokens_out, ts }) {
+    // Helper para fixtures nuevas con `provider` explícito (post #3078).
+    return {
+        event: 'session:end',
+        skill, issue, phase, provider, model,
+        tokens_in: tokens_in || 0,
+        tokens_out: tokens_out || 0,
+        cache_read: 0, cache_write: 0,
+        duration_ms: 1000, tool_calls: 0,
+        ts: ts || new Date().toISOString(),
+    };
+}
+
+test('CA-1+CA-2: timeline expone execution_mode=llm para eventos con provider=anthropic', async () => {
+    // Fixtures con placeholder reconocible — NO API keys reales (CA-9 #3078).
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    writeLog([
+        sessionEndV3({ skill: 'guru', issue: 5001, phase: 'analisis', provider: 'anthropic', model: 'claude-opus-4-7', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:00:00Z' }),
+        sessionEndV3({ skill: 'tester', issue: 5001, phase: 'test', provider: 'openai-codex', model: 'gpt-5-codex', tokens_in: 800, tokens_out: 400, ts: '2026-05-01T10:05:00Z' }),
+        sessionEndV3({ skill: 'build', issue: 5001, phase: 'build', provider: 'deterministic', model: 'deterministic', tokens_in: 0, tokens_out: 0, ts: '2026-05-01T10:10:00Z' }),
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    const issue = snap.issues.find(i => i.issue === 5001);
+    assert.ok(issue, 'issue 5001 existe en snapshot');
+    const modes = issue.timeline.map(t => t.execution_mode).sort();
+    assert.deepEqual(modes, ['deterministic', 'llm', 'llm'],
+        'timeline debe tener 2 llm (anthropic+openai-codex) + 1 deterministic');
+});
+
+test('CA-2: llm_vs_deterministic combina sesiones llm + legacy_llm para mismo skill', async () => {
+    // Mezcla: eventos modernos con provider explícito + legacy sin provider.
+    // Ambos deben sumar al `llm_sessions` del skill (subtipo legacy_llm folded).
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    writeLog([
+        // 2 sesiones con provider explícito → llm
+        sessionEndV3({ skill: 'guru', issue: 5100, phase: 'analisis', provider: 'anthropic', model: 'claude-opus-4-7', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:00:00Z' }),
+        sessionEndV3({ skill: 'guru', issue: 5101, phase: 'analisis', provider: 'anthropic', model: 'claude-opus-4-7', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:01:00Z' }),
+        // 1 sesión legacy sin provider → legacy_llm (fold a llm en la comparativa)
+        sessionEnd({ skill: 'guru', issue: 5102, phase: 'analisis', model: 'claude-opus-4-7', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:02:00Z' }),
+        // 2 sesiones deterministic
+        sessionEndV3({ skill: 'guru', issue: 5103, phase: 'analisis', provider: 'deterministic', model: 'deterministic', ts: '2026-05-01T10:03:00Z' }),
+        sessionEndV3({ skill: 'guru', issue: 5104, phase: 'analisis', provider: 'deterministic', model: 'deterministic', ts: '2026-05-01T10:04:00Z' }),
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    const row = snap.llm_vs_deterministic.find(r => r.skill === 'guru');
+    assert.ok(row, 'fila guru existe');
+    assert.equal(row.llm_sessions, 3, '2 con provider + 1 legacy = 3 sesiones llm');
+    assert.equal(row.deterministic_sessions, 2);
+    assert.ok(row.llm_cost_usd > 0);
+    assert.equal(row.migrated, true);
+});
+
+test('CA-6: provider fuera de allowlist NO se folda como llm (se queda como `unknown`)', async () => {
+    // Si llegara un evento envenenado con provider arbitrario, NO debe contribuir
+    // ni a llm ni a deterministic — queda en bucket `unknown` separado.
+    writePricing(VALID_CROSS_PROVIDER_PRICING);
+    writeLog([
+        sessionEndV3({ skill: 'guru', issue: 5200, phase: 'analisis', provider: 'fake-vendor', model: 'claude-opus-4-7', tokens_in: 1000, tokens_out: 500, ts: '2026-05-01T10:00:00Z' }),
+    ]);
+    const snap = await aggregator.buildSnapshot({});
+    const row = snap.llm_vs_deterministic.find(r => r.skill === 'guru');
+    if (row) {
+        // Si la fila existe, no debe contar la sesión envenenada como llm
+        assert.equal(row.llm_sessions, 0);
+        assert.equal(row.deterministic_sessions, 0);
+    }
+});
+
+test('CA-9: fixtures usan placeholders FAKE — no hay API keys reales', () => {
+    // Auto-test del propio test file: ni en este file ni en fixtures embebidas
+    // se filtran API keys. Sanitizer del repo redacta, pero mejor no llevarlas.
+    const testSrc = fs.readFileSync(__filename, 'utf8');
+    // Patrones de keys reales (sk-..., AIza...) — debe encontrar 0 ocurrencias
+    // que NO sean strings explícitos `FAKE`.
+    const matches = testSrc.match(/sk-[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}/g) || [];
+    const nonFakeMatches = matches.filter(m => !/FAKE/i.test(m));
+    assert.equal(nonFakeMatches.length, 0, 'no API keys reales en fixtures');
 });
