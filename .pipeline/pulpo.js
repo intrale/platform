@@ -2694,6 +2694,37 @@ function brazoBarrido(config) {
               const skillDep = m.skill || skillFromFile(rechazados[0].file.name);
               const motivoSanitized = sanitizePipelineText(m.motivo).slice(0, 1500);
 
+              // #3079 — Pre-validar deps en GitHub: si todas las dependencias
+              // numéricas que el clasificador identificó ya están CLOSED, NO
+              // pegar `blocked:dependencies` y NO archivar. El agente trabajó
+              // sobre estado stale (worktree viejo o cache de contexto) y el
+              // bloqueo nacería zombi — el brazoDesbloqueo después lo destrabaría
+              // pero entre medio el issue queda pegado al label, el reconciler
+              // lo escalaría con marker fantasma, y el operador ve "needs-human"
+              // sobre una dep ya resuelta. Fail-open: si NO hay deps numéricas
+              // (assets puros) o el state es UNKNOWN, comportamiento previo.
+              if (Array.isArray(result.dependsOn) && result.dependsOn.length > 0) {
+                let todasCerradas = true;
+                const stateLog = [];
+                for (const depNum of result.dependsOn) {
+                  // Invalidar cache antes de chequear: el dep pudo haber cerrado
+                  // hace minutos y el cache de 10min nos daría un estado stale.
+                  issueLabelsCache.delete(depNum);
+                  const info = getIssueInfo(depNum);
+                  stateLog.push(`#${depNum}=${info.state}`);
+                  if (info.state !== 'CLOSED') {
+                    todasCerradas = false;
+                    break;
+                  }
+                }
+                if (todasCerradas) {
+                  log('barrido', `🪢⏭ #${issue} dependency_block IGNORADO — todas las deps ya CLOSED (${stateLog.join(',')}). No se pega label, no se archiva. El motivo era stale.`);
+                  // No archivar, no pegar label. El issue cae al flujo normal
+                  // de rebote (humanBlock → rev++) que lo destraba o lo escala.
+                  continue;
+                }
+              }
+
               try {
                 reboteClassifier.reportDependencyBlock({
                   issue: parseInt(issue),
