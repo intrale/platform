@@ -5175,19 +5175,73 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // determinísticos emiten su propio par session:start/end internamente,
   // así que solo cubrimos el path LLM acá. El handle se usa luego en
   // child.on('exit') para emitir session:end con tokens parseados del log.
-  // #3074 — el `model` ahora viene resuelto del dispatcher (agent-models.json
-  // o fallback legacy), eliminando el hardcode previo.
+  //
+  // #3083 (S5 multi-provider — audit trail dinámico):
+  //   - Eliminado fallback `|| 'claude-opus-4-7'` (CA-1): el caller no puede
+  //     inventar un modelo; si `agent-models.json` no resolvió, el resolver
+  //     dejó `launchResult.model = null` y el campo aparece como `unknown`
+  //     en el log (señal forense legítima de bug del resolver, no falsa claim).
+  //   - `provider` viene explícito del launchResult (CA-9, SEC-8).
+  //   - `cli_version` y `git_sha_provider_adapter` se resuelven empíricamente
+  //     acá (no via env vars — SEC-2/SEC-3).
+  //   - `prompt_hash` se calcula con `hashPromptPair(systemContent, userContent)`
+  //     ANTES del spawn — el módulo de traceability NUNCA recibe el contenido
+  //     (SEC-1 / defensa en profundidad).
   let traceHandle = null;
   if (!useDeterministicSkill) {
+    // (#3083 / CA-2) Resolver cli_version desde el launcher del provider.
+    // El provider Anthropic expone `detectLauncher()` → `{cmd, ...}`. Otros
+    // providers que no tienen launcher externo (deterministic, openai-codex
+    // stub) caen al default 'n/a' o 'unknown' del propio traceability.
+    let cliVersion = 'unknown';
+    try {
+      const handler = launchResult && launchResult.handler;
+      if (handler && typeof handler.detectLauncher === 'function') {
+        const launcher = handler.detectLauncher();
+        if (launcher && launcher.cmd) {
+          cliVersion = trace.resolveCliVersion(launcher.cmd);
+        }
+      }
+    } catch (e) {
+      log('lanzamiento', `traceability resolveCliVersion falló: ${e.message}`);
+    }
+    // (#3083 / CA-2 / SEC-2) git_sha del adaptador en uso. NUNCA inferir de
+    // env vars — un atacante con control de spawn args podría spoofear el SHA.
+    let adapterSha = null;
+    try {
+      const providerName = (launchResult && launchResult.provider) || 'anthropic';
+      const adapterPath = path.join(PIPELINE, 'lib', 'agent-launcher', 'providers', `${providerName}.js`);
+      adapterSha = trace.resolveProviderAdapterSha(adapterPath);
+    } catch (e) {
+      log('lanzamiento', `traceability resolveProviderAdapterSha falló: ${e.message}`);
+    }
+    // (#3083 / CA-3 / SEC-1) Hash del par system+user prompt. ANTES del spawn,
+    // descartamos cualquier referencia al contenido — solo el digest viaja.
+    // El systemFile ya está escrito a disco (línea ~4833); leerlo de vuelta
+    // para hashear es cheap y garantiza paridad con lo que el agente verá.
+    let promptHash = null;
+    try {
+      let systemContent = '';
+      try { systemContent = fs.readFileSync(systemFile, 'utf8'); } catch (_) {}
+      promptHash = trace.hashPromptPair(systemContent, userPrompt);
+    } catch (e) {
+      log('lanzamiento', `traceability hashPromptPair falló: ${e.message}`);
+    }
     try {
       traceHandle = trace.emitSessionStart({
         skill, issue: parseInt(issue), phase: fase,
-        model: launchResult.model || 'claude-opus-4-7',
-        // (#3078) `provider` viene resuelto por agent-launcher
-        // (#3074 / agent-models.json). Lo propagamos al evento session:start
-        // y el handle lo lleva al session:end para que el classifier dispatchee
-        // por provider explícito en lugar de inferir por substring del modelo.
+        // (#3083 / CA-1) NO MÁS `|| 'claude-opus-4-7'`. Si el resolver no
+        // entregó un modelo, dejamos que `emitSessionStart` use su default
+        // ('deterministic'). El audit trail tiene que reflejar la realidad.
+        model: launchResult.model,
+        // (#3078 / #3083-CA-9) provider explícito desde agent-models.json.
+        // No inferir por substring del model name (SEC-8).
         provider: launchResult.provider || 'anthropic',
+        // (#3083 / CA-2)
+        cli_version: cliVersion,
+        git_sha_provider_adapter: adapterSha,
+        // (#3083 / CA-3) prompt_hash viaja por el handle hasta emitSessionEnd.
+        prompt_hash: promptHash,
       });
     } catch (e) {
       log('lanzamiento', `traceability emitSessionStart falló: ${e.message}`);
