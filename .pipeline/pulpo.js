@@ -110,6 +110,22 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
   },
 });
 
+// #3075 — Hidratación de API keys de providers desde el JSON único de secretos.
+// El dispatcher de child procesos (`lib/build-child-env.js`) filtra `process.env`
+// con allowlist mínima: para que el child de `openai-codex` reciba
+// `OPENAI_API_KEY`, el padre tiene que tenerla en `process.env`. La fuente única
+// de verdad es `~/.claude/secrets/telegram-config.json` (la misma key que ya usan
+// TTS/Whisper vía `multimedia.js`). Mantener una sola fuente evita divergencias
+// al rotar la key. Idempotente y no sobreescribe si el operador setea la var
+// explícitamente en el SO.
+require('./lib/hydrate-provider-env').hydrateProviderEnv({
+  legacyConfigPath: path.join(__dirname, '..', '.claude', 'hooks', 'telegram-config.json'),
+  log: (msg) => {
+    try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+    console.error(msg);
+  },
+});
+
 // #2337 CA10: cleanup perezoso + startup de metricas UX (REQ-SEC-5)
 try { uxMetrics.cleanup({ force: true }); } catch { /* best-effort */ }
 
