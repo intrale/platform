@@ -40,6 +40,12 @@ const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
+// #3167 — Clasificador unificado de rebotes (cross_phase / dependency_block /
+// human_block / infra / code). El brazo de barrido invoca `classifyRebote`
+// ANTES de la rama de bloqueo humano: si detecta `dependency_block` no se
+// crea marker en `bloqueado-humano/`, se aplica label `blocked:dependencies`
+// y el brazoDesbloqueo (ya existente) destraba cuando todas las deps cierren.
+const reboteClassifier = require('./lib/rebote-classifier');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
 const partialPauseDeps = require('./lib/partial-pause-deps');
 // #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
@@ -2648,6 +2654,81 @@ function brazoBarrido(config) {
           }));
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
+
+          // #3167 — DEPENDENCY_BLOCK: ANTES de evaluar bloqueo humano, le damos al
+          // clasificador unificado la chance de capturar rebotes donde el agente
+          // dice "depende de #N todavía OPEN" o "asset UX no en main". Si calza,
+          // NO creamos marker en `bloqueado-humano/` y NO incrementamos rev:
+          // aplicamos label `blocked:dependencies` y dejamos que el brazoDesbloqueo
+          // (que ya existe — ~línea 7813) destrabe cuando todas las deps cierren
+          // en GitHub. Cero tokens consumidos mientras espera + cero intervención
+          // humana cuando las deps cierren. Defense-in-depth: TODO el resto del
+          // flujo de humanBlock queda intacto abajo (sigue siendo dueño cuando
+          // el motivo no clasifica como dep).
+          let depBlockHandled = false;
+          if (!esReboteDeInfra) {
+            for (const m of motivosClasificados) {
+              const result = reboteClassifier.classifyRebote({
+                motivo: m.motivo,
+                classifyErrorResult: m.clasificacion,
+                isRoutingMismatch: false, // routing se evalúa más abajo, mantener orden
+              });
+              if (result.category !== 'dependency_block') continue;
+
+              const skillDep = m.skill || skillFromFile(rechazados[0].file.name);
+              const motivoSanitized = sanitizePipelineText(m.motivo).slice(0, 1500);
+
+              try {
+                reboteClassifier.reportDependencyBlock({
+                  issue: parseInt(issue),
+                  dependsOn: result.dependsOn,
+                  reason: motivoSanitized,
+                  skill: skillDep,
+                  phase: fase,
+                });
+              } catch (e) {
+                log('barrido', `❌ #${issue} reportDependencyBlock falló: ${e.message}`);
+                // Fail-open: si reportDependencyBlock falla NO caemos a humanBlock
+                // — el motivo SÍ es dep, simplemente la cola GitHub no aceptó el
+                // marker. Mejor dejar el issue en pendiente/ para el próximo ciclo
+                // que crear un marker humano espurio. Rompemos el for sin set de
+                // depBlockHandled para que el flujo siga (rebote_numero, etc).
+                break;
+              }
+
+              // Mover archivos de la fase actual a archivado/ — el issue queda
+              // fuera del flujo activo hasta que el brazoDesbloqueo le quite el
+              // label. Mismo patrón que la rama humanBlock más abajo.
+              for (const a of archivos) {
+                const destArch = path.join(fasePath(pipelineName, fase), 'archivado');
+                try { fs.mkdirSync(destArch, { recursive: true }); moveFile(a.path, destArch); } catch {}
+              }
+              for (const estado of ['pendiente', 'trabajando']) {
+                const dir = path.join(fasePath(pipelineName, fase), estado);
+                try {
+                  for (const f of fs.readdirSync(dir)) {
+                    if (f.startsWith(issue + '.') && !f.startsWith('.')) {
+                      const archDir = path.join(fasePath(pipelineName, fase), 'archivado');
+                      fs.mkdirSync(archDir, { recursive: true });
+                      try { moveFile(path.join(dir, f), archDir); } catch {}
+                    }
+                  }
+                } catch {}
+              }
+
+              const depsLabel = result.dependsOn.length > 0
+                ? result.dependsOn.map(n => '#' + n).join(',')
+                : '(asset)';
+              log('barrido', `🪢 #${issue} → blocked:dependencies (skill=${skillDep}, deps=${depsLabel}) — sin rebote, sin marker humano, esperando brazoDesbloqueo.`);
+              try {
+                sendTelegram(`🪢 Issue #${issue} bloqueado por dependencias — esperando ${depsLabel}. El pipeline destraba automáticamente al cerrar.`);
+              } catch {}
+
+              depBlockHandled = true;
+              break;
+            }
+          }
+          if (depBlockHandled) continue;
 
           // #2549 — BLOQUEO HUMANO: si AL MENOS UN motivo indica que el avance
           // depende de una intervención humana (PR esperando merge, CODEOWNERS,
@@ -7975,7 +8056,7 @@ async function brazoDesbloqueoImpl(config) {
               log('desbloqueo', `Error cerrando paraguas #${issue.number}: ${e.message}`);
             }
           } else {
-            log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
+            log('desbloqueo', `🪢→🟢 #${issue.number} destrabado (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`);
 
             // Quitar label blocked:dependencies
             ghThrottle();
@@ -7985,18 +8066,18 @@ async function brazoDesbloqueoImpl(config) {
             );
 
             // Agregar comentario de desbloqueo
-            const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
+            const unblockComment = `## Dependencias resueltas 🟢\n\nLas siguientes dependencias cerraron: ${depIssueNumbers.map(n => '#' + n).join(', ')}.\n\nEl pipeline reentra a este issue automáticamente.`;
             ghThrottle();
             await ghDesbloqueoCall(
               ['issue', 'comment', String(issue.number), '--body', unblockComment, '--repo', 'intrale/platform'],
               10000
             );
 
-            sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+            sendTelegram(`🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`);
             log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
           }
         } else {
-          log('desbloqueo', `#${issue.number}: dependencias abiertas: ${openDeps.map(n => '#' + n).join(', ')} — sigue bloqueado`);
+          log('desbloqueo', `🪢⏳ #${issue.number} sigue esperando ${openDeps.map(n => '#' + n).join(',')}`);
         }
       } catch (e) {
         log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
