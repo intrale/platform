@@ -4108,7 +4108,7 @@ function brazoLanzamiento(config) {
 
 const APP_LABELS = ['app:client', 'app:business', 'app:delivery'];
 const LABEL_TO_FLAVOR = { 'app:client': 'client', 'app:business': 'business', 'app:delivery': 'delivery' };
-const ROUTING_LABELS = [...APP_LABELS, 'area:backend', 'area:infra', 'docs'];
+const ROUTING_LABELS = [...APP_LABELS, 'area:backend', 'area:infra', 'area:pipeline', 'tipo:infra', 'docs'];
 
 // Keywords para auto-clasificación inteligente de issues sin labels de ruteo
 const AUTO_CLASSIFY_RULES = [
