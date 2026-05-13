@@ -5537,13 +5537,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         // Reporte PDF de muerte prematura (background)
         try {
           const reportScript = path.join(PIPELINE, 'rejection-report.js');
-          const reportChild = spawn(process.execPath, [
+          // (#3088 / CA-1 + CA-6 + CA-9) provider/model resueltos por
+          // agent-models.json al lanzar; viajan al rejection-report como
+          // single source of truth (no se infiere por substring del model).
+          // Si launchResult no entregó el campo, omitimos el flag — el
+          // rejection-report hace lookup al audit-log y, si falla, cae a
+          // literal "unknown".
+          const reportArgs = [
             reportScript,
             '--issue', String(issue), '--skill', skill, '--fase', fase,
             '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
             '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
-            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
-          ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
+            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline,
+          ];
+          if (launchResult && launchResult.provider) {
+            reportArgs.push('--provider', String(launchResult.provider));
+          }
+          if (launchResult && launchResult.model) {
+            reportArgs.push('--model', String(launchResult.model));
+          }
+          const reportChild = spawn(process.execPath, reportArgs,
+            { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
           reportChild.unref();
         } catch {}
         return;
@@ -5678,13 +5692,24 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       if (data.resultado === 'rechazado') {
         try {
           const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          // (#3088 / CA-1 + CA-6 + CA-9) provider/model resueltos por
+          // agent-models.json. El rejection-report los inyecta en el header
+          // del PDF y los usa para la regla determinística del audio. Si por
+          // alguna razón no están resueltos (launchResult vacío), omitimos
+          // el flag y el reporte hace lookup al audit-log → fallback "unknown".
           const reportArgs = [
             reportScript,
             '--issue', String(issue), '--skill', skill, '--fase', fase,
             '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
             '--motivo', String(data.motivo || 'Sin motivo'),
-            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline,
           ];
+          if (launchResult && launchResult.provider) {
+            reportArgs.push('--provider', String(launchResult.provider));
+          }
+          if (launchResult && launchResult.model) {
+            reportArgs.push('--model', String(launchResult.model));
+          }
           const reportChild = spawn(process.execPath, reportArgs, {
             cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true
           });
