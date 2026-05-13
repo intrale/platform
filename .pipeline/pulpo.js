@@ -200,6 +200,61 @@ function loadAgentModelsRuntime() {
 }
 loadAgentModelsRuntime();
 
+// =============================================================================
+// #3082 (CA-S3 / CA-8): validación capability-level de TODOS los skills al boot.
+//
+// Estrategia de rollout:
+//   - Por default, este check corre con `mode: warn` y solo emite logs.
+//   - Si `PIPELINE_PERMISSION_VALIDATOR_STRICT=1`, los failures terminan el boot
+//     (fail-fast) — pensado para CI / smoke tests / staging.
+//
+// La validación at-spawn-time (en agent-launcher.js) sí es fail-CLOSED siempre.
+// El check at-boot tiene rol distinto: alerta temprano si la config de
+// agent-models.json + frontmatters de skills es inconsistente.
+// =============================================================================
+try {
+    const permissionValidatorBoot = require('./lib/permission-validator');
+    const skillsMetadataBoot = require('./lib/skills-metadata');
+    const { resolveProviderForSkill, resolvePermissionMode } = require('./lib/agent-launcher/resolve-provider');
+    const skillsRootBoot = path.join(__dirname, '..', '.claude', 'skills');
+    const { registry: bootSkillsRegistry, failures: bootSkillsFailures } = skillsMetadataBoot.loadAllSkillsMetadata({
+        skillsRoot: skillsRootBoot,
+    });
+    if (bootSkillsFailures && bootSkillsFailures.length > 0) {
+        for (const f of bootSkillsFailures) {
+            try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+                `[${new Date().toISOString()}] [pulpo] WARN skill '${f.skill}' falló parseo de metadata: ${f.error}\n`); } catch {}
+        }
+    }
+    const bootResolveSkill = (skill) => {
+        const r = resolveProviderForSkill(skill, { pipelineDir: __dirname, fsImpl: fsForAgentModels });
+        if (!r) return null;
+        return { provider: r.provider, mode: r.mode || 'bypassPermissions' };
+    };
+    const bootFailures = permissionValidatorBoot.validateAllSkillsAtBoot({
+        skillsRegistry: bootSkillsRegistry,
+        resolveSkill: bootResolveSkill,
+    });
+    if (bootFailures.length > 0) {
+        const strict = process.env.PIPELINE_PERMISSION_VALIDATOR_STRICT === '1';
+        for (const f of bootFailures) {
+            try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+                `[${new Date().toISOString()}] [pulpo] WARN permission gate boot — ${f.skill}: ${f.reason || 'unknown'} — ${(f.message || '').split('\n')[0]}\n`); } catch {}
+        }
+        if (strict) {
+            try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+                `[${new Date().toISOString()}] [pulpo] FATAL ${bootFailures.length} skill(s) no pasaron el permission gate at-boot — strict mode activo. Abortando boot.\n`); } catch {}
+            process.exit(78); // EX_CONFIG (config issue)
+        }
+    }
+} catch (e) {
+    // Defensivo: el check de boot no puede tirar el pulpo. Si algo explota
+    // (require falla, fs error), loggemos y seguimos — at-spawn-time igual
+    // valida y atajan el bug en cada lanzamiento.
+    try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+        `[${new Date().toISOString()}] [pulpo] WARN permission validator at-boot falló (no bloqueante): ${e.message}\n`); } catch {}
+}
+
 // Resolvers locales para evitar reabrir el JSON en cada gate. NULL-safe:
 // si AGENT_MODELS no está disponible (pre-boot, error de IO), devuelven null
 // y el caller cae al gate global / config legacy.

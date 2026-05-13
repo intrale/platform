@@ -44,11 +44,48 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const { resolveProviderForSkill } = require('./agent-launcher/resolve-provider');
+const permissionValidator = require('./permission-validator');
+const skillsMetadata = require('./skills-metadata');
 const PROVIDERS = {
     anthropic: require('./agent-launcher/providers/anthropic'),
     deterministic: require('./agent-launcher/providers/deterministic'),
     'openai-codex': require('./agent-launcher/providers/openai-codex'),
 };
+
+// #3082 (CA-S3 / CA-8): cache liviano de required_permissions por skill,
+// invalidado por mtime del archivo. Se puede desactivar via
+// PIPELINE_PERMISSION_VALIDATOR_NO_CACHE=1 (tests).
+const _skillPermissionsCache = new Map(); // skill → { mtime, required }
+
+function getRequiredPermissionsForSkill(skill, fsImpl) {
+    const _fs = fsImpl || fs;
+    const skillsRoot = path.join(
+        process.env.PIPELINE_REPO_ROOT || process.cwd(),
+        '.claude', 'skills'
+    );
+    const skillFile = path.join(skillsRoot, skill, 'SKILL.md');
+    if (!_fs.existsSync(skillFile)) {
+        return { ok: false, error: `SKILL.md de '${skill}' no existe (${skillFile}).` };
+    }
+    const stat = _fs.statSync(skillFile);
+    const cached = _skillPermissionsCache.get(skill);
+    if (cached && cached.mtime === stat.mtimeMs && process.env.PIPELINE_PERMISSION_VALIDATOR_NO_CACHE !== '1') {
+        return { ok: true, required_permissions: cached.required };
+    }
+    try {
+        const loaded = skillsMetadata.loadSkillMetadata(skill, { skillsRoot, fsImpl: _fs });
+        const required = Array.isArray(loaded.meta.required_permissions) ? loaded.meta.required_permissions : [];
+        _skillPermissionsCache.set(skill, { mtime: stat.mtimeMs, required });
+        return { ok: true, required_permissions: required };
+    } catch (e) {
+        return { ok: false, error: e.message };
+    }
+}
+
+// Reset del cache — útil para tests o si el operador edita un SKILL.md hot.
+function _resetPermissionsCacheForTesting() {
+    _skillPermissionsCache.clear();
+}
 
 // -----------------------------------------------------------------------------
 // launchAgent — única función pública. Resuelve provider, arma el spawn y
@@ -89,6 +126,53 @@ function launchAgent({
     const resolution = _resolve(skill, { pipelineDir: PIPELINE, fsImpl: _fs });
     if (resolution.warning) {
         log('agent-launcher', `⚠️ ${resolution.warning}`);
+    }
+
+    // 1.5 (#3082 CA-S3 / CA-8 / CA-9): validación capability-level at-spawn-time.
+    // Hacemos la validación ANTES de spawn — fail-CLOSED si:
+    //   - el SKILL.md no declara required_permissions (modo legacy: warn solo)
+    //   - capability fuera del catálogo (fail-fast, mensaje accionable)
+    //   - capabilities requeridas no son subset de las concedidas por
+    //     (provider, mode) según la matriz canónica.
+    //
+    // Para skills determinísticos NO aplicamos el gate: son Node puro auditado
+    // que corre con permisos del usuario del pulpo (matriz `deterministic/native`).
+    // Pero igualmente loggemos si declararon required_permissions, así nadie
+    // queda con la falsa idea de que el gate los cubre.
+    if (resolution.provider !== 'deterministic') {
+        const permCheck = getRequiredPermissionsForSkill(skill, _fs);
+        if (!permCheck.ok) {
+            // Skill sin SKILL.md o sin frontmatter parseable.
+            // Fail-CLOSED si el strict flag está activo, warning + permitir si no.
+            // Default: warning para no romper rollout. Activar strict con env var.
+            const strict = process.env.PIPELINE_PERMISSION_VALIDATOR_STRICT === '1';
+            if (strict) {
+                throw new Error(
+                    `[FAIL-CLOSED] Skill '${skill}' no tiene required_permissions cargable.\n` +
+                    `  ${permCheck.error}\n` +
+                    `  Activá el flag strict (PIPELINE_PERMISSION_VALIDATOR_STRICT=1) ya es 1: fail-fast.\n` +
+                    `  Doc: docs/pipeline-multi-provider/permission-mapping.md`
+                );
+            }
+            log('agent-launcher', `⚠️ ${skill}: required_permissions no cargable — ${permCheck.error}. Avanzo en modo legacy.`);
+        } else {
+            const validation = permissionValidator.validateSpawn({
+                skill,
+                provider: resolution.provider,
+                mode: resolution.mode || 'bypassPermissions',
+                requiredCapabilities: permCheck.required_permissions,
+            });
+            if (!validation.ok) {
+                // CA-9 fail-CLOSED: throw para que pulpo lo trate como infra failure
+                // y rebote el archivo al pendiente con motivo claro. El mensaje viaja
+                // tal cual al log; CA-10 valida formato.
+                log('agent-launcher', `🛑 ${validation.message}`);
+                throw new Error(validation.message);
+            }
+            if (validation.source === 'override') {
+                log('agent-launcher', `🛂 ${skill}: spawn autorizado por override activo (hash ${String(validation.override_hash).slice(0, 16)}).`);
+            }
+        }
     }
 
     // 2. Provider determinístico: si el script no existe, fallback a Anthropic
@@ -149,4 +233,7 @@ module.exports = {
     // sin tener que volver a resolver el provider.
     PROVIDERS,
     resolveProviderForSkill,
+    // #3082: exportados para tests y para validateAllSkillsAtBoot()
+    getRequiredPermissionsForSkill,
+    _resetPermissionsCacheForTesting,
 };

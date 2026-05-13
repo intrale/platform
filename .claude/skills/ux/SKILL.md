@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[auditar <flujo>|benchmark <area>|tendencias|mejorar <pantalla>|guia|escalar]"
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, TaskCreate, TaskUpdate, TaskList, Skill
 model: claude-sonnet-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, network_out, tool_use_gated]
 ---
 
 # /ux — UX Specialist

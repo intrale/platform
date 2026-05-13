@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[definir <area>|validar <issue>|acceptance <issue>|revisar-ux <pantalla>|revisar-videos <issue>|gaps]"
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, WebSearch, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, network_out, tool_use_gated]
 ---
 
 # /po — Product Owner

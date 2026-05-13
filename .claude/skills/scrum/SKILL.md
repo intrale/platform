@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[audit | sync | standup | health | mejoras]"
 allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, network_out, tool_use_gated]
 ---
 
 # /scrum — Scrum Master

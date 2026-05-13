@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<descripcion> [--issue <N>] [--draft] [--all] [--clean] [--dev-skill <nombre>]"
 allowed-tools: Bash, Read, Glob, Grep, Skill, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, network_out, tool_use_gated]
 ---
 
 # /delivery — DeliveryManager
