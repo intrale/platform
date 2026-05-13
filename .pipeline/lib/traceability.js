@@ -217,6 +217,126 @@ function pick(obj, key, fallback) {
     return fallback;
 }
 
+// =============================================================================
+// (#3088 / CA-6) Lookup del contexto de sesión por (issue, skill)
+// =============================================================================
+//
+// `getSessionContext` lee el último `session:start` registrado para una
+// combinación (issue, skill) en el activity-log y devuelve la metadata
+// multi-provider asociada. Es el **single source of truth** que consume
+// `rejection-report.js` para inyectar provider/model/cli_version en el PDF
+// y narración.
+//
+// Reglas de seguridad (#3088 SEC-3, alineado con #3083):
+//   - Lee SIEMPRE del activity-log persistido. NO infiere provider por
+//     substring del model name (envenena análisis "Codex rebota más en X").
+//   - NO re-resuelve `cli_version` ejecutando `--version` (el binario puede
+//     haber cambiado entre la sesión y el reporte).
+//   - NUNCA throw. Sobre I/O o JSON parse errors devuelve `null`.
+//
+// Opciones:
+//   - `issue` (number, obligatorio): número de issue a buscar.
+//   - `skill` (string, obligatorio): nombre del skill.
+//   - `recentWindow` (number, opcional): si > 0, se calcula `recent_switch`
+//     (true si la ventana de N últimas sesiones del skill contiene >1
+//     combinaciones (provider, model) distintas) y `first_with_combo`
+//     (true si la combinación de la sesión matched no aparece en sesiones
+//     anteriores del skill dentro del registro leído).
+//   - `logFile` (string, opcional, testing): override del path del log.
+//   - `fsImpl` (object, opcional, testing): override de fs.
+//
+// Devuelve `{ provider, model, cli_version, git_sha_provider_adapter,
+//   ts_session_start [, recent_switch, first_with_combo] }` o `null`.
+function getSessionContext(opts) {
+    opts = opts || {};
+    const targetIssue = opts.issue !== undefined && opts.issue !== null
+        ? Number(opts.issue) : null;
+    const targetSkill = opts.skill || null;
+    const recentWindow = Math.max(0, Number(opts.recentWindow || 0));
+    const logFile = opts.logFile || LOG_FILE;
+    const _fs = opts.fsImpl || fs;
+
+    if (!Number.isFinite(targetIssue) || !targetSkill) return null;
+
+    let raw;
+    try {
+        if (!_fs.existsSync(logFile)) return null;
+        // (#3088 / SEC-3) Lee cola del archivo (últimos ~2MB) para evitar
+        // costo prohibitivo en archivos grandes. Esa ventana cubre miles de
+        // sesiones — más que suficiente para el lookup y las reglas
+        // determinísticas. Si la sesión es más vieja, fallback a `null` →
+        // rejection-report cae a literal "unknown" (SEC-3 OK).
+        const stat = _fs.statSync(logFile);
+        const READ_BYTES = 2 * 1024 * 1024;
+        const readSize = Math.min(stat.size, READ_BYTES);
+        const fd = _fs.openSync(logFile, 'r');
+        const buf = Buffer.alloc(readSize);
+        _fs.readSync(fd, buf, 0, readSize, Math.max(0, stat.size - readSize));
+        _fs.closeSync(fd);
+        raw = buf.toString('utf8');
+    } catch (e) {
+        return null;
+    }
+
+    const lines = raw.split('\n');
+    // Si quedamos a mitad de una línea (truncamiento del tail), descartamos la
+    // primera para que el JSON.parse no falle silenciosamente.
+    if (lines.length > 0 && !lines[0].endsWith('}')) lines.shift();
+
+    const skillSessions = []; // session:start ordenadas cronológicamente por skill
+    let matched = null;
+    let matchedIdx = -1;
+    for (const line of lines) {
+        if (!line) continue;
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        if (!evt || evt.event !== 'session:start') continue;
+        if (evt.skill !== targetSkill) continue;
+        skillSessions.push(evt);
+        if (Number(evt.issue) === targetIssue) {
+            matched = evt;
+            matchedIdx = skillSessions.length - 1;
+        }
+    }
+    if (!matched) return null;
+
+    // (#3088 / SEC-3) Fallback literal "unknown" — NO inferir, NO undefined.
+    const result = {
+        provider: matched.provider || 'unknown',
+        model: matched.model || 'unknown',
+        cli_version: matched.cli_version || 'unknown',
+        git_sha_provider_adapter: matched.git_sha_provider_adapter || null,
+        ts_session_start: matched.ts || null,
+    };
+
+    if (recentWindow > 0) {
+        // first_with_combo: ¿hay alguna sesión PREVIA del skill (cronológicamente)
+        // con la misma (provider, model)? Si no → es la primera. Esto cubre la
+        // regla 1 de CA-2 ("primera sesión con la combinación").
+        let firstWithCombo = true;
+        for (let i = 0; i < matchedIdx; i++) {
+            const s = skillSessions[i];
+            if (s.provider === matched.provider && s.model === matched.model) {
+                firstWithCombo = false;
+                break;
+            }
+        }
+        // recent_switch: en las últimas `recentWindow` sesiones del skill hubo
+        // >1 combinación (provider, model) distinta. Esto cubre la regla 2 de
+        // CA-2 ("switch automático cross-provider/cross-model reciente").
+        const recent = skillSessions.slice(-recentWindow);
+        const combos = new Set();
+        let recentSwitch = false;
+        for (const s of recent) {
+            combos.add(`${s.provider}|${s.model}`);
+            if (combos.size > 1) { recentSwitch = true; break; }
+        }
+        result.first_with_combo = firstWithCombo;
+        result.recent_switch = recentSwitch;
+    }
+    return result;
+}
+
 function envCtx() {
     return {
         skill: process.env.PIPELINE_SKILL || null,
@@ -426,6 +546,8 @@ module.exports = {
     resolveCliVersion,
     resolveProviderAdapterSha,
     clampRetentionDays,
+    // (#3088) Lookup del contexto de sesión (single source of truth)
+    getSessionContext,
     PROMPT_HASH_SEPARATOR,
     AUDIT_RETENTION_FLOOR_DAYS,
     AUDIT_RETENTION_DEFAULT_DAYS,
