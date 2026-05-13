@@ -750,16 +750,34 @@ Si un provider no tiene equivalente semántico para un permission mode requerido
 
 Hoy `pulpo.js:4903` y `lib/traceability.js:11` reportan `model: 'claude-opus-4-7'` hardcoded — **ya estamos rompiendo el audit trail con un solo provider** (sería false claim si corremos Sonnet). Multi-modelo lo amplifica.
 
-Cada `session:start` debe registrar:
+> **Estado**: implementado por issue [#3083](https://github.com/intrale/platform/issues/3083) (S5). Esta sección documenta el contrato resultante.
 
-- `provider` (anthropic | openai-codex | gemini | ollama | deterministic).
-- `model` (string completo del modelo, ej. `claude-opus-4-7`, `gpt-5-codex`).
-- `cli_version` (resolver al boot del pulpo, persistir en handle de sesión).
-- `git_sha_provider_adapter` (sha del archivo del adaptador en uso).
+Cada `session:start` registra:
 
-Cada `session:end` registra: prompt hash (SHA-256 del system+user prompt, NO el contenido), token counts, costo estimado.
+- `provider` (anthropic | openai-codex | gemini | ollama | deterministic) — resuelto por `agent-models.json` (#3072). **Nunca inferido por substring del model name** (frágil + colisiona con futuros routers).
+- `model` (string completo del modelo, ej. `claude-opus-4-7`, `gpt-5-codex`). Si el resolver no entregó un modelo concreto, el campo queda como `deterministic` (default explícito); **NO se inventa un modelo Claude por fallback** — el log refleja la realidad para forensia.
+- `cli_version` — resuelto al boot del pulpo via `<launcher> --version`. Caché por `launcherPath` para amortizar el costo. Si el spawn falla → `'unknown'`. Si el provider es deterministic → `'n/a'`. **Nunca `null`/`undefined`** (el log siempre lleva string no-vacío).
+- `git_sha_provider_adapter` — SHA del archivo del adaptador en uso (`git hash-object <adapter_path>`). `null` cuando provider es deterministic. **PROHIBIDO leerlo de env vars** (`PROVIDER_ADAPTER_SHA` y similares se ignoran): un atacante con control de spawn args podría spoofear el SHA y mentir sobre qué adaptador estaba activo.
 
-Logs de sesión inmutables (append-only) por X días para forensia (X = config). Issue S5 implementa el fix.
+Cada `session:end` registra: `prompt_hash` (SHA-256 del system+user prompt, **NO el contenido**), token counts (`tokens_in/out/cache_read/cache_write`), y `cost_usd_estimated` (calculado por `estimateCostUsd(provider, model, tokens)` con la tabla de `pricing.json`).
+
+Logs de sesión append-only (`fs.appendFileSync`, **prohibidos** flags `w`/`r+`/`a+`/truncate) por al menos 30 días para forensia (`pipeline.audit_retention_days` en `config.yaml`, default 90, **clamp ≥30 hardcoded** en `lib/traceability.js` — una config maliciosa con `audit_retention_days: 1` se eleva automáticamente al piso).
+
+#### 6.8.0 Algoritmo de hash de prompts (S5 / #3083 — CA-10)
+
+`prompt_hash` viaja en `session:end` y es la única forma de correlacionar sesiones equivalentes en forensia. Su algoritmo está fijado y bumpear la versión requiere coordinación cross-equipo (rompe correlación histórica).
+
+**Especificación `prompt_hash_v1`** (implementación: `lib/traceability.js:hashPromptPair`):
+
+1. **Inputs**: `systemContent` (contenido del system prompt) y `userContent` (contenido del user prompt). Ambos son strings.
+2. **Normalización**: UTF-8 NFC (`String.normalize('NFC')`). **Sin trim** (espacios en bordes son significativos para el hash). Los bytes literales se conservan.
+3. **Concatenación**: `system + SOH + user`, donde `SOH` es el byte `` (Start Of Heading, ``, no imprimible). Razón: cualquier separador imprimible (`\n`, `\t`, `|`, etc.) puede aparecer en prompts en texto y crear colisiones donde dos pares distintos producen el mismo hash; SOH no aparece naturalmente en prompts editados por humanos.
+4. **Hash**: SHA-256 (`crypto.createHash('sha256')`), output en **hex lowercase de 64 chars** (`.digest('hex')`).
+5. **Inputs nulos**: si `systemContent` o `userContent` son `null`/`undefined` → el helper devuelve `null` (sesiones sin prompt: skills determinísticos, tests).
+
+**Contrato de no-leak (SEC-1)**: el módulo `traceability.js` **NUNCA** recibe el contenido del prompt como parámetro a `emitSessionStart` o `emitSessionEnd`. El caller (`pulpo.js`) hashea con `hashPromptPair(systemContent, userContent)` ANTES del spawn y pasa solo el digest al handle. Defensa en profundidad contra leaks accidentales del contenido al audit log.
+
+**Bump de versión**: cualquier cambio al algoritmo (otro separador, otro hash, otra normalización) **requiere bumpear a `prompt_hash_v2`** y exponerlo como helper nuevo (`hashPromptPairV2`). El campo en el log puede agregar `prompt_hash_version` (default `v1`) para preservar correlación histórica. No hacerlo destruye la utilidad forense del campo.
 
 #### 6.8.1 Restricción de contenido en notificaciones post-hoc
 

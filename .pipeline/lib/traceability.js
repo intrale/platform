@@ -1,14 +1,24 @@
 // V3 Traceability helpers — emite eventos session:start / session:end al activity-log
-// Contrato definido en issue #2477. Los consumen skills LLM y skills determinísticos.
+// Contrato definido en issue #2477 y extendido en #3083 (S5 multi-provider).
+// Los consumen skills LLM y skills determinísticos.
 //
 // Uso típico (skill determinístico):
 //   const trace = require('./traceability');
-//   const ctx = trace.emitSessionStart({ skill: 'builder', issue: 2476, phase: 'build', model: 'deterministic' });
+//   const ctx = trace.emitSessionStart({ skill: 'builder', issue: 2476, phase: 'build', provider: 'deterministic' });
 //   // ... trabajo ...
 //   trace.emitSessionEnd(ctx, { tool_calls: 0 });
 //
 // Uso típico (skill LLM, instrumentación desde pulpo.js):
-//   const ctx = trace.emitSessionStart({ skill: 'android-dev', issue: 2476, phase: 'dev', model: 'claude-opus-4-7' });
+//   const ctx = trace.emitSessionStart({
+//       skill: 'android-dev', issue: 2476, phase: 'dev',
+//       // (#3083) provider+model resueltos por agent-models.json (#3072).
+//       // Prohibido pasar literales hardcoded — el caller no debe inventar el modelo.
+//       provider: launchResult.provider,
+//       model: launchResult.model,
+//       cli_version: trace.resolveCliVersion(launcherPath),         // spawneado al boot, cacheado
+//       git_sha_provider_adapter: trace.resolveProviderAdapterSha(adapterPath),
+//       prompt_hash: trace.hashPromptPair(systemContent, userContent), // SHA-256 hex lowercase
+//   });
 //   // al terminar, extraer tokens del stream-json:
 //   trace.emitSessionEnd(ctx, { tokens_in, tokens_out, cache_read, cache_write, tool_calls });
 
@@ -16,7 +26,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const crypto = require('crypto');
+const { execSync, spawnSync } = require('child_process');
 
 function resolveRepoRoot() {
     const candidate = process.env.CLAUDE_PROJECT_DIR || process.env.PIPELINE_REPO_ROOT || 'C:\\Workspaces\\Intrale\\platform';
@@ -33,13 +44,171 @@ function resolveRepoRoot() {
 const REPO_ROOT = resolveRepoRoot();
 const LOG_FILE = path.join(REPO_ROOT, '.claude', 'activity-log.jsonl');
 
+// (#3083 / SEC-6) Piso hardcoded de retención forense. Cualquier configuración
+// menor a este valor (por error humano o config maliciosa) se eleva al piso
+// antes de aplicar. NO leer de config — el clamp tiene que vivir en código.
+const AUDIT_RETENTION_FLOOR_DAYS = 30;
+const AUDIT_RETENTION_DEFAULT_DAYS = 90;
+
+/**
+ * (#3083 / CA-7 / SEC-6) Eleva al piso de retención cualquier valor < 30 días.
+ * Default 90. Acepta number/string/null. Si llega `undefined`/`null`/NaN → 90.
+ * Si llega un número finito < 30 → 30. Si llega ≥ 30 → ese valor (sin tope superior).
+ *
+ * Justificación: una config maliciosa o un error humano (`retention_days: 1`)
+ * borraría evidencia forense antes de un incidente. El clamp vive en código
+ * para que no se pueda bypassear desde `config.yaml`.
+ */
+function clampRetentionDays(value) {
+    if (value === undefined || value === null || value === '') return AUDIT_RETENTION_DEFAULT_DAYS;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return AUDIT_RETENTION_DEFAULT_DAYS;
+    if (n < AUDIT_RETENTION_FLOOR_DAYS) return AUDIT_RETENTION_FLOOR_DAYS;
+    return Math.floor(n);
+}
+
 function appendEvent(evt) {
     try {
+        // (#3083 / CA-5) JSON.stringify garantiza que newlines / quotes dentro
+        // de strings (ej. `model: "fake\n{tampered}"`) queden escapados — no
+        // pueden inyectar una línea adicional al log. Test SEC-5 lo verifica.
         const line = JSON.stringify(evt) + '\n';
+        // (#3083 / CA-4 / SEC-4) Append-only enforced: SIEMPRE `appendFileSync`,
+        // nunca `writeFileSync` ni flags `w`/`r+`/`a+`. Si en algún momento esto
+        // cambia, el test SEC-4 falla (lint estático de no-regresión).
         fs.appendFileSync(LOG_FILE, line, 'utf8');
     } catch (e) {
         // no throw — la traza nunca debe romper un skill
         try { process.stderr.write('[traceability] append failed: ' + e.message + '\n'); } catch(_) {}
+    }
+}
+
+// =============================================================================
+// (#3083 / CA-3 / SEC-1) Hash de prompts — NUNCA persistir contenido del prompt
+// =============================================================================
+//
+// El módulo `traceability.js` NUNCA recibe el contenido del prompt como
+// parámetro a `emitSessionStart` o `emitSessionEnd`. El caller (pulpo.js)
+// hashea con este helper ANTES del spawn y pasa solo el digest.
+//
+// Algoritmo (documentado en docs/pipeline-multi-provider.md §6.8):
+//   1. Inputs: `systemContent` y `userContent` (strings).
+//   2. Normalización: UTF-8 NFC, sin trim, conservar bytes literales.
+//   3. Concatenación: `system + SOH + user`, donde SOH es el byte ``
+//      (Start Of Heading, no imprimible, jamás aparece en prompts en texto).
+//   4. Hash: SHA-256 hex lowercase (64 chars).
+//
+// Si alguno de los inputs es nulo/undefined → `null` (sesiones sin prompt:
+// skills determinísticos, sesiones de test).
+const PROMPT_HASH_SEPARATOR = ''; // SOH — byte no imprimible, no aparece en texto.
+
+function hashPromptPair(systemContent, userContent) {
+    if (systemContent === undefined || systemContent === null) return null;
+    if (userContent === undefined || userContent === null) return null;
+    try {
+        const sys = String(systemContent).normalize('NFC');
+        const usr = String(userContent).normalize('NFC');
+        const combined = sys + PROMPT_HASH_SEPARATOR + usr;
+        return crypto.createHash('sha256').update(combined, 'utf8').digest('hex');
+    } catch (e) {
+        // Si la normalización o el hash fallan (memoria, encoding raro), no
+        // queremos romper el spawn. `null` deja claro que no hay prompt
+        // verificable — el aggregator lo trata como legacy.
+        try { process.stderr.write('[traceability] hashPromptPair failed: ' + e.message + '\n'); } catch(_) {}
+        return null;
+    }
+}
+
+// =============================================================================
+// (#3083 / CA-2 / SEC-3) Resolución de cli_version — al boot, cacheado
+// =============================================================================
+//
+// El `cli_version` se resuelve via `<launcher> --version` UNA VEZ por launcher
+// path y se cachea. Reglas:
+//   - Si el launcher es deterministic / vacío → `'n/a'`.
+//   - Si el spawn falla / timeout / exit != 0 → `'unknown'`.
+//   - Caso éxito → la salida `trim()`-eada, recortada a 200 chars (defensa
+//     contra launchers que devuelven kilobytes).
+// Nunca `null` / `undefined` — el log siempre lleva string no-vacío.
+//
+// Cache: Map<launcherPath, version>. NO se invalida en runtime; reinicio del
+// pulpo basta para refrescar (criterio operacional: si cambia el binario, hay
+// `/restart` de por medio).
+const _cliVersionCache = new Map();
+
+function resolveCliVersion(launcherPath, opts) {
+    opts = opts || {};
+    if (!launcherPath || typeof launcherPath !== 'string') return 'n/a';
+    const cached = _cliVersionCache.get(launcherPath);
+    if (cached) return cached;
+    const _spawnSync = opts.spawnSyncImpl || spawnSync;
+    let result;
+    try {
+        result = _spawnSync(launcherPath, ['--version'], {
+            timeout: 5000,
+            encoding: 'utf8',
+            windowsHide: true,
+            shell: false,
+        });
+    } catch (e) {
+        _cliVersionCache.set(launcherPath, 'unknown');
+        return 'unknown';
+    }
+    if (!result || result.error || result.status !== 0) {
+        _cliVersionCache.set(launcherPath, 'unknown');
+        return 'unknown';
+    }
+    const raw = String(result.stdout || result.stderr || '').trim();
+    if (!raw) {
+        _cliVersionCache.set(launcherPath, 'unknown');
+        return 'unknown';
+    }
+    const ver = raw.slice(0, 200);
+    _cliVersionCache.set(launcherPath, ver);
+    return ver;
+}
+
+function _resetCliVersionCacheForTesting() {
+    _cliVersionCache.clear();
+}
+
+// =============================================================================
+// (#3083 / CA-2 / SEC-2) Resolución del SHA del adaptador del provider
+// =============================================================================
+//
+// El SHA del archivo del adaptador en uso (ej. `.pipeline/lib/agent-launcher/
+// providers/anthropic.js`) se resuelve via `git hash-object <file>`. Esto da
+// el hash del CONTENIDO del archivo, no de un commit — si alguien edita el
+// adaptador y olvida commit, el SHA cambia (deseado para forensia).
+//
+// **SEC-2**: PROHIBIDO leerlo de env vars. Un atacante con control de spawn
+// args puede setear `PROVIDER_ADAPTER_SHA=fake-sha` y mentir sobre qué
+// adaptador estaba activo. La resolución es siempre filesystem-driven.
+//
+// Si falla (git no disponible, archivo no existe, repo corrupto) → `null`
+// (señalable como "no resoluble" en el log).
+function resolveProviderAdapterSha(adapterPath, opts) {
+    opts = opts || {};
+    if (!adapterPath || typeof adapterPath !== 'string') return null;
+    const _execSync = opts.execSyncImpl || execSync;
+    const _fs = opts.fsImpl || fs;
+    try {
+        if (!_fs.existsSync(adapterPath)) return null;
+    } catch { return null; }
+    try {
+        // `git hash-object <file>` no requiere que el archivo esté commiteado.
+        // Es un hash determinístico del contenido (SHA-1 hex 40 chars).
+        const out = _execSync(`git hash-object "${adapterPath}"`, {
+            cwd: REPO_ROOT,
+            timeout: 5000,
+            windowsHide: true,
+            encoding: 'utf8',
+        });
+        const sha = String(out).trim();
+        if (/^[a-f0-9]{40}$/.test(sha)) return sha;
+        return null;
+    } catch (e) {
+        return null;
     }
 }
 
@@ -62,6 +231,18 @@ function envCtx() {
 function emitSessionStart(opts) {
     opts = opts || {};
     const env = envCtx();
+    const resolvedProvider = pick(opts, 'provider', env.provider);
+    const isDeterministic = resolvedProvider === 'deterministic';
+    // (#3083 / CA-8) Contrato explícito para skills determinísticos:
+    //   provider: 'deterministic'
+    //   cli_version: 'n/a'
+    //   git_sha_provider_adapter: null
+    //   prompt_hash: null   (en emitSessionEnd — start no lo persiste)
+    // El default de cli_version cuando el caller no lo pasa:
+    //   - deterministic → 'n/a' (no hay launcher LLM)
+    //   - cualquier otro → 'unknown' (el caller olvidó resolverlo)
+    // NUNCA `null`/`undefined` (SEC-3).
+    const cliVersionDefault = isDeterministic ? 'n/a' : 'unknown';
     const ctx = {
         event: 'session:start',
         skill: pick(opts, 'skill', env.skill),
@@ -71,7 +252,19 @@ function emitSessionStart(opts) {
         // (#3078) `provider` agregado por simetría con emitSessionEnd y para que
         // el handle lo propague sin que el caller lo repita. NUNCA un objeto:
         // debe ser un enum string corto (security: no metadata sensible acá).
-        provider: pick(opts, 'provider', env.provider),
+        provider: resolvedProvider,
+        // (#3083 / CA-2) `cli_version` — string no-vacío. Resuelto al boot del
+        // pulpo (helper `resolveCliVersion(launcherPath)`). Si el caller no lo
+        // pasa: 'n/a' (deterministic) o 'unknown' (LLM sin resolución).
+        cli_version: pick(opts, 'cli_version', cliVersionDefault),
+        // (#3083 / CA-2 / SEC-2) `git_sha_provider_adapter` — SHA del archivo
+        // del adaptador (`git hash-object`). `null` cuando deterministic.
+        // SEC-2: PROHIBIDO inferir de env vars. El caller debe resolverlo via
+        // `resolveProviderAdapterSha(adapterPath)` antes del spawn.
+        git_sha_provider_adapter: pick(
+            opts, 'git_sha_provider_adapter',
+            isDeterministic ? null : null
+        ),
         ts: new Date().toISOString(),
         pid: process.pid,
     };
@@ -83,6 +276,12 @@ function emitSessionStart(opts) {
         phase: ctx.phase,
         model: ctx.model,
         provider: ctx.provider,
+        cli_version: ctx.cli_version,
+        git_sha_provider_adapter: ctx.git_sha_provider_adapter,
+        // (#3083 / CA-3) `prompt_hash` viaja en el handle desde start hasta end
+        // para que `emitSessionEnd` lo persista junto con tokens y costo.
+        // No se persiste en `session:start` (sería redundante y aumenta superficie).
+        prompt_hash: pick(opts, 'prompt_hash', null),
         start_ts: Date.now(),
         pid: ctx.pid,
     };
@@ -99,20 +298,43 @@ function emitSessionEnd(handle, metrics) {
     //   3) `process.env.PIPELINE_PROVIDER` (paralelo a PIPELINE_SKILL)
     //   4) null → aggregator clasifica como legacy_llm (back-compat eventos pre-#3078)
     const provider = pick(metrics, 'provider', pick(handle, 'provider', env.provider || null));
+    const model = pick(handle, 'model', 'deterministic');
+    const tokens_in = Number(metrics.tokens_in || 0);
+    const tokens_out = Number(metrics.tokens_out || 0);
+    const cache_read = Number(metrics.cache_read || 0);
+    const cache_write = Number(metrics.cache_write || 0);
+    // (#3083 / CA-3) `cost_usd_estimated`: provider + model + tokens.
+    // `estimateCostUsd` ya valida allowlist y cae a 0 si algo no matchea
+    // (sanitización defensiva — NUNCA throw, jamás rompe la sesión).
+    // Para deterministic / unknown model → 0.
+    let cost_usd_estimated = 0;
+    try {
+        cost_usd_estimated = estimateCostUsd(provider, model, {
+            tokens_in, tokens_out, cache_read, cache_write,
+        });
+    } catch (_) { cost_usd_estimated = 0; }
+    // (#3083 / CA-3) `prompt_hash`: viene del handle (resuelto en start) o
+    // de `metrics` si el caller lo recalculó. NUNCA contenido — solo digest.
+    const prompt_hash = pick(metrics, 'prompt_hash', pick(handle, 'prompt_hash', null));
     const evt = {
         event: 'session:end',
         skill: pick(handle, 'skill', env.skill),
         issue: pick(handle, 'issue', env.issue),
         phase: pick(handle, 'phase', env.phase),
-        model: pick(handle, 'model', 'deterministic'),
+        model: model,
         provider: provider,
-        tokens_in: Number(metrics.tokens_in || 0),
-        tokens_out: Number(metrics.tokens_out || 0),
-        cache_read: Number(metrics.cache_read || 0),
-        cache_write: Number(metrics.cache_write || 0),
+        tokens_in: tokens_in,
+        tokens_out: tokens_out,
+        cache_read: cache_read,
+        cache_write: cache_write,
         duration_ms: Number(metrics.duration_ms || (Date.now() - startMs)),
         tool_calls: Number(metrics.tool_calls || 0),
         exit_code: metrics.exit_code === undefined ? null : Number(metrics.exit_code),
+        // (#3083 / CA-3) Nuevos campos S5:
+        //   - prompt_hash: SHA-256 hex lowercase o null (deterministic / sin prompt).
+        //   - cost_usd_estimated: USD calculado por `estimateCostUsd`.
+        prompt_hash: prompt_hash,
+        cost_usd_estimated: cost_usd_estimated,
         // #2993 — telemetría de handoff cross-agente. Solo contadores, NUNCA
         // contenido del handoff ni hashes que permitan reconstruirlo (CA-C1).
         // Ausentes (=0) cuando el feature está OFF o la fase no recibe inyección.
@@ -199,4 +421,14 @@ module.exports = {
     MODEL_PRICING,
     LOG_FILE,
     REPO_ROOT,
+    // (#3083) Helpers S5 — audit trail dinámico
+    hashPromptPair,
+    resolveCliVersion,
+    resolveProviderAdapterSha,
+    clampRetentionDays,
+    PROMPT_HASH_SEPARATOR,
+    AUDIT_RETENTION_FLOOR_DAYS,
+    AUDIT_RETENTION_DEFAULT_DAYS,
+    // exports internos para tests
+    _resetCliVersionCacheForTesting,
 };

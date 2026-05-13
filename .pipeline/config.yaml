@@ -427,3 +427,13 @@ handoff:
 # Ver: docs/pipeline-multi-provider.md §5.2 (acoplamiento A16).
 pipeline:
   env_isolation_enabled: false
+
+  # (#3083 / CA-7 / SEC-6) Retención forense del audit trail (activity-log.jsonl).
+  #
+  # Define cuántos días de logs append-only conservamos antes de rotar /
+  # depurar. Cualquier valor menor a 30 se eleva automáticamente al piso por
+  # `lib/traceability.js` (clamp en código — NO se puede bajar desde config
+  # por error humano o config maliciosa).
+  #
+  # Default: 90 días. Recomendado mínimo: 30 días (piso hardcoded).
+  audit_retention_days: 90
