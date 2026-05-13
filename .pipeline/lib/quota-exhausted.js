@@ -740,16 +740,27 @@ function detectFromResultEvent(evt, cfg = null) {
 }
 
 /**
- * Skills determinísticos (espejo de DETERMINISTIC_SKILLS en pulpo.js#L4782).
+ * Skills determinísticos. #3076 (H4) consolidó la fuente única en
+ * `lib/agent-models.js` — leer del helper en vez de duplicar la lista.
  * El gate pre-spawn deja pasar estos skills incluso con flag activo —
  * corren en Node puro sin tokens LLM.
+ *
+ * Lazy require: `agent-models-validate.js` (cargado vía `lib/agent-models.js`)
+ * a su vez hace lazy-require de este módulo para cross-validar
+ * KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER. Si hiciéramos el require al top-level,
+ * cargar `quota-exhausted` durante esa cross-validation devolvería un módulo
+ * a medio inicializar. El getter cacheado evita el ciclo manteniendo
+ * idempotencia (un solo cómputo, mismo Set en cada acceso).
  */
-const DETERMINISTIC_SKILLS = Object.freeze(
-    new Set(['build', 'tester', 'delivery', 'linter'])
-);
+let _deterministicSkillsRef = null;
+function _getDeterministicSkillsLazy() {
+    if (_deterministicSkillsRef) return _deterministicSkillsRef;
+    _deterministicSkillsRef = require('./agent-models').getDeterministicSkills();
+    return _deterministicSkillsRef;
+}
 
 function isDeterministicSkill(skill) {
-    return DETERMINISTIC_SKILLS.has(String(skill || '').trim().toLowerCase());
+    return _getDeterministicSkillsLazy().has(String(skill || '').trim().toLowerCase());
 }
 
 /**
@@ -817,7 +828,6 @@ module.exports = {
     MIN_RESETS_AT_MS,
     RAW_EXCERPT_MAX_CHARS,
     PATTERN_MATCHED_MAX_CHARS,
-    DETERMINISTIC_SKILLS,
     KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
 
     // Paths (útiles para tests)
@@ -830,3 +840,13 @@ module.exports = {
     _detectAnthropic,
     _detectOpenAI,
 };
+
+// #3076 (H4) — `DETERMINISTIC_SKILLS` se resuelve lazy para romper el ciclo
+// quota-exhausted ↔ agent-models-validate (vía cross-validation de
+// KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER). Getter cacheado mediante
+// `_getDeterministicSkillsLazy()`. Compatible con `.has()`, iteración y `[...set]`.
+Object.defineProperty(module.exports, 'DETERMINISTIC_SKILLS', {
+    enumerable: true,
+    configurable: false,
+    get() { return _getDeterministicSkillsLazy(); },
+});

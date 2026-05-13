@@ -314,15 +314,42 @@ test('getWindow tolera JSON corrupto sin tirar', () => {
 });
 
 // =========================================================================
-// Coherencia con DETERMINISTIC_SKILLS de pulpo.js
+// Coherencia con DETERMINISTIC_SKILLS — #3076 (H4) single-source-of-truth
 // =========================================================================
+//
+// Antes de #3076 este test validaba que el set hardcoded de
+// `rest-mode-window.js` coincidiera con el de `pulpo.js`. La consolidación
+// movió la lista a `agent-models.json` (validado por Ajv) y todos los
+// callers la leen vía `lib/agent-models.js → getDeterministicSkills()`.
+//
+// Reconvertimos el test para verificar dos invariantes nuevas:
+//   1. El módulo lee del helper (no de una constante propia).
+//   2. Cada skill declarado tiene archivo en `skills-deterministicos/`.
+//
+// La paridad cross-source con los otros 3 callers
+// (`providers/deterministic.js`, `quota-exhausted.js`, `dashboard-slices.js`)
+// la cubre `deterministic-skills-coherence.test.js`.
 
-test('DETERMINISTIC_SKILLS coincide con el set documentado', () => {
-    // Si pulpo.js cambia su set, este test obliga a actualizar el módulo.
-    assert.deepEqual(
-        [...rmw.DETERMINISTIC_SKILLS].sort(),
-        ['build', 'delivery', 'linter', 'tester'].sort()
-    );
+test('DETERMINISTIC_SKILLS proviene del helper agent-models.js (single source of truth)', () => {
+    const agentModels = require('../agent-models');
+    const fromHelper = [...agentModels.getDeterministicSkills()].sort();
+    const fromModule = [...rmw.DETERMINISTIC_SKILLS].sort();
+    assert.deepEqual(fromModule, fromHelper,
+        'rest-mode-window.DETERMINISTIC_SKILLS debe leer del helper agent-models.js, ' +
+        'no de una constante propia (H4 single-source-of-truth).');
+});
+
+test('cada skill declarado en agent-models.json tiene su .js en skills-deterministicos/', () => {
+    const PIPELINE_DIR = path.resolve(__dirname, '..', '..');
+    const skillsDir = path.join(PIPELINE_DIR, 'skills-deterministicos');
+    for (const skill of rmw.DETERMINISTIC_SKILLS) {
+        const scriptPath = path.join(skillsDir, `${skill}.js`);
+        assert.ok(
+            fs.existsSync(scriptPath),
+            `skill "${skill}" tiene provider:deterministic en agent-models.json pero ` +
+            `falta el archivo ${scriptPath}. Crear el script o quitar el skill del JSON.`
+        );
+    }
 });
 
 // =========================================================================

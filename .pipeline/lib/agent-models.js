@@ -39,6 +39,77 @@ const ALLOWLISTED_FIELDS_FOR_NOTIFICATION = Object.freeze([
     'launcher',
 ]);
 
+// =============================================================================
+// #3076 (H4) — getDeterministicSkills(): single-source-of-truth para la
+// allowlist de skills determinísticos.
+//
+// Antes de #3076 la lista vivía duplicada en 4 archivos (`providers/
+// deterministic.js`, `quota-exhausted.js`, `rest-mode-window.js`,
+// `dashboard-slices.js`) y el test cross-source `deterministic-skills-
+// coherence.test.js` impedía drift. Pero un skill nuevo seguía requiriendo
+// tocar código en 4 lugares — el objetivo de H4 es que basta editar
+// `agent-models.json`.
+//
+// Comportamiento:
+//   - Lee `agent-models.json` vía `loadAndValidate()` (que reutiliza
+//     `agent-models-validate.js` con Ajv 2020-12).
+//   - Devuelve un `Set<string>` congelado con los skills cuyo `provider`
+//     es `deterministic`.
+//   - Cachea el resultado al primer require — config estática, cambios
+//     requieren restart del pulpo (R5 aceptado en CA del PO).
+//   - Si el JSON no valida o no existe (caso edge: tests con tmpdir,
+//     checkout sin H1 mergeado), devuelve un Set vacío congelado. El boot
+//     del pulpo ya hace fail-fast vía `agent-models-validate.js`, así que
+//     en producción esto no se da. Tests que necesitan refrescar el cache
+//     usan `_resetDeterministicSkillsCacheForTests()`.
+//
+// Defensa I4 (path-traversal): el resultado se usa para validar el nombre
+// del skill ANTES de spawn (ver `providers/deterministic.js`). Como el JSON
+// pasa por schema con `additionalProperties:false` y los nombres de skills
+// están restringidos por patrón (`^[a-z0-9-]+$` en el schema), la allowlist
+// resultante es segura para concatenar en `path.join`.
+// =============================================================================
+let _deterministicSkillsCache = null;
+
+function _computeDeterministicSkills(options) {
+    const result = loadAndValidate(options);
+    const out = new Set();
+    if (result && result.ok && result.config && result.config.skills) {
+        for (const [name, def] of Object.entries(result.config.skills)) {
+            if (def && def.provider === 'deterministic') out.add(name);
+        }
+    }
+    return Object.freeze(out);
+}
+
+/**
+ * Devuelve el set congelado de skills con `provider: deterministic` en
+ * `agent-models.json`. Cacheado al primer require.
+ *
+ * @param {object} [options]
+ * @param {string} [options.jsonPath] — override (tests). NO usa cache.
+ * @param {string} [options.schemaPath] — override (tests). NO usa cache.
+ * @param {boolean} [options.forceReload] — fuerza recálculo sin actualizar cache.
+ * @returns {Set<string>} Set congelado de nombres de skill.
+ */
+function getDeterministicSkills(options) {
+    const _opts = options || {};
+    if (_opts.jsonPath || _opts.schemaPath || _opts.forceReload) {
+        return _computeDeterministicSkills(_opts);
+    }
+    if (_deterministicSkillsCache) return _deterministicSkillsCache;
+    _deterministicSkillsCache = _computeDeterministicSkills(_opts);
+    return _deterministicSkillsCache;
+}
+
+/**
+ * Reset del cache. Solo para tests — el pipeline en producción usa config
+ * estática y no requiere invalidación.
+ */
+function _resetDeterministicSkillsCacheForTests() {
+    _deterministicSkillsCache = null;
+}
+
 /**
  * Carga y valida `agent-models.json` reusando el validador canónico.
  * No lanza — devuelve `{ ok, config, errors }` para que el caller decida.
@@ -129,6 +200,9 @@ module.exports = {
     loadAndValidate,
     resolveModel,
     allowlistedFieldsForDiff,
+    // #3076 (H4) — single-source-of-truth para skills determinísticos.
+    getDeterministicSkills,
+    _resetDeterministicSkillsCacheForTests,
     // Re-exports cómodos para callers que quieren validar sin pasar por el loader.
     CANONICAL_JSON_PATH: validator.CANONICAL_JSON_PATH,
     CANONICAL_SCHEMA_PATH: validator.CANONICAL_SCHEMA_PATH,

@@ -15,13 +15,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
+const agentModels = require('../../agent-models');
 
 // -----------------------------------------------------------------------------
-// Allowlist hardcoded — invariante de seguridad I4 (path-traversal defense).
-// NUNCA cambiar a require dinámico sobre `skill`: si un atacante con permiso de
-// PR edita esto, podría inyectar un script fuera de skills-deterministicos/.
+// Allowlist derivada de `agent-models.json` — invariante de seguridad I4
+// (path-traversal defense). #3076 (H4) consolidó las 4 mirrors en el helper
+// único `lib/agent-models.js`. El JSON pasa por schema Ajv 2020-12 en boot
+// del pulpo (`agent-models-validate.js`, fail-fast), y los nombres de skills
+// están restringidos por patrón en el schema.
+//
+// NUNCA cambiar a require dinámico sobre `skill`: si un atacante con permiso
+// de PR edita esto, podría inyectar un script fuera de skills-deterministicos/.
+// La combinación allowlist + path.join estricto evita path-traversal.
 // -----------------------------------------------------------------------------
-const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
+const DETERMINISTIC_SKILLS = agentModels.getDeterministicSkills();
 
 function isDeterministic(skill) {
     return DETERMINISTIC_SKILLS.has(skill);

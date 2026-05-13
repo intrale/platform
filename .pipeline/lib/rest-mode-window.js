@@ -31,10 +31,10 @@ const path = require('path');
 
 const DEFAULT_PIPELINE_DIR = path.resolve(__dirname, '..');
 
-// Mismo set que pulpo.js — duplicado a propósito para no introducir un
-// require circular (pulpo → este módulo → pulpo). Si se cambia uno, cambiar
-// el otro. Test de coherencia en `__tests__/rest-mode-window.test.js`.
-const DETERMINISTIC_SKILLS = Object.freeze(['delivery', 'build', 'linter', 'tester']);
+// #3076 (H4) — single-source-of-truth en `lib/agent-models.js`. El helper es
+// módulo hoja (no importa pulpo ni rest-mode-window), así que el require
+// directo no introduce ciclo. Eliminado el duplicado a propósito.
+const DETERMINISTIC_SKILLS = require('./agent-models').getDeterministicSkills();
 
 const DEFAULT_TIMEZONE = 'America/Argentina/Buenos_Aires';
 const DEFAULT_DAYS = Object.freeze([0, 1, 2, 3, 4, 5, 6]);
@@ -376,7 +376,7 @@ function isSkillAllowedNow(skill, now, opts) {
         : (typeof now === 'number' ? now : Date.now());
 
     const within = isWithinWindow(window, nowMs);
-    const isDeterministic = DETERMINISTIC_SKILLS.indexOf(String(skill)) >= 0;
+    const isDeterministic = DETERMINISTIC_SKILLS.has(String(skill));
 
     if (!within) {
         return {

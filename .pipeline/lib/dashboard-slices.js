@@ -22,11 +22,10 @@ let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
-// eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
-// sincronizado con `DETERMINISTIC_SKILLS` del detector (#2974,
-// `lib/quota-exhausted.js`). Si divergen, el dashboard puede mostrar un
-// conteo distinto al gate real del pulpo.
-const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
+// eso siguen ejecutándose aún con `quota-exhausted.json` activo.
+// #3076 (H4) — single-source-of-truth en `lib/agent-models.js`. El helper
+// cachea el set desde `agent-models.json` (validado por Ajv en boot).
+const DETERMINISTIC_SKILLS = require('./agent-models').getDeterministicSkills();
 
 // #3023 — Filtro de la cola "Próximos 10" por allowlist de pausa parcial.
 // Importación defensiva: si el módulo no está disponible (edge: checkout
