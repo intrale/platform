@@ -41,50 +41,70 @@ const PANEL_CSS = `
 .mp-tabpanel { display: none; }
 .mp-tabpanel.active { display: block; }
 
+/* Iconografía sprite (UX #3086 + #3177): los SVG <use> heredan currentColor.
+   ic-* siguen la convención de viewBox 24x24 / stroke 1.75 del sprite UX. */
+.mp-icon { width: 14px; height: 14px; display: inline-block; vertical-align: -2px; flex: 0 0 auto; }
+.mp-icon.lg { width: 20px; height: 20px; vertical-align: -4px; }
+.mp-icon.xl { width: 22px; height: 22px; vertical-align: -5px; }
+
 .mp-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 16px 18px; margin-bottom: 14px; }
 .mp-card-head { display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; }
 .mp-card-title { font-size: 14px; font-weight: 600; }
 .mp-card-sub { color: var(--in-fg-dim); font-size: 12px; }
 
-.mp-row { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px dashed var(--in-border); }
+/* Fila base + soporte de paleta por provider (#3086 — tokens --provider-*).
+   El --row-accent se setea inline desde el JS: var(--provider-anthropic) etc. */
+.mp-row { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-bottom: 1px dashed var(--in-border); border-left: 3px solid transparent; border-radius: 4px; }
 .mp-row:last-child { border-bottom: none; }
-.mp-row-label { flex: 0 0 160px; font-weight: 500; }
+.mp-row.has-provider-accent { border-left-color: var(--row-accent, var(--in-border)); background: linear-gradient(90deg, color-mix(in srgb, var(--row-accent, transparent) 6%, transparent) 0%, transparent 40%); }
+.mp-row-label { flex: 0 0 160px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.mp-row-label .mp-icon { color: var(--row-accent, var(--in-fg-dim)); }
 .mp-row-input { flex: 1; }
 .mp-row-actions { flex: 0 0 auto; display: flex; gap: 6px; }
 
-.mp-mask { font-family: var(--in-mono, monospace); font-size: 12px; padding: 4px 8px; background: var(--in-bg); border-radius: 4px; }
-.mp-status { font-size: 11px; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
+.mp-mask-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.mp-mask { font-family: var(--in-mono, monospace); font-size: 12px; padding: 4px 8px; background: var(--in-bg); border-radius: 4px; display: inline-flex; align-items: center; gap: 6px; }
+.mp-mask .mp-icon { color: var(--in-fg-dim); }
+.mp-status { font-size: 11px; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; display: inline-flex; align-items: center; gap: 4px; }
+.mp-status .mp-icon { width: 11px; height: 11px; }
 .mp-status.present { background: var(--in-ok-soft); color: var(--in-ok); }
 .mp-status.absent { background: var(--in-bad-soft); color: var(--in-bad); }
 .mp-status.placeholder { background: var(--in-warn-soft); color: var(--in-warn); }
 
-.mp-btn { background: var(--in-accent); color: #fff; border: none; padding: 7px 14px; font-size: 12px; font-weight: 500; border-radius: 6px; cursor: pointer; }
+.mp-btn { background: var(--in-accent); color: #fff; border: none; padding: 7px 14px; font-size: 12px; font-weight: 500; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .mp-btn:hover { filter: brightness(1.08); }
 .mp-btn:disabled { opacity: .45; cursor: not-allowed; }
 .mp-btn.danger { background: var(--in-bad); }
 .mp-btn.ghost { background: transparent; color: var(--in-fg); border: 1px solid var(--in-border); }
 .mp-btn.small { padding: 4px 9px; font-size: 11px; }
+.mp-btn .mp-icon { width: 13px; height: 13px; }
 
 .mp-input, .mp-select, .mp-textarea { width: 100%; background: var(--in-bg); border: 1px solid var(--in-border); color: var(--in-fg); padding: 7px 9px; font-size: 12px; border-radius: 6px; font-family: inherit; }
 .mp-textarea { min-height: 60px; resize: vertical; font-family: var(--in-mono, monospace); }
 .mp-input:focus, .mp-select:focus, .mp-textarea:focus { outline: none; border-color: var(--in-accent); }
 
+/* Grilla por agente: cada card recibe --row-accent inline (paleta del provider).
+   Override → franja naranja var(--in-warn). NON-DEGRADABLE → franja roja var(--in-bad). */
 .mp-skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.mp-skill-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 12px 14px; }
-.mp-skill-card.has-override { border-color: var(--in-warn); }
-.mp-skill-card.non-degradable { opacity: .85; }
+.mp-skill-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-left: 3px solid var(--row-accent, var(--in-border)); border-radius: var(--in-radius-sm); padding: 12px 14px; position: relative; }
+.mp-skill-card.has-override { --row-accent: var(--in-warn); border-color: var(--in-warn); }
+.mp-skill-card.non-degradable { --row-accent: var(--in-bad); opacity: .92; }
 .mp-skill-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.mp-skill-name { font-weight: 600; font-size: 13px; }
-.mp-skill-badge { font-size: 10px; padding: 2px 6px; border-radius: 3px; }
+.mp-skill-name { font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+.mp-skill-name .mp-icon { color: var(--row-accent, var(--in-fg-dim)); }
+.mp-skill-badge { font-size: 10px; padding: 2px 6px; border-radius: 3px; display: inline-flex; align-items: center; gap: 3px; }
+.mp-skill-badge .mp-icon { width: 11px; height: 11px; }
 .mp-skill-badge.warn { background: var(--in-warn-soft); color: var(--in-warn); }
-.mp-skill-badge.locked { background: var(--in-bg); color: var(--in-fg-dim); }
+.mp-skill-badge.locked { background: var(--in-bad-soft); color: var(--in-bad); font-weight: 600; }
 .mp-skill-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-top: 6px; }
 .mp-skill-row > label { color: var(--in-fg-dim); flex: 0 0 78px; }
 .mp-skill-row select { flex: 1; }
 
-.mp-fallback-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--in-bg); border: 1px solid var(--in-border); padding: 2px 7px; font-size: 11px; border-radius: 4px; margin: 2px; }
+.mp-fallback-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--in-bg); border: 1px solid var(--in-border); border-left: 2px solid var(--row-accent, var(--in-border)); padding: 2px 7px; font-size: 11px; border-radius: 4px; margin: 2px; }
+.mp-fallback-chip .mp-icon { color: var(--in-fg-dim); cursor: grab; }
 .mp-fallback-chip button { background: transparent; border: none; color: var(--in-fg-dim); cursor: pointer; font-size: 13px; padding: 0; line-height: 1; }
-.mp-fallback-add { background: transparent; border: 1px dashed var(--in-border); color: var(--in-fg-dim); padding: 2px 7px; font-size: 11px; border-radius: 4px; cursor: pointer; }
+.mp-fallback-add { background: transparent; border: 1px dashed var(--in-border); color: var(--in-fg-dim); padding: 2px 7px; font-size: 11px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.mp-fallback-add .mp-icon { width: 11px; height: 11px; }
 
 .mp-catalog-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .mp-catalog-table th, .mp-catalog-table td { padding: 6px 10px; border-bottom: 1px solid var(--in-border); text-align: left; }
@@ -94,7 +114,10 @@ const PANEL_CSS = `
 .mp-override-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .mp-override-table th, .mp-override-table td { padding: 7px 10px; border-bottom: 1px solid var(--in-border); text-align: left; vertical-align: top; }
 .mp-override-table th { color: var(--in-fg-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
-.mp-ttl-countdown { font-variant-numeric: tabular-nums; color: var(--in-warn); font-weight: 500; }
+.mp-override-table tr { border-left: 3px solid transparent; }
+.mp-override-table tr.has-provider-accent td:first-child { border-left: 3px solid var(--row-accent, var(--in-warn)); padding-left: 12px; }
+.mp-ttl-countdown { font-variant-numeric: tabular-nums; color: var(--in-warn); font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+.mp-ttl-countdown .mp-icon { color: currentColor; }
 .mp-ttl-countdown.expiring { color: var(--in-bad); }
 
 .mp-diff-preview { background: var(--in-bg); border: 1px solid var(--in-border); border-radius: 6px; padding: 10px 12px; font-family: var(--in-mono, monospace); font-size: 11.5px; line-height: 1.6; max-height: 220px; overflow-y: auto; }
@@ -116,12 +139,15 @@ const PANEL_CSS = `
 function bodyHtml() {
     return `
 <section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">🎛</span>Multi-Provider — configuración del pipeline</h2>
+  <h2 class="in-section-title">
+    <span class="in-section-title-icon" aria-hidden="true"><svg class="mp-icon xl" viewBox="0 0 24 24"><use href="/assets/icons/sprite.svg#ic-multi-provider"></use></svg></span>
+    Multi-Provider — configuración del pipeline
+  </h2>
 
   <div class="mp-toolbar">
-    <button class="mp-btn" id="mp-save-btn" disabled>Guardar cambios</button>
-    <button class="mp-btn ghost" id="mp-preview-btn">Previsualizar diff</button>
-    <button class="mp-btn ghost" id="mp-reload-btn">Reload pipeline</button>
+    <button class="mp-btn" id="mp-save-btn" disabled><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-diff"></use></svg>Guardar cambios</button>
+    <button class="mp-btn ghost" id="mp-preview-btn"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-diff"></use></svg>Previsualizar diff</button>
+    <button class="mp-btn ghost" id="mp-reload-btn"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-reset-default"></use></svg>Reload pipeline</button>
     <span class="mp-msg" id="mp-msg">Cargando…</span>
   </div>
 
@@ -134,7 +160,7 @@ function bodyHtml() {
 
   <div class="mp-tabpanel active" id="mp-tab-providers">
     <div class="mp-card">
-      <div class="mp-card-head"><div><div class="mp-card-title">Proveedores y API keys</div><div class="mp-card-sub">Rotación con masking. Anthropic se gestiona vía OAuth/MAX — no editable acá.</div></div></div>
+      <div class="mp-card-head"><div><div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-key"></use></svg> Proveedores y API keys</div><div class="mp-card-sub">Rotación con masking. Anthropic se gestiona vía OAuth/MAX — no editable acá.</div></div></div>
       <div id="mp-providers-list"></div>
     </div>
 
@@ -149,7 +175,7 @@ function bodyHtml() {
 
   <div class="mp-tabpanel" id="mp-tab-skills">
     <div class="mp-card">
-      <div class="mp-card-head"><div><div class="mp-card-title">Configuración por agente</div><div class="mp-card-sub">Provider + model override + fallbacks. Badge naranja = override activo. Badge gris = skill non-degradable (no admite override).</div></div></div>
+      <div class="mp-card-head"><div><div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-fallback-chain"></use></svg> Configuración por agente</div><div class="mp-card-sub">Provider + model override + fallbacks. Franja naranja = override activo. Franja roja = skill NON-DEGRADABLE.</div></div></div>
       <div class="mp-skill-grid" id="mp-skills-grid"></div>
     </div>
   </div>
@@ -167,8 +193,8 @@ function bodyHtml() {
   <div class="mp-tabpanel" id="mp-tab-overrides">
     <div class="mp-card">
       <div class="mp-card-head">
-        <div><div class="mp-card-title">Permission Overrides — vigentes</div><div class="mp-card-sub">TTL countdown en vivo. Revocar quita el override inmediatamente (append-only en audit log).</div></div>
-        <button class="mp-btn small" id="mp-override-create-btn">+ Crear override</button>
+        <div><div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-override-active"></use></svg> Permission Overrides — vigentes</div><div class="mp-card-sub">TTL countdown en vivo. Revocar quita el override inmediatamente (append-only en audit log).</div></div>
+        <button class="mp-btn small" id="mp-override-create-btn"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-override-active"></use></svg>Crear override</button>
       </div>
       <table class="mp-override-table" id="mp-overrides-active">
         <thead><tr><th>Skill</th><th>Provider</th><th>Capabilities diff</th><th>TTL</th><th>Justificación</th><th>Autor</th><th></th></tr></thead>
@@ -187,30 +213,30 @@ function bodyHtml() {
 
 <div class="mp-modal-bg" id="mp-modal-rotate">
   <div class="mp-modal">
-    <h3>Rotar API key</h3>
+    <h3><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-key-rotate"></use></svg> Rotar API key</h3>
     <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 12px">Provider: <strong id="mp-rotate-provider"></strong>. La key actual será sobreescrita con backup automático.</p>
     <div class="mp-row"><div class="mp-row-label">Nueva API key</div><div class="mp-row-input"><input type="password" class="mp-input" id="mp-rotate-value" autocomplete="off" placeholder="sk-..."></div></div>
     <div class="mp-modal-actions">
       <button class="mp-btn ghost" onclick="closeModal('mp-modal-rotate')">Cancelar</button>
-      <button class="mp-btn" id="mp-rotate-submit">Rotar key</button>
+      <button class="mp-btn" id="mp-rotate-submit"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-key-rotate"></use></svg>Rotar key</button>
     </div>
   </div>
 </div>
 
 <div class="mp-modal-bg" id="mp-modal-diff">
   <div class="mp-modal" style="width:min(720px,90vw)">
-    <h3>Preview de cambios</h3>
+    <h3><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-diff"></use></svg> Preview de cambios</h3>
     <div class="mp-diff-preview" id="mp-diff-content">—</div>
     <div class="mp-modal-actions">
       <button class="mp-btn ghost" onclick="closeModal('mp-modal-diff')">Cerrar</button>
-      <button class="mp-btn" id="mp-diff-apply">Aplicar y guardar</button>
+      <button class="mp-btn" id="mp-diff-apply"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-diff"></use></svg>Aplicar y guardar</button>
     </div>
   </div>
 </div>
 
 <div class="mp-modal-bg" id="mp-modal-override">
   <div class="mp-modal">
-    <h3>Crear permission override</h3>
+    <h3><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-override-active"></use></svg> Crear permission override</h3>
     <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 12px">Concede capabilities adicionales a un par (skill, provider). TTL máx 168h. Skills NON_DEGRADABLE no aparecen en la lista.</p>
     <div class="mp-row"><div class="mp-row-label">Skill</div><div class="mp-row-input"><select class="mp-select" id="mp-ov-skill"></select></div></div>
     <div class="mp-row"><div class="mp-row-label">Provider</div><div class="mp-row-input"><select class="mp-select" id="mp-ov-provider"></select></div></div>
@@ -219,19 +245,19 @@ function bodyHtml() {
     <div class="mp-row"><div class="mp-row-label">Justificación (≥30 chars)</div><div class="mp-row-input"><textarea class="mp-textarea" id="mp-ov-justify" placeholder="Motivo concreto — incidente, validación, etc."></textarea></div></div>
     <div class="mp-modal-actions">
       <button class="mp-btn ghost" onclick="closeModal('mp-modal-override')">Cancelar</button>
-      <button class="mp-btn" id="mp-ov-submit">Crear</button>
+      <button class="mp-btn" id="mp-ov-submit"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-override-active"></use></svg>Crear</button>
     </div>
   </div>
 </div>
 
 <div class="mp-modal-bg" id="mp-modal-revoke">
   <div class="mp-modal">
-    <h3>Revocar override</h3>
+    <h3><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-revoke"></use></svg> Revocar override</h3>
     <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 12px">Hash: <code id="mp-revoke-hash"></code></p>
     <div class="mp-row"><div class="mp-row-label">Motivo (≥10 chars)</div><div class="mp-row-input"><textarea class="mp-textarea" id="mp-revoke-motivo" placeholder="Razón por la que cortás el override antes del TTL."></textarea></div></div>
     <div class="mp-modal-actions">
       <button class="mp-btn ghost" onclick="closeModal('mp-modal-revoke')">Cancelar</button>
-      <button class="mp-btn danger" id="mp-revoke-submit">Revocar</button>
+      <button class="mp-btn danger" id="mp-revoke-submit"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-revoke"></use></svg>Revocar</button>
     </div>
   </div>
 </div>
@@ -293,6 +319,67 @@ function escapeHtml(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&a
 function openModal(id) { const m = document.getElementById(id); if (m) m.classList.add('open'); }
 function closeModal(id) { const m = document.getElementById(id); if (m) m.classList.remove('open'); }
 
+// =====================================================================
+// Sistema visual UX (#3086/#3129 + #3177).
+//
+// Helpers que consumen los assets entregados por UX en
+// .pipeline/assets/icons/sprite.svg (55 símbolos, viewBox 24x24).
+// El sprite se sirve estáticamente desde GET /assets/icons/sprite.svg
+// (server.js). Los SVG <use> heredan currentColor para integrarse con
+// la paleta del theme (var(--in-*) y var(--provider-*)).
+// =====================================================================
+
+/**
+ * Devuelve el HTML de un ícono del sprite UX por nombre (sin prefijo ic-).
+ * @param {string} name — ej. 'multi-provider', 'key', 'shield-lock'.
+ * @param {string} size — 'sm' (default 14px), 'lg' (20px), 'xl' (22px).
+ * @param {string} aria — label opcional; si falta se marca aria-hidden.
+ */
+function iconSvg(name, size, aria) {
+    const cls = size ? 'mp-icon ' + size : 'mp-icon';
+    const accessibility = aria
+        ? 'role="img" aria-label="' + escapeHtml(aria) + '"'
+        : 'aria-hidden="true"';
+    return '<svg class="' + cls + '" viewBox="0 0 24 24" ' + accessibility + '><use href="/assets/icons/sprite.svg#ic-' + name + '"></use></svg>';
+}
+
+/**
+ * Mapping provider -> token CSS de la paleta --provider-* (#3086).
+ * Allowlist cerrada — providers fuera del set caen en provider-unknown
+ * (regla R6 anti-fallback documentada en design-tokens.css).
+ * @returns {string} el nombre del token CSS (sin var()).
+ */
+function providerToken(provider) {
+    const p = String(provider || '').toLowerCase();
+    if (p === 'anthropic') return '--provider-anthropic';
+    if (p === 'openai') return '--provider-openai';
+    if (p === 'openai-codex' || p === 'codex') return '--provider-openai-codex';
+    if (p === 'deterministic') return '--provider-deterministic';
+    return '--provider-unknown';
+}
+
+/**
+ * Ícono del sprite que representa al provider (#3086 + #3129).
+ * @returns {string} HTML del <svg><use>.
+ */
+function providerIcon(provider, size) {
+    const p = String(provider || '').toLowerCase();
+    if (p === 'anthropic') return iconSvg('provider-anthropic', size);
+    if (p === 'openai') return iconSvg('provider-openai', size);
+    if (p === 'openai-codex' || p === 'codex') return iconSvg('provider-openai-codex', size);
+    if (p === 'deterministic') return iconSvg('provider-deterministic', size);
+    return iconSvg('provider-unknown', size);
+}
+
+/**
+ * Map status string → ícono de conexión live-ping (CA-4).
+ */
+function connIcon(status) {
+    if (status === 'present') return iconSvg('conn-ok');
+    if (status === 'placeholder') return iconSvg('conn-warn');
+    return iconSvg('conn-err');
+}
+
 async function loadAll() {
     setMsg('Cargando configuración…');
     await fetchCsrf();
@@ -329,19 +416,29 @@ function renderProviders() {
     c.innerHTML = '';
     for (const k of mpState.keys) {
         const row = document.createElement('div');
-        row.className = 'mp-row';
+        // Aplica la paleta --provider-* del UX (#3086) al accent de la fila.
+        // El --row-accent se hereda en el ::before / borde izquierdo via CSS.
+        row.className = 'mp-row has-provider-accent';
+        row.style.setProperty('--row-accent', 'var(' + providerToken(k.provider) + ')');
         const statusClass = k.status;
         const statusLabel = k.status === 'present' ? 'configurada' : k.status === 'placeholder' ? 'placeholder' : 'sin key';
         row.innerHTML = \`
-            <div class="mp-row-label">\${escapeHtml(k.label)}</div>
+            <div class="mp-row-label" title="Provider \${escapeHtml(k.provider||'')}">
+                \${providerIcon(k.provider, 'lg')}
+                <span>\${escapeHtml(k.label)}</span>
+            </div>
             <div class="mp-row-input">
-                <span class="mp-mask">\${k.masked || '—'}</span>
-                <span class="mp-status \${statusClass}">\${statusLabel}</span>
-                \${k.fingerprint ? '<span class="mp-card-sub" style="margin-left:8px">fp '+k.fingerprint.slice(0,8)+'</span>' : ''}
+                <span class="mp-mask">\${iconSvg('key')}\${k.masked ? escapeHtml(k.masked) : '—'}</span>
+                <span class="mp-status \${statusClass}" aria-label="Estado: \${statusLabel}">\${connIcon(k.status)}\${statusLabel}</span>
+                \${k.fingerprint ? '<span class="mp-card-sub" style="margin-left:8px">fp '+escapeHtml(k.fingerprint.slice(0,8))+'</span>' : ''}
             </div>
             <div class="mp-row-actions">
-                <button class="mp-btn small ghost" data-act="ping" data-provider="\${k.provider}" \${k.status==='absent'?'disabled':''}>Ping</button>
-                <button class="mp-btn small" data-act="rotate" data-provider="\${k.provider}" \${k.editable?'':'disabled title="'+escapeHtml(k.reason||'')+'"'}>Rotar key</button>
+                <button class="mp-btn small ghost" data-act="ping" data-provider="\${escapeHtml(k.provider)}" \${k.status==='absent'?'disabled':''} title="Live-ping al provider">
+                    \${iconSvg('test-ping')}Ping
+                </button>
+                <button class="mp-btn small" data-act="rotate" data-provider="\${escapeHtml(k.provider)}" \${k.editable?'':'disabled title="'+escapeHtml(k.reason||'')+'"'}>
+                    \${iconSvg('key-rotate')}Rotar
+                </button>
             </div>\`;
         c.appendChild(row);
     }
@@ -411,24 +508,41 @@ function renderSkillsGrid() {
         card.className = 'mp-skill-card';
         if (activeOv) card.classList.add('has-override');
         if (nonDegradable.has(skill)) card.classList.add('non-degradable');
+        // Paleta del provider primario para la franja lateral (UX #3086).
+        // Override y NON-DEGRADABLE tienen --row-accent en sus reglas CSS,
+        // por lo que NO se pisa el inline si esas clases están activas
+        // (mockup: naranja override / rojo non-degradable mandan).
+        if (!activeOv && !nonDegradable.has(skill)) {
+            card.style.setProperty('--row-accent', 'var(' + providerToken(cfg.provider) + ')');
+        }
         const badges = [];
         if (activeOv) {
             const hoursLeft = Math.max(0, Math.round((activeOv.expires_at - Date.now()) / 3600000));
-            badges.push('<span class="mp-skill-badge warn" title="Override activo">override '+hoursLeft+'h</span>');
+            badges.push('<span class="mp-skill-badge warn" title="Override activo (TTL ' + hoursLeft + 'h)">' + iconSvg('override-active') + 'override · ' + hoursLeft + 'h</span>');
         }
-        if (nonDegradable.has(skill)) badges.push('<span class="mp-skill-badge locked" title="No admite override por diseño de seguridad">non-degradable</span>');
+        if (nonDegradable.has(skill)) badges.push('<span class="mp-skill-badge locked" title="No admite override por diseño de seguridad (fail-CLOSED)">' + iconSvg('shield-lock') + 'NON-DEGRADABLE</span>');
         const provOpts = providers.map(p => '<option value="'+escapeHtml(p)+'" '+(cfg.provider===p?'selected':'')+'>'+escapeHtml(p)+'</option>').join('');
         const fbs = Array.isArray(cfg.fallbacks) ? cfg.fallbacks : [];
-        const fbChips = fbs.map((f, i) => '<span class="mp-fallback-chip">'+escapeHtml(f)+' <button data-skill="'+escapeHtml(skill)+'" data-idx="'+i+'" data-act="rmfb">×</button></span>').join('');
+        const fbChips = fbs.map((f, i) =>
+            '<span class="mp-fallback-chip" style="--row-accent: var(' + providerToken(f) + ')">' +
+                iconSvg('drag-handle') +
+                providerIcon(f) +
+                escapeHtml(f) +
+                ' <button data-skill="' + escapeHtml(skill) + '" data-idx="' + i + '" data-act="rmfb" aria-label="Quitar fallback ' + escapeHtml(f) + '">×</button>' +
+            '</span>'
+        ).join('');
+        // En NON-DEGRADABLE el botón reset queda disabled para reforzar el mockup
+        // (no se oculta — el operador debe ver la protección, no descubrirla).
+        const resetDisabled = nonDegradable.has(skill) ? 'disabled title="Skill NON-DEGRADABLE: no admite reset por override"' : '';
         card.innerHTML = \`
             <div class="mp-skill-head">
-                <span class="mp-skill-name">\${escapeHtml(skill)}</span>
+                <span class="mp-skill-name">\${providerIcon(cfg.provider)}\${escapeHtml(skill)}</span>
                 <div style="margin-left:auto">\${badges.join(' ')}</div>
             </div>
             <div class="mp-skill-row"><label>Provider</label><select class="mp-select" data-skill="\${escapeHtml(skill)}" data-field="provider">\${provOpts}</select></div>
             <div class="mp-skill-row"><label>Modelo</label><input type="text" class="mp-input" data-skill="\${escapeHtml(skill)}" data-field="model_override" placeholder="default del provider" value="\${escapeHtml(cfg.model_override||'')}"></div>
-            <div class="mp-skill-row"><label>Fallbacks</label><div style="flex:1">\${fbChips} <button class="mp-fallback-add" data-skill="\${escapeHtml(skill)}" data-act="addfb">+ agregar</button></div></div>
-            <div class="mp-skill-row" style="font-size:11px;color:var(--in-fg-dim)"><label>Reset</label><button class="mp-btn small ghost" data-skill="\${escapeHtml(skill)}" data-act="reset">Volver al default</button></div>
+            <div class="mp-skill-row"><label>Fallbacks</label><div style="flex:1">\${fbChips} <button class="mp-fallback-add" data-skill="\${escapeHtml(skill)}" data-act="addfb">\${iconSvg('fallback-chain')}agregar</button></div></div>
+            <div class="mp-skill-row" style="font-size:11px;color:var(--in-fg-dim)"><label>Reset</label><button class="mp-btn small ghost" data-skill="\${escapeHtml(skill)}" data-act="reset" \${resetDisabled}>\${iconSvg('reset-default')}Volver al default</button></div>
         \`;
         grid.appendChild(card);
     }
@@ -480,9 +594,11 @@ function renderCatalog() {
     for (const [provider, list] of Object.entries(mpState.catalog.catalog)) {
         for (const m of list) {
             const tr = document.createElement('tr');
+            // Aplica acento de paleta UX al primer td (#3086 anti-fallback).
+            tr.style.setProperty('--row-accent', 'var(' + providerToken(provider) + ')');
             const caps = (m.capabilities||[]).map(c => '<span class="mp-cap-pill">'+escapeHtml(c)+'</span>').join('');
             tr.innerHTML = \`
-                <td>\${escapeHtml(provider)}</td>
+                <td style="color: var(--row-accent); font-weight: 500;">\${providerIcon(provider)} \${escapeHtml(provider)}</td>
                 <td><strong>\${escapeHtml(m.id)}</strong><br><span style="color:var(--in-fg-dim);font-size:11px">\${escapeHtml(m.label||'')}</span></td>
                 <td>\${m.context_window ? (m.context_window/1000).toFixed(0)+'k' : '—'}</td>
                 <td>\${caps}</td>
@@ -507,21 +623,27 @@ function renderOverrides() {
         activeBody.innerHTML = '';
         for (const o of active) {
             const tr = document.createElement('tr');
+            // Acento naranja (override) + paleta por provider en la primera col (UX #3086).
+            tr.className = 'has-provider-accent';
+            tr.style.setProperty('--row-accent', 'var(' + providerToken(o.provider) + ')');
             const expiresIn = o.expires_at - Date.now();
             const hours = Math.max(0, Math.round(expiresIn/3600000));
             const expiringClass = hours < 2 ? 'expiring' : '';
             tr.innerHTML = \`
-                <td>\${escapeHtml(o.skill)}</td>
-                <td>\${escapeHtml(o.provider)}</td>
+                <td><span class="mp-skill-badge warn">\${iconSvg('override-active')}\${escapeHtml(o.skill)}</span></td>
+                <td>\${providerIcon(o.provider)} \${escapeHtml(o.provider)}</td>
                 <td><span class="mp-cap-pill">\${(o.capabilities_diff||[]).map(escapeHtml).join(', ')||'—'}</span></td>
-                <td><span class="mp-ttl-countdown \${expiringClass}" data-expires="\${o.expires_at}">\${hours}h</span></td>
+                <td><span class="mp-ttl-countdown \${expiringClass}" data-expires="\${o.expires_at}" aria-live="polite">\${iconSvg('ttl-countdown')}\${hours}h</span></td>
                 <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis" title="\${escapeHtml(o.justificacion)}">\${escapeHtml(o.justificacion)}</td>
                 <td>\${escapeHtml(o.autor)}</td>
-                <td><button class="mp-btn small danger" data-hash="\${escapeHtml(o.hash_self)}">Revocar</button></td>
+                <td style="display:flex;gap:4px">
+                    <button class="mp-btn small ghost" data-act="renew" data-hash="\${escapeHtml(o.hash_self)}" title="Renovar TTL (placeholder — #3177 P2)" disabled>\${iconSvg('renew')}</button>
+                    <button class="mp-btn small danger" data-act="revoke" data-hash="\${escapeHtml(o.hash_self)}">\${iconSvg('revoke')}Revocar</button>
+                </td>
             \`;
             activeBody.appendChild(tr);
         }
-        activeBody.querySelectorAll('button[data-hash]').forEach(btn => {
+        activeBody.querySelectorAll('button[data-act="revoke"]').forEach(btn => {
             btn.addEventListener('click', () => startRevoke(btn.dataset.hash));
         });
     }
@@ -529,9 +651,11 @@ function renderOverrides() {
     histBody.innerHTML = '';
     for (const h of history.slice(-50).reverse()) {
         const tr = document.createElement('tr');
+        tr.className = 'has-provider-accent';
+        tr.style.setProperty('--row-accent', 'var(' + providerToken(h.provider) + ')');
         tr.innerHTML = \`
             <td>\${escapeHtml(h.skill)}</td>
-            <td>\${escapeHtml(h.provider)}</td>
+            <td>\${providerIcon(h.provider)} \${escapeHtml(h.provider)}</td>
             <td><span class="mp-status \${h.end_reason==='revoked'?'absent':'placeholder'}">\${escapeHtml(h.end_reason)}</span></td>
             <td>\${escapeHtml(h.autor)}</td>
             <td>\${new Date(h.created_at).toLocaleString('es-AR')}</td>
@@ -657,7 +781,9 @@ function tickCountdowns() {
     document.querySelectorAll('.mp-ttl-countdown').forEach(el => {
         const expires = Number(el.dataset.expires) || 0;
         const hours = Math.max(0, Math.round((expires - now) / 3600000));
-        el.textContent = hours + 'h';
+        // Re-inyecta el ícono del sprite + texto. Mantiene la accesibilidad
+        // (aria-live="polite" anuncia el cambio sin interrumpir lectura).
+        el.innerHTML = iconSvg('ttl-countdown') + hours + 'h';
         el.classList.toggle('expiring', hours < 2);
     });
 }

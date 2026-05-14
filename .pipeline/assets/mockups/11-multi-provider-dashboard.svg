@@ -1,0 +1,610 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 11 — Tab "Multi-Provider" del dashboard interno (#3177)
+  -----------------------------------------------------------------------------
+  Vista principal del nuevo tab del dashboard (puerto 3200) que centraliza la
+  configuracion multi-provider del pipeline. Muestra las secciones 1, 2, 3 y 5
+  del issue #3177. Secciones 4 (catalogo) y 6 (permission overrides) viven
+  como paneles laterales — ver mockup 12.
+
+  Convencion:
+    - Paleta: design-tokens.css (var(--surface-*), var(--provider-*))
+    - Iconos: sprite.svg referenciados con <use href="#ic-*"/>
+    - Tipografia: var(--font-sans) en estilos inline
+    - Bandera WCAG AA: todos los textos verificados contra fondo, ratios >= 4.5:1
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1100" font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- Reutilizamos definiciones del sprite con <symbol> en linea -->
+    <symbol id="m-key" viewBox="0 0 24 24">
+      <circle cx="8" cy="13" r="4.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M12.5 13 L21 13 M18 13 V16 M21 13 V16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="8" cy="13" r="1.4" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-key-rotate" viewBox="0 0 24 24">
+      <circle cx="7" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M10.3 12 L15 12 M13 12 V14 M15 12 V14" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 6 A6 6 0 0 1 21.5 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M19.5 15.5 L21.5 16 L21.8 13.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-eye-off" viewBox="0 0 24 24">
+      <path d="M3 5 L21 21" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M5 8 C3.6 9.4 2.7 10.8 2 12 C5 17.5 8.5 20 12 20 C13.4 20 14.7 19.7 16 19.2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M9 5 C9.9 4.7 10.9 4.5 12 4.5 C15.5 4.5 19 7 22 12.5 C21.2 14 20.3 15.3 19.3 16.4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M9.5 9.5 A3.2 3.2 0 0 0 14.5 14.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-conn-ok" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.45"/>
+      <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="12" r="3" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-conn-warn" viewBox="0 0 24 24">
+      <circle cx="10" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="10" cy="12" r="2.6" fill="currentColor"/>
+      <path d="M18 4 L23 13 H13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M18 7.5 V10.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="18" cy="12" r="0.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-conn-err" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-override" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M12 10 V12 L13.5 13.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-drag" viewBox="0 0 24 24">
+      <circle cx="9"  cy="7"  r="1.5" fill="currentColor"/>
+      <circle cx="15" cy="7"  r="1.5" fill="currentColor"/>
+      <circle cx="9"  cy="12" r="1.5" fill="currentColor"/>
+      <circle cx="15" cy="12" r="1.5" fill="currentColor"/>
+      <circle cx="9"  cy="17" r="1.5" fill="currentColor"/>
+      <circle cx="15" cy="17" r="1.5" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-shield-lock" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6" fill="currentColor" opacity="0.16"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M10.5 11.5 V10 C10.5 9.2 11.1 8.5 12 8.5 C12.9 8.5 13.5 9.2 13.5 10 V11.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="m-diff" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="11" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <rect x="10" y="6" width="11" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M5 8 H8 M5 11 H8 M5 14 H8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      <path d="M14.5 11 H17.5 M16 9.5 V12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M14.5 15 H17.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-test-ping" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+      <path d="M9 9 A4.5 4.5 0 0 0 9 15" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M15 9 A4.5 4.5 0 0 1 15 15" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M6.5 6.5 A8 8 0 0 0 6.5 17.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.7"/>
+      <path d="M17.5 6.5 A8 8 0 0 1 17.5 17.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.7"/>
+    </symbol>
+    <symbol id="m-reset" viewBox="0 0 24 24">
+      <path d="M5 12 A7 7 0 1 0 7.3 6.7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M3 4 V8 H7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-multi-provider" viewBox="0 0 24 24">
+      <circle cx="9" cy="10" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M9 4 V5.5 M9 14.5 V16 M3 10 H4.5 M13.5 10 H15 M4.7 5.7 L5.7 6.7 M12.3 13.3 L13.3 14.3 M4.7 14.3 L5.7 13.3 M12.3 6.7 L13.3 5.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="9" cy="10" r="1.6" fill="currentColor"/>
+      <circle cx="16" cy="15.5" r="3" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M16 11.5 V12.5 M16 18.5 V19.5 M12 15.5 H13 M19 15.5 H20" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+      <circle cx="16" cy="15.5" r="1" fill="currentColor"/>
+    </symbol>
+    <!-- Provider icons (importados del sprite) -->
+    <symbol id="m-anthropic" viewBox="0 0 24 24">
+      <line x1="12" y1="3.5" x2="12" y2="20.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <line x1="5" y1="7.5" x2="19" y2="16.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <line x1="5" y1="16.5" x2="19" y2="7.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-openai" viewBox="0 0 24 24">
+      <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 6.5 L17 9.5 L17 14.5 L12 17.5 L7 14.5 L7 9.5 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" opacity="0.55"/>
+    </symbol>
+    <symbol id="m-openai-codex" viewBox="0 0 24 24">
+      <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M10.5 9.5 L8 12 L10.5 14.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M13.5 9.5 L16 12 L13.5 14.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-deterministic" viewBox="0 0 24 24">
+      <rect x="6" y="6" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <line x1="9.5" y1="3" x2="9.5" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="14.5" y1="3" x2="14.5" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="9.5" y1="18" x2="9.5" y2="21" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="14.5" y1="18" x2="14.5" y2="21" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="3" y1="9.5" x2="6" y2="9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="3" y1="14.5" x2="6" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="18" y1="9.5" x2="21" y2="9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="18" y1="14.5" x2="21" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+    </symbol>
+  </defs>
+
+  <!-- =========================================================================
+       FONDO + GRID (surface-0 con sutiles guias para legibilidad)
+       ========================================================================= -->
+  <rect width="1440" height="1100" fill="#0D1117"/>
+
+  <!-- =========================================================================
+       HEADER (navegacion principal + tabs)
+       ========================================================================= -->
+  <g>
+    <rect x="0" y="0" width="1440" height="62" fill="#161B22"/>
+    <line x1="0" y1="62" x2="1440" y2="62" stroke="#30363D" stroke-width="1"/>
+    <!-- Logo Intrale -->
+    <g transform="translate(24,16)">
+      <svg width="30" height="30" viewBox="0 0 24 24" color="#00D6FF">
+        <path d="M12 3 L3 19 L21 19 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+        <path d="M12 10 L8.8 15.3 L15.2 15.3 Z" fill="currentColor"/>
+      </svg>
+    </g>
+    <text x="62" y="38" fill="#E6EDF3" font-size="18" font-weight="600" letter-spacing="0.02em">Intrale Pipeline · V3</text>
+    <!-- Tabs -->
+    <g font-size="14" font-weight="500">
+      <text x="320"  y="38" fill="#8B949E">Board</text>
+      <text x="400"  y="38" fill="#8B949E">Agentes</text>
+      <text x="490"  y="38" fill="#8B949E">Consumo</text>
+      <!-- Tab activo "Multi-Provider" -->
+      <rect x="585" y="22" width="180" height="30" rx="6" fill="rgba(45,212,191,0.10)" stroke="#2DD4BF" stroke-width="1"/>
+      <g transform="translate(597,28)" color="#2DD4BF">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-multi-provider"/></svg>
+      </g>
+      <text x="623" y="42" fill="#2DD4BF" font-weight="600">Multi-Provider</text>
+      <text x="785" y="38" fill="#8B949E">Leyenda</text>
+    </g>
+    <!-- Clock derecha -->
+    <g transform="translate(1310,38)">
+      <text fill="#E6EDF3" font-size="18" font-weight="500" font-family="'SF Mono', Consolas, monospace">14/05 · 15:42</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       BREADCRUMB + TITULO
+       ========================================================================= -->
+  <text x="24"  y="100" fill="#8B949E" font-size="13">Multi-Provider · Configuracion global</text>
+  <text x="24"  y="138" fill="#E6EDF3" font-size="28" font-weight="600">Configuracion del pipeline multi-provider</text>
+  <text x="24"  y="166" fill="#B1BAC4" font-size="14">Centralizar proveedores, modelos, fallbacks y permission overrides. Cambios persisten en agent-models.json con backup automatico.</text>
+
+  <!-- Status banner global (server-side enforcement) -->
+  <g transform="translate(24,184)">
+    <rect width="1392" height="40" rx="6" fill="rgba(88,166,255,0.08)" stroke="#1F6FEB" stroke-width="1"/>
+    <g transform="translate(14,9)" color="#58A6FF">
+      <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+    </g>
+    <text x="46" y="25" fill="#58A6FF" font-size="13" font-weight="500">Endpoints server-side enforced</text>
+    <text x="240" y="25" fill="#B1BAC4" font-size="13">— validacion Ajv strict, NON_DEGRADABLE_SKILLS bloqueados en backend, autor del audit derivado de git config user.email (no del request body).</text>
+  </g>
+
+  <!-- =========================================================================
+       SECCION 1 — GESTION DE PROVEEDORES
+       ========================================================================= -->
+  <text x="24"  y="262" fill="#E6EDF3" font-size="18" font-weight="600">1. Proveedores</text>
+  <text x="120" y="262" fill="#8B949E" font-size="13">— Estado live, rotacion de keys, default y fallbacks globales</text>
+
+  <!-- 4 cards de provider en grid -->
+  <!-- Card Anthropic (default + valid) -->
+  <g transform="translate(24,282)">
+    <rect width="334" height="172" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <!-- Header card -->
+    <g transform="translate(16,16)">
+      <g color="#E5946B">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-anthropic"/></svg>
+      </g>
+      <text x="40" y="13" fill="#E6EDF3" font-size="15" font-weight="600">Anthropic</text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">claude-opus-4-7 · claude-sonnet-4-6</text>
+      <!-- Badge default -->
+      <g transform="translate(238,0)">
+        <rect width="70" height="22" rx="11" fill="rgba(0,214,255,0.10)" stroke="#00D6FF" stroke-width="1"/>
+        <text x="35" y="15" fill="#00D6FF" font-size="11" font-weight="600" text-anchor="middle" letter-spacing="0.05em">DEFAULT</text>
+      </g>
+    </g>
+    <!-- Estado live -->
+    <g transform="translate(16,68)">
+      <g color="#3FB950">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-conn-ok"/></svg>
+      </g>
+      <text x="22" y="11" fill="#3FB950" font-size="12" font-weight="500">valid · ping 142ms</text>
+      <text x="180" y="11" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">last check 5s</text>
+    </g>
+    <!-- API Key field -->
+    <g transform="translate(16,94)">
+      <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.05em">API KEY · OAUTH (Claude Code MAX)</text>
+      <rect x="0" y="8" width="226" height="34" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(10,18)" color="#6E7681">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-key"/></svg>
+      </g>
+      <text x="34" y="29" fill="#6E7681" font-size="13" font-family="'SF Mono', Consolas, monospace">········ OAuth gestionada</text>
+      <g transform="translate(196,18)" color="#6E7681">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-eye-off"/></svg>
+      </g>
+      <!-- Disabled rotate button -->
+      <rect x="234" y="8" width="68" height="34" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1" opacity="0.5"/>
+      <g transform="translate(244,18)" color="#6E7681" opacity="0.5">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-key-rotate"/></svg>
+      </g>
+      <text x="266" y="29" fill="#6E7681" font-size="12" opacity="0.5">Rotar</text>
+    </g>
+    <!-- Tooltip explicativo -->
+    <text x="16" y="160" fill="#8B949E" font-size="11" font-style="italic">Anthropic se gestiona por OAuth (Claude Code MAX); no editable desde UI</text>
+  </g>
+
+  <!-- Card OpenAI (valid) -->
+  <g transform="translate(370,282)">
+    <rect width="334" height="172" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(16,16)">
+      <g color="#34D399">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-openai"/></svg>
+      </g>
+      <text x="40" y="13" fill="#E6EDF3" font-size="15" font-weight="600">OpenAI</text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">gpt-4o · gpt-4o-mini · o1-preview</text>
+    </g>
+    <g transform="translate(16,68)">
+      <g color="#3FB950">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-conn-ok"/></svg>
+      </g>
+      <text x="22" y="11" fill="#3FB950" font-size="12" font-weight="500">valid · ping 318ms</text>
+      <text x="180" y="11" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">last check 12s</text>
+    </g>
+    <g transform="translate(16,94)">
+      <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.05em">API KEY · OPENAI_API_KEY</text>
+      <rect x="0" y="8" width="226" height="34" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(10,18)" color="#34D399">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-key"/></svg>
+      </g>
+      <text x="34" y="29" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">sk-pro·····························L8mQ</text>
+      <g transform="translate(196,18)" color="#8B949E">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-eye-off"/></svg>
+      </g>
+      <!-- Rotate button -->
+      <rect x="234" y="8" width="68" height="34" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(244,18)" color="#58A6FF">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-key-rotate"/></svg>
+      </g>
+      <text x="266" y="29" fill="#58A6FF" font-size="12" font-weight="500">Rotar</text>
+    </g>
+    <g transform="translate(16,144)">
+      <text x="0" y="11" fill="#6E7681" font-size="11">Rotada hace 8 dias · proxima rotacion sugerida en 22d</text>
+    </g>
+  </g>
+
+  <!-- Card OpenAI-Codex (warn — quota baja) -->
+  <g transform="translate(716,282)">
+    <rect width="334" height="172" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(16,16)">
+      <g color="#10B981">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-openai-codex"/></svg>
+      </g>
+      <text x="40" y="13" fill="#E6EDF3" font-size="15" font-weight="600">OpenAI Codex</text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">gpt-5-codex · gpt-5-codex-fast</text>
+    </g>
+    <g transform="translate(16,68)">
+      <g color="#D29922">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-conn-warn"/></svg>
+      </g>
+      <text x="22" y="11" fill="#D29922" font-size="12" font-weight="500">cuota baja · 87% usado</text>
+      <text x="180" y="11" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">reset en 4d 12h</text>
+    </g>
+    <g transform="translate(16,94)">
+      <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.05em">API KEY · CODEX_API_KEY</text>
+      <rect x="0" y="8" width="226" height="34" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(10,18)" color="#10B981">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-key"/></svg>
+      </g>
+      <text x="34" y="29" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">cdx-····························rT9k</text>
+      <g transform="translate(196,18)" color="#8B949E">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-eye-off"/></svg>
+      </g>
+      <rect x="234" y="8" width="68" height="34" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(244,18)" color="#58A6FF">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-key-rotate"/></svg>
+      </g>
+      <text x="266" y="29" fill="#58A6FF" font-size="12" font-weight="500">Rotar</text>
+    </g>
+    <g transform="translate(16,144)">
+      <text x="0" y="11" fill="#D29922" font-size="11">Considerar pausar agentes Codex hasta el reset</text>
+    </g>
+  </g>
+
+  <!-- Card ElevenLabs (TTS — not-configured) -->
+  <g transform="translate(1062,282)">
+    <rect width="354" height="172" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>
+    <g transform="translate(16,16)">
+      <g color="#6E7681">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-test-ping"/></svg>
+      </g>
+      <text x="40" y="13" fill="#B1BAC4" font-size="15" font-weight="600">ElevenLabs <tspan fill="#8B949E" font-weight="400" font-size="12">· TTS</tspan></text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">eleven-multilingual-v2 · eleven-flash-v2</text>
+    </g>
+    <g transform="translate(16,68)">
+      <g color="#6E7681">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-conn-err"/></svg>
+      </g>
+      <text x="22" y="11" fill="#8B949E" font-size="12" font-weight="500">no configurada · fallback edge-tts activo</text>
+    </g>
+    <g transform="translate(16,94)">
+      <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.05em">API KEY · ELEVENLABS_API_KEY</text>
+      <rect x="0" y="8" width="246" height="34" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(10,18)" color="#6E7681">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-key"/></svg>
+      </g>
+      <text x="34" y="29" fill="#6E7681" font-size="13" font-style="italic">vacia — ingresar para activar</text>
+      <!-- Configurar button -->
+      <rect x="254" y="8" width="88" height="34" rx="6" fill="rgba(88,166,255,0.10)" stroke="#58A6FF" stroke-width="1"/>
+      <text x="298" y="29" fill="#58A6FF" font-size="12" font-weight="500" text-anchor="middle">Configurar</text>
+    </g>
+    <g transform="translate(16,144)">
+      <text x="0" y="11" fill="#6E7681" font-size="11">Mientras este vacia, la narrativa usa edge-tts gratuito de fallback</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       FALLBACKS GLOBALES (orden + drag&drop)
+       ========================================================================= -->
+  <g transform="translate(24,478)">
+    <rect width="1392" height="78" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="26" fill="#E6EDF3" font-size="14" font-weight="600">Fallbacks globales</text>
+    <text x="190" y="26" fill="#8B949E" font-size="12">— orden cuando el default falla; arrastrar para reordenar</text>
+
+    <!-- 3 chips ordenables -->
+    <g transform="translate(20,42)">
+      <!-- Chip 1: OpenAI -->
+      <rect x="0" y="0" width="180" height="28" rx="14" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(8,7)" color="#8B949E">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-drag"/></svg>
+      </g>
+      <circle cx="34" cy="14" r="9" fill="rgba(52,211,153,0.18)"/>
+      <text x="34" y="17" fill="#34D399" font-size="11" font-weight="700" text-anchor="middle">1</text>
+      <g transform="translate(48,4)" color="#34D399">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-openai"/></svg>
+      </g>
+      <text x="72" y="19" fill="#E6EDF3" font-size="12" font-weight="500">OpenAI</text>
+      <text x="125" y="19" fill="#8B949E" font-size="11">gpt-4o</text>
+
+      <!-- Chip 2: Codex -->
+      <rect x="192" y="0" width="180" height="28" rx="14" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(200,7)" color="#8B949E">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-drag"/></svg>
+      </g>
+      <circle cx="226" cy="14" r="9" fill="rgba(16,185,129,0.18)"/>
+      <text x="226" y="17" fill="#10B981" font-size="11" font-weight="700" text-anchor="middle">2</text>
+      <g transform="translate(240,4)" color="#10B981">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-openai-codex"/></svg>
+      </g>
+      <text x="264" y="19" fill="#E6EDF3" font-size="12" font-weight="500">Codex</text>
+      <text x="305" y="19" fill="#8B949E" font-size="11">gpt-5-codex</text>
+
+      <!-- Chip 3: Deterministic -->
+      <rect x="384" y="0" width="200" height="28" rx="14" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(392,7)" color="#8B949E">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-drag"/></svg>
+      </g>
+      <circle cx="418" cy="14" r="9" fill="rgba(177,186,196,0.20)"/>
+      <text x="418" y="17" fill="#B1BAC4" font-size="11" font-weight="700" text-anchor="middle">3</text>
+      <g transform="translate(432,4)" color="#B1BAC4">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-deterministic"/></svg>
+      </g>
+      <text x="456" y="19" fill="#E6EDF3" font-size="12" font-weight="500">Deterministic</text>
+      <text x="545" y="19" fill="#8B949E" font-size="11">last-resort</text>
+
+      <!-- "+ Agregar fallback" -->
+      <rect x="596" y="0" width="138" height="28" rx="14" fill="none" stroke="#30363D" stroke-width="1" stroke-dasharray="3 2"/>
+      <text x="665" y="19" fill="#8B949E" font-size="12" text-anchor="middle">+ Agregar fallback</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       SECCION 2 — GRILLA MAESTRA POR AGENTE
+       ========================================================================= -->
+  <text x="24"  y="600" fill="#E6EDF3" font-size="18" font-weight="600">2. Configuracion por agente</text>
+  <text x="270" y="600" fill="#8B949E" font-size="13">— 16 skills · 12 LLM · 4 deterministicos</text>
+
+  <g transform="translate(24,620)">
+    <rect width="1392" height="380" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Header tabla -->
+    <g>
+      <rect x="0" y="0" width="1392" height="44" rx="10" fill="#1C2128"/>
+      <rect x="0" y="38" width="1392" height="6" fill="#1C2128"/>
+      <text x="24"   y="28" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">SKILL</text>
+      <text x="240"  y="28" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">PROVIDER DEFAULT</text>
+      <text x="450"  y="28" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">MODELO ACTUAL</text>
+      <text x="700"  y="28" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">FALLBACKS</text>
+      <text x="1010" y="28" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">PERMISSIONS</text>
+      <text x="1230" y="28" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">ACCIONES</text>
+    </g>
+
+    <!-- Row 1: guru (default) -->
+    <g transform="translate(0,44)">
+      <line x1="0" y1="0" x2="1392" y2="0" stroke="#21262D" stroke-width="1"/>
+      <text x="24"  y="32" fill="#E6EDF3" font-size="14" font-weight="600">guru</text>
+      <text x="24"  y="50" fill="#6E7681" font-size="11">analisis tecnico</text>
+      <g transform="translate(240,18)" color="#E5946B">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-anthropic"/></svg>
+      </g>
+      <text x="266" y="32" fill="#E6EDF3" font-size="13" font-weight="500">Anthropic</text>
+      <text x="450" y="32" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">claude-opus-4-7</text>
+      <text x="450" y="50" fill="#6E7681" font-size="11">200K ctx · cache 3600s</text>
+      <!-- Fallbacks chips -->
+      <g transform="translate(700,17)">
+        <rect x="0" y="0" width="58" height="22" rx="11" fill="rgba(52,211,153,0.12)"/>
+        <text x="29" y="15" fill="#34D399" font-size="11" font-weight="500" text-anchor="middle">openai</text>
+        <rect x="64" y="0" width="56" height="22" rx="11" fill="rgba(16,185,129,0.12)"/>
+        <text x="92" y="15" fill="#10B981" font-size="11" font-weight="500" text-anchor="middle">codex</text>
+      </g>
+      <!-- Permissions OK -->
+      <g transform="translate(1010,18)" color="#3FB950">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="1032" y="32" fill="#3FB950" font-size="12">3 capabilities</text>
+      <!-- Acciones -->
+      <g transform="translate(1230,18)" color="#58A6FF">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-diff"/></svg>
+      </g>
+      <text x="1252" y="32" fill="#58A6FF" font-size="12" font-weight="500">Editar</text>
+      <g transform="translate(1310,18)" color="#8B949E">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-reset"/></svg>
+      </g>
+    </g>
+
+    <!-- Row 2: security (NON_DEGRADABLE) -->
+    <g transform="translate(0,108)">
+      <line x1="0" y1="0" x2="1392" y2="0" stroke="#21262D" stroke-width="1"/>
+      <rect x="0" y="0" width="6" height="64" fill="#F85149" opacity="0.5"/>
+      <text x="24"  y="32" fill="#E6EDF3" font-size="14" font-weight="600">security</text>
+      <text x="24"  y="50" fill="#6E7681" font-size="11">auditoria de seguridad</text>
+      <g transform="translate(240,18)" color="#E5946B">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-anthropic"/></svg>
+      </g>
+      <text x="266" y="32" fill="#E6EDF3" font-size="13" font-weight="500">Anthropic</text>
+      <text x="450" y="32" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">claude-opus-4-7</text>
+      <text x="450" y="50" fill="#6E7681" font-size="11">required: tool_use_gated</text>
+      <g transform="translate(700,17)">
+        <text x="0" y="15" fill="#8B949E" font-size="11" font-style="italic">— (no degradable)</text>
+      </g>
+      <!-- Permissions NON_DEGRADABLE -->
+      <g transform="translate(1010,18)" color="#F85149">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="1032" y="32" fill="#F85149" font-size="12" font-weight="500">NON-DEGRADABLE</text>
+      <!-- Acciones (override disabled) -->
+      <g transform="translate(1230,18)" color="#58A6FF">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-diff"/></svg>
+      </g>
+      <text x="1252" y="32" fill="#58A6FF" font-size="12" font-weight="500">Editar</text>
+      <g transform="translate(1310,18)" color="#6E7681" opacity="0.4">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-override"/></svg>
+      </g>
+    </g>
+
+    <!-- Row 3: ux (override activo — badge naranja) -->
+    <g transform="translate(0,172)">
+      <line x1="0" y1="0" x2="1392" y2="0" stroke="#21262D" stroke-width="1"/>
+      <rect x="0" y="0" width="6" height="64" fill="#F59E0B" opacity="0.6"/>
+      <text x="24"  y="32" fill="#E6EDF3" font-size="14" font-weight="600">ux</text>
+      <text x="24"  y="50" fill="#6E7681" font-size="11">experiencia + diseno</text>
+      <!-- Badge override activo -->
+      <g transform="translate(80,18)">
+        <rect width="118" height="22" rx="11" fill="rgba(245,158,11,0.16)" stroke="#F59E0B" stroke-width="1"/>
+        <g transform="translate(6,3)" color="#F59E0B">
+          <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-override"/></svg>
+        </g>
+        <text x="26" y="15" fill="#F59E0B" font-size="11" font-weight="600">override · 18h</text>
+      </g>
+      <g transform="translate(240,18)" color="#34D399">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-openai"/></svg>
+      </g>
+      <text x="266" y="32" fill="#E6EDF3" font-size="13" font-weight="500">OpenAI</text>
+      <text x="266" y="50" fill="#F59E0B" font-size="11" font-style="italic">(via override)</text>
+      <text x="450" y="32" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">gpt-4o</text>
+      <text x="450" y="50" fill="#6E7681" font-size="11">128K ctx · cache auto</text>
+      <g transform="translate(700,17)">
+        <rect x="0" y="0" width="74" height="22" rx="11" fill="rgba(229,148,107,0.12)"/>
+        <text x="37" y="15" fill="#E5946B" font-size="11" font-weight="500" text-anchor="middle">anthropic</text>
+      </g>
+      <g transform="translate(1010,18)" color="#D29922">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="1032" y="32" fill="#D29922" font-size="12">2 capabilities</text>
+      <text x="1032" y="50" fill="#F59E0B" font-size="10">override: -fine_grained_acl</text>
+      <g transform="translate(1230,18)" color="#58A6FF">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-diff"/></svg>
+      </g>
+      <text x="1252" y="32" fill="#58A6FF" font-size="12" font-weight="500">Editar</text>
+      <g transform="translate(1310,18)" color="#F85149">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-override"/></svg>
+      </g>
+    </g>
+
+    <!-- Row 4: builder (deterministic — no LLM) -->
+    <g transform="translate(0,236)">
+      <line x1="0" y1="0" x2="1392" y2="0" stroke="#21262D" stroke-width="1"/>
+      <text x="24"  y="32" fill="#E6EDF3" font-size="14" font-weight="600">builder</text>
+      <text x="24"  y="50" fill="#6E7681" font-size="11">compilacion gradle</text>
+      <g transform="translate(240,18)" color="#B1BAC4">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-deterministic"/></svg>
+      </g>
+      <text x="266" y="32" fill="#B1BAC4" font-size="13" font-weight="500">Deterministic</text>
+      <text x="450" y="32" fill="#8B949E" font-size="13" font-style="italic">— (sin LLM)</text>
+      <text x="700" y="32" fill="#6E7681" font-size="11" font-style="italic">N/A</text>
+      <g transform="translate(1010,18)" color="#F85149">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="1032" y="32" fill="#F85149" font-size="12" font-weight="500">NON-DEGRADABLE</text>
+      <g transform="translate(1230,18)" color="#6E7681" opacity="0.5">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-diff"/></svg>
+      </g>
+      <text x="1252" y="32" fill="#6E7681" font-size="12" opacity="0.5">Editar</text>
+    </g>
+
+    <!-- Row 5: qa -->
+    <g transform="translate(0,300)">
+      <line x1="0" y1="0" x2="1392" y2="0" stroke="#21262D" stroke-width="1"/>
+      <text x="24"  y="32" fill="#E6EDF3" font-size="14" font-weight="600">qa</text>
+      <text x="24"  y="50" fill="#6E7681" font-size="11">tests e2e con video</text>
+      <g transform="translate(240,18)" color="#E5946B">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-anthropic"/></svg>
+      </g>
+      <text x="266" y="32" fill="#E6EDF3" font-size="13" font-weight="500">Anthropic</text>
+      <text x="450" y="32" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">claude-sonnet-4-6</text>
+      <text x="450" y="50" fill="#6E7681" font-size="11">200K ctx · vision activa</text>
+      <g transform="translate(700,17)">
+        <rect x="0" y="0" width="58" height="22" rx="11" fill="rgba(52,211,153,0.12)"/>
+        <text x="29" y="15" fill="#34D399" font-size="11" font-weight="500" text-anchor="middle">openai</text>
+      </g>
+      <g transform="translate(1010,18)" color="#3FB950">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="1032" y="32" fill="#3FB950" font-size="12">4 capabilities</text>
+      <g transform="translate(1230,18)" color="#58A6FF">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-diff"/></svg>
+      </g>
+      <text x="1252" y="32" fill="#58A6FF" font-size="12" font-weight="500">Editar</text>
+      <g transform="translate(1310,18)" color="#8B949E">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-override"/></svg>
+      </g>
+    </g>
+
+    <!-- Hint: clic en row para abrir panel lateral -->
+    <text x="24" y="368" fill="#6E7681" font-size="11" font-style="italic">Mostrando 5 de 16 skills · click en una fila para abrir panel lateral con multi-select de modelos permitidos y reorder de fallbacks por agente</text>
+  </g>
+
+  <!-- =========================================================================
+       FOOTER — Save / Reload / Diff
+       ========================================================================= -->
+  <g transform="translate(24,1024)">
+    <text x="0" y="14" fill="#8B949E" font-size="12">3 cambios pendientes en </text>
+    <text x="170" y="14" fill="#E6EDF3" font-size="12" font-weight="500">guru, ux, qa</text>
+    <text x="0" y="32" fill="#6E7681" font-size="11">Backup automatico en .pipeline/audit/agent-models-backups/&lt;ISO-ts&gt;.json · file lock con proper-lockfile</text>
+  </g>
+
+  <g transform="translate(950,1018)">
+    <!-- Botones derecha -->
+    <rect x="0" y="0" width="116" height="40" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(14,11)" color="#58A6FF">
+      <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-diff"/></svg>
+    </g>
+    <text x="40" y="25" fill="#E6EDF3" font-size="13" font-weight="500">Ver diff</text>
+
+    <rect x="128" y="0" width="160" height="40" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(142,11)" color="#F59E0B">
+      <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-reset"/></svg>
+    </g>
+    <text x="168" y="25" fill="#E6EDF3" font-size="13" font-weight="500">Reload pipeline</text>
+
+    <rect x="300" y="0" width="160" height="40" rx="6" fill="#1F6FEB"/>
+    <g transform="translate(316,11)" color="#FFFFFF">
+      <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+    </g>
+    <text x="342" y="25" fill="#FFFFFF" font-size="13" font-weight="600">Guardar cambios</text>
+  </g>
+
+  <!-- Etiqueta de versión / mockup info -->
+  <g transform="translate(24,1062)">
+    <text fill="#6E7681" font-size="10" font-family="'SF Mono', Consolas, monospace">mockup 11 · multi-provider-dashboard · v1 · issue #3177 · WCAG AA · prefers-reduced-motion</text>
+  </g>
+</svg>
