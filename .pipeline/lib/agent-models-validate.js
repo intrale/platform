@@ -376,6 +376,36 @@ function validateCrossReferences(config) {
           fix: `declarar el provider en la sección providers o cambiar el assignment del skill`,
         });
       }
+      // #3177 — fallbacks (opcional): cada item debe estar declarado en providers
+      // y NO repetir el primario. Validación cruzada estricta para evitar UI
+      // edits que dejen el JSON con referencias rotas.
+      if (skillDef && Array.isArray(skillDef.fallbacks)) {
+        for (let i = 0; i < skillDef.fallbacks.length; i++) {
+          const fb = skillDef.fallbacks[i];
+          if (typeof fb !== 'string' || fb.length === 0) {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback en posición ${i} debe ser string no vacío`,
+              fix: 'editar fallbacks dejando solo nombres de providers válidos',
+            });
+            continue;
+          }
+          if (!providerKeys.includes(fb)) {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback "${fb}" no está declarado en providers (válidos: [${providerKeys.join(', ')}])`,
+              fix: `declarar "${fb}" en providers o quitarlo de fallbacks`,
+            });
+          }
+          if (fb === skillDef.provider) {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback "${fb}" duplica el provider primario — no tiene sentido como fallback`,
+              fix: 'quitar el provider primario de la lista de fallbacks',
+            });
+          }
+        }
+      }
     }
   }
 
