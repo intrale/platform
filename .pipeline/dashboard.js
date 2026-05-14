@@ -7911,7 +7911,26 @@ es.onerror = function() {
 
 // --- Server ---
 
+// #3177 — Panel UI Multi-Provider. Lazy require para que el dashboard arranque
+// aún si el módulo (o sus deps como ajv) no están disponibles en un checkout
+// transitorio. Si falla → log + degradación silenciosa.
+let multiProviderApi = null;
+let multiProviderView = null;
+try { multiProviderApi = require('./lib/multi-provider/api'); } catch (e) { log(`multi-provider api unavailable: ${e.message}`); }
+try { multiProviderView = require('./views/dashboard/multi-provider'); } catch (e) { log(`multi-provider view unavailable: ${e.message}`); }
+
 const server = http.createServer((req, res) => {
+  // #3177 — Multi-Provider: HTML del panel y API REST asociada.
+  // Mounted antes que el catch-all para que `/multi-provider` no caiga al legacy.
+  if (multiProviderApi && multiProviderApi.route(req, res)) {
+    return;
+  }
+  if (multiProviderView && (req.url === '/multi-provider' || req.url === '/multi-provider/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(multiProviderView.renderMultiProvider());
+    return;
+  }
+
   // Log viewer en ventana dedicada
   if (req.url.startsWith('/logs/view/')) {
     const parts = req.url.slice(11).split('?');
@@ -9128,10 +9147,15 @@ const server = http.createServer((req, res) => {
   res.end(generateHTML(state));
 });
 
-server.listen(PORT, () => {
-  log(`Dashboard en http://localhost:${PORT}`);
-  log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3`);
-  try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT }); } catch {}
+// #3177 + #3191 — bind explícito a 127.0.0.1 por default (mitiga DNS rebinding
+// y reduce superficie de ataque para los nuevos endpoints PUT/POST de Multi-Provider).
+// Override controlado por env (`DASHBOARD_HOST`) para no bloquear setups
+// excepcionales donde el dashboard se expone en LAN intencionalmente.
+const HOST = process.env.DASHBOARD_HOST || '127.0.0.1';
+server.listen(PORT, HOST, () => {
+  log(`Dashboard en http://${HOST}:${PORT}`);
+  log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
+  try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
 });
 
 // dashboard.pid se mantiene como hint informativo (útil para mtime →

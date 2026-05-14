@@ -138,6 +138,11 @@
           "type": "string",
           "description": "Modelo específico que sobrescribe el 'model' default del provider. La cross-validación contra la allowlist de modelos por launcher (ALLOWED_MODELS_BY_LAUNCHER) se hace en lib/agent-models-validate.js durante el boot.",
           "minLength": 1
+        },
+        "fallbacks": {
+          "type": "array",
+          "description": "Lista ordenada de providers fallback para este skill. Si el provider primario falla (cuota / 5xx / circuit-breaker), el pulpo intenta con el siguiente. Cada item DEBE existir en 'providers'. Validación cruzada en lib/agent-models-validate.js. Vacío o ausente = usar solo el provider primario. Issue #3177 (UI dashboard) + apertura para H7/M2.",
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     }

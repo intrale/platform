@@ -1,0 +1,360 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 13 — Modales criticos del tab Multi-Provider (#3177)
+  -----------------------------------------------------------------------------
+  Tres modales que cumplen los criterios de seguridad (CA-5/CA-18/CA-23) +
+  confirmacion 2-step para acciones destructivas.
+
+  Modal A: Rotar API Key (confirmacion 2-step — re-typear nombre del provider)
+  Modal B: Confirmar cambios con diff visible antes de aplicar
+  Modal C: Revocar permission override (confirmacion 2-step)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1320" font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <symbol id="m-key-rotate" viewBox="0 0 24 24">
+      <circle cx="7" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M10.3 12 L15 12 M13 12 V14 M15 12 V14" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 6 A6 6 0 0 1 21.5 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M19.5 15.5 L21.5 16 L21.8 13.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-diff" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="11" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <rect x="10" y="6" width="11" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M5 8 H8 M5 11 H8 M5 14 H8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      <path d="M14.5 11 H17.5 M16 9.5 V12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M14.5 15 H17.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-revoke" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M8 8 L16 16 M16 8 L8 16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-shield-lock" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6" fill="currentColor" opacity="0.16"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M10.5 11.5 V10 C10.5 9.2 11.1 8.5 12 8.5 C12.9 8.5 13.5 9.2 13.5 10 V11.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="m-warning" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 9.5 V14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-key" viewBox="0 0 24 24">
+      <circle cx="8" cy="13" r="4.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M12.5 13 L21 13 M18 13 V16 M21 13 V16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="8" cy="13" r="1.4" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-eye-off" viewBox="0 0 24 24">
+      <path d="M3 5 L21 21" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M5 8 C3.6 9.4 2.7 10.8 2 12 C5 17.5 8.5 20 12 20 C13.4 20 14.7 19.7 16 19.2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M9 5 C9.9 4.7 10.9 4.5 12 4.5 C15.5 4.5 19 7 22 12.5 C21.2 14 20.3 15.3 19.3 16.4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M9.5 9.5 A3.2 3.2 0 0 0 14.5 14.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-openai" viewBox="0 0 24 24">
+      <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 6.5 L17 9.5 L17 14.5 L12 17.5 L7 14.5 L7 9.5 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" opacity="0.55"/>
+    </symbol>
+  </defs>
+
+  <!-- Fondo dimmed (backdrop del modal) -->
+  <rect width="1440" height="1320" fill="#0D1117"/>
+
+  <!-- Titulo seccion -->
+  <text x="24" y="44" fill="#E6EDF3" font-size="22" font-weight="600">Modales criticos · #3177</text>
+  <text x="24" y="68" fill="#8B949E" font-size="13">Tres dialogos modales con confirmacion 2-step y diff visible. Backdrop dimmed (rgba(0,0,0,0.65)), focus-ring WCAG, ESC cierra, click-outside no cierra.</text>
+
+  <!-- =========================================================================
+       MODAL A — Rotar API Key (confirmacion 2-step)
+       ========================================================================= -->
+  <text x="24" y="116" fill="#2DD4BF" font-size="14" font-weight="600" letter-spacing="0.04em">MODAL A · ROTAR API KEY · 2-STEP (CA-5)</text>
+
+  <!-- Backdrop simulado -->
+  <rect x="24" y="132" width="688" height="436" rx="12" fill="#06080A"/>
+  <rect x="24" y="132" width="688" height="436" rx="12" fill="rgba(0,0,0,0.30)"/>
+
+  <!-- Modal card -->
+  <g transform="translate(106,196)">
+    <rect width="524" height="332" rx="12" fill="#252B33" stroke="#484F58" stroke-width="1" filter="url(#modalShadow)"/>
+    <!-- Header -->
+    <g transform="translate(24,24)">
+      <g color="#F59E0B">
+        <svg width="32" height="32" viewBox="0 0 24 24"><use href="#m-key-rotate"/></svg>
+      </g>
+      <text x="48" y="14" fill="#E6EDF3" font-size="18" font-weight="600">Rotar API key</text>
+      <text x="48" y="34" fill="#34D399" font-size="13" font-weight="500">OpenAI · OPENAI_API_KEY</text>
+    </g>
+
+    <!-- Aviso impacto -->
+    <g transform="translate(24,84)">
+      <rect width="476" height="74" rx="8" fill="rgba(245,158,11,0.10)" stroke="#9E6A03" stroke-width="1"/>
+      <g transform="translate(14,16)" color="#F59E0B">
+        <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-warning"/></svg>
+      </g>
+      <text x="46" y="26" fill="#F59E0B" font-size="13" font-weight="600">Impacto inmediato</text>
+      <text x="46" y="46" fill="#B1BAC4" font-size="12">Los 4 agentes con provider OpenAI (po, ux, planner, refinar)</text>
+      <text x="46" y="62" fill="#B1BAC4" font-size="12">van a usar la nueva key en su proximo spawn. Sin re-spawn de in-flight.</text>
+    </g>
+
+    <!-- Confirmacion textfield -->
+    <g transform="translate(24,176)">
+      <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.06em">CONFIRMA ESCRIBIENDO <tspan fill="#E6EDF3" font-weight="600">openai</tspan> PARA HABILITAR</text>
+      <rect x="0" y="10" width="476" height="40" rx="6" fill="#1C2128" stroke="#F59E0B" stroke-width="1.5"/>
+      <text x="14" y="35" fill="#E6EDF3" font-size="14" font-family="'SF Mono', Consolas, monospace">openai|</text>
+    </g>
+
+    <!-- Input nueva key (masked) -->
+    <g transform="translate(24,232)">
+      <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.06em">NUEVA API KEY</text>
+      <rect x="0" y="10" width="476" height="40" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(12,21)" color="#34D399">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-key"/></svg>
+      </g>
+      <text x="40" y="35" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">sk-proj-································K9pM</text>
+      <g transform="translate(440,21)" color="#8B949E">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-eye-off"/></svg>
+      </g>
+    </g>
+
+    <!-- Footer (cancelar + confirmar) -->
+    <g transform="translate(24,290)">
+      <rect width="120" height="36" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="60" y="23" fill="#E6EDF3" font-size="13" text-anchor="middle">Cancelar (ESC)</text>
+
+      <rect x="260" y="0" width="216" height="36" rx="6" fill="#F59E0B"/>
+      <g transform="translate(278,9)" color="#0D1117">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-key-rotate"/></svg>
+      </g>
+      <text x="368" y="23" fill="#0D1117" font-size="13" font-weight="600" text-anchor="middle">Rotar y guardar</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       MODAL B — Confirmar cambios con diff (CA-18)
+       ========================================================================= -->
+  <text x="728" y="116" fill="#2DD4BF" font-size="14" font-weight="600" letter-spacing="0.04em">MODAL B · CONFIRMAR CAMBIOS CON DIFF (CA-18)</text>
+
+  <rect x="728" y="132" width="688" height="436" rx="12" fill="#06080A"/>
+  <rect x="728" y="132" width="688" height="436" rx="12" fill="rgba(0,0,0,0.30)"/>
+
+  <g transform="translate(770,164)">
+    <rect width="604" height="372" rx="12" fill="#252B33" stroke="#484F58" stroke-width="1"/>
+    <!-- Header -->
+    <g transform="translate(24,24)">
+      <g color="#58A6FF">
+        <svg width="30" height="30" viewBox="0 0 24 24"><use href="#m-diff"/></svg>
+      </g>
+      <text x="44" y="14" fill="#E6EDF3" font-size="18" font-weight="600">Confirmar cambios</text>
+      <text x="44" y="34" fill="#8B949E" font-size="12">3 agentes afectados · backup automatico · file lock activo</text>
+    </g>
+
+    <!-- Diff content -->
+    <g transform="translate(24,82)">
+      <rect width="556" height="194" rx="8" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+      <!-- Header columnas -->
+      <g transform="translate(0,16)">
+        <text x="16" y="0" fill="#F85149" font-size="11" font-weight="600" letter-spacing="0.04em">— ANTES</text>
+        <text x="290" y="0" fill="#3FB950" font-size="11" font-weight="600" letter-spacing="0.04em">+ DESPUES</text>
+      </g>
+      <line x1="278" y1="32" x2="278" y2="186" stroke="#21262D" stroke-width="1"/>
+
+      <!-- Diff lines -->
+      <g transform="translate(16,42)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+        <!-- guru -->
+        <text fill="#B1BAC4">"guru": {</text>
+        <text y="16" fill="#B1BAC4">  "provider": "anthropic",</text>
+        <rect x="-8" y="22" width="266" height="16" fill="rgba(248,81,73,0.10)"/>
+        <text y="34" fill="#F85149">  "model": "sonnet-4-5"</text>
+        <text y="52" fill="#B1BAC4">},</text>
+        <!-- ux -->
+        <text y="76" fill="#B1BAC4">"ux": {</text>
+        <rect x="-8" y="82" width="266" height="16" fill="rgba(248,81,73,0.10)"/>
+        <text y="94" fill="#F85149">  "provider": "anthropic"</text>
+        <text y="112" fill="#B1BAC4">},</text>
+        <!-- qa -->
+        <text y="136" fill="#B1BAC4">"qa": {</text>
+        <text y="152" fill="#B1BAC4">  "provider": "anthropic",</text>
+        <rect x="-8" y="158" width="266" height="16" fill="rgba(248,81,73,0.10)"/>
+        <text y="170" fill="#F85149">  "fallbacks": []</text>
+      </g>
+
+      <g transform="translate(290,42)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+        <text fill="#B1BAC4">"guru": {</text>
+        <text y="16" fill="#B1BAC4">  "provider": "anthropic",</text>
+        <rect x="-8" y="22" width="262" height="16" fill="rgba(63,185,80,0.10)"/>
+        <text y="34" fill="#3FB950">  "model": "opus-4-7"</text>
+        <text y="52" fill="#B1BAC4">},</text>
+        <text y="76" fill="#B1BAC4">"ux": {</text>
+        <rect x="-8" y="82" width="262" height="16" fill="rgba(63,185,80,0.10)"/>
+        <text y="94" fill="#3FB950">  "provider": "openai"</text>
+        <text y="112" fill="#B1BAC4">},</text>
+        <text y="136" fill="#B1BAC4">"qa": {</text>
+        <text y="152" fill="#B1BAC4">  "provider": "anthropic",</text>
+        <rect x="-8" y="158" width="262" height="16" fill="rgba(63,185,80,0.10)"/>
+        <text y="170" fill="#3FB950">  "fallbacks": ["openai"]</text>
+      </g>
+    </g>
+
+    <!-- Status summary -->
+    <g transform="translate(24,290)">
+      <g color="#3FB950">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="26" y="14" fill="#B1BAC4" font-size="12">Schema Ajv: <tspan fill="#3FB950" font-weight="500">OK</tspan> · NON_DEGRADABLE: <tspan fill="#3FB950" font-weight="500">no afectados</tspan> · backup pendiente</text>
+    </g>
+
+    <!-- Footer -->
+    <g transform="translate(24,322)">
+      <rect width="120" height="36" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="60" y="23" fill="#E6EDF3" font-size="13" text-anchor="middle">Cancelar</text>
+
+      <rect x="340" y="0" width="216" height="36" rx="6" fill="#1F6FEB"/>
+      <g transform="translate(360,9)" color="#FFFFFF">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="448" y="23" fill="#FFFFFF" font-size="13" font-weight="600" text-anchor="middle">Aplicar 3 cambios</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       MODAL C — Revocar permission override (2-step)
+       ========================================================================= -->
+  <text x="24" y="620" fill="#2DD4BF" font-size="14" font-weight="600" letter-spacing="0.04em">MODAL C · REVOCAR PERMISSION OVERRIDE · 2-STEP (CA-23)</text>
+
+  <rect x="24" y="636" width="688" height="436" rx="12" fill="#06080A"/>
+  <rect x="24" y="636" width="688" height="436" rx="12" fill="rgba(0,0,0,0.30)"/>
+
+  <g transform="translate(106,696)">
+    <rect width="524" height="340" rx="12" fill="#252B33" stroke="#484F58" stroke-width="1"/>
+    <g transform="translate(24,24)">
+      <g color="#F85149">
+        <svg width="32" height="32" viewBox="0 0 24 24"><use href="#m-revoke"/></svg>
+      </g>
+      <text x="48" y="14" fill="#E6EDF3" font-size="18" font-weight="600">Revocar override</text>
+      <text x="48" y="34" fill="#B1BAC4" font-size="13">ux × <tspan fill="#34D399" font-weight="500">OpenAI</tspan> · creado hace 5h · expira en 18h</text>
+    </g>
+
+    <!-- Lo que va a pasar -->
+    <g transform="translate(24,84)">
+      <rect width="476" height="106" rx="8" fill="rgba(248,81,73,0.06)" stroke="#8B1A14" stroke-width="1"/>
+      <text x="14" y="22" fill="#F85149" font-size="13" font-weight="600">Que pasa al revocar</text>
+      <g transform="translate(14,32)" fill="#B1BAC4" font-size="12">
+        <text y="14">•  Append-only: nuevo entry <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">permission_override_revocation</tspan> en JSONL.</text>
+        <text y="32">•  El archivo del override original <tspan fill="#E6EDF3" font-weight="500">NO se borra</tspan> (audit trail intacto).</text>
+        <text y="50">•  ux vuelve al provider default (Anthropic) en su proximo spawn.</text>
+        <text y="68">•  Notificacion Telegram con autor + motivo.</text>
+      </g>
+    </g>
+
+    <!-- Confirmacion -->
+    <g transform="translate(24,210)">
+      <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.06em">CONFIRMA ESCRIBIENDO <tspan fill="#E6EDF3" font-weight="600">ux:openai</tspan> PARA HABILITAR</text>
+      <rect x="0" y="10" width="476" height="40" rx="6" fill="#1C2128" stroke="#F85149" stroke-width="1.5"/>
+      <text x="14" y="35" fill="#E6EDF3" font-size="14" font-family="'SF Mono', Consolas, monospace">ux:openai|</text>
+    </g>
+
+    <!-- Footer -->
+    <g transform="translate(24,272)">
+      <rect width="120" height="36" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="60" y="23" fill="#E6EDF3" font-size="13" text-anchor="middle">Cancelar</text>
+
+      <rect x="248" y="0" width="228" height="36" rx="6" fill="#F85149"/>
+      <g transform="translate(266,9)" color="#FFFFFF">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-revoke"/></svg>
+      </g>
+      <text x="362" y="23" fill="#FFFFFF" font-size="13" font-weight="600" text-anchor="middle">Revocar y auditar</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       SECCION ACCESIBILIDAD + INTERACCIONES
+       ========================================================================= -->
+  <text x="728" y="620" fill="#2DD4BF" font-size="14" font-weight="600" letter-spacing="0.04em">REGLAS DE INTERACCION · ACCESIBILIDAD (CA-29..CA-34)</text>
+
+  <g transform="translate(728,636)">
+    <rect width="688" height="436" rx="12" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <g transform="translate(24,24)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="15" font-weight="600">Confirmacion 2-step</text>
+      <text x="0" y="20" fill="#B1BAC4" font-size="12">Para rotar key, revocar override, aplicar cambios → re-typear el nombre del recurso afectado (estilo GitHub delete repo). Boton confirm queda disabled hasta que el textfield matchee exact (case-sensitive).</text>
+    </g>
+
+    <g transform="translate(24,90)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="15" font-weight="600">Masking de keys (CA-29)</text>
+      <text x="0" y="20" fill="#B1BAC4" font-size="12">Formato <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">sk-pro·····························L8mQ</tspan> en pantalla (primeros 6 + ultimos 4). GET <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">/api/multi-provider/config</tspan> nunca devuelve la key completa — solo metadata + masking.</text>
+    </g>
+
+    <g transform="translate(24,158)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="15" font-weight="600">Copy-to-clipboard (CA-5)</text>
+      <text x="0" y="20" fill="#B1BAC4" font-size="12">Requiere gesto explicito (click en boton "Copy"). Nunca llamar <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">navigator.clipboard.writeText</tspan> en <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">onload</tspan> ni en hover.</text>
+    </g>
+
+    <g transform="translate(24,226)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="15" font-weight="600">Escape HTML (CA-30)</text>
+      <text x="0" y="20" fill="#B1BAC4" font-size="12">Justificacion, autor, nombres custom → render con <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">textContent</tspan> / DOM API. Nunca <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">innerHTML</tspan>. Tests adversariales pegando <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">&lt;script&gt;</tspan> deben renderizarse como texto literal.</text>
+    </g>
+
+    <g transform="translate(24,310)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="15" font-weight="600">Focus-ring &amp; teclado</text>
+      <text x="0" y="20" fill="#B1BAC4" font-size="12"><tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">--focus-ring</tspan> 4px brand-cyan en todos los controles. Tab navega en orden logico. ESC cierra modal. Enter confirma cuando el textfield 2-step matchea.</text>
+    </g>
+
+    <g transform="translate(24,378)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="15" font-weight="600">prefers-reduced-motion</text>
+      <text x="0" y="20" fill="#B1BAC4" font-size="12">TTL countdown ring se actualiza textualmente (sin animacion rotativa) si el usuario tiene <tspan font-family="'SF Mono', Consolas, monospace" fill="#E6EDF3">prefers-reduced-motion: reduce</tspan>.</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       SECCION CONTRASTE + WCAG
+       ========================================================================= -->
+  <text x="24" y="1124" fill="#2DD4BF" font-size="14" font-weight="600" letter-spacing="0.04em">CONTRASTE WCAG AA · TODOS LOS TOKENS VERIFICADOS</text>
+
+  <g transform="translate(24,1140)">
+    <rect width="1392" height="156" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(24,24)" font-size="12">
+      <!-- Tabla simple -->
+      <text x="0" y="0" fill="#8B949E" letter-spacing="0.06em" font-weight="600">TOKEN</text>
+      <text x="240" y="0" fill="#8B949E" letter-spacing="0.06em" font-weight="600">USO</text>
+      <text x="600" y="0" fill="#8B949E" letter-spacing="0.06em" font-weight="600">CONTRASTE vs surface-0</text>
+      <text x="900" y="0" fill="#8B949E" letter-spacing="0.06em" font-weight="600">WCAG</text>
+
+      <line x1="0" y1="12" x2="1344" y2="12" stroke="#21262D"/>
+
+      <g transform="translate(0,30)">
+        <text fill="#F59E0B" font-family="'SF Mono', Consolas, monospace">--retry · #F59E0B</text>
+        <text x="240" fill="#B1BAC4">Badge "override · 18h" + TTL countdown</text>
+        <text x="600" fill="#E6EDF3" font-weight="500">8.9:1</text>
+        <text x="900" fill="#3FB950" font-weight="500">AA Normal + AAA Large</text>
+      </g>
+      <g transform="translate(0,50)">
+        <text fill="#F85149" font-family="'SF Mono', Consolas, monospace">--danger · #F85149</text>
+        <text x="240" fill="#B1BAC4">Badge "NON-DEGRADABLE" + boton Revocar</text>
+        <text x="600" fill="#E6EDF3" font-weight="500">5.6:1</text>
+        <text x="900" fill="#3FB950" font-weight="500">AA Normal</text>
+      </g>
+      <g transform="translate(0,70)">
+        <text fill="#3FB950" font-family="'SF Mono', Consolas, monospace">--success · #3FB950</text>
+        <text x="240" fill="#B1BAC4">Estado conexion "valid · ping"</text>
+        <text x="600" fill="#E6EDF3" font-weight="500">7.3:1</text>
+        <text x="900" fill="#3FB950" font-weight="500">AA Normal + AAA Large</text>
+      </g>
+      <g transform="translate(0,90)">
+        <text fill="#58A6FF" font-family="'SF Mono', Consolas, monospace">--info · #58A6FF</text>
+        <text x="240" fill="#B1BAC4">Boton "Editar" + banner server-side enforcement</text>
+        <text x="600" fill="#E6EDF3" font-weight="500">7.1:1</text>
+        <text x="900" fill="#3FB950" font-weight="500">AA Normal + AAA Large</text>
+      </g>
+      <g transform="translate(0,110)">
+        <text fill="#2DD4BF" font-family="'SF Mono', Consolas, monospace">--teal · #2DD4BF</text>
+        <text x="240" fill="#B1BAC4">Tab activo "Multi-Provider"</text>
+        <text x="600" fill="#E6EDF3" font-weight="500">10.4:1</text>
+        <text x="900" fill="#3FB950" font-weight="500">AAA</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Footer info -->
+  <g transform="translate(24,1308)">
+    <text fill="#6E7681" font-size="10" font-family="'SF Mono', Consolas, monospace">mockup 13 · multi-provider-modals · v1 · issue #3177 · 3 modales criticos + reglas de interaccion</text>
+  </g>
+</svg>
