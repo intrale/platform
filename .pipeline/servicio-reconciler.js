@@ -123,6 +123,19 @@ function enqueueLabelApply(issueNum, label, meta = null) {
     );
 }
 
+// #3186 — encola orden `remove-label` para que el servicio-github le quite
+// el label en GitHub. La action `remove-label` ya está soportada por
+// `servicio-github.js` (línea ~451) y es idempotente: si el label ya fue
+// removido, `gh issue edit --remove-label` no falla.
+function enqueueLabelRemove(issueNum, label) {
+    fs.mkdirSync(GH_QUEUE, { recursive: true });
+    const filename = `${issueNum}-rm-${label}-reconciler-${Date.now()}.json`;
+    fs.writeFileSync(
+        path.join(GH_QUEUE, filename),
+        JSON.stringify({ action: 'remove-label', issue: issueNum, label }),
+    );
+}
+
 // -----------------------------------------------------------------------------
 // Decidir fase para placeholder según labels del issue
 // -----------------------------------------------------------------------------
@@ -369,6 +382,175 @@ function reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet, opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #3186 — Reconciliar markers resueltos por el guardian (re-aprobación)
+// -----------------------------------------------------------------------------
+//
+// Asimetría histórica: `reconcileClosedMarkers` archiva markers cuando el
+// issue queda CLOSED en GitHub, pero **no hay equivalente para el caso
+// "guardian re-aprobó"**. Si guru rechaza, deja marker en
+// `bloqueado-humano/3082.guru`. Si en una corrida posterior el mismo skill
+// re-aprueba y dropea `listo/3082.guru`, el marker queda zombie: el reconciler
+// sigue viéndolo y re-aplica `needs-human` cada ciclo (loop label↔reconciler).
+//
+// Esta función detecta dos casos:
+//
+//   A) GUARDIAN-RESOLVED:
+//      Existe `<pipeline>/<phase>/{listo,procesado}/<issue>.<skill>` con
+//      `mtime > marker.mtime`. Esto indica que el mismo skill que generó el
+//      bloqueo emitió un resultado posterior — implícitamente, re-aprobó.
+//
+//      Por qué buscar en `listo/` Y `procesado/`: el pulpo promueve archivos
+//      `listo/` → `procesado/` al instante en que la fase siguiente toma el
+//      issue. Si el reconciler corre tarde (intervalo default 5min), el
+//      archivo ya puede estar en `procesado/`. Sin esta extensión, el bug
+//      original (#3082) se reproduce parcialmente.
+//
+//   B) TTL-EXPIRED:
+//      `now - marker.mtime > RESOLVED_TTL_MS` (default 7 días). Red de
+//      seguridad para markers que nadie tocó en una semana — típicamente
+//      casos donde el archivo `listo/` fue borrado a mano o nunca existió
+//      (humano intervino fuera del pipeline). Sin este TTL los markers
+//      podrían acumularse indefinidamente.
+//
+// Al archivar:
+//   - Marker → `<pipeline>/<phase>/archivado/<issue>.<skill>.<reason>-<ts>`
+//     con timestamp sanitizado para Windows (sin `:` ni `.`).
+//   - `.reason.json` se elimina (mismo patrón que `reconcileClosedMarkers`).
+//   - `appendStaleOrderLog({ reason })` con reasons `guardian-resolved` o
+//     `ttl-expired` para que `reconcilerStaleOrdersSlice` los cuente.
+//
+// Cross-fase remove-label: si después de archivar no quedan otros markers
+// para el mismo issue (un issue puede estar bloqueado por varios skills en
+// fases diferentes), encolar `remove-label needs-human`. Sin esta verificación
+// podríamos quitar el label aunque haya otros bloqueos pendientes.
+
+const RESOLVED_TTL_MS = parseInt(
+    process.env.RECONCILER_RESOLVED_TTL_MS || String(7 * 24 * 60 * 60 * 1000),
+    10,
+); // 7 días default
+
+// Busca resolución del guardian: archivo `<issue>.<skill>` en `listo/` o
+// `procesado/` de la misma fase, con mtime > markerMtime.
+// Devuelve { state, path, mtimeMs } o null.
+function findGuardianResolution(marker, markerMtime) {
+    const base = `${marker.issue}.${marker.skill}`;
+    for (const state of ['listo', 'procesado']) {
+        const candidate = path.join(PIPELINE, marker.pipeline, marker.phase, state, base);
+        let stat;
+        try { stat = fs.statSync(candidate); } catch { continue; }
+        if (stat.mtimeMs > markerMtime) {
+            return { state, path: candidate, mtimeMs: stat.mtimeMs };
+        }
+    }
+    return null;
+}
+
+// Sanitiza un timestamp ISO para usarlo como sufijo de archivo en Windows.
+// `2026-05-14T22:30:45.123Z` → `2026-05-14T22-30-45-123Z`.
+function safeTsSuffix(ms) {
+    return new Date(ms).toISOString().replace(/[:.]/g, '-');
+}
+
+function reconcileResolvedMarkers(blockedMarkers, opts = {}) {
+    const now = opts.now || Date.now();
+    const ttlMs = typeof opts.ttlMs === 'number' ? opts.ttlMs : RESOLVED_TTL_MS;
+    const logFn = opts.logStaleOrder || appendStaleOrderLog;
+    const enqueueRemoveFn = opts.enqueueLabelRemove || enqueueLabelRemove;
+    const findResolutionFn = opts.findGuardianResolution || findGuardianResolution;
+
+    const archivedMarkerKeys = new Set(); // `${issue}.${skill}`
+    const archivedIssues = new Set();
+    const archivedEntries = [];
+
+    for (const m of blockedMarkers) {
+        const markerPath = path.join(
+            PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
+        );
+        let markerMtime;
+        try { markerMtime = fs.statSync(markerPath).mtimeMs; }
+        catch { continue; } // marker desapareció entre listado y stat — saltar
+
+        let resolved = null;
+        const guardian = findResolutionFn(m, markerMtime);
+        if (guardian) {
+            resolved = {
+                reason: 'guardian-resolved',
+                detail: `${m.pipeline}/${m.phase}/${guardian.state}/${m.issue}.${m.skill}`,
+            };
+        } else if ((now - markerMtime) > ttlMs) {
+            const daysIdle = Math.round((now - markerMtime) / (24 * 3600 * 1000));
+            resolved = {
+                reason: 'ttl-expired',
+                detail: `marker sin movimiento por ${daysIdle}d (TTL=${Math.round(ttlMs / (24 * 3600 * 1000))}d)`,
+            };
+        }
+
+        if (!resolved) continue;
+
+        // Archivar marker en <pipeline>/<phase>/archivado/ con sufijo
+        // `<reason>-<ts>` para que sea evidente por qué se cerró.
+        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+        const base = `${m.issue}.${m.skill}`;
+        const archivedName = `${base}.${resolved.reason}-${safeTsSuffix(now)}`;
+        const dst = path.join(archiveDir, archivedName);
+
+        try {
+            fs.mkdirSync(archiveDir, { recursive: true });
+            fs.renameSync(markerPath, dst);
+        } catch (e) {
+            log(`Error archivando marker resuelto #${m.issue}.${m.skill}: ${e.message.slice(0, 120)}`);
+            continue;
+        }
+        try { fs.unlinkSync(markerPath + '.reason.json'); } catch {}
+
+        archivedMarkerKeys.add(`${m.issue}.${m.skill}`);
+        archivedIssues.add(m.issue);
+        archivedEntries.push({
+            issue: m.issue, skill: m.skill, reason: resolved.reason, archived_as: dst,
+        });
+
+        try {
+            logFn({
+                reason: resolved.reason,
+                issue: m.issue,
+                label: RECONCILER_LABEL,
+                snapshot_at: null,
+                current_mtime: markerMtime,
+                detail: resolved.detail,
+            });
+        } catch {}
+
+        log(`#${m.issue}.${m.skill} resuelto (${resolved.reason}) → archivado/${archivedName}`);
+    }
+
+    // Cross-fase: por cada issue con marker archivado, verificar si quedan
+    // otros markers activos en blockedMarkers (en cualquier fase). Solo si
+    // todos los markers del issue fueron archivados, encolamos remove-label
+    // para que GitHub también quede sin `needs-human`.
+    let removeLabelsEnqueued = 0;
+    for (const issue of archivedIssues) {
+        const stillBlocked = blockedMarkers.some(
+            m => m.issue === issue && !archivedMarkerKeys.has(`${m.issue}.${m.skill}`),
+        );
+        if (stillBlocked) continue;
+        try {
+            enqueueRemoveFn(issue, RECONCILER_LABEL);
+            removeLabelsEnqueued++;
+        } catch (e) {
+            log(`Error encolando remove-label #${issue}: ${e.message.slice(0, 120)}`);
+        }
+    }
+
+    return {
+        archived: archivedEntries.length,
+        archivedIssues,
+        archivedMarkerKeys,
+        removeLabelsEnqueued,
+        entries: archivedEntries,
+    };
+}
+
+// -----------------------------------------------------------------------------
 // Telemetría: log append-only de descartes/detecciones (CA5 #2994)
 // -----------------------------------------------------------------------------
 //
@@ -425,24 +607,38 @@ function reconcileOnce() {
 
     const created = reconcileLabelToFilesystem(ghIssues, blockedByIssue);
 
-    // CA3 (#2994) — primero detectar destrabes humanos: corre ANTES que
+    // #3186 — primero, archivar markers ya resueltos por el guardian (re-aprobó)
+    // o expirados por TTL. Corre ANTES que reconcileMarkerToLabel para no
+    // re-aplicar el label sobre un issue que está funcionalmente destrabado;
+    // ANTES que reconcileHumanUnblockDetected porque el guardian-resolved es
+    // más específico (sabemos exactamente qué skill resolvió) que la detección
+    // por "label ausente" — si ambos disparan, preferimos archivar a `archivado/`
+    // (estado terminal) en vez de mover a `pendiente/` (estado de re-ejecución).
+    const resolvedResult = reconcileResolvedMarkers(blockedMarkers);
+    const resolved = resolvedResult.archived;
+    const resolvedRemovedLabels = resolvedResult.removeLabelsEnqueued;
+    const afterResolved = resolvedResult.archivedMarkerKeys.size > 0
+        ? blockedMarkers.filter(m => !resolvedResult.archivedMarkerKeys.has(`${m.issue}.${m.skill}`))
+        : blockedMarkers;
+
+    // CA3 (#2994) — detectar destrabes humanos: corre ANTES que
     // reconcileMarkerToLabel para no encolar órdenes que tendríamos que
     // descartar como stale por GitHub-autoritativo.
-    const unblockResult = reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet);
+    const unblockResult = reconcileHumanUnblockDetected(afterResolved, ghIssueSet);
     const detected = unblockResult.detected;
     // Filtrar markers ya movidos para que reconcileMarkerToLabel/Closed
     // no vuelvan a procesarlos en este mismo ciclo.
     const remaining = unblockResult.movedIssues.size > 0
-        ? blockedMarkers.filter(m => !unblockResult.movedIssues.has(m.issue))
-        : blockedMarkers;
+        ? afterResolved.filter(m => !unblockResult.movedIssues.has(m.issue))
+        : afterResolved;
 
     const enqueued = reconcileMarkerToLabel(remaining, ghIssueSet);
     const archived = reconcileClosedMarkers(remaining, ghIssueSet);
 
     const elapsed = Date.now() - t0;
     lastRunAt = Date.now();
-    if (created || enqueued || archived || detected) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados, +${detected} destrabes humanos detectados`);
+    if (created || enqueued || archived || detected || resolved) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -492,13 +688,18 @@ module.exports = {
     reconcileMarkerToLabel,
     reconcileClosedMarkers,
     reconcileHumanUnblockDetected,
+    reconcileResolvedMarkers,
+    findGuardianResolution,
+    safeTsSuffix,
     decidirFasePlaceholder,
     isRecommendationIssue,
     RECOMMENDATION_LABELS,
     listGhIssuesWithLabel,
     getIssueState,
     enqueueLabelApply,
+    enqueueLabelRemove,
     buildMarkerMeta,
     appendStaleOrderLog,
     HUMAN_UNBLOCK_GRACE_MS,
+    RESOLVED_TTL_MS,
 };
