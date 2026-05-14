@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[sprint|session <id>|agent <name>|report [--telegram]]"
 allowed-tools: Bash, Read, Glob, Grep
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn]
 ---
 
 # /cost — Token Cost Tracker

@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[--run] [--deep] [--json] [--processes|--worktrees|--sessions|--locks|--logs|--qa|--agents|--env]"
 allowed-tools: Bash, Read
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn]
 ---
 
 # /ghostbusters — Cazador unificado de fantasmas

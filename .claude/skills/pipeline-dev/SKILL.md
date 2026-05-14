@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<issue-o-tarea> [--plan] [--test]"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, tool_use_gated]
 ---
 
 # /pipeline-dev — PipelineDev

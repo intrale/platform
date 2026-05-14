@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<pregunta-o-tema-a-investigar>"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
+required_permissions: [file_read, bash, child_spawn, network_out]
 ---
 
 # /guru — Guru

@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[modulo] [--coverage] [--fail-fast] [--from-gherkin <issue>]"
 allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList, Write, Edit
 model: claude-opus-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, tool_use_gated, long_running_watcher]
 ---
 
 # /tester — Tester

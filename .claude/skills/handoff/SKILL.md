@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<issue> --commit '<msg>' --body '<pr-body>' [--type <tipo>] [--qa <disposition>]"
 allowed-tools: Bash, Read
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, network_out]
 ---
 
 # /handoff — Handoff

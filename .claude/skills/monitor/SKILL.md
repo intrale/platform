@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[all|sessions|tasks|help]"
 allowed-tools: Bash, Read, Grep, Glob, TaskList
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, tool_use_gated, long_running_watcher]
 ---
 
 # /monitor — Monitor

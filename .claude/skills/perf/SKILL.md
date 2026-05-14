@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[--scan] [--compare] [--top N] [--report]"
 allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, tool_use_gated]
 ---
 
 # /perf — Performance Analyzer

@@ -102,6 +102,7 @@ function resolveProviderForSkill(skill, opts = {}) {
         return {
             provider: 'deterministic',
             model: null,
+            mode: 'native',
             handler: determHandler,
             source: 'deterministic-allowlist',
         };
@@ -113,6 +114,7 @@ function resolveProviderForSkill(skill, opts = {}) {
         return {
             provider: 'anthropic',
             model: LEGACY_ANTHROPIC_MODEL,
+            mode: 'bypassPermissions',
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-no-config',
         };
@@ -121,6 +123,7 @@ function resolveProviderForSkill(skill, opts = {}) {
         return {
             provider: 'anthropic',
             model: LEGACY_ANTHROPIC_MODEL,
+            mode: 'bypassPermissions',
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-read-error',
             warning: `agent-models.json no se pudo parsear: ${models.__readError}`,
@@ -134,6 +137,7 @@ function resolveProviderForSkill(skill, opts = {}) {
         return {
             provider: 'anthropic',
             model: defaultModel,
+            mode: resolvePermissionMode(models, 'anthropic'),
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-skill-not-found',
         };
@@ -144,9 +148,38 @@ function resolveProviderForSkill(skill, opts = {}) {
     return {
         provider: providerName,
         model: skillCfg.model || defaultModel,
+        // #3082 (CA-8): el mode efectivo del provider para este skill es lo
+        // que la matriz capability×(provider, mode) consume. Lo extraemos del
+        // bloque providers.<X>.permissions_mode de agent-models.json. Si no
+        // está declarado, el caller cae al default por provider (anthropic →
+        // bypassPermissions, openai-codex → full-auto).
+        mode: resolvePermissionMode(models, providerName),
         handler,
         source: 'agent-models',
     };
+}
+
+// -----------------------------------------------------------------------------
+// resolvePermissionMode — #3082 (CA-8): extrae el `permissions_mode` del bloque
+// `providers.<name>` de agent-models.json. Si está ausente, devuelve el default
+// canónico por provider documentado en docs/pipeline-multi-provider/permission-mapping.md.
+//
+// El default por provider es **conservador**: el mode más permisivo que el pulpo
+// usa hoy (`bypassPermissions` para anthropic, `full-auto` para openai-codex,
+// `native` para deterministic). Cambiar el default acá requiere actualizar la
+// matriz capability del validator y la doc canónica.
+// -----------------------------------------------------------------------------
+function resolvePermissionMode(models, providerName) {
+    const defaultsByProvider = {
+        anthropic: 'bypassPermissions',
+        'openai-codex': 'full-auto',
+        deterministic: 'native',
+    };
+    if (!models || !models.providers || !models.providers[providerName]) {
+        return defaultsByProvider[providerName] || null;
+    }
+    const block = models.providers[providerName];
+    return block.permissions_mode || defaultsByProvider[providerName] || null;
 }
 
 module.exports = {
@@ -156,4 +189,5 @@ module.exports = {
     getProviderHandler,
     resolveProviderForSkill,
     readAgentModels,
+    resolvePermissionMode,
 };

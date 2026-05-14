@@ -736,15 +736,45 @@ Si un patrón estructural anterior (`HEADER_AUTHORIZATION`, `HEADER_X_API_KEY`, 
 
 ### 6.7 Permission model mapping
 
-Tabla explícita de equivalencias (issue S4):
+> **Estado**: implementado por issue [#3082](https://github.com/intrale/platform/issues/3082) (S4 multi-provider). El **documento canónico** vive en [`docs/pipeline-multi-provider/permission-mapping.md`](./pipeline-multi-provider/permission-mapping.md). Esta sección es índice.
 
-| Capacidad harness Claude | Equivalente codex | Equivalente Gemini CLI | Equivalente Ollama |
-|--------------------------|-------------------|------------------------|--------------------|
-| `--permission-mode bypassPermissions` (Claude Code) | `--no-confirm` | n/a (sin gating built-in) | n/a |
-| `--permission-mode acceptEdits` | `--auto-edit` | n/a | n/a |
-| `--permission-mode plan` | n/a (codex no tiene plan mode propio) | n/a | n/a |
+#### Por qué la tabla canónica es **capability-level**, no flag-level
 
-Si un provider no tiene equivalente semántico para un permission mode requerido por un skill, ese skill **NO puede correr en ese provider** hasta validación manual y excepción documentada.
+La versión v1 de este doc proponía mapear flags entre providers (`bypassPermissions ↔ --no-confirm`). El análisis de security identificó el problema: dos flags pueden **parecer equivalentes** y conceder **conjuntos distintos** de capabilities. Sin un catálogo cerrado de capacidades, queda margen para privilege escalation cross-provider.
+
+La matriz canónica mapea **capabilities** (file_read, file_write_repo, bash, child_spawn, tool_use_gated, …) → `(provider, mode)`. La tabla flag↔flag es **derivada**, no fuente.
+
+#### Fuentes de verdad (código)
+
+- Catálogo canónico de capabilities: [`.pipeline/lib/capabilities.js`](../.pipeline/lib/capabilities.js) (`KNOWN_CAPABILITIES` — Set inmutable).
+- Matriz `(provider, mode) → Set<capability>`: [`.pipeline/lib/permission-validator.js`](../.pipeline/lib/permission-validator.js) (`CAPABILITY_MATRIX`).
+- Validación en cada spawn (CA-S3): `validateSpawn(skill, provider, mode, requiredCapabilities)`.
+- Catálogo `NON_DEGRADABLE_SKILLS` hardcoded: mismo archivo.
+- Schema del frontmatter de skills: [`docs/skills/skill-metadata.schema.json`](./skills/skill-metadata.schema.json).
+- Audit log tamper-evident de overrides: `.pipeline/audit/permission-overrides.jsonl` (hash chain SHA-256).
+- CLI atómicos: `.pipeline/scripts/{override-permission,revoke-permission}.js`.
+
+#### Garantías declaradas
+
+1. **Fail-CLOSED por default** (CA-S2): mode desconocido o capability ausente del catálogo → spawn rechazado con mensaje accionable.
+2. **At-spawn-time** (CA-S3): cada `launchAgent` revalida — `agent-models.json` puede cambiar runtime y los rebotes cross-phase cambian el skill.
+3. **Audit log con hash chain** (CA-S4): cada override registra `{skill, provider, mode_requerido, mode_otorgado, capabilities_diff, justificacion, autor, ttl_horas, created_at, hash_prev, hash_self}`. Tamper-evident — un edit manual rompe la chain y todos los overrides se ignoran.
+4. **Notificación Telegram inmediata** (CA-17): el spawn con override aplicado corre **después** de que el operador recibe la notificación natural en el chat.
+5. **NON_DEGRADABLE skills** (CA-S6): `security`, `review`, `builder`, `tester`, `backend-dev` NO admiten override — fail-CLOSED indefectible si el provider no concede sus capabilities.
+
+#### Tabla flag↔flag derivada (informativa)
+
+Estas equivalencias son **derivadas** de la matriz canónica. Si entran en conflicto con la matriz, manda la matriz.
+
+| Flag Anthropic | Flag OpenAI-Codex | Equivalencia capability (resumen) |
+|----------------|-------------------|-----------------------------------|
+| `bypassPermissions` | `full-auto` (parcial — pierde `tool_use_gated`, `long_running_watcher` hasta CA-19) | Mayoría de capabilities; lo perdido motiva `NON_DEGRADABLE_SKILLS`. |
+| `acceptEdits` | (sin equivalente directo) | Mismo set otorgado que `bypassPermissions` en el pipeline (no-interactivo). |
+| `plan` | `default` (sin flag) | Read-only seguro; sin `bash`, sin `file_write_repo`. |
+
+#### Detalles operativos
+
+Para la matriz completa con justificación por celda, mecanismos de override, casos extremos, diagrama de flujo del decisor, y procedimiento para agregar provider/capability nueva → leer la doc canónica.
 
 ### 6.8 Audit trail dinámico
 
@@ -870,16 +900,17 @@ Al pasar el flag `quota-exhausted.json` de global a granularidad `provider:model
 
 Bajo el régimen automático cross-MODELO (Política A), el algoritmo de §4.3 puede degradar un skill a un modelo más barato si el costo histórico es alto y la tasa de rebote es baja. Hay skills cuya capacidad de detección es crítica para la postura de seguridad del propio pipeline — degradarlos silenciosamente puede dejar pasar vulnerabilidades sutiles.
 
-**Lista inicial de skills no-degradables** (default):
+**Lista actual de skills no-degradables** (#3082 lo hardcodeó en `permission-validator.js`):
 
 ```js
-// .pipeline/lib/agent-launcher.js (post-H2)
+// .pipeline/lib/permission-validator.js (entregado en #3082)
 // NO mover a agent-models.json: cualquier cambio debe requerir PR auditable.
-const NO_DEGRADABLE_SKILLS = new Set([
-    'security',   // detección de vulnerabilidades
-    'review',     // last gate antes de merge
-    'builder',    // determinístico ya, no aplica el algoritmo
-    'tester',     // determinístico ya, no aplica el algoritmo
+const NON_DEGRADABLE_SKILLS = immutableSet([
+    'security',     // detección de vulnerabilidades — necesita tool_use_gated
+    'review',       // last gate antes de merge — necesita tool_use_gated
+    'builder',      // builds Gradle reales — necesita bash + long_running_watcher
+    'tester',       // ejecución de tests + cobertura — necesita tool_use_gated
+    'backend-dev',  // refactors arquitecturales sensibles — necesita tool_use_gated
 ]);
 ```
 
@@ -891,7 +922,7 @@ const NO_DEGRADABLE_SKILLS = new Set([
 
 **Algoritmo cuando un skill está en la lista**: `lib/model-selector.js` retorna directamente `cfg.skills[skill].phase_overrides[fase]` o `cfg.skills[skill].model` sin pasar por la rama de degradación. El audit log (§6.8.3) registra `motivo: 'no_degradable_skill'` para que el operador pueda verificar que la lista está activa.
 
-Hardening pendiente: issue [#3066](https://github.com/intrale/platform/issues/3066).
+Hardening pendiente: issue [#3066](https://github.com/intrale/platform/issues/3066) (queda como recomendación independiente — #3082 ya entregó la lista hardcoded y el gate fail-CLOSED para non-degradables).
 
 ---
 

@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[<PR-number>] [--strict] [--quick]"
 allowed-tools: Bash, Read, Grep, Glob
 model: claude-opus-4-6
+required_permissions: [file_read, bash, child_spawn, network_out, tool_use_gated]
 ---
 
 # /review — Review

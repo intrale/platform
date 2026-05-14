@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[api|desktop|android|all|validate <issue-number>] [--skip-env] [--keep-env]"
 allowed-tools: Bash, Read, Write, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, tool_use_gated, long_running_watcher]
 ---
 
 # /qa — QA E2E
