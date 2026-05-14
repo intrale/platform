@@ -682,12 +682,34 @@ test('CA-3 · HARDCODED_SECRET_PATTERNS está congelado (inmutabilidad)', () => 
 // CA-2 (#3080 / S1) · Boot fail-fast por env var faltante
 // =============================================================================
 
-test('CA-2 #3080 · validate con processEnv vacío → falla por ANTHROPIC_API_KEY', () => {
-  const file = tmpFile(baseValid());
+// Helper #3154: baseValid() tiene anthropic con launcher=claude (OAuth bypass).
+// Para testear el camino "exige env var faltante" necesitamos un provider con
+// launcher distinto (codex/gemini/ollama/node) referenciado por algún skill.
+function baseValidWithCodex() {
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = {
+    launcher: 'codex',
+    model: 'gpt-4o',
+    spawn_args_template: ['-p', '{user_prompt}', '--model', '{model}'],
+    output_parser: 'openai-sse',
+    quota_error_types: [],
+    supports_tool_use: true,
+    prompt_caching: { supported: false },
+    credentials_env: ['OPENAI_API_KEY'],
+  };
+  cfg.skills.qa.provider = 'openai-codex';
+  delete cfg.skills.qa.model_override; // model_override era para anthropic
+  return cfg;
+}
+
+test('CA-2 #3080 · validate con processEnv vacío + provider non-claude → falla por env var', () => {
+  // Antes de #3154: testeaba contra anthropic+ANTHROPIC_API_KEY. Reaimed a
+  // openai-codex+OPENAI_API_KEY porque launcher=claude ahora bypassea el chequeo.
+  const file = tmpFile(baseValidWithCodex());
   try {
     const r = validateMod.validate(file, { processEnv: {} });
     assert.equal(r.ok, false);
-    const e = r.errors.find((er) => er.message.includes('ANTHROPIC_API_KEY'));
+    const e = r.errors.find((er) => er.message.includes('OPENAI_API_KEY'));
     assert.ok(e, `debe fallar por env var faltante: ${JSON.stringify(r.errors)}`);
     assert.match(e.message, /no está presente en process\.env/);
     assert.equal(r.exitCode, 2);
@@ -695,19 +717,21 @@ test('CA-2 #3080 · validate con processEnv vacío → falla por ANTHROPIC_API_K
 });
 
 test('CA-2 #3080 · validate con processEnv válido → ok', () => {
-  const file = tmpFile(baseValid());
+  const file = tmpFile(baseValidWithCodex());
   try {
-    const r = validateMod.validate(file, { processEnv: { ANTHROPIC_API_KEY: 'sk-ant-fake-not-real-1234567890' } });
+    const r = validateMod.validate(file, {
+      processEnv: { OPENAI_API_KEY: 'sk-fake-not-real-1234567890' },
+    });
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   } finally { fs.unlinkSync(file); }
 });
 
 test('CA-2 #3080 · validate con env var presente pero vacía → falla', () => {
-  const file = tmpFile(baseValid());
+  const file = tmpFile(baseValidWithCodex());
   try {
-    const r = validateMod.validate(file, { processEnv: { ANTHROPIC_API_KEY: '' } });
+    const r = validateMod.validate(file, { processEnv: { OPENAI_API_KEY: '' } });
     assert.equal(r.ok, false);
-    const e = r.errors.find((er) => er.message.includes('ANTHROPIC_API_KEY'));
+    const e = r.errors.find((er) => er.message.includes('OPENAI_API_KEY'));
     assert.ok(e, 'env vacía debe fallar igual que ausente');
   } finally { fs.unlinkSync(file); }
 });
@@ -721,8 +745,8 @@ test('CA-2 #3080 · validate sin processEnv → NO valida env vars (backwards co
   } finally { fs.unlinkSync(file); }
 });
 
-test('CA-2 #3080 · validateOrExit con checkEnv:true sin env var → exit 2', () => {
-  const file = tmpFile(baseValid());
+test('CA-2 #3080 · validateOrExit con checkEnv:true sin env var (non-claude) → exit 2', () => {
+  const file = tmpFile(baseValidWithCodex());
   let exitCode = null;
   let stderrMsg = '';
   try {
@@ -734,7 +758,7 @@ test('CA-2 #3080 · validateOrExit con checkEnv:true sin env var → exit 2', ()
       exitFn: (c) => { exitCode = c; },
     });
     assert.equal(exitCode, 2);
-    assert.match(stderrMsg, /ANTHROPIC_API_KEY/);
+    assert.match(stderrMsg, /OPENAI_API_KEY/);
     assert.match(stderrMsg, /no está presente en process\.env/);
   } finally { fs.unlinkSync(file); }
 });
@@ -789,7 +813,8 @@ test('CA-2 #3080 · provider con skill asignado → exige todas sus credentials_
 });
 
 test('CA-2 #3080 · mensaje de fail-fast NO contiene valor del env (anti-leak)', () => {
-  const file = tmpFile(baseValid());
+  // Reaimed post #3154 a un provider non-claude para forzar el path de error.
+  const file = tmpFile(baseValidWithCodex());
   // Setear una env var con un valor que reconoceríamos si filtrara.
   const sentinel = 'SENTINEL-VALUE-1234567890-DO-NOT-LEAK';
   try {
@@ -807,6 +832,7 @@ test('CA-2 #3080 · validateCredentialsEnvPresence función pura, testable sin f
   const cfg = {
     default_provider: 'p1',
     providers: {
+      // Sin launcher → no aplica el bypass de #3154, sigue exigiendo env.
       p1: { credentials_env: ['VAR_A'] },
       p2: { credentials_env: ['VAR_B'] },
     },
@@ -819,6 +845,113 @@ test('CA-2 #3080 · validateCredentialsEnvPresence función pura, testable sin f
   const errs2 = validateMod.validateCredentialsEnvPresence(cfg, {});
   assert.equal(errs2.length, 1);
   assert.match(errs2[0].message, /VAR_A/);
+});
+
+// =============================================================================
+// CA #3154 · Bypass launcher='claude' (auth OAuth vía CLI, no env var)
+// =============================================================================
+
+test('#3154 · launcher=claude con credentials_env declarado → bypass, env vacía es válida', () => {
+  // El setup canónico actual: anthropic con launcher=claude y
+  // credentials_env=['ANTHROPIC_API_KEY']. Claude Max delega la auth al CLI
+  // (OAuth en ~/.claude/.credentials.json), nunca a env vars. La presencia
+  // de ANTHROPIC_API_KEY no debe ser obligatoria al boot.
+  const file = tmpFile(baseValid());
+  try {
+    const r = validateMod.validate(file, { processEnv: {} });
+    assert.equal(r.ok, true, `bypass claude debe pasar con env vacía: ${JSON.stringify(r.errors)}`);
+    // Doble check: ningún error debe nombrar ANTHROPIC_API_KEY.
+    const e = (r.errors || []).find((er) => er.message && er.message.includes('ANTHROPIC_API_KEY'));
+    assert.equal(e, undefined, 'no debe haber error sobre ANTHROPIC_API_KEY');
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3154 · launcher=codex con env vacía → falla con mensaje accionable (gate openai-codex)', () => {
+  // Espejo del caso anterior: si alguien asigna un skill a openai-codex (que
+  // SÍ usa env var directa OPENAI_API_KEY), el boot fail-fast debe disparar.
+  const file = tmpFile(baseValidWithCodex());
+  try {
+    const r = validateMod.validate(file, { processEnv: {} });
+    assert.equal(r.ok, false);
+    const e = (r.errors || []).find((er) => er.message && er.message.includes('OPENAI_API_KEY'));
+    assert.ok(e, `non-claude debe seguir exigiendo env: ${JSON.stringify(r.errors)}`);
+    assert.match(e.message, /no está presente en process\.env/);
+    assert.match(e.fix, /setear OPENAI_API_KEY/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3154 · bypass por launcher es per-provider, no global (provider claude OK + provider codex falla)', () => {
+  // Mix: skills usando anthropic (launcher=claude, bypass) Y openai-codex
+  // (launcher=codex, exige env). Con env vacía, debe fallar SOLO por codex,
+  // no por anthropic. Esto asegura que el bypass no contamina la decisión
+  // sobre otros providers.
+  const cfg = baseValidWithCodex();
+  // qa ya está en openai-codex por baseValidWithCodex(). backend-dev sigue
+  // en anthropic. Forzamos default_provider a openai-codex para ejercitar
+  // el path de default + el path de skill.
+  cfg.default_provider = 'openai-codex';
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file, { processEnv: {} });
+    assert.equal(r.ok, false);
+    const codexErr = (r.errors || []).find((er) => er.message && er.message.includes('OPENAI_API_KEY'));
+    assert.ok(codexErr, 'codex debe fallar por env faltante');
+    const anthErr = (r.errors || []).find((er) => er.message && er.message.includes('ANTHROPIC_API_KEY'));
+    assert.equal(anthErr, undefined, 'anthropic (launcher=claude) debe seguir bypasseado aunque otro provider falle');
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3154 · launcher futuro (node) con credentials_env → sigue chequeándose (escenario claude-api SDK)', () => {
+  // Hipótesis: un futuro provider que consuma ANTHROPIC_API_KEY directamente
+  // desde Node (sin pasar por el CLI `claude`) declararía launcher='node'.
+  // El bypass es per-launcher, así que ese caso NO debe escaparse del check.
+  // Este test gatea contra una regresión donde alguien generalizara el bypass.
+  const cfg = baseValid();
+  cfg.providers['anthropic-sdk'] = {
+    launcher: 'node',
+    model: 'deterministic',
+    spawn_args_template: ['{script_path}', '{issue}'],
+    output_parser: 'none',
+    quota_error_types: [],
+    supports_tool_use: false,
+    prompt_caching: { supported: false },
+    credentials_env: ['ANTHROPIC_API_KEY'],
+  };
+  cfg.skills.qa.provider = 'anthropic-sdk';
+  delete cfg.skills.qa.model_override;
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file, { processEnv: {} });
+    assert.equal(r.ok, false);
+    const e = (r.errors || []).find((er) =>
+      er.path && er.path.includes('anthropic-sdk') && er.message.includes('ANTHROPIC_API_KEY')
+    );
+    assert.ok(e, `provider non-claude con credentials_env debe seguir gateado: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3154 · validateCredentialsEnvPresence función pura — bypass claude vs check codex', () => {
+  // Mismo shape que el test "función pura" de #3080, ejercitando ambos paths.
+  const cfg = {
+    default_provider: 'anth',
+    providers: {
+      anth: { launcher: 'claude', credentials_env: ['ANTHROPIC_API_KEY'] },
+      codex: { launcher: 'codex', credentials_env: ['OPENAI_API_KEY'] },
+    },
+    skills: {
+      s1: { provider: 'anth' },
+      s2: { provider: 'codex' },
+    },
+  };
+  // Env vacía: claude bypass → no error. codex referenciado → error.
+  const errs = validateMod.validateCredentialsEnvPresence(cfg, {});
+  assert.equal(errs.length, 1, `solo codex debe fallar: ${JSON.stringify(errs)}`);
+  assert.match(errs[0].message, /OPENAI_API_KEY/);
+  assert.match(errs[0].path, /\/providers\/codex\/credentials_env$/);
+
+  // Con OPENAI_API_KEY presente: ambos OK.
+  const errsOk = validateMod.validateCredentialsEnvPresence(cfg, { OPENAI_API_KEY: 'sk-fake' });
+  assert.deepEqual(errsOk, []);
 });
 
 // =============================================================================

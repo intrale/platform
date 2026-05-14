@@ -8896,10 +8896,14 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
     const agentModelsValidate = require('./lib/agent-models-validate');
     agentModelsValidate.validateOrExit({
       contextLabel: 'boot abortado',
-      // checkEnv quedó en false (default): el setup actual autentica los
-      // skills LLM vía OAuth del CLI `claude` (Claude Max), no por env var.
-      // Activarlo rompe el boot del pulpo. Ver issue de seguimiento para
-      // reintroducirlo con awareness de launcher (claude=OAuth, otros=env).
+      // checkEnv:true (re-activado en #3154 después del fix temporal de #3153).
+      // validateCredentialsEnvPresence hace bypass de providers con
+      // `launcher: "claude"` (auth OAuth vía CLI, no env var). Cualquier
+      // otro launcher (codex/gemini/ollama/node) que declare credentials_env
+      // sigue exigiendo presencia de la env var al boot. Esto gateá la
+      // activación de openai-codex (OPENAI_API_KEY) sin romper el setup
+      // actual donde todos los skills usan launcher=claude.
+      checkEnv: true,
     });
   } catch (err) {
     // Si el módulo de validación mismo crasha (no debería: ajv/loadSchema están

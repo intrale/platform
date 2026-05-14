@@ -457,6 +457,20 @@ function validateCrossReferences(config) {
  * inyectada al boot. Esto evita rebote falso para el operador que tenga
  * agent-models.json con providers preparados pero no en uso.
  *
+ * Bypass para `launcher: "claude"` (#3154): el CLI `claude` (Claude Max)
+ * autentica vía OAuth — el token persiste en `~/.claude/.credentials.json`
+ * con `subscriptionType: "max"` y nunca pasa por env var. Cualquier
+ * `credentials_env` declarado para un provider con launcher=claude se
+ * ignora a propósito en este chequeo. Para el resto de launchers (`codex`,
+ * `gemini`, `ollama`, `node`) la presencia de la env var sigue siendo
+ * obligatoria al boot.
+ *
+ * NOTA estructural: el bypass acopla launcher='claude' con auth-mode OAuth.
+ * Si en el futuro aparece un launcher='claude' que NO use OAuth (ej. un
+ * SDK que consuma ANTHROPIC_API_KEY directo desde Node) el special case se
+ * invierte. Tracking del refactor a `auth_mode: "oauth" | "env"` declarativo
+ * en provider schema: issue #3205 (no bloqueante).
+ *
  * Devuelve array de errores con shape estándar (path, message, fix).
  *
  * REGLAS DE NO-LEAK:
@@ -482,6 +496,9 @@ function validateCredentialsEnvPresence(config, processEnv) {
     const providerDef = config.providers[providerName];
     if (!providerDef) continue; // ya lo agarra validateCrossReferences
     if (!Array.isArray(providerDef.credentials_env)) continue;
+    // Bypass #3154: launcher=claude autentica vía OAuth del CLI, no por env.
+    // Ver JSDoc arriba para el razonamiento y refactor pendiente (#3205).
+    if (providerDef.launcher === 'claude') continue;
     for (const envVar of providerDef.credentials_env) {
       if (typeof envVar !== 'string' || !envVar) continue;
       // Presencia en processEnv. Una string vacía NO cuenta como "seteada"
