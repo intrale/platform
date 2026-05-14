@@ -1,0 +1,810 @@
+# Multi-provider — guía operativa
+
+> **Audiencia:** dev del pipeline o operador que necesita agregar / cambiar / rotar / diagnosticar proveedores de IA del pipeline V3.
+> **No es** documento de diseño: para el "por qué" del rediseño multi-provider ver [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (diseño v2 + decisiones arquitectónicas).
+> **Issue de origen:** [#3176](https://github.com/intrale/platform/issues/3176) — documentación canónica operativa de la ola N+1 multi-provider.
+
+---
+
+## Mapa rápido
+
+1. [Agregar un proveedor nuevo](#1-agregar-un-proveedor-nuevo) — 6 puntos de toque coordinados.
+2. [Default del pipeline y fallbacks](#2-default-del-pipeline-y-fallbacks) — qué provider corre cuando no hay override.
+3. [Modelos disponibles por proveedor](#3-modelos-disponibles-por-proveedor) — catálogo + cómo agregar/quitar.
+4. [Configuración por agente](#4-configuración-por-agente) — bloque `skills.<name>` paso a paso.
+5. [Información operativa](#5-información-operativa) — validación, audit trail, cuota, diagnóstico.
+6. [Referencia rápida](#6-referencia-rápida) — tabla resumen + diagrama de dispatch.
+7. [Security considerations](#7-security-considerations) — gestión de keys, CSRF, audit trail, fallbacks reales.
+
+> **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
+
+---
+
+## 1. Agregar un proveedor nuevo
+
+> **Estado actual:** el pipeline tiene tres providers operativos (`anthropic`, `openai-codex`, `deterministic`) y dos provistos como stubs para futura activación (`gemini`, `ollama`). Esta sección describe el procedimiento end-to-end para que un dev nuevo pueda dar de alta un proveedor sin leer código fuente.
+
+### 1.1 Checklist de 6 puntos de toque
+
+Cada paso es **obligatorio**. Si saltás uno, el boot del pulpo aborta con mensaje accionable o el dispatch a runtime degrada a fallback de regresión cero. El orden importa.
+
+| # | Archivo | Acción |
+|---|---------|--------|
+| 1 | `.pipeline/lib/agent-models-validate.js` | Sumar el alias del CLI a `ALLOWED_LAUNCHERS`. |
+| 2 | `.pipeline/lib/agent-models-validate.js` | Sumar el parser stream/SSE/JSONL a `ALLOWED_OUTPUT_PARSERS`. |
+| 3 | `.pipeline/lib/agent-models-validate.js` | Sumar la env var de credencial a `ALLOWED_CREDENTIAL_ENV_VARS`. |
+| 4 | `.pipeline/lib/quota-exhausted.js` | Sumar el provider + sus `error_types` a `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER`. |
+| 5 | `.pipeline/lib/multi-provider/model-catalog.js` | Agregar la lista de modelos del provider al `CATALOG`, bumpear `CATALOG_VERSION`. |
+| 6 | `.pipeline/lib/agent-launcher/providers/<provider>.js` | Implementar el handler (`detectLauncher`, `buildSpawn`, `parseTokensFromLog`, `detectQuotaExhausted`). |
+| 7 | `.pipeline/lib/agent-launcher/resolve-provider.js` | Sumar la línea al objeto `PROVIDER_HANDLERS` (tabla hardcoded, **no** require dinámico). |
+| 8 | `.pipeline/lib/quota-adapters/<provider>.js` | Implementar `quotaUsage(sessionData)` (cálculo offline, sin red). |
+| 9 | `.pipeline/lib/quota-adapters/index.js` | Sumar el nombre del provider a `ALLOWED_PROVIDERS`. |
+| 10 | `.pipeline/agent-models.json` | Declarar el bloque `providers.<name>` con `launcher`, `model`, `spawn_args_template`, `output_parser`, `quota_error_types`, `prompt_caching`, `credentials_env`, `permissions_mode`. |
+
+> **Por qué tantos puntos de toque:** el pipeline aplica **defensa en profundidad** ([#3080](https://github.com/intrale/platform/issues/3080), [#3081](https://github.com/intrale/platform/issues/3081), [#3085](https://github.com/intrale/platform/issues/3085)). El JSON declara la intención, pero cada allowlist hardcoded existe para que un atacante con permiso de PR **no pueda** introducir un launcher arbitrario editando solo el JSON. Si querés evitar esta fricción, [#3197](https://github.com/intrale/platform/issues/3197) propone auto-generación de tablas; sigue abierto.
+
+### 1.2 Esquema de configuración del bloque `providers.<name>`
+
+Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json) — `$defs.providerDef`):
+
+```json
+{
+  "launcher": "claude",
+  "model": "claude-opus-4-7",
+  "spawn_args_template": [
+    "-p", "{user_prompt}",
+    "--system-prompt-file", "{system_file}",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--permission-mode", "bypassPermissions"
+  ],
+  "output_parser": "anthropic-stream-json",
+  "quota_error_types": ["usage_limit_error", "weekly_quota_exhausted", "snapshot_threshold_90"],
+  "resets_at_cap_max_days": 7,
+  "supports_tool_use": true,
+  "prompt_caching": {
+    "supported": true,
+    "ttl_seconds_default": 300,
+    "ttl_seconds_extended": 3600
+  },
+  "credentials_env": ["ANTHROPIC_API_KEY"],
+  "permissions_mode": "bypassPermissions"
+}
+```
+
+**Claves:**
+
+- `launcher` — alias del binario CLI. Debe estar en `ALLOWED_LAUNCHERS` (`claude`, `codex`, `gemini`, `ollama`, `node`). El schema deriva su enum por inyección programática, no por copia literal: editar la constante en JS basta.
+- `model` — modelo por default si el skill no sobreescribe.
+- `spawn_args_template` — argv que recibe el child. Las llaves `{user_prompt}`, `{system_file}`, `{script_path}`, `{issue}`, `{trabajando_path}`, `{model}` son los **únicos placeholders válidos** (`ALLOWED_PLACEHOLDERS`). Sustitución 1:1 a elemento del argv — **nunca concatenación shell**.
+- `output_parser` — normalizador del output. Valores: `anthropic-stream-json`, `openai-sse`, `gemini-stream`, `ollama-jsonl`, `none` (deterministic).
+- `quota_error_types` — strings que el detector de cuota (`lib/quota-exhausted.js`) marca como "cuota agotada" para este provider. Cada item cross-validado contra la **meta-allowlist** en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` ([#3077](https://github.com/intrale/platform/issues/3077) SEC-2, defensa anti supply-chain).
+- `resets_at_cap_max_days` — cap superior del `resets_at` cuando el provider reporta cuota agotada (cuotas semanales = 7, mensuales = 31). Aplicado en `capResetsAt()` para evitar "drenado natural" falso por un `reset_at` lejano malicioso ([#3077](https://github.com/intrale/platform/issues/3077) SEC-6).
+- `supports_tool_use` — `true` / `false` / `"limited"`. Define paridad funcional cross-provider.
+- `prompt_caching` — capacidades de cache (`supported`, `auto`, `ttl_seconds_default`, `ttl_seconds_extended`). Necesario para normalizar costos cross-provider.
+- `credentials_env` — env vars que **deben existir al boot del pulpo** si algún skill referencia este provider. Cada item validado contra `ALLOWED_CREDENTIAL_ENV_VARS` ([#3080](https://github.com/intrale/platform/issues/3080) SEC-3, anti-exfiltración de `PATH`/`AWS_SECRET_ACCESS_KEY` por declaración).
+- `permissions_mode` — modo de permisos del CLI. Mapeado a la matriz capability×(provider, mode) de [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
+
+### 1.3 Dónde se inyectan las API keys y cómo rotarlas
+
+**Ubicación canónica:** `~/.claude/secrets/telegram-config.json` (fuera del repo, inmune a checkouts y pulls).
+
+**Schema parcial (placeholders, NO valores reales):**
+
+```json
+{
+  "bot_token": "<TELEGRAM_BOT_TOKEN>",
+  "chat_id": "<TELEGRAM_CHAT_ID>",
+  "anthropic_api_key": "<ANTHROPIC_API_KEY o vacío si usás OAuth/MAX>",
+  "openai_api_key": "<OPENAI_API_KEY>",
+  "elevenlabs_api_key": "<ELEVENLABS_API_KEY>"
+}
+```
+
+**Boot del pulpo** ([#3172](https://github.com/intrale/platform/issues/3172) / H3 multi-provider): lee este JSON al arrancar y hidrata las env vars correspondientes en el process del pulpo. Los child agents heredan `process.env` filtrado por `build-child-env.js` (allowlist `SYSTEM_ALLOWLIST` + la env de credenciales del provider del skill, **nunca todas las keys**).
+
+**Rotación de keys — dos caminos:**
+
+#### Camino A — UI dashboard (recomendado para ops día-a-día)
+
+1. Levantar el dashboard: `node .pipeline/dashboard.js` (si no corre ya).
+2. Abrir `http://localhost:8080/dashboard.html#multi-provider`.
+3. Pestaña **1 · Proveedores**.
+4. Click "Rotar key" en el provider deseado.
+5. Pegar el nuevo valor en el modal y confirmar.
+6. El backend hace **write atómico + backup pre-save** en `~/.claude/secrets/backups/` (retención 30, ver `secrets-rw.js`).
+7. El archivo en disco queda con permisos `0600` (best-effort en Windows).
+8. Audit chain registra `{type: "api_key_rotation", provider, jsonField, fingerprint, autor}` en `.pipeline/audit/api-key-rotations.jsonl`.
+
+> **Anthropic key NO es rotable por UI.** El input aparece deshabilitado (`editable: false`) porque Claude Code usa OAuth / MAX login, no API key. Rotarla acá rompe el child env. Si necesitás rotar OAuth, hacelo desde `claude login` en CLI.
+
+#### Camino B — edición manual del archivo (uso puntual)
+
+```bash
+# 1. Backup manual (la UI hace esto automático)
+cp ~/.claude/secrets/telegram-config.json ~/.claude/secrets/backups/telegram-config.$(date -u +%Y%m%dT%H%M%SZ).json
+
+# 2. Editar
+${EDITOR:-vim} ~/.claude/secrets/telegram-config.json
+
+# 3. Validar JSON
+node -e "JSON.parse(require('fs').readFileSync(process.env.HOME + '/.claude/secrets/telegram-config.json'))"
+
+# 4. Restart del pulpo (no hot-reload de secrets — el pulpo cachea al boot)
+node .pipeline/restart.js
+```
+
+**Marca de revocación sin borrar:** si querés invalidar una key sin borrar el campo, escribí el valor `REVOKED`, `PLACEHOLDER`, `MOVED`, `EXAMPLE`, `REPLACE` o `CHANGE_ME` (case insensitive). El módulo `secrets-rw.js` los detecta como placeholder via `PLACEHOLDER_RE` y reporta `status: 'placeholder'` en la UI.
+
+### 1.4 Cómo hacerlo desde la UI del dashboard
+
+El panel **Multi-Provider** del dashboard ([#3177](https://github.com/intrale/platform/issues/3177), [#3196](https://github.com/intrale/platform/pull/3196)) tiene 4 tabs operativos. Para dar de alta un provider nuevo desde la UI:
+
+1. **Tab "1 · Proveedores"** → rotar la API key del nuevo provider (sólo si el provider ya está declarado en `agent-models.json`).
+2. **Tab "2 · Por agente"** → asignar skills al nuevo provider.
+3. **Tab "3 · Catálogo"** → verificar que los modelos del provider aparezcan listados.
+4. **Tab "6 · Permission overrides"** → si el provider degrada capabilities (caso típico de codex sin `tool_use_gated`), crear override con TTL y justificación.
+
+> **Caveat:** el panel **no permite registrar un provider nuevo desde la UI**. Para eso editás `agent-models.json` (Camino B de [§1.3](#13-dónde-se-inyectan-las-api-keys-y-cómo-rotarlas)) o usás `PUT /api/multi-provider/config` con CSRF. El panel sí permite modificar providers existentes (default, fallbacks, model overrides por skill).
+
+> **Por qué la UI no es one-click para "provider nuevo":** los 6+ puntos de toque de [§1.1](#11-checklist-de-6-puntos-de-toque) viven en código JS hardcoded (allowlists). Un PR review + tests es el gate correcto para sumar un launcher / parser / quota-error-types nuevo; la UI no puede acortarlo sin debilitar la defensa en profundidad.
+
+---
+
+## 2. Default del pipeline y fallbacks
+
+### 2.1 Default del pipeline
+
+El campo raíz `default_provider` de [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json) define el provider usado para **cualquier skill que no tenga override**.
+
+```json
+{
+  "default_provider": "anthropic",
+  ...
+}
+```
+
+**Reglas:**
+
+- `default_provider` **debe existir** como clave en `providers` (validación cruzada en `validateCrossReferences`).
+- Si ningún skill tiene override, todos los skills LLM corren contra el default.
+- Si un skill aparece en `skills.<name>.provider`, ese valor **gana** sobre el default.
+
+### 2.2 Default por agente (override de skill)
+
+Cada skill se declara en el bloque `skills.<name>` con un campo `provider`. Esto sobreescribe el `default_provider` solo para ese skill.
+
+```json
+{
+  "skills": {
+    "guru":         { "provider": "anthropic" },
+    "qa":           { "provider": "openai-codex" },
+    "backend-dev":  { "provider": "anthropic", "model_override": "claude-sonnet-4-6" },
+    "build":        { "provider": "deterministic" }
+  }
+}
+```
+
+### 2.3 Fallbacks
+
+Cada skill **puede** declarar una lista ordenada `fallbacks[]` de providers alternativos.
+
+```json
+{
+  "skills": {
+    "qa": {
+      "provider": "openai-codex",
+      "fallbacks": ["anthropic"]
+    }
+  }
+}
+```
+
+**Validaciones cruzadas** (`agent-models-validate.js`):
+
+- Cada item de `fallbacks[]` debe existir como clave en `providers`.
+- Un fallback no puede duplicar el `provider` primario (sería ruido).
+- Strings vacíos o no-string → rechazo con `fix:` accionable.
+
+> #### Estado actual de fallbacks (LEER ANTES DE DEPENDER DE FAILOVER AUTOMÁTICO)
+>
+> El campo `skills.<name>.fallbacks[]` está soportado en **schema y dashboard UI**, y se valida correctamente al boot. Pero **el consumer en runtime** (`resolveProviderForSkill` en [`.pipeline/lib/agent-launcher/resolve-provider.js`](../../.pipeline/lib/agent-launcher/resolve-provider.js)) **no itera el array** cuando el primary falla. El "fallback" actual cubre solo el caso de regresión cero:
+>
+> - `agent-models.json` no existe → `provider: 'anthropic', model: 'claude-opus-4-7'`.
+> - `agent-models.json` no parsea → mismo fallback.
+> - Skill no está declarado en `skills` → mismo fallback con default model.
+>
+> **No hay retry automático cross-provider** cuando Anthropic devuelve `usage_limit_error` y el skill tiene `fallbacks: ["openai-codex"]`. El pipeline para con el flag de cuota agotada y espera al `resets_at` (o intervención humana).
+>
+> El issue [#3198](https://github.com/intrale/platform/issues/3198) está abierto para implementar el consumer runtime. Hasta que cierre, **no dependas de fallbacks declarados para continuidad de servicio**. Si necesitás failover ahora, podés:
+>
+> - Cambiar manualmente `skills.<x>.provider` por el alternativo cuando se agote cuota.
+> - Hot-reload (no soportado — restart): `node .pipeline/restart.js`.
+
+### 2.4 Reglas de precedencia
+
+Cuando el pulpo va a spawn un skill, el dispatcher (`resolveProviderForSkill`) aplica este orden:
+
+```
+1. ¿El skill está en la allowlist `DETERMINISTIC_SKILLS`? (hardcoded en providers/deterministic.js)
+   → SÍ: provider = 'deterministic', source = 'deterministic-allowlist'.
+   → NO: continuar.
+
+2. ¿Existe `.pipeline/agent-models.json` y parsea?
+   → NO: provider = 'anthropic', model = 'claude-opus-4-7', source = 'fallback-no-config' (o 'fallback-read-error').
+
+3. ¿`skills.<skill>` existe en el JSON?
+   → NO: provider = 'anthropic', model = (defaults.model || legacy), source = 'fallback-skill-not-found'.
+
+4. provider = skills.<skill>.provider, model = (skills.<skill>.model_override || providers.<provider>.model).
+   source = 'agent-models'. Validar provider contra tabla hardcoded PROVIDER_HANDLERS.
+```
+
+> **Implicancia:** el `default_provider` raíz **no se aplica explícitamente en runtime**. El dispatcher prefiere el `provider` del skill o cae directo a `'anthropic'` por compat. Esto está documentado en el código como decisión consciente — ver comentario CA-2 de `resolve-provider.js`.
+
+### 2.5 Cómo configurarlo desde la UI del dashboard
+
+| Configuración | Tab dashboard | Acción |
+|---------------|---------------|--------|
+| `default_provider` raíz | **1 · Proveedores** | Card "Default provider" → select. |
+| `skills.<name>.provider` | **2 · Por agente** | Click en el provider de la fila del skill → select. |
+| `skills.<name>.model_override` | **2 · Por agente** | Click en el modelo de la fila → select del catálogo. |
+| `skills.<name>.fallbacks[]` | **2 · Por agente** | Botón "Fallbacks" en la fila → modal con orden. |
+
+Cualquier cambio dispara:
+
+1. **Preview de diff** (modal "Preview de cambios") — muestra qué skills cambian.
+2. Confirmación → `PUT /api/multi-provider/config` con CSRF token.
+3. Schema validation server-side (`agent-models-validate.js`).
+4. Write atómico + backup en `.pipeline/audit/agent-models-backups/<ISO-ts>.json`.
+5. UI muestra botón "Reload pipeline" — click ejecuta `restart.js` (el pulpo no hot-reloads la config; cachea al boot).
+
+---
+
+## 3. Modelos disponibles por proveedor
+
+### 3.1 Listado por defecto (estado actual del catálogo)
+
+> **Fuente de verdad en código:** [`.pipeline/lib/multi-provider/model-catalog.js`](../../.pipeline/lib/multi-provider/model-catalog.js). `CATALOG_VERSION` indica la versión vigente.
+
+| Provider | Modelo | Context | Capabilities | Costo input USD / 1M | Costo output USD / 1M | Recomendado para |
+|----------|--------|---------|--------------|----------------------|------------------------|------------------|
+| anthropic | `claude-opus-4-7` | 1.000.000 | chat, tools, vision, reasoning, cache | 15.00 | 75.00 | guru, po, review, planner, security, qa |
+| anthropic | `claude-sonnet-4-6` | 200.000 | chat, tools, vision, cache | 3.00 | 15.00 | backend-dev, android-dev, web-dev, pipeline-dev, ux, refinar |
+| anthropic | `claude-haiku-4` | 200.000 | chat, tools, cache | 0.25 | 1.25 | linter, delivery |
+| openai-codex | `gpt-5-codex` | 256.000 | chat, tools, cache | 2.50 | 10.00 | backend-dev, pipeline-dev |
+| openai-codex | `gpt-5` | 256.000 | chat, tools, vision, cache | 5.00 | 20.00 | guru, qa |
+| deterministic | `deterministic` | 0 | (sin LLM) | 0 | 0 | build, tester, linter, delivery |
+
+> **Importante:** esta tabla se mantiene **a mano** y puede desactualizarse si el catálogo cambia sin que el doc se actualice. Para el estado canónico siempre consultá el archivo de código o la **Tab "3 · Catálogo"** del dashboard. El issue [#3197](https://github.com/intrale/platform/issues/3197) propone auto-generar esta tabla — sigue abierto.
+
+### 3.2 Cómo agregar un modelo al catálogo
+
+1. **Editar [`.pipeline/lib/multi-provider/model-catalog.js`](../../.pipeline/lib/multi-provider/model-catalog.js)** — agregar entrada en el array del provider correspondiente:
+
+   ```js
+   {
+       id: 'claude-sonnet-5',
+       label: 'Claude Sonnet 5',
+       capabilities: ['chat', 'tools', 'vision', 'cache'],
+       cost_per_1m: { input: 4.00, output: 18.00 },
+       context_window: 1_000_000,
+       release_date: '2026-08',
+       recommended_for: ['backend-dev', 'pipeline-dev'],
+   },
+   ```
+
+2. **Bumpear `CATALOG_VERSION`** — convención `YYYY-MM-DD.N` (cache busting del front).
+
+3. **Si el modelo no existe en la allowlist del validador**, agregarlo a `ALLOWED_MODELS_BY_LAUNCHER` en [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js).
+
+   > **Nota:** al 2026-05-14 esta allowlist está mencionada en comentarios pero **no implementada como constante**. La validación efectiva de `model` y `model_override` la hace el schema vía el campo libre `minLength: 1`. Si el issue [#3197](https://github.com/intrale/platform/issues/3197) o un PR de seguridad sucesivo materializa la constante, este paso se vuelve obligatorio.
+
+4. **Tests:** correr `node --test .pipeline/lib/__tests__/` (no hay tests específicos del catálogo todavía; agregar uno smoke que valide forma `{id, label, capabilities, cost_per_1m, context_window}`).
+
+5. **PR + review** (CODEOWNERS `.pipeline/lib/` = `@leitolarreta`).
+
+### 3.3 Cómo quitar un modelo del catálogo
+
+> **Cuidado:** si algún skill tiene `model_override` apuntando al modelo a remover, el boot del pulpo aborta. Verificá ANTES:
+
+```bash
+grep -E "\"model_override\":\s*\"<modelo-a-quitar>\"" .pipeline/agent-models.json
+```
+
+1. Si hay matches → migrar los skills al modelo de reemplazo (preferentemente la misma familia) **antes** de tocar el catálogo.
+2. Quitar la entrada de `CATALOG` en `model-catalog.js`.
+3. Bumpear `CATALOG_VERSION`.
+4. Si el modelo estaba en `ALLOWED_MODELS_BY_LAUNCHER` (cuando se materialice), removerlo también.
+5. Commit + review.
+
+### 3.4 Capabilities por modelo
+
+El campo `capabilities[]` del catálogo enumera **propiedades funcionales del modelo** (`chat`, `tools`, `vision`, `reasoning`, `cache`). Es **distinto** de las capabilities de permisos (file_read, bash, etc.) que viven en la matriz capability×(provider, mode) — esa otra tabla se documenta en [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
+
+### 3.5 Restricción de modelos por agente
+
+No existe un campo `allowedModels[]` por skill en el schema vigente. La restricción se hace por:
+
+- **`model_override`** explícito en `skills.<name>` (positivo: este modelo).
+- **Ausencia de `model_override`** → cae al `providers.<provider>.model` default.
+- **Validación lazy** del modelo contra la allowlist `ALLOWED_MODELS_BY_LAUNCHER` (cuando se materialice, ver [§3.2.3](#32-cómo-agregar-un-modelo-al-catálogo)).
+
+Si necesitás una restricción más fina ("este skill solo puede usar Haiku o Sonnet, nunca Opus"), abrir issue de seguridad — hoy se hace por convención + review.
+
+---
+
+## 4. Configuración por agente
+
+### 4.1 Esquema completo del bloque `skills.<name>`
+
+```json
+{
+  "skills": {
+    "<skill-name>": {
+      "provider": "<provider-name>",
+      "model_override": "<model-id-opcional>",
+      "fallbacks": ["<provider-1>", "<provider-2>"]
+    }
+  }
+}
+```
+
+| Campo | Tipo | Obligatorio | Descripción |
+|-------|------|-------------|-------------|
+| `provider` | string | sí | Debe existir como clave en `providers`. |
+| `model_override` | string | no | Modelo específico que sobreescribe el `model` default del provider. |
+| `fallbacks` | array de string | no | Lista ordenada de providers alternativos. **No consumido en runtime hoy** (ver [§2.3](#23-fallbacks)). |
+
+### 4.2 Skills determinísticos (sin LLM)
+
+Los skills **`build`, `tester`, `linter`, `delivery`** corren sin LLM. La asignación canónica es `provider: 'deterministic'`. La allowlist hardcoded vive en `providers/deterministic.js` — **siempre prevalece** sobre lo que diga `agent-models.json` (defensa contra config corrupta).
+
+```json
+{
+  "skills": {
+    "build":    { "provider": "deterministic" },
+    "tester":   { "provider": "deterministic" },
+    "linter":   { "provider": "deterministic" },
+    "delivery": { "provider": "deterministic" }
+  }
+}
+```
+
+### 4.3 Ejemplos completos para 3 agentes representativos
+
+#### Ejemplo 1 — guru (análisis técnico) con Opus por defecto
+
+```json
+{
+  "skills": {
+    "guru": { "provider": "anthropic" }
+  }
+}
+```
+
+Resuelve a `provider: 'anthropic', model: 'claude-opus-4-7'` (default del provider).
+
+#### Ejemplo 2 — backend-dev con Sonnet (override por costo)
+
+```json
+{
+  "skills": {
+    "backend-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6"
+    }
+  }
+}
+```
+
+Resuelve a `provider: 'anthropic', model: 'claude-sonnet-4-6'` (5× más barato que Opus para tareas template-driven).
+
+#### Ejemplo 3 — qa con codex como primario y fallback declarado
+
+```json
+{
+  "skills": {
+    "qa": {
+      "provider": "openai-codex",
+      "fallbacks": ["anthropic"]
+    }
+  }
+}
+```
+
+Resuelve a `provider: 'openai-codex', model: 'gpt-5-codex'`. **El `fallbacks` está declarado pero no se itera en runtime** ([§2.3](#23-fallbacks)). Si OpenAI agota cuota, el pulpo gateará el skill hasta que se libere.
+
+### 4.4 Pasos para hacer lo mismo desde la UI del dashboard
+
+1. Abrir `http://localhost:8080/dashboard.html#multi-provider`.
+2. Tab **2 · Por agente**.
+3. Localizar el skill en la grilla (search por nombre).
+4. Cambios disponibles:
+   - **Provider:** select de la fila → elegir nuevo.
+   - **Model:** select del catálogo según provider elegido.
+   - **Fallbacks:** botón "Fallbacks" → modal con orden drag-and-drop.
+   - **NON_DEGRADABLE banner rojo:** indica que el skill está protegido — no se puede asignar un provider con menos capabilities que las requeridas (ver `NON_DEGRADABLE_SKILLS` en `permission-validator.js`).
+5. Click "Guardar" → modal de diff.
+6. Confirmar diff → write atómico + reload manual del pipeline.
+
+---
+
+## 5. Información operativa
+
+### 5.1 Validar la configuración
+
+**CLI humanizado** ([`#3170`](https://github.com/intrale/platform/issues/3170)):
+
+```bash
+node .pipeline/validate-agent-models.js
+```
+
+Salida happy path (≤ 5 líneas):
+
+```
+✅ Schema agent-models.json válido
+✅ Cross-validations OK (providers, skills, fallbacks, quota_error_types)
+✅ Credenciales env: todas las requeridas presentes
+✅ Sin secrets hardcoded detectados
+```
+
+**Flags útiles:**
+
+```bash
+node .pipeline/validate-agent-models.js --help    # ayuda + exit codes
+node .pipeline/validate-agent-models.js --quiet   # 1 línea para CI
+node .pipeline/validate-agent-models.js --no-env  # saltea check de env vars (útil en pre-commit local sin .env real)
+```
+
+**Exit codes** (mapeo accionable):
+
+| Code | Causa | Acción del operador |
+|------|-------|---------------------|
+| 0 | OK | nada |
+| 1 | Schema inválido o cross-refs rotos | editar `agent-models.json`, releer mensaje con `path` + `fix:` |
+| 2 | Env var de credencial faltante | exportar la env var o quitar el provider del JSON |
+| 3 | Secret hardcoded detectado en algún campo | reemplazar el literal por `${VAR_NAME}` |
+| 4 | Path inválido / archivo no encontrado | verificar cwd y existencia de `.pipeline/agent-models.json` |
+
+### 5.2 Audit trail
+
+El pipeline mantiene **dos audit logs independientes** con propiedades distintas:
+
+#### 5.2.1 Switches de provider/model — `.pipeline/logs/quota-detector-<YYYY-MM-DD>.log`
+
+Línea de log estructurado JSON cada vez que el detector marca cuota agotada. Campos canónicos:
+
+```json
+{
+  "ts": "2026-05-14T19:09:16.000Z",
+  "provider": "anthropic",
+  "model": "claude-opus-4-7",
+  "pattern_matched": "usage_limit_error",
+  "resets_at": "2026-05-15T00:00:00.000Z",
+  "raw_excerpt": "<sanitizado, ≤200 chars>"
+}
+```
+
+Lectura:
+
+```bash
+# Hoy
+cat .pipeline/logs/quota-detector-$(date -u +%Y-%m-%d).log
+
+# Último switch a cualquier provider
+grep '"provider":"openai-codex"' .pipeline/logs/quota-detector-*.log | tail -1
+```
+
+#### 5.2.2 Audit chain SHA-256 — `.pipeline/audit/<type>.jsonl`
+
+Append-only con hash chain ([#3082](https://github.com/intrale/platform/issues/3082) S4 + [#3068](https://github.com/intrale/platform/issues/3068) refinamiento). Cada línea trae `hash_prev` + `hash_self` para detección de tampering.
+
+Archivos canónicos:
+
+| Archivo | Qué registra |
+|---------|--------------|
+| `.pipeline/audit/api-key-rotations.jsonl` | Cada rotación de API key vía UI/API. |
+| `.pipeline/audit/permission-overrides.jsonl` | Cada override de permission con TTL + revocación. |
+| `.pipeline/audit/agent-models-backups/<ISO-ts>.json` | Backup pre-save del JSON antes de cada PUT (retención 30). |
+
+Verificar integridad de la chain:
+
+```bash
+node -e "console.log(JSON.stringify(require('./.pipeline/lib/audit-log').verifyChain('./.pipeline/audit/api-key-rotations.jsonl')))"
+```
+
+Output esperado:
+
+```json
+{"ok":true,"entriesChecked":42}
+```
+
+Si la chain está rota:
+
+```json
+{"ok":false,"entriesChecked":12,"brokenAt":12,"reason":"hash_prev mismatch: esperaba 'abc123…' pero la entry trae 'def456…'"}
+```
+
+→ alerta de tampering, investigar forensicamente.
+
+### 5.3 Cuando un proveedor se queda sin cuota
+
+El **quota-detector cross-provider** ([`.pipeline/lib/quota-exhausted.js`](../../.pipeline/lib/quota-exhausted.js), [#3077](https://github.com/intrale/platform/issues/3077)):
+
+1. Observa el log stream del child (stream-json / SSE según provider).
+2. Matchea `error.type` contra los `quota_error_types` del bloque del provider en `agent-models.json`.
+3. Cross-valida contra `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` ([#3077](https://github.com/intrale/platform/issues/3077) SEC-2).
+4. Persiste flag JSON en `.pipeline/quota-exhausted.json`:
+
+   ```json
+   {
+     "exhausted": true,
+     "provider": "anthropic",
+     "model": "claude-opus-4-7",
+     "resets_at": "2026-05-15T00:00:00.000Z",
+     "detected_at": "2026-05-14T19:09:16.123Z",
+     "pattern_matched": "usage_limit_error"
+   }
+   ```
+
+5. El pulpo consulta `shouldGateSpawn(skill, { provider })` antes de cada spawn LLM.
+6. **Scope per-provider** ([#3077](https://github.com/intrale/platform/issues/3077) SEC-1): si el flag activo es del provider X y un skill corre con provider Y, el spawn pasa. **Cuando Anthropic se agota, los skills configurados con OpenAI siguen corriendo.**
+7. Cuando `Date.now() > resets_at`, la lectura defensiva devuelve `exhausted: false` y el módulo borra el flag (drenado natural).
+
+**Kill-switch operacional** (si por bug el flag queda persistente):
+
+```bash
+rm .pipeline/quota-exhausted.json
+```
+
+→ desbloquea el pipeline en el spawn siguiente. Documentar el motivo en commit / Telegram.
+
+### 5.4 Métricas expuestas
+
+| Métrica | Archivo | Cómo verla |
+|---------|---------|------------|
+| Quota usage % por provider | `.pipeline/metrics-history.jsonl` | Dashboard tab "Métricas" o `lib/weekly-quota.js` CLI |
+| Costo estimado por skill | `.pipeline/metrics/cost-by-skill.json` | Dashboard tab "Cost Tracker" ([#1244](https://github.com/intrale/platform/issues/1244)) |
+| Switches automáticos cross-modelo | `.pipeline/audit/model-switches.jsonl` ([#3068](https://github.com/intrale/platform/issues/3068)) | `cat .pipeline/audit/model-switches.jsonl \| jq '.'` |
+| Eventos cross-provider | `.pipeline/logs/quota-detector-*.log` | `grep "provider" -r .pipeline/logs/quota-detector-*` |
+
+Endpoint REST del dashboard:
+
+```bash
+curl http://localhost:8080/api/metrics/quota | jq '.'
+```
+
+### 5.5 Diagnóstico de errores frecuentes
+
+| Síntoma | Causa probable | Acción |
+|---------|----------------|--------|
+| Boot del pulpo aborta con `INVALID_CONFIG` | Schema inválido | Correr `node .pipeline/validate-agent-models.js` — leer mensaje `path` + `fix:`. |
+| Boot del pulpo aborta con `TOOLCHAIN_MISSING` | `ajv` no instalado | `npm install ajv@^8` desde la raíz del repo. |
+| Boot del pulpo aborta con "credenciales faltantes" | Env var de credencial no exportada | Verificar `~/.claude/secrets/telegram-config.json` + rerun. |
+| Spawn de skill devuelve "Provider desconocido" | `skills.<x>.provider` apunta a un nombre fuera de `PROVIDER_HANDLERS` | Cambiar a `anthropic`, `openai-codex` o `deterministic`. |
+| Skill con `provider: 'openai-codex'` lanza "no implementado" | Stub aún no completado por [#3076](https://github.com/intrale/platform/issues/3076) | Cambiar temporal a `anthropic` o esperar entrega. |
+| Dashboard devuelve 403 `missing_csrf_token` en PUT | Cliente no pidió `/api/multi-provider/csrf-token` antes | Verificar fetch del cliente, el token vive 4h. |
+| Dashboard devuelve 403 `csrf_mismatch` | Header `X-CSRF-Token` no matchea cookie `mp_csrf` | Recargar la página para sincronizar token + cookie. |
+| `quota_error_types` rechazado al boot | Item fuera de `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` | Quitar el `error_type` o agregarlo a la meta-allowlist (decisión de seguridad, requiere PR review). |
+| Catálogo de modelos vacío en el dashboard | `CATALOG_VERSION` cambió y el front cacheó | Forzar reload (Ctrl+F5) — el endpoint `/api/multi-provider/catalog` no se cachea pero el client sí. |
+
+---
+
+## 6. Referencia rápida
+
+### 6.1 Tabla resumen: skills → provider → modelo (al 2026-05-14)
+
+| Skill | Provider | Modelo efectivo | Tipo |
+|-------|----------|-----------------|------|
+| guru | anthropic | claude-opus-4-7 | LLM |
+| security | anthropic | claude-opus-4-7 | LLM |
+| po | anthropic | claude-opus-4-7 | LLM |
+| ux | anthropic | claude-opus-4-7 | LLM |
+| planner | anthropic | claude-opus-4-7 | LLM |
+| review | anthropic | claude-opus-4-7 | LLM |
+| refinar | anthropic | claude-opus-4-7 | LLM |
+| backend-dev | anthropic | claude-opus-4-7 | LLM |
+| android-dev | anthropic | claude-opus-4-7 | LLM |
+| web-dev | anthropic | claude-opus-4-7 | LLM |
+| pipeline-dev | anthropic | claude-opus-4-7 | LLM |
+| qa | anthropic | claude-opus-4-7 | LLM |
+| tester | deterministic | — | Node puro |
+| build | deterministic | — | Node puro |
+| linter | deterministic | — | Node puro |
+| delivery | deterministic | — | Node puro |
+
+> **Verificar el estado canónico:** `cat .pipeline/agent-models.json` o **Tab "2 · Por agente"** del dashboard.
+
+### 6.2 Diagrama del flujo de dispatch
+
+```
+                ┌──────────────────────────────────────────────────────┐
+                │ pulpo.js detecta archivo en pendiente/               │
+                │  → mueve a trabajando/                               │
+                │  → identifica skill por nombre del archivo           │
+                └────────────────────┬─────────────────────────────────┘
+                                     │
+                                     ▼
+                ┌──────────────────────────────────────────────────────┐
+                │ resolveProviderForSkill(skill, { pipelineDir })      │
+                │                                                      │
+                │  1. ¿skill ∈ DETERMINISTIC_SKILLS?                   │
+                │     → SÍ: provider='deterministic'                   │
+                │                                                      │
+                │  2. Lectura defensiva de agent-models.json           │
+                │     ↳ archivo no existe / parse error                │
+                │        → provider='anthropic', model=legacy          │
+                │                                                      │
+                │  3. skills.<skill>.provider                          │
+                │     ↳ no declarado → fallback 'anthropic'            │
+                │     ↳ declarado    → lookup en PROVIDER_HANDLERS     │
+                │                                                      │
+                │  Output: { provider, model, handler, mode, source }  │
+                └────────────────────┬─────────────────────────────────┘
+                                     │
+                                     ▼
+                ┌──────────────────────────────────────────────────────┐
+                │ shouldGateSpawn(skill, { provider })                 │
+                │                                                      │
+                │  ↳ flag activo de OTRO provider → pasa               │
+                │  ↳ flag activo de ESTE provider → gate, no spawn     │
+                │  ↳ sin flag                     → pasa               │
+                └────────────────────┬─────────────────────────────────┘
+                                     │
+                                     ▼
+                ┌──────────────────────────────────────────────────────┐
+                │ handler.buildSpawn({                                 │
+                │   user_prompt, system_file, model, ...               │
+                │ })                                                   │
+                │                                                      │
+                │  Expansión 1:1 de spawn_args_template                │
+                │  Filtrado de env por SYSTEM_ALLOWLIST                │
+                │  Inyección de la credencial del provider del skill   │
+                └────────────────────┬─────────────────────────────────┘
+                                     │
+                                     ▼
+                          ┌───────────────────┐
+                          │ child_process.    │
+                          │   spawn(...)      │
+                          └─────────┬─────────┘
+                                    │
+                                    ▼
+                ┌──────────────────────────────────────────────────────┐
+                │ Loop de eventos del child:                           │
+                │  • output_parser normaliza tokens/usage              │
+                │  • detector de cuota chequea error.type              │
+                │  • traceability registra (provider, model,           │
+                │    cli_version, git_sha)                             │
+                │  • watchdog mata si heartbeat se pierde              │
+                └────────────────────┬─────────────────────────────────┘
+                                     │
+                                     ▼
+                ┌──────────────────────────────────────────────────────┐
+                │ on-exit: pulpo mueve trabajando/ → listo/            │
+                │  → próxima fase evalúa resultado YAML                │
+                └──────────────────────────────────────────────────────┘
+```
+
+### 6.3 Atajos de comandos
+
+```bash
+# Validar config
+node .pipeline/validate-agent-models.js
+
+# Levantar dashboard
+node .pipeline/dashboard.js
+
+# Restart del pipeline (post cambio de config)
+node .pipeline/restart.js
+
+# Verificar chain de audit
+node -e "console.log(JSON.stringify(require('./.pipeline/lib/audit-log').verifyChain('./.pipeline/audit/api-key-rotations.jsonl')))"
+
+# Desbloquear flag de cuota colgado
+rm .pipeline/quota-exhausted.json && node .pipeline/restart.js
+
+# Backup manual de secrets
+cp ~/.claude/secrets/telegram-config.json ~/.claude/secrets/backups/telegram-config.$(date -u +%Y%m%dT%H%M%SZ).json
+```
+
+---
+
+## 7. Security considerations
+
+> **Esta sección es obligatoria.** Sin estos controles, un operador puede rotar una key mal, deshabilitar CSRF por desconocimiento, asumir un failover que no existe, o exfiltrar la key del provider equivocado. Los gates de seguridad ya están **implementados** en código — esta sección documenta su existencia para que la operación no los degrade.
+
+### 7.1 Gestión de API keys
+
+- **Almacenamiento canónico:** `~/.claude/secrets/telegram-config.json`. **Nunca en el repo, nunca commiteado.** Cualquier `git status` que muestre este archivo es una alerta — debería estar fuera del worktree.
+- **`GET /api/multi-provider/keys` nunca devuelve el valor completo** — solo `status` (`present` / `absent` / `placeholder`), `masked` preview (primeros 6 + últimos 4) y `fingerprint` SHA-256 (primeros 16 chars). Esto se verifica server-side; cualquier client que muestre la key completa significa que la API se rompió.
+- **`POST /api/multi-provider/keys/:provider` rota** con write atómico + backup pre-save en `~/.claude/secrets/backups/` (retención 30).
+- **Permisos en disco `0600`** — solo el usuario que corre el pulpo lo puede leer. En Windows es best-effort (la API `setFileSecurity` no es trivial sin nativos).
+- **Patrón de revocación sin borrar:** valores `REVOKED|PLACEHOLDER|MOVED|EXAMPLE|REPLACE|CHANGE_ME` (case-insensitive) son detectados como placeholder. El operador puede invalidar una key dejando trazabilidad sin remover el campo.
+- **Anthropic key NO se rota por UI.** El input está deshabilitado (`editable: false`) porque Claude Code usa OAuth/MAX login, no API key. Si la doc te sugiere lo contrario, hay un bug — abrir issue.
+
+### 7.2 CSRF + DNS rebinding mitigation
+
+Los endpoints mutating del dashboard (`POST`, `PUT`, `DELETE` bajo `/api/multi-provider/`) usan **double-submit cookie**:
+
+1. Cliente pide `GET /api/multi-provider/csrf-token`.
+2. Server devuelve `{ csrf_token }` y setea cookie `mp_csrf=<token>; SameSite=Strict; Path=/api/multi-provider`.
+3. En cada PUT/POST/DELETE, el cliente envía header `X-CSRF-Token: <token>` leído de la cookie.
+4. Server compara header vs cookie. Si NO matchean → 403.
+
+**Por qué mitiga DNS rebinding:** un atacante que apunta DNS de `attacker.com` a `127.0.0.1` puede invocar el dashboard desde el browser de la víctima, pero **no puede leer la cookie** de un origen distinto (Same-Origin Policy del browser). Sin cookie no hay header → 403.
+
+**Atributos del token:** per-process, TTL 4h, rotación natural en cada restart del pulpo.
+
+> **NO deshabilites CSRF** "porque molesta para automatizar scripts". Si necesitás automatización contra el dashboard, pedí el token primero con `curl` y reusalo con header + cookie. Sin CSRF el dashboard queda expuesto a cross-origin desde el browser de cualquier víctima en la misma red local.
+
+### 7.3 Audit trail
+
+| Evento | Archivo | Campos | Verificación |
+|--------|---------|--------|--------------|
+| Cuota agotada detectada | `.pipeline/logs/quota-detector-<YYYY-MM-DD>.log` | `ts, provider, model, pattern_matched, resets_at, raw_excerpt` | `tail -n 100 .pipeline/logs/quota-detector-*.log` |
+| API key rotation | `.pipeline/audit/api-key-rotations.jsonl` | `type, provider, jsonField, fingerprint, autor, created_at, hash_prev, hash_self` | `node -e "console.log(JSON.stringify(require('./.pipeline/lib/audit-log').verifyChain('./.pipeline/audit/api-key-rotations.jsonl')))"` |
+| Permission override creado / revocado | `.pipeline/audit/permission-overrides.jsonl` | `type, skill, provider, mode_requerido, mode_otorgado, capabilities_diff, justificacion, ttl_horas, autor, hash_prev, hash_self` | mismo comando contra ese archivo |
+| Switch de provider/model en runtime | `.pipeline/audit/model-switches.jsonl` ([#3068](https://github.com/intrale/platform/issues/3068)) | `provider, model, cli_version, git_sha, motivo` | mismo comando |
+
+**Sanitización obligatoria:** el campo `raw_excerpt` del quota-detector pasa por [`.pipeline/lib/redact.js`](../../.pipeline/lib/redact.js) antes de escribirse (CA-11 de [#3077](https://github.com/intrale/platform/issues/3077)) — sin esto, una key del provider podría filtrarse al log.
+
+**Retención:** los `.jsonl` son **append-only**. Para rotar / archivar, mover el archivo + arrancar nueva chain con `GENESIS`. Documentar el motivo en commit.
+
+### 7.4 Threat model del dashboard
+
+- **Default: local-only.** El dashboard escucha en `127.0.0.1:8080`. CSRF asume Same-Origin Policy del browser — válido para acceso local.
+- **Si se expone a LAN/Internet** (NO hagas esto sin checklist):
+  - Reverse proxy con autenticación (basic auth + TLS).
+  - IP allowlist en el proxy.
+  - WAF que filtre headers maliciosos.
+  - Revisar `secrets-rw.js` masking para asegurar que no haya endpoint que devuelva keys completas.
+- **Quien accede al filesystem donde viven las keys** (`~/.claude/secrets/`) **= quien tiene acceso efectivo a TODOS los providers**. No hay encriptación at-rest — el control es el control del usuario del SO.
+
+### 7.5 Fallbacks: estado real vs aspiracional
+
+| Funcionalidad | Soportado en schema | Soportado en UI | Consumido en runtime |
+|---------------|:-------------------:|:---------------:|:--------------------:|
+| Declarar `fallbacks[]` por skill | ✅ | ✅ | ❌ |
+| Validación cruzada de items contra `providers` | ✅ | ✅ | n/a |
+| Failover automático cross-provider en cuota agotada | — | — | ❌ |
+
+**Lectura para operadores:** declarar `fallbacks[]` en `agent-models.json` **no garantiza continuidad de servicio** cuando el provider primario falla. La continuidad real proviene de:
+
+- **Scope per-provider del quota-detector** ([#3077](https://github.com/intrale/platform/issues/3077) SEC-1): si Anthropic se agota, los skills con `provider: 'openai-codex'` siguen corriendo.
+- **Cambio manual del operador**: editar `agent-models.json` reasignando skills críticos a otro provider.
+
+Cierre del gap: [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks).
+
+### 7.6 Reglas inquebrantables para los ejemplos de esta doc
+
+- **NUNCA** incluir API keys reales en ejemplos. Siempre placeholders: `sk-ant-PLACEHOLDER`, `sk-proj-XXXXX`.
+- **NUNCA** incluir fingerprints SHA-256 reales (facilitan matching contra dumps filtrados).
+- **NUNCA** incluir paths absolutos de prod si la doc se publica externamente.
+- **Capturas del dashboard** deben tomarse con keys placeholder activas — verificar en el screenshot que la masked preview muestra placeholder o key sintética.
+- **Pegar JSON con valores reales** en issues, PRs o comentarios públicos viola estas reglas — usar la masked preview o fingerprint.
+
+### 7.7 Glosario de issues de hardening relacionados
+
+| Issue | Aporte de seguridad |
+|-------|----------------------|
+| [#3072](https://github.com/intrale/platform/issues/3072) (H1) | `agent-models.json` canónico + schema. |
+| [#3074](https://github.com/intrale/platform/issues/3074) (H2) | `resolve-provider.js` con tabla hardcoded (defensa path-traversal). |
+| [#3077](https://github.com/intrale/platform/issues/3077) (H5) | Quota-detector cross-provider con scope per-provider + redact. |
+| [#3080](https://github.com/intrale/platform/issues/3080) (S1) | Inventario y rotación de credenciales + denylist de secrets hardcoded. |
+| [#3081](https://github.com/intrale/platform/issues/3081) (S3) | Sandboxing del JSON + allowlists hardcoded compartidas con el pre-commit hook. |
+| [#3082](https://github.com/intrale/platform/issues/3082) (S4) | Matriz capability×(provider, mode) + permission overrides con TTL. |
+| [#3084](https://github.com/intrale/platform/issues/3084) (S6) | Verificación de firma/integridad de inputs (data-residency). |
+| [#3171](https://github.com/intrale/platform/issues/3171) (S5) | Audit trail dinámico con `cli_version` + `git_sha`. |
+| [#3187](https://github.com/intrale/platform/issues/3187) (S4 b) | Permission mapping cross-provider + tests de paridad. |
+
+---
+
+## Apéndice — links rápidos
+
+- **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
+- **Diseño y decisiones:** [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (1140 líneas, design doc v2).
+- **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
+- **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).
+- **Issue de esta doc:** [#3176](https://github.com/intrale/platform/issues/3176).
+- **Issues de mejora futura:** [#3197](https://github.com/intrale/platform/issues/3197) (auto-gen tablas), [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime fallbacks).

@@ -6,6 +6,8 @@
 > Fecha del relevamiento empírico v1: 2026-05-06. Refinamiento v2: 2026-05-07.
 > Autor v1: pipeline-dev (agente). Refinamiento v2: pipeline-dev (agente) sobre análisis de guru, security, po y ux.
 
+> **¿Buscás la guía operativa "cómo agregar un proveedor / rotar una key / configurar un fallback"?** → leé [`docs/pipeline/multi-provider.md`](pipeline/multi-provider.md). Ese documento describe el flujo día-a-día sobre la implementación ya cerrada (ola N+1 multi-provider). Este documento (`pipeline-multi-provider.md`) mantiene la narrativa de diseño v2 + decisiones arquitectónicas que motivaron la implementación.
+
 ---
 
 ## Changelog v2 (refinamiento del 2026-05-07)
