@@ -149,8 +149,32 @@ const MODULE_DIRS = {
 //                     Verificado: `grep` por `qa/evidence` en *.gradle.kts/*.kt
 //                     devuelve 0 referencias.
 //
+// Rebote #2398 rev-1 (mismo síntoma, archivo distinto):
+//   - #2398 (ghostbusters: limpiar branches agent/* stale) trajo cambios puros
+//     Node.js bajo `.pipeline/lib/` + `.pipeline/ghostbusters.js` + el archivo
+//     de skill instructions `.claude/skills/ghostbusters/SKILL.md` (que el
+//     harness Claude Code consume al invocar el skill). El path bajo `.claude/`
+//     rompió el match `every` y forzó la ruta gradle, que para un cambio sin
+//     código Kotlin no produjo reportes JUnit:
+//       diff vs origin/main: 4 archivos
+//         .claude/skills/ghostbusters/SKILL.md
+//         .pipeline/ghostbusters.js
+//         .pipeline/lib/__tests__/stale-branches.test.js
+//         .pipeline/lib/stale-branches.js
+//       → tester rebote: "[tester] No se encontraron reportes JUnit"
+//
+//   `.claude/`     → instrucciones de skills (`.claude/skills/<skill>/SKILL.md`),
+//                    hooks Node.js del harness (`.claude/hooks/*.js`), settings
+//                    (`.claude/settings.json`, `.claude/settings.local.json`) y
+//                    permisos. Todo este árbol lo consume Claude Code, no
+//                    Gradle. Verificado: `grep` por `\.claude` en
+//                    `**/*.{gradle.kts,gradle,kt}` devuelve 0 referencias.
+//                    Cualquier cambio acá afecta el comportamiento del harness/
+//                    agentes pero NO la compilación Kotlin ni la cobertura
+//                    Kover. Encaja exactamente en pipeline-only.
+//
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
-// `settings.gradle.kts`, `build.gradle.kts`, `.claude/`, `qa/build.gradle.kts`,
+// `settings.gradle.kts`, `build.gradle.kts`, `qa/build.gradle.kts`,
 // `qa/src/`, `qa/scripts/`, `qa/test-cases/`, `qa/regression-suite.json` (todos
 // pueden afectar build/coverage o testing real). El test `paths fuera de los
 // patrones permitidos rompen el match` documenta y protege esa frontera.
@@ -159,6 +183,7 @@ const PIPELINE_ONLY_PATTERNS = [
     /^docs\//,              // documentación pura
     /^agents\//,            // reglas para agentes
     /^\.github\//,          // GitHub Actions / templates
+    /^\.claude\//,          // skills/hooks/settings de Claude Code — fuera de Gradle
     /^\.gitignore$/,        // gitignore root — no afecta compilación Kotlin
     /^\.gitattributes$/,    // git attributes — no afecta compilación Kotlin
     /^\.editorconfig$/,     // editor config — no afecta cobertura
@@ -1071,6 +1096,15 @@ if (require.main === module) {
             { name: 'PIPELINE_ONLY_PATTERNS sigue rechazando build.gradle.kts (frontera Kotlin)', fn: () => {
                 const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'app/composeApp/build.gradle.kts']);
                 if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con build.gradle.kts');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta .claude/skills/<>/SKILL.md junto con .pipeline/ (rebote #2398)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.claude/skills/ghostbusters/SKILL.md',
+                    '.pipeline/ghostbusters.js',
+                    '.pipeline/lib/__tests__/stale-branches.test.js',
+                    '.pipeline/lib/stale-branches.js',
+                ]);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con .claude/skills/<>/SKILL.md');
             }},
         ]);
         return;
