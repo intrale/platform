@@ -199,18 +199,39 @@ describe('validate-agent-models (CLI integration)', () => {
     });
   });
 
-  test('fixture válida con env var faltante retorna exit 2 (credencial faltante)', () => {
-    withFixture('valid.json', () => {
+  test('fixture válida (launcher=codex) con env var faltante retorna exit 2 (credencial faltante)', () => {
+    // #3154: El bypass per-launcher hace que `launcher: "claude"` no exija
+    // env var (auth delegada al OAuth del CLI). Para seguir cubriendo el
+    // contrato CA-EXIT-2 ("credencial faltante → exit 2") usamos un fixture
+    // con launcher=codex, que SÍ requiere OPENAI_API_KEY en env.
+    withFixture('valid-codex.json', () => {
       // Borramos la env var del child sin tocar la del padre.
       const env = Object.assign({}, process.env);
-      delete env.ANTHROPIC_API_KEY;
+      delete env.OPENAI_API_KEY;
       const result = spawnSync(process.execPath, [SCRIPT], {
         env: Object.assign(env, { NO_COLOR: '1' }),
         encoding: 'utf8',
       });
       assert.equal(result.status, cli.EXIT.CREDENTIAL_MISSING, `esperaba exit ${cli.EXIT.CREDENTIAL_MISSING}, fue ${result.status}. stderr=${result.stderr}`);
       assert.match(result.stderr, /credencial faltante/i);
-      assert.match(result.stderr, /ANTHROPIC_API_KEY/);
+      assert.match(result.stderr, /OPENAI_API_KEY/);
+    });
+  });
+
+  test('#3154 · fixture válida (launcher=claude) con env var faltante retorna exit 0 (bypass OAuth)', () => {
+    // #3154: launcher=claude delega auth al OAuth del CLI (`~/.claude/.credentials.json`),
+    // por lo que la ausencia de ANTHROPIC_API_KEY NO debe abortar el boot.
+    // Este test documenta el bypass a nivel CLI integration (complementa los
+    // tests unitarios en lib/__tests__/agent-models-validate.test.js).
+    withFixture('valid.json', () => {
+      const env = Object.assign({}, process.env);
+      delete env.ANTHROPIC_API_KEY;
+      const result = spawnSync(process.execPath, [SCRIPT], {
+        env: Object.assign(env, { NO_COLOR: '1' }),
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, cli.EXIT.OK, `esperaba exit 0 (bypass claude), fue ${result.status}. stderr=${result.stderr}`);
+      assert.match(result.stdout, /Validación OK/);
     });
   });
 
