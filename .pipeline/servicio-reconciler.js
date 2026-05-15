@@ -32,6 +32,7 @@ const path = require('path');
 require('./lib/sanitize-console').install();
 const { sanitize } = require('./sanitizer');
 const humanBlock = require('./lib/human-block');
+const admissionGate = require('./lib/admission-gate');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -41,6 +42,13 @@ const GH_QUEUE = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
 
 const RECONCILE_INTERVAL_MS = parseInt(process.env.RECONCILER_INTERVAL_MS || '300000', 10); // 5 min default
 const RECONCILER_LABEL = 'needs-human';
+
+// #3175 — Sweep paralelo de admission gate. Kill-switch por env var para
+// poder cortar instantáneo sin reiniciar el reconciler. Default ON; setear
+// `ADMISSION_SWEEP_ENABLED=0` para desactivar.
+const ADMISSION_SWEEP_ENABLED = process.env.ADMISSION_SWEEP_ENABLED !== '0';
+const ADMISSION_DRY_RUN = process.env.ADMISSION_GATE_DRY_RUN === '1';
+const ADMISSION_TELEGRAM_QUEUE = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
 
 // Labels que indican que `needs-human` está pegado por origen de recomendación
 // (security/guru/planner generan issues auto y los marcan así para triaje humano
@@ -581,6 +589,135 @@ function appendStaleOrderLog(entry) {
 }
 
 // -----------------------------------------------------------------------------
+// #3175 — Admission gate sweep (huérfanos sin needs-definition/Ready)
+// -----------------------------------------------------------------------------
+//
+// El workflow `.github/workflows/admission-gate.yml` cubre el caso event-driven
+// (issue/PR recién creado). Pero hay paths que escapan al workflow:
+//   - Issues creados durante un downtime de Actions.
+//   - Issues creados antes del deploy del workflow (huérfanos históricos).
+//   - PRs creados desde un fork con permisos limitados.
+//
+// Este sweep es defensa en profundidad: cada ciclo del reconciler escanea
+// todos los issues/PRs OPEN del repo, filtra los que NO tengan label de
+// admisión, aplica `needs-definition` y avisa por Telegram.
+//
+// El sweep es idempotente: aplicar un label ya existente es no-op en la API
+// de GitHub. Y el formatTelegramAlert devuelve null cuando hay 0 huérfanos,
+// así que no se alerta cuando todo está limpio (modo silencioso, CA-UX5).
+
+function listGhItemsAll(kind) {
+    // kind: 'issue' | 'pr'. Listamos open con labels/title/url para que
+    // admissionGate.filterOrphans pueda decidir sin más I/O.
+    const cmd = kind === 'pr' ? 'pr list' : 'issue list';
+    try {
+        const raw = execSync(
+            `"${GH_BIN}" ${cmd} --state open --limit 500 --json number,labels,title,url`,
+            { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true },
+        );
+        const items = JSON.parse(raw || '[]');
+        return items;
+    } catch (e) {
+        log(`Error consultando GitHub (${kind}): ${e.message.slice(0, 120)}`);
+        return null;
+    }
+}
+
+function applyAdmissionLabel(issueNumber) {
+    // Idempotente del lado de GitHub. Reusamos la cola de svc-github para
+    // que el apply no bloquee el reconciler ni dependa de la latencia de
+    // la API.
+    try {
+        fs.mkdirSync(GH_QUEUE, { recursive: true });
+        const filename = `${issueNumber}-${admissionGate.DEFAULT_ADMISSION_LABEL}-admission-${Date.now()}.json`;
+        const payload = {
+            action: 'label',
+            issue: issueNumber,
+            label: admissionGate.DEFAULT_ADMISSION_LABEL,
+        };
+        fs.writeFileSync(path.join(GH_QUEUE, filename), JSON.stringify(payload));
+        return true;
+    } catch (e) {
+        log(`Error encolando admission label #${issueNumber}: ${e.message.slice(0, 120)}`);
+        return false;
+    }
+}
+
+function enqueueTelegramAlert(text) {
+    // Patrón estándar del pipeline: drop JSON en servicios/telegram/pendiente/
+    // y svc-telegram lo envía. El svc-telegram ya hace sanitización doble
+    // (sanitize-console + sanitize-payload + redact), pero el módulo
+    // admission-gate ya redacta el título por nuestro lado — defensa en
+    // profundidad.
+    try {
+        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
+        const filename = `${Date.now()}-admission-sweep.json`;
+        const payload = { text, parse_mode: 'Markdown' };
+        fs.writeFileSync(path.join(ADMISSION_TELEGRAM_QUEUE, filename), JSON.stringify(payload), 'utf8');
+        return true;
+    } catch (e) {
+        log(`Error encolando alerta Telegram admission: ${e.message.slice(0, 120)}`);
+        return false;
+    }
+}
+
+function reconcileAdmissionOrphans(opts = {}) {
+    // Devuelve {appliedCount, deferredCount, bootstrap, alertSent, dryRun}.
+    // El opts.listIssues/opts.listPrs/opts.applyLabel/opts.enqueueAlert son
+    // hooks para tests (todos opcionales; defaultean a las funciones reales).
+    if (!ADMISSION_SWEEP_ENABLED) {
+        return { skipped: true, reason: 'ADMISSION_SWEEP_ENABLED=0' };
+    }
+
+    const listIssuesFn = opts.listIssues || (() => listGhItemsAll('issue'));
+    const listPrsFn = opts.listPrs || (() => listGhItemsAll('pr'));
+    const applyFn = opts.applyLabel || applyAdmissionLabel;
+    const alertFn = opts.enqueueAlert || enqueueTelegramAlert;
+    const dryRun = opts.dryRun != null ? !!opts.dryRun : ADMISSION_DRY_RUN;
+
+    const issues = listIssuesFn();
+    const prs = listPrsFn();
+    if (issues === null && prs === null) {
+        return { skipped: true, reason: 'GitHub no respondió' };
+    }
+
+    const orphans = [
+        ...admissionGate.filterOrphans(issues || []),
+        ...admissionGate.filterOrphans(prs || []),
+    ];
+
+    if (orphans.length === 0) {
+        // Modo silencioso (CA-UX5). No publicamos nada cuando todo OK.
+        return { appliedCount: 0, deferredCount: 0, bootstrap: false, alertSent: false, dryRun };
+    }
+
+    const decision = admissionGate.applyBootstrapCap(orphans);
+    let appliedCount = 0;
+    if (!dryRun) {
+        for (const o of decision.apply) {
+            if (applyFn(o.number)) appliedCount++;
+        }
+    } else {
+        // En dry-run reportamos cuántos se aplicarían pero no encolamos.
+        appliedCount = decision.apply.length;
+    }
+
+    const alertText = admissionGate.formatTelegramAlert(decision);
+    let alertSent = false;
+    if (alertText && !dryRun) {
+        alertSent = alertFn(alertText);
+    }
+
+    return {
+        appliedCount,
+        deferredCount: decision.deferred.length,
+        bootstrap: decision.bootstrap,
+        alertSent,
+        dryRun,
+    };
+}
+
+// -----------------------------------------------------------------------------
 // Loop principal
 // -----------------------------------------------------------------------------
 
@@ -635,10 +772,24 @@ function reconcileOnce() {
     const enqueued = reconcileMarkerToLabel(remaining, ghIssueSet);
     const archived = reconcileClosedMarkers(remaining, ghIssueSet);
 
+    // #3175 — Sweep paralelo del admission gate (defensa en profundidad).
+    // Fallas del sweep son no-fatales: si GH no responde o falla la cola,
+    // el ciclo del reconciler debe completar igual.
+    let admissionResult = null;
+    try {
+        admissionResult = reconcileAdmissionOrphans();
+    } catch (e) {
+        log(`Admission sweep error: ${e.message.slice(0, 120)}`);
+        admissionResult = { error: true };
+    }
+
     const elapsed = Date.now() - t0;
     lastRunAt = Date.now();
-    if (created || enqueued || archived || detected || resolved) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)`);
+    const admissionSummary = admissionResult && !admissionResult.skipped && !admissionResult.error
+        ? `, +${admissionResult.appliedCount || 0} admission${admissionResult.bootstrap ? ' [BOOTSTRAP]' : ''}`
+        : '';
+    if (created || enqueued || archived || detected || resolved || (admissionResult && admissionResult.appliedCount)) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${admissionSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -702,4 +853,11 @@ module.exports = {
     appendStaleOrderLog,
     HUMAN_UNBLOCK_GRACE_MS,
     RESOLVED_TTL_MS,
+    // #3175 — Admission gate sweep
+    reconcileAdmissionOrphans,
+    applyAdmissionLabel,
+    enqueueTelegramAlert,
+    listGhItemsAll,
+    ADMISSION_SWEEP_ENABLED,
+    ADMISSION_DRY_RUN,
 };

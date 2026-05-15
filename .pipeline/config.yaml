@@ -71,6 +71,40 @@ intake:
     label: "Ready"
     fase_entrada: validacion
 
+# #3175 — Admission gate: garantiza que todo issue/PR creado tenga un label
+# de admisión (`needs-definition` o `Ready`). Defensa en dos capas:
+#
+#   1. GitHub Action (`.github/workflows/admission-gate.yml`) — event-driven,
+#      aplica el label dentro de ~30s del open. Configurable con la variable
+#      de repo `ADMISSION_GATE_DRY_RUN=1` para correr sin aplicar.
+#
+#   2. Sweep periódico en `servicio-reconciler.js` — defensa en profundidad
+#      para issues/PRs que escaparon al workflow (downtime de Actions,
+#      huérfanos pre-deploy, forks con permisos limitados). Corre en cada
+#      ciclo de reconcile (5min default) junto con el sweep de needs-human.
+#
+# La configuración real de runtime se hace por env vars que setea el pulpo
+# al lanzar servicio-reconciler:
+#   - ADMISSION_SWEEP_ENABLED=0  → desactiva el sweep del reconciler.
+#                                   El workflow event-driven sigue funcionando.
+#   - ADMISSION_GATE_DRY_RUN=1   → reconciler y workflow loguean decisiones
+#                                   pero NO aplican labels ni encolan alertas.
+#
+# Este bloque YAML es declarativo (visibilidad operacional). Los valores
+# acá NO se leen al iniciar el reconciler — son referencia y futura
+# extensión si decidimos hidratar via env desde config.yaml.
+admission_gate:
+  # Sweep del reconciler activo por default. Para apagar: setear
+  # ADMISSION_SWEEP_ENABLED=0 en el entorno del proceso.
+  sweep_enabled: true
+  # Modo dry-run global (loguea pero no aplica). Setear ADMISSION_GATE_DRY_RUN=1
+  # en el entorno para activar runtime.
+  dry_run: false
+  # Cap de huérfanos a aplicar por sweep. Si N>10, los primeros 10 se etiquetan
+  # y se manda alerta especial 🔴 al Commander pidiendo revisión humana antes
+  # de continuar. Valor sincronizado con lib/admission-gate.js → BOOTSTRAP_CAP.
+  bootstrap_cap: 10
+
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
   "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)

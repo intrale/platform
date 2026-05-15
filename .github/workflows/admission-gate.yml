@@ -1,0 +1,140 @@
+# =============================================================================
+# Admission Gate — Auto-etiqueta issues/PRs creados sin label de admisión
+# Issue #3175
+#
+# Garantiza que todo artefacto nuevo lleve `needs-definition` o `Ready`. Si
+# se crea sin ninguno de los dos, este workflow aplica `needs-definition`
+# (default conservador) y publica un comentario explicativo estático.
+#
+# Diseño seguro (CAs S1–S7):
+#   - permissions: explícitas mínimas (CA-S1)
+#   - NO actions/checkout de código de fork (CA-S2)
+#   - inputs no confiables (body, title) NUNCA en interpolación `${{ }}` de
+#     un bloque `run:` (CA-S3). Solo se usan en github-script con la API
+#     segura de Octokit.
+#   - texto del comentario importado literal del módulo (CA-S6 / CA-UX1)
+#   - NO escucha `unlabeled` (anti-loop: si el creador remueve el label
+#     manualmente, no lo re-aplicamos por evento — solo el reconciler en
+#     su sweep periódico puede hacerlo)
+#   - solo dispara en `opened` (NO `reopened`, evita comentarios duplicados)
+#
+# El módulo `.pipeline/lib/admission-gate.js` es importado vía `require()`
+# desde github-script. Esto mantiene la copy y la lógica en un único lugar
+# reusable por el reconciler también.
+# =============================================================================
+
+name: Admission Gate
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+# Permisos mínimos absolutos (CA-S1). Sin write-all.
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+concurrency:
+  # Evita runs duplicadas si GitHub dispara el evento dos veces (raro pero
+  # posible en re-runs manuales). El group es por artefacto.
+  group: admission-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply-admission-label:
+    runs-on: ubuntu-latest
+    # Solo correr para issues NO creados por el propio bot del gate (defensa
+    # de UX edge case #1: bot comentando su propio bot-comment).
+    if: github.event.sender.type != 'Bot' || github.actor != 'github-actions[bot]'
+    steps:
+      - name: Checkout (solo `.pipeline/lib/` — NO código del PR)
+        # IMPORTANTE: `actions/checkout` SIN `ref: head.sha` (CA-S2). Trae el
+        # default branch (= main) que es código de confianza, no del fork.
+        # Solo necesitamos `.pipeline/lib/admission-gate.js` y `redact.js`.
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .pipeline/lib/admission-gate.js
+            .pipeline/lib/redact.js
+            .pipeline/lib/constants.js
+          sparse-checkout-cone-mode: false
+
+      - name: Evaluar y aplicar label si corresponde
+        uses: actions/github-script@v7
+        env:
+          # CA-S3: body/title se exponen al script como env vars, NUNCA
+          # interpoladas en strings de shell. `actions/github-script` corre
+          # JavaScript puro, así que esto es defensa extra.
+          ADMISSION_GATE_DRY_RUN: ${{ vars.ADMISSION_GATE_DRY_RUN || '0' }}
+        with:
+          # github-token explícito: solo permisos del workflow (mínimo).
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const path = require('path');
+            // Resolvemos relativo al workspace donde checkout dejó el módulo.
+            const gate = require(path.join(process.env.GITHUB_WORKSPACE, '.pipeline', 'lib', 'admission-gate.js'));
+
+            const isPR = !!context.payload.pull_request;
+            const item = isPR ? context.payload.pull_request : context.payload.issue;
+            const number = item.number;
+            const labels = item.labels || [];
+            const kind = isPR ? 'pr' : 'issue';
+
+            core.info(`Admission gate evaluando ${kind} #${number}`);
+
+            if (gate.isAdmitted(labels)) {
+              core.info(`#${number} ya tiene label de admisión — no-op`);
+              return;
+            }
+
+            const dryRun = process.env.ADMISSION_GATE_DRY_RUN === '1';
+            if (dryRun) {
+              core.warning(`DRY_RUN=1: aplicaría label "${gate.DEFAULT_ADMISSION_LABEL}" a ${kind} #${number}`);
+              return;
+            }
+
+            // Aplicar label. Idempotente — GitHub API tolera re-aplicación.
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                labels: [gate.DEFAULT_ADMISSION_LABEL],
+              });
+              core.info(`Label "${gate.DEFAULT_ADMISSION_LABEL}" aplicado a ${kind} #${number}`);
+            } catch (e) {
+              core.setFailed(`Fallo aplicando label: ${e.message}`);
+              return;
+            }
+
+            // Publicar comentario explicativo (estático, importado del módulo).
+            // Idempotencia: chequear si ya existe un comentario del gate.
+            // Listar comentarios — solo metadatos {body} (sin user, sin reactions).
+            const { data: existingComments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              per_page: 100,
+            });
+            if (gate.alreadyCommented(existingComments, kind)) {
+              core.info(`#${number} ya tiene comentario del gate — skip comment`);
+              return;
+            }
+
+            const body = gate.getAdmissionComment(kind);
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                body,
+              });
+              core.info(`Comentario del gate publicado en ${kind} #${number}`);
+            } catch (e) {
+              // Comentario fallido es no-fatal — el label ya entró, el gate
+              // cumplió su función primaria.
+              core.warning(`No se pudo publicar el comentario: ${e.message}`);
+            }
