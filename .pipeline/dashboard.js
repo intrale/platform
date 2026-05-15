@@ -311,6 +311,25 @@ function log(msg) {
   console.log(`[${ts}] [dashboard] ${msg}`);
 }
 
+// #3142 — Comentario automático en GH cuando se promueve issue a allowlist (CA-Sec-16).
+// Best-effort, fire-and-forget. Usamos spawn con array de args (CA-Sec-06) — nunca
+// shell con string concatenado (anti command injection).
+function tryCommentPromoted(issueNum, addedDeps) {
+  try {
+    const ghPath = process.env.GH_PATH || 'gh';
+    const ts = new Date().toISOString();
+    const depsTxt = (addedDeps && addedDeps.length)
+      ? ' Deps incluidas recursivamente: ' + addedDeps.map(d => '#' + d).join(', ') + '.'
+      : '';
+    const body = `Issue #${issueNum} agregado a allowlist activa desde dashboard a las ${ts}.${depsTxt}`;
+    const { spawn } = require('child_process');
+    const args = ['issue', 'comment', String(issueNum), '--body', body];
+    const ch = spawn(ghPath, args, { detached: true, stdio: 'ignore' });
+    ch.on('error', () => {});
+    ch.unref();
+  } catch {}
+}
+
 function loadConfig() {
   try { return yaml.load(fs.readFileSync(path.join(PIPELINE, 'config.yaml'), 'utf8')); }
   catch { return { pipelines: {}, concurrencia: {} }; }
@@ -1210,6 +1229,13 @@ function generateHTML(state) {
     partialPauseState = pp.getPipelineMode();
   } catch {}
   const isPartialPause = partialPauseState.mode === 'partial_pause';
+
+  // #3142 — Candidatos a allowlist (likes persistidos en .pipeline/allowlist-candidates.json)
+  let allowlistCandidatesList = [];
+  try {
+    const ac = require('./lib/allowlist-candidates');
+    allowlistCandidatesList = ac.readCandidates().candidates || [];
+  } catch {}
 
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
   let v3Workers = [];
@@ -4554,6 +4580,69 @@ body.standalone .section-collapsed .section-body{display:block !important}
     <button onclick="includeMissingDeps()" style="margin-left:12px;padding:4px 10px;background:#f0a500;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-weight:600;" title="Agregar todas las deps abiertas al allowlist">Agregar dependencias al allowlist</button>
     <button onclick="dismissDepsBanner()" style="margin-left:6px;padding:4px 10px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;" title="Ocultar (volverá a aparecer en el próximo ciclo si persiste)">Ocultar</button>
   </div>
+
+  <!-- #3142 — Allowlist & Candidatos (sub-sección del tab Pipeline) -->
+  <details id="allowlist-candidates-section" class="section" style="margin:8px 0;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.02);">
+    <summary style="cursor:pointer;padding:10px 14px;font-weight:600;display:flex;align-items:center;gap:8px;">
+      <span style="color:var(--purple,#bc8cff)">❤️</span>
+      Allowlist &amp; Candidatos
+      <span class="dim" style="font-weight:normal;font-size:0.85em">
+        — activa: ${partialPauseState.allowedIssues.length}, candidatos: ${allowlistCandidatesList.length}
+      </span>
+    </summary>
+    <div style="padding:8px 14px 14px">
+      <!-- Allowlist activa -->
+      <div style="margin-bottom:14px">
+        <div style="font-weight:600;margin-bottom:6px;color:var(--teal,#39c5cf)">
+          \u{1F4CC} Allowlist activa <span class="dim" style="font-weight:normal">(${partialPauseState.allowedIssues.length})</span>
+        </div>
+        ${partialPauseState.allowedIssues.length === 0
+          ? '<div class="dim" style="font-size:0.85em;font-style:italic">Pipeline corriendo sin allowlist activa (modo Kanban abierto).</div>'
+          : '<ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px">' +
+            partialPauseState.allowedIssues.map(function(i) {
+              return '<li style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(57,197,207,0.06);border:1px solid rgba(57,197,207,0.2);border-radius:6px;font-size:0.85em">' +
+                '<a href="https://github.com/intrale/platform/issues/' + i + '" target="_blank" style="font-family:\'SF Mono\',Consolas,monospace;color:#58a6ff;text-decoration:none">#' + i + '</a>' +
+                '<span class="dim" style="flex:1"></span>' +
+                '<button onclick="allowlistRemove(' + i + ')" title="Quitar este issue de la allowlist activa" style="padding:3px 9px;background:transparent;color:#f85149;border:1px solid rgba(248,81,73,0.4);border-radius:4px;cursor:pointer;font-size:0.85em">➖ quitar</button>' +
+                '</li>';
+            }).join('') + '</ul>'
+        }
+      </div>
+
+      <!-- Candidatos likeados -->
+      <div style="margin-bottom:10px">
+        <div style="font-weight:600;margin-bottom:6px;color:var(--purple,#bc8cff)">
+          ❤️ Candidatos likeados <span class="dim" style="font-weight:normal">(${allowlistCandidatesList.length})</span>
+        </div>
+        ${allowlistCandidatesList.length === 0
+          ? '<div class="dim" style="font-size:0.85em;font-style:italic">No hay candidatos likeados. Bus' + 'cá un issue más abajo para empezar.</div>'
+          : '<ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px" id="allowlist-candidates-list">' +
+            allowlistCandidatesList.map(function(c) {
+              var dateLabel = (c.likedAt || '').slice(0, 10) || '—';
+              var safeReason = escapeHtml(c.reason || '');
+              var reasonHtml = safeReason ? '<div class="dim" style="font-size:0.78em;margin-top:2px">' + safeReason + '</div>' : '';
+              return '<li style="display:flex;flex-direction:column;gap:2px;padding:8px 10px;background:rgba(188,140,255,0.05);border:1px solid rgba(188,140,255,0.18);border-radius:6px;font-size:0.85em">' +
+                '<div style="display:flex;align-items:center;gap:8px">' +
+                  '<a href="https://github.com/intrale/platform/issues/' + c.issue + '" target="_blank" style="font-family:\'SF Mono\',Consolas,monospace;color:#58a6ff;text-decoration:none">#' + c.issue + '</a>' +
+                  '<span class="dim" style="font-size:0.78em">Liked ' + escapeHtml(dateLabel) + '</span>' +
+                  '<span style="flex:1"></span>' +
+                  '<button onclick="allowlistPromote(' + c.issue + ')" title="Promover candidato a allowlist activa (preview deps + confirmar)" style="padding:3px 9px;background:#3fb950;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-size:0.85em;font-weight:600">➕ sumar</button>' +
+                  '<button onclick="allowlistUnlike(' + c.issue + ')" title="Quitar este like" style="padding:3px 9px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;font-size:0.85em">❤️ unlike</button>' +
+                '</div>' +
+                reasonHtml +
+              '</li>';
+            }).join('') + '</ul>'
+        }
+      </div>
+
+      <!-- Picker: nuevo like -->
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.12);border-radius:6px">
+        <input id="allowlist-like-input" type="text" placeholder="Número de issue (ej: 3140)" inputmode="numeric" pattern="\\d+" style="flex:0 0 200px;padding:6px 8px;background:#0d1117;color:#c9d1d9;border:1px solid rgba(255,255,255,0.15);border-radius:4px;font-size:0.85em;font-family:'SF Mono',Consolas,monospace">
+        <input id="allowlist-like-reason" type="text" placeholder="Razón (opcional, max 500)" maxlength="500" style="flex:1;padding:6px 8px;background:#0d1117;color:#c9d1d9;border:1px solid rgba(255,255,255,0.15);border-radius:4px;font-size:0.85em">
+        <button onclick="allowlistLike()" style="padding:6px 12px;background:var(--purple,#bc8cff);color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-size:0.85em;font-weight:600">❤️ likear</button>
+      </div>
+    </div>
+  </details>
   ${(() => {
     const pw = state.priorityWindows || {};
     const qaActive = pw.qa && pw.qa.active;
@@ -5270,6 +5359,160 @@ function showPartialPauseDepsModal(requestedIssues, missing, chains) {
       const r = await resp.json();
       showToast(r.msg + ' (riesgo aceptado)', r.ok);
       setTimeout(function() { location.reload(); }, 1500);
+    } catch (e) { showToast('Error: ' + e.message, false); }
+  };
+}
+
+// #3142 — Handlers de allowlist & candidatos (sub-sección del tab Pipeline).
+// CA-Sec-08: likedBy NUNCA se envía del cliente — server-derived.
+function _aclEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function allowlistLike() {
+  const inp = document.getElementById('allowlist-like-input');
+  const reasonInp = document.getElementById('allowlist-like-reason');
+  if (!inp) return;
+  const raw = String(inp.value || '').trim();
+  if (!/^\d+$/.test(raw)) {
+    showToast('Issue debe ser un número (ej: 3140)', false);
+    return;
+  }
+  const issue = parseInt(raw, 10);
+  if (!Number.isInteger(issue) || issue <= 0 || issue > 999999) {
+    showToast('Número de issue inválido', false);
+    return;
+  }
+  const reason = reasonInp ? String(reasonInp.value || '').trim().slice(0, 500) : '';
+  try {
+    const resp = await fetch('/api/allowlist-candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue: issue, reason: reason })
+    });
+    const r = await resp.json();
+    if (!r.ok) {
+      showToast('Error: ' + (r.error || r.msg || 'desconocido'), false);
+      return;
+    }
+    showToast(r.alreadyExisted ? '#' + issue + ' ya estaba likeado' : '❤️ Likeado #' + issue, true);
+    setTimeout(function() { location.reload(); }, 800);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+async function allowlistUnlike(issue) {
+  if (!Number.isInteger(issue) || issue <= 0) return;
+  try {
+    const resp = await fetch('/api/allowlist-candidates/' + issue, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const r = await resp.json();
+    if (!r.ok) { showToast('Error: ' + (r.error || 'desconocido'), false); return; }
+    showToast('Unlike #' + issue, true);
+    setTimeout(function() { location.reload(); }, 600);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+async function allowlistRemove(issue) {
+  if (!Number.isInteger(issue) || issue <= 0) return;
+  if (!confirm('Quitar #' + issue + ' de la allowlist activa?\\n\\nEsto modifica .partial-pause.json — el Pulpo dejará de procesar este issue inmediatamente.')) return;
+  try {
+    // Reusamos /api/pause-partial: leemos el estado actual y mandamos la lista sin el issue.
+    const state = await fetch('/api/allowlist-candidates').then(r => r.json());
+    if (!state.ok) { showToast('Error obteniendo estado', false); return; }
+    const newList = (state.allowlistActive || []).filter(function(n) { return n !== issue; });
+    const resp = await fetch('/api/pause-partial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issues: newList, detectDeps: false })
+    });
+    const r = await resp.json();
+    showToast(r.ok ? '➖ Quitado #' + issue + ' de allowlist' : 'Error: ' + (r.msg || 'desconocido'), r.ok);
+    setTimeout(function() { location.reload(); }, 800);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+async function allowlistPromote(issue) {
+  if (!Number.isInteger(issue) || issue <= 0) return;
+  try {
+    // Paso 1: preview (sin confirmed)
+    const previewResp = await fetch('/api/allowlist-candidates/' + issue + '/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (previewResp.status === 409) {
+      const data = await previewResp.json();
+      if (data.code === 'PROMOTE_CAP_EXCEEDED') {
+        alert('Promote rechazado: sumaría ' + (data.toAdd || []).length + ' issues a la allowlist (cap ' + data.cap + ').\\n\\nDividí el promote en varios candidatos o ajustá las deps manualmente.');
+        return;
+      }
+    }
+    const preview = await previewResp.json();
+    if (!preview.ok || !preview.preview) {
+      showToast('Error en preview: ' + (preview.msg || preview.error || 'desconocido'), false);
+      return;
+    }
+    // Mostrar modal de confirmación
+    showAllowlistPromoteModal(issue, preview);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+function showAllowlistPromoteModal(issue, preview) {
+  const toAdd = preview.toAdd || [];
+  const chains = preview.chains || {};
+  const finalAllowlist = preview.finalAllowlist || [];
+  const truncated = preview.truncated === true;
+
+  const toAddList = toAdd.length === 0
+    ? '<li class="dim" style="font-style:italic">Sin deps adicionales — el candidato no tiene dependencias abiertas faltantes.</li>'
+    : toAdd.map(function(d) {
+        const c = chains[String(d)] || {};
+        const t = c.title ? ' — ' + _aclEsc(String(c.title).slice(0, 70)) : '';
+        return '<li><a href="https://github.com/intrale/platform/issues/' + d + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + d + '</a>' + t + '</li>';
+      }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'allowlist-promote-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  overlay.innerHTML = '<div role="dialog" aria-modal="true" aria-labelledby="acl-promote-title" style="background:#161b22;border:1px solid rgba(63,185,80,0.5);border-radius:10px;padding:20px;max-width:620px;width:92%;color:#c9d1d9;box-shadow:0 10px 40px rgba(0,0,0,0.6);">'
+    + '<h3 id="acl-promote-title" style="margin:0 0 10px;color:#3fb950;display:flex;align-items:center;gap:8px;">➕ Promover #' + issue + ' a allowlist activa</h3>'
+    + '<div style="margin-bottom:10px;padding:8px 12px;background:rgba(188,140,255,0.08);border-left:3px solid #bc8cff;border-radius:4px;">'
+      + '<strong>Candidato:</strong> <a href="https://github.com/intrale/platform/issues/' + issue + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + issue + '</a>'
+    + '</div>'
+    + '<div style="margin-bottom:8px;font-size:0.88rem;">Se sumarán <strong>' + toAdd.length + '</strong> issue' + (toAdd.length === 1 ? '' : 's') + ' a la allowlist activa (incluyendo deps recursivas abiertas):</div>'
+    + '<ul style="margin:0 0 12px;padding-left:22px;font-size:0.82rem;max-height:240px;overflow-y:auto;">' + toAddList + '</ul>'
+    + (truncated ? '<div style="margin-bottom:10px;font-size:0.78rem;color:#d29922;">⚠ Detección truncada por profundidad máxima — puede haber más deps no resueltas.</div>' : '')
+    + '<div style="margin-bottom:14px;font-size:0.78rem;color:var(--dim,#8b949e)">Allowlist final: ' + finalAllowlist.length + ' issue' + (finalAllowlist.length === 1 ? '' : 's') + '. Se modificará <code>.partial-pause.json</code>.</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">'
+      + '<button id="acl-promote-cancel" style="padding:8px 14px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:5px;cursor:pointer;">Cancelar</button>'
+      + '<button id="acl-promote-confirm" style="padding:8px 14px;background:#3fb950;color:#1c2128;border:0;border-radius:5px;cursor:pointer;font-weight:600;">Confirmar promover</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+
+  const closeModal = function() { try { overlay.remove(); } catch (_) {} };
+  overlay.querySelector('#acl-promote-cancel').onclick = closeModal;
+  overlay.querySelector('#acl-promote-confirm').onclick = async function() {
+    closeModal();
+    try {
+      const resp = await fetch('/api/allowlist-candidates/' + issue + '/promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true })
+      });
+      const r = await resp.json();
+      if (!r.ok) {
+        showToast('Error promoviendo: ' + (r.msg || r.error || 'desconocido'), false);
+        return;
+      }
+      showToast('✅ Promovido #' + issue + ' (+' + (r.addedDeps || []).length + ' deps)', true);
+      setTimeout(function() { location.reload(); }, 1200);
     } catch (e) { showToast('Error: ' + e.message, false); }
   };
 }
@@ -8270,6 +8513,286 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, msg: e.message }));
       }
     });
+    return;
+  }
+
+  // =========================================================================
+  // #3142 — Allowlist Candidates (likes a issues candidatos a allowlist)
+  //
+  //   GET    /api/allowlist-candidates                  → state actual (candidatos + allowlist activa)
+  //   POST   /api/allowlist-candidates                  → like (body: {issue, reason?})
+  //   DELETE /api/allowlist-candidates/:issue           → unlike
+  //   POST   /api/allowlist-candidates/:issue/promote   → preview (sin confirmed) o promueve (con confirmed:true)
+  //
+  // Defensa en profundidad (CA-Sec-01..16):
+  //   - isLoopback obligatorio (rechaza requests no-loopback con 403)
+  //   - Origin/Referer validados contra localhost:3200 / 127.0.0.1:3200
+  //   - Content-Type estricto application/json en mutaciones
+  //   - :issue validado contra regex ^\d+$ + cap 999999
+  //   - reason saneada (trim, cap 500, sin chars de control)
+  //   - likedBy NUNCA del cliente — server-derived a "dashboard-local"
+  //   - promote en 2 pasos (preview → confirmed) — anti-mutación accidental
+  //   - cap 50 issues por promote (anti-explosión recursiva)
+  //   - logs estructurados en .pipeline/logs/allowlist-mutations.log
+  // =========================================================================
+  if (req.url && req.url.startsWith('/api/allowlist-candidates')) {
+    // --- 1. Loopback gate (CA-Sec-01) ---
+    const remote = (req.socket && req.socket.remoteAddress) || '';
+    const isLoopback = remote === '127.0.0.1'
+        || remote === '::1'
+        || remote === '::ffff:127.0.0.1'
+        || remote.startsWith('127.');
+    if (!isLoopback) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: `loopback-only endpoint, got remote=${remote}` }));
+      return;
+    }
+
+    // --- 2. Origin/Referer gate para mutaciones (CA-Sec-02) ---
+    const ALLOWED_ORIGINS = ['http://localhost:3200', 'http://127.0.0.1:3200'];
+    const isMutation = req.method === 'POST' || req.method === 'DELETE';
+    if (isMutation) {
+      const origin = req.headers['origin'] || '';
+      const referer = req.headers['referer'] || '';
+      let originOk = !origin; // si no manda Origin, lo dejamos (curl/tests locales)
+      if (origin) originOk = ALLOWED_ORIGINS.includes(origin);
+      let refererOk = !referer;
+      if (referer) refererOk = ALLOWED_ORIGINS.some(o => referer.startsWith(o + '/'));
+      if (!originOk || !refererOk) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'cross-origin request rejected' }));
+        return;
+      }
+      // --- 3. Content-Type estricto (CA-Sec-03) — solo si hay body ---
+      if (req.method === 'POST') {
+        const ct = String(req.headers['content-type'] || '').toLowerCase();
+        if (!ct.startsWith('application/json')) {
+          res.writeHead(415, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'Content-Type must be application/json' }));
+          return;
+        }
+      }
+    }
+
+    // --- helpers ---
+    const allowlistCandidates = require('./lib/allowlist-candidates');
+    const promoteCapIssues = 50;
+    const promoteMaxDepth = 5;
+
+    function readBodyJson(cb) {
+      let body = '';
+      let aborted = false;
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > 16 * 1024) { aborted = true; req.destroy(); }
+      });
+      req.on('end', () => {
+        if (aborted) return;
+        try { cb(null, body ? JSON.parse(body) : {}); }
+        catch (e) { cb(e); }
+      });
+    }
+
+    function logMutation(action, payload) {
+      try {
+        const logDir = path.join(PIPELINE, 'logs');
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+        const line = JSON.stringify({
+          timestamp: new Date().toISOString(),
+          action,
+          origin: 'dashboard-local',
+          remote,
+          ...payload,
+        }) + '\n';
+        fs.appendFileSync(path.join(logDir, 'allowlist-mutations.log'), line, 'utf8');
+      } catch (e) {
+        // No fatal: el log es para forensia, no interrumpir el flow del usuario.
+        log(`Warning: allowlist-mutations.log no se pudo escribir: ${e.message}`);
+      }
+    }
+
+    // ROUTE: GET /api/allowlist-candidates → estado completo
+    if (req.url === '/api/allowlist-candidates' && req.method === 'GET') {
+      try {
+        const { getPipelineMode } = require('./lib/partial-pause');
+        const state = getPipelineMode();
+        const c = allowlistCandidates.readCandidates();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          mode: state.mode,
+          allowlistActive: state.allowedIssues || [],
+          candidates: c.candidates,
+          caps: {
+            maxCandidates: allowlistCandidates.MAX_CANDIDATES,
+            maxReason: allowlistCandidates.MAX_REASON_LEN,
+            maxPromoteIssues: promoteCapIssues,
+            maxPromoteDepth: promoteMaxDepth,
+          },
+        }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+      return;
+    }
+
+    // ROUTE: POST /api/allowlist-candidates → like
+    if (req.url === '/api/allowlist-candidates' && req.method === 'POST') {
+      readBodyJson((err, data) => {
+        if (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + err.message }));
+          return;
+        }
+        // CA-Sec-08: likedBy del cliente IGNORADO. Server-derived.
+        const result = allowlistCandidates.addCandidate({
+          issue: data.issue,
+          reason: data.reason,
+        });
+        if (!result.ok) {
+          const code = result.error === 'cap_reached' ? 409 : 400;
+          res.writeHead(code, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: result.error }));
+          return;
+        }
+        logMutation('like', { issue: result.candidate.issue, alreadyExisted: result.alreadyExisted });
+        log(`Allowlist-candidate: liked #${result.candidate.issue} (alreadyExisted=${result.alreadyExisted})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          candidate: result.candidate,
+          alreadyExisted: result.alreadyExisted,
+        }));
+      });
+      return;
+    }
+
+    // ROUTE: DELETE /api/allowlist-candidates/:issue → unlike
+    const unlikeMatch = req.url.match(/^\/api\/allowlist-candidates\/(\d+)$/);
+    if (unlikeMatch && req.method === 'DELETE') {
+      const issueStr = unlikeMatch[1];
+      const v = allowlistCandidates.validateIssueId(issueStr);
+      if (!v.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: v.error }));
+        return;
+      }
+      const result = allowlistCandidates.removeCandidate(v.value);
+      if (result.existed) {
+        logMutation('unlike', { issue: v.value });
+        log(`Allowlist-candidate: unliked #${v.value}`);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, existed: result.existed }));
+      return;
+    }
+
+    // ROUTE: POST /api/allowlist-candidates/:issue/promote → preview o confirm
+    const promoteMatch = req.url.match(/^\/api\/allowlist-candidates\/(\d+)\/promote$/);
+    if (promoteMatch && req.method === 'POST') {
+      const issueStr = promoteMatch[1];
+      const v = allowlistCandidates.validateIssueId(issueStr);
+      if (!v.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: v.error }));
+        return;
+      }
+      readBodyJson((err, data) => {
+        if (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + err.message }));
+          return;
+        }
+        const confirmed = data && data.confirmed === true;
+        try {
+          const { getPipelineMode, setPartialPause } = require('./lib/partial-pause');
+          const ppDeps = require('./lib/partial-pause-deps');
+          const state = getPipelineMode();
+          const currentAllowlist = state.allowedIssues || [];
+
+          // Resolver deps abiertas recursivas del candidato (maxDepth=5 — CA-Sec-12).
+          const { openDeps, chains, truncated } = ppDeps.resolveOpenDeps(v.value, { maxDepth: promoteMaxDepth });
+          const allowedSet = new Set(currentAllowlist);
+          const toAdd = [v.value, ...openDeps].filter(n => !allowedSet.has(n));
+          const finalAllowlist = [...new Set([...currentAllowlist, v.value, ...openDeps])].sort((a, b) => a - b);
+
+          // CA-Sec-13: cap defensivo. Si excede el cap, rechazamos sin escribir.
+          if (toAdd.length > promoteCapIssues) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              ok: false,
+              code: 'PROMOTE_CAP_EXCEEDED',
+              msg: `Promote sumaría ${toAdd.length} issues a la allowlist (cap ${promoteCapIssues}).`,
+              candidate: v.value,
+              toAdd,
+              cap: promoteCapIssues,
+              chains,
+            }));
+            return;
+          }
+
+          // Modo PREVIEW (sin confirmed:true): solo devolvemos los datos sin escribir.
+          if (!confirmed) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              ok: true,
+              preview: true,
+              candidate: v.value,
+              currentAllowlist,
+              toAdd,
+              finalAllowlist,
+              chains,
+              truncated,
+            }));
+            return;
+          }
+
+          // Modo CONFIRMED: persistir. Preservamos depSources existentes y marcamos los nuevos.
+          const depSources = Object.assign({}, state.depSources || {});
+          for (const d of openDeps) {
+            if (!(String(d) in depSources)) depSources[String(d)] = 'auto-deps';
+          }
+          const result = setPartialPause(finalAllowlist, {
+            source: 'dashboard-promote',
+            acceptedDepRisk: state.acceptedDepRisk === true,
+            depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+          });
+
+          // Sacar el candidato (ya está en allowlist activa, no es más "candidato").
+          allowlistCandidates.removeCandidate(v.value);
+
+          logMutation('promote', {
+            issue: v.value,
+            addedDeps: openDeps,
+            finalAllowlistSize: result.allowedIssues.length,
+          });
+          log(`Allowlist-candidate: promoted #${v.value} → allowlist (+${openDeps.length} deps recursivas)`);
+
+          // CA-Sec-16: comentario automático en el issue de GH (best-effort).
+          // No bloquea la respuesta — se hace fire-and-forget.
+          tryCommentPromoted(v.value, openDeps);
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: true,
+            preview: false,
+            candidate: v.value,
+            addedDeps: openDeps,
+            allowlistActive: result.allowedIssues,
+            msg: result.msg,
+          }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: e.message }));
+        }
+      });
+      return;
+    }
+
+    // Si llegó acá, no matcheó ningún sub-route.
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, msg: 'allowlist-candidates: route no encontrada' }));
     return;
   }
 

@@ -26,6 +26,9 @@ const PIPELINE_DIR = path.join(REPO_ROOT, '.pipeline');
 const CACHE_FILE = path.join(PIPELINE_DIR, 'partial-pause-deps-cache.json');
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_DEPTH = 3;
+// Cap absoluto de profundidad (defensa contra opts.maxDepth descontrolado).
+// Cualquier override debe quedar dentro de [1, ABSOLUTE_MAX_DEPTH].
+const ABSOLUTE_MAX_DEPTH = 10;
 
 // Regex para detectar referencias a issues en body/comments.
 // Convenciones soportadas:
@@ -178,6 +181,12 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
  */
 function resolveOpenDeps(issueNum, opts = {}) {
     const { ghRunner = defaultGhRunner, repo = 'intrale/platform', cacheFile = CACHE_FILE, now = Date.now() } = opts;
+    // maxDepth override (issue #3142): permite a `/promote` aumentar el alcance
+    // a 5 niveles (cumple CA-Sec-12) sin tocar callers existentes (default 3).
+    // Se clampea contra [1, ABSOLUTE_MAX_DEPTH] para evitar loops descontrolados.
+    let maxDepth = Number.isFinite(opts.maxDepth) ? Math.floor(opts.maxDepth) : MAX_DEPTH;
+    if (maxDepth < 1) maxDepth = 1;
+    if (maxDepth > ABSOLUTE_MAX_DEPTH) maxDepth = ABSOLUTE_MAX_DEPTH;
     const cache = readCache(cacheFile);
     const visited = new Set();
     const openDeps = new Set();
@@ -188,7 +197,7 @@ function resolveOpenDeps(issueNum, opts = {}) {
         const key = String(num);
         if (visited.has(key)) return;
         visited.add(key);
-        if (depth > MAX_DEPTH) {
+        if (depth > maxDepth) {
             truncated = true;
             return;
         }
@@ -269,6 +278,7 @@ module.exports = {
     CACHE_FILE,
     CACHE_TTL_MS,
     MAX_DEPTH,
+    ABSOLUTE_MAX_DEPTH,
     DEP_PATTERNS,
     parseDepsFromText,
     fetchIssueInfo,
