@@ -18,6 +18,7 @@
 //   6. QA artifacts viejos (qa/backend.log, qa/recordings/*)
 //   7. Consistencia agentes vs PRs (solo reporte)
 //   8. Entorno (Java, gh, disco — solo reporte)
+//   9. Branches stale (agent/* sin worktree, tip ya en origin/main) — issue #2398
 //
 // Uso CLI:
 //   node ghostbusters.js                 → dry-run completo (default seguro)
@@ -32,6 +33,7 @@
 //   node ghostbusters.js --qa            → solo qa artifacts
 //   node ghostbusters.js --agents        → solo consistencia agentes
 //   node ghostbusters.js --env           → solo entorno
+//   node ghostbusters.js --branches      → solo branches agent/* stale
 //
 // API programática:
 //   const gb = require('./ghostbusters');
@@ -51,6 +53,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
+const staleBranchesLib = require('./lib/stale-branches');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -164,7 +167,7 @@ function parseCliArgs(argv) {
     explicitRun: flags.has('--run') || flags.has('--deep'),
     categories: new Set(),
   };
-  const knownCats = ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env'];
+  const knownCats = ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env', 'branches'];
   for (const c of knownCats) if (flags.has(`--${c}`)) opts.categories.add(c);
   if (opts.categories.size === 0) for (const c of knownCats) opts.categories.add(c);
   opts.dryRun = opts.explicitDryRun || !opts.explicitRun;
@@ -855,7 +858,7 @@ function run(opts = {}) {
   const dryRun = opts.dryRun === true;
   const cats = opts.categories instanceof Set
     ? opts.categories
-    : new Set(opts.categories || ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env']);
+    : new Set(opts.categories || ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env', 'branches']);
   const deep = opts.deep === true;
 
   const procs = wmicProcesses();
@@ -884,6 +887,8 @@ function run(opts = {}) {
     qaArtifacts: [],
     agentInconsistencies: [],
     envIssues: [],
+    staleBranches: [],
+    staleBranchesSkipped: [],
     ramFreedBytes: 0,
     diskFreedBytes: 0,
   };
@@ -987,6 +992,45 @@ function run(opts = {}) {
     report.envIssues = findEnvIssues();
   }
 
+  // Branches stale agent/* — issue #2398
+  // Refresca origin/main para evitar falsos negativos cuando el local está
+  // desactualizado vs el remoto (sugerencia del análisis Guru).
+  if (cats.has('branches')) {
+    try {
+      const { candidates, skipped } = staleBranchesLib.detectStale({
+        repoRoot: ROOT,
+        fetchOrigin: true,
+        withIssueState: true,
+      });
+      const cleanResults = staleBranchesLib.cleanStale(candidates, {
+        repoRoot: ROOT,
+        dryRun,
+        backupTag: true,
+      });
+      // Merge: cada cleanResult ya trae name/issueNum/removed/backupTag/error.
+      // Sumamos reason e issueState del detect.
+      const candByName = new Map(candidates.map((c) => [c.name, c]));
+      report.staleBranches = cleanResults.map((r) => {
+        const det = candByName.get(r.name) || {};
+        return {
+          name: r.name,
+          issueNum: r.issueNum,
+          skill: det.skill,
+          issueState: det.issueState || r.issueState,
+          reason: det.reason,
+          removed: r.removed,
+          backupTag: r.backupTag,
+          error: r.error,
+        };
+      });
+      report.staleBranchesSkipped = skipped;
+    } catch (e) {
+      log(`⚠️ stale-branches falló: ${e.message.slice(0, 120)}`);
+      report.staleBranches = [];
+      report.staleBranchesSkipped = [];
+    }
+  }
+
   if (deep && !dryRun) {
     const deepDirs = [
       path.join(MAIN_ROOT, '.gradle'),
@@ -1026,7 +1070,8 @@ function fmtReport(r) {
   const otherCounts =
     r.worktrees.length + r.sessions.length + r.locks.length +
     r.logs.length + r.qaArtifacts.length +
-    r.agentInconsistencies.length + r.envIssues.length;
+    r.agentInconsistencies.length + r.envIssues.length +
+    (r.staleBranches ? r.staleBranches.length : 0);
 
   if (procCounts === 0 && otherCounts === 0) {
     lines.push('✅ Sistema sano. No hay fantasmas.');
@@ -1108,6 +1153,25 @@ function fmtReport(r) {
 
   section('Issues de entorno', r.envIssues, (e) =>
     `⚠️ ${e.kind}: ${e.detail}`);
+
+  // Branches stale agent/* (issue #2398)
+  if (r.staleBranches && r.staleBranches.length > 0) {
+    const removed = r.staleBranches.filter((b) => b.removed).length;
+    const tag = r.dryRun ? 'dry-run' : `${removed} borradas`;
+    lines.push(`*Branches stale (agent/*):* ${r.staleBranches.length} (${tag})`);
+    lines.push(`  Tip en origin/main, sin worktree, sin contenido único`);
+    const shownB = r.staleBranches.slice(0, MAX_PER_SECTION);
+    for (const b of shownB) {
+      const icon = r.dryRun ? '🔍' : (b.removed ? '🗑' : '⚠️');
+      const state = b.issueState && b.issueState !== 'UNKNOWN' ? ` ${b.issueState}` : '';
+      const errSuffix = !r.dryRun && !b.removed && b.error ? ` — ${b.error}` : '';
+      lines.push(`  ${icon} ${b.name} (issue #${b.issueNum}${state})${errSuffix}`);
+    }
+    if (r.staleBranches.length > MAX_PER_SECTION) {
+      lines.push(`  …y ${r.staleBranches.length - MAX_PER_SECTION} más`);
+    }
+    lines.push('');
+  }
 
   if (r.deepCleaned && r.deepCleaned.length > 0) {
     section('Deep clean', r.deepCleaned, (d) => {

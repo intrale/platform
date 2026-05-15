@@ -1,7 +1,7 @@
 ---
 description: Ghostbusters — Caza fantasmas del sistema (procesos zombi, worktrees, sesiones, locks, logs, QA artifacts, agentes, entorno)
 user-invocable: true
-argument-hint: "[--run] [--deep] [--json] [--processes|--worktrees|--sessions|--locks|--logs|--qa|--agents|--env]"
+argument-hint: "[--run] [--deep] [--json] [--processes|--worktrees|--sessions|--locks|--logs|--qa|--agents|--env|--branches]"
 allowed-tools: Bash, Read
 model: claude-haiku-4-5-20251001
 required_permissions: [file_read, bash, child_spawn]
@@ -37,6 +37,7 @@ El script ya tiene toda la lógica. Vos sos un wrapper delgado que lo ejecuta y 
 12. **QA artifacts** — `qa/backend.log`, `qa/recordings/*`.
 13. **Consistencia agentes** (solo reporte) — agentes en `agent-registry.json` cuyos PIDs ya no existen.
 14. **Entorno** (solo reporte) — `JAVA_HOME`, `gh` CLI, espacio en disco C:.
+15. **Branches stale `agent/*`** (`--branches`, issue #2398) — refs locales que cumplen TODAS estas condiciones: (a) sin worktree asociado, (b) tip ya integrado en `origin/main` (verificado con `git merge-base --is-ancestor`), (c) nombre matchea `agent/<n>-<skill>` (no toca feature/*, bugfix/*, session-*). Antes de cada borrado se crea un tag de backup `backup/orphan-<branch>-<ts>` con TTL convencional de 30 días, y la salida del comando se hace con `git branch -D`. Cero pérdida de trabajo posible: el ancestor-check garantiza que el contenido del branch ya está en main.
 
 ## Whitelist absoluta — NUNCA toca
 
@@ -63,6 +64,7 @@ El script ya tiene toda la lógica. Vos sos un wrapper delgado que lo ejecuta y 
 | `--qa` | Solo QA artifacts |
 | `--agents` | Solo consistencia agentes (siempre reporte) |
 | `--env` | Solo entorno (siempre reporte) |
+| `--branches` | Solo branches `agent/*` stale (dry-run salvo `--run`); fetcha `origin/main` antes para evitar falsos negativos |
 
 ## Paso 1: Ejecutar
 
@@ -101,5 +103,7 @@ No repitas el dashboard completo en el resumen — el usuario ya lo vio.
 /ghostbusters --deep              → auto-fix + clean profundo (gradle, node_modules)
 /ghostbusters --processes         → solo dry-run de procesos
 /ghostbusters --processes --run   → solo procesos, ejecuta
+/ghostbusters --branches          → solo dry-run de branches agent/* stale
+/ghostbusters --branches --run    → solo branches, ejecuta (crea tags backup antes de borrar)
 /ghostbusters --json              → JSON crudo
 ```
