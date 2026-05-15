@@ -40,6 +40,11 @@ const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
+const {
+  resolveDependencies,
+  buildAutoPromoteComment,
+  sanitizeForLog,
+} = require('./lib/dep-resolver');
 // #3167 — Clasificador unificado de rebotes (cross_phase / dependency_block /
 // human_block / infra / code). El brazo de barrido invoca `classifyRebote`
 // ANTES de la rama de bloqueo humano: si detecta `dependency_block` no se
@@ -8163,18 +8168,26 @@ async function brazoDesbloqueoImpl(config) {
 
     for (const issue of blockedIssues) {
       try {
-        // 2. Leer comentarios del issue (#3002 — JSON estructurado, NO `--jq
-        // .comments[].body`). Necesitamos `createdAt` para escoger el marker
-        // más reciente cuando hay múltiples (CA-7) y `body` por separado por
-        // comentario para que el parser pueda hacer match line-based.
+        // 2. Leer body + comentarios del issue.
+        //
+        // #3002 — JSON estructurado por comentario, NO `--jq .comments[].body`:
+        // el parser line-based necesita `createdAt` (CA-7 del marker, escoge el
+        // más reciente) y `body` separado por comentario.
+        //
+        // #3193 — Sumamos `body` al fetch para detectar deps escritas
+        // directamente en el body del issue (caso #3176/#3177 — deps en body,
+        // sin marker en comentario). El campo `body` es un add-on a la MISMA
+        // llamada → cero requests adicionales a GitHub API por ciclo (CA-18).
         ghThrottle();
         const { stdout: rawComments } = await ghDesbloqueoCall(
-          ['issue', 'view', String(issue.number), '--json', 'comments', '--repo', 'intrale/platform']
+          ['issue', 'view', String(issue.number), '--json', 'body,comments', '--repo', 'intrale/platform']
         );
         let commentsArray = [];
+        let issueBody = '';
         try {
           const parsed = JSON.parse(rawComments || '{}');
           commentsArray = Array.isArray(parsed.comments) ? parsed.comments : [];
+          issueBody = typeof parsed.body === 'string' ? parsed.body : '';
         } catch (e) {
           // Si gh devolvió algo que no es JSON, fail-closed: no podemos
           // garantizar que las deps estén bien parseadas → no tocar labels.
@@ -8182,22 +8195,25 @@ async function brazoDesbloqueoImpl(config) {
           continue;
         }
 
-        // #3002 — Parser robusto del marker "Dependencias detectadas por el
-        // pipeline". Reemplaza la regex inline rota + el fallback de "todos
-        // los #N del body+comments" que arrastraba menciones fantasma.
-        // null = no marker → fail-closed (CA-6); [] = marker pero sin nums.
-        const parsed = parseDependencyComment(commentsArray, issue.number);
-        if (parsed === null) {
-          // CA-6: NO desbloquear, NO auto-cerrar. Mantener label puesto y
+        // #3193 — Resolver multi-fuente: comentario canónico + body con 3
+        // patrones (sección canónica, sección genérica con bullets puros,
+        // verbos GitHub-nativos `Depends on`/`Blocked by`). Unión de fuentes
+        // con cap MAX_DEPS=20. Fail-closed semántica preservada (CA-5).
+        const resolved = resolveDependencies({
+          body: issueBody,
+          comments: commentsArray,
+          selfIssue: issue.number,
+        });
+        if (resolved.deps === null) {
+          // CA-5/CA-6: NO desbloquear, NO auto-cerrar. Ninguna de las 3
+          // fuentes produjo un marker válido → mantener label puesto y
           // dejar el issue para revisión humana en próxima iteración.
-          log('desbloqueo', `#${issue.number}: no se encontró marker "Dependencias detectadas por el pipeline" en ningún comentario — fail-closed, skip ciclo`);
-          // No tocar blockedBy: si lo registramos como [] el dashboard lo
-          // muestra como "sin deps" y la siguiente iteración lo auto-cierra
-          // por allClosed=true. Mejor dejarlo fuera del mapa hasta que
-          // aparezca el marker o un humano intervenga.
+          log('desbloqueo', `#${issue.number}: sin marker canónico ni patrones detectables en body — fail-closed, skip ciclo`);
           continue;
         }
-        const depIssueNumbers = parsed.map(String);
+        const depIssueNumbers = resolved.deps.map(String);
+        // CA-17 — Observabilidad: registrar fuente detectada por ciclo.
+        log('desbloqueo', `#${issue.number}: fuente=${resolved.source} deps=${depIssueNumbers.length} (${sanitizeForLog(depIssueNumbers.join(','), 200)})`);
         if (depIssueNumbers.length === 0) {
           log('desbloqueo', `#${issue.number}: marker presente pero sin issue numbers reconocibles — registrado sin deps`);
           blockedBy[issue.number] = [];
@@ -8209,6 +8225,47 @@ async function brazoDesbloqueoImpl(config) {
         for (const dep of depIssueNumbers) {
           if (!blocks[dep]) blocks[dep] = [];
           if (!blocks[dep].includes(String(issue.number))) blocks[dep].push(String(issue.number));
+        }
+
+        // #3193 — Auto-promote del marker canónico cuando las deps vienen
+        // SOLO del body (caso #3176/#3177). Una vez promovido, el comentario
+        // canónico pasa a ser la fuente de verdad y los próximos ciclos no
+        // re-parsean el body (CA-13/CA-14/CA-15).
+        //
+        // Idempotencia: re-fetcheamos comments JUSTO antes de postear y
+        // verificamos que no exista ya un marker canónico (ej: otro ciclo del
+        // pulpo lo posteó en paralelo, o el agente humano agregó uno mientras
+        // este ciclo procesaba). Si ya existe → skip silencioso con log.
+        if (resolved.source === 'body') {
+          try {
+            ghThrottle();
+            const { stdout: rawFresh } = await ghDesbloqueoCall(
+              ['issue', 'view', String(issue.number), '--json', 'comments', '--repo', 'intrale/platform'],
+              10000
+            );
+            let freshComments = [];
+            try {
+              const freshParsed = JSON.parse(rawFresh || '{}');
+              freshComments = Array.isArray(freshParsed.comments) ? freshParsed.comments : [];
+            } catch {
+              freshComments = [];
+            }
+            if (parseDependencyComment(freshComments, issue.number) !== null) {
+              log('desbloqueo', `#${issue.number}: marker canónico ya presente — skip auto-promote (idempotente)`);
+            } else {
+              const promoteComment = buildAutoPromoteComment(resolved.deps);
+              ghThrottle();
+              await ghDesbloqueoCall(
+                ['issue', 'comment', String(issue.number), '--body', promoteComment, '--repo', 'intrale/platform'],
+                10000
+              );
+              log('desbloqueo', `#${issue.number}: marker canónico auto-promovido desde body (deps: ${depIssueNumbers.join(',')})`);
+            }
+          } catch (e) {
+            // Fallar el auto-promote NO debe romper el flujo de desbloqueo.
+            // Lo logueamos y seguimos — el ciclo siguiente reintenta.
+            log('desbloqueo', `#${issue.number}: error en auto-promote (no bloqueante): ${e.message}`);
+          }
         }
 
         // 3. Verificar si todas las dependencias están cerradas
