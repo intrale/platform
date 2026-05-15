@@ -630,7 +630,32 @@ test('CA-3 · referencia ${ANTHROPIC_API_KEY} en credentials_env → válido (no
 
 test('CA-3 · findHardcodedSecrets aplicado al config canónico no detecta secrets', () => {
   // El archivo canónico en main NO debe tener secrets hardcoded — guardrail.
-  const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  //
+  // Rebote #3154 rev-2: leemos el contenido desde `git show HEAD:.pipeline/agent-models.json`
+  // en vez de `fs.readFileSync(CANONICAL_JSON_PATH)`. Razón: el test
+  // CLI en `.pipeline/tests/validate-agent-models.test.js` usa `withFixture`
+  // para mutar TEMPORALMENTE el archivo canónico durante la ejecución de
+  // sub-procesos. Cuando ambos archivos de test corren en paralelo (default
+  // de `node --test` con múltiples files), este test puede leer el archivo
+  // mientras un fixture con `sk-ant-...` está activo, gatillando un falso
+  // positivo. Leer desde git evita la race: git ve sólo el contenido
+  // committed (HEAD), no las mutaciones temporales del filesystem.
+  //
+  // Fallback a fs.readFileSync si git no está disponible (caso edge, ej.
+  // ejecución desde un tarball sin .git/). El fallback acepta el riesgo de
+  // race en ese contexto poco probable.
+  const { execSync } = require('child_process');
+  const repoRoot = path.resolve(__dirname, '..', '..', '..');
+  let raw;
+  try {
+    raw = execSync('git show HEAD:.pipeline/agent-models.json', {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  }
   const cfg = JSON.parse(raw);
   const hits = validateMod.findHardcodedSecrets(cfg);
   assert.deepEqual(hits, [], `agent-models.json canónico tiene secrets hardcoded: ${JSON.stringify(hits)}`);
