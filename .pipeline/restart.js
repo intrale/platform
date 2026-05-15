@@ -23,6 +23,7 @@ const {
   SCRIPT_MAP,
 } = require('./pid-discovery');
 const { clearAllMarkers } = require('./lib/ready-marker');
+const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
 
 // Saneado global de JAVA_HOME — si restart.js heredó una ruta stale (ej. JBR
 // de IntelliJ obsoleto), la corregimos antes de spawnear pulpo/servicios, así
@@ -181,28 +182,31 @@ function killAll() {
   // dueño; sin esta limpieza, el mecanismo [huerfanos] del Pulpo tarda hasta
   // `orphan_timeout_minutes` (10min default) en moverlos — dejando el
   // dashboard mostrando "activos" agentes que ya no existen.
-  // Formato de archivo de agente: `<issueId>.<skill>` (ej. 1915.qa, 2441.guru).
-  // Filtramos `.gitkeep` y cualquier otro archivo sin ese patrón.
-  const agenteFileRegex = /^\d+\.[a-z][a-z0-9-]*$/;
-  let orphansMoved = 0;
-  for (const pipeline of ['desarrollo', 'definicion']) {
-    const pipeDir = path.join(PIPELINE, pipeline);
-    if (!fs.existsSync(pipeDir)) continue;
-    for (const fase of fs.readdirSync(pipeDir)) {
-      const trabajando = path.join(pipeDir, fase, 'trabajando');
-      const pendiente = path.join(pipeDir, fase, 'pendiente');
-      if (!fs.existsSync(trabajando)) continue;
-      try {
-        if (!fs.existsSync(pendiente)) fs.mkdirSync(pendiente, { recursive: true });
-        for (const f of fs.readdirSync(trabajando)) {
-          if (!agenteFileRegex.test(f)) continue;
-          fs.renameSync(path.join(trabajando, f), path.join(pendiente, f));
-          orphansMoved++;
-        }
-      } catch {}
-    }
-  }
-  if (orphansMoved > 0) log(`  ${orphansMoved} agente(s) huérfano(s) de fases → pendiente/`);
+  //
+  // #2374 Parte 1 — preservación de trabajo interrumpido por restart:
+  //   Hoy `killAll()` mata claude.exe (spawn no-detached), por lo que el
+  //   trabajo en memoria del agente se pierde. El YAML del archivo SE PRESERVA
+  //   (el helper lo escribe íntegro en `pendiente/`), pero el agente re-lanzado
+  //   parte de cero. Para dejar trazabilidad del corte el helper agrega al
+  //   YAML las claves `restart_interrupted: true` y `restart_at: <ISO>` — el
+  //   agente que re-tome el archivo verá explícitamente que es un re-run
+  //   post-restart y puede decidir comportamiento defensivo (por ejemplo,
+  //   builder puede limpiar daemons stale antes de empezar).
+  //
+  //   Hot-restart real (preservar el proceso del agente vivo, sin matarlo,
+  //   y que el nuevo pulpo lo reattach) requiere `detached:true` en
+  //   `lib/agent-launcher.js`, persistencia de PID + heartbeat, y handler de
+  //   reattach en pulpo.js. Esa entrega queda como follow-up por el riesgo
+  //   regresivo en el spawn.
+  //
+  //   El helper `annotateAndMoveOrphans` está testeado en
+  //   `lib/__tests__/restart-orphan-annotator.test.js`.
+  const { movedCount: orphansMoved } = annotateAndMoveOrphans({
+    pipelineRoot: PIPELINE,
+    pipelinesScan: ['desarrollo', 'definicion'],
+    restartAt: new Date().toISOString(),
+  });
+  if (orphansMoved > 0) log(`  ${orphansMoved} agente(s) interrumpido(s) por restart → pendiente/ (marcados con restart_interrupted: true)`);
 
   // Escribir timestamp de último restart para evitar restarts encadenados
   try {
