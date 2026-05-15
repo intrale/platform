@@ -347,12 +347,7 @@ test('isPipelineOnlyChange — false con array vacío', () => {
 });
 
 test('isPipelineOnlyChange — paths fuera de los patrones permitidos rompen el match', () => {
-    // .claude/ NO está en pipeline-only (puede afectar build behavior)
-    assert.equal(tester.isPipelineOnlyChange([
-        '.pipeline/config.yaml',
-        '.claude/settings.json',
-    ]), false);
-    // README.md en raíz no está
+    // README.md en raíz no está (puede ser parte del producto)
     assert.equal(tester.isPipelineOnlyChange(['README.md']), false);
     // gradle.properties / build.gradle.kts SÍ pueden afectar build, no son pipeline-only
     assert.equal(tester.isPipelineOnlyChange([
@@ -362,6 +357,11 @@ test('isPipelineOnlyChange — paths fuera de los patrones permitidos rompen el 
     assert.equal(tester.isPipelineOnlyChange([
         '.pipeline/config.yaml',
         'build.gradle.kts',
+    ]), false);
+    // settings.gradle.kts también afecta build
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'settings.gradle.kts',
     ]), false);
 });
 
@@ -574,6 +574,50 @@ test('#3092 rev-1 — isPipelineOnlyChange NO confunde qa/evidence en subdirecto
     ]), false);
     assert.equal(tester.isPipelineOnlyChange([
         'backend/qa/evidence/log.txt',
+    ]), false);
+});
+
+// ── Rebote #2398 rev-1 ────────────────────────────────────────────
+// El cambio del ghostbusters (#2398) tocó archivos puramente Node.js bajo
+// `.pipeline/lib/` + `.pipeline/ghostbusters.js` + el archivo de
+// instrucciones del skill `.claude/skills/ghostbusters/SKILL.md`. El path
+// bajo `.claude/` rompió el match `every` y forzó la ruta gradle, que
+// para un cambio sin código Kotlin no produjo reportes JUnit:
+//   diff vs origin/main: 4 archivos
+//   → tester rebote: "[tester] No se encontraron reportes JUnit"
+test('#2398 rev-1 — isPipelineOnlyChange acepta .claude/skills/<skill>/SKILL.md', () => {
+    // Archivo de instrucciones de skill solo (cambio puro de docs del skill) → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/skills/ghostbusters/SKILL.md',
+    ]), true);
+    // Hooks Node.js del harness Claude Code → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/hooks/agent-concurrency-check.js',
+    ]), true);
+    // Settings del harness → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/settings.json',
+    ]), true);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/settings.local.json',
+    ]), true);
+    // Caso real del rebote #2398: 4 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/skills/ghostbusters/SKILL.md',
+        '.pipeline/ghostbusters.js',
+        '.pipeline/lib/__tests__/stale-branches.test.js',
+        '.pipeline/lib/stale-branches.js',
+    ]), true);
+});
+
+test('#2398 rev-1 — isPipelineOnlyChange NO confunde .claude en subdirectorios anidados', () => {
+    // El patrón `^\.claude\/` ancla a raíz. Un `.claude/` dentro de un
+    // módulo (improbable pero posible) NO debe disparar pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/.claude/skills/foo.md',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'backend/.claude/hooks/bar.js',
     ]), false);
 });
 
