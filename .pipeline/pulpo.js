@@ -1179,6 +1179,23 @@ const PROFILE_STALE_HOURS = 24;
 // agente nunca cierran bajo el umbral porque el emulador ya está presente en la baseline).
 const QA_INFRA_SKILLS = new Set(['qa', 'security', 'tester']);
 
+// Skills que DISPARAN el arranque del emulador en el pre-flight de fase `verificacion`.
+// Sólo `qa` necesita realmente el AVD (tests E2E); `tester` y `security` son
+// determinísticos (JVM tests, análisis estático) y no requieren emulador.
+// Esta whitelist evita que el modo descanso levante el emulador innecesariamente
+// cuando solo corren skills determinísticos en la ventana 22:00-07:00 ART.
+// Ver issue #3140.
+const SKILLS_THAT_NEED_EMULATOR = new Set(['qa']);
+
+// Helper único para decidir si un (skill, fase) dispara `preflightQaChecks` y por
+// extensión `requestEmulator`/`reboteVerificacionABuild`. Vive como función pura
+// para tener una sola fuente de verdad — la condición se aplica en el preflight
+// regular del bucle de lanzamiento y también en el deadlock breaker.
+// Ver issue #3140 (whitelist explícita) y CA-4/CA-6 del PO.
+function shouldRunQaPreflight(skill, fase) {
+  return fase === 'verificacion' && SKILLS_THAT_NEED_EMULATOR.has(skill);
+}
+
 function getEstimatedImpact(profile) {
   const DEFAULT_CPU = 12;
   const DEFAULT_MEM = 3;  // Proceso claude.exe real ~ 250-500 MB en 16 GB
@@ -4054,7 +4071,11 @@ function brazoLanzamiento(config) {
     // El preflight y el rebote son barato (no consumen RAM ni CPU significativos),
     // así que tiene sentido ejecutarlos ANTES del gate de recursos.
     let preflightResult = null;
-    if (fase === 'verificacion') {
+    // Filtramos por skill: sólo los skills declarados en SKILLS_THAT_NEED_EMULATOR
+    // disparan el preflight QA (que puede arrancar el emulador). Skills determinísticos
+    // como `tester` y `security` no requieren AVD y no deben pagar el overhead del
+    // preflight ni levantar el emulador (#3140).
+    if (shouldRunQaPreflight(skill, fase)) {
       preflightResult = preflightQaChecks(issue);
       if (!preflightResult.ok) {
         if (preflightResult.result === 'apk_missing') {
@@ -4159,7 +4180,9 @@ function brazoLanzamiento(config) {
         // Si detecta APK faltante, REBOTAR a build (no abandonar) — sin esto, el
         // deadlock breaker se queda atascado para siempre haciendo return ciclo tras
         // ciclo mientras los archivos siguen en verificacion/pendiente/.
-        if (fase === 'verificacion') {
+        // Filtramos por skill por la misma razón que el preflight regular (#3140):
+        // skills determinísticos no deben disparar arranque del emulador.
+        if (shouldRunQaPreflight(skill, fase)) {
           const preflight = preflightQaChecks(issue);
           if (!preflight.ok) {
             if (preflight.result === 'apk_missing') {
@@ -8736,6 +8759,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     migrateSkillProfilesIfNeeded,
     SKILL_PROFILES_SCHEMA_VERSION,
     QA_INFRA_SKILLS,
+    // #3140 — whitelist de skills que disparan preflight QA / emulador en verificacion.
+    SKILLS_THAT_NEED_EMULATOR,
+    shouldRunQaPreflight,
     MAX_EST_MEM,
     MAX_EST_CPU,
     // #2317 — precheck de conectividad
