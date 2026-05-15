@@ -51,6 +51,8 @@ const {
 // crea marker en `bloqueado-humano/`, se aplica label `blocked:dependencies`
 // y el brazoDesbloqueo (ya existente) destraba cuando todas las deps cierren.
 const reboteClassifier = require('./lib/rebote-classifier');
+// #2374 — Destino del rebote (faseRechazo para código, misma fase para infra)
+const { resolveReboteDestino } = require('./lib/rebote-destino');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
 const partialPauseDeps = require('./lib/partial-pause-deps');
 // #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
@@ -3382,12 +3384,6 @@ function brazoBarrido(config) {
             }
           }
 
-          const devPendiente = path.join(fasePath(pipelineName, faseRechazo), 'pendiente');
-
-          // Determinar qué skill de dev corresponde
-          const devSkill = determinarDevSkill(issue, config);
-          const devFile = path.join(devPendiente, `${issue}.${devSkill}`);
-
           // #2317: clasificar el rebote. Si el motivo apunta a infra,
           // marcarlo como `rebote_tipo: infra` y NO incrementar el contador
           // efectivo del circuit breaker (se preserva el reboteCount anterior).
@@ -3400,6 +3396,41 @@ function brazoBarrido(config) {
           const nuevoReboteNumero = esReboteDeInfra ? reboteCount : (reboteCount + 1);
           const nuevoReboteInfraNumero = esReboteDeInfra ? (reboteInfraCount + 1) : reboteInfraCount;
 
+          // #2374 — diferenciar destino del rebote según tipo:
+          //   - codigo:  faseRechazo (dev) — el dev tiene que corregir el código.
+          //   - infra:   MISMA fase — el watchdog/timeout/crash es transitorio,
+          //              no hay defecto de código que corregir, sólo reintentar.
+          //
+          // Incidente que motivó esta separación: delivery de #2159 murió por
+          // timeout esperando CI (OWASP ~28min). PR ya estaba creado con
+          // checks pass, pero el pipeline devolvió el issue a dev como si
+          // backend-dev hubiera fallado → re-run completo (horas de cómputo
+          // duplicado: backend-dev + builder + tester + qa + review + delivery).
+          //
+          // Estrategia de skills destino (ver .pipeline/lib/rebote-destino.js
+          // para el contrato puro testeable):
+          //   - dev/build/entrega: fases mono-skill. Re-encolamos ese único skill.
+          //     Para `dev`, determinarDevSkill resuelve por labels del issue.
+          //   - validación/verificación/aprobación: fases paralelas multi-skill.
+          //     Re-encolamos TODOS los skills_por_fase porque los archivos en
+          //     listo/ de skills que aprobaron se mueven a procesado/ al final
+          //     del barrido (línea 3547). Si re-encoláramos solo el skill que
+          //     falló por infra, la próxima evaluación quedaría incompleta para
+          //     siempre (faltarían los listo/ de los demás skills_requeridos).
+          const { faseDestino, skillsDestino } = resolveReboteDestino({
+            esReboteDeInfra,
+            fase,
+            faseRechazo,
+            skillsPorFase: pipelineConfig.skills_por_fase || {},
+            determinarDevSkill,
+            rechazados,
+            issue,
+            config,
+            skillFromFile,
+          });
+
+          const destinoPendiente = path.join(fasePath(pipelineName, faseDestino), 'pendiente');
+
           // #2333: sanitizar el motivo de rechazo antes de persistirlo en
           // el YAML del archivo de trabajo. Esto evita que un log con
           // tokens/JWT/PEM termine en el próximo archivo que se lee y
@@ -3408,7 +3439,7 @@ function brazoBarrido(config) {
           // cuando hubo al menos un rebote infra clasificado.
           const yamlOut = {
             issue: parseInt(issue),
-            fase: faseRechazo,
+            fase: faseDestino,
             pipeline: pipelineName,
             rebote: true,
             rebote_numero: nuevoReboteNumero,
@@ -3419,16 +3450,20 @@ function brazoBarrido(config) {
           if (nuevoReboteInfraNumero > 0) {
             yamlOut.rebote_numero_infra = nuevoReboteInfraNumero;
           }
-          writeYaml(devFile, yamlOut);
+          for (const skill of skillsDestino) {
+            const destinoFile = path.join(destinoPendiente, `${issue}.${skill}`);
+            writeYaml(destinoFile, yamlOut);
+          }
 
           if (esReboteDeInfra) {
-            log('barrido', `#${issue} RECHAZADO en ${fase} por INFRA → devuelto a ${faseRechazo} (rebote_numero_infra=${nuevoReboteInfraNumero}/${MAX_REBOTES_INFRA} — NO cuenta contra circuit breaker generico)`);
+            const skillsStr = skillsDestino.join(',') || '(ninguno)';
+            log('barrido', `#${issue} RECHAZADO en ${fase} por INFRA → REENCOLADO en MISMA fase '${faseDestino}' [${skillsStr}] (rebote_numero_infra=${nuevoReboteInfraNumero}/${MAX_REBOTES_INFRA} — NO cuenta contra circuit breaker generico, NO devuelto a dev)`);
             ghCommentOnIssue(
               issue,
-              `🚫 Bloqueado por infra #2314 — rebote clasificado como infra (no cuenta contra el circuit breaker). Se reintentará al restaurar conectividad.`,
+              `🚫 Rebote clasificado como infra (#2374) — reintentando en \`${faseDestino}\` sin devolver a \`dev\` (el código no falló, sólo timeout/crash/watchdog). No cuenta contra el circuit breaker de código.`,
             );
           } else {
-            log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseRechazo} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})`);
+            log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseDestino} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})`);
           }
 
           // CLEANUP DOWNSTREAM: limpiar archivos residuales del issue en fases posteriores.
