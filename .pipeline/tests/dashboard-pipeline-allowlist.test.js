@@ -236,14 +236,18 @@ test('home.js usa repeat(auto-fit, minmax(96px, 1fr)) para .areas-bar (CA-2 + CA
     );
 });
 
-test('home.js sigue exportando 10 áreas (regression vs el conteo asumido por el grid)', () => {
+test('home.js sigue exportando 11 áreas (regression vs el conteo asumido por el grid)', () => {
+    // #3239 — sumamos la tarjeta Multi-Provider después de "modo-descanso".
+    // El grid usa repeat(auto-fit, minmax(96px, 1fr)) (no repeat fijo), así que
+    // sumar una tarjeta no rompe el layout; el conteo se mantiene como
+    // assertion explícita para detectar cambios accidentales al array.
     const start = HOME_SRC.indexOf('const AREAS = [');
     assert.ok(start > 0, 'AREAS array debe existir');
     const end = HOME_SRC.indexOf('];', start);
     const body = HOME_SRC.slice(start, end);
     // Contar entries con `key:`. Match laxo para no romper si cambia el orden.
     const entries = body.match(/\{\s*key:/g) || [];
-    assert.equal(entries.length, 10, 'el array AREAS debe seguir teniendo 10 elementos (Equipo..Descanso)');
+    assert.equal(entries.length, 11, 'el array AREAS debe seguir teniendo 11 elementos (Equipo..Descanso..Multi-Provider)');
 });
 
 // ───────────── tickHeader actualiza el cache compartido ─────────────
