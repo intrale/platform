@@ -1,0 +1,579 @@
+// =============================================================================
+// dispatch-with-fallback.test.js — tests del consumer runtime de skill.fallbacks[]
+//
+// Issue: #3198.
+//
+// Cubre las reglas declaradas en `lib/agent-launcher/dispatch-with-fallback.js`:
+//   1. Happy path: primary no gateado → devuelve primary, gated: false.
+//   2. Primary gateado y sin fallbacks declarados → gated: true.
+//   3. Primary gateado y primer fallback libre → devuelve fallback.
+//   4. Primary gateado y primer fallback también gateado → itera al segundo.
+//   5. Primary gateado y todos los fallbacks gateados → all-gated.
+//   6. Skills determinísticos no se gatean (bypass).
+//   7. Fallback con provider desconocido → skip + audit.
+//   8. Cycle: fallback duplicado en chain → skip + audit.
+//   9. MAX_FALLBACK_DEPTH respetado.
+//  10. Audit log con hash-chain SHA-256 (reusa lib/audit-log).
+//  11. Telegram queue se encola con notice cross-provider.
+//  12. quotaModule ausente → devuelve primary sin gate (modo legacy).
+//  13. resolveSpawnWithFallback es defensivo si audit-log throws.
+//  14. Fallback duplica al primary → skip (defense in depth).
+// =============================================================================
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+
+const {
+    resolveSpawnWithFallback,
+    enqueueTelegramNotice,
+    dispatchAuditFile,
+    MAX_FALLBACK_DEPTH,
+} = require('../lib/agent-launcher/dispatch-with-fallback');
+
+// -----------------------------------------------------------------------------
+// Helpers — fakes inyectables
+// -----------------------------------------------------------------------------
+
+function fakeAuditLog() {
+    const entries = [];
+    return {
+        appendChained: ({ entry, file }) => {
+            entries.push({ entry, file });
+            return { hash_self: 'fake-hash', hash_prev: 'fake-prev', line: '' };
+        },
+        verifyChain: () => ({ ok: true, entriesChecked: entries.length }),
+        readAll: () => entries.map(e => e.entry),
+        entries,
+    };
+}
+
+function fakeNotify() {
+    const calls = [];
+    const fn = (opts) => {
+        calls.push(opts);
+        return true;
+    };
+    fn.calls = calls;
+    return fn;
+}
+
+// Resolver fake de handlers: aceptamos los providers conocidos del módulo real
+// + cualquier custom que el test declare como "válido". Para los tests que
+// quieren probar handlers inexistentes, el caller NO los incluye acá.
+function fakeProviderHandlerResolver(validProviders = ['anthropic', 'openai-codex', 'gemini', 'deterministic']) {
+    return (name) => {
+        if (!validProviders.includes(name)) {
+            throw new Error(`[fake] provider "${name}" no está en validProviders`);
+        }
+        return { name: `${name}-fake` };
+    };
+}
+
+function fakeQuotaModule({ gatedProviders = [], sanitize } = {}) {
+    return {
+        shouldGateSpawn: (skill, { provider } = {}) => {
+            if (!provider) return false;
+            return gatedProviders.includes(provider);
+        },
+        sanitizeRawExcerpt: sanitize || ((s) => String(s || '')),
+        appendAudit: () => {},
+    };
+}
+
+function fakeResolver(skill, opts) {
+    const fs = opts.fsImpl;
+    const pipelineDir = opts.pipelineDir;
+    let models = null;
+    try {
+        const p = path.join(pipelineDir, 'agent-models.json');
+        if (fs && fs.existsSync(p)) {
+            models = JSON.parse(fs.readFileSync(p, 'utf8'));
+        }
+    } catch {}
+    if (!models) {
+        return {
+            provider: 'anthropic',
+            model: 'claude-opus-4-7',
+            handler: { name: 'anthropic-fake' },
+            source: 'fallback-no-config',
+        };
+    }
+    const sk = (models.skills && models.skills[skill]) || null;
+    if (!sk) {
+        return {
+            provider: 'anthropic',
+            model: (models.defaults && models.defaults.model) || 'claude-opus-4-7',
+            handler: { name: 'anthropic-fake' },
+            source: 'fallback-skill-not-found',
+        };
+    }
+    const provider = sk.provider || 'anthropic';
+    const providerDef = (models.providers && models.providers[provider]) || {};
+    return {
+        provider,
+        model: sk.model_override || providerDef.model || (models.defaults && models.defaults.model) || 'claude-opus-4-7',
+        handler: { name: `${provider}-fake` },
+        source: 'agent-models',
+    };
+}
+
+function fakeFsWithAgentModels(pipelineDir, modelsObj) {
+    const modelsPath = path.join(pipelineDir, 'agent-models.json');
+    const files = new Map();
+    files.set(modelsPath, JSON.stringify(modelsObj));
+    return {
+        existsSync: (p) => files.has(p),
+        readFileSync: (p) => {
+            if (files.has(p)) return files.get(p);
+            const e = new Error(`ENOENT: ${p}`);
+            e.code = 'ENOENT';
+            throw e;
+        },
+        mkdirSync: () => {},
+        writeFileSync: (p, content) => {
+            files.set(p, content);
+        },
+        _files: files,
+    };
+}
+
+const PIPELINE_DIR = '/repo/.pipeline';
+const ISSUE = 3198;
+
+function baseAgentModels() {
+    return {
+        defaults: { model: 'claude-opus-4-7' },
+        default_provider: 'anthropic',
+        providers: {
+            anthropic: { model: 'claude-opus-4-7' },
+            'openai-codex': { model: 'gpt-codex' },
+            gemini: { model: 'gemini-pro' },
+        },
+        skills: {
+            guru: {
+                provider: 'anthropic',
+                fallbacks: ['openai-codex'],
+            },
+            'lone-wolf': {
+                provider: 'anthropic',
+            },
+            'chain-skill': {
+                provider: 'anthropic',
+                fallbacks: ['openai-codex', 'gemini'],
+            },
+        },
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 1. Happy path
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback devuelve primary cuando NO está gateado', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+    const notify = fakeNotify();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify,
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'anthropic');
+    assert.equal(r.source, 'agent-models');
+    assert.equal(r.fallbackUsed, null);
+    assert.equal(r.crossProvider, false);
+    assert.deepEqual(r.chainTried, ['anthropic']);
+    assert.equal(audit.entries.length, 0, 'no audit en happy path');
+    assert.equal(notify.calls.length, 0, 'no telegram en happy path');
+});
+
+// -----------------------------------------------------------------------------
+// 2. Primary gated, sin fallbacks declarados → gated
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback gatea cuando primary está gated y no hay fallbacks', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'lone-wolf',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, true);
+    assert.equal(r.source, 'all-gated');
+    assert.equal(r.fallbackUsed, null);
+    assert.equal(r.primaryProvider, 'anthropic');
+    const event = audit.entries[0].entry.event;
+    assert.equal(event, 'gated_no_fallbacks');
+});
+
+// -----------------------------------------------------------------------------
+// 3. Primary gated, primer fallback libre → fallback elegido
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback elige primer fallback libre cuando primary está gated', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+    const notify = fakeNotify();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify,
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.source, 'fallback');
+    assert.equal(r.provider, 'openai-codex');
+    assert.equal(r.model, 'gpt-codex');
+    assert.equal(r.crossProvider, true);
+    assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex']);
+    assert.deepEqual(r.fallbackUsed, { index: 0, provider: 'openai-codex' });
+
+    assert.ok(audit.entries.find(e => e.entry.event === 'fallback_selected'), 'audit fallback_selected');
+    assert.equal(notify.calls.length, 1, 'una notificación Telegram');
+    assert.match(notify.calls[0].text, /cross-provider/i);
+});
+
+// -----------------------------------------------------------------------------
+// 4. Primary y primer fallback gated → itera al segundo
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback salta fallbacks gated e itera al siguiente', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'chain-skill',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic', 'openai-codex'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'gemini');
+    assert.equal(r.fallbackUsed.index, 1);
+    assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'gemini']);
+    assert.ok(audit.entries.find(e => e.entry.event === 'fallback_also_gated'), 'audit fallback_also_gated');
+    assert.ok(audit.entries.find(e => e.entry.event === 'fallback_selected'), 'audit fallback_selected');
+});
+
+// -----------------------------------------------------------------------------
+// 5. Primary y todos los fallbacks gated → all-gated
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback marca all-gated cuando toda la chain está gated', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'chain-skill',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic', 'openai-codex', 'gemini'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, true);
+    assert.equal(r.source, 'all-gated');
+    assert.equal(r.fallbackUsed, null);
+    assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'gemini']);
+    assert.ok(audit.entries.find(e => e.entry.event === 'chain_exhausted'), 'audit chain_exhausted');
+});
+
+// -----------------------------------------------------------------------------
+// 6. Skills determinísticos: bypass
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback no gatea skills deterministic (allowlist)', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const determResolver = () => ({
+        provider: 'deterministic',
+        model: null,
+        handler: { name: 'deterministic-fake', isDeterministic: () => true },
+        source: 'deterministic-allowlist',
+    });
+
+    const r = resolveSpawnWithFallback({
+        skill: 'build',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic', 'deterministic'] }),
+        primaryResolver: determResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'deterministic');
+    assert.equal(r.fallbackUsed, null);
+});
+
+// -----------------------------------------------------------------------------
+// 7. Fallback con provider desconocido → skip + audit
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback salta fallback con provider desconocido y audita', () => {
+    const models = baseAgentModels();
+    models.skills['rogue-skill'] = {
+        provider: 'anthropic',
+        fallbacks: ['provider-inexistente', 'openai-codex'],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'rogue-skill',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'openai-codex');
+    assert.ok(audit.entries.find(e => e.entry.event === 'fallback_unknown_provider'));
+});
+
+// -----------------------------------------------------------------------------
+// 8. Cycle: fallback duplicado en chain → skip + audit
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback detecta ciclos en la chain de fallbacks', () => {
+    const models = baseAgentModels();
+    models.skills['cycle-skill'] = {
+        provider: 'anthropic',
+        fallbacks: ['openai-codex', 'openai-codex', 'gemini'],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'cycle-skill',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic', 'openai-codex'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'gemini');
+    const cycleSkip = audit.entries.find(e => e.entry.event === 'fallback_cycle_skipped');
+    assert.ok(cycleSkip, 'audit fallback_cycle_skipped emitido');
+    assert.equal(cycleSkip.entry.fallback_provider, 'openai-codex');
+});
+
+// -----------------------------------------------------------------------------
+// 9. MAX_FALLBACK_DEPTH respetado
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback corta cuando la chain supera MAX_FALLBACK_DEPTH', () => {
+    const models = baseAgentModels();
+    const longFallbacks = [];
+    for (let i = 0; i < MAX_FALLBACK_DEPTH + 3; i++) {
+        longFallbacks.push(`provider-${i}`);
+    }
+    models.skills['long-skill'] = {
+        provider: 'anthropic',
+        fallbacks: longFallbacks,
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'long-skill',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, true);
+    assert.equal(r.depthExceeded, true);
+    assert.ok(audit.entries.find(e => e.entry.event === 'depth_exceeded'));
+});
+
+// -----------------------------------------------------------------------------
+// 10. Audit log con hash-chain real (smoke test contra lib/audit-log real)
+// -----------------------------------------------------------------------------
+test('audit log se escribe con hash-chain real (smoke test contra lib/audit-log)', (t) => {
+    const os = require('node:os');
+    const fsReal = require('node:fs');
+    const tmpRoot = fsReal.mkdtempSync(path.join(os.tmpdir(), 'dispatch-fallback-'));
+    t.after(() => {
+        try { fsReal.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    });
+
+    const models = baseAgentModels();
+    fsReal.mkdirSync(tmpRoot, { recursive: true });
+    fsReal.writeFileSync(path.join(tmpRoot, 'agent-models.json'), JSON.stringify(models));
+
+    const auditLogReal = require('../lib/audit-log');
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: tmpRoot,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: auditLogReal,
+        notify: () => true,
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'openai-codex');
+
+    const auditFile = dispatchAuditFile(tmpRoot);
+    assert.ok(fsReal.existsSync(auditFile), 'audit log creado');
+    const chain = auditLogReal.verifyChain(auditFile);
+    assert.equal(chain.ok, true, `hash-chain válida: ${JSON.stringify(chain)}`);
+    assert.ok(chain.entriesChecked >= 1);
+});
+
+// -----------------------------------------------------------------------------
+// 11. Telegram queue real
+// -----------------------------------------------------------------------------
+test('enqueueTelegramNotice escribe archivo en queue de servicios/telegram/pendiente', (t) => {
+    const os = require('node:os');
+    const fsReal = require('node:fs');
+    const tmpRoot = fsReal.mkdtempSync(path.join(os.tmpdir(), 'dispatch-fallback-tg-'));
+    t.after(() => {
+        try { fsReal.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    });
+
+    const ok = enqueueTelegramNotice({
+        pipelineDir: tmpRoot,
+        text: 'test cross-provider notice',
+        meta: { skill: 'guru', issue: 3198 },
+    });
+    assert.equal(ok, true);
+
+    const queueDir = path.join(tmpRoot, 'servicios', 'telegram', 'pendiente');
+    const files = fsReal.readdirSync(queueDir);
+    assert.equal(files.length, 1);
+    const payload = JSON.parse(fsReal.readFileSync(path.join(queueDir, files[0]), 'utf8'));
+    assert.equal(payload.type, 'cross-provider-fallback');
+    assert.equal(payload.text, 'test cross-provider notice');
+    assert.equal(payload.meta.skill, 'guru');
+});
+
+// -----------------------------------------------------------------------------
+// 12. quotaModule ausente: devuelve primary sin gate (modo legacy)
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback sin quotaModule devuelve primary sin gate', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        primaryResolver: fakeResolver,
+        auditLog: fakeAuditLog(),
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'anthropic');
+    assert.equal(r.fallbackUsed, null);
+});
+
+// -----------------------------------------------------------------------------
+// 13. audit-log throws: el dispatcher NO crashea (best-effort)
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback no crashea cuando audit-log throws', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+
+    const brokenAudit = {
+        appendChained: () => { throw new Error('disco lleno'); },
+    };
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: brokenAudit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'openai-codex');
+});
+
+// -----------------------------------------------------------------------------
+// 14. Fallback duplica al primary → skip
+// -----------------------------------------------------------------------------
+test('resolveSpawnWithFallback ignora fallback que duplica el primary', () => {
+    const models = baseAgentModels();
+    models.skills['rogue-cfg'] = {
+        provider: 'anthropic',
+        fallbacks: ['anthropic', 'openai-codex'],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'rogue-cfg',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'openai-codex');
+    const evidence = audit.entries.find(e =>
+        e.entry.event === 'fallback_duplicates_primary' ||
+        e.entry.event === 'fallback_cycle_skipped'
+    );
+    assert.ok(evidence, 'evidence de defensa contra duplicate_primary o cycle');
+});
