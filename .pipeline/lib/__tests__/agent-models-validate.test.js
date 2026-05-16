@@ -1240,8 +1240,11 @@ test('#3220 · agent-models.json canónico declara los 5 providers LLM + determi
 //
 // Tests del schema extension `fallbacks: oneOf[string, {provider, model_override}]`
 // + validator cross-checks + resolver helpers (resolveFallbackEntry,
-// resolveSkillChain). El JSON canónico carga 17 skills (build heredado +
-// 16 LLM skills) con el orden de la memoria project_multi-provider-per-agent-order.
+// resolveSkillChain). El JSON canónico carga 15 skills LLM con el orden de la
+// memoria project_multi-provider-per-agent-order. Los skills determinísticos
+// (`build`, `tester`, `delivery`, `linter`) se declaran con `provider:
+// deterministic` sin fallbacks[] — su coherencia se valida en
+// `deterministic-skills-coherence.test.js` (guard del #3157).
 // =============================================================================
 
 // Helpers reutilizables — variantes provider listas para inyectar en baseValid().
@@ -1562,31 +1565,39 @@ test('#3221 · resolveSkillChain salta fallbacks con referencias rotas (sin cras
 
 // ─── CA-2 · drift detector contra agent-models.json canónico ────────────────
 
-test('#3221 canónico · 17 skills con LLM declarados (memoria sign-off 2026-05-15)', () => {
-  // El JSON canónico debe declarar al menos los 17 skills del CA-2 del issue.
-  // Lista exacta: backend-dev, pipeline-dev, android-dev, web-dev, build,
-  // tester, security, qa, review, po, ux, doc, planner, guru, ops, perf, auth.
+test('#3221 canónico · 15 skills con LLM declarados (memoria sign-off 2026-05-15)', () => {
+  // El JSON canónico debe declarar al menos los 15 skills del CA-2 del issue
+  // que efectivamente corren con LLM. `build` y `tester` quedan FUERA: son
+  // skills determinísticos (Node scripts en `.pipeline/skills-deterministicos/`)
+  // y aparecen en agent-models.json sólo con `{provider: deterministic}` —
+  // la coherencia entre la allowlist hardcoded y el JSON la valida
+  // `deterministic-skills-coherence.test.js` (regression guard de #3157).
+  //
+  // Lista exacta: backend-dev, pipeline-dev, android-dev, web-dev,
+  // security, qa, review, po, ux, doc, planner, guru, ops, perf, auth.
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
   const declared = Object.keys(cfg.skills || {});
-  const expected17 = [
+  const expected15 = [
     'backend-dev', 'pipeline-dev', 'android-dev', 'web-dev',
-    'build', 'tester', 'security', 'qa', 'review',
+    'security', 'qa', 'review',
     'po', 'ux', 'doc', 'planner', 'guru', 'ops', 'perf', 'auth',
   ];
-  for (const skill of expected17) {
+  for (const skill of expected15) {
     assert.ok(declared.includes(skill), `skill canónico falta: ${skill}`);
   }
 });
 
-test('#3221 canónico · Gemini EXCLUIDO en los 10 skills con TOS-risk (memoria sign-off)', () => {
+test('#3221 canónico · Gemini EXCLUIDO en los 9 skills LLM con TOS-risk (memoria sign-off)', () => {
   // Memoria project_multi-provider-per-agent-order: Gemini queda fuera en
-  // backend-dev, pipeline-dev, tester, security, review, doc, planner,
-  // guru, ops, auth (10 skills que tocan secrets/código/estrategia).
+  // backend-dev, pipeline-dev, security, review, doc, planner, guru, ops,
+  // auth (9 skills LLM que tocan secrets/código/estrategia). `tester` también
+  // está en la memoria con Gemini EXCLUIDO pero es determinístico (Node),
+  // sin fallbacks LLM — ver `deterministic-skills-coherence.test.js`.
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
   const tosExcluded = [
-    'backend-dev', 'pipeline-dev', 'tester', 'security', 'review',
+    'backend-dev', 'pipeline-dev', 'security', 'review',
     'doc', 'planner', 'guru', 'ops', 'auth',
   ];
   for (const skill of tosExcluded) {
@@ -1599,12 +1610,26 @@ test('#3221 canónico · Gemini EXCLUIDO en los 10 skills con TOS-risk (memoria 
   }
 });
 
-test('#3221 canónico · build primary = groq (ahorro primero, memoria sign-off)', () => {
+test('#3221 canónico · build/tester declarados como deterministic (NO LLM en agent-models)', () => {
+  // Refuerza la coherencia con `deterministic-skills-coherence.test.js` desde
+  // la perspectiva del issue #3221: la memoria sign-off 2026-05-15 lista los
+  // skills con potencial LLM, pero build/tester corren como Node scripts en
+  // `.pipeline/skills-deterministicos/` y `resolveProviderForSkill` los
+  // resuelve siempre a `deterministic` ignorando agent-models.json. Declararles
+  // un primary LLM acá sería decoración engañosa (la chain nunca se usa) y
+  // reabriría la grieta de drift que destapó el #3157.
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
-  const skillDef = cfg.skills['build'];
-  assert.ok(skillDef, 'build skill ausente');
-  assert.equal(skillDef.provider, 'groq', 'build primary debe ser groq (memoria sign-off 2026-05-15)');
+  for (const skill of ['build', 'tester']) {
+    const skillDef = cfg.skills[skill];
+    assert.ok(skillDef, `${skill} skill ausente`);
+    assert.equal(skillDef.provider, 'deterministic',
+      `${skill} debe declararse con provider:deterministic — corre como Node script, ` +
+      `el LLM declarativo causa drift entre el JSON y la allowlist hardcoded ` +
+      `(causa raíz del #3157).`);
+    assert.ok(!skillDef.fallbacks,
+      `${skill} no debería tener fallbacks[] — es determinístico, nunca cae a LLM.`);
+  }
 });
 
 test('#3221 canónico · qa/po/ux declaran Gemini en fallbacks (necesitan vision multimodal)', () => {
@@ -1622,17 +1647,20 @@ test('#3221 canónico · qa/po/ux declaran Gemini en fallbacks (necesitan vision
   }
 });
 
-test('#3221 canónico · resolveSkillChain enumera primary + fallbacks para los 17 skills', () => {
-  // Drift detector funcional: para cada skill declarado en el canónico,
+test('#3221 canónico · resolveSkillChain enumera primary + fallbacks para los 15 skills LLM', () => {
+  // Drift detector funcional: para cada skill LLM declarado en el canónico,
   // resolveSkillChain debe devolver una chain no vacía con primary primero.
+  // `build` y `tester` quedan fuera porque son determinísticos (provider:
+  // deterministic, sin fallbacks[]) — su drift lo cubre
+  // deterministic-skills-coherence.test.js.
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
-  const expected17 = [
+  const expected15 = [
     'backend-dev', 'pipeline-dev', 'android-dev', 'web-dev',
-    'build', 'tester', 'security', 'qa', 'review',
+    'security', 'qa', 'review',
     'po', 'ux', 'doc', 'planner', 'guru', 'ops', 'perf', 'auth',
   ];
-  for (const skill of expected17) {
+  for (const skill of expected15) {
     const chain = validateMod.resolveSkillChain(cfg, skill);
     assert.ok(chain.length >= 1, `${skill} debe tener al menos primary; chain=${JSON.stringify(chain)}`);
     assert.equal(chain[0].source, 'primary', `${skill} chain[0] debe ser primary`);

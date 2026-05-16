@@ -155,26 +155,9 @@
       ]
     },
 
-    "build": {
-      "provider": "groq",
-      "model_override": "llama-3.3-70b-versatile",
-      "fallbacks": [
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "anthropic", "model_override": "claude-haiku-4-5" }
-      ]
-    },
+    "build":        { "provider": "deterministic" },
 
-    "tester": {
-      "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
-      "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
-      ]
-    },
+    "tester":       { "provider": "deterministic" },
 
     "security": {
       "provider": "anthropic",
