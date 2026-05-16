@@ -261,18 +261,37 @@ function headerSlice(state, ctx) {
     // #2890 PR-A — Modo descanso: pill indigo en header (CA-3.1) cuando la
     // ventana está activa. Devolvemos `restMode` aun cuando esté inactivo
     // para que el cliente pueda morphear sin re-fetchear otra cosa.
+    //
+    // #3241 CA-Slice — shape enriquecido para la UI nueva (#3242):
+    //   { active, isWithinNow, currentPeriod, nextPeriod, periodsToday, manual }
+    // Conservamos los campos legacy (`start`, `end`, `days`, `timezone`,
+    // `isWithinWindow`, `updatedAt`) para retrocompat del pill viejo durante
+    // la transición — `getWindow()` los sintetiza desde `schedule`.
     let restMode = { active: false };
     if (restModeWindow) {
         try {
+            const now = Date.now();
             const w = restModeWindow.getWindow({ pipelineDir: PIPELINE });
-            const within = restModeWindow.isWithinWindow(w, Date.now());
+            const within = restModeWindow.isWithinWindow(w, now);
+            const describe = typeof restModeWindow.describeRestModeNow === 'function'
+                ? restModeWindow.describeRestModeNow(w, now)
+                : { active: !!w.active, isWithinNow: within, currentPeriod: null,
+                    nextPeriod: null, periodsToday: 0, manual: !!w.manual };
             restMode = {
-                active: !!w.active,
+                // Campos enriquecidos #3241 (CA-Slice — UI nueva los consume)
+                active: describe.active,
+                isWithinNow: describe.isWithinNow,
+                currentPeriod: describe.currentPeriod,
+                nextPeriod: describe.nextPeriod,
+                periodsToday: describe.periodsToday,
+                manual: describe.manual,
+                // Schedule completo para clientes que necesitan iterar
+                schedule: w.schedule || null,
+                // Campos legacy sintetizados (retrocompat pill viejo)
                 start: w.start || null,
                 end: w.end || null,
                 timezone: w.timezone || null,
                 days: Array.isArray(w.days) ? w.days : [],
-                manual: !!w.manual,
                 isWithinWindow: within,
                 updatedAt: w.updatedAt || null,
             };
