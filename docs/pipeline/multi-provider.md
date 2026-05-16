@@ -206,20 +206,32 @@ Cada skill **puede** declarar una lista ordenada `fallbacks[]` de providers alte
 - Un fallback no puede duplicar el `provider` primario (sería ruido).
 - Strings vacíos o no-string → rechazo con `fix:` accionable.
 
-> #### Estado actual de fallbacks (LEER ANTES DE DEPENDER DE FAILOVER AUTOMÁTICO)
+> #### Estado actual de fallbacks (#3198 ✅ cerrado — failover automático ACTIVO)
 >
-> El campo `skills.<name>.fallbacks[]` está soportado en **schema y dashboard UI**, y se valida correctamente al boot. Pero **el consumer en runtime** (`resolveProviderForSkill` en [`.pipeline/lib/agent-launcher/resolve-provider.js`](../../.pipeline/lib/agent-launcher/resolve-provider.js)) **no itera el array** cuando el primary falla. El "fallback" actual cubre solo el caso de regresión cero:
+> El campo `skills.<name>.fallbacks[]` está soportado end-to-end:
 >
-> - `agent-models.json` no existe → `provider: 'anthropic', model: 'claude-opus-4-7'`.
-> - `agent-models.json` no parsea → mismo fallback.
-> - Skill no está declarado en `skills` → mismo fallback con default model.
+> - **Schema + UI**: declarable en `agent-models.json` y editable desde el dashboard (#3177).
+> - **Validación al boot**: `agent-models-validate.js` (cada item existe como provider, no duplica el primario, anti-cycle estático).
+> - **Consumer en runtime**: `lib/agent-launcher/dispatch-with-fallback.js` ([fuente](../../.pipeline/lib/agent-launcher/dispatch-with-fallback.js)) — itera la chain cuando el primary está gated. Implementado y mergeado por [#3198](https://github.com/intrale/platform/issues/3198) (2026-05-15).
 >
-> **No hay retry automático cross-provider** cuando Anthropic devuelve `usage_limit_error` y el skill tiene `fallbacks: ["openai-codex"]`. El pipeline para con el flag de cuota agotada y espera al `resets_at` (o intervención humana).
+> **El "fallback" hoy cubre dos planos**:
 >
-> El issue [#3198](https://github.com/intrale/platform/issues/3198) está abierto para implementar el consumer runtime. Hasta que cierre, **no dependas de fallbacks declarados para continuidad de servicio**. Si necesitás failover ahora, podés:
+> 1. **Regresión cero** (`resolveProviderForSkill` en `resolve-provider.js`): si `agent-models.json` no existe / no parsea / el skill no está declarado → `provider: 'anthropic', model: 'claude-opus-4-7'`. Inalterado por #3198.
+> 2. **Failover cross-provider** (`resolveSpawnWithFallback` en `dispatch-with-fallback.js`): si el primary está gated por cuota agotada, itera `skills.<x>.fallbacks[]` en orden y devuelve el primer candidato disponible. Caps de seguridad: `MAX_FALLBACK_DEPTH = 5`, `Set` anti-cycle en runtime, skip de fallbacks que comparten el provider gated.
 >
-> - Cambiar manualmente `skills.<x>.provider` por el alternativo cuando se agote cuota.
-> - Hot-reload (no soportado — restart): `node .pipeline/restart.js`.
+> Cada decisión cross-provider se loguea en `logs/cross-provider-dispatch-YYYY-MM-DD.jsonl` (hash-chain SHA-256, redactado) y dispara notificación Telegram post-hoc via `servicios/telegram/pendiente/` (filesystem queue, sin LLM en el camino). Detalle operativo completo en [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) §3.9.
+>
+> **Cuándo PUEDE NO haber failover** (comportamiento esperado, no bug):
+>
+> - El skill no declara `fallbacks` o el array está vacío → si el primary está gated, archivo a `pendiente/` (legacy).
+> - Toda la chain (primary + fallbacks) está gated → archivo a `pendiente/`.
+> - El skill está en `DETERMINISTIC_SKILLS` (allowlist hardcoded) → corre Node puro, sin LLM, sin necesidad de fallback.
+>
+> **Inspeccionar / desactivar en operación**:
+>
+> - Ver decisiones: `tail -n 50 logs/cross-provider-dispatch-$(date -u +%F).jsonl | jq .`
+> - Kill switch por skill: vaciar `skills.<x>.fallbacks[]` desde el dashboard (`[]`) → cae a comportamiento pre-#3198.
+> - Forzar provider primario alternativo: cambiar `skills.<x>.provider` desde el dashboard + `node .pipeline/restart.js`.
 
 ### 2.4 Reglas de precedencia
 
@@ -354,7 +366,7 @@ Si necesitás una restricción más fina ("este skill solo puede usar Haiku o So
 |-------|------|-------------|-------------|
 | `provider` | string | sí | Debe existir como clave en `providers`. |
 | `model_override` | string | no | Modelo específico que sobreescribe el `model` default del provider. |
-| `fallbacks` | array de string | no | Lista ordenada de providers alternativos. **No consumido en runtime hoy** (ver [§2.3](#23-fallbacks)). |
+| `fallbacks` | array de string | no | Lista ordenada de providers alternativos. Consumido por `dispatch-with-fallback.js` cuando el primary está gated por cuota (#3198, ver [§2.3](#23-fallbacks)). |
 
 ### 4.2 Skills determinísticos (sin LLM)
 
@@ -413,7 +425,7 @@ Resuelve a `provider: 'anthropic', model: 'claude-sonnet-4-6'` (5× más barato 
 }
 ```
 
-Resuelve a `provider: 'openai-codex', model: 'gpt-5-codex'`. **El `fallbacks` está declarado pero no se itera en runtime** ([§2.3](#23-fallbacks)). Si OpenAI agota cuota, el pulpo gateará el skill hasta que se libere.
+Resuelve a `provider: 'openai-codex', model: 'gpt-5-codex'`. Si OpenAI agota cuota, el dispatcher itera `fallbacks: ["anthropic"]` (#3198 — consumer runtime activo) y, si Anthropic está disponible, spawnea con `provider: 'anthropic'` automáticamente; si toda la chain está gated, el archivo va a `pendiente/` esperando reset ([§2.3](#23-fallbacks)).
 
 ### 4.4 Pasos para hacer lo mismo desde la UI del dashboard
 
@@ -765,16 +777,19 @@ Los endpoints mutating del dashboard (`POST`, `PUT`, `DELETE` bajo `/api/multi-p
 
 | Funcionalidad | Soportado en schema | Soportado en UI | Consumido en runtime |
 |---------------|:-------------------:|:---------------:|:--------------------:|
-| Declarar `fallbacks[]` por skill | ✅ | ✅ | ❌ |
+| Declarar `fallbacks[]` por skill | ✅ | ✅ | ✅ |
 | Validación cruzada de items contra `providers` | ✅ | ✅ | n/a |
-| Failover automático cross-provider en cuota agotada | — | — | ❌ |
+| Failover automático cross-provider en cuota agotada | ✅ | ✅ | ✅ |
 
-**Lectura para operadores:** declarar `fallbacks[]` en `agent-models.json` **no garantiza continuidad de servicio** cuando el provider primario falla. La continuidad real proviene de:
+**Lectura para operadores:** desde [#3198](https://github.com/intrale/platform/issues/3198) (mergeado 2026-05-15), declarar `fallbacks[]` en `agent-models.json` **sí dispara failover automático** cuando el provider primario está gated. La continuidad de servicio efectiva proviene de tres mecanismos complementarios:
 
-- **Scope per-provider del quota-detector** ([#3077](https://github.com/intrale/platform/issues/3077) SEC-1): si Anthropic se agota, los skills con `provider: 'openai-codex'` siguen corriendo.
-- **Cambio manual del operador**: editar `agent-models.json` reasignando skills críticos a otro provider.
+- **Scope per-provider del quota-detector** ([#3077](https://github.com/intrale/platform/issues/3077) SEC-1): si Anthropic se agota, los skills con `provider: 'openai-codex'` siguen corriendo sin necesidad de cambiar nada.
+- **Consumer runtime de fallbacks** (#3198): para skills cuyo primary está gated, el dispatcher itera `skills.<x>.fallbacks[]` en orden y spawnea con el primer candidato disponible. Caps `MAX_FALLBACK_DEPTH=5` + anti-cycle + audit log con hash-chain + notificación Telegram post-hoc.
+- **Cambio manual del operador**: editar `agent-models.json` reasignando primaries críticos sigue disponible como override explícito.
 
-Cierre del gap: [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks).
+Caveat: declarar `fallbacks[]` no es magia. Si toda la chain (primary + fallbacks) está gated en simultáneo, el archivo cae a `pendiente/` esperando reset — sin failover infinito.
+
+Implementado por: [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks). Detalle operativo: [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) §3.9.
 
 ### 7.6 Reglas inquebrantables para los ejemplos de esta doc
 
@@ -807,4 +822,5 @@ Cierre del gap: [#3198](https://github.com/intrale/platform/issues/3198) (consum
 - **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).
 - **Issue de esta doc:** [#3176](https://github.com/intrale/platform/issues/3176).
-- **Issues de mejora futura:** [#3197](https://github.com/intrale/platform/issues/3197) (auto-gen tablas), [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime fallbacks).
+- **Issues de mejora futura:** [#3197](https://github.com/intrale/platform/issues/3197) (auto-gen tablas).
+- **Issues cerrados relevantes:** [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks, mergeado 2026-05-15 — ver §2.3).

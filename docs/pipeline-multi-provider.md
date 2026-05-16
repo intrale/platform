@@ -373,12 +373,12 @@ Migración: cualquier `agent-models.json` local de devs que use `provider: 'gemi
 
 #### 3.8.3 Estado del handler de cuota
 
-- **Groq + Cerebras**: el handler estructurado existe (`_detectOpenAI` en `quota-exhausted.js`). La detección de cuota es funcional cuando el runtime (#3198) spawnee el wrapper real — sin trabajo adicional en este issue.
+- **Groq + Cerebras**: el handler estructurado existe (`_detectOpenAI` en `quota-exhausted.js`). La detección de cuota es funcional cuando el runtime spawnee el wrapper real — consumer runtime ya operativo desde #3198 (ver §3.9).
 - **Gemini-google**: el handler `_detectGemini` NO existe todavía. La declaración `quota_error_types` queda **declarativa** (passa el validador del schema y la meta-allowlist) pero **sin defensa funcional** (el detector no lo consume con parser estructurado). Issue de recomendación: #3226. Riesgo aceptado: detección Gemini via string-matching heurístico hasta que #3226 entregue el handler real.
 
 #### 3.8.4 Runtime / wrappers Node
 
-Decisión PO (opción A del análisis del guru): launchers nuevos `groq` y `cerebras` con wrapper Node interno. Este issue declara los launchers en la allowlist + crea handlers stub en `lib/agent-launcher/providers/{gemini-google,groq,cerebras}.js` que tiran error accionable si se les pide spawn antes de #3198. El hardening de wrappers (TLS-only, timeouts, no-log payloads, etc.) se trackea en #3227 y se materializa con #3198.
+Decisión PO (opción A del análisis del guru): launchers nuevos `groq` y `cerebras` con wrapper Node interno. Este issue declara los launchers en la allowlist + crea handlers stub en `lib/agent-launcher/providers/{gemini-google,groq,cerebras}.js` que tiran error accionable si se les pide spawn. El consumer runtime que integra estos handlers con el flow del pulpo se materializó en #3198 (ver §3.9). El hardening de wrappers (TLS-only, timeouts, no-log payloads, etc.) se trackea en #3227.
 
 #### 3.8.5 Modelos soportados por launcher (`ALLOWED_MODELS_BY_LAUNCHER`)
 
@@ -404,10 +404,137 @@ Anti-leak (#3220): si el valor de `model` parece un secret hardcoded conocido (m
 #### 3.8.7 Follow-ups (no bloqueantes — issues separados)
 
 - **#3221**: cargar el orden sign-off 2026-05-15 en `skills.<x>.fallbacks[]` (bloqueado por este).
-- **#3198**: implementar el runtime que consume `fallbacks[]` y los wrappers Node de Groq/Cerebras.
+- **#3198**: ✅ **CERRADO** — consumer runtime de `fallbacks[]` implementado por `lib/agent-launcher/dispatch-with-fallback.js`. Ver §3.9 abajo para el contrato operativo completo.
 - **#3226**: handler `_detectGemini` estructurado (defensa funcional anti-DoS para Gemini).
 - **#3227**: hardening de wrappers Node Groq/Cerebras (TLS-only, timeouts, no-log payloads).
 - **#3228**: agregar patrones `gsk_` y `csk-` a `HARDCODED_SECRET_PATTERNS` (defensa en profundidad).
+
+---
+
+### 3.9 Consumer runtime de fallbacks (#3198)
+
+> **Estado**: ✅ implementado y mergeado (2026-05-15). Cierra el gap que dejaron PRs anteriores (#3177 entregó schema + UI + lib RW pero NO consumer en runtime). A partir de este PR, declarar `skills.<x>.fallbacks[]` en `agent-models.json` deja de ser decorativo: el pipeline efectivamente itera la cadena cuando el provider primario está gated por cuota.
+
+#### 3.9.1 Cómo se configura `fallbacks[]` por skill
+
+La declaración vive en `agent-models.json` (raíz `.pipeline/`), schema vigente desde #3177. Forma canónica:
+
+```json
+{
+  "skills": {
+    "pipeline-dev": {
+      "provider": "claude",
+      "model": "claude-opus-4-7",
+      "fallbacks": ["codex", "gemini-google", "groq"]
+    }
+  }
+}
+```
+
+Reglas del array (validadas en boot por `lib/agent-models-validate.js`):
+
+- Cada item debe ser un nombre de provider existente en `providers.<name>` del mismo archivo (fail-fast si no).
+- El primario (`provider`) NO debe aparecer en su propio `fallbacks` (anti-cycle estático).
+- El array es ordenado: el dispatcher itera de izquierda a derecha. Convención: poner primero los pagos de mayor calidad (Codex) y al final los free-tier (Groq, Cerebras).
+- Schema acepta array vacío `[]` → comportamiento idéntico al pre-#3198 (sin failover).
+
+La edición autoritativa se hace desde la UI del dashboard multi-provider (`/.pipeline/views/dashboard/multi-provider.js`, secciones 525-572 — corrección menor del cuerpo del issue, que citaba erróneamente las líneas 421-467). Cada save de `fallbacks[]` desde la UI es opt-in humano explícito en sí mismo (S-7 del análisis security): la presencia del array ES la aprobación, no se requiere doble barrera.
+
+#### 3.9.2 Qué hace el dispatcher cuando el primario está gated
+
+Punto de entrada: `resolveSpawnWithFallback({ skill, quotaModule, attempt })`, llamado pre-spawn en `pulpo.js:4937` y `pulpo.js:4967` (handlers de despacho del archivo de trabajo). Reemplaza al check binario `shouldGateSpawn` por un resolver que devuelve `{ gated, provider, model, depth, source }`.
+
+Flujo:
+
+1. Resuelve el provider/model primario del skill (vía `resolveProviderForSkill`).
+2. Si `quotaModule.shouldGateSpawn(skill, { provider: primary })` devuelve `false` → spawn primario, fin.
+3. Si está gated → itera `fallbacks[]` en orden, llamando a `getProviderHandler(name)` + re-evaluando el gate por cada candidato.
+4. El primer fallback con `gated:false` y handler válido es devuelto. El caller spawnea con ese `provider`/`model`.
+5. Si la cadena entera está gated → devuelve `{ gated: true }`; el pulpo mueve el archivo a `pendiente/` (comportamiento legacy, espera al reset de cuota).
+
+El happy path (primario disponible) NO paga overhead: el dispatcher es pasivo, sólo activa cuando hay flag de cuota.
+
+#### 3.9.3 Política dual (consistente con §4.1)
+
+- **Cross-MODELO** (mismo provider, distinto modelo): NO se configura via `fallbacks[]` (el array lista provider names). Cross-modelo se hace via `skill.model_override` + selector autónomo §4.3. Fuera del scope #3198.
+- **Cross-PROVIDER**: el opt-in humano ES la declaración del array. No agregamos doble barrera (rompería la promesa "configurá fallbacks y el pipeline sigue funcionando"). Las defensas adyacentes (audit log + Telegram + caps) cubren la observabilidad post-hoc.
+
+#### 3.9.4 Cap MAX_FALLBACK_DEPTH y anti-ciclo
+
+- **`MAX_FALLBACK_DEPTH = 5`** (constante en `dispatch-with-fallback.js`). Si la chain efectiva del skill (primario + fallbacks) supera 5 candidatos, el dispatcher trunca con warning en el audit log. Es generoso para configs típicas (Anthropic → Codex → Gemini → Groq → Cerebras = 5) sin permitir recursión patológica.
+- **Anti-ciclo**: `Set<providerName>` de candidatos ya intentados en el dispatch corriente. Si un fallback ya fue probado en un nivel anterior (caso raro pero posible si la config tiene duplicados), se saltea.
+- **Skip same-provider-gate**: si el fallback comparte el provider del primario gated (caso de mala config), se saltea — el flag de cuota del primario también gatearía al fallback.
+
+#### 3.9.5 Audit log dedicado
+
+Cada decisión del dispatcher (resolución, gate, skip por ciclo, skip por depth) escribe a:
+
+```
+logs/cross-provider-dispatch-YYYY-MM-DD.jsonl
+```
+
+Formato append-only con hash-chain SHA-256 (delegado a `audit-log.appendChained`, que ya redacta y firma cada entrada). Campos principales por línea:
+
+- `ts`, `issue`, `skill`, `attempt`
+- `primary: { provider, model }`
+- `chain: [{ provider, gated, source }]` (cada candidato intentado)
+- `resolved: { provider, model, depth } | null` (null si todo gated)
+- `prev_hash`, `hash` (hash-chain SHA-256 para detectar tampering)
+
+El `raw_excerpt` del detector de cuota pasa por `quotaModule.sanitizeRawExcerpt` antes de logguearse — sin tokens, sin payloads.
+
+#### 3.9.6 Notificación Telegram via filesystem queue
+
+Cuando el dispatcher resuelve un fallback (decisión cross-PROVIDER consumada), encola un mensaje informativo en:
+
+```
+.pipeline/servicios/telegram/pendiente/<ts>-cross-provider-<issue>-<skill>.json
+```
+
+El servicio `servicio-telegram.js` drena la cola fuera del path crítico del pulpo. Sin `curl` directo, sin LLM en el camino — patrón S-9 consistente con `sendTelegram` ya existente. Plantilla del mensaje:
+
+> 🔀 **Fallback cross-provider activado**
+> Issue #&lt;n&gt; · skill `<skill>`
+> Primary: `<provider>:<model>` (gated por cuota)
+> Fallback elegido: `<fb_provider>:<fb_model>` (depth `<n>`)
+> Audit: `logs/cross-provider-dispatch-YYYY-MM-DD.jsonl`
+
+Es post-hoc informativo, no decisorio — la decisión ya quedó autorizada por la presencia del array en `agent-models.json`.
+
+#### 3.9.7 Defensas S-1 a S-9 (resumen del análisis security cerrado por este PR)
+
+| ID | Defensa | Dónde |
+|---|---|---|
+| S-1 | Detección de cuota por shape estructurado, NUNCA substring | `quotaModule.shouldGateSpawn` (reutilizado) |
+| S-2 | Aislamiento de credenciales en el spawn del fallback | `lib/build-child-env.js` filtra env vars al provider resuelto |
+| S-3 | Validación del nombre del provider contra `PROVIDER_HANDLERS` | `getProviderHandler` + boot validator |
+| S-4 | Path traversal en flag pending | N/A — el opt-in es la presencia del array, no flags por skill |
+| S-5 | Cycle/depth limit | `MAX_FALLBACK_DEPTH = 5` + `Set` anti-ciclo |
+| S-6 | Audit log redactado con hash-chain | `audit-log.appendChained` + `sanitizeRawExcerpt` |
+| S-7 | Política dual cross-MODELO/cross-PROVIDER | Opt-in vía array; sin doble barrera |
+| S-8 | Quota flag scoping per-provider | `clearFlag` respeta scope (#3077 CA-8); fallback NO limpia flag del primario |
+| S-9 | Telegram sin LLM en el camino | Filesystem queue + drainer Node puro |
+
+#### 3.9.8 Aprobar / desaprobar un fallback en operación
+
+- **Sumar un provider a la chain**: editar `skills.<x>.fallbacks[]` en la UI del dashboard multi-provider, guardar. Boot validation confirma que el provider existe; el dispatcher empieza a usarlo desde el próximo despacho.
+- **Sacar un provider**: removerlo del array en la UI. No requiere restart del pulpo (el archivo se relee por dispatch).
+- **Pausar todos los fallbacks (kill switch)**: vaciar `fallbacks[]` del skill (`[]`). El dispatcher cae al comportamiento pre-#3198: si el primario está gated, el archivo va a `pendiente/`.
+- **Inspeccionar decisiones recientes**: `tail -n 50 logs/cross-provider-dispatch-$(date -u +%F).jsonl | jq .` — cada entrada muestra chain completa, decisión y hash.
+- **Detectar tampering del audit**: `node .pipeline/scripts/verify-audit-chain.js logs/cross-provider-dispatch-*.jsonl` (verificador existente reutilizado).
+
+#### 3.9.9 Tests y verificación
+
+61/61 tests del scope verdes a HEAD `1b7836ef`:
+
+```
+node --test .pipeline/tests/build-child-env.test.js \
+            .pipeline/tests/dispatch-with-fallback.test.js \
+            .pipeline/tests/dispatch-build-env-integration.test.js
+# tests 61, pass 61, fail 0
+```
+
+Cobertura: unit (cada defensa S-1 a S-9) + integración env+dispatch + scenarios de chain (happy path, all-gated, ciclo, depth overflow, same-provider skip, fallback con env aislado).
 
 ---
 
