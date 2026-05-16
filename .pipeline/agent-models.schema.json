@@ -141,10 +141,37 @@
         },
         "fallbacks": {
           "type": "array",
-          "description": "Lista ordenada de providers fallback para este skill. Si el provider primario falla (cuota / 5xx / circuit-breaker), el pulpo intenta con el siguiente. Cada item DEBE existir en 'providers'. Validación cruzada en lib/agent-models-validate.js. Vacío o ausente = usar solo el provider primario. Issue #3177 (UI dashboard) + apertura para H7/M2.",
-          "items": { "type": "string", "minLength": 1 }
+          "description": "Lista ordenada de providers fallback para este skill. Si el provider primario falla (cuota / 5xx / circuit-breaker), el pulpo intenta con el siguiente. Cada item DEBE existir en 'providers'. Validación cruzada en lib/agent-models-validate.js. Vacío o ausente = usar solo el provider primario. Issue #3177 (UI dashboard) + apertura para H7/M2. Issue #3221 (multi-provider per-agent order): cada item puede ser (a) un string con el nombre del provider (legacy, usa el `model` default del provider) o (b) un objeto `{provider, model_override}` que pin-ea el modelo del provider para este skill — necesario para el orden sign-off 2026-05-15 donde, por ejemplo, qa quiere `gpt-5` (vision) en lugar del `gpt-5-codex` default de openai-codex.",
+          "items": { "$ref": "#/$defs/fallbackEntry" }
         }
       }
+    },
+
+    "fallbackEntry": {
+      "description": "Item de fallbacks[]. Backward-compatible: acepta string (legacy, solo provider name) o object {provider, model_override}. La cross-validation contra ALLOWED_MODELS_BY_LAUNCHER + providers[] vive en lib/agent-models-validate.js.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": ["provider"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Nombre del provider fallback. DEBE existir en 'providers'.",
+              "minLength": 1
+            },
+            "model_override": {
+              "type": "string",
+              "description": "Modelo específico del provider fallback para este skill. La cross-validación contra ALLOWED_MODELS_BY_LAUNCHER se hace en lib/agent-models-validate.js durante el boot.",
+              "minLength": 1
+            }
+          }
+        }
+      ]
     }
   }
 }

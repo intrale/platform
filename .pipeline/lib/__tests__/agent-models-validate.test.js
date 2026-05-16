@@ -1234,3 +1234,419 @@ test('#3220 · agent-models.json canónico declara los 5 providers LLM + determi
     assert.ok(keys.includes(expected), `provider canónico falta: ${expected} (declarados: ${keys.join(', ')})`);
   }
 });
+
+// =============================================================================
+// #3221 · multi-provider per-agent order — sign-off Leo 2026-05-15
+//
+// Tests del schema extension `fallbacks: oneOf[string, {provider, model_override}]`
+// + validator cross-checks + resolver helpers (resolveFallbackEntry,
+// resolveSkillChain). El JSON canónico carga 17 skills (build heredado +
+// 16 LLM skills) con el orden de la memoria project_multi-provider-per-agent-order.
+// =============================================================================
+
+// Helpers reutilizables — variantes provider listas para inyectar en baseValid().
+// Replicadas localmente porque las del #3220 viven más arriba en este archivo y
+// el patrón es agregar tests al final.
+function providerOpenAICodex() {
+  return {
+    launcher: 'codex',
+    model: 'gpt-5-codex',
+    spawn_args_template: ['exec', '--full-auto', '--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
+    output_parser: 'openai-sse',
+    quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached'],
+    supports_tool_use: true,
+    prompt_caching: { supported: true, auto: true },
+    credentials_env: ['OPENAI_API_KEY'],
+    permissions_mode: 'bypassPermissions',
+  };
+}
+
+function providerGroqEntry() {
+  return {
+    launcher: 'groq',
+    model: 'llama-3.3-70b-versatile',
+    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
+    output_parser: 'openai-sse',
+    quota_error_types: ['rate_limit_exceeded', 'tokens_exhausted', 'quota_exceeded'],
+    supports_tool_use: false,
+    prompt_caching: { supported: false },
+    credentials_env: ['GROQ_API_KEY'],
+    permissions_mode: 'bypassPermissions',
+  };
+}
+
+function providerCerebrasEntry() {
+  return {
+    launcher: 'cerebras',
+    model: 'llama-3.3-70b',
+    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
+    output_parser: 'openai-sse',
+    quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
+    supports_tool_use: false,
+    prompt_caching: { supported: false },
+    credentials_env: ['CEREBRAS_API_KEY'],
+    permissions_mode: 'bypassPermissions',
+  };
+}
+
+function providerGeminiEntry() {
+  return {
+    launcher: 'gemini-google',
+    model: 'gemini-2.0-flash',
+    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
+    output_parser: 'gemini-stream',
+    quota_error_types: ['quota_exceeded', 'resource_exhausted'],
+    supports_tool_use: true,
+    prompt_caching: { supported: false },
+    credentials_env: ['GEMINI_API_KEY'],
+    permissions_mode: 'bypassPermissions',
+  };
+}
+
+// ─── CA-1b · schema extension oneOf ──────────────────────────────────────────
+
+test('#3221 · schema declara fallbackEntry oneOf [string, {provider, model_override}]', () => {
+  const schema = validateMod.getEffectiveSchema();
+  assert.ok(schema.$defs.fallbackEntry, 'falta $defs.fallbackEntry');
+  const oneOf = schema.$defs.fallbackEntry.oneOf;
+  assert.ok(Array.isArray(oneOf) && oneOf.length === 2, 'fallbackEntry debe tener oneOf con 2 ramas');
+  // Rama 1: string
+  const strBranch = oneOf.find((b) => b.type === 'string');
+  assert.ok(strBranch, 'falta rama string en fallbackEntry');
+  // Rama 2: object {provider, model_override}
+  const objBranch = oneOf.find((b) => b.type === 'object');
+  assert.ok(objBranch, 'falta rama object en fallbackEntry');
+  assert.equal(objBranch.additionalProperties, false, 'object branch debe ser additionalProperties:false');
+  assert.deepEqual(objBranch.required, ['provider'], 'object branch requiere provider');
+  assert.ok(objBranch.properties.provider, 'object branch debe tener provider');
+  assert.ok(objBranch.properties.model_override, 'object branch debe tener model_override opcional');
+});
+
+test('#3221 · schema fallbacks items apunta a $defs/fallbackEntry', () => {
+  const schema = validateMod.getEffectiveSchema();
+  const fb = schema.$defs.skillAssignment.properties.fallbacks;
+  assert.equal(fb.type, 'array');
+  assert.ok(fb.items && fb.items.$ref === '#/$defs/fallbackEntry',
+    `fallbacks.items debe apuntar a fallbackEntry, encontrado: ${JSON.stringify(fb.items)}`);
+});
+
+// ─── CA-1 / CA-2 · happy path con shape nuevo ───────────────────────────────
+
+test('#3221 happy path · skill con fallbacks objects {provider, model_override} válidos', () => {
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = providerOpenAICodex();
+  cfg.providers['groq'] = providerGroqEntry();
+  cfg.providers['cerebras'] = providerCerebrasEntry();
+  cfg.skills['backend-dev'] = {
+    provider: 'anthropic',
+    model_override: 'claude-opus-4-7',
+    fallbacks: [
+      { provider: 'openai-codex', model_override: 'gpt-5-codex' },
+      { provider: 'groq', model_override: 'qwen2.5-coder-32b' },
+      { provider: 'cerebras', model_override: 'llama-3.3-70b' },
+    ],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, true, `happy path debe validar; errores: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3221 backward-compat · skill con fallbacks como strings (legacy) sigue válido', () => {
+  // El shape pre-#3221 era array de strings — debe seguir aceptándose.
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = providerOpenAICodex();
+  cfg.skills['security'] = {
+    provider: 'anthropic',
+    fallbacks: ['openai-codex'],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, true, `legacy strings deben validar; errores: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3221 mixto · skill puede mezclar strings y objects en fallbacks', () => {
+  // Ergonómico para migración progresiva: parte legacy + parte modelos pin-eados.
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = providerOpenAICodex();
+  cfg.providers['groq'] = providerGroqEntry();
+  cfg.skills['planner'] = {
+    provider: 'anthropic',
+    fallbacks: [
+      'openai-codex',
+      { provider: 'groq', model_override: 'llama-3.3-70b-versatile' },
+    ],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, true, `shape mixto debe validar; errores: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+// ─── Cross-validation negativa: errores esperados ───────────────────────────
+
+test('#3221 · fallback object con provider desconocido → error con path correcto', () => {
+  const cfg = baseValid();
+  cfg.skills['guru'] = {
+    provider: 'anthropic',
+    fallbacks: [{ provider: 'inexistente-llm', model_override: 'foo' }],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => er.path === '#/skills/guru/fallbacks/0');
+    assert.ok(e, `falta error por provider desconocido; errores: ${JSON.stringify(r.errors)}`);
+    assert.match(e.message, /no está declarado en providers/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3221 · fallback object con model_override fuera de allowlist → error redactado por path', () => {
+  // model_override en fallback debe cumplir ALLOWED_MODELS_BY_LAUNCHER del provider apuntado.
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = providerOpenAICodex();
+  cfg.skills['ux'] = {
+    provider: 'anthropic',
+    fallbacks: [{ provider: 'openai-codex', model_override: 'modelo-inexistente-fantasia' }],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => er.path === '#/skills/ux/fallbacks/0/model_override');
+    assert.ok(e, `falta error de model_override de fallback; errores: ${JSON.stringify(r.errors)}`);
+    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["codex"\]/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3221 · fallback que duplica el provider primario → error', () => {
+  const cfg = baseValid();
+  cfg.skills['tester'] = {
+    provider: 'anthropic',
+    fallbacks: [{ provider: 'anthropic', model_override: 'claude-sonnet-4-7' }],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => er.path === '#/skills/tester/fallbacks/0');
+    assert.ok(e);
+    assert.match(e.message, /duplica el provider primario/);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3221 · fallback con shape inválido (number) → error accionable', () => {
+  // ajv ya rechaza por oneOf, pero la cross-validation también debe emitir
+  // un error legible. Validamos `r.ok=false` y que el error mencione el path.
+  const cfg = baseValid();
+  cfg.skills['perf'] = {
+    provider: 'anthropic',
+    fallbacks: [42],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    // Aceptamos que el error venga del schema o de la cross-validation;
+    // lo importante es que el path lleve a fallbacks/0.
+    const e = r.errors.find((er) => er.path && er.path.includes('/skills/perf/fallbacks'));
+    assert.ok(e, `falta error por shape inválido; errores: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+test('#3221 · fallback object sin provider (objeto vacío) → error', () => {
+  const cfg = baseValid();
+  cfg.skills['doc'] = {
+    provider: 'anthropic',
+    fallbacks: [{ model_override: 'gpt-5' }],
+  };
+  const file = tmpFile(cfg);
+  try {
+    const r = validateMod.validate(file);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((er) => er.path && er.path.includes('/skills/doc/fallbacks'));
+    assert.ok(e, `falta error por object sin provider; errores: ${JSON.stringify(r.errors)}`);
+  } finally { fs.unlinkSync(file); }
+});
+
+// ─── resolveFallbackEntry — normalización 1:1 ───────────────────────────────
+
+test('#3221 · resolveFallbackEntry(string) devuelve {provider, model_override:null}', () => {
+  const r = validateMod.resolveFallbackEntry('groq');
+  assert.deepEqual(r, { provider: 'groq', model_override: null });
+});
+
+test('#3221 · resolveFallbackEntry(object con model_override) devuelve {provider, model_override}', () => {
+  const r = validateMod.resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5' });
+  assert.deepEqual(r, { provider: 'openai-codex', model_override: 'gpt-5' });
+});
+
+test('#3221 · resolveFallbackEntry(object sin model_override) devuelve {provider, model_override:null}', () => {
+  const r = validateMod.resolveFallbackEntry({ provider: 'cerebras' });
+  assert.deepEqual(r, { provider: 'cerebras', model_override: null });
+});
+
+test('#3221 · resolveFallbackEntry rechaza shapes inválidos (null, number, array, object vacío) → null', () => {
+  assert.equal(validateMod.resolveFallbackEntry(null), null);
+  assert.equal(validateMod.resolveFallbackEntry(undefined), null);
+  assert.equal(validateMod.resolveFallbackEntry(42), null);
+  assert.equal(validateMod.resolveFallbackEntry([]), null);
+  assert.equal(validateMod.resolveFallbackEntry({}), null);
+  assert.equal(validateMod.resolveFallbackEntry({ provider: '' }), null);
+  assert.equal(validateMod.resolveFallbackEntry(''), null);
+});
+
+// ─── resolveSkillChain — primary + fallbacks normalizados, en orden ─────────
+
+test('#3221 · resolveSkillChain devuelve primary primero, después fallbacks en orden', () => {
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = providerOpenAICodex();
+  cfg.providers['groq'] = providerGroqEntry();
+  cfg.skills['backend-dev'] = {
+    provider: 'anthropic',
+    model_override: 'claude-opus-4-7',
+    fallbacks: [
+      { provider: 'openai-codex', model_override: 'gpt-5-codex' },
+      { provider: 'groq', model_override: 'qwen2.5-coder-32b' },
+    ],
+  };
+  const chain = validateMod.resolveSkillChain(cfg, 'backend-dev');
+  assert.equal(chain.length, 3);
+  assert.deepEqual(chain[0], { provider: 'anthropic', model: 'claude-opus-4-7', source: 'primary' });
+  assert.deepEqual(chain[1], { provider: 'openai-codex', model: 'gpt-5-codex', source: 'fallback' });
+  assert.deepEqual(chain[2], { provider: 'groq', model: 'qwen2.5-coder-32b', source: 'fallback' });
+});
+
+test('#3221 · resolveSkillChain con fallback string usa provider.model default', () => {
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = providerOpenAICodex(); // model default = 'gpt-5-codex'
+  cfg.skills['security'] = {
+    provider: 'anthropic',
+    fallbacks: ['openai-codex'],
+  };
+  const chain = validateMod.resolveSkillChain(cfg, 'security');
+  assert.equal(chain.length, 2);
+  assert.equal(chain[1].provider, 'openai-codex');
+  assert.equal(chain[1].model, 'gpt-5-codex'); // default del provider
+  assert.equal(chain[1].source, 'fallback');
+});
+
+test('#3221 · resolveSkillChain devuelve [] cuando el skill no existe', () => {
+  const cfg = baseValid();
+  assert.deepEqual(validateMod.resolveSkillChain(cfg, 'no-existe'), []);
+});
+
+test('#3221 · resolveSkillChain salta fallbacks con referencias rotas (sin crashear)', () => {
+  // Caso defensivo: el JSON declara un fallback a un provider inexistente.
+  // El validator emite error en validate(), pero resolveSkillChain debe
+  // devolver la chain válida sin el item roto (para no romper en runtime
+  // si alguien edita el JSON en caliente).
+  const cfg = baseValid();
+  cfg.providers['openai-codex'] = providerOpenAICodex();
+  cfg.skills['tester'] = {
+    provider: 'anthropic',
+    fallbacks: [
+      { provider: 'openai-codex', model_override: 'gpt-5-codex' },
+      { provider: 'provider-fantasma', model_override: 'foo' },
+    ],
+  };
+  const chain = validateMod.resolveSkillChain(cfg, 'tester');
+  assert.equal(chain.length, 2); // primary + 1 fallback válido (el roto se salta)
+  assert.equal(chain[0].provider, 'anthropic');
+  assert.equal(chain[1].provider, 'openai-codex');
+});
+
+// ─── CA-2 · drift detector contra agent-models.json canónico ────────────────
+
+test('#3221 canónico · 17 skills con LLM declarados (memoria sign-off 2026-05-15)', () => {
+  // El JSON canónico debe declarar al menos los 17 skills del CA-2 del issue.
+  // Lista exacta: backend-dev, pipeline-dev, android-dev, web-dev, build,
+  // tester, security, qa, review, po, ux, doc, planner, guru, ops, perf, auth.
+  const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  const cfg = JSON.parse(raw);
+  const declared = Object.keys(cfg.skills || {});
+  const expected17 = [
+    'backend-dev', 'pipeline-dev', 'android-dev', 'web-dev',
+    'build', 'tester', 'security', 'qa', 'review',
+    'po', 'ux', 'doc', 'planner', 'guru', 'ops', 'perf', 'auth',
+  ];
+  for (const skill of expected17) {
+    assert.ok(declared.includes(skill), `skill canónico falta: ${skill}`);
+  }
+});
+
+test('#3221 canónico · Gemini EXCLUIDO en los 10 skills con TOS-risk (memoria sign-off)', () => {
+  // Memoria project_multi-provider-per-agent-order: Gemini queda fuera en
+  // backend-dev, pipeline-dev, tester, security, review, doc, planner,
+  // guru, ops, auth (10 skills que tocan secrets/código/estrategia).
+  const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  const cfg = JSON.parse(raw);
+  const tosExcluded = [
+    'backend-dev', 'pipeline-dev', 'tester', 'security', 'review',
+    'doc', 'planner', 'guru', 'ops', 'auth',
+  ];
+  for (const skill of tosExcluded) {
+    const skillDef = cfg.skills[skill];
+    assert.ok(skillDef, `skill ${skill} ausente del canónico`);
+    const fallbacks = skillDef.fallbacks || [];
+    const providerNames = fallbacks.map((fb) => typeof fb === 'string' ? fb : fb.provider);
+    assert.ok(!providerNames.includes('gemini-google'),
+      `Gemini NO debe estar en fallbacks de ${skill} (TOS sensible) — declarados: ${providerNames.join(', ')}`);
+  }
+});
+
+test('#3221 canónico · build primary = groq (ahorro primero, memoria sign-off)', () => {
+  const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  const cfg = JSON.parse(raw);
+  const skillDef = cfg.skills['build'];
+  assert.ok(skillDef, 'build skill ausente');
+  assert.equal(skillDef.provider, 'groq', 'build primary debe ser groq (memoria sign-off 2026-05-15)');
+});
+
+test('#3221 canónico · qa/po/ux declaran Gemini en fallbacks (necesitan vision multimodal)', () => {
+  // qa procesa video del run, po/ux procesan screenshots. Memoria sign-off
+  // los autoriza con Gemini en fallbacks pese a TOS porque no procesan
+  // secrets directos (qa lee output del emulador, po lee features, ux mockups).
+  const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  const cfg = JSON.parse(raw);
+  for (const skill of ['qa', 'po', 'ux']) {
+    const skillDef = cfg.skills[skill];
+    const providerNames = (skillDef.fallbacks || [])
+      .map((fb) => typeof fb === 'string' ? fb : fb.provider);
+    assert.ok(providerNames.includes('gemini-google'),
+      `${skill} debe declarar gemini-google en fallbacks (vision multimodal) — declarados: ${providerNames.join(', ')}`);
+  }
+});
+
+test('#3221 canónico · resolveSkillChain enumera primary + fallbacks para los 17 skills', () => {
+  // Drift detector funcional: para cada skill declarado en el canónico,
+  // resolveSkillChain debe devolver una chain no vacía con primary primero.
+  const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
+  const cfg = JSON.parse(raw);
+  const expected17 = [
+    'backend-dev', 'pipeline-dev', 'android-dev', 'web-dev',
+    'build', 'tester', 'security', 'qa', 'review',
+    'po', 'ux', 'doc', 'planner', 'guru', 'ops', 'perf', 'auth',
+  ];
+  for (const skill of expected17) {
+    const chain = validateMod.resolveSkillChain(cfg, skill);
+    assert.ok(chain.length >= 1, `${skill} debe tener al menos primary; chain=${JSON.stringify(chain)}`);
+    assert.equal(chain[0].source, 'primary', `${skill} chain[0] debe ser primary`);
+    for (let i = 1; i < chain.length; i++) {
+      assert.equal(chain[i].source, 'fallback', `${skill} chain[${i}] debe ser fallback`);
+      assert.ok(chain[i].provider, `${skill} fallback[${i-1}] sin provider`);
+      assert.ok(chain[i].model, `${skill} fallback[${i-1}] sin model`);
+    }
+  }
+});
+
+test('#3221 canónico · validate() pasa contra el archivo real', () => {
+  // Empírico: el archivo .pipeline/agent-models.json en disco debe validar
+  // sin errores (CA-3 del issue). Si rompe, el boot del pulpo falla.
+  const r = validateMod.validate(validateMod.CANONICAL_JSON_PATH);
+  assert.equal(r.ok, true, `agent-models.json canónico inválido; errores: ${JSON.stringify(r.errors)}`);
+});

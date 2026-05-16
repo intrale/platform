@@ -1,6 +1,6 @@
 {
   "$schema": "./agent-models.schema.json",
-  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5). Documento canónico: docs/pipeline-multi-provider.md §3.1 + §3.5. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077).",
+  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free).",
 
   "default_provider": "anthropic",
 
@@ -116,23 +116,182 @@
   },
 
   "skills": {
-    "guru":         { "provider": "anthropic" },
-    "security":     { "provider": "anthropic" },
-    "po":           { "provider": "anthropic" },
-    "ux":           { "provider": "anthropic" },
-    "planner":      { "provider": "anthropic" },
-    "review":       { "provider": "anthropic" },
+    "backend-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+    "pipeline-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+    "android-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+    "web-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "build": {
+      "provider": "groq",
+      "model_override": "llama-3.3-70b-versatile",
+      "fallbacks": [
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "anthropic", "model_override": "claude-haiku-4-5" }
+      ]
+    },
+
+    "tester": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "security": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "qa": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "review": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "po": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "ux": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "doc": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "planner": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "guru": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "ops": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "perf": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
+    "auth": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    },
+
     "refinar":      { "provider": "anthropic" },
 
-    "backend-dev":  { "provider": "anthropic" },
-    "android-dev":  { "provider": "anthropic" },
-    "web-dev":      { "provider": "anthropic" },
-    "pipeline-dev": { "provider": "anthropic" },
-
-    "tester":       { "provider": "deterministic" },
-    "qa":           { "provider": "anthropic" },
-
-    "build":        { "provider": "deterministic" },
     "linter":       { "provider": "deterministic" },
     "delivery":     { "provider": "deterministic" }
   }

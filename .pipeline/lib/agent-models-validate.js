@@ -497,33 +497,73 @@ function validateCrossReferences(config) {
           });
         }
       }
-      // #3177 — fallbacks (opcional): cada item debe estar declarado en providers
-      // y NO repetir el primario. Validación cruzada estricta para evitar UI
-      // edits que dejen el JSON con referencias rotas.
+      // #3177 / #3221 — fallbacks (opcional): cada item debe estar declarado
+      // en providers y NO repetir el primario. Cross-validation estricta para
+      // evitar UI/handmade edits que dejen el JSON con referencias rotas.
+      //
+      // #3221 — los items aceptan dos shapes (backward-compat):
+      //   (a) string con el nombre del provider (legacy).
+      //   (b) object {provider, model_override} para pinear modelo concreto.
+      // El validador normaliza ambos a `{ providerName, modelOverride }` antes
+      // de cruzar contra providers + ALLOWED_MODELS_BY_LAUNCHER.
       if (skillDef && Array.isArray(skillDef.fallbacks)) {
         for (let i = 0; i < skillDef.fallbacks.length; i++) {
           const fb = skillDef.fallbacks[i];
-          if (typeof fb !== 'string' || fb.length === 0) {
+          let providerName = null;
+          let modelOverride = null;
+          if (typeof fb === 'string') {
+            providerName = fb;
+          } else if (fb && typeof fb === 'object' && !Array.isArray(fb)
+                     && typeof fb.provider === 'string') {
+            providerName = fb.provider;
+            modelOverride = typeof fb.model_override === 'string' ? fb.model_override : null;
+          } else {
             errors.push({
               path: `#/skills/${skillKey}/fallbacks/${i}`,
-              message: `fallback en posición ${i} debe ser string no vacío`,
-              fix: 'editar fallbacks dejando solo nombres de providers válidos',
+              message: `fallback en posición ${i} debe ser string o object {provider, model_override}`,
+              fix: 'editar fallbacks dejando string con nombre del provider, o objeto con provider + model_override opcional',
             });
             continue;
           }
-          if (!providerKeys.includes(fb)) {
+          if (!providerName || providerName.length === 0) {
             errors.push({
               path: `#/skills/${skillKey}/fallbacks/${i}`,
-              message: `fallback "${fb}" no está declarado en providers (válidos: [${providerKeys.join(', ')}])`,
-              fix: `declarar "${fb}" en providers o quitarlo de fallbacks`,
+              message: `fallback en posición ${i} tiene provider vacío`,
+              fix: 'declarar provider no vacío en el fallback',
+            });
+            continue;
+          }
+          if (!providerKeys.includes(providerName)) {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback "${providerName}" no está declarado en providers (válidos: [${providerKeys.join(', ')}])`,
+              fix: `declarar "${providerName}" en providers o quitarlo de fallbacks`,
             });
           }
-          if (fb === skillDef.provider) {
+          if (providerName === skillDef.provider) {
             errors.push({
               path: `#/skills/${skillKey}/fallbacks/${i}`,
-              message: `fallback "${fb}" duplica el provider primario — no tiene sentido como fallback`,
+              message: `fallback "${providerName}" duplica el provider primario — no tiene sentido como fallback`,
               fix: 'quitar el provider primario de la lista de fallbacks',
             });
+          }
+          // #3221 — model_override del fallback debe estar en ALLOWED_MODELS_BY_LAUNCHER
+          // del launcher del provider apuntado (cuando la allowlist existe).
+          // Anti-leak idéntico al de provider.model arriba.
+          if (modelOverride && providerKeys.includes(providerName)
+              && config.providers[providerName]
+              && typeof config.providers[providerName].launcher === 'string') {
+            const launcher = config.providers[providerName].launcher;
+            const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[launcher];
+            if (Array.isArray(allowedModels) && allowedModels.length > 0
+                && !allowedModels.includes(modelOverride)) {
+              const safeValue = looksLikeSecret(modelOverride) ? '[REDACTED]' : modelOverride;
+              errors.push({
+                path: `#/skills/${skillKey}/fallbacks/${i}/model_override`,
+                message: `model_override "${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+                fix: 'usar uno de los modelos soportados por el launcher del provider fallback, o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js',
+              });
+            }
           }
         }
       }
@@ -963,6 +1003,74 @@ function stringifyContextValue(v) {
   return String(v);
 }
 
+// ─── Helper: resolución de fallback entry (#3221) ────────────────────────────
+
+/**
+ * Normaliza un fallback entry a `{ provider, model_override }` para que el
+ * runtime consumer (dispatch-with-fallback.js) tenga una API estable
+ * independiente de la shape declarada en agent-models.json (string suelto vs
+ * objeto). Devuelve null si el entry no es válido — el caller decide skip vs
+ * crash; la validación primaria ocurre en validateCrossReferences.
+ *
+ * Casos:
+ *   resolveFallbackEntry('groq')                              → { provider: 'groq', model_override: null }
+ *   resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5' })
+ *                                                             → { provider: 'openai-codex', model_override: 'gpt-5' }
+ *   resolveFallbackEntry({ provider: 'groq' })                → { provider: 'groq', model_override: null }
+ *   resolveFallbackEntry(null|123|[])                         → null
+ *   resolveFallbackEntry({ })                                 → null (sin provider)
+ */
+function resolveFallbackEntry(entry) {
+  if (typeof entry === 'string' && entry.length > 0) {
+    return { provider: entry, model_override: null };
+  }
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)
+      && typeof entry.provider === 'string' && entry.provider.length > 0) {
+    const modelOverride = (typeof entry.model_override === 'string' && entry.model_override.length > 0)
+      ? entry.model_override
+      : null;
+    return { provider: entry.provider, model_override: modelOverride };
+  }
+  return null;
+}
+
+/**
+ * Devuelve el orden completo de attempts (primary + fallbacks normalizados)
+ * para un skill dado, leyendo `config.skills[skill]` + `config.providers`.
+ * Cada attempt es `{ provider, model, source }` donde `source ∈ {'primary','fallback'}`
+ * y `model` es el override si está declarado, o el `model` default del provider.
+ *
+ * Útil para tests y para el dispatcher cuando quiera previsualizar la chain
+ * sin llamar a quotaModule.shouldGateSpawn.
+ *
+ * Devuelve `[]` si el skill no existe o el provider primario no resuelve.
+ */
+function resolveSkillChain(config, skill) {
+  if (!config || !config.skills || !config.skills[skill]) return [];
+  if (!config.providers || typeof config.providers !== 'object') return [];
+  const skillCfg = config.skills[skill];
+  const providers = config.providers;
+
+  const chain = [];
+  const primaryProvider = skillCfg.provider;
+  if (typeof primaryProvider !== 'string' || !providers[primaryProvider]) return [];
+  const primaryModel = (typeof skillCfg.model_override === 'string' && skillCfg.model_override.length > 0)
+    ? skillCfg.model_override
+    : (providers[primaryProvider].model || null);
+  chain.push({ provider: primaryProvider, model: primaryModel, source: 'primary' });
+
+  const fallbacks = Array.isArray(skillCfg.fallbacks) ? skillCfg.fallbacks : [];
+  for (const raw of fallbacks) {
+    const norm = resolveFallbackEntry(raw);
+    if (!norm) continue;
+    const providerDef = providers[norm.provider];
+    if (!providerDef) continue; // referencia rota — validateCrossReferences ya emite el error
+    const model = norm.model_override || providerDef.model || null;
+    chain.push({ provider: norm.provider, model, source: 'fallback' });
+  }
+  return chain;
+}
+
 // ─── Helpers de export para schema sincronización ────────────────────────────
 
 /**
@@ -1036,6 +1144,8 @@ module.exports = {
   validate,
   validateOrExit,
   expandSpawnArgs,
+  resolveFallbackEntry,
+  resolveSkillChain,
 
   // Helpers (testing).
   loadSchema,

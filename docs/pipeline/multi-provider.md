@@ -356,7 +356,10 @@ Si necesitás una restricción más fina ("este skill solo puede usar Haiku o So
     "<skill-name>": {
       "provider": "<provider-name>",
       "model_override": "<model-id-opcional>",
-      "fallbacks": ["<provider-1>", "<provider-2>"]
+      "fallbacks": [
+        "<provider-legacy>",
+        { "provider": "<provider-name>", "model_override": "<model-id>" }
+      ]
     }
   }
 }
@@ -366,7 +369,7 @@ Si necesitás una restricción más fina ("este skill solo puede usar Haiku o So
 |-------|------|-------------|-------------|
 | `provider` | string | sí | Debe existir como clave en `providers`. |
 | `model_override` | string | no | Modelo específico que sobreescribe el `model` default del provider. |
-| `fallbacks` | array de string | no | Lista ordenada de providers alternativos. Consumido por `dispatch-with-fallback.js` cuando el primary está gated por cuota (#3198, ver [§2.3](#23-fallbacks)). |
+| `fallbacks` | array de `string` o `{provider, model_override}` | no | Lista ordenada de providers alternativos. Consumido por `dispatch-with-fallback.js` cuando el primary está gated por cuota (#3198, ver [§2.3](#23-fallbacks)). Desde **#3221** acepta dos shapes (backward-compatible): (a) string suelto con el nombre del provider (usa el `model` default del provider), o (b) objeto `{provider, model_override}` que pinea el modelo concreto del provider para ese skill — necesario cuando, por ejemplo, `qa` quiere `gpt-5` (vision) y no el `gpt-5-codex` default de `openai-codex`. Cross-validación en `lib/agent-models-validate.js`: cada provider del fallback debe existir en `providers[]`, no puede duplicar el primario, y el `model_override` debe estar en `ALLOWED_MODELS_BY_LAUNCHER` del launcher apuntado. |
 
 ### 4.2 Skills determinísticos (sin LLM)
 
@@ -427,7 +430,40 @@ Resuelve a `provider: 'anthropic', model: 'claude-sonnet-4-6'` (5× más barato 
 
 Resuelve a `provider: 'openai-codex', model: 'gpt-5-codex'`. Si OpenAI agota cuota, el dispatcher itera `fallbacks: ["anthropic"]` (#3198 — consumer runtime activo) y, si Anthropic está disponible, spawnea con `provider: 'anthropic'` automáticamente; si toda la chain está gated, el archivo va a `pendiente/` esperando reset ([§2.3](#23-fallbacks)).
 
-### 4.4 Pasos para hacer lo mismo desde la UI del dashboard
+### 4.4 Orden canónico por agente — sign-off Leo 2026-05-15 (#3221)
+
+Esta tabla refleja la **fuente autoritativa**: la memoria `project_multi-provider-per-agent-order` (sign-off Leo 2026-05-15). El archivo `.pipeline/agent-models.json` carga este orden 1:1. Los tests en `lib/__tests__/agent-models-validate.test.js` actúan como drift detector — si la tabla cambia, los tests fallan y avisan.
+
+Convenciones:
+- **Gemini EXCLUIDO**: el skill toca código fuente / secrets / estrategia. TOS AI Studio entrena con prompts free → riesgo de fuga.
+- **Gemini incluido**: el skill procesa multimodal (video QA, screenshots, mockups) y/o no toca código sensible.
+- Cuando un fallback aparece con `model_override` específico, es porque el `model` default del provider no es adecuado para ese skill (ej. `qa` necesita `gpt-5` con vision, no `gpt-5-codex` text-only).
+
+| Skill | Primary | Fallback 1 | Fallback 2 | Fallback 3 | Fallback 4 | Notas |
+|-------|---------|------------|------------|------------|------------|-------|
+| `backend-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
+| `pipeline-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
+| `android-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente Android — Gemini OK |
+| `web-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente web — Gemini OK |
+| `build` | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | gemini-google / gemini-2.0-flash | openai-codex / gpt-5-codex | claude / haiku-4-5 | Excepción: **ahorro primero** (memoria `feedback_free-providers-rule`). Runtime hardcodea deterministic — esta config es intent forward-looking |
+| `tester` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (lee código sensible). Runtime hardcodea deterministic |
+| `security` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (gate pre-merge sensible) |
+| `qa` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | Vision multimodal (video) — Gemini **incluido** porque solo procesa output de emulador, no secrets |
+| `review` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (lee diffs con secrets/JWT) |
+| `po` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | Vision (video QA + screenshots) — Gemini OK por TOS |
+| `ux` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | Vision (mockups/screenshots) — Gemini OK |
+| `doc` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (estrategia de producto) |
+| `planner` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
+| `guru` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (fragmentos código) |
+| `ops` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
+| `perf` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | Sin secrets — Gemini OK |
+| `auth` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (config interna del entorno) |
+
+> **Sobre la nota "sonnet-4-7" vs "sonnet-4-6" de la memoria:** la memoria original escribió `sonnet-4-6` para varios skills; el catálogo `ALLOWED_MODELS_BY_LAUNCHER` declara `claude-sonnet-4-7` siguiendo la convención del cluster (4-7 para Opus, 4-5 para Haiku). El JSON canónico usa `claude-sonnet-4-7` (modelo validado en la allowlist). Si Anthropic libera `claude-sonnet-4-6` en algún momento, agregarlo a `ALLOWED_MODELS_BY_LAUNCHER.claude` requiere review humano.
+
+> **Sobre `tester` y `build` con primary LLM:** la memoria los declara con LLM como primary, pero el runtime mantiene la allowlist hardcoded `DETERMINISTIC_SKILLS = ['build', 'tester', 'linter', 'delivery']` en `resolve-provider.js` que fuerza spawn determinístico (Node puro, sin LLM). La config LLM en `agent-models.json` es **forward-looking** — documenta la decisión por skill por si una historia futura introduce variantes LLM-augmented (ej. `tester` que invoque Claude para generar tests a partir de Gherkin). Hasta entonces, runtime ignora `fallbacks[]` para estos skills.
+
+### 4.5 Pasos para hacer lo mismo desde la UI del dashboard
 
 1. Abrir `http://localhost:8080/dashboard.html#multi-provider`.
 2. Tab **2 · Por agente**.

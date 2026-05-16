@@ -577,3 +577,150 @@ test('resolveSpawnWithFallback ignora fallback que duplica el primary', () => {
     );
     assert.ok(evidence, 'evidence de defensa contra duplicate_primary o cycle');
 });
+
+// =============================================================================
+// #3221 · shape nuevo en fallbacks (object {provider, model_override})
+//
+// El runtime de #3198 nació consumiendo strings. #3221 extiende el schema a
+// oneOf [string, {provider, model_override}] para que cada fallback pueda
+// pinear su modelo concreto. Estos tests cubren la rama nueva del dispatcher.
+// =============================================================================
+
+test('#3221 · fallback object {provider, model_override} usa model pin-eado del entry', () => {
+    // qa quiere gpt-5 (vision) como fallback de openai-codex, NO el gpt-5-codex
+    // default que pinea el provider en la sección providers.
+    const models = baseAgentModels();
+    // override del provider default para distinguir "default del provider" vs
+    // "override del entry de fallback".
+    models.providers['openai-codex'].model = 'gpt-5-codex'; // default del provider
+    models.skills.qa = {
+        provider: 'anthropic',
+        model_override: 'claude-opus-4-7',
+        fallbacks: [
+            { provider: 'openai-codex', model_override: 'gpt-5' }, // pin-eado en fallback
+        ],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+    const notify = fakeNotify();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'qa',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }), // primary gated
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex']),
+        auditLog: audit,
+        notify,
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'openai-codex');
+    assert.equal(r.model, 'gpt-5', 'debe usar el model_override del entry de fallback, no el default del provider');
+    const selected = audit.entries.find((e) => e.entry.event === 'fallback_selected');
+    assert.ok(selected, 'audit fallback_selected esperado');
+    assert.equal(selected.entry.fallback_model, 'gpt-5');
+});
+
+test('#3221 · fallback object sin model_override usa model default del provider', () => {
+    // Backward-compat funcional: si el object solo declara provider, el modelo
+    // sale del default de la sección providers (comportamiento idéntico al string).
+    const models = baseAgentModels();
+    models.providers['openai-codex'].model = 'gpt-5-codex';
+    models.skills.security = {
+        provider: 'anthropic',
+        fallbacks: [
+            { provider: 'openai-codex' }, // sin model_override
+        ],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'security',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex']),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.provider, 'openai-codex');
+    assert.equal(r.model, 'gpt-5-codex', 'sin model_override del entry, usa el default del provider');
+});
+
+test('#3221 · fallbacks mixto (string + object) ambos resuelven correctamente', () => {
+    const models = baseAgentModels();
+    models.providers['openai-codex'].model = 'gpt-5-codex';
+    models.providers['gemini'].model = 'gemini-pro';
+    models.skills.planner = {
+        provider: 'anthropic',
+        fallbacks: [
+            'openai-codex',                                          // string legacy
+            { provider: 'gemini', model_override: 'gemini-custom' }, // object con pin
+        ],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+
+    // Caso 1: primary gated → toma el primer fallback (string).
+    let r = resolveSpawnWithFallback({
+        skill: 'planner',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'gemini']),
+        auditLog: fakeAuditLog(),
+        notify: fakeNotify(),
+    });
+    assert.equal(r.provider, 'openai-codex');
+    assert.equal(r.model, 'gpt-5-codex'); // default del provider (legacy shape)
+
+    // Caso 2: primary + primer fallback gated → toma el segundo (object con pin).
+    r = resolveSpawnWithFallback({
+        skill: 'planner',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic', 'openai-codex'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'gemini']),
+        auditLog: fakeAuditLog(),
+        notify: fakeNotify(),
+    });
+    assert.equal(r.provider, 'gemini');
+    assert.equal(r.model, 'gemini-custom'); // pin-eado por el entry de fallback
+});
+
+test('#3221 · fallback shape inválido (number 42) → skip + audit fallback_invalid_shape', () => {
+    const models = baseAgentModels();
+    models.skills.tester = {
+        provider: 'anthropic',
+        fallbacks: [42, 'openai-codex'], // 42 inválido, debe saltarlo
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'tester',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex']),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    // Debe haber saltado el item inválido y elegido el siguiente válido.
+    assert.equal(r.provider, 'openai-codex');
+    const invalidShape = audit.entries.find((e) => e.entry.event === 'fallback_invalid_shape');
+    assert.ok(invalidShape, 'audit fallback_invalid_shape esperado');
+});

@@ -359,7 +359,35 @@ function resolveSpawnWithFallback(opts = {}) {
             break;
         }
 
-        const fbName = fallbacks[i];
+        // #3221 — el item de fallbacks puede ser string (legacy) o
+        // {provider, model_override}. Normalizamos a `fbName` (provider key)
+        // y `fbModelOverride` (modelo pin-eado o null). La resolución del
+        // shape vive en lib/agent-models-validate.js para una sola fuente
+        // de verdad — si llega null acá es porque el item del JSON está
+        // mal formado (validator ya lo emite como error, defense in depth
+        // adicional: skipear con audit).
+        const fbEntry = fallbacks[i];
+        let fbName, fbModelOverride;
+        if (typeof fbEntry === 'string') {
+            fbName = fbEntry;
+            fbModelOverride = null;
+        } else if (fbEntry && typeof fbEntry === 'object' && !Array.isArray(fbEntry)
+                   && typeof fbEntry.provider === 'string') {
+            fbName = fbEntry.provider;
+            fbModelOverride = typeof fbEntry.model_override === 'string' ? fbEntry.model_override : null;
+        } else {
+            auditAppend({
+                pipelineDir, fsImpl, sanitize, auditLog, now: _now,
+                entry: {
+                    event: 'fallback_invalid_shape',
+                    skill,
+                    issue: issue || null,
+                    fallback_index: i,
+                    raw_excerpt: `entry_type=${typeof fbEntry}`,
+                },
+            });
+            continue;
+        }
 
         // 3.a — cycle/anti-duplicate
         if (tried.has(fbName)) {
@@ -440,8 +468,22 @@ function resolveSpawnWithFallback(opts = {}) {
         }
 
         // 3.e — candidato libre. Resolver model para el fallback.
+        // #3221 — orden de precedencia para `fbModel`:
+        //   1. `fbModelOverride` del entry de fallback (string|{provider,model_override}).
+        //      Es lo que pin-ea el modelo concreto del provider (ej. qa quiere
+        //      gpt-5 en lugar del gpt-5-codex default de openai-codex).
+        //   2. `provider.model` default declarado en la sección providers.
+        //   3. `models.defaults.model` (fallback histórico).
+        //   4. null.
+        //
+        // OJO: pre-#3221 el código usaba `skillCfg.model_override` acá, lo cual
+        // era incorrecto — ese override aplica al provider PRIMARIO, no al
+        // fallback (cada fallback puede correr un modelo distinto del provider
+        // distinto). Si todavía hay configs legacy con `fallbacks: [string]`,
+        // `fbModelOverride` queda null y el fallback usa el `model` default
+        // del provider (comportamiento previo preservado).
         const fbProviderDef = (models && models.providers && models.providers[fbName]) || null;
-        const fbModel = (skillCfg && skillCfg.model_override)
+        const fbModel = fbModelOverride
             || (fbProviderDef && fbProviderDef.model)
             || (models && models.defaults && models.defaults.model)
             || null;
