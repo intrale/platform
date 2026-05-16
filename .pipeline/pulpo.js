@@ -991,7 +991,9 @@ function issueExistsInPipeline(issueNum, pipelineName) {
       // Solo buscar en estados activos — procesado significa que ya terminó esa fase
       // bloqueado-humano cuenta como activo: el issue está pausado pero ocupando slot conceptual,
       // no debe re-intakearse ni relanzarse hasta que /unblock lo desbloquee (issue #2478)
-      for (const estado of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano']) {
+      // bloqueado-dependencias (issue #3229) idem: el brazoDesbloqueo lo libera cuando
+      // todas las deps cierren — mientras tanto, no debe re-intakearse ni relanzarse.
+      for (const estado of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano', 'bloqueado-dependencias']) {
         const dir = path.join(PIPELINE, pName, fase, estado);
         try {
           for (const f of fs.readdirSync(dir)) {
@@ -2747,10 +2749,19 @@ function brazoBarrido(config) {
           // #2317: clasificar los rechazos por tipo. Si TODOS los motivos
           // apuntan a infra (ENOTFOUND/ETIMEDOUT/etc) marcamos el rebote como
           // `rebote_tipo: infra` para que NO cuente contra el circuit breaker.
+          //
+          // #3229 — pasamos también los campos YAML estructurados que el
+          // agente pudo haber emitido (rebote_categoria, depende_de). Antes
+          // se construía solo con `motivo` y el classifier no veía la
+          // categoría declarativa cuando el agente la emitía como YAML
+          // top-level (resultaba en `human_block` por fallback).
           const motivosClasificados = rechazados.map(r => ({
             skill: skillFromFile(r.file.name),
             motivo: r.motivo || '',
             clasificacion: precheck.classifyError(r.motivo || '') || 'codigo',
+            // Hints estructurados del YAML del agente (pueden ser undefined)
+            rebote_categoria: r.rebote_categoria || null,
+            depende_de: Array.isArray(r.depende_de) ? r.depende_de : null,
           }));
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
@@ -2772,6 +2783,10 @@ function brazoBarrido(config) {
                 motivo: m.motivo,
                 classifyErrorResult: m.clasificacion,
                 isRoutingMismatch: false, // routing se evalúa más abajo, mantener orden
+                // #3229 — hints estructurados del YAML del agente. Cierra el
+                // puente roto entre guru (clasifica) y barrido (consumer).
+                rebote_categoria: m.rebote_categoria,
+                dependsOn: m.depende_de,
               });
               if (result.category !== 'dependency_block') continue;
 
@@ -2827,30 +2842,41 @@ function brazoBarrido(config) {
                 break;
               }
 
-              // Mover archivos de la fase actual a archivado/ — el issue queda
-              // fuera del flujo activo hasta que el brazoDesbloqueo le quite el
-              // label. Mismo patrón que la rama humanBlock más abajo.
-              for (const a of archivos) {
-                const destArch = path.join(fasePath(pipelineName, fase), 'archivado');
-                try { fs.mkdirSync(destArch, { recursive: true }); moveFile(a.path, destArch); } catch {}
+              // #3229 — Mover archivos a `bloqueado-dependencias/` (NO a
+              // `archivado/`). La segregación física hace que:
+              //   - dashboards/auditoría distingan needs-human de blocked-deps,
+              //   - el brazoDesbloqueo pueda reingresar los archivos a
+              //     `pendiente/` cuando cierren todas las deps,
+              //   - los motivos no se confundan ("archivado" implicaba
+              //     descartado/manual).
+              try {
+                reboteClassifier.writeDependencyBlockMarker({
+                  issue: parseInt(issue),
+                  skill: skillDep,
+                  phase: fase,
+                  pipeline: pipelineName,
+                  dependsOn: result.dependsOn,
+                  reason: motivoSanitized,
+                });
+              } catch (e) {
+                log('barrido', `[WARN] #${issue} writeDependencyBlockMarker falló (no bloqueante): ${e.message}`);
               }
-              for (const estado of ['pendiente', 'trabajando']) {
-                const dir = path.join(fasePath(pipelineName, fase), estado);
-                try {
-                  for (const f of fs.readdirSync(dir)) {
-                    if (f.startsWith(issue + '.') && !f.startsWith('.')) {
-                      const archDir = path.join(fasePath(pipelineName, fase), 'archivado');
-                      fs.mkdirSync(archDir, { recursive: true });
-                      try { moveFile(path.join(dir, f), archDir); } catch {}
-                    }
-                  }
-                } catch {}
+
+              try {
+                const movResult = reboteClassifier.moveIssueFilesToDependencyBlock({
+                  issue: parseInt(issue),
+                  pipeline: pipelineName,
+                  phase: fase,
+                });
+                log('barrido', `📦 #${issue} archivos movidos a bloqueado-dependencias/ (count=${movResult.moved})`);
+              } catch (e) {
+                log('barrido', `[WARN] #${issue} moveIssueFilesToDependencyBlock falló: ${e.message}`);
               }
 
               const depsLabel = result.dependsOn.length > 0
                 ? result.dependsOn.map(n => '#' + n).join(',')
                 : '(asset)';
-              log('barrido', `🪢 #${issue} → blocked:dependencies (skill=${skillDep}, deps=${depsLabel}) — sin rebote, sin marker humano, esperando brazoDesbloqueo.`);
+              log('barrido', `🪢 #${issue} → blocked:dependencies (skill=${skillDep}, deps=${depsLabel}) — bloqueado-dependencias/, label blocked:dependencies. Sin needs-human, esperando brazoDesbloqueo.`);
               try {
                 sendTelegram(`🪢 Issue #${issue} bloqueado por dependencias — esperando ${depsLabel}. El pipeline destraba automáticamente al cerrar.`);
               } catch {}
@@ -4006,7 +4032,43 @@ function brazoLanzamiento(config) {
     }
 
     // 0b. BLOCKED: no lanzar issues con blocked:dependencies
+    //
+    // #3229 — Simetría con la rama needs-human de más abajo: si el label se
+    // aplicó DESPUÉS de que el archivo entró a pendiente/ (ej. label puesto
+    // a mano o por servicio-github post-intake), movemos el archivo a
+    // `bloqueado-dependencias/` para que el dashboard lo vea segregado y
+    // el brazoDesbloqueo pueda devolverlo a pendiente/ al destrabar.
     if (issueLbls.includes('blocked:dependencies')) {
+      try {
+        const blockedDepDir = path.join(fasePath(pipelineName, fase), 'bloqueado-dependencias');
+        fs.mkdirSync(blockedDepDir, { recursive: true });
+        const targetFile = path.join(blockedDepDir, archivo.name);
+        if (!fs.existsSync(targetFile)) {
+          try { fs.renameSync(archivo.path, targetFile); }
+          catch {
+            try { fs.copyFileSync(archivo.path, targetFile); fs.unlinkSync(archivo.path); } catch {}
+          }
+          // Dejar .reason.json mínimo si no existía — el brazoDesbloqueo lo
+          // necesita para saber a qué fase devolver el archivo al destrabar.
+          const reasonFile = targetFile + '.reason.json';
+          if (!fs.existsSync(reasonFile)) {
+            try {
+              fs.writeFileSync(reasonFile, JSON.stringify({
+                issue: parseInt(issue),
+                skill: skillFromFile(archivo.name),
+                phase: fase,
+                pipeline: pipelineName,
+                depends_on: [],
+                reason: 'Label blocked:dependencies aplicado en GitHub — pipeline pausa hasta que el brazoDesbloqueo verifique que todas las deps cerraron.',
+                blocked_at: new Date().toISOString(),
+              }, null, 2));
+            } catch {}
+          }
+          log('lanzamiento', `🪢 #${issue} movido a bloqueado-dependencias/ (label blocked:dependencies aplicado post-intake)`);
+        }
+      } catch (e) {
+        log('lanzamiento', `[WARN] #${issue} no se pudo mover a bloqueado-dependencias/: ${e.message}`);
+      }
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
       continue;
     }
@@ -8406,6 +8468,24 @@ async function brazoDesbloqueoImpl(config) {
               ['issue', 'edit', String(issue.number), '--remove-label', 'blocked:dependencies', '--repo', 'intrale/platform'],
               10000
             );
+
+            // #3229 — Reingresar archivos del filesystem: si el barrido movió
+            // el issue a `bloqueado-dependencias/` (post-#3229), liberarlo a
+            // `pendiente/` de la fase original. Idempotente: si no hay
+            // marker (caso pre-#3229 o issue label-only sin filesystem move),
+            // moved=0 y seguimos.
+            try {
+              const releaseRes = reboteClassifier.releaseDependencyBlockToPendiente({
+                issue: issue.number,
+              });
+              if (releaseRes.moved > 0) {
+                log('desbloqueo', `🟢 #${issue.number}: ${releaseRes.moved} archivo(s) movido(s) de bloqueado-dependencias/ a ${releaseRes.pipeline}/${releaseRes.phase}/pendiente/`);
+              } else {
+                log('desbloqueo', `🟢 #${issue.number}: sin archivos en bloqueado-dependencias/ (issue label-only, pipeline arrancará via intake)`);
+              }
+            } catch (e) {
+              log('desbloqueo', `[WARN] #${issue.number}: releaseDependencyBlockToPendiente falló (no bloqueante): ${e.message}`);
+            }
 
             // Agregar comentario de desbloqueo
             const unblockComment = `## Dependencias resueltas 🟢\n\nLas siguientes dependencias cerraron: ${depIssueNumbers.map(n => '#' + n).join(', ')}.\n\nEl pipeline reentra a este issue automáticamente.`;

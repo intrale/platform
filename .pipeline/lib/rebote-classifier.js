@@ -65,6 +65,19 @@ const DEPS_LABEL = 'blocked:dependencies';
 const MAX_MOTIVO_LEN = 5000;
 const MAX_DEPS_PER_BLOCK = 20;
 
+// #3229 — Segregación filesystem entre los dos estados conceptualmente distintos:
+//   - bloqueado-humano/         → needs-human, solo libera con /unblock manual
+//   - bloqueado-dependencias/   → blocked:dependencies, libera automático al
+//                                  cerrar todas las deps (brazoDesbloqueo).
+//
+// Antes de #3229, `bloqueado-humano/` recibía AMBOS estados: el barrido del
+// pulpo invocaba reportHumanBlock cuando el motivo no incluía la cadena
+// literal `rebote_categoria: dependency_block` en el texto, aunque el agente
+// emitiese el campo como YAML estructurado. Resultado: dashboards confusos,
+// labels equivocados, tokens desperdiciados en issues que podían destrabarse
+// solos.
+const DEPS_BLOCK_SUBDIR = 'bloqueado-dependencias';
+
 // -----------------------------------------------------------------------------
 // PATRONES DEPENDENCY_BLOCK
 //
@@ -127,6 +140,15 @@ const STRUCTURED_DEPS_LIST = /\b(?:depende_de|depends_on|dependencias)\s*[:=]\s*
  * @param {string} opts.motivo               — texto crudo del rebote
  * @param {number[]} [opts.dependsOn=[]]     — hint estructural de dependencias
  *                                              (si el agente ya las parseó)
+ * @param {string} [opts.rebote_categoria]   — #3229: si el agente ya clasificó
+ *                                              explícitamente como
+ *                                              'dependency_block' o 'human_block'
+ *                                              vía campo YAML top-level, este
+ *                                              hint gana sobre regex sobre el
+ *                                              motivo. Sin esta vía el puente
+ *                                              guru → barrido quedaba roto
+ *                                              cuando la cadena literal no
+ *                                              aparecía en `motivo`.
  * @param {string} [opts.faseDestino]        — fase destino para cross_phase
  * @param {string} [opts.classifyErrorResult] — resultado de precheck.classifyError
  *                                              ('infra' | 'codigo'). Si no se
@@ -161,7 +183,39 @@ function classifyRebote(opts = {}) {
     }
 
     // 2. dependency_block — primer matcher específico
-    //    Prioridad: hint estructural > regex sobre el texto
+    //
+    // Precedencia interna:
+    //   (a) Hint YAML estructurado `rebote_categoria: dependency_block`  [#3229]
+    //   (b) Hint estructural en motivo `rebote_categoria: dependency_block`
+    //   (c) Regex sobre el texto del motivo
+    //
+    // (a) es el camino limpio para agentes que emiten YAML típado; (b) y (c)
+    // siguen vigentes como compat para motivos en texto plano.
+    const explicitCategory = typeof opts.rebote_categoria === 'string'
+        ? opts.rebote_categoria.trim().toLowerCase()
+        : null;
+
+    if (explicitCategory === 'dependency_block') {
+        // Confiamos en el agente — usamos el dependsOn que pasó (sanitizado)
+        // y NO corremos los regex (evitamos falsos negativos por motivos
+        // demasiado cortos o sin patrón estándar).
+        return {
+            category: 'dependency_block',
+            label: DEPS_LABEL,
+            dependsOn: hintDeps,
+            counts_against_circuit_breaker: false,
+            autounlock: {
+                source: 'github-label',
+                mechanism: 'brazo-desbloqueo',
+                label: DEPS_LABEL,
+                note: 'El Pulpo destraba automáticamente cuando todas las dependencias estén CLOSED en GitHub.',
+            },
+            reason_summary: hintDeps.length > 0
+                ? 'Depende de issue(s) abierto(s): ' + hintDeps.map(n => '#' + n).join(', ')
+                : 'Espera asset/recurso no en main (agente declaró dependency_block sin issue numbers)',
+        };
+    }
+
     const depDetect = detectDependencyBlock(motivo, hintDeps);
     if (depDetect.matched) {
         return {
@@ -178,6 +232,21 @@ function classifyRebote(opts = {}) {
             reason_summary: depDetect.assetOnly
                 ? 'Espera asset/recurso no en main'
                 : 'Depende de issue(s) abierto(s): ' + depDetect.dependsOn.map(n => '#' + n).join(', '),
+        };
+    }
+
+    // 2.5 — #3229: si el agente declaró `rebote_categoria: human_block` como
+    // hint YAML explícito, lo respetamos sin pasar por el regex de
+    // isHumanBlockReason. Cubre casos donde el motivo no incluye un patrón
+    // canónico pero el agente sabe que necesita humano (PO ambiguo, etc).
+    if (explicitCategory === 'human_block') {
+        return {
+            category: 'human_block',
+            label: humanBlock.NEEDS_HUMAN_LABEL,
+            dependsOn: [],
+            counts_against_circuit_breaker: false,
+            autounlock: null,
+            reason_summary: 'Bloqueo humano (agente declaró human_block explícitamente)',
         };
     }
 
@@ -385,6 +454,221 @@ function reportDependencyBlock(opts) {
     return { ok: true, issue, label_queued: labelQueued, comment_queued: commentQueued };
 }
 
+// =============================================================================
+// #3229 — Segregación filesystem bloqueado-dependencias/
+// =============================================================================
+//
+// Antes de #3229 el barrido del pulpo movía los archivos del issue a
+// `archivado/` y dejaba al brazoDesbloqueo trabajar solo desde la GitHub-label.
+// El problema: al destrabar, no había forma simple de reingresar el archivo a
+// `pendiente/` (estaba enterrado en archivado/ junto a basura técnica).
+//
+// El nuevo flujo:
+//   1. Barrido detecta dependency_block → mueve archivos a
+//      <pipeline>/<phase>/bloqueado-dependencias/<issue>.<skill>
+//      + .reason.json adyacente con metadata (depende_de, skill, fase, ts).
+//   2. Aplica label `blocked:dependencias` en GitHub (vía reportDependencyBlock).
+//   3. brazoDesbloqueo descubre que todas las deps cerraron → quita label
+//      + escanea `bloqueado-dependencias/` y mueve archivos a `pendiente/`
+//      de la fase original (que está en el .reason.json).
+//
+// `bloqueado-humano/` queda INTACTO — su contrato (release vía /unblock) no
+// cambia. Las dos carpetas son hermanas, mutuamente excluyentes por issue.
+
+/**
+ * Crea/actualiza el marker filesystem para un issue bloqueado por dependencias.
+ * Pareja simétrica de `humanBlock.reportHumanBlock` para el otro estado.
+ *
+ * @param {object} opts
+ * @param {number} opts.issue
+ * @param {string} opts.skill        — skill del agente que detectó la dep
+ * @param {string} opts.phase        — fase donde se detectó (validacion, dev, etc)
+ * @param {string} opts.pipeline     — pipeline (desarrollo/definicion)
+ * @param {number[]} opts.dependsOn  — issue numbers de las dependencias
+ * @param {string} [opts.reason]     — motivo del agente
+ *
+ * @returns {{ ok: boolean, marker_path?: string, error?: string }}
+ */
+function writeDependencyBlockMarker(opts) {
+    const issue = Number(opts.issue);
+    const skill = String(opts.skill || '').trim();
+    const phase = String(opts.phase || '').trim();
+    const pipeline = String(opts.pipeline || 'desarrollo').trim();
+    if (!issue || !skill || !phase) {
+        return { ok: false, error: 'writeDependencyBlockMarker requiere issue, skill, phase' };
+    }
+
+    const targetDir = path.join(PIPELINE_DIR, pipeline, phase, DEPS_BLOCK_SUBDIR);
+    try { fs.mkdirSync(targetDir, { recursive: true }); }
+    catch (e) { return { ok: false, error: 'No se pudo crear ' + DEPS_BLOCK_SUBDIR + ': ' + e.message }; }
+
+    const marker = `${issue}.${skill}`;
+    const targetFile = path.join(targetDir, marker);
+    if (!fs.existsSync(targetFile)) {
+        try { fs.writeFileSync(targetFile, ''); }
+        catch (e) { return { ok: false, error: 'No se pudo crear marker: ' + e.message }; }
+    }
+
+    // Metadata adyacente — el brazoDesbloqueo la lee para saber a qué fase
+    // devolver el archivo cuando destraba.
+    try {
+        fs.writeFileSync(targetFile + '.reason.json', JSON.stringify({
+            issue, skill, phase, pipeline,
+            depends_on: sanitizeDepsList(opts.dependsOn),
+            reason: String(opts.reason || '').slice(0, 1500),
+            blocked_at: new Date().toISOString(),
+        }, null, 2));
+    } catch (e) {
+        // Fail-open: el marker ya está; sin .reason.json el brazo de
+        // desbloqueo cae a defaults (skill='build', phase=BLOCK_SUBDIR padre).
+    }
+
+    return { ok: true, marker_path: targetFile };
+}
+
+/**
+ * Mueve los archivos del issue (desde pendiente/trabajando/listo de la fase
+ * actual) a `bloqueado-dependencias/`. Asociado a `writeDependencyBlockMarker`.
+ *
+ * @param {object} opts
+ * @param {number} opts.issue
+ * @param {string} opts.pipeline
+ * @param {string} opts.phase
+ *
+ * @returns {{ moved: number, target_dir: string }}
+ */
+function moveIssueFilesToDependencyBlock(opts) {
+    const issue = Number(opts.issue);
+    const pipeline = String(opts.pipeline || 'desarrollo').trim();
+    const phase = String(opts.phase || '').trim();
+    if (!issue || !phase) return { moved: 0, target_dir: '' };
+
+    const targetDir = path.join(PIPELINE_DIR, pipeline, phase, DEPS_BLOCK_SUBDIR);
+    try { fs.mkdirSync(targetDir, { recursive: true }); } catch {}
+
+    const prefix = String(issue) + '.';
+    let moved = 0;
+    for (const state of ['pendiente', 'trabajando', 'listo']) {
+        const dir = path.join(PIPELINE_DIR, pipeline, phase, state);
+        let entries = [];
+        try { entries = fs.readdirSync(dir); } catch { continue; }
+        for (const f of entries) {
+            if (!f.startsWith(prefix) || f === '.gitkeep') continue;
+            const src = path.join(dir, f);
+            const dst = path.join(targetDir, f);
+            try {
+                fs.renameSync(src, dst);
+                moved++;
+            } catch {
+                // Si rename falla (cross-device, lock), copiamos+unlink
+                try {
+                    fs.copyFileSync(src, dst);
+                    fs.unlinkSync(src);
+                    moved++;
+                } catch {}
+            }
+        }
+    }
+    return { moved, target_dir: targetDir };
+}
+
+/**
+ * Lista markers presentes en `bloqueado-dependencias/` para todos los
+ * pipelines/fases. Usado por el brazoDesbloqueo para reingresar archivos
+ * cuando las dependencias cierran.
+ *
+ * @returns {Array<{issue, skill, phase, pipeline, file, reason}>}
+ */
+function listDependencyBlockedMarkers() {
+    const PIPELINES = ['desarrollo', 'definicion'];
+    const out = [];
+    for (const pipeline of PIPELINES) {
+        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        let phases = [];
+        try {
+            phases = fs.readdirSync(pipeRoot).filter(f => {
+                try { return fs.statSync(path.join(pipeRoot, f)).isDirectory(); }
+                catch { return false; }
+            });
+        } catch { continue; }
+        for (const phase of phases) {
+            const dir = path.join(pipeRoot, phase, DEPS_BLOCK_SUBDIR);
+            let entries = [];
+            try { entries = fs.readdirSync(dir); } catch { continue; }
+            for (const f of entries) {
+                if (f === '.gitkeep' || f.endsWith('.reason.json')) continue;
+                // Markers válidos tienen forma <issue>.<skill> (≤2 segmentos)
+                if (f.split('.').length > 2) continue;
+                const dot = f.indexOf('.');
+                if (dot <= 0) continue;
+                const issue = Number(f.slice(0, dot));
+                const skill = f.slice(dot + 1);
+                if (!Number.isFinite(issue)) continue;
+                let reason = null;
+                try { reason = JSON.parse(fs.readFileSync(path.join(dir, f + '.reason.json'), 'utf8')); }
+                catch {}
+                out.push({
+                    issue, skill, phase, pipeline,
+                    file: path.join(dir, f),
+                    reason,
+                });
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * Reingresa el archivo de un issue desde `bloqueado-dependencias/` a
+ * `pendiente/` de la fase declarada en `.reason.json` (o `phase` si se pasa).
+ * Idempotente: si el archivo ya no está, devuelve `moved: 0`.
+ *
+ * @param {object} opts
+ * @param {number} opts.issue
+ * @param {string} [opts.targetPhase] — fase explícita; default = lo que dice
+ *                                       el .reason.json del marker.
+ *
+ * @returns {{ moved: number, files: string[], pipeline?: string, phase?: string }}
+ */
+function releaseDependencyBlockToPendiente(opts) {
+    const issue = Number(opts.issue);
+    if (!issue) return { moved: 0, files: [] };
+
+    const markers = listDependencyBlockedMarkers().filter(m => m.issue === issue);
+    if (markers.length === 0) return { moved: 0, files: [] };
+
+    // Agrupar por pipeline+phase (debería ser único, pero defense-in-depth)
+    let pipeline = null;
+    let phase = null;
+    const movedFiles = [];
+
+    for (const m of markers) {
+        const dstPhase = String(opts.targetPhase || m.phase);
+        const dstDir = path.join(PIPELINE_DIR, m.pipeline, dstPhase, 'pendiente');
+        try { fs.mkdirSync(dstDir, { recursive: true }); } catch {}
+        const dst = path.join(dstDir, path.basename(m.file));
+        try {
+            fs.renameSync(m.file, dst);
+            movedFiles.push(dst);
+            pipeline = m.pipeline;
+            phase = dstPhase;
+        } catch {
+            try {
+                fs.copyFileSync(m.file, dst);
+                fs.unlinkSync(m.file);
+                movedFiles.push(dst);
+                pipeline = m.pipeline;
+                phase = dstPhase;
+            } catch {}
+        }
+        // Limpiar el .reason.json adyacente (su info ya está en el archivo
+        // movido o ya no aplica — el agente reentra a pendiente/).
+        try { fs.unlinkSync(m.file + '.reason.json'); } catch {}
+    }
+
+    return { moved: movedFiles.length, files: movedFiles, pipeline, phase };
+}
+
 // -----------------------------------------------------------------------------
 // HELPERS INTERNOS
 // -----------------------------------------------------------------------------
@@ -427,8 +711,14 @@ module.exports = {
     buildDependencyComment,
     reportDependencyBlock,
     sanitizeDepsList,
+    // #3229 — segregación filesystem bloqueado-dependencias/
+    writeDependencyBlockMarker,
+    moveIssueFilesToDependencyBlock,
+    listDependencyBlockedMarkers,
+    releaseDependencyBlockToPendiente,
     DEPENDENCY_PATTERNS,
     DEPENDENCY_ASSET_PATTERNS,
     DEPS_LABEL,
+    DEPS_BLOCK_SUBDIR,
     MAX_DEPS_PER_BLOCK,
 };
