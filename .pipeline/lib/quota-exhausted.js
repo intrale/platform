@@ -170,9 +170,28 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         'billing_hard_limit_reached',
         'tokens_exhausted',
     ]),
-    gemini: Object.freeze([
+    // #3220 — rename ex-`gemini` → `gemini-google` (sign-off 2026-05-15).
+    // Coordinación cross-archivo: ALLOWED_LAUNCHERS, ALLOWED_PROVIDERS y
+    // adapter filename. Single source of truth para naming en pipeline V3.
+    // SEC-3 (#3220): handler estructurado `_detectGemini` pendiente — la
+    // detección actual queda declarativa, sólo soportada por string-matching
+    // heurístico (issue de recomendación #3226).
+    'gemini-google': Object.freeze([
         'quota_exceeded',
         'resource_exhausted',
+    ]),
+    // #3220 — Groq expone API OpenAI-compatible (handler `_detectOpenAI`
+    // reusable). Error types tomados del análisis del issue: dos códigos
+    // formales del SDK + el genérico `quota_exceeded`.
+    groq: Object.freeze([
+        'rate_limit_exceeded',
+        'tokens_exhausted',
+        'quota_exceeded',
+    ]),
+    // #3220 — Cerebras también es OpenAI-compatible. Lista conservadora.
+    cerebras: Object.freeze([
+        'rate_limit_exceeded',
+        'quota_exceeded',
     ]),
 });
 

@@ -26,7 +26,10 @@ test('ALLOWED_PROVIDERS exporta lista freezada de providers conocidos', () => {
     assert.ok(Array.isArray(ALLOWED_PROVIDERS));
     assert.ok(ALLOWED_PROVIDERS.includes('anthropic'));
     assert.ok(ALLOWED_PROVIDERS.includes('openai-codex'));
-    assert.ok(ALLOWED_PROVIDERS.includes('gemini'));
+    // #3220 — rename `gemini` → `gemini-google` + sumamos `groq` y `cerebras`.
+    assert.ok(ALLOWED_PROVIDERS.includes('gemini-google'));
+    assert.ok(ALLOWED_PROVIDERS.includes('groq'));
+    assert.ok(ALLOWED_PROVIDERS.includes('cerebras'));
     assert.ok(ALLOWED_PROVIDERS.includes('ollama'));
     assert.ok(ALLOWED_PROVIDERS.includes('deterministic'));
     assert.equal(Object.isFrozen(ALLOWED_PROVIDERS), true,
@@ -107,7 +110,8 @@ test('fail-secure: si el adapter lanza excepción, dispatch devuelve error sin p
 test('fail-secure: si el adapter devuelve no-objeto, dispatch devuelve error', () => {
     const adaptersDir = require.resolve('../../quota-adapters');
     delete require.cache[adaptersDir];
-    const fakeGeminiPath = require.resolve('../../quota-adapters/gemini');
+    // #3220 — adapter renombrado a gemini-google.
+    const fakeGeminiPath = require.resolve('../../quota-adapters/gemini-google');
     delete require.cache[fakeGeminiPath];
     require.cache[fakeGeminiPath] = {
         id: fakeGeminiPath,
@@ -119,7 +123,7 @@ test('fail-secure: si el adapter devuelve no-objeto, dispatch devuelve error', (
     };
 
     const { quotaUsage } = require('../../quota-adapters');
-    const r = quotaUsage('gemini', {});
+    const r = quotaUsage('gemini-google', {});
     assert.equal(r.adapterStatus, 'error');
     assert.match(r.errorReason, /shape inválido|shape invalido/);
 

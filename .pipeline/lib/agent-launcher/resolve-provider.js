@@ -27,6 +27,11 @@ const path = require('node:path');
 const PROVIDER_HANDLERS = {
     'anthropic': require('./providers/anthropic'),
     'openai-codex': require('./providers/openai-codex'),
+    // #3220 — providers sign-off 2026-05-15. Handlers stub: tiran error
+    // accionable si se les pide spawn antes de #3198 (runtime real).
+    'gemini-google': require('./providers/gemini-google'),
+    'groq': require('./providers/groq'),
+    'cerebras': require('./providers/cerebras'),
     'deterministic': require('./providers/deterministic'),
 };
 
@@ -173,6 +178,13 @@ function resolvePermissionMode(models, providerName) {
     const defaultsByProvider = {
         anthropic: 'bypassPermissions',
         'openai-codex': 'full-auto',
+        // #3220 — providers nuevos sign-off 2026-05-15. Default
+        // `bypassPermissions` consistente con cómo el pulpo trata a Claude;
+        // si #3198 detecta que un wrapper de provider concreto necesita
+        // otro modo, lo declara via providers.<x>.permissions_mode.
+        'gemini-google': 'bypassPermissions',
+        'groq': 'bypassPermissions',
+        'cerebras': 'bypassPermissions',
         deterministic: 'native',
     };
     if (!models || !models.providers || !models.providers[providerName]) {

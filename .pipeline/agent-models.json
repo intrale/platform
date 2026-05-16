@@ -49,6 +49,57 @@
       "permissions_mode": "bypassPermissions"
     },
 
+    "gemini-google": {
+      "launcher": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "spawn_args_template": [
+        "--model", "{model}",
+        "--system", "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "gemini-stream",
+      "quota_error_types": ["quota_exceeded", "resource_exhausted"],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": true,
+      "prompt_caching": { "supported": false },
+      "credentials_env": ["GEMINI_API_KEY"],
+      "permissions_mode": "bypassPermissions"
+    },
+
+    "groq": {
+      "launcher": "groq",
+      "model": "llama-3.3-70b-versatile",
+      "spawn_args_template": [
+        "--model", "{model}",
+        "--system", "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "openai-sse",
+      "quota_error_types": ["rate_limit_exceeded", "tokens_exhausted", "quota_exceeded"],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": false,
+      "prompt_caching": { "supported": false },
+      "credentials_env": ["GROQ_API_KEY"],
+      "permissions_mode": "bypassPermissions"
+    },
+
+    "cerebras": {
+      "launcher": "cerebras",
+      "model": "llama-3.3-70b",
+      "spawn_args_template": [
+        "--model", "{model}",
+        "--system", "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "openai-sse",
+      "quota_error_types": ["rate_limit_exceeded", "quota_exceeded"],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": false,
+      "prompt_caching": { "supported": false },
+      "credentials_env": ["CEREBRAS_API_KEY"],
+      "permissions_mode": "bypassPermissions"
+    },
+
     "deterministic": {
       "launcher": "node",
       "model": "deterministic",
