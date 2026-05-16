@@ -91,7 +91,6 @@ const PROTECTED_FILES = new Set([
   'permissions-baseline.json', 'package.json', 'package-lock.json',
   'tg-session-store.json', 'tg-offsets.json', 'session-state.json',
   'agent-metrics.json', 'agent-participation.json', 'heartbeat-state.json',
-  'scrum-health-history.jsonl',
 ]);
 
 // -----------------------------------------------------------------------------

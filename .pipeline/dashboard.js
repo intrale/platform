@@ -891,7 +891,7 @@ function fmtUptime(ms) {
 
 // Categorías semánticas de skills (para agrupación en Equipo Disponible)
 const SKILL_CATEGORY = {
-  po: 'product', ux: 'product', planner: 'product', scrum: 'product',
+  po: 'product', ux: 'product', planner: 'product',
   'backend-dev': 'dev', 'android-dev': 'dev', 'web-dev': 'dev',
   tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
   guru: 'ops', perf: 'ops', build: 'ops', delivery: 'ops',
@@ -1263,7 +1263,6 @@ function generateHTML(state) {
     qa:            { icon: '✅', name: 'QA',           tagline: 'James Bach · Lisa Crispin · Bolton',       color: '#3fb950' },
     review:        { icon: '👁️', name: 'Review',      tagline: 'Michaela Greiler · Google Eng Practices',  color: '#ffa657' },
     delivery:      { icon: '🚀', name: 'Delivery',    tagline: 'Jez Humble · Dave Farley �� Forsgren',      color: '#f0883e' },
-    scrum:         { icon: '📊', name: 'Scrum',       tagline: 'Sutherland · Vacanti · Mike Cohn',         color: '#79c0ff' },
     perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
     build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
     commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
@@ -7056,7 +7055,7 @@ ${maxCpu(snap1h) > 90 ? '<p class="red">⚠️ <strong>Perf (Gregg):</strong> CP
 ${reboteRate > 30 ? '<p class="orange">⚠️ <strong>QA (James Bach):</strong> Tasa de rechazo ${reboteRate}% — Explorar root cause en prompts de agentes dev.</p>' : ''}
 ${reboteRate > 15 && reboteRate <= 30 ? '<p class="yellow">⚠️ <strong>Delivery (Forsgren):</strong> Change failure rate ${reboteRate}% — Por encima del target DORA elite (< 15%).</p>' : ''}
 ${levelPct.red > 10 ? '<p class="red">⚠️ <strong>Planner (Reinertsen):</strong> Sistema en rojo ' + levelPct.red + '% del tiempo — Batch size excesivo, limitar WIP.</p>' : ''}
-${levelPct.green > 80 ? '<p class="green">✅ <strong>Scrum (Vacanti):</strong> Flow saludable — recursos bien dimensionados para la carga actual.</p>' : ''}
+${levelPct.green > 80 ? '<p class="green">✅ <strong>Flow (Vacanti):</strong> Flow saludable — recursos bien dimensionados para la carga actual.</p>' : ''}
 ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>PO (Cagan):</strong> 0 entregas en 24h con pipeline activo — Verificar si el trabajo avanza hacia outcomes.</p>' : ''}
 <p class="dim" style="margin-top:8px">${dataSourceLabel}</p>
 </div>
