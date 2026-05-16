@@ -8951,6 +8951,10 @@ const server = http.createServer((req, res) => {
       const window = restModeWindow.getWindow({ pipelineDir: PIPELINE });
       const now = Date.now();
       const within = restModeWindow.isWithinWindow(window, now);
+      // #3241: incluir slice enriquecido para consumidores que quieran datos
+      // derivados sin recomputar.
+      const describe = typeof restModeWindow.describeRestModeNow === 'function'
+        ? restModeWindow.describeRestModeNow(window, now) : null;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
@@ -8958,6 +8962,8 @@ const server = http.createServer((req, res) => {
         bypassLabels: Array.isArray(cfg.bypass_labels) ? cfg.bypass_labels : ['priority:critical'],
         isWithinWindow: within,
         now: new Date(now).toISOString(),
+        // #3241 CA-Slice: shape enriquecido que la UI de #3242 va a consumir.
+        restMode: describe,
       }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -8972,9 +8978,10 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: false, msg: 'rest-mode-window no disponible' }));
       return;
     }
-    // CA-Sec-A01 — solo loopback. El servidor escucha en 0.0.0.0 por default
-    // y queremos que un POST desde otra IP (LAN, túnel, etc.) sea rechazado
-    // explícitamente con 403, sin parsear body.
+    // CA-Sec-A01 / PO-SEC-7 — solo loopback. El servidor escucha en 0.0.0.0 por
+    // default y queremos que un POST desde otra IP (LAN, túnel, etc.) sea
+    // rechazado explícitamente con 403, sin parsear body.
+    // #3241 CA-Endpoint-Loopback: este bloque NO se modifica.
     const remote = (req.socket && req.socket.remoteAddress) || '';
     const isLoopback = remote === '127.0.0.1'
         || remote === '::1'
@@ -8989,6 +8996,10 @@ const server = http.createServer((req, res) => {
     req.on('data', c => { body += c; if (body.length > 16 * 1024) req.destroy(); });
     req.on('end', () => {
       try {
+        // #3241 CA-8.6: el payload puede traer `schedule:{...}` (modelo nuevo)
+        // o el shape legacy `{start, end, days}`. Si trae ambos, schedule gana
+        // y se loguea warning (PO-SEC-5). El módulo `rest-mode-window` maneja
+        // la precedencia.
         const payload = body ? JSON.parse(body) : {};
         const result = restModeWindow.setWindow(payload, {
           pipelineDir: PIPELINE,
@@ -8999,9 +9010,13 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, errors: result.errors }));
           return;
         }
-        log(`rest-mode window actualizada via /api/rest-mode (active=${result.state.active}, start=${result.state.start}, end=${result.state.end}, tz=${result.state.timezone}, days=[${result.state.days.join(',')}])`);
+        if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+          for (const w of result.warnings) log(`rest-mode warning: ${w}`);
+        }
+        const daysWithPeriods = Array.isArray(result.state.days) ? result.state.days.join(',') : '';
+        log(`rest-mode window actualizada via /api/rest-mode (active=${result.state.active}, tz=${result.state.timezone}, days=[${daysWithPeriods}])`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, state: result.state }));
+        res.end(JSON.stringify({ ok: true, state: result.state, warnings: result.warnings || [] }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
