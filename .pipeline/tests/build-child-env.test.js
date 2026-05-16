@@ -580,3 +580,207 @@ test('DEFAULT_REQUIRES_BY_SKILL solo declara scopes que existen en CREDENTIAL_SC
         }
     }
 });
+
+// =============================================================================
+// #3198 — Partial override shape `{ provider }` (cross-provider fallback runtime)
+//
+// Cuando el dispatcher de fallback (resolveSpawnWithFallback) decide que un
+// child debe correr con OTRO provider distinto al primary, le pasamos a
+// buildChildEnv sólo `{ provider: '<fallback>' }`. El helper DEBE mergear
+// con el skill leído de disk para resolver `credentials_env` correctamente.
+//
+// Invariante crítico de seguridad (S-2): el child del fallback recibe
+// SOLO la API key del FALLBACK, NUNCA la del primary.
+// =============================================================================
+test('#3198: partial override { provider } mergea con skill cfg de disk y selecciona la API key del FALLBACK', () => {
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: {
+                anthropic: { credentials_env: 'ANTHROPIC_API_KEY' },
+                'openai-codex': { credentials_env: 'OPENAI_API_KEY' },
+            },
+            skills: {
+                guru: { provider: 'anthropic', requires_credentials: ['github'] },
+            },
+        }),
+    };
+    const env = buildChildEnv({
+        skill: 'guru',
+        pipelineDir: '/fake/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: fullOperatorEnv(),
+        // Dispatcher resuelve fallback openai-codex sólo nombrando el provider:
+        skillConfigOverride: { provider: 'openai-codex' },
+    });
+    // S-2: el child del fallback recibe SOLO la OPENAI_API_KEY, NO la ANTHROPIC_API_KEY.
+    assert.equal(env.OPENAI_API_KEY, 'sk-openai-XXXXX', 'OPENAI_API_KEY del fallback debe estar presente');
+    assert.equal(env.ANTHROPIC_API_KEY, undefined, 'ANTHROPIC_API_KEY del primary NO debe leakear al child del fallback');
+    // El skill conserva su scope github (mergeo correcto con disk):
+    assert.equal(env.GH_TOKEN, 'ghp_XXXXX');
+});
+
+test('#3198: partial override { provider } repro exacto del rejection (anthropic primary → openai-codex fallback)', () => {
+    // Repro empírico del motivo_rechazo de #3198 con processEnv reducido:
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: {
+                anthropic: { credentials_env: 'ANTHROPIC_API_KEY' },
+                'openai-codex': { credentials_env: 'OPENAI_API_KEY' },
+            },
+            skills: {
+                guru: { provider: 'anthropic' },
+            },
+        }),
+    };
+    const env = buildChildEnv({
+        skill: 'guru',
+        pipelineDir: '/c/Workspaces/Intrale/platform/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: {
+            PATH: '/tmp/path',
+            SystemRoot: 'C:/Windows',
+            ANTHROPIC_API_KEY: 'sk-ant-test',
+            OPENAI_API_KEY: 'sk-openai-test',
+            GH_TOKEN: 'ghtok',
+            TELEGRAM_BOT_TOKEN: 'tg',
+            TELEGRAM_CHAT_ID: '123',
+        },
+        pipelineExtras: { PIPELINE_ISSUE: '3198' },
+        skillConfigOverride: { provider: 'openai-codex' },
+    });
+    // Estos eran los aserts que fallaban antes del fix (resultado de la verificación):
+    assert.equal('ANTHROPIC_API_KEY' in env, false, 'PRIMARY key NO debe filtrarse al child del fallback (era true antes del fix)');
+    assert.equal('OPENAI_API_KEY' in env, true, 'FALLBACK key DEBE estar presente (era false antes del fix)');
+});
+
+test('#3198: partial override { provider } NO confunde con full override { skill, providers }', () => {
+    // Si el caller pasa ambos campos (skill = override completo), gana el path
+    // de full override y se ignora providers leídos de disk.
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: { anthropic: { credentials_env: 'ANTHROPIC_API_KEY' } },
+            skills: { guru: { provider: 'anthropic' } },
+        }),
+    };
+    const env = buildChildEnv({
+        skill: 'guru',
+        pipelineDir: '/fake/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: fullOperatorEnv(),
+        skillConfigOverride: {
+            skill: { provider: 'openai-codex', requires_credentials: [] },
+            providers: { 'openai-codex': { credentials_env: 'OPENAI_API_KEY' } },
+        },
+    });
+    // Path de full override: usa los providers del override, no los de disk.
+    assert.equal(env.OPENAI_API_KEY, 'sk-openai-XXXXX');
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+});
+
+test('#3198: partial override { provider } sin agent-models.json cae a PROVIDER_DEFAULT_CREDENTIAL_ENV', () => {
+    // Caso degradado: si agent-models.json no existe en disk, el helper aún
+    // debe resolver la API key del FALLBACK usando PROVIDER_DEFAULT_CREDENTIAL_ENV.
+    const fakeFs = {
+        existsSync: () => false,  // sin agent-models.json
+        readFileSync: () => { throw new Error('no debería leerse'); },
+    };
+    const env = buildChildEnv({
+        skill: 'guru',
+        pipelineDir: '/fake/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: fullOperatorEnv(),
+        skillConfigOverride: { provider: 'openai-codex' },
+    });
+    // PROVIDER_DEFAULT_CREDENTIAL_ENV['openai-codex'] === 'OPENAI_API_KEY'
+    assert.equal(env.OPENAI_API_KEY, 'sk-openai-XXXXX');
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+});
+
+test('#3198: partial override { provider } con provider desconocido y key faltante throwa fail-fast', () => {
+    // Si el fallback es un provider que no está en disk NI en
+    // PROVIDER_DEFAULT_CREDENTIAL_ENV, providerKeyVar === undefined y NO se
+    // inyecta ninguna API key (no throw). Eso es comportamiento correcto:
+    // el handler determinístico/desconocido no necesita LLM credentials.
+    // El test asegura que NO leakeen las keys del primary.
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: { anthropic: { credentials_env: 'ANTHROPIC_API_KEY' } },
+            skills: { guru: { provider: 'anthropic' } },
+        }),
+    };
+    const env = buildChildEnv({
+        skill: 'guru',
+        pipelineDir: '/fake/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: fullOperatorEnv(),
+        skillConfigOverride: { provider: 'provider-inexistente' },
+    });
+    // Ninguna key del primary se filtra:
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(env.OPENAI_API_KEY, undefined);
+});
+
+test('#3198: partial override { provider } preserva requires_credentials del skill de disk', () => {
+    // Verifica que el merge skillCfg + { provider } no pisa el campo
+    // requires_credentials del skill. Es importante porque scopes
+    // (github/aws/gradle-android) son ortogonales al cambio de provider:
+    // el skill sigue necesitando gh CLI para postear comentarios.
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: {
+                anthropic: { credentials_env: 'ANTHROPIC_API_KEY' },
+                'openai-codex': { credentials_env: 'OPENAI_API_KEY' },
+            },
+            skills: {
+                security: { provider: 'anthropic', requires_credentials: ['github', 'aws'] },
+            },
+        }),
+    };
+    const env = buildChildEnv({
+        skill: 'security',
+        pipelineDir: '/fake/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: fullOperatorEnv(),
+        skillConfigOverride: { provider: 'openai-codex' },
+    });
+    // Provider del fallback aplicado:
+    assert.equal(env.OPENAI_API_KEY, 'sk-openai-XXXXX');
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+    // Scopes del skill conservados (github + aws):
+    assert.equal(env.GH_TOKEN, 'ghp_XXXXX');
+    assert.equal(env.GITHUB_TOKEN, 'ghs_XXXXX');
+    assert.equal(env.AWS_ACCESS_KEY_ID, 'AKIAXXXX');
+    assert.equal(env.AWS_SECRET_ACCESS_KEY, 'secret-XXXX');
+});
+
+test('#3198: partial override { provider } con API key del FALLBACK faltante en env throwa fail-fast accionable', () => {
+    // Si el operador no setea OPENAI_API_KEY y el dispatcher resuelve fallback
+    // openai-codex, el child NO arranca. Mensaje accionable explica qué setear.
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: {
+                anthropic: { credentials_env: 'ANTHROPIC_API_KEY' },
+                'openai-codex': { credentials_env: 'OPENAI_API_KEY' },
+            },
+            skills: { guru: { provider: 'anthropic' } },
+        }),
+    };
+    const envSinFallback = fullOperatorEnv();
+    delete envSinFallback.OPENAI_API_KEY;
+    assert.throws(
+        () => buildChildEnv({
+            skill: 'guru',
+            pipelineDir: '/fake/.pipeline',
+            fsImpl: fakeFs,
+            processEnv: envSinFallback,
+            skillConfigOverride: { provider: 'openai-codex' },
+        }),
+        /OPENAI_API_KEY no está en el env del pulpo/,
+    );
+});

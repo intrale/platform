@@ -19,7 +19,20 @@
 //     pipelineExtras: { PIPELINE_ISSUE: '1234', ... },
 //     // inyectables para tests:
 //     fsImpl, skillConfigOverride: { skill: {...}, providers: {...} },
+//     // o partial-override #3198 (cross-provider fallback runtime):
+//     skillConfigOverride: { provider: 'openai-codex' },
 //   });
+//
+// **Override shapes** (`skillConfigOverride`):
+//   - Full: `{ skill: {...}, providers: {...} }` — reemplaza por completo lo
+//     que se hubiera leído de `agent-models.json`. Usado por tests y por el
+//     commander (pulpo.js).
+//   - Partial (#3198): `{ provider: '<name>' }` — el dispatcher de fallback
+//     resolvió que el child debe correr con otro provider. Mergeamos el
+//     skill leído de disk con `{ provider: <override> }` y conservamos el
+//     `providers` config completo del disk para resolver `credentials_env`
+//     del fallback. Indispensable para S-2: garantiza que el child del
+//     fallback reciba SOLO la API key del fallback (no la del primary).
 //
 // **Estrategia**:
 //   1. Allowlist hardcoded de variables del sistema (Windows-compatible).
@@ -214,10 +227,34 @@ function readAgentModelsDefensive(pipelineDir, fsImpl) {
 function resolveSkillConfig(skill, opts = {}) {
     const { pipelineDir, fsImpl, skillConfigOverride } = opts;
 
+    // Full override: tests + commander pasan ambos campos.
     if (skillConfigOverride && skillConfigOverride.skill !== undefined) {
         return {
             skillCfg: skillConfigOverride.skill || {},
             providersCfg: skillConfigOverride.providers || {},
+        };
+    }
+
+    // Partial override (#3198): el dispatcher de fallback decide en runtime
+    // que el child debe correr con otro provider (ej. anthropic→openai-codex).
+    // Mergeamos el skillCfg leído de disk con `{ provider: <override> }` para
+    // que el resto de la config (requires_credentials, model, etc.) se
+    // preserve, pero el `provider` apunte al FALLBACK. Conservamos los
+    // `providers` config completos del disk para que `credentials_env` del
+    // fallback se resuelva correctamente.
+    //
+    // INVARIANTE S-2 (defensa cross-provider credential isolation):
+    //   Cuando esta rama dispara, el `providerKeyVar` resultante DEBE ser el
+    //   del fallback (ej. OPENAI_API_KEY), nunca el del primary
+    //   (ej. ANTHROPIC_API_KEY). Tests dedicados en
+    //   build-child-env.test.js (#3198) verifican el invariante.
+    if (skillConfigOverride && typeof skillConfigOverride.provider === 'string') {
+        const models = readAgentModelsDefensive(pipelineDir, fsImpl);
+        const diskSkillCfg = (models && models.skills && models.skills[skill]) || {};
+        const providersCfg = (models && models.providers) || {};
+        return {
+            skillCfg: { ...diskSkillCfg, provider: skillConfigOverride.provider },
+            providersCfg,
         };
     }
 

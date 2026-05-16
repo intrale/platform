@@ -86,6 +86,11 @@ const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/qu
 // deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
 // que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
 const { launchAgent } = require('./lib/agent-launcher');
+// #3198 — consumer runtime de skill.fallbacks[]. Cuando el provider primario
+// queda gateado por cuota, el dispatcher itera el array y devuelve la primera
+// resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
+// hash-chain SHA-256 en logs/cross-provider-dispatch-*.jsonl + notify Telegram.
+const { resolveSpawnWithFallback } = require('./lib/agent-launcher/dispatch-with-fallback');
 // #3155: creación de worktree con recovery de branches huérfanas. Reemplaza
 // el bloque inline previo (`git worktree add -b ... origin/main`) que fallaba
 // cada vez que una iteración anterior dejaba la branch `agent/<n>-<skill>`
@@ -4922,19 +4927,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // devuelve a `pendiente/` naturalmente, y cuando el flag se borre (drenado
   // post-reset o spawn exitoso), el filesystem-como-cola los recoge sin lógica
   // adicional. CA-1/CA-2 del issue.
+  // #3198 — consumer runtime de skill.fallbacks[]: si el primary queda gateado
+  // por cuota, intentamos los providers declarados como fallback antes de
+  // devolver el archivo a pendiente/. Devuelve `{ provider, model, source,
+  // gated, fallbackUsed }`. Cuando `source === 'fallback'`, el spawn arranca
+  // con el provider del fallback (cross-provider switch) y el archivo NO vuelve
+  // a pendiente/. Cuando `gated === true` (primary + todos los fallbacks
+  // gated), el comportamiento es idéntico al gate clásico (#3077).
+  let dispatchResolution = null;
   try {
-    // #3077 CA-7 / SEC-5: scope por provider. Resolvemos el provider del skill
-    // desde agent-models.json y lo pasamos al gate. Si el flag activo es de un
-    // provider distinto al del skill, el gate deja pasar — multi-provider real.
-    let skillProvider = null;
-    let skillModel = null;
-    try {
-      skillProvider = resolveSkillProvider(skill);
-      skillModel = resolveSkillModel(skill);
-    } catch { /* defensa: si la resolución falla, caemos al gate global */ }
+    dispatchResolution = resolveSpawnWithFallback({
+      skill,
+      issue,
+      pipelineDir: PIPELINE,
+      quotaModule: quotaExhausted,
+      onLog: log,
+    });
 
-    if (quotaExhausted.shouldGateSpawn(skill, { provider: skillProvider })) {
-      log('lanzamiento', `🚫 ${skill}:#${issue} bloqueado por quota-exhausted (LLM, flag activo, provider=${skillProvider || 'unknown'}) — devuelvo a pendiente/`);
+    if (dispatchResolution.gated) {
+      log('lanzamiento', `🚫 ${skill}:#${issue} bloqueado por quota-exhausted (LLM, primary=${dispatchResolution.primaryProvider || 'unknown'} y ${(dispatchResolution.chainTried || []).length - 1} fallback(s) gated) — devuelvo a pendiente/`);
       try {
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         moveFile(trabajandoPath, pendienteDir);
@@ -4943,20 +4954,24 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         quotaExhausted.appendAudit({
           event: 'gate_blocked_spawn',
           agent: skill,
-          provider: skillProvider,
-          model: skillModel,
+          provider: dispatchResolution.primaryProvider,
+          model: dispatchResolution.model || null,
           error_type: null,
-          raw_excerpt: `issue=${issue} fase=${fase} pipeline=${pipeline}`,
+          raw_excerpt: `issue=${issue} fase=${fase} pipeline=${pipeline} chain=${(dispatchResolution.chainTried || []).join('->')}`,
           flag_set: true,
         });
       } catch {}
       return;
     }
+
+    if (dispatchResolution.source === 'fallback' && dispatchResolution.fallbackUsed) {
+      log('lanzamiento', `↪️ ${skill}:#${issue} primary=${dispatchResolution.primaryProvider} gated, spawn con fallback="${dispatchResolution.fallbackUsed.provider}" (índice ${dispatchResolution.fallbackUsed.index}).`);
+    }
   } catch (gateErr) {
-    // Best-effort: si el gate falla por bug, NO bloqueamos el spawn — preferimos
+    // Best-effort: si el dispatcher falla por bug, NO bloqueamos el spawn — preferimos
     // que el pipeline siga operativo aún con detector roto. El siguiente result
     // event con is_error=true volverá a setear el flag.
-    log('lanzamiento', `⚠️ gate quota-exhausted falló para ${skill}:#${issue}: ${gateErr.message} — continúo con spawn`);
+    log('lanzamiento', `⚠️ dispatcher de fallback falló para ${skill}:#${issue}: ${gateErr.message} — continúo con spawn`);
   }
 
   // INVARIANTE CRÍTICO: el skill debe pertenecer a skills_por_fase[fase] de este pipeline.
@@ -5296,11 +5311,24 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   } catch { /* sin config legible: default false (preserva legacy) */ }
   if (envIsolationEnabled) {
     try {
+      // #3198 / S-2: cuando el dispatcher eligió un fallback, construimos el
+      // env con el PROVIDER DEL FALLBACK — no el primary. Eso garantiza que
+      // un child Anthropic→OpenAI reciba sólo OPENAI_API_KEY (S-2 isolation).
+      // El override se pasa vía `skillConfigOverride`, que tiene precedencia
+      // sobre la lectura de agent-models.json.
+      const skillConfigOverride = (
+        dispatchResolution &&
+        dispatchResolution.source === 'fallback' &&
+        dispatchResolution.provider
+      )
+        ? { provider: dispatchResolution.provider }
+        : undefined;
       childEnv = buildChildEnvLib.buildChildEnv({
         skill,
         pipelineDir: PIPELINE,
         processEnv: process.env,
         pipelineExtras,
+        skillConfigOverride,
       });
     } catch (e) {
       // Fail-fast: si la API key del provider falta, NO arrancar el child.
@@ -5313,6 +5341,23 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     childEnv = { ...process.env, ...pipelineExtras };
   }
 
+  // #3198 — si el dispatcher resolvió un fallback, pasamos un `resolveImpl`
+  // que devuelve esa resolución completa para que `launchAgent` use el handler
+  // y el modelo del fallback (no del primary). Sin esta línea, el launcher
+  // re-resolvería desde agent-models.json y volvería al primary.
+  const launchResolveImpl = (
+    dispatchResolution &&
+    dispatchResolution.source === 'fallback' &&
+    dispatchResolution.handler
+  )
+    ? () => ({
+        provider: dispatchResolution.provider,
+        model: dispatchResolution.model,
+        handler: dispatchResolution.handler,
+        source: 'dispatch-fallback',
+      })
+    : undefined;
+
   const launchResult = launchAgent({
     skill, issue, trabajandoPath, fase, pipeline,
     args,
@@ -5322,6 +5367,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     ROOT,
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
     onLog: log,
+    resolveImpl: launchResolveImpl,
   });
   const child = launchResult.child;
   const useDeterministicSkill = (launchResult.provider === 'deterministic');
