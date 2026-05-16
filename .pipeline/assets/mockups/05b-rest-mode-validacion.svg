@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 05b — Modo descanso · estados de validacion (#3230)
+  Resolucion: 1280x720
+  Complemento del mockup 05. Demuestra los estados de validacion que cierran
+  CA-8.4 (validacion cliente espejo de CA-6) + SEC-3 (cross-midnight overlap)
+  + SEC-4 (start === end) + cap de N periodos (SEC-2) + edge cases visuales:
+
+    1. Solapamiento detectado entre dos periodos del mismo dia (lunes 13:00-16:00 y 14:30-18:00)
+    2. Cross-midnight solapado correctamente (22:00 -> 07:00 vs 06:00 -> 08:00 — caso SEC-3)
+    3. start === end rechazado salvo dia completo
+    4. Limite de periodos alcanzado (24 por dia, anti-DoS SEC-2)
+    5. Estado pre-submit con boton deshabilitado mientras haya errores
+
+  Sirve para que pipeline-dev (post-pasaje a fase dev) sepa exactamente como
+  comunicar cada error sin re-disenarlo de cero.
+
+  Tokens: design-tokens.css (danger, warning, rest-mode-fg, surface-*).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="errPanel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1F1645" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1280" height="720" fill="#0D1117"/>
+
+  <!-- Title -->
+  <g transform="translate(32, 32)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="1.4">SETTINGS / MODO DESCANSO /</text>
+    <text x="0" y="26" fill="#E6EDF3" font-size="22" font-weight="700">Estados de validacion</text>
+    <text x="0" y="46" fill="#B1BAC4" font-size="12">
+      Cuatro estados de error de cliente que cierran CA-8.4 + SEC-2/3/4. Boton Guardar deshabilitado mientras haya algun rojo.
+    </text>
+  </g>
+
+  <!-- =============== ESTADO 1: SOLAPAMIENTO MISMO DIA =============== -->
+  <g transform="translate(32, 116)">
+    <rect width="280" height="280" rx="12" fill="url(#errPanel)" stroke="#F85149" stroke-opacity="0.45"/>
+    <rect width="3" height="280" fill="#F85149"/>
+
+    <text x="20" y="32" fill="#F85149" font-size="11" font-weight="700" letter-spacing="1.2">ERROR · SOLAPAMIENTO</text>
+    <text x="20" y="54" fill="#E6EDF3" font-size="14" font-weight="700">Lunes</text>
+    <text x="20" y="72" fill="#B1BAC4" font-size="11">Dos periodos solapan entre 14:30 y 16:00</text>
+
+    <!-- Periodo 1: 13:00 - 16:00 (marcado en rojo) -->
+    <g transform="translate(20, 88)">
+      <rect width="240" height="50" rx="8" fill="#F85149" fill-opacity="0.12" stroke="#F85149" stroke-opacity="0.65" stroke-width="1.5"/>
+      <text x="12" y="14" fill="#F85149" font-size="9" letter-spacing="0.8">PERIODO 1 · SOLAPADO</text>
+      <text x="12" y="34" fill="#E6EDF3" font-size="13" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace">13:00 → 16:00</text>
+      <g transform="translate(216, 6)">
+        <rect width="18" height="18" rx="4" fill="none" stroke="#F85149" stroke-opacity="0.55"/>
+        <path d="M6 6 L12 12 M12 6 L6 12" stroke="#F85149" stroke-width="1.4" stroke-linecap="round"/>
+      </g>
+    </g>
+
+    <!-- Periodo 2: 14:30 - 18:00 -->
+    <g transform="translate(20, 148)">
+      <rect width="240" height="50" rx="8" fill="#F85149" fill-opacity="0.12" stroke="#F85149" stroke-opacity="0.65" stroke-width="1.5"/>
+      <text x="12" y="14" fill="#F85149" font-size="9" letter-spacing="0.8">PERIODO 2 · SOLAPADO</text>
+      <text x="12" y="34" fill="#E6EDF3" font-size="13" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace">14:30 → 18:00</text>
+      <g transform="translate(216, 6)">
+        <rect width="18" height="18" rx="4" fill="none" stroke="#F85149" stroke-opacity="0.55"/>
+        <path d="M6 6 L12 12 M12 6 L6 12" stroke="#F85149" stroke-width="1.4" stroke-linecap="round"/>
+      </g>
+    </g>
+
+    <!-- Tooltip -->
+    <g transform="translate(20, 216)">
+      <rect width="240" height="48" rx="6" fill="#F85149" fill-opacity="0.08" stroke="#F85149" stroke-opacity="0.30"/>
+      <g transform="translate(12, 12)" fill="none" stroke="#F85149" stroke-width="1.4">
+        <circle cx="8" cy="8" r="7"/>
+        <text x="8" y="11" fill="#F85149" font-size="10" font-weight="700" text-anchor="middle">!</text>
+      </g>
+      <text x="36" y="18" fill="#F85149" font-size="11" font-weight="700">No se puede solapar</text>
+      <text x="36" y="36" fill="#B1BAC4" font-size="10">Ajustar uno de los dos periodos o eliminarlo</text>
+    </g>
+  </g>
+
+  <!-- =============== ESTADO 2: CROSS-MIDNIGHT OVERLAP (SEC-3) =============== -->
+  <g transform="translate(336, 116)">
+    <rect width="280" height="280" rx="12" fill="url(#errPanel)" stroke="#F85149" stroke-opacity="0.45"/>
+    <rect width="3" height="280" fill="#F85149"/>
+
+    <text x="20" y="32" fill="#F85149" font-size="11" font-weight="700" letter-spacing="1.2">ERROR · CROSS-MIDNIGHT</text>
+    <text x="20" y="54" fill="#E6EDF3" font-size="14" font-weight="700">Martes</text>
+    <text x="20" y="72" fill="#B1BAC4" font-size="11">El nocturno desborda al periodo matinal</text>
+
+    <g transform="translate(20, 88)">
+      <rect width="240" height="50" rx="8" fill="#F85149" fill-opacity="0.12" stroke="#F85149" stroke-opacity="0.65" stroke-width="1.5"/>
+      <text x="12" y="14" fill="#F85149" font-size="9" letter-spacing="0.8">NOCHE · +1 dIA · COLISION</text>
+      <text x="12" y="34" fill="#E6EDF3" font-size="13" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace">22:00 → 07:00</text>
+      <g transform="translate(200, 32)" fill="none" stroke="#F85149" stroke-width="1.4">
+        <path d="M10 7 A4 4 0 1 1 6 3 A3 3 0 0 0 10 7 Z" stroke-linejoin="round"/>
+      </g>
+      <g transform="translate(216, 6)">
+        <rect width="18" height="18" rx="4" fill="none" stroke="#F85149" stroke-opacity="0.55"/>
+        <path d="M6 6 L12 12 M12 6 L6 12" stroke="#F85149" stroke-width="1.4" stroke-linecap="round"/>
+      </g>
+    </g>
+
+    <g transform="translate(20, 148)">
+      <rect width="240" height="50" rx="8" fill="#F85149" fill-opacity="0.12" stroke="#F85149" stroke-opacity="0.65" stroke-width="1.5"/>
+      <text x="12" y="14" fill="#F85149" font-size="9" letter-spacing="0.8">MATINAL · DENTRO DEL NOCTURNO</text>
+      <text x="12" y="34" fill="#E6EDF3" font-size="13" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace">06:00 → 08:00</text>
+      <g transform="translate(216, 6)">
+        <rect width="18" height="18" rx="4" fill="none" stroke="#F85149" stroke-opacity="0.55"/>
+        <path d="M6 6 L12 12 M12 6 L6 12" stroke="#F85149" stroke-width="1.4" stroke-linecap="round"/>
+      </g>
+    </g>
+
+    <g transform="translate(20, 216)">
+      <rect width="240" height="48" rx="6" fill="#F85149" fill-opacity="0.08" stroke="#F85149" stroke-opacity="0.30"/>
+      <g transform="translate(12, 12)" fill="none" stroke="#F85149" stroke-width="1.4">
+        <circle cx="8" cy="8" r="7"/>
+        <text x="8" y="11" fill="#F85149" font-size="10" font-weight="700" text-anchor="middle">!</text>
+      </g>
+      <text x="36" y="18" fill="#F85149" font-size="11" font-weight="700">22:00 → 07:00 incluye 06:00–08:00</text>
+      <text x="36" y="36" fill="#B1BAC4" font-size="10">Detector usa minutos absolutos (SEC-3)</text>
+    </g>
+  </g>
+
+  <!-- =============== ESTADO 3: start === end (SEC-4) =============== -->
+  <g transform="translate(640, 116)">
+    <rect width="280" height="280" rx="12" fill="url(#errPanel)" stroke="#F85149" stroke-opacity="0.45"/>
+    <rect width="3" height="280" fill="#F85149"/>
+
+    <text x="20" y="32" fill="#F85149" font-size="11" font-weight="700" letter-spacing="1.2">ERROR · INICIO = FIN</text>
+    <text x="20" y="54" fill="#E6EDF3" font-size="14" font-weight="700">Miercoles</text>
+    <text x="20" y="72" fill="#B1BAC4" font-size="11">start === end ambiguo, salvo dia completo</text>
+
+    <!-- Caso invalido -->
+    <g transform="translate(20, 88)">
+      <rect width="240" height="50" rx="8" fill="#F85149" fill-opacity="0.12" stroke="#F85149" stroke-opacity="0.65" stroke-width="1.5"/>
+      <text x="12" y="14" fill="#F85149" font-size="9" letter-spacing="0.8">INVALIDO · AMBIGuO</text>
+      <text x="12" y="34" fill="#E6EDF3" font-size="13" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace">13:00 → 13:00</text>
+      <g transform="translate(216, 6)">
+        <rect width="18" height="18" rx="4" fill="none" stroke="#F85149" stroke-opacity="0.55"/>
+        <path d="M6 6 L12 12 M12 6 L6 12" stroke="#F85149" stroke-width="1.4" stroke-linecap="round"/>
+      </g>
+    </g>
+
+    <!-- Caso valido: dia completo -->
+    <g transform="translate(20, 148)">
+      <rect width="240" height="50" rx="8" fill="#7C5CFF" fill-opacity="0.10" stroke="#7C5CFF" stroke-opacity="0.45"/>
+      <text x="12" y="14" fill="#C5B7FF" font-size="9" letter-spacing="0.8" font-weight="700">VALIDO · DiA COMPLETO</text>
+      <text x="12" y="34" fill="#C5B7FF" font-size="13" font-weight="700"
+            font-family="'SF Mono', Consolas, monospace">00:00 → 23:59</text>
+      <g transform="translate(216, 6)">
+        <rect width="18" height="18" rx="4" fill="none" stroke="#484F58"/>
+        <path d="M6 6 L12 12 M12 6 L6 12" stroke="#8B949E" stroke-width="1.4" stroke-linecap="round"/>
+      </g>
+    </g>
+
+    <g transform="translate(20, 216)">
+      <rect width="240" height="48" rx="6" fill="#F85149" fill-opacity="0.08" stroke="#F85149" stroke-opacity="0.30"/>
+      <g transform="translate(12, 12)" fill="none" stroke="#F85149" stroke-width="1.4">
+        <circle cx="8" cy="8" r="7"/>
+        <text x="8" y="11" fill="#F85149" font-size="10" font-weight="700" text-anchor="middle">!</text>
+      </g>
+      <text x="36" y="18" fill="#F85149" font-size="11" font-weight="700">Solo 00:00 → 23:59</text>
+      <text x="36" y="36" fill="#B1BAC4" font-size="10">Cualquier otro X → X es error 400</text>
+    </g>
+  </g>
+
+  <!-- =============== ESTADO 4: CAP DE PERIODOS (SEC-2) =============== -->
+  <g transform="translate(944, 116)">
+    <rect width="280" height="280" rx="12" fill="url(#errPanel)" stroke="#D29922" stroke-opacity="0.45"/>
+    <rect width="3" height="280" fill="#D29922"/>
+
+    <text x="20" y="32" fill="#D29922" font-size="11" font-weight="700" letter-spacing="1.2">CAP ALCANZADO</text>
+    <text x="20" y="54" fill="#E6EDF3" font-size="14" font-weight="700">Jueves · 24 / 24 periodos</text>
+    <text x="20" y="72" fill="#B1BAC4" font-size="11">Maximo 24 periodos por dia (anti-DoS SEC-2)</text>
+
+    <!-- mini-lista visual (resumen) -->
+    <g transform="translate(20, 92)">
+      <rect width="240" height="32" rx="6" fill="#0D1117" stroke="#30363D"/>
+      <text x="12" y="20" fill="#B1BAC4" font-size="11" font-family="'SF Mono', Consolas, monospace">00:00 → 01:00</text>
+    </g>
+    <g transform="translate(20, 132)">
+      <rect width="240" height="32" rx="6" fill="#0D1117" stroke="#30363D"/>
+      <text x="12" y="20" fill="#B1BAC4" font-size="11" font-family="'SF Mono', Consolas, monospace">01:00 → 02:00</text>
+    </g>
+    <g transform="translate(20, 172)">
+      <rect width="240" height="32" rx="6" fill="#0D1117" stroke="#30363D"/>
+      <text x="120" y="20" fill="#6E7681" font-size="11" font-style="italic" text-anchor="middle">22 mas...</text>
+    </g>
+
+    <!-- Boton + Periodo deshabilitado -->
+    <g transform="translate(20, 216)">
+      <rect width="240" height="48" rx="8" fill="none" stroke="#D29922" stroke-opacity="0.45" stroke-dasharray="4 4"/>
+      <text x="120" y="22" fill="#D29922" font-size="11" font-weight="700" text-anchor="middle">+ Periodo · deshabilitado</text>
+      <text x="120" y="38" fill="#B1BAC4" font-size="10" text-anchor="middle">eliminar uno para sumar otro</text>
+    </g>
+  </g>
+
+  <!-- =============== FOOTER: barra de acciones con boton deshabilitado =============== -->
+  <g transform="translate(32, 432)">
+    <rect width="1216" height="80" rx="12" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="80" fill="#F85149" opacity="0.5"/>
+
+    <g transform="translate(20, 22)" fill="none" stroke="#F85149" stroke-width="1.5">
+      <circle cx="14" cy="14" r="12"/>
+      <text x="14" y="18" fill="#F85149" font-size="14" font-weight="700" text-anchor="middle" stroke="none">3</text>
+    </g>
+
+    <text x="58" y="34" fill="#E6EDF3" font-size="14" font-weight="700">
+      3 errores de validacion · Guardar bloqueado hasta resolverlos
+    </text>
+    <text x="58" y="54" fill="#B1BAC4" font-size="11">
+      Solapamiento (lun) · cross-midnight (mar) · start === end (mie). Cap de jueves no bloquea, solo limita el + Periodo.
+    </text>
+
+    <!-- Boton deshabilitado -->
+    <g transform="translate(1116, 22)">
+      <rect width="84" height="36" rx="8" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.35"/>
+      <text x="42" y="23" fill="#7C5CFF" font-size="12" font-weight="700" text-anchor="middle" opacity="0.55">Guardar</text>
+    </g>
+    <g transform="translate(1028, 22)">
+      <rect width="80" height="36" rx="8" fill="none" stroke="#30363D"/>
+      <text x="40" y="23" fill="#B1BAC4" font-size="12" text-anchor="middle">Cancelar</text>
+    </g>
+  </g>
+
+  <!-- =============== NOTA TECNICA AL PIE =============== -->
+  <g transform="translate(32, 540)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" font-style="italic">
+      Validacion cliente es UX (evita 400 round-trip) — backend revalida igual (SEC-9).
+    </text>
+    <text x="0" y="18" fill="#8B949E" font-size="11" font-style="italic">
+      Reglas implementadas en helper compartido entre cliente y servidor: <tspan font-family="'SF Mono', Consolas, monospace" fill="#B1BAC4">lib/rest-mode-schedule.js</tspan>
+    </text>
+    <text x="0" y="36" fill="#8B949E" font-size="11" font-style="italic">
+      Algoritmo de solapamiento: normalizar a minutos absolutos [startAbs, endAbs) con +1440 si cruza medianoche, sort, comparar adyacentes — O(N log N).
+    </text>
+  </g>
+
+  <!-- =============== TIMELINE VISUAL: como se ve un dia con N periodos =============== -->
+  <g transform="translate(32, 600)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="1.2">TIMELINE DEL LUNES — 24h</text>
+    <rect x="0" y="10" width="1216" height="36" rx="6" fill="#0D1117" stroke="#30363D"/>
+
+    <!-- Ticks de hora cada 2h -->
+    <g font-size="9" fill="#6E7681" font-family="'SF Mono', Consolas, monospace">
+      <text x="0" y="62" text-anchor="start">00</text>
+      <text x="202.7" y="62" text-anchor="middle">04</text>
+      <text x="405.3" y="62" text-anchor="middle">08</text>
+      <text x="608" y="62" text-anchor="middle">12</text>
+      <text x="810.7" y="62" text-anchor="middle">16</text>
+      <text x="1013.3" y="62" text-anchor="middle">20</text>
+      <text x="1216" y="62" text-anchor="end">24</text>
+    </g>
+
+    <!-- Bandas activas: periodo 1 (13:00 -> 16:00) y periodo 2 (22:00 -> 24:00, cross-midnight) -->
+    <!-- 13:00 = 658.7px ... 16:00 = 810.7px -->
+    <rect x="658.7" y="14" width="152" height="28" rx="4" fill="#7C5CFF" fill-opacity="0.45" stroke="#7C5CFF" stroke-opacity="0.7"/>
+    <text x="734" y="32" fill="#FFFFFF" font-size="10" font-weight="700" text-anchor="middle">13:00–16:00</text>
+
+    <!-- 22:00 = 1114.7 ... 24:00 = 1216 -->
+    <rect x="1114.7" y="14" width="101.3" height="28" rx="4" fill="#7C5CFF" fill-opacity="0.45" stroke="#7C5CFF" stroke-opacity="0.7"/>
+    <text x="1165" y="32" fill="#FFFFFF" font-size="10" font-weight="700" text-anchor="middle">22:00→</text>
+
+    <!-- indicador "ahora" en 14:23 -->
+    <line x1="729" y1="6" x2="729" y2="50" stroke="#00D6FF" stroke-width="2" stroke-dasharray="3 3"/>
+    <circle cx="729" cy="6" r="3" fill="#00D6FF"/>
+    <text x="729" y="-2" fill="#00D6FF" font-size="10" font-weight="700" text-anchor="middle">AHORA 14:23</text>
+  </g>
+
+</svg>
