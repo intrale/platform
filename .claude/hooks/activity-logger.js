@@ -48,7 +48,6 @@ const AGENT_MAP = {
     "/qa": "QA",
     "/po": "PO",
     "/ux": "UX Specialist",
-    "/scrum": "Scrum Master",
     "/ops": "Ops",
     "/backend-dev": "BackendDev",
     "/android-dev": "AndroidDev",

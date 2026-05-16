@@ -179,7 +179,6 @@ const DEFAULT_REQUIRES_BY_SKILL = Object.freeze({
     priorizar: ['github'],
     historia: ['github'],
     doc: ['github'],
-    scrum: ['github'],
     handoff: ['github'],
 
     // Skills LLM que tocan código → necesitan github (comentarios + branches).

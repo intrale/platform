@@ -31,8 +31,6 @@ const LOG_FILES = [
 /** Archivos JSONL que requieren rotación por número de entradas */
 const JSONL_FILES = [
     "delivery-gate-audit.jsonl",
-    "scrum-health-history.jsonl",
-    "sprint-audit.jsonl",
     "ops-learnings.jsonl",
     "restart-log.jsonl",
     "approval-audit.jsonl",
