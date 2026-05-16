@@ -1536,14 +1536,26 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
     return pageShell('Costos', 'Cuota Plan Max + tokens y consumo', body, script, css);
 }
 
-// ─────────────────── Modo descanso (#2890 PR-A) ───────────────────
+// ─────────────────── Modo descanso (#3230 / hija frontend #3242) ───────────────────
+// Rediseño completo: grid semanal de 7 columnas con N periodos por día, basado en
+// los mockups `agent/3230-ux-rest-mode-redesign` (05-rest-mode-settings.svg y
+// 05b-rest-mode-validacion.svg). Reemplaza al form single-window del PR-A (#2890).
+//
+// El render del grid usa `document.createElement` + `.textContent` para todos los
+// campos provenientes del servidor (FE-SEC-1 / PO-FE-SEC-1 / CA-XSS).
+//
+// La validación cliente de overlap espeja la lógica del helper compartido
+// `lib/rest-mode-schedule.js` (que vive en este mismo PR) — el backend de la hija
+// #3241 va a usar ese mismo helper como source of truth. El cliente NUNCA confía
+// en su propia validación: siempre hace el round-trip a `POST /api/rest-mode`.
+// nota: solo UX, backend revalida en POST /api/rest-mode (FE-SEC-2 / SEC-9).
 function renderModoDescanso() {
     const body = `
 <section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">🌙</span>Modo descanso · gating horario</h2>
-  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">
-    Durante la ventana configurada, sólo corren los <strong>skills determinísticos</strong>
-    (delivery, builder, linter, tester). El resto se queda en cola y arranca al cerrar la ventana.
+  <h2 class="in-section-title"><span class="in-section-title-icon">🌙</span>Modo descanso · calendario semanal</h2>
+  <p class="rm-hint-text">
+    Durante los periodos configurados, sólo corren los <strong>skills determinísticos</strong>
+    (delivery, builder, linter, tester). El resto se queda en cola y arranca al cerrar el periodo.
     Los issues con label <code>priority:critical</code> hacen bypass del gate.
   </p>
   <div id="rm-status" class="rm-status">…</div>
@@ -1554,35 +1566,20 @@ function renderModoDescanso() {
       </label>
       <span class="rm-hint">Si destildás, el pipeline opera sin restricciones (CA-1.9).</span>
     </div>
-    <div class="rm-row rm-row-grid">
+    <div class="rm-row rm-row-tz">
       <label>
-        <span class="rm-label-text">Inicio (HH:MM)</span>
-        <input type="time" id="rm-start" required>
-      </label>
-      <label>
-        <span class="rm-label-text">Fin (HH:MM)</span>
-        <input type="time" id="rm-end" required>
-      </label>
-      <label>
-        <span class="rm-label-text">Timezone</span>
+        <span class="rm-label-text">Zona horaria</span>
         <input type="text" id="rm-timezone" placeholder="America/Argentina/Buenos_Aires" list="rm-tz-list">
         <datalist id="rm-tz-list"></datalist>
       </label>
     </div>
-    <div class="rm-row">
-      <span class="rm-label-text">Días activos</span>
-      <div class="rm-days" id="rm-days">
-        <label><input type="checkbox" data-day="1"> Lun</label>
-        <label><input type="checkbox" data-day="2"> Mar</label>
-        <label><input type="checkbox" data-day="3"> Mié</label>
-        <label><input type="checkbox" data-day="4"> Jue</label>
-        <label><input type="checkbox" data-day="5"> Vie</label>
-        <label><input type="checkbox" data-day="6"> Sáb</label>
-        <label><input type="checkbox" data-day="0"> Dom</label>
-      </div>
-    </div>
+    <section class="rm-grid" id="rm-grid" data-rm-editing="0" aria-label="Calendario semanal de periodos de descanso">
+      <!-- 7 columnas inyectadas por buildGrid() -->
+    </section>
+    <div class="rm-errors-box" id="rm-errors" hidden></div>
     <div class="rm-row rm-actions">
-      <button type="submit" class="in-btn rm-save">💾 Guardar configuración</button>
+      <button type="submit" class="in-btn rm-save" id="rm-save">💾 Guardar configuración</button>
+      <span id="rm-error-count" class="rm-error-count"></span>
       <span id="rm-msg" class="rm-msg"></span>
     </div>
   </form>
@@ -1593,69 +1590,419 @@ function renderModoDescanso() {
   </div>
 </section>`;
     const css = `
-.rm-status { padding: 12px 16px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); background: var(--in-bg-3); margin-bottom: 16px; font-size: 13px; }
+/* CA-8.8: todos los colores vienen de design tokens. Cero hardcoded. */
+.rm-hint-text { color: var(--in-fg-dim); font-size: 12px; margin: 0 0 14px 0; }
+.rm-status { padding: 12px 16px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); background: var(--in-bg-3); margin-bottom: 16px; font-size: 13px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .rm-status.rm-active { border-color: rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); background: var(--rest-mode-bg, rgba(124,92,255,0.16)); }
 .rm-status.rm-inactive { color: var(--in-fg-dim); }
+.rm-status-icon { font-size: 16px; }
+.rm-status-text { display: flex; flex-direction: column; gap: 2px; }
+.rm-status-title { font-weight: 600; }
+.rm-status-sub { font-size: 11px; color: var(--in-fg-soft); }
 .rm-form { display: flex; flex-direction: column; gap: 14px; }
 .rm-row { display: flex; flex-direction: column; gap: 6px; }
-.rm-row-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.rm-row-tz { max-width: 360px; }
 .rm-row label { font-size: 12px; color: var(--in-fg); display: flex; flex-direction: column; gap: 4px; }
 .rm-label { flex-direction: row !important; align-items: center; gap: 8px !important; }
 .rm-label-text { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); letter-spacing: 0.5px; }
 .rm-hint { font-size: 11px; color: var(--in-fg-soft); }
 .rm-form input[type="time"], .rm-form input[type="text"] { padding: 7px 9px; background: var(--in-bg); color: var(--in-fg); border: 1px solid var(--in-border); border-radius: 4px; font-family: var(--in-mono); font-size: 12px; }
 .rm-form input:focus { outline: none; border-color: var(--in-accent); }
-.rm-days { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 0; }
-.rm-days label { flex-direction: row !important; align-items: center; gap: 5px !important; font-size: 12px; color: var(--in-fg); }
-.rm-actions { flex-direction: row !important; align-items: center; gap: 14px; padding-top: 8px; }
+
+/* Grid semanal (CA-8.1). */
+.rm-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; margin: 6px 0; }
+.rm-col { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); background: var(--in-bg-3); min-height: 180px; }
+.rm-col-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding-bottom: 6px; border-bottom: 1px dashed var(--in-border); }
+.rm-col-day { font-size: 12px; font-weight: 600; color: var(--in-fg); text-transform: uppercase; letter-spacing: 0.5px; }
+.rm-col-count { font-size: 11px; color: var(--in-fg-soft); font-family: var(--in-mono); }
+.rm-col-count.rm-col-count-full { color: var(--warning, #D29922); }
+.rm-col-empty { font-size: 11px; color: var(--in-fg-soft); padding: 16px 6px; text-align: center; font-style: italic; }
+.rm-period { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--in-border); border-radius: 4px; background: var(--in-bg); }
+.rm-period.rm-period-active { border-color: rgba(124,92,255,0.55); background: var(--rest-mode-bg, rgba(124,92,255,0.16)); }
+.rm-period.rm-period-error { border-color: var(--danger, #F85149); background: rgba(248,81,73,0.08); }
+.rm-period-inputs { display: flex; align-items: center; gap: 4px; }
+.rm-period-inputs input[type="time"] { padding: 4px 6px; font-size: 11px; flex: 1; min-width: 0; }
+.rm-period-dash { color: var(--in-fg-soft); font-size: 11px; }
+.rm-period-remove { background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim); padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 11px; line-height: 1; }
+.rm-period-remove:hover { color: var(--danger, #F85149); border-color: var(--danger, #F85149); }
+.rm-period-caption { font-size: 10px; color: var(--in-fg-soft); display: flex; align-items: center; gap: 4px; }
+.rm-period-caption.rm-period-caption-cross { color: var(--rest-mode-fg, #C5B7FF); }
+.rm-period-error-msg { font-size: 10px; color: var(--danger, #F85149); margin-top: 2px; }
+.rm-col-add { background: transparent; border: 1px dashed var(--in-border); color: var(--in-fg-dim); padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: inherit; margin-top: auto; }
+.rm-col-add:hover:not(:disabled) { border-color: rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); }
+.rm-col-add:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.rm-errors-box { padding: 10px 12px; border-radius: 4px; border: 1px solid var(--danger, #F85149); background: rgba(248,81,73,0.08); color: var(--danger, #F85149); font-size: 12px; }
+.rm-errors-box ul { margin: 4px 0 0 0; padding-left: 18px; }
+.rm-errors-box li { margin: 2px 0; }
+.rm-error-count { font-size: 12px; color: var(--danger, #F85149); }
+.rm-error-count:empty { display: none; }
+
+.rm-actions { flex-direction: row !important; align-items: center; gap: 14px; padding-top: 8px; flex-wrap: wrap; }
 .rm-save { background: var(--rest-mode-bg, rgba(124,92,255,0.16)); border-color: rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); padding: 8px 16px; }
-.rm-save:hover { filter: brightness(1.18); }
+.rm-save:hover:not(:disabled) { filter: brightness(1.18); }
+.rm-save:disabled { opacity: 0.4; cursor: not-allowed; }
 .rm-msg { font-size: 12px; color: var(--in-fg-dim); }
 .rm-msg.rm-ok { color: var(--in-ok); }
 .rm-msg.rm-err { color: var(--in-bad); }
 .rm-meta { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--in-border); font-size: 12px; color: var(--in-fg-dim); }
 .rm-meta p { margin: 4px 0; }
-.rm-meta code { font-family: var(--in-mono); background: var(--in-bg-3); padding: 1px 6px; border-radius: 3px; }`;
-    const script = `
-const TZ_DEFAULTS = ['America/Argentina/Buenos_Aires','UTC','America/New_York','America/Mexico_City','America/Sao_Paulo','Europe/Madrid','Europe/London'];
+.rm-meta code { font-family: var(--in-mono); background: var(--in-bg-3); padding: 1px 6px; border-radius: 3px; }
 
-function setMsg(text, kind){
-    const el = document.getElementById('rm-msg');
-    if(!el) return;
-    el.textContent = text || '';
-    el.classList.remove('rm-ok','rm-err');
-    if(kind === 'ok') el.classList.add('rm-ok');
-    if(kind === 'err') el.classList.add('rm-err');
+/* Mobile: el grid de 7 columnas se transforma en lista vertical. */
+@media (max-width: 900px) {
+    .rm-grid { grid-template-columns: 1fr; }
+    .rm-col { min-height: 0; }
+}`;
+    const script = `
+// nota: validacion cliente solo UX, backend revalida en POST /api/rest-mode (FE-SEC-2).
+// Este script espeja la logica de .pipeline/lib/rest-mode-schedule.js — si una
+// vuelve a cambiar, actualizar la otra. Tests del helper cubren los casos.
+const TZ_DEFAULTS = ['America/Argentina/Buenos_Aires','UTC','America/New_York','America/Mexico_City','America/Sao_Paulo','Europe/Madrid','Europe/London'];
+const DAY_KEYS = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+const DAY_LABELS = { monday: 'Lun', tuesday: 'Mar', wednesday: 'Mié', thursday: 'Jue', friday: 'Vie', saturday: 'Sáb', sunday: 'Dom' };
+const DAY_KEY_TO_DOW = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+const DOW_TO_DAY_KEY = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+const MAX_PERIODS_PER_DAY = 24;  // SEC-2 espejo (backend revalida).
+const HHMM_RE = /^([01]\\d|2[0-3]):[0-5]\\d$/;
+const FULL_DAY_START = '00:00';
+const FULL_DAY_END = '23:59';
+const MIN_PER_DAY = 1440;
+const MIN_PER_WEEK = 10080;
+
+// Estado in-memory del editor. NO se sincroniza con el servidor mientras el
+// usuario está editando (CA-8.7). Cada vez que el usuario suelta el último
+// input, se setea un debounce de 3s para liberar el "lock" de edición.
+let scheduleState = makeEmptySchedule();
+let editingTimer = null;
+let bypassLabelsState = [];
+let updatedAtState = null;
+
+function makeEmptySchedule(){
+    return { monday: [], tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: [] };
 }
 
+function hhmmToMin(hhmm){
+    if(typeof hhmm !== 'string' || !HHMM_RE.test(hhmm)) return null;
+    const [h, m] = hhmm.split(':').map(n => parseInt(n, 10));
+    return h * 60 + m;
+}
+
+function isFullDay(p){ return p && p.start === FULL_DAY_START && p.end === FULL_DAY_END; }
+
+function crossesMidnight(p){
+    if(isFullDay(p)) return false;
+    const s = hhmmToMin(p.start);
+    const e = hhmmToMin(p.end);
+    return s !== null && e !== null && s > e;
+}
+
+function expandPeriod(dayKey, p){
+    const dow = DAY_KEY_TO_DOW[dayKey];
+    if(dow == null) return [];
+    const base = ((dow + 6) % 7) * MIN_PER_DAY;
+    const sMin = hhmmToMin(p.start);
+    const eMin = hhmmToMin(p.end);
+    if(sMin === null || eMin === null) return [];
+    if(isFullDay(p)) return [{ startAbs: base, endAbs: base + MIN_PER_DAY }];
+    if(sMin < eMin) return [{ startAbs: base + sMin, endAbs: base + eMin }];
+    return [
+        { startAbs: base + sMin, endAbs: base + MIN_PER_DAY },
+        { startAbs: (base + MIN_PER_DAY) % MIN_PER_WEEK, endAbs: ((base + MIN_PER_DAY) % MIN_PER_WEEK) + eMin },
+    ];
+}
+
+function intervalsOverlap(a, b){
+    const split = (iv) => iv.endAbs <= MIN_PER_WEEK
+        ? [iv]
+        : [{ startAbs: iv.startAbs, endAbs: MIN_PER_WEEK }, { startAbs: 0, endAbs: iv.endAbs - MIN_PER_WEEK }];
+    const as = split(a);
+    const bs = split(b);
+    for(const ai of as){
+        for(const bi of bs){
+            if(ai.startAbs < bi.endAbs && bi.startAbs < ai.endAbs) return true;
+        }
+    }
+    return false;
+}
+
+// Devuelve un objeto { errors: string[], perPeriod: Map<dayKey+idx, errMsg[]> }.
+// La validación NO bloquea el submit por sí sola — eso lo decide el caller
+// (CA-8.4); pero sí pinta los periodos en rojo y deshabilita "Guardar" mientras
+// haya errores. nota: solo UX, backend revalida.
+function validateScheduleClient(schedule){
+    const errors = [];
+    const perPeriod = {};
+    function tag(day, idx, msg){
+        const k = day + ':' + idx;
+        if(!perPeriod[k]) perPeriod[k] = [];
+        perPeriod[k].push(msg);
+    }
+
+    // Validación por-periodo (HH:MM, SEC-4) y cap (SEC-2).
+    for(const day of DAY_KEYS){
+        const list = schedule[day] || [];
+        if(list.length > MAX_PERIODS_PER_DAY){
+            errors.push(DAY_LABELS[day] + ': máximo 24 periodos/día (recibidos ' + list.length + ')');
+        }
+        for(let i = 0; i < list.length; i++){
+            const p = list[i];
+            if(!p || typeof p !== 'object'){ tag(day, i, 'Periodo inválido'); continue; }
+            if(!HHMM_RE.test(p.start || '')) tag(day, i, 'Hora de inicio inválida');
+            if(!HHMM_RE.test(p.end || ''))   tag(day, i, 'Hora de fin inválida');
+            if(perPeriod[day + ':' + i]) continue;
+            if(p.start === p.end && !isFullDay(p)){
+                tag(day, i, 'Hora de inicio y fin no pueden ser iguales (salvo 00:00–23:59 = día completo)');
+            }
+        }
+    }
+
+    // Overlap absoluto en la semana (SEC-3).
+    const expanded = [];
+    for(const day of DAY_KEYS){
+        const list = schedule[day] || [];
+        for(let i = 0; i < list.length; i++){
+            if(perPeriod[day + ':' + i]) continue; // periodos ya rotos no entran al overlap
+            const ivs = expandPeriod(day, list[i]);
+            for(const iv of ivs) expanded.push({ day, idx: i, period: list[i], iv });
+        }
+    }
+    const seen = {};
+    for(let i = 0; i < expanded.length; i++){
+        for(let j = i + 1; j < expanded.length; j++){
+            const a = expanded[i], b = expanded[j];
+            if(a.day === b.day && a.idx === b.idx) continue;
+            if(!intervalsOverlap(a.iv, b.iv)) continue;
+            const k1 = a.day + ':' + a.idx + '<->' + b.day + ':' + b.idx;
+            const k2 = b.day + ':' + b.idx + '<->' + a.day + ':' + a.idx;
+            if(seen[k1] || seen[k2]) continue;
+            seen[k1] = 1;
+            tag(a.day, a.idx, 'Solapa con ' + DAY_LABELS[b.day] + ' ' + b.period.start + '–' + b.period.end);
+            tag(b.day, b.idx, 'Solapa con ' + DAY_LABELS[a.day] + ' ' + a.period.start + '–' + a.period.end);
+            if(a.day === b.day){
+                errors.push(DAY_LABELS[a.day] + ': solapamiento entre ' + a.period.start + '–' + a.period.end + ' y ' + b.period.start + '–' + b.period.end);
+            } else {
+                errors.push(DAY_LABELS[a.day] + ' ' + a.period.start + '–' + a.period.end + ' solapa con ' + DAY_LABELS[b.day] + ' ' + b.period.start + '–' + b.period.end + ' (cruza medianoche)');
+            }
+        }
+    }
+
+    return { errors, perPeriod };
+}
+
+// ----- Render del grid usando createElement + textContent (CA-XSS, FE-SEC-1) -----
+
+function clearChildren(el){ while(el.firstChild) el.removeChild(el.firstChild); }
+
+function makeEl(tag, opts){
+    const el = document.createElement(tag);
+    if(opts){
+        if(opts.cls){ el.className = opts.cls; }
+        if(opts.text != null){ el.textContent = String(opts.text); }
+        if(opts.attrs){ for(const k in opts.attrs){ el.setAttribute(k, String(opts.attrs[k])); } }
+    }
+    return el;
+}
+
+function buildGrid(){
+    const grid = document.getElementById('rm-grid');
+    if(!grid) return;
+    clearChildren(grid);
+    const validation = validateScheduleClient(scheduleState);
+    for(const day of DAY_KEYS){
+        const list = scheduleState[day] || [];
+        const col = makeEl('div', { cls: 'rm-col', attrs: { 'data-day': day } });
+
+        const head = makeEl('div', { cls: 'rm-col-head' });
+        head.appendChild(makeEl('span', { cls: 'rm-col-day', text: DAY_LABELS[day] }));
+        const countCls = list.length >= MAX_PERIODS_PER_DAY ? 'rm-col-count rm-col-count-full' : 'rm-col-count';
+        head.appendChild(makeEl('span', { cls: countCls, text: list.length + '/' + MAX_PERIODS_PER_DAY }));
+        col.appendChild(head);
+
+        if(list.length === 0){
+            col.appendChild(makeEl('div', { cls: 'rm-col-empty', text: '○ Sin descanso' }));
+        } else {
+            for(let i = 0; i < list.length; i++){
+                col.appendChild(buildPeriodRow(day, i, list[i], validation.perPeriod[day + ':' + i] || []));
+            }
+        }
+
+        const addBtn = makeEl('button', { cls: 'rm-col-add', text: '+ Periodo' });
+        addBtn.type = 'button';
+        addBtn.disabled = list.length >= MAX_PERIODS_PER_DAY;
+        if(addBtn.disabled){ addBtn.title = 'Máximo 24 periodos por día'; }
+        addBtn.addEventListener('click', () => {
+            scheduleState[day] = (scheduleState[day] || []).concat([{ start: '22:00', end: '07:00' }]);
+            markEditing();
+            buildGrid();
+        });
+        col.appendChild(addBtn);
+
+        grid.appendChild(col);
+    }
+    refreshErrorsBox(validation.errors);
+}
+
+function buildPeriodRow(day, idx, period, periodErrors){
+    const row = makeEl('div', { cls: 'rm-period' + (periodErrors.length ? ' rm-period-error' : '') });
+
+    const inputs = makeEl('div', { cls: 'rm-period-inputs' });
+    const startIn = document.createElement('input');
+    startIn.type = 'time';
+    startIn.value = period.start || '';
+    startIn.setAttribute('data-rm-input', 'start');
+    startIn.addEventListener('input', () => {
+        scheduleState[day][idx].start = startIn.value;
+        markEditing();
+        buildGrid();
+    });
+    const dash = makeEl('span', { cls: 'rm-period-dash', text: '–' });
+    const endIn = document.createElement('input');
+    endIn.type = 'time';
+    endIn.value = period.end || '';
+    endIn.setAttribute('data-rm-input', 'end');
+    endIn.addEventListener('input', () => {
+        scheduleState[day][idx].end = endIn.value;
+        markEditing();
+        buildGrid();
+    });
+    inputs.appendChild(startIn);
+    inputs.appendChild(dash);
+    inputs.appendChild(endIn);
+
+    const removeBtn = makeEl('button', { cls: 'rm-period-remove', text: '✕', attrs: { 'aria-label': 'Eliminar periodo' } });
+    removeBtn.type = 'button';
+    removeBtn.addEventListener('click', () => {
+        scheduleState[day].splice(idx, 1);
+        markEditing();
+        buildGrid();
+    });
+    inputs.appendChild(removeBtn);
+
+    row.appendChild(inputs);
+
+    // Caption visual: día completo / cruza medianoche / intra-día normal.
+    if(isFullDay(period)){
+        row.appendChild(makeEl('div', { cls: 'rm-period-caption', text: '☀ Día completo' }));
+    } else if(crossesMidnight(period)){
+        row.appendChild(makeEl('div', { cls: 'rm-period-caption rm-period-caption-cross', text: '🌙 Cruza medianoche · +1 día' }));
+    }
+
+    // Errores por-periodo (FE-SEC-1: textContent, no innerHTML).
+    for(const msg of periodErrors){
+        row.appendChild(makeEl('div', { cls: 'rm-period-error-msg', text: '⚠ ' + msg }));
+    }
+
+    return row;
+}
+
+function refreshErrorsBox(errors){
+    const box = document.getElementById('rm-errors');
+    const count = document.getElementById('rm-error-count');
+    const saveBtn = document.getElementById('rm-save');
+    if(!box || !count || !saveBtn) return;
+    clearChildren(box);
+    if(errors.length === 0){
+        box.hidden = true;
+        count.textContent = '';
+        saveBtn.disabled = false;
+        return;
+    }
+    box.hidden = false;
+    box.appendChild(makeEl('div', { text: 'Errores de validación de cliente (nota: el backend revalida igual):' }));
+    const ul = makeEl('ul');
+    for(const e of errors){ ul.appendChild(makeEl('li', { text: e })); }
+    box.appendChild(ul);
+    count.textContent = errors.length + ' error' + (errors.length === 1 ? '' : 'es');
+    saveBtn.disabled = true;
+}
+
+// ----- Marcador data-rm-editing (CA-8.7 + FE-SEC-3) -----
+function markEditing(){
+    const grid = document.getElementById('rm-grid');
+    if(grid) grid.setAttribute('data-rm-editing', '1');
+    if(editingTimer) clearTimeout(editingTimer);
+    editingTimer = setTimeout(() => {
+        const g = document.getElementById('rm-grid');
+        if(g) g.setAttribute('data-rm-editing', '0');
+        editingTimer = null;
+    }, 3000);
+}
+
+// ----- Status header (#rm-status) y bypass labels -----
 function renderStatus(payload){
     const status = document.getElementById('rm-status');
-    if(!status || !payload) return;
-    const w = payload.window || {};
+    if(!status) return;
+    clearChildren(status);
     status.classList.remove('rm-active','rm-inactive');
-    if(w.active && w.start && w.end){
-        status.classList.add('rm-active');
-        const within = payload.isWithinWindow ? '· **AHORA** dentro de la ventana' : '· programada';
-        status.innerHTML = '🌙 <strong>Activa</strong> '+escapeHtml(w.start)+'–'+escapeHtml(w.end)+' ('+escapeHtml(w.timezone||'')+') '+within.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-    } else {
+    const rm = (payload && payload.window) || {};
+    if(!rm.active){
         status.classList.add('rm-inactive');
-        status.textContent = '○ Inactivo · pipeline opera sin restricciones.';
+        status.appendChild(makeEl('span', { cls: 'rm-status-icon', text: '○' }));
+        status.appendChild(makeEl('span', { cls: 'rm-status-text', text: 'Inactivo · pipeline opera sin restricciones.' }));
+    } else {
+        status.classList.add('rm-active');
+        status.appendChild(makeEl('span', { cls: 'rm-status-icon', text: '🌙' }));
+        const txt = makeEl('span', { cls: 'rm-status-text' });
+        const cur = payload && payload.currentPeriod;
+        const next = payload && payload.nextPeriod;
+        const periodsToday = (payload && typeof payload.periodsToday === 'number') ? payload.periodsToday : null;
+        if(cur && cur.start && cur.end){
+            txt.appendChild(makeEl('span', { cls: 'rm-status-title', text: 'Activa · ahora ' + cur.start + '–' + cur.end }));
+            if(periodsToday != null && next && next.start){
+                txt.appendChild(makeEl('span', { cls: 'rm-status-sub', text: periodsToday + ' periodo' + (periodsToday === 1 ? '' : 's') + ' hoy · próximo ' + next.start }));
+            } else if(periodsToday != null){
+                txt.appendChild(makeEl('span', { cls: 'rm-status-sub', text: periodsToday + ' periodo' + (periodsToday === 1 ? '' : 's') + ' hoy' }));
+            }
+        } else if(next && next.start){
+            txt.appendChild(makeEl('span', { cls: 'rm-status-title', text: 'Programada · próximo ' + next.start + (next.end ? '–' + next.end : '') }));
+            if(periodsToday != null){
+                txt.appendChild(makeEl('span', { cls: 'rm-status-sub', text: periodsToday + ' periodo' + (periodsToday === 1 ? '' : 's') + ' hoy' }));
+            }
+        } else {
+            txt.appendChild(makeEl('span', { cls: 'rm-status-title', text: 'Activa · sin periodos configurados todavía' }));
+        }
+        status.appendChild(txt);
     }
-    document.getElementById('rm-bypass').textContent = (payload.bypassLabels || []).join(', ') || '(ninguno)';
-    document.getElementById('rm-updated').textContent = w.updatedAt ? new Date(w.updatedAt).toLocaleString('es-AR') : '—';
+    // Bypass labels y updatedAt — textContent siempre (CA-XSS).
+    const bp = document.getElementById('rm-bypass');
+    if(bp) bp.textContent = (payload && Array.isArray(payload.bypassLabels) && payload.bypassLabels.length)
+        ? payload.bypassLabels.join(', ')
+        : '(ninguno)';
+    const upd = document.getElementById('rm-updated');
+    if(upd) upd.textContent = rm.updatedAt ? new Date(rm.updatedAt).toLocaleString('es-AR') : '—';
 }
 
-function syncFormFromState(payload){
-    const w = (payload && payload.window) || {};
-    document.getElementById('rm-active').checked = !!w.active;
-    if(w.start) document.getElementById('rm-start').value = w.start;
-    if(w.end) document.getElementById('rm-end').value = w.end;
-    document.getElementById('rm-timezone').value = w.timezone || '';
-    const days = Array.isArray(w.days) ? w.days : [0,1,2,3,4,5,6];
-    document.querySelectorAll('#rm-days input[type=checkbox]').forEach(cb => {
-        const d = parseInt(cb.dataset.day, 10);
-        cb.checked = days.indexOf(d) >= 0;
-    });
+function syncStateFromServer(payload){
+    if(!payload) return;
+    const w = payload.window || {};
+    const activeEl = document.getElementById('rm-active');
+    if(activeEl) activeEl.checked = !!w.active;
+    const tzEl = document.getElementById('rm-timezone');
+    if(tzEl) tzEl.value = w.timezone || '';
+    // Schema nuevo (CA-8.1): preferimos schedule:{} sobre window.start/end legacy.
+    if(payload.schedule && typeof payload.schedule === 'object'){
+        const next = makeEmptySchedule();
+        for(const k of DAY_KEYS){
+            if(Array.isArray(payload.schedule[k])){
+                next[k] = payload.schedule[k].map(p => ({ start: String(p.start || ''), end: String(p.end || '') }));
+            }
+        }
+        scheduleState = next;
+    } else if(w.start && w.end && Array.isArray(w.days)){
+        // Compat: legacy single-window mapeado al schema nuevo (un periodo por día activo).
+        const next = makeEmptySchedule();
+        for(const d of w.days){
+            const dayKey = DOW_TO_DAY_KEY[d];
+            if(dayKey) next[dayKey] = [{ start: w.start, end: w.end }];
+        }
+        scheduleState = next;
+    } else {
+        scheduleState = makeEmptySchedule();
+    }
+    bypassLabelsState = Array.isArray(payload.bypassLabels) ? payload.bypassLabels.slice() : bypassLabelsState;
+    updatedAtState = w.updatedAt || updatedAtState;
+    buildGrid();
 }
 
 function buildTimezoneList(){
@@ -1668,7 +2015,22 @@ function buildTimezoneList(){
             if(Array.isArray(all) && all.length) zones = all;
         }
     } catch(e){}
-    list.innerHTML = zones.map(z => '<option value="'+escapeHtml(z)+'"></option>').join('');
+    // FE-SEC-6: construir opciones con createElement + .value (no innerHTML).
+    clearChildren(list);
+    for(const z of zones){
+        const opt = document.createElement('option');
+        opt.value = String(z);
+        list.appendChild(opt);
+    }
+}
+
+function setMsg(text, kind){
+    const el = document.getElementById('rm-msg');
+    if(!el) return;
+    el.textContent = text || '';
+    el.classList.remove('rm-ok','rm-err');
+    if(kind === 'ok') el.classList.add('rm-ok');
+    if(kind === 'err') el.classList.add('rm-err');
 }
 
 async function fetchRestMode(){
@@ -1677,31 +2039,35 @@ async function fetchRestMode(){
     return r.json();
 }
 
+// CA-8.7 + FE-SEC-3: chequear data-rm-editing al inicio Y al final del morph.
+// Si está activo en cualquiera de los dos, abortar el morph y descartar el fetch.
 async function tickRestMode(){
+    const grid = document.getElementById('rm-grid');
+    if(grid && grid.getAttribute('data-rm-editing') === '1') return;
     const d = await fetchRestMode();
     if(!d || !d.ok) return;
+    if(grid && grid.getAttribute('data-rm-editing') === '1') return;  // post-fetch re-check
     renderStatus(d);
-    if(!document.activeElement || !document.activeElement.closest('#rm-form')){
-        // Solo morphear el form si el usuario no está editando.
-        syncFormFromState(d);
-    }
+    syncStateFromServer(d);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
     buildTimezoneList();
+    buildGrid();
     const form = document.getElementById('rm-form');
     if(form){
         form.addEventListener('submit', async (ev) => {
             ev.preventDefault();
-            const days = [...document.querySelectorAll('#rm-days input[type=checkbox]')]
-                .filter(cb => cb.checked)
-                .map(cb => parseInt(cb.dataset.day, 10));
+            // FE-SEC-5: re-validamos antes del submit por si DevTools manipuló inputs.
+            const v = validateScheduleClient(scheduleState);
+            if(v.errors.length){
+                setMsg('✗ Corrigí los ' + v.errors.length + ' error' + (v.errors.length === 1 ? '' : 'es') + ' antes de guardar.', 'err');
+                return;
+            }
             const payload = {
                 active: document.getElementById('rm-active').checked,
-                start: document.getElementById('rm-start').value,
-                end: document.getElementById('rm-end').value,
                 timezone: document.getElementById('rm-timezone').value || 'America/Argentina/Buenos_Aires',
-                days: days.length ? days : [0,1,2,3,4,5,6],
+                schedule: scheduleState,
                 manual: true,
             };
             setMsg('Guardando…');
@@ -1709,13 +2075,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 const r = await fetch('/api/rest-mode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
                 const j = await r.json();
                 if(j.ok){
-                    setMsg('✓ Guardado · hot-reload sin reinicio del pipeline (CA-3.3).', 'ok');
+                    setMsg('✓ Guardado · hot-reload sin reinicio del pipeline.', 'ok');
                     tickRestMode();
                 } else {
-                    setMsg('✗ '+(j.errors ? j.errors.join(' · ') : (j.msg || 'Error')), 'err');
+                    const errs = Array.isArray(j.errors) ? j.errors.join(' · ') : (j.msg || 'Error');
+                    // textContent al setear el msg (FE-SEC-1).
+                    setMsg('✗ ' + errs, 'err');
                 }
             } catch(e){
-                setMsg('✗ Error de red: '+e.message, 'err');
+                setMsg('✗ Error de red: ' + e.message, 'err');
             }
         });
     }
@@ -1725,7 +2093,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickRestMode, ms: 8000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Modo descanso', 'Ventana horaria · gating de skills LLM', body, script, css);
+    return pageShell('Modo descanso', 'Calendario semanal · gating de skills LLM', body, script, css);
 }
 
 module.exports = {

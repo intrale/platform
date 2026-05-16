@@ -1035,17 +1035,46 @@ async function tickHeader(){
     setWindowPill('hdr-window-qa', pw.qa, 'QA');
     setWindowPill('hdr-window-build', pw.build, 'Build');
 
-    // Modo descanso (#2890 PR-A): pill solo visible cuando la ventana está
-    // activa Y configurada con horarios. Texto "Modo descanso · HH:MM-HH:MM".
+    // Modo descanso (#3230 / hija frontend #3242): pill adaptado al schema
+    // semanal nuevo. Formatos:
+    //   - "🌙 · ahora HH:MM–HH:MM"   cuando currentPeriod existe (dentro de
+    //     un periodo activo).
+    //   - "🌙 · próximo HH:MM"         cuando solo hay nextPeriod (programada).
+    // Compat backward: si el slice todavía no trae currentPeriod/nextPeriod
+    // (porque #3241 aún no aterrizó), caemos al formato legacy de PR-A
+    // ("HH:MM-HH:MM · ahora|programada"). textContent siempre (CA-XSS / FE-SEC-4).
     const rm = d.restMode || {};
     const restPill = document.getElementById('hdr-rest-mode');
     if(restPill){
-        const visible = !!(rm.active && rm.start && rm.end);
+        const hasNew = !!(rm.currentPeriod || rm.nextPeriod);
+        const legacyVisible = !!(rm.active && rm.start && rm.end);
+        const visible = rm.active && (hasNew || legacyVisible);
         restPill.style.display = visible ? '' : 'none';
         if(visible){
-            const within = rm.isWithinWindow ? '· ahora' : '· programada';
-            restPill.textContent = '🌙 Modo descanso · '+rm.start+'–'+rm.end+' '+within;
-            restPill.title = 'Modo descanso configurado · '+rm.start+'–'+rm.end+' ('+(rm.timezone||'')+'). Click para configurar.';
+            const periodsToday = (typeof rm.periodsToday === 'number') ? rm.periodsToday : null;
+            const periodsLabel = periodsToday != null
+                ? (' · ' + periodsToday + ' periodo' + (periodsToday === 1 ? '' : 's') + ' hoy')
+                : '';
+            if(rm.currentPeriod && rm.currentPeriod.start && rm.currentPeriod.end){
+                restPill.textContent = '🌙 · ahora ' + rm.currentPeriod.start + '–' + rm.currentPeriod.end + periodsLabel;
+            } else if(rm.nextPeriod && rm.nextPeriod.start){
+                restPill.textContent = '🌙 · próximo ' + rm.nextPeriod.start + (rm.nextPeriod.end ? '–' + rm.nextPeriod.end : '') + periodsLabel;
+            } else {
+                // Compat legacy: single-window con start/end y isWithinWindow.
+                const within = rm.isWithinWindow ? '· ahora' : '· programada';
+                restPill.textContent = '🌙 Modo descanso · ' + rm.start + '–' + rm.end + ' ' + within;
+            }
+            // title se limita a 200 chars para evitar tooltip degeneration (FE-SEC-4).
+            const tz = rm.timezone || '';
+            let titleBase;
+            if(rm.currentPeriod){
+                titleBase = 'Modo descanso · ahora ' + rm.currentPeriod.start + '–' + rm.currentPeriod.end + ' (' + tz + '). Click para configurar.';
+            } else if(rm.nextPeriod){
+                titleBase = 'Modo descanso · próximo ' + rm.nextPeriod.start + ' (' + tz + '). Click para configurar.';
+            } else {
+                titleBase = 'Modo descanso · ' + rm.start + '–' + rm.end + ' (' + tz + '). Click para configurar.';
+            }
+            restPill.title = titleBase.length > 200 ? titleBase.slice(0, 197) + '…' : titleBase;
         }
     }
     // Recursos: CPU/RAM con coloreo según umbrales.
