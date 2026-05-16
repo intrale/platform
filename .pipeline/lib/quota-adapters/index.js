@@ -35,10 +35,15 @@ const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 // Si en el futuro se suma un provider nuevo, se agrega acá Y se crea su
 // adapter en este directorio. Cualquier `provider` fuera de esta lista
 // hace fail-fast con `adapterStatus: 'error'`.
+// #3220 — Rename `gemini` → `gemini-google` (sign-off 2026-05-15). Adapter
+// stub trasladado a `gemini-google.js`. Sumamos también `groq` y `cerebras`
+// como stubs no-implementados — los wrappers reales llegan con #3198.
 const ALLOWED_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
-    'gemini',
+    'gemini-google',
+    'groq',
+    'cerebras',
     'ollama',
     'deterministic',
 ]);
@@ -54,7 +59,9 @@ function getAdapter(provider) {
     switch (provider) {
         case 'anthropic':       return require('./anthropic');
         case 'openai-codex':    return require('./openai-codex');
-        case 'gemini':          return require('./gemini');
+        case 'gemini-google':   return require('./gemini-google');
+        case 'groq':            return require('./groq');
+        case 'cerebras':        return require('./cerebras');
         case 'ollama':          return require('./ollama');
         case 'deterministic':   return require('./deterministic');
         default:                return null; // unreachable — la allowlist ya filtró.

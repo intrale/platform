@@ -34,7 +34,23 @@ const path = require('path');
 
 // Allowlist de launchers permitidos. El schema deriva su enum de esta lista
 // (composición programática), evitando drift schema↔código (refinamiento Guru #1).
-const ALLOWED_LAUNCHERS = Object.freeze(['claude', 'codex', 'gemini', 'ollama', 'node']);
+//
+// #3220 — incorporación multi-provider sign-off 2026-05-15:
+//   - `gemini-google` (rename ex-`gemini`, naming coherente con el sign-off).
+//   - `groq` (API OpenAI-compatible, modelos llama/qwen).
+//   - `cerebras` (API OpenAI-compatible, modelos llama).
+// Las 3 entradas suman launchers nuevos. El runtime real (wrapper Node por
+// provider) se materializa con #3198 — por ahora la allowlist habilita
+// declarar los providers en agent-models.json sin que el boot falle.
+const ALLOWED_LAUNCHERS = Object.freeze([
+  'claude',
+  'codex',
+  'gemini-google',
+  'groq',
+  'cerebras',
+  'ollama',
+  'node',
+]);
 
 // Launchers que requieren shell:true en spawn (caso heredado del .cmd shim de
 // Windows en detectClaudeLauncher pulpo.js:127). Default es shell:false.
@@ -76,6 +92,12 @@ const DENIED_FLAGS = Object.freeze([
 ]);
 
 // Output parsers válidos (composición consistente con el schema).
+//
+// #3220 — Groq y Cerebras exponen APIs drop-in OpenAI-compatible; el handler
+// `_detectOpenAI` en lib/quota-exhausted.js ya parsea ambos shapes (canónico
+// `event=error data.error.type` y alternativo `response.error`). Por lo
+// tanto reusan `openai-sse` sin agregar parsers nuevos. Gemini conserva su
+// `gemini-stream` declarativo (handler estructurado pendiente — #3226).
 const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'anthropic-stream-json',
   'openai-sse',
@@ -83,6 +105,41 @@ const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'ollama-jsonl',
   'none',
 ]);
+
+// #3220 — Allowlist de modelos por launcher (cross-validate ante
+// `provider.model` y `skills.<x>.model_override`). El comentario histórico
+// en validateCrossReferences mencionaba esta constante pero no existía como
+// código — recién entra acá. Si un caller declara un modelo fuera de su
+// launcher, el boot rechaza con mensaje accionable.
+//
+// Para los launchers determinísticos / locales sin LLM (node, ollama) la
+// lista queda vacía: cualquier string como `model` se acepta — son alias
+// informativos del script o del modelo local que el operador eligió, no
+// un binding a un endpoint de provider remoto.
+const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
+  claude: Object.freeze([
+    'claude-opus-4-7',
+    'claude-sonnet-4-7',
+    'claude-haiku-4-5',
+  ]),
+  codex: Object.freeze([
+    'gpt-5-codex',
+    'gpt-5',
+  ]),
+  'gemini-google': Object.freeze([
+    'gemini-2.0-flash',
+  ]),
+  groq: Object.freeze([
+    'llama-3.3-70b-versatile',
+    'qwen2.5-coder-32b',
+  ]),
+  cerebras: Object.freeze([
+    'llama-3.3-70b',
+  ]),
+  // launchers sin allowlist explícita → cualquier string `model` es válido.
+  node: Object.freeze([]),
+  ollama: Object.freeze([]),
+});
 
 // Patrones de secrets hardcoded prohibidos en cualquier string del JSON
 // (#3080 / S1 multi-provider). Cubre prefijos públicos conocidos de
@@ -130,6 +187,11 @@ const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
   'OPENAI_API_KEY',
   'GOOGLE_API_KEY',
   'GEMINI_API_KEY',
+  // #3220 SEC-1 — providers nuevos sign-off 2026-05-15. Ambas siguen la
+  // convención `<PROVIDER>_API_KEY` (credencial explícita del provider,
+  // no var del SO). Review de seguridad aprobado en análisis del issue.
+  'GROQ_API_KEY',
+  'CEREBRAS_API_KEY',
   'GH_TOKEN',
   'GITHUB_TOKEN',
   'OLLAMA_HOST',
@@ -308,6 +370,20 @@ function findHardcodedSecrets(node) {
 }
 
 /**
+ * Helper anti-leak (#3220). Devuelve true si el string parece ser un secret
+ * hardcoded según HARDCODED_SECRET_PATTERNS. Usado por errores de
+ * cross-validation cuyo mensaje cita el valor del campo — si el valor es
+ * un secret, redactamos para no exfiltrarlo a stderr/Telegram/PDF.
+ */
+function looksLikeSecret(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  for (const { re } of HARDCODED_SECRET_PATTERNS) {
+    if (re.test(value)) return true;
+  }
+  return false;
+}
+
+/**
  * Valida que cada string en `credentials_env` esté en
  * ALLOWED_CREDENTIAL_ENV_VARS. Bloquea declaraciones tipo `PATH`,
  * `AWS_SECRET_ACCESS_KEY` que exfiltrarían vars sensibles del operador al
@@ -359,10 +435,35 @@ function validateCrossReferences(config) {
   }
 
   // skills.<x>.provider ∈ providers + spawn_args_template per provider
+  // + cross-validation `model` vs ALLOWED_MODELS_BY_LAUNCHER (#3220).
   if (config.providers && typeof config.providers === 'object') {
     for (const [key, providerDef] of Object.entries(config.providers)) {
       if (providerDef && Array.isArray(providerDef.spawn_args_template)) {
         errors.push(...validateSpawnArgsTemplate(providerDef.spawn_args_template, key));
+      }
+      // #3220 — model default del provider debe pertenecer a la allowlist
+      // de su launcher (cuando la allowlist existe y no está vacía).
+      // Launchers sin allowlist (node, ollama) aceptan cualquier `model`
+      // string — su `model` es alias informativo del script local, no un
+      // binding a un endpoint de provider remoto.
+      //
+      // Anti-leak: si el valor de `model` matchea un patrón de secret
+      // hardcoded conocido (vector: alguien pone una API key en `model`),
+      // emitimos el mensaje con `[REDACTED]` para no exfiltrar el valor
+      // en stderr / Telegram / PDF. La validación de hardcoded-secret se
+      // ejecuta independientemente vía findHardcodedSecrets (defensa
+      // primaria); este redact es defensa en profundidad cross-error.
+      if (providerDef && typeof providerDef.model === 'string' && typeof providerDef.launcher === 'string') {
+        const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[providerDef.launcher];
+        if (Array.isArray(allowedModels) && allowedModels.length > 0
+            && !allowedModels.includes(providerDef.model)) {
+          const safeValue = looksLikeSecret(providerDef.model) ? '[REDACTED]' : providerDef.model;
+          errors.push({
+            path: `#/providers/${key}/model`,
+            message: `model "${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${providerDef.launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+            fix: 'usar uno de los modelos soportados por el launcher o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js (decisión de plataforma — requiere review)',
+          });
+        }
       }
     }
   }
@@ -375,6 +476,26 @@ function validateCrossReferences(config) {
           message: `provider "${skillDef.provider}" no es key de providers (válidos: [${providerKeys.join(', ')}])`,
           fix: `declarar el provider en la sección providers o cambiar el assignment del skill`,
         });
+      }
+      // #3220 — model_override debe pertenecer a la allowlist del launcher
+      // del provider asignado. Sin provider o sin launcher conocido, se
+      // saltea (otra validación arriba ya capturó el error de provider).
+      // Anti-leak idéntico al de provider.model arriba.
+      if (skillDef && typeof skillDef.model_override === 'string'
+          && typeof skillDef.provider === 'string'
+          && config.providers && config.providers[skillDef.provider]
+          && typeof config.providers[skillDef.provider].launcher === 'string') {
+        const launcher = config.providers[skillDef.provider].launcher;
+        const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[launcher];
+        if (Array.isArray(allowedModels) && allowedModels.length > 0
+            && !allowedModels.includes(skillDef.model_override)) {
+          const safeValue = looksLikeSecret(skillDef.model_override) ? '[REDACTED]' : skillDef.model_override;
+          errors.push({
+            path: `#/skills/${skillKey}/model_override`,
+            message: `model_override "${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+            fix: 'usar uno de los modelos soportados por el launcher del provider asignado, o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js',
+          });
+        }
       }
       // #3177 — fallbacks (opcional): cada item debe estar declarado en providers
       // y NO repetir el primario. Validación cruzada estricta para evitar UI
@@ -904,6 +1025,7 @@ module.exports = {
   ALLOWED_PLACEHOLDERS,
   DENIED_FLAGS,
   ALLOWED_OUTPUT_PARSERS,
+  ALLOWED_MODELS_BY_LAUNCHER,
   HARDCODED_SECRET_PATTERNS,
   ALLOWED_CREDENTIAL_ENV_VARS,
   EXIT_CODES,

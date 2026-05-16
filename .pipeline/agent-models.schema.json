@@ -51,8 +51,8 @@
       "properties": {
         "launcher": {
           "type": "string",
-          "description": "Alias del launcher. DEBE estar dentro de ALLOWED_LAUNCHERS (lib/agent-models-validate.js). El enum se inyecta programáticamente al cargar el schema; el literal abajo es informativo.",
-          "enum": ["claude", "codex", "gemini", "ollama", "node"]
+          "description": "Alias del launcher. DEBE estar dentro de ALLOWED_LAUNCHERS (lib/agent-models-validate.js). El enum se inyecta programáticamente al cargar el schema; el literal abajo es informativo (post #3220).",
+          "enum": ["claude", "codex", "gemini-google", "groq", "cerebras", "ollama", "node"]
         },
         "model": {
           "type": "string",

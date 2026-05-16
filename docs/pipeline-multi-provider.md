@@ -312,10 +312,12 @@ Hoy `pulpo.js:4851` define `DETERMINISTIC_SKILLS = new Set(['builder', 'tester',
 |---|---|---|---|
 | `anthropic` | `anthropic-stream-json` | `evt.type === 'result' && evt.is_error === true && evt.error_type ∈ allowlist` | `usage_limit_error`, `weekly_quota_exhausted`, `snapshot_threshold_90` |
 | `openai-codex` | `openai-sse` | `evt.event === 'error' && evt.data.error.type ∈ allowlist` (canónico)<br>`evt.type === 'response.error' && evt.error.type ∈ allowlist` (alternativo) | `insufficient_quota`, `billing_hard_limit_reached`, `tokens_exhausted` |
-| `gemini` | `gemini-stream` | (reservado, adaptador no entregado) | `quota_exceeded`, `resource_exhausted` |
+| `gemini-google` | `gemini-stream` | (reservado, handler estructurado pendiente — #3226) | `quota_exceeded`, `resource_exhausted` |
+| `groq` | `openai-sse` (API drop-in OpenAI-compat) | mismo dispatcher que `openai-codex` (`_detectOpenAI`) | `rate_limit_exceeded`, `tokens_exhausted`, `quota_exceeded` |
+| `cerebras` | `openai-sse` (API drop-in OpenAI-compat) | mismo dispatcher que `openai-codex` (`_detectOpenAI`) | `rate_limit_exceeded`, `quota_exceeded` |
 | `deterministic`, `ollama` | `none` | sin detección de cuota basada en eventos | `[]` |
 
-**Tipos "externos" vs "internos"**: los strings que vienen del CLI del provider son externos (ej. `usage_limit_error`). Los strings emitidos por integraciones del propio pipeline son internos — el caso canónico es `snapshot_threshold_90`, emitido por `quota-snapshot-integration.js` cuando el snapshot real reporta `weekly_all_models_pct >= 90` (#3013). Los internos pertenecen al provider Anthropic exclusivamente y NO se propagan a OpenAI ni Gemini (#3077 SEC-8).
+**Tipos "externos" vs "internos"**: los strings que vienen del CLI del provider son externos (ej. `usage_limit_error`). Los strings emitidos por integraciones del propio pipeline son internos — el caso canónico es `snapshot_threshold_90`, emitido por `quota-snapshot-integration.js` cuando el snapshot real reporta `weekly_all_models_pct >= 90` (#3013). Los internos pertenecen al provider Anthropic exclusivamente y NO se propagan a OpenAI/Codex, Gemini, Groq ni Cerebras (#3077 SEC-8).
 
 **Meta-allowlist** (#3077 SEC-2): cada string declarado en `quota_error_types` se cross-valida en `lib/agent-models.js.loadAndValidate()` contra `KNOWN_QUOTA_ERROR_TYPES_BY_LAUNCHER` (hardcoded). Si un PR introduce un valor opaco fuera de la meta-allowlist → boot fail-fast con mensaje accionable. Defensa anti-supply-chain. Para ampliar la meta-allowlist se requiere review humano explícito (PR a `lib/agent-models.js` + `lib/quota-exhausted.js`).
 
@@ -335,6 +337,77 @@ Hoy `pulpo.js:4851` define `DETERMINISTIC_SKILLS = new Set(['builder', 'tester',
 **Sanitización del `raw_excerpt`** (#3077 SEC-4): el campo `raw_excerpt` del audit log pasa por `lib/redact.js` y por una segunda capa de patrones de API keys multi-proveedor (`sk-`, `sk-ant-`, `AIza`, `ya29.`, `Bearer`, JWT) ANTES de logear. Cierra el vector "OpenAI emite eventos de error con context que contiene fragmentos de la API key o del system prompt → audit log se vuelve vector de exfiltración pasivo". S2 (#3073) generaliza esta defensa a sanitizer extendido global.
 
 **Fuente de verdad y deprecación**: `agent-models.json` es la fuente canónica. `config.yaml:quota_detector.error_types` y `config.yaml:quota_detector.resets_at_cap_max_days` quedan como `@deprecated` para callers legacy de `detectFromResultEvent(evt, cfg)` que aún no resuelvan `providerDef`. Se eliminarán en una historia de cleanup posterior, después de migrar todos los callers a `detectQuotaError(evt, providerDef)`.
+
+### 3.8 Providers sign-off 2026-05-15 (#3220 — gemini-google, groq, cerebras)
+
+El sign-off multi-provider del 2026-05-15 (memoria `project_multi-provider-per-agent-order`) cerró el orden de providers para los 15 skills con componente LLM. Este issue (#3220) extiende el schema y allowlists para los 3 providers nuevos. La carga del orden sign-off en `skills.<x>.fallbacks[]` queda en #3221 (bloqueado por este).
+
+#### 3.8.1 Rename `gemini` → `gemini-google`
+
+Coordinación cross-archivo del rename (consistencia naming con el sign-off):
+
+| Archivo | Cambio |
+|---|---|
+| `lib/agent-models-validate.js` | `ALLOWED_LAUNCHERS`: `gemini` → `gemini-google` |
+| `lib/quota-exhausted.js` | key `gemini` → `gemini-google` en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` |
+| `lib/quota-adapters/index.js` | `ALLOWED_PROVIDERS`: `gemini` → `gemini-google` |
+| `lib/quota-adapters/gemini.js` | renombrado a `gemini-google.js` |
+| `lib/agent-launcher/providers/` | nuevo stub `gemini-google.js` |
+| `agent-models.schema.json` | enum literal informativo actualizado |
+
+Migración: cualquier `agent-models.json` local de devs que use `provider: 'gemini'` debe migrar a `provider: 'gemini-google'`. El validador rechaza el viejo nombre con mensaje accionable.
+
+#### 3.8.2 Campos requeridos por provider (sign-off 2026-05-15)
+
+| Campo | gemini-google | groq | cerebras |
+|---|---|---|---|
+| `launcher` | `gemini-google` | `groq` | `cerebras` |
+| `model` default | `gemini-2.0-flash` | `llama-3.3-70b-versatile` | `llama-3.3-70b` |
+| `output_parser` | `gemini-stream` (declarativo) | `openai-sse` (drop-in OpenAI-compat) | `openai-sse` (drop-in OpenAI-compat) |
+| `quota_error_types` | `quota_exceeded`, `resource_exhausted` | `rate_limit_exceeded`, `tokens_exhausted`, `quota_exceeded` | `rate_limit_exceeded`, `quota_exceeded` |
+| `resets_at_cap_max_days` | 31 | 31 | 31 |
+| `supports_tool_use` | `true` (2.0-flash) | `false` (llama 3.3) | `false` (llama 3.3) |
+| `prompt_caching.supported` | `false` | `false` | `false` |
+| `credentials_env` | `['GEMINI_API_KEY']` | `['GROQ_API_KEY']` | `['CEREBRAS_API_KEY']` |
+| `permissions_mode` | `bypassPermissions` | `bypassPermissions` | `bypassPermissions` |
+
+#### 3.8.3 Estado del handler de cuota
+
+- **Groq + Cerebras**: el handler estructurado existe (`_detectOpenAI` en `quota-exhausted.js`). La detección de cuota es funcional cuando el runtime (#3198) spawnee el wrapper real — sin trabajo adicional en este issue.
+- **Gemini-google**: el handler `_detectGemini` NO existe todavía. La declaración `quota_error_types` queda **declarativa** (passa el validador del schema y la meta-allowlist) pero **sin defensa funcional** (el detector no lo consume con parser estructurado). Issue de recomendación: #3226. Riesgo aceptado: detección Gemini via string-matching heurístico hasta que #3226 entregue el handler real.
+
+#### 3.8.4 Runtime / wrappers Node
+
+Decisión PO (opción A del análisis del guru): launchers nuevos `groq` y `cerebras` con wrapper Node interno. Este issue declara los launchers en la allowlist + crea handlers stub en `lib/agent-launcher/providers/{gemini-google,groq,cerebras}.js` que tiran error accionable si se les pide spawn antes de #3198. El hardening de wrappers (TLS-only, timeouts, no-log payloads, etc.) se trackea en #3227 y se materializa con #3198.
+
+#### 3.8.5 Modelos soportados por launcher (`ALLOWED_MODELS_BY_LAUNCHER`)
+
+Cross-validación nueva (#3220) en `lib/agent-models-validate.js`: cada `provider.model` y `skill.model_override` se valida contra la allowlist de su launcher. Boot fail-fast si un modelo está fuera del set.
+
+| Launcher | Modelos permitidos |
+|---|---|
+| `claude` | `claude-opus-4-7`, `claude-sonnet-4-7`, `claude-haiku-4-5` |
+| `codex` | `gpt-5-codex`, `gpt-5` |
+| `gemini-google` | `gemini-2.0-flash` |
+| `groq` | `llama-3.3-70b-versatile`, `qwen2.5-coder-32b` |
+| `cerebras` | `llama-3.3-70b` |
+| `node`, `ollama` | (allowlist vacía → cualquier `model` string aceptado, son alias informativos) |
+
+Para sumar un modelo nuevo: editar `ALLOWED_MODELS_BY_LAUNCHER` en `lib/agent-models-validate.js` (review humano). El validador exporta la constante; tests detectan drift.
+
+Anti-leak (#3220): si el valor de `model` parece un secret hardcoded conocido (matchea `HARDCODED_SECRET_PATTERNS`), el mensaje de error del cross-validate redacta con `[REDACTED]` para no exfiltrar el valor en stderr/Telegram/PDF.
+
+#### 3.8.6 Credentials env vars (allowlist hardcoded #3080 SEC-1)
+
+`ALLOWED_CREDENTIAL_ENV_VARS` agregó `GROQ_API_KEY` y `CEREBRAS_API_KEY` para los providers nuevos. La env var sólo se exige al boot si algún skill referencia el provider (lazy gate). Mantener fuera de la allowlist: `PATH`, `AWS_SECRET_ACCESS_KEY` o cualquier var del SO — bloquea exfiltración cross-provider.
+
+#### 3.8.7 Follow-ups (no bloqueantes — issues separados)
+
+- **#3221**: cargar el orden sign-off 2026-05-15 en `skills.<x>.fallbacks[]` (bloqueado por este).
+- **#3198**: implementar el runtime que consume `fallbacks[]` y los wrappers Node de Groq/Cerebras.
+- **#3226**: handler `_detectGemini` estructurado (defensa funcional anti-DoS para Gemini).
+- **#3227**: hardening de wrappers Node Groq/Cerebras (TLS-only, timeouts, no-log payloads).
+- **#3228**: agregar patrones `gsk_` y `csk-` a `HARDCODED_SECRET_PATTERNS` (defensa en profundidad).
 
 ---
 
@@ -870,7 +943,7 @@ Sin este audit log, reconstruir forensia post-incidente requiere cruzar múltipl
 
 ### 6.10 Threat model adversario interno (PR malicioso)
 
-- Un atacante con permiso de PR puede inyectar `agent-models.json` apuntando a un launcher arbitrario (`launcher: "curl"`). **Mitigación**: allowlist hardcoded en `pulpo.js` (`ALLOWED_LAUNCHERS = new Set(['claude', 'codex', 'gemini', 'ollama', 'node'])`) + verificación de hash del binario detectado al boot (opcional, fase 3).
+- Un atacante con permiso de PR puede inyectar `agent-models.json` apuntando a un launcher arbitrario (`launcher: "curl"`). **Mitigación**: allowlist hardcoded en `lib/agent-models-validate.js` (`ALLOWED_LAUNCHERS = ['claude', 'codex', 'gemini-google', 'groq', 'cerebras', 'ollama', 'node']`, post #3220) + verificación de hash del binario detectado al boot (opcional, fase 3).
 - Un atacante puede modificar `spawn_args_template` para incluir flags peligrosos (e.g. `--api-base http://attacker.com`). **Mitigación**: allowlist de flags por proveedor + validación schema rechaza flags fuera de allowlist.
 - Un atacante puede agregar variables de env al `extraEnv` del spawn que filtren credenciales. **Mitigación**: §6.3 (allowlist de env del child).
 - Un atacante puede pegar un secret literal en cualquier campo string de `agent-models.json` (ej: `permissions_mode: "sk-ant-..."`). **Mitigación** (S1, #3080): el validador walks recursivamente el JSON con denylist de prefijos públicos (`HARDCODED_SECRET_PATTERNS` en `lib/agent-models-validate.js`). El mensaje de rechazo nombra el patrón (ej: "Anthropic key (sk-ant-)") sin pegar el valor.
