@@ -869,6 +869,11 @@ const AREAS = [
     { key: 'historial', label: 'Historial', icon: '📜', sub: 'Actividad reciente', href: '/historial' },
     { key: 'costos', label: 'Costos', icon: '💰', sub: 'Tokens y consumo', href: '/costos' },
     { key: 'modo-descanso', label: 'Descanso', icon: '🌙', sub: 'Ventana horaria', href: '/modo-descanso' },
+    // #3239 — Tarjeta de acceso al panel /multi-provider (entregado en #3177).
+    // Label corto "Provider" para no desbordar .area-pill-name (11px, minmax 96px).
+    // El badge se hidrata en tickMultiProvider() con cantidad de providers configurados
+    // y semáforo según el estado de las keys (CA-4/CA-5/CA-7).
+    { key: 'multi-provider', label: 'Provider', icon: '🤖', sub: 'Proveedores, modelos, fallbacks y overrides', href: '/multi-provider' },
 ];
 
 function renderClientScript() {
@@ -1058,6 +1063,66 @@ async function tickHeader(){
         else if(worst > 50) resPill.classList.add('in-pill-warn');
         else resPill.classList.add('in-pill-ok');
         resPill.title = 'CPU '+cpu+'% (cap '+maxCpu+'%) · RAM '+mem+'% ('+(res.memUsedGB||'?')+'GB / '+(res.memTotalGB||'?')+'GB · cap '+maxMem+'%) · '+(res.cpuCores||'?')+' cores';
+    }
+}
+
+// #3239 — tickMultiProvider: hidrata el badge de la tarjeta /multi-provider del
+// home con cantidad de providers configurados + semáforo según estado de keys.
+// No existe /api/multi-provider/status; usamos /config (defaultProvider + lista)
+// y /keys (status per key) tal como definió la validación UX del issue.
+// CA-4/CA-5: badge muestra cantidad de providers; tooltip resume default + estado.
+// CA-7: badge rojo si alguna key está absent; amarillo si hay placeholder;
+//       brand si todo OK; zero (gris) si todavía no hay providers en config.
+async function tickMultiProvider(){
+    const badge = document.getElementById('badge-multi-provider');
+    if(!badge) return;
+    const pill = badge.closest('.area-pill');
+    const [cfg, ksRes] = await Promise.all([
+        fetchJson('/api/multi-provider/config'),
+        fetchJson('/api/multi-provider/keys'),
+    ]);
+    if(!cfg || !cfg.ok){
+        // Endpoint caído o multi-provider no inicializado todavía: dejar el
+        // placeholder gris sin romper visualmente la tarjeta.
+        badge.textContent = '·';
+        badge.classList.remove('area-pill-badge-warn','area-pill-badge-bad');
+        badge.classList.add('area-pill-badge-zero');
+        if(pill) pill.title = 'Proveedores, modelos, fallbacks y overrides (estado no disponible)';
+        return;
+    }
+    const providers = (cfg.config && cfg.config.providers) ? Object.keys(cfg.config.providers) : [];
+    const defaultProvider = (cfg.config && cfg.config.default_provider) || '—';
+    const count = providers.length;
+
+    badge.textContent = count > 0 ? String(count) : '·';
+    badge.classList.remove('area-pill-badge-warn','area-pill-badge-bad','area-pill-badge-zero');
+
+    // Estado de keys gestionables vía UI (anthropic/openai/elevenlabs) — el array
+    // 'keys' viene tanto en /config como en /keys; preferimos /keys porque es la
+    // fuente autoritativa del panel. Si /keys falla, caemos a las del /config.
+    const keys = (ksRes && ksRes.ok && Array.isArray(ksRes.keys))
+        ? ksRes.keys
+        : ((cfg && Array.isArray(cfg.keys)) ? cfg.keys : []);
+    const absent = keys.filter(k => k && k.status === 'absent');
+    const placeholder = keys.filter(k => k && k.status === 'placeholder');
+
+    if(count === 0){
+        badge.classList.add('area-pill-badge-zero');
+    } else if(absent.length > 0){
+        badge.classList.add('area-pill-badge-bad');
+    } else if(placeholder.length > 0){
+        badge.classList.add('area-pill-badge-warn');
+    } // default → brand (sin clase extra)
+
+    if(pill){
+        const parts = ['Provider · ' + count + ' provider' + (count === 1 ? '' : 's') + ' activo' + (count === 1 ? '' : 's')];
+        parts.push('default: ' + defaultProvider);
+        if(absent.length > 0){
+            parts.push('⚠ keys ausentes: ' + absent.map(k => k.label || k.provider).join(', '));
+        } else if(placeholder.length > 0){
+            parts.push('⚠ keys placeholder: ' + placeholder.map(k => k.label || k.provider).join(', '));
+        }
+        pill.title = parts.join(' · ');
     }
 }
 
@@ -1814,6 +1879,9 @@ const POLLS = [
     { fn: tickActive, ms: 2000 },
     { fn: tickRecent, ms: 10000 },
     { fn: tickQueue, ms: 5000 },
+    // #3239 — badge de la tarjeta /multi-provider. 10s alcanza: el panel
+    // raramente cambia y el endpoint sólo lee el JSON canónico + secrets.
+    { fn: tickMultiProvider, ms: 10000 },
 ];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 // #3035 — Bind del toggle "Solo con error" antes del primer poll para
