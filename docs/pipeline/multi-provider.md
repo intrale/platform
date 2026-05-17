@@ -849,6 +849,111 @@ Implementado por: [#3198](https://github.com/intrale/platform/issues/3198) (cons
 
 ---
 
+## 8. Hardening de free providers (#3260)
+
+Los providers free (Groq, Gemini-Google, Cerebras, NVIDIA-NIM cuando mergee #3243) son la **red de salvataje** del pipeline cuando se agota la cuota de Claude / Codex. El issue [#3260](https://github.com/intrale/platform/issues/3260) (ola N+5) endurece esa red con healthchecks periódicos, validación semanal de keys, panel "Health" del dashboard, alertas Telegram con dedupe + back-off, y este procedimiento operativo.
+
+### 8.1 Free tier real por provider
+
+> **Fuente:** documentación oficial verificada al 2026-05-17. Si un provider cambia los límites, actualizar acá y bumpear la nota en `secrets-rw.js#MANAGED_KEYS[].free_tier_notes`.
+
+| Provider | RPM | RPD | Tokens/día | Endpoint usado en healthcheck | Notas |
+|----------|----:|----:|-----------:|--------------------------------|-------|
+| `groq` | 30 | 14400 | depende del modelo (~500K) | `GET https://api.groq.com/openai/v1/models` | Body 401/403 sin detalle propietario. 429 con `insufficient_quota` ⇒ `quota_exhausted`. |
+| `gemini-google` | 15 | 1500 | 1M tokens | `GET https://generativelanguage.googleapis.com/v1beta/models` | Auth con header `x-goog-api-key` (la key NUNCA en query string — `key` ya está en `SENSITIVE_QUERY_KEYS`). 400 con `API_KEY_INVALID` ⇒ `invalid_credentials`. |
+| `cerebras` | 30 | sin cap docu | ~60K tokens/min | `GET https://api.cerebras.ai/v1/models` | Free tier sólo modelos llama-* (sin Mistral). 429 con `insufficient` ⇒ `quota_exhausted`. |
+| `nvidia-nim` | TBD | TBD | TBD | TBD (sumar cuando mergee #3243) | Card "muted" en el panel Health hasta que el provider esté declarado. |
+
+Cron de healthchecks: cada 15min × 4 providers = **384 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota).
+
+### 8.2 Rotar una API key sin downtime (CA-5)
+
+**El único método soportado** es la UI del dashboard o el endpoint `secrets.rotateKey()`. **Prohibido** editar `~/.claude/secrets/telegram-config.json` a mano (race condition + sin audit + sin backup atómico).
+
+Procedimiento:
+
+1. **Generar la nueva key en el portal del provider** (Groq Console / Google AI Studio / Cerebras dashboard). NO revocar la vieja todavía.
+2. **Rotar vía UI del dashboard:**
+   - Abrir `http://localhost:8080/dashboard.html#multi-provider`.
+   - Tab **1 · Proveedores** → click "Rotar key" en el provider afectado.
+   - Pegar la nueva key. Confirmar.
+   - El backend hace: backup atómico en `~/.claude/secrets/backups/`, write atómico 0600, audit entry en `audit/api-key-rotations.jsonl` (hash chain).
+3. **Verificar con live-ping desde la UI** — botón "Ping" en la fila del provider. Status `authenticated` significa key nueva válida.
+4. **Recién entonces revocar la key vieja en el portal del provider** (out-of-band — `secrets-rw.js` no puede hacer esto por vos, cada provider tiene su propio mecanismo). Si la revocás antes de validar la nueva con live-ping, te quedás sin failover hasta el próximo restart del pulpo.
+
+**Si fallás el live-ping post-rotación:**
+
+- Revisar el backup: `~/.claude/secrets/backups/telegram-config.<TS>.json` (último archivo).
+- Recuperar la key vieja manualmente y re-rotarla por la UI.
+- El pulpo cachea las keys al boot; restart con `node .pipeline/restart.js` si la rotación inicial dejó env vars rotas.
+
+### 8.3 Recuperación cuando 2+ free providers caen en simultáneo (CA-5)
+
+El cron emite alerta Telegram `Multi-Down` cuando 3+ free providers están en rojo simultáneamente. Procedimiento de respuesta:
+
+1. **Abrir el dashboard, tab "5 · Health"** — confirmar qué providers están rojos y con qué `reason_code`.
+2. **Diferenciar la causa**:
+   - `invalid_credentials` / `forbidden`: problema de key — verificar el portal del provider, posiblemente cambió la policy o se vencen las keys del free tier. Rotar (sección 8.2).
+   - `quota_exhausted`: hit del límite diario — verificar contador en cada portal; esperar reset o agregar pago al provider.
+   - `rate_limited`: throttling temporal — los siguientes ticks deberían volver a verde solos. Si persiste >1h, aumentar jitter o investigar tráfico anómalo.
+   - `network_error` / `timeout`: conectividad — `ping`/`traceroute` a los hosts y revisar firewall.
+3. **Si el pipeline está caído por exhausted (Claude + Codex también)**: verificar que al menos UN free provider esté verde. Si todos rojos, el pulpo encola en `pendiente/` esperando reset; no hay "fallback al fallback" implementado en esta historia.
+4. **Audit log**: las transiciones quedan registradas en `audit/multi-provider-health.jsonl` (hash chain). `node .pipeline/lib/audit-log.js verify <file>` valida la integridad.
+
+### 8.4 Panel "Health" del dashboard
+
+- **URL**: `http://localhost:8080/dashboard.html#multi-provider` → tab **5 · Health**.
+- **Datos**: read-only del snapshot persistido (`state/multi-provider-health.json`). NO dispara pings sintéticos al abrir.
+- **KPIs**: contadores verdes / amarillos / rojos.
+- **Por provider**: estado, reason code, latencia, rate-limit-hit últimas 24h, status de la key, timestamp del último check.
+- **Botón "Forzar tick"**: dispara `POST /api/multi-provider/health/run` (con CSRF). Útil para diagnóstico inmediato post-rotación. Respeta el lock — si otro proceso está corriendo el cron, devuelve `skipped`.
+
+### 8.5 Alertas Telegram (CA-4 / SR-4 / SR-5)
+
+El cron emite a Telegram cuando:
+
+- Un provider entra en estado **rojo** y permanece >10 min (dedup window).
+- **3+ free providers** están en rojo simultáneamente (Multi-Down).
+- Una API key responde **401 / 403** (transición a `invalid_credentials`).
+
+Garantías:
+
+- **Payload metadata-only**: `{ provider, state, reason_code, observed_at }`. Nunca incluye API key, fingerprint, masked, body excerpt, headers ni stack trace con paths.
+- **Dedupe 10 min**: misma combinación `provider+state` no se reenvía dentro de la ventana.
+- **Back-off exponencial**: si el estado rojo persiste, alertas cada 30 / 60 / 120 / 240 min (cap 4h) — sin flood.
+- **Persistencia del dedupe**: `~/.claude/secrets/telegram-alerts-dedup.json` (0600). Sobrevive restarts del pulpo.
+
+Para silenciar todas las alertas durante una maintenance window: borrar el archivo `.../telegram-alerts-dedup.json` y crearlo con `{ "alerts": { "__SUPPRESSED_UNTIL__": <unix-ms> } }` no es soportado todavía — la solución actual es cortar el bot de Telegram. Ver issue de mejora si esto se vuelve recurrente.
+
+### 8.6 Comandos útiles
+
+```bash
+# Forzar un healthcheck inmediato (sin esperar al cron):
+node .pipeline/lib/multi-provider/health-cron.js
+
+# Inspeccionar el snapshot actual:
+cat .pipeline/state/multi-provider-health.json | jq .
+
+# Verificar la integridad del audit log:
+node -e "console.log(require('./.pipeline/lib/audit-log').verifyChain('.pipeline/audit/multi-provider-health.jsonl'))"
+
+# Inspeccionar dedupe de alertas (qué pares provider+state están suprimidos):
+cat ~/.claude/secrets/telegram-alerts-dedup.json | jq .
+
+# Listar providers gestionados + free tier notes:
+node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secrets-rw').listKeys(), null, 2))"
+```
+
+### 8.7 Anti-patrones a evitar
+
+- ❌ **Editar `telegram-config.json` con `vi`** durante rotación → race con writes del pulpo, sin backup, sin audit. Siempre usar la UI o `secrets.rotateKey()`.
+- ❌ **Pasar Gemini key como `?key=AIza…`** en URLs → aunque está en `SENSITIVE_QUERY_KEYS` para defense-in-depth, el header `x-goog-api-key` es el camino correcto (lo que el pipeline hace internamente).
+- ❌ **Revocar la key vieja antes de validar la nueva con live-ping** → te quedás sin failover hasta restart.
+- ❌ **Pingear endpoints de completion en el healthcheck** → consumen cuota. El cron usa solo `/v1/models` (o equivalente).
+- ❌ **Bypassar el lock del cron** corriendo `runOnce` desde múltiples procesos → puede disparar abuse-detection del provider. El lock está ahí por una razón.
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).

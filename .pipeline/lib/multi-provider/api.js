@@ -40,6 +40,13 @@ const validator = require('../agent-models-validate');
 const permValidator = require('../permission-validator');
 const auditLog = require('../audit-log');
 
+// Health snapshot (#3260) — endpoint read-only que el panel "Health" consume.
+// El cron de healthcheck es disparado por el pulpo (o el dashboard, si está
+// solo activo) cada ~15min; este módulo SOLO lee el snapshot persistido. No
+// dispara pings sintéticos al abrir el panel (SR-3 / CA-3).
+let healthCron = null;
+try { healthCron = require('./health-cron'); } catch { /* opcional */ }
+
 let skillsMetadata = null;
 try { skillsMetadata = require('../skills-metadata'); } catch { /* opcional */ }
 
@@ -376,6 +383,95 @@ async function handleOverridesRevoke(req, res) {
     });
 }
 
+/**
+ * GET /api/multi-provider/health
+ *
+ * Devuelve el último snapshot persistido por `health-cron`. Read-only y SIN
+ * CSRF (es lectura pública del estado interno del pipeline). NO dispara
+ * pings sintéticos — la frescura está acotada por el intervalo del cron
+ * (15min ± 60s) y por cuando el dashboard/pulpo lo ejecutó por última vez.
+ *
+ * El snapshot vive en `state/multi-provider-health.json` y NO se escribe en
+ * directorio web-served. La API solo proyecta el JSON al cliente.
+ *
+ * Si el cron nunca corrió (snapshot ausente) devolvemos 200 con providers=[]
+ * + `bootstrap=true` para que la UI muestre "esperando primer healthcheck"
+ * sin disparar error.
+ */
+async function handleHealthGet(req, res) {
+    if (req.method !== 'GET') return sendError(res, 405, 'method_not_allowed', 'GET only');
+    try {
+        const stateDir = healthCron ? healthCron.defaultStateDir() : path.join(PIPELINE_ROOT, 'state');
+        const file = path.join(stateDir, healthCron ? healthCron.SNAPSHOT_FILENAME : 'multi-provider-health.json');
+        if (!fs.existsSync(file)) {
+            return sendJson(res, {
+                ok: true,
+                bootstrap: true,
+                providers: [],
+                green_count: 0,
+                yellow_count: 0,
+                red_count: 0,
+                ts: null,
+                cron: {
+                    tick_interval_ms: healthCron ? healthCron.TICK_INTERVAL_MS : null,
+                    jitter_range_ms: healthCron ? healthCron.JITTER_RANGE_MS : null,
+                },
+                note: 'El healthcheck aún no corrió. Esperando primer tick del cron.',
+            });
+        }
+        const snapshot = JSON.parse(fs.readFileSync(file, 'utf8'));
+        // Reforzar shape antes de devolver al cliente: nunca exponer fingerprint
+        // ni masked ni body excerpts aunque algo futuro intente meterlos.
+        const safeProviders = (snapshot.providers || []).map(p => ({
+            provider: p.provider,
+            label: p.label,
+            state: p.state,
+            reason_code: p.reason_code,
+            status_code: p.status_code,
+            latency_ms: p.latency_ms,
+            rate_limit_hit_24h: p.rate_limit_hit_24h,
+            last_checked_at: p.last_checked_at,
+            key_status: p.key_status,
+            free_tier_notes: p.free_tier_notes || null,
+        }));
+        sendJson(res, {
+            ok: true,
+            bootstrap: false,
+            ts: snapshot.ts,
+            providers: safeProviders,
+            green_count: snapshot.green_count || 0,
+            yellow_count: snapshot.yellow_count || 0,
+            red_count: snapshot.red_count || 0,
+            cron: {
+                tick_interval_ms: healthCron ? healthCron.TICK_INTERVAL_MS : null,
+                jitter_range_ms: healthCron ? healthCron.JITTER_RANGE_MS : null,
+            },
+        });
+    } catch (e) {
+        sendError(res, 500, 'health_read_failed', e.message);
+    }
+}
+
+/**
+ * POST /api/multi-provider/health/run
+ *
+ * Fuerza una corrida del healthcheck (requiere CSRF). Útil para diagnóstico
+ * manual desde el panel. NO bypassa el lock — si otro proceso está corriendo
+ * el cron, devuelve `skipped: true`.
+ */
+async function handleHealthRun(req, res) {
+    if (!csrf.requireCSRF(req, res)) return;
+    if (!healthCron) {
+        return sendError(res, 503, 'health_cron_unavailable', 'health-cron no está disponible en este build.');
+    }
+    try {
+        const result = await healthCron.tickIfDue({});
+        sendJson(res, { ok: true, ...result });
+    } catch (e) {
+        sendError(res, 500, 'health_run_failed', e.message);
+    }
+}
+
 async function handleReload(req, res) {
     if (!csrf.requireCSRF(req, res)) return;
     const author = resolveAuthor();
@@ -432,6 +528,9 @@ const ROUTES = [
     { method: 'POST', pattern: /^\/api\/multi-provider\/overrides$/,             handler: handleOverridesCreate },
     { method: 'POST', pattern: /^\/api\/multi-provider\/overrides\/revoke$/,     handler: handleOverridesRevoke },
     { method: 'POST', pattern: /^\/api\/multi-provider\/reload$/,                handler: handleReload },
+    // Health snapshot (#3260): read-only sin CSRF, mutación con CSRF.
+    { method: 'GET',  pattern: /^\/api\/multi-provider\/health$/,                handler: handleHealthGet },
+    { method: 'POST', pattern: /^\/api\/multi-provider\/health\/run$/,           handler: handleHealthRun },
 ];
 
 function route(req, res) {
@@ -476,6 +575,8 @@ module.exports = {
     handleOverridesCreate,
     handleOverridesRevoke,
     handleReload,
+    handleHealthGet,
+    handleHealthRun,
     readBody,
     RELOAD_SIGNAL_PATH,
 };
