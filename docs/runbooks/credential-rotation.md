@@ -113,6 +113,12 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
 5. `node .pipeline/restart.js`.
 6. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
 
+### Cómo verificar que rotaste bien (OpenAI)
+
+- [ ] Vieja key revocada falla con `401` (probar con `curl -H "Authorization: Bearer <vieja>" https://api.openai.com/v1/models`).
+- [ ] El pulpo arranca sin `[FATAL]` (CA-2).
+- [ ] Commit pusheado con `last_rotated` actualizado.
+
 ## Groq (free tier — multi-provider fallback)
 
 > _Free tier, regla `feedback_free-providers-rule`. Nunca pago._
@@ -165,12 +171,6 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
    ```
 3. Revocá la vieja key desde la consola de NVIDIA.
 4. `node .pipeline/restart.js` (no impacta a nada hasta que se implemente #3243).
-
-### Cómo verificar que rotaste bien (OpenAI)
-
-- [ ] Vieja key revocada falla con `401` (probar con `curl -H "Authorization: Bearer <vieja>" https://api.openai.com/v1/models`).
-- [ ] El pulpo arranca sin `[FATAL]` (CA-2).
-- [ ] Commit pusheado con `last_rotated` actualizado.
 
 ## GitHub (token de gh CLI / `GH_TOKEN`)
 
