@@ -152,3 +152,53 @@ test('getRawKey devuelve la key real o null si ausente/placeholder', () => {
     assert.equal(secrets.getRawKey({ provider: 'elevenlabs', secretsPath: file }), null);
     assert.equal(secrets.getRawKey({ provider: 'anthropic', secretsPath: file }), null);
 });
+
+// ─── Free providers (#3260) ─────────────────────────────────────────────────
+
+test('MANAGED_KEYS incluye los 3 free providers de #3260', () => {
+    const providers = secrets.MANAGED_KEYS.map(k => k.provider);
+    assert.ok(providers.includes('groq'), 'groq presente');
+    assert.ok(providers.includes('gemini-google'), 'gemini-google presente');
+    assert.ok(providers.includes('cerebras'), 'cerebras presente');
+});
+
+test('free providers son editable=true (rotables vía UI)', () => {
+    for (const p of ['groq', 'gemini-google', 'cerebras']) {
+        const spec = secrets.MANAGED_KEYS.find(k => k.provider === p);
+        assert.equal(spec.editable, true, `${p} debe ser editable`);
+        assert.ok(spec.free_tier_notes, `${p} debe tener free_tier_notes`);
+    }
+});
+
+test('rotateKey de free provider crea backup + write atómico 0600 (SR-1)', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'config.json');
+    const bakDir = path.join(dir, 'bak');
+    fs.writeFileSync(file, JSON.stringify({ groq_api_key: 'gsk_old_aaaaaaaaaaaaaaaaaaaaa' }));
+    const result = secrets.rotateKey({
+        provider: 'groq',
+        newValue: 'gsk_new_bbbbbbbbbbbbbbbbbbbbb',
+        secretsPath: file,
+        backupDir: bakDir,
+        retention: 5,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.provider, 'groq');
+    assert.ok(result.fingerprint, 'fingerprint generado');
+    assert.equal(result.fingerprint.length, 16);
+    const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(persisted.groq_api_key, 'gsk_new_bbbbbbbbbbbbbbbbbbbbb');
+    // Backup existe
+    const backups = fs.readdirSync(bakDir);
+    assert.equal(backups.length, 1);
+});
+
+test('listKeys de free provider incluye free_tier_notes en metadata', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ groq_api_key: 'gsk_aaaaaaaaaaaaaaaaaaaaaa' }));
+    const out = secrets.listKeys({ secretsPath: file });
+    const groq = out.find(k => k.provider === 'groq');
+    assert.equal(groq.status, 'present');
+    assert.ok(groq.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
+});

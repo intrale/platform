@@ -155,6 +155,7 @@ function bodyHtml() {
     <button class="mp-tab active" data-tab="providers" role="tab">1 · Proveedores</button>
     <button class="mp-tab" data-tab="skills" role="tab">2 · Por agente</button>
     <button class="mp-tab" data-tab="catalog" role="tab">3 · Catálogo</button>
+    <button class="mp-tab" data-tab="health" role="tab">5 · Health</button>
     <button class="mp-tab" data-tab="overrides" role="tab">6 · Permission overrides</button>
   </div>
 
@@ -204,6 +205,21 @@ function bodyHtml() {
         <thead><tr><th>Provider</th><th>Modelo</th><th>Context</th><th>Capabilities</th><th>Costo input</th><th>Costo output</th></tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </div>
+
+  <div class="mp-tabpanel" id="mp-tab-health">
+    <div class="mp-card">
+      <div class="mp-card-head">
+        <div>
+          <div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-provider-health"></use></svg> Multi-Provider Health (#3260)</div>
+          <div class="mp-card-sub">Snapshot del último healthcheck (cron cada 15min ± 60s, lock anti-thundering-herd). Read-only — el panel NO dispara pings sintéticos.</div>
+        </div>
+        <button class="mp-btn small" id="mp-health-run-btn"><svg class="mp-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-reset-default"></use></svg>Forzar tick</button>
+      </div>
+      <div id="mp-health-kpis" style="display:flex;gap:18px;margin-bottom:14px;font-size:13px"></div>
+      <div id="mp-health-providers"></div>
+      <div id="mp-health-footer" style="margin-top:10px;color:var(--in-fg-dim);font-size:11px"></div>
     </div>
   </div>
 
@@ -400,11 +416,12 @@ function connIcon(status) {
 async function loadAll() {
     setMsg('Cargando configuración…');
     await fetchCsrf();
-    const [cfg, cat, sk, ovs] = await Promise.all([
+    const [cfg, cat, sk, ovs, health] = await Promise.all([
         fetchJson('/api/multi-provider/config'),
         fetchJson('/api/multi-provider/catalog'),
         fetchJson('/api/multi-provider/skills'),
         fetchJson('/api/multi-provider/overrides'),
+        fetchJson('/api/multi-provider/health'),
     ]);
     if (!cfg || !cfg.config) { setMsg('Error cargando config'); return; }
     mpState.config = cfg.config;
@@ -413,6 +430,7 @@ async function loadAll() {
     mpState.catalog = cat || null;
     mpState.skills = sk || null;
     mpState.overrides = ovs || { active: [], history: [] };
+    mpState.health = health || null;
     mpState.dirty = false;
     renderAll();
     setMsg('OK');
@@ -424,7 +442,53 @@ function renderAll() {
     renderSkillsGrid();
     renderCatalog();
     renderOverrides();
+    renderHealth();
     updateSaveBtn();
+}
+
+// Renderiza la tarjeta Health del Multi-Provider (CA-3 / #3260).
+// Lee mpState.health (snapshot persistido por el cron). NO dispara pings
+// sintéticos. Si el snapshot no existe (bootstrap), muestra mensaje
+// "esperando primer healthcheck" sin error.
+function renderHealth() {
+    const kpis = document.getElementById('mp-health-kpis');
+    const provsEl = document.getElementById('mp-health-providers');
+    const footer = document.getElementById('mp-health-footer');
+    if (!kpis || !provsEl) return;
+    const h = mpState.health || {};
+    if (h.bootstrap || !Array.isArray(h.providers) || h.providers.length === 0) {
+        kpis.innerHTML = '<span style="color:var(--in-fg-dim)">— sin datos todavía —</span>';
+        provsEl.innerHTML = '<div style="color:var(--in-fg-dim);font-size:12px;padding:14px 0">' + escapeHtml(h.note || 'El cron de healthcheck aún no corrió. Esperá ~15 min o forzá un tick.') + '</div>';
+        if (footer) footer.textContent = '';
+        return;
+    }
+    kpis.innerHTML = [
+        '<span><strong style="color:var(--in-ok);font-size:22px">' + h.green_count + '</strong> verdes</span>',
+        '<span><strong style="color:var(--in-warn);font-size:22px">' + h.yellow_count + '</strong> amarillos</span>',
+        '<span><strong style="color:var(--in-bad);font-size:22px">' + h.red_count + '</strong> rojos</span>',
+    ].join('');
+    const rows = h.providers.map(p => {
+        const stateLabel = p.state ? p.state.toUpperCase() : 'UNKNOWN';
+        const stateColor = p.state === 'green' ? 'var(--in-ok)' : p.state === 'yellow' ? 'var(--in-warn)' : 'var(--in-bad)';
+        const icon = p.state === 'green' ? 'conn-ok' : p.state === 'yellow' ? 'conn-warn' : 'conn-err';
+        return [
+            '<div class="mp-row" style="border-left-color:' + stateColor + '">',
+              '<div class="mp-row-label">' + providerIcon(p.provider) + ' ' + escapeHtml(p.label || p.provider) + '</div>',
+              '<div class="mp-row-input">',
+                '<span class="mp-status" style="background:transparent;color:' + stateColor + ';font-weight:600">' + iconSvg(icon) + ' ' + escapeHtml(stateLabel) + '</span>',
+                ' · <code>' + escapeHtml(p.reason_code || '—') + '</code>',
+                p.latency_ms != null ? ' · ' + p.latency_ms + 'ms' : '',
+                p.rate_limit_hit_24h ? ' · rate-limit hits 24h: <strong>' + p.rate_limit_hit_24h + '</strong>' : '',
+              '</div>',
+              '<div class="mp-row-actions" style="color:var(--in-fg-dim);font-size:11px">' + escapeHtml(p.key_status || 'absent') + ' · checked ' + (p.last_checked_at || '—') + '</div>',
+            '</div>',
+        ].join('');
+    });
+    provsEl.innerHTML = rows.join('');
+    if (footer) {
+        const cron = h.cron || {};
+        footer.textContent = 'Último snapshot: ' + (h.ts || '?') + ' · cron cada ' + Math.round((cron.tick_interval_ms || 0) / 60000) + ' min ± ' + Math.round((cron.jitter_range_ms || 0) / 1000) + 's.';
+    }
 }
 
 function renderProviders() {
@@ -859,6 +923,25 @@ function wireToolbar() {
     document.getElementById('mp-preview-btn').onclick = previewDiff;
     document.getElementById('mp-reload-btn').onclick = reloadPipeline;
     document.getElementById('mp-override-create-btn').onclick = startCreateOverride;
+    const healthBtn = document.getElementById('mp-health-run-btn');
+    if (healthBtn) healthBtn.onclick = forceHealthTick;
+}
+
+async function forceHealthTick() {
+    setMsg('Disparando healthcheck…');
+    const r = await authedPost('/api/multi-provider/health/run', {});
+    if (r && r.ok) {
+        // Recargar el snapshot.
+        const fresh = await fetchJson('/api/multi-provider/health');
+        if (fresh) {
+            mpState.health = fresh;
+            renderHealth();
+        }
+        showToast('Healthcheck ejecutado (' + (r.providers_pinged || 0) + ' providers pinged)', true);
+    } else {
+        showToast('No pude disparar healthcheck: ' + (r && (r.message || r.error) || 'unknown'), false);
+    }
+    setMsg('OK');
 }
 
 function tickCountdowns() {

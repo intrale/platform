@@ -74,6 +74,93 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
             return { ok: false, reason: 'unknown' };
         },
     },
+    // ─── Free providers — red de salvataje del pipeline (#3260 SR-2 / SR-7).
+    //
+    // Reglas para sumar uno:
+    //   - URL **literal hardcoded** (anti-SSRF). Prohibido leer de
+    //     `agent-models.json`, env vars o body de request.
+    //   - Endpoint de **listado de modelos** (no completion) — los pings del
+    //     cron de CA-1 corren cada 15min y la validación semanal de keys (CA-2).
+    //     Un completion consume cuota, `/models` no.
+    //   - Header de auth en `Authorization` / `x-api-key` / `x-goog-api-key`,
+    //     **nunca en query string** (defense-in-depth contra leaks en logs;
+    //     `key` ya está en `SENSITIVE_QUERY_KEYS` para protegerlo igualmente).
+    //   - Reason codes genéricos: `authenticated` / `invalid_credentials` /
+    //     `forbidden` / `quota_exhausted` / `rate_limited` / `unknown`. Nunca
+    //     códigos provider-specific (filtran detalle al panel).
+    //
+    // NVIDIA-NIM se suma cuando mergee #3243 con su propio handler.
+    groq: {
+        url: 'https://api.groq.com/openai/v1/models',
+        method: 'GET',
+        body: () => null,
+        headers: (key) => ({ 'authorization': `Bearer ${key}` }),
+        interpret: (status, bodyExcerpt) => {
+            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
+            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
+            if (status === 403) return { ok: false, reason: 'forbidden' };
+            if (status === 429) {
+                // Groq mezcla 'quota' y 'rate limit' en el mismo HTTP; el body
+                // discrimina con `insufficient_quota` vs `rate_limit_exceeded`.
+                if (/insufficient_quota|tokens_per_day|day_limit/i.test(bodyExcerpt)) {
+                    return { ok: false, reason: 'quota_exhausted' };
+                }
+                return { ok: false, reason: 'rate_limited' };
+            }
+            return { ok: false, reason: 'unknown' };
+        },
+    },
+    'gemini-google': {
+        // Google AI Studio v1beta. La key viaja en el header `x-goog-api-key`,
+        // no en query (SR-2). Lo llamamos 'gemini-google' (no 'gemini' a
+        // secas) porque Vertex AI tiene OAuth distinto y se sumaría aparte.
+        url: 'https://generativelanguage.googleapis.com/v1beta/models',
+        method: 'GET',
+        body: () => null,
+        headers: (key) => ({ 'x-goog-api-key': key }),
+        interpret: (status, bodyExcerpt) => {
+            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
+            if (status === 400) {
+                // Gemini devuelve 400 cuando la API key tiene formato inválido
+                // (ej. demasiado corta). Lo tratamos como invalid_credentials.
+                if (/API key not valid|API_KEY_INVALID/i.test(bodyExcerpt)) {
+                    return { ok: false, reason: 'invalid_credentials' };
+                }
+                return { ok: false, reason: 'unknown' };
+            }
+            if (status === 401 || status === 403) {
+                if (/permission|forbidden|insufficient/i.test(bodyExcerpt)) {
+                    return { ok: false, reason: 'forbidden' };
+                }
+                return { ok: false, reason: 'invalid_credentials' };
+            }
+            if (status === 429) {
+                if (/quota|exceeded/i.test(bodyExcerpt)) {
+                    return { ok: false, reason: 'quota_exhausted' };
+                }
+                return { ok: false, reason: 'rate_limited' };
+            }
+            return { ok: false, reason: 'unknown' };
+        },
+    },
+    cerebras: {
+        url: 'https://api.cerebras.ai/v1/models',
+        method: 'GET',
+        body: () => null,
+        headers: (key) => ({ 'authorization': `Bearer ${key}` }),
+        interpret: (status, bodyExcerpt) => {
+            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
+            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
+            if (status === 403) return { ok: false, reason: 'forbidden' };
+            if (status === 429) {
+                if (/quota|exceeded|insufficient/i.test(bodyExcerpt)) {
+                    return { ok: false, reason: 'quota_exhausted' };
+                }
+                return { ok: false, reason: 'rate_limited' };
+            }
+            return { ok: false, reason: 'unknown' };
+        },
+    },
 });
 
 const TIMEOUT_MS = 8_000;

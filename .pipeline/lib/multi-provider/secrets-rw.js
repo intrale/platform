@@ -24,6 +24,11 @@ const DEFAULT_BACKUP_DIR = path.join(os.homedir(), '.claude', 'secrets', 'backup
 const DEFAULT_BACKUP_RETENTION = 30;
 
 // Lista canónica de keys gestionables vía UI. Anthropic está pero `editable:false`.
+//
+// Los 3 free providers (#3260 — hardening de free providers, ola N+5) entran al
+// mismo flujo de masking + fingerprint SHA-256 + atomic write 0600 + backup
+// 30d + audit chain (SR-1 de security). NVIDIA-NIM se sumará cuando mergee
+// #3243 — la lista crece editando este array, sin código nuevo.
 const MANAGED_KEYS = Object.freeze([
     {
         jsonField: 'anthropic_api_key',
@@ -43,6 +48,27 @@ const MANAGED_KEYS = Object.freeze([
         provider: 'elevenlabs',
         label: 'ElevenLabs',
         editable: true,
+    },
+    {
+        jsonField: 'groq_api_key',
+        provider: 'groq',
+        label: 'Groq',
+        editable: true,
+        free_tier_notes: 'RPM 30 / RPD 14400 (free) — ver docs/pipeline/multi-provider.md §8.',
+    },
+    {
+        jsonField: 'gemini_google_api_key',
+        provider: 'gemini-google',
+        label: 'Gemini (Google AI Studio)',
+        editable: true,
+        free_tier_notes: 'RPM 15 / RPD 1500 / TPM 1M (free) — ver docs/pipeline/multi-provider.md §8.',
+    },
+    {
+        jsonField: 'cerebras_api_key',
+        provider: 'cerebras',
+        label: 'Cerebras',
+        editable: true,
+        free_tier_notes: 'RPM 30 / TPM 60K (free) — ver docs/pipeline/multi-provider.md §8.',
     },
 ]);
 
@@ -89,6 +115,7 @@ function listKeys({ secretsPath = HOME_SECRETS, fsImpl = fs } = {}) {
             label: spec.label,
             editable: spec.editable,
             reason: spec.reason || null,
+            free_tier_notes: spec.free_tier_notes || null,
             status,
             masked: status === 'present' ? maskValue(raw) : null,
             fingerprint: status === 'present' ? fingerprint(raw) : null,

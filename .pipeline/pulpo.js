@@ -9237,6 +9237,17 @@ async function mainLoop() {
       // independiente del estado de pausa del pipeline.
       try { pollQuotaFlag(); } catch (e) { log('quota', `pollQuotaFlag error: ${e.message}`); }
 
+      // #3260 — Healthcheck multi-provider. Corre SIEMPRE (idempotente, con
+      // lock + jitter ±60s anti-thundering-herd). El módulo decide internamente
+      // si toca tickear (cada 15min) y si toca check semanal de keys. No
+      // dispara LLM ni completion — solo /v1/models. Fire-and-forget.
+      try {
+        const healthCron = require(path.join(PIPELINE, 'lib', 'multi-provider', 'health-cron'));
+        healthCron.tickIfDue({}).catch(e => log('mp-health', `tickIfDue error: ${e.message}`));
+      } catch (e) {
+        // require puede fallar si el módulo no existe (build viejo); no es fatal.
+      }
+
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
