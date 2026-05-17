@@ -34,6 +34,11 @@ const { spawn, spawnSync, execFileSync } = require('child_process');
 const { fillTemplate, escapeMarkdownV2 } = require('./commander/fill-template');
 const { createAuditLog } = require('./commander/audit-log');
 const { createRateLimiter } = require('./commander/rate-limit');
+const {
+    createDestructiveCooldown,
+    humanizeRetryAfter,
+    DEFAULT_COOLDOWN_MS,
+} = require('./commander/destructive-cooldown');
 const { redactReadOutput } = require('./commander/redact-read');
 const baseRedact = require('./redact');
 
@@ -57,6 +62,8 @@ const DETERMINISTIC_SLASH = new Set([
     'procesos',
     'salud',
     'descanso',
+    // Issue #3253 — /quota read-only sin LLM (CA-1).
+    'quota',
     // Comandos legacy del switch original que también son determinísticos:
     'help', 'start',
     'actividad',
@@ -99,6 +106,8 @@ const NLP_PATTERNS = [
     { regex: /\b(procesos node|node procesos|qu[eé] procesos node hay|listar procesos|ver procesos)\b/i, command: 'procesos' },
     { regex: /\b(salud (del )?pulpo|health (del )?pulpo|c[oó]mo (est[áa]|esta) el pulpo)\b/i, command: 'salud' },
     { regex: /\b(modo descanso|descanso lookup|ventana de descanso|cu[áa]ndo descansa|cuando descansa)\b/i, command: 'descanso' },
+    // Issue #3253 — NLP para /quota (CA-1). Texto natural: "cómo está la cuota", "cuota claude".
+    { regex: /\b(cuota|quota|c[oó]mo (esta|est[áa]) la cuota|claude cuota|cuota claude)\b/i, command: 'quota' },
     // Patrones legacy (presentes en parseCommand original)
     { regex: /\b(pausar|paus[áa] el|fren[áa] el|par[áa] el pulpo)\b/i, command: 'pausar' },
     { regex: /\b(reanudar|reanud[áa] el|arranc[áa] el pulpo)\b/i, command: 'reanudar' },
@@ -236,6 +245,19 @@ const ARG_SCHEMAS = {
     procesos: { allow: () => true },
     salud: { allow: () => true },
     descanso: { allow: () => true },
+    // Issue #3253 — /quota es estrictamente read-only (CA-S1).
+    // Cualquier argumento (clear, reset, delete, force, etc.) se rechaza
+    // antes de invocar al handler para impedir bypass del rate-limit de
+    // Claude desde el chat. El handler nunca modifica el archivo del flag.
+    quota: {
+        allow(args) {
+            const norm = String(args || '').trim();
+            return norm.length === 0;
+        },
+        usage: 'quota',
+        allowedValues: [],
+        hint: 'El comando es read-only — no acepta argumentos. Para destrabar la cuota, esperá al reset o borrá el flag manualmente con `rm .pipeline/quota-exhausted.json` (consola).',
+    },
 };
 
 function validateArgs(command, args) {
@@ -262,6 +284,10 @@ function validateArgs(command, args) {
  * @param {string} [opts.expectedChatId]   - chat_id autorizado (CA-17)
  * @param {object} [opts.handlers]         - override por comando (para tests / pulpo)
  * @param {object} [opts.rateLimit]        - { burst, ratePerMin }
+ * @param {object} [opts.destructiveCooldown]
+ *        - { cooldownMs, destructiveCommands } — issue #3253 CA-4. Si se omite,
+ *          se crea uno con defaults (60s sobre restart/limpiar/ghostbusters/reset).
+ *          Pasar `false` lo deshabilita (tests aislados que no quieren cooldown).
  * @param {function} [opts.now]            - clock injectable
  */
 function createDispatcher(opts) {
@@ -279,6 +305,16 @@ function createDispatcher(opts) {
         ratePerMin: options.rateLimit && options.rateLimit.ratePerMin,
         now: options.now,
     });
+    // Issue #3253 — CA-4: cooldown destructivo. Layer adicional al rate-limit.
+    // Si el caller pasa `false` explícito, lo deshabilitamos (tests que quieren
+    // ejecutar el mismo destructivo varias veces sin esperar 60s).
+    const destructiveCooldown = options.destructiveCooldown === false
+        ? null
+        : createDestructiveCooldown({
+            cooldownMs: options.destructiveCooldown && options.destructiveCooldown.cooldownMs,
+            destructiveCommands: options.destructiveCooldown && options.destructiveCooldown.destructiveCommands,
+            now: options.now,
+        });
     const customHandlers = options.handlers || {};
     const now = typeof options.now === 'function' ? options.now : () => Date.now();
 
@@ -409,6 +445,35 @@ function createDispatcher(opts) {
             return { reply, status: 'invalid_args', handler: intent.command, intent, durationMs: row.duration_ms };
         }
 
+        // Issue #3253 — CA-4: cooldown destructivo. Aplica DESPUÉS del
+        // rate-limit y de la validación de args, ANTES del handler. Si el
+        // comando es destructivo y está dentro de la ventana, devolvemos
+        // template con tiempo restante y NO invocamos al handler. No
+        // grabamos `recordSuccess` acá — el caller lo hace explícitamente
+        // después de confirmar éxito (ver `markDestructiveSuccess`).
+        if (destructiveCooldown && chatId && destructiveCooldown.isDestructive(intent.command)) {
+            const cd = destructiveCooldown.check(chatId, intent.command);
+            if (!cd.allowed) {
+                const reply = fillTemplate('error-destructive-cooldown', {
+                    command: intent.command,
+                    'retry-after-ms': cd.retryAfterMs,
+                    'retry-after-human': humanizeRetryAfter(cd.retryAfterMs),
+                    'cooldown-seconds': Math.round((destructiveCooldown._config.cooldownMs || DEFAULT_COOLDOWN_MS) / 1000),
+                });
+                const row = auditLog.record({
+                    from: message && message.from,
+                    chat_id: chatId,
+                    raw_command: intent.rawTruncated,
+                    intent_class: 'deterministic',
+                    handler: intent.command,
+                    args: intent.args,
+                    result_status: 'cooldown',
+                    duration_ms: now() - start,
+                });
+                return { reply, status: 'cooldown', handler: intent.command, intent, durationMs: row.duration_ms };
+            }
+        }
+
         const handler = handlers[intent.command];
         if (typeof handler !== 'function') {
             const row = auditLog.record({
@@ -444,6 +509,13 @@ function createDispatcher(opts) {
             status = 'error';
             try { process.stderr.write(`[commander-deterministic] handler ${intent.command} falló: ${e.message}\n`); } catch (_) {}
         }
+        // Issue #3253 — CA-4: grabar success solo si efectivamente devolvimos
+        // una respuesta no nula. Si el handler retornó null (ej. legacy
+        // resuelto en pulpo.js via no_handler fallback), no grabamos —
+        // pulpo.js llamará a `markDestructiveSuccess` cuando confirme éxito.
+        if (destructiveCooldown && chatId && status === 'ok' && reply !== null && destructiveCooldown.isDestructive(intent.command)) {
+            destructiveCooldown.recordSuccess(chatId, intent.command);
+        }
         const durationMs = now() - start;
         auditLog.record({
             from: message && message.from,
@@ -458,12 +530,40 @@ function createDispatcher(opts) {
         return { reply, audioText, status, handler: intent.command, intent, durationMs };
     }
 
+    /**
+     * Issue #3253 — CA-4: API explícita para que pulpo.js marque éxito
+     * de un comando destructivo cuyo handler vive en el switch legacy
+     * (cmdLimpiar / cmdRestart / cmdGhostbusters). Sin esto, los comandos
+     * que NO tienen handler default en el dispatcher (porque están en
+     * pulpo.js) nunca activarían el cooldown.
+     */
+    function markDestructiveSuccess(chatId, command) {
+        if (!destructiveCooldown || !chatId || !command) return false;
+        if (!destructiveCooldown.isDestructive(command)) return false;
+        destructiveCooldown.recordSuccess(chatId, command);
+        return true;
+    }
+
+    /**
+     * Issue #3253 — CA-4: API explícita para que pulpo.js consulte si un
+     * destructivo está en cooldown antes de invocar el switch legacy.
+     */
+    function checkDestructiveCooldown(chatId, command) {
+        if (!destructiveCooldown || !chatId || !command) {
+            return { allowed: true, retryAfterMs: 0, lastSuccessAt: null };
+        }
+        return destructiveCooldown.check(chatId, command);
+    }
+
     return {
         classify,
         validateArgs,
         dispatch,
         auditLog,
         rateLimiter,
+        destructiveCooldown,
+        markDestructiveSuccess,
+        checkDestructiveCooldown,
         DETERMINISTIC_SLASH,
         LLM_SLASH,
         ARG_SCHEMAS,
@@ -484,6 +584,70 @@ function buildDefaultHandlers(ctx) {
     const LOG_DIR = path.resolve(ctx.logsDir);
 
     return {
+        // Issue #3253 — CA-1: `/quota` read-only. Lee
+        // `.pipeline/quota-exhausted.json` con whitelist estricta de campos
+        // (CA-S2: nunca emite el JSON crudo, nunca expone paths absolutos).
+        // El handler jamás modifica el archivo (CA-S1) — los args mutativos
+        // (clear/reset/delete) ya rebotaron en ARG_SCHEMAS.quota antes de
+        // llegar acá.
+        quota: async () => {
+            const flagPath = path.join(PIPELINE, 'quota-exhausted.json');
+            let parsed = null;
+            try {
+                if (fs.existsSync(flagPath)) {
+                    const raw = fs.readFileSync(flagPath, 'utf8');
+                    parsed = JSON.parse(raw);
+                }
+            } catch (_) {
+                // Lectura defensiva: si está corrupto el JSON, NO emitimos
+                // el contenido crudo en la respuesta (CA-S2). Devolvemos el
+                // estado "sin cuota activa" como safe-default.
+                parsed = null;
+            }
+
+            const exhausted = !!(parsed && parsed.exhausted === true);
+            if (!exhausted) {
+                return fillTemplate('quota', { exhausted: false });
+            }
+
+            // Whitelist estricta de campos para Telegram (CA-S2).
+            // - provider: string identificador (ej "anthropic"), sanitizado.
+            // - since-iso: detected_at en ISO8601 humanizado a HH:MM:SS.
+            // - since-elapsed: tiempo desde detected_at.
+            // - resets-iso / resets-in: si hay resets_at, humanizamos; sino "—".
+            // - reason-kind: el campo `pattern_matched` truncado a 64 chars.
+            const provider = typeof parsed.provider === 'string' ? parsed.provider : 'anthropic';
+            const reasonKindRaw = typeof parsed.pattern_matched === 'string'
+                ? parsed.pattern_matched
+                : 'desconocido';
+            const reasonKind = reasonKindRaw.slice(0, 64);
+
+            const nowMs = Date.now();
+            const detectedAtMs = parsed.detected_at ? Date.parse(parsed.detected_at) : NaN;
+            const resetsAtMs = parsed.resets_at ? Date.parse(parsed.resets_at) : NaN;
+
+            const sinceElapsed = Number.isFinite(detectedAtMs)
+                ? formatElapsed(nowMs - detectedAtMs)
+                : 'desconocido';
+            const sinceIso = Number.isFinite(detectedAtMs)
+                ? new Date(detectedAtMs).toISOString()
+                : '—';
+            const hasResets = Number.isFinite(resetsAtMs);
+            const resetsIn = hasResets ? formatElapsed(resetsAtMs - nowMs) : '—';
+            const resetsIso = hasResets ? new Date(resetsAtMs).toISOString() : '—';
+
+            return fillTemplate('quota', {
+                exhausted: true,
+                provider,
+                'reason-kind': reasonKind,
+                'since-elapsed': sinceElapsed,
+                'since-iso': sinceIso,
+                'has-resets': hasResets,
+                'resets-in': resetsIn,
+                'resets-iso': resetsIso,
+            });
+        },
+
         tail: async ({ args }) => {
             const file = String(args || '').trim();
             const safeFile = path.resolve(LOG_DIR, file);

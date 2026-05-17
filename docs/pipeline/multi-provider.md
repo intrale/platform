@@ -15,6 +15,8 @@
 5. [Información operativa](#5-información-operativa) — validación, audit trail, cuota, diagnóstico.
 6. [Referencia rápida](#6-referencia-rápida) — tabla resumen + diagrama de dispatch.
 7. [Security considerations](#7-security-considerations) — gestión de keys, CSRF, audit trail, fallbacks reales.
+8. [Hardening de free providers](#8-hardening-de-free-providers-3260) — secrets, alerts, telemetry.
+9. [Modo degradado del Commander (sin LLM)](#9-modo-degradado-del-commander-sin-llm) — `/quota`, cooldown destructivo, gate texto libre.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -951,6 +953,144 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 - ❌ **Revocar la key vieja antes de validar la nueva con live-ping** → te quedás sin failover hasta restart.
 - ❌ **Pingear endpoints de completion en el healthcheck** → consumen cuota. El cron usa solo `/v1/models` (o equivalente).
 - ❌ **Bypassar el lock del cron** corriendo `runOnce` desde múltiples procesos → puede disparar abuse-detection del provider. El lock está ahí por una razón.
+
+---
+
+## 9. Modo degradado del Commander (sin LLM)
+
+> **Issue origen:** [#3253](https://github.com/intrale/platform/issues/3253) (path **(a)** — modo degradado).
+> **Builds upon:** [#3257](https://github.com/intrale/platform/issues/3257) (commander determinístico — separar status/listado/snapshot del flujo LLM).
+> **Documentos relacionados:** [`docs/pipeline/resiliencia-cuota-claude.md`](./resiliencia-cuota-claude.md) (spike #3251 que detectó el SPoF).
+
+El Telegram Commander es el **único canal humano↔pipeline** mientras el pulpo corre. Originalmente `ejecutarClaude` era el camino obligatorio para resolver cualquier mensaje del chat → si Claude caía, el operador perdía `/status`, `/ghostbusters`, `/restart` y todo control remoto en plena ventana de outage.
+
+El modo degradado garantiza que un set de comandos críticos **NUNCA pasa por el LLM**: viven en `.pipeline/lib/commander-deterministic.js` y resuelven con lectura de filesystem + render de plantilla MarkdownV2. Es la red de seguridad para diagnosticar y corregir el pipeline cuando Claude está caído.
+
+### 9.1 Comandos disponibles sin LLM
+
+El router `commander-deterministic.js` (función `classify`) usa **allowlist explícita** en `DETERMINISTIC_SLASH`. Los siguientes comandos jamás invocan a Claude:
+
+| Comando | Qué hace | Handler |
+|---------|----------|---------|
+| `/status` | Tablero completo del pipeline | `cmdStatus` (pulpo.js, legacy) |
+| `/quota` | Estado del flag de cuota Claude (read-only, ver §9.2) | `buildDefaultHandlers.quota` (#3253) |
+| `/snapshot` | Snapshot de la ola actual | `buildDefaultHandlers.snapshot` |
+| `/listado [filtro]` | Issues por fase del pipeline | `buildDefaultHandlers.listado` |
+| `/allowlist` | Pausa parcial actual | `buildDefaultHandlers.allowlist` |
+| `/tail <archivo>` | Últimas 30 líneas de un log permitido (allowlist) | `buildDefaultHandlers.tail` |
+| `/dashboard-up` / `/dashboard-down` | Levantar / bajar el dashboard | `buildDefaultHandlers.dashboard-*` |
+| `/salud` | Health del pulpo (lock + last tick + errores) | `buildDefaultHandlers.salud` |
+| `/procesos` | Procesos Node activos del pipeline | `buildDefaultHandlers.procesos` |
+| `/descanso` | Ventana de modo descanso | `buildDefaultHandlers.descanso` |
+| `/actividad`, `/ghostbusters`, `/pausar`, `/reanudar`, `/pause-partial`, `/costos`, `/limpiar`, `/restart`, `/bloqueados`, `/unblock`, `/help`, `/start`, `/stop` | Handlers legacy en `pulpo.js` (switch case) | `cmdXxx` |
+
+> **Regla:** todo comando en `DETERMINISTIC_SLASH` se resuelve sin spawn de Claude. El router devuelve `delegated_to_llm` SOLO para texto libre y para los dos comandos del set `LLM_SLASH` (`/intake`, `/proponer`).
+
+### 9.2 `/quota` (read-only)
+
+Lee `.pipeline/quota-exhausted.json` y muestra un resumen con campos **whitelisteados**:
+
+```
+🔴 Claude · cuota agotada
+
+Provider:  anthropic
+Desde:     hace 47m 12s (2026-05-17T03:45:12.000Z)
+Resetea:   en 13m (2026-05-17T05:45:12.000Z)
+Motivo:    usage_limit_error
+
+━━━━━━━━━━━━━━━━━━━━
+
+Comandos disponibles sin LLM:
+/status · /ghostbusters · /restart · /pausar · /quota · /help
+```
+
+**Garantías de seguridad** (CA-S1, CA-S2 del issue):
+
+- **Read-only.** Cualquier argumento (`clear`, `reset`, `delete`, `force`, etc.) se rechaza con `invalid_args` en `ARG_SCHEMAS.quota.allow()` *antes* de llegar al handler. El archivo nunca se modifica desde Telegram.
+- **Whitelist estricta** de campos: `provider`, `pattern_matched` (renombrado a `reason-kind`), `detected_at`, `resets_at`. Nunca emite el JSON crudo, paths absolutos, ni metadata interna del flag.
+- **JSON corrupto → safe-default:** si el archivo no parsea, responde "cuota disponible" sin echo del contenido raw.
+
+Para destrabar el flag manualmente (operación de consola, NO disponible desde Telegram):
+
+```bash
+rm .pipeline/quota-exhausted.json
+```
+
+### 9.3 Cooldown destructivo (60s)
+
+Los comandos potencialmente costosos están protegidos por un **cooldown ≥ 60s por chat × comando** (módulo `lib/commander/destructive-cooldown.js`). Mitiga:
+
+- Pulsado accidental doble en mobile (Telegram en android no diferencia bien tap simple vs doble).
+- Loops upstream que disparan `/restart` repetido y dejan el pulpo en estado inconsistente.
+- Operador en pánico martillando `/ghostbusters`.
+
+**Comandos en cooldown por default:**
+
+| Comando | Default cooldown |
+|---------|-----------------|
+| `/restart` | 60s |
+| `/limpiar` | 60s |
+| `/ghostbusters` | 60s |
+| `/reset` (reservado a futuro) | 60s |
+
+**Diferencia con el rate-limit token-bucket** (`lib/commander/rate-limit.js`, CA-11 #3257):
+
+| | Rate limit | Cooldown destructivo |
+|--|------------|---------------------|
+| **Granularidad** | Por chat_id | Por (chat_id, command) |
+| **Modelo** | Token bucket (10 burst, 30/min) | Ventana fija de 60s |
+| **Aplica a** | TODOS los comandos determinísticos | SOLO comandos destructivos |
+| **Mensaje** | "Calma, pibe — esperá un toque" | "⏳ /restart en cooldown. Reintentar en Xs." |
+
+El cooldown corre **después** del rate-limit, no en lugar de.
+
+### 9.4 Gate de cuota para texto libre (anti-prompt-injection)
+
+Cuando `quotaNotifier.getState().active === true` y llega un mensaje libre (texto largo o slash-command desconocido), el commander responde con texto canned literal **sin interpolar el input del usuario**. Esto cierra el vector de prompt-injection vía mensajes del chat (un atacante con acceso al bot token no podría inducir respuestas escritas con su payload, porque el flujo nunca lo invoca al LLM).
+
+Texto canned (definido en `lib/quota-notifier.js` → `QUOTA_COPY.cannedFreeText`):
+
+```
+Cuota Anthropic agotada hasta las HH:MM.
+Pipeline operando en modo determinístico.
+Comandos disponibles: /status /metrics /dashboard /intake /pause /ghostbusters /restart /limpiar.
+```
+
+- Debounce 2 minutos para evitar spam-self del bot ante flujos chatty.
+- Logueo del input usuario pasa por `redact()` antes de persistir en `commander-history.jsonl`.
+
+### 9.5 Extender la lista de comandos sin LLM
+
+Si necesitás sumar un comando nuevo al modo degradado:
+
+1. Sumarlo a `DETERMINISTIC_SLASH` en `commander-deterministic.js`.
+2. Si lleva args, declarar el schema en `ARG_SCHEMAS[<command>]` con `allow(args)`, `usage`, `allowedValues`, `hint`.
+3. Implementar el handler en `buildDefaultHandlers` (handler-level NO debe importar `pulpo.js`; recibe `{ args, message, intent }` y devuelve string MarkdownV2).
+4. Crear el template en `lib/commander/templates/<command>.md` con sintaxis Handlebars-básica (`{{var}}`, `{{#if}}`, `{{#each}}`).
+5. Si es destructivo (mata procesos, modifica filesystem), sumarlo a `DEFAULT_DESTRUCTIVE_COMMANDS` en `destructive-cooldown.js` o pasarlo via `opts.destructiveCommands` del dispatcher.
+6. Cubrirlo con tests `node --test` en `lib/__tests__/`.
+7. Actualizar este documento (§9.1) + `cmdHelp` en `pulpo.js`.
+
+### 9.6 Limitaciones explícitas (qué NO hace el modo degradado)
+
+- **No procesa texto libre.** Si Claude está caído y mandás "andá a fijarte qué pasa con #1234", recibís el canned response, no análisis.
+- **No crea issues.** `/intake` y `/proponer` clasifican como `LLM_SLASH` — requieren Claude (#3250 SEC-5 + provider activo === anthropic). Si Claude está caído, esos comandos también caen al gate.
+- **No reemplaza alertas.** El modo degradado es manual: requiere que el operador envíe el comando. Para alertas activas (PagerDuty-style) hay un canal separado vía `quotaNotifier` (recordatorios A→B→C→D, ver `lib/quota-notifier.js`).
+- **No es defensa de seguridad por sí solo.** El cooldown destructivo y el `/quota` read-only son **UX guards**. La auth real está en `listener-telegram.js:144` (allowlist hardcoded de `chat.id`).
+
+### 9.7 Verificación operativa
+
+```bash
+# Tests unitarios del modo degradado:
+node --test .pipeline/lib/__tests__/commander-quota-cooldown.test.js
+node --test .pipeline/lib/__tests__/commander-router.test.js
+
+# Smoke E2E (issue #3253 CA-8): simula flag activo, dispara /quota, /status,
+# /restart x2, verifica que NINGÚN spawn LLM se dispara durante el flujo:
+npm run smoke:commander
+```
+
+El smoke usa fixture aislado en `.pipeline/tests/fixtures/quota-exhausted.json` y un pipeline temporal en `os.tmpdir()` — **nunca toca el estado real** del pipeline (CA-S6).
 
 ---
 

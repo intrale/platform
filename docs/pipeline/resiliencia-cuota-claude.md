@@ -131,7 +131,7 @@ delivery       primary=deterministic  fallbacks=[(none)]
 
 1. **[#3253](https://github.com/intrale/platform/issues/3253) — [pipeline] Telegram Commander es SPoF en Claude — habilitar multi-provider o modo degradado sin LLM.**
    Mitigación mínima viable (orden de costo creciente):
-   - **(a) Modo degradado sin LLM**: comandos pre-definidos parseados con regex en `_brazoCommanderInner` (`/status`, `/ghostbusters`, `/reset`, `/pause`, `/quota`). Si llega un mensaje que no matchea regex, responder con texto fijo "Claude está caído, comandos disponibles: …". Cero tokens, cero dependencia LLM, canal de control siempre vivo.
+   - **(a) Modo degradado sin LLM**: comandos pre-definidos parseados con regex en `_brazoCommanderInner` (`/status`, `/ghostbusters`, `/reset`, `/pause`, `/quota`). Si llega un mensaje que no matchea regex, responder con texto fijo "Claude está caído, comandos disponibles: …". Cero tokens, cero dependencia LLM, canal de control siempre vivo. **→ Entregado por #3253 path (a)** — ver [`docs/pipeline/multi-provider.md` §9 — Modo degradado del Commander](./multi-provider.md#9-modo-degradado-del-commander-sin-llm) para detalle operativo (`/quota`, cooldown destructivo 60s, gate texto libre anti-prompt-injection, tests + smoke).
    - **(b) Multi-provider real**: `ejecutarClaude` pasa por `resolveSpawnWithFallback({ skill: 'commander', ... })`. Requiere agregar `commander` como skill en `agent-models.json` con su propia `fallbacks[]`. Bloqueado por #3076/#3198 (handlers reales).
    - Recomendación: empezar por (a) — desbloquea hoy. (b) se hace cuando #3198 entrega runtime.
 

@@ -7432,24 +7432,39 @@ function cmdUnblock(args) {
 function cmdHelp() {
   return `🤖 *Comandos del Pipeline V2*
 
+*Sin LLM (siempre disponibles, incluso con Claude caído):*
 /status — Tablero completo del pipeline
+/quota — Estado de cuota Claude (read-only, sin LLM)
+/snapshot — Snapshot de la ola actual
+/listado [filtro] — Listar issues del pipeline
+/allowlist — Pausa parcial actual
+/tail <archivo> — Últimas líneas de un log permitido
+/dashboard-up — Levantar el dashboard
+/dashboard-down — Bajar el dashboard
+/salud — Salud del pulpo
+/procesos — Procesos Node del pipeline
+/descanso — Modo descanso (ventana)
 /actividad [filtro] — Timeline (ej: /actividad 30m, /actividad #732)
-/intake [issue] — Meter trabajo al pipeline
-/proponer — Proponer historias nuevas (vía Claude)
-/restart — Reiniciar pipeline completo
-/restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
-/limpiar — Matar daemons Gradle/Kotlin huérfanos
-/ghostbusters — Matar fantasmas: gradle zombies + worktrees abandonados + emuladores no sincronizados
 /pausar — Pausar el Pulpo (completo)
 /pause-partial 2490 2491 — Pausa parcial: solo esos issues siguen activos
 /reanudar — Reanudar el Pulpo (levanta pausa completa o parcial)
 /costos — Resumen de actividad/costos
-/bloqueados — Listar issues bloqueados esperando intervención humana (V3)
-/unblock <issue> <orientación> — Desbloquear un issue con orientación para el skill (V3)
+/bloqueados — Listar issues bloqueados esperando intervención humana
+/unblock <issue> <orientación> — Desbloquear un issue con orientación
 /help — Esta ayuda
+
+*Destructivos (cooldown 60s):*
+/restart — Reiniciar pipeline completo
+/restart pausado — Reiniciar en modo pausado (solo Telegram + dashboard)
+/limpiar — Matar daemons Gradle/Kotlin huérfanos
+/ghostbusters — Matar fantasmas (gradle zombies + worktrees abandonados + emus no sync)
+
+*Con LLM (texto libre y comandos especiales):*
+/intake [issue] — Meter trabajo al pipeline
+/proponer — Proponer historias nuevas
 /stop — Apagar el Commander
 
-También podés escribir texto libre y te respondo con Claude.`;
+_Texto libre: si Claude está disponible, responde el LLM. Si no, respuesta canned + lista de comandos sin LLM._`;
 }
 
 /** Detectar si un mensaje es un comando y extraer nombre + argumentos */
@@ -7507,6 +7522,10 @@ function getCommanderDispatcher() {
     logsDir: LOG_DIR,
     expectedChatId: getTelegramChatId(),
     rateLimit: { burst: 10, ratePerMin: 30 },
+    // Issue #3253 — CA-4: cooldown destructivo de 60s para restart/limpiar/
+    // ghostbusters/reset. Mitiga pulsado accidental en mobile + restart
+    // encadenado por loops upstream. Layer adicional al rate-limit.
+    destructiveCooldown: { cooldownMs: 60 * 1000 },
   });
   return _commanderDispatcher;
 }
@@ -7676,33 +7695,57 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     if (respuesta === null && intent.class === 'deterministic' && intent.command) {
       const cmd = intent.command;
       const args = intent.args;
-      switch (cmd) {
-        case 'status': respuesta = await cmdStatus(config); break;
-        case 'actividad': respuesta = cmdActividad(args); break;
-        case 'ghostbusters': respuesta = cmdGhostbusters(); break;
-        case 'intake': respuesta = cmdIntake(args, config); break;
-        case 'pausar': case 'pause': respuesta = cmdPausar(); break;
-        case 'reanudar': case 'resume': respuesta = cmdReanudar(); break;
-        case 'pause-partial': case 'pause_partial': case 'pausarparcial':
-          respuesta = cmdPausaParcial(args); break;
-        case 'costos': respuesta = cmdCostos(); break;
-        case 'help': case 'start': respuesta = cmdHelp(); break;
-        case 'stop':
-          respuesta = '🛑 Commander apagándose...';
-          sendTelegram(respuesta);
-          running = false;
-          break;
-        case 'proponer': respuesta = await cmdProponer(args, config); break;
-        case 'limpiar': respuesta = cmdLimpiar(); break;
-        case 'restart': respuesta = cmdRestart(args); break;
-        case 'bloqueados': respuesta = cmdBloqueados(); break;
-        case 'unblock': respuesta = cmdUnblock(args); break;
-        // snapshot/listado/allowlist/dashboard-up/dashboard-down/screenshot/procesos
-        // se resuelven en `dispatcher.dispatch` arriba (buildDefaultHandlers en
-        // commander-deterministic.js). Si llegaran acá significa que el dispatcher
-        // devolvió `no_handler` → caemos a `default` y eventualmente a texto libre,
-        // garantizando que el usuario reciba ALGUNA respuesta.
-        default: respuesta = null; break;
+
+      // Issue #3253 — CA-4: cooldown destructivo para handlers legacy. El
+      // dispatcher YA hace cooldown para handlers default, pero restart/
+      // limpiar/ghostbusters viven en pulpo.js y necesitan pre-check explícito
+      // antes de ejecutarse. Si está en cooldown, no entramos al switch.
+      const chatIdForCooldown = m.chat_id || getTelegramChatId();
+      const cdCheck = dispatcher.checkDestructiveCooldown(chatIdForCooldown, cmd);
+      if (!cdCheck.allowed) {
+        const { humanizeRetryAfter } = require('./lib/commander/destructive-cooldown');
+        const { fillTemplate } = require('./lib/commander/fill-template');
+        respuesta = fillTemplate('error-destructive-cooldown', {
+          command: cmd,
+          'retry-after-ms': cdCheck.retryAfterMs,
+          'retry-after-human': humanizeRetryAfter(cdCheck.retryAfterMs),
+          'cooldown-seconds': 60,
+        });
+        log('commander', `cooldown destructivo (legacy): /${cmd} bloqueado ${cdCheck.retryAfterMs}ms`);
+      } else {
+        switch (cmd) {
+          case 'status': respuesta = await cmdStatus(config); break;
+          case 'actividad': respuesta = cmdActividad(args); break;
+          case 'ghostbusters': respuesta = cmdGhostbusters(); break;
+          case 'intake': respuesta = cmdIntake(args, config); break;
+          case 'pausar': case 'pause': respuesta = cmdPausar(); break;
+          case 'reanudar': case 'resume': respuesta = cmdReanudar(); break;
+          case 'pause-partial': case 'pause_partial': case 'pausarparcial':
+            respuesta = cmdPausaParcial(args); break;
+          case 'costos': respuesta = cmdCostos(); break;
+          case 'help': case 'start': respuesta = cmdHelp(); break;
+          case 'stop':
+            respuesta = '🛑 Commander apagándose...';
+            sendTelegram(respuesta);
+            running = false;
+            break;
+          case 'proponer': respuesta = await cmdProponer(args, config); break;
+          case 'limpiar': respuesta = cmdLimpiar(); break;
+          case 'restart': respuesta = cmdRestart(args); break;
+          case 'bloqueados': respuesta = cmdBloqueados(); break;
+          case 'unblock': respuesta = cmdUnblock(args); break;
+          // snapshot/listado/allowlist/dashboard-up/dashboard-down/screenshot/procesos
+          // se resuelven en `dispatcher.dispatch` arriba (buildDefaultHandlers en
+          // commander-deterministic.js). Si llegaran acá significa que el dispatcher
+          // devolvió `no_handler` → caemos a `default` y eventualmente a texto libre,
+          // garantizando que el usuario reciba ALGUNA respuesta.
+          default: respuesta = null; break;
+        }
+        // Issue #3253 — CA-4: marcar success post-handler para que el cooldown
+        // aplique en la próxima invocación. Solo si efectivamente respondió.
+        if (respuesta !== null) {
+          try { dispatcher.markDestructiveSuccess(chatIdForCooldown, cmd); } catch {}
+        }
       }
     }
 
