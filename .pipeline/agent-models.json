@@ -1,6 +1,6 @@
 {
   "$schema": "./agent-models.schema.json",
-  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free).",
+  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente) + #3258 (skill virtual `telegram-commander`). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free). El skill virtual `telegram-commander` (#3258) NO está en `skills_por_fase` — es consumido por pulpo.js (commander chat de Telegram) vía lib/commander/multi-provider.js para el dispatch con fallback chain.",
 
   "default_provider": "anthropic",
 
@@ -276,6 +276,17 @@
     "refinar":      { "provider": "anthropic" },
 
     "linter":       { "provider": "deterministic" },
-    "delivery":     { "provider": "deterministic" }
+    "delivery":     { "provider": "deterministic" },
+
+    "telegram-commander": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
+        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
+        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+      ]
+    }
   }
 }

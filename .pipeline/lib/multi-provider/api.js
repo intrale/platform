@@ -397,8 +397,29 @@ async function handleReload(req, res) {
     }
 }
 
+// #3258 — CA-6: distribución del Commander de Telegram por provider.
+// Lee los audit logs `logs/commander-dispatch-YYYY-MM-DD.jsonl` y agrega por
+// `provider_effective` para mostrar % de requests resueltos por cada provider
+// en la ventana solicitada (24h, 7d, 30d).
+async function handleCommanderDistribution(req, res, _params, query) {
+    if (req.method !== 'GET') return sendError(res, 405, 'method_not_allowed', 'GET only');
+    try {
+        const cmp = require('../commander/multi-provider');
+        const window = String((query && query.get && query.get('window')) || '7d');
+        const windowDays =
+            window === '24h' || window === '1d' ? 1 :
+            window === '30d' ? 30 :
+            7;
+        const stats = cmp.readCommanderStats({ pipelineDir: PIPELINE_ROOT, windowDays });
+        sendJson(res, { ok: true, window, ...stats });
+    } catch (e) {
+        sendError(res, 500, 'read_failed', e.message);
+    }
+}
+
 const ROUTES = [
     { method: 'GET',  pattern: /^\/api\/multi-provider\/csrf-token$/,            handler: handleCsrfToken },
+    { method: 'GET',  pattern: /^\/api\/multi-provider\/commander-distribution(\?.*)?$/, handler: handleCommanderDistribution },
     { method: 'GET',  pattern: /^\/api\/multi-provider\/config$/,                handler: handleConfigGet },
     { method: 'POST', pattern: /^\/api\/multi-provider\/config\/diff$/,          handler: handleConfigDiff },
     { method: 'PUT',  pattern: /^\/api\/multi-provider\/config$/,                handler: handleConfigPut },

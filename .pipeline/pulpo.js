@@ -37,6 +37,12 @@ const humanBlock = require('./lib/human-block');
 const partialPause = require('./lib/partial-pause');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
+// #3258 — Multi-provider fallback chain para el Commander de Telegram. Reusa
+// el runtime de dispatch-with-fallback (#3198) con `skill: 'telegram-commander'`.
+// Sanitiza input del usuario, deduplica avisos de fallback (SR-6), emite audit
+// log con hash-chain (CA-4 / SR-3) y formatea las notificaciones a Leo según
+// UX-G1 (lenguaje natural, no log operativo).
+const commanderMP = require('./lib/commander/multi-provider');
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
@@ -6805,6 +6811,108 @@ function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOrigina
 function ejecutarClaude(prompt, textoOriginal) {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
+    const startTimeForAudit = Date.now();
+
+    // #3258 — SR-4: sanitizar el input del usuario ANTES de cualquier dispatch.
+    // Si detecta patrones de prompt-injection, recorta al primer match y
+    // dejamos constancia en el audit log (best-effort). El prompt efectivo que
+    // pasamos al LLM es el sanitizado, no el original.
+    const sanRes = commanderMP.sanitizeUserPrompt(prompt);
+    const promptForLLM = sanRes.sanitized;
+    if (sanRes.hits.length > 0) {
+      log('commander', `🛡️ Patrones de prompt-injection detectados (${sanRes.hits.length}) — input recortado.`);
+      try {
+        commanderMP.auditCommanderRequest({
+          pipelineDir: PIPELINE,
+          event: 'prompt_injection_attempt',
+          providerIntended: 'anthropic',
+          providerEffective: null,
+          chatId: getTelegramChatId(),
+          prompt: prompt,
+          injectionHits: sanRes.hits,
+        });
+      } catch { /* best-effort */ }
+    }
+
+    // #3258 — CA-3 / CA-1 / CA-2: resolución del provider efectivo con fallback
+    // chain. Si Anthropic está gateado por cuota (#2974/#3077), el dispatcher
+    // resuelve al próximo provider declarado en `agent-models.json::skills.
+    // telegram-commander.fallbacks[]`. Si toda la chain está gateada, devuelve
+    // `gated: true` y respondemos canned sin spawnear nada.
+    let resolution;
+    try {
+      resolution = commanderMP.resolveCommanderProvider({
+        pipelineDir: PIPELINE,
+        log: (l, m) => log(l || 'commander', m),
+      });
+    } catch (e) {
+      log('commander', `⚠️ resolveCommanderProvider falló: ${e.message} — degradando a Anthropic por compatibilidad.`);
+      resolution = { provider: 'anthropic', model: null, gated: false, crossProvider: false, primaryProvider: 'anthropic', chainTried: ['anthropic'], fallbackUsed: null, handler: null, source: 'fallback-resolver-error' };
+    }
+
+    if (resolution.gated) {
+      // Toda la chain está sin cuota. Canned response al usuario.
+      log('commander', `🚫 Chain de fallback agotada (chain_tried=${(resolution.chainTried || []).join('->')})`);
+      try {
+        commanderMP.auditCommanderRequest({
+          pipelineDir: PIPELINE,
+          event: 'gated_all',
+          providerIntended: 'anthropic',
+          providerEffective: null,
+          chainTried: resolution.chainTried,
+          chatId: getTelegramChatId(),
+          prompt: prompt,
+          errorCode: 'quota_exhausted',
+        });
+      } catch { /* best-effort */ }
+      return resolve(commanderMP.cannedAllGatedResponse());
+    }
+
+    // CA-5 + SR-6 — Si el dispatcher resolvió a un fallback distinto del
+    // primary, emitimos aviso a Leo en formato UX-G1 (lenguaje natural,
+    // sin jerga operativa). El runtime ya encoló un mensaje genérico
+    // operacional vía `dispatch-with-fallback.js:enqueueTelegramNotice`, pero
+    // ese formato es para humanos técnicos. Acá agregamos uno conversacional
+    // específico del Commander.
+    if (resolution.crossProvider) {
+      try {
+        const fbHandler = resolution.handler || {};
+        // Si el provider efectivo no soporta tool use (Groq/Cerebras),
+        // SR-8 obliga a avisar la degradación de capacidad en línea separada.
+        // Leemos el flag del JSON config para no asumirlo en runtime.
+        const supportsToolUse = (() => {
+          try {
+            const models = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'agent-models.json'), 'utf8'));
+            const def = models.providers && models.providers[resolution.provider];
+            return def && typeof def.supports_tool_use === 'boolean' ? def.supports_tool_use : true;
+          } catch { return true; }
+        })();
+        const shouldEmit = commanderMP.shouldEmitFallbackNotice({
+          pipelineDir: PIPELINE,
+          chatId: getTelegramChatId(),
+          fallbackProvider: resolution.provider,
+        });
+        if (shouldEmit) {
+          const notice = commanderMP.formatFallbackNotice({
+            primaryProvider: resolution.primaryProvider || 'anthropic',
+            fallbackProvider: resolution.provider,
+            errorCode: 'quota_exhausted',
+            supportsToolUse,
+          });
+          sendTelegramPlain(notice);
+          log('commander', `↪️ Cross-provider notice emitido (fallback=${resolution.provider})`);
+        } else {
+          log('commander', `↪️ Cross-provider fallback activo (fallback=${resolution.provider}) — notice dedupeado por ventana 5min`);
+        }
+      } catch (notifErr) {
+        log('commander', `⚠️ Error formando notice de fallback (best-effort): ${notifErr.message}`);
+      }
+    }
+
+    // #3258 — args dependen del provider efectivo. Para Anthropic mantenemos
+    // los args legacy (`--output-format stream-json`). Para otros providers,
+    // dejamos que `buildSpawn` del handler arme sus propios args desde
+    // `spawn_args_template` de agent-models.json.
     const args = [
       '-p',
       '--output-format', 'stream-json',
@@ -6813,10 +6921,9 @@ function ejecutarClaude(prompt, textoOriginal) {
     ];
 
     // #3085 / S7 multi-provider — aislamiento de credenciales también para
-    // el commander singleton. El commander es Claude operando el pulpo (chat
-    // del operador) — NO es un skill de pipeline pero es un proceso LLM con
-    // las mismas implicancias de seguridad. Bajo flag, le pasamos un env
-    // mínimo + scope github (postea al issue tracker) + telegram (always-on).
+    // el commander singleton. SR-2 #3258: el env del child filtra por el
+    // PROVIDER EFECTIVO, no por anthropic hardcoded. Cuando fallbackeamos a
+    // openai-codex, el child recibe `OPENAI_API_KEY` y NO `ANTHROPIC_API_KEY`.
     let cleanEnv;
     let commanderEnvIsolation = false;
     try {
@@ -6825,22 +6932,21 @@ function ejecutarClaude(prompt, textoOriginal) {
     } catch { /* default false */ }
     if (commanderEnvIsolation) {
       try {
+        // SR-2 — provider efectivo dinámico. `skillConfigOverride.provider`
+        // shape (partial, #3198): el merge interno hace lookup correcto del
+        // `credentials_env` del fallback en `agent-models.json::providers`.
+        // Si el primary respondió OK, `resolution.provider === 'anthropic'`
+        // y el comportamiento es idéntico al previo.
         cleanEnv = buildChildEnvLib.buildChildEnv({
-          skill: 'commander',
+          skill: commanderMP.COMMANDER_SKILL,
           pipelineDir: PIPELINE,
           processEnv: process.env,
           pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
-          // El commander no está en DEFAULT_REQUIRES_BY_SKILL, así que
-          // pasamos override explícito con el provider Anthropic + scopes
-          // github (necesita gh CLI para responder sobre issues).
-          skillConfigOverride: {
-            skill: { provider: 'anthropic', requires_credentials: ['github'] },
-            providers: { anthropic: { credentials_env: 'ANTHROPIC_API_KEY' } },
-          },
+          skillConfigOverride: { provider: resolution.provider },
         });
       } catch (e) {
-        log('commander', `❌ env-isolation rechazó spawn del commander: ${e.message}`);
-        throw e;
+        log('commander', `❌ env-isolation rechazó spawn del commander (provider=${resolution.provider}): ${e.message}`);
+        return reject(e);
       }
     } else {
       cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
@@ -6849,6 +6955,82 @@ function ejecutarClaude(prompt, textoOriginal) {
     // confunde al child sobre si ya está en una sesión activa.
     delete cleanEnv.CLAUDECODE;
 
+    // #3258 — Si el provider efectivo NO es Anthropic, tratamos de invocar el
+    // handler real vía `safeBuildSpawn`. Los providers no-Anthropic son stubs
+    // hasta #3198 — `buildSpawn` tira `_notImplemented`. En ese caso, audit
+    // log + respondemos canned al usuario sin matar el flow.
+    if (resolution.provider !== 'anthropic') {
+      const safe = commanderMP.safeBuildSpawn({
+        handler: resolution.handler,
+        args,
+        cwd: ROOT,
+        env: cleanEnv,
+      });
+      try {
+        commanderMP.auditCommanderRequest({
+          pipelineDir: PIPELINE,
+          event: safe.ok ? 'fallback_used' : 'fallback_unavailable',
+          providerIntended: resolution.primaryProvider || 'anthropic',
+          providerEffective: resolution.provider,
+          chainTried: resolution.chainTried,
+          chatId: getTelegramChatId(),
+          prompt: prompt,
+          latencyMs: Date.now() - startTimeForAudit,
+          errorCode: safe.ok ? null : 'not_implemented',
+          injectionHits: sanRes.hits,
+        });
+      } catch { /* best-effort */ }
+      if (!safe.ok) {
+        log('commander', `⚠️ Fallback provider "${resolution.provider}" no implementado (${safe.reason}). Respondiendo canned.`);
+        return resolve(commanderMP.cannedFallbackUnavailableResponse({ provider: resolution.provider }));
+      }
+      // Si #3198 está deployed y el handler real funciona, llegamos acá. La
+      // parsing de output stream-json de Anthropic NO aplica directamente a
+      // otros providers (cada uno tiene su `output_parser`). Esta es la
+      // observación G1/G2 que dejamos para una iteración futura — por ahora
+      // si el handler responde con buildSpawn pero el output no es
+      // stream-json, capturamos stdout crudo y lo devolvemos al usuario.
+      const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
+      proc.stdin && proc.stdin.write && proc.stdin.write(promptForLLM);
+      proc.stdin && proc.stdin.end && proc.stdin.end();
+      let stdout = '';
+      let stderr = '';
+      const startNon = Date.now();
+      const HARD_NON_ANTH_MS = 90 * 1000; // SR-5 — budget 90s para providers no-stream-json
+      const timer = setTimeout(() => {
+        try { proc.kill('SIGTERM'); } catch {}
+        log('commander', `Provider ${resolution.provider} timeout 90s — abortando`);
+      }, HARD_NON_ANTH_MS);
+      proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); });
+      proc.stderr && proc.stderr.on('data', (d) => { stderr += d.toString(); });
+      proc.on('close', () => {
+        clearTimeout(timer);
+        const elapsed = Date.now() - startNon;
+        log('commander', `Provider ${resolution.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, stderr=${stderr.length}c)`);
+        try {
+          commanderMP.auditCommanderRequest({
+            pipelineDir: PIPELINE,
+            event: 'fallback_used',
+            providerIntended: resolution.primaryProvider || 'anthropic',
+            providerEffective: resolution.provider,
+            chainTried: resolution.chainTried,
+            chatId: getTelegramChatId(),
+            prompt: prompt,
+            latencyMs: elapsed,
+            errorCode: stdout ? null : 'empty_output',
+          });
+        } catch { /* best-effort */ }
+        resolve(stdout || `No pude completar tu pedido vía ${resolution.provider}. Intentá de nuevo.`);
+      });
+      proc.on('error', (e) => {
+        clearTimeout(timer);
+        log('commander', `Error spawning ${resolution.provider}: ${e.message}`);
+        resolve(commanderMP.cannedFallbackUnavailableResponse({ provider: resolution.provider }));
+      });
+      return;
+    }
+
+    // Path por default: Anthropic. Comportamiento byte-equivalente al previo.
     const cmdSpawn = CLAUDE_LAUNCHER.cmd;
     const cmdArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...args];
 
@@ -6860,7 +7042,8 @@ function ejecutarClaude(prompt, textoOriginal) {
       windowsHide: true
     });
 
-    proc.stdin.write(prompt);
+    // #3258 — SR-4: pasamos el prompt SANITIZADO al LLM, no el original.
+    proc.stdin.write(promptForLLM);
     proc.stdin.end();
 
     let lastText = '';
@@ -6882,6 +7065,33 @@ function ejecutarClaude(prompt, textoOriginal) {
       rl.close();
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       log('commander', `Claude terminó (${reason}, code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
+      // #3258 — CA-4 / SR-3: audit log con hash-chain del request del commander.
+      // Métadata mínima (prov, tokens si los hay, latencia, hashes). NO se
+      // loguea prompt ni respuesta literales — solo hashes.
+      try {
+        const usage = finalResult && finalResult.usage ? finalResult.usage : (finalResult && finalResult.message && finalResult.message.usage) || null;
+        const tokensSummary = usage ? {
+          input: Number(usage.input_tokens || 0),
+          output: Number(usage.output_tokens || 0),
+          cache_read: Number(usage.cache_read_input_tokens || 0),
+          cache_create: Number(usage.cache_creation_input_tokens || 0),
+          tool_calls: toolCount,
+        } : { tool_calls: toolCount };
+        commanderMP.auditCommanderRequest({
+          pipelineDir: PIPELINE,
+          event: 'dispatch',
+          providerIntended: resolution.primaryProvider || 'anthropic',
+          providerEffective: resolution.provider,
+          chainTried: resolution.chainTried,
+          chatId: getTelegramChatId(),
+          prompt: prompt,
+          tokens: tokensSummary,
+          latencyMs: Date.now() - startTime,
+          errorCode: (finalResult && finalResult.result) || lastText ? null : 'no_result',
+          injectionHits: sanRes.hits,
+          supportsToolUse: true,
+        });
+      } catch { /* best-effort */ }
       if (finalResult?.result) {
         resolve(finalResult.result);
       } else if (lastText) {
