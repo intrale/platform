@@ -467,3 +467,316 @@ test('processQueue() sin args usa defaultGhClient (firma compatible con producci
     // ejecuciones). Aquí no asertamos un destino específico, solo que el
     // dispatch no fue rechazado por la firma.
 });
+
+// ===========================================================================
+// #3303 — Body con saltos de línea reales preservados extremo a extremo.
+//
+// Causa raíz del incidente del 2026-05-17: el `esc()` viejo convertía `\n` a
+// la secuencia literal `\\n` para no romper el quoting del shell de Windows.
+// Resultado: el comentario posteado a GitHub quedaba en una sola línea y el
+// detector de dependencias del Pulpo (`parseDependencyComment`) no matcheaba.
+//
+// El fix migra a `cp.execFileSync` + `--body-file -` con stdin, lo que no
+// requiere escape de newlines. Estos tests cierran la regresión:
+//
+//   CA-4 (dispatch test puro):
+//     - El fake `ghClient` mockea la API. El worker invoca commentIssue con
+//       el body íntegro (con `\n` reales). Si alguien reintrodujera `esc()`
+//       o cualquier transformación de newlines en el path del worker, el
+//       fake lo detectaría comparando `args[1]` contra el string original.
+//
+//   CA-5 (E2E hasta el binario):
+//     - Monkey-patch de `cp.execFileSync` en el módulo de servicio-github.
+//       Captura el argv y `options.input` que llegan al binario `gh`.
+//       Verifica:
+//         (a) que el body se pasa por `--body-file -` (no `-b "..."`).
+//         (b) que el body en stdin tiene los `\n` reales sin transformación.
+//         (c) que NO aparece el patrón `\\n` literal anti-pattern.
+//
+//   CA-6 (integración con el parser real):
+//     - Toma el body que captura CA-5 y lo pasa por `parseDependencyComment`.
+//       Verifica que el parser detecta correctamente el listado `- #NNNN`.
+//       Si el body llegara con `\n` literales (como antes del fix), el
+//       parser devolvería `null` (causa raíz exacta del incidente #3253).
+// ===========================================================================
+
+test('CA-4 #3303: action=comment con body multilínea pasa newlines reales al ghClient', () => {
+    resetState();
+    const ghClient = makeFakeGhClient();
+
+    const bodyMultilinea = '## Dependencias detectadas por el pipeline\n\n- #3257\n\nEste issue queda bloqueado hasta que cierren las dependencias.';
+
+    const filename = enqueueOrder(3253, {
+        action: 'comment', issue: 3253, body: bodyMultilinea,
+    });
+
+    svc.processQueue({ ghClient });
+
+    const call = ghClient.calls.find(c => c.method === 'commentIssue');
+    assert.ok(call, `commentIssue debe haber sido invocado (calls=${JSON.stringify(ghClient.calls)})`);
+    assert.equal(call.args[0], 3253);
+
+    // CA-4 — el body llega IDÉNTICO al string original; ni el dispatcher ni
+    // el `sanitizeGithubPayload` deben transformar `\n` real en `\\n` literal.
+    const receivedBody = call.args[1];
+    assert.equal(receivedBody, bodyMultilinea,
+        'body debe pasarse verbatim — sin transformación de newlines');
+
+    // Doble check: el body contiene saltos de línea reales y NO la secuencia
+    // literal `\n` (dos chars: backslash + n) que producía el bug original.
+    assert.ok(receivedBody.includes('\n'),
+        'body recibido debe contener LF real');
+    assert.ok(!receivedBody.includes('\\n'),
+        'body recibido NO debe contener la secuencia literal \\n (sería el bug previo)');
+
+    // Sanity: el resultado quedó en listo sin descartado.
+    const result = readListoFile(filename);
+    assert.equal(result.discarded, undefined);
+});
+
+test('CA-5 #3303: defaultGhClient.commentIssue invoca execFileSync con --body-file - y body en stdin', () => {
+    resetState();
+
+    // Body que reproduce exactamente el patrón del incidente #3253.
+    const bodyMultilinea = '## Dependencias detectadas por el pipeline\n\n- #3257\n\nEste issue queda bloqueado hasta que cierren las dependencias.';
+
+    // Monkey-patch `cp.execFileSync` a nivel módulo. La producción usa
+    // `cp.execFileSync(GH_BIN, argv, opts)` — capturamos los 3 args, NO
+    // invocamos el binario real. Saneamos al final con `cp.execFileSync = original`.
+    //
+    // Por qué este enfoque y no un stub `.exe` real:
+    //   - Windows requiere `.exe` nativo o `shell: true` para `.bat`/`.cmd`,
+    //     y el punto del fix es justamente NO usar shell. Un stub `.js`
+    //     no es ejecutable directo desde `execFileSync` sin shell.
+    //   - El monkey-patch del módulo `child_process` es el mecanismo
+    //     estándar en Node `node --test` para aislar IO. La invocación
+    //     real ya está cubierta por integration tests en producción
+    //     (el daemon corre miles de veces al día contra `gh.exe` real).
+    const cp = require('node:child_process');
+    const originalExecFileSync = cp.execFileSync;
+
+    let capturedFile = null;
+    let capturedArgs = null;
+    let capturedOptions = null;
+    cp.execFileSync = function spyExecFileSync(file, args, options) {
+        capturedFile = file;
+        capturedArgs = args;
+        capturedOptions = options;
+        // Simulamos un comentario exitoso (gh devuelve la URL en stdout).
+        return 'https://github.com/intrale/platform/issues/3253#issuecomment-fake\n';
+    };
+
+    try {
+        svc.defaultGhClient.commentIssue(3253, bodyMultilinea);
+    } finally {
+        cp.execFileSync = originalExecFileSync;
+    }
+
+    // CA-5 (a) — argv usa --body-file -, NO -b/--body con interpolación.
+    assert.ok(Array.isArray(capturedArgs), 'execFileSync debe recibir argv como array');
+    assert.deepEqual(capturedArgs.slice(0, 3), ['issue', 'comment', '3253']);
+    assert.ok(capturedArgs.includes('--body-file'),
+        `argv debe incluir --body-file (recibido: ${JSON.stringify(capturedArgs)})`);
+    const bodyFileIdx = capturedArgs.indexOf('--body-file');
+    assert.equal(capturedArgs[bodyFileIdx + 1], '-',
+        '--body-file debe apuntar a "-" (stdin)');
+    assert.ok(!capturedArgs.includes('-b'),
+        `argv NO debe usar -b (sería interpolación shell — recibido: ${JSON.stringify(capturedArgs)})`);
+
+    // CA-5 (b) — el body real llega íntegro por stdin (options.input).
+    assert.ok(capturedOptions && typeof capturedOptions.input === 'string',
+        'options.input debe ser string con el body');
+    assert.equal(capturedOptions.input, bodyMultilinea,
+        'options.input debe ser EXACTAMENTE el body original (sin transformación)');
+
+    // CA-5 (c) — anti-pattern: NO debe haber backslash-n literal en el input.
+    assert.ok(capturedOptions.input.includes('\n'),
+        'options.input debe tener LF real');
+    assert.ok(!capturedOptions.input.includes('\\n'),
+        'options.input NO debe tener la secuencia literal \\\\n');
+
+    // Sanity: cwd, encoding, timeout, windowsHide preservados del cliente anterior.
+    assert.equal(capturedOptions.encoding, 'utf8');
+    assert.equal(typeof capturedOptions.timeout, 'number');
+    assert.equal(capturedOptions.windowsHide, true);
+});
+
+test('CA-5 #3303: defaultGhClient.createIssue usa --body-file - y title como argv literal', () => {
+    resetState();
+
+    const titleMultilinea = 'Issue de prueba con "comillas" y %USERPROFILE%';
+    const bodyMultilinea = 'Línea 1\nLínea 2\nLínea 3\n\nCon emojis 🎯 y backticks `cmd`';
+
+    const cp = require('node:child_process');
+    const originalExecFileSync = cp.execFileSync;
+
+    let capturedArgs = null;
+    let capturedOptions = null;
+    cp.execFileSync = function spyExecFileSync(file, args, options) {
+        capturedArgs = args;
+        capturedOptions = options;
+        return 'https://github.com/intrale/platform/issues/9999\n';
+    };
+
+    let result;
+    try {
+        result = svc.defaultGhClient.createIssue({
+            title: titleMultilinea,
+            body: bodyMultilinea,
+            labels: 'bug,needs-definition',
+            repo: 'intrale/platform',
+        });
+    } finally {
+        cp.execFileSync = originalExecFileSync;
+    }
+
+    // Verificar shape: ['issue', 'create', '--title', <title>, '--body-file', '-', '--repo', <repo>, '--label', <labels>]
+    assert.deepEqual(capturedArgs.slice(0, 2), ['issue', 'create']);
+
+    // Title pasa como un solo argv (sin escape, sin expansion de %USERPROFILE%).
+    const titleIdx = capturedArgs.indexOf('--title');
+    assert.equal(capturedArgs[titleIdx + 1], titleMultilinea,
+        'title debe pasarse como un solo argv literal — sin transformación');
+
+    // Body por stdin con --body-file -.
+    const bodyFileIdx = capturedArgs.indexOf('--body-file');
+    assert.equal(capturedArgs[bodyFileIdx + 1], '-');
+    assert.equal(capturedOptions.input, bodyMultilinea,
+        'body de createIssue debe llegar íntegro por stdin');
+    assert.ok(!capturedOptions.input.includes('\\n'),
+        'body NO debe tener secuencia literal \\\\n');
+
+    // Repo y label como argv.
+    const repoIdx = capturedArgs.indexOf('--repo');
+    assert.equal(capturedArgs[repoIdx + 1], 'intrale/platform');
+    const labelIdx = capturedArgs.indexOf('--label');
+    assert.equal(capturedArgs[labelIdx + 1], 'bug,needs-definition');
+
+    // Parse del result (extraer número desde la URL).
+    assert.equal(result.number, 9999);
+});
+
+test('CA-5 #3303: defaultGhClient.editIssue usa argv array (sin shell) para add/remove label', () => {
+    resetState();
+
+    const cp = require('node:child_process');
+    const originalExecFileSync = cp.execFileSync;
+    const calls = [];
+    cp.execFileSync = function spyExecFileSync(file, args, options) {
+        calls.push({ file, args, options });
+        return '';
+    };
+
+    try {
+        svc.defaultGhClient.editIssue(1234, { addLabel: 'needs-definition' });
+        svc.defaultGhClient.editIssue(1234, { removeLabel: 'blocked:dependencies' });
+    } finally {
+        cp.execFileSync = originalExecFileSync;
+    }
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].args, ['issue', 'edit', '1234', '--add-label', 'needs-definition']);
+    assert.deepEqual(calls[1].args, ['issue', 'edit', '1234', '--remove-label', 'blocked:dependencies']);
+    // No hay options.input para edits.
+    assert.equal(calls[0].options.input, undefined);
+});
+
+test('CA-5 #3303: defaultGhClient.createLabel usa argv array y preserva idempotencia "already exists"', () => {
+    resetState();
+
+    const cp = require('node:child_process');
+    const originalExecFileSync = cp.execFileSync;
+
+    let callArgs = null;
+    cp.execFileSync = function spyExecFileSync(file, args, options) {
+        callArgs = args;
+        return '';
+    };
+
+    let result;
+    try {
+        result = svc.defaultGhClient.createLabel('label-nuevo', 'B60205', { repo: 'intrale/platform' });
+    } finally {
+        cp.execFileSync = originalExecFileSync;
+    }
+
+    assert.deepEqual(callArgs, ['label', 'create', 'label-nuevo', '--color', 'B60205', '--repo', 'intrale/platform']);
+    assert.equal(result.created, true);
+    assert.equal(result.alreadyExists, false);
+
+    // Caso idempotencia: el binario falla con "already exists".
+    cp.execFileSync = function spyExecFileSyncFails() {
+        const err = new Error('Error: label already exists');
+        err.stderr = 'label already exists\n';
+        throw err;
+    };
+
+    try {
+        result = svc.defaultGhClient.createLabel('label-existente', 'ededed', { repo: 'intrale/platform' });
+    } finally {
+        cp.execFileSync = originalExecFileSync;
+    }
+
+    assert.equal(result.created, false);
+    assert.equal(result.alreadyExists, true);
+});
+
+test('CA-6 #3303: ciclo end-to-end — body posteado por commentIssue es detectado por parseDependencyComment', () => {
+    resetState();
+
+    // 1. Body que produce el pipeline cuando un issue tiene dependencias.
+    const bodyPipeline = '## Dependencias detectadas por el pipeline\n\n- #3257\n- #3260\n\nEste issue queda bloqueado hasta que cierren las dependencias.';
+
+    // 2. Capturamos el `options.input` que llegaría al binario `gh`.
+    const cp = require('node:child_process');
+    const originalExecFileSync = cp.execFileSync;
+    let stdinCaptured = null;
+    cp.execFileSync = function spyExecFileSync(file, args, options) {
+        stdinCaptured = options.input;
+        return '';
+    };
+
+    try {
+        svc.defaultGhClient.commentIssue(3253, bodyPipeline);
+    } finally {
+        cp.execFileSync = originalExecFileSync;
+    }
+
+    // 3. El body capturado debe ser idéntico al original (lo que GitHub
+    //    recibe y lo que después devuelve por `gh issue view --json comments`).
+    assert.equal(stdinCaptured, bodyPipeline);
+
+    // 4. Pasamos el body capturado por el parser canónico del Pulpo.
+    //    Si la causa raíz del bug se reactivara, el body llegaría sin LF
+    //    reales y el parser devolvería `null`.
+    const { parseDependencyComment } = require('../lib/dep-comment-parser');
+    const deps = parseDependencyComment(
+        [{ body: stdinCaptured, createdAt: new Date().toISOString() }],
+        3253,
+    );
+
+    // 5. El parser debe detectar correctamente AMBAS dependencias.
+    assert.ok(Array.isArray(deps), `parser debe devolver array, recibió: ${deps}`);
+    assert.deepEqual(deps.sort(), [3257, 3260].sort(),
+        'parser debe detectar las dos dependencias #3257 y #3260');
+});
+
+test('CA-6 #3303: regresión cerrada — body con \\n literales (bug previo) NO matchea el parser', () => {
+    // Test de control: si alguien reintroduce el bug (body con `\n` literales
+    // en lugar de LF reales), `parseDependencyComment` debe devolver `null`.
+    // Este test documenta el comportamiento fail-closed del parser y demuestra
+    // que el fix de #3303 (LF reales preservados) es el que habilita la
+    // detección — no un cambio en el parser.
+    const bodyBuggy = '## Dependencias detectadas por el pipeline\\n\\n- #3257\\n\\nEste issue queda bloqueado...';
+
+    const { parseDependencyComment } = require('../lib/dep-comment-parser');
+    const deps = parseDependencyComment(
+        [{ body: bodyBuggy, createdAt: new Date().toISOString() }],
+        3253,
+    );
+
+    // Con `\n` literales (no LF reales), el body es UNA sola línea — el
+    // heading nunca matchea como heading aislado y el parser devuelve null.
+    assert.equal(deps, null,
+        'body con \\\\n literales debe devolver null (fail-closed) — corolario del bug previo');
+});
