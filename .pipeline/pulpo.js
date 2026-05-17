@@ -86,6 +86,11 @@ const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/qu
 // deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
 // que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
 const { launchAgent } = require('./lib/agent-launcher');
+// #3257 — Commander determinístico: router + audit-log + rate-limit + redact.
+// Reemplaza el parser de comandos inline por un módulo aislado y testable.
+// La pista determinística (status/listado/snapshot/tail/etc) responde SIEMPRE
+// sin invocar a Claude, incluso con cuota agotada o multi-provider caído.
+const commanderDet = require('./lib/commander-deterministic');
 // #3198 — consumer runtime de skill.fallbacks[]. Cuando el provider primario
 // queda gateado por cuota, el dispatcher itera el array y devuelve la primera
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
@@ -7214,6 +7219,21 @@ function parseCommand(text) {
   return null; // Texto libre — delegar a Claude
 }
 
+// #3257 — Singleton del dispatcher determinístico. Vive en module scope para
+// que audit-log + rate-limit (token bucket) persistan entre invocaciones del
+// brazo Commander. Lazy init para no leer FS hasta que llegue el primer mensaje.
+let _commanderDispatcher = null;
+function getCommanderDispatcher() {
+  if (_commanderDispatcher) return _commanderDispatcher;
+  _commanderDispatcher = commanderDet.createDispatcher({
+    pipelineRoot: PIPELINE,
+    logsDir: LOG_DIR,
+    expectedChatId: getTelegramChatId(),
+    rateLimit: { burst: 10, ratePerMin: 30 },
+  });
+  return _commanderDispatcher;
+}
+
 async function brazoCommander(config) {
   const commanderPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
   const commanderTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
@@ -7306,61 +7326,128 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: m._textoFinal, timestamp: new Date().toISOString() }) + '\n');
   }
 
-  // --- SEPARAR: comandos nativos vs texto libre ---
+  // --- CLASIFICAR cada mensaje con el router determinístico (#3257 CA-1) ---
+  // El router decide deterministic / llm / unknown ANTES de invocar a Claude.
+  // TODOS los mensajes pasan por `dispatcher.dispatch` — incluyendo los `llm` —
+  // para que el audit-log (commander-audit-YYYY-MM-DD.jsonl, CA-10) registre
+  // SIEMPRE una fila con `intent_class`. Sin esto, la métrica CA-4
+  // "% determinístico vs LLM" del dashboard quedaba ~100% determinístico
+  // permanentemente porque el productor del lado LLM nunca emitía filas.
+  //
+  // El dispatcher devuelve `{ reply, status }`:
+  //   - status='ok' + reply!=null  → respuesta determinística lista
+  //   - status='delegated_to_llm'  → audit ya hecho, caller debe llamar a Claude
+  //   - status='no_handler'        → comando determinístico sin handler default
+  //                                  → fallback al switch legacy de pulpo.js
+  //   - status='rate_limited'/'invalid_args'/'unauthorized' → reply listo
+  const dispatcher = getCommanderDispatcher();
   const comandos = [];
   const textoLibre = [];
 
   for (const m of mensajes) {
-    const parsed = parseCommand(m._textoFinal);
-    if (parsed) {
-      comandos.push({ m, parsed });
+    const intent = commanderDet.classify(m._textoFinal);
+    m._intent = intent;
+    if (intent.class === 'deterministic' || intent.class === 'unknown') {
+      comandos.push({ m, intent });
     } else {
+      // class === 'llm' → emitimos audit-log explícitamente (camino que
+      // antes saltaba dispatch entero). Usar `auditLog.record` para no
+      // pagar el costo del rate-limit + reply nulo de dispatch (el llm
+      // tiene su propio camino, ejecutarClaude, más abajo).
+      try {
+        dispatcher.auditLog.record({
+          from: m.from,
+          chat_id: m.chat_id || getTelegramChatId(),
+          raw_command: intent.rawTruncated,
+          intent_class: 'llm',
+          handler: intent.command || null,
+          args: intent.args,
+          result_status: 'ok',
+          duration_ms: 0,
+        });
+      } catch (e) {
+        log('commander', `[audit-llm] error: ${e.message}`);
+      }
       textoLibre.push(m);
     }
   }
 
-  // --- PROCESAR COMANDOS NATIVOS (rápidos, uno a uno) ---
-  for (const { m, parsed } of comandos) {
-    log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
+  // --- PROCESAR COMANDOS DETERMINÍSTICOS (rápidos, uno a uno) ---
+  for (const { m, intent } of comandos) {
+    log('commander', `[${intent.class}] /${intent.command || '(none)'} args="${intent.args}"`);
     let respuesta = null;
-    switch (parsed.cmd) {
-      case 'status': respuesta = await cmdStatus(config); break;
-      case 'actividad': respuesta = cmdActividad(parsed.args); break;
-      case 'ghostbusters': respuesta = cmdGhostbusters(); break;
-      case 'intake': respuesta = cmdIntake(parsed.args, config); break;
-      case 'pausar': case 'pause': respuesta = cmdPausar(); break;
-      case 'reanudar': case 'resume': respuesta = cmdReanudar(); break;
-      case 'pause-partial': case 'pause_partial': case 'pausarparcial':
-        respuesta = cmdPausaParcial(parsed.args); break;
-      case 'costos': respuesta = cmdCostos(); break;
-      case 'help': case 'start': respuesta = cmdHelp(); break;
-      case 'stop':
-        respuesta = '🛑 Commander apagándose...';
-        sendTelegram(respuesta);
-        running = false;
-        break;
-      case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
-      case 'limpiar': respuesta = cmdLimpiar(); break;
-      case 'restart': respuesta = cmdRestart(parsed.args); break;
-      case 'bloqueados': respuesta = cmdBloqueados(); break;
-      case 'unblock': respuesta = cmdUnblock(parsed.args); break;
-      default: respuesta = null; break;
+    let result = null;
+
+    // 1. Dispatch al router: maneja rate-limit, args inválidos, unknown,
+    //    y los handlers NUEVOS del CA-2 (tail / salud / descanso). Para los
+    //    comandos legacy devuelve { status: 'no_handler' } y caemos al switch.
+    try {
+      result = await dispatcher.dispatch({
+        from: m.from,
+        chat_id: m.chat_id || getTelegramChatId(),
+        text: m._textoFinal,
+      });
+      if (result && result.reply !== null) {
+        respuesta = result.reply;
+      }
+    } catch (e) {
+      log('commander', `[dispatcher] error: ${e.message}`);
+    }
+
+    // 2. Fallback al switch case legacy si el router no resolvió (handlers
+    //    históricos siguen viviendo en pulpo.js: cmdStatus, cmdActividad, ...).
+    if (respuesta === null && intent.class === 'deterministic' && intent.command) {
+      const cmd = intent.command;
+      const args = intent.args;
+      switch (cmd) {
+        case 'status': respuesta = await cmdStatus(config); break;
+        case 'actividad': respuesta = cmdActividad(args); break;
+        case 'ghostbusters': respuesta = cmdGhostbusters(); break;
+        case 'intake': respuesta = cmdIntake(args, config); break;
+        case 'pausar': case 'pause': respuesta = cmdPausar(); break;
+        case 'reanudar': case 'resume': respuesta = cmdReanudar(); break;
+        case 'pause-partial': case 'pause_partial': case 'pausarparcial':
+          respuesta = cmdPausaParcial(args); break;
+        case 'costos': respuesta = cmdCostos(); break;
+        case 'help': case 'start': respuesta = cmdHelp(); break;
+        case 'stop':
+          respuesta = '🛑 Commander apagándose...';
+          sendTelegram(respuesta);
+          running = false;
+          break;
+        case 'proponer': respuesta = await cmdProponer(args, config); break;
+        case 'limpiar': respuesta = cmdLimpiar(); break;
+        case 'restart': respuesta = cmdRestart(args); break;
+        case 'bloqueados': respuesta = cmdBloqueados(); break;
+        case 'unblock': respuesta = cmdUnblock(args); break;
+        // snapshot/listado/allowlist/dashboard-up/dashboard-down/screenshot/procesos
+        // se resuelven en `dispatcher.dispatch` arriba (buildDefaultHandlers en
+        // commander-deterministic.js). Si llegaran acá significa que el dispatcher
+        // devolvió `no_handler` → caemos a `default` y eventualmente a texto libre,
+        // garantizando que el usuario reciba ALGUNA respuesta.
+        default: respuesta = null; break;
+      }
     }
 
     if (respuesta !== null) {
-      session.lastCommand = parsed.cmd;
+      session.lastCommand = intent.command || 'unknown';
       session.lastTimestamp = new Date().toISOString();
-      session.context = `Último comando: /${parsed.cmd}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
+      session.context = `Último comando: /${intent.command}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
       sendTelegram(respuesta);
-      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+      fs.appendFileSync(historyFile, JSON.stringify({
+        direction: 'out',
+        text: respuesta.slice(0, 1000),
+        timestamp: new Date().toISOString(),
+        routing: { class: intent.class, handler: intent.command || null, status: result ? result.status : 'legacy' },
+      }) + '\n');
     } else {
-      // Comando no reconocido → mover a texto libre
+      // Comando no reconocido por ningún handler → cae a texto libre (LLM)
       textoLibre.push(m);
     }
 
     try { moveFile(m._path, commanderListo); } catch {}
     const logFile = path.join(LOG_DIR, 'commander.log');
-    fs.appendFileSync(logFile, `[${new Date().toISOString()}] /${parsed.cmd}\n${respuesta || '(sin respuesta)'}\n---\n`);
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] /${intent.command || '(unknown)'}\n${respuesta || '(sin respuesta)'}\n---\n`);
   }
 
   // --- FALLBACK: si TODOS los mensajes libres son audios fallidos (whisper

@@ -2728,6 +2728,51 @@ function generateHTML(state) {
         </div>
       </div>
     </div>`;
+
+    // #3257 CA-4 — Tarjeta de routing del Commander (determinístico vs LLM).
+    // Resumen de hoy + total 7d. Datos de commander-audit-*.jsonl.
+    try {
+      const commanderDet = require('./lib/commander-deterministic');
+      const LOG_DIR = path.join(__dirname, 'logs');
+      const routing = commanderDet.computeRoutingMetrics(LOG_DIR, { days: 7 });
+      const today = routing.buckets[routing.buckets.length - 1] || { deterministic: 0, llm: 0, unknown: 0, total: 0, percentDeterministic: 0 };
+      const totalDet = routing.buckets.reduce((a, b) => a + b.deterministic, 0);
+      const totalLlm = routing.buckets.reduce((a, b) => a + b.llm, 0);
+      const totalAll = routing.buckets.reduce((a, b) => a + b.total, 0);
+      const pct7d = totalAll > 0 ? Math.round((totalDet / totalAll) * 1000) / 10 : 0;
+      const detColor = today.percentDeterministic >= 60 ? 'var(--gn)' : today.percentDeterministic >= 30 ? 'var(--yl)' : 'var(--dim)';
+      doraMinHTML += `
+    <div class="dora-mini" style="margin-top:12px">
+      <div class="matrix-header">
+        <h2>⚙️ Commander Routing <span style="font-size:0.7em;color:var(--dim);text-transform:none;letter-spacing:0">(determinístico vs LLM · 7d)</span></h2>
+        <a href="/api/metrics/commander/routing" class="matrix-count" style="text-decoration:none">JSON →</a>
+      </div>
+      <div class="dora-mini-grid">
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${detColor}">${today.percentDeterministic}%</div>
+          <div class="dora-mini-label">% Determinístico hoy</div>
+          <div class="dora-mini-target">target &gt; 60%</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--ac)">${today.deterministic}</div>
+          <div class="dora-mini-label">Sin LLM hoy</div>
+          <div class="dora-mini-target">comandos resueltos</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--pu)">${today.llm}</div>
+          <div class="dora-mini-label">Con LLM hoy</div>
+          <div class="dora-mini-target">${today.unknown} no clasificados</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--ac)">${pct7d}%</div>
+          <div class="dora-mini-label">% Determinístico 7d</div>
+          <div class="dora-mini-target">${totalDet}/${totalAll} cmd</div>
+        </div>
+      </div>
+    </div>`;
+    } catch (e) {
+      log('[commander-routing] card error: ' + e.message);
+    }
   } catch {}
 
   let actHTML = state.actividad.slice(-15).reverse().map(a => {
@@ -8244,6 +8289,36 @@ const server = http.createServer((req, res) => {
     }, 800);
 
     req.on('close', () => clearInterval(interval));
+    return;
+  }
+
+  // Endpoint: métricas de routing del Commander determinístico (#3257 CA-4).
+  // Devuelve % determinístico vs LLM por día (ventana 7d default).
+  if (req.url && req.url.startsWith('/api/metrics/commander/routing')) {
+    try {
+      const commanderDet = require('./lib/commander-deterministic');
+      const u = new URL(req.url, 'http://localhost');
+      const daysParam = parseInt(u.searchParams.get('days') || '7', 10);
+      const days = Number.isFinite(daysParam) && daysParam > 0 && daysParam <= 30 ? daysParam : 7;
+      const LOG_DIR = path.join(__dirname, 'logs');
+      const result = commanderDet.computeRoutingMetrics(LOG_DIR, { days });
+      // Totales agregados de la ventana
+      const totals = result.buckets.reduce((acc, b) => {
+        acc.deterministic += b.deterministic;
+        acc.llm += b.llm;
+        acc.unknown += b.unknown;
+        acc.total += b.total;
+        return acc;
+      }, { deterministic: 0, llm: 0, unknown: 0, total: 0 });
+      totals.percentDeterministic = totals.total > 0
+        ? Math.round((totals.deterministic / totals.total) * 1000) / 10
+        : 0;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ...result, totals }, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 
