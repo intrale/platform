@@ -1,0 +1,304 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 15 — Card "Commander Routing" del dashboard V3 (issue #3257 CA-4)
+  Resolucion target: 1200x720 (cabe en seccion "DORA & Routing" del dashboard)
+  Demuestra:
+    - Card principal con donut (% deterministico vs LLM por dia)
+    - Tendencia 7d (barras stacked)
+    - KPIs derivados (tokens ahorrados, comandos resueltos sin LLM)
+    - Acceso al endpoint JSON
+    - Sticker visual del modo degradado (cuando cuota agotada)
+  Tokens reales: design-tokens.css
+  Iconos reales: sprite.svg (ic-deterministic, ic-quota-exhausted, ic-llm-queued, ic-tokens-saved)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="donutDet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#B1BAC4"/>
+      <stop offset="100%" stop-color="#8B949E"/>
+    </linearGradient>
+    <linearGradient id="donutLlm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#BC8CFF"/>
+      <stop offset="100%" stop-color="#8957E5"/>
+    </linearGradient>
+    <linearGradient id="donutQuota" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F0A500"/>
+      <stop offset="100%" stop-color="#B57700"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-2%" y="-2%" width="104%" height="108%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
+      <feOffset dx="0" dy="2"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.4"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Fondo (surface-0) -->
+  <rect width="1200" height="720" fill="#0D1117"/>
+
+  <!-- ============ TITULO SECCION ============ -->
+  <g transform="translate(32, 28)">
+    <!-- Icono determinístico -->
+    <g transform="translate(0, 2)">
+      <rect width="28" height="28" rx="6" fill="rgba(177, 186, 196, 0.10)" stroke="#30363D"/>
+      <!-- ic-deterministic -->
+      <g transform="translate(4, 4)" stroke="#B1BAC4" stroke-width="1.75" fill="none"
+         stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="16" height="14" rx="2"/>
+        <path d="M6 8 L10 12 L14 8"/>
+      </g>
+    </g>
+    <text x="40" y="22" fill="#E6EDF3" font-size="18" font-weight="700">Commander Routing</text>
+    <text x="40" y="38" fill="#8B949E" font-size="11" letter-spacing="1.2">
+      ISSUE #3257 · CA-4 · % DETERMINÍSTICO VS LLM POR DÍA
+    </text>
+
+    <!-- Badge "live" -->
+    <g transform="translate(280, 8)">
+      <rect width="56" height="20" rx="10" fill="rgba(63, 185, 80, 0.15)" stroke="#3FB950" stroke-opacity="0.4"/>
+      <circle cx="11" cy="10" r="3" fill="#3FB950"/>
+      <text x="20" y="14" fill="#3FB950" font-size="10" font-weight="700" letter-spacing="1.2">LIVE</text>
+    </g>
+  </g>
+
+  <!-- ============ CARD PRINCIPAL: DONUT HOY ============ -->
+  <g transform="translate(32, 80)" filter="url(#cardShadow)">
+    <rect width="380" height="380" rx="12" fill="#161B22" stroke="#30363D"/>
+
+    <text x="20" y="32" fill="#E6EDF3" font-size="14" font-weight="700">Hoy · {{date-today}}</text>
+    <text x="20" y="48" fill="#8B949E" font-size="11">
+      {{total-commands-today}} comandos procesados
+    </text>
+
+    <!-- Donut chart -->
+    <g transform="translate(190, 200)">
+      <!-- Track de fondo -->
+      <circle cx="0" cy="0" r="86" fill="none" stroke="#21262D" stroke-width="22"/>
+      <!-- Segmento determinístico (78%) -->
+      <circle cx="0" cy="0" r="86" fill="none" stroke="url(#donutDet)" stroke-width="22"
+              stroke-dasharray="421.4 540.4" stroke-dashoffset="0"
+              transform="rotate(-90)" stroke-linecap="butt"/>
+      <!-- Segmento LLM (18%) -->
+      <circle cx="0" cy="0" r="86" fill="none" stroke="url(#donutLlm)" stroke-width="22"
+              stroke-dasharray="97.3 540.4" stroke-dashoffset="-421.4"
+              transform="rotate(-90)" stroke-linecap="butt"/>
+      <!-- Segmento unknown (4%) -->
+      <circle cx="0" cy="0" r="86" fill="none" stroke="#F85149" stroke-width="22"
+              stroke-dasharray="21.6 540.4" stroke-dashoffset="-518.7"
+              transform="rotate(-90)" stroke-linecap="butt"/>
+
+      <!-- Numero central -->
+      <text x="0" y="-2" fill="#E6EDF3" font-size="44" font-weight="700" text-anchor="middle">78%</text>
+      <text x="0" y="22" fill="#8B949E" font-size="11" text-anchor="middle" letter-spacing="1">
+        DETERMINÍSTICOS
+      </text>
+    </g>
+
+    <!-- Leyenda -->
+    <g transform="translate(20, 320)" font-size="12">
+      <g>
+        <rect width="14" height="14" rx="3" fill="url(#donutDet)"/>
+        <text x="22" y="12" fill="#E6EDF3" font-weight="600">Determinístico</text>
+        <text x="290" y="12" fill="#B1BAC4" text-anchor="end">{{det-count}} · 78%</text>
+      </g>
+      <g transform="translate(0, 20)">
+        <rect width="14" height="14" rx="3" fill="url(#donutLlm)"/>
+        <text x="22" y="12" fill="#E6EDF3" font-weight="600">LLM</text>
+        <text x="290" y="12" fill="#B1BAC4" text-anchor="end">{{llm-count}} · 18%</text>
+      </g>
+      <g transform="translate(0, 40)">
+        <rect width="14" height="14" rx="3" fill="#F85149"/>
+        <text x="22" y="12" fill="#E6EDF3" font-weight="600">No clasificado</text>
+        <text x="290" y="12" fill="#B1BAC4" text-anchor="end">{{unknown-count}} · 4%</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============ CARD: TENDENCIA 7D ============ -->
+  <g transform="translate(432, 80)" filter="url(#cardShadow)">
+    <rect width="500" height="380" rx="12" fill="#161B22" stroke="#30363D"/>
+
+    <text x="20" y="32" fill="#E6EDF3" font-size="14" font-weight="700">Tendencia · últimos 7 días</text>
+    <text x="20" y="48" fill="#8B949E" font-size="11">
+      stacked bars · determinístico (gris) sobre LLM (violeta)
+    </text>
+
+    <!-- Eje Y (sutil) -->
+    <line x1="50" y1="80" x2="50" y2="300" stroke="#30363D" stroke-width="1"/>
+    <text x="44" y="86" fill="#6E7681" font-size="10" text-anchor="end">100%</text>
+    <text x="44" y="196" fill="#6E7681" font-size="10" text-anchor="end">50%</text>
+    <text x="44" y="304" fill="#6E7681" font-size="10" text-anchor="end">0%</text>
+
+    <!-- Grid line en 50% -->
+    <line x1="50" y1="190" x2="480" y2="190" stroke="#21262D" stroke-width="1" stroke-dasharray="2,4"/>
+
+    <!-- Barras 7 dias (de izq a der: hace 6d, 5d, 4d, 3d, 2d, ayer, hoy) -->
+    <!-- Cada barra: 50px ancho, gap 12px. X start: 70 -->
+    <g>
+      <!-- d-6: 72% det / 25% llm / 3% unk -->
+      <rect x="70" y="91" width="50" height="158" fill="url(#donutDet)" rx="2"/>
+      <rect x="70" y="249" width="50" height="55" fill="url(#donutLlm)" rx="2"/>
+      <rect x="70" y="304" width="50" height="6" fill="#F85149"/>
+      <text x="95" y="324" fill="#8B949E" font-size="10" text-anchor="middle">vie</text>
+
+      <!-- d-5: 65% / 30% / 5% -->
+      <rect x="132" y="111" width="50" height="143" fill="url(#donutDet)" rx="2"/>
+      <rect x="132" y="254" width="50" height="66" fill="url(#donutLlm)" rx="2"/>
+      <rect x="132" y="320" width="50" height="11" fill="#F85149"/>
+      <text x="157" y="324" fill="#8B949E" font-size="10" text-anchor="middle">sáb</text>
+
+      <!-- d-4: 81% / 17% / 2% -->
+      <rect x="194" y="80" width="50" height="178" fill="url(#donutDet)" rx="2"/>
+      <rect x="194" y="258" width="50" height="37" fill="url(#donutLlm)" rx="2"/>
+      <rect x="194" y="295" width="50" height="4" fill="#F85149"/>
+      <text x="219" y="324" fill="#8B949E" font-size="10" text-anchor="middle">dom</text>
+
+      <!-- d-3: 88% / 11% / 1% -->
+      <rect x="256" y="80" width="50" height="194" fill="url(#donutDet)" rx="2"/>
+      <rect x="256" y="274" width="50" height="24" fill="url(#donutLlm)" rx="2"/>
+      <rect x="256" y="298" width="50" height="2" fill="#F85149"/>
+      <text x="281" y="324" fill="#8B949E" font-size="10" text-anchor="middle">lun</text>
+
+      <!-- d-2: 94% / 5% / 1% (cuota degraded — barra ambar overlay) -->
+      <rect x="318" y="80" width="50" height="207" fill="url(#donutDet)" rx="2"/>
+      <rect x="318" y="287" width="50" height="11" fill="url(#donutLlm)" rx="2"/>
+      <rect x="318" y="298" width="50" height="2" fill="#F85149"/>
+      <!-- Marker cuota -->
+      <line x1="316" y1="68" x2="370" y2="68" stroke="#F0A500" stroke-width="2"/>
+      <text x="343" y="62" fill="#F0A500" font-size="9" text-anchor="middle" font-weight="700">CUOTA</text>
+      <text x="343" y="324" fill="#8B949E" font-size="10" text-anchor="middle">mar</text>
+
+      <!-- d-1: ayer -->
+      <rect x="380" y="80" width="50" height="182" fill="url(#donutDet)" rx="2"/>
+      <rect x="380" y="262" width="50" height="33" fill="url(#donutLlm)" rx="2"/>
+      <rect x="380" y="295" width="50" height="4" fill="#F85149"/>
+      <text x="405" y="324" fill="#8B949E" font-size="10" text-anchor="middle">ayer</text>
+
+      <!-- d-0: hoy -->
+      <rect x="442" y="80" width="50" height="172" fill="url(#donutDet)" rx="2"/>
+      <rect x="442" y="252" width="50" height="40" fill="url(#donutLlm)" rx="2"/>
+      <rect x="442" y="292" width="50" height="8" fill="#F85149"/>
+      <text x="467" y="324" fill="#3FB950" font-size="10" text-anchor="middle" font-weight="700">hoy</text>
+    </g>
+
+    <!-- Footnote -->
+    <text x="20" y="354" fill="#6E7681" font-size="10" font-style="italic">
+      ⚠ Marker "CUOTA" indica día con quotaNotifier activo → más routing a determinístico.
+    </text>
+  </g>
+
+  <!-- ============ CARD: KPIs DERIVADOS ============ -->
+  <g transform="translate(952, 80)" filter="url(#cardShadow)">
+    <rect width="216" height="380" rx="12" fill="#161B22" stroke="#30363D"/>
+
+    <text x="20" y="32" fill="#E6EDF3" font-size="14" font-weight="700">Ahorro</text>
+    <text x="20" y="48" fill="#8B949E" font-size="11">vs todo-LLM (baseline)</text>
+
+    <!-- KPI 1: Tokens ahorrados -->
+    <g transform="translate(0, 80)">
+      <line x1="20" y1="0" x2="196" y2="0" stroke="#21262D"/>
+      <g transform="translate(20, 12)">
+        <!-- ic-tokens-saved -->
+        <g stroke="#3FB950" stroke-width="1.75" fill="none" stroke-linecap="round">
+          <circle cx="9" cy="9" r="7"/>
+          <path d="M9 5 V9 L12 11"/>
+        </g>
+        <text x="28" y="12" fill="#8B949E" font-size="11">TOKENS AHORRADOS HOY</text>
+      </g>
+      <text x="20" y="58" fill="#3FB950" font-size="28" font-weight="700">{{tokens-saved-today}}</text>
+      <text x="180" y="54" fill="#8B949E" font-size="11" text-anchor="end">~{{usd-saved-today}} USD</text>
+    </g>
+
+    <!-- KPI 2: comandos resueltos sin LLM -->
+    <g transform="translate(0, 168)">
+      <line x1="20" y1="0" x2="196" y2="0" stroke="#21262D"/>
+      <g transform="translate(20, 12)">
+        <g stroke="#B1BAC4" stroke-width="1.75" fill="none" stroke-linecap="round">
+          <rect x="2" y="3" width="14" height="12" rx="2"/>
+          <path d="M5 7 L9 11 L13 7"/>
+        </g>
+        <text x="28" y="12" fill="#8B949E" font-size="11">RESUELTOS SIN LLM (7d)</text>
+      </g>
+      <text x="20" y="58" fill="#E6EDF3" font-size="28" font-weight="700">{{det-7d}}</text>
+    </g>
+
+    <!-- KPI 3: latencia mediana det -->
+    <g transform="translate(0, 256)">
+      <line x1="20" y1="0" x2="196" y2="0" stroke="#21262D"/>
+      <g transform="translate(20, 12)">
+        <g stroke="#58A6FF" stroke-width="1.75" fill="none" stroke-linecap="round">
+          <circle cx="9" cy="9" r="7"/>
+          <path d="M9 5 V9 L12 11"/>
+        </g>
+        <text x="28" y="12" fill="#8B949E" font-size="11">LATENCIA p50 (det)</text>
+      </g>
+      <text x="20" y="58" fill="#58A6FF" font-size="28" font-weight="700">{{p50-ms}}<tspan font-size="14" fill="#8B949E"> ms</tspan></text>
+      <text x="180" y="54" fill="#8B949E" font-size="11" text-anchor="end">vs ~3.2s LLM</text>
+    </g>
+
+    <!-- Link al endpoint JSON -->
+    <g transform="translate(0, 340)">
+      <line x1="20" y1="0" x2="196" y2="0" stroke="#21262D"/>
+      <text x="20" y="20" fill="#58A6FF" font-size="10" font-family="ui-monospace, monospace">
+        /metrics/commander/routing
+      </text>
+      <text x="20" y="34" fill="#6E7681" font-size="10" font-style="italic">click → JSON crudo</text>
+    </g>
+  </g>
+
+  <!-- ============ FOOTER: STICKER MODO DEGRADADO ============ -->
+  <g transform="translate(32, 484)" filter="url(#cardShadow)">
+    <rect width="1136" height="100" rx="12" fill="rgba(240, 165, 0, 0.10)" stroke="#F0A500" stroke-opacity="0.45"/>
+
+    <g transform="translate(24, 24)">
+      <!-- ic-quota-exhausted -->
+      <g stroke="#F0A500" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="18" cy="18" r="16" fill="rgba(240, 165, 0, 0.18)"/>
+        <path d="M18 10 V20 M18 24 V25"/>
+      </g>
+    </g>
+
+    <text x="80" y="40" fill="#F0A500" font-size="14" font-weight="700" letter-spacing="0.5">
+      MODO DEGRADADO · cuota Claude agotada
+    </text>
+    <text x="80" y="60" fill="#FFE5A8" font-size="12">
+      Los comandos LLM caen a respuesta enlatada hasta el reset \({{quota-reset-at}}\).
+    </text>
+    <text x="80" y="78" fill="#B1BAC4" font-size="11">
+      Los comandos determinísticos siguen normales — el Commander mantiene visibilidad sobre el pipeline.
+    </text>
+
+    <!-- Action: ver detalle -->
+    <g transform="translate(960, 30)">
+      <rect width="156" height="36" rx="8" fill="rgba(240, 165, 0, 0.20)" stroke="#F0A500" stroke-opacity="0.6"/>
+      <text x="78" y="22" fill="#FFE5A8" font-size="12" font-weight="700" text-anchor="middle">
+        VER QUOTA STATUS →
+      </text>
+    </g>
+  </g>
+
+  <!-- ============ FOOTER: TIPS UX ============ -->
+  <g transform="translate(32, 612)">
+    <text x="0" y="14" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">
+      NOTAS DE DISEÑO UX
+    </text>
+    <text x="0" y="34" fill="#B1BAC4" font-size="12">
+      • Donut hoy usa <tspan fill="#B1BAC4" font-weight="700">--deterministic</tspan> (gris semántico) para "sin gasto" y <tspan fill="#BC8CFF" font-weight="700">--purple</tspan> para LLM (coherente con badge definicion).
+    </text>
+    <text x="0" y="52" fill="#B1BAC4" font-size="12">
+      • Color rojo en "no clasificado" llama a la acción: cada % alto ahí dispara revisión del router (CA-1) o sugiere nueva entrada al allowlist (CA-7).
+    </text>
+    <text x="0" y="70" fill="#B1BAC4" font-size="12">
+      • Marker "CUOTA" en barra de tendencia comunica el incidente sin desordenar el chart — patrón coherente con #2882 cost-anomaly.
+    </text>
+    <text x="0" y="88" fill="#B1BAC4" font-size="12">
+      • El sticker de modo degradado usa <tspan fill="#F0A500" font-weight="700">--quota-degraded</tspan> (existente, definido en design-tokens.css L99-112).
+    </text>
+  </g>
+</svg>
