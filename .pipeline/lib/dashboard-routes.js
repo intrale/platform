@@ -61,6 +61,30 @@ try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catc
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 
+// #3259 — Health por provider (cache TTL 5min, allowlist live-ping) +
+// dispatch-by-provider (activity log 24h). Lectura defensiva: si el módulo
+// no carga, los endpoints devuelven 503.
+let providerHealth = null;
+try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
+
+// #3259 — Rate-limit inline (security A05): hasta #3285 entregue el middleware
+// reusable, mantenemos un semáforo simple en memoria por IP. 6 req/min cubre
+// auto-refresh del dashboard (cada 30s = 2 req/min) + headroom para debugging.
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 6;
+const _rateLimitState = new Map(); // ip → array de timestamps
+function rateLimitAllow(ip, now = Date.now()) {
+    if (!ip) ip = 'unknown';
+    const arr = (_rateLimitState.get(ip) || []).filter(ts => now - ts < RATE_LIMIT_WINDOW_MS);
+    if (arr.length >= RATE_LIMIT_MAX) {
+        _rateLimitState.set(ip, arr);
+        return false;
+    }
+    arr.push(now);
+    _rateLimitState.set(ip, arr);
+    return true;
+}
+
 const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
     '/pipeline': sat.renderPipeline,
@@ -145,6 +169,27 @@ const API_ROUTES = {
     // documentado en CA-C2 (nombre humano-friendly para curl/debug).
     '/api/dash/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
     '/api/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
+    // #3259 / CA-6 — Despachos por provider últimas 24h (lectura del activity
+    // log). Síncrono y barato; el card en la home dashboard lo poltea cada 30s.
+    '/api/dash/dispatch-by-provider': () => {
+        if (!providerHealth) return { error: 'module_unavailable', total: 0, totals: {} };
+        return providerHealth.getDispatchByProvider();
+    },
+    '/api/dashboard/dispatch-by-provider': () => {
+        if (!providerHealth) return { error: 'module_unavailable', total: 0, totals: {} };
+        return providerHealth.getDispatchByProvider();
+    },
+};
+
+// #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
+// `/api/pulpo/provider-health` corre live-ping detrás del cache TTL 5min, no
+// martilla las APIs. Allowlist de providers fija en live-ping.js (SSRF
+// defense). Rate-limit aplicado en `handle()`.
+const ASYNC_API_ROUTES = {
+    '/api/pulpo/provider-health': async () => {
+        if (!providerHealth) return { error: 'module_unavailable', providers: [] };
+        return await providerHealth.getProviderHealth();
+    },
 };
 
 function sendJson(res, payload, status = 200) {
@@ -210,6 +255,23 @@ function handle(req, res, ctx) {
         } catch (e) {
             sendJson(res, { error: e.message || String(e) }, 500);
         }
+        return true;
+    }
+
+    // #3259 / CA-5 — Rutas async (provider-health). Rate-limit inline + cache
+    // TTL 5min internamente. La respuesta nunca incluye API keys (security A02).
+    if (ASYNC_API_ROUTES[apiPath]) {
+        const ip = (req.socket && req.socket.remoteAddress) || 'unknown';
+        if (!rateLimitAllow(ip)) {
+            sendJson(res, { error: 'rate_limited', retry_after_s: 60 }, 503);
+            return true;
+        }
+        // Fire-and-forget: no awaiteamos para no bloquear el sync handle()
+        // del dashboard. El cliente cierra cuando el body llega.
+        Promise.resolve()
+            .then(() => ASYNC_API_ROUTES[apiPath](ctx.getState(), ctx))
+            .then(payload => sendJson(res, payload))
+            .catch(e => sendJson(res, { error: e.message || String(e) }, 500));
         return true;
     }
 
