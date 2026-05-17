@@ -13,7 +13,13 @@
 // producción (el `defaultGhClient` envuelve los `execSync` 1:1).
 // =============================================================================
 
-const { execSync, spawn } = require('child_process');
+// #3303 — Usamos `cp.execFileSync` en lugar de `execSync` con interpolación
+// de string al shell, lo que elimina dependencia de cmd.exe / sh. Mantenemos
+// `spawn` destructured porque lo usa `fireOnComplete` con detached:true (no
+// pasa por shell). `cp` se referencia por módulo para permitir monkey-patch
+// desde los tests (#3303 CA-5).
+const cp = require('child_process');
+const { spawn } = cp;
 const fs = require('fs');
 const path = require('path');
 // #2334: sanitización write-time.
@@ -57,20 +63,36 @@ function listWorkFiles(dir) {
   } catch { return []; }
 }
 
-// --- Escape para shell ---
-function esc(str) {
-  return (str || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '');
-}
+// =============================================================================
+// #3303 — `esc()` quedó deprecated y se removió. Era el helper de escapeo
+// para interpolación shell de `execSync(`...${esc(body)}...`)`. Convertía
+// `\n` real a la secuencia literal `\\n` para no romper el quoting de cmd.exe.
+// Efecto colateral: el body posteado a GitHub llegaba con `\n` LITERALES en
+// lugar de saltos de línea reales, y el detector de dependencias del Pulpo
+// (`parseDependencyComment`) no matcheaba el heading porque el comentario
+// quedaba en una sola línea — incidente #3253 (2026-05-17).
+//
+// Reemplazo: `cp.execFileSync(GH_BIN, argv, { input, ... })`. Argv array NO
+// pasa por shell en Windows (CreateProcess directo) ni en Unix (execve), así
+// que no requiere escapeo. Body multilínea se pasa por stdin con
+// `--body-file -`, que es la API soportada por `gh` (validada en gh 2.86.0).
+//
+// Por qué NO se mantiene `esc()` como utilidad opcional:
+//   - No queda ningún caller en este archivo que pase argumentos por shell.
+//   - Si en el futuro un caller necesita shell escape, el patrón canónico
+//     es agregar el caso específico con `cp.execFileSync` + argv y NO
+//     reintroducir el shell. Mantener un helper "por si acaso" reabre el
+//     vector que cerramos.
+//   - Cualquier reintroducción de `execSync` o de `esc()` para body/title
+//     en este archivo debe ser bloqueada en review — el bug es estructural,
+//     no un escape mal escrito.
+// =============================================================================
 
 // =============================================================================
-// #3025 — defaultGhClient: cliente real que envuelve `execSync` 1:1 al binario
-// `gh`. La forma de cada método es la API estable que consume `processQueue`,
-// `refreshLabelCache` y `ensureLabels`. Tests inyectan un mock JS puro con la
-// misma forma; no hay diferencia funcional para producción.
+// #3025 — defaultGhClient: cliente real que envuelve `cp.execFileSync` al
+// binario `gh`. La forma de cada método es la API estable que consume
+// `processQueue`, `refreshLabelCache` y `ensureLabels`. Tests inyectan un
+// mock JS puro con la misma forma; no hay diferencia funcional para producción.
 //
 // Salvaguardas preservadas:
 //   - `GH_BIN_OVERRIDE` sigue resolviendo el binario (futuros smoke tests E2E
@@ -81,33 +103,42 @@ function esc(str) {
 //   - `sanitizeGithubPayload(data)` se sigue invocando ANTES del client en el
 //     call site del worker (no se mueve dentro del client) — defensa explícita
 //     para que cualquier caller del client tenga que sanitizar primero.
+//
+// #3303 — Refactor a `cp.execFileSync` con argv array:
+//   - `commentIssue` y `createIssue` envían el body por stdin con
+//     `--body-file -` (preserva newlines reales, soporta cualquier UTF-8).
+//   - Resto de métodos (`editIssue`, `listLabels`, `createLabel`) pasan args
+//     en argv array — sin shell, sin escape, sin expansión de `%var%`.
 // =============================================================================
 const defaultGhClient = {
   editIssue(issueNumber, { addLabel, removeLabel } = {}) {
     if (addLabel) {
-      execSync(`"${GH_BIN}" issue edit ${issueNumber} --add-label "${esc(addLabel)}"`, {
+      cp.execFileSync(GH_BIN, ['issue', 'edit', String(issueNumber), '--add-label', String(addLabel)], {
         cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
       });
     }
     if (removeLabel) {
-      execSync(`"${GH_BIN}" issue edit ${issueNumber} --remove-label "${esc(removeLabel)}"`, {
+      cp.execFileSync(GH_BIN, ['issue', 'edit', String(issueNumber), '--remove-label', String(removeLabel)], {
         cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
       });
     }
   },
 
   commentIssue(issueNumber, body) {
-    execSync(`"${GH_BIN}" issue comment ${issueNumber} -b "${esc(body)}"`, {
-      cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+    cp.execFileSync(GH_BIN, ['issue', 'comment', String(issueNumber), '--body-file', '-'], {
+      cwd: ROOT, encoding: 'utf8', input: body == null ? '' : String(body),
+      timeout: 15000, windowsHide: true,
     });
   },
 
   createIssue({ title, body, labels, repo } = {}) {
     const targetRepo = repo || DEFAULT_REPO;
-    const output = execSync(
-      `"${GH_BIN}" issue create --title "${esc(title)}" --body "${esc(body)}" --label "${esc(labels)}" --repo ${targetRepo}`,
-      { cwd: ROOT, encoding: 'utf8', timeout: 20000, windowsHide: true },
-    ).trim();
+    const args = ['issue', 'create', '--title', String(title || ''), '--body-file', '-', '--repo', targetRepo];
+    if (labels) args.push('--label', String(labels));
+    const output = cp.execFileSync(GH_BIN, args, {
+      cwd: ROOT, encoding: 'utf8', input: body == null ? '' : String(body),
+      timeout: 20000, windowsHide: true,
+    }).trim();
     const urlMatch = output.match(/\/(\d+)\s*$/);
     return {
       number: urlMatch ? parseInt(urlMatch[1], 10) : null,
@@ -118,8 +149,9 @@ const defaultGhClient = {
   listLabels({ repo, limit } = {}) {
     const targetRepo = repo || DEFAULT_REPO;
     const targetLimit = limit || 200;
-    const raw = execSync(
-      `"${GH_BIN}" label list --json name --limit ${targetLimit} --repo ${targetRepo}`,
+    const raw = cp.execFileSync(
+      GH_BIN,
+      ['label', 'list', '--json', 'name', '--limit', String(targetLimit), '--repo', targetRepo],
       { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true },
     );
     return JSON.parse(raw || '[]');
@@ -128,8 +160,9 @@ const defaultGhClient = {
   createLabel(name, color, { repo } = {}) {
     const targetRepo = repo || DEFAULT_REPO;
     try {
-      execSync(
-        `"${GH_BIN}" label create "${esc(name)}" --color "${color}" --repo ${targetRepo}`,
+      cp.execFileSync(
+        GH_BIN,
+        ['label', 'create', String(name), '--color', String(color), '--repo', targetRepo],
         { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true },
       );
       return { created: true, alreadyExists: false };
