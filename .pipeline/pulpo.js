@@ -108,6 +108,15 @@ const commanderDet = require('./lib/commander-deterministic');
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
 // hash-chain SHA-256 en logs/cross-provider-dispatch-*.jsonl + notify Telegram.
 const { resolveSpawnWithFallback } = require('./lib/agent-launcher/dispatch-with-fallback');
+// #3259 — provider-exhaustion-pause: cuando primary + todos los fallbacks
+// de un skill quedan gated, este módulo aplica label, encola Telegram,
+// persiste marker (dedupe 2h) y auditea con hash-chain. El brazo de retry
+// (más abajo) llama a tryResume() periódicamente para destrabar issues
+// cuando un provider se libera. Lectura defensiva: si el módulo no carga
+// por bug, el pulpo sigue gateando como antes (CA-4/CA-9/CA-10 degradan a
+// "label-less" sin tumbar el barrido).
+let providerExhaustionPause = null;
+try { providerExhaustionPause = require('./lib/provider-exhaustion-pause'); } catch { /* opcional */ }
 // #3155: creación de worktree con recovery de branches huérfanas. Reemplaza
 // el bloque inline previo (`git worktree add -b ... origin/main`) que fallaba
 // cada vez que una iteración anterior dejaba la branch `agent/<n>-<skill>`
@@ -5040,6 +5049,29 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           flag_set: true,
         });
       } catch {}
+      // #3259 / CA-4 + CA-9: aplicar label `provider-exhaustion-pause` al
+      // issue + encolar Telegram con detalle sanitizado + persistir marker
+      // de dedupe (2h o cambio de chain) + audit hash-chained. Idempotente.
+      // Best-effort: si el módulo no cargó o gh no está disponible, el
+      // gate clásico (mover a pendiente + appendAudit arriba) sigue
+      // funcionando — el operador queda sin label/Telegram, no se rompe el
+      // pulpo.
+      try {
+        if (providerExhaustionPause) {
+          const retryMs = providerExhaustionPause.clampRetryIntervalMs(
+            ((loadConfig() || {}).pulpo_continuidad || {}).retry_interval_ms
+          );
+          providerExhaustionPause.reportExhaustion({
+            skill,
+            issue,
+            primary_provider: dispatchResolution.primaryProvider || 'unknown',
+            chain_tried: dispatchResolution.chainTried || [],
+            retry_interval_ms: retryMs,
+          });
+        }
+      } catch (perr) {
+        log('lanzamiento', `[WARN] provider-exhaustion-pause report falló (no bloqueante): ${perr.message}`);
+      }
       return;
     }
 
@@ -8731,6 +8763,43 @@ function _maybeLogReentrySkip() {
   return true;
 }
 
+// #3259 / CA-4 + CA-10 — brazo de retry de provider-exhaustion-pause.
+// Estado:
+//   - `_exhaustionLastTickAt`: ms del último tick exitoso (default 0 — primer
+//     tick corre apenas el loop arranca).
+//   - El brazo es síncrono y rápido (gh issue list con --limit 50 + un
+//     gh issue edit por cada issue destrabable). No usa guard de re-entrada
+//     porque el intervalo mínimo de 60s lo previene naturalmente.
+let _exhaustionLastTickAt = 0;
+
+function brazoProviderExhaustionRetry(config) {
+  // Lectura defensiva: si el módulo no cargó, no hay nada que hacer.
+  if (!providerExhaustionPause) return;
+
+  // Intervalo configurable con piso hardcoded 60s (anti-DoS providers free).
+  const cfgInterval = ((config && config.pulpo_continuidad) || {}).retry_interval_ms;
+  const intervalMs = providerExhaustionPause.clampRetryIntervalMs(cfgInterval);
+  const now = Date.now();
+  if (now - _exhaustionLastTickAt < intervalMs) return;
+  _exhaustionLastTickAt = now;
+
+  try {
+    const result = providerExhaustionPause.tryResume({});
+    if (result.resumed.length > 0) {
+      log('exhaustion-retry', `🟩 destrabados ${result.resumed.length} issue(s): ${result.resumed.map(r => `#${r.issue}→${r.provider_recovered}`).join(', ')}`);
+    }
+    if (result.skipped.length > 0) {
+      // Solo loguear si hubo skip por motivo no-trivial (gh error, etc).
+      const meaningfulSkips = result.skipped.filter(s => s.reason !== 'still_gated_same_provider');
+      if (meaningfulSkips.length > 0) {
+        log('exhaustion-retry', `⚠️ saltados ${meaningfulSkips.length} issue(s): ${meaningfulSkips.map(s => `#${s.issue}:${s.reason}`).join(', ')}`);
+      }
+    }
+  } catch (e) {
+    log('exhaustion-retry', `[WARN] brazo retry falló (no bloqueante): ${e.message}`);
+  }
+}
+
 async function brazoDesbloqueo(config) {
   // #3059 — Watchdog ANTES del guard: si la ejecución anterior nunca
   // terminó (gh.exe wedged en Windows con timeout que no garantiza kill),
@@ -9436,6 +9505,11 @@ async function mainLoop() {
         // #2893: detección periódica de deps faltantes en pausa parcial (cada N ticks).
         // Fire-and-forget: consulta gh con cache TTL 5min, no bloquea el loop.
         brazoPartialPauseDeps(config).catch(e => log('pulpo', `[partial-pause-deps] error async: ${e.message}`));
+        // #3259 / CA-4 + CA-10: brazo de retry de provider-exhaustion-pause.
+        // Cada `retry_interval_ms` (clampeado a piso 60s) revisa issues con
+        // label `provider-exhaustion-pause` y los destraba si algún provider
+        // de su chain se liberó. Fire-and-forget — no bloquea el loop.
+        brazoProviderExhaustionRetry(config);
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
