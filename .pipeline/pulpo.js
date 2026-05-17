@@ -7328,9 +7328,18 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
 
   // --- CLASIFICAR cada mensaje con el router determinístico (#3257 CA-1) ---
   // El router decide deterministic / llm / unknown ANTES de invocar a Claude.
-  // Cada mensaje se asienta en commander-audit-YYYY-MM-DD.jsonl (CA-10), pasa
-  // por rate limit por chat_id (CA-11) y, si es determinístico, se contesta
-  // sin LLM. Si es `llm` o el handler legacy devuelve null, cae a texto libre.
+  // TODOS los mensajes pasan por `dispatcher.dispatch` — incluyendo los `llm` —
+  // para que el audit-log (commander-audit-YYYY-MM-DD.jsonl, CA-10) registre
+  // SIEMPRE una fila con `intent_class`. Sin esto, la métrica CA-4
+  // "% determinístico vs LLM" del dashboard quedaba ~100% determinístico
+  // permanentemente porque el productor del lado LLM nunca emitía filas.
+  //
+  // El dispatcher devuelve `{ reply, status }`:
+  //   - status='ok' + reply!=null  → respuesta determinística lista
+  //   - status='delegated_to_llm'  → audit ya hecho, caller debe llamar a Claude
+  //   - status='no_handler'        → comando determinístico sin handler default
+  //                                  → fallback al switch legacy de pulpo.js
+  //   - status='rate_limited'/'invalid_args'/'unauthorized' → reply listo
   const dispatcher = getCommanderDispatcher();
   const comandos = [];
   const textoLibre = [];
@@ -7341,6 +7350,24 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     if (intent.class === 'deterministic' || intent.class === 'unknown') {
       comandos.push({ m, intent });
     } else {
+      // class === 'llm' → emitimos audit-log explícitamente (camino que
+      // antes saltaba dispatch entero). Usar `auditLog.record` para no
+      // pagar el costo del rate-limit + reply nulo de dispatch (el llm
+      // tiene su propio camino, ejecutarClaude, más abajo).
+      try {
+        dispatcher.auditLog.record({
+          from: m.from,
+          chat_id: m.chat_id || getTelegramChatId(),
+          raw_command: intent.rawTruncated,
+          intent_class: 'llm',
+          handler: intent.command || null,
+          args: intent.args,
+          result_status: 'ok',
+          duration_ms: 0,
+        });
+      } catch (e) {
+        log('commander', `[audit-llm] error: ${e.message}`);
+      }
       textoLibre.push(m);
     }
   }
@@ -7393,13 +7420,11 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         case 'restart': respuesta = cmdRestart(args); break;
         case 'bloqueados': respuesta = cmdBloqueados(); break;
         case 'unblock': respuesta = cmdUnblock(args); break;
-        case 'snapshot': /* TODO: handler determinístico real */ break;
-        case 'listado': /* TODO: handler determinístico real */ break;
-        case 'allowlist': /* TODO: handler determinístico real */ break;
-        case 'dashboard-up': /* TODO: handler determinístico real */ break;
-        case 'dashboard-down': /* TODO: handler determinístico real */ break;
-        case 'screenshot': /* TODO: handler determinístico real */ break;
-        case 'procesos': /* TODO: handler determinístico real */ break;
+        // snapshot/listado/allowlist/dashboard-up/dashboard-down/screenshot/procesos
+        // se resuelven en `dispatcher.dispatch` arriba (buildDefaultHandlers en
+        // commander-deterministic.js). Si llegaran acá significa que el dispatcher
+        // devolvió `no_handler` → caemos a `default` y eventualmente a texto libre,
+        // garantizando que el usuario reciba ALGUNA respuesta.
         default: respuesta = null; break;
       }
     }

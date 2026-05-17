@@ -134,20 +134,95 @@ function renderEach(template, ctx) {
 }
 
 function renderIf(template, ctx) {
-    // {{#if x}}A{{else}}B{{/if}} primero (greedy del else), después {{#if x}}A{{/if}}.
-    const reIfElse = /\{\{#if\s+([\w.-]+)\s*\}\}([\s\S]*?)\{\{else\}\}([\s\S]*?)\{\{\/if\}\}/;
-    while (reIfElse.test(template)) {
-        template = template.replace(reIfElse, (_, name, ifBranch, elseBranch) => {
-            const v = resolvePath(ctx, name);
-            return isTruthy(v) ? ifBranch : elseBranch;
-        });
+    // Balanceo manual: el regex non-greedy `{{/if}}` antes elegía el PRIMER
+    // `{{/if}}` después de `{{else}}`, lo que rompe templates con ifs anidados
+    // dentro de la rama else (ej. `listado-issues.md`). Acá escaneamos linealmente
+    // y buscamos el `{{/if}}` que cierra el `{{#if}}` actual contando profundidad.
+    //
+    // Algoritmo: arrancamos en el último `{{#if}}` (más interno por construcción
+    // del scan), encontramos su `{{else}}` opcional y su `{{/if}}` matching, y
+    // reemplazamos. Iteramos hasta que no quede ningún `{{#if}}`.
+    const reOpen = /\{\{#if\s+([\w.-]+)\s*\}\}/g;
+    const reClose = /\{\{\/if\}\}/g;
+    const reElse = /\{\{else\}\}/g;
+
+    function findAllOpens(text) {
+        const opens = [];
+        reOpen.lastIndex = 0;
+        let m;
+        while ((m = reOpen.exec(text)) !== null) {
+            opens.push({ start: m.index, end: m.index + m[0].length, name: m[1] });
+        }
+        return opens;
     }
-    const reIf = /\{\{#if\s+([\w.-]+)\s*\}\}([\s\S]*?)\{\{\/if\}\}/;
-    while (reIf.test(template)) {
-        template = template.replace(reIf, (_, name, body) => {
-            const v = resolvePath(ctx, name);
-            return isTruthy(v) ? body : '';
-        });
+
+    function findMatchingClose(text, fromIdx) {
+        // Cuenta opens/closes desde fromIdx para encontrar el cierre balanceado.
+        let depth = 1;
+        let i = fromIdx;
+        while (i < text.length) {
+            const open = text.indexOf('{{#if ', i);
+            const close = text.indexOf('{{/if}}', i);
+            if (close === -1) return -1;
+            if (open !== -1 && open < close) { depth += 1; i = open + 6; continue; }
+            depth -= 1;
+            if (depth === 0) return close;
+            i = close + 7;
+        }
+        return -1;
+    }
+
+    function findElseAtDepth0(text, fromIdx, endIdx) {
+        // Busca el {{else}} en la profundidad raíz entre fromIdx y endIdx.
+        let depth = 0;
+        let i = fromIdx;
+        while (i < endIdx) {
+            const open = text.indexOf('{{#if ', i);
+            const close = text.indexOf('{{/if}}', i);
+            const els = text.indexOf('{{else}}', i);
+            const min = [open, close, els].filter((x) => x !== -1 && x < endIdx).sort((a, b) => a - b)[0];
+            if (min === undefined) return -1;
+            if (min === open) { depth += 1; i = open + 6; continue; }
+            if (min === close) { depth -= 1; i = close + 7; continue; }
+            if (min === els) {
+                if (depth === 0) return els;
+                i = els + 8;
+                continue;
+            }
+        }
+        return -1;
+    }
+
+    // Procesar de adentro hacia afuera: el último open antes de cualquier close.
+    let guard = 0;
+    while (template.includes('{{#if ') && guard < 500) {
+        guard += 1;
+        const opens = findAllOpens(template);
+        if (opens.length === 0) break;
+
+        // Elegimos el último open (más interno o más a la derecha)
+        const opened = opens[opens.length - 1];
+        const closeIdx = findMatchingClose(template, opened.end);
+        if (closeIdx === -1) {
+            // template mal formado — abortamos
+            break;
+        }
+        const innerStart = opened.end;
+        const innerEnd = closeIdx;
+        const elseIdx = findElseAtDepth0(template, innerStart, innerEnd);
+
+        let ifBranch;
+        let elseBranch;
+        if (elseIdx === -1) {
+            ifBranch = template.slice(innerStart, innerEnd);
+            elseBranch = '';
+        } else {
+            ifBranch = template.slice(innerStart, elseIdx);
+            elseBranch = template.slice(elseIdx + '{{else}}'.length, innerEnd);
+        }
+        const v = resolvePath(ctx, opened.name);
+        const chosen = isTruthy(v) ? ifBranch : elseBranch;
+        template = template.slice(0, opened.start) + chosen + template.slice(closeIdx + '{{/if}}'.length);
     }
     return template;
 }

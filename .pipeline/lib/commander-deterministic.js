@@ -30,6 +30,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 const { fillTemplate, escapeMarkdownV2 } = require('./commander/fill-template');
 const { createAuditLog } = require('./commander/audit-log');
 const { createRateLimiter } = require('./commander/rate-limit');
@@ -526,6 +527,458 @@ function buildDefaultHandlers(ctx) {
             });
         },
 
+        snapshot: async () => {
+            // Lee `.pipeline/desarrollo/<fase>/<estado>/*.{<skill>,yaml}` y arma
+            // un snapshot agregado del estado actual del pipeline. Sin LLM ni red:
+            // solo `fs.readdirSync` sobre la jerarquía de carpetas.
+            const desarrollo = path.join(PIPELINE, 'desarrollo');
+            const PHASES = ['dev', 'build', 'verificacion', 'aprobacion', 'entrega', 'validacion'];
+            const STATES = ['pendiente', 'trabajando', 'listo'];
+            const issuesMap = new Map(); // issue → { phase, state, file, mtimeMs }
+            let blockedCount = 0;
+            const interventionItems = [];
+
+            for (const phase of PHASES) {
+                for (const state of STATES) {
+                    const dir = path.join(desarrollo, phase, state);
+                    let files = [];
+                    try { files = fs.readdirSync(dir); } catch (_) { continue; }
+                    for (const f of files) {
+                        const m = f.match(/^(\d+)\.([\w-]+)$/);
+                        if (!m) continue;
+                        const issue = Number(m[1]);
+                        const fullPath = path.join(dir, f);
+                        let mtimeMs = 0;
+                        try { mtimeMs = fs.statSync(fullPath).mtimeMs; } catch (_) {}
+                        // Si ya existía el issue en otra fase, conservamos la más avanzada
+                        // (la fase con índice mayor en PHASES).
+                        const prev = issuesMap.get(issue);
+                        const idx = PHASES.indexOf(phase);
+                        const prevIdx = prev ? PHASES.indexOf(prev.phase) : -1;
+                        if (!prev || idx > prevIdx) {
+                            issuesMap.set(issue, { phase, state, file: f, mtimeMs });
+                        }
+                        // Detección heurística de bloqueo: archivos `.reason*.json` o
+                        // contenido con `rebote: true` / `motivo_rechazo`.
+                        try {
+                            if (state === 'pendiente') {
+                                const content = fs.readFileSync(fullPath, 'utf8');
+                                if (/^rebote:\s*true/m.test(content) || /motivo_rechazo:/m.test(content)) {
+                                    blockedCount += 1;
+                                    if (interventionItems.length < 5) {
+                                        const reasonMatch = content.match(/motivo_rechazo:\s*\|?\s*\n?\s*(.{0,140})/);
+                                        const reason = (reasonMatch ? reasonMatch[1].trim() : 'rebote pendiente').slice(0, 140);
+                                        interventionItems.push({ number: issue, reason });
+                                    }
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                }
+            }
+
+            const totalIssues = issuesMap.size;
+            // Progreso: % de issues en fases finales (aprobacion/entrega) sobre total.
+            const advancedPhases = new Set(['aprobacion', 'entrega']);
+            let advanced = 0;
+            for (const meta of issuesMap.values()) {
+                if (advancedPhases.has(meta.phase)) advanced += 1;
+            }
+            const progressPercent = totalIssues > 0 ? Math.round((advanced / totalIssues) * 100) : 0;
+            const progressBar = renderProgressBar(progressPercent);
+
+            // Render: orden por issue desc, máximo 12 issues para no pasarnos del límite.
+            const issues = [...issuesMap.entries()]
+                .sort((a, b) => b[0] - a[0])
+                .slice(0, 12)
+                .map(([num, meta]) => ({
+                    number: num,
+                    phase: meta.phase,
+                    title: `(${meta.file})`,
+                    'status-icon': stateIcon(meta.state),
+                    blocked: false,
+                    'last-event': null,
+                    'last-event-elapsed': null,
+                }));
+
+            // Número de ola: best-effort. Si existe `.pipeline/ola-actual.json` lo
+            // usamos, sino lo dejamos en "—" (no inventamos).
+            let olaNumero = '—';
+            try {
+                const olaFile = path.join(PIPELINE, 'ola-actual.json');
+                if (fs.existsSync(olaFile)) {
+                    const data = JSON.parse(fs.readFileSync(olaFile, 'utf8'));
+                    if (data && data.numero) olaNumero = String(data.numero);
+                }
+            } catch (_) {}
+
+            return fillTemplate('snapshot-ola', {
+                'ola-numero': olaNumero,
+                timestamp: new Date().toISOString(),
+                'progress-bar': progressBar,
+                'progress-percent': progressPercent,
+                'eta-human': '—',
+                'eta-model': 'sin modelo determinístico',
+                'blocked-count': blockedCount,
+                'total-issues': totalIssues,
+                issues,
+                'intervencion-requerida': interventionItems.length > 0,
+                'intervencion-items': interventionItems,
+            });
+        },
+
+        listado: async ({ args }) => {
+            // Lectura puro-FS del estado actual del pipeline. Filtros aceptados
+            // (validados por ARG_SCHEMAS antes de llegar acá): pendientes / en
+            // curso / listos / ola / todo / '' (default = todo).
+            const filter = String(args || '').toLowerCase().trim() || 'todo';
+            const desarrollo = path.join(PIPELINE, 'desarrollo');
+            const PHASES = ['dev', 'build', 'verificacion', 'aprobacion', 'entrega', 'validacion'];
+
+            // Mapeo filtro → conjunto de estados aceptados.
+            const STATE_MAP = {
+                pendientes: new Set(['pendiente']),
+                'en-curso': new Set(['trabajando']),
+                'en curso': new Set(['trabajando']),
+                listos: new Set(['listo']),
+                ola: new Set(['pendiente', 'trabajando', 'listo']),
+                todo: new Set(['pendiente', 'trabajando', 'listo']),
+                '': new Set(['pendiente', 'trabajando', 'listo']),
+            };
+            const acceptedStates = STATE_MAP[filter] || STATE_MAP.todo;
+
+            const issueRows = new Map(); // issue → row
+            for (const phase of PHASES) {
+                for (const state of acceptedStates) {
+                    const dir = path.join(desarrollo, phase, state);
+                    let files = [];
+                    try { files = fs.readdirSync(dir); } catch (_) { continue; }
+                    for (const f of files) {
+                        const m = f.match(/^(\d+)\.([\w-]+)$/);
+                        if (!m) continue;
+                        const issue = Number(m[1]);
+                        const skill = m[2];
+                        const fullPath = path.join(dir, f);
+                        let elapsed = null;
+                        try {
+                            const st = fs.statSync(fullPath);
+                            elapsed = formatElapsed(Date.now() - st.mtimeMs);
+                        } catch (_) {}
+                        const prev = issueRows.get(issue);
+                        const idx = PHASES.indexOf(phase);
+                        const prevIdx = prev ? PHASES.indexOf(prev._phaseIdx) : -1;
+                        if (!prev || idx > prevIdx) {
+                            issueRows.set(issue, {
+                                number: issue,
+                                _phaseIdx: phase,
+                                phase,
+                                state,
+                                labels: skill,
+                                title: `(${f})`,
+                                elapsed,
+                                'priority-icon': stateIcon(state),
+                            });
+                        }
+                    }
+                }
+            }
+
+            const total = issueRows.size;
+            const sortedRows = [...issueRows.values()].sort((a, b) => b.number - a.number);
+            const MAX_SHOW = 15;
+            const shown = Math.min(sortedRows.length, MAX_SHOW);
+            const issues = sortedRows.slice(0, MAX_SHOW);
+
+            return fillTemplate('listado-issues', {
+                'filter-description': filter || 'todo',
+                empty: total === 0,
+                total,
+                shown,
+                truncated: total > MAX_SHOW,
+                issues,
+            });
+        },
+
+        allowlist: async () => {
+            const partialPausePath = path.join(PIPELINE, '.partial-pause.json');
+            if (!fs.existsSync(partialPausePath)) {
+                return fillTemplate('allowlist', {
+                    active: false,
+                    'last-modified': 'nunca',
+                    'last-modified-by': null,
+                    'empty-allowlist': true,
+                    count: 0,
+                    issues: [],
+                    'con-deps-recursivas': false,
+                    deps: [],
+                });
+            }
+
+            let raw;
+            try { raw = fs.readFileSync(partialPausePath, 'utf8'); }
+            catch (e) {
+                return fillTemplate('allowlist', {
+                    active: false,
+                    'last-modified': 'error de lectura',
+                    'last-modified-by': null,
+                    'empty-allowlist': true,
+                    count: 0,
+                    issues: [],
+                    'con-deps-recursivas': false,
+                    deps: [],
+                });
+            }
+            let parsed = null;
+            try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+
+            // Soportar formatos variados: { issues: [...] }, [...], { allowlist: [...] }
+            let allowed = [];
+            if (Array.isArray(parsed)) allowed = parsed;
+            else if (parsed && Array.isArray(parsed.issues)) allowed = parsed.issues;
+            else if (parsed && Array.isArray(parsed.allowlist)) allowed = parsed.allowlist;
+
+            const stat = fs.statSync(partialPausePath);
+            const lastModified = new Date(stat.mtimeMs).toISOString();
+            const isEmpty = allowed.length === 0;
+            // Pausa parcial "activa" si el archivo existe Y tiene items en allowlist.
+            const isActive = !isEmpty;
+
+            const issues = allowed.map((item) => {
+                if (typeof item === 'number' || typeof item === 'string') {
+                    return { number: Number(item), 'title-short': '(sin metadata)', 'labels-display': null };
+                }
+                return {
+                    number: Number(item.issue || item.number || 0),
+                    'title-short': String(item.title || '(sin título)').slice(0, 60),
+                    'labels-display': item.labels ? String(item.labels).slice(0, 40) : null,
+                };
+            });
+
+            return fillTemplate('allowlist', {
+                active: isActive,
+                'last-modified': lastModified,
+                'last-modified-by': parsed && parsed.modified_by ? String(parsed.modified_by) : null,
+                'empty-allowlist': isEmpty,
+                count: issues.length,
+                issues,
+                'con-deps-recursivas': false,
+                deps: [],
+            });
+        },
+
+        'dashboard-up': async () => {
+            // Levanta el dashboard. Sin shell-concat: spawn con argv array.
+            const port = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+            const dashboardScript = path.join(PIPELINE, 'dashboard.js');
+            if (!fs.existsSync(dashboardScript)) {
+                return fillTemplate('dashboard-up', {
+                    'dashboard-url': '—',
+                    pid: '—',
+                    port,
+                    'startup-ms': 0,
+                    'was-already-running': false,
+                    'smoke-test-passed': false,
+                });
+            }
+
+            // Check si ya corre alguien en el puerto.
+            const existingPid = portInUse(port);
+            if (existingPid) {
+                return fillTemplate('dashboard-up', {
+                    'dashboard-url': `http://localhost:${port}/`,
+                    pid: existingPid,
+                    port,
+                    'startup-ms': 0,
+                    'was-already-running': true,
+                    'smoke-test-passed': false,
+                });
+            }
+
+            const startedAt = Date.now();
+            const logPath = path.join(LOG_DIR, 'dashboard-v2.log');
+            let logFd = null;
+            try {
+                if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+                fs.appendFileSync(logPath, `--- dashboard-up commander ${new Date().toISOString()} ---\n`);
+                logFd = fs.openSync(logPath, 'a');
+            } catch (_) {}
+
+            // Spawn detached con argv array — node + dashboard.js. Sin shell.
+            let child;
+            try {
+                child = spawn(process.execPath, [dashboardScript], {
+                    cwd: path.resolve(PIPELINE, '..'),
+                    stdio: logFd ? ['ignore', logFd, logFd] : 'ignore',
+                    detached: true,
+                    windowsHide: true,
+                    env: { ...process.env },
+                });
+                child.unref();
+            } catch (e) {
+                return fillTemplate('dashboard-up', {
+                    'dashboard-url': '—',
+                    pid: '—',
+                    port,
+                    'startup-ms': Date.now() - startedAt,
+                    'was-already-running': false,
+                    'smoke-test-passed': false,
+                });
+            } finally {
+                if (logFd) try { fs.closeSync(logFd); } catch (_) {}
+            }
+
+            // Smoke test best-effort: esperar máximo 5s a que el puerto responda.
+            let smokeOk = false;
+            for (let i = 0; i < 25; i += 1) {
+                if (portInUse(port)) { smokeOk = true; break; }
+                // sleep 200ms sync sin tirar nuevo node
+                const until = Date.now() + 200;
+                while (Date.now() < until) { /* busy wait corto */ }
+            }
+
+            return fillTemplate('dashboard-up', {
+                'dashboard-url': `http://localhost:${port}/`,
+                pid: child && child.pid ? child.pid : '—',
+                port,
+                'startup-ms': Date.now() - startedAt,
+                'was-already-running': false,
+                'smoke-test-passed': smokeOk,
+            });
+        },
+
+        'dashboard-down': async () => {
+            const port = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+            const pid = portInUse(port);
+            if (!pid) {
+                return fillTemplate('dashboard-down', {
+                    pid: '—',
+                    'uptime-human': '—',
+                    reason: 'apagado manual desde Telegram',
+                    'was-not-running': true,
+                    'leftover-processes': false,
+                    'leftover-count': 0,
+                });
+            }
+
+            const startedAt = pidStartTime(pid);
+            const uptimeHuman = startedAt ? formatElapsed(Date.now() - startedAt) : 'desconocido';
+
+            let killed = false;
+            // En Windows usamos taskkill /F /T (mata árbol) sin shell-concat.
+            if (process.platform === 'win32') {
+                try {
+                    spawnSync('taskkill', ['/PID', String(pid), '/F', '/T'], {
+                        timeout: 5000, windowsHide: true, stdio: 'ignore',
+                    });
+                    killed = true;
+                } catch (_) {}
+            } else {
+                try {
+                    process.kill(pid, 'SIGTERM');
+                    killed = true;
+                } catch (_) {}
+            }
+
+            // Esperar hasta 2s a que el puerto se libere.
+            let leftover = false;
+            for (let i = 0; i < 10; i += 1) {
+                const until = Date.now() + 200;
+                while (Date.now() < until) { /* busy wait */ }
+                if (!portInUse(port)) { leftover = false; break; }
+                leftover = true;
+            }
+
+            return fillTemplate('dashboard-down', {
+                pid,
+                'uptime-human': uptimeHuman,
+                reason: killed ? 'apagado manual desde Telegram' : 'kill falló',
+                'was-not-running': false,
+                'leftover-processes': leftover,
+                'leftover-count': leftover ? 1 : 0,
+            });
+        },
+
+        screenshot: async () => {
+            // Sin puppeteer/playwright instalados en el repo, el handler
+            // determinístico responde con metadata útil + URL en vez de adjuntar
+            // imagen. Esto es honesto y testeable; no inventa adjuntos.
+            const port = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+            const dashUrl = `http://localhost:${port}/`;
+            const dashAlive = !!portInUse(port);
+            return fillTemplate('screenshot', {
+                timestamp: new Date().toISOString(),
+                'view-name': 'home',
+                attached: false,
+                width: 0,
+                height: 0,
+                'size-human': '0 B',
+                redacted: false,
+                'redacted-areas': 0,
+                'available-views': dashAlive ? `home (${dashUrl})` : 'dashboard apagado',
+            });
+        },
+
+        procesos: async () => {
+            // Lectura del estado de procesos node del pipeline. Usa wmic/ps con
+            // argv array (sin shell-concat). pid-discovery YA aplica esa regla.
+            let scanner;
+            try { scanner = require('../pid-discovery'); }
+            catch (e) {
+                return fillTemplate('procesos-node', {
+                    timestamp: new Date().toISOString(),
+                    'total-count': 0,
+                    'total-ram-human': '0 B',
+                    processes: [],
+                    'has-orphans': false,
+                    'orphan-count': 0,
+                    orphans: [],
+                });
+            }
+
+            const all = scanner.scanNodeProcesses();
+            const SCRIPT_MAP = scanner.SCRIPT_MAP || {};
+            // Mapeo inverso script → rol
+            const SCRIPT_TO_ROLE = {};
+            for (const [role, script] of Object.entries(SCRIPT_MAP)) {
+                SCRIPT_TO_ROLE[script] = role;
+            }
+
+            const procesos = [];
+            const orphans = [];
+            for (const p of all) {
+                if (!p.commandLine || !p.commandLine.includes('.pipeline')) continue;
+                let role = null;
+                for (const [script, r] of Object.entries(SCRIPT_TO_ROLE)) {
+                    if (p.commandLine.includes(script)) { role = r; break; }
+                }
+                if (role) {
+                    procesos.push({
+                        'status-icon': '🟢',
+                        role,
+                        pid: p.pid,
+                        'cpu-percent': '—',
+                        'ram-human': '—',
+                        uptime: '—',
+                        'is-zombie': false,
+                    });
+                } else {
+                    // Huérfano: corre dentro de .pipeline pero no matchea ningún script conocido.
+                    const safeCmd = redactReadOutput(String(p.commandLine).slice(0, 160)).text;
+                    orphans.push({ pid: p.pid, 'cmdline-redacted': safeCmd });
+                }
+            }
+
+            return fillTemplate('procesos-node', {
+                timestamp: new Date().toISOString(),
+                'total-count': procesos.length,
+                'total-ram-human': '—',
+                processes: procesos,
+                'has-orphans': orphans.length > 0,
+                'orphan-count': orphans.length,
+                orphans,
+            });
+        },
+
         salud: async () => {
             // Datos básicos del estado del pulpo: lock activo, último tick, errores recientes.
             const lockPath = path.join(PIPELINE, 'pulpo.lock');
@@ -606,6 +1059,53 @@ function clipForTelegram(text) {
     const LIMIT = 3000;
     if (text.length <= LIMIT) return text;
     return text.slice(-LIMIT);
+}
+
+function renderProgressBar(percent) {
+    // Barra ASCII de 20 caracteres. Defensivo: percent fuera de rango lo clampeamos.
+    const pct = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+    const filled = Math.round((pct / 100) * 20);
+    return '█'.repeat(filled) + '░'.repeat(20 - filled);
+}
+
+function stateIcon(state) {
+    switch (String(state || '').toLowerCase()) {
+        case 'pendiente': return '⏳';
+        case 'trabajando': return '⚙️';
+        case 'listo': return '✅';
+        case 'procesado': return '📦';
+        default: return '•';
+    }
+}
+
+function portInUse(port) {
+    // Reusa pid-discovery.findPidByPort si está disponible; defensivo si el
+    // módulo no carga (test aislado del commander).
+    try {
+        const scanner = require('../pid-discovery');
+        return scanner.findPidByPort(port) || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function pidStartTime(pid) {
+    try {
+        const scanner = require('../pid-discovery');
+        const all = scanner.scanNodeProcesses();
+        for (const p of all) {
+            if (p.pid === pid && p.creationDate) {
+                // wmic CreationDate: yyyyMMddHHmmss.ffffff+TZ
+                const m = String(p.creationDate).match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+                if (m) {
+                    const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+                    const t = Date.parse(iso);
+                    if (Number.isFinite(t)) return t;
+                }
+            }
+        }
+    } catch (_) {}
+    return null;
 }
 
 function collectRecentErrors(logDir) {
