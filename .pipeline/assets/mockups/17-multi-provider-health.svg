@@ -1,0 +1,586 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 17 — Seccion "Health" del panel Multi-Provider (#3260)
+  -----------------------------------------------------------------------------
+  Vista de la nueva seccion del tab "Multi-Provider" del dashboard interno
+  (puerto 3200) que cubre el CA-3 del issue #3260: estado de los healthchecks
+  cron + cuota observada + % de requests del pipeline 24h + rate-limit-hit count.
+
+  Esta seccion vive DEBAJO de las cards de providers existentes del mockup 11
+  (no las reemplaza). El data feed se lee del snapshot persistido en
+  audit/multi-provider-health.jsonl (CA-1) — el panel NO dispara pings
+  sinteticos al abrir.
+
+  Convencion:
+    - Paleta: design-tokens.css (var(--surface-*), var(--success/warning/danger))
+    - Iconos: sprite.svg referenciados con <use href="#ic-*"/>
+    - Tipografia: var(--font-sans) en estilos inline
+    - WCAG AA: todos los textos verificados sobre fondo, ratios >= 4.5:1
+    - Estados: verde = ping OK <10min; amarillo = OK pero rate-limit-hit >0;
+      rojo = ping fallido O sin ping reciente >20min
+
+  Trazabilidad:
+    - CA-1: healthcheck cron 15 min + jitter ±60s (visible en banner superior)
+    - CA-2: validacion semanal API keys (badge "weekly key check ok" en cada card)
+    - CA-3: estado, ultima cuota, % requests 24h, rate-limit-hit (cuerpo)
+    - CA-4: telegram alert dedupe banner (extremo derecho)
+    - CA-6: boton "simular caida" oculto detras de flag --debug-multi-provider
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1180" font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- Reutilizamos iconos del sprite con <symbol> en linea -->
+    <symbol id="m-provider-groq" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M13 5 L8.5 13 L12 13 L11 19 L15.5 11 L12 11 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-provider-gemini" viewBox="0 0 24 24">
+      <path d="M12 2.5 L17 12 L12 21.5 L7 12 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M2.5 12 L12 17 L21.5 12 L12 7 Z" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round" opacity="0.55"/>
+    </symbol>
+    <symbol id="m-provider-cerebras" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M7 7 H17 M7 10 H17 M7 13 H17 M7 16 H17" stroke="currentColor" stroke-width="1.1"/>
+      <path d="M7 7 V17 M10 7 V17 M13 7 V17 M16 7 V17" stroke="currentColor" stroke-width="1.1"/>
+      <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-provider-nvidia-nim" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3.2" fill="currentColor"/>
+      <circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.55" opacity="0.55"/>
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.3"/>
+      <path d="M12 5.5 V2.5 M12 21.5 V18.5 M5.5 12 H2.5 M21.5 12 H18.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-conn-ok" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.45"/>
+      <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="12" r="3" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-conn-warn" viewBox="0 0 24 24">
+      <circle cx="10" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="10" cy="12" r="2.6" fill="currentColor"/>
+      <path d="M18 4 L23 13 H13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M18 7.5 V10.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="18" cy="12" r="0.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-conn-err" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-provider-health" viewBox="0 0 24 24">
+      <path d="M2 12 H7 L9 7 L12 17 L14 9 L16 14 L18 12 H22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-retry-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M12 13 V8.5 M12 13 L15 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M18 5.5 A8 8 0 0 1 21 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M21 5.5 L21 9 L17.5 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-quota-exhausted" viewBox="0 0 24 24">
+      <path d="M6 3 H18 V6 L13 11 L18 16 V21 H6 V16 L11 11 L6 6 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8 18 H16 L13.5 15 H10.5 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-key-rotate" viewBox="0 0 24 24">
+      <circle cx="7" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M10.3 12 L15 12 M13 12 V14 M15 12 V14" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 6 A6 6 0 0 1 21.5 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M19.5 15.5 L21.5 16 L21.8 13.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-snooze" viewBox="0 0 24 24">
+      <path d="M6 16 V11 A6 6 0 0 1 18 11 V16 L20 18 H4 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M10.5 21 A1.5 1.5 0 0 0 13.5 21" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M16 3 H22 L16 9 H22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-shield-check" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M8.5 12.5 L11 15 L15.5 9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="8" r="1" fill="currentColor"/>
+      <path d="M12 11 V17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-jitter" viewBox="0 0 24 24">
+      <path d="M3 12 L6 12 L7 9 L9 15 L11 8 L13 16 L15 10 L17 13 L21 13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <!-- =========================================================================
+       FONDO + GRID
+       ========================================================================= -->
+  <rect width="1440" height="1180" fill="#0D1117"/>
+
+  <!-- =========================================================================
+       HEADER (idéntico al resto del dashboard)
+       ========================================================================= -->
+  <g>
+    <rect x="0" y="0" width="1440" height="62" fill="#161B22"/>
+    <line x1="0" y1="62" x2="1440" y2="62" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(24,16)">
+      <svg width="30" height="30" viewBox="0 0 24 24" color="#00D6FF">
+        <path d="M12 3 L3 19 L21 19 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+        <path d="M12 10 L8.8 15.3 L15.2 15.3 Z" fill="currentColor"/>
+      </svg>
+    </g>
+    <text x="62" y="38" fill="#E6EDF3" font-size="18" font-weight="600" letter-spacing="0.02em">Intrale Pipeline · V3</text>
+    <g font-size="14" font-weight="500">
+      <text x="320"  y="38" fill="#8B949E">Board</text>
+      <text x="400"  y="38" fill="#8B949E">Agentes</text>
+      <text x="490"  y="38" fill="#8B949E">Consumo</text>
+      <rect x="585" y="22" width="180" height="30" rx="6" fill="rgba(45,212,191,0.10)" stroke="#2DD4BF" stroke-width="1"/>
+      <text x="623" y="42" fill="#2DD4BF" font-weight="600">Multi-Provider</text>
+      <text x="785" y="38" fill="#8B949E">Leyenda</text>
+    </g>
+    <g transform="translate(1310,38)">
+      <text fill="#E6EDF3" font-size="18" font-weight="500" font-family="'SF Mono', Consolas, monospace">16/05 · 21:48</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       BREADCRUMB + TITULO
+       ========================================================================= -->
+  <text x="24"  y="100" fill="#8B949E" font-size="13">Multi-Provider · Health (free providers)</text>
+  <text x="24"  y="138" fill="#E6EDF3" font-size="28" font-weight="600">Salud de la red de free providers</text>
+  <text x="24"  y="166" fill="#B1BAC4" font-size="14">Healthcheck cron cada 15 min con jitter (±60s) + lock anti-thundering-herd. Validacion semanal de API keys. Data leida del snapshot persistido — no se disparan pings al abrir el panel.</text>
+
+  <!-- =========================================================================
+       BANNER SUPERIOR — meta del cron (CA-1 / SR-3)
+       ========================================================================= -->
+  <g transform="translate(24,184)">
+    <rect width="1392" height="46" rx="6" fill="rgba(45,212,191,0.06)" stroke="#2DD4BF" stroke-width="1"/>
+    <g transform="translate(14,11)" color="#2DD4BF">
+      <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-provider-health"/></svg>
+    </g>
+    <text x="50" y="30" fill="#2DD4BF" font-size="13" font-weight="500">Cron activo</text>
+    <text x="130" y="30" fill="#B1BAC4" font-size="13">
+      <tspan>Ultimo tick: hace 4m 12s</tspan>
+      <tspan dx="22" fill="#6E7681">·</tspan>
+      <tspan dx="14">Proximo: ~11 min</tspan>
+      <tspan dx="22" fill="#6E7681">·</tspan>
+      <tspan dx="14">Jitter aplicado: +43s</tspan>
+      <tspan dx="22" fill="#6E7681">·</tspan>
+      <tspan dx="14">Lock holder: dashboard:3200</tspan>
+    </text>
+    <text x="1180" y="30" fill="#8B949E" font-size="12" font-family="'SF Mono', Consolas, monospace" text-anchor="end">audit/multi-provider-health.jsonl</text>
+    <g transform="translate(1185,15)" color="#8B949E">
+      <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       SECCION HEALTH — 4 CARDS POR PROVIDER
+       Estados: verde / amarillo / rojo / muted (no configurado)
+       ========================================================================= -->
+  <text x="24"  y="270" fill="#E6EDF3" font-size="18" font-weight="600">Free providers · estado live</text>
+  <text x="305" y="270" fill="#8B949E" font-size="13">— ping endpoint /v1/models cada 15 min, sin consumir cuota</text>
+
+  <!-- ===== Card 1 — GROQ (verde / sano) ===== -->
+  <g transform="translate(24,290)">
+    <rect width="334" height="280" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <!-- Header card -->
+    <g transform="translate(16,16)">
+      <g color="#F55036">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-provider-groq"/></svg>
+      </g>
+      <text x="40" y="13" fill="#E6EDF3" font-size="15" font-weight="600">Groq</text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">openai/v1/models · 4 modelos</text>
+      <!-- Badge tier free -->
+      <g transform="translate(238,0)">
+        <rect width="80" height="22" rx="11" fill="rgba(63,185,80,0.12)" stroke="#3FB950" stroke-width="1"/>
+        <text x="40" y="15" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle" letter-spacing="0.05em">FREE TIER</text>
+      </g>
+    </g>
+    <!-- Divisor -->
+    <line x1="16" y1="60" x2="318" y2="60" stroke="#21262D" stroke-width="1"/>
+    <!-- Estado live (verde) -->
+    <g transform="translate(16,76)">
+      <g color="#3FB950">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-conn-ok"/></svg>
+      </g>
+      <text x="26" y="13" fill="#3FB950" font-size="13" font-weight="600">VERDE · ping 184ms</text>
+      <text x="200" y="13" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">hace 4m 12s</text>
+    </g>
+    <!-- Cuota observada -->
+    <g transform="translate(16,108)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">CUOTA OBSERVADA · 24H</text>
+      <!-- Barra de uso -->
+      <rect x="0" y="10" width="302" height="6" rx="3" fill="#21262D"/>
+      <rect x="0" y="10" width="84" height="6" rx="3" fill="#3FB950"/>
+      <text x="0" y="33" fill="#E6EDF3" font-size="13" font-weight="500">
+        <tspan font-family="'SF Mono', Consolas, monospace">3 240</tspan>
+        <tspan fill="#8B949E" font-weight="400"> / </tspan>
+        <tspan font-family="'SF Mono', Consolas, monospace">14 400</tspan>
+        <tspan fill="#8B949E" font-weight="400" font-size="11"> rpd (Groq free)</tspan>
+      </text>
+      <text x="302" y="33" fill="#3FB950" font-size="11" font-weight="500" text-anchor="end">22.5%</text>
+    </g>
+    <!-- % requests pipeline -->
+    <g transform="translate(16,160)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">% REQUESTS DEL PIPELINE · 24H</text>
+      <text x="0" y="22" fill="#E6EDF3" font-size="20" font-weight="600">12.4%</text>
+      <text x="60" y="22" fill="#8B949E" font-size="11">de 26 138 dispatchs</text>
+      <text x="60" y="35" fill="#6E7681" font-size="11">computado de audit log</text>
+    </g>
+    <!-- Rate limit hit count -->
+    <g transform="translate(16,206)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">RATE-LIMIT HIT · 24H</text>
+      <text x="0" y="22" fill="#3FB950" font-size="18" font-weight="600">0</text>
+      <text x="34" y="22" fill="#8B949E" font-size="11">sin throttling</text>
+    </g>
+    <!-- Footer card -->
+    <line x1="16" y1="240" x2="318" y2="240" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,254)">
+      <g color="#3FB950">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg>
+      </g>
+      <text x="22" y="11" fill="#8B949E" font-size="11">key valida · check semanal hace 2d</text>
+    </g>
+  </g>
+
+  <!-- ===== Card 2 — GEMINI (amarillo / cuota baja) ===== -->
+  <g transform="translate(370,290)">
+    <rect width="334" height="280" rx="10" fill="#161B22" stroke="#D29922" stroke-width="1.5"/>
+    <g transform="translate(16,16)">
+      <g color="#4285F4">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-provider-gemini"/></svg>
+      </g>
+      <text x="40" y="13" fill="#E6EDF3" font-size="15" font-weight="600">Gemini (Google)</text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">v1beta/models · 3 modelos</text>
+      <g transform="translate(238,0)">
+        <rect width="80" height="22" rx="11" fill="rgba(63,185,80,0.12)" stroke="#3FB950" stroke-width="1"/>
+        <text x="40" y="15" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle" letter-spacing="0.05em">FREE TIER</text>
+      </g>
+    </g>
+    <line x1="16" y1="60" x2="318" y2="60" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,76)">
+      <g color="#D29922">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-conn-warn"/></svg>
+      </g>
+      <text x="26" y="13" fill="#D29922" font-size="13" font-weight="600">AMARILLO · ping 612ms</text>
+      <text x="220" y="13" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">hace 4m 12s</text>
+    </g>
+    <g transform="translate(16,108)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">CUOTA OBSERVADA · 24H</text>
+      <rect x="0" y="10" width="302" height="6" rx="3" fill="#21262D"/>
+      <rect x="0" y="10" width="265" height="6" rx="3" fill="#D29922"/>
+      <text x="0" y="33" fill="#E6EDF3" font-size="13" font-weight="500">
+        <tspan font-family="'SF Mono', Consolas, monospace">1 280</tspan>
+        <tspan fill="#8B949E" font-weight="400"> / </tspan>
+        <tspan font-family="'SF Mono', Consolas, monospace">1 500</tspan>
+        <tspan fill="#8B949E" font-weight="400" font-size="11"> rpd (Gemini free)</tspan>
+      </text>
+      <text x="302" y="33" fill="#D29922" font-size="11" font-weight="500" text-anchor="end">85.3%</text>
+    </g>
+    <g transform="translate(16,160)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">% REQUESTS DEL PIPELINE · 24H</text>
+      <text x="0" y="22" fill="#E6EDF3" font-size="20" font-weight="600">8.1%</text>
+      <text x="50" y="22" fill="#8B949E" font-size="11">de 26 138 dispatchs</text>
+      <text x="50" y="35" fill="#6E7681" font-size="11">computado de audit log</text>
+    </g>
+    <g transform="translate(16,206)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">RATE-LIMIT HIT · 24H</text>
+      <text x="0" y="22" fill="#D29922" font-size="18" font-weight="600">14</text>
+      <text x="34" y="22" fill="#8B949E" font-size="11">throttling intermitente</text>
+      <g transform="translate(180,8)" color="#D29922">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-retry-clock"/></svg>
+      </g>
+      <text x="200" y="22" fill="#D29922" font-size="11">backoff 60s</text>
+    </g>
+    <line x1="16" y1="240" x2="318" y2="240" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,254)">
+      <g color="#3FB950">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg>
+      </g>
+      <text x="22" y="11" fill="#8B949E" font-size="11">key valida · key=… en query string redactada</text>
+    </g>
+  </g>
+
+  <!-- ===== Card 3 — CEREBRAS (rojo / ping fallido >10min) ===== -->
+  <g transform="translate(716,290)">
+    <rect width="334" height="280" rx="10" fill="#161B22" stroke="#F85149" stroke-width="1.5"/>
+    <g transform="translate(16,16)">
+      <g color="#A855F7">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-provider-cerebras"/></svg>
+      </g>
+      <text x="40" y="13" fill="#E6EDF3" font-size="15" font-weight="600">Cerebras</text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">v1/models · 2 modelos</text>
+      <g transform="translate(238,0)">
+        <rect width="80" height="22" rx="11" fill="rgba(63,185,80,0.12)" stroke="#3FB950" stroke-width="1"/>
+        <text x="40" y="15" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle" letter-spacing="0.05em">FREE TIER</text>
+      </g>
+    </g>
+    <line x1="16" y1="60" x2="318" y2="60" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,76)">
+      <g color="#F85149">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-conn-err"/></svg>
+      </g>
+      <text x="26" y="13" fill="#F85149" font-size="13" font-weight="600">ROJO · ping fallido</text>
+      <text x="200" y="13" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">hace 12m</text>
+    </g>
+    <g transform="translate(16,103)">
+      <text x="0" y="0" fill="#8B949E" font-size="11">reason_code:
+        <tspan fill="#F85149" font-weight="600" font-family="'SF Mono', Consolas, monospace"> rate_limited</tspan>
+        <tspan fill="#6E7681"> · sin body excerpt expuesto</tspan>
+      </text>
+    </g>
+    <g transform="translate(16,128)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">ULTIMA CUOTA EXITOSA · OBSERVADA</text>
+      <rect x="0" y="10" width="302" height="6" rx="3" fill="#21262D" opacity="0.5"/>
+      <rect x="0" y="10" width="180" height="6" rx="3" fill="#6E7681" opacity="0.7"/>
+      <text x="0" y="33" fill="#8B949E" font-size="13" font-weight="500">
+        <tspan font-family="'SF Mono', Consolas, monospace">8 600</tspan>
+        <tspan fill="#6E7681" font-weight="400"> / </tspan>
+        <tspan font-family="'SF Mono', Consolas, monospace">14 400</tspan>
+        <tspan fill="#6E7681" font-weight="400" font-size="11"> rpd (Cerebras free)</tspan>
+      </text>
+      <text x="302" y="33" fill="#6E7681" font-size="11" font-weight="500" text-anchor="end">stale 12m</text>
+    </g>
+    <g transform="translate(16,180)">
+      <text x="0" y="0" fill="#8B949E" font-size="10" letter-spacing="0.05em">RATE-LIMIT HIT · 24H</text>
+      <text x="0" y="22" fill="#F85149" font-size="18" font-weight="600">38</text>
+      <text x="34" y="22" fill="#8B949E" font-size="11">picos a partir de las 19:30</text>
+    </g>
+    <g transform="translate(16,212)">
+      <rect width="302" height="22" rx="4" fill="rgba(248,81,73,0.10)" stroke="#F85149" stroke-width="1"/>
+      <g transform="translate(8,4)" color="#F85149">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-quota-exhausted"/></svg>
+      </g>
+      <text x="28" y="15" fill="#F85149" font-size="11" font-weight="500">Excluido del fallback chain hasta volver a verde</text>
+    </g>
+    <line x1="16" y1="240" x2="318" y2="240" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,254)">
+      <g color="#3FB950">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg>
+      </g>
+      <text x="22" y="11" fill="#8B949E" font-size="11">key valida · alerta CA-4 disparada hace 2m</text>
+    </g>
+  </g>
+
+  <!-- ===== Card 4 — NVIDIA NIM (muted / pending #3243) ===== -->
+  <g transform="translate(1062,290)">
+    <rect width="354" height="280" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>
+    <g transform="translate(16,16)">
+      <g color="#76B900">
+        <svg width="28" height="28" viewBox="0 0 24 24"><use href="#m-provider-nvidia-nim"/></svg>
+      </g>
+      <text x="40" y="13" fill="#B1BAC4" font-size="15" font-weight="600">NVIDIA NIM
+        <tspan fill="#8B949E" font-weight="400" font-size="12">· pendiente #3243</tspan>
+      </text>
+      <text x="40" y="29" fill="#8B949E" font-size="11">hook abierto en MANAGED_KEYS y allowlist</text>
+    </g>
+    <line x1="16" y1="60" x2="338" y2="60" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,84)">
+      <g color="#6E7681">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-info"/></svg>
+      </g>
+      <text x="26" y="13" fill="#B1BAC4" font-size="13" font-weight="500">No configurado todavia</text>
+    </g>
+    <g transform="translate(16,116)">
+      <text x="0" y="0" fill="#8B949E" font-size="12">El 4to provider gratuito (NVIDIA NIM)</text>
+      <text x="0" y="18" fill="#8B949E" font-size="12">se suma cuando mergee #3243. La</text>
+      <text x="0" y="36" fill="#8B949E" font-size="12">arquitectura ya soporta agregarlo:</text>
+      <text x="0" y="64" fill="#B1BAC4" font-size="11" font-family="'SF Mono', Consolas, monospace">PROVIDER_PING_ENDPOINTS[]</text>
+      <text x="0" y="82" fill="#B1BAC4" font-size="11" font-family="'SF Mono', Consolas, monospace">MANAGED_KEYS[]</text>
+      <text x="0" y="100" fill="#B1BAC4" font-size="11" font-family="'SF Mono', Consolas, monospace">quota-adapters/nvidia-nim.js</text>
+    </g>
+    <g transform="translate(16,236)">
+      <rect width="322" height="28" rx="6" fill="rgba(88,166,255,0.10)" stroke="#58A6FF" stroke-width="1" stroke-dasharray="3 2"/>
+      <text x="161" y="18" fill="#58A6FF" font-size="11" font-weight="500" text-anchor="middle">Listo para activacion en PR posterior</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       BANNER ALERT — telegram dedupe en accion (CA-4 / SR-5)
+       ========================================================================= -->
+  <text x="24" y="616" fill="#E6EDF3" font-size="18" font-weight="600">Alertas Telegram · dedupe activo</text>
+  <text x="285" y="616" fill="#8B949E" font-size="13">— misma combinacion (provider, state) bloqueada 10 min · back-off exponencial si persiste</text>
+
+  <g transform="translate(24,636)">
+    <rect width="908" height="190" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Alert row 1 — fired -->
+    <g transform="translate(16,16)">
+      <rect width="876" height="48" rx="6" fill="rgba(248,81,73,0.06)" stroke="#F85149" stroke-width="1"/>
+      <g transform="translate(14,15)" color="#F85149">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-conn-err"/></svg>
+      </g>
+      <text x="42" y="22" fill="#E6EDF3" font-size="13" font-weight="600">cerebras = rojo</text>
+      <text x="170" y="22" fill="#B1BAC4" font-size="12">reason_code rate_limited · permanece > 10 min</text>
+      <g transform="translate(680,12)">
+        <rect width="78" height="24" rx="6" fill="rgba(248,81,73,0.12)" stroke="#F85149" stroke-width="1"/>
+        <text x="39" y="16" fill="#F85149" font-size="11" font-weight="600" text-anchor="middle" letter-spacing="0.04em">ENVIADA</text>
+      </g>
+      <text x="800" y="22" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace" text-anchor="end">21:43:14</text>
+      <text x="42" y="38" fill="#6E7681" font-size="11">payload metadata-only · sin api-key · sin body excerpt</text>
+    </g>
+
+    <!-- Alert row 2 — deduped -->
+    <g transform="translate(16,76)">
+      <rect width="876" height="48" rx="6" fill="rgba(139,148,158,0.06)" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(14,15)" color="#8B949E">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-snooze"/></svg>
+      </g>
+      <text x="42" y="22" fill="#B1BAC4" font-size="13" font-weight="600">cerebras = rojo</text>
+      <text x="170" y="22" fill="#8B949E" font-size="12">re-detectada · dedupe activo (cooldown 10 min)</text>
+      <g transform="translate(660,12)">
+        <rect width="98" height="24" rx="6" fill="rgba(139,148,158,0.10)" stroke="#6E7681" stroke-width="1"/>
+        <text x="49" y="16" fill="#B1BAC4" font-size="11" font-weight="600" text-anchor="middle" letter-spacing="0.04em">DEDUPEADA</text>
+      </g>
+      <text x="800" y="22" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace" text-anchor="end">21:46:02</text>
+      <text x="42" y="38" fill="#6E7681" font-size="11">proximo envio permitido en ~7m 12s · luego back-off 30 min</text>
+    </g>
+
+    <!-- Alert row 3 — fired (multi-provider) -->
+    <g transform="translate(16,136)">
+      <rect width="876" height="48" rx="6" fill="rgba(245,158,11,0.08)" stroke="#F59E0B" stroke-width="1"/>
+      <g transform="translate(14,15)" color="#F59E0B">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-conn-warn"/></svg>
+      </g>
+      <text x="42" y="22" fill="#E6EDF3" font-size="13" font-weight="600">multi-down</text>
+      <text x="170" y="22" fill="#B1BAC4" font-size="12">2 free providers caidos simultaneamente · cerebras + tmp gemini</text>
+      <g transform="translate(680,12)">
+        <rect width="78" height="24" rx="6" fill="rgba(245,158,11,0.14)" stroke="#F59E0B" stroke-width="1"/>
+        <text x="39" y="16" fill="#F59E0B" font-size="11" font-weight="600" text-anchor="middle" letter-spacing="0.04em">ENVIADA</text>
+      </g>
+      <text x="800" y="22" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace" text-anchor="end">21:32:08</text>
+      <text x="42" y="38" fill="#6E7681" font-size="11">pipeline sigue avanzando con groq + claude-opus + codex disponibles</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       PANEL LATERAL — KPIs de la red
+       ========================================================================= -->
+  <g transform="translate(948,636)">
+    <rect width="468" height="190" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="32" fill="#E6EDF3" font-size="14" font-weight="600">Red de seguridad · resumen</text>
+    <line x1="20" y1="46" x2="448" y2="46" stroke="#21262D" stroke-width="1"/>
+
+    <!-- KPI 1 -->
+    <g transform="translate(20,62)">
+      <text fill="#8B949E" font-size="11" letter-spacing="0.05em">PROVIDERS VERDES</text>
+      <text y="26" fill="#3FB950" font-size="22" font-weight="600">2</text>
+      <text x="32" y="26" fill="#8B949E" font-size="12">/ 4 activos</text>
+    </g>
+    <!-- KPI 2 -->
+    <g transform="translate(180,62)">
+      <text fill="#8B949E" font-size="11" letter-spacing="0.05em">RATE-LIMIT HIT · 24H</text>
+      <text y="26" fill="#D29922" font-size="22" font-weight="600">52</text>
+      <text x="40" y="26" fill="#8B949E" font-size="12">total</text>
+    </g>
+    <!-- KPI 3 -->
+    <g transform="translate(340,62)">
+      <text fill="#8B949E" font-size="11" letter-spacing="0.05em">ALERTAS · 24H</text>
+      <text y="26" fill="#F85149" font-size="22" font-weight="600">3</text>
+      <text x="32" y="26" fill="#8B949E" font-size="12">enviadas · 7 dedupeadas</text>
+    </g>
+
+    <line x1="20" y1="115" x2="448" y2="115" stroke="#21262D" stroke-width="1"/>
+
+    <text x="20" y="138" fill="#8B949E" font-size="11" letter-spacing="0.05em">% PIPELINE EN FREE PROVIDERS · 24H</text>
+    <!-- Stacked bar -->
+    <g transform="translate(20,148)">
+      <rect width="428" height="14" rx="3" fill="#21262D"/>
+      <rect width="146" height="14" rx="3" fill="#F55036"/>
+      <rect x="146" width="95" height="14" fill="#4285F4"/>
+      <rect x="241" width="42" height="14" fill="#A855F7"/>
+      <rect x="283" width="145" height="14" rx="3" fill="#E5946B" opacity="0.85"/>
+    </g>
+    <g transform="translate(20,172)">
+      <circle cx="0" cy="0" r="3.5" fill="#F55036"/><text x="8" y="3" fill="#B1BAC4" font-size="10">Groq 12.4%</text>
+      <circle cx="92" cy="0" r="3.5" fill="#4285F4"/><text x="100" y="3" fill="#B1BAC4" font-size="10">Gemini 8.1%</text>
+      <circle cx="186" cy="0" r="3.5" fill="#A855F7"/><text x="194" y="3" fill="#B1BAC4" font-size="10">Cerebras 3.6%</text>
+      <circle cx="284" cy="0" r="3.5" fill="#E5946B"/><text x="292" y="3" fill="#B1BAC4" font-size="10">Claude/Codex 75.9%</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       SECCION INFERIOR — Free tier real (tabla del CA-5)
+       ========================================================================= -->
+  <text x="24" y="876" fill="#E6EDF3" font-size="18" font-weight="600">Free tier real por provider</text>
+  <text x="320" y="876" fill="#8B949E" font-size="13">— observado y verificado · fuente para `docs/pipeline/multi-provider.md`</text>
+
+  <g transform="translate(24,896)">
+    <rect width="1392" height="220" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Header -->
+    <g transform="translate(24,32)" font-size="11" letter-spacing="0.05em" fill="#8B949E">
+      <text x="0">PROVIDER</text>
+      <text x="280">RPM</text>
+      <text x="400">RPD</text>
+      <text x="540">TOKENS/DIA</text>
+      <text x="720">AUTH</text>
+      <text x="900">ENDPOINT /v1/models</text>
+      <text x="1240">VERIFIED</text>
+    </g>
+    <line x1="24" y1="46" x2="1368" y2="46" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Row Groq -->
+    <g transform="translate(24,72)" font-size="12">
+      <g color="#F55036"><svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-provider-groq"/></svg></g>
+      <text x="30" y="14" fill="#E6EDF3" font-weight="500">Groq</text>
+      <text x="280" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">30</text>
+      <text x="400" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">14 400</text>
+      <text x="540" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">~6M</text>
+      <text x="720" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">Bearer header</text>
+      <text x="900" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">api.groq.com/openai/v1/models</text>
+      <text x="1240" y="14" fill="#3FB950" font-family="'SF Mono', Consolas, monospace" font-size="11">2026-05-12</text>
+    </g>
+    <line x1="24" y1="92" x2="1368" y2="92" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Row Gemini -->
+    <g transform="translate(24,116)" font-size="12">
+      <g color="#4285F4"><svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-provider-gemini"/></svg></g>
+      <text x="30" y="14" fill="#E6EDF3" font-weight="500">Gemini (Google)</text>
+      <text x="280" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">15</text>
+      <text x="400" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">1 500</text>
+      <text x="540" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">~1M</text>
+      <text x="720" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">?key=… (redact)</text>
+      <text x="900" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">generativelanguage.googleapis.com/v1beta/models</text>
+      <text x="1240" y="14" fill="#3FB950" font-family="'SF Mono', Consolas, monospace" font-size="11">2026-05-12</text>
+    </g>
+    <line x1="24" y1="136" x2="1368" y2="136" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Row Cerebras -->
+    <g transform="translate(24,160)" font-size="12">
+      <g color="#A855F7"><svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-provider-cerebras"/></svg></g>
+      <text x="30" y="14" fill="#E6EDF3" font-weight="500">Cerebras</text>
+      <text x="280" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">30</text>
+      <text x="400" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">14 400</text>
+      <text x="540" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">~4.5M</text>
+      <text x="720" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace">Bearer header</text>
+      <text x="900" y="14" fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace" font-size="11">api.cerebras.ai/v1/models</text>
+      <text x="1240" y="14" fill="#3FB950" font-family="'SF Mono', Consolas, monospace" font-size="11">2026-05-12</text>
+    </g>
+    <line x1="24" y1="180" x2="1368" y2="180" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Row NVIDIA NIM (pendiente) -->
+    <g transform="translate(24,204)" font-size="12" opacity="0.65">
+      <g color="#76B900"><svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-provider-nvidia-nim"/></svg></g>
+      <text x="30" y="14" fill="#B1BAC4" font-weight="500">NVIDIA NIM
+        <tspan fill="#8B949E" font-size="11" font-weight="400">· #3243</tspan>
+      </text>
+      <text x="280" y="14" fill="#6E7681" font-family="'SF Mono', Consolas, monospace">tbd</text>
+      <text x="400" y="14" fill="#6E7681" font-family="'SF Mono', Consolas, monospace">tbd</text>
+      <text x="540" y="14" fill="#6E7681" font-family="'SF Mono', Consolas, monospace">tbd</text>
+      <text x="720" y="14" fill="#6E7681" font-family="'SF Mono', Consolas, monospace">Bearer header</text>
+      <text x="900" y="14" fill="#6E7681" font-family="'SF Mono', Consolas, monospace" font-size="11">integrate.api.nvidia.com/v1/models</text>
+      <text x="1240" y="14" fill="#6E7681" font-family="'SF Mono', Consolas, monospace" font-size="11">pendiente</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       FOOTER — Audit + jitter info
+       ========================================================================= -->
+  <g transform="translate(24,1140)">
+    <text fill="#6E7681" font-size="11">
+      <tspan fill="#8B949E">Audit:</tspan>
+      <tspan fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace"> audit/multi-provider-health.jsonl</tspan>
+      <tspan dx="14" fill="#6E7681">·</tspan>
+      <tspan dx="8" fill="#8B949E">Hash chain SHA-256 (appendChained)</tspan>
+      <tspan dx="14" fill="#6E7681">·</tspan>
+      <tspan dx="8" fill="#8B949E">Cron lock:</tspan>
+      <tspan fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace"> .pipeline/state/healthcheck.lock</tspan>
+      <tspan dx="14" fill="#6E7681">·</tspan>
+      <tspan dx="8" fill="#8B949E">Dedupe:</tspan>
+      <tspan fill="#B1BAC4" font-family="'SF Mono', Consolas, monospace"> ~/.claude/secrets/telegram-alerts-dedup.json (0600)</tspan>
+    </text>
+  </g>
+</svg>

@@ -15,9 +15,11 @@ no bocetos de baja fidelidad). Cada mockup usa los tokens reales de
 | `04-rest-mode-active.svg`        | 1440x900   | Modo descanso ACTIVO (#2882): pill header indigo, banner explicativo, lanes con LLM en cola, bypass critical visible |
 | `05-rest-mode-settings.svg`      | 1440x900   | Settings → Operación → Modo descanso: form (toggle, horarios, TZ, días), skills clasificados read-only, bypass labels, toast de confirmación |
 | `06-cost-anomaly-alert.svg`      | 1440x900   | Banner persistente de alerta de consumo anómalo (#2882): pill +213%, mini-gráfico, top 3 skills, acuse + snooze, preview Telegram, audit trail |
+| `17-multi-provider-health.svg`   | 1440x1180  | Seccion "Health" del tab Multi-Provider (#3260 CA-1..CA-6): banner cron + 4 cards por provider (verde/amarillo/rojo/muted) + feed Telegram con dedupe + KPIs + tabla free tier real |
 | `narrativa-lili.md`              | —          | Script narrado del sistema visual base (mockups 01-03) |
 | `narrativa-lili.mp3`             | 4m 42s     | Audio TTS de la narrativa base, voz `es-AR-ElenaNeural` |
 | `narrativa-modo-descanso.md`     | —          | Script narrado del modo descanso (#2882, mockups 04-06) — generar mp3 en fase `dev` |
+| `narrativa-multi-provider-health.md` | —      | Guidelines UX + microcopy + reglas inquebrantables del panel Health (#3260, mockup 17) |
 
 ## Ver los mockups
 
