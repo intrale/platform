@@ -171,6 +171,23 @@ function bodyHtml() {
         <div class="mp-row-input"><select class="mp-select" id="mp-default-provider"></select></div>
       </div>
     </div>
+
+    <!-- #3258 — CA-6: distribución del Commander por provider (UX-G2). -->
+    <div class="mp-card" id="mp-card-commander-dist">
+      <div class="mp-card-head">
+        <div>
+          <div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-fallback-chain"></use></svg> Distribución del Commander por provider</div>
+          <div class="mp-card-sub">% de requests del commander resueltos por cada provider — útil para detectar caídas prolongadas.</div>
+        </div>
+        <div class="mp-tabs" role="tablist" style="border:0;margin:0">
+          <button class="mp-tab active" data-cmd-win="7d">7 días</button>
+          <button class="mp-tab" data-cmd-win="1d">24 h</button>
+          <button class="mp-tab" data-cmd-win="30d">30 días</button>
+        </div>
+      </div>
+      <div id="mp-cmd-dist-chart" style="margin-top:8px"></div>
+      <div id="mp-cmd-dist-legend" class="mp-card-sub" style="margin-top:8px"></div>
+    </div>
   </div>
 
   <div class="mp-tabpanel" id="mp-tab-skills">
@@ -760,13 +777,81 @@ async function reloadPipeline() {
 }
 
 function wireTabs() {
-    document.querySelectorAll('.mp-tab').forEach(t => {
+    // Top-level tabs (data-tab). Filtramos para NO matchear los sub-tabs de la
+    // card "commander-distribution" que usan data-cmd-win (#3258 / UX-G2).
+    document.querySelectorAll('.mp-tab[data-tab]').forEach(t => {
         t.addEventListener('click', () => {
             const id = t.dataset.tab;
-            document.querySelectorAll('.mp-tab').forEach(x => x.classList.toggle('active', x === t));
+            document.querySelectorAll('.mp-tab[data-tab]').forEach(x => x.classList.toggle('active', x === t));
             document.querySelectorAll('.mp-tabpanel').forEach(p => p.classList.toggle('active', p.id === 'mp-tab-' + id));
         });
     });
+}
+
+// #3258 — CA-6 / UX-G2: distribución del Commander por provider. Carga
+// /api/multi-provider/commander-distribution con window 7d/1d/30d y renderiza
+// una barra apilada horizontal + leyenda. Default 7d.
+async function loadCommanderDistribution(window) {
+    const win = window || '7d';
+    const target = document.getElementById('mp-cmd-dist-chart');
+    const legend = document.getElementById('mp-cmd-dist-legend');
+    if (!target || !legend) return;
+    let resp;
+    try {
+        resp = await fetchJson('/api/multi-provider/commander-distribution?window=' + encodeURIComponent(win));
+    } catch (e) {
+        target.innerHTML = '<span class="mp-card-sub">no se pudo cargar (' + e.message + ')</span>';
+        legend.innerHTML = '';
+        return;
+    }
+    if (!resp || !resp.ok) {
+        target.innerHTML = '<span class="mp-card-sub">no se pudo cargar</span>';
+        legend.innerHTML = '';
+        return;
+    }
+    if (!resp.totalRequests) {
+        target.innerHTML = '<span class="mp-card-sub">no hay requests del commander en la ventana ' + win + '</span>';
+        legend.innerHTML = '';
+        return;
+    }
+    // Colores por provider — reusa tokens existentes si están, fallback inline.
+    const colorFor = (p) => {
+        const map = {
+            anthropic: '#d97706',
+            'openai-codex': '#10a37f',
+            groq: '#f97316',
+            'gemini-google': '#4285f4',
+            cerebras: '#8b5cf6',
+        };
+        return map[p] || '#6b7280';
+    };
+    const providers = Object.keys(resp.byProvider).sort((a, b) => resp.byProvider[b].count - resp.byProvider[a].count);
+    let chart = '<div style="display:flex;width:100%;height:24px;border-radius:6px;overflow:hidden;border:1px solid var(--in-border)">';
+    for (const p of providers) {
+        const stat = resp.byProvider[p];
+        const w = Math.max(0.5, stat.pct);
+        chart += '<div title="' + p + ': ' + stat.count + ' requests (' + stat.pct + '%)" style="background:' + colorFor(p) + ';width:' + w + '%"></div>';
+    }
+    chart += '</div>';
+    target.innerHTML = chart;
+    let legendHtml = '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px">';
+    for (const p of providers) {
+        const stat = resp.byProvider[p];
+        legendHtml += '<span style="display:inline-flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px;height:10px;background:' + colorFor(p) + ';border-radius:2px"></span>' + p + ' — ' + stat.count + ' (' + stat.pct + '%)</span>';
+    }
+    legendHtml += '</div>';
+    legendHtml += '<div class="mp-card-sub" style="margin-top:6px">Total: ' + resp.totalRequests + ' requests · ventana ' + win + '</div>';
+    legend.innerHTML = legendHtml;
+}
+
+function wireCommanderDistribution() {
+    document.querySelectorAll('.mp-tab[data-cmd-win]').forEach(t => {
+        t.addEventListener('click', () => {
+            document.querySelectorAll('.mp-tab[data-cmd-win]').forEach(x => x.classList.toggle('active', x === t));
+            loadCommanderDistribution(t.dataset.cmdWin);
+        });
+    });
+    loadCommanderDistribution('7d');
 }
 
 function wireToolbar() {
@@ -790,6 +875,7 @@ function tickCountdowns() {
 
 wireTabs();
 wireToolbar();
+wireCommanderDistribution();
 loadAll();
 setInterval(tickCountdowns, 60000);
 setInterval(() => { if (!mpState.dirty) loadAll().catch(()=>{}); }, 30000);
