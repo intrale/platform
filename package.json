@@ -4,7 +4,8 @@
   "scripts": {
     "prepare": "husky || true",
     "validate:agent-models": "node .pipeline/lib/agent-models-validate.js",
-    "test:pipeline": "node --test .pipeline/lib/__tests__ .pipeline/tests"
+    "test:pipeline": "node --test .pipeline/lib/__tests__ .pipeline/tests",
+    "smoke:commander": "node .pipeline/tests/smoke/commander-degraded.smoke.js"
   },
   "dependencies": {
     "ajv": "^8.20.0",
