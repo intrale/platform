@@ -10,6 +10,15 @@ const os = require('os');
 const { execSync, spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
+
+// #3311 — Hidratar process.env desde ~/.claude/secrets/credentials.json antes
+// de cualquier require que pueda leer credenciales (telegram-secrets,
+// validateOrExit con checkEnv, etc). El cargador degrada silenciosamente si
+// el archivo no existe; sólo loggea warnings al stderr en casos anómalos.
+require('./lib/credentials').loadIntoEnv({
+  logger: (m) => process.stderr.write(m + '\n'),
+});
+
 const yaml = require('js-yaml');
 const dedupLib = require('./dedup-lib');
 const precheck = require('./connectivity-precheck');

@@ -4,6 +4,60 @@
 > los pasos están numerados, son cortos, y al final hay una checklist de
 > verificación + sección "si algo sale mal".
 
+## Ubicación canónica de credenciales (#3311)
+
+Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
+
+```
+~/.claude/secrets/credentials.json
+```
+
+**Estructura**:
+
+```json
+{
+  "_note": "...",
+  "_version": 1,
+  "telegram":  { "bot_token": "...", "chat_id": "..." },
+  "providers": {
+    "openai":   { "api_key": "..." },
+    "anthropic":{ "api_key": "..." },
+    "google":   { "api_key": "..." },
+    "groq":     { "api_key": "..." },
+    "cerebras": { "api_key": "..." },
+    "nvidia":   { "api_key": "..." }
+  },
+  "multimedia": {
+    "elevenlabs_api_key":  "...",
+    "elevenlabs_voice_id": "..."
+  }
+}
+```
+
+**Cómo se carga**: `.pipeline/lib/credentials.js#loadIntoEnv()` se invoca al
+boot de `pulpo.js` y `restart.js`, mapea cada path a su env var canónica
+(`providers.groq.api_key` → `GROQ_API_KEY`, etc.) y popula `process.env`.
+`telegram-secrets.js` también lee este archivo para sus consumidores legacy.
+
+**Precedencia**:
+1. `process.env` ya seteado (no se sobrescribe — `setx` sigue funcionando como override manual)
+2. `~/.claude/secrets/credentials.json` (canónico)
+3. `~/.claude/secrets/telegram-config.json` (legacy flat, fallback con warning)
+4. `<repo>/.claude/hooks/telegram-config.json` (legacy committed, último recurso)
+
+**Editar el archivo**: abrir con tu editor preferido y modificar el JSON.
+Después correr `node .pipeline/restart.js` para que el pipeline reinicie con
+las nuevas credenciales hidratadas.
+
+**Verificar qué se hidrata** (sin imprimir valores):
+
+```bash
+node .pipeline/lib/credentials.js
+```
+
+Devuelve `source` (canonical/legacy/none), `hydrated` (nombres de env vars
+hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
+
 ## Contexto general
 
 - **Por qué rotar**: política `≤ 90 días` por convención (ver
@@ -16,20 +70,20 @@
 
 ## Anthropic
 
+> _Provider opcional — sólo aplica si activaste Vision multimedia directo
+> (no via CLI Claude). Sin `anthropic_api_key` en `credentials.json`, Vision
+> sigue funcionando via OAuth Max del CLI (ver `multimedia.js:213`)._
+
 1. Abrí <https://console.anthropic.com/settings/keys> con la cuenta que figura
    en `account_id` del inventario.
 2. Generá una **nueva key** (botón "Create Key"), nombrá con `intrale-pipeline-v3-YYYYMMDD`.
-3. Actualizá la env var del operador:
-   ```bash
-   # Linux/macOS — editá ~/.zshrc o ~/.bashrc
-   export ANTHROPIC_API_KEY="<nueva-key>"
-   # Windows — Panel de Control → Sistema → Variables de Entorno
-   #   o:  setx ANTHROPIC_API_KEY "<nueva-key>"
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "anthropic": { "api_key": "<nueva-key>" } } }
    ```
-   Cerrá y reabrí la terminal donde corre el pulpo (sin reiniciar la terminal,
-   `process.env` queda con el valor viejo).
 4. Revocá la **vieja** key desde la misma consola (botón "Revoke").
-5. Actualizá `last_rotated` en [`docs/secrets-inventory.md`](../secrets-inventory.md)
+5. `node .pipeline/restart.js` para que el pipeline recargue con la key nueva.
+6. Actualizá `last_rotated` en [`docs/secrets-inventory.md`](../secrets-inventory.md)
    con la fecha de hoy en formato ISO `YYYY-MM-DD`. Commiteá.
 
 ### Cómo verificar que rotaste bien (Anthropic)
@@ -51,19 +105,72 @@
 1. Abrí <https://platform.openai.com/api-keys> con la cuenta `account_id`.
 2. Generá una nueva key (botón "Create new secret key"), nombrá con
    `intrale-pipeline-v3-YYYYMMDD`. Limitá scope a `Codex` si corresponde.
-3. Actualizá la env var del operador:
-   ```bash
-   export OPENAI_API_KEY="<nueva-key>"
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "openai": { "api_key": "<nueva-key>" } } }
    ```
-   Cerrá y reabrí la terminal del pulpo.
 4. Revocá la vieja key desde la misma consola (botón "Revoke key").
-5. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
+5. `node .pipeline/restart.js`.
+6. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
 
 ### Cómo verificar que rotaste bien (OpenAI)
 
 - [ ] Vieja key revocada falla con `401` (probar con `curl -H "Authorization: Bearer <vieja>" https://api.openai.com/v1/models`).
 - [ ] El pulpo arranca sin `[FATAL]` (CA-2).
 - [ ] Commit pusheado con `last_rotated` actualizado.
+
+## Groq (free tier — multi-provider fallback)
+
+> _Free tier, regla `feedback_free-providers-rule`. Nunca pago._
+
+1. Abrí <https://console.groq.com> y andá a "API Keys".
+2. "Create API Key" — nombrá `intrale-pipeline-YYYYMMDD`. Copiar `gsk_...`
+   (se muestra una sola vez).
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "groq": { "api_key": "<nueva-key>" } } }
+   ```
+4. Revocá la vieja key en la misma página.
+5. `node .pipeline/restart.js`.
+
+## Gemini (Google AI Studio — free tier)
+
+1. Abrí <https://aistudio.google.com/apikey> con la cuenta GCP del proyecto.
+2. "Create API key" — asociar a un proyecto de Google Cloud existente o nuevo.
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "google": { "api_key": "<nueva-key>" } } }
+   ```
+4. Verificar que la **Generative Language API** esté habilitada en el proyecto
+   de GCP (sino tira 403 al primer request).
+5. Revocá la vieja key desde la consola.
+6. `node .pipeline/restart.js`.
+
+## Cerebras (free tier — multi-provider fallback)
+
+1. Abrí <https://cloud.cerebras.ai/platform> y andá a "API Keys".
+2. "Create API Key" — nombrá `intrale-pipeline-YYYYMMDD`. Copiar `csk-...`.
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "cerebras": { "api_key": "<nueva-key>" } } }
+   ```
+4. Revocá la vieja key.
+5. `node .pipeline/restart.js`.
+
+## NVIDIA NIM (preparada para #3243 — Ola N+5)
+
+> _Provider declarado pero todavía no consumido. La key vive en `credentials.json`
+> y se hidrata a `NVIDIA_NIM_API_KEY`, pero ningún `agent-models.json` la usa
+> hasta que #3243 entre en producción._
+
+1. Abrí <https://build.nvidia.com> y elegí cualquier modelo (sugerido:
+   DeepSeek V4-Pro o Kimi K2.6). Click "Get API Key".
+2. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "nvidia": { "api_key": "<nueva-key>" } } }
+   ```
+3. Revocá la vieja key desde la consola de NVIDIA.
+4. `node .pipeline/restart.js` (no impacta a nada hasta que se implemente #3243).
 
 ## GitHub (token de gh CLI / `GH_TOKEN`)
 

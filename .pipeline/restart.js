@@ -32,6 +32,16 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
   log: (msg) => console.error(msg),
 });
 
+// #3311 — Hidratar process.env desde ~/.claude/secrets/credentials.json antes
+// de spawnear los hijos del pipeline (pulpo, listener, svc-*). Los procesos
+// hijo heredan el env del padre, así que con una sola invocación acá todos
+// los componentes reciben las API keys de providers + tokens Telegram sin que
+// el operador tenga que setear setx manualmente. Degradación silenciosa si
+// el archivo no existe.
+require('./lib/credentials').loadIntoEnv({
+  logger: (m) => console.error(m),
+});
+
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
 
