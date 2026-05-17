@@ -18,7 +18,10 @@
 //      con formato UX-G1, separado del aviso de degradación capability).
 //   5. Aplica dedup 5 min en notificaciones repetidas (SR-6) para no spamear
 //      durante caídas prolongadas.
-//   6. Wire a `data-residency-filter` (SR-1) y emite eventos de audit log
+//   6. Wire a `data-residency-filter` (SR-1) — `enforceDataResidency()`
+//      llama a `loadExclusionsOrThrow()` + `filterPathsForProvider()` antes
+//      del spawn no-Anthropic; fail-closed si el sidecar es inválido; emite
+//      eventos `data_residency_check` / `data_residency_block` al audit log
 //      con hash-chain (CA-4 / SR-3).
 //
 // SCOPE PRE-SPAWN
@@ -402,6 +405,165 @@ function readCommanderStats({ pipelineDir, windowDays, now, fsImpl, auditLog }) 
 }
 
 // -----------------------------------------------------------------------------
+// SR-1 — enforceDataResidency.
+//
+// El gate de data-residency-filter (#3084) sólo aplica a providers
+// NO-Anthropic. El commander del Telegram no extrae paths declarativos del
+// prompt — al menos hasta #3198, donde los adapters reales podrán parsear
+// "leeme X.kt" y enviar su contenido al child. Pero el SR-1 del issue
+// (2026-05-17 00:19) exige que **el dispatch verifique empíricamente** el
+// filtro antes del spawn no-Anthropic, dejando trazado en el audit log y
+// el wiring armado.
+//
+// Diseño:
+//   - Llama a `loadExclusionsOrThrow()` (fail-closed; sin sidecar válido el
+//     spawn no-Anthropic se aborta).
+//   - Llama a `filterPathsForProvider({ paths, provider, exclusions,
+//     defaultPolicy })`. `paths: []` es válido y honra el contrato; cuando
+//     #3198 traiga paths reales, este caller los pasará tal cual.
+//   - Si `provider !== 'anthropic'` y `blocked.length > 0` → retorna
+//     `{ ok: false, reason: 'data_residency_blocked', blocked }`. El caller
+//     debe responder canned y NO spawnear.
+//   - Si Anthropic, o si `blocked.length === 0` → retorna `{ ok: true }` y
+//     el caller continúa.
+//   - Emite siempre evento al audit log:
+//       * `data_residency_check` cuando pasa.
+//       * `data_residency_block` cuando bloquea.
+//
+// Fail-closed (CA-3 del #3084): si `loadExclusionsOrThrow()` lanza por
+// sidecar ausente/inválido y el provider efectivo es no-Anthropic →
+// `ok: false, reason: 'sidecar_unavailable'`. Si es Anthropic, el filtro
+// no aplica → `ok: true, policy: 'passthrough', sidecar: 'unavailable'`.
+// -----------------------------------------------------------------------------
+function enforceDataResidency(opts = {}) {
+    const {
+        pipelineDir,
+        provider,
+        paths,
+        log,
+        chatId,
+        prompt,
+        // inyectables tests
+        drfModule,
+        auditLog,
+        fsImpl,
+        now,
+    } = opts;
+
+    const _drf = drfModule || require('../data-residency-filter');
+    const _paths = Array.isArray(paths) ? paths : [];
+    const _provider = String(provider || 'anthropic');
+    const _log = typeof log === 'function' ? log : () => {};
+
+    let exclusions;
+    let defaultPolicy;
+    try {
+        const loaded = _drf.loadExclusionsOrThrow();
+        exclusions = loaded.exclusions;
+        defaultPolicy = loaded.default_policy;
+    } catch (e) {
+        // Fail-closed: sidecar inválido o ausente.
+        if (_provider === 'anthropic' || _provider === 'deterministic') {
+            // Anthropic siempre pasa — el filtro no aplica.
+            _log('commander', `⚠️ SR-1: sidecar de data-residency no disponible (${e.message}). Anthropic continúa (passthrough).`);
+            return {
+                ok: true,
+                blocked: [],
+                allowed: _paths,
+                policy: 'passthrough',
+                sidecar: 'unavailable',
+            };
+        }
+        _log('commander', `❌ SR-1: sidecar de data-residency no disponible (${e.message}). Bloqueando spawn ${_provider} por fail-closed.`);
+        return {
+            ok: false,
+            reason: 'sidecar_unavailable',
+            error: e.message,
+            blocked: [],
+            allowed: [],
+            policy: 'fail_closed',
+        };
+    }
+
+    let filt;
+    try {
+        filt = _drf.filterPathsForProvider({
+            paths: _paths,
+            provider: _provider,
+            exclusions,
+            defaultPolicy,
+        });
+    } catch (e) {
+        // filterPathsForProvider sólo lanza si los argumentos son inválidos
+        // (no debería pasar acá). Fail-closed igual.
+        _log('commander', `❌ SR-1: filterPathsForProvider falló (${e.message}). Bloqueando spawn ${_provider} por fail-closed.`);
+        return {
+            ok: false,
+            reason: 'filter_error',
+            error: e.message,
+            blocked: [],
+            allowed: [],
+            policy: 'fail_closed',
+        };
+    }
+
+    const isBlocking = _provider !== 'anthropic' && _provider !== 'deterministic' && filt.blocked.length > 0;
+
+    // Audit log (SR-3) — siempre, sea blocked o no.
+    try {
+        auditCommanderRequest({
+            pipelineDir,
+            event: isBlocking ? 'data_residency_block' : 'data_residency_check',
+            providerEffective: _provider,
+            chatId,
+            prompt,
+            auditLog,
+            fsImpl,
+            now,
+            // No incluimos contenido literal — solo conteos.
+            errorCode: isBlocking ? 'data_residency_blocked' : null,
+        });
+    } catch { /* best-effort */ }
+
+    if (isBlocking) {
+        _log('commander',
+            `🚫 SR-1: ${filt.blocked.length} path(s) bloqueados para ${_provider} ` +
+            `(patterns=${[...new Set(filt.blocked.map(b => b.pattern))].join(', ')})`);
+        return {
+            ok: false,
+            reason: 'data_residency_blocked',
+            blocked: filt.blocked,
+            allowed: filt.allowed,
+            policy: filt.policy,
+        };
+    }
+
+    return {
+        ok: true,
+        blocked: filt.blocked,
+        allowed: filt.allowed,
+        policy: filt.policy,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// SR-1 — cannedDataResidencyResponse.
+//
+// Mensaje al usuario cuando el gate de data-residency bloqueó el spawn al
+// provider no-Anthropic. NO mencionamos los paths concretos (SR-7) — sólo
+// el conteo y el provider efectivo. Sugerencia accionable al final.
+// -----------------------------------------------------------------------------
+function cannedDataResidencyResponse({ provider, blocked }) {
+    const n = Array.isArray(blocked) ? blocked.length : 0;
+    return (
+        `⚠️ No puedo procesar tu pedido vía \`${provider}\` porque toca ` +
+        `${n} archivo${n === 1 ? '' : 's'} marcado${n === 1 ? '' : 's'} como sensible${n === 1 ? '' : 's'} ` +
+        `(secrets, credenciales o auditorías internas). ` +
+        `Esperá a que Claude vuelva, o reformulá el pedido sin esos paths.`
+    );
+}
+
+// -----------------------------------------------------------------------------
 // safeBuildSpawn — wrapper defensivo para `handler.buildSpawn` que captura
 // el throw de los stubs no implementados (#3198 pendiente).
 //
@@ -457,9 +619,11 @@ module.exports = {
     auditCommanderRequest,
     readCommanderStats,
     safeBuildSpawn,
+    enforceDataResidency,
 
     cannedFallbackUnavailableResponse,
     cannedAllGatedResponse,
+    cannedDataResidencyResponse,
 
     // exports internos para tests
     _hashFor: hashFor,

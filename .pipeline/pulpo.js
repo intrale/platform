@@ -6955,6 +6955,35 @@ function ejecutarClaude(prompt, textoOriginal) {
     // confunde al child sobre si ya está en una sesión activa.
     delete cleanEnv.CLAUDECODE;
 
+    // #3258 — SR-1: data-residency-filter gate antes del spawn. Sólo aplica
+    // a providers no-Anthropic; para Anthropic es passthrough explícito.
+    // Hoy `paths: []` porque el commander no extrae paths declarativos del
+    // prompt; cuando #3198 implemente adapters reales que SÍ procesen
+    // contexto del usuario (ej: "leeme X.kt"), este caller pasará la lista
+    // detectada. Fail-closed: si el sidecar no carga, el spawn no-Anthropic
+    // se aborta y se responde canned.
+    const drCheck = commanderMP.enforceDataResidency({
+      pipelineDir: PIPELINE,
+      provider: resolution.provider,
+      paths: [], // commander pre-spawn: sin paths declarativos hoy (ver #3198)
+      chatId: getTelegramChatId(),
+      prompt: prompt,
+      log: (l, m) => log(l || 'commander', m),
+    });
+    if (!drCheck.ok) {
+      log('commander', `🚫 SR-1: data-residency bloqueó spawn ${resolution.provider} (${drCheck.reason}). Respondiendo canned sin spawnear.`);
+      try {
+        sendTelegramPlain(commanderMP.cannedDataResidencyResponse({
+          provider: resolution.provider,
+          blocked: drCheck.blocked,
+        }));
+      } catch { /* best-effort */ }
+      return resolve(commanderMP.cannedDataResidencyResponse({
+        provider: resolution.provider,
+        blocked: drCheck.blocked,
+      }));
+    }
+
     // #3258 — Si el provider efectivo NO es Anthropic, tratamos de invocar el
     // handler real vía `safeBuildSpawn`. Los providers no-Anthropic son stubs
     // hasta #3198 — `buildSpawn` tira `_notImplemented`. En ese caso, audit

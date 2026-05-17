@@ -426,3 +426,286 @@ test('CA-1 / CA-2 — agent-models.json real tiene telegram-commander con orden 
     const chain = (cmd.fallbacks || []).map(f => f.provider);
     assert.deepEqual(chain, ['openai-codex', 'groq', 'gemini-google', 'cerebras']);
 });
+
+// -----------------------------------------------------------------------------
+// SR-1 — enforceDataResidency wirea loadExclusionsOrThrow +
+// filterPathsForProvider antes del spawn no-Anthropic, y bloquea fail-closed
+// cuando hay matches. (Issue #3258 — rev rebote 2026-05-17.)
+// -----------------------------------------------------------------------------
+
+/**
+ * Construye un fake del módulo data-residency-filter con behavior controlable
+ * por test. Permite verificar:
+ *   - que enforceDataResidency llame a loadExclusionsOrThrow() y a
+ *     filterPathsForProvider({ paths, provider, exclusions, defaultPolicy }).
+ *   - que mockear `blocked.length > 0` corte el flow al canned response.
+ *   - que mockear `loadExclusionsOrThrow()` throw aborte el spawn no-anthropic.
+ */
+function makeFakeDrfModule({ throwOnLoad, fakeExclusions, fakeDefaultPolicy, simulateBlock } = {}) {
+    const calls = { load: [], filter: [] };
+    return {
+        calls,
+        loadExclusionsOrThrow: () => {
+            calls.load.push({});
+            if (throwOnLoad) throw new Error(throwOnLoad === true ? 'fake sidecar missing' : String(throwOnLoad));
+            return {
+                version: '2026-test',
+                default_policy: fakeDefaultPolicy || { anthropic: 'passthrough', deterministic: 'passthrough', non_anthropic: 'filter' },
+                exclusions: fakeExclusions || [{ pattern: '**/secret/**', providers: ['non_anthropic'], motivo: 'fake-test-secret' }],
+            };
+        },
+        filterPathsForProvider: ({ paths, provider, exclusions, defaultPolicy }) => {
+            calls.filter.push({ paths: paths.slice(), provider, exclusionsLength: exclusions.length, defaultPolicy });
+            // Para anthropic / deterministic, passthrough.
+            if (provider === 'anthropic' || provider === 'deterministic') {
+                return { allowed: paths.slice(), blocked: [], provider, category: provider, policy: 'passthrough' };
+            }
+            // Para non-anthropic con simulateBlock, devolvemos al menos un blocked.
+            if (simulateBlock) {
+                const blocked = (paths.length > 0 ? paths : ['__forced_block__']).map(p => ({
+                    path: p,
+                    pattern: '**/secret/**',
+                    motivo: 'fake-test-secret',
+                }));
+                return { allowed: [], blocked, provider, category: 'non_anthropic', policy: 'filter' };
+            }
+            // Sin simulateBlock: passthrough (paths === [] no matchea nada).
+            return { allowed: paths.slice(), blocked: [], provider, category: 'non_anthropic', policy: 'filter' };
+        },
+    };
+}
+
+test('SR-1 — enforceDataResidency llama a filterPathsForProvider con `paths` y `provider` del resolution', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const fakeDrf = makeFakeDrfModule({});
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'openai-codex',
+            paths: [],
+            chatId: 'chat-x',
+            prompt: 'hola',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        // Verificaciones del wiring:
+        assert.equal(fakeDrf.calls.load.length, 1, 'debe llamar a loadExclusionsOrThrow()');
+        assert.equal(fakeDrf.calls.filter.length, 1, 'debe llamar a filterPathsForProvider()');
+        assert.deepEqual(fakeDrf.calls.filter[0].paths, []);
+        assert.equal(fakeDrf.calls.filter[0].provider, 'openai-codex');
+        assert.ok(fakeDrf.calls.filter[0].exclusionsLength >= 1, 'debe pasar las exclusions cargadas');
+        assert.ok(fakeDrf.calls.filter[0].defaultPolicy, 'debe pasar default_policy');
+        // No hay match con paths=[] → ok:true.
+        assert.equal(r.ok, true);
+        assert.deepEqual(r.blocked, []);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — provider !== anthropic y blocked.length > 0 → ok:false (canned, sin spawn)', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const fakeDrf = makeFakeDrfModule({ simulateBlock: true });
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'openai-codex',
+            paths: ['app/users/src/main/resources/application.conf'],
+            chatId: 'chat-y',
+            prompt: 'leeme application.conf',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        assert.equal(r.ok, false);
+        assert.equal(r.reason, 'data_residency_blocked');
+        assert.ok(Array.isArray(r.blocked) && r.blocked.length > 0);
+        assert.equal(r.blocked[0].pattern, '**/secret/**');
+        // Verifico también que el canned response menciona el provider y el conteo.
+        const canned = cmp.cannedDataResidencyResponse({ provider: 'openai-codex', blocked: r.blocked });
+        assert.match(canned, /openai-codex/);
+        assert.match(canned, new RegExp(`${r.blocked.length}\\s+archivo`));
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — provider === anthropic → ok:true (passthrough) aunque haya patterns que matchen', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // Forzamos un fake que SIEMPRE bloquearía si pudiera, pero el provider
+        // anthropic debe caer en passthrough antes de llegar al matcher.
+        const fakeDrf = makeFakeDrfModule({ simulateBlock: true });
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'anthropic',
+            paths: ['secret/wow.pem'],
+            chatId: 'chat-z',
+            prompt: 'algo',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        assert.equal(r.ok, true);
+        assert.equal(r.policy, 'passthrough');
+        assert.deepEqual(r.blocked, []);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — provider !== anthropic y blocked.length === 0 → ok:true (continúa)', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // Sin simulateBlock → fake devuelve blocked:[].
+        const fakeDrf = makeFakeDrfModule({ simulateBlock: false });
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'groq',
+            paths: ['docs/innocent.md'],
+            chatId: 'chat-w',
+            prompt: 'algo',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        assert.equal(r.ok, true);
+        assert.deepEqual(r.blocked, []);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — fail-closed: sidecar lanza al cargar → ok:false con provider no-anthropic', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const fakeDrf = makeFakeDrfModule({ throwOnLoad: 'sidecar corrupto' });
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'openai-codex',
+            paths: [],
+            chatId: 'chat-q',
+            prompt: 'algo',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        assert.equal(r.ok, false);
+        assert.equal(r.reason, 'sidecar_unavailable');
+        assert.match(r.error, /sidecar corrupto/);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — fail-closed sidecar inválido + provider anthropic → ok:true (no rompe Claude)', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const fakeDrf = makeFakeDrfModule({ throwOnLoad: 'sidecar missing' });
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'anthropic',
+            paths: [],
+            chatId: 'chat-q',
+            prompt: 'algo',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        // Anthropic no aplica el filtro → continúa aunque el sidecar esté roto.
+        assert.equal(r.ok, true);
+        assert.equal(r.sidecar, 'unavailable');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — enforceDataResidency emite evento audit data_residency_block cuando bloquea', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const fakeDrf = makeFakeDrfModule({ simulateBlock: true });
+        cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'groq',
+            paths: ['users/src/main/resources/application.conf'],
+            chatId: 'chat-block',
+            prompt: 'leelo',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        const files = fs.readdirSync(path.join(dir, 'logs')).filter(f => f.startsWith('commander-dispatch-'));
+        assert.equal(files.length, 1);
+        const content = fs.readFileSync(path.join(dir, 'logs', files[0]), 'utf8').trim();
+        assert.ok(content.length > 0);
+        const entries = content.split('\n').map(l => JSON.parse(l));
+        const blockEvent = entries.find(e => e.event === 'data_residency_block');
+        assert.ok(blockEvent, 'debe haber al menos un evento data_residency_block');
+        assert.equal(blockEvent.provider_effective, 'groq');
+        assert.equal(blockEvent.error_code, 'data_residency_blocked');
+        // SR-7: ningún path crudo en el log.
+        assert.doesNotMatch(content, /application\.conf/);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — enforceDataResidency emite evento audit data_residency_check cuando pasa', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const fakeDrf = makeFakeDrfModule({ simulateBlock: false });
+        cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'openai-codex',
+            paths: [],
+            chatId: 'chat-pass',
+            prompt: 'hola',
+            drfModule: fakeDrf,
+            log: () => {},
+        });
+        const files = fs.readdirSync(path.join(dir, 'logs')).filter(f => f.startsWith('commander-dispatch-'));
+        assert.equal(files.length, 1);
+        const content = fs.readFileSync(path.join(dir, 'logs', files[0]), 'utf8').trim();
+        const entries = content.split('\n').map(l => JSON.parse(l));
+        const checkEvent = entries.find(e => e.event === 'data_residency_check');
+        assert.ok(checkEvent, 'debe haber al menos un evento data_residency_check');
+        assert.equal(checkEvent.provider_effective, 'openai-codex');
+        assert.equal(checkEvent.error_code, null);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — sidecar real del repo carga sin throw y filtra application.conf para non-anthropic', () => {
+    // Smoke test contra el sidecar real (sin fake). Garantiza que el wiring
+    // funciona end-to-end con la sidecar committed.
+    const dir = mkTmpPipelineDir();
+    try {
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'groq',
+            paths: ['users/src/main/resources/application.conf'],
+            chatId: 'chat-real',
+            prompt: 'leelo',
+            log: () => {},
+        });
+        assert.equal(r.ok, false, 'application.conf debe quedar bloqueado para non-anthropic');
+        assert.equal(r.reason, 'data_residency_blocked');
+        assert.ok(r.blocked.length >= 1);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('SR-1 — sidecar real: anthropic pasa todo, incluso paths que matchearían patterns', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const r = cmp.enforceDataResidency({
+            pipelineDir: dir,
+            provider: 'anthropic',
+            paths: ['users/src/main/resources/application.conf', 'secrets/foo'],
+            chatId: 'chat-real',
+            prompt: 'leelo',
+            log: () => {},
+        });
+        assert.equal(r.ok, true);
+        assert.equal(r.policy, 'passthrough');
+        assert.deepEqual(r.blocked, []);
+    } finally {
+        cleanup(dir);
+    }
+});
