@@ -453,26 +453,58 @@ function enqueueTelegram(text, opts = {}) {
 // Audit log (hash-chain via lib/audit-log.js — best-effort si no carga).
 // -----------------------------------------------------------------------------
 
+/**
+ * Persiste una entry en el audit log de exhaustion. Devuelve `true` si
+ * efectivamente escribió (hash-chain o fallback plano), `false` si ambos
+ * caminos fallaron — NO swallow silent: el caller usa el return para
+ * setear `audit_logged` con honestidad.
+ *
+ * Estrategia:
+ *   1. Si `lib/audit-log.js` cargó, intentamos `appendChained` con la
+ *      firma correcta `{ file, entry }`. Si TIRA, NO devolvemos `true`
+ *      ni mentimos: caemos al fallback plano para al menos persistir la
+ *      evidencia.
+ *   2. Fallback plano: `fs.appendFileSync` JSONL sin hash-chain.
+ *
+ * Diferencia con la versión anterior (#3259 rebote 1):
+ *   - Antes: try/catch silencioso alrededor de appendChained(string, entry)
+ *     enmascaraba el bug de firma — la función reportaba `audit_logged: true`
+ *     pero el archivo nunca existía.
+ *   - Ahora: la firma es correcta + el catch hace fallback real + return
+ *     boolean explícito.
+ */
 function appendAudit(event, entry, opts = {}) {
-    if (!auditLogLib || typeof auditLogLib.appendChained !== 'function') {
-        // Fallback: append directo a archivo JSONL sin hash-chain.
+    const file = exhaustionAuditFile(opts);
+
+    // Intento 1: hash-chained via lib/audit-log.js (path preferido — el
+    // mandato security pide chain SHA-256 verificable con verifyChain).
+    if (auditLogLib && typeof auditLogLib.appendChained === 'function') {
         try {
-            const file = exhaustionAuditFile(opts);
-            ensureDir(path.dirname(file));
-            fs.appendFileSync(file, JSON.stringify({
-                ts: new Date(opts.now || Date.now()).toISOString(),
-                event,
-                ...entry,
-            }) + '\n', { mode: 0o600 });
-        } catch { /* best-effort */ }
-        return;
+            auditLogLib.appendChained({
+                file,
+                entry: { event, ...entry },
+            });
+            return true;
+        } catch {
+            // Si el lib falla (bug interno, EACCES, ENOSPC, etc.) caemos
+            // al fallback plano. NO devolvemos true acá — solo si el
+            // fallback también escribe.
+        }
     }
+
+    // Intento 2: append directo a JSONL sin hash-chain. Cubre tanto el
+    // caso "auditLogLib no cargó" como "auditLogLib tiró".
     try {
-        auditLogLib.appendChained(exhaustionAuditFile(opts), {
+        ensureDir(path.dirname(file));
+        fs.appendFileSync(file, JSON.stringify({
+            ts: new Date(opts.now || Date.now()).toISOString(),
             event,
             ...entry,
-        });
-    } catch { /* best-effort */ }
+        }) + '\n', { mode: 0o600 });
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -543,19 +575,19 @@ function reportExhaustion(payload, opts = {}) {
         }, opts);
     } catch { /* best-effort */ }
 
-    // 4. Audit log hash-chained.
-    try {
-        appendAudit('provider-exhaustion-pause', {
-            skill: String(skill || ''),
-            issue: Number(issue),
-            primary_provider: String(payload.primary_provider || ''),
-            chain_tried: Array.isArray(payload.chain_tried) ? payload.chain_tried.slice() : [],
-            label_applied: out.label_applied,
-            notified: out.notified,
-            notify_reason: out.notify_reason,
-        }, { ...opts, now });
-        out.audit_logged = true;
-    } catch { /* best-effort */ }
+    // 4. Audit log hash-chained. `appendAudit` retorna boolean honesto
+    // (true sólo si efectivamente escribió por hash-chain o fallback
+    // plano). NO envolvemos en try/catch + true asumido — eso enmascara
+    // bugs como el de la firma incorrecta (rebote 1 #3259).
+    out.audit_logged = appendAudit('provider-exhaustion-pause', {
+        skill: String(skill || ''),
+        issue: Number(issue),
+        primary_provider: String(payload.primary_provider || ''),
+        chain_tried: Array.isArray(payload.chain_tried) ? payload.chain_tried.slice() : [],
+        label_applied: out.label_applied,
+        notified: out.notified,
+        notify_reason: out.notify_reason,
+    }, { ...opts, now });
 
     return out;
 }
@@ -633,14 +665,14 @@ function tryResume(opts = {}) {
         });
         enqueueTelegram(text, { ...opts, filenameTag: 'exhaustion-resumed' });
 
-        // 7. Audit.
-        try {
-            appendAudit('provider-exhaustion-resumed', {
-                issue,
-                provider_recovered: recovered,
-                chain_before: chain,
-            }, opts);
-        } catch { /* best-effort */ }
+        // 7. Audit (hash-chain + fallback plano via `appendAudit`).
+        // `appendAudit` no tira; el return boolean queda implícito porque
+        // este path es fire-and-forget (no exponemos el flag al caller).
+        appendAudit('provider-exhaustion-resumed', {
+            issue,
+            provider_recovered: recovered,
+            chain_before: chain,
+        }, opts);
 
         out.resumed.push({ issue, provider_recovered: recovered, removed: labelRes.removed });
     }

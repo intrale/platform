@@ -234,6 +234,30 @@ test('chaos: TODOS los providers gated → reportExhaustion aplica label + Teleg
     assert.ok(spawnSync.calls.some(c => c.args.includes('view')), 'gh view');
     assert.ok(spawnSync.calls.some(c => c.args.includes('--add-label')), 'gh add-label');
     assert.ok(spawnSync.calls.some(c => c.args.includes('provider-exhaustion-pause')), 'label name');
+
+    // Verificación empírica del hash-chain audit log (rebote 1 #3259):
+    // el archivo DEBE existir y tener al menos la entry con hash_self/hash_prev.
+    // Antes, `audit_logged: true` mentía porque `appendChained` se invocaba
+    // con firma incorrecta (string en vez de `{ file, entry }`) y el catch
+    // silenciaba el throw.
+    const auditFile = exhaustion.exhaustionAuditFile({ pipelineDir: sandbox });
+    assert.ok(fs.existsSync(auditFile),
+        `audit file persistido en ${auditFile}`);
+    const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n').filter(Boolean);
+    assert.ok(lines.length >= 1, 'al menos una entry en audit log');
+    const parsed = JSON.parse(lines[0]);
+    assert.equal(parsed.event, 'provider-exhaustion-pause');
+    assert.ok(parsed.hash_self, 'hash_self presente (hash-chain SHA-256)');
+    assert.ok(typeof parsed.hash_prev === 'string', 'hash_prev presente');
+    assert.equal(parsed.issue, 3259);
+    assert.equal(parsed.primary_provider, 'anthropic');
+
+    // verifyChain debe validar la chain entera (mandato security).
+    const auditLog = require('../lib/audit-log');
+    const verification = auditLog.verifyChain(auditFile);
+    assert.equal(verification.ok, true,
+        `verifyChain debe pasar: ${verification.reason || 'ok'}`);
+    assert.ok(verification.entriesChecked >= 1);
 });
 
 // -----------------------------------------------------------------------------
@@ -344,6 +368,26 @@ test('CA-10 resume: flag liberado → quita label, borra marker, encola destrabe
     assert.equal(files.length, 1);
     const payload = JSON.parse(fs.readFileSync(path.join(queueDir, files[0]), 'utf8'));
     assert.ok(payload.text.includes('destrabado'));
+
+    // Verificación empírica del hash-chain audit log para el evento
+    // `provider-exhaustion-resumed` (rebote 1 #3259). Mismo defecto que
+    // CA-4: la firma incorrecta a `appendChained` impedía la persistencia.
+    const auditFile = exhaustion.exhaustionAuditFile({ pipelineDir: sandbox });
+    assert.ok(fs.existsSync(auditFile),
+        `audit file persistido en ${auditFile}`);
+    const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n').filter(Boolean);
+    assert.ok(lines.length >= 1, 'al menos una entry en audit log');
+    const parsed = JSON.parse(lines[0]);
+    assert.equal(parsed.event, 'provider-exhaustion-resumed');
+    assert.ok(parsed.hash_self, 'hash_self presente (hash-chain SHA-256)');
+    assert.ok(typeof parsed.hash_prev === 'string', 'hash_prev presente');
+    assert.equal(parsed.issue, 3259);
+    assert.equal(parsed.provider_recovered, 'anthropic');
+
+    const auditLog = require('../lib/audit-log');
+    const verification = auditLog.verifyChain(auditFile);
+    assert.equal(verification.ok, true,
+        `verifyChain debe pasar: ${verification.reason || 'ok'}`);
 });
 
 // -----------------------------------------------------------------------------
