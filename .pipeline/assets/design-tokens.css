@@ -175,6 +175,76 @@
   --provider-unknown-fg:       #FFE099;   /* texto sobre bg, 12.0:1 */
 
   /* ---------------------------------------------------------------------------
+   * 3.d PROVIDERS FREE (multi-provider fallback chain — #3259 / Ola N+5)
+   * Cada proveedor free tiene un color identitario distintivo, coherente con
+   * la familia de tokens 3.c (providers). Se usan en:
+   *   - Card "Continuidad del Pulpo" del dashboard (CA-6 de #3259)
+   *   - Badge provider:model en el row de skill (vista live)
+   *   - Tooltips y leyenda en /leyenda#proveedores
+   *
+   * Restricciones (heredadas de R2/R6 de #3086):
+   *   - Allowlist cerrada: los IDs vienen de `agent-models.json:providers`.
+   *   - Identificadores fuera de allowlist caen en `provider-unknown`.
+   *
+   * Contraste verificado contra surface-0 (#0D1117) con WebAIM:
+   *   - provider-groq           (#FF6B47) = 5.4:1  AA Normal
+   *   - provider-gemini         (#8AB4F8) = 9.2:1  AA Large + AAA Normal
+   *   - provider-cerebras       (#FFD166) = 12.3:1 AAA
+   *   - provider-nvidia-nim     (#76B900) = 7.6:1  AAA Large + AA Normal
+   * -------------------------------------------------------------------------- */
+
+  /* Groq — coral calido distinto de provider-anthropic (copper) y del retry/danger.
+   * Identidad: velocidad (Groq LPU) -> tono energico. */
+  --provider-groq:             #FF6B47;
+  --provider-groq-dim:         #B84A30;
+  --provider-groq-bg:          rgba(255, 107, 71, 0.14);
+  --provider-groq-fg:          #FFC1AE;   /* texto sobre provider-groq-bg, 10.5:1 */
+
+  /* Gemini — azul claro Google, diferenciado del --info y del --brand-blue.
+   * Atencion TOS: AI Studio free entrena con prompts -> skills sensibles excluidos
+   * en agent-models.json (memoria project_multi-provider-per-agent-order). */
+  --provider-gemini:           #8AB4F8;
+  --provider-gemini-dim:       #4285F4;
+  --provider-gemini-bg:        rgba(138, 180, 248, 0.14);
+  --provider-gemini-fg:        #CBD9F9;   /* texto sobre provider-gemini-bg, 12.8:1 */
+
+  /* Cerebras — amarillo claro, identidad de "wafer scale".
+   * Distinto de --warning (mostaza), --retry (ambar) y --quota-degraded. */
+  --provider-cerebras:         #FFD166;
+  --provider-cerebras-dim:     #C49A2E;
+  --provider-cerebras-bg:      rgba(255, 209, 102, 0.14);
+  --provider-cerebras-fg:      #FFE6A8;   /* texto sobre provider-cerebras-bg, 13.4:1 */
+
+  /* NVIDIA NIM — verde NVIDIA clasico, distinto de --success.
+   * Reservado por si entra como provider en una ola futura (#3260). */
+  --provider-nvidia-nim:       #76B900;
+  --provider-nvidia-nim-dim:   #5C8F00;
+  --provider-nvidia-nim-bg:    rgba(118, 185, 0, 0.14);
+  --provider-nvidia-nim-fg:    #C4E380;   /* texto sobre provider-nvidia-nim-bg, 10.3:1 */
+
+  /* ---------------------------------------------------------------------------
+   * 3.e ESTADOS DEL PULPO (#3259 — continuidad ante caida de providers)
+   * Estados operativos exclusivos del orquestador. Coherentes con la familia 3.b
+   * pero con identidad propia: el Pulpo NUNCA muere, solo entra en pausa.
+   * -------------------------------------------------------------------------- */
+
+  /* Provider-exhaustion-pause — issue pausado por cuota agotada en todos los providers.
+   * Color: ambar profundo, mezcla simbolica de --quota-degraded (cuota) +
+   * --retry (reintento). Distinto de --danger (no es error, es pausa controlada).
+   * Contraste sobre surface-0: 7.9:1 AAA Large + AA Normal. */
+  --pulpo-paused:              #E8770D;
+  --pulpo-paused-dim:          #A8540A;
+  --pulpo-paused-bg:           rgba(232, 119, 13, 0.16);
+  --pulpo-paused-fg:           #FFCD9B;   /* texto sobre pulpo-paused-bg, 10.1:1 */
+  --pulpo-paused-glow:         0 0 12px rgba(232, 119, 13, 0.45);
+
+  /* Pulpo-resumed — destrabe automatico: un provider volvio.
+   * Verde con leve glow para diferenciarlo del --success generico. */
+  --pulpo-resumed:             var(--success);
+  --pulpo-resumed-bg:          var(--success-bg);
+  --pulpo-resumed-glow:        var(--shadow-glow-ok);
+
+  /* ---------------------------------------------------------------------------
    * 4. ACENTOS POR LANE (board del dashboard)
    * Cada lane tiene un color distintivo para reforzar la identidad del flujo.
    * -------------------------------------------------------------------------- */
