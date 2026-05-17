@@ -43,6 +43,12 @@ const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // log con hash-chain (CA-4 / SR-3) y formatea las notificaciones a Leo según
 // UX-G1 (lenguaje natural, no log operativo).
 const commanderMP = require('./lib/commander/multi-provider');
+// #3250 — Delegación de creación de issues a /doc y /planner. Detección de
+// intent + sanitización + audit log JSONL + provider gate + allowlist de
+// sender. La invocación real del Skill tool sigue corriendo en la sesión
+// Claude del Commander (`ejecutarClaude`); este módulo cierra el cinturón
+// pre/post LLM para que el resultado sea indistinguible de un /doc por consola.
+const commanderIssueCreation = require('./lib/commander/issue-creation');
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
@@ -7749,6 +7755,94 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       log('commander', `Mensajes consolidados: ${textoLibre.length} → 1 prompt`);
     }
 
+    // --- #3250 — SEC-2: validación de sender Telegram contra allowlist hardcoded.
+    // Defensa en profundidad ante leak de bot token. Por default permite todo
+    // (allowlist vacía); si está configurada via `TELEGRAM_ALLOWED_USER_IDS`,
+    // descarta mensajes de IDs no autorizados.
+    const senderAllowlist = commanderIssueCreation.getAllowedSenderIds();
+    if (senderAllowlist.length > 0) {
+      const firstFromId = textoLibre[0].from && textoLibre[0].from.id;
+      const allowed = commanderIssueCreation.isSenderAllowed(firstFromId, senderAllowlist);
+      if (!allowed) {
+        log('commander', `🚫 SEC-2: sender Telegram id=${firstFromId} no autorizado — descartando ${textoLibre.length} msg(s)`);
+        try {
+          commanderIssueCreation.logSkillInvocation({
+            pipelineDir: PIPELINE,
+            from: textoLibre[0].from || null,
+            inputText: mensajeConsolidado,
+            skillResult: 'blocked',
+            error: 'sender_not_allowed',
+            senderAllowed: false,
+          }, { log });
+        } catch { /* best-effort */ }
+        for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+        saveSession(session);
+        return;
+      }
+    }
+
+    // --- #3250 — Detección de intent de creación de issues (CA-1). El LLM
+    // decide la invocación real del Skill; acá usamos la heurística para
+    // gatear SEC-5 (provider activo ≠ anthropic) y enriquecer el audit log.
+    const issueIntent = commanderIssueCreation.detectIssueCreationIntent(mensajeConsolidado);
+    const wantsIssueCreation = issueIntent.intent !== commanderIssueCreation.INTENT_NONE;
+
+    // --- #3250 — SEC-5: bloqueo cuando el provider efectivo NO es Anthropic.
+    // Los providers no-Anthropic (Groq/Cerebras/Gemini/Codex) no tienen Skill
+    // tool habilitado en el harness; intentar /doc o /planner allí caería en
+    // un fallback silencioso de calidad degradada. Mejor responder canned y
+    // pedir al usuario que reintente cuando Claude vuelva.
+    if (wantsIssueCreation) {
+      let activeProvider = 'anthropic';
+      try {
+        const probe = commanderMP.resolveCommanderProvider({
+          pipelineDir: PIPELINE,
+          log: (l, m) => log(l || 'commander', m),
+        });
+        if (probe && probe.provider) activeProvider = probe.provider;
+      } catch (e) {
+        log('commander', `SEC-5: no pude resolver provider activo (${e.message}) — asumiendo anthropic.`);
+      }
+      if (activeProvider !== 'anthropic') {
+        const blocked = commanderIssueCreation.formatBlockedByProviderResponse({ provider: activeProvider });
+        log('commander', `🚫 SEC-5: provider activo=${activeProvider} ≠ anthropic — bloqueando creación de issue`);
+        sendTelegram(blocked);
+        try {
+          commanderIssueCreation.logSkillInvocation({
+            pipelineDir: PIPELINE,
+            from: textoLibre[0].from || null,
+            inputText: mensajeConsolidado,
+            skillInvoked: issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SPLIT ? 'planner' : 'doc',
+            skillResult: 'blocked',
+            error: 'provider_not_anthropic',
+            provider: activeProvider,
+            intent: issueIntent.intent,
+          }, { log });
+        } catch { /* best-effort */ }
+        fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: blocked, timestamp: new Date().toISOString(), reason: `issue_creation_blocked:${activeProvider}` }) + '\n');
+        for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+        saveSession(session);
+        return;
+      }
+    }
+
+    // --- #3250 — SEC-3: sanitización del input antes de pasarlo al Skill tool
+    // (vía Claude). Trunca a 4000 chars y strip de caracteres de control/ANSI.
+    // Sólo aplica cuando hay intent de creación de issue — para texto libre
+    // genérico mantenemos el comportamiento previo (ya pasa por
+    // `commanderMP.sanitizeUserPrompt` dentro de `ejecutarClaude`).
+    let inputSanitized = mensajeConsolidado;
+    let inputWasTruncated = false;
+    if (wantsIssueCreation) {
+      const san = commanderIssueCreation.sanitizeIssueCreationInput(mensajeConsolidado);
+      inputSanitized = san.sanitized;
+      inputWasTruncated = san.truncated;
+      if (san.truncated || san.strippedControls > 0) {
+        log('commander', `🛡️ SEC-3: input sanitizado (truncated=${san.truncated}, stripped=${san.strippedControls}) para issue-creation`);
+      }
+      mensajeConsolidado = inputSanitized;
+    }
+
     // Protección anti-restart encadenado: si el mensaje pide restart y ya hubo
     // uno reciente (< 2 min), responder directamente sin delegar a Claude
     const restartPattern = /\b(reinici|restart|levant[aá]|arranc[aá])\b/i;
@@ -7767,6 +7861,10 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
 
     // ACK contextual
     sendTelegram(generarAck(mensajeConsolidado, esAudio));
+
+    // #3250 — declarado fuera del try para que el catch pueda calcular
+    // durationMs en caso de error (timeout/quota/etc.).
+    let skillInvocationStartedAt = Date.now();
 
     try {
       // Construir prompt
@@ -7788,6 +7886,12 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       }
 
       const from = textoLibre[0].from || 'Leo';
+      // #3250 — Bloque de routing a /doc y /planner (CA-1, CA-2, CA-3, CA-4,
+      // CA-5 + SEC-1). Se inyecta SIEMPRE: la heurística pre-LLM puede no
+      // detectar el intent pero el LLM sí, y la regla es genérica suficiente
+      // para que no dispare invocaciones espurias cuando el usuario no pide
+      // crear nada.
+      const issueCreationBlock = commanderIssueCreation.buildIssueCreationPromptBlock();
       const userPrompt = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
 
 REGLAS:
@@ -7801,11 +7905,44 @@ REGLAS:
    - PIDs: .pipeline/*.pid
    - Logs: .pipeline/logs/
    - Procesos: tasklist | grep node
-
+${issueCreationBlock}
 Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
 
+      // #3250 — SEC-4: audit log. Pre-LLM marcamos el start time; post-LLM
+      // escribimos una línea por intento de creación de issue con el resultado
+      // (skill invocado, issue creado, duración, error). Sólo si la heurística
+      // detectó intent — para texto libre genérico no inflamos el log.
+      skillInvocationStartedAt = Date.now();
       let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado);
       log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
+
+      if (wantsIssueCreation) {
+        try {
+          const outcome = commanderIssueCreation.inspectResponseForOutcome(respuesta || '');
+          const expectedSkill = issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SPLIT ? 'planner' : 'doc';
+          const skillResult = outcome.issuesCreated.length > 0 ? 'ok'
+            : (outcome.skillsMentioned.length === 0 ? 'error' : 'unknown');
+          commanderIssueCreation.logSkillInvocation({
+            pipelineDir: PIPELINE,
+            from: textoLibre[0].from || null,
+            inputText: mensajeConsolidado,
+            inputTextTruncated: inputWasTruncated,
+            skillInvoked: outcome.skillsMentioned[0] || expectedSkill,
+            skillResult,
+            issueCreated: outcome.issuesCreated.length === 1 ? outcome.issuesCreated[0] : (outcome.issuesCreated.length > 1 ? outcome.issuesCreated : undefined),
+            durationMs: Date.now() - skillInvocationStartedAt,
+            provider: 'anthropic',
+            intent: issueIntent.intent,
+            error: skillResult === 'error' ? 'no_skill_invoked_or_no_issue_created' : undefined,
+            senderAllowed: true,
+          }, { log });
+          if (skillResult === 'error') {
+            log('commander', `⚠️ SEC-1: respuesta del Commander no menciona invocación de doc/planner ni issue creado — posible fallback silencioso`);
+          }
+        } catch (auditErr) {
+          log('commander', `audit log de issue-creation falló (best-effort): ${auditErr.message}`);
+        }
+      }
 
       // --- CHECK DE SUPLEMENTOS ---
       // Mensajes que llegaron MIENTRAS Claude procesaba (ej: segundo audio complementario)
@@ -7897,7 +8034,32 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
       }
     } catch (e) {
       log('commander', `Error Claude: ${e.message}`);
-      sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
+      // #3250 — Si el flow venía de un intent de creación de issue (CA-5),
+      // usamos copy variado por causa para no dar el genérico "Error procesando".
+      // SIEMPRE registramos en el audit log el fallo para forense (SEC-4).
+      if (wantsIssueCreation) {
+        const kind = /timeout|HARD_TIMEOUT|killed/i.test(e.message) ? 'timeout'
+          : /quota|rate.?limit|usage_limit/i.test(e.message) ? 'quota'
+          : /gh\s|github|gh:\s/i.test(e.message) ? 'gh_error'
+          : 'generic';
+        try { sendTelegram(commanderIssueCreation.formatSkillFailureResponse({ kind, error: e.message })); } catch {}
+        try {
+          commanderIssueCreation.logSkillInvocation({
+            pipelineDir: PIPELINE,
+            from: textoLibre[0].from || null,
+            inputText: mensajeConsolidado,
+            inputTextTruncated: inputWasTruncated,
+            skillInvoked: issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SPLIT ? 'planner' : 'doc',
+            skillResult: 'error',
+            error: `${kind}:${(e.message || '').slice(0, 200)}`,
+            durationMs: Date.now() - skillInvocationStartedAt,
+            provider: 'anthropic',
+            intent: issueIntent.intent,
+          }, { log });
+        } catch { /* best-effort */ }
+      } else {
+        sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
+      }
     }
 
     // Mover todos los mensajes texto-libre a listo
