@@ -47,6 +47,7 @@ const baseRedact = require('./redact');
 const DETERMINISTIC_SLASH = new Set([
     'status',
     'snapshot',
+    'wave',            // #3262 — snapshot ejecutivo de ola (avance %, ETA, intervención)
     'listado',
     'allowlist',
     'tail',
@@ -84,7 +85,10 @@ const LLM_SLASH = new Set([
 // (parseCommand:7189-7208) para no romper la UX existente (CA-18 no-regresión).
 const NLP_PATTERNS = [
     { regex: /\b(status|estado del pipeline|tablero|que hay en el pipeline|qué hay en el pipeline)\b/i, command: 'status' },
-    { regex: /\b(snapshot|snapshot de (la )?ola|estado de (la )?ola|ola en curso)\b/i, command: 'snapshot' },
+    // #3262 — `/wave` y "¿cómo va la ola?" / "estado de la ola con audio" — snapshot ejecutivo.
+    // El patrón captura "estado/avance/cómo/cómo viene/cómo va" + "ola" para los pedidos naturales.
+    { regex: /\b(wave|cómo (viene|va|anda) la ola|c[oó]mo (viene|va|anda) la ola|avance de (la )?ola|estado de (la )?ola)\b/i, command: 'wave' },
+    { regex: /\b(snapshot|snapshot de (la )?ola|ola en curso)\b/i, command: 'snapshot' },
     { regex: /\b(listado|listar issues|qué issues|que issues|mostrame los issues|mostr[áa] los issues)\b/i, command: 'listado' },
     { regex: /\b(allowlist|pausa parcial actual|qué hay en la allowlist|que hay en la allowlist)\b/i, command: 'allowlist' },
     { regex: /^tail\s+([\w.-]+)/i, command: 'tail', argsFromCapture: 1 },
@@ -189,9 +193,22 @@ const LISTADO_FILTERS = new Set([
     '', 'pendientes', 'en-curso', 'en curso', 'listos', 'ola', 'todo',
 ]);
 
+// #3262 — `/wave` admite el flag opcional `--audio` para activar TTS opt-in (CA-9 / PO-CA-9).
+// Cualquier otro arg es rechazado para no abrir vectores adicionales.
+const WAVE_FLAGS = new Set(['', '--audio']);
+
 const ARG_SCHEMAS = {
     status: { allow: () => true },
     snapshot: { allow: () => true },
+    wave: {
+        allow(args) {
+            const norm = String(args || '').toLowerCase().trim();
+            return WAVE_FLAGS.has(norm);
+        },
+        usage: 'wave [--audio]',
+        allowedValues: ['--audio'],
+        hint: 'Sin args o con `--audio` para incluir resumen TTS opt-in.',
+    },
     listado: {
         allow(args) {
             const norm = String(args || '').toLowerCase().trim();
@@ -408,10 +425,21 @@ function createDispatcher(opts) {
         }
 
         let reply = null;
+        let audioText = null;
         let status = 'ok';
         try {
             const result = await handler({ args: intent.args, message, intent });
-            reply = typeof result === 'string' ? result : (result && result.reply) || null;
+            if (typeof result === 'string') {
+                reply = result;
+            } else if (result && typeof result === 'object') {
+                reply = result.reply || null;
+                // #3262 — handlers que quieren emitir audio TTS (opt-in, no
+                // bloqueante) devuelven `audioText` adicional. El dispatcher
+                // lo forwardea para que el caller (pulpo.brazoCommander) decida
+                // si invocar sendVoiceTelegram. Si el caller no lo soporta,
+                // simplemente lo ignora — el reply Markdown llega igual.
+                audioText = result.audioText || null;
+            }
         } catch (e) {
             status = 'error';
             try { process.stderr.write(`[commander-deterministic] handler ${intent.command} falló: ${e.message}\n`); } catch (_) {}
@@ -427,7 +455,7 @@ function createDispatcher(opts) {
             result_status: status,
             duration_ms: durationMs,
         });
-        return { reply, status, handler: intent.command, intent, durationMs };
+        return { reply, audioText, status, handler: intent.command, intent, durationMs };
     }
 
     return {
@@ -525,6 +553,69 @@ function buildDefaultHandlers(ctx) {
                 'snooze-cap-h': 24,
                 'has-snooze': false,
             });
+        },
+
+        wave: async ({ args }) => {
+            // #3262 — Snapshot ejecutivo de la ola para Telegram. Combina
+            // resolveActiveWave (active-wave.json / partial-pause / fallback FS)
+            // + buildWaveSnapshot (cálculo determinístico de %, ETA, bloqueos)
+            // + renderWaveSnapshot (MarkdownV2 listo para enviar).
+            //
+            // El flag opcional `--audio` activa la generación del texto TTS
+            // (CA-9). Si el caller (pulpo) puede emitir voice, lo hará; si no,
+            // queda como metadato extra que no rompe el reply principal.
+            //
+            // Performance (CA-16): usa wave-state con TTL cache 2s. Re-usar
+            // dashboard.getCachedPipelineState no es viable acá porque
+            // `dashboard.js` arranca un HTTP server al require (side effect
+            // imposible desde el commander singleton). wave-state es un
+            // módulo paralelo que replica las pocas funciones de state que
+            // necesitamos sin esos side effects.
+            const resolver = require('./wave-resolver');
+            const snapshotMod = require('./wave-snapshot');
+            const rendererMod = require('./wave-renderer');
+            const stateMod = require('./wave-state');
+
+            const wave = resolver.resolveActiveWave({ pipelineRoot: PIPELINE });
+            const state = stateMod.getCachedWaveState({ pipelineRoot: PIPELINE });
+
+            // Listado de bloqueados (best-effort).
+            let blocked = [];
+            try {
+                // eslint-disable-next-line global-require
+                const humanBlock = require('./human-block');
+                if (typeof humanBlock.listBlockedIssues === 'function') {
+                    blocked = humanBlock.listBlockedIssues() || [];
+                }
+            } catch (_) { /* sin bloqueados detectables */ }
+
+            // Closed: heurística — labels `closed` o estado `procesado` de entrega.
+            // No consultamos GitHub API (CA-8, sin red).
+            const closedIssues = new Set();
+            for (const id of wave.issues) {
+                const data = state.issueMatrix && state.issueMatrix[String(id)];
+                if (!data) continue;
+                const labels = Array.isArray(data.labels) ? data.labels : [];
+                const labelNames = labels.map((l) => (typeof l === 'string' ? l : (l && l.name) || '')).filter(Boolean);
+                if (labelNames.includes('closed') || labelNames.includes('done')) {
+                    closedIssues.add(Number(id));
+                }
+            }
+
+            const snapshot = snapshotMod.buildWaveSnapshot({
+                state,
+                wave,
+                blocked,
+                closedIssues,
+            });
+
+            const reply = rendererMod.renderWaveSnapshot(snapshot);
+
+            // CA-9: TTS opt-in solo si --audio.
+            const wantsAudio = String(args || '').toLowerCase().trim() === '--audio';
+            const audioText = wantsAudio ? rendererMod.renderAudioText(snapshot) : null;
+
+            return { reply, audioText };
         },
 
         snapshot: async () => {

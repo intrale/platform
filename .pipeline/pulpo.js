@@ -7717,6 +7717,25 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         timestamp: new Date().toISOString(),
         routing: { class: intent.class, handler: intent.command || null, status: result ? result.status : 'legacy' },
       }) + '\n');
+
+      // #3262 CA-9 — TTS opt-in: si el handler devolvió audioText (ej. `/wave --audio`),
+      // generar mp3 con multimedia.textToSpeechWithMeta y enviar como voice.
+      // Fail-safe: si la cuota TTS o la red están caídas, NO afectamos el reply
+      // principal (que ya se envió a Telegram justo arriba).
+      const audioText = result && result.audioText;
+      if (audioText && typeof audioText === 'string' && audioText.trim().length > 0) {
+        try {
+          if (botToken && chatId && typeof textToSpeechWithMeta === 'function' && typeof sendVoiceTelegram === 'function') {
+            const ttsMeta = await textToSpeechWithMeta(audioText);
+            if (ttsMeta && ttsMeta.buffer) {
+              await sendVoiceTelegram(ttsMeta.buffer, botToken, chatId);
+              log('commander', `[tts-opt-in] audio enviado para /${intent.command} (provider=${ttsMeta.provider})`);
+            }
+          }
+        } catch (e) {
+          log('commander', `[tts-opt-in] fallo generar/enviar audio: ${e.message} — reply principal ya entregado`);
+        }
+      }
     } else {
       // Comando no reconocido por ningún handler → cae a texto libre (LLM)
       textoLibre.push(m);
