@@ -13,6 +13,15 @@ const COMMANDER_QUEUE = path.join(PIPELINE, 'servicios', 'commander', 'pendiente
 const HISTORY_FILE = path.join(PIPELINE, 'commander-history.jsonl');
 const OFFSET_FILE = path.join(PIPELINE, 'listener-offset.json');
 
+// Issue #3310 CA-1: sanitizar TODO texto entrante antes de:
+//   - escribir el drop a la cola del commander
+//   - appendear al historial
+//   - loggear en stdout
+// Si alguien pega una API key por Telegram, el sanitizer la convierte en
+// `[REDACTED:<TIPO>]` antes de que toque disco. Fail-closed: si el sanitizer
+// rompe devuelve `[SANITIZER_ERROR:...]`, NUNCA el input original.
+const { sanitize } = require('./sanitizer');
+
 // Secrets fuera del repo (ver lib/telegram-secrets.js)
 const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
@@ -175,10 +184,16 @@ async function enqueueMessage(update) {
     voicePath = await downloadTelegramFile(msg.audio.file_id, 'mp3');
   }
 
+  // Issue #3310 CA-1: sanitizar TEXT y CAPTION antes de persistir. Si el
+  // usuario pegó por error una API key (incidente Groq 2026-05-17), acá la
+  // redactamos antes de que toque disco — ni cola, ni historial, ni log.
+  const rawText = msg.text || caption || '';
+  const sanitizedText = sanitize(rawText);
+
   const content = {
     message_id: msg.message_id,
     from: msg.from?.first_name || 'unknown',
-    text: msg.text || caption || '',
+    text: sanitizedText,
     photo: msg.photo ? msg.photo[msg.photo.length - 1]?.file_id : null,
     photo_path: photoPath,
     voice: msg.voice?.file_id || msg.audio?.file_id || null,
@@ -186,14 +201,14 @@ async function enqueueMessage(update) {
     date: msg.date
   };
 
-  // Escribir en cola del Commander
+  // Escribir en cola del Commander (texto ya sanitizado).
   const filePath = path.join(COMMANDER_QUEUE, `${id}.json`);
   fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
 
-  // Registrar en historial
+  // Registrar en historial (texto ya sanitizado).
   appendHistory({ direction: 'in', ...content });
 
-  log(`Mensaje encolado: "${(content.text || '').slice(0, 50)}..." → ${filePath}`);
+  log(`Mensaje encolado: "${(sanitizedText || '').slice(0, 50)}..." → ${filePath}`);
 }
 
 // --- Main polling loop ---

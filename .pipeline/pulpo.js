@@ -6112,7 +6112,45 @@ function loadSession() {
 }
 
 function saveSession(session) {
+  // Issue #3310 CA-4: sanitizar `session.context` antes de persistir. El
+  // context se arma con respuestas de Claude (lineas 7764, 8092) y puede
+  // citar de vuelta input del usuario. Si el commander hace eco de una key,
+  // queda redacted en disco. Idempotente: re-aplicar sanitize sobre un
+  // placeholder no lo altera (los patrones no matchean `[REDACTED:...]`).
+  try {
+    if (session && typeof session.context === 'string') {
+      session = { ...session, context: sanitizePipelineText(session.context) };
+    }
+  } catch { /* fail-closed via sanitizePipelineText, no debería tirar */ }
   fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
+}
+
+// Issue #3310 CA-1.5: chokepoint único para appendear al
+// `commander-history.jsonl`. Sanitiza el campo `text` (y `reason` en caso de
+// gates) ANTES del JSON.stringify para que un secreto que se cuele en una
+// respuesta outbound o en input procesado no quede en plaintext en disco.
+//
+// Reemplaza los 6 `fs.appendFileSync(historyFile, ...)` dispersos por
+// pulpo.js. Cualquier append nuevo al historial DEBE pasar por este helper.
+function appendCommanderHistory(historyFile, entry) {
+  try {
+    const safe = { ...entry };
+    if (typeof safe.text === 'string') safe.text = sanitizePipelineText(safe.text);
+    if (typeof safe.reason === 'string') safe.reason = sanitizePipelineText(safe.reason);
+    // Default timestamp si el caller no lo trajo (los appends viejos lo
+    // declaran inline; mantenemos el comportamiento previo).
+    if (!safe.timestamp) safe.timestamp = new Date().toISOString();
+    fs.appendFileSync(historyFile, JSON.stringify(safe) + '\n');
+  } catch (e) {
+    // Fail-closed: si algo rompe, NO escribimos el entry crudo (que podría
+    // tener un secreto). Solo registramos el error con marker explícito.
+    try {
+      fs.appendFileSync(
+        historyFile,
+        JSON.stringify({ direction: 'error', text: `[HISTORY_APPEND_ERROR:${(e && e.message) || 'unknown'}]`, timestamp: new Date().toISOString() }) + '\n',
+      );
+    } catch { /* best-effort, no podemos hacer más */ }
+  }
 }
 
 // --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
@@ -7627,8 +7665,8 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     m._audioFailed = !!(processed.audio && processed.audio.ok === false);
     log('commander', `Preprocesado: "${m._textoFinal.slice(0, 80)}"${m._audioFailed ? ' [audio fallido: ' + processed.audio.errorKind + ']' : ''}`);
 
-    // Registrar entrada en historial
-    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: m._textoFinal, timestamp: new Date().toISOString() }) + '\n');
+    // Registrar entrada en historial (sanitizado por appendCommanderHistory).
+    appendCommanderHistory(historyFile, { direction: 'in', from: m.from, text: m._textoFinal });
   }
 
   // --- CLASIFICAR cada mensaje con el router determinístico (#3257 CA-1) ---
@@ -7763,12 +7801,11 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       session.lastTimestamp = new Date().toISOString();
       session.context = `Último comando: /${intent.command}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
       sendTelegram(respuesta);
-      fs.appendFileSync(historyFile, JSON.stringify({
+      appendCommanderHistory(historyFile, {
         direction: 'out',
         text: respuesta.slice(0, 1000),
-        timestamp: new Date().toISOString(),
         routing: { class: intent.class, handler: intent.command || null, status: result ? result.status : 'legacy' },
-      }) + '\n');
+      });
 
       // #3262 CA-9 — TTS opt-in: si el handler devolvió audioText (ej. `/wave --audio`),
       // generar mp3 con multimedia.textToSpeechWithMeta y enviar como voice.
@@ -7808,7 +7845,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     const fallback = (textoLibre[0]._audio && textoLibre[0]._audio.fallbackMessage) || transcriptionFailureMessage(dominant);
     log('commander', `Audio(s) sin transcribir [${errorKinds.join(',')}] — fallback directo a Telegram, sin invocar a Claude`);
     sendTelegram(fallback);
-    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: fallback, timestamp: new Date().toISOString(), reason: `audio_fallback:${dominant}` }) + '\n');
+    appendCommanderHistory(historyFile, { direction: 'out', text: fallback, reason: `audio_fallback:${dominant}` });
     for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
     return;
   }
@@ -7828,12 +7865,11 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
           const safe = redact(m._textoFinal || '');
           return `[Mensaje ${i + 1}${m._esAudio ? ' (audio)' : ''}]: ${safe}`;
         }).join('\n\n');
-        fs.appendFileSync(historyFile, JSON.stringify({
+        appendCommanderHistory(historyFile, {
           direction: 'in_quota_blocked',
           text: audit,
           debounced: gate.debounced,
-          timestamp: new Date().toISOString(),
-        }) + '\n');
+        });
       } catch {}
       // Mover mensajes a listo y abortar el flujo de Claude.
       for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
@@ -7922,7 +7958,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
             intent: issueIntent.intent,
           }, { log });
         } catch { /* best-effort */ }
-        fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: blocked, timestamp: new Date().toISOString(), reason: `issue_creation_blocked:${activeProvider}` }) + '\n');
+        appendCommanderHistory(historyFile, { direction: 'out', text: blocked, reason: `issue_creation_blocked:${activeProvider}` });
         for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
         saveSession(session);
         return;
@@ -8061,7 +8097,7 @@ Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
           suplementosTexto.push(txt);
           s._textoFinal = txt;
           s._esAudio = !!(s.voice || s.voice_path);
-          fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: s.from, text: txt, timestamp: new Date().toISOString() }) + '\n');
+          appendCommanderHistory(historyFile, { direction: 'in', from: s.from, text: txt });
         }
 
         sendTelegram('💬 Vi tu mensaje adicional, lo integro a la respuesta...');
@@ -8133,7 +8169,7 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
 
         sendTelegram(respuesta);
         log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
-        fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+        appendCommanderHistory(historyFile, { direction: 'out', text: respuesta.slice(0, 1000) });
       }
     } catch (e) {
       log('commander', `Error Claude: ${e.message}`);
