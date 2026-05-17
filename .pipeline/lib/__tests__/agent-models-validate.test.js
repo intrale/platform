@@ -172,10 +172,11 @@ test('CA-2 · validateOrExit invoca exitFn con el código correcto + escribe a s
 
 // ─── CA-3 · ALLOWED_LAUNCHERS source-of-truth + composición programática ────
 
-test('CA-3 · ALLOWED_LAUNCHERS expone los launchers permitidos (post #3220 = 7)', () => {
+test('CA-3 · ALLOWED_LAUNCHERS expone los launchers permitidos (post #3220 + #3243 = 8)', () => {
   // #3220 — sumamos `gemini-google` (rename ex-`gemini`), `groq` y `cerebras`.
+  // #3243 — sumamos `nvidia-nim` (4to free provider, ola N+5).
   assert.deepEqual([...validateMod.ALLOWED_LAUNCHERS].sort(),
-    ['cerebras', 'claude', 'codex', 'gemini-google', 'groq', 'node', 'ollama']);
+    ['cerebras', 'claude', 'codex', 'gemini-google', 'groq', 'node', 'nvidia-nim', 'ollama']);
 });
 
 test('CA-3 · ALLOWED_LAUNCHERS es congelado (Object.freeze) — inmutabilidad', () => {
@@ -499,7 +500,8 @@ test('CA-3 · si schema literal disagrees con ALLOWED_LAUNCHERS, runtime gana (c
   // Si fueran la misma referencia, esto contaminaría literalEnum.
   // En cualquier caso, ALLOWED_LAUNCHERS sigue intacto (Object.freeze).
   // #3220 — 5 → 7 launchers (rename gemini→gemini-google + groq + cerebras).
-  assert.equal(validateMod.ALLOWED_LAUNCHERS.length, 7);
+  // #3243 — 7 → 8 launchers (nvidia-nim, 4to free provider ola N+5).
+  assert.equal(validateMod.ALLOWED_LAUNCHERS.length, 8);
 });
 
 // =============================================================================

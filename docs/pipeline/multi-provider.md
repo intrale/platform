@@ -853,7 +853,7 @@ Implementado por: [#3198](https://github.com/intrale/platform/issues/3198) (cons
 
 ## 8. Hardening de free providers (#3260)
 
-Los providers free (Groq, Gemini-Google, Cerebras, NVIDIA-NIM cuando mergee #3243) son la **red de salvataje** del pipeline cuando se agota la cuota de Claude / Codex. El issue [#3260](https://github.com/intrale/platform/issues/3260) (ola N+5) endurece esa red con healthchecks periódicos, validación semanal de keys, panel "Health" del dashboard, alertas Telegram con dedupe + back-off, y este procedimiento operativo.
+Los **4 providers free** (Groq, Gemini-Google, Cerebras, NVIDIA NIM) son la **red de salvataje** del pipeline cuando se agota la cuota de Claude / Codex. El issue [#3260](https://github.com/intrale/platform/issues/3260) (ola N+5) endurece esa red con healthchecks periódicos, validación semanal de keys, panel "Health" del dashboard, alertas Telegram con dedupe + back-off, y este procedimiento operativo. NVIDIA NIM se sumó en [#3243](https://github.com/intrale/platform/issues/3243) (ola N+5).
 
 ### 8.1 Free tier real por provider
 
@@ -864,7 +864,7 @@ Los providers free (Groq, Gemini-Google, Cerebras, NVIDIA-NIM cuando mergee #324
 | `groq` | 30 | 14400 | depende del modelo (~500K) | `GET https://api.groq.com/openai/v1/models` | Body 401/403 sin detalle propietario. 429 con `insufficient_quota` ⇒ `quota_exhausted`. |
 | `gemini-google` | 15 | 1500 | 1M tokens | `GET https://generativelanguage.googleapis.com/v1beta/models` | Auth con header `x-goog-api-key` (la key NUNCA en query string — `key` ya está en `SENSITIVE_QUERY_KEYS`). 400 con `API_KEY_INVALID` ⇒ `invalid_credentials`. |
 | `cerebras` | 30 | sin cap docu | ~60K tokens/min | `GET https://api.cerebras.ai/v1/models` | Free tier sólo modelos llama-* (sin Mistral). 429 con `insufficient` ⇒ `quota_exhausted`. |
-| `nvidia-nim` | TBD | TBD | TBD | TBD (sumar cuando mergee #3243) | Card "muted" en el panel Health hasta que el provider esté declarado. |
+| `nvidia-nim` | _no publicado_ | _no publicado_ | _no publicado_ | `GET https://integrate.api.nvidia.com/v1/models` | NVIDIA no publica RPM/RPD/TPM del free tier — la observación queda pendiente del cron de health (medición empírica, ver #3327). 429 con `insufficient_quota / monthly` ⇒ `quota_exhausted`. |
 
 Cron de healthchecks: cada 15min × 4 providers = **384 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota).
 
@@ -1038,6 +1038,56 @@ Si por error pegaste una key directamente en el chat:
    ```
    Si aparece, sabés que el incidente queda registrado y sirve para correlación.
 4. **Issue de scrubbing retroactivo**: si querés limpiar el historial existente, ver [#3317](https://github.com/intrale/platform/issues/3317) (necesita aprobación humana, `needs-human`).
+### 8.9 NVIDIA NIM — guía operativa específica (#3243)
+
+NVIDIA NIM es el **4to free provider** del multi-provider (post #3243). Hostea ~80 modelos OpenAI-compatible en `integrate.api.nvidia.com`, con catálogo enfocado en razonamiento (DeepSeek V4-Pro, SWE-bench 80.6%) y agentic loops (Kimi K2.6, tool use 96.6%) — complementario a los llamas de Groq/Cerebras y a Gemini 2.0 Flash.
+
+**Cómo obtener la API key:**
+
+1. Crear cuenta gratis en [`https://build.nvidia.com`](https://build.nvidia.com) (signup con email/Google/GitHub).
+2. Panel "API Keys" → "Generate Personal Key".
+3. Copiar la key (`nvapi-…`) — el portal NO permite re-mostrarla después de cerrar el modal.
+4. Setearla **vía UI del dashboard** (sección 8.2), tab "1 · Proveedores" → "Rotar key" en la fila `nvidia-nim`. NO editar `telegram-config.json` a mano.
+
+**Modelos disponibles en el catálogo del pipeline:**
+
+| Modelo | Capabilities | Context window | Uso recomendado |
+|--------|--------------|----------------|-----------------|
+| `deepseek-ai/deepseek-v4-pro` | `reasoning`, `coding`, `long_context` | 1M tokens | Razonamiento técnico, análisis de código de gran escala (SWE-bench Verified 80.6%, LiveCodeBench 93.5%) |
+| `moonshotai/kimi-k2-instruct` | `agentic`, `tool_use`, `long_context` | 128K tokens | Loops agentic con muchos tool calls (tool use success 96.6%, long-horizon 13h / 300 sub-agents) |
+
+Para agregar más modelos del catálogo NVIDIA NIM (ej. `gpt-oss-120b` opcional), seguir sección 3.2: editar `ALLOWED_MODELS_BY_LAUNCHER['nvidia-nim']` en `lib/agent-models-validate.js` + agregar entry en `agent-models.json` con el namespace `vendor/model`. El boot del pulpo cross-valida.
+
+**Free tier — observación empírica pendiente (#3327):**
+
+NVIDIA **NO publica** rate limits ni monthly quota del free tier. Las decisiones operativas (cuándo cortar, cuándo escalar a paid) dependen de telemetría real del cron de health durante las primeras 2 semanas post-activación. Mientras tanto:
+
+- `provider-exhaustion-pause.js` desactiva temporalmente el provider si responde 429 repetido (mismo comportamiento que Groq / Cerebras).
+- El cron de health (cada 15min × `/v1/models`) genera baseline de latencia y disponibilidad sin consumir cuota de completions.
+
+**Hosting topology check — gate pre-activación (#3243 SR-12):**
+
+NVIDIA NIM permite que **partners** (3rd parties) hosteen modelos del catálogo en infra propia. Antes de flippear el provider a `activo` en runtime:
+
+- Verificar en `build.nvidia.com` que `deepseek-ai/deepseek-v4-pro` y `moonshotai/kimi-k2-instruct` aparecen como **"NVIDIA-direct"** (no "NIM Partner redeploy").
+- Si alguno es partner, documentar el hop adicional acá y validar contra la matriz de policy TOS/DPA de #3084 antes de activar.
+- Estado actual: **pendiente de verificación** (al merge de #3243 los modelos quedan declarados como "configurados pero inactivos" hasta completar este check + la fila TOS/DPA en #3084).
+
+**Comparativa cross-provider (free tier):**
+
+| Provider | Modelo principal | Foco | Context | Naming |
+|----------|------------------|------|---------|--------|
+| Groq | `llama-3.3-70b-versatile` / `qwen2.5-coder-32b` | Velocidad | 128K | sin namespace |
+| Gemini | `gemini-2.0-flash` | Generalista (sin código sensible — TOS entrena) | 1M | sin namespace |
+| Cerebras | `llama-3.3-70b` | Velocidad inference | 128K | sin namespace |
+| **NVIDIA NIM** | **`deepseek-v4-pro` / `kimi-k2`** | **Razonamiento / agentic** | **1M (DeepSeek)** | **`vendor/model`** |
+
+NVIDIA NIM aporta razonamiento de calidad alta en free tier — los 3 anteriores son llamas/Gemini sin foco en razonamiento. Es **complementario**, no redundante.
+
+**Asignación de skills (al merge de #3243):**
+
+- `guru` (análisis técnico): `nvidia-nim` queda como **último fallback** con `deepseek-ai/deepseek-v4-pro`. Anthropic sigue primero (sign-off Leo 2026-05-15).
+- Resto de skills: sin asignación todavía. Promover NVIDIA NIM arriba en otros skills requiere sign-off humano explícito.
 
 ---
 

@@ -193,6 +193,15 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         'rate_limit_exceeded',
         'quota_exceeded',
     ]),
+    // #3243 — NVIDIA NIM, 4to free provider. API OpenAI-compat: `_detectOpenAI`
+    // reusa el shape SSE sin código nuevo. Lista conservadora — NVIDIA no
+    // publica códigos formales del free tier; estos cubren los casos típicos
+    // de un OpenAI-compat provider (429 → quota / rate limit).
+    'nvidia-nim': Object.freeze([
+        'rate_limit_exceeded',
+        'quota_exceeded',
+        'insufficient_quota',
+    ]),
 });
 
 // -----------------------------------------------------------------------------

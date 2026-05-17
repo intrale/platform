@@ -388,6 +388,11 @@ function providerToken(provider) {
     if (p === 'openai') return '--provider-openai';
     if (p === 'openai-codex' || p === 'codex') return '--provider-openai-codex';
     if (p === 'deterministic') return '--provider-deterministic';
+    // #3243 — NVIDIA NIM free provider. Token ya entregado por UX en
+    // design-tokens.css (#76B900, contraste 7.6:1 AAA Large). Allowlist
+    // del dashboard sigue cerrada (regla R6 anti-fallback); el resto de free
+    // providers (groq/gemini-google/cerebras) se cubren en #3326.
+    if (p === 'nvidia-nim') return '--provider-nvidia-nim';
     return '--provider-unknown';
 }
 
@@ -401,6 +406,9 @@ function providerIcon(provider, size) {
     if (p === 'openai') return iconSvg('provider-openai', size);
     if (p === 'openai-codex' || p === 'codex') return iconSvg('provider-openai-codex', size);
     if (p === 'deterministic') return iconSvg('provider-deterministic', size);
+    // #3243 — sprite entregado en .pipeline/assets/icons/sprite.svg
+    // (ic-provider-nvidia-nim: nodo + 3 satélites = microservice de inferencia).
+    if (p === 'nvidia-nim') return iconSvg('provider-nvidia-nim', size);
     return iconSvg('provider-unknown', size);
 }
 

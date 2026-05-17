@@ -32,6 +32,10 @@ const PROVIDER_HANDLERS = {
     'gemini-google': require('./providers/gemini-google'),
     'groq': require('./providers/groq'),
     'cerebras': require('./providers/cerebras'),
+    // #3243 — NVIDIA NIM, 4to free provider. Stub idéntico al patrón de los
+    // otros 3 free providers: error accionable hasta que #3198 entregue el
+    // wrapper real, sin tokens consumidos, sin crash del pulpo.
+    'nvidia-nim': require('./providers/nvidia-nim'),
     'deterministic': require('./providers/deterministic'),
 };
 
@@ -185,6 +189,8 @@ function resolvePermissionMode(models, providerName) {
         'gemini-google': 'bypassPermissions',
         'groq': 'bypassPermissions',
         'cerebras': 'bypassPermissions',
+        // #3243 — NVIDIA NIM default consistent con otros free providers.
+        'nvidia-nim': 'bypassPermissions',
         deterministic: 'native',
     };
     if (!models || !models.providers || !models.providers[providerName]) {

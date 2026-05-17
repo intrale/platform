@@ -89,7 +89,29 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
     //     `forbidden` / `quota_exhausted` / `rate_limited` / `unknown`. Nunca
     //     códigos provider-specific (filtran detalle al panel).
     //
-    // NVIDIA-NIM se suma cuando mergee #3243 con su propio handler.
+    // NVIDIA NIM (#3243): API OpenAI-compatible, key viaja en `Authorization:
+    // Bearer`. Endpoint de listado `/v1/models`. Reason codes alineados al set
+    // genérico (SR-4 del análisis de seguridad). Free tier sin límites públicos
+    // documentados — `quota_exhausted` se infiere por body match si NVIDIA
+    // empieza a publicar `insufficient_quota` (placeholder conservador).
+    'nvidia-nim': {
+        url: 'https://integrate.api.nvidia.com/v1/models',
+        method: 'GET',
+        body: () => null,
+        headers: (key) => ({ 'authorization': `Bearer ${key}` }),
+        interpret: (status, bodyExcerpt) => {
+            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
+            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
+            if (status === 403) return { ok: false, reason: 'forbidden' };
+            if (status === 429) {
+                if (/insufficient_quota|quota|monthly_limit/i.test(bodyExcerpt)) {
+                    return { ok: false, reason: 'quota_exhausted' };
+                }
+                return { ok: false, reason: 'rate_limited' };
+            }
+            return { ok: false, reason: 'unknown' };
+        },
+    },
     groq: {
         url: 'https://api.groq.com/openai/v1/models',
         method: 'GET',
