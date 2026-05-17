@@ -211,6 +211,123 @@ PR que las viole debe ser rechazado en code review.
 
 ---
 
+## Creación de issues delega a /doc y /planner (#3250)
+
+Cuando el Commander recibe un pedido por Telegram que dispara creación de
+issues ("creá un issue para X", "creá un épico", "esto hay que dividirlo en
+A y B", etc.), **NO arma el body con su propio LLM**. Delega al skill
+correspondiente para que el inventario quede indistinguible de un `/doc` por
+consola.
+
+### Routing por tipo de pedido
+
+| Texto del usuario | Skill invocado | Args |
+|-------------------|----------------|------|
+| "creá un issue para X" / "levantá una historia de Y" / "hace falta un ticket de Z" / "armá un issue de W" | `doc` | `nueva <descripción>` |
+| "creá un épico" / "esto hay que dividirlo en A y B" / "separá en backend y app" / "esto toca varios módulos" | `planner` | `split ...` (si hay padre) o `proponer ...` (si Leo pide ideas) |
+
+La detección viene en dos pasos:
+
+1. **Heurística pre-LLM** (módulo `lib/commander/issue-creation.js`,
+   función `detectIssueCreationIntent`). Patrones regex en español. Si
+   matchea, el Pulpo activa los gates SEC-3/SEC-4/SEC-5 antes de invocar
+   a Claude. Si NO matchea, el flow sigue al LLM y el routing real lo
+   decide Claude (instruido por el bloque `buildIssueCreationPromptBlock`
+   inyectado en el `userPrompt`).
+2. **Bloque de prompt** — Claude recibe siempre una regla específica en
+   mayúsculas en el `userPrompt` con: la allowlist de skills (`doc` y
+   `planner`), la prohibición de `gh issue create` directo, la
+   validación post-éxito con `gh issue view`, y el formato esperado del
+   reporte a Telegram para split. Ver `buildIssueCreationPromptBlock()`
+   en el módulo.
+
+### Reglas inquebrantables aplicadas
+
+| ID | Origen | Implementación |
+|----|--------|----------------|
+| **CA-1** | issue body | heurística + prompt inyectado |
+| **CA-2** | issue body | Skill tool via `bypassPermissions` — único entrypoint |
+| **CA-3** | issue body | prompt obliga `gh issue view` post-éxito |
+| **CA-4** | issue body | prompt define formato split (`🧩 ... blocked:dependencies → ...`) |
+| **CA-5** | issue body | prompt PROHÍBE `gh issue create` y declara los copys de error |
+| **CA-6** | issue body | esta sección + `feedback_commander-delega-doc-planner.md` |
+| **SEC-1** | análisis security | `ALLOWED_SKILLS_FOR_ISSUE_CREATION = ['doc', 'planner']` |
+| **SEC-2** | análisis security | `isSenderAllowed(from.id, getAllowedSenderIds())`, env `TELEGRAM_ALLOWED_USER_IDS` |
+| **SEC-3** | análisis security | `sanitizeIssueCreationInput()` — trunca a 4000 chars + strip control/ANSI |
+| **SEC-4** | análisis security | `logSkillInvocation()` → `.pipeline/logs/commander-skill-audit.jsonl` |
+| **SEC-5** | análisis security | `resolveCommanderProvider()` + gate explícito si `provider !== 'anthropic'` |
+
+### Audit log de invocaciones de skill (SEC-4)
+
+Path: `.pipeline/logs/commander-skill-audit.jsonl`. Una línea JSON por
+invocación. Convive con `commander-audit-YYYY-MM-DD.jsonl` (audit
+general de routing) pero el shape es específico de creación de issues:
+
+```json
+{
+  "timestamp": "2026-05-17T01:45:00.123Z",
+  "from": { "id": 12345678, "username": "leitolarreta" },
+  "input_text": "creá un issue para arreglar el bug del scroll en el feed",
+  "input_text_truncated": false,
+  "skill_invoked": "doc",
+  "skill_args": null,
+  "skill_result": "ok",
+  "issue_created": 3299,
+  "duration_ms": 245000,
+  "provider": "anthropic",
+  "intent": "create_simple",
+  "sender_allowed": true
+}
+```
+
+Casos especiales:
+
+- **`skill_result: "blocked"`** con `error: "sender_not_allowed"` →
+  SEC-2 rechazó el mensaje (sender fuera de `TELEGRAM_ALLOWED_USER_IDS`).
+- **`skill_result: "blocked"`** con `error: "provider_not_anthropic"` →
+  SEC-5 rechazó el pedido (failover a Codex/Groq/etc.).
+- **`skill_result: "error"`** → Claude termino pero la respuesta no
+  menciona invocación de skill ni issue creado → posible fallback
+  silencioso (alerta forense).
+- **`input_text`** se guarda redactado en los primeros 200 chars (preview
+  forense). El texto completo del usuario vive en
+  `commander-history.jsonl` con la política de redacción ya existente.
+
+### Bloqueo cuando el provider activo no es Anthropic (SEC-5)
+
+Los providers no-Anthropic (Groq/Cerebras/Gemini/Codex) no tienen Skill
+tool habilitado en el harness — intentar `/doc` o `/planner` allí
+caería en fallback silencioso con calidad degradada. Cuando el dispatcher
+(`commanderMP.resolveCommanderProvider`) resuelve a un provider distinto
+de Anthropic, el Pulpo NO invoca a Claude y responde directo:
+
+```
+🚧 No puedo crear issues ahora mismo — el cerebro principal está caído (failover a <provider>).
+Reintentá más tarde o creá manual por consola: /doc nueva ...
+```
+
+Cuando #3258 (multi-provider fallback chain) declare más providers, este
+gate se mantiene válido porque el contrato es "Anthropic o nada" — sólo
+Anthropic tiene Skill tool en este pipeline.
+
+### Cómo verificar manualmente
+
+```bash
+# 1. Estado del audit log
+tail -n 20 .pipeline/logs/commander-skill-audit.jsonl
+
+# 2. Test del módulo
+node --test .pipeline/lib/__tests__/commander-issue-creation.test.js
+
+# 3. Sintaxis pulpo.js (smoke)
+node --check .pipeline/pulpo.js
+
+# 4. Provider activo del commander
+node -e "console.log(require('./.pipeline/lib/commander/multi-provider').resolveCommanderProvider({ pipelineDir: '.pipeline' }))"
+```
+
+---
+
 ## Referencias
 
 - Mockup del card del dashboard: `.pipeline/assets/mockups/15-commander-routing-metric.svg`
@@ -219,3 +336,4 @@ PR que las viole debe ser rechazado en code review.
 - Análisis OWASP completo: comentario `security` en issue #3257
 - Análisis técnico: comentario `guru` en issue #3257
 - Criterios consolidados: comentario `po` en issue #3257
+- Delegación a /doc y /planner: issue #3250 + módulo `.pipeline/lib/commander/issue-creation.js`
