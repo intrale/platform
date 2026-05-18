@@ -763,6 +763,51 @@ test('siempre rompe', () => { assert.equal(1, 2); });
     assert.equal(r.summary.failed_tests[0].name, 'siempre rompe');
 });
 
+// #3344 — Antes de este fix, un test que dejaba un handle activo (timer,
+// socket, server HTTP sin cerrar) hacía que `node --test` nunca terminara,
+// porque el runner top-level espera a que todos los workers cierren sus
+// handles. El tester quedaba colgado hasta que el watchdog del Pulpo lo
+// mataba a los 45min, con reporte JUnit vacío. El fix: spawn lanza
+// `--test-timeout=120000` (corta tests individuales), `runNodeTests` aplica
+// wall-clock duro de 12min (mata el child con SIGKILL/taskkill /T /F) y
+// emite heartbeat de progreso vía opts.onLog. Verificamos los hooks nuevos
+// sobre un test normal sin alterar el éxito del run.
+test('#3344 — runNodeTests acepta opts.onLog (heartbeat) sin romper runs normales', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3344-onlog-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'fast.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('ok', () => { assert.equal(1, 1); });
+`);
+    const logs = [];
+    const r = await tester.runNodeTests(fresh, process.env, {
+        onLog: (m) => logs.push(m),
+    });
+    assert.equal(r.exit_code, 0);
+    assert.equal(r.timed_out, false);
+    assert.equal(typeof r.last_progress_line, 'string');
+    // El run termina rápido, así que el heartbeat (intervalo 30s) puede no
+    // disparar nunca — sólo verificamos que el callback se aceptó sin error.
+    assert.ok(Array.isArray(logs));
+});
+
+test('#3344 — runNodeTests setea timed_out:false en run normal y last_progress_line presente', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3344-fields-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'sample.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('ok', () => { assert.equal(2, 2); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.timed_out, false);
+    assert.equal(r.exit_code, 0);
+    assert.equal(typeof r.last_progress_line, 'string');
+});
+
 // #2895 (rebote rev-1): regresión empírica del rebote del 2026-04-30.
 // Los tests del pipeline fallaban en producción cuando el pulpo arrancaba
 // como servicio sin git en el PATH heredado. Este test simula ese caso
