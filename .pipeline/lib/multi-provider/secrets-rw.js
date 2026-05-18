@@ -1,6 +1,10 @@
 // =============================================================================
-// secrets-rw.js — Lectura/escritura segura de API keys en
-// `~/.claude/secrets/telegram-config.json` desde la UI del dashboard (#3177).
+// secrets-rw.js — Lectura/escritura segura de API keys (#3177 / #3313).
+//
+// Fuente única de verdad: `~/.claude/secrets/credentials.json` (canonical,
+// estructura nested introducida por #3311). Fallback de SOLO LECTURA a
+// `~/.claude/secrets/telegram-config.json` (legacy, flat keys) para casos
+// donde el canonical todavía no fue creado.
 //
 // Reglas de seguridad (OWASP A02 — Cryptographic Failures + A07):
 //   - GET nunca devuelve la key completa. Sólo metadata: provider, status
@@ -11,6 +15,23 @@
 //     La API la lista pero con flag `editable: false`.
 //   - El archivo en disco tiene permisos 0600 después de cada write (best-effort
 //     en Windows: setFileSecurity no es trivial sin nativos, en POSIX usa chmod).
+//
+// Estructura canonical esperada (alineada con .pipeline/lib/credentials.js):
+//   {
+//     "telegram":   { "bot_token": "...", "chat_id": "..." },
+//     "providers":  {
+//       "anthropic": { "api_key": "..." },
+//       "openai":    { "api_key": "..." },
+//       "groq":      { "api_key": "..." },
+//       "google":    { "api_key": "..." },        // mapea al provider 'gemini-google'
+//       "cerebras":  { "api_key": "..." },
+//       "nvidia":    { "api_key": "..." }
+//     },
+//     "multimedia": { "elevenlabs_api_key": "..." }
+//   }
+//
+// Estructura legacy (solo lectura, deprecada):
+//   { "openai_api_key": "...", "groq_api_key": "...", ... }  // flat
 // =============================================================================
 'use strict';
 
@@ -19,55 +40,64 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 
-const HOME_SECRETS = path.join(os.homedir(), '.claude', 'secrets', 'telegram-config.json');
+const HOME_CANONICAL = path.join(os.homedir(), '.claude', 'secrets', 'credentials.json');
+const HOME_LEGACY = path.join(os.homedir(), '.claude', 'secrets', 'telegram-config.json');
 const DEFAULT_BACKUP_DIR = path.join(os.homedir(), '.claude', 'secrets', 'backups');
 const DEFAULT_BACKUP_RETENTION = 30;
 
 // Lista canónica de keys gestionables vía UI. Anthropic está pero `editable:false`.
 //
-// Los 3 free providers (#3260 — hardening de free providers, ola N+5) entran al
-// mismo flujo de masking + fingerprint SHA-256 + atomic write 0600 + backup
-// 30d + audit chain (SR-1 de security). NVIDIA-NIM se sumará cuando mergee
-// #3243 — la lista crece editando este array, sin código nuevo.
+// `canonicalPath` = dot-path en credentials.json (estructura nested).
+// `legacyField`   = flat key en telegram-config.json (solo lectura, para
+// compat hacia atrás mientras el canonical todavía no existe).
 const MANAGED_KEYS = Object.freeze([
     {
-        jsonField: 'anthropic_api_key',
         provider: 'anthropic',
         label: 'Anthropic',
         editable: false,
         reason: 'Claude Code usa OAuth / MAX login; rotar acá puede confundir el child env.',
+        canonicalPath: 'providers.anthropic.api_key',
+        legacyField: 'anthropic_api_key',
     },
     {
-        jsonField: 'openai_api_key',
         provider: 'openai',
         label: 'OpenAI / Codex',
         editable: true,
+        canonicalPath: 'providers.openai.api_key',
+        legacyField: 'openai_api_key',
     },
     {
-        jsonField: 'elevenlabs_api_key',
         provider: 'elevenlabs',
         label: 'ElevenLabs',
         editable: true,
+        canonicalPath: 'multimedia.elevenlabs_api_key',
+        legacyField: 'elevenlabs_api_key',
     },
     {
-        jsonField: 'groq_api_key',
         provider: 'groq',
         label: 'Groq',
         editable: true,
+        canonicalPath: 'providers.groq.api_key',
+        legacyField: 'groq_api_key',
         free_tier_notes: 'RPM 30 / RPD 14400 (free) — ver docs/pipeline/multi-provider.md §8.',
     },
     {
-        jsonField: 'gemini_google_api_key',
         provider: 'gemini-google',
         label: 'Gemini (Google AI Studio)',
         editable: true,
+        // En el credentials.json canónico vive bajo `providers.google` (alineado
+        // con credentials.js → GEMINI_API_KEY). En la UI seguimos llamándolo
+        // 'gemini-google' para diferenciarlo de Vertex AI.
+        canonicalPath: 'providers.google.api_key',
+        legacyField: 'gemini_google_api_key',
         free_tier_notes: 'RPM 15 / RPD 1500 / TPM 1M (free) — ver docs/pipeline/multi-provider.md §8.',
     },
     {
-        jsonField: 'cerebras_api_key',
         provider: 'cerebras',
         label: 'Cerebras',
         editable: true,
+        canonicalPath: 'providers.cerebras.api_key',
+        legacyField: 'cerebras_api_key',
         free_tier_notes: 'RPM 30 / TPM 60K (free) — ver docs/pipeline/multi-provider.md §8.',
     },
 ]);
@@ -100,10 +130,72 @@ function tryReadJson(file, fsImpl = fs) {
     }
 }
 
-function listKeys({ secretsPath = HOME_SECRETS, fsImpl = fs } = {}) {
-    const json = tryReadJson(secretsPath, fsImpl) || {};
+function getNested(obj, dotPath) {
+    return dotPath.split('.').reduce(
+        (acc, k) => (acc && typeof acc === 'object') ? acc[k] : undefined,
+        obj
+    );
+}
+
+function setNested(obj, dotPath, value) {
+    const parts = dotPath.split('.');
+    const last = parts.pop();
+    let cur = obj;
+    for (const p of parts) {
+        if (cur[p] === null || cur[p] === undefined || typeof cur[p] !== 'object') {
+            cur[p] = {};
+        }
+        cur = cur[p];
+    }
+    cur[last] = value;
+    return obj;
+}
+
+// Detecta el formato del JSON cargado. Si tiene alguna de las claves canónicas
+// top-level → 'canonical'; en cualquier otro caso → 'legacy' (incluso si está
+// vacío o no tiene ninguna key conocida, asumimos legacy por defensa, porque
+// si está vacío sin tener providers/multimedia no podemos asumir intent).
+function detectFormat(data) {
+    if (!data || typeof data !== 'object') return 'canonical';
+    if (data.providers !== undefined || data.multimedia !== undefined || data.telegram !== undefined) {
+        return 'canonical';
+    }
+    // Si tiene alguna flat key conocida → legacy.
+    for (const spec of MANAGED_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(data, spec.legacyField)) return 'legacy';
+    }
+    // Vacío o desconocido: asumimos canonical (caso de archivo recién creado).
+    return 'canonical';
+}
+
+function readKeyFromData(spec, data, format) {
+    if (!data) return undefined;
+    if (format === 'legacy') return data[spec.legacyField];
+    return getNested(data, spec.canonicalPath);
+}
+
+// Resuelve qué archivo abrir y devuelve {data, format, path}. Si `secretsPath`
+// es explícito, usa ese; sino, intenta canonical y luego legacy.
+function loadSource({ secretsPath, fsImpl = fs } = {}) {
+    if (secretsPath) {
+        const data = tryReadJson(secretsPath, fsImpl);
+        return { data, format: detectFormat(data), path: secretsPath };
+    }
+    if (fsImpl.existsSync(HOME_CANONICAL)) {
+        const data = tryReadJson(HOME_CANONICAL, fsImpl);
+        return { data: data || {}, format: 'canonical', path: HOME_CANONICAL };
+    }
+    if (fsImpl.existsSync(HOME_LEGACY)) {
+        const data = tryReadJson(HOME_LEGACY, fsImpl);
+        return { data: data || {}, format: 'legacy', path: HOME_LEGACY };
+    }
+    return { data: null, format: 'canonical', path: HOME_CANONICAL };
+}
+
+function listKeys({ secretsPath, fsImpl = fs } = {}) {
+    const { data, format } = loadSource({ secretsPath, fsImpl });
     return MANAGED_KEYS.map(spec => {
-        const raw = json[spec.jsonField];
+        const raw = readKeyFromData(spec, data, format);
         let status;
         if (typeof raw !== 'string' || !raw.trim()) status = 'absent';
         else if (isPlaceholder(raw)) status = 'placeholder';
@@ -111,7 +203,8 @@ function listKeys({ secretsPath = HOME_SECRETS, fsImpl = fs } = {}) {
 
         return {
             provider: spec.provider,
-            jsonField: spec.jsonField,
+            jsonField: spec.legacyField, // Compat: la UI/log ya consumen `jsonField`. Mantenemos el alias.
+            canonicalPath: spec.canonicalPath,
             label: spec.label,
             editable: spec.editable,
             reason: spec.reason || null,
@@ -126,7 +219,7 @@ function listKeys({ secretsPath = HOME_SECRETS, fsImpl = fs } = {}) {
 function rotateKey({
     provider,
     newValue,
-    secretsPath = HOME_SECRETS,
+    secretsPath,
     backupDir = DEFAULT_BACKUP_DIR,
     retention = DEFAULT_BACKUP_RETENTION,
     fsImpl = fs,
@@ -152,40 +245,64 @@ function rotateKey({
         throw new Error('[secrets-rw] rotateKey: "newValue" demasiado corto (< 20 chars). Sospechoso.');
     }
 
-    const dir = path.dirname(secretsPath);
+    // Escritura: por defecto el archivo destino es el canonical. Si el caller
+    // pasa `secretsPath`, se respeta. El formato escrito preserva el formato
+    // detectado del archivo existente (si es legacy y existe, mantenemos flat
+    // para no romper consumidores legacy; si no existe o es canonical,
+    // escribimos canonical nested).
+    const targetPath = secretsPath || HOME_CANONICAL;
+    const dir = path.dirname(targetPath);
     if (!fsImpl.existsSync(dir)) fsImpl.mkdirSync(dir, { recursive: true });
-    const current = tryReadJson(secretsPath, fsImpl) || {};
+
+    let current = {};
+    let format = 'canonical';
+    if (fsImpl.existsSync(targetPath)) {
+        current = tryReadJson(targetPath, fsImpl) || {};
+        format = detectFormat(current);
+    }
 
     let backupPath = null;
-    if (fsImpl.existsSync(secretsPath)) {
+    if (fsImpl.existsSync(targetPath)) {
         if (!fsImpl.existsSync(backupDir)) fsImpl.mkdirSync(backupDir, { recursive: true });
         const ts = new Date(now).toISOString().replace(/[:.]/g, '-');
-        backupPath = path.join(backupDir, `telegram-config.${ts}.json`);
-        fsImpl.copyFileSync(secretsPath, backupPath);
+        const basename = path.basename(targetPath, '.json');
+        backupPath = path.join(backupDir, `${basename}.${ts}.json`);
+        fsImpl.copyFileSync(targetPath, backupPath);
         try { fsImpl.chmodSync(backupPath, 0o600); } catch { /* Windows: best-effort */ }
     }
 
-    const updated = { ...current, [spec.jsonField]: newValue.trim() };
-    const tmpPath = `${secretsPath}.tmp.${process.pid}.${now}`;
-    fsImpl.writeFileSync(tmpPath, JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
-    fsImpl.renameSync(tmpPath, secretsPath);
-    try { fsImpl.chmodSync(secretsPath, 0o600); } catch { /* Windows: best-effort */ }
+    const trimmed = newValue.trim();
+    const updated = JSON.parse(JSON.stringify(current));
+    if (format === 'legacy') {
+        updated[spec.legacyField] = trimmed;
+    } else {
+        setNested(updated, spec.canonicalPath, trimmed);
+    }
 
-    applyBackupRetention({ backupDir, retention, fsImpl });
+    const tmpPath = `${targetPath}.tmp.${process.pid}.${now}`;
+    fsImpl.writeFileSync(tmpPath, JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
+    fsImpl.renameSync(tmpPath, targetPath);
+    try { fsImpl.chmodSync(targetPath, 0o600); } catch { /* Windows: best-effort */ }
+
+    applyBackupRetention({ backupDir, retention, fsImpl, basename: path.basename(targetPath, '.json') });
 
     return {
         ok: true,
-        jsonField: spec.jsonField,
+        jsonField: spec.legacyField,
+        canonicalPath: spec.canonicalPath,
         provider: spec.provider,
-        fingerprint: fingerprint(newValue.trim()),
+        format,
+        targetPath,
+        fingerprint: fingerprint(trimmed),
         backupPath,
     };
 }
 
-function applyBackupRetention({ backupDir, retention, fsImpl }) {
+function applyBackupRetention({ backupDir, retention, fsImpl, basename }) {
     if (!fsImpl.existsSync(backupDir)) return;
+    const prefix = `${basename}.`;
     const files = fsImpl.readdirSync(backupDir)
-        .filter(f => f.startsWith('telegram-config.') && f.endsWith('.json'))
+        .filter(f => f.startsWith(prefix) && f.endsWith('.json'))
         .sort();
     while (files.length > retention) {
         const oldest = files.shift();
@@ -193,17 +310,21 @@ function applyBackupRetention({ backupDir, retention, fsImpl }) {
     }
 }
 
-function getRawKey({ provider, secretsPath = HOME_SECRETS, fsImpl = fs } = {}) {
+function getRawKey({ provider, secretsPath, fsImpl = fs } = {}) {
     const spec = MANAGED_KEYS.find(k => k.provider === provider);
     if (!spec) return null;
-    const json = tryReadJson(secretsPath, fsImpl) || {};
-    const raw = json[spec.jsonField];
+    const { data, format } = loadSource({ secretsPath, fsImpl });
+    const raw = readKeyFromData(spec, data, format);
     if (!raw || typeof raw !== 'string' || !raw.trim() || isPlaceholder(raw)) return null;
     return raw;
 }
 
 module.exports = {
-    HOME_SECRETS,
+    HOME_CANONICAL,
+    HOME_LEGACY,
+    // Compat hacia atrás: módulos que importaban `HOME_SECRETS` siguen funcionando
+    // — apunta al canonical, que es el nuevo destino.
+    HOME_SECRETS: HOME_CANONICAL,
     DEFAULT_BACKUP_DIR,
     DEFAULT_BACKUP_RETENTION,
     MANAGED_KEYS,
@@ -213,4 +334,8 @@ module.exports = {
     maskValue,
     fingerprint,
     isPlaceholder,
+    // Helpers expuestos para tests y consumidores internos:
+    detectFormat,
+    getNested,
+    setNested,
 };
