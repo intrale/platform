@@ -47,6 +47,19 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 // Umbral de cobertura por defecto (línea) — igual al skill LLM.
 const DEFAULT_COVERAGE_THRESHOLD = 80;
 
+// Timeouts del spawn de `node --test` (issue #3344).
+// Antes: sin timeout. Si un .test.js dejaba un handle activo (timer/socket/server
+// no clearado) el child quedaba colgado para siempre → el watchdog del Pulpo
+// mataba al tester a los 45min pero el reporte JUnit quedaba vacío (0 tests).
+// Ahora:
+//   1) `--test-timeout` corta cada test individual.
+//   2) Wall-clock duro mata el child (con árbol) si la batería completa no
+//      termina, mucho antes del watchdog del Pulpo. El motivo se reporta.
+//   3) Heartbeat de progreso para diagnosticar a cuál archivo le tocaba el cuelgue.
+const NODE_TEST_PER_TEST_TIMEOUT_MS = 120 * 1000;
+const NODE_TEST_WALL_TIMEOUT_MS = 12 * 60 * 1000;
+const NODE_TEST_IDLE_LOG_INTERVAL_MS = 30 * 1000;
+
 // Anti-stale de XML reports (rebote #2892):
 // Cuando gradle aborta antes de ejecutar tests (ej. cmd.exe no entiende
 // `./gradlew` y devuelve `"." no se reconoce`), el exit_code es ≠0 y el
@@ -405,8 +418,16 @@ function ensureGitInPath(env) {
 /**
  * Corre `node --test --test-reporter=junit` sobre los tests del pipeline.
  * Devuelve resultado con shape compatible con `aggregateTestResults`.
+ *
+ * Issue #3344: spawn con timeout duro + streaming a un log para diagnosticar
+ * cuelgues. Si un test individual excede `NODE_TEST_PER_TEST_TIMEOUT_MS`
+ * Node lo cancela y sigue. Si toda la batería excede
+ * `NODE_TEST_WALL_TIMEOUT_MS`, matamos el child con árbol y reportamos
+ * `exit_code=124` (convención POSIX para timeout) + last_progress_line para
+ * diagnóstico.
  */
-function runNodeTests(repoRoot, env) {
+function runNodeTests(repoRoot, env, opts = {}) {
+    const onLog = typeof opts.onLog === 'function' ? opts.onLog : () => {};
     return new Promise((resolve) => {
         const started = Date.now();
         const files = findNodeTestFiles(repoRoot);
@@ -427,6 +448,7 @@ function runNodeTests(repoRoot, env) {
 
         const args = [
             '--test',
+            `--test-timeout=${NODE_TEST_PER_TEST_TIMEOUT_MS}`,
             '--test-reporter=junit',
             `--test-reporter-destination=${reportFile}`,
             ...files,
@@ -494,30 +516,91 @@ function runNodeTests(repoRoot, env) {
         }
         let stdout = '';
         let stderr = '';
+        // Última línea de progreso conocida; útil cuando matamos por timeout
+        // para identificar qué archivo estaba corriendo al momento del cuelgue.
+        let lastProgressLine = '';
+        let lastOutputAt = Date.now();
+        let timedOut = false;
+        let resolved = false;
+        const finish = (result) => {
+            if (resolved) return;
+            resolved = true;
+            resolve(result);
+        };
         const child = spawn(process.execPath, args, {
             cwd: repoRoot, env: childEnv, shell: false, windowsHide: true,
         });
-        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
-        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
+        const trackProgress = (chunk) => {
+            lastOutputAt = Date.now();
+            const lines = chunk.toString().split(/\r?\n/).filter((l) => l.trim());
+            if (lines.length) lastProgressLine = lines[lines.length - 1].slice(0, 240);
+        };
+        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); trackProgress(d); });
+        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); trackProgress(d); });
+
+        // Heartbeat de progreso: cada 30s, escribimos al log del agente el
+        // elapsed/idle y la última línea de spec. Permite reconstruir POST-MORTEM
+        // qué archivo estaba activo cuando el wall-timeout disparó SIGKILL.
+        const heartbeat = setInterval(() => {
+            const elapsed = Math.round((Date.now() - started) / 1000);
+            const idle = Math.round((Date.now() - lastOutputAt) / 1000);
+            onLog(`[tester:node-test] alive elapsed=${elapsed}s idle=${idle}s last="${lastProgressLine}"`);
+        }, NODE_TEST_IDLE_LOG_INTERVAL_MS);
+        heartbeat.unref?.();
+
+        // Wall-clock duro: si la batería completa no termina en
+        // NODE_TEST_WALL_TIMEOUT_MS, matamos al child (y a sus hijos en Windows
+        // con taskkill /T /F porque SIGKILL no recursivo).
+        const wallTimer = setTimeout(() => {
+            timedOut = true;
+            const elapsed = Math.round((Date.now() - started) / 1000);
+            onLog(`[tester:node-test] WALL-TIMEOUT ${elapsed}s — matando child (PID ${child.pid}). last="${lastProgressLine}"`);
+            try {
+                if (process.platform === 'win32' && child.pid) {
+                    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+                } else {
+                    child.kill('SIGKILL');
+                }
+            } catch {}
+        }, NODE_TEST_WALL_TIMEOUT_MS);
+        wallTimer.unref?.();
+
         child.on('error', (e) => {
+            clearInterval(heartbeat);
+            clearTimeout(wallTimer);
             stderr += `\n[spawn-error] ${e.message}\n`;
-            resolve({
+            finish({
                 exit_code: 2, stdout, stderr,
                 wall_ms: Date.now() - started,
                 report_file: reportFile, files,
+                last_progress_line: lastProgressLine,
                 summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
                            time_seconds: 0, suites: 0, failed_tests: [] },
             });
         });
-        child.on('exit', (code) => {
+        child.on('exit', (code, signal) => {
+            clearInterval(heartbeat);
+            clearTimeout(wallTimer);
             let xml = '';
             try { xml = fs.readFileSync(reportFile, 'utf8'); } catch {}
             const summary = parseNodeTestJunit(xml);
-            resolve({
-                exit_code: code == null ? 1 : code,
+            let exitCode;
+            if (timedOut) {
+                // 124 = exit code POSIX de `timeout(1)` para distinguir del
+                // success (0) y de los failures genéricos (1).
+                exitCode = 124;
+            } else if (code != null) {
+                exitCode = code;
+            } else {
+                exitCode = signal ? 1 : 1;
+            }
+            finish({
+                exit_code: exitCode,
                 stdout, stderr,
                 wall_ms: Date.now() - started,
                 report_file: reportFile, files,
+                timed_out: timedOut,
+                last_progress_line: lastProgressLine,
                 summary,
             });
         });
