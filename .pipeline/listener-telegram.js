@@ -114,7 +114,9 @@ async function sendMessage(text) {
 // del brazoCommander, y disparar `sendChatAction('typing')` apenas llega el
 // mensaje (UX-3) para que Leo vea feedback inmediato en el celular.
 //
-// El skill `skills-deterministicos/report.js` genera el cuerpo MarkdownV2.
+// El módulo `lib/report.js` genera el cuerpo MarkdownV2 (wrapper CLI/in-proc,
+// NO skill del Pulpo — vive en `lib/` porque se invoca acá en el mismo proceso
+// del listener, no spawneado por el dispatcher de fases).
 // Acá nos limitamos a:
 //   1. Re-validar autorización chat_id (SR-5 — defense in depth)
 //   2. sendChatAction('typing')         (UX-3)
@@ -133,10 +135,10 @@ function getReportModule() {
   if (_reportModule === undefined) return null;
   if (_reportModule) return _reportModule;
   try {
-    _reportModule = require('./skills-deterministicos/report');
+    _reportModule = require('./lib/report');
     return _reportModule;
   } catch (e) {
-    log(`Error cargando skill report: ${e.message}`);
+    log(`Error cargando módulo report: ${e.message}`);
     _reportModule = undefined; // no reintentar — degradar al commander
     return null;
   }

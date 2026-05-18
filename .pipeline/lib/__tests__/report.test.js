@@ -1,13 +1,14 @@
 // =============================================================================
-// Tests para skills-deterministicos/report.js — Issue #2904
+// Tests para lib/report.js — Issue #2904
 //
-// Cobertura del skill wrapper:
+// Cobertura del wrapper CLI/módulo (NO skill del Pulpo — invocado en proceso
+// desde listener-telegram.js cuando llega /report <sección>):
 //   - runReport() sin sección devuelve menú de ayuda (CA-2)
 //   - runReport('invalida') devuelve menú de ayuda (CA-3)
 //   - runReport('cuota') devuelve markdown válido (CA-1)
 //   - splitMessage del reporte resulta en N mensajes válidos
 //   - buildFallbacks produce HTML escapado correcto (TR-4)
-//   - VALID_SECTIONS y HELP_MENU reexportados desde el skill
+//   - VALID_SECTIONS y HELP_MENU reexportados desde el wrapper
 // =============================================================================
 'use strict';
 

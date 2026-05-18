@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 // =============================================================================
-// skills-deterministicos/report.js — Skill determinístico para `/report` (#2904)
+// lib/report.js — Wrapper CLI/módulo para `/report <seccion>` (#2904)
 //
 // Comando `/report <seccion>` desde Telegram. Cero tokens LLM, lectura de
 // dashboard HTTP + fallback FS, render Markdown V2.
 //
+// IMPORTANTE: este NO es un "skill" del Pulpo (no procesa issues, no es
+// spawneado por el dispatcher de fases). Es un handler local invocado en
+// proceso desde `listener-telegram.js` cuando el usuario escribe `/report`.
+// Por eso vive en `lib/` y no en `skills-deterministicos/` — el test
+// `__tests__/deterministic-skills-coherence.test.js` valida que todo
+// archivo bajo `skills-deterministicos/` esté en la allowlist hardcoded
+// `DETERMINISTIC_SKILLS`, lo cual no aplica a este wrapper.
+//
 // Modos de uso:
-//   1. Modulo:  const { runReport } = require('./skills-deterministicos/report');
+//   1. Modulo:  const { runReport } = require('./lib/report');
 //               const { messages, status } = await runReport('cuota');
-//   2. CLI:     node skills-deterministicos/report.js cuota
+//   2. CLI:     node lib/report.js cuota
 //               (imprime el primer mensaje a stdout, exit 0 si ok, 1 si invalido)
 //
 // La separación entre módulo y CLI permite:
@@ -21,7 +29,7 @@
 
 'use strict';
 
-const reports = require('../lib/telegram-reports');
+const reports = require('./telegram-reports');
 
 /**
  * Genera el reporte solicitado y lo parte en mensajes <=4096 chars si excede.
