@@ -97,6 +97,16 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
         headers: (key) => ({ 'authorization': `Bearer ${key}` }),
         interpret: (status, bodyExcerpt) => {
             if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
+            if (status === 400) {
+                // Groq devuelve 400 + `organization_restricted` cuando la
+                // organización dueña de la key fue restringida (#3347). El
+                // status es 400 (no 403) porque Groq usa `invalid_request_error`
+                // como wrapper. La key es válida → no es `invalid_credentials`.
+                if (/organization_restricted/i.test(bodyExcerpt)) {
+                    return { ok: false, reason: 'forbidden' };
+                }
+                return { ok: false, reason: 'unknown' };
+            }
             if (status === 401) return { ok: false, reason: 'invalid_credentials' };
             if (status === 403) return { ok: false, reason: 'forbidden' };
             if (status === 429) {

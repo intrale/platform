@@ -170,6 +170,36 @@ test('ping Groq con 429 plain → rate_limited', async () => {
     assert.equal(r.reason, 'rate_limited');
 });
 
+test('ping Groq con 400 organization_restricted → forbidden (#3347)', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { groq_api_key: 'gsk_test_1234567890abcdef0000' });
+    const r = await livePing.ping({
+        provider: 'groq',
+        secretsPath: f,
+        httpImpl: fakeHttp({
+            status: 400,
+            body: '{"error":{"message":"Organization has been restricted...","type":"invalid_request_error","code":"organization_restricted"}}',
+        }),
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'forbidden');
+    assert.equal(r.statusCode, 400);
+});
+
+test('ping Groq con 400 sin organization_restricted → unknown', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { groq_api_key: 'gsk_test_1234567890abcdef0000' });
+    const r = await livePing.ping({
+        provider: 'groq',
+        secretsPath: f,
+        httpImpl: fakeHttp({ status: 400, body: '{"error":{"message":"bad request"}}' }),
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'unknown');
+});
+
 test('ping Gemini-Google con status 200 devuelve authenticated', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
