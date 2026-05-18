@@ -51,11 +51,13 @@ test('updateRateLimitCounter: ok decae si hay hits previos', () => {
     assert.equal(healthCron.updateRateLimitCounter({ ok: true, reason: 'authenticated' }, { rate_limit_hit_24h: 3 }), 2);
 });
 
-test('listManagedAndPingable incluye los 3 free providers de #3260', () => {
+test('listManagedAndPingable incluye los 4 free providers (#3260 + #3243)', () => {
     const providers = healthCron.listManagedAndPingable().map(p => p.provider);
     assert.ok(providers.includes('groq'), 'groq presente');
     assert.ok(providers.includes('gemini-google'), 'gemini-google presente');
     assert.ok(providers.includes('cerebras'), 'cerebras presente');
+    // #3243 — NVIDIA NIM se sumó al pool de free providers gestionados.
+    assert.ok(providers.includes('nvidia-nim'), 'nvidia-nim presente');
 });
 
 test('tryAcquireLock: primero gana, segundo falla', () => {
@@ -165,7 +167,11 @@ test('runOnce: CA-6 simulación — 2 free providers en rojo simultáneo (free c
     assert.ok(freeRedAlerts.length >= 2, 'al menos una alerta por cada free provider rojo');
 });
 
-test('runOnce: 3 free providers en rojo dispara alerta multi-down', async () => {
+test('runOnce: 3+ free providers en rojo dispara alerta multi-down', async () => {
+    // Con el 4to free provider (nvidia-nim, #3243) sin key configurada, el
+    // snapshot reporta red_count=4 (los 3 con ping fallido + nvidia-nim
+    // marcado red por no_key_configured). La alerta multi_down se dispara
+    // igual — el umbral es ≥3.
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
@@ -173,6 +179,7 @@ test('runOnce: 3 free providers en rojo dispara alerta multi-down', async () => 
         groq_api_key: 'gsk_test_aaaaaaaaaaaaaaaaaaaa',
         gemini_google_api_key: 'AIza_test_aaaaaaaaaaaaaaaaaaaa',
         cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
+        nvidia_nim_api_key: 'nvapi-test_aaaaaaaaaaaaaaaaaaaa',
     });
     const result = await healthCron.runOnce({
         stateDir,
@@ -182,6 +189,7 @@ test('runOnce: 3 free providers en rojo dispara alerta multi-down', async () => 
             groq: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
             'gemini-google': { ok: false, reason: 'quota_exhausted', statusCode: 429 },
             cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
+            'nvidia-nim': { ok: false, reason: 'invalid_credentials', statusCode: 401 },
         }),
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
@@ -189,7 +197,7 @@ test('runOnce: 3 free providers en rojo dispara alerta multi-down', async () => 
     });
     const multi = result.alerts.find(a => a.kind === 'multi_down');
     assert.ok(multi, 'debe haber alerta multi_down');
-    assert.equal(multi.payload.red_count, 3);
+    assert.equal(multi.payload.red_count, 4);
 });
 
 test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', async () => {

@@ -27,6 +27,7 @@
 |----------|---------|-------|--------------|------------|------------|----------------------|---------------------|
 | anthropic | `ANTHROPIC_API_KEY` | leitolarreta | 2026-04-15 | 2026-07-14 | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
 | openai-codex | `OPENAI_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
+| nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com (panel "API keys") |
 
 **Notas**:
 

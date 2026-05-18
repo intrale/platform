@@ -48,6 +48,11 @@ const ALLOWED_LAUNCHERS = Object.freeze([
   'gemini-google',
   'groq',
   'cerebras',
+  // #3243 — NVIDIA NIM, 4to free provider (API OpenAI-compat). Sign-off
+  // 2026-05-17 (security + guru + ux + po aprobados en análisis del issue).
+  // El runtime real llega con #3198; este alias habilita declarar el provider
+  // en agent-models.json sin que el boot falle.
+  'nvidia-nim',
   'ollama',
   'node',
 ]);
@@ -136,6 +141,16 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   cerebras: Object.freeze([
     'llama-3.3-70b',
   ]),
+  // #3243 — NVIDIA NIM expone modelos hosted con naming `vendor/model`. La
+  // allowlist se inicializa con los 2 modelos sign-off del issue (DeepSeek
+  // V4-Pro para razonamiento/código y Kimi K2.6 para agentic loops). El
+  // catálogo crece editando esta lista — fuente única de verdad cross-validada
+  // contra `provider.model` y `skills.<x>.model_override`. `gpt-oss-120b` queda
+  // pendiente de validar disponibilidad/cuota antes de sumarse.
+  'nvidia-nim': Object.freeze([
+    'deepseek-ai/deepseek-v4-pro',
+    'moonshotai/kimi-k2-instruct',
+  ]),
   // launchers sin allowlist explícita → cualquier string `model` es válido.
   node: Object.freeze([]),
   ollama: Object.freeze([]),
@@ -192,6 +207,10 @@ const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
   // no var del SO). Review de seguridad aprobado en análisis del issue.
   'GROQ_API_KEY',
   'CEREBRAS_API_KEY',
+  // #3243 SEC-1 — NVIDIA NIM, 4to free provider sign-off 2026-05-17. Sigue la
+  // convención `<PROVIDER>_API_KEY` (credencial explícita del provider, no var
+  // del SO). Security aprobó el handler en el análisis del issue.
+  'NVIDIA_NIM_API_KEY',
   'GH_TOKEN',
   'GITHUB_TOKEN',
   'OLLAMA_HOST',

@@ -100,6 +100,23 @@
       "permissions_mode": "bypassPermissions"
     },
 
+    "nvidia-nim": {
+      "launcher": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "spawn_args_template": [
+        "--model", "{model}",
+        "--system", "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "openai-sse",
+      "quota_error_types": ["rate_limit_exceeded", "quota_exceeded", "insufficient_quota"],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": true,
+      "prompt_caching": { "supported": false },
+      "credentials_env": ["NVIDIA_NIM_API_KEY"],
+      "permissions_mode": "bypassPermissions"
+    },
+
     "deterministic": {
       "launcher": "node",
       "model": "deterministic",
@@ -238,7 +255,8 @@
       "fallbacks": [
         { "provider": "openai-codex", "model_override": "gpt-5-codex" },
         { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        { "provider": "cerebras", "model_override": "llama-3.3-70b" },
+        { "provider": "nvidia-nim", "model_override": "deepseek-ai/deepseek-v4-pro" }
       ]
     },
 

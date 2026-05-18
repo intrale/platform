@@ -131,10 +131,12 @@ test('ping no expone la API key cruda en la respuesta', async () => {
 
 // ─── Free providers (#3260) ─────────────────────────────────────────────────
 
-test('isAllowedProvider acepta los 3 free providers de #3260', () => {
+test('isAllowedProvider acepta los 4 free providers (#3260 + #3243)', () => {
     assert.equal(livePing.isAllowedProvider('groq'), true);
     assert.equal(livePing.isAllowedProvider('gemini-google'), true);
     assert.equal(livePing.isAllowedProvider('cerebras'), true);
+    // #3243 — NVIDIA NIM
+    assert.equal(livePing.isAllowedProvider('nvidia-nim'), true);
 });
 
 test('ping Groq con status 200 devuelve authenticated', async () => {
@@ -247,6 +249,79 @@ test('ping Cerebras con 401 → invalid_credentials', async () => {
     writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
     const r = await livePing.ping({ provider: 'cerebras', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) });
     assert.equal(r.reason, 'invalid_credentials');
+});
+
+// ─── NVIDIA NIM (#3243) ──────────────────────────────────────────────────────
+
+test('ping NVIDIA NIM con status 200 devuelve authenticated', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
+    const r = await livePing.ping({ provider: 'nvidia-nim', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) });
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, 'authenticated');
+    assert.equal(r.provider, 'nvidia-nim');
+});
+
+test('ping NVIDIA NIM con 401 → invalid_credentials', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
+    const r = await livePing.ping({ provider: 'nvidia-nim', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'invalid_credentials');
+});
+
+test('ping NVIDIA NIM con 403 → forbidden', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
+    const r = await livePing.ping({ provider: 'nvidia-nim', secretsPath: f, httpImpl: fakeHttp({ status: 403 }) });
+    assert.equal(r.reason, 'forbidden');
+});
+
+test('ping NVIDIA NIM con 429 + insufficient_quota → quota_exhausted', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
+    const r = await livePing.ping({
+        provider: 'nvidia-nim',
+        secretsPath: f,
+        httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"insufficient_quota"}}' }),
+    });
+    assert.equal(r.reason, 'quota_exhausted');
+});
+
+test('ping NVIDIA NIM con 429 plain → rate_limited', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
+    const r = await livePing.ping({
+        provider: 'nvidia-nim',
+        secretsPath: f,
+        httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"rate_limit_exceeded"}}' }),
+    });
+    assert.equal(r.reason, 'rate_limited');
+});
+
+test('NVIDIA NIM usa header Authorization Bearer (SR-2: nunca query string)', () => {
+    const spec = livePing.PROVIDER_PING_ENDPOINTS['nvidia-nim'];
+    assert.ok(spec.url.startsWith('https://integrate.api.nvidia.com/v1/models'),
+        'NVIDIA NIM debe pingear /v1/models hardcoded (SR-1)');
+    assert.ok(!spec.url.includes('?'), 'NVIDIA NIM URL no debe llevar query string');
+    const headers = spec.headers('nvapi-TEST');
+    assert.equal(headers['authorization'], 'Bearer nvapi-TEST',
+        'NVIDIA NIM debe enviar la key en header Authorization Bearer');
+    // No debería haber otros headers de auth alternativos.
+    assert.ok(!('x-api-key' in headers), 'no debe haber x-api-key suelto');
+    assert.ok(!('key' in headers), 'no debe haber "key" suelto');
+});
+
+test('NVIDIA NIM usa GET /v1/models (SR-3: nunca /v1/chat/completions)', () => {
+    const spec = livePing.PROVIDER_PING_ENDPOINTS['nvidia-nim'];
+    assert.equal(spec.method, 'GET', 'NVIDIA NIM ping debe ser GET');
+    assert.ok(spec.url.endsWith('/v1/models'), 'NVIDIA NIM ping debe usar /v1/models (no completions)');
+    assert.equal(spec.body(), null, 'NVIDIA NIM ping no debe enviar body');
 });
 
 test('PROVIDER_PING_ENDPOINTS solo expone URLs HTTPS literales hardcoded (anti-SSRF)', () => {

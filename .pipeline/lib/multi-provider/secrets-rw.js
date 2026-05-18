@@ -50,6 +50,11 @@ const DEFAULT_BACKUP_RETENTION = 30;
 // `canonicalPath` = dot-path en credentials.json (estructura nested).
 // `legacyField`   = flat key en telegram-config.json (solo lectura, para
 // compat hacia atrás mientras el canonical todavía no existe).
+//
+// Los 4 free providers (#3260 + #3243 — hardening de free providers, ola N+5)
+// entran al mismo flujo de masking + fingerprint SHA-256 + atomic write 0600 +
+// backup 30d + audit chain (SR-1 de security). La lista crece editando este
+// array, sin código nuevo.
 const MANAGED_KEYS = Object.freeze([
     {
         provider: 'anthropic',
@@ -99,6 +104,21 @@ const MANAGED_KEYS = Object.freeze([
         canonicalPath: 'providers.cerebras.api_key',
         legacyField: 'cerebras_api_key',
         free_tier_notes: 'RPM 30 / TPM 60K (free) — ver docs/pipeline/multi-provider.md §8.',
+    },
+    {
+        // #3243 — NVIDIA NIM, 4to free provider del multi-provider. Mismo
+        // flujo de masking + atomic write 0600 + backup chain que el resto.
+        // Free tier sin RPM/RPD publicado por NVIDIA — observación pendiente
+        // del cron de health (ver docs/pipeline/multi-provider.md §8).
+        // En credentials.json canónico vive bajo `providers.nvidia` (alineado
+        // con credentials.js → NVIDIA_NIM_API_KEY). En la UI seguimos llamándolo
+        // 'nvidia-nim' para diferenciarlo de Triton / on-prem NIM.
+        provider: 'nvidia-nim',
+        label: 'NVIDIA NIM',
+        editable: true,
+        canonicalPath: 'providers.nvidia.api_key',
+        legacyField: 'nvidia_nim_api_key',
+        free_tier_notes: 'Free tier sin RPM/RPD/MOQ públicos — ver docs/pipeline/multi-provider.md §8.',
     },
 ]);
 
