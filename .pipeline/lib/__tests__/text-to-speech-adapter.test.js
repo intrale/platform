@@ -300,12 +300,20 @@ test('CA-11: input > MAX_TTS_INPUT_CHARS se trunca y marca truncated=true', () =
     assert.ok(result.script.length <= MAX_TTS_INPUT_CHARS);
 });
 
-test('CA-11: input adversarial (10k chars + !) se procesa en <100ms', () => {
+// Threshold anti-ReDoS: holgado para no ser flaky bajo carga del runner
+// paralelo (140 archivos de test compiten por CPU en `node --test`), pero
+// chico comparado con un ReDoS real (que demora segundos o cuelga). 2000ms
+// = ~10x el tiempo en máquina ociosa (~80-250ms), y 5x-50x por debajo de
+// cualquier patrón catastrófico real. Si esto se dispara, hay regresión
+// genuina en los regex.
+const REDOS_THRESHOLD_MS = 2000;
+
+test('CA-11: input adversarial (10k chars + !) se procesa rapido (anti-ReDoS)', () => {
     const adversarial = 'a'.repeat(10000) + '!';
     const start = Date.now();
     textToSpeechScript(adversarial);
     const elapsed = Date.now() - start;
-    assert.ok(elapsed < 200, `regex demoro ${elapsed}ms, debe ser <200`);
+    assert.ok(elapsed < REDOS_THRESHOLD_MS, `regex demoro ${elapsed}ms, debe ser <${REDOS_THRESHOLD_MS}`);
 });
 
 test('CA-11: path adversarial no causa ReDoS', () => {
@@ -313,7 +321,7 @@ test('CA-11: path adversarial no causa ReDoS', () => {
     const start = Date.now();
     textToSpeechScript(adversarial);
     const elapsed = Date.now() - start;
-    assert.ok(elapsed < 200, `path regex demoro ${elapsed}ms`);
+    assert.ok(elapsed < REDOS_THRESHOLD_MS, `path regex demoro ${elapsed}ms, debe ser <${REDOS_THRESHOLD_MS}`);
 });
 
 test('CA-11: URL adversarial no causa ReDoS', () => {
@@ -321,7 +329,7 @@ test('CA-11: URL adversarial no causa ReDoS', () => {
     const start = Date.now();
     textToSpeechScript(adversarial);
     const elapsed = Date.now() - start;
-    assert.ok(elapsed < 200);
+    assert.ok(elapsed < REDOS_THRESHOLD_MS, `url regex demoro ${elapsed}ms, debe ser <${REDOS_THRESHOLD_MS}`);
 });
 
 // -----------------------------------------------------------------------------
