@@ -106,6 +106,158 @@ async function sendMessage(text) {
   }
 }
 
+// =============================================================================
+// Issue #2904 — /report <seccion>
+//
+// Pre-handler que intercepta `^/report` ANTES de encolar al Commander. Esto
+// nos permite responder en <3s sin pagar la ventana de consolidación de 5s
+// del brazoCommander, y disparar `sendChatAction('typing')` apenas llega el
+// mensaje (UX-3) para que Leo vea feedback inmediato en el celular.
+//
+// El módulo `lib/report.js` genera el cuerpo MarkdownV2 (wrapper CLI/in-proc,
+// NO skill del Pulpo — vive en `lib/` porque se invoca acá en el mismo proceso
+// del listener, no spawneado por el dispatcher de fases).
+// Acá nos limitamos a:
+//   1. Re-validar autorización chat_id (SR-5 — defense in depth)
+//   2. sendChatAction('typing')         (UX-3)
+//   3. runReport(section)               (logica deterministica del reporte)
+//   4. sendMessage(...) por cada chunk  (CA-7: split a >15 lineas)
+//   5. Fallback HTML si MarkdownV2 falla (TR-4)
+//   6. Log de auditoria en history      (SR-4)
+//
+// Carga lazy: el require ocurre la primera vez que un `/report` llega.
+// Si el módulo falla al cargar (caso muy borde), degradamos a "encolar al
+// commander" — el resto del bot sigue funcionando.
+// =============================================================================
+
+let _reportModule = null;
+function getReportModule() {
+  if (_reportModule === undefined) return null;
+  if (_reportModule) return _reportModule;
+  try {
+    _reportModule = require('./lib/report');
+    return _reportModule;
+  } catch (e) {
+    log(`Error cargando módulo report: ${e.message}`);
+    _reportModule = undefined; // no reintentar — degradar al commander
+    return null;
+  }
+}
+
+// Captura `/report` (con o sin argumento). El argumento se limita a chars de
+// palabra para evitar ruido — el dispatcher después valida que esté en la
+// whitelist (CA-3: subcomando inválido cae al menú de ayuda).
+const REPORT_REGEX = /^\s*\/report(?:\s+(\S+))?(?:\s.*)?$/i;
+
+async function sendChatActionTyping() {
+  try {
+    await telegramRequest('sendChatAction', { chat_id: CHAT_ID, action: 'typing' });
+  } catch { /* best-effort — no bloqueante */ }
+}
+
+async function sendReportMessage(text) {
+  // Intento primario: MarkdownV2.
+  try {
+    const res = await telegramRequest('sendMessage', {
+      chat_id: CHAT_ID,
+      text,
+      parse_mode: 'MarkdownV2',
+      disable_web_page_preview: true,
+    });
+    if (res && res.ok) return true;
+    if (res && !res.ok) {
+      log(`MarkdownV2 rechazado por Telegram: ${res.description || 'unknown'} — fallback HTML`);
+    }
+  } catch (e) {
+    log(`Error MarkdownV2: ${e.message} — fallback HTML`);
+  }
+  // Fallback HTML con <pre>: el report ya viene escapado MD, lo
+  // desescapamos y re-envolvemos en <pre> con escape HTML estricto.
+  try {
+    const reports = require('./lib/telegram-reports');
+    const mod = getReportModule();
+    if (!mod) throw new Error('report module unavailable for fallback');
+    const { html } = mod.buildFallbacks(text);
+    await telegramRequest('sendMessage', {
+      chat_id: CHAT_ID,
+      text: html,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    });
+    return true;
+  } catch (e) {
+    log(`Error fallback HTML: ${e.message}`);
+    return false;
+  }
+}
+
+/**
+ * Intenta interceptar el mensaje como `/report`. Devuelve `true` si la
+ * intercepción tomó el control (no encolar al Commander), `false` si el
+ * mensaje no era un `/report` y debe seguir el flujo normal.
+ */
+async function maybeHandleReportCommand(msg) {
+  const text = (msg && msg.text) || '';
+  const match = text.match(REPORT_REGEX);
+  if (!match) return false;
+
+  const mod = getReportModule();
+  if (!mod) {
+    // Degradación: si el skill no carga, dejamos que el commander lo procese
+    // como mensaje normal (mejor a no responder).
+    return false;
+  }
+
+  // SR-5: re-verificar chat autorizado (el caller ya lo hizo en enqueueMessage
+  // pero acá agregamos defensa en profundidad).
+  if (String(msg.chat?.id) !== String(CHAT_ID)) return true;
+
+  const section = match[1] || '';
+
+  // UX-3: typing indicator inmediato para que Leo vea feedback en mobile.
+  await sendChatActionTyping();
+
+  // SR-4: auditoria del comando en history (mismo formato que enqueueMessage).
+  appendHistory({
+    direction: 'in',
+    from: msg.from?.first_name || 'unknown',
+    text: `/report ${section}`,
+    chat_id: msg.chat.id,
+    section,
+    handler: 'report',
+  });
+
+  try {
+    const result = await mod.runReport(section);
+    // CA-7: enviar cada chunk como un mensaje separado. Re-emitir typing
+    // entre chunks largos (UX-3: refresca el indicador cada ~4s).
+    for (let i = 0; i < result.messages.length; i++) {
+      if (i > 0) await sendChatActionTyping();
+      await sendReportMessage(result.messages[i]);
+    }
+    // SR-4: registrar la salida.
+    appendHistory({
+      direction: 'out',
+      to: 'telegram',
+      handler: 'report',
+      section,
+      status: result.status,
+      chunks: result.messages.length,
+    });
+  } catch (e) {
+    log(`Error procesando /report: ${e.message}`);
+    // Si todo falla, mandamos un mensaje plano (sin MD) para que Leo sepa
+    // que algo se rompió y no quede esperando.
+    try {
+      await telegramRequest('sendMessage', {
+        chat_id: CHAT_ID,
+        text: 'No pude generar el reporte — revisá los logs del listener.',
+      });
+    } catch { /* best-effort */ }
+  }
+  return true;
+}
+
 // --- Download Telegram files ---
 
 const MEDIA_DIR = path.join(PIPELINE, 'logs', 'media');
@@ -162,6 +314,18 @@ async function enqueueMessage(update) {
   if (processedMessageIds.size > 100) {
     const arr = [...processedMessageIds];
     arr.slice(0, arr.length - 100).forEach(id => processedMessageIds.delete(id));
+  }
+
+  // Issue #2904 — Pre-handler `/report`: intercepta antes de encolar al
+  // commander para responder en <3s sin ventana de consolidación de 5s.
+  // Si el mensaje no es `/report`, sigue el flujo normal.
+  try {
+    if (await maybeHandleReportCommand(msg)) {
+      log(`/report procesado inline (message_id=${msg.message_id})`);
+      return;
+    }
+  } catch (e) {
+    log(`Error en pre-handler /report: ${e.message} — cae a flujo normal`);
   }
 
   const id = `${Date.now()}-${msg.message_id}`;
