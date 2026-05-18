@@ -129,10 +129,25 @@ test('_ghCallWithTimeout: el proceso hijo wedged queda muerto después del timeo
     assert.equal(e.code, 'GH_CALL_TIMEOUT');
   }
 
-  // Esperar a que taskkill termine de propagar.
-  await new Promise(r => setTimeout(r, 400));
-
-  const stillAlive = pidAlive(pid);
+  // Esperar a que taskkill termine de propagar. En Windows, `taskkill /F /T`
+  // sí mata el proceso de inmediato, pero la propagación a `tasklist` puede
+  // tardar varios cientos de ms cuando el sistema está bajo carga (típico
+  // cuando se corre la suite completa de ~2573 tests Node en paralelo:
+  // rebote intermitente #2958-rev1 — el test originalmente esperaba 400ms
+  // fijos y eso resultó insuficiente bajo carga).
+  //
+  // Solución: polling con backoff hasta MAX_KILL_PROPAGATION_MS. Apenas el
+  // pid deja de aparecer en tasklist, salimos. Si excede el tope, asertamos
+  // false y dejamos que la asserción siguiente reporte el pid zombi.
+  const MAX_KILL_PROPAGATION_MS = 5000;
+  const POLL_INTERVAL_MS = 100;
+  const deadline = Date.now() + MAX_KILL_PROPAGATION_MS;
+  let stillAlive = true;
+  while (Date.now() < deadline) {
+    stillAlive = pidAlive(pid);
+    if (!stillAlive) break;
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+  }
   assert.equal(stillAlive, false, `pid ${pid} debe estar muerto, no quedan zombis (CA-4 d)`);
 });
 

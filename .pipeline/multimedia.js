@@ -598,61 +598,15 @@ function textToSpeechEdge(text, profileName = 'default') {
 }
 
 // --- Sanitizer markdown → texto natural para TTS ---
-// El TTS lee literal: "**bold**" se pronuncia "asterisco asterisco bold asterisco
-// asterisco". Limpiamos antes de mandarle el chunk al provider.
+// Delegado al adaptador dedicado en lib/text-to-speech-adapter.js (issue #2958).
+// El adaptador cubre: secretos (JWT/AWS keys/Telegram tokens), modelos IA,
+// paths, hashes, URLs reformuladas, markdown, emojis, tablas a frase natural
+// y resumen heuristico para inputs > 1500 chars. Idempotente.
+const { sanitizeForTts: adapterSanitizeForTts } = require('./lib/text-to-speech-adapter');
+
 function sanitizeForTts(text) {
   if (!text) return text;
-  let s = String(text);
-  // Bloques de código triple-backtick: descartarlos completamente.
-  s = s.replace(/```[\s\S]*?```/g, ' ');
-  // Inline code `xxx` → xxx
-  s = s.replace(/`([^`]+)`/g, '$1');
-  // Negrita **xxx** y __xxx__
-  s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
-  s = s.replace(/__([^_]+)__/g, '$1');
-  // Itálicas *xxx* y _xxx_ (cuidando de no romper identificadores con _ dentro)
-  s = s.replace(/(^|[\s(])\*([^*\n]+)\*([\s).,:;!?]|$)/g, '$1$2$3');
-  s = s.replace(/(^|[\s(])_([^_\n]+)_([\s).,:;!?]|$)/g, '$1$2$3');
-  // Links markdown [texto](url) → texto
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
-  // Headers (# ## ### al inicio de línea)
-  s = s.replace(/^#{1,6}\s+/gm, '');
-  // Issue/PR refs "#1234" → "número 1234" (el TTS los lee "almohadilla", molesto)
-  s = s.replace(/#(\d+)/g, 'número $1');
-  // Emojis y símbolos visuales: el TTS los narra por nombre Unicode
-  // ("mano hacia la derecha", "casilla de verificación") y arruina el audio.
-  // Drop: pictographs/symbols/dingbats + variation selectors + ZWJ + checkbox-like.
-  s = s.replace(
-    /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{25A0}-\u{25FF}\u{2460}-\u{24FF}\u{2B00}-\u{2BFF}\u{20D0}-\u{20FF}\u{FE0E}\u{FE0F}\u{200D}]/gu,
-    ''
-  );
-  // Blockquotes ">"
-  s = s.replace(/^\s*>\s?/gm, '');
-  // Tablas: separador --- | --- y filas con |
-  // OJO: usar [ \t] en lugar de \s para no engullir \n (la clase con \s greedy
-  // pegaba las filas adyacentes al separador).
-  s = s.replace(/^[ \t|:\-]+$/gm, '');
-  s = s.replace(/^[ \t]*\|(.+)\|[ \t]*$/gm, (_, inner) =>
-    inner
-      .split('|')
-      .map((c) => c.trim())
-      .filter(Boolean)
-      .join(', ')
-  );
-  // Bullets/numeradas al inicio de línea
-  s = s.replace(/^\s*[-*+]\s+/gm, '');
-  s = s.replace(/^\s*\d+\.\s+/gm, '');
-  // Asteriscos sueltos remanentes (énfasis sin cierre, separadores)
-  s = s.replace(/\*+/g, '');
-  // Backticks remanentes
-  s = s.replace(/`+/g, '');
-  // Tildes de tachado ~~xxx~~
-  s = s.replace(/~~/g, '');
-  // Saltos triples → dobles
-  s = s.replace(/\n{3,}/g, '\n\n');
-  // Espacios múltiples
-  s = s.replace(/[ \t]+/g, ' ');
-  return s.trim();
+  return adapterSanitizeForTts(text);
 }
 
 // --- TTS con priorización dinámica + fallback ---
