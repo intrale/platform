@@ -55,6 +55,28 @@ EXIT=$?
 # Exit code 0 = OK → propagar.
 if [ "$EXIT" = "3" ]; then
   printf '[warn] agent-models validate skip: toolchain incompleto (correr "npm install")\n' >&2
-  exit 0
+elif [ "$EXIT" != "0" ]; then
+  exit $EXIT
 fi
-exit $EXIT
+
+# =============================================================================
+# Issue #3310 CA-5 — Secret-scan defensivo sobre archivos de estado del pipeline.
+#
+# Aunque `.pipeline/commander-session.json`, `commander-history.jsonl` y
+# `.pipeline/servicios/**/*.json` están en `.gitignore`, si alguien los
+# des-ignora por error este escáner bloquea el commit antes de que el secreto
+# llegue a la rama. Reusa el mismo `sanitizer.js` del runtime.
+#
+# El helper Node devuelve:
+#   - exit 0 → OK (no hay secretos detectados)
+#   - exit 1 → BLOQUEAR (secretos encontrados o sanitizer falló — fail-closed)
+# =============================================================================
+if [ -f ".pipeline/lib/precommit-secret-scan.js" ]; then
+  node .pipeline/lib/precommit-secret-scan.js
+  SCAN_EXIT=$?
+  if [ "$SCAN_EXIT" != "0" ]; then
+    exit $SCAN_EXIT
+  fi
+fi
+
+exit 0

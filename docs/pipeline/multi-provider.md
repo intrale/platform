@@ -954,6 +954,91 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 - ❌ **Pingear endpoints de completion en el healthcheck** → consumen cuota. El cron usa solo `/v1/models` (o equivalente).
 - ❌ **Bypassar el lock del cron** corriendo `runOnce` desde múltiples procesos → puede disparar abuse-detection del provider. El lock está ahí por una razón.
 
+### 8.8 Procedimiento seguro para pasar API keys vía Telegram (#3310)
+
+> **Contexto:** el 2026-05-17 una API key de Groq se filtró al disco del pulpo porque se pegó en plaintext en el chat de Telegram. El listener escribía el texto crudo en `commander-session.json`, `commander-history.jsonl` y `servicios/commander/pendiente/*.json` sin redacción. Issue [#3310](https://github.com/intrale/platform/issues/3310) cierra el flanco con sanitización en write-time (`sanitizer.sanitize()` aplicado antes de cualquier `appendFileSync`/`writeFileSync` de input externo) más un pre-commit hook como red de seguridad para evitar que el estado interno del pipeline llegue al repo.
+>
+> **Pero la regla operativa sigue siendo la primaria:** nunca pegues una key en el chat aunque el sanitizer esté activo. Es defensa en profundidad — la única forma robusta es no exponer el secreto al canal en primer lugar.
+
+#### 8.8.1 Procedimiento recomendado
+
+1. Generá / obtené la API key en el portal del provider (Groq Console, Google AI Studio, Cerebras dashboard, NVIDIA build.nvidia.com, etc.).
+2. **Guardá la key en un archivo local** bajo `~/.claude/secrets/` (fuera del repo):
+   ```bash
+   # Ejemplo: agregar GROQ key
+   mkdir -p ~/.claude/secrets
+   printf '%s' '<la-key>' > ~/.claude/secrets/groq.txt
+   chmod 600 ~/.claude/secrets/groq.txt
+   ```
+3. **Por Telegram, mandá únicamente el path absoluto**, ej:
+   ```
+   actualizar groq key, está en ~/.claude/secrets/groq.txt
+   ```
+4. El commander (cuando se cablee `8.8.2`) leerá el archivo desde disco, validará el path contra la whitelist, hará la rotación vía `secrets.rotateKey()` y devolverá confirmación. La key nunca toca el canal.
+
+> **Regla inquebrantable:** aunque el sanitizer redacte un paste accidental, **nunca** pegues el contenido literal de una key en el chat — ni en mensaje de texto, ni como caption de foto, ni como nota de voz transcrita. El audit log archiva mensajes 24h y backups del pulpo viven 7 días.
+
+#### 8.8.2 Validación del path (defensa contra path traversal)
+
+Cuando se implemente el handler que lee el archivo apuntado por el mensaje (issue de seguimiento), DEBE aplicar las siguientes verificaciones **antes** de cualquier `fs.readFileSync`:
+
+| Check | Implementación |
+|-------|----------------|
+| Canonicalización | `path.resolve(input)` para resolver `..`, `./`, alias del shell. NUNCA usar el path crudo del mensaje. |
+| Whitelist de directorios | El path resuelto DEBE comenzar con `path.resolve(os.homedir(), '.claude', 'secrets') + path.sep`. Cualquier otro prefijo → rechazo. |
+| Tipo de archivo | `fs.statSync(p).isFile()` + tamaño máximo razonable (ej. 4KB — las keys son <500 bytes; cualquier cosa más grande es sospechoso). |
+| Permisos | Opcional: validar que el archivo sea `0600` o más restrictivo. Warning si está demasiado abierto, pero no bloquea. |
+| Rechazo loggeable | Si el path no pasa la whitelist, logguear el intento **pasando el path por `sanitize()` antes** (el path malicioso podría contener un secreto disfrazado de path). Mensaje al usuario en español natural: *"ese path no está permitido, usá uno bajo `~/.claude/secrets/`"*. |
+
+Patrón de referencia:
+
+```js
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const { sanitize } = require('.pipeline/sanitizer');
+
+const SECRETS_ROOT = path.resolve(os.homedir(), '.claude', 'secrets');
+
+function readSecretFromPath(rawPath) {
+  const resolved = path.resolve(rawPath);
+  if (!resolved.startsWith(SECRETS_ROOT + path.sep)) {
+    // Path traversal o whitelist mismatch — logueamos sanitizando.
+    log('commander', `Rechazo path fuera de whitelist: ${sanitize(resolved)}`);
+    throw new Error(`Path no autorizado: usá uno bajo ${SECRETS_ROOT}`);
+  }
+  const st = fs.statSync(resolved);
+  if (!st.isFile()) throw new Error('El path apunta a algo que no es un archivo regular');
+  if (st.size > 4096) throw new Error('Archivo demasiado grande para ser una API key');
+  return fs.readFileSync(resolved, 'utf8').trim();
+}
+```
+
+> **Defensa en profundidad adicional:** el listener ya sanitiza el `msg.text` antes de escribir a disco (#3310 CA-1), así que aunque el path malicioso contenga un secreto pegado al lado (`/etc/passwd gsk_<52 chars>`), el secret se redacta antes del log. La validación de path traversal protege el flanco distinto de "exfiltrar contenido arbitrario del filesystem leyendo archivos fuera de la whitelist".
+
+#### 8.8.3 Lista de archivos NO commiteables (CA-5 — defensa final)
+
+El pre-commit hook (`.husky/pre-commit` + `.pipeline/lib/precommit-secret-scan.js`) bloquea automáticamente commits que toquen estos paths con contenido que matchee un patrón de credencial:
+
+- `.pipeline/commander-session.json`
+- `.pipeline/commander-history.jsonl`
+- `.pipeline/servicios/**/*.json`
+
+Estos archivos ya están en `.gitignore`. Si te encontrás des-ignorándolos a propósito, asumí que estás cometiendo un error — el hook va a bloquearte. Si es legítimo (ej. fixture sintético sin secrets reales), el hook tolera el commit porque el sanitizer no encuentra patrones para redactar.
+
+#### 8.8.4 Si la key ya se filtró
+
+Si por error pegaste una key directamente en el chat:
+
+1. **Revocá la key inmediatamente en el portal del provider** (Groq Console → Settings → API Keys → Delete). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
+2. **Generá una nueva** y seguila el procedimiento §8.8.1.
+3. **Verificá los archivos que vivieron mientras la key estaba expuesta**:
+   ```bash
+   grep -r "<prefijo de la key, p.ej. gsk_>" .pipeline/ 2>/dev/null | head
+   ```
+   Si aparece, sabés que el incidente queda registrado y sirve para correlación.
+4. **Issue de scrubbing retroactivo**: si querés limpiar el historial existente, ver [#3317](https://github.com/intrale/platform/issues/3317) (necesita aprobación humana, `needs-human`).
+
 ---
 
 ## 9. Modo degradado del Commander (sin LLM)

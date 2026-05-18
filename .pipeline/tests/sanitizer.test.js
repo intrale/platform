@@ -690,6 +690,113 @@ test('panic dump simulado: apiKey="sk-ant-..." cae con placeholder específico',
     assert.ok(!out.includes(FAKE_ANTHROPIC));
 });
 
+// =============================================================================
+// Free-tier providers (#3310): Groq, Cerebras, NVIDIA NIM
+//
+// Cobertura: positivo (redacta y no leakea) + negativo (prefijo similar pero
+// longitud insuficiente o sin prefijo exacto, NO se redacta). Idempotencia y
+// orden mixto incluidos.
+// =============================================================================
+
+const FAKE_GROQ = 'gsk_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmN';        // gsk_ + 52
+const FAKE_CEREBRAS = 'csk-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmN';    // csk- + 52
+const FAKE_NVIDIA_NIM = 'nvapi-aBcDeFgHiJkLmNoPqRsTuVwXyZ-_0123456789aBcDeFgHiJk'; // nvapi- + 50
+
+test('GROQ_API_KEY positivo: gsk_<52> redacted', () => {
+    const out = sanitize(`GROQ_API_KEY=${FAKE_GROQ}`);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_GROQ), `leak: ${out}`);
+});
+
+test('GROQ_API_KEY negativo: prefijo corto gsk_short no se redacta', () => {
+    const out = sanitize('debug: gsk_short observed');
+    assert.ok(!out.includes('[REDACTED:GROQ_API_KEY]'), `falso positivo: ${out}`);
+});
+
+test('GROQ_API_KEY negativo: similar pero sin prefijo exacto (xgsk_...) no se redacta', () => {
+    // El lookbehind negativo evita matchear cuando el prefijo viene pegado a
+    // otro identificador. Forensia: si alguien escribió `xgsk_...` no es key.
+    const out = sanitize(`build-id xgsk_${'A'.repeat(50)}`);
+    assert.ok(!out.includes('[REDACTED:GROQ_API_KEY]'), `falso positivo: ${out}`);
+});
+
+test('CEREBRAS_API_KEY positivo: csk-<52> redacted', () => {
+    const out = sanitize(`CEREBRAS_API_KEY=${FAKE_CEREBRAS}`);
+    assert.ok(out.includes('[REDACTED:CEREBRAS_API_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_CEREBRAS), `leak: ${out}`);
+});
+
+test('CEREBRAS_API_KEY negativo: prefijo corto csk-short no se redacta', () => {
+    const out = sanitize('class="csk-button-primary"');
+    assert.ok(!out.includes('[REDACTED:CEREBRAS_API_KEY]'), `falso positivo: ${out}`);
+});
+
+test('CEREBRAS_API_KEY negativo: csk- con guiones medios (no alfanumérico sólido) no matchea', () => {
+    // El charset estricto `[A-Za-z0-9]` (sin `_-`) en el cuerpo evita
+    // identificadores tipo `csk-foo-bar-baz`.
+    const out = sanitize('GET /static/csk-thumbnail-default-foo-bar.png HTTP/1.1');
+    assert.ok(!out.includes('[REDACTED:CEREBRAS_API_KEY]'), `falso positivo: ${out}`);
+});
+
+test('NVIDIA_NIM_API_KEY positivo: nvapi-<50> redacted', () => {
+    const out = sanitize(`NVIDIA_NIM_API_KEY=${FAKE_NVIDIA_NIM}`);
+    assert.ok(out.includes('[REDACTED:NVIDIA_NIM_API_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_NVIDIA_NIM), `leak: ${out}`);
+});
+
+test('NVIDIA_NIM_API_KEY negativo: prefijo corto nvapi-short no se redacta', () => {
+    const out = sanitize('placeholder nvapi-AAA in docs');
+    assert.ok(!out.includes('[REDACTED:NVIDIA_NIM_API_KEY]'), `falso positivo: ${out}`);
+});
+
+test('NVIDIA_NIM_API_KEY negativo: nvapi sin guion no matchea', () => {
+    // El prefijo exige `nvapi-` (con guion). Sin él, no matchea.
+    const out = sanitize(`build nvapi_${'A'.repeat(50)}`);
+    assert.ok(!out.includes('[REDACTED:NVIDIA_NIM_API_KEY]'), `falso positivo: ${out}`);
+});
+
+// ─── Orden mixto + idempotencia free providers ─────────────────────────────
+
+test('orden mixto: los 3 free providers en un mismo input se redactan c/u con su placeholder', () => {
+    const input = `groq=${FAKE_GROQ} cerebras=${FAKE_CEREBRAS} nim=${FAKE_NVIDIA_NIM}`;
+    const out = sanitize(input);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `falta GROQ: ${out}`);
+    assert.ok(out.includes('[REDACTED:CEREBRAS_API_KEY]'), `falta CEREBRAS: ${out}`);
+    assert.ok(out.includes('[REDACTED:NVIDIA_NIM_API_KEY]'), `falta NVIDIA_NIM: ${out}`);
+    assert.ok(!out.includes(FAKE_GROQ), `leak GROQ: ${out}`);
+    assert.ok(!out.includes(FAKE_CEREBRAS), `leak CEREBRAS: ${out}`);
+    assert.ok(!out.includes(FAKE_NVIDIA_NIM), `leak NVIDIA_NIM: ${out}`);
+});
+
+test('idempotencia free providers: sanitize(sanitize(x)) === sanitize(x)', () => {
+    const input = `g=${FAKE_GROQ} c=${FAKE_CEREBRAS} n=${FAKE_NVIDIA_NIM}`;
+    const once = sanitize(input);
+    const twice = sanitize(once);
+    assert.strictEqual(once, twice, 'idempotencia rota');
+});
+
+test('bypass ZWSP en gsk_ se redacta igual (zero-width strip)', () => {
+    const zwsp = '​';
+    const poisoned = `gsk${zwsp}_${'A'.repeat(50)}`;
+    const out = sanitize(poisoned);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `out=${out}`);
+});
+
+// ─── Verificación CA-2: AIza... (Gemini / Google AI Studio) ya cubierto ────
+
+test('GOOGLE_API_KEY cubre Gemini / Google AI Studio (AIzaSy...)', () => {
+    // Las keys de Google AI Studio (Gemini) tienen formato AIza<35 chars> —
+    // verificación explícita de CA-2 que pide confirmar la cobertura.
+    // AIza + 35 chars exactos = 39 chars total (formato Google AI Studio)
+    const geminiKey = 'AIza' + '0123456789ABCDEF0123456789ABCDEF012'; // 4 + 35 = 39
+    const out = sanitize(`GEMINI_API_KEY=${geminiKey}`);
+    assert.ok(
+        out.includes('[REDACTED:GOOGLE_API_KEY]') || out.includes('[REDACTED:CONF_VALUE]'),
+        `out=${out}`,
+    );
+    assert.ok(!out.includes(geminiKey), `leak Gemini: ${out}`);
+});
+
 // ─── run ────────────────────────────────────────────────────────────────────
 runAll().catch((e) => {
     // eslint-disable-next-line no-console

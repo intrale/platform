@@ -43,6 +43,9 @@ const P = {
     ANTHROPIC_KEY: '[REDACTED:ANTHROPIC_KEY]',
     OPENAI_KEY: '[REDACTED:OPENAI_KEY]',
     OPENAI_PROJECT_KEY: '[REDACTED:OPENAI_PROJECT_KEY]',
+    GROQ_API_KEY: '[REDACTED:GROQ_API_KEY]',
+    CEREBRAS_API_KEY: '[REDACTED:CEREBRAS_API_KEY]',
+    NVIDIA_NIM_API_KEY: '[REDACTED:NVIDIA_NIM_API_KEY]',
     COGNITO_SECRET: '[REDACTED:COGNITO_SECRET]',
     PRIVATE_KEY: '[REDACTED:PRIVATE_KEY]',
     BASIC_AUTH: '[REDACTED:BASIC_AUTH]',
@@ -308,6 +311,49 @@ const PATTERNS = [
         name: 'GOOGLE_OAUTH_TOKEN',
         re: /(?<![A-Za-z0-9_-])ya29\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/g,
         replace: () => P.GOOGLE_OAUTH_TOKEN,
+    },
+
+    // -------------------------------------------------------------------------
+    // Free-tier providers (#3310, ola N+1 multi-provider)
+    //
+    // Patrones para credenciales de los providers que oficialmente son free
+    // (Groq, Cerebras, NVIDIA NIM). Mismo enfoque que las keys de Anthropic/
+    // OpenAI más arriba: lookbehind/lookahead negativos sobre el charset del
+    // secreto + longitud mínima 40 para evitar falsos positivos sobre slugs,
+    // clases CSS o identificadores legítimos del codebase.
+    //
+    // Estos patrones DEBEN ir antes del bloque genérico CONF_STRUCTURED para
+    // que cada placeholder atribuya correctamente el proveedor.
+    // -------------------------------------------------------------------------
+
+    // Groq API key — formato `gsk_<52 chars base62>`.
+    // Mínimo 40 chars después del prefijo (la consola Groq genera 52).
+    // Fuente: https://console.groq.com (sección "API Keys").
+    {
+        name: 'GROQ_API_KEY',
+        re: /(?<![A-Za-z0-9_-])gsk_[A-Za-z0-9]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.GROQ_API_KEY,
+    },
+
+    // Cerebras API key — formato `csk-<52 chars base62>`.
+    // El charset documentado por Cerebras incluye `_-`, pero exigimos mínimo
+    // 40 chars alfanuméricos sólidos después del prefijo para no colisionar
+    // con identificadores `csk-foo` cortos.
+    // Fuente: https://cloud.cerebras.ai (página de API Keys).
+    {
+        name: 'CEREBRAS_API_KEY',
+        re: /(?<![A-Za-z0-9_-])csk-[A-Za-z0-9]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.CEREBRAS_API_KEY,
+    },
+
+    // NVIDIA NIM API key — formato `nvapi-<base64url ~50 chars>`.
+    // El charset incluye `_-` (es base64url). El prefijo `nvapi-` no aparece
+    // en código legítimo del repo.
+    // Fuente: https://build.nvidia.com (sección "API Key").
+    {
+        name: 'NVIDIA_NIM_API_KEY',
+        re: /(?<![A-Za-z0-9_-])nvapi-[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.NVIDIA_NIM_API_KEY,
     },
 
     // Cognito client secret (AWS Cognito típico: 52 base64url chars en config).
