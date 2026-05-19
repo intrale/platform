@@ -1883,6 +1883,11 @@ async function tickRecent(){
         container.innerHTML = '<div class="in-empty">'+escapeHtml(emptyMsg)+'</div>';
         return;
     }
+    // #3359 — Limpiar empty state stale ANTES del loop de prepend (UX G3: anti-flicker).
+    // Bug gemelo de tickQueue: la rama empty deja <div class="in-empty"> y el
+    // limpiador de abajo solo matchea .line-row, por lo que el mensaje persistía.
+    const staleEmpty = container.querySelector('.in-empty');
+    if(staleEmpty) staleEmpty.remove();
     const seen = new Set();
     for(const a of arr){
         const key = a.issue+'-'+a.skill+'-'+a.fase;
@@ -1951,6 +1956,11 @@ async function tickQueue(){
         }
         return;
     }
+    // #3359 — Limpiar empty state stale ANTES del loop de append (UX G3: anti-flicker).
+    // La rama empty inyecta <div class="in-empty"> y el limpiador de abajo solo
+    // matchea .line-row, por lo que el mensaje quedaba sticky cuando llegaban items.
+    const staleEmpty = container.querySelector('.in-empty');
+    if(staleEmpty) staleEmpty.remove();
     const seen = new Set();
     for(const a of arr){
         const key = a.issue+'-'+a.skill+'-'+a.fase;
