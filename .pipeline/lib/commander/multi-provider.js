@@ -38,8 +38,8 @@
 //
 // STUBS DE PROVIDER
 // -----------------
-// Los providers no-Anthropic (`openai-codex`, `groq`, `gemini-google`,
-// `cerebras`) hoy son **stubs** que tiran `_notImplemented` en `buildSpawn`
+// Los providers no-Anthropic (`openai-codex`, `gemini-google`, `cerebras`,
+// `nvidia-nim`) hoy son **stubs** que tiran `_notImplemented` en `buildSpawn`
 // (lib/agent-launcher/providers/*.js). El runtime real llega con #3198.
 //
 // Mientras tanto, la cadena resuelve correctamente al provider (pre-spawn)

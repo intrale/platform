@@ -22,7 +22,6 @@
 //     "providers":  {
 //       "anthropic": { "api_key": "..." },
 //       "openai":    { "api_key": "..." },
-//       "groq":      { "api_key": "..." },
 //       "google":    { "api_key": "..." },        // mapea al provider 'gemini-google'
 //       "cerebras":  { "api_key": "..." },
 //       "nvidia":    { "api_key": "..." }
@@ -31,7 +30,10 @@
 //   }
 //
 // Estructura legacy (solo lectura, deprecada):
-//   { "openai_api_key": "...", "groq_api_key": "...", ... }  // flat
+//   { "openai_api_key": "...", ... }  // flat
+//
+// Groq fue descontinuado en #3353 (mayo 2026): si aparece en el JSON, se
+// ignora silenciosamente porque ya no está en MANAGED_KEYS.
 // =============================================================================
 'use strict';
 
@@ -77,14 +79,6 @@ const MANAGED_KEYS = Object.freeze([
         editable: true,
         canonicalPath: 'multimedia.elevenlabs_api_key',
         legacyField: 'elevenlabs_api_key',
-    },
-    {
-        provider: 'groq',
-        label: 'Groq',
-        editable: true,
-        canonicalPath: 'providers.groq.api_key',
-        legacyField: 'groq_api_key',
-        free_tier_notes: 'RPM 30 / RPD 14400 (free) — ver docs/pipeline/multi-provider.md §8.',
     },
     {
         provider: 'gemini-google',

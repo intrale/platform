@@ -1,11 +1,11 @@
 // =============================================================================
-// Tests quota-adapters/{ollama,deterministic,gemini-google,groq,cerebras}.js
-// — stubs (#3092 + #3220)
+// Tests quota-adapters/{ollama,deterministic,gemini-google,cerebras}.js
+// — stubs (#3092 + #3220 + #3353)
 //
 // Estos adapters son stubs simples: ollama y deterministic devuelven
-// `no_quota` (no consumen cuota); gemini-google, groq y cerebras devuelven
+// `no_quota` (no consumen cuota); gemini-google y cerebras devuelven
 // `not_implemented` (cálculo de cuota real llega con runtime fallbacks[]
-// — #3198).
+// — #3198). Groq fue descontinuado en #3353.
 //
 // Validación clave: el shape devuelto distingue NETAMENTE entre "no hay
 // cuota" (banner debe ocultarlos del agregado, no contarlos como 0%) y
@@ -50,13 +50,8 @@ test('gemini-google adapter devuelve not_implemented (post-M2)', () => {
     assert.equal(r.pct, null);
 });
 
-test('groq adapter devuelve not_implemented (#3220, runtime llega con #3198)', () => {
-    const adapter = fresh('groq');
-    const r = adapter({});
-    assert.equal(r.provider, 'groq');
-    assert.equal(r.adapterStatus, 'not_implemented');
-    assert.equal(r.pct, null);
-});
+// Test "groq adapter devuelve not_implemented" eliminado en #3353 (Groq
+// descontinuado). El módulo .pipeline/lib/quota-adapters/groq.js fue removido.
 
 test('cerebras adapter devuelve not_implemented (#3220, runtime llega con #3198)', () => {
     const adapter = fresh('cerebras');
@@ -67,8 +62,9 @@ test('cerebras adapter devuelve not_implemented (#3220, runtime llega con #3198)
 });
 
 test('todos los stubs devuelven schemaVersion=2 y breakdown[] (forward-compat)', () => {
-    // #3220 — sumamos gemini-google (rename), groq, cerebras.
-    for (const name of ['ollama', 'deterministic', 'gemini-google', 'groq', 'cerebras']) {
+    // #3220 — sumamos gemini-google (rename) y cerebras.
+    // #3353 — quitamos groq (provider descontinuado).
+    for (const name of ['ollama', 'deterministic', 'gemini-google', 'cerebras']) {
         const adapter = fresh(name);
         const r = adapter({});
         assert.equal(r.schemaVersion, 2, `${name}: schemaVersion`);

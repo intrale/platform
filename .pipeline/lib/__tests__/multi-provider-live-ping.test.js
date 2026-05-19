@@ -131,76 +131,16 @@ test('ping no expone la API key cruda en la respuesta', async () => {
 
 // ─── Free providers (#3260) ─────────────────────────────────────────────────
 
-test('isAllowedProvider acepta los 4 free providers (#3260 + #3243)', () => {
-    assert.equal(livePing.isAllowedProvider('groq'), true);
+test('isAllowedProvider acepta los free providers vivos (#3260 + #3243 + #3353)', () => {
+    // #3353 — groq removido; los 3 free providers vivos quedan acá.
+    assert.equal(livePing.isAllowedProvider('groq'), false, 'groq debería estar removido tras #3353');
     assert.equal(livePing.isAllowedProvider('gemini-google'), true);
     assert.equal(livePing.isAllowedProvider('cerebras'), true);
     // #3243 — NVIDIA NIM
     assert.equal(livePing.isAllowedProvider('nvidia-nim'), true);
 });
 
-test('ping Groq con status 200 devuelve authenticated', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { groq_api_key: 'gsk_test_1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'groq', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) });
-    assert.equal(r.ok, true);
-    assert.equal(r.reason, 'authenticated');
-});
-
-test('ping Groq con 429 + insufficient_quota → quota_exhausted', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { groq_api_key: 'gsk_test_1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'groq',
-        secretsPath: f,
-        httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"insufficient_quota"}}' }),
-    });
-    assert.equal(r.reason, 'quota_exhausted');
-});
-
-test('ping Groq con 429 plain → rate_limited', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { groq_api_key: 'gsk_test_1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'groq',
-        secretsPath: f,
-        httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"rate_limit_exceeded"}}' }),
-    });
-    assert.equal(r.reason, 'rate_limited');
-});
-
-test('ping Groq con 400 organization_restricted → forbidden (#3347)', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { groq_api_key: 'gsk_test_1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'groq',
-        secretsPath: f,
-        httpImpl: fakeHttp({
-            status: 400,
-            body: '{"error":{"message":"Organization has been restricted...","type":"invalid_request_error","code":"organization_restricted"}}',
-        }),
-    });
-    assert.equal(r.ok, false);
-    assert.equal(r.reason, 'forbidden');
-    assert.equal(r.statusCode, 400);
-});
-
-test('ping Groq con 400 sin organization_restricted → unknown', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { groq_api_key: 'gsk_test_1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'groq',
-        secretsPath: f,
-        httpImpl: fakeHttp({ status: 400, body: '{"error":{"message":"bad request"}}' }),
-    });
-    assert.equal(r.ok, false);
-    assert.equal(r.reason, 'unknown');
-});
+// Tests "ping Groq con ..." se eliminaron en #3353 — Groq descontinuado.
 
 test('ping Gemini-Google con status 200 devuelve authenticated', async () => {
     const dir = tmpDir();

@@ -26,9 +26,10 @@ test('ALLOWED_PROVIDERS exporta lista freezada de providers conocidos', () => {
     assert.ok(Array.isArray(ALLOWED_PROVIDERS));
     assert.ok(ALLOWED_PROVIDERS.includes('anthropic'));
     assert.ok(ALLOWED_PROVIDERS.includes('openai-codex'));
-    // #3220 — rename `gemini` → `gemini-google` + sumamos `groq` y `cerebras`.
+    // #3220 — rename `gemini` → `gemini-google` + sumamos `cerebras`.
+    // #3353 — `groq` removido tras descontinuación del provider.
     assert.ok(ALLOWED_PROVIDERS.includes('gemini-google'));
-    assert.ok(ALLOWED_PROVIDERS.includes('groq'));
+    assert.ok(!ALLOWED_PROVIDERS.includes('groq'), 'groq debería estar removido tras #3353');
     assert.ok(ALLOWED_PROVIDERS.includes('cerebras'));
     assert.ok(ALLOWED_PROVIDERS.includes('ollama'));
     assert.ok(ALLOWED_PROVIDERS.includes('deterministic'));

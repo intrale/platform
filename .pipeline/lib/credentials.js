@@ -10,9 +10,13 @@
 // Estructura esperada del JSON:
 //   {
 //     "telegram":   { "bot_token": "...", "chat_id": "..." },
-//     "providers":  { "groq": {"api_key": "..."}, "google": {...}, ... },
+//     "providers":  { "google": {"api_key": "..."}, "cerebras": {...}, ... },
 //     "multimedia": { "elevenlabs_api_key": "...", "elevenlabs_voice_id": "..." }
 //   }
+//
+// #3353 (mayo 2026): Groq fue descontinuado. Si el credentials.json todavía
+// tiene `providers.groq`, la key se ignora silenciosamente (sin entrada en
+// ENV_MAPPING) — el operador puede limpiarlo cuando quiera.
 //
 // Precedencia (alineada con loadApiKeys de telegram-secrets.js):
 //   1. process.env ya seteado → respetar, no sobrescribir
@@ -39,7 +43,7 @@ const ENV_MAPPING = Object.freeze({
   'providers.openai.api_key':      'OPENAI_API_KEY',
   'providers.anthropic.api_key':   'ANTHROPIC_API_KEY',
   'providers.google.api_key':      'GEMINI_API_KEY',
-  'providers.groq.api_key':        'GROQ_API_KEY',
+  // providers.groq.api_key se removió en #3353 — Groq descontinuado.
   'providers.cerebras.api_key':    'CEREBRAS_API_KEY',
   'providers.nvidia.api_key':      'NVIDIA_NIM_API_KEY',
   // Multimedia (TTS/STT/Vision)
@@ -48,14 +52,16 @@ const ENV_MAPPING = Object.freeze({
 });
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las
-// que existían en ese formato — providers nuevos (groq/google/cerebras/nvidia)
-// no se cargan del legacy porque no existían cuando ese archivo era canónico.
+// que existían en ese formato — providers nuevos (google/cerebras/nvidia) no
+// se cargan del legacy porque no existían cuando ese archivo era canónico.
+//
+// #3353 (mayo 2026): `groq_api_key` se removió del mapping legacy junto con la
+// descontinuación de Groq. Si aparece en el JSON legacy se ignora silenciosamente.
 const LEGACY_MAPPING = Object.freeze({
   'bot_token':           'TELEGRAM_BOT_TOKEN',
   'chat_id':             'TELEGRAM_CHAT_ID',
   'openai_api_key':      'OPENAI_API_KEY',
   'anthropic_api_key':   'ANTHROPIC_API_KEY',
-  'groq_api_key':        'GROQ_API_KEY',
   'elevenlabs_api_key':  'ELEVENLABS_API_KEY',
   'elevenlabs_voice_id': 'ELEVENLABS_VOICE_ID',
 });

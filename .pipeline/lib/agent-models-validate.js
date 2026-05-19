@@ -37,16 +37,18 @@ const path = require('path');
 //
 // #3220 — incorporación multi-provider sign-off 2026-05-15:
 //   - `gemini-google` (rename ex-`gemini`, naming coherente con el sign-off).
-//   - `groq` (API OpenAI-compatible, modelos llama/qwen).
 //   - `cerebras` (API OpenAI-compatible, modelos llama).
-// Las 3 entradas suman launchers nuevos. El runtime real (wrapper Node por
+// Las entradas suman launchers nuevos. El runtime real (wrapper Node por
 // provider) se materializa con #3198 — por ahora la allowlist habilita
 // declarar los providers en agent-models.json sin que el boot falle.
+//
+// #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
+// arbitrarios. El launcher 'groq' se removió de la allowlist; cualquier
+// agent-models.json que lo declare ahora falla el boot con mensaje accionable.
 const ALLOWED_LAUNCHERS = Object.freeze([
   'claude',
   'codex',
   'gemini-google',
-  'groq',
   'cerebras',
   // #3243 — NVIDIA NIM, 4to free provider (API OpenAI-compat). Sign-off
   // 2026-05-17 (security + guru + ux + po aprobados en análisis del issue).
@@ -98,10 +100,10 @@ const DENIED_FLAGS = Object.freeze([
 
 // Output parsers válidos (composición consistente con el schema).
 //
-// #3220 — Groq y Cerebras exponen APIs drop-in OpenAI-compatible; el handler
-// `_detectOpenAI` en lib/quota-exhausted.js ya parsea ambos shapes (canónico
-// `event=error data.error.type` y alternativo `response.error`). Por lo
-// tanto reusan `openai-sse` sin agregar parsers nuevos. Gemini conserva su
+// #3220 — Cerebras expone una API drop-in OpenAI-compatible; el handler
+// `_detectOpenAI` en lib/quota-exhausted.js ya parsea el shape canónico
+// (`event=error data.error.type`) y alternativo (`response.error`). Por lo
+// tanto reusa `openai-sse` sin agregar parsers nuevos. Gemini conserva su
 // `gemini-stream` declarativo (handler estructurado pendiente — #3226).
 const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'anthropic-stream-json',
@@ -133,10 +135,6 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   ]),
   'gemini-google': Object.freeze([
     'gemini-2.0-flash',
-  ]),
-  groq: Object.freeze([
-    'llama-3.3-70b-versatile',
-    'qwen2.5-coder-32b',
   ]),
   cerebras: Object.freeze([
     'llama-3.3-70b',
@@ -202,10 +200,13 @@ const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
   'OPENAI_API_KEY',
   'GOOGLE_API_KEY',
   'GEMINI_API_KEY',
-  // #3220 SEC-1 — providers nuevos sign-off 2026-05-15. Ambas siguen la
-  // convención `<PROVIDER>_API_KEY` (credencial explícita del provider,
-  // no var del SO). Review de seguridad aprobado en análisis del issue.
-  'GROQ_API_KEY',
+  // #3220 SEC-1 — providers nuevos sign-off 2026-05-15. Sigue la convención
+  // `<PROVIDER>_API_KEY` (credencial explícita del provider, no var del SO).
+  // Review de seguridad aprobado en análisis del issue.
+  //
+  // #3353 (mayo 2026) — `GROQ_API_KEY` se removió de la allowlist porque Groq
+  // fue descontinuado: cualquier agent-models.json que lo declare ahora falla
+  // el boot por env var fuera de allowlist, con mensaje accionable.
   'CEREBRAS_API_KEY',
   // #3243 SEC-1 — NVIDIA NIM, 4to free provider sign-off 2026-05-17. Sigue la
   // convención `<PROVIDER>_API_KEY` (credencial explícita del provider, no var
@@ -1032,10 +1033,10 @@ function stringifyContextValue(v) {
  * crash; la validación primaria ocurre en validateCrossReferences.
  *
  * Casos:
- *   resolveFallbackEntry('groq')                              → { provider: 'groq', model_override: null }
+ *   resolveFallbackEntry('cerebras')                          → { provider: 'cerebras', model_override: null }
  *   resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5' })
  *                                                             → { provider: 'openai-codex', model_override: 'gpt-5' }
- *   resolveFallbackEntry({ provider: 'groq' })                → { provider: 'groq', model_override: null }
+ *   resolveFallbackEntry({ provider: 'cerebras' })            → { provider: 'cerebras', model_override: null }
  *   resolveFallbackEntry(null|123|[])                         → null
  *   resolveFallbackEntry({ })                                 → null (sin provider)
  */

@@ -30,13 +30,14 @@ const PROVIDER_HANDLERS = {
     // #3220 — providers sign-off 2026-05-15. Handlers stub: tiran error
     // accionable si se les pide spawn antes de #3198 (runtime real).
     'gemini-google': require('./providers/gemini-google'),
-    'groq': require('./providers/groq'),
     'cerebras': require('./providers/cerebras'),
     // #3243 — NVIDIA NIM, 4to free provider. Stub idéntico al patrón de los
     // otros 3 free providers: error accionable hasta que #3198 entregue el
     // wrapper real, sin tokens consumidos, sin crash del pulpo.
     'nvidia-nim': require('./providers/nvidia-nim'),
     'deterministic': require('./providers/deterministic'),
+    // Groq fue descontinuado en #3353 (mayo 2026) por política de bloqueos
+    // arbitrarios — el handler stub y la referencia se removieron del mapa.
 };
 
 const VALID_PROVIDERS = Object.freeze(Object.keys(PROVIDER_HANDLERS));
@@ -187,7 +188,6 @@ function resolvePermissionMode(models, providerName) {
         // si #3198 detecta que un wrapper de provider concreto necesita
         // otro modo, lo declara via providers.<x>.permissions_mode.
         'gemini-google': 'bypassPermissions',
-        'groq': 'bypassPermissions',
         'cerebras': 'bypassPermissions',
         // #3243 — NVIDIA NIM default consistent con otros free providers.
         'nvidia-nim': 'bypassPermissions',

@@ -241,12 +241,12 @@ test('logSkillInvocation: omite campos undefined', () => {
         skillInvoked: 'planner',
         skillResult: 'blocked',
         error: 'provider_not_anthropic',
-        provider: 'groq',
+        provider: 'cerebras',
     });
     const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'logs', 'commander-skill-audit.jsonl'), 'utf8').trim());
     assert.equal(parsed.skill_invoked, 'planner');
     assert.equal(parsed.error, 'provider_not_anthropic');
-    assert.equal(parsed.provider, 'groq');
+    assert.equal(parsed.provider, 'cerebras');
     assert.ok(!('from' in parsed));
     assert.ok(!('issue_created' in parsed));
     assert.ok(!('duration_ms' in parsed));
@@ -291,8 +291,8 @@ test('logSkillInvocation: sin pipelineDir → no escribe y devuelve false', () =
 // -----------------------------------------------------------------------------
 
 test('formatBlockedByProviderResponse: menciona provider de failover', () => {
-    const out = ic.formatBlockedByProviderResponse({ provider: 'groq' });
-    assert.ok(out.includes('failover a groq'));
+    const out = ic.formatBlockedByProviderResponse({ provider: 'cerebras' });
+    assert.ok(out.includes('failover a cerebras'));
     assert.ok(/cerebro principal/i.test(out));
     assert.ok(/\/doc nueva/.test(out));
 });

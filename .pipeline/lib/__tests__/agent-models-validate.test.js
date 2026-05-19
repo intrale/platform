@@ -172,11 +172,12 @@ test('CA-2 · validateOrExit invoca exitFn con el código correcto + escribe a s
 
 // ─── CA-3 · ALLOWED_LAUNCHERS source-of-truth + composición programática ────
 
-test('CA-3 · ALLOWED_LAUNCHERS expone los launchers permitidos (post #3220 + #3243 = 8)', () => {
-  // #3220 — sumamos `gemini-google` (rename ex-`gemini`), `groq` y `cerebras`.
+test('CA-3 · ALLOWED_LAUNCHERS expone los launchers permitidos (post #3353 = 7)', () => {
+  // #3220 — sumamos `gemini-google` (rename ex-`gemini`) y `cerebras`.
   // #3243 — sumamos `nvidia-nim` (4to free provider, ola N+5).
+  // #3353 — eliminamos `groq` (mayo 2026) por política inestable de restricciones.
   assert.deepEqual([...validateMod.ALLOWED_LAUNCHERS].sort(),
-    ['cerebras', 'claude', 'codex', 'gemini-google', 'groq', 'node', 'nvidia-nim', 'ollama']);
+    ['cerebras', 'claude', 'codex', 'gemini-google', 'node', 'nvidia-nim', 'ollama']);
 });
 
 test('CA-3 · ALLOWED_LAUNCHERS es congelado (Object.freeze) — inmutabilidad', () => {
@@ -501,7 +502,8 @@ test('CA-3 · si schema literal disagrees con ALLOWED_LAUNCHERS, runtime gana (c
   // En cualquier caso, ALLOWED_LAUNCHERS sigue intacto (Object.freeze).
   // #3220 — 5 → 7 launchers (rename gemini→gemini-google + groq + cerebras).
   // #3243 — 7 → 8 launchers (nvidia-nim, 4to free provider ola N+5).
-  assert.equal(validateMod.ALLOWED_LAUNCHERS.length, 8);
+  // #3353 — 8 → 7 launchers (eliminación de groq, mayo 2026).
+  assert.equal(validateMod.ALLOWED_LAUNCHERS.length, 7);
 });
 
 // =============================================================================
@@ -1007,22 +1009,10 @@ test('findHardcodedSecrets · ignora $schema en raíz (URL legítima)', () => {
 });
 
 // =============================================================================
-// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, groq, cerebras)
+// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, cerebras)
+// #3353 — Groq removido (mayo 2026): tests `providerGroq` y sus assertions
+// se eliminaron junto con el provider.
 // =============================================================================
-
-function providerGroq() {
-  return {
-    launcher: 'groq',
-    model: 'llama-3.3-70b-versatile',
-    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
-    output_parser: 'openai-sse',
-    quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
-    supports_tool_use: false,
-    prompt_caching: { supported: false },
-    credentials_env: ['GROQ_API_KEY'],
-    permissions_mode: 'bypassPermissions',
-  };
-}
 
 function providerGeminiGoogle() {
   return {
@@ -1052,31 +1042,34 @@ function providerCerebras() {
   };
 }
 
-test('#3220 · ALLOWED_LAUNCHERS incluye gemini-google, groq y cerebras', () => {
+test('#3220 + #3353 · ALLOWED_LAUNCHERS incluye gemini-google y cerebras (sin groq)', () => {
   const launchers = [...validateMod.ALLOWED_LAUNCHERS];
   assert.ok(launchers.includes('gemini-google'), 'falta gemini-google');
-  assert.ok(launchers.includes('groq'), 'falta groq');
   assert.ok(launchers.includes('cerebras'), 'falta cerebras');
   // Rename: 'gemini' bare ya no está en la allowlist.
   assert.ok(!launchers.includes('gemini'), 'gemini bare debería estar renombrado a gemini-google');
+  // #3353 — groq fue removido tras la descontinuación del provider.
+  assert.ok(!launchers.includes('groq'), 'groq debería estar removido tras #3353');
 });
 
-test('#3220 · ALLOWED_CREDENTIAL_ENV_VARS incluye GROQ_API_KEY y CEREBRAS_API_KEY', () => {
+test('#3220 + #3353 · ALLOWED_CREDENTIAL_ENV_VARS incluye CEREBRAS_API_KEY (sin GROQ_API_KEY)', () => {
   const vars = [...validateMod.ALLOWED_CREDENTIAL_ENV_VARS];
-  assert.ok(vars.includes('GROQ_API_KEY'), 'falta GROQ_API_KEY');
   assert.ok(vars.includes('CEREBRAS_API_KEY'), 'falta CEREBRAS_API_KEY');
   assert.ok(vars.includes('GEMINI_API_KEY'), 'GEMINI_API_KEY debe permanecer');
+  // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
+  assert.ok(!vars.includes('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
 });
 
-test('#3220 · ALLOWED_MODELS_BY_LAUNCHER existe y declara modelos por los 5 providers LLM', () => {
+test('#3220 + #3353 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por providers vivos (sin groq)', () => {
   const models = validateMod.ALLOWED_MODELS_BY_LAUNCHER;
   assert.ok(models, 'ALLOWED_MODELS_BY_LAUNCHER debe exportarse');
   assert.ok(Object.isFrozen(models), 'top-level debe estar congelado');
   assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-7']);
   assert.deepEqual([...models.codex].sort(), ['gpt-5', 'gpt-5-codex']);
   assert.deepEqual([...models['gemini-google']], ['gemini-2.0-flash']);
-  assert.deepEqual([...models.groq].sort(), ['llama-3.3-70b-versatile', 'qwen2.5-coder-32b']);
   assert.deepEqual([...models.cerebras], ['llama-3.3-70b']);
+  // #3353 — `groq` no debe estar en la allowlist de modelos.
+  assert.equal(models.groq, undefined, 'groq debería estar removido tras #3353');
 });
 
 test('#3220 · provider gemini-google con campos completos → validación pasa', () => {
@@ -1089,13 +1082,27 @@ test('#3220 · provider gemini-google con campos completos → validación pasa'
   } finally { fs.unlinkSync(file); }
 });
 
-test('#3220 · provider groq con campos completos → validación pasa', () => {
+test('#3353 · provider groq declarado → rechazado por launcher fuera de allowlist', () => {
   const cfg = baseValid();
-  cfg.providers.groq = providerGroq();
+  // Construir manualmente lo que ANTES era providerGroq() — el helper se borró
+  // junto con el provider, pero seguimos validando que el config rechaza groq.
+  cfg.providers.groq = {
+    launcher: 'groq',
+    model: 'llama-3.3-70b-versatile',
+    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
+    output_parser: 'openai-sse',
+    quota_error_types: ['rate_limit_exceeded'],
+    supports_tool_use: false,
+    prompt_caching: { supported: false },
+    credentials_env: ['GROQ_API_KEY'],
+    permissions_mode: 'bypassPermissions',
+  };
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
-    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.ok, false, 'groq ya no debería ser un launcher válido');
+    const e = r.errors.find((er) => /launcher|enum|groq/i.test(er.message));
+    assert.ok(e, `debe rechazar el launcher groq: ${JSON.stringify(r.errors)}`);
   } finally { fs.unlinkSync(file); }
 });
 
@@ -1109,20 +1116,9 @@ test('#3220 · provider cerebras con campos completos → validación pasa', () 
   } finally { fs.unlinkSync(file); }
 });
 
-test('#3220 · groq con model fuera de ALLOWED_MODELS_BY_LAUNCHER → rechazado', () => {
-  const cfg = baseValid();
-  const p = providerGroq();
-  p.model = 'gpt-5'; // pertenece a codex, no a groq
-  cfg.providers.groq = p;
-  const file = tmpFile(cfg);
-  try {
-    const r = validateMod.validate(file);
-    assert.equal(r.ok, false);
-    const e = r.errors.find((er) => er.path === '#/providers/groq/model');
-    assert.ok(e, `debe rechazar model fuera de allowlist: ${JSON.stringify(r.errors)}`);
-    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["groq"\]/);
-  } finally { fs.unlinkSync(file); }
-});
+// #3353 — test "groq con model fuera de ALLOWED_MODELS_BY_LAUNCHER" eliminado:
+// el launcher groq ya no existe en ALLOWED_LAUNCHERS, cualquier config con
+// groq es rechazada antes de evaluar el modelo.
 
 test('#3220 · cerebras con credentials_env=PATH → rechazado por allowlist (SEC-1)', () => {
   const cfg = baseValid();
@@ -1152,19 +1148,9 @@ test('#3220 · gemini-google con quota_error_type fuera de meta-allowlist → re
   } finally { fs.unlinkSync(file); }
 });
 
-test('#3220 · skill apuntando a groq sin GROQ_API_KEY presente → fail-fast al boot', () => {
-  const cfg = baseValid();
-  cfg.providers.groq = providerGroq();
-  cfg.skills.qa = { provider: 'groq' };
-  delete cfg.skills.qa.model_override;
-  const file = tmpFile(cfg);
-  try {
-    const r = validateMod.validate(file, { processEnv: {} });
-    assert.equal(r.ok, false);
-    const e = r.errors.find((er) => er.message.includes('GROQ_API_KEY'));
-    assert.ok(e, `debe exigir GROQ_API_KEY: ${JSON.stringify(r.errors)}`);
-  } finally { fs.unlinkSync(file); }
-});
+// #3353 — test "skill apuntando a groq sin GROQ_API_KEY" eliminado: GROQ_API_KEY
+// se removió de ALLOWED_CREDENTIAL_ENV_VARS junto con el provider; la
+// validación ahora rechaza groq antes de chequear env vars.
 
 test('#3220 · skill apuntando a cerebras con CEREBRAS_API_KEY presente → válido', () => {
   const cfg = baseValid();
@@ -1180,22 +1166,21 @@ test('#3220 · skill apuntando a cerebras con CEREBRAS_API_KEY presente → vál
 
 test('#3220 · skill model_override fuera de allowlist del launcher del provider → rechazado', () => {
   const cfg = baseValid();
-  cfg.providers.groq = providerGroq();
-  cfg.skills['groq-skill'] = { provider: 'groq', model_override: 'gpt-5-codex' };
+  cfg.providers.cerebras = providerCerebras();
+  cfg.skills['cerebras-skill'] = { provider: 'cerebras', model_override: 'gpt-5-codex' };
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
     assert.equal(r.ok, false);
-    const e = r.errors.find((er) => er.path === '#/skills/groq-skill/model_override');
+    const e = r.errors.find((er) => er.path === '#/skills/cerebras-skill/model_override');
     assert.ok(e, 'debe rechazar model_override que no pertenece al launcher del provider');
-    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["groq"\]/);
+    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["cerebras"\]/);
   } finally { fs.unlinkSync(file); }
 });
 
-test('#3220 · output_parser openai-sse válido para groq y cerebras (API drop-in OpenAI-compat)', () => {
-  // Confirma decisión PO: reusar openai-sse para Groq/Cerebras, no agregar parsers nuevos.
+test('#3220 · output_parser openai-sse válido para cerebras (API drop-in OpenAI-compat)', () => {
+  // Confirma decisión PO: reusar openai-sse para Cerebras, no agregar parsers nuevos.
   const cfg = baseValid();
-  cfg.providers.groq = providerGroq();
   cfg.providers.cerebras = providerCerebras();
   const file = tmpFile(cfg);
   try {
@@ -1232,9 +1217,11 @@ test('#3220 · agent-models.json canónico declara los 5 providers LLM + determi
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
   const keys = Object.keys(cfg.providers || {});
-  for (const expected of ['anthropic', 'openai-codex', 'gemini-google', 'groq', 'cerebras', 'deterministic']) {
+  for (const expected of ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'deterministic']) {
     assert.ok(keys.includes(expected), `provider canónico falta: ${expected} (declarados: ${keys.join(', ')})`);
   }
+  // #3353 — `groq` ya no debe estar declarado en el canónico.
+  assert.ok(!keys.includes('groq'), 'groq debería estar removido del canónico tras #3353');
 });
 
 // =============================================================================
@@ -1266,19 +1253,8 @@ function providerOpenAICodex() {
   };
 }
 
-function providerGroqEntry() {
-  return {
-    launcher: 'groq',
-    model: 'llama-3.3-70b-versatile',
-    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
-    output_parser: 'openai-sse',
-    quota_error_types: ['rate_limit_exceeded', 'tokens_exhausted', 'quota_exceeded'],
-    supports_tool_use: false,
-    prompt_caching: { supported: false },
-    credentials_env: ['GROQ_API_KEY'],
-    permissions_mode: 'bypassPermissions',
-  };
-}
+// providerGroqEntry se removió en #3353 — Groq descontinuado. Los tests que la
+// usaban ahora se construyen sobre providerCerebrasEntry o providerGeminiEntry.
 
 function providerCerebrasEntry() {
   return {
@@ -1340,14 +1316,14 @@ test('#3221 · schema fallbacks items apunta a $defs/fallbackEntry', () => {
 test('#3221 happy path · skill con fallbacks objects {provider, model_override} válidos', () => {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['groq'] = providerGroqEntry();
+  cfg.providers['gemini-google'] = providerGeminiEntry();
   cfg.providers['cerebras'] = providerCerebrasEntry();
   cfg.skills['backend-dev'] = {
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5-codex' },
-      { provider: 'groq', model_override: 'qwen2.5-coder-32b' },
+      { provider: 'gemini-google', model_override: 'gemini-2.0-flash' },
       { provider: 'cerebras', model_override: 'llama-3.3-70b' },
     ],
   };
@@ -1377,12 +1353,12 @@ test('#3221 mixto · skill puede mezclar strings y objects en fallbacks', () => 
   // Ergonómico para migración progresiva: parte legacy + parte modelos pin-eados.
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['groq'] = providerGroqEntry();
+  cfg.providers['cerebras'] = providerCerebrasEntry();
   cfg.skills['planner'] = {
     provider: 'anthropic',
     fallbacks: [
       'openai-codex',
-      { provider: 'groq', model_override: 'llama-3.3-70b-versatile' },
+      { provider: 'cerebras', model_override: 'llama-3.3-70b' },
     ],
   };
   const file = tmpFile(cfg);
@@ -1481,8 +1457,8 @@ test('#3221 · fallback object sin provider (objeto vacío) → error', () => {
 // ─── resolveFallbackEntry — normalización 1:1 ───────────────────────────────
 
 test('#3221 · resolveFallbackEntry(string) devuelve {provider, model_override:null}', () => {
-  const r = validateMod.resolveFallbackEntry('groq');
-  assert.deepEqual(r, { provider: 'groq', model_override: null });
+  const r = validateMod.resolveFallbackEntry('cerebras');
+  assert.deepEqual(r, { provider: 'cerebras', model_override: null });
 });
 
 test('#3221 · resolveFallbackEntry(object con model_override) devuelve {provider, model_override}', () => {
@@ -1510,20 +1486,20 @@ test('#3221 · resolveFallbackEntry rechaza shapes inválidos (null, number, arr
 test('#3221 · resolveSkillChain devuelve primary primero, después fallbacks en orden', () => {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['groq'] = providerGroqEntry();
+  cfg.providers['cerebras'] = providerCerebrasEntry();
   cfg.skills['backend-dev'] = {
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5-codex' },
-      { provider: 'groq', model_override: 'qwen2.5-coder-32b' },
+      { provider: 'cerebras', model_override: 'llama-3.3-70b' },
     ],
   };
   const chain = validateMod.resolveSkillChain(cfg, 'backend-dev');
   assert.equal(chain.length, 3);
   assert.deepEqual(chain[0], { provider: 'anthropic', model: 'claude-opus-4-7', source: 'primary' });
   assert.deepEqual(chain[1], { provider: 'openai-codex', model: 'gpt-5-codex', source: 'fallback' });
-  assert.deepEqual(chain[2], { provider: 'groq', model: 'qwen2.5-coder-32b', source: 'fallback' });
+  assert.deepEqual(chain[2], { provider: 'cerebras', model: 'llama-3.3-70b', source: 'fallback' });
 });
 
 test('#3221 · resolveSkillChain con fallback string usa provider.model default', () => {

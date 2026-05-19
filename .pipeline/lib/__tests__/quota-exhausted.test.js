@@ -1024,16 +1024,9 @@ test('lifecycle multi-provider · flag anthropic + skill openai pasa + skill ant
 });
 
 // =============================================================================
-// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, groq, cerebras)
+// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, cerebras)
+// #3353 — Tests específicos de groq eliminados: provider descontinuado.
 // =============================================================================
-
-const PROVIDER_DEF_GROQ = Object.freeze({
-    launcher: 'groq',
-    model: 'llama-3.3-70b-versatile',
-    output_parser: 'openai-sse', // API drop-in OpenAI-compatible
-    quota_error_types: ['rate_limit_exceeded', 'tokens_exhausted', 'quota_exceeded'],
-    resets_at_cap_max_days: 31,
-});
 
 const PROVIDER_DEF_CEREBRAS = Object.freeze({
     launcher: 'cerebras',
@@ -1043,42 +1036,22 @@ const PROVIDER_DEF_CEREBRAS = Object.freeze({
     resets_at_cap_max_days: 31,
 });
 
-test('#3220 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google, groq y cerebras', () => {
+test('#3220 + #3353 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google y cerebras (sin groq)', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const meta = q.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
     assert.ok(meta['gemini-google'], 'falta gemini-google');
-    assert.ok(meta.groq, 'falta groq');
     assert.ok(meta.cerebras, 'falta cerebras');
+    // #3353 — groq fue removido tras la descontinuación.
+    assert.ok(!meta.groq, 'groq debería estar removido tras #3353');
     // Inmutabilidad
     assert.ok(Object.isFrozen(meta['gemini-google']));
-    assert.ok(Object.isFrozen(meta.groq));
     assert.ok(Object.isFrozen(meta.cerebras));
     // Valores esperados
     assert.deepEqual([...meta['gemini-google']].sort(), ['quota_exceeded', 'resource_exhausted']);
-    assert.deepEqual([...meta.groq].sort(), ['quota_exceeded', 'rate_limit_exceeded', 'tokens_exhausted']);
     assert.deepEqual([...meta.cerebras].sort(), ['quota_exceeded', 'rate_limit_exceeded']);
     // Rename: bare 'gemini' ya no existe
     assert.ok(!meta.gemini, "key 'gemini' debe haber sido renombrado a 'gemini-google'");
-});
-
-test('#3220 · detectQuotaError(groq) matchea SSE event=error data.error.type', () => {
-    const tmp = newTmpDir();
-    const q = freshModule(tmp);
-    // Groq emite shape SSE OpenAI-compatible — reusa _detectOpenAI.
-    const evt = { event: 'error', data: { error: { type: 'rate_limit_exceeded', message: 'Rate limit exceeded' } } };
-    const det = q.detectQuotaError(evt, PROVIDER_DEF_GROQ);
-    assert.equal(det.matched, true);
-    assert.equal(det.errorType, 'rate_limit_exceeded');
-});
-
-test('#3220 · detectQuotaError(groq) matchea shape alternativo response.error', () => {
-    const tmp = newTmpDir();
-    const q = freshModule(tmp);
-    const evt = { type: 'response.error', error: { type: 'tokens_exhausted' } };
-    const det = q.detectQuotaError(evt, PROVIDER_DEF_GROQ);
-    assert.equal(det.matched, true);
-    assert.equal(det.errorType, 'tokens_exhausted');
 });
 
 test('#3220 · detectQuotaError(cerebras) matchea SSE event=error data.error.type', () => {
@@ -1090,34 +1063,43 @@ test('#3220 · detectQuotaError(cerebras) matchea SSE event=error data.error.typ
     assert.equal(det.errorType, 'rate_limit_exceeded');
 });
 
-test('#3220 · detectQuotaError(groq) NO matchea error_type fuera de allowlist groq', () => {
+test('#3220 · detectQuotaError(cerebras) matchea shape alternativo response.error', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
-    // billing_hard_limit_reached pertenece a openai-codex, no groq
-    const evt = { event: 'error', data: { error: { type: 'billing_hard_limit_reached' } } };
-    assert.equal(q.detectQuotaError(evt, PROVIDER_DEF_GROQ).matched, false);
+    const evt = { type: 'response.error', error: { type: 'rate_limit_exceeded' } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS);
+    assert.equal(det.matched, true);
+    assert.equal(det.errorType, 'rate_limit_exceeded');
 });
 
-test('#3220 · setFlag con provider=groq + skill groq → gateado; skill anthropic NO gateado', () => {
+test('#3220 · detectQuotaError(cerebras) NO matchea error_type fuera de allowlist cerebras', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // billing_hard_limit_reached pertenece a openai-codex, no cerebras
+    const evt = { event: 'error', data: { error: { type: 'billing_hard_limit_reached' } } };
+    assert.equal(q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS).matched, false);
+});
+
+test('#3220 · setFlag con provider=cerebras + skill cerebras → gateado; skill anthropic NO gateado', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-15T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     q.setFlag({
         errorType: 'rate_limit_exceeded',
-        provider: 'groq',
-        model: 'llama-3.3-70b-versatile',
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
         resetsAt,
         now,
         maxDays: 31,
     });
-    // skill que usa groq SÍ se gatea
-    assert.equal(q.shouldGateSpawn('qa', { provider: 'groq', now }), true);
+    // skill que usa cerebras SÍ se gatea
+    assert.equal(q.shouldGateSpawn('qa', { provider: 'cerebras', now }), true);
     // skill que usa anthropic NO se gatea (scope cross-provider)
     assert.equal(q.shouldGateSpawn('qa', { provider: 'anthropic', now }), false);
 });
 
-test('#3220 · setFlag con provider=cerebras + maxDays=31 produce flag con campos esperados', () => {
+test('#3220 · setFlag con provider=cerebras (segundo caso) + maxDays=31 produce flag con campos esperados', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-15T00:00:00Z');
@@ -1137,15 +1119,15 @@ test('#3220 · setFlag con provider=cerebras + maxDays=31 produce flag con campo
     assert.equal(persisted.provider, 'cerebras');
 });
 
-test('#3220 · flag groq NO limpia con clearFlag(provider=cerebras) (scope cross-provider)', () => {
+test('#3220 · flag cerebras NO limpia con clearFlag(provider=gemini-google) (scope cross-provider)', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-15T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
-    q.setFlag({ errorType: 'rate_limit_exceeded', provider: 'groq', resetsAt, now, maxDays: 31 });
-    assert.equal(q.clearFlag({ provider: 'cerebras' }), false, 'cerebras no debería limpiar flag de groq');
+    q.setFlag({ errorType: 'rate_limit_exceeded', provider: 'cerebras', resetsAt, now, maxDays: 31 });
+    assert.equal(q.clearFlag({ provider: 'gemini-google' }), false, 'gemini-google no debería limpiar flag de cerebras');
     assert.equal(q.isQuotaExhausted({ now }), true);
-    assert.equal(q.clearFlag({ provider: 'groq' }), true, 'groq sí limpia su propio flag');
+    assert.equal(q.clearFlag({ provider: 'cerebras' }), true, 'cerebras sí limpia su propio flag');
     assert.equal(q.isQuotaExhausted({ now }), false);
 });
 
