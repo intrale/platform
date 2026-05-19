@@ -322,14 +322,35 @@ function headerSlice(state, ctx) {
 
 // `gh pr list` tarda ~3-4s y los PRs mergeados de 7 días no cambian rápido.
 // Cache de 5 min para no bloquear el endpoint /api/dash/kpis cada poll.
+//
+// CA-1.3 (#3357): si `gh` falla, conservamos el valor anterior del cache.
+// Cuando nunca tuvo valor, prsLast7d sigue como `null` (UI muestra "—"); si
+// ya teníamos un conteo previo, lo mantenemos hasta que vuelva la conexión.
+//
+// CA-1.4 (#3357): la ventana se calcula con UTC (`slice(0,10)` sobre toISO).
+// El operador en hora local AR (UTC-3) puede ver una "ventana corrida"
+// cerca de medianoche UTC — bajo impacto, documentado acá.
 let _prsCache = { value: null, at: 0 };
 const PRS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Cache de issues cerrados — sirve a `issueCycleTimeMs` (CA-3.2 #3357).
+// TTL = 5 min, mismo patrón defensivo que `_prsCache`. Si `gh` falla,
+// el valor previo se preserva.
+let _closedIssuesCache = { value: null, at: 0 };
+const CLOSED_ISSUES_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // Snapshot del aggregator V3 — TTL más agresivo (10 min) porque generar el
 // snapshot es lento (escanea activity-log.jsonl entero) y los tokens no
 // cambian en milisegundos. Refresh en background sin bloquear la response.
+//
+// CA-2.1 (#3357): escribimos DOS snapshots en paralelo — `snapshot.json`
+// (window=all, consumidores externos pre-existentes) y `snapshot-24h.json`
+// (window=24h, lectura del `tokens24h` del kpisSlice). Cada uno con su
+// flag de refresh para no superponer spawns.
 let _snapshotRefreshing = false;
 let _snapshotLastRefresh = 0;
+let _snapshot24hRefreshing = false;
+let _snapshot24hLastRefresh = 0;
 const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 
 function maybeRefreshSnapshot(ROOT, snapshotPath) {
@@ -354,85 +375,263 @@ function maybeRefreshSnapshot(ROOT, snapshotPath) {
     } catch { _snapshotRefreshing = false; }
 }
 
+// CA-2.1 (#3357): refresh dedicado del snapshot 24h. El aggregator escribe
+// `snapshot.json` para el window pedido — para tener DOS snapshots paralelos
+// pasamos `--out snapshot-24h.json` (flag opcional aceptada por aggregator
+// post-#3357, fallback a comportamiento legacy si no se reconoce).
+function maybeRefreshSnapshot24h(ROOT, snapshot24hPath) {
+    if (_snapshot24hRefreshing) return;
+    let mtimeMs = 0;
+    try { mtimeMs = require('fs').statSync(snapshot24hPath).mtimeMs; } catch {}
+    const ageMs = Date.now() - mtimeMs;
+    if (ageMs < SNAPSHOT_TTL_MS && Date.now() - _snapshot24hLastRefresh < SNAPSHOT_TTL_MS) return;
+    _snapshot24hRefreshing = true;
+    _snapshot24hLastRefresh = Date.now();
+    try {
+        const { spawn } = require('child_process');
+        const aggregatorPath = path.join(__dirname, '..', 'metrics', 'aggregator.js');
+        const child = spawn(
+            process.execPath,
+            [aggregatorPath, '--once', '--window', '24h', '--out', 'snapshot-24h.json'],
+            { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true },
+        );
+        child.unref();
+        child.on('exit', () => { _snapshot24hRefreshing = false; });
+        child.on('error', () => { _snapshot24hRefreshing = false; });
+    } catch { _snapshot24hRefreshing = false; }
+}
+
+// CA-1 (#3357): query simplificada. `--search "merged:>=<date>"` ya implica
+// `state:merged`, así que eliminamos el `--state merged` redundante.
+// `--limit 500` da margen frente a semanas pico (51 PRs hoy, techo 500).
+//
+// NOTA UTC (CA-1.4): `since` se calcula vía `toISOString().slice(0,10)`, que
+// es UTC. El operador en hora local AR (UTC-3) puede percibir la ventana
+// "corrida" 1 día cerca de medianoche UTC — bajo impacto operativo.
+function ghPrCommand(ghBin, sinceUtc) {
+    return `"${ghBin}" pr list --search "merged:>=${sinceUtc}" --json number,createdAt,mergedAt --limit 500`;
+}
+
+// CA-3.2 (#3357): query a `gh issue list` con `closed:>=<date>` para
+// `issueCycleTimeMs`. Trae `createdAt` + `closedAt` para calcular la
+// duración real del flujo (issue creation → close ≈ DORA cycle time).
+function ghClosedIssuesCommand(ghBin, sinceUtc) {
+    return `"${ghBin}" issue list --state closed --search "closed:>=${sinceUtc}" --json number,createdAt,closedAt --limit 500`;
+}
+
+function _todayUtcMinus(days) {
+    return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+}
+
+// CA-3 (#3357): mediana sobre array numérico. Vacío → null.
+function _median(arr) {
+    if (!arr || arr.length === 0) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+}
+
 function kpisSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
     const GH_BIN = ctx.GH_BIN;
 
+    // -------------------------------------------------------------------
+    // CA-1 (#3357): PRs últimos 7 días con cache defensivo
+    // -------------------------------------------------------------------
     let prsLast7d = _prsCache.value;
     if (Date.now() - _prsCache.at > PRS_CACHE_TTL_MS) {
         try {
-            const since = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+            const since = _todayUtcMinus(7);
             const result = execSync(
-                `"${GH_BIN}" pr list --state merged --search "merged:>=${since}" --json number --limit 200`,
+                ghPrCommand(GH_BIN, since),
                 { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true }
             );
-            prsLast7d = JSON.parse(result || '[]').length;
-            _prsCache = { value: prsLast7d, at: Date.now() };
-        } catch { /* gh offline — mantener valor previo del cache si existe */ }
+            const parsed = JSON.parse(result || '[]');
+            prsLast7d = parsed.length;
+            // Solo persistimos el cache cuando `gh` respondió OK. Si la query
+            // tirara en el próximo poll, el valor previo se preserva.
+            _prsCache = { value: prsLast7d, at: Date.now(), prs: parsed };
+        } catch {
+            // CA-1.3: NO sobreescribir _prsCache.value con null. Si nunca tuvo
+            // valor, sigue null (UI: "—"). Si tenía valor previo, lo conservamos.
+        }
     }
 
+    // -------------------------------------------------------------------
+    // CA-2 (#3357): tokens últimas 24h con breakdown por provider
+    // -------------------------------------------------------------------
     let tokens24h = null;
-    let snapshot = null;
+    let snapshot24h = null;
     try {
-        const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
-        // Lanzar refresh background si el snapshot es viejo (>10 min). No
-        // bloquea la response actual; el siguiente poll va a leer fresh.
-        maybeRefreshSnapshot(ROOT, snapPath);
-        snapshot = safeReadJson(snapPath, null);
-        if (snapshot && snapshot.totals) {
-            // El snapshot del aggregator usa snake_case (tokens_in, tokens_out).
-            // Suma puede ser 0 si el log no tiene eventos con tokens contables;
-            // en ese caso retornamos null para que la UI muestre "—".
-            const sum = (snapshot.totals.tokens_in || 0) + (snapshot.totals.tokens_out || 0);
-            tokens24h = sum > 0 ? sum : null;
+        const snap24hPath = path.join(PIPELINE, 'metrics', 'snapshot-24h.json');
+        // Refresh paralelo del snapshot 24h (no bloquea response actual).
+        maybeRefreshSnapshot24h(ROOT, snap24hPath);
+        snapshot24h = safeReadJson(snap24hPath, null);
+        // Fallback al snapshot all-time si el 24h aún no se generó (primer arranque).
+        if (!snapshot24h) {
+            const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
+            maybeRefreshSnapshot(ROOT, snapPath);
+            snapshot24h = safeReadJson(snapPath, null);
         }
-    } catch { /* ignore */ }
+        if (snapshot24h && snapshot24h.totals) {
+            const totals = snapshot24h.totals;
+            const totalSum = (totals.tokens_in || 0) + (totals.tokens_out || 0);
+            // Breakdown por provider — CA-2.2/2.3. El aggregator expone
+            // `totals.by_provider: { <provider>: { tokens_in, tokens_out, ... } }`
+            // post-#3357. Si el snapshot todavía no lo tiene (versión vieja),
+            // degrade limpio: solo `total`, sin `by_provider`.
+            let byProvider = null;
+            if (totals.by_provider && typeof totals.by_provider === 'object') {
+                byProvider = {};
+                for (const [prov, bucket] of Object.entries(totals.by_provider)) {
+                    if (!bucket || typeof bucket !== 'object') continue;
+                    const tokSum = (bucket.tokens_in || 0) + (bucket.tokens_out || 0);
+                    byProvider[prov] = tokSum;
+                }
+            }
+            if (totalSum > 0) {
+                tokens24h = { total: totalSum, by_provider: byProvider };
+            } else {
+                // Sin datos en 24h → null (UI: "—"). Distinguir de "estado vacío".
+                tokens24h = null;
+            }
+        }
+    } catch { /* snapshot ausente / corrupto — degrade a null */ }
 
-    let cycleTimeMs = null;
+    // -------------------------------------------------------------------
+    // CA-3 (#3357): agentDurationMedianMs (renombrado) + issueCycleTimeMs
+    // -------------------------------------------------------------------
+    let agentDurationMedianMs = null;
     try {
-        const allDurations = [];
-        for (const data of Object.values(state.issueMatrix || {})) {
-            for (const entries of Object.values(data.fases || {})) {
+        // CA-3.3: fix doble conteo `listo` + `procesado`. Por (issue, fase, skill)
+        // preferimos `procesado` (estado final). Si no hay `procesado`, usamos
+        // `listo`. Así un marker reciclado cuenta UNA sola vez.
+        //
+        // CA-3.4: cap superior de duración subido de 24h → 7d para no enmascarar
+        // builds grandes / QA E2E con video que legítimamente duran horas.
+        const MAX_DUR_MS = 7 * 24 * 3600 * 1000;
+        const bestPerKey = new Map(); // `${issue}|${fase}|${skill}` → entry
+        for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
+            for (const [faseKey, entries] of Object.entries(data.fases || {})) {
                 for (const e of entries) {
-                    // Filtros: estado terminal + duración entre 1 segundo y 24 horas.
-                    // < 1s descarta ruido del FS (timestamps casi iguales).
-                    // > 24h descarta archivos huérfanos antiguos que distorsionan la mediana.
-                    if ((e.estado === 'procesado' || e.estado === 'listo')
-                        && e.durationMs >= 1000
-                        && e.durationMs < 24 * 3600000) {
-                        allDurations.push(e.durationMs);
+                    if (e.estado !== 'procesado' && e.estado !== 'listo') continue;
+                    if (!(e.durationMs >= 1000) || e.durationMs >= MAX_DUR_MS) continue;
+                    const key = `${issueId}|${faseKey}|${e.skill}`;
+                    const prev = bestPerKey.get(key);
+                    // Preferir `procesado` sobre `listo`; si ambos son procesado,
+                    // tomar el más reciente por updatedAt.
+                    if (!prev) {
+                        bestPerKey.set(key, e);
+                    } else if (prev.estado === 'listo' && e.estado === 'procesado') {
+                        bestPerKey.set(key, e);
+                    } else if (prev.estado === e.estado && (e.updatedAt || 0) > (prev.updatedAt || 0)) {
+                        bestPerKey.set(key, e);
                     }
                 }
             }
         }
-        if (allDurations.length > 0) {
-            allDurations.sort((a, b) => a - b);
-            cycleTimeMs = allDurations[Math.floor(allDurations.length / 2)];
+        const allDurations = [...bestPerKey.values()].map(e => e.durationMs);
+        agentDurationMedianMs = _median(allDurations);
+    } catch { /* ignore */ }
+
+    // CA-3.2 (#3357): nuevo issueCycleTimeMs = mediana de (closedAt - createdAt)
+    // de issues cerrados en los últimos 7d. Usamos `gh issue list` cacheado.
+    let issueCycleTimeMs = null;
+    try {
+        let closedIssues = _closedIssuesCache.value;
+        if (Date.now() - _closedIssuesCache.at > CLOSED_ISSUES_CACHE_TTL_MS) {
+            try {
+                const since = _todayUtcMinus(7);
+                const result = execSync(
+                    ghClosedIssuesCommand(GH_BIN, since),
+                    { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true }
+                );
+                closedIssues = JSON.parse(result || '[]');
+                _closedIssuesCache = { value: closedIssues, at: Date.now() };
+            } catch { /* gh offline — preservar valor previo */ }
+        }
+        if (Array.isArray(closedIssues) && closedIssues.length > 0) {
+            const durations = closedIssues
+                .map(i => {
+                    const c = i.createdAt ? Date.parse(i.createdAt) : NaN;
+                    const cl = i.closedAt ? Date.parse(i.closedAt) : NaN;
+                    if (!Number.isFinite(c) || !Number.isFinite(cl) || cl < c) return null;
+                    return cl - c;
+                })
+                .filter(d => d != null && d > 0);
+            issueCycleTimeMs = _median(durations);
         }
     } catch { /* ignore */ }
 
+    // -------------------------------------------------------------------
+    // CA-4 (#3357): bouncePct con denominador = issues, breakdown por fase
+    // -------------------------------------------------------------------
     let bouncePct = null;
     try {
-        let total = 0;
-        let rejected = 0;
-        for (const data of Object.values(state.issueMatrix || {})) {
-            for (const entries of Object.values(data.fases || {})) {
+        const WINDOW_MS = 7 * 24 * 3600 * 1000;
+        const cutoff = Date.now() - WINDOW_MS;
+        const issuesInWindow = new Set();         // issues con cualquier marker activo/terminado en 7d
+        const issuesWithBounce = new Set();       // issues con ≥1 marker rechazado en 7d
+        const phaseTotals = new Map();            // fase → { issues:Set, bouncedIssues:Set }
+
+        for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
+            // Track per-fase: ¿el issue terminó algo en esa fase dentro de la ventana?
+            // ¿fue rebotado en esa fase?
+            for (const [faseKey, entries] of Object.entries(data.fases || {})) {
+                let phaseFinishedInWindow = false;
+                let phaseRejectedInWindow = false;
                 for (const e of entries) {
                     if (e.estado !== 'procesado' && e.estado !== 'listo') continue;
                     if (!e.resultado) continue;
-                    total++;
-                    if (e.resultado === 'rechazado') rejected++;
+                    const ts = e.updatedAt || 0;
+                    if (ts < cutoff) continue;
+                    phaseFinishedInWindow = true;
+                    issuesInWindow.add(issueId);
+                    if (e.resultado === 'rechazado') {
+                        phaseRejectedInWindow = true;
+                        issuesWithBounce.add(issueId);
+                    }
+                }
+                if (phaseFinishedInWindow) {
+                    if (!phaseTotals.has(faseKey)) {
+                        phaseTotals.set(faseKey, { issues: new Set(), bouncedIssues: new Set() });
+                    }
+                    const slot = phaseTotals.get(faseKey);
+                    slot.issues.add(issueId);
+                    if (phaseRejectedInWindow) slot.bouncedIssues.add(issueId);
                 }
             }
         }
-        if (total > 0) bouncePct = Math.round((rejected / total) * 1000) / 10;
+
+        // CA-4.4: si total = 0, devolver null (NO 0%, NO div/0).
+        if (issuesInWindow.size > 0) {
+            const overall = (issuesWithBounce.size / issuesInWindow.size) * 1000;
+            const byPhase = {};
+            for (const [faseKey, slot] of phaseTotals.entries()) {
+                if (slot.issues.size === 0) continue;
+                byPhase[faseKey] = Math.round((slot.bouncedIssues.size / slot.issues.size) * 1000) / 10;
+            }
+            bouncePct = {
+                overall: Math.round(overall) / 10,
+                byPhase,
+                windowDays: 7,
+                issuesTotal: issuesInWindow.size,
+                issuesBounced: issuesWithBounce.size,
+            };
+        }
     } catch { /* ignore */ }
 
     return {
         prsLast7d,
         tokens24h,
-        cycleTimeMs,
+        // CA-3.1: nombre semánticamente correcto (lo que mide HOY).
+        agentDurationMedianMs,
+        // CA-3.2: nueva métrica DORA-like (issue creation → close).
+        issueCycleTimeMs,
+        // CA-3.1: alias legacy deprecado — mantener durante 1 release para
+        // no romper consumidores externos. Borrar después de la próxima review.
+        // @deprecated usar agentDurationMedianMs
+        cycleTimeMs: agentDurationMedianMs,
         bouncePct,
         timestamp: Date.now(),
     };
@@ -682,18 +881,81 @@ function historialSlice(state) {
 // aproximamos sumando duration_ms de session:end del activity-log.
 // Auto-ajuste pasivo: si el observado supera el effective_limit sin
 // bloqueos detectados, sube el límite. Ver lib/weekly-quota.js.
+//
+// #3357 CA-5: multi-provider. El slice devuelve quota por cada provider
+// declarado en `agent-models.json` (vía `quotaUsage(provider, ...)` del
+// dispatcher de quota-adapters). Retrocompat:
+//   - Campos legacy (hoursUsed7d, pct, status, session.*, etc.) quedan en
+//     el TOP-LEVEL del objeto retornado — son el resultado del adapter de
+//     Anthropic, idéntico byte-a-byte al shape pre-#3357. Esto evita romper
+//     consumidores del banner del dashboard.
+//   - Campo nuevo `providers: { anthropic, openai-codex, groq, ... }` expone
+//     el shape multi-provider para la UI nueva del kpi panel (CA-UX-2).
 function quotaSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
+    const metricsDir = path.join(PIPELINE, 'metrics');
+    const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
+    const configLimitHours = Number(process.env.ANTHROPIC_MAX_WEEKLY_HOURS) || undefined;
+
+    // Resolver providers declarados en agent-models.json. Si el archivo no
+    // está disponible (caso edge), cae al set mínimo conocido. NO usar `eval`
+    // ni `require` dinámico con paths construidos — siempre el path fijo.
+    let declaredProviders = ['anthropic', 'openai-codex', 'gemini-google', 'groq', 'cerebras', 'nvidia-nim'];
     try {
-        const quotaLib = require('./weekly-quota');
-        const metricsDir = path.join(PIPELINE, 'metrics');
-        const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
-        const configLimitHours = Number(process.env.ANTHROPIC_MAX_WEEKLY_HOURS) || undefined;
-        return quotaLib.computeQuota(metricsDir, activityLog, { configLimitHours });
+        const modelsPath = path.join(PIPELINE, 'agent-models.json');
+        const models = safeReadJson(modelsPath, null);
+        if (models && models.providers && typeof models.providers === 'object') {
+            // Filtrar `deterministic` (no consume cuota) y deduplicar.
+            const fromConfig = Object.keys(models.providers).filter(p => p !== 'deterministic');
+            if (fromConfig.length > 0) declaredProviders = fromConfig;
+        }
+    } catch { /* fallback al set mínimo */ }
+
+    // Anthropic primero — su resultado se flat-mergea al top-level para
+    // backward-compat con consumidores legacy (banner del dashboard).
+    let anthropicResult = null;
+    const providers = {};
+    try {
+        const { quotaUsage } = require('./quota-adapters');
+        for (const provider of declaredProviders) {
+            try {
+                const result = quotaUsage(provider, {
+                    metricsDir,
+                    activityLogPath: activityLog,
+                    configLimitHours: provider === 'anthropic' ? configLimitHours : undefined,
+                });
+                providers[provider] = result;
+                if (provider === 'anthropic') anthropicResult = result;
+            } catch (err) {
+                // Defensa: el dispatcher es fail-secure, pero por si acaso.
+                providers[provider] = {
+                    provider,
+                    adapterStatus: 'error',
+                    errorReason: err && err.message ? err.message : 'unknown',
+                    pct: null,
+                    status: 'unknown',
+                };
+            }
+        }
     } catch (e) {
-        return { error: e.message, hoursUsed7d: 0, pct: 0, status: 'unknown' };
+        // quota-adapters no está disponible — cae al cómputo legacy directo.
+        try {
+            const quotaLib = require('./weekly-quota');
+            anthropicResult = quotaLib.computeQuota(metricsDir, activityLog, { configLimitHours });
+            providers.anthropic = anthropicResult;
+        } catch (e2) {
+            return { error: e2.message, hoursUsed7d: 0, pct: 0, status: 'unknown', providers: {} };
+        }
     }
+
+    // Retrocompat: campos legacy de Anthropic en el top-level + nuevo
+    // `providers` con el desglose por adapter.
+    const out = anthropicResult && typeof anthropicResult === 'object'
+        ? { ...anthropicResult }
+        : { hoursUsed7d: 0, pct: 0, status: 'unknown' };
+    out.providers = providers;
+    return out;
 }
 
 // =============================================================================

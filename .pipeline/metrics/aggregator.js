@@ -176,6 +176,10 @@ async function buildSnapshot(options) {
     const byProvider = new Map();     // provider → bucket (TTS)
     const byAgentProvider = new Map();// `${skill}|${provider}` → bucket (TTS)
     const byAgentMode = new Map();    // `${skill}|${mode}` → bucket (#2488 — LLM vs determinístico)
+    // (#3357 CA-2.2) Totals por provider para session:end. Permite que el
+    // dashboard muestre breakdown "Anthropic X · Codex Y · Groq Z" en el KPI
+    // de tokens 24h. Mismo shape que `emptyBucket()` para reusar `addToBucket`.
+    const tokensByProvider = new Map(); // provider → bucket (session:end)
     const dailySeries = new Map();    // YYYY-MM-DD → { cost_usd, tts_cost_usd, sessions } (para proyecciones)
     const hourlyBuckets = new Map();  // "YYYY-MM-DD HH" → { cost_usd, tokens, sessions } (#2891 baseline horario)
     // Top consumidores por hora-del-dia (#2892 PR-C). Bucket "YYYY-MM-DD HH|skill" → cost_usd.
@@ -269,6 +273,16 @@ async function buildSnapshot(options) {
             const key = `${skill}|${mode}`;
             if (!byAgentMode.has(key)) byAgentMode.set(key, emptyBucket());
             addToBucket(byAgentMode.get(key), evt);
+        }
+
+        // (#3357 CA-2.2) Sumar al bucket de provider para `totals.by_provider`.
+        // Eventos sin provider explícito se imputan a la clave 'unknown' para
+        // que el operador detecte log histórico (pre M2 multi-provider) sin
+        // confundir el total con datos faltantes.
+        if (evt.event === 'session:end') {
+            const provKey = provider || 'unknown';
+            if (!tokensByProvider.has(provKey)) tokensByProvider.set(provKey, emptyBucket());
+            addToBucket(tokensByProvider.get(provKey), evt);
         }
 
         // Serie temporal diaria para proyecciones (#2488)
@@ -411,6 +425,16 @@ async function buildSnapshot(options) {
     const hourly = computeHourlySeries({ hourlyBuckets, nowMs, lookbackCutoffMs });
     const currentHour = computeCurrentHour({ hourlyBuckets, hourlyBySkill, nowMs });
 
+    // (#3357 CA-2.2) Breakdown por provider para los `totals`. Cada entrada
+    // tiene la forma { tokens_in, tokens_out, cost_usd, sessions, cache_read,
+    // cache_write, duration_ms, tool_calls } — mismo shape que `emptyBucket()`
+    // post-`withAvg`. El consumidor (dashboard kpisSlice tokens24h) suma
+    // tokens_in+tokens_out y rinde Anthropic/Codex/Groq/etc separados.
+    const totalsByProvider = {};
+    for (const [prov, bucket] of tokensByProvider.entries()) {
+        totalsByProvider[prov] = withAvg(bucket);
+    }
+
     return {
         generated_at: new Date().toISOString(),
         window: options.window || 'all',
@@ -427,6 +451,8 @@ async function buildSnapshot(options) {
             tts_cost_usd: Math.round(agents.reduce((s, a) => s + a.tts_cost_usd, 0) * 10000) / 10000,
             v3_events: v3Events,
             total_log_lines: totalEvents,
+            // (#3357 CA-2.2) breakdown por provider — solo session:end.
+            by_provider: totalsByProvider,
         },
         agents,
         phases,
@@ -542,7 +568,9 @@ function emitEmptySnapshot(options) {
         generated_at: new Date(nowMs).toISOString(),
         window: (options && options.window) || 'all',
         cutoff_ts: null,
-        totals: emptyBucket(),
+        // (#3357 CA-2.2) Empty snapshot también expone `by_provider: {}` para
+        // que consumidores (kpisSlice) no necesiten guard extra contra undefined.
+        totals: Object.assign(emptyBucket(), { by_provider: {} }),
         agents: [], phases: [], issues: [],
         tts: { by_provider: [], by_agent: [], by_issue: [] },
         llm_vs_deterministic: [],
@@ -559,29 +587,41 @@ function emitEmptySnapshot(options) {
     };
 }
 
-function writeSnapshot(snap) {
+// (#3357 CA-2.1) writeSnapshot acepta `outName` opcional para escribir
+// snapshots paralelos (`snapshot.json` all-time + `snapshot-24h.json` para
+// el tokens24h del kpisSlice). Sanitización: el nombre no puede contener
+// path separators ni `..` — defensa contra path-traversal vía CLI flag.
+function writeSnapshot(snap, outName) {
     ensureDir(METRICS_DIR);
-    const tmp = SNAPSHOT_FILE + '.tmp';
+    let target = SNAPSHOT_FILE;
+    if (outName) {
+        const safe = String(outName).trim();
+        if (safe.length > 0 && !safe.includes('/') && !safe.includes('\\') && !safe.includes('..')) {
+            target = path.join(METRICS_DIR, safe);
+        }
+    }
+    const tmp = target + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(snap, null, 2), 'utf8');
-    fs.renameSync(tmp, SNAPSHOT_FILE);
+    fs.renameSync(tmp, target);
 }
 
 async function runOnce(options) {
     const snap = await buildSnapshot(options);
-    writeSnapshot(snap);
+    writeSnapshot(snap, options && options.out);
     return snap;
 }
 
 function parseArgs(argv) {
-    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS, lookbackDays: DEFAULT_LOOKBACK_DAYS };
+    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS, lookbackDays: DEFAULT_LOOKBACK_DAYS, out: null };
     for (let i = 2; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--once') args.once = true;
         else if (a === '--window' && argv[i + 1]) { args.window = argv[++i]; }
         else if (a === '--refresh' && argv[i + 1]) { args.refreshMs = Math.max(5000, parseInt(argv[++i], 10) || DEFAULT_REFRESH_MS); }
         else if (a === '--lookback-days' && argv[i + 1]) { args.lookbackDays = clampLookbackDays(parseInt(argv[++i], 10)); }
+        else if (a === '--out' && argv[i + 1]) { args.out = String(argv[++i] || '').trim(); }
         else if (a === '--help' || a === '-h') {
-            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms] [--lookback-days 7-14]\n');
+            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms] [--lookback-days 7-14] [--out snapshot-24h.json]\n');
             process.exit(0);
         }
     }

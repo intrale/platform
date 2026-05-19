@@ -19,7 +19,7 @@
 //   GET /costos                     tab Costos
 //
 //   GET /api/dash/header              {mode, allowedIssues, pulpoAlive, ...}
-//   GET /api/dash/kpis                {prsLast7d, tokens24h, cycleTimeMs, bouncePct}
+//   GET /api/dash/kpis                {prsLast7d, tokens24h:{total,by_provider}, agentDurationMedianMs, issueCycleTimeMs, bouncePct:{overall,byPhase,...}, cycleTimeMs(deprecated)}
 //   GET /api/dash/active              {agents:[], totalRunning}
 //   GET /api/dash/recent              {recent:[]}
 //   GET /api/dash/queue               {queue:[]}

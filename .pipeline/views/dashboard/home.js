@@ -1288,14 +1288,43 @@ async function tickKpis(){
     const d = await fetchJson('/api/dash/kpis');
     if(!d) return;
     setText('kpi-prs-value', d.prsLast7d==null?'—':d.prsLast7d);
-    setText('kpi-tokens-value', fmtNum(d.tokens24h));
-    setText('kpi-cycle-value', fmtDur(d.cycleTimeMs));
+    // (#3357 CA-2) tokens24h pasa de number a { total, by_provider }. Mantenemos
+    // back-compat: si el server todavía devuelve number, lo aceptamos.
+    const tk = d.tokens24h;
+    const tkTotal = (tk && typeof tk === 'object') ? tk.total : tk;
+    setText('kpi-tokens-value', fmtNum(tkTotal));
+    // Tooltip con breakdown por provider cuando esté disponible.
+    const tkCard = document.getElementById('kpi-tokens');
+    if(tkCard && tk && typeof tk === 'object' && tk.by_provider){
+        const parts = Object.entries(tk.by_provider)
+            .filter(([,v]) => v > 0)
+            .sort((a, b) => b[1] - a[1])
+            .map(([p, v]) => p + ': ' + fmtNum(v));
+        tkCard.title = parts.length > 0
+            ? 'Últimas 24h · ' + parts.join(' · ')
+            : 'Tokens últimas 24h (sin actividad)';
+    }
+    // (#3357 CA-3) cycle time = agentDurationMedianMs (rename). Mantenemos
+    // compat con cycleTimeMs legacy durante 1 release.
+    setText('kpi-cycle-value', fmtDur(d.agentDurationMedianMs != null ? d.agentDurationMedianMs : d.cycleTimeMs));
+    // (#3357 CA-4) bouncePct ahora es objeto { overall, byPhase, ... }.
+    // Compat: si llega number (server legacy), lo usamos directo.
     const bp = d.bouncePct;
-    setText('kpi-bounce-value', fmtPct(bp));
+    const bpOverall = (bp && typeof bp === 'object') ? bp.overall : bp;
+    setText('kpi-bounce-value', fmtPct(bpOverall));
     const bcard = document.getElementById('kpi-bounce');
     if(bcard){
         bcard.classList.remove('kpi-ok','kpi-warn','kpi-bad');
-        if(bp!=null){ if(bp>30) bcard.classList.add('kpi-bad'); else if(bp>15) bcard.classList.add('kpi-warn'); else bcard.classList.add('kpi-ok'); }
+        if(bpOverall!=null){ if(bpOverall>30) bcard.classList.add('kpi-bad'); else if(bpOverall>15) bcard.classList.add('kpi-warn'); else bcard.classList.add('kpi-ok'); }
+        // Tooltip con breakdown por fase cuando esté disponible.
+        if(bp && typeof bp === 'object' && bp.byPhase){
+            const phases = Object.entries(bp.byPhase)
+                .sort((a, b) => b[1] - a[1])
+                .map(([f, v]) => f + ': ' + v + '%');
+            bcard.title = phases.length > 0
+                ? '% rebote por fase (últimos 7d) · ' + phases.join(' · ')
+                : '% rebote (últimos 7d, sin datos)';
+        }
     }
 }
 
@@ -2378,29 +2407,29 @@ function renderHomeHTML(opts) {
   <main class="kiosk-body">
 
     <section class="kpi-grid" aria-label="KPIs">
-      <div class="kpi-card" id="kpi-prs">
+      <div class="kpi-card" id="kpi-prs" title="PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.">
         <span class="kpi-icon">✅</span>
         <span class="kpi-label">PRs · 7d</span>
         <span class="kpi-value" id="kpi-prs-value">…</span>
         <span class="kpi-sub">mergeados</span>
       </div>
-      <div class="kpi-card" id="kpi-tokens">
+      <div class="kpi-card" id="kpi-tokens" title="Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Groq · Gemini · Cerebras). Hover para breakdown.">
         <span class="kpi-icon">⚡</span>
         <span class="kpi-label">Tokens · 24h</span>
         <span class="kpi-value" id="kpi-tokens-value">…</span>
-        <span class="kpi-sub">in + out</span>
+        <span class="kpi-sub">todos los providers</span>
       </div>
-      <div class="kpi-card" id="kpi-cycle">
+      <div class="kpi-card" id="kpi-cycle" title="Mediana de duración por agente/fase (cap 7d). NO es cycle time DORA — esa métrica vive separada.">
         <span class="kpi-icon">⏱</span>
-        <span class="kpi-label">Cycle time</span>
+        <span class="kpi-label">Duración por agente</span>
         <span class="kpi-value" id="kpi-cycle-value">…</span>
-        <span class="kpi-sub">mediana por fase</span>
+        <span class="kpi-sub">mediana por marker</span>
       </div>
-      <div class="kpi-card" id="kpi-bounce">
+      <div class="kpi-card" id="kpi-bounce" title="% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.">
         <span class="kpi-icon">↩</span>
-        <span class="kpi-label">% Rebote</span>
+        <span class="kpi-label">% Rebote · 7d</span>
         <span class="kpi-value" id="kpi-bounce-value">…</span>
-        <span class="kpi-sub">rechazos / total</span>
+        <span class="kpi-sub">issues con ≥1 rebote</span>
       </div>
       <div class="kpi-card kpi-quota-dual" id="kpi-quota" title="Cuota Plan Max (sin API pública de Anthropic — calibrado contra valores reales de claude.ai).">
         <span class="kpi-icon">📊</span>
