@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 18 — Ventana Providers (multi-provider.js) con health integrada (#3361)
+  -----------------------------------------------------------------------------
+  Refactor: el card "Continuidad del Pulpo" del home (mockup 16) se mueve a la
+  ventana Providers para evitar la duplicacion (home + ventana mostraban el
+  mismo dato con interpretacion distinta). Esta es la unica fuente de verdad
+  visual de salud de providers del dashboard interno.
+
+  Cubre la refactorizacion de:
+    - home.js: queda sin la seccion Continuidad del Pulpo (referencia abajo a la izq).
+    - multi-provider.js: incorpora un panel "Salud Live" debajo del bloque de keys
+      existente, alimentado por /api/pulpo/provider-health (cache backend >= 5min).
+
+  Convencion (reutiliza el sistema visual existente — cero tokens nuevos):
+    - Paleta: design-tokens.css (--success, --warning, --danger, --info, --retry,
+      --text-dim, --provider-*, --surface-*).
+    - Iconos: sprite.svg via inline <symbol> (autocontenido el mockup).
+    - Tipografia: var(--font-sans) en estilo inline.
+    - WCAG AA: todos los textos verificados contra surface-1 (#161B22) >= 4.5:1.
+    - Estados live: VERDE / NEUTRO / ROJO / AMARILLO / NARANJA + icono + literal.
+
+  Mapeo reason_code -> color/semaforo (definicion canonica de UX para #3361):
+    - authenticated         -> VERDE (--success #3FB950) · ic-conn-ok
+    - no_key_configured     -> NEUTRO MUTED (--text-dim #8B949E) · borde punteado · ic-info
+                                NUNCA amarillo. Es ausencia de dato, no anomalia.
+    - invalid_credentials   -> ROJO (--danger #F85149) · ic-conn-err
+    - quota_exhausted       -> AMARILLO (--warning #D29922) · ic-conn-warn
+    - forbidden             -> NARANJA (--retry #F59E0B) · ic-conn-warn
+    - unknown               -> ROJO (--danger #F85149) · ic-conn-err
+
+  Tratamiento "no aplica" para Anthropic (OAuth Max):
+    - Origen: bandera declarativa auth_mode:"oauth" en agent-models.json
+    - Render: badge text-dim + literal "OAuth Max · sin API key" + sin pill semaforo
+    - Razon: el dashboard no puede pingear OAuth desde el navegador y la sesion
+      vive en el CLI; mostrar amarillo confunde al operador (ya documentado por
+      security agent + guru, CA-7 del refinamiento PO).
+
+  Staleness pill (CA-6 del PO refinado):
+    - Banner muestra "Snapshot · hace XmYs" en relativo. >5min => texto
+      --warning + icono pendiente. Visualiza que el backend cachea >= 5min para
+      no martillar APIs externas (defensa amplification).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1080"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- Iconos del sprite (copia para mockup autocontenido) -->
+    <symbol id="m-provider-anthropic" viewBox="0 0 24 24">
+      <line x1="12" y1="3.5" x2="12" y2="20.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <line x1="5" y1="7.5" x2="19" y2="16.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <line x1="5" y1="16.5" x2="19" y2="7.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-provider-openai" viewBox="0 0 24 24">
+      <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-provider-gemini" viewBox="0 0 24 24">
+      <path d="M12 2.5 L17 12 L12 21.5 L7 12 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M2.5 12 L12 17 L21.5 12 L12 7 Z" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round" opacity="0.55"/>
+    </symbol>
+    <symbol id="m-provider-cerebras" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M7 7 H17 M7 10 H17 M7 13 H17 M7 16 H17" stroke="currentColor" stroke-width="1.1"/>
+      <path d="M7 7 V17 M10 7 V17 M13 7 V17 M16 7 V17" stroke="currentColor" stroke-width="1.1"/>
+      <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-provider-elevenlabs" viewBox="0 0 24 24">
+      <rect x="5" y="6" width="4" height="12" rx="1" fill="currentColor"/>
+      <rect x="11" y="3" width="4" height="18" rx="1" fill="currentColor"/>
+      <rect x="17" y="8" width="2.5" height="8" rx="1" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-conn-ok" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.45"/>
+      <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="12" r="3" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-conn-warn" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 10 V14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-conn-err" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="8" r="1" fill="currentColor"/>
+      <path d="M12 11 V17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-provider-health" viewBox="0 0 24 24">
+      <path d="M2 12 H7 L9 7 L12 17 L14 9 L16 14 L18 12 H22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-clock-stale" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M12 7 V12 L15.5 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-shield-check" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M8.5 12.5 L11 15 L15.5 9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-strikethrough" viewBox="0 0 24 24">
+      <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <!-- ===== BACKGROUND surface-0 (#0D1117) ===== -->
+  <rect width="1440" height="1080" fill="#0D1117"/>
+
+  <!-- ===== HEADER del dashboard (62px) ===== -->
+  <rect x="0" y="0" width="1440" height="62" fill="#161B22"/>
+  <rect x="0" y="61" width="1440" height="1" fill="#30363D"/>
+  <text x="32" y="38" fill="#E6EDF3" font-size="14" font-weight="700" letter-spacing="0.4">PIPELINE V3 · DASHBOARD</text>
+  <text x="220" y="38" fill="#8B949E" font-size="12">Issue #3361 · Refactor: Providers Window</text>
+
+  <!-- Pestañas (Home / Providers activa / Consumo / Modo Descanso) -->
+  <g font-size="12" font-weight="600" letter-spacing="0.3">
+    <text x="1024" y="38" fill="#8B949E">Home</text>
+    <text x="1080" y="38" fill="#E6EDF3">Providers</text>
+    <rect x="1075" y="48" width="74" height="2" fill="#58A6FF" rx="1"/>
+    <text x="1162" y="38" fill="#8B949E">Consumo</text>
+    <text x="1236" y="38" fill="#8B949E">Descanso</text>
+    <text x="1306" y="38" fill="#8B949E">Multi-Provider</text>
+  </g>
+
+  <!-- ===== TITULO + STALENESS PILL (CA-6) ===== -->
+  <g transform="translate(32, 92)">
+    <use href="#m-provider-health" x="0" y="0" width="22" height="22" color="#E6EDF3"/>
+    <text x="32" y="17" fill="#E6EDF3" font-size="18" font-weight="700">Salud de Providers · Vista unificada</text>
+    <text x="32" y="38" fill="#8B949E" font-size="12">
+      Fuente unica del estado de credenciales y ping live. Reemplaza el card duplicado "Continuidad del Pulpo" del home.
+    </text>
+
+    <!-- Staleness pill: alineada a la derecha (1440 - 32 padding) -->
+    <g transform="translate(1108, -2)">
+      <rect x="0" y="0" width="268" height="34" rx="17" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+      <use href="#m-clock-stale" x="10" y="6" width="22" height="22" color="#8B949E"/>
+      <text x="38" y="15" fill="#8B949E" font-size="10" letter-spacing="0.5">SNAPSHOT</text>
+      <text x="38" y="28" fill="#E6EDF3" font-size="12" font-weight="600">hace 2m 14s · cache backend 5 min</text>
+    </g>
+  </g>
+
+  <!-- ===== BANNER de origen — coherencia con cron #3260 ===== -->
+  <g transform="translate(32, 148)">
+    <rect x="0" y="0" width="1376" height="48" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <use href="#m-info" x="16" y="14" width="20" height="20" color="#58A6FF"/>
+    <text x="44" y="22" fill="#E6EDF3" font-size="12" font-weight="600">Fuente canonica · provider-health.listConfiguredProviders()</text>
+    <text x="44" y="38" fill="#8B949E" font-size="11">
+      La misma lista se sirve por /api/pulpo/provider-health (live, polling 30s) y /api/multi-provider/health (cron 15 min). Sin drift de semaforos entre endpoints — fix raiz de los amarillos espurios.
+    </text>
+  </g>
+
+  <!-- ============================================================
+       BLOQUE 1 — KEYS / CREDENCIALES (existente, sin tocar)
+       Se mantiene como esta hoy en multi-provider.js renderProviders().
+       ============================================================ -->
+  <g transform="translate(32, 220)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="14" font-weight="700" letter-spacing="0.4">CREDENCIALES · ESTADO DE KEYS</text>
+    <text x="0" y="20" fill="#8B949E" font-size="11">No live ping aca — solo reporta si la key existe, esta enmascarada y cuando se rotó por ultima vez.</text>
+
+    <!-- Filas existentes (referencia, no se modifican en este issue) -->
+    <g transform="translate(0, 36)" font-size="12">
+      <rect x="0" y="0" width="1376" height="40" rx="8" fill="#161B22" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="40" fill="#E5946B"/>
+      <use href="#m-provider-anthropic" x="14" y="10" width="20" height="20" color="#E5946B"/>
+      <text x="44" y="25" fill="#E6EDF3" font-weight="600">Anthropic</text>
+      <text x="180" y="25" fill="#8B949E">OAuth Max · sin API key</text>
+      <text x="1180" y="25" fill="#8B949E" text-anchor="end">verificado hace 2d</text>
+      <use href="#m-shield-check" x="1340" y="10" width="20" height="20" color="#8B949E"/>
+
+      <rect x="0" y="48" width="1376" height="40" rx="8" fill="#161B22" stroke="#30363D"/>
+      <rect x="0" y="48" width="3" height="40" fill="#34D399"/>
+      <use href="#m-provider-openai" x="14" y="58" width="20" height="20" color="#34D399"/>
+      <text x="44" y="73" fill="#E6EDF3" font-weight="600">OpenAI</text>
+      <text x="180" y="73" fill="#A7F3D0" font-family="SF Mono, monospace">sk-proj-****QXc4</text>
+      <text x="1180" y="73" fill="#8B949E" text-anchor="end">rotada hace 14d</text>
+      <use href="#m-shield-check" x="1340" y="58" width="20" height="20" color="#3FB950"/>
+
+      <rect x="0" y="96" width="1376" height="40" rx="8" fill="#161B22" stroke="#30363D"/>
+      <rect x="0" y="96" width="3" height="40" fill="#8AB4F8"/>
+      <use href="#m-provider-gemini" x="14" y="106" width="20" height="20" color="#8AB4F8"/>
+      <text x="44" y="121" fill="#E6EDF3" font-weight="600">Gemini</text>
+      <text x="180" y="121" fill="#A7F3D0" font-family="SF Mono, monospace">AIza****Hf7q</text>
+      <text x="1180" y="121" fill="#8B949E" text-anchor="end">rotada hace 6d</text>
+      <use href="#m-shield-check" x="1340" y="106" width="20" height="20" color="#3FB950"/>
+
+      <rect x="0" y="144" width="1376" height="40" rx="8" fill="#161B22" stroke="#30363D"/>
+      <rect x="0" y="144" width="3" height="40" fill="#FFD166"/>
+      <use href="#m-provider-cerebras" x="14" y="154" width="20" height="20" color="#FFD166"/>
+      <text x="44" y="169" fill="#E6EDF3" font-weight="600">Cerebras</text>
+      <text x="180" y="169" fill="#A7F3D0" font-family="SF Mono, monospace">csk-****8wMv</text>
+      <text x="1180" y="169" fill="#8B949E" text-anchor="end">rotada hace 21d</text>
+      <use href="#m-shield-check" x="1340" y="154" width="20" height="20" color="#3FB950"/>
+
+      <rect x="0" y="192" width="1376" height="40" rx="8" fill="#161B22" stroke="#30363D"/>
+      <rect x="0" y="192" width="3" height="40" fill="#A78BFA"/>
+      <use href="#m-provider-elevenlabs" x="14" y="202" width="20" height="20" color="#A78BFA"/>
+      <text x="44" y="217" fill="#E6EDF3" font-weight="600">ElevenLabs</text>
+      <text x="180" y="217" fill="#8B949E">multimedia · TTS · no LLM</text>
+      <text x="1180" y="217" fill="#8B949E" text-anchor="end">rotada hace 9d</text>
+      <use href="#m-shield-check" x="1340" y="202" width="20" height="20" color="#3FB950"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       BLOQUE 2 — SALUD LIVE (NUEVO — reemplaza el card del home)
+       Polling 30s a /api/pulpo/provider-health. Cache backend >=5min.
+       ============================================================ -->
+  <g transform="translate(32, 540)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="14" font-weight="700" letter-spacing="0.4">SALUD LIVE · PING POR PROVIDER</text>
+    <text x="0" y="20" fill="#8B949E" font-size="11">
+      Estado del ultimo ping al endpoint de auth del provider. Anthropic no aplica (OAuth Max). Click en el card para audit.
+    </text>
+
+    <!-- Resumen KPIs -->
+    <g transform="translate(1000, -4)" font-size="11">
+      <text x="0" y="0" fill="#8B949E" letter-spacing="0.5">RESUMEN</text>
+      <text x="100" y="14" fill="#3FB950" font-size="22" font-weight="700" text-anchor="end">3</text>
+      <text x="106" y="14" fill="#8B949E">verdes</text>
+      <text x="210" y="14" fill="#8B949E" font-size="22" font-weight="700" text-anchor="end">1</text>
+      <text x="216" y="14" fill="#8B949E">muted</text>
+      <text x="320" y="14" fill="#D29922" font-size="22" font-weight="700" text-anchor="end">0</text>
+      <text x="326" y="14" fill="#8B949E">amarillos</text>
+      <text x="376" y="14" fill="#F85149" font-size="22" font-weight="700" text-anchor="end">0</text>
+      <text x="382" y="14" fill="#8B949E">rojos</text>
+    </g>
+
+    <!-- 5 cards de provider en grid 4x1 + 1 (ElevenLabs aparte si lleva TTS) -->
+    <!-- card anchura: (1376 - 3*12) / 4 = 335px -->
+    <g transform="translate(0, 36)" font-size="12">
+
+      <!-- CARD 1 — Anthropic (NO APLICA · OAuth Max) — borde punteado muted -->
+      <g transform="translate(0, 0)">
+        <rect x="0" y="0" width="335" height="140" rx="10" fill="#161B22" stroke="#8B949E" stroke-width="1" stroke-dasharray="4 3"/>
+        <use href="#m-provider-anthropic" x="14" y="14" width="22" height="22" color="#E5946B"/>
+        <text x="44" y="30" fill="#E6EDF3" font-weight="600" font-size="14">Anthropic</text>
+        <text x="44" y="48" fill="#8B949E" font-size="11">claude-opus-4-7 · OAuth Max</text>
+
+        <!-- Badge "no aplica" en vez de pill semaforo -->
+        <g transform="translate(14, 64)">
+          <rect x="0" y="0" width="148" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+          <use href="#m-info" x="6" y="3" width="16" height="16" color="#8B949E"/>
+          <text x="26" y="15" fill="#8B949E" font-size="11" font-weight="600">NO APLICA · sin API key</text>
+        </g>
+        <text x="14" y="104" fill="#8B949E" font-size="11" font-family="SF Mono, monospace">auth_mode: "oauth"</text>
+        <text x="14" y="120" fill="#6E7681" font-size="10">declarado en agent-models.json · sesion vive en el CLI</text>
+      </g>
+
+      <!-- CARD 2 — OpenAI (VERDE · authenticated) -->
+      <g transform="translate(347, 0)">
+        <rect x="0" y="0" width="335" height="140" rx="10" fill="#161B22" stroke="rgba(63,185,80,0.45)" stroke-width="1.5"/>
+        <use href="#m-provider-openai" x="14" y="14" width="22" height="22" color="#34D399"/>
+        <text x="44" y="30" fill="#E6EDF3" font-weight="600" font-size="14">OpenAI</text>
+        <text x="44" y="48" fill="#8B949E" font-size="11">gpt-5-codex · API key</text>
+
+        <g transform="translate(14, 64)">
+          <rect x="0" y="0" width="120" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+          <use href="#m-conn-ok" x="6" y="3" width="16" height="16" color="#3FB950"/>
+          <text x="26" y="15" fill="#3FB950" font-size="11" font-weight="700">VERDE · 184ms</text>
+        </g>
+        <text x="14" y="104" fill="#E6EDF3" font-size="11" font-family="SF Mono, monospace">reason: authenticated</text>
+        <text x="14" y="120" fill="#8B949E" font-size="10">ping ok · cache 38s</text>
+      </g>
+
+      <!-- CARD 3 — Gemini (VERDE) -->
+      <g transform="translate(694, 0)">
+        <rect x="0" y="0" width="335" height="140" rx="10" fill="#161B22" stroke="rgba(63,185,80,0.45)" stroke-width="1.5"/>
+        <use href="#m-provider-gemini" x="14" y="14" width="22" height="22" color="#8AB4F8"/>
+        <text x="44" y="30" fill="#E6EDF3" font-weight="600" font-size="14">Gemini</text>
+        <text x="44" y="48" fill="#8B949E" font-size="11">gemini-2.5-flash · API key</text>
+
+        <g transform="translate(14, 64)">
+          <rect x="0" y="0" width="120" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+          <use href="#m-conn-ok" x="6" y="3" width="16" height="16" color="#3FB950"/>
+          <text x="26" y="15" fill="#3FB950" font-size="11" font-weight="700">VERDE · 212ms</text>
+        </g>
+        <text x="14" y="104" fill="#E6EDF3" font-size="11" font-family="SF Mono, monospace">reason: authenticated</text>
+        <text x="14" y="120" fill="#8B949E" font-size="10">ping ok · cache 41s</text>
+      </g>
+
+      <!-- CARD 4 — Cerebras (VERDE) -->
+      <g transform="translate(1041, 0)">
+        <rect x="0" y="0" width="335" height="140" rx="10" fill="#161B22" stroke="rgba(63,185,80,0.45)" stroke-width="1.5"/>
+        <use href="#m-provider-cerebras" x="14" y="14" width="22" height="22" color="#FFD166"/>
+        <text x="44" y="30" fill="#E6EDF3" font-weight="600" font-size="14">Cerebras</text>
+        <text x="44" y="48" fill="#8B949E" font-size="11">llama-3.3-70b · API key</text>
+
+        <g transform="translate(14, 64)">
+          <rect x="0" y="0" width="120" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+          <use href="#m-conn-ok" x="6" y="3" width="16" height="16" color="#3FB950"/>
+          <text x="26" y="15" fill="#3FB950" font-size="11" font-weight="700">VERDE · 96ms</text>
+        </g>
+        <text x="14" y="104" fill="#E6EDF3" font-size="11" font-family="SF Mono, monospace">reason: authenticated</text>
+        <text x="14" y="120" fill="#8B949E" font-size="10">ping ok · cache 22s</text>
+      </g>
+
+      <!-- Nota Groq removido -->
+      <g transform="translate(0, 156)">
+        <rect x="0" y="0" width="682" height="38" rx="8" fill="rgba(248,81,73,0.06)" stroke="#30363D" stroke-dasharray="3 3"/>
+        <use href="#m-strikethrough" x="12" y="10" width="20" height="20" color="#8B949E"/>
+        <text x="40" y="16" fill="#8B949E" font-size="11" font-weight="600">groq</text>
+        <text x="80" y="16" fill="#8B949E" font-size="11">— removido del semaforo (depende de #3353 cerrar)</text>
+        <text x="40" y="30" fill="#6E7681" font-size="10">live-ping.js no debe listarlo · CA-10 verificable con grep en post-merge</text>
+      </g>
+
+      <!-- ElevenLabs como bloque separado (no es LLM, es multimedia) -->
+      <g transform="translate(694, 156)">
+        <rect x="0" y="0" width="682" height="38" rx="8" fill="#161B22" stroke="rgba(63,185,80,0.35)" stroke-width="1.5"/>
+        <use href="#m-provider-elevenlabs" x="12" y="9" width="20" height="20" color="#A78BFA"/>
+        <text x="40" y="16" fill="#E6EDF3" font-size="11" font-weight="700">ElevenLabs (multimedia · TTS)</text>
+        <use href="#m-conn-ok" x="170" y="9" width="20" height="20" color="#3FB950"/>
+        <text x="194" y="22" fill="#3FB950" font-size="11" font-weight="700">VERDE · 320ms</text>
+        <text x="40" y="30" fill="#8B949E" font-size="10">se mantiene · usado por TTS narrativa · NO se mezcla con semaforo LLM</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       BLOQUE 3 — LEYENDA DE COLORES POR REASON CODE (canonica)
+       ============================================================ -->
+  <g transform="translate(32, 800)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="14" font-weight="700" letter-spacing="0.4">LEYENDA · MAPEO reason_code → SEMAFORO</text>
+    <text x="0" y="20" fill="#8B949E" font-size="11">Cada estado lleva color + icono + literal. Cero reliance en color solo (WCAG AA + daltonismo).</text>
+
+    <g transform="translate(0, 36)" font-size="11">
+
+      <g transform="translate(0, 0)">
+        <rect x="0" y="0" width="220" height="56" rx="8" fill="rgba(63,185,80,0.10)" stroke="#3FB950"/>
+        <use href="#m-conn-ok" x="12" y="18" width="20" height="20" color="#3FB950"/>
+        <text x="40" y="22" fill="#3FB950" font-size="11" font-weight="700">VERDE</text>
+        <text x="40" y="40" fill="#E6EDF3" font-family="SF Mono, monospace">authenticated</text>
+        <text x="40" y="52" fill="#8B949E" font-size="10">200 OK con body parseable</text>
+      </g>
+
+      <g transform="translate(232, 0)">
+        <rect x="0" y="0" width="220" height="56" rx="8" fill="rgba(139,148,158,0.10)" stroke="#8B949E" stroke-dasharray="4 3"/>
+        <use href="#m-info" x="12" y="18" width="20" height="20" color="#8B949E"/>
+        <text x="40" y="22" fill="#8B949E" font-size="11" font-weight="700">NEUTRO · MUTED</text>
+        <text x="40" y="40" fill="#E6EDF3" font-family="SF Mono, monospace">no_key_configured</text>
+        <text x="40" y="52" fill="#8B949E" font-size="10">ausencia esperada · NUNCA amarillo</text>
+      </g>
+
+      <g transform="translate(464, 0)">
+        <rect x="0" y="0" width="220" height="56" rx="8" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+        <use href="#m-conn-err" x="12" y="18" width="20" height="20" color="#F85149"/>
+        <text x="40" y="22" fill="#F85149" font-size="11" font-weight="700">ROJO</text>
+        <text x="40" y="40" fill="#E6EDF3" font-family="SF Mono, monospace">invalid_credentials</text>
+        <text x="40" y="52" fill="#8B949E" font-size="10">401 · key invalida o revocada</text>
+      </g>
+
+      <g transform="translate(696, 0)">
+        <rect x="0" y="0" width="220" height="56" rx="8" fill="rgba(210,153,34,0.10)" stroke="#D29922"/>
+        <use href="#m-conn-warn" x="12" y="18" width="20" height="20" color="#D29922"/>
+        <text x="40" y="22" fill="#D29922" font-size="11" font-weight="700">AMARILLO</text>
+        <text x="40" y="40" fill="#E6EDF3" font-family="SF Mono, monospace">quota_exhausted</text>
+        <text x="40" y="52" fill="#8B949E" font-size="10">429 con marker de cuota</text>
+      </g>
+
+      <g transform="translate(928, 0)">
+        <rect x="0" y="0" width="220" height="56" rx="8" fill="rgba(245,158,11,0.10)" stroke="#F59E0B"/>
+        <use href="#m-conn-warn" x="12" y="18" width="20" height="20" color="#F59E0B"/>
+        <text x="40" y="22" fill="#F59E0B" font-size="11" font-weight="700">NARANJA</text>
+        <text x="40" y="40" fill="#E6EDF3" font-family="SF Mono, monospace">forbidden</text>
+        <text x="40" y="52" fill="#8B949E" font-size="10">403 · permisos o region</text>
+      </g>
+
+      <g transform="translate(1160, 0)">
+        <rect x="0" y="0" width="216" height="56" rx="8" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+        <use href="#m-conn-err" x="12" y="18" width="20" height="20" color="#F85149"/>
+        <text x="40" y="22" fill="#F85149" font-size="11" font-weight="700">ROJO</text>
+        <text x="40" y="40" fill="#E6EDF3" font-family="SF Mono, monospace">unknown</text>
+        <text x="40" y="52" fill="#8B949E" font-size="10">5xx o cuerpos sin parsear</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       BLOQUE 4 — HOME REFERENCE (mini thumbnail: el home queda LIMPIO)
+       ============================================================ -->
+  <g transform="translate(32, 928)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="14" font-weight="700" letter-spacing="0.4">HOME · ANTES vs DESPUES (referencia)</text>
+    <text x="0" y="20" fill="#8B949E" font-size="11">El home queda sin "Continuidad del Pulpo" (no duplica info de esta ventana).</text>
+
+    <!-- ANTES (tachado) -->
+    <g transform="translate(0, 36)">
+      <rect x="0" y="0" width="678" height="110" rx="10" fill="#161B22" stroke="#30363D" opacity="0.55"/>
+      <text x="14" y="24" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="0.4">ANTES · home.js (líneas 2362-2371)</text>
+      <rect x="14" y="36" width="650" height="56" rx="8" fill="#1C2128" stroke="#E8770D" stroke-width="1.5"/>
+      <text x="26" y="56" fill="#E6EDF3" font-size="12" font-weight="700">🐙 Continuidad del Pulpo</text>
+      <text x="26" y="74" fill="#8B949E" font-size="10">pills + dispatch bar · 30s · provider-health · DUPLICA ventana Providers</text>
+      <line x1="14" y1="64" x2="664" y2="64" stroke="#F85149" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+    </g>
+
+    <!-- DESPUES (limpio) -->
+    <g transform="translate(698, 36)">
+      <rect x="0" y="0" width="678" height="110" rx="10" fill="#161B22" stroke="rgba(63,185,80,0.45)" stroke-width="1.5"/>
+      <text x="14" y="24" fill="#E6EDF3" font-size="11" font-weight="700" letter-spacing="0.4">DESPUES · home.js limpio</text>
+      <rect x="14" y="36" width="650" height="56" rx="8" fill="#1C2128" stroke="#30363D" stroke-dasharray="3 3"/>
+      <use href="#m-conn-ok" x="24" y="50" width="20" height="20" color="#3FB950"/>
+      <text x="56" y="64" fill="#E6EDF3" font-size="12" font-weight="600">KPIs + quota banner + active panels (sin duplicacion)</text>
+      <text x="56" y="80" fill="#8B949E" font-size="10">salud de providers vive solo en ventana Providers · una fuente de verdad</text>
+    </g>
+  </g>
+
+  <!-- ===== FOOTER ===== -->
+  <g transform="translate(32, 1056)">
+    <text x="0" y="0" fill="#6E7681" font-size="10" font-family="SF Mono, monospace">
+      ux · pipeline V3 · fase criterios · issue #3361 · reutiliza design-tokens.css + sprite.svg · cero hardcoded · WCAG AA
+    </text>
+  </g>
+</svg>
