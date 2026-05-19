@@ -221,26 +221,35 @@ test('onlyAllowlistFilter es booleano de módulo, no se persiste en localStorage
 
 // ───────────── Grid de áreas (CA-2) ─────────────
 
-test('home.js usa repeat(auto-fit, minmax(96px, 1fr)) para .areas-bar (CA-2 + CA-UX-7)', () => {
-    // Antes (#3045): repeat(9, 1fr) → con 10 áreas, la 10ª se iba a una segunda fila.
-    // Ahora: auto-fit con minmax para que entren 10 (o N) en una línea sin truncar.
+test('home.js usa repeat(${AREAS.length}, minmax(0, 1fr)) para .areas-bar (CA-2 #3358)', () => {
+    // Historia: #3045 (9→10) pasó de repeat(9, 1fr) a auto-fit minmax(96px, 1fr).
+    // #3239 (10→11) sumó "Provider" — auto-fit dejó de alcanzar al ancho operativo
+    // del kiosk (1036px usables) y la 11ª pill rebotó a una segunda fila.
+    // #3358 — pasa a repeat(${AREAS.length}, minmax(0, 1fr)) interpolado para
+    // que las columnas se DERIVEN del array AREAS, así el patrón histórico
+    // 9 → 10 → 11 → … no vuelve a romper la fila por un literal estático.
     assert.match(
         HOME_SRC,
-        /\.areas-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(96px,\s*1fr\)\)/,
-        '.areas-bar debe usar auto-fit / minmax para evitar wrap a 2 líneas',
+        /\.areas-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(\$\{AREAS\.length\},\s*minmax\(0,\s*1fr\)\)/,
+        '.areas-bar debe usar repeat(${AREAS.length}, minmax(0, 1fr)) (CA-2: derivado, no literal)',
     );
     assert.doesNotMatch(
         HOME_SRC,
         /\.areas-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(9,\s*1fr\)/,
-        'no debe quedar el repeat(9, 1fr) viejo',
+        'no debe quedar el repeat(9, 1fr) viejo de #3045',
+    );
+    assert.doesNotMatch(
+        HOME_SRC,
+        /\.areas-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(96px/,
+        'no debe quedar el auto-fit minmax(96px) viejo de #3045/#3239 (rebotaba a 2 filas con 11 ítems)',
     );
 });
 
 test('home.js sigue exportando 11 áreas (regression vs el conteo asumido por el grid)', () => {
     // #3239 — sumamos la tarjeta Multi-Provider después de "modo-descanso".
-    // El grid usa repeat(auto-fit, minmax(96px, 1fr)) (no repeat fijo), así que
-    // sumar una tarjeta no rompe el layout; el conteo se mantiene como
-    // assertion explícita para detectar cambios accidentales al array.
+    // #3358 — el grid usa repeat(${AREAS.length}, minmax(0, 1fr)) (derivado),
+    // así que sumar/sacar una tarjeta no rompe el layout; el conteo se mantiene
+    // como assertion explícita para detectar cambios accidentales al array.
     const start = HOME_SRC.indexOf('const AREAS = [');
     assert.ok(start > 0, 'AREAS array debe existir');
     const end = HOME_SRC.indexOf('];', start);

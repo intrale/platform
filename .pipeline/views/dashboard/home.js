@@ -432,16 +432,25 @@ function homeStyles() {
 .line-btn:hover { background: var(--in-bg-3); border-color: var(--in-accent); color: var(--in-accent); }
 
 /* Áreas — botonera horizontal compacta con badges de conteo.
-   #3045 — auto-fit con minmax(96px, 1fr) en lugar de repeat(9, 1fr):
-   - resiste el crecimiento del array AREAS (hoy son 10, no 9) sin que
-     el último ítem se vaya a una segunda fila;
-   - degrada con gracia si el viewport baja (operador con la ventana
-     achicada en monitor secundario);
-   - 96px es suficiente para los labels más largos ("Bloqueados", 10ch
-     a 11px de font-size) sin truncar ni activar text-overflow. */
+   Historia del grid (no perder el contexto al próximo agente que toque acá):
+   - #3045 (9 → 10 ítems): se pasó de repeat(9, 1fr) a
+     auto-fit minmax(96px, 1fr) para tolerar el crecimiento del array AREAS.
+   - #3239 (10 → 11 ítems): se agregó la pill "Provider" y el ancho
+     operativo del kiosk (1080px frame − 22px×2 padding ≈ 1036px usables)
+     ya no alcanza para 11 × 96 + 10 × 8 = 1136px → la 11ª pill se
+     escapaba a una segunda fila y quebraba el layout.
+   - #3358: se pasa a repeat(${AREAS.length}, minmax(0, 1fr)) interpolado.
+     Las columnas se derivan del array AREAS, así que el patrón histórico
+     9 → 10 → 11 → … no vuelve a romper la fila por un literal estático.
+     minmax(0, 1fr) evita que min-content empuje la columna y permite
+     que las pills compacten al ancho disponible. Con 11 cols quedan
+     ≈ 86.9px por celda (956 ÷ 11) y ≈ 70.9px usables tras padding
+     10px 8px — suficiente para "Bloqueados" (10ch × 11px ≈ 62px).
+     Si el viewport baja por debajo del ancho operativo, las pills
+     siguen siendo clickeables aunque se vean más comprimidas (CA-7). */
 .areas-bar {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+    grid-template-columns: repeat(${AREAS.length}, minmax(0, 1fr));
     gap: 8px;
 }
 .area-pill {
