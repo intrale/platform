@@ -283,6 +283,12 @@ function computeUsageSince(activityLogPath, sinceMs) {
         // Excluir determinísticos (model:'deterministic') porque no consumen
         // cuota del plan Max — solo los agentes Claude reales cuentan.
         if (evt.model === 'deterministic') continue;
+        // CA-5.1 (#3357): filtrar por provider — solo Anthropic cuenta al
+        // plan Max. Sesiones con provider explícito distinto (groq, openai-codex,
+        // gemini-google, cerebras, nvidia-nim, etc.) NO consumen cuota Anthropic.
+        // Eventos sin `provider` se asumen Anthropic (compat con log histórico
+        // anterior a M2 multi-provider, donde no se emitía el campo).
+        if (evt.provider && evt.provider !== 'anthropic') continue;
         totalMs += evt.duration_ms;
         if (ts >= day24Start) totalMs24h += evt.duration_ms;
         count++;

@@ -1191,11 +1191,20 @@ async function tickKpis(){
     if(!d) return;
     const grid = document.getElementById('kpis-grid');
     if(grid){
+        // (#3357 CA-2/3/4) shapes nuevos para tokens24h, agentDurationMedianMs,
+        // bouncePct. Mantenemos compat con shapes viejos (number) por si el
+        // server queda atrás del cliente durante un deploy escalonado.
+        const tk = d.tokens24h;
+        const tkTotal = (tk && typeof tk === 'object') ? tk.total : tk;
+        const cyc = d.agentDurationMedianMs != null ? d.agentDurationMedianMs : d.cycleTimeMs;
+        const bp = d.bouncePct;
+        const bpOverall = (bp && typeof bp === 'object') ? bp.overall : bp;
         const tiles = [
             { label: 'PRs · 7d', value: d.prsLast7d==null?'—':d.prsLast7d, sub: 'mergeados' },
-            { label: 'Tokens · 24h', value: fmtNum(d.tokens24h), sub: 'in + out' },
-            { label: 'Cycle time', value: fmtDur(d.cycleTimeMs), sub: 'mediana' },
-            { label: '% rebote', value: fmtPct(d.bouncePct), sub: 'rechazos / total' },
+            { label: 'Tokens · 24h', value: fmtNum(tkTotal), sub: 'todos los providers' },
+            { label: 'Duración por agente', value: fmtDur(cyc), sub: 'mediana por marker' },
+            { label: 'Cycle time issue', value: fmtDur(d.issueCycleTimeMs), sub: 'creación → cierre' },
+            { label: '% rebote · 7d', value: fmtPct(bpOverall), sub: 'issues con ≥1 rebote' },
         ];
         let html = '';
         for(const t of tiles) html += '<div class="kp-tile"><div class="kp-tile-label">'+escapeHtml(t.label)+'</div><div class="kp-tile-value">'+escapeHtml(t.value)+'</div><div class="kp-tile-sub">'+escapeHtml(t.sub)+'</div></div>';
