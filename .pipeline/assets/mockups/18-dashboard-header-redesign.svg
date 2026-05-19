@@ -1,0 +1,383 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 18 — Rediseño del encabezado del large board principal (issue #3356)
+  Resolucion target: 1440x780 (cabe holgado en 1280x720; viewport real del dashboard)
+
+  Demuestra:
+    - Sub-secciones visualmente diferenciadas por superficie + borde (CA-2)
+    - "Cola" detallada con hasta 10 issues #num · titulo (CA-1)
+    - Conservacion de info existente: status global, ventana QA, ventana Build,
+      CPU/RAM, uptime, hora, KPIs (CA-3)
+    - Uso de design tokens reales (--surface-*, --border, --radius-md, --space-*)
+    - Iconografia del sprite (--ic-intrale-logo, ic-health-ok, ic-issues-count, etc)
+
+  Decisiones de diseno (referencia para pipeline-dev):
+    A. Cinco sub-secciones empiladas, cada una con surface-1 + border-subtle,
+       gap de --space-3 (12px), radius --radius-md (8px).
+    B. Las KPIs siguen donde estan, pero se enmarcan en un card propio.
+    C. La cola entra entre infra-health y kpis-row, con su propia altura
+       maxima y scroll vertical si supera 10 items.
+    D. La fila brand (logo+titulo+pill+reloj) queda mas compacta: 64px en
+       lugar de los ~92px actuales, porque el ruido visual baja al separar.
+    E. Tokens: ningun color nuevo, ninguna fuente nueva, ningun radio nuevo.
+
+  Iconos usados (todos existen en sprite.svg):
+    ic-intrale-logo, ic-health-ok, ic-agents-count, ic-issues-count,
+    ic-estado-stale (uptime), ic-issues-count (cola).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="780" viewBox="0 0 1440 780"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <pattern id="sec-divider" width="6" height="1" patternUnits="userSpaceOnUse">
+      <rect width="3" height="1" fill="#30363D"/>
+    </pattern>
+  </defs>
+
+  <!-- Fondo body (surface-0) -->
+  <rect width="1440" height="780" fill="#0D1117"/>
+
+  <!--
+    =====================================================================
+    SECCION 1 — BRAND BAR  (--surface-1 + headerGrad sutil)
+    Altura: 64px · Contiene: logo, titulo, status pill, autorefresh, reloj
+    =====================================================================
+  -->
+  <g>
+    <rect x="16" y="16" width="1408" height="64" rx="8" fill="url(#headerGrad)" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Logo Intrale -->
+    <g transform="translate(32, 32)">
+      <rect width="32" height="32" rx="8" fill="#0D274D"/>
+      <path d="M16 6 L5 26 L27 26 Z" fill="none" stroke="url(#brandGrad)" stroke-width="2.5"
+            stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M16 14 L11 22 L21 22 Z" fill="url(#brandGrad)"/>
+    </g>
+
+    <!-- Titulo + sub -->
+    <text x="76" y="44" fill="#E6EDF3" font-size="17" font-weight="700">Intrale Pipeline</text>
+    <text x="76" y="62" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="1.3">DASHBOARD V3 · LOCALHOST:3200</text>
+
+    <!-- Badge V3 -->
+    <g transform="translate(232, 36)">
+      <rect width="36" height="22" rx="11" fill="#2DD4BF" fill-opacity="0.18" stroke="#2DD4BF" stroke-opacity="0.42"/>
+      <text x="18" y="15" fill="#2DD4BF" font-size="10.5" font-weight="700" text-anchor="middle" letter-spacing="1.2">V3</text>
+    </g>
+
+    <!-- Status pill "Running" -->
+    <g transform="translate(280, 36)">
+      <rect width="110" height="22" rx="11" fill="#3FB950" fill-opacity="0.15" stroke="#3FB950" stroke-opacity="0.4"/>
+      <circle cx="14" cy="11" r="3.2" fill="#3FB950"/>
+      <text x="26" y="15" fill="#3FB950" font-size="10.5" font-weight="700" letter-spacing="1.4">RUNNING</text>
+    </g>
+
+    <!-- Autorefresh chip -->
+    <g transform="translate(404, 36)">
+      <rect width="78" height="22" rx="11" fill="#161B22" stroke="#30363D"/>
+      <text x="39" y="15" fill="#B1BAC4" font-size="10.5" font-weight="700" text-anchor="middle" letter-spacing="1.1">↻ AUTO</text>
+    </g>
+
+    <!-- Reloj (right) -->
+    <g transform="translate(1264, 26)">
+      <text x="120" y="22" fill="#E6EDF3" font-size="26" font-weight="700" text-anchor="end" letter-spacing="-0.02em" font-family="'SF Mono','Consolas',monospace">14:32<tspan font-size="14" fill="#8B949E">:18</tspan></text>
+      <text x="120" y="42" fill="#8B949E" font-size="10.5" font-weight="600" text-anchor="end" letter-spacing="1.2">LUN · 19 MAY 2026</text>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    SECCION 2 — CONTROL BAR  (status global + Priority QA/Build + Pausa)
+    Altura: 52px · Surface-1 con borde lateral cyan suave cuando hay status
+    =====================================================================
+  -->
+  <g>
+    <rect x="16" y="92" width="1408" height="52" rx="8" fill="#161B22" stroke="#30363D"/>
+    <!-- Rail izquierdo (cyan, semantico de "estado del sistema") -->
+    <rect x="16" y="92" width="3" height="52" rx="2" fill="url(#brandGrad)" opacity="0.85"/>
+
+    <!-- Status global -->
+    <g transform="translate(36, 118)">
+      <circle cx="0" cy="0" r="5" fill="#3FB950"/>
+      <text x="14" y="5" fill="#E6EDF3" font-size="13.5" font-weight="600">4 agentes trabajando</text>
+      <text x="180" y="5" fill="#8B949E" font-size="12">·</text>
+      <text x="194" y="5" fill="#B1BAC4" font-size="12.5">cola con 7 issues</text>
+      <text x="320" y="5" fill="#8B949E" font-size="12">·</text>
+      <text x="334" y="5" fill="#B1BAC4" font-size="12.5">sin stale</text>
+    </g>
+
+    <!-- Priority Windows (right) -->
+    <g transform="translate(900, 100)">
+      <text x="0" y="20" fill="#8B949E" font-size="10.5" font-weight="700" letter-spacing="1.2">PRIORITY WINDOWS</text>
+
+      <!-- Toggle QA (inactivo) -->
+      <g transform="translate(160, 4)">
+        <rect width="118" height="32" rx="16" fill="#161B22" stroke="#30363D"/>
+        <text x="18" y="20" fill="#2DD4BF" font-size="14">🔍</text>
+        <text x="40" y="20" fill="#B1BAC4" font-size="12" font-weight="600">QA</text>
+        <text x="98" y="20" fill="#6E7681" font-size="10.5" text-anchor="end" letter-spacing="0.8">OFF</text>
+      </g>
+
+      <!-- Toggle Build (activo · 12m) -->
+      <g transform="translate(288, 4)">
+        <rect width="148" height="32" rx="16" fill="rgba(245, 158, 11, 0.14)" stroke="#F59E0B" stroke-opacity="0.55"/>
+        <text x="18" y="20" fill="#F59E0B" font-size="14">🔨</text>
+        <text x="40" y="20" fill="#F59E0B" font-size="12" font-weight="700">Build · 12m</text>
+        <text x="128" y="20" fill="#F59E0B" font-size="10.5" text-anchor="end" letter-spacing="0.8">ON</text>
+      </g>
+
+      <!-- Pausa -->
+      <g transform="translate(450, 4)">
+        <rect width="92" height="32" rx="16" fill="#161B22" stroke="#30363D"/>
+        <text x="46" y="20" fill="#B1BAC4" font-size="12" font-weight="600" text-anchor="middle">⏸ Pausar</text>
+      </g>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    SECCION 3 — INFRA HEALTH  (cards horizontales · renderInfraHealth)
+    Altura: 64px · Resumen colapsable del estado de servicios
+    =====================================================================
+  -->
+  <g>
+    <rect x="16" y="156" width="1408" height="64" rx="8" fill="#161B22" stroke="#30363D"/>
+    <text x="36" y="184" fill="#8B949E" font-size="10.5" font-weight="700" letter-spacing="1.2">SALUD DE INFRA</text>
+
+    <g transform="translate(36, 198)" font-size="11.5">
+      <!-- Servicios -->
+      <g><circle cx="6" cy="-3" r="4" fill="#3FB950"/><text x="16" y="0" fill="#E6EDF3">Pulpo</text></g>
+      <g transform="translate(80,0)"><circle cx="6" cy="-3" r="4" fill="#3FB950"/><text x="16" y="0" fill="#E6EDF3">Dashboard</text></g>
+      <g transform="translate(190,0)"><circle cx="6" cy="-3" r="4" fill="#3FB950"/><text x="16" y="0" fill="#E6EDF3">Listener</text></g>
+      <g transform="translate(290,0)"><circle cx="6" cy="-3" r="4" fill="#3FB950"/><text x="16" y="0" fill="#E6EDF3">Telegram</text></g>
+      <g transform="translate(390,0)"><circle cx="6" cy="-3" r="4" fill="#D29922"/><text x="16" y="0" fill="#E6EDF3">GitHub</text></g>
+      <g transform="translate(478,0)"><circle cx="6" cy="-3" r="4" fill="#3FB950"/><text x="16" y="0" fill="#E6EDF3">Drive</text></g>
+      <g transform="translate(560,0)"><circle cx="6" cy="-3" r="4" fill="#3FB950"/><text x="16" y="0" fill="#E6EDF3">Emulador</text></g>
+
+      <!-- KPI providers -->
+      <g transform="translate(820,-12)">
+        <text x="0" y="0" fill="#8B949E" font-size="10.5" letter-spacing="1.1">PROVIDERS</text>
+        <text x="0" y="14" fill="#E6EDF3" font-size="13" font-weight="700">5/5 healthy</text>
+      </g>
+      <g transform="translate(960,-12)">
+        <text x="0" y="0" fill="#8B949E" font-size="10.5" letter-spacing="1.1">UPTIME</text>
+        <text x="0" y="14" fill="#E6EDF3" font-size="13" font-weight="700">3d 14h 22m</text>
+      </g>
+      <g transform="translate(1100,-12)">
+        <text x="0" y="0" fill="#8B949E" font-size="10.5" letter-spacing="1.1">BUILD</text>
+        <text x="0" y="14" fill="#E6EDF3" font-size="13" font-weight="700">d-7a3f · p-9e1c</text>
+      </g>
+
+      <!-- Chevron colapsar (existente) -->
+      <text x="1340" y="0" fill="#8B949E" font-size="14" text-anchor="end">▼</text>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    SECCION 4 — KPIs ROW  (6 KPIs + sys-mini-card a la derecha)
+    Altura: 110px · Surface-1, KPIs separados por divider interno sutil
+    =====================================================================
+  -->
+  <g>
+    <rect x="16" y="232" width="1064" height="110" rx="8" fill="#161B22" stroke="#30363D"/>
+    <text x="36" y="258" fill="#8B949E" font-size="10.5" font-weight="700" letter-spacing="1.2">KPIs DEL PIPELINE</text>
+
+    <!-- 6 KPIs en grid -->
+    <g transform="translate(36, 270)">
+      <!-- Definidos -->
+      <g><text x="0" y="14" fill="#8B949E" font-size="11">Definidos</text>
+        <text x="0" y="46" fill="#BC8CFF" font-size="28" font-weight="700">23</text>
+        <text x="0" y="62" fill="#6E7681" font-size="10.5">backlog total</text></g>
+      <!-- En cola -->
+      <g transform="translate(168,0)"><text x="0" y="14" fill="#8B949E" font-size="11">En cola</text>
+        <text x="0" y="46" fill="#F59E0B" font-size="28" font-weight="700">7</text>
+        <text x="0" y="62" fill="#6E7681" font-size="10.5">esperando agente</text></g>
+      <!-- Ejecucion -->
+      <g transform="translate(336,0)"><text x="0" y="14" fill="#8B949E" font-size="11">Ejecución</text>
+        <text x="0" y="46" fill="#D29922" font-size="28" font-weight="700">4</text>
+        <text x="0" y="62" fill="#6E7681" font-size="10.5">agentes activos</text></g>
+      <!-- Entregados 24h -->
+      <g transform="translate(504,0)"><text x="0" y="14" fill="#8B949E" font-size="11">Entregados 24h</text>
+        <text x="0" y="46" fill="#3FB950" font-size="28" font-weight="700">11</text>
+        <text x="0" y="62" fill="#6E7681" font-size="10.5">últimas 24 horas</text></g>
+      <!-- Bloqueados -->
+      <g transform="translate(672,0)"><text x="0" y="14" fill="#8B949E" font-size="11">Bloqueados</text>
+        <text x="0" y="46" fill="#F85149" font-size="28" font-weight="700">2</text>
+        <text x="0" y="62" fill="#6E7681" font-size="10.5">click para filtrar</text></g>
+      <!-- Necesitan humano -->
+      <g transform="translate(840,0)"><text x="0" y="14" fill="#8B949E" font-size="11">🚨 Necesitan humano</text>
+        <text x="0" y="46" fill="#F85149" font-size="28" font-weight="700">1</text>
+        <text x="0" y="62" fill="#6E7681" font-size="10.5">click para detalle</text></g>
+    </g>
+
+    <!-- sys-mini-card (CPU/RAM/Salud) en la derecha, mismo alto -->
+    <rect x="1092" y="232" width="332" height="110" rx="8" fill="#161B22" stroke="#30363D"/>
+    <text x="1112" y="258" fill="#8B949E" font-size="10.5" font-weight="700" letter-spacing="1.2">SALUD DEL HOST</text>
+
+    <!-- Score circular -->
+    <g transform="translate(1124, 274)">
+      <text x="0" y="12" fill="#8B949E" font-size="10.5">Salud</text>
+      <text x="0" y="38" fill="#3FB950" font-size="28" font-weight="700">82</text>
+      <rect x="0" y="48" width="46" height="16" rx="8" fill="rgba(63,185,80,0.15)" stroke="#3FB950" stroke-opacity="0.4"/>
+      <text x="23" y="60" fill="#3FB950" font-size="10" font-weight="700" letter-spacing="1.1" text-anchor="middle">SANO</text>
+    </g>
+
+    <!-- CPU gauge -->
+    <g transform="translate(1224, 282)">
+      <circle cx="28" cy="28" r="22" fill="none" stroke="#21262D" stroke-width="4"/>
+      <circle cx="28" cy="28" r="22" fill="none" stroke="#3FB950" stroke-width="4"
+              stroke-dasharray="138.2" stroke-dashoffset="80" transform="rotate(-90 28 28)" stroke-linecap="round"/>
+      <text x="28" y="28" fill="#E6EDF3" font-size="13" font-weight="700" text-anchor="middle">42%</text>
+      <text x="28" y="42" fill="#8B949E" font-size="9" text-anchor="middle" letter-spacing="0.6">CPU</text>
+    </g>
+
+    <!-- RAM gauge -->
+    <g transform="translate(1320, 282)">
+      <circle cx="28" cy="28" r="22" fill="none" stroke="#21262D" stroke-width="4"/>
+      <circle cx="28" cy="28" r="22" fill="none" stroke="#D29922" stroke-width="4"
+              stroke-dasharray="138.2" stroke-dashoffset="30" transform="rotate(-90 28 28)" stroke-linecap="round"/>
+      <text x="28" y="28" fill="#E6EDF3" font-size="13" font-weight="700" text-anchor="middle">78%</text>
+      <text x="28" y="42" fill="#8B949E" font-size="9" text-anchor="middle" letter-spacing="0.6">RAM</text>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    SECCION 5 — COLA DETALLADA  (10 issues #num · titulo · skill esperado)
+    Altura: 396px · Surface-1, listado scrolleable si >10 items
+    Aporta valor real al issue #3356 — exposicion directa de qué hay esperando
+    =====================================================================
+  -->
+  <g>
+    <rect x="16" y="354" width="1408" height="396" rx="8" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Header de seccion -->
+    <g transform="translate(36, 380)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="14" font-weight="700">📋 Cola</text>
+      <rect x="80" y="-14" width="48" height="20" rx="10" fill="rgba(245, 158, 11, 0.14)" stroke="#F59E0B" stroke-opacity="0.45"/>
+      <text x="104" y="0" fill="#F59E0B" font-size="11" font-weight="700" text-anchor="middle">7 issues</text>
+      <text x="140" y="0" fill="#8B949E" font-size="11">mostrando hasta 10 · orden FIFO de `pendientesList`</text>
+    </g>
+
+    <!-- Tabla / lista (10 filas pero con 7 datos reales + 3 "—" cuando hay menos) -->
+    <g transform="translate(36, 400)" font-size="12.5">
+
+      <!-- Fila 1 -->
+      <g transform="translate(0,0)">
+        <rect x="0" y="0" width="1336" height="30" rx="6" fill="#1C2128"/>
+        <text x="14" y="20" fill="#8B949E" font-family="'SF Mono','Consolas',monospace" font-size="12">#3356</text>
+        <text x="84" y="20" fill="#E6EDF3">Rediseñar encabezado del large board principal — información clara y separada</text>
+        <g transform="translate(1180, 8)">
+          <rect width="62" height="16" rx="8" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-opacity="0.4"/>
+          <text x="31" y="12" fill="#BC8CFF" font-size="10" font-weight="700" text-anchor="middle">criterios</text>
+        </g>
+        <text x="1264" y="20" fill="#6E7681" font-size="10.5">↪ ux</text>
+      </g>
+
+      <!-- Fila 2 -->
+      <g transform="translate(0,34)">
+        <text x="14" y="20" fill="#8B949E" font-family="'SF Mono','Consolas',monospace" font-size="12">#3344</text>
+        <text x="84" y="20" fill="#E6EDF3">Endpoint /metrics/providers consolidado por skill</text>
+        <g transform="translate(1180, 8)">
+          <rect width="62" height="16" rx="8" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+          <text x="31" y="12" fill="#58A6FF" font-size="10" font-weight="700" text-anchor="middle">dev</text>
+        </g>
+        <text x="1264" y="20" fill="#6E7681" font-size="10.5">↪ backend-dev</text>
+      </g>
+
+      <!-- Fila 3 -->
+      <g transform="translate(0,68)">
+        <rect x="0" y="0" width="1336" height="30" rx="6" fill="#1C2128"/>
+        <text x="14" y="20" fill="#8B949E" font-family="'SF Mono','Consolas',monospace" font-size="12">#3313</text>
+        <text x="84" y="20" fill="#E6EDF3">Refactor del fallback chain multi-provider — separar selección de retry</text>
+        <g transform="translate(1180, 8)">
+          <rect width="62" height="16" rx="8" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+          <text x="31" y="12" fill="#58A6FF" font-size="10" font-weight="700" text-anchor="middle">dev</text>
+        </g>
+        <text x="1264" y="20" fill="#6E7681" font-size="10.5">↪ pipeline-dev</text>
+      </g>
+
+      <!-- Fila 4 -->
+      <g transform="translate(0,102)">
+        <text x="14" y="20" fill="#8B949E" font-family="'SF Mono','Consolas',monospace" font-size="12">#3259</text>
+        <text x="84" y="20" fill="#E6EDF3">Continuidad del Pulpo ante agotamiento simultáneo de providers</text>
+        <g transform="translate(1180, 8)">
+          <rect width="62" height="16" rx="8" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-opacity="0.4"/>
+          <text x="31" y="12" fill="#2DD4BF" font-size="10" font-weight="700" text-anchor="middle">qa</text>
+        </g>
+        <text x="1264" y="20" fill="#6E7681" font-size="10.5">↪ qa</text>
+      </g>
+
+      <!-- Fila 5 -->
+      <g transform="translate(0,136)">
+        <rect x="0" y="0" width="1336" height="30" rx="6" fill="#1C2128"/>
+        <text x="14" y="20" fill="#8B949E" font-family="'SF Mono','Consolas',monospace" font-size="12">#3243</text>
+        <text x="84" y="20" fill="#E6EDF3">Validación de allowlist en commander con feedback rico al usuario</text>
+        <g transform="translate(1180, 8)">
+          <rect width="62" height="16" rx="8" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-opacity="0.4"/>
+          <text x="31" y="12" fill="#BC8CFF" font-size="10" font-weight="700" text-anchor="middle">criterios</text>
+        </g>
+        <text x="1264" y="20" fill="#6E7681" font-size="10.5">↪ po</text>
+      </g>
+
+      <!-- Fila 6 -->
+      <g transform="translate(0,170)">
+        <text x="14" y="20" fill="#8B949E" font-family="'SF Mono','Consolas',monospace" font-size="12">#2958</text>
+        <text x="84" y="20" fill="#E6EDF3">Telemetría handoff cross-agente — métricas de adopción</text>
+        <g transform="translate(1180, 8)">
+          <rect width="62" height="16" rx="8" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-opacity="0.4"/>
+          <text x="31" y="12" fill="#2DD4BF" font-size="10" font-weight="700" text-anchor="middle">qa</text>
+        </g>
+        <text x="1264" y="20" fill="#6E7681" font-size="10.5">↪ tester</text>
+      </g>
+
+      <!-- Fila 7 -->
+      <g transform="translate(0,204)">
+        <rect x="0" y="0" width="1336" height="30" rx="6" fill="#1C2128"/>
+        <text x="14" y="20" fill="#8B949E" font-family="'SF Mono','Consolas',monospace" font-size="12">#2904</text>
+        <text x="84" y="20" fill="#E6EDF3">Snooze inteligente en alertas de consumo anómalo — recomendación de duración</text>
+        <g transform="translate(1180, 8)">
+          <rect width="62" height="16" rx="8" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+          <text x="31" y="12" fill="#58A6FF" font-size="10" font-weight="700" text-anchor="middle">dev</text>
+        </g>
+        <text x="1264" y="20" fill="#6E7681" font-size="10.5">↪ pipeline-dev</text>
+      </g>
+
+      <!-- Filas 8-10 placeholders cuando cola tiene < 10 items (estado real: 7) -->
+      <g transform="translate(0,238)">
+        <text x="14" y="20" fill="#6E7681" font-family="'SF Mono','Consolas',monospace" font-size="12">—</text>
+        <text x="84" y="20" fill="#6E7681" font-size="12" font-style="italic">cola con espacio para 3 issues más</text>
+      </g>
+      <g transform="translate(0,272)">
+        <text x="14" y="20" fill="#6E7681" font-family="'SF Mono','Consolas',monospace" font-size="12">—</text>
+        <text x="84" y="20" fill="#6E7681" font-size="12" font-style="italic">cola con espacio para 2 issues más</text>
+      </g>
+      <g transform="translate(0,306)">
+        <text x="14" y="20" fill="#6E7681" font-family="'SF Mono','Consolas',monospace" font-size="12">—</text>
+        <text x="84" y="20" fill="#6E7681" font-size="12" font-style="italic">cola con espacio para 1 issue más</text>
+      </g>
+
+      <!-- Footer: contador / link a vista completa -->
+      <g transform="translate(0,346)">
+        <text x="0" y="14" fill="#8B949E" font-size="11">7 mostrados · 0 ocultos · Si la cola supera 10 items, se habilita scroll vertical interno (max-height 360px).</text>
+      </g>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    LEYENDA / GUIDELINES (al lado de la pieza principal)
+    =====================================================================
+  -->
+  <g transform="translate(36, 754)">
+    <text x="0" y="0" fill="#6E7681" font-size="10" letter-spacing="0.8">5 sub-secciones · cada una con surface-1 + border #30363D · gap --space-3 (12px) · radius --radius-md (8px)</text>
+  </g>
+</svg>

@@ -2895,6 +2895,68 @@ ${loadDesignTokens()}
 .lc-state-narrating{background:var(--teal-bg,rgba(45,212,191,0.14));color:var(--teal,#2DD4BF);border-color:rgba(45,212,191,0.4)}
 .lc-state-stale{background:rgba(139,148,158,0.12);color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.3)}
 .lc-state-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 var(--space-3,10px) var(--space-2,6px);margin-top:-2px}
+/* ── Cola detallada (#3356) — 5ta sub-seccion del large board principal ─── */
+/* Las 5 sub-secciones del header son: (1) brand bar / hdr-bar-v3,            */
+/* (2) pipeline-ctrl-bar, (3) infra-health, (4) kpis-row (incluye sys-mini),  */
+/* (5) cola-detallada (nueva). Cada una con border + radius + surface propio  */
+/* para que el operador distinga las agrupaciones de un vistazo (CA-2).       */
+.cola-detallada{
+  background:var(--surface-1,var(--sf));
+  border:1px solid var(--border,var(--bd));
+  border-radius:var(--radius-md,8px);
+  padding:var(--space-3,12px) var(--space-4,16px);
+  margin:var(--space-3,12px) 0;
+  display:flex;flex-direction:column;gap:var(--space-2,8px);
+}
+.cola-detallada-head{
+  display:flex;align-items:center;gap:var(--space-3,12px);
+  font-size:var(--fs-xs,0.75rem);font-weight:var(--fw-bold,700);
+  text-transform:uppercase;letter-spacing:1.2px;
+  color:var(--text-secondary,var(--tx));
+  border-bottom:1px solid var(--border-subtle,var(--bd2));
+  padding-bottom:var(--space-2,8px);
+}
+.cola-detallada-head-icon{font-size:1.05em;opacity:0.85}
+.cola-detallada-title{color:var(--text-secondary,var(--tx))}
+.cola-detallada-count{color:var(--text-primary,var(--tx));font-weight:700}
+.cola-detallada-note{color:var(--text-dim,var(--dim));font-weight:400;font-size:0.92em;text-transform:none;letter-spacing:0;margin-left:auto}
+.cola-detallada-list{
+  list-style:none;padding:0;margin:0;
+  display:flex;flex-direction:column;
+  max-height:360px;overflow-y:auto;
+}
+.cola-detallada-item{
+  display:flex;align-items:center;gap:var(--space-3,12px);
+  padding:7px 6px;font-size:var(--fs-sm,0.875rem);
+  border-bottom:1px solid var(--border-subtle,var(--bd2));
+  min-height:30px;
+}
+.cola-detallada-item:nth-child(even){background:var(--surface-2,#1c2128)}
+.cola-detallada-item:last-child{border-bottom:none}
+.cola-detallada-item.is-placeholder{color:var(--text-disabled,#484f58);font-style:italic;opacity:0.55}
+.cola-detallada-item.is-placeholder .cola-title{color:var(--text-disabled,#484f58)}
+.cola-num{font-family:'SF Mono',Consolas,monospace;color:var(--text-dim,var(--dim));font-weight:600;min-width:70px;flex-shrink:0}
+.cola-title{flex:1;color:var(--text-primary,var(--tx));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cola-phase{
+  font-size:var(--fs-xs,0.72rem);font-weight:var(--fw-bold,700);
+  text-transform:uppercase;letter-spacing:0.8px;
+  padding:2px 9px;border-radius:var(--radius-full,9999px);
+  border:1px solid transparent;flex-shrink:0;min-width:62px;text-align:center;
+}
+.cola-phase-definicion{background:var(--lane-definicion-bg,var(--purple-bg,rgba(188,140,255,0.14)));color:var(--lane-definicion,var(--purple,#bc8cff));border-color:rgba(188,140,255,0.4)}
+.cola-phase-desarrollo{background:var(--lane-desarrollo-bg,var(--info-bg,rgba(88,166,255,0.14)));color:var(--lane-desarrollo,var(--info,#58a6ff));border-color:rgba(88,166,255,0.4)}
+.cola-phase-qa{background:var(--lane-qa-bg,var(--teal-bg,rgba(45,212,191,0.14)));color:var(--lane-qa,var(--teal,#2dd4bf));border-color:rgba(45,212,191,0.4)}
+.cola-phase-entrega{background:var(--lane-entrega-bg,var(--success-bg,rgba(63,185,80,0.14)));color:var(--lane-entrega,var(--success,#3fb950));border-color:rgba(63,185,80,0.4)}
+.cola-skill{font-family:'SF Mono',Consolas,monospace;color:var(--text-dim,var(--dim));font-size:var(--fs-xs,0.72rem);min-width:110px;text-align:right;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cola-skill-arrow{opacity:0.5;margin-right:3px}
+.cola-empty{padding:var(--space-3,12px) 0;color:var(--text-dim,var(--dim));font-style:italic;text-align:center;font-size:var(--fs-sm,0.875rem)}
+.cola-detallada-foot{font-size:var(--fs-xs,0.72rem);color:var(--text-dim,var(--dim));border-top:1px solid var(--border-subtle,var(--bd2));padding-top:var(--space-2,6px)}
+@media (max-width: 900px){
+  .cola-phase{display:none}
+  .cola-skill{min-width:auto}
+  .cola-num{min-width:58px}
+  .cola-detallada-list{max-height:280px}
+}
 /* ── Reset ──────────────────────────────────────────────────────────────── */
 *{margin:0;padding:0;box-sizing:border-box}
 body{
@@ -4822,6 +4884,83 @@ body.standalone .section-collapsed .section-body{display:block !important}
       </div>`;
     })()}
   </div>
+
+  ${(() => {
+    // #3356 — Sub-seccion "Cola detallada" del header del large board.
+    // Lista hasta 10 issues pendientes con formato `#num · titulo · [fase] · skill`.
+    // Datos provienen 100% de `pendientesList` (slice 0..10) ya consolidado en
+    // server-side. SIN endpoints HTTP nuevos (CA-4). Titulos escapados con
+    // esc() (CA-5 + tests dashboard-header-cola-xss).
+    const COLA_MAX = 10;
+    const items = pendientesList.slice(0, COLA_MAX);
+    const ocultos = Math.max(0, pendientesList.length - COLA_MAX);
+    const phaseInfo = (faseKey) => {
+      if (!faseKey) return { lane: 'desarrollo', name: '—' };
+      const idx = faseKey.indexOf('/');
+      const pipe = idx > 0 ? faseKey.slice(0, idx) : faseKey;
+      const fase = idx > 0 ? faseKey.slice(idx + 1) : '';
+      let lane;
+      if (pipe === 'definicion') lane = 'definicion';
+      else if (pipe === 'entrega') lane = 'entrega';
+      else if (pipe === 'desarrollo' && (fase === 'verificacion' || fase === 'qa')) lane = 'qa';
+      else lane = 'desarrollo';
+      return { lane, name: fase || pipe || '—' };
+    };
+    const pendingSkill = (d) => {
+      if (!d || !d.faseActual) return '';
+      const entries = (d.fases && d.fases[d.faseActual]) || [];
+      const e = entries.find(x => x.estado === 'pendiente') || entries.find(x => x.estado === 'trabajando');
+      return e ? (e.skill || '') : '';
+    };
+    let rowsHtml = '';
+    if (items.length === 0) {
+      rowsHtml = '<li class="cola-empty" role="listitem">Sin issues en cola — el pipeline está al día</li>';
+    } else {
+      rowsHtml = items.map(([num, d]) => {
+        const ph = phaseInfo(d.faseActual);
+        const skill = pendingSkill(d);
+        const title = d.title ? esc(d.title) : `Issue #${esc(String(num))}`;
+        const skillHtml = skill
+          ? `<span class="cola-skill" title="Skill esperado: ${esc(skill)}"><span class="cola-skill-arrow">↪</span>${esc(skill)}</span>`
+          : '<span class="cola-skill"></span>';
+        return `<li class="cola-detallada-item" role="listitem">
+          <span class="cola-num">#${esc(String(num))}</span>
+          <span class="cola-title" title="${title}">${title}</span>
+          <span class="cola-phase cola-phase-${ph.lane}" title="Fase actual: ${esc(ph.name)}">${esc(ph.name)}</span>
+          ${skillHtml}
+        </li>`;
+      }).join('');
+      // Placeholders para mantener altura estable cuando hay menos de COLA_MAX (UX narrativa).
+      const placeholders = Math.max(0, COLA_MAX - items.length);
+      for (let i = 0; i < placeholders; i++) {
+        rowsHtml += `<li class="cola-detallada-item is-placeholder" role="listitem" aria-hidden="true">
+          <span class="cola-num">—</span>
+          <span class="cola-title">(slot libre)</span>
+          <span class="cola-skill"></span>
+        </li>`;
+      }
+    }
+    const total = pendientesList.length;
+    const noteParts = [];
+    if (total > 0) {
+      noteParts.push(`mostrando ${items.length} de ${total}`);
+      if (ocultos > 0) noteParts.push(`${ocultos} oculto${ocultos === 1 ? '' : 's'} (scroll)`);
+      noteParts.push('orden FIFO');
+    } else {
+      noteParts.push('orden FIFO');
+    }
+    const noteHtml = noteParts.join(' · ');
+    return `
+  <section class="cola-detallada" aria-label="Cola del pipeline" data-test-id="cola-detallada">
+    <div class="cola-detallada-head">
+      <span class="cola-detallada-head-icon" aria-hidden="true">\u{1F4CB}</span>
+      <span class="cola-detallada-title">Cola</span>
+      <span class="cola-detallada-count">${total} issue${total === 1 ? '' : 's'}</span>
+      <span class="cola-detallada-note">${esc(noteHtml)}</span>
+    </div>
+    <ul class="cola-detallada-list" role="list">${rowsHtml}</ul>
+  </section>`;
+  })()}
 
   <div class="bar-section panel-equipo panel-equipo-full section-collapsible" id="equipo" data-section="equipo">
     <div class="eq-head">
