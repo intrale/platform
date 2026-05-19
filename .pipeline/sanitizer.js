@@ -43,8 +43,15 @@ const P = {
     ANTHROPIC_KEY: '[REDACTED:ANTHROPIC_KEY]',
     OPENAI_KEY: '[REDACTED:OPENAI_KEY]',
     OPENAI_PROJECT_KEY: '[REDACTED:OPENAI_PROJECT_KEY]',
-    // GROQ_API_KEY se removió en #3353 — Groq descontinuado. Si en logs viejos
-    // aparece una key con prefijo `gsk_`, cae al pattern genérico CONF_STRUCTURED.
+    // GROQ_API_KEY: MANTENIDO post-#3353 como defense-in-depth.
+    // Groq fue descontinuado como provider (mayo 2026), pero las keys legacy
+    // con prefijo `gsk_` pueden seguir apareciendo en logs viejos, backups
+    // (`~/.claude/secrets/backups/`), rejection reports archivados y dumps de
+    // incidentes (#3310, #3348). Verificación empírica en #3353-rev-1 mostró
+    // que CONF_STRUCTURED genérico NO cubre 6 de 7 escenarios realistas
+    // (bare keys, JSON, `Key=`, `groq_api_key=`, etc.), por lo que el pattern
+    // explícito sigue siendo necesario para evitar regresión de leak.
+    GROQ_API_KEY: '[REDACTED:GROQ_API_KEY]',
     CEREBRAS_API_KEY: '[REDACTED:CEREBRAS_API_KEY]',
     NVIDIA_NIM_API_KEY: '[REDACTED:NVIDIA_NIM_API_KEY]',
     COGNITO_SECRET: '[REDACTED:COGNITO_SECRET]',
@@ -318,18 +325,31 @@ const PATTERNS = [
     // Free-tier providers (#3310, ola N+1 multi-provider)
     //
     // Patrones para credenciales de los providers que oficialmente son free
-    // (Cerebras, NVIDIA NIM). Mismo enfoque que las keys de Anthropic/OpenAI
-    // más arriba: lookbehind/lookahead negativos sobre el charset del secreto
-    // + longitud mínima 40 para evitar falsos positivos sobre slugs, clases
-    // CSS o identificadores legítimos del codebase.
+    // (Cerebras, NVIDIA NIM) + legacy de Groq (descontinuado en #3353, pero
+    // las keys con prefijo `gsk_` siguen apareciendo en logs viejos y backups).
+    // Mismo enfoque que las keys de Anthropic/OpenAI más arriba: lookbehind/
+    // lookahead negativos sobre el charset del secreto + longitud mínima 40
+    // para evitar falsos positivos sobre slugs, clases CSS o identificadores
+    // legítimos del codebase.
     //
     // Estos patrones DEBEN ir antes del bloque genérico CONF_STRUCTURED para
     // que cada placeholder atribuya correctamente el proveedor.
-    //
-    // #3353 (mayo 2026): el pattern explícito de Groq (`gsk_*`) se removió
-    // junto con la descontinuación del provider. Si una key vieja `gsk_...`
-    // aparece en logs, queda cubierta por CONF_STRUCTURED genérico.
     // -------------------------------------------------------------------------
+
+    // Groq API key — formato `gsk_<52 chars base62>`.
+    // MANTENIDO post-#3353 (provider descontinuado pero keys legacy pueden
+    // seguir apareciendo en logs viejos, backups en `~/.claude/secrets/backups/`,
+    // rejection reports archivados y documentos de incidentes — defense-in-depth
+    // como recomendó security review en rev-1 de #3353).
+    // Verificación empírica: CONF_STRUCTURED genérico NO cubre bare keys,
+    // JSON `"api_key":"gsk_..."`, `groq_api_key=...` ni `Key=gsk_...`.
+    // Mínimo 40 chars después del prefijo (la consola Groq genera 52).
+    // Fuente: https://console.groq.com (sección "API Keys").
+    {
+        name: 'GROQ_API_KEY',
+        re: /(?<![A-Za-z0-9_-])gsk_[A-Za-z0-9]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.GROQ_API_KEY,
+    },
 
     // Cerebras API key — formato `csk-<52 chars base62>`.
     // El charset documentado por Cerebras incluye `_-`, pero exigimos mínimo

@@ -691,19 +691,61 @@ test('panic dump simulado: apiKey="sk-ant-..." cae con placeholder específico',
 });
 
 // =============================================================================
-// Free-tier providers (#3310 + #3353): Cerebras, NVIDIA NIM
+// Free-tier providers (#3310 + #3353): Groq (legacy), Cerebras, NVIDIA NIM
 //
 // Cobertura: positivo (redacta y no leakea) + negativo (prefijo similar pero
 // longitud insuficiente o sin prefijo exacto, NO se redacta). Idempotencia y
 // orden mixto incluidos.
 //
-// #3353 (mayo 2026): el pattern Groq (`gsk_*`) se removió junto con la
-// descontinuación del provider. Los tests positivos/negativos específicos de
-// Groq también se eliminaron.
+// #3353 (mayo 2026): el provider Groq fue descontinuado, PERO el pattern
+// `gsk_*` se mantiene como defense-in-depth porque las keys legacy pueden
+// seguir apareciendo en backups (`~/.claude/secrets/backups/`), logs viejos
+// y dumps de incidentes archivados. Verificación empírica en rev-1 del fix
+// mostró que el genérico CONF_STRUCTURED NO cubre 6 de 7 escenarios
+// realistas (bare keys, JSON quoted, `groq_api_key=`, `Key=`, etc.).
 // =============================================================================
 
+const FAKE_GROQ = 'gsk_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmN';        // gsk_ + 52
 const FAKE_CEREBRAS = 'csk-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmN';    // csk- + 52
 const FAKE_NVIDIA_NIM = 'nvapi-aBcDeFgHiJkLmNoPqRsTuVwXyZ-_0123456789aBcDeFgHiJk'; // nvapi- + 50
+
+test('GROQ_API_KEY positivo: gsk_<52> redacted (legacy defense-in-depth post #3353)', () => {
+    const out = sanitize(`GROQ_API_KEY=${FAKE_GROQ}`);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `out=${out}`);
+    assert.ok(!out.includes(FAKE_GROQ), `leak: ${out}`);
+});
+
+test('GROQ_API_KEY negativo: prefijo corto gsk_short no se redacta (legacy)', () => {
+    const out = sanitize('debug: gsk_short observed');
+    assert.ok(!out.includes('[REDACTED:GROQ_API_KEY]'), `falso positivo: ${out}`);
+});
+
+test('GROQ_API_KEY negativo: similar pero sin prefijo exacto (xgsk_...) no se redacta (legacy)', () => {
+    // El lookbehind negativo evita matchear cuando el prefijo viene pegado a
+    // otro identificador. Forensia: si alguien escribió `xgsk_...` no es key.
+    const out = sanitize(`build-id xgsk_${'A'.repeat(50)}`);
+    assert.ok(!out.includes('[REDACTED:GROQ_API_KEY]'), `falso positivo: ${out}`);
+});
+
+test('GROQ_API_KEY legacy: bare key sola sin field name se redacta (regresión #3353-rev-1)', () => {
+    // Verificación empírica: el genérico CONF_STRUCTURED NO cubre bare keys.
+    // El pattern explícito `gsk_*` SÍ las cubre. Este test bloquea regresión.
+    const out = sanitize(FAKE_GROQ);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `bare key leak: ${out}`);
+    assert.ok(!out.includes(FAKE_GROQ), `leak: ${out}`);
+});
+
+test('GROQ_API_KEY legacy: JSON quoted "api_key":"gsk_..." se redacta (regresión #3353-rev-1)', () => {
+    const out = sanitize(`{"api_key":"${FAKE_GROQ}"}`);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `JSON leak: ${out}`);
+    assert.ok(!out.includes(FAKE_GROQ), `leak: ${out}`);
+});
+
+test('GROQ_API_KEY legacy: contexto narrativo "Error: ... Key=gsk_..." se redacta (regresión #3353-rev-1)', () => {
+    const out = sanitize(`Error: Groq quota exceeded. Key=${FAKE_GROQ}`);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `narrative leak: ${out}`);
+    assert.ok(!out.includes(FAKE_GROQ), `leak: ${out}`);
+});
 
 test('CEREBRAS_API_KEY positivo: csk-<52> redacted', () => {
     const out = sanitize(`CEREBRAS_API_KEY=${FAKE_CEREBRAS}`);
@@ -742,20 +784,29 @@ test('NVIDIA_NIM_API_KEY negativo: nvapi sin guion no matchea', () => {
 
 // ─── Orden mixto + idempotencia free providers ─────────────────────────────
 
-test('orden mixto: los free providers vivos en un mismo input se redactan c/u con su placeholder', () => {
-    const input = `cerebras=${FAKE_CEREBRAS} nim=${FAKE_NVIDIA_NIM}`;
+test('orden mixto: los free providers (vivos + Groq legacy) se redactan c/u con su placeholder', () => {
+    const input = `groq=${FAKE_GROQ} cerebras=${FAKE_CEREBRAS} nim=${FAKE_NVIDIA_NIM}`;
     const out = sanitize(input);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `falta GROQ: ${out}`);
     assert.ok(out.includes('[REDACTED:CEREBRAS_API_KEY]'), `falta CEREBRAS: ${out}`);
     assert.ok(out.includes('[REDACTED:NVIDIA_NIM_API_KEY]'), `falta NVIDIA_NIM: ${out}`);
+    assert.ok(!out.includes(FAKE_GROQ), `leak GROQ: ${out}`);
     assert.ok(!out.includes(FAKE_CEREBRAS), `leak CEREBRAS: ${out}`);
     assert.ok(!out.includes(FAKE_NVIDIA_NIM), `leak NVIDIA_NIM: ${out}`);
 });
 
 test('idempotencia free providers: sanitize(sanitize(x)) === sanitize(x)', () => {
-    const input = `c=${FAKE_CEREBRAS} n=${FAKE_NVIDIA_NIM}`;
+    const input = `g=${FAKE_GROQ} c=${FAKE_CEREBRAS} n=${FAKE_NVIDIA_NIM}`;
     const once = sanitize(input);
     const twice = sanitize(once);
     assert.strictEqual(once, twice, 'idempotencia rota');
+});
+
+test('bypass ZWSP en gsk_ se redacta igual (zero-width strip, legacy)', () => {
+    const zwsp = '​';
+    const poisoned = `gsk${zwsp}_${'A'.repeat(50)}`;
+    const out = sanitize(poisoned);
+    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `out=${out}`);
 });
 
 // ─── Verificación CA-2: AIza... (Gemini / Google AI Studio) ya cubierto ────

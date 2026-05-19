@@ -25,8 +25,8 @@
 // Diseño:
 //   - **Sin dependencias externas** (solo `fs`, `path`, `child_process`).
 //   - **Reusa el mismo sanitizer del runtime** — single source of truth para
-//     los patrones (Anthropic, OpenAI, Cerebras, NVIDIA NIM, Google,
-//     AWS, GitHub, JWT, etc.).
+//     los patrones (Anthropic, OpenAI, Groq (legacy, defense-in-depth post
+//     #3353), Cerebras, NVIDIA NIM, Google, AWS, GitHub, JWT, etc.).
 //   - **Robusto al escaping** de Windows / MINGW / Git Bash (no regex en
 //     bash).
 //   - **Fail-closed**: si el sanitizer tira, bloquea el commit (preferimos un
