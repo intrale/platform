@@ -227,6 +227,225 @@ function getChangedFiles(cwd) {
     return files;
 }
 
+// #2551 — Estado granular del worktree previo al rebase.
+//
+// `getChangedFiles` mezcla todo en un solo array; getDirtyState lo separa en
+// las tres categorías que delivery.js necesita para tomar decisiones distintas:
+//
+//   - `tracked_modified`: archivos que git ya conoce y fueron tocados desde el
+//     último commit. Se stashean con stash plain (--autostash equivalente).
+//   - `untracked`: archivos nuevos generados por skills previos (linter, review,
+//     po, ux) que escribieron en el worktree. Necesitan `--include-untracked`
+//     en el stash, sino el rebase aborta si main toca alguno de esos paths.
+//   - `ignored`: archivos cubiertos por .gitignore. No suelen aparecer en
+//     `status --porcelain` salvo con `--ignored`, pero los exponemos para
+//     completitud y para que el logging granular pueda distinguirlos.
+//
+// Se usa para logging redactado (delivery.js loguea conteo por categoría) y
+// como input al decisor de qué estrategia de stash aplicar.
+function parseGitStatusOutput(stdout) {
+    const out = { tracked_modified: [], untracked: [], ignored: [] };
+    for (const ln of (stdout || '').split(/\r?\n/)) {
+        if (!ln.trim()) continue;
+        const code = ln.slice(0, 2);
+        const filepath = ln.slice(3);
+        if (code === '??') {
+            out.untracked.push(filepath);
+        } else if (code === '!!') {
+            out.ignored.push(filepath);
+        } else if (code[0] !== ' ' || code[1] !== ' ') {
+            // Cualquier marca distinta a "  " es un cambio tracked (staged o no).
+            out.tracked_modified.push(filepath);
+        }
+    }
+    return out;
+}
+
+function getDirtyState(cwd) {
+    const r = runGit(['status', '--porcelain=v1', '--ignored'], { cwd });
+    if (r.exit_code !== 0) return { tracked_modified: [], untracked: [], ignored: [] };
+    return parseGitStatusOutput(r.stdout);
+}
+
+// #2551 — Patrones de paths sensibles que NUNCA deben aparecer en outputs
+// visibles del pipeline (motivo de rechazo del marker YAML, comentario PR,
+// mensajes a Telegram). El log local de delivery (.pipeline/logs/<issue>-
+// delivery.log) sí los conserva sin redactar para forense post-incidente
+// (CA-S1 + CA-S3: log local es el único lugar con audit trail completo).
+//
+// Sumá patrones acá solamente si el rechazo cubre filenames con secrets que
+// no son cazables por los patrones existentes. Mantener allowlist conservadora
+// — falsos positivos solo redactan información, falsos negativos leakean
+// credenciales.
+const SENSITIVE_PATH_PATTERNS = [
+    /(?:^|[\\/])\.env(?:\.|$)/i,
+    /credentials/i,
+    /\.key$/i,
+    /\.pem$/i,
+    /^id_rsa(?:\.|$)/i,
+    /[\\/]id_rsa(?:\.|$)/i,
+    /secret/i,
+    /application\.conf$/i,
+];
+
+// #2551 — Reemplaza por `<sensitive-path-redacted>` cualquier path que matchee
+// SENSITIVE_PATH_PATTERNS. Idempotente: si el input no tiene paths sensibles,
+// devuelve el mismo string. Recibe el output crudo de `git status --porcelain`
+// (multi-línea, con códigos de 2 chars + espacio + path) y respeta los códigos
+// para que la salida siga siendo legible.
+function redactSensitivePaths(text) {
+    if (!text) return text;
+    return text.split(/\r?\n/).map((line) => {
+        if (!line.trim()) return line;
+        // status --porcelain: 2 chars de código + espacio + path
+        const m = line.match(/^([ ?!MADRCU][ ?!MADRCU]) (.+)$/);
+        if (!m) {
+            // Línea suelta (probablemente del stderr de git rebase). Redactamos
+            // cualquier substring que matchee un patrón sensible.
+            return redactInline(line);
+        }
+        const code = m[1];
+        const filepath = m[2];
+        if (isSensitivePath(filepath)) {
+            return `${code} <sensitive-path-redacted>`;
+        }
+        return line;
+    }).join('\n');
+}
+
+function isSensitivePath(filepath) {
+    if (!filepath) return false;
+    return SENSITIVE_PATH_PATTERNS.some((rx) => rx.test(filepath));
+}
+
+// #2551 — Redacción inline para mensajes de error / stderr que mencionan
+// paths sin formato porcelain. Estrategia: tokenizar por espacios y reemplazar
+// el token entero por placeholder si matchea uno de los patrones sensibles.
+// Es coarse-grained adrede — preferimos sobre-redactar a leakear.
+function redactInline(text) {
+    if (!text) return text;
+    return text.replace(/[^\s'"`]+/g, (token) => {
+        if (isSensitivePath(token)) return '<sensitive-path-redacted>';
+        return token;
+    });
+}
+
+// #2551 — Stash explícito con --include-untracked. El `--autostash` del rebase
+// NO incluye untracked (solo modified tracked), por lo que archivos nuevos
+// generados por skills previos (linter, review, po, ux) no se stashean y el
+// rebase puede abortar con "untracked working tree files would be overwritten"
+// si main toca alguno de esos paths.
+//
+// El message lleva PID embebido (`delivery-<issue>-<pid>`) para que un próximo
+// run pueda identificar y dropear stashes huérfanos de procesos muertos
+// (`cleanupOrphanStashes`).
+function stashAll(cwd, { issue, pid = process.pid } = {}) {
+    const message = `delivery-${issue}-${pid}`;
+    return {
+        message,
+        result: runGit(
+            ['stash', 'push', '--include-untracked', '--message', message],
+            { cwd, timeoutMs: 60 * 1000 },
+        ),
+    };
+}
+
+// #2551 — Pop del stash recién creado (top of stack). Si el pop falla por
+// conflicto (caso patológico: main movió el mismo path), drop fuerza la
+// limpieza y no perdemos audit trail porque los archivos eran transitorios
+// del pipeline (logs/heartbeats/reports).
+function stashPop(cwd) {
+    return runGit(['stash', 'pop'], { cwd, timeoutMs: 60 * 1000 });
+}
+
+function stashDrop(cwd, stashRef = 'stash@{0}') {
+    return runGit(['stash', 'drop', stashRef], { cwd, timeoutMs: 30 * 1000 });
+}
+
+// #2551 — Identifica candidatos a dropear desde la salida de `git stash list`.
+// Pura: no toca git, recibe el stdout + decisor de PID vivo. Permite testearse
+// sin invocar git real (ver __tests__/git-ops.test.js).
+//
+// Returns: array de { ref, pid } que cumplen TODAS las condiciones:
+//   - matchean el formato `delivery-<issue>-<pid>` en la cola del message.
+//   - el issue del stash == issue del run actual (no tocamos stashes ajenos).
+//   - el pid del stash != currentPid (nunca dropear el del proceso actual).
+//   - isAlive(pid) === false (owner muerto).
+function findOrphanStashes(stashListStdout, { issue, currentPid = process.pid, isAlive = isProcessAlive } = {}) {
+    const candidates = [];
+    if (!issue) return candidates;
+    const lines = (stashListStdout || '').split(/\r?\n/).filter(Boolean);
+    lines.forEach((ln) => {
+        const m = ln.match(/^(stash@\{\d+\}):.*delivery-(\d+)-(\d+)\s*$/);
+        if (!m) return;
+        const ref = m[1];
+        const stashIssue = parseInt(m[2], 10);
+        const pid = parseInt(m[3], 10);
+        if (stashIssue !== issue) return;
+        if (pid === currentPid) return;
+        if (isAlive(pid)) return;
+        candidates.push({ ref, pid });
+    });
+    return candidates;
+}
+
+// #2551 — Limpia stashes huérfanos del delivery cuando el PID que los creó
+// ya no está vivo (proceso anterior crasheó entre stash y pop). Match por
+// regex `delivery-<issue>-<pid>` con verificación de PID por `kill 0`.
+//
+// Estrategia conservadora: si NO podemos confirmar que el PID está muerto
+// (ej. proceso de otro usuario, EPERM), dejamos el stash como está. Mejor
+// dejar un stash huérfano que dropear el de otro delivery activo.
+function cleanupOrphanStashes(cwd, { issue, currentPid = process.pid } = {}) {
+    const dropped = [];
+    if (!issue) return dropped;
+    const list = runGit(['stash', 'list'], { cwd, timeoutMs: 30 * 1000 });
+    if (list.exit_code !== 0) return dropped;
+    // Output ej.:
+    //   stash@{0}: On agent/2551-pipeline-dev: delivery-2551-12345
+    //   stash@{1}: On agent/2551-pipeline-dev: delivery-2551-67890
+    const candidates = findOrphanStashes(list.stdout, { issue, currentPid });
+    // Importante: los índices stash@{N} cambian a medida que dropeamos. Para
+    // ser robustos, dropeamos por message (--all + filter) cuando hay más de
+    // uno. Acá usamos refs directos pero re-listamos por seguridad.
+    for (const c of candidates) {
+        const drop = runGit(['stash', 'drop', c.ref], { cwd, timeoutMs: 30 * 1000 });
+        if (drop.exit_code === 0) {
+            dropped.push({ ref: c.ref, pid: c.pid });
+        } else {
+            // Si la referencia stash@{N} cambió por dropeos anteriores, hacemos
+            // un fallback: re-listar y buscar por message.
+            const reList = runGit(['stash', 'list'], { cwd, timeoutMs: 30 * 1000 });
+            const target = (reList.stdout || '').split(/\r?\n/).find(
+                (ln) => ln.includes(`delivery-${issue}-${c.pid}`),
+            );
+            if (target) {
+                const m = target.match(/^(stash@\{\d+\})/);
+                if (m) {
+                    const retry = runGit(['stash', 'drop', m[1]], { cwd, timeoutMs: 30 * 1000 });
+                    if (retry.exit_code === 0) dropped.push({ ref: m[1], pid: c.pid });
+                }
+            }
+        }
+    }
+    return dropped;
+}
+
+// #2551 — Helper para `cleanupOrphanStashes`. process.kill(pid, 0) tira
+// ESRCH si el PID no existe, EPERM si existe pero no tenemos permiso.
+// Tratamos EPERM como "vivo" (conservador) — no queremos dropear stashes
+// de otros usuarios por error.
+function isProcessAlive(pid) {
+    if (!pid || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        if (e.code === 'EPERM') return true; // Existe pero no tenemos permiso
+        return false; // ESRCH u otro: no existe
+    }
+}
+
 function getDiffStats(cwd, base = 'origin/main') {
     const r = runGit(['diff', '--shortstat', `${base}...HEAD`], { cwd });
     // Output ej: " 5 files changed, 123 insertions(+), 4 deletions(-)"
@@ -246,7 +465,7 @@ function fetchOrigin(cwd) {
     return runGit(['fetch', 'origin', 'main'], { cwd, timeoutMs: 60 * 1000 });
 }
 
-function rebaseOnto(cwd, base = 'origin/main') {
+function rebaseOnto(cwd, base = 'origin/main', { autostash = true } = {}) {
     // #2519 (rev-2): --autostash es defensa en profundidad para el caso en que
     // el árbol de trabajo tenga archivos tracked modificados que SAFE_IGNORE
     // (delivery.js) decidió no commitear (heartbeats, agent-registry, activity-
@@ -255,7 +474,18 @@ function rebaseOnto(cwd, base = 'origin/main') {
     // estado transitorio del pipeline en marcha. --autostash los stashea antes
     // del rebase y los reaplica después; como main nunca toca esos paths, el
     // pop es conflict-free.
-    return runGit(['rebase', '--autostash', base], { cwd, timeoutMs: 60 * 1000 });
+    //
+    // #2551: --autostash NO incluye untracked. Cuando un skill previo (linter,
+    // review, po, ux) genera archivos nuevos en el worktree y main por
+    // casualidad toca alguno de esos paths, rebase aborta con "untracked
+    // working tree files would be overwritten". Para esos casos, delivery.js
+    // hace un stash explícito con `--include-untracked` ANTES de llamar a
+    // rebaseOnto y pasa { autostash: false } para no doblar el trabajo.
+    // Default true para compat con callers existentes.
+    const args = autostash
+        ? ['rebase', '--autostash', base]
+        : ['rebase', base];
+    return runGit(args, { cwd, timeoutMs: 60 * 1000 });
 }
 
 function rebaseAbort(cwd) {
@@ -422,6 +652,8 @@ module.exports = {
     getCurrentBranch,
     getCurrentSha,
     getChangedFiles,
+    getDirtyState,
+    parseGitStatusOutput,
     getDiffStats,
     fetchOrigin,
     rebaseOnto,
@@ -434,4 +666,14 @@ module.exports = {
     inferScope,
     buildCommitMessage,
     buildPRBody,
+    stashAll,
+    stashPop,
+    stashDrop,
+    cleanupOrphanStashes,
+    findOrphanStashes,
+    isProcessAlive,
+    redactSensitivePaths,
+    redactInline,
+    isSensitivePath,
+    SENSITIVE_PATH_PATTERNS,
 };

@@ -276,6 +276,10 @@ async function main() {
             // #2519 (rev-1): ampliado a metrics-history.jsonl, *.heartbeat sueltos en root,
             // bash.exe.stackdump y otros artefactos no commiteables que aparecen en cualquier
             // worktree con pipeline en marcha.
+            // #2551: ampliado además a outputs intermedios que generan las fases post-dev
+            // cuando corren con cwd=worktree (PR #2537): logs del linter, locks transitorios,
+            // qa evidence, lint reports. Sin esto, después del commit el árbol queda con
+            // tracked-modified o untracked y el rebase/push tropieza con archivos espurios.
             const SAFE_IGNORE = new RegExp(
                 '^(?:' + [
                     '\\.claude\\/hooks\\/agent-\\d+\\.heartbeat',
@@ -283,6 +287,10 @@ async function main() {
                     '\\.claude\\/hooks\\/activity-log',
                     '\\.pipeline\\/metrics-history\\.jsonl',
                     '\\.pipeline\\/.*\\.heartbeat',
+                    '\\.pipeline\\/logs\\/.*',
+                    '\\.pipeline\\/locks\\/.*',
+                    'qa\\/evidence\\/.*',
+                    'lint-\\d+-report\\.(md|json)',
                     '.*\\.stackdump',
                 ].join('|') + ')'
             );
@@ -320,24 +328,101 @@ async function main() {
         phaseEnd('stage_commit', t);
 
         // ── Fase 2: rebase contra origin/main ──────────────────────────
-        // #2519 (rev-2): rebaseOnto usa --autostash. Necesario porque después
-        // del commit pueden quedar archivos tracked modificados (heartbeats,
-        // agent-registry, activity-logger, metrics-history) que SAFE_IGNORE
-        // dejó fuera del staging — el pipeline sigue corriendo en paralelo y
-        // los reescribe. Sin --autostash el rebase muere con "You have
-        // unstaged changes" aunque sean estado transitorio.
+        // #2519 (rev-2): el rebase necesita un árbol limpio. Después del commit
+        // pueden quedar archivos tracked-modified (heartbeats, agent-registry,
+        // activity-logger, metrics-history) que SAFE_IGNORE dejó fuera del
+        // staging — el pipeline sigue corriendo en paralelo y los reescribe.
+        // El --autostash original cubría tracked-modified pero NO untracked.
+        //
+        // #2551: cuando un skill previo (linter/review/po/ux) genera archivos
+        // nuevos (post-#2537 corren con cwd=worktree), aparecen como untracked
+        // y `git rebase --autostash` los deja afuera. Si main toca alguno de
+        // esos paths, rebase aborta con "untracked working tree files would
+        // be overwritten". Solución: stash explícito con --include-untracked
+        // ANTES de rebase, restaurar después en `finally`. Cleanup garantizado
+        // incluso ante crash entre stash y pop (CA-S2).
         t = phaseStart();
         const fetchRes = git.fetchOrigin(WORK_DIR);
         if (fetchRes.exit_code !== 0) {
             logAppend(`[delivery] git fetch warning: ${fetchRes.stderr.slice(0, 200)}`);
         }
-        const rebaseRes = git.rebaseOnto(WORK_DIR, 'origin/main');
-        if (rebaseRes.exit_code !== 0) {
-            // Conflicto irresoluble — abortar y rebote
-            git.rebaseAbort(WORK_DIR);
-            throw new Error(`Rebase conflict: ${rebaseRes.stderr.slice(0, 300) || rebaseRes.stdout.slice(0, 300)}`);
+
+        // (a) Cleanup defensivo: drop de stashes huérfanos de runs anteriores
+        //     que crashearon entre stash y pop (PIDs muertos con prefijo
+        //     `delivery-<issue>-`). No bloquea si nadie quedó huérfano.
+        const orphans = git.cleanupOrphanStashes(WORK_DIR, { issue });
+        if (orphans.length) {
+            logAppend(`[delivery] cleanup stash huérfanos: ${orphans.map((o) => `${o.ref}(pid=${o.pid})`).join(', ')}`);
         }
-        logAppend(`[delivery] rebase OK`);
+
+        // (b) Logging del estado git pre-rebase. Local sin redacción para
+        //     forense; categorías agregadas (sin paths) al log público.
+        //     CA-S1: paths sensibles se redactan en el snapshot que pueden
+        //     ver outputs visibles (motivo, marker, comentario PR, Telegram).
+        const dirtyState = git.getDirtyState(WORK_DIR);
+        const dirtyCounts = `tracked_modified=${dirtyState.tracked_modified.length} untracked=${dirtyState.untracked.length} ignored=${dirtyState.ignored.length}`;
+        logAppend(`[delivery] dirty state pre-rebase: ${dirtyCounts}`);
+        const rawStatus = git.runGit(['status', '--porcelain=v1'], { cwd: WORK_DIR }).stdout || '';
+        // Log local SIN redacción (CA-4 + CA-S1).
+        logAppend('[delivery] git status --porcelain (raw, local-only):');
+        for (const ln of rawStatus.split(/\r?\n/)) if (ln.trim()) logAppend(`    ${ln}`);
+        // Snapshot redactado: lo que verán outputs externos si el rebase falla.
+        const redactedStatus = git.redactSensitivePaths(rawStatus);
+        const hasSensitive = redactedStatus !== rawStatus;
+        if (hasSensitive) {
+            logAppend(`[delivery] ALERTA: detectados paths sensibles en worktree, se redactarán en outputs visibles`);
+        }
+
+        // (c) Stash explícito con --include-untracked. Etiqueta por PID para
+        //     que próximos runs puedan limpiar huérfanos.
+        const dirtyTotal = dirtyState.tracked_modified.length + dirtyState.untracked.length;
+        let stashed = false;
+        let stashMessage = null;
+        if (dirtyTotal > 0) {
+            const { message, result } = git.stashAll(WORK_DIR, { issue });
+            if (result.exit_code !== 0) {
+                throw new Error(
+                    `git stash falló: ${(result.stderr || result.stdout || '').slice(0, 300)}`,
+                );
+            }
+            stashed = true;
+            stashMessage = message;
+            logAppend(`[delivery] stash creado: ${message}`);
+        }
+
+        // (d) Rebase sin --autostash (ya stasheamos arriba). En cleanup hacemos
+        //     stash pop, sea cual sea el resultado del rebase.
+        try {
+            const rebaseRes = git.rebaseOnto(WORK_DIR, 'origin/main', { autostash: false });
+            if (rebaseRes.exit_code !== 0) {
+                // Conflicto irresoluble — abortar para liberar el árbol antes de pop.
+                git.rebaseAbort(WORK_DIR);
+                // Motivo redactado: rebote visible no debe leakear paths sensibles
+                // (CA-4 + CA-S1). Incluye stderr resumido + snapshot del status.
+                const stderrRedacted = git.redactInline(
+                    (rebaseRes.stderr || rebaseRes.stdout || '').slice(0, 300),
+                );
+                const statusForMotivo = redactedStatus.split(/\r?\n/).filter(Boolean).slice(0, 5).join(' | ');
+                throw new Error(
+                    `Rebase conflict: ${stderrRedacted} [${dirtyCounts}${statusForMotivo ? ` status="${statusForMotivo}"` : ''}]`,
+                );
+            }
+            logAppend(`[delivery] rebase OK`);
+        } finally {
+            // (e) Cleanup garantizado del stash, incluso ante throw.
+            //     CA-S2: el finally se ejecuta SÍ o SÍ.
+            if (stashed) {
+                const popRes = git.stashPop(WORK_DIR);
+                if (popRes.exit_code !== 0) {
+                    // Conflict en pop: contenido transitorio del pipeline,
+                    // preferimos drop a dejarlo bloqueando futuros runs.
+                    const dropRes = git.stashDrop(WORK_DIR);
+                    logAppend(`[delivery] stash pop falló, drop ${dropRes.exit_code === 0 ? 'OK' : 'también falló'}: ${(popRes.stderr || '').slice(0, 200)}`);
+                } else {
+                    logAppend(`[delivery] stash pop OK (${stashMessage})`);
+                }
+            }
+        }
         phaseEnd('rebase', t);
 
         // ── Fase 3: push ──────────────────────────────────────────────

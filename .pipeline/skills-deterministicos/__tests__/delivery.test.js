@@ -225,3 +225,84 @@ test('#2523 rev-2 — exporta REPO_ROOT y WORK_DIR para introspección', () => {
     assert.ok(delivery.REPO_ROOT.length > 0);
     assert.ok(delivery.WORK_DIR.length > 0);
 });
+
+// #2551 — Validación del SAFE_IGNORE ampliado (CA-3) y de las defensas que el
+// delivery introduce contra "rebase conflict: unstaged changes" en worktrees
+// post-#2537. El SAFE_IGNORE de delivery.js es local del flow; replicamos el
+// regex acá para verificar el contrato sin tener que exportarlo.
+
+const SAFE_IGNORE_2551 = new RegExp(
+    '^(?:' + [
+        '\\.claude\\/hooks\\/agent-\\d+\\.heartbeat',
+        '\\.claude\\/hooks\\/agent-registry\\.json',
+        '\\.claude\\/hooks\\/activity-log',
+        '\\.pipeline\\/metrics-history\\.jsonl',
+        '\\.pipeline\\/.*\\.heartbeat',
+        '\\.pipeline\\/logs\\/.*',
+        '\\.pipeline\\/locks\\/.*',
+        'qa\\/evidence\\/.*',
+        'lint-\\d+-report\\.(md|json)',
+        '.*\\.stackdump',
+    ].join('|') + ')',
+);
+
+test('#2551 CA-3 — SAFE_IGNORE captura outputs del linter (lint-N-report.{md,json})', () => {
+    assert.equal(SAFE_IGNORE_2551.test('lint-1234-report.md'), true);
+    assert.equal(SAFE_IGNORE_2551.test('lint-1234-report.json'), true);
+    assert.equal(SAFE_IGNORE_2551.test('lint-99-report.md'), true);
+});
+
+test('#2551 CA-3 — SAFE_IGNORE captura .pipeline/logs/* y .pipeline/locks/*', () => {
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/logs/2551-delivery.log'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/logs/foo/bar.txt'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/locks/delivery-2551.lock'), true);
+});
+
+test('#2551 CA-3 — SAFE_IGNORE captura qa/evidence/*', () => {
+    assert.equal(SAFE_IGNORE_2551.test('qa/evidence/2551/screenshot-1.png'), true);
+    assert.equal(SAFE_IGNORE_2551.test('qa/evidence/video.webm'), true);
+});
+
+test('#2551 CA-3 — SAFE_IGNORE preserva paths inocuos (no falso positivo)', () => {
+    assert.equal(SAFE_IGNORE_2551.test('app/composeApp/src/Main.kt'), false);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/skills-deterministicos/delivery.js'), false);
+    assert.equal(SAFE_IGNORE_2551.test('docs/readme.md'), false);
+    assert.equal(SAFE_IGNORE_2551.test('docs/qa/rejection-2551.md'), false);
+});
+
+test('#2551 CA-3 — SAFE_IGNORE preserva regla original (heartbeats, agent-registry, metrics)', () => {
+    assert.equal(SAFE_IGNORE_2551.test('.claude/hooks/agent-2551.heartbeat'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.claude/hooks/agent-registry.json'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/metrics-history.jsonl'), true);
+});
+
+// #2551 CA-S3 — Gates de seguridad NO modificados.
+test('#2551 CA-S3 — hasQaGate sigue aceptando exactamente passed y skipped', () => {
+    assert.equal(delivery.QA_LABELS_OK.size, 2);
+    assert.equal(delivery.QA_LABELS_OK.has('qa:passed'), true);
+    assert.equal(delivery.QA_LABELS_OK.has('qa:skipped'), true);
+    assert.equal(delivery.QA_LABELS_OK.has('qa:pending'), false);
+    assert.equal(delivery.QA_LABELS_OK.has('qa:failed'), false);
+    assert.equal(delivery.hasQaGate(['qa:passed']), true);
+    assert.equal(delivery.hasQaGate(['qa:skipped']), true);
+    assert.equal(delivery.hasQaGate(['qa:failed']), false);
+    assert.equal(delivery.hasQaGate(['qa:pending']), false);
+    assert.equal(delivery.hasQaGate([]), false);
+});
+
+// #2551 CA-S1 — Redacción adversarial: fake-credentials.json + .env redactados.
+test('#2551 CA-S1 — git-ops.redactSensitivePaths oculta credentials/.env en outputs visibles', () => {
+    const git = require('../lib/git-ops');
+    const input = [
+        '?? fake-credentials.json',
+        ' M .env.local',
+        '?? .pipeline/logs/2551-delivery.log',
+        ' M app/Main.kt',
+    ].join('\n');
+    const out = git.redactSensitivePaths(input);
+    assert.ok(out.includes('<sensitive-path-redacted>'));
+    assert.ok(!out.includes('fake-credentials.json'));
+    assert.ok(!out.includes('.env.local'));
+    assert.ok(out.includes('.pipeline/logs/2551-delivery.log'));
+    assert.ok(out.includes('app/Main.kt'));
+});
