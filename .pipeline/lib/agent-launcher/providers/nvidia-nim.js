@@ -8,7 +8,7 @@
 // #3198 (dispatch-with-fallback) cuando se materialicen los wrappers reales
 // de free providers.
 //
-// API drop-in OpenAI-compatible (mismo patrón que groq/cerebras) — el
+// API drop-in OpenAI-compatible (mismo patrón que cerebras) — el
 // detector estructurado de cuota (`_detectOpenAI` en quota-exhausted.js) ya
 // cubre los shapes SSE que NVIDIA NIM emite, por lo que la detección de
 // cuota será automática cuando el wrapper real exista.

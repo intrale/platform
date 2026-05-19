@@ -1,22 +1,28 @@
 {
   "$schema": "./agent-models.schema.json",
   "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente) + #3258 (skill virtual `telegram-commander`). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free). El skill virtual `telegram-commander` (#3258) NO está en `skills_por_fase` — es consumido por pulpo.js (commander chat de Telegram) vía lib/commander/multi-provider.js para el dispatch con fallback chain.",
-
   "default_provider": "anthropic",
-
   "providers": {
     "anthropic": {
       "launcher": "claude",
       "model": "claude-opus-4-7",
       "spawn_args_template": [
-        "-p", "{user_prompt}",
-        "--system-prompt-file", "{system_file}",
-        "--output-format", "stream-json",
+        "-p",
+        "{user_prompt}",
+        "--system-prompt-file",
+        "{system_file}",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--permission-mode", "bypassPermissions"
+        "--permission-mode",
+        "bypassPermissions"
       ],
       "output_parser": "anthropic-stream-json",
-      "quota_error_types": ["usage_limit_error", "weekly_quota_exhausted", "snapshot_threshold_90"],
+      "quota_error_types": [
+        "usage_limit_error",
+        "weekly_quota_exhausted",
+        "snapshot_threshold_90"
+      ],
       "resets_at_cap_max_days": 7,
       "supports_tool_use": true,
       "prompt_caching": {
@@ -24,99 +30,115 @@
         "ttl_seconds_default": 300,
         "ttl_seconds_extended": 3600
       },
-      "credentials_env": ["ANTHROPIC_API_KEY"],
+      "credentials_env": [
+        "ANTHROPIC_API_KEY"
+      ],
       "permissions_mode": "bypassPermissions"
     },
-
     "openai-codex": {
       "launcher": "codex",
       "model": "gpt-5-codex",
       "spawn_args_template": [
-        "exec", "--full-auto",
-        "--model", "{model}",
-        "--system", "{system_file}",
+        "exec",
+        "--full-auto",
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
         "{user_prompt}"
       ],
       "output_parser": "openai-sse",
-      "quota_error_types": ["insufficient_quota", "billing_hard_limit_reached"],
+      "quota_error_types": [
+        "insufficient_quota",
+        "billing_hard_limit_reached"
+      ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,
       "prompt_caching": {
         "supported": true,
         "auto": true
       },
-      "credentials_env": ["OPENAI_API_KEY"],
+      "credentials_env": [
+        "OPENAI_API_KEY"
+      ],
       "permissions_mode": "bypassPermissions"
     },
-
     "gemini-google": {
       "launcher": "gemini-google",
       "model": "gemini-2.0-flash",
       "spawn_args_template": [
-        "--model", "{model}",
-        "--system", "{system_file}",
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
         "{user_prompt}"
       ],
       "output_parser": "gemini-stream",
-      "quota_error_types": ["quota_exceeded", "resource_exhausted"],
+      "quota_error_types": [
+        "quota_exceeded",
+        "resource_exhausted"
+      ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,
-      "prompt_caching": { "supported": false },
-      "credentials_env": ["GEMINI_API_KEY"],
-      "permissions_mode": "bypassPermissions"
-    },
-
-    "groq": {
-      "launcher": "groq",
-      "model": "llama-3.3-70b-versatile",
-      "spawn_args_template": [
-        "--model", "{model}",
-        "--system", "{system_file}",
-        "{user_prompt}"
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "GEMINI_API_KEY"
       ],
-      "output_parser": "openai-sse",
-      "quota_error_types": ["rate_limit_exceeded", "tokens_exhausted", "quota_exceeded"],
-      "resets_at_cap_max_days": 31,
-      "supports_tool_use": false,
-      "prompt_caching": { "supported": false },
-      "credentials_env": ["GROQ_API_KEY"],
       "permissions_mode": "bypassPermissions"
     },
-
     "cerebras": {
       "launcher": "cerebras",
       "model": "llama-3.3-70b",
       "spawn_args_template": [
-        "--model", "{model}",
-        "--system", "{system_file}",
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
         "{user_prompt}"
       ],
       "output_parser": "openai-sse",
-      "quota_error_types": ["rate_limit_exceeded", "quota_exceeded"],
+      "quota_error_types": [
+        "rate_limit_exceeded",
+        "quota_exceeded"
+      ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": false,
-      "prompt_caching": { "supported": false },
-      "credentials_env": ["CEREBRAS_API_KEY"],
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "CEREBRAS_API_KEY"
+      ],
       "permissions_mode": "bypassPermissions"
     },
-
     "nvidia-nim": {
       "launcher": "nvidia-nim",
       "model": "deepseek-ai/deepseek-v4-pro",
       "spawn_args_template": [
-        "--model", "{model}",
-        "--system", "{system_file}",
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
         "{user_prompt}"
       ],
       "output_parser": "openai-sse",
-      "quota_error_types": ["rate_limit_exceeded", "quota_exceeded", "insufficient_quota"],
+      "quota_error_types": [
+        "rate_limit_exceeded",
+        "quota_exceeded",
+        "insufficient_quota"
+      ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,
-      "prompt_caching": { "supported": false },
-      "credentials_env": ["NVIDIA_NIM_API_KEY"],
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "NVIDIA_NIM_API_KEY"
+      ],
       "permissions_mode": "bypassPermissions"
     },
-
     "deterministic": {
       "launcher": "node",
       "model": "deterministic",
@@ -128,182 +150,281 @@
       "output_parser": "none",
       "quota_error_types": [],
       "supports_tool_use": false,
-      "prompt_caching": { "supported": false }
+      "prompt_caching": {
+        "supported": false
+      }
     }
   },
-
   "skills": {
     "backend-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
     "pipeline-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
     "android-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
     "web-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
-    "build":        { "provider": "deterministic" },
-
-    "tester":       { "provider": "deterministic" },
-
+    "build": {
+      "provider": "deterministic"
+    },
+    "tester": {
+      "provider": "deterministic"
+    },
     "security": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "qa": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "review": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "po": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "ux": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "doc": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "planner": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "guru": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" },
-        { "provider": "nvidia-nim", "model_override": "deepseek-ai/deepseek-v4-pro" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        }
       ]
     },
-
     "ops": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "perf": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
     "auth": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "qwen2.5-coder-32b" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     },
-
-    "refinar":      { "provider": "anthropic" },
-
-    "linter":       { "provider": "deterministic" },
-    "delivery":     { "provider": "deterministic" },
-
+    "refinar": {
+      "provider": "anthropic"
+    },
+    "linter": {
+      "provider": "deterministic"
+    },
+    "delivery": {
+      "provider": "deterministic"
+    },
     "telegram-commander": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
       "fallbacks": [
-        { "provider": "openai-codex", "model_override": "gpt-5-codex" },
-        { "provider": "groq", "model_override": "llama-3.3-70b-versatile" },
-        { "provider": "gemini-google", "model_override": "gemini-2.0-flash" },
-        { "provider": "cerebras", "model_override": "llama-3.3-70b" }
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
       ]
     }
   }

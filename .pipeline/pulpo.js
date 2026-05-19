@@ -7056,7 +7056,7 @@ function ejecutarClaude(prompt, textoOriginal) {
     if (resolution.crossProvider) {
       try {
         const fbHandler = resolution.handler || {};
-        // Si el provider efectivo no soporta tool use (Groq/Cerebras),
+        // Si el provider efectivo no soporta tool use (Cerebras/Gemini/NVIDIA),
         // SR-8 obliga a avisar la degradación de capacidad en línea separada.
         // Leemos el flag del JSON config para no asumirlo en runtime.
         const supportsToolUse = (() => {
@@ -8021,7 +8021,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     const wantsIssueCreation = issueIntent.intent !== commanderIssueCreation.INTENT_NONE;
 
     // --- #3250 — SEC-5: bloqueo cuando el provider efectivo NO es Anthropic.
-    // Los providers no-Anthropic (Groq/Cerebras/Gemini/Codex) no tienen Skill
+    // Los providers no-Anthropic (Cerebras/Gemini/NVIDIA/Codex) no tienen Skill
     // tool habilitado en el harness; intentar /doc o /planner allí caería en
     // un fallback silencioso de calidad degradada. Mejor responder canned y
     // pedir al usuario que reintente cuando Claude vuelva.

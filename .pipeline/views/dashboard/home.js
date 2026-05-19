@@ -2027,12 +2027,13 @@ async function pauseIssueHome(issue){
 // Defensa XSS (security A03): TODO texto que viene del JSON (provider id,
 // reason, status) se rendea via textContent o escapeHtml(). Cero
 // innerHTML con strings interpolados.
+// #3353 - groq removido tras la descontinuacion. Si llega del backend, cae al
+// fallback provider-unknown (sin token CSS dedicado).
 const PROVIDER_TOKEN_NAMES = {
     'anthropic': 'provider-anthropic',
     'openai-codex': 'provider-openai-codex',
     'openai': 'provider-openai',
     'gemini-google': 'provider-gemini',
-    'groq': 'provider-groq',
     'cerebras': 'provider-cerebras',
     'nvidia-nim': 'provider-nvidia-nim',
 };

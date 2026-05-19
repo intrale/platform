@@ -115,8 +115,9 @@ const KNOWN_HINTS_BY_PROVIDER = Object.freeze({
     anthropic: 'usage_limit_error / weekly_quota_exhausted',
     'openai-codex': 'insufficient_quota / billing_hard_limit_reached',
     'gemini-google': 'quota_exceeded / resource_exhausted',
-    groq: 'rate_limit_exceeded / tokens_exhausted',
+    // Groq descontinuado en #3353 — sin hint hardcoded para el provider.
     cerebras: 'rate_limit_exceeded / quota_exceeded',
+    'nvidia-nim': 'rate_limit_exceeded / quota_exceeded / insufficient_quota',
 });
 
 // -----------------------------------------------------------------------------

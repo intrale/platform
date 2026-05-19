@@ -38,7 +38,8 @@ const PATTERNS = [
     // OpenAI / Anthropic / similares
     { name: 'openai_key', regex: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
     { name: 'anthropic_key', regex: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g },
-    { name: 'groq_key', regex: /\bgsk_[A-Za-z0-9]{40,}\b/g },
+    // Groq key pattern (`gsk_`) se removió en #3353 — Groq descontinuado. Si
+    // aparece en logs viejos, el filtro genérico de `apiKey`/`secret` lo cubre.
     // Google AI / Gemini API keys (AIza prefix + 35 chars)
     { name: 'gemini_key', regex: /\bAIza[A-Za-z0-9_-]{35}\b/g },
     // Slack tokens (xoxb-/xoxp-/xoxa-)

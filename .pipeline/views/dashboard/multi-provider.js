@@ -391,7 +391,8 @@ function providerToken(provider) {
     // #3243 — NVIDIA NIM free provider. Token ya entregado por UX en
     // design-tokens.css (#76B900, contraste 7.6:1 AAA Large). Allowlist
     // del dashboard sigue cerrada (regla R6 anti-fallback); el resto de free
-    // providers (groq/gemini-google/cerebras) se cubren en #3326.
+    // providers (gemini-google/cerebras) se cubren en #3326. Groq fue
+    // descontinuado en #3353.
     if (p === 'nvidia-nim') return '--provider-nvidia-nim';
     return '--provider-unknown';
 }
@@ -888,12 +889,13 @@ async function loadCommanderDistribution(window) {
     }
     // Colores por provider — reusa tokens existentes si están, fallback inline.
     const colorFor = (p) => {
+        // #3353 — groq removido del mapa de colores tras la descontinuación.
         const map = {
             anthropic: '#d97706',
             'openai-codex': '#10a37f',
-            groq: '#f97316',
             'gemini-google': '#4285f4',
             cerebras: '#8b5cf6',
+            'nvidia-nim': '#76b900',
         };
         return map[p] || '#6b7280';
     };

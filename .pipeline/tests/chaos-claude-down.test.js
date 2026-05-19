@@ -105,7 +105,7 @@ function fakeProviderHandler(validProviders) {
 
 function fakeResolver(skill /*, opts */) {
     // Resolver muy simple: skill 'guru' → primary anthropic + fallbacks
-    // [openai-codex, groq].
+    // [openai-codex, cerebras]. Groq fue removido en #3353.
     return {
         provider: 'anthropic',
         model: 'claude-opus-4-7',
@@ -134,10 +134,10 @@ function fakeModelsFile(sandbox) {
         providers: {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7' },
             'openai-codex': { launcher: 'codex', model: 'gpt-5-codex' },
-            groq: { launcher: 'groq', model: 'llama-3.3-70b-versatile' },
+            cerebras: { launcher: 'cerebras', model: 'llama-3.3-70b' },
         },
         skills: {
-            guru: { provider: 'anthropic', fallbacks: ['openai-codex', 'groq'] },
+            guru: { provider: 'anthropic', fallbacks: ['openai-codex', 'cerebras'] },
             tester: { provider: 'deterministic' },
         },
     };
@@ -161,7 +161,7 @@ test('chaos: Anthropic gated + OpenAI libre → dispatcher devuelve fallback, no
         fsImpl: fs,
         quotaModule: quota,
         resolverImpl: fakeResolver,
-        providerHandlerResolver: fakeProviderHandler(['anthropic', 'openai-codex', 'groq']),
+        providerHandlerResolver: fakeProviderHandler(['anthropic', 'openai-codex', 'cerebras']),
         auditLog: audit,
         notifyTelegram: notify,
         onLog: () => {},
@@ -182,7 +182,7 @@ test('chaos: TODOS los providers gated → reportExhaustion aplica label + Teleg
     fakeModelsFile(sandbox);
     const audit = fakeAuditLog();
     const notify = fakeNotify();
-    const quota = fakeQuota({ gated: ['anthropic', 'openai-codex', 'groq'] });
+    const quota = fakeQuota({ gated: ['anthropic', 'openai-codex', 'cerebras'] });
 
     const dispatchResult = resolveSpawnWithFallback({
         skill: 'guru',
@@ -191,13 +191,13 @@ test('chaos: TODOS los providers gated → reportExhaustion aplica label + Teleg
         fsImpl: fs,
         quotaModule: quota,
         resolverImpl: fakeResolver,
-        providerHandlerResolver: fakeProviderHandler(['anthropic', 'openai-codex', 'groq']),
+        providerHandlerResolver: fakeProviderHandler(['anthropic', 'openai-codex', 'cerebras']),
         auditLog: audit,
         notifyTelegram: notify,
         onLog: () => {},
     });
     assert.equal(dispatchResult.gated, true, 'chain agotada → gated:true');
-    assert.deepEqual(dispatchResult.chainTried, ['anthropic', 'openai-codex', 'groq']);
+    assert.deepEqual(dispatchResult.chainTried, ['anthropic', 'openai-codex', 'cerebras']);
 
     // Simular el flow real del pulpo.js: cuando gated, llamamos
     // reportExhaustion con la chain. Mockeamos gh para que devuelva 0
@@ -218,7 +218,7 @@ test('chaos: TODOS los providers gated → reportExhaustion aplica label + Teleg
     // Verificar marker persistido.
     const marker = exhaustion.readNotifyMarker(3259, { pipelineDir: sandbox });
     assert.ok(marker, 'marker existe');
-    assert.deepEqual(marker.chain_tried, ['anthropic', 'openai-codex', 'groq']);
+    assert.deepEqual(marker.chain_tried, ['anthropic', 'openai-codex', 'cerebras']);
     assert.equal(marker.primary_provider, 'anthropic');
 
     // Verificar Telegram queue tiene archivo.
@@ -271,7 +271,7 @@ test('CA-9 dedup: misma chain dentro de 2h → no re-notifica', () => {
         issue: 3259,
         skill: 'guru',
         primary_provider: 'anthropic',
-        chain_tried: ['anthropic', 'openai-codex', 'groq'],
+        chain_tried: ['anthropic', 'openai-codex', 'cerebras'],
         last_notified_ms: baseTs,
         updated_at: new Date(baseTs).toISOString(),
     }, { pipelineDir: sandbox });
@@ -284,7 +284,7 @@ test('CA-9 dedup: misma chain dentro de 2h → no re-notifica', () => {
         skill: 'guru',
         issue: 3259,
         primary_provider: 'anthropic',
-        chain_tried: ['anthropic', 'openai-codex', 'groq'],
+        chain_tried: ['anthropic', 'openai-codex', 'cerebras'],
     }, {
         pipelineDir: sandbox,
         spawnSyncImpl: spawnSync,
@@ -320,7 +320,7 @@ test('CA-9 chain change: chain distinta → re-notifica dentro de 2h', () => {
         skill: 'guru',
         issue: 3259,
         primary_provider: 'anthropic',
-        chain_tried: ['anthropic', 'openai-codex', 'groq'],
+        chain_tried: ['anthropic', 'openai-codex', 'cerebras'],
     }, {
         pipelineDir: sandbox,
         spawnSyncImpl: spawnSync,
@@ -340,7 +340,7 @@ test('CA-10 resume: flag liberado → quita label, borra marker, encola destrabe
         issue: 3259,
         skill: 'guru',
         primary_provider: 'anthropic',
-        chain_tried: ['anthropic', 'openai-codex', 'groq'],
+        chain_tried: ['anthropic', 'openai-codex', 'cerebras'],
         last_notified_ms: Date.now() - 60 * 60 * 1000,
     }, { pipelineDir: sandbox });
 

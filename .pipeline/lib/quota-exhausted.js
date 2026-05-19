@@ -180,14 +180,10 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         'quota_exceeded',
         'resource_exhausted',
     ]),
-    // #3220 — Groq expone API OpenAI-compatible (handler `_detectOpenAI`
-    // reusable). Error types tomados del análisis del issue: dos códigos
-    // formales del SDK + el genérico `quota_exceeded`.
-    groq: Object.freeze([
-        'rate_limit_exceeded',
-        'tokens_exhausted',
-        'quota_exceeded',
-    ]),
+    // #3353 (mayo 2026) — Groq descontinuado: la entrada `groq` se removió
+    // de la meta-allowlist; agent-models.json con quota_error_types declarado
+    // para groq ahora falla la cross-validation con mensaje accionable.
+    //
     // #3220 — Cerebras también es OpenAI-compatible. Lista conservadora.
     cerebras: Object.freeze([
         'rate_limit_exceeded',

@@ -441,27 +441,30 @@ Convenciones:
 - **Gemini incluido**: el skill procesa multimodal (video QA, screenshots, mockups) y/o no toca código sensible.
 - Cuando un fallback aparece con `model_override` específico, es porque el `model` default del provider no es adecuado para ese skill (ej. `qa` necesita `gpt-5` con vision, no `gpt-5-codex` text-only).
 
-| Skill | Primary | Fallback 1 | Fallback 2 | Fallback 3 | Fallback 4 | Notas |
-|-------|---------|------------|------------|------------|------------|-------|
-| `backend-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
-| `pipeline-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
-| `android-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente Android — Gemini OK |
-| `web-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente web — Gemini OK |
-| `security` | claude / opus-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (gate pre-merge sensible) |
-| `qa` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | Vision multimodal (video) — Gemini **incluido** porque solo procesa output de emulador, no secrets |
-| `review` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (lee diffs con secrets/JWT) |
-| `po` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | Vision (video QA + screenshots) — Gemini OK por TOS |
-| `ux` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | Vision (mockups/screenshots) — Gemini OK |
-| `doc` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (estrategia de producto) |
-| `planner` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / llama-3.3-70b-versatile | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
-| `guru` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (fragmentos código) |
-| `ops` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
-| `perf` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | Sin secrets — Gemini OK |
-| `auth` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | groq / qwen2.5-coder-32b | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (config interna del entorno) |
+> **Nota #3353 (mayo 2026):** `groq` fue descontinuado por política de bloqueos
+> arbitrarios del proveedor. Las cadenas de fallback debajo ya no lo incluyen.
+
+| Skill | Primary | Fallback 1 | Fallback 2 | Fallback 3 | Notas |
+|-------|---------|------------|------------|------------|-------|
+| `backend-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
+| `pipeline-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
+| `android-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente Android — Gemini OK |
+| `web-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente web — Gemini OK |
+| `security` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (gate pre-merge sensible) |
+| `qa` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Vision multimodal (video) — Gemini **incluido** porque solo procesa output de emulador, no secrets |
+| `review` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (lee diffs con secrets/JWT) |
+| `po` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Vision (video QA + screenshots) — Gemini OK por TOS |
+| `ux` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Vision (mockups/screenshots) — Gemini OK |
+| `doc` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (estrategia de producto) |
+| `planner` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
+| `guru` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | nvidia-nim / deepseek-v4-pro | Gemini **EXCLUIDO** (fragmentos código) |
+| `ops` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
+| `perf` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Sin secrets — Gemini OK |
+| `auth` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (config interna del entorno) |
 
 > **Sobre la nota "sonnet-4-7" vs "sonnet-4-6" de la memoria:** la memoria original escribió `sonnet-4-6` para varios skills; el catálogo `ALLOWED_MODELS_BY_LAUNCHER` declara `claude-sonnet-4-7` siguiendo la convención del cluster (4-7 para Opus, 4-5 para Haiku). El JSON canónico usa `claude-sonnet-4-7` (modelo validado en la allowlist). Si Anthropic libera `claude-sonnet-4-6` en algún momento, agregarlo a `ALLOWED_MODELS_BY_LAUNCHER.claude` requiere review humano.
 
-> **Sobre `tester` y `build` (deterministic):** la memoria `project_multi-provider-per-agent-order` originalmente proponía `build`=groq y `tester`=claude-sonnet como primary LLM. Sin embargo, **ambos skills son determinísticos** — corren como Node scripts (`.pipeline/skills-deterministicos/{build,tester}.js`) y la allowlist hardcoded `DETERMINISTIC_SKILLS = ['build', 'tester', 'linter', 'delivery']` en `resolve-provider.js` fuerza spawn determinístico ignorando lo que diga `agent-models.json`. Declararlos con LLM declarativo y `fallbacks[]` en el JSON crea **drift entre fuentes de verdad** (mismo patrón del incidente #3157 que costó $2.72/h en builds). Por eso `agent-models.json` los declara con la forma mínima `{provider: deterministic}` igual que `linter` y `delivery`, y `deterministic-skills-coherence.test.js` lo enforce. Si alguna vez se introduce una variante LLM-augmented (ej. `tester --from-gherkin`), se trata como un skill nuevo con su propia entrada, no se mezcla con el determinístico.
+> **Sobre `tester` y `build` (deterministic):** la memoria `project_multi-provider-per-agent-order` originalmente proponía `build` con un free provider y `tester`=claude-sonnet como primary LLM. Sin embargo, **ambos skills son determinísticos** — corren como Node scripts (`.pipeline/skills-deterministicos/{build,tester}.js`) y la allowlist hardcoded `DETERMINISTIC_SKILLS = ['build', 'tester', 'linter', 'delivery']` en `resolve-provider.js` fuerza spawn determinístico ignorando lo que diga `agent-models.json`. Declararlos con LLM declarativo y `fallbacks[]` en el JSON crea **drift entre fuentes de verdad** (mismo patrón del incidente #3157 que costó $2.72/h en builds). Por eso `agent-models.json` los declara con la forma mínima `{provider: deterministic}` igual que `linter` y `delivery`, y `deterministic-skills-coherence.test.js` lo enforce. Si alguna vez se introduce una variante LLM-augmented (ej. `tester --from-gherkin`), se trata como un skill nuevo con su propia entrada, no se mezcla con el determinístico.
 
 ### 4.5 Pasos para hacer lo mismo desde la UI del dashboard
 
@@ -851,9 +854,20 @@ Implementado por: [#3198](https://github.com/intrale/platform/issues/3198) (cons
 
 ---
 
-## 8. Hardening de free providers (#3260)
+## 8. Hardening de free providers (#3260 + #3353)
 
-Los **4 providers free** (Groq, Gemini-Google, Cerebras, NVIDIA NIM) son la **red de salvataje** del pipeline cuando se agota la cuota de Claude / Codex. El issue [#3260](https://github.com/intrale/platform/issues/3260) (ola N+5) endurece esa red con healthchecks periódicos, validación semanal de keys, panel "Health" del dashboard, alertas Telegram con dedupe + back-off, y este procedimiento operativo. NVIDIA NIM se sumó en [#3243](https://github.com/intrale/platform/issues/3243) (ola N+5).
+Los **3 providers free vivos** (Gemini-Google, Cerebras, NVIDIA NIM) son la **red de salvataje** del pipeline cuando se agota la cuota de Claude / Codex. El issue [#3260](https://github.com/intrale/platform/issues/3260) (ola N+5) endurece esa red con healthchecks periódicos, validación semanal de keys, panel "Health" del dashboard, alertas Telegram con dedupe + back-off, y este procedimiento operativo. NVIDIA NIM se sumó en [#3243](https://github.com/intrale/platform/issues/3243) (ola N+5). **Groq fue descontinuado en [#3353](https://github.com/intrale/platform/issues/3353)** (mayo 2026) por política inestable de restricciones del proveedor.
+
+### Criterio de selección de free providers
+
+- Estabilidad operativa ≥ 99.5% SLA (no bloques arbitrarios).
+- Soporte técnico responsivo (< 24h respuesta).
+- Política clara de restricciones (no "amenaza de bloqueo único").
+- API compatible con OpenAI o documentación pública del shape de respuesta.
+
+Groq fue descontinuado (mayo 2026) por no cumplir criterio de estabilidad operativa: la organización dueña de las keys fue bloqueada sin aviso por "organization_restricted", y el soporte ofreció "desbloqueo único" con amenaza implícita de "no habrá segundo bloqueo" — inaceptable para producción.
+
+**Alternativas a evaluar como reemplazo:** Together AI (~6M tokens/mes free, API OpenAI-compatible) y Fireworks AI (~50K tokens/día). El issue [#3353](https://github.com/intrale/platform/issues/3353) documenta esa decisión.
 
 ### 8.1 Free tier real por provider
 
@@ -861,12 +875,11 @@ Los **4 providers free** (Groq, Gemini-Google, Cerebras, NVIDIA NIM) son la **re
 
 | Provider | RPM | RPD | Tokens/día | Endpoint usado en healthcheck | Notas |
 |----------|----:|----:|-----------:|--------------------------------|-------|
-| `groq` | 30 | 14400 | depende del modelo (~500K) | `GET https://api.groq.com/openai/v1/models` | Body 401/403 sin detalle propietario. 429 con `insufficient_quota` ⇒ `quota_exhausted`. |
 | `gemini-google` | 15 | 1500 | 1M tokens | `GET https://generativelanguage.googleapis.com/v1beta/models` | Auth con header `x-goog-api-key` (la key NUNCA en query string — `key` ya está en `SENSITIVE_QUERY_KEYS`). 400 con `API_KEY_INVALID` ⇒ `invalid_credentials`. |
 | `cerebras` | 30 | sin cap docu | ~60K tokens/min | `GET https://api.cerebras.ai/v1/models` | Free tier sólo modelos llama-* (sin Mistral). 429 con `insufficient` ⇒ `quota_exhausted`. |
 | `nvidia-nim` | _no publicado_ | _no publicado_ | _no publicado_ | `GET https://integrate.api.nvidia.com/v1/models` | NVIDIA no publica RPM/RPD/TPM del free tier — la observación queda pendiente del cron de health (medición empírica, ver #3327). 429 con `insufficient_quota / monthly` ⇒ `quota_exhausted`. |
 
-Cron de healthchecks: cada 15min × 4 providers = **384 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota).
+Cron de healthchecks: cada 15min × 3 providers = **288 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota). Groq fue descontinuado en #3353 y ya no se incluye en el cron.
 
 ### 8.2 Rotar una API key sin downtime (CA-5)
 
@@ -874,7 +887,7 @@ Cron de healthchecks: cada 15min × 4 providers = **384 requests/día por provid
 
 Procedimiento:
 
-1. **Generar la nueva key en el portal del provider** (Groq Console / Google AI Studio / Cerebras dashboard). NO revocar la vieja todavía.
+1. **Generar la nueva key en el portal del provider** (Google AI Studio / Cerebras dashboard / NVIDIA build.nvidia.com). NO revocar la vieja todavía.
 2. **Rotar vía UI del dashboard:**
    - Abrir `http://localhost:8080/dashboard.html#multi-provider`.
    - Tab **1 · Proveedores** → click "Rotar key" en el provider afectado.
@@ -956,23 +969,23 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 
 ### 8.8 Procedimiento seguro para pasar API keys vía Telegram (#3310)
 
-> **Contexto:** el 2026-05-17 una API key de Groq se filtró al disco del pulpo porque se pegó en plaintext en el chat de Telegram. El listener escribía el texto crudo en `commander-session.json`, `commander-history.jsonl` y `servicios/commander/pendiente/*.json` sin redacción. Issue [#3310](https://github.com/intrale/platform/issues/3310) cierra el flanco con sanitización en write-time (`sanitizer.sanitize()` aplicado antes de cualquier `appendFileSync`/`writeFileSync` de input externo) más un pre-commit hook como red de seguridad para evitar que el estado interno del pipeline llegue al repo.
+> **Contexto:** el 2026-05-17 una API key de Groq se filtró al disco del pulpo porque se pegó en plaintext en el chat de Telegram. El listener escribía el texto crudo en `commander-session.json`, `commander-history.jsonl` y `servicios/commander/pendiente/*.json` sin redacción. Issue [#3310](https://github.com/intrale/platform/issues/3310) cierra el flanco con sanitización en write-time (`sanitizer.sanitize()` aplicado antes de cualquier `appendFileSync`/`writeFileSync` de input externo) más un pre-commit hook como red de seguridad para evitar que el estado interno del pipeline llegue al repo. Groq fue descontinuado en [#3353](https://github.com/intrale/platform/issues/3353), pero la regla aplica a cualquier key.
 >
 > **Pero la regla operativa sigue siendo la primaria:** nunca pegues una key en el chat aunque el sanitizer esté activo. Es defensa en profundidad — la única forma robusta es no exponer el secreto al canal en primer lugar.
 
 #### 8.8.1 Procedimiento recomendado
 
-1. Generá / obtené la API key en el portal del provider (Groq Console, Google AI Studio, Cerebras dashboard, NVIDIA build.nvidia.com, etc.).
+1. Generá / obtené la API key en el portal del provider (Google AI Studio, Cerebras dashboard, NVIDIA build.nvidia.com, etc.).
 2. **Guardá la key en un archivo local** bajo `~/.claude/secrets/` (fuera del repo):
    ```bash
-   # Ejemplo: agregar GROQ key
+   # Ejemplo: agregar CEREBRAS key
    mkdir -p ~/.claude/secrets
-   printf '%s' '<la-key>' > ~/.claude/secrets/groq.txt
-   chmod 600 ~/.claude/secrets/groq.txt
+   printf '%s' '<la-key>' > ~/.claude/secrets/cerebras.txt
+   chmod 600 ~/.claude/secrets/cerebras.txt
    ```
 3. **Por Telegram, mandá únicamente el path absoluto**, ej:
    ```
-   actualizar groq key, está en ~/.claude/secrets/groq.txt
+   actualizar cerebras key, está en ~/.claude/secrets/cerebras.txt
    ```
 4. El commander (cuando se cablee `8.8.2`) leerá el archivo desde disco, validará el path contra la whitelist, hará la rotación vía `secrets.rotateKey()` y devolverá confirmación. La key nunca toca el canal.
 
@@ -1030,7 +1043,7 @@ Estos archivos ya están en `.gitignore`. Si te encontrás des-ignorándolos a p
 
 Si por error pegaste una key directamente en el chat:
 
-1. **Revocá la key inmediatamente en el portal del provider** (Groq Console → Settings → API Keys → Delete). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
+1. **Revocá la key inmediatamente en el portal del provider** (Google AI Studio / Cerebras dashboard / NVIDIA build.nvidia.com → Settings → API Keys → Delete). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
 2. **Generá una nueva** y seguila el procedimiento §8.8.1.
 3. **Verificá los archivos que vivieron mientras la key estaba expuesta**:
    ```bash
@@ -1040,7 +1053,7 @@ Si por error pegaste una key directamente en el chat:
 4. **Issue de scrubbing retroactivo**: si querés limpiar el historial existente, ver [#3317](https://github.com/intrale/platform/issues/3317) (necesita aprobación humana, `needs-human`).
 ### 8.9 NVIDIA NIM — guía operativa específica (#3243)
 
-NVIDIA NIM es el **4to free provider** del multi-provider (post #3243). Hostea ~80 modelos OpenAI-compatible en `integrate.api.nvidia.com`, con catálogo enfocado en razonamiento (DeepSeek V4-Pro, SWE-bench 80.6%) y agentic loops (Kimi K2.6, tool use 96.6%) — complementario a los llamas de Groq/Cerebras y a Gemini 2.0 Flash.
+NVIDIA NIM es uno de los 3 free providers vivos (junto con Gemini y Cerebras, post #3353). Hostea ~80 modelos OpenAI-compatible en `integrate.api.nvidia.com`, con catálogo enfocado en razonamiento (DeepSeek V4-Pro, SWE-bench 80.6%) y agentic loops (Kimi K2.6, tool use 96.6%) — complementario a los llamas de Cerebras y a Gemini 2.0 Flash.
 
 **Cómo obtener la API key:**
 
@@ -1062,7 +1075,7 @@ Para agregar más modelos del catálogo NVIDIA NIM (ej. `gpt-oss-120b` opcional)
 
 NVIDIA **NO publica** rate limits ni monthly quota del free tier. Las decisiones operativas (cuándo cortar, cuándo escalar a paid) dependen de telemetría real del cron de health durante las primeras 2 semanas post-activación. Mientras tanto:
 
-- `provider-exhaustion-pause.js` desactiva temporalmente el provider si responde 429 repetido (mismo comportamiento que Groq / Cerebras).
+- `provider-exhaustion-pause.js` desactiva temporalmente el provider si responde 429 repetido (mismo comportamiento que Cerebras).
 - El cron de health (cada 15min × `/v1/models`) genera baseline de latencia y disponibilidad sin consumir cuota de completions.
 
 **Hosting topology check — gate pre-activación (#3243 SR-12):**
@@ -1077,12 +1090,11 @@ NVIDIA NIM permite que **partners** (3rd parties) hosteen modelos del catálogo 
 
 | Provider | Modelo principal | Foco | Context | Naming |
 |----------|------------------|------|---------|--------|
-| Groq | `llama-3.3-70b-versatile` / `qwen2.5-coder-32b` | Velocidad | 128K | sin namespace |
 | Gemini | `gemini-2.0-flash` | Generalista (sin código sensible — TOS entrena) | 1M | sin namespace |
 | Cerebras | `llama-3.3-70b` | Velocidad inference | 128K | sin namespace |
 | **NVIDIA NIM** | **`deepseek-v4-pro` / `kimi-k2`** | **Razonamiento / agentic** | **1M (DeepSeek)** | **`vendor/model`** |
 
-NVIDIA NIM aporta razonamiento de calidad alta en free tier — los 3 anteriores son llamas/Gemini sin foco en razonamiento. Es **complementario**, no redundante.
+NVIDIA NIM aporta razonamiento de calidad alta en free tier — Cerebras es velocidad sobre llama, Gemini es generalista. Es **complementario**, no redundante. (Groq fue descontinuado en #3353.)
 
 **Asignación de skills (al merge de #3243):**
 

@@ -112,36 +112,11 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
             return { ok: false, reason: 'unknown' };
         },
     },
-    groq: {
-        url: 'https://api.groq.com/openai/v1/models',
-        method: 'GET',
-        body: () => null,
-        headers: (key) => ({ 'authorization': `Bearer ${key}` }),
-        interpret: (status, bodyExcerpt) => {
-            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
-            if (status === 400) {
-                // Groq devuelve 400 + `organization_restricted` cuando la
-                // organización dueña de la key fue restringida (#3347). El
-                // status es 400 (no 403) porque Groq usa `invalid_request_error`
-                // como wrapper. La key es válida → no es `invalid_credentials`.
-                if (/organization_restricted/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'forbidden' };
-                }
-                return { ok: false, reason: 'unknown' };
-            }
-            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
-            if (status === 403) return { ok: false, reason: 'forbidden' };
-            if (status === 429) {
-                // Groq mezcla 'quota' y 'rate limit' en el mismo HTTP; el body
-                // discrimina con `insufficient_quota` vs `rate_limit_exceeded`.
-                if (/insufficient_quota|tokens_per_day|day_limit/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'quota_exhausted' };
-                }
-                return { ok: false, reason: 'rate_limited' };
-            }
-            return { ok: false, reason: 'unknown' };
-        },
-    },
+    // Groq fue descontinuado (#3353, mayo 2026): la organización dueña de las
+    // keys fue bloqueada por Groq sin aviso ("organization_restricted") y la
+    // política de soporte era "desbloqueo único" — inaceptable para producción.
+    // Si en algún momento se reintegra, copiar el bloque desde git history
+    // (último commit con groq: 7dba2169).
     'gemini-google': {
         // Google AI Studio v1beta. La key viaja en el header `x-goog-api-key`,
         // no en query (SR-2). Lo llamamos 'gemini-google' (no 'gemini' a

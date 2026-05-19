@@ -56,16 +56,16 @@ function mkTmpPipelineDir() {
                 credentials_env: ['OPENAI_API_KEY'],
                 permissions_mode: 'bypassPermissions',
             },
-            groq: {
-                launcher: 'groq',
-                model: 'llama-3.3-70b-versatile',
+            cerebras: {
+                launcher: 'cerebras',
+                model: 'llama-3.3-70b',
                 spawn_args_template: ['--model'],
                 output_parser: 'openai-sse',
                 quota_error_types: ['rate_limit_exceeded'],
                 resets_at_cap_max_days: 31,
                 supports_tool_use: false,
                 prompt_caching: { supported: false },
-                credentials_env: ['GROQ_API_KEY'],
+                credentials_env: ['CEREBRAS_API_KEY'],
                 permissions_mode: 'bypassPermissions',
             },
         },
@@ -75,7 +75,7 @@ function mkTmpPipelineDir() {
                 model_override: 'claude-opus-4-7',
                 fallbacks: [
                     { provider: 'openai-codex', model_override: 'gpt-5-codex' },
-                    { provider: 'groq', model_override: 'llama-3.3-70b-versatile' },
+                    { provider: 'cerebras', model_override: 'llama-3.3-70b' },
                 ],
             },
         },
@@ -152,7 +152,7 @@ test('CA-7 — Claude gated por cuota → resuelve a openai-codex (próximo en c
     }
 });
 
-test('CA-7 — Claude + Codex gated → fallback escala a groq', () => {
+test('CA-7 — Claude + Codex gated → fallback escala a cerebras', () => {
     const dir = mkTmpPipelineDir();
     try {
         const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex']);
@@ -162,8 +162,8 @@ test('CA-7 — Claude + Codex gated → fallback escala a groq', () => {
             quotaModule: fakeQuota,
         });
         assert.equal(r.gated, false);
-        assert.equal(r.provider, 'groq');
-        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'groq']);
+        assert.equal(r.provider, 'cerebras');
+        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'cerebras']);
     } finally {
         cleanup(dir);
     }
@@ -172,7 +172,7 @@ test('CA-7 — Claude + Codex gated → fallback escala a groq', () => {
 test('CA-7 — chain entera gated → gated:true, response canned', () => {
     const dir = mkTmpPipelineDir();
     try {
-        const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex', 'groq']);
+        const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex', 'cerebras']);
         const r = cmp.resolveCommanderProvider({
             pipelineDir: dir,
             log: () => {},
@@ -224,7 +224,7 @@ test('CA-5 — formatFallbackNotice produce línea natural sin jerga', () => {
 test('CA-5 / SR-8 — formatFallbackNotice agrega línea de degradación si no tool use', () => {
     const text = cmp.formatFallbackNotice({
         primaryProvider: 'anthropic',
-        fallbackProvider: 'groq',
+        fallbackProvider: 'cerebras',
         errorCode: 'quota_exhausted',
         supportsToolUse: false,
     });
@@ -267,12 +267,12 @@ test('SR-6 — después de 5 min la próxima emisión vuelve a salir', () => {
     try {
         const t0 = 1_700_000_000_000;
         cmp.shouldEmitFallbackNotice({
-            pipelineDir: dir, chatId: 'chat-abc', fallbackProvider: 'groq', now: t0,
+            pipelineDir: dir, chatId: 'chat-abc', fallbackProvider: 'cerebras', now: t0,
         });
         const later = cmp.shouldEmitFallbackNotice({
             pipelineDir: dir,
             chatId: 'chat-abc',
-            fallbackProvider: 'groq',
+            fallbackProvider: 'cerebras',
             now: t0 + 6 * 60 * 1000,
         });
         assert.equal(later, true);
@@ -424,7 +424,8 @@ test('CA-1 / CA-2 — agent-models.json real tiene telegram-commander con orden 
     assert.ok(cmd, 'skill telegram-commander debe estar declarado');
     assert.equal(cmd.provider, 'anthropic');
     const chain = (cmd.fallbacks || []).map(f => f.provider);
-    assert.deepEqual(chain, ['openai-codex', 'groq', 'gemini-google', 'cerebras']);
+    // #3353 — groq removido del orden de fallback del telegram-commander.
+    assert.deepEqual(chain, ['openai-codex', 'gemini-google', 'cerebras']);
 });
 
 // -----------------------------------------------------------------------------
@@ -559,7 +560,7 @@ test('SR-1 — provider !== anthropic y blocked.length === 0 → ok:true (contin
         const fakeDrf = makeFakeDrfModule({ simulateBlock: false });
         const r = cmp.enforceDataResidency({
             pipelineDir: dir,
-            provider: 'groq',
+            provider: 'cerebras',
             paths: ['docs/innocent.md'],
             chatId: 'chat-w',
             prompt: 'algo',
@@ -621,7 +622,7 @@ test('SR-1 — enforceDataResidency emite evento audit data_residency_block cuan
         const fakeDrf = makeFakeDrfModule({ simulateBlock: true });
         cmp.enforceDataResidency({
             pipelineDir: dir,
-            provider: 'groq',
+            provider: 'cerebras',
             paths: ['users/src/main/resources/application.conf'],
             chatId: 'chat-block',
             prompt: 'leelo',
@@ -635,7 +636,7 @@ test('SR-1 — enforceDataResidency emite evento audit data_residency_block cuan
         const entries = content.split('\n').map(l => JSON.parse(l));
         const blockEvent = entries.find(e => e.event === 'data_residency_block');
         assert.ok(blockEvent, 'debe haber al menos un evento data_residency_block');
-        assert.equal(blockEvent.provider_effective, 'groq');
+        assert.equal(blockEvent.provider_effective, 'cerebras');
         assert.equal(blockEvent.error_code, 'data_residency_blocked');
         // SR-7: ningún path crudo en el log.
         assert.doesNotMatch(content, /application\.conf/);
@@ -677,7 +678,7 @@ test('SR-1 — sidecar real del repo carga sin throw y filtra application.conf p
     try {
         const r = cmp.enforceDataResidency({
             pipelineDir: dir,
-            provider: 'groq',
+            provider: 'cerebras',
             paths: ['users/src/main/resources/application.conf'],
             chatId: 'chat-real',
             prompt: 'leelo',

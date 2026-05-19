@@ -53,11 +53,12 @@ function fail(msg) { console.error(`  ✘ ${msg}`); process.exit(1); }
 function assert(cond, msg) { if (!cond) fail(msg); else pass(msg); }
 
 function isLLMSpawn(call) {
-    // Cualquier spawn que mencione "claude", "codex", "groq", "cerebras" o
-    // "gemini" se considera invocación al LLM. Spawns de wmic/taskkill son
-    // benignos (los hace el handler determinístico para descubrir PIDs).
+    // Cualquier spawn que mencione "claude", "codex", "cerebras" o "gemini" se
+    // considera invocación al LLM. Spawns de wmic/taskkill son benignos (los
+    // hace el handler determinístico para descubrir PIDs).
+    // #3353: groq removido del set tras la descontinuación.
     const haystack = (call.cmd + ' ' + (call.args || []).join(' ')).toLowerCase();
-    return /claude|codex|groq|cerebras|gemini-cli|gemini\.exe|anthropic/.test(haystack);
+    return /claude|codex|cerebras|gemini-cli|gemini\.exe|anthropic/.test(haystack);
 }
 
 // -----------------------------------------------------------------------------

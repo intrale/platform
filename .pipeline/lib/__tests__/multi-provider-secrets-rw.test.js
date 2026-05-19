@@ -67,18 +67,20 @@ test('detectFormat distingue canonical de legacy', () => {
     assert.equal(secrets.detectFormat({ multimedia: {} }), 'canonical');
     assert.equal(secrets.detectFormat({ telegram: {} }), 'canonical');
     assert.equal(secrets.detectFormat({ openai_api_key: 'sk-xxx' }), 'legacy');
-    assert.equal(secrets.detectFormat({ groq_api_key: 'gsk_xxx' }), 'legacy');
+    // #3353: cualquier flat key conocida sigue marcando legacy (groq fue
+    // removido del MANAGED_KEYS, así que ya no aparece acá).
+    assert.equal(secrets.detectFormat({ anthropic_api_key: 'sk-ant-xxx' }), 'legacy');
     assert.equal(secrets.detectFormat({}), 'canonical');
 });
 
 test('setNested crea estructura intermedia y asigna el valor', () => {
     const obj = {};
-    secrets.setNested(obj, 'providers.groq.api_key', 'gsk_real');
-    assert.deepEqual(obj, { providers: { groq: { api_key: 'gsk_real' } } });
+    secrets.setNested(obj, 'providers.cerebras.api_key', 'csk_real');
+    assert.deepEqual(obj, { providers: { cerebras: { api_key: 'csk_real' } } });
 
     secrets.setNested(obj, 'providers.openai.api_key', 'sk-real');
     assert.equal(obj.providers.openai.api_key, 'sk-real');
-    assert.equal(obj.providers.groq.api_key, 'gsk_real', 'no debe pisar siblings');
+    assert.equal(obj.providers.cerebras.api_key, 'csk_real', 'no debe pisar siblings');
 });
 
 test('listKeys lee del formato CANONICAL nested', () => {
@@ -88,7 +90,6 @@ test('listKeys lee del formato CANONICAL nested', () => {
         providers: {
             openai:   { api_key: 'sk-actual-key-1234567890abcdef' },
             anthropic: { api_key: 'PLACEHOLDER' },
-            groq:     { api_key: 'gsk_real_key_1234567890abcdef' },
             google:   { api_key: 'AIza_real_key_1234567890abc' },
             cerebras: { api_key: 'csk_real_key_1234567890abcdef' },
         },
@@ -108,11 +109,12 @@ test('listKeys lee del formato CANONICAL nested', () => {
     assert.equal(byProvider.elevenlabs.status, 'absent');
     assert.equal(byProvider.elevenlabs.masked, null);
 
-    // Los 3 free providers DEBEN aparecer como present con la estructura nested
-    // — éste es exactamente el caso que rompía el dashboard antes de #3313.
-    assert.equal(byProvider.groq.status, 'present');
+    // Los free providers vivos DEBEN aparecer como present con la estructura
+    // nested — éste es exactamente el caso que rompía el dashboard antes de
+    // #3313. #3353 eliminó groq, así que ya no aparece en este listado.
     assert.equal(byProvider['gemini-google'].status, 'present');
     assert.equal(byProvider.cerebras.status, 'present');
+    assert.equal(byProvider.groq, undefined, 'groq debería estar removido tras #3353');
 });
 
 test('listKeys lee del formato LEGACY flat (fallback)', () => {
@@ -122,7 +124,6 @@ test('listKeys lee del formato LEGACY flat (fallback)', () => {
         openai_api_key: 'sk-legacy-1234567890abcdef',
         anthropic_api_key: 'PLACEHOLDER',
         elevenlabs_api_key: '',
-        groq_api_key: 'gsk_legacy_1234567890abcdef',
     }));
     const out = secrets.listKeys({ secretsPath: file });
     const byProvider = Object.fromEntries(out.map(k => [k.provider, k]));
@@ -130,7 +131,6 @@ test('listKeys lee del formato LEGACY flat (fallback)', () => {
     assert.equal(byProvider.openai.status, 'present');
     assert.equal(byProvider.anthropic.status, 'placeholder');
     assert.equal(byProvider.elevenlabs.status, 'absent');
-    assert.equal(byProvider.groq.status, 'present');
     // El legacy no incluye cerebras ni gemini-google → absent.
     assert.equal(byProvider.cerebras.status, 'absent');
     assert.equal(byProvider['gemini-google'].status, 'absent');
@@ -201,16 +201,16 @@ test('rotateKey crea archivo CANONICAL si no existe (estructura nested)', () => 
     const file = path.join(dir, 'credentials.json');
     const bakDir = path.join(dir, 'bak');
     const result = secrets.rotateKey({
-        provider: 'groq',
-        newValue: 'gsk_fresh_aaaaaaaaaaaaaaaaaaaa',
+        provider: 'cerebras',
+        newValue: 'csk_fresh_aaaaaaaaaaaaaaaaaaaa',
         secretsPath: file,
         backupDir: bakDir,
     });
     assert.equal(result.ok, true);
     assert.equal(result.format, 'canonical');
-    assert.equal(result.canonicalPath, 'providers.groq.api_key');
+    assert.equal(result.canonicalPath, 'providers.cerebras.api_key');
     const updated = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(updated.providers.groq.api_key, 'gsk_fresh_aaaaaaaaaaaaaaaaaaaa');
+    assert.equal(updated.providers.cerebras.api_key, 'csk_fresh_aaaaaaaaaaaaaaaaaaaa');
 });
 
 test('rotateKey sobre archivo LEGACY preserva formato flat (compat hacia atrás)', () => {
@@ -219,18 +219,34 @@ test('rotateKey sobre archivo LEGACY preserva formato flat (compat hacia atrás)
     const bakDir = path.join(dir, 'bak');
     fs.writeFileSync(file, JSON.stringify({
         openai_api_key: 'sk-old-12345678901234567890',
-        groq_api_key: 'gsk_old_aaaaaaaaaaaaaaaaaaaaa',
+        anthropic_api_key: 'PLACEHOLDER',
     }));
     const result = secrets.rotateKey({
-        provider: 'groq',
-        newValue: 'gsk_new_bbbbbbbbbbbbbbbbbbbbb',
+        provider: 'openai',
+        newValue: 'sk-new-bbbbbbbbbbbbbbbbbbbbb',
         secretsPath: file,
         backupDir: bakDir,
     });
     assert.equal(result.format, 'legacy');
     const updated = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(updated.groq_api_key, 'gsk_new_bbbbbbbbbbbbbbbbbbbbb');
-    assert.equal(updated.openai_api_key, 'sk-old-12345678901234567890', 'flat siblings preservados');
+    assert.equal(updated.openai_api_key, 'sk-new-bbbbbbbbbbbbbbbbbbbbb');
+    assert.equal(updated.anthropic_api_key, 'PLACEHOLDER', 'flat siblings preservados');
+});
+
+test('rotateKey rechaza groq (provider descontinuado en #3353)', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'credentials.json');
+    const bakDir = path.join(dir, 'bak');
+    assert.throws(
+        () => secrets.rotateKey({
+            provider: 'groq',
+            newValue: 'gsk_fresh_aaaaaaaaaaaaaaaaaaaa',
+            secretsPath: file,
+            backupDir: bakDir,
+        }),
+        /no está gestionado/,
+        'groq ya no debería ser un provider gestionado'
+    );
 });
 
 test('rotateKey respeta la retention policy en backups (canonical)', () => {
@@ -278,28 +294,27 @@ test('getRawKey lee del LEGACY flat cuando el canonical no existe', () => {
     const legacyFile = path.join(dir, 'telegram-config.json');
     fs.writeFileSync(legacyFile, JSON.stringify({
         openai_api_key: 'sk-legacy-1234567890abcdef',
-        groq_api_key: 'gsk_legacy_1234567890abcdef',
     }));
     assert.equal(secrets.getRawKey({ provider: 'openai', secretsPath: legacyFile }), 'sk-legacy-1234567890abcdef');
-    assert.equal(secrets.getRawKey({ provider: 'groq', secretsPath: legacyFile }), 'gsk_legacy_1234567890abcdef');
 });
 
-// ─── Free providers (#3260 + #3313) ─────────────────────────────────────────
+// ─── Free providers vivos (#3260 + #3313 + #3353) ───────────────────────────
 
-test('MANAGED_KEYS incluye los 3 free providers de #3260 con canonicalPath', () => {
+test('MANAGED_KEYS incluye los free providers vivos con canonicalPath', () => {
     const providers = secrets.MANAGED_KEYS.map(k => k.provider);
-    assert.ok(providers.includes('groq'), 'groq presente');
+    // #3353 — groq fue removido tras descontinuación del provider.
+    assert.ok(!providers.includes('groq'), 'groq debería estar removido tras #3353');
     assert.ok(providers.includes('gemini-google'), 'gemini-google presente');
     assert.ok(providers.includes('cerebras'), 'cerebras presente');
+    assert.ok(providers.includes('nvidia-nim'), 'nvidia-nim presente');
 
     const byP = Object.fromEntries(secrets.MANAGED_KEYS.map(k => [k.provider, k]));
-    assert.equal(byP.groq.canonicalPath, 'providers.groq.api_key');
     assert.equal(byP['gemini-google'].canonicalPath, 'providers.google.api_key');
     assert.equal(byP.cerebras.canonicalPath, 'providers.cerebras.api_key');
 });
 
 test('free providers son editable=true (rotables vía UI)', () => {
-    for (const p of ['groq', 'gemini-google', 'cerebras']) {
+    for (const p of ['gemini-google', 'cerebras', 'nvidia-nim']) {
         const spec = secrets.MANAGED_KEYS.find(k => k.provider === p);
         assert.equal(spec.editable, true, `${p} debe ser editable`);
         assert.ok(spec.free_tier_notes, `${p} debe tener free_tier_notes`);
@@ -311,22 +326,22 @@ test('rotateKey de free provider sobre CANONICAL crea backup + write atómico 06
     const file = path.join(dir, 'credentials.json');
     const bakDir = path.join(dir, 'bak');
     fs.writeFileSync(file, JSON.stringify({
-        providers: { groq: { api_key: 'gsk_old_aaaaaaaaaaaaaaaaaaaaa' } },
+        providers: { cerebras: { api_key: 'csk_old_aaaaaaaaaaaaaaaaaaaaa' } },
     }));
     const result = secrets.rotateKey({
-        provider: 'groq',
-        newValue: 'gsk_new_bbbbbbbbbbbbbbbbbbbbb',
+        provider: 'cerebras',
+        newValue: 'csk_new_bbbbbbbbbbbbbbbbbbbbb',
         secretsPath: file,
         backupDir: bakDir,
         retention: 5,
     });
     assert.equal(result.ok, true);
-    assert.equal(result.provider, 'groq');
+    assert.equal(result.provider, 'cerebras');
     assert.equal(result.format, 'canonical');
     assert.ok(result.fingerprint, 'fingerprint generado');
     assert.equal(result.fingerprint.length, 16);
     const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(persisted.providers.groq.api_key, 'gsk_new_bbbbbbbbbbbbbbbbbbbbb');
+    assert.equal(persisted.providers.cerebras.api_key, 'csk_new_bbbbbbbbbbbbbbbbbbbbb');
     const backups = fs.readdirSync(bakDir).filter(f => f.startsWith('credentials.'));
     assert.equal(backups.length, 1);
 });
@@ -335,10 +350,10 @@ test('listKeys de free provider incluye free_tier_notes en metadata', () => {
     const dir = tmpDir();
     const file = path.join(dir, 'credentials.json');
     fs.writeFileSync(file, JSON.stringify({
-        providers: { groq: { api_key: 'gsk_aaaaaaaaaaaaaaaaaaaaaa' } },
+        providers: { cerebras: { api_key: 'csk_aaaaaaaaaaaaaaaaaaaaaa' } },
     }));
     const out = secrets.listKeys({ secretsPath: file });
-    const groq = out.find(k => k.provider === 'groq');
-    assert.equal(groq.status, 'present');
-    assert.ok(groq.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
+    const cerebras = out.find(k => k.provider === 'cerebras');
+    assert.equal(cerebras.status, 'present');
+    assert.ok(cerebras.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
 });

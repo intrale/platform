@@ -43,7 +43,8 @@ const P = {
     ANTHROPIC_KEY: '[REDACTED:ANTHROPIC_KEY]',
     OPENAI_KEY: '[REDACTED:OPENAI_KEY]',
     OPENAI_PROJECT_KEY: '[REDACTED:OPENAI_PROJECT_KEY]',
-    GROQ_API_KEY: '[REDACTED:GROQ_API_KEY]',
+    // GROQ_API_KEY se removió en #3353 — Groq descontinuado. Si en logs viejos
+    // aparece una key con prefijo `gsk_`, cae al pattern genérico CONF_STRUCTURED.
     CEREBRAS_API_KEY: '[REDACTED:CEREBRAS_API_KEY]',
     NVIDIA_NIM_API_KEY: '[REDACTED:NVIDIA_NIM_API_KEY]',
     COGNITO_SECRET: '[REDACTED:COGNITO_SECRET]',
@@ -317,23 +318,18 @@ const PATTERNS = [
     // Free-tier providers (#3310, ola N+1 multi-provider)
     //
     // Patrones para credenciales de los providers que oficialmente son free
-    // (Groq, Cerebras, NVIDIA NIM). Mismo enfoque que las keys de Anthropic/
-    // OpenAI más arriba: lookbehind/lookahead negativos sobre el charset del
-    // secreto + longitud mínima 40 para evitar falsos positivos sobre slugs,
-    // clases CSS o identificadores legítimos del codebase.
+    // (Cerebras, NVIDIA NIM). Mismo enfoque que las keys de Anthropic/OpenAI
+    // más arriba: lookbehind/lookahead negativos sobre el charset del secreto
+    // + longitud mínima 40 para evitar falsos positivos sobre slugs, clases
+    // CSS o identificadores legítimos del codebase.
     //
     // Estos patrones DEBEN ir antes del bloque genérico CONF_STRUCTURED para
     // que cada placeholder atribuya correctamente el proveedor.
+    //
+    // #3353 (mayo 2026): el pattern explícito de Groq (`gsk_*`) se removió
+    // junto con la descontinuación del provider. Si una key vieja `gsk_...`
+    // aparece en logs, queda cubierta por CONF_STRUCTURED genérico.
     // -------------------------------------------------------------------------
-
-    // Groq API key — formato `gsk_<52 chars base62>`.
-    // Mínimo 40 chars después del prefijo (la consola Groq genera 52).
-    // Fuente: https://console.groq.com (sección "API Keys").
-    {
-        name: 'GROQ_API_KEY',
-        re: /(?<![A-Za-z0-9_-])gsk_[A-Za-z0-9]{40,}(?![A-Za-z0-9_-])/g,
-        replace: () => P.GROQ_API_KEY,
-    },
 
     // Cerebras API key — formato `csk-<52 chars base62>`.
     // El charset documentado por Cerebras incluye `_-`, pero exigimos mínimo

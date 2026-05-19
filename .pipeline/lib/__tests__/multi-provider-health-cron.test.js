@@ -51,9 +51,10 @@ test('updateRateLimitCounter: ok decae si hay hits previos', () => {
     assert.equal(healthCron.updateRateLimitCounter({ ok: true, reason: 'authenticated' }, { rate_limit_hit_24h: 3 }), 2);
 });
 
-test('listManagedAndPingable incluye los 4 free providers (#3260 + #3243)', () => {
+test('listManagedAndPingable incluye los free providers vivos (#3260 + #3243 + #3353)', () => {
     const providers = healthCron.listManagedAndPingable().map(p => p.provider);
-    assert.ok(providers.includes('groq'), 'groq presente');
+    // #3353 — groq removido tras la descontinuación.
+    assert.ok(!providers.includes('groq'), 'groq debería estar removido tras #3353');
     assert.ok(providers.includes('gemini-google'), 'gemini-google presente');
     assert.ok(providers.includes('cerebras'), 'cerebras presente');
     // #3243 — NVIDIA NIM se sumó al pool de free providers gestionados.
@@ -110,20 +111,20 @@ test('runOnce: pingea sólo los providers presentes en secretos', async () => {
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
     const secretsPath = makeSecretsFile(dir, {
-        groq_api_key: 'gsk_test_aaaaaaaaaaaaaaaaaaaa',
-        // gemini y cerebras AUSENTES → status absent → skipped
+        cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
+        // gemini ausente → status absent → skipped
     });
     const result = await healthCron.runOnce({
         stateDir,
         auditDir,
         secretsPath,
-        pingImpl: fakePing({ groq: { ok: true, reason: 'authenticated', statusCode: 200 } }),
+        pingImpl: fakePing({ cerebras: { ok: true, reason: 'authenticated', statusCode: 200 } }),
         skipAudit: true,
     });
     assert.ok(Array.isArray(result.snapshot.providers));
-    const groq = result.snapshot.providers.find(p => p.provider === 'groq');
-    assert.equal(groq.state, 'green');
-    assert.equal(groq.reason_code, 'authenticated');
+    const cerebras = result.snapshot.providers.find(p => p.provider === 'cerebras');
+    assert.equal(cerebras.state, 'green');
+    assert.equal(cerebras.reason_code, 'authenticated');
     const gemini = result.snapshot.providers.find(p => p.provider === 'gemini-google');
     assert.equal(gemini.state, 'red');
     assert.equal(gemini.reason_code, 'no_key_configured');
@@ -134,49 +135,6 @@ test('runOnce: CA-6 simulación — 2 free providers en rojo simultáneo (free c
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
     const secretsPath = makeSecretsFile(dir, {
-        groq_api_key: 'gsk_test_aaaaaaaaaaaaaaaaaaaa',
-        gemini_google_api_key: 'AIza_test_aaaaaaaaaaaaaaaaaaaa',
-        cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
-    });
-    const result = await healthCron.runOnce({
-        stateDir,
-        auditDir,
-        secretsPath,
-        pingImpl: fakePing({
-            groq: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
-            'gemini-google': { ok: false, reason: 'quota_exhausted', statusCode: 429 },
-            cerebras: { ok: true, reason: 'authenticated', statusCode: 200 },
-        }),
-        telegramSender: () => true,
-        dedupFile: path.join(dir, 'dedup.json'),
-        skipAudit: true,
-    });
-    // Filtrar a los 3 free providers para verificar CA-6.
-    const free = result.snapshot.providers.filter(p =>
-        ['groq', 'gemini-google', 'cerebras'].includes(p.provider));
-    const reds = free.filter(p => p.state === 'red');
-    const greens = free.filter(p => p.state === 'green');
-    assert.equal(reds.length, 2, 'dos free providers en rojo');
-    assert.equal(greens.length, 1, 'uno verde');
-    // Alertas: una por cada free red. (Anthropic/OpenAI/ElevenLabs no
-    // configurados también figurarán como red por no_key_configured, pero
-    // CA-4 sigue emitiendo — el caller debe filtrar si quiere solo free.)
-    const redAlerts = result.alerts.filter(a => a.kind === 'red');
-    const freeRedAlerts = redAlerts.filter(a =>
-        ['groq', 'gemini-google', 'cerebras'].includes(a.provider));
-    assert.ok(freeRedAlerts.length >= 2, 'al menos una alerta por cada free provider rojo');
-});
-
-test('runOnce: 3+ free providers en rojo dispara alerta multi-down', async () => {
-    // Con el 4to free provider (nvidia-nim, #3243) sin key configurada, el
-    // snapshot reporta red_count=4 (los 3 con ping fallido + nvidia-nim
-    // marcado red por no_key_configured). La alerta multi_down se dispara
-    // igual — el umbral es ≥3.
-    const dir = tmpDir();
-    const stateDir = path.join(dir, 'state');
-    const auditDir = path.join(dir, 'audit');
-    const secretsPath = makeSecretsFile(dir, {
-        groq_api_key: 'gsk_test_aaaaaaaaaaaaaaaaaaaa',
         gemini_google_api_key: 'AIza_test_aaaaaaaaaaaaaaaaaaaa',
         cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
         nvidia_nim_api_key: 'nvapi-test_aaaaaaaaaaaaaaaaaaaa',
@@ -186,7 +144,43 @@ test('runOnce: 3+ free providers en rojo dispara alerta multi-down', async () =>
         auditDir,
         secretsPath,
         pingImpl: fakePing({
-            groq: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
+            'gemini-google': { ok: false, reason: 'quota_exhausted', statusCode: 429 },
+            cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
+            'nvidia-nim': { ok: true, reason: 'authenticated', statusCode: 200 },
+        }),
+        telegramSender: () => true,
+        dedupFile: path.join(dir, 'dedup.json'),
+        skipAudit: true,
+    });
+    // Filtrar a los 3 free providers vivos para verificar CA-6 (#3353).
+    const free = result.snapshot.providers.filter(p =>
+        ['gemini-google', 'cerebras', 'nvidia-nim'].includes(p.provider));
+    const reds = free.filter(p => p.state === 'red');
+    const greens = free.filter(p => p.state === 'green');
+    assert.equal(reds.length, 2, 'dos free providers en rojo');
+    assert.equal(greens.length, 1, 'uno verde');
+    const redAlerts = result.alerts.filter(a => a.kind === 'red');
+    const freeRedAlerts = redAlerts.filter(a =>
+        ['gemini-google', 'cerebras', 'nvidia-nim'].includes(a.provider));
+    assert.ok(freeRedAlerts.length >= 2, 'al menos una alerta por cada free provider rojo');
+});
+
+test('runOnce: 3+ free providers en rojo dispara alerta multi-down', async () => {
+    // Con los 3 free providers vivos (gemini, cerebras, nvidia-nim) todos en
+    // rojo, la alerta multi_down se dispara. El umbral es ≥3.
+    const dir = tmpDir();
+    const stateDir = path.join(dir, 'state');
+    const auditDir = path.join(dir, 'audit');
+    const secretsPath = makeSecretsFile(dir, {
+        gemini_google_api_key: 'AIza_test_aaaaaaaaaaaaaaaaaaaa',
+        cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
+        nvidia_nim_api_key: 'nvapi-test_aaaaaaaaaaaaaaaaaaaa',
+    });
+    const result = await healthCron.runOnce({
+        stateDir,
+        auditDir,
+        secretsPath,
+        pingImpl: fakePing({
             'gemini-google': { ok: false, reason: 'quota_exhausted', statusCode: 429 },
             cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
             'nvidia-nim': { ok: false, reason: 'invalid_credentials', statusCode: 401 },
@@ -197,20 +191,20 @@ test('runOnce: 3+ free providers en rojo dispara alerta multi-down', async () =>
     });
     const multi = result.alerts.find(a => a.kind === 'multi_down');
     assert.ok(multi, 'debe haber alerta multi_down');
-    assert.equal(multi.payload.red_count, 4);
+    assert.equal(multi.payload.red_count, 3);
 });
 
 test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', async () => {
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
-    const SECRET_KEY = 'gsk_VERY_SECRET_DO_NOT_LEAK_aaaaaaaaaaaaaaaaaa';
-    const secretsPath = makeSecretsFile(dir, { groq_api_key: SECRET_KEY });
+    const SECRET_KEY = 'csk_VERY_SECRET_DO_NOT_LEAK_aaaaaaaaaaaaaaaaaa';
+    const secretsPath = makeSecretsFile(dir, { cerebras_api_key: SECRET_KEY });
     const result = await healthCron.runOnce({
         stateDir,
         auditDir,
         secretsPath,
-        pingImpl: fakePing({ groq: { ok: false, reason: 'invalid_credentials', statusCode: 401 } }),
+        pingImpl: fakePing({ cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 } }),
         skipAudit: true,
     });
     const serialized = JSON.stringify(result.snapshot);
@@ -221,12 +215,12 @@ test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', asy
 test('runOnce: persiste snapshot a state/multi-provider-health.json', async () => {
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
-    const secretsPath = makeSecretsFile(dir, { groq_api_key: 'gsk_test_aaaaaaaaaaaaaaaaaaaa' });
+    const secretsPath = makeSecretsFile(dir, { cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa' });
     await healthCron.runOnce({
         stateDir,
         auditDir: path.join(dir, 'audit'),
         secretsPath,
-        pingImpl: fakePing({ groq: { ok: true, reason: 'authenticated', statusCode: 200 } }),
+        pingImpl: fakePing({ cerebras: { ok: true, reason: 'authenticated', statusCode: 200 } }),
         skipAudit: true,
     });
     const snapshotFile = path.join(stateDir, healthCron.SNAPSHOT_FILENAME);
@@ -261,12 +255,12 @@ test('jitterMs: rng inyectable para reproducibilidad', () => {
 
 test('formatAlertText: payload válido genera texto markdown', () => {
     const t = healthCron.formatAlertText({
-        provider: 'groq',
+        provider: 'cerebras',
         state: 'red',
         reason_code: 'invalid_credentials',
         observed_at: '2026-05-17T00:00:00Z',
     });
-    assert.ok(t.includes('groq'));
+    assert.ok(t.includes('cerebras'));
     assert.ok(t.includes('RED'));
     assert.ok(t.includes('invalid_credentials'));
 });
@@ -275,9 +269,9 @@ test('formatAlertText: multi_down lista los providers', () => {
     const t = healthCron.formatAlertText({
         event: 'multi_down',
         red_count: 3,
-        providers_red: ['groq', 'gemini-google', 'cerebras'],
+        providers_red: ['gemini-google', 'cerebras', 'nvidia-nim'],
         observed_at: '2026-05-17T00:00:00Z',
     });
     assert.ok(t.includes('Multi-Down'));
-    assert.ok(t.includes('groq'));
+    assert.ok(t.includes('cerebras'));
 });

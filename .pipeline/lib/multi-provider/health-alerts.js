@@ -104,7 +104,7 @@ function sanitizeProvider(provider) {
  *   - Para estados `green` / `yellow` solo aplica la ventana dedup de 10 min.
  *
  * @param {object} params
- * @param {string} params.provider — `groq`, `gemini-google`, etc.
+ * @param {string} params.provider — `gemini-google`, `cerebras`, etc.
  * @param {string} params.state — `green` | `yellow` | `red`.
  * @param {string} params.reasonCode — código genérico (sanitizado al persistir).
  * @param {number} [params.now=Date.now()]
@@ -237,8 +237,11 @@ function record({ provider, state, sent, now = Date.now(), dedupFile = HOME_DEDU
  *
  * Los providers free se identifican por estar en el set conocido (no incluye
  * anthropic / openai / elevenlabs, que no son free tier).
+ *
+ * Groq fue descontinuado en #3353 (mayo 2026) por política inestable de
+ * restricciones del proveedor.
  */
-const FREE_PROVIDERS = Object.freeze(new Set(['groq', 'gemini-google', 'cerebras', 'nvidia-nim']));
+const FREE_PROVIDERS = Object.freeze(new Set(['gemini-google', 'cerebras', 'nvidia-nim']));
 
 function decideMultiDown({ snapshot, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
     if (!snapshot || !Array.isArray(snapshot.providers)) {

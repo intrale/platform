@@ -96,7 +96,7 @@ function redactSecretsInText(text) {
 // 2. MODELOS IA — patrones a omitir / reemplazar.
 // -----------------------------------------------------------------------------
 // Match conservador: nombres conocidos + version opcional.
-const MODEL_NAME_REGEX = /\b(?:Sonnet|Opus|Haiku|Claude(?:-?(?:Opus|Sonnet|Haiku))?|GPT-?\d+(?:\.\d+)?(?:o|-turbo)?|claude-(?:opus|sonnet|haiku)-?\d*(?:\.\d+)*|gemini-?\d*(?:\.\d+)*(?:-pro|-flash)?|groq|cerebras|codex)(?:\s+\d+(?:\.\d+)*)?/gi;
+const MODEL_NAME_REGEX = /\b(?:Sonnet|Opus|Haiku|Claude(?:-?(?:Opus|Sonnet|Haiku))?|GPT-?\d+(?:\.\d+)?(?:o|-turbo)?|claude-(?:opus|sonnet|haiku)-?\d*(?:\.\d+)*|gemini-?\d*(?:\.\d+)*(?:-pro|-flash)?|cerebras|codex)(?:\s+\d+(?:\.\d+)*)?/gi;
 
 function stripModelNames(text) {
     let count = 0;

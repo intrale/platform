@@ -36,13 +36,15 @@ const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 // adapter en este directorio. Cualquier `provider` fuera de esta lista
 // hace fail-fast con `adapterStatus: 'error'`.
 // #3220 — Rename `gemini` → `gemini-google` (sign-off 2026-05-15). Adapter
-// stub trasladado a `gemini-google.js`. Sumamos también `groq` y `cerebras`
-// como stubs no-implementados — los wrappers reales llegan con #3198.
+// stub trasladado a `gemini-google.js`. Sumamos también `cerebras` como stub
+// no-implementado — el wrapper real llega con #3198.
+//
+// #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
+// arbitrarios. El adapter standalone y la entrada del switch se removieron.
 const ALLOWED_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
     'gemini-google',
-    'groq',
     'cerebras',
     'ollama',
     'deterministic',
@@ -60,7 +62,6 @@ function getAdapter(provider) {
         case 'anthropic':       return require('./anthropic');
         case 'openai-codex':    return require('./openai-codex');
         case 'gemini-google':   return require('./gemini-google');
-        case 'groq':            return require('./groq');
         case 'cerebras':        return require('./cerebras');
         case 'ollama':          return require('./ollama');
         case 'deterministic':   return require('./deterministic');

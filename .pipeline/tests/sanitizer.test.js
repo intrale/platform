@@ -691,34 +691,19 @@ test('panic dump simulado: apiKey="sk-ant-..." cae con placeholder específico',
 });
 
 // =============================================================================
-// Free-tier providers (#3310): Groq, Cerebras, NVIDIA NIM
+// Free-tier providers (#3310 + #3353): Cerebras, NVIDIA NIM
 //
 // Cobertura: positivo (redacta y no leakea) + negativo (prefijo similar pero
 // longitud insuficiente o sin prefijo exacto, NO se redacta). Idempotencia y
 // orden mixto incluidos.
+//
+// #3353 (mayo 2026): el pattern Groq (`gsk_*`) se removió junto con la
+// descontinuación del provider. Los tests positivos/negativos específicos de
+// Groq también se eliminaron.
 // =============================================================================
 
-const FAKE_GROQ = 'gsk_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmN';        // gsk_ + 52
 const FAKE_CEREBRAS = 'csk-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmN';    // csk- + 52
 const FAKE_NVIDIA_NIM = 'nvapi-aBcDeFgHiJkLmNoPqRsTuVwXyZ-_0123456789aBcDeFgHiJk'; // nvapi- + 50
-
-test('GROQ_API_KEY positivo: gsk_<52> redacted', () => {
-    const out = sanitize(`GROQ_API_KEY=${FAKE_GROQ}`);
-    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `out=${out}`);
-    assert.ok(!out.includes(FAKE_GROQ), `leak: ${out}`);
-});
-
-test('GROQ_API_KEY negativo: prefijo corto gsk_short no se redacta', () => {
-    const out = sanitize('debug: gsk_short observed');
-    assert.ok(!out.includes('[REDACTED:GROQ_API_KEY]'), `falso positivo: ${out}`);
-});
-
-test('GROQ_API_KEY negativo: similar pero sin prefijo exacto (xgsk_...) no se redacta', () => {
-    // El lookbehind negativo evita matchear cuando el prefijo viene pegado a
-    // otro identificador. Forensia: si alguien escribió `xgsk_...` no es key.
-    const out = sanitize(`build-id xgsk_${'A'.repeat(50)}`);
-    assert.ok(!out.includes('[REDACTED:GROQ_API_KEY]'), `falso positivo: ${out}`);
-});
 
 test('CEREBRAS_API_KEY positivo: csk-<52> redacted', () => {
     const out = sanitize(`CEREBRAS_API_KEY=${FAKE_CEREBRAS}`);
@@ -757,29 +742,20 @@ test('NVIDIA_NIM_API_KEY negativo: nvapi sin guion no matchea', () => {
 
 // ─── Orden mixto + idempotencia free providers ─────────────────────────────
 
-test('orden mixto: los 3 free providers en un mismo input se redactan c/u con su placeholder', () => {
-    const input = `groq=${FAKE_GROQ} cerebras=${FAKE_CEREBRAS} nim=${FAKE_NVIDIA_NIM}`;
+test('orden mixto: los free providers vivos en un mismo input se redactan c/u con su placeholder', () => {
+    const input = `cerebras=${FAKE_CEREBRAS} nim=${FAKE_NVIDIA_NIM}`;
     const out = sanitize(input);
-    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `falta GROQ: ${out}`);
     assert.ok(out.includes('[REDACTED:CEREBRAS_API_KEY]'), `falta CEREBRAS: ${out}`);
     assert.ok(out.includes('[REDACTED:NVIDIA_NIM_API_KEY]'), `falta NVIDIA_NIM: ${out}`);
-    assert.ok(!out.includes(FAKE_GROQ), `leak GROQ: ${out}`);
     assert.ok(!out.includes(FAKE_CEREBRAS), `leak CEREBRAS: ${out}`);
     assert.ok(!out.includes(FAKE_NVIDIA_NIM), `leak NVIDIA_NIM: ${out}`);
 });
 
 test('idempotencia free providers: sanitize(sanitize(x)) === sanitize(x)', () => {
-    const input = `g=${FAKE_GROQ} c=${FAKE_CEREBRAS} n=${FAKE_NVIDIA_NIM}`;
+    const input = `c=${FAKE_CEREBRAS} n=${FAKE_NVIDIA_NIM}`;
     const once = sanitize(input);
     const twice = sanitize(once);
     assert.strictEqual(once, twice, 'idempotencia rota');
-});
-
-test('bypass ZWSP en gsk_ se redacta igual (zero-width strip)', () => {
-    const zwsp = '​';
-    const poisoned = `gsk${zwsp}_${'A'.repeat(50)}`;
-    const out = sanitize(poisoned);
-    assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `out=${out}`);
 });
 
 // ─── Verificación CA-2: AIza... (Gemini / Google AI Studio) ya cubierto ────
