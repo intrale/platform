@@ -165,6 +165,32 @@ function bodyHtml() {
       <div id="mp-providers-list"></div>
     </div>
 
+    <!--
+      #3361 — Salud de providers en vivo (movido desde el home).
+      Fuente: /api/pulpo/provider-health (cache TTL 5min server-side).
+      Polling cliente cada 30s con texto auxiliar de staleness para que el
+      operador entienda que el cache hace que los semáforos no sean tiempo
+      real estricto. Mapeo canónico reason_code → semáforo definido por UX
+      en .pipeline/assets/mockups/narrativa-3361-providers-health-unified.md.
+    -->
+    <div class="mp-card" id="mp-card-live-providers">
+      <div class="mp-card-head">
+        <div>
+          <div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-provider-health"></use></svg> Salud de providers en vivo</div>
+          <div class="mp-card-sub">Ping a cada provider con cache server-side (TTL 5min). Anthropic se gestiona por OAuth Max — figura como "NO APLICA".</div>
+        </div>
+        <span class="mp-card-sub" id="mp-live-providers-stale" style="font-variant-numeric:tabular-nums"></span>
+      </div>
+      <div id="mp-live-providers"></div>
+      <div class="mp-card-sub" id="mp-live-providers-legend" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px 14px;font-size:11px">
+        <span>🟢 verde · authenticated</span>
+        <span>⚪ neutro · no aplica / sin key</span>
+        <span>🔴 rojo · invalid_credentials</span>
+        <span>🟡 amarillo · quota_exhausted</span>
+        <span>🟠 naranja · forbidden</span>
+      </div>
+    </div>
+
     <div class="mp-card">
       <div class="mp-card-head"><div><div class="mp-card-title">Default provider</div><div class="mp-card-sub">Provider usado cuando un skill no tiene override.</div></div></div>
       <div class="mp-row">
@@ -301,6 +327,8 @@ const CLIENT_JS = `
 let mpState = {
     config: null, edits: null, keys: [], catalog: null, skills: null,
     overrides: { active: [], history: [] }, csrfToken: null, dirty: false,
+    // #3361 — snapshot del último GET /api/pulpo/provider-health (live).
+    liveProviders: null,
 };
 
 function showToast(msg, ok) {
@@ -452,7 +480,117 @@ function renderAll() {
     renderCatalog();
     renderOverrides();
     renderHealth();
+    renderLiveProviders();
     updateSaveBtn();
+}
+
+// =====================================================================
+// #3361 — Salud de providers en vivo (movida desde el home).
+//
+// Fuente: GET /api/pulpo/provider-health (cache TTL ≥5min server-side).
+// Mapeo canónico reason_code → semáforo (definido por UX en la
+// narrativa #3361):
+//
+//   authenticated      → 🟢 verde   (--in-ok)
+//   no_key_configured  → ⚪ neutro  (--in-fg-dim)
+//   invalid_credentials→ 🔴 rojo   (--in-bad)
+//   quota_exhausted    → 🟡 amarillo (--in-warn)
+//   forbidden          → 🟠 naranja (--in-warn / acento)
+//   rate_limited       → 🟡 amarillo
+//   unknown / *        → 🔴 rojo
+//
+// Anthropic se marca declarativamente como "NO APLICA" cuando el provider
+// trae display_in_health='not_applicable' en agent-models.json. El frontend
+// NO hardcodea nombres de provider — usa metadata del endpoint (CA-7).
+//
+// Defensa XSS (A03): TODO campo interpolado pasa por escapeHtml(). Cero
+// innerHTML con strings derivados del response sin escapar.
+// =====================================================================
+
+function reasonToVisualState(reason) {
+    const r = String(reason || '').toLowerCase();
+    if (r === 'authenticated') {
+        return { color: 'var(--in-ok)', icon: 'conn-ok', label: 'OK', dot: '🟢' };
+    }
+    if (r === 'no_key_configured' || r === 'no_ping_endpoint') {
+        return { color: 'var(--in-fg-dim)', icon: 'conn-warn', label: 'SIN KEY', dot: '⚪' };
+    }
+    if (r === 'invalid_credentials') {
+        return { color: 'var(--in-bad)', icon: 'conn-err', label: 'INVALID', dot: '🔴' };
+    }
+    if (r === 'quota_exhausted') {
+        return { color: 'var(--in-warn)', icon: 'conn-warn', label: 'QUOTA', dot: '🟡' };
+    }
+    if (r === 'rate_limited') {
+        return { color: 'var(--in-warn)', icon: 'conn-warn', label: 'RATE LIMIT', dot: '🟡' };
+    }
+    if (r === 'forbidden') {
+        return { color: 'var(--in-warn)', icon: 'conn-warn', label: 'FORBIDDEN', dot: '🟠' };
+    }
+    if (r === 'timeout' || r === 'network_error') {
+        return { color: 'var(--in-bad)', icon: 'conn-err', label: 'NET ERROR', dot: '🔴' };
+    }
+    return { color: 'var(--in-bad)', icon: 'conn-err', label: 'UNKNOWN', dot: '🔴' };
+}
+
+function renderLiveProviders() {
+    const container = document.getElementById('mp-live-providers');
+    if (!container) return;
+    const data = mpState.liveProviders;
+    if (!data || !Array.isArray(data.providers) || data.providers.length === 0) {
+        container.innerHTML = '<div style="color:var(--in-fg-dim);font-size:12px;padding:14px 0">Esperando primer ping…</div>';
+        return;
+    }
+    const rows = data.providers.map(p => {
+        const pid = String(p.id || '');
+        // Anthropic / OAuth managed → render declarativo "NO APLICA"
+        // (sin semáforo amarillo). El flag viene del endpoint (CA-7).
+        if (p.display_in_health === 'not_applicable' || p.status === 'not_applicable') {
+            return [
+                '<div class="mp-row" style="border-left-color:var(--in-fg-dim);border-left-style:dashed">',
+                  '<div class="mp-row-label">' + providerIcon(pid) + ' ' + escapeHtml(pid) + '</div>',
+                  '<div class="mp-row-input">',
+                    '<span class="mp-status" style="background:transparent;color:var(--in-fg-dim);font-weight:600">' + iconSvg('conn-warn') + ' NO APLICA</span>',
+                    ' · <code>' + escapeHtml(p.reason || 'oauth_managed') + '</code>',
+                  '</div>',
+                  '<div class="mp-row-actions" style="color:var(--in-fg-dim);font-size:11px">' + escapeHtml(p.auth_mode || 'oauth') + '</div>',
+                '</div>',
+            ].join('');
+        }
+        const vs = reasonToVisualState(p.reason || p.status);
+        const cacheAge = Number.isFinite(p.cache_age_s) ? (p.cache_age_s | 0) : 0;
+        return [
+            '<div class="mp-row" style="border-left-color:' + vs.color + '">',
+              '<div class="mp-row-label">' + providerIcon(pid) + ' ' + escapeHtml(pid) + '</div>',
+              '<div class="mp-row-input">',
+                '<span class="mp-status" style="background:transparent;color:' + vs.color + ';font-weight:600">' + iconSvg(vs.icon) + ' ' + escapeHtml(vs.label) + '</span>',
+                ' · <code>' + escapeHtml(p.reason || p.status || '—') + '</code>',
+              '</div>',
+              '<div class="mp-row-actions" style="color:var(--in-fg-dim);font-size:11px">cache ' + cacheAge + 's</div>',
+            '</div>',
+        ].join('');
+    });
+    container.innerHTML = rows.join('');
+
+    // Staleness pill: el cache server-side es ≥5min, dejar claro al operador.
+    const staleEl = document.getElementById('mp-live-providers-stale');
+    if (staleEl) {
+        const maxAge = data.providers.reduce((a, p) => Math.max(a, Number(p.cache_age_s) || 0), 0);
+        if (maxAge > 0) {
+            const mins = Math.round(maxAge / 60);
+            staleEl.textContent = 'cache · ' + (mins > 0 ? mins + ' min' : maxAge + ' s');
+        } else {
+            staleEl.textContent = 'recién pingeado';
+        }
+    }
+}
+
+async function tickLiveProviders() {
+    const r = await fetchJson('/api/pulpo/provider-health');
+    if (r && Array.isArray(r.providers)) {
+        mpState.liveProviders = r;
+        renderLiveProviders();
+    }
 }
 
 // Renderiza la tarjeta Health del Multi-Provider (CA-3 / #3260).
@@ -970,6 +1108,9 @@ wireTabs();
 wireToolbar();
 wireCommanderDistribution();
 loadAll();
+// #3361 — Salud live de providers: primer tick inmediato + poll 30s.
+tickLiveProviders().catch(()=>{});
+setInterval(() => { tickLiveProviders().catch(()=>{}); }, 30000);
 setInterval(tickCountdowns, 60000);
 setInterval(() => { if (!mpState.dirty) loadAll().catch(()=>{}); }, 30000);
 `;
