@@ -90,22 +90,57 @@ function writeCache(state, opts = {}) {
 // -----------------------------------------------------------------------------
 
 /**
+ * Carga defensiva del config — `agent-models.js` expone `loadAndValidate()`
+ * (no hay un getter cacheado). Devolvemos null si falla para que el caller
+ * caiga al fallback hardcoded.
+ *
+ * @returns {object|null}
+ */
+function loadAgentModelsConfig() {
+    if (!agentModelsLib || typeof agentModelsLib.loadAndValidate !== 'function') return null;
+    try {
+        const result = agentModelsLib.loadAndValidate();
+        if (result && result.ok && result.config) return result.config;
+    } catch { /* best-effort */ }
+    return null;
+}
+
+/**
  * Lista los providers declarados en `agent-models.json:providers`. Si el módulo
  * no cargó (test, edge), devuelve la lista hardcoded de live-ping.
+ *
+ * @returns {string[]} provider IDs (canonical) — incluye TODOS los providers
+ *   declarados, sin filtrar por `display_in_health` (fuente de verdad única).
  */
 function listConfiguredProviders() {
-    if (agentModelsLib && typeof agentModelsLib.getAgentModelsConfig === 'function') {
-        try {
-            const cfg = agentModelsLib.getAgentModelsConfig();
-            if (cfg && cfg.providers && typeof cfg.providers === 'object') {
-                return Object.keys(cfg.providers);
-            }
-        } catch { /* fallthrough */ }
+    const cfg = loadAgentModelsConfig();
+    if (cfg && cfg.providers && typeof cfg.providers === 'object') {
+        return Object.keys(cfg.providers);
     }
     if (livePing && livePing.PROVIDER_PING_ENDPOINTS) {
         return Object.keys(livePing.PROVIDER_PING_ENDPOINTS);
     }
     return ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+}
+
+/**
+ * #3361 — Devuelve metadata declarativa de cada provider para que el frontend
+ * decida cómo renderear sin hardcodear nombres (CA-7). Los flags vienen de
+ * `agent-models.json` (`auth_mode`, `display_in_health`).
+ *
+ * @returns {Array<{ id, auth_mode, display_in_health }>}
+ */
+function listProvidersWithMetadata() {
+    const providers = listConfiguredProviders();
+    const cfg = loadAgentModelsConfig();
+    return providers.map((id) => {
+        const def = (cfg && cfg.providers && cfg.providers[id]) || {};
+        const authMode = def.auth_mode === 'oauth' ? 'oauth' : 'api_key';
+        const displayInHealth = def.display_in_health === 'not_applicable'
+            ? 'not_applicable'
+            : 'live';
+        return { id, auth_mode: authMode, display_in_health: displayInHealth };
+    });
 }
 
 /**
@@ -152,10 +187,11 @@ async function getProviderHealth(opts = {}) {
         } catch { /* best-effort */ }
     }
 
-    const providers = listConfiguredProviders();
+    const providersMeta = listProvidersWithMetadata();
     const results = [];
 
-    for (const provider of providers) {
+    for (const meta of providersMeta) {
+        const provider = meta.id;
         const cached = cache.providers[provider] || {};
         const cachedTs = Number(cached.last_ping_ts_ms || 0);
         const cacheAgeMs = Number.isFinite(cachedTs) && cachedTs > 0 ? now - cachedTs : Infinity;
@@ -166,6 +202,26 @@ async function getProviderHealth(opts = {}) {
         let reason = null;
         let lastQuotaFlagTs = null;
         let resetsAt = null;
+
+        // #3361 CA-7 — providers con display_in_health='not_applicable' NO se
+        // pingean (típicamente OAuth managed, Anthropic Max). Reportamos un
+        // estado declarativo `not_applicable` para que el frontend pinte
+        // "NO APLICA" sin semáforo amarillo confuso. Nunca tocan live-ping ni
+        // cache, evitando "no_key_configured" espurio.
+        if (meta.display_in_health === 'not_applicable') {
+            results.push({
+                id: provider,
+                status: 'not_applicable',
+                reason: meta.auth_mode === 'oauth' ? 'oauth_managed' : 'not_applicable',
+                auth_mode: meta.auth_mode,
+                display_in_health: meta.display_in_health,
+                last_ping_ts: null,
+                last_quota_flag_ts: null,
+                resets_at: null,
+                cache_age_s: 0,
+            });
+            continue;
+        }
 
         if (activeFlag && activeFlag.provider === provider) {
             status = 'gated';
@@ -220,6 +276,8 @@ async function getProviderHealth(opts = {}) {
             id: provider,
             status,
             reason,
+            auth_mode: meta.auth_mode,
+            display_in_health: meta.display_in_health,
             last_ping_ts: cachedEntry.last_ping_ts || null,
             last_quota_flag_ts: lastQuotaFlagTs,
             resets_at: resetsAt,
@@ -297,6 +355,7 @@ module.exports = {
     getProviderHealth,
     getDispatchByProvider,
     listConfiguredProviders,
+    listProvidersWithMetadata,
     pingableId,
     readCache,
     writeCache,

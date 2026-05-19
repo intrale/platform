@@ -33,7 +33,9 @@
       "credentials_env": [
         "ANTHROPIC_API_KEY"
       ],
-      "permissions_mode": "bypassPermissions"
+      "permissions_mode": "bypassPermissions",
+      "auth_mode": "oauth",
+      "display_in_health": "not_applicable"
     },
     "openai-codex": {
       "launcher": "codex",

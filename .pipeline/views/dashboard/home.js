@@ -736,134 +736,9 @@ function homeStyles() {
     transition: width 1s linear;
 }
 
-/* =========================================================================
- * #3259 — Card "Continuidad del Pulpo" (CA-6).
- *
- * Asset spec: .pipeline/assets/mockups/16-continuidad-pulpo-card.svg
- * Tokens: --provider-* (3.c y 3.d) + --pulpo-paused (3.e).
- * Filosofia: el Pulpo nunca muere, entra en pausa controlada -> ambar calido.
- * Cada pill carga icono + texto + dot (cero reliance en color solo, R6).
- * Auto-refresh 30s alineado con polling estandar del dashboard.
- * ========================================================================= */
-.pulpo-continuidad-card {
-    margin: 0 22px;
-    padding: 14px 16px;
-    background: var(--in-bg-2, #161b22);
-    border: 1px solid var(--in-border, #30363d);
-    border-radius: var(--in-radius, 14px);
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.pulpo-continuidad-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-.pulpo-continuidad-title {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.3px;
-    color: var(--in-fg, #e6edf3);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.pulpo-continuidad-title-icon {
-    font-size: 16px;
-}
-.pulpo-continuidad-meta {
-    font-size: 11px;
-    color: var(--in-fg-soft, #6e7681);
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    font-variant-numeric: tabular-nums;
-}
-.pulpo-continuidad-pills {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 8px;
-}
-.pulpo-pill {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    border-radius: var(--in-radius-sm, 8px);
-    border: 1px solid var(--in-border, #30363d);
-    background: var(--in-bg-3, #1f2937);
-    font-size: 12px;
-    line-height: 1.3;
-}
-.pulpo-pill-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: 0 0 8px;
-    background: var(--in-fg-soft, #6e7681);
-    box-shadow: 0 0 0 2px var(--in-bg-3, #1f2937);
-}
-.pulpo-pill[data-status="ok"] .pulpo-pill-dot { background: var(--in-ok, #3fb950); }
-.pulpo-pill[data-status="gated"] .pulpo-pill-dot { background: var(--pulpo-paused, #E8770D); }
-.pulpo-pill[data-status="unknown"] .pulpo-pill-dot { background: var(--in-warn, #d29922); }
-.pulpo-pill-body {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.pulpo-pill-name {
-    font-weight: 700;
-    color: var(--in-fg, #e6edf3);
-    font-size: 12px;
-}
-.pulpo-pill-sub {
-    font-size: 10px;
-    color: var(--in-fg-soft, #6e7681);
-    font-variant-numeric: tabular-nums;
-}
-.pulpo-pill[data-status="gated"] { border-color: var(--pulpo-paused-dim, #A8540A); }
-.pulpo-pill[data-status="ok"] { border-color: var(--in-ok, #3fb950); border-color: rgba(63,185,80,0.35); }
-
-.pulpo-dispatch-bar {
-    display: flex;
-    height: 14px;
-    border-radius: 6px;
-    overflow: hidden;
-    background: var(--in-bg-3, #1f2937);
-    border: 1px solid var(--in-border, #30363d);
-}
-.pulpo-dispatch-bar > span {
-    display: block;
-    height: 100%;
-    transition: width 0.4s ease;
-}
-.pulpo-dispatch-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 16px;
-    font-size: 11px;
-    color: var(--in-fg-dim, #8b949e);
-    font-variant-numeric: tabular-nums;
-}
-.pulpo-dispatch-legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-.pulpo-dispatch-legend-swatch {
-    width: 10px;
-    height: 10px;
-    border-radius: 2px;
-    background: var(--in-fg-soft, #6e7681);
-}
-.pulpo-continuidad-empty {
-    font-size: 11px;
-    color: var(--in-fg-soft, #6e7681);
-    font-style: italic;
-}
+/* #3361 — La card de salud de providers se movió a la ventana Providers
+ * (multi-provider.js). Estilos y polling viven ahora ahí. El home queda
+ * limpio sin duplicación. Ver mp-live-providers en multi-provider.js. */
 
 /* =========================================================================
  * #3013 — Banner real-snapshot de cuota (4 estados, narrativa §2.1).
@@ -2067,134 +1942,11 @@ async function pauseIssueHome(issue){
     } catch(e){ showToast('Error: '+e.message, false); }
 }
 
-// #3259 / CA-6 — Card "Continuidad del Pulpo".
-// Polling cada 30s: provider-health internamente cachea TTL 5min para
-// no martillar APIs, asi el tick es barato (1 fetch JSON). El dispatch
-// breakdown 24h cambia lento, mismo 30s alcanza.
-//
-// Defensa XSS (security A03): TODO texto que viene del JSON (provider id,
-// reason, status) se rendea via textContent o escapeHtml(). Cero
-// innerHTML con strings interpolados.
-// #3353 - groq removido tras la descontinuacion. Si llega del backend, cae al
-// fallback provider-unknown (sin token CSS dedicado).
-const PROVIDER_TOKEN_NAMES = {
-    'anthropic': 'provider-anthropic',
-    'openai-codex': 'provider-openai-codex',
-    'openai': 'provider-openai',
-    'gemini-google': 'provider-gemini',
-    'cerebras': 'provider-cerebras',
-    'nvidia-nim': 'provider-nvidia-nim',
-};
-function providerVar(provider){
-    const token = PROVIDER_TOKEN_NAMES[provider] || 'provider-unknown';
-    return 'var(--' + token + ')';
-}
-async function tickPulpoContinuidad(){
-    // Resolvemos los dos endpoints en paralelo. Si alguno falla, igual
-    // queremos mostrar lo que tengamos del otro.
-    let health = null, dispatch = null;
-    try { health = await fetchJson('/api/pulpo/provider-health'); } catch {}
-    try { dispatch = await fetchJson('/api/dash/dispatch-by-provider'); } catch {}
-
-    const pillsContainer = document.getElementById('pulpo-continuidad-pills');
-    const emptyEl = document.getElementById('pulpo-continuidad-pills-empty');
-    const metaEl = document.getElementById('pulpo-continuidad-meta');
-    const barEl = document.getElementById('pulpo-dispatch-bar');
-    const legendEl = document.getElementById('pulpo-dispatch-legend');
-    if(!pillsContainer || !metaEl || !barEl || !legendEl) return;
-
-    // 1. Pills por provider (security A03: rendear con textContent).
-    const providers = (health && Array.isArray(health.providers)) ? health.providers : [];
-    if(providers.length === 0){
-        // Mantener empty visible; ocultar pills.
-        if(emptyEl) emptyEl.style.display = '';
-    } else {
-        if(emptyEl) emptyEl.style.display = 'none';
-        // Reconciliar el DOM por id estable para evitar flicker.
-        const existing = new Map();
-        for(const node of pillsContainer.querySelectorAll('.pulpo-pill')){
-            const k = node.dataset.provider || '';
-            existing.set(k, node);
-        }
-        const seen = new Set();
-        for(const p of providers){
-            const pid = String(p.id || 'unknown');
-            seen.add(pid);
-            let el = existing.get(pid);
-            if(!el){
-                el = document.createElement('div');
-                el.className = 'pulpo-pill';
-                el.dataset.provider = pid;
-                el.setAttribute('role', 'listitem');
-                el.innerHTML = '<span class="pulpo-pill-dot" aria-hidden="true"></span>'+
-                    '<div class="pulpo-pill-body">'+
-                    '<span class="pulpo-pill-name"></span>'+
-                    '<span class="pulpo-pill-sub"></span>'+
-                    '</div>';
-                pillsContainer.appendChild(el);
-            }
-            const status = ['ok','gated','unknown'].indexOf(p.status) >= 0 ? p.status : 'unknown';
-            el.dataset.status = status;
-            const nameEl = el.querySelector('.pulpo-pill-name');
-            const subEl = el.querySelector('.pulpo-pill-sub');
-            if(nameEl) nameEl.textContent = pid;
-            const cacheAge = Number.isFinite(p.cache_age_s) ? (p.cache_age_s|0) : 0;
-            const reason = p.reason ? String(p.reason) : status;
-            if(subEl) subEl.textContent = status + ' · cache ' + cacheAge + 's · ' + reason;
-        }
-        // Remover pills que ya no estan en el payload.
-        for(const [pid, node] of existing){
-            if(!seen.has(pid)) node.remove();
-        }
-    }
-    // Meta arriba a la derecha.
-    if(health && health.ts){
-        const okCount = providers.filter(x => x.status === 'ok').length;
-        const gatedCount = providers.filter(x => x.status === 'gated').length;
-        metaEl.textContent = providers.length + ' providers · ok ' + okCount + ' · gated ' + gatedCount;
-    }
-
-    // 2. Dispatch bar 24h.
-    const totals = (dispatch && dispatch.totals && typeof dispatch.totals === 'object') ? dispatch.totals : {};
-    const total = Number(dispatch && dispatch.total) || 0;
-    // Limpieza idempotente: usamos innerHTML porque cada segmento es un
-    // span sin contenido textual (estilizado por background/width).
-    while(barEl.firstChild) barEl.removeChild(barEl.firstChild);
-    while(legendEl.firstChild) legendEl.removeChild(legendEl.firstChild);
-    if(total === 0){
-        const empty = document.createElement('span');
-        empty.style.flex = '1';
-        empty.style.background = 'transparent';
-        barEl.appendChild(empty);
-        const empMsg = document.createElement('span');
-        empMsg.className = 'pulpo-continuidad-empty';
-        empMsg.textContent = 'Sin despachos en las últimas 24h.';
-        legendEl.appendChild(empMsg);
-    } else {
-        // Orden estable por nombre para que el render no salte aleatorio.
-        const entries = Object.entries(totals).filter(([p, n]) => Number(n) > 0)
-            .sort((a, b) => Number(b[1]) - Number(a[1]));
-        for(const [provider, count] of entries){
-            const pct = (Number(count) / total) * 100;
-            const seg = document.createElement('span');
-            seg.style.width = pct.toFixed(2) + '%';
-            seg.style.background = providerVar(provider);
-            seg.title = provider + ': ' + count + ' (' + pct.toFixed(1) + '%)';
-            barEl.appendChild(seg);
-
-            const item = document.createElement('span');
-            item.className = 'pulpo-dispatch-legend-item';
-            const swatch = document.createElement('span');
-            swatch.className = 'pulpo-dispatch-legend-swatch';
-            swatch.style.background = providerVar(provider);
-            item.appendChild(swatch);
-            const text = document.createElement('span');
-            text.textContent = provider + ' · ' + count + ' (' + pct.toFixed(1) + '%)';
-            item.appendChild(text);
-            legendEl.appendChild(item);
-        }
-    }
-}
+// #3361 — el ticker de salud de providers y la card asociada se movieron a la
+// ventana Providers (multi-provider.js, seccion Salud de providers en vivo).
+// El home ya no consume los endpoints de pulpo/health ni el breakdown 24h —
+// la duplicacion generaba ruido y semaforos amarillos espurios. Ver
+// mp-live-providers en multi-provider.js para el reemplazo.
 
 const POLLS = [
     { fn: tickHeader, ms: 5000 },
@@ -2217,9 +1969,7 @@ const POLLS = [
     // #3239 — badge de la tarjeta /multi-provider. 10s alcanza: el panel
     // raramente cambia y el endpoint sólo lee el JSON canónico + secrets.
     { fn: tickMultiProvider, ms: 10000 },
-    // #3259 / CA-6 — card "Continuidad del Pulpo". 30s alcanza porque el
-    // endpoint cachea internamente TTL 5min y el breakdown 24h cambia lento.
-    { fn: tickPulpoContinuidad, ms: 30000 },
+    // #3361 — ticker de salud de providers removido del home (se movió a Providers).
 ];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 // #3035 — Bind del toggle "Solo con error" antes del primer poll para
@@ -2403,25 +2153,10 @@ function renderHomeHTML(opts) {
   </section>
 
   <!--
-    #3259 / CA-6 — Card "Continuidad del Pulpo".
-    Tokens UX: --provider-* (3.c/3.d) + --pulpo-paused (3.e).
-    Auto-refresh via tickPulpoContinuidad() cada 30s.
-    Estado inicial vacio; el primer poll lo hidrata.
+    #3361 — La card de salud de providers se movió a la ventana Providers
+    (multi-provider.js). El home queda libre del duplicado y los semáforos
+    se gestionan en su lugar canónico.
   -->
-  <section class="pulpo-continuidad-card" id="pulpo-continuidad-card" aria-label="Continuidad del Pulpo">
-    <div class="pulpo-continuidad-header">
-      <h2 class="pulpo-continuidad-title">
-        <span class="pulpo-continuidad-title-icon" aria-hidden="true">🐙</span>
-        Continuidad del Pulpo
-      </h2>
-      <span class="pulpo-continuidad-meta" id="pulpo-continuidad-meta">cargando…</span>
-    </div>
-    <div class="pulpo-continuidad-pills" id="pulpo-continuidad-pills" role="list">
-      <span class="pulpo-continuidad-empty" id="pulpo-continuidad-pills-empty">Esperando ping de providers…</span>
-    </div>
-    <div class="pulpo-dispatch-bar" id="pulpo-dispatch-bar" aria-label="Despachos por provider — últimas 24h"></div>
-    <div class="pulpo-dispatch-legend" id="pulpo-dispatch-legend"></div>
-  </section>
 
   <main class="kiosk-body">
 
@@ -2432,7 +2167,7 @@ function renderHomeHTML(opts) {
         <span class="kpi-value" id="kpi-prs-value">…</span>
         <span class="kpi-sub">mergeados</span>
       </div>
-      <div class="kpi-card" id="kpi-tokens" title="Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Groq · Gemini · Cerebras). Hover para breakdown.">
+      <div class="kpi-card" id="kpi-tokens" title="Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Gemini · Cerebras · NVIDIA). Hover para breakdown.">
         <span class="kpi-icon">⚡</span>
         <span class="kpi-label">Tokens · 24h</span>
         <span class="kpi-value" id="kpi-tokens-value">…</span>

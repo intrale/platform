@@ -120,6 +120,16 @@
           "type": "string",
           "description": "Modo de permisos del CLI. Mapeado en la tabla §6.7 del doc multi-provider.",
           "minLength": 1
+        },
+        "auth_mode": {
+          "type": "string",
+          "description": "Cómo se autentica el provider. 'oauth' = login interactivo (Claude Max), no usa API key configurada acá. 'api_key' = key gestionada en credentials.json. Default 'api_key' si está ausente. #3361 — permite distinguir Anthropic (OAuth Max) sin hardcodear nombres en el frontend.",
+          "enum": ["oauth", "api_key"]
+        },
+        "display_in_health": {
+          "type": "string",
+          "description": "Cómo se exhibe este provider en la ventana Providers del dashboard. 'live' = se pingea y se muestra el semáforo en vivo. 'not_applicable' = se muestra como 'NO APLICA' (badge informativo, sin semáforo). Default 'live'. #3361 — separa la visualización de la lista canónica para que listConfiguredProviders() siga siendo la fuente de verdad única.",
+          "enum": ["live", "not_applicable"]
         }
       }
     },
