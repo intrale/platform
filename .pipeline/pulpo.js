@@ -132,6 +132,12 @@ try { providerExhaustionPause = require('./lib/provider-exhaustion-pause'); } ca
 // huérfana en local — el `-b` rebotaba con "branch already exists" y el
 // issue quedaba dando vueltas en cola sin avanzar.
 const { ensureLaunchWorktree, WorktreeLaunchError } = require('./lib/worktree-launcher');
+// #2591 — Resolver fast-fail del worktree para fases `useExistingWorktree`.
+// Reemplaza el fallback inline a ROOT que producía commits cruzados entre
+// agentes cuando el worktree del issue desaparecía (cleanup, restart, etc).
+const { resolveExistingWorktree } = require('./lib/worktree-resolver');
+const { appendWorktreeAudit } = require('./lib/worktree-audit');
+const worktreeNotifDedup = require('./lib/worktree-notif-dedup');
 // #3085 / S7 multi-provider: aislamiento de credenciales por proceso. Filtra
 // `process.env` con allowlist mínima + scope del skill antes de pasarlo al
 // child. Eliminar `OPENAI_API_KEY` del env de un agente Anthropic (y viceversa)
@@ -5287,7 +5293,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // branch. Incidente real: delivery del #2519 corrió en ROOT con branch
   // agent/2523-... y 66 archivos sucios, falló rebase con "unstaged changes".
   const useExistingWorktree = (fase === 'build' || fase === 'linteo' || fase === 'aprobacion' || fase === 'entrega');
-  let worktreePath = ROOT;
+  // #2591 — Inicializamos en `null` para que cualquier rama olvidada que use
+  // `worktreePath` sin resolverlo falle ruidosamente en vez de degradar
+  // silenciosamente a ROOT (que producía commits cruzados entre agentes).
+  let worktreePath = null;
   let worktreeBranch = null;
 
   if (needsWorktree) {
@@ -5311,25 +5320,110 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       return;
     }
   } else if (useExistingWorktree) {
-    // Build/linteo/aprobacion: buscar el worktree existente del issue
-    // (creado en fase dev por algún skill dev: android-dev, backend-dev,
-    // web-dev o pipeline-dev). El primero que matchee `platform.agent-<issue>-*`.
+    // #2591 — Fast-fail con auto-recovery validado. Eliminamos el fallback a
+    // ROOT que existía antes: si no podemos resolver el worktree del issue,
+    // abortamos ANTES del spawn y rebotamos a `pendiente/` con
+    // `rebote_tipo: 'infra'` (no consume budget de circuit breaker).
+    //
+    // El resolver hace:
+    //   1. Validación dura de issue (`/^\d+$/`) y skill (regex segura).
+    //   2. `git worktree list --porcelain` vía spawnSync (sin shell parsing).
+    //   3. Si no encuentra → intenta auto-recovery desde `origin/agent/<n>-<skill>`
+    //      validando procedencia de la branch remota (autor allowlisted o
+    //      marker `pipeline-v2` en commits).
+    //   4. Si recovery falla → retorna `{ found: false, reason, branchOriginVerified }`.
+    let resolution;
     try {
-      const worktreePattern = `platform.agent-${issue}-`;
-      const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
-      for (const line of worktrees.split('\n')) {
-        if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
-          worktreePath = line.replace('worktree ', '').trim();
-          break;
-        }
-      }
-      if (worktreePath !== ROOT) {
-        log('lanzamiento', `${skill}:#${issue} (fase ${fase}): usando worktree existente ${worktreePath}`);
-      } else {
-        log('lanzamiento', `${skill}:#${issue} (fase ${fase}): no se encontró worktree, usando ROOT — posible lectura incorrecta si ROOT está en rama ajena`);
-      }
+      resolution = resolveExistingWorktree({
+        ROOT,
+        issue,
+        skill,
+        log: (msg) => log('lanzamiento', msg),
+      });
     } catch (e) {
-      log('lanzamiento', `${skill}:#${issue} (fase ${fase}): error buscando worktree (${e.message}), usando ROOT`);
+      // Validación falló (issue/skill malformado) — defense-in-depth.
+      log('lanzamiento', `⛔ #${issue}: input inválido en resolución de worktree (${e.code || 'UNKNOWN'}): ${e.message.slice(0, 120)}`);
+      resolution = { found: false, reason: `invalid-input:${e.code || 'UNKNOWN'}`, branchOriginVerified: null };
+    }
+
+    if (resolution.found) {
+      worktreePath = resolution.worktreePath;
+      const tag = resolution.recovered ? 'recovered' : 'existing';
+      log('lanzamiento', `${skill}:#${issue} (fase ${fase}): worktree ${tag} ${worktreePath}`);
+    } else {
+      // ── ABORTO LIMPIO — no spawneamos al agente ─────────────────────────
+      const motivoMsg = (
+        `Worktree del issue no encontrado — pulpo no puede ejecutar fase ${fase} sin worktree dedicado. ` +
+        `Detalle: ${resolution.reason || 'desconocido'}`
+      );
+      log('lanzamiento',
+        `⛔ #${issue}: NO se encontró worktree platform.agent-${issue}-* para fase ${fase} — abortando spawn (evita commit en rama ajena). Motivo: ${resolution.reason || 'desconocido'}`);
+
+      // Audit trail persistente (CA-8).
+      try {
+        appendWorktreeAudit({
+          event: 'abort',
+          issue,
+          fase,
+          skill,
+          motivo: resolution.reason || 'no-worktree-found',
+          recovery_attempted: true,
+          recovery_succeeded: false,
+          branch_origin_verified: resolution.branchOriginVerified,
+        });
+      } catch {}
+
+      // Notificación Telegram dedupeada (CA-4). Cambia el copy si la
+      // verificación de procedencia falló (UX CA-5): es señal potencial de
+      // adversario, no de cleanup normal.
+      try {
+        if (worktreeNotifDedup.shouldNotify(issue, fase)) {
+          const unverified = resolution.branchOriginVerified === false;
+          const msg = unverified
+            ? [
+                `🚨 #${issue}: branch remota origin/agent/${issue}-${skill} no verificada.`,
+                'Auto-recovery rechazado. Inspeccionar autor del primer commit antes de re-encolar.',
+              ].join('\n')
+            : [
+                `⛔ Aborté #${issue} en fase ${fase}: no encontré el worktree platform.agent-${issue}-*.`,
+                `Motivo: ${resolution.reason || 'sin detalle'}`,
+                'Cómo resolverlo: re-encolá el issue al inicio del pipeline para que el dev cree el worktree limpio.',
+              ].join('\n');
+          try { sendTelegram(msg); } catch {}
+          worktreeNotifDedup.markNotified(issue, fase);
+        }
+      } catch {}
+
+      // Rebote a pendiente/ con rebote_tipo:'infra' para que el sweep
+      // `reencolarInfraBloqueados` lo procese sin consumir budget del CB.
+      try {
+        const data = readYaml(trabajandoPath) || {};
+        const updated = {
+          ...data,
+          rebote_tipo: 'infra',
+          rebote: true,
+          motivo_rechazo: motivoMsg,
+          rechazado_en_fase: fase,
+          rechazado_por_skill: skill,
+          bloqueado_por_infra: true,
+          infra_motivo: motivoMsg,
+          infra_ultimo_check: new Date().toISOString(),
+          worktree_missing: true,
+          worktree_recovery_attempted: true,
+          worktree_recovery_succeeded: false,
+          worktree_branch_origin_verified: resolution.branchOriginVerified,
+        };
+        writeYaml(trabajandoPath, updated);
+      } catch (e) {
+        log('lanzamiento', `⚠️ #${issue}: no se pudo actualizar YAML con motivo de aborto: ${e.message.slice(0, 120)}`);
+      }
+      try {
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        moveFile(trabajandoPath, pendienteDir);
+      } catch (e) {
+        log('lanzamiento', `⚠️ #${issue}: no se pudo mover a pendiente tras aborto: ${e.message.slice(0, 120)}`);
+      }
+      return;
     }
   }
 

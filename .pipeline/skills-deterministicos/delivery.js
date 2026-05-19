@@ -238,6 +238,13 @@ async function main() {
         // Mejor abortar fast-fail con mensaje claro que rebotar después de hacer
         // commits a la rama equivocada y recién fallar en el rebase.
         //
+        // #2591 — DEFENSE-IN-DEPTH INTENCIONAL: Esta salvaguarda se MANTIENE
+        // aunque pulpo.js ahora aborta antes de spawnear delivery cuando no
+        // encuentra worktree (ver lib/worktree-resolver.js). Es la última línea
+        // de defensa contra cualquier futura regresión que reintroduzca el
+        // fallback a ROOT. NO eliminar sin redundancia probada — un eventual
+        // commit cruzado a main es data-integrity failure (OWASP A08).
+        //
         // #2523 (rev-2): error message reporta WORK_DIR (no REPO_ROOT) porque
         // ese es el cwd real desde donde corrió git. REPO_ROOT siempre apunta
         // al checkout principal, lo cual confundía el diagnóstico.
