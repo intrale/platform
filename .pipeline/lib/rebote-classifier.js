@@ -56,6 +56,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const yaml = require('js-yaml');
 const trace = require('./traceability');
 const humanBlock = require('./human-block');
 
@@ -623,19 +624,30 @@ function listDependencyBlockedMarkers() {
  * `pendiente/` de la fase declarada en `.reason.json` (o `phase` si se pasa).
  * Idempotente: si el archivo ya no está, devuelve `moved: 0`.
  *
+ * #3373 — Además de mover desde `bloqueado-dependencias/`, ejecuta un sweep
+ * defensivo sobre `<pipeline>/<phase>/procesado/` buscando archivos del mismo
+ * issue con `cancelado_por === 'fast-fail-rebote'` (strict equality) y los
+ * reingresa a `pendiente/`. Recupera archivos legacy que el fast-fail-rebote
+ * pre-#3373 drenó a procesado/ y dejó varados. NO toca archivos con
+ * `cancelado_por: 'cross-phase-rebote'` (otra semántica).
+ *
  * @param {object} opts
  * @param {number} opts.issue
  * @param {string} [opts.targetPhase] — fase explícita; default = lo que dice
  *                                       el .reason.json del marker.
  *
- * @returns {{ moved: number, files: string[], pipeline?: string, phase?: string }}
+ * @returns {{ moved: number, files: string[], pipeline?: string, phase?: string, swept?: number }}
  */
 function releaseDependencyBlockToPendiente(opts) {
     const issue = Number(opts.issue);
-    if (!issue) return { moved: 0, files: [] };
+    if (!Number.isInteger(issue) || issue <= 0) return { moved: 0, files: [] };
 
     const markers = listDependencyBlockedMarkers().filter(m => m.issue === issue);
-    if (markers.length === 0) return { moved: 0, files: [] };
+    if (markers.length === 0) {
+        // Sin marker no podemos inferir (pipeline, phase). El sweep necesita ese
+        // contexto — sin él no escaneamos a ciegas todo el filesystem.
+        return { moved: 0, files: [] };
+    }
 
     // Agrupar por pipeline+phase (debería ser único, pero defense-in-depth)
     let pipeline = null;
@@ -666,7 +678,122 @@ function releaseDependencyBlockToPendiente(opts) {
         try { fs.unlinkSync(m.file + '.reason.json'); } catch {}
     }
 
-    return { moved: movedFiles.length, files: movedFiles, pipeline, phase };
+    // #3373 — Sweep defensivo: recuperar archivos legacy en procesado/ con
+    // `cancelado_por: fast-fail-rebote` para los (pipeline, phase) donde
+    // encontramos markers. Sin esto, issues que sufrieron el bug pre-#3373
+    // quedan trabados aunque las deps cierren.
+    const sweptFiles = [];
+    const sweepedPhases = new Set();
+    for (const m of markers) {
+        const key = `${m.pipeline}/${m.phase}`;
+        if (sweepedPhases.has(key)) continue;
+        sweepedPhases.add(key);
+        try {
+            const sweepRes = sweepFastFailRebotesFromProcesado({
+                issue,
+                pipeline: m.pipeline,
+                phase: m.phase,
+            });
+            for (const f of sweepRes.files) sweptFiles.push(f);
+        } catch {
+            // sweep defensivo — nunca debe romper el destrabe principal
+        }
+    }
+
+    return {
+        moved: movedFiles.length + sweptFiles.length,
+        files: [...movedFiles, ...sweptFiles],
+        pipeline,
+        phase,
+        swept: sweptFiles.length,
+    };
+}
+
+/**
+ * #3373 — Sweep defensivo: escanea `<pipeline>/<phase>/procesado/` buscando
+ * archivos del mismo issue con flag `cancelado_por === 'fast-fail-rebote'`
+ * (strict equality, NO laxer match) y los reingresa a `pendiente/`. Recupera
+ * archivos legacy varados por el bug pre-#3373.
+ *
+ * Caps de seguridad (recomendación security #3373):
+ *   - Máximo 3 archivos reingresados por issue (anti-abuso).
+ *   - Máximo 100 archivos escaneados por invocación (anti-DOS).
+ *   - Strict equality `=== 'fast-fail-rebote'`: NO restituye 'cross-phase-rebote'
+ *     ni motivos parciales/regex.
+ *   - Filtrado por prefix de filename ANTES de leer YAML (perf + defensa).
+ *   - try/catch envolviendo cada operación de FS (idempotencia + corrupciones).
+ *
+ * @param {object} opts
+ * @param {number} opts.issue
+ * @param {string} opts.pipeline
+ * @param {string} opts.phase
+ *
+ * @returns {{ moved: number, files: string[], scanned: number, capped: boolean }}
+ */
+function sweepFastFailRebotesFromProcesado(opts) {
+    const issue = Number(opts.issue);
+    const pipeline = String(opts.pipeline || '').trim();
+    const phase = String(opts.phase || '').trim();
+    if (!Number.isInteger(issue) || issue <= 0) return { moved: 0, files: [], scanned: 0, capped: false };
+    if (!pipeline || !phase) return { moved: 0, files: [], scanned: 0, capped: false };
+
+    const MAX_FILES_PER_ISSUE = 3;
+    const MAX_FILES_SCANNED = 100;
+
+    const procesadoDir = path.join(PIPELINE_DIR, pipeline, phase, 'procesado');
+    const pendienteDir = path.join(PIPELINE_DIR, pipeline, phase, 'pendiente');
+
+    const prefix = String(issue) + '.';
+    const moved = [];
+    let scanned = 0;
+    let capped = false;
+
+    let entries = [];
+    try { entries = fs.readdirSync(procesadoDir); } catch { return { moved: 0, files: [], scanned: 0, capped: false }; }
+
+    for (const f of entries) {
+        if (scanned >= MAX_FILES_SCANNED) { capped = true; break; }
+        // Early-continue: descarta cualquier archivo que NO sea de este issue
+        // antes de leer YAML (perf + defensa contra fanout enorme).
+        if (!f.startsWith(prefix)) continue;
+        if (f === '.gitkeep') continue;
+        if (f.endsWith('.reason.json') || f.endsWith('.guidance.txt') || f.endsWith('.comment.md')) continue;
+        // Markers válidos: <issue>.<skill> (≤2 segmentos)
+        if (f.split('.').length > 2) continue;
+        scanned++;
+        if (moved.length >= MAX_FILES_PER_ISSUE) { capped = true; break; }
+
+        const src = path.join(procesadoDir, f);
+        let data = null;
+        try {
+            const raw = fs.readFileSync(src, 'utf8');
+            data = yaml.load(raw) || {};
+        } catch {
+            // YAML corrupto o I/O failure: skip silencioso. No relanzar.
+            continue;
+        }
+        // Strict equality — NO 'cross-phase-rebote', NO regex, NO includes.
+        if (data.cancelado_por !== 'fast-fail-rebote') continue;
+
+        try { fs.mkdirSync(pendienteDir, { recursive: true }); } catch {}
+        const dst = path.join(pendienteDir, f);
+
+        // Reescribir YAML limpiando los flags de cancelación — el agente
+        // re-entra a pendiente/ como ciclo nuevo, no como reintento marcado.
+        const clean = { ...data };
+        delete clean.cancelado_por;
+        delete clean.cancelado_ts;
+
+        try {
+            fs.writeFileSync(dst, yaml.dump(clean, { lineWidth: -1 }));
+            fs.unlinkSync(src);
+            moved.push(dst);
+        } catch {
+            // ENOENT u otro race: idempotencia, capturar y seguir.
+        }
+    }
+
+    return { moved: moved.length, files: moved, scanned, capped };
 }
 
 // -----------------------------------------------------------------------------
@@ -716,6 +843,8 @@ module.exports = {
     moveIssueFilesToDependencyBlock,
     listDependencyBlockedMarkers,
     releaseDependencyBlockToPendiente,
+    // #3373 — sweep defensivo de fast-fail-rebote varados en procesado/
+    sweepFastFailRebotesFromProcesado,
     DEPENDENCY_PATTERNS,
     DEPENDENCY_ASSET_PATTERNS,
     DEPS_LABEL,

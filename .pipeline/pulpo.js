@@ -2646,7 +2646,42 @@ function brazoBarrido(config) {
         // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
         // cancelar los archivos residuales del mismo issue en pendiente/ y trabajando/
         // de la fase actual para que no queden huérfanos tras el rebote.
+        //
+        // #3373 — EXCEPCIÓN dependency_block: si alguno de los rechazos viene con
+        // `rebote_categoria: dependency_block` (hint YAML del agente) o el classifier
+        // detecta dep_block sobre el motivo, NO drenar. El handler dep-block más abajo
+        // (línea ~2906, moveIssueFilesToDependencyBlock) barre TODOS los archivos del
+        // issue (pendiente + trabajando + listo) a `bloqueado-dependencias/`. Drenar
+        // acá a `procesado/` con `cancelado_por: fast-fail-rebote` rompía el destrabe
+        // automático: el brazoDesbloqueo solo lee `bloqueado-dependencias/` y dejaba
+        // los .po/.ux varados en procesado/. Incidente #3361 — issue trabado ~10h.
+        let hayDepBlockEnRechazos = false;
         if (!todosCompletos && hayRechazoConfirmado) {
+          for (const r of resultados) {
+            if (r.resultado !== 'rechazado') continue;
+            // (a) hint explícito en YAML del agente — gana sobre regex
+            if (r.rebote_categoria === 'dependency_block') {
+              hayDepBlockEnRechazos = true;
+              break;
+            }
+            // (b) fallback: classifier identifica dep_block por motivo
+            try {
+              const cl = reboteClassifier.classifyRebote({
+                motivo: r.motivo || '',
+                rebote_categoria: r.rebote_categoria || null,
+                dependsOn: Array.isArray(r.depende_de) ? r.depende_de : null,
+              });
+              if (cl && cl.category === 'dependency_block') {
+                hayDepBlockEnRechazos = true;
+                break;
+              }
+            } catch {
+              // classifier defensivo — si tira, seguimos con el drain normal
+            }
+          }
+        }
+
+        if (!todosCompletos && hayRechazoConfirmado && !hayDepBlockEnRechazos) {
           const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
           for (const estado of ['pendiente', 'trabajando']) {
             const dir = path.join(fasePath(pipelineName, fase), estado);
@@ -2665,6 +2700,12 @@ function brazoBarrido(config) {
             } catch {}
           }
           log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+        } else if (!todosCompletos && hayRechazoConfirmado && hayDepBlockEnRechazos) {
+          // #3373 — skip drain. Los archivos pendiente/trabajando se quedan
+          // donde están, el handler dep-block los barre a bloqueado-dependencias/
+          // junto con los de listo/. Así el brazoDesbloqueo encuentra todo
+          // junto y los reingresa cuando las deps cierren.
+          log('barrido', `⚡⏸ #${issue} fast-fail con dependency_block — skip drain. Handler dep-block barre todo a bloqueado-dependencias/.`);
         }
 
         // --- GATE DE EVIDENCIA QA (fase verificacion) ---
@@ -9370,6 +9411,11 @@ async function brazoDesbloqueoImpl(config) {
               });
               if (releaseRes.moved > 0) {
                 log('desbloqueo', `🟢 #${issue.number}: ${releaseRes.moved} archivo(s) movido(s) de bloqueado-dependencias/ a ${releaseRes.pipeline}/${releaseRes.phase}/pendiente/`);
+                // #3373 — sweep defensivo: si recuperó archivos legacy de procesado/,
+                // log explícito con prefijo distintivo para forensics.
+                if (releaseRes.swept && releaseRes.swept > 0) {
+                  log('desbloqueo-sweep', `🧹 #${issue.number}: ${releaseRes.swept} archivo(s) legacy recuperado(s) de procesado/ (cancelado_por: fast-fail-rebote)`);
+                }
               } else {
                 log('desbloqueo', `🟢 #${issue.number}: sin archivos en bloqueado-dependencias/ (issue label-only, pipeline arrancará via intake)`);
               }
