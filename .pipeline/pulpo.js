@@ -52,6 +52,15 @@ const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // log con hash-chain (CA-4 / SR-3) y formatea las notificaciones a Leo según
 // UX-G1 (lenguaje natural, no log operativo).
 const commanderMP = require('./lib/commander/multi-provider');
+// #3343 — Sherlock verifier adversarial. Corre IN-PROCESS entre
+// `ejecutarClaude` y `sendTelegram` del flujo texto-libre. Refuta el análisis
+// con un provider distinto al del Commander. Bypass total si
+// config.yaml.sherlock_enabled=false. Ver lib/sherlock-verifier.js.
+const sherlockVerifier = require('./lib/sherlock-verifier');
+// #3343 — Sherlock necesita generar `turnId` para correlación cross-event
+// del audit log (sherlock_verification ↔ commander_response). Usamos
+// crypto.randomBytes(8) → 16 hex; bastante para forenses cruzados.
+const crypto = require('node:crypto');
 // #3250 — Delegación de creación de issues a /doc y /planner. Detección de
 // intent + sanitización + audit log JSONL + provider gate + allowlist de
 // sender. La invocación real del Skill tool sigue corriendo en la sesión
@@ -2641,7 +2650,42 @@ function brazoBarrido(config) {
         // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
         // cancelar los archivos residuales del mismo issue en pendiente/ y trabajando/
         // de la fase actual para que no queden huérfanos tras el rebote.
+        //
+        // #3373 — EXCEPCIÓN dependency_block: si alguno de los rechazos viene con
+        // `rebote_categoria: dependency_block` (hint YAML del agente) o el classifier
+        // detecta dep_block sobre el motivo, NO drenar. El handler dep-block más abajo
+        // (línea ~2906, moveIssueFilesToDependencyBlock) barre TODOS los archivos del
+        // issue (pendiente + trabajando + listo) a `bloqueado-dependencias/`. Drenar
+        // acá a `procesado/` con `cancelado_por: fast-fail-rebote` rompía el destrabe
+        // automático: el brazoDesbloqueo solo lee `bloqueado-dependencias/` y dejaba
+        // los .po/.ux varados en procesado/. Incidente #3361 — issue trabado ~10h.
+        let hayDepBlockEnRechazos = false;
         if (!todosCompletos && hayRechazoConfirmado) {
+          for (const r of resultados) {
+            if (r.resultado !== 'rechazado') continue;
+            // (a) hint explícito en YAML del agente — gana sobre regex
+            if (r.rebote_categoria === 'dependency_block') {
+              hayDepBlockEnRechazos = true;
+              break;
+            }
+            // (b) fallback: classifier identifica dep_block por motivo
+            try {
+              const cl = reboteClassifier.classifyRebote({
+                motivo: r.motivo || '',
+                rebote_categoria: r.rebote_categoria || null,
+                dependsOn: Array.isArray(r.depende_de) ? r.depende_de : null,
+              });
+              if (cl && cl.category === 'dependency_block') {
+                hayDepBlockEnRechazos = true;
+                break;
+              }
+            } catch {
+              // classifier defensivo — si tira, seguimos con el drain normal
+            }
+          }
+        }
+
+        if (!todosCompletos && hayRechazoConfirmado && !hayDepBlockEnRechazos) {
           const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
           for (const estado of ['pendiente', 'trabajando']) {
             const dir = path.join(fasePath(pipelineName, fase), estado);
@@ -2660,6 +2704,12 @@ function brazoBarrido(config) {
             } catch {}
           }
           log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+        } else if (!todosCompletos && hayRechazoConfirmado && hayDepBlockEnRechazos) {
+          // #3373 — skip drain. Los archivos pendiente/trabajando se quedan
+          // donde están, el handler dep-block los barre a bloqueado-dependencias/
+          // junto con los de listo/. Así el brazoDesbloqueo encuentra todo
+          // junto y los reingresa cuando las deps cierren.
+          log('barrido', `⚡⏸ #${issue} fast-fail con dependency_block — skip drain. Handler dep-block barre todo a bloqueado-dependencias/.`);
         }
 
         // --- GATE DE EVIDENCIA QA (fase verificacion) ---
@@ -8232,10 +8282,22 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     //    y los handlers NUEVOS del CA-2 (tail / salud / descanso). Para los
     //    comandos legacy devuelve { status: 'no_handler' } y caemos al switch.
     try {
+      // Issue #3415 — pasar metadata adicional al dispatcher para que el
+      // handler de `/rechazar` aplique CA-9/CA-13/CA-14 (whisper-local,
+      // límites de audio, replay protection). Los handlers que no usan
+      // estos campos los ignoran (shape backward-compatible).
       result = await dispatcher.dispatch({
         from: m.from,
         chat_id: m.chat_id || getTelegramChatId(),
         text: m._textoFinal,
+        date: m.date,
+        voice: m.voice,
+        voice_path: m.voice_path,
+        voice_file_size: m.voice_file_size,
+        voice_duration: m.voice_duration,
+        _esAudio: m._esAudio,
+        _audio: m._audio,
+        _textoFinal: m._textoFinal,
       });
       if (result && result.reply !== null) {
         respuesta = result.reply;
@@ -8693,6 +8755,129 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           try { moveFile(s._path, commanderListo); } catch {}
         }
       }
+
+      // --- SHERLOCK VERIFIER (#3343) ---
+      // Verificación adversarial pre-`sendTelegram`. Corre con un provider
+      // DISTINTO al del Commander (excludedProvider) y refuta el análisis con
+      // evidencia del estado actual. Si encuentra inconsistencias, dispara
+      // 1 reelaboración (cap hardcoded). Si timeout/error/sin-provider, agrega
+      // disclaimer F-6. Bypass total si `sherlock_enabled=false`.
+      //
+      // turnId se genera acá (no dentro del verifier) para que los turnos
+      // bypaseados también queden correlacionables vía `commander_response`.
+      const turnId = crypto.randomBytes(8).toString('hex');
+      let sherlockInvoked = false;
+      let sherlockDisclaimerType = null;
+      try {
+        // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
+        // — sólo contadores que el Commander pudo haber observado para que
+        // Sherlock cruce el claim "hay N issues pendientes" vs realidad.
+        let pendingCount = 0;
+        let trabajandoCount = 0;
+        try {
+          pendingCount = fs.readdirSync(commanderPendiente).length;
+        } catch {}
+        try {
+          trabajandoCount = fs.readdirSync(commanderTrabajando).length;
+        } catch {}
+        const systemStateSnapshot =
+          `commander_pendiente_files=${pendingCount}\n` +
+          `commander_trabajando_files=${trabajandoCount}\n` +
+          `timestamp_iso=${new Date().toISOString()}\n` +
+          `pipeline_dir=${PIPELINE}`;
+
+        // El provider del Commander hoy es siempre `anthropic` (ejecutarClaude
+        // hace spawn de claude CLI). Cuando #3258 introduzca cross-provider
+        // fallback al Commander, este valor vendrá del dispatcher.
+        const commanderProvider = 'anthropic';
+
+        const verdict = await sherlockVerifier.verify({
+          analysis: respuesta || '',
+          originalRequest: mensajeConsolidado,
+          systemState: systemStateSnapshot,
+          lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
+          excludedProvider: commanderProvider,
+          pipelineDir: PIPELINE,
+          configLoader: loadConfig,
+          log,
+        });
+        sherlockInvoked = verdict.verdict !== 'skipped';
+
+        if (verdict.verdict === 'rechazado' && verdict.inconsistencies.length >= 1) {
+          // CA-F-3 — reelaborar UNA vez (cap hardcoded en verifier).
+          log('commander', `🔍 Sherlock rechazó respuesta (provider=${verdict.sherlockProvider}, inconsistencies=${verdict.inconsistencies.length}). Reelaborando...`);
+          const inconsistenciesBlock = verdict.inconsistencies
+            .map((it, i) => `${i + 1}. CLAIM: ${it.claim}\n   CONTRADICCIÓN: ${it.contradiction}`)
+            .join('\n\n');
+          const reelaboratePrompt = `${userPrompt}
+
+RESPUESTA ANTERIOR (borrador, NO enviada al usuario todavía):
+${respuesta}
+
+El verificador Sherlock encontró ${verdict.inconsistencies.length} inconsistencia(s) entre tu análisis y el estado real del sistema:
+
+${inconsistenciesBlock}
+
+INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones detectadas. NO menciones que hubo verificación previa ni que reelaboraste — entregá una respuesta final natural.`;
+          try {
+            const reelaborada = await ejecutarClaude(reelaboratePrompt, 'reelaboración Sherlock');
+            if (typeof reelaborada === 'string' && reelaborada.trim()) {
+              respuesta = reelaborada;
+              // 2da pasada de verificación con el mismo excludedProvider.
+              const verdict2 = await sherlockVerifier.verify({
+                analysis: respuesta || '',
+                originalRequest: mensajeConsolidado,
+                systemState: systemStateSnapshot,
+                lastHourLogs: '',
+                excludedProvider: commanderProvider,
+                pipelineDir: PIPELINE,
+                configLoader: loadConfig,
+                log,
+              });
+              if (verdict2.verdict === 'rechazado' && verdict2.inconsistencies.length >= 1) {
+                // CA-F-5 — disclaimer "rechazado persistente".
+                sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY;
+                log('commander', `🔍 Sherlock rechazó la reelaboración también — disclaimer F-5 aplicado`);
+              } else if (verdict2.verdict === 'aborted') {
+                sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+                log('commander', `🔍 Sherlock aborted en 2da pasada (${verdict2.errorCode}) — disclaimer F-6 aplicado`);
+              }
+            }
+          } catch (re) {
+            log('commander', `⚠️ Reelaboración Sherlock falló: ${re.message}. Manteniendo respuesta original.`);
+            sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+          }
+        } else if (verdict.verdict === 'aborted') {
+          // CA-F-6 — timeout/schema-fail/sin-provider-distinto.
+          sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+          log('commander', `🔍 Sherlock aborted (${verdict.errorCode}: ${verdict.reason}) — disclaimer F-6 aplicado`);
+        } else if (verdict.verdict === 'ok') {
+          // CA-F-7 — silencio total cuando todo concuerda.
+          log('commander', `🔍 Sherlock OK (provider=${verdict.sherlockProvider}, ${verdict.durationMs}ms)`);
+        }
+      } catch (sherlockErr) {
+        // Defensa: un fallo de Sherlock NUNCA debe tirar el turno. Degradamos
+        // a respuesta original con disclaimer F-6 y seguimos.
+        log('commander', `⚠️ Sherlock excepción no manejada: ${sherlockErr.message} — degradando a F-6`);
+        sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+      }
+
+      if (sherlockDisclaimerType && respuesta) {
+        respuesta = sherlockVerifier.applyDisclaimer(respuesta, sherlockDisclaimerType);
+      }
+
+      // Audit de correlación turn-level (CA-A-3).
+      try {
+        commanderMP.auditCommanderRequest({
+          pipelineDir: PIPELINE,
+          event: 'commander_response',
+          providerEffective: 'anthropic',
+          chatId,
+          prompt: '', // no prompt crudo
+          errorCode: sherlockDisclaimerType,
+          requestId: turnId,
+        });
+      } catch { /* best-effort */ }
 
       // Actualizar sesión
       session.lastCommand = 'chat';
@@ -9716,6 +9901,11 @@ async function brazoDesbloqueoImpl(config) {
               });
               if (releaseRes.moved > 0) {
                 log('desbloqueo', `🟢 #${issue.number}: ${releaseRes.moved} archivo(s) movido(s) de bloqueado-dependencias/ a ${releaseRes.pipeline}/${releaseRes.phase}/pendiente/`);
+                // #3373 — sweep defensivo: si recuperó archivos legacy de procesado/,
+                // log explícito con prefijo distintivo para forensics.
+                if (releaseRes.swept && releaseRes.swept > 0) {
+                  log('desbloqueo-sweep', `🧹 #${issue.number}: ${releaseRes.swept} archivo(s) legacy recuperado(s) de procesado/ (cancelado_por: fast-fail-rebote)`);
+                }
               } else {
                 log('desbloqueo', `🟢 #${issue.number}: sin archivos en bloqueado-dependencias/ (issue label-only, pipeline arrancará via intake)`);
               }
