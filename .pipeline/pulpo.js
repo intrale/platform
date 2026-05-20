@@ -6573,6 +6573,10 @@ function saveSession(session) {
 //
 // Reemplaza los 6 `fs.appendFileSync(historyFile, ...)` dispersos por
 // pulpo.js. Cualquier append nuevo al historial DEBE pasar por este helper.
+//
+// #3418 CA-9 — Acepta campo opcional `intent` (string corto). Los
+// consumidores externos que no lo entienden lo ignoran (campos desconocidos
+// se descartan en lectura). Habilita el `prevContext` para SEC-B.
 function appendCommanderHistory(historyFile, entry) {
   try {
     const safe = { ...entry };
@@ -6592,6 +6596,43 @@ function appendCommanderHistory(historyFile, entry) {
       );
     } catch { /* best-effort, no podemos hacer más */ }
   }
+}
+
+// #3418 SEC-B / CA-9 — Lee las últimas N entradas del historial conversacional
+// para reconstruir el `prevContext` necesario por
+// `detectIssueCreationIntent`. Sólo devuelve `{ intent }` si encuentra una
+// entrada `direction: 'in_intent'` reciente. Si no encuentra, retorna `null`
+// (y los patterns continuativos del detector quedan desactivados → cero
+// falsos positivos).
+//
+// Política: solo miramos las últimas 5 entradas para que el contexto se
+// "olvide" si el operador cambió de tema (no quiero arrastrar un intent de
+// hace 30 mensajes). Si la entrada `in_intent` está separada por un `out`
+// del bot que NO sea una creación de issue exitosa, también la ignoramos —
+// el bot habiendo respondido algo no relacionado rompe el hilo.
+function readPrevIssueCreationContext(historyFile, opts = {}) {
+  const lookback = Number.isFinite(opts.lookback) ? opts.lookback : 5;
+  try {
+    if (!fs.existsSync(historyFile)) return null;
+    // Leemos el final del archivo y nos quedamos con las últimas `lookback`
+    // entradas válidas. Usamos slice negativo para evitar parsear todo el
+    // archivo en cada turno.
+    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n').slice(-lookback);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i]);
+        if (entry && entry.direction === 'in_intent' && typeof entry.intent === 'string' && entry.intent !== 'none') {
+          // SEC-B: validez 5 minutos. Si el último intent matched fue hace
+          // más de 5 minutos, ya no califica como "turno previo" — el
+          // operador probablemente está en otra conversación.
+          const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+          if (ts && (Date.now() - ts) > 5 * 60 * 1000) return null;
+          return { intent: entry.intent, ts };
+        }
+      } catch { /* línea inválida, seguir */ }
+    }
+  } catch { /* best-effort */ }
+  return null;
 }
 
 // --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
@@ -7612,14 +7653,36 @@ function ejecutarClaude(prompt, textoOriginal) {
     // Límite absoluto: 10 minutos — si Claude no terminó, matar y resolver
     const HARD_TIMEOUT_MS = 10 * 60 * 1000;
 
+    // #3418 CA-3 — watchdog específico para Skill /doc y /planner. Trackeamos
+    // cada `tool_use` cuyo `name === 'Skill'` y limpiamos cuando llega el
+    // `tool_result` correspondiente (matcheado por `tool_use_id`). Si pasan
+    // 60s sin result, killProc + flag de skillTimeout para que el caller en
+    // procesarTextoLibre clasifique como SKILL_RESULT_TIMEOUT en el audit log
+    // y envíe el mensaje de timeout a Telegram.
+    const SKILL_WATCHDOG_MS = 60 * 1000;
+    const pendingSkillCalls = new Map(); // tool_use_id → { startedAt, skillName }
+    let skillTimedOut = false; // flag que finish() expone al caller
+    let skillTimedOutInfo = null; // { skillName, durationMs }
+
     function finish(code, reason) {
       if (resolved) return;
       resolved = true;
       clearInterval(progressTimer);
       clearTimeout(hardTimer);
+      clearInterval(skillWatchdogTimer);
       rl.close();
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       log('commander', `Claude terminó (${reason}, code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
+      // #3418 CA-3 — si el watchdog detectó timeout de Skill, anexamos
+      // marcador al texto final para que el caller pueda distinguir el caso
+      // y mapear a SKILL_RESULT_TIMEOUT en el audit log + enviar mensaje
+      // específico a Telegram. NO modificamos la respuesta visible si el
+      // proceso terminó por otra razón.
+      if (skillTimedOut && skillTimedOutInfo) {
+        const marker = `[SKILL_TIMEOUT:${skillTimedOutInfo.skillName}:${skillTimedOutInfo.durationMs}ms]`;
+        log('commander', `🚨 SKILL_TIMEOUT propagado al caller: ${marker}`);
+        if (!lastText) lastText = marker;
+      }
       // #3258 — CA-4 / SR-3: audit log con hash-chain del request del commander.
       // Métadata mínima (prov, tokens si los hay, latencia, hashes). NO se
       // loguea prompt ni respuesta literales — solo hashes.
@@ -7678,6 +7741,36 @@ function ejecutarClaude(prompt, textoOriginal) {
               toolCount++;
               lastToolDesc = b.input?.description || b.input?.command?.slice(0, 50) || b.name || '';
               log('commander', `  [tool ${toolCount}] ${b.name}: ${lastToolDesc.slice(0, 80)}`);
+              // #3418 CA-3 — arrancar reloj del watchdog SOLO para
+              // tool_use cuyo `name === 'Skill'` Y el `input.skill` esté
+              // en la allowlist (`doc`/`planner`). Para otras tools
+              // (Bash, Read, Edit, etc.) el HARD_TIMEOUT de 10min sigue
+              // siendo el único límite.
+              if (b.name === 'Skill' && b.id) {
+                const skillName = b.input && typeof b.input.skill === 'string' ? b.input.skill : null;
+                const watched = skillName && (skillName === 'doc' || skillName === 'planner');
+                if (watched) {
+                  pendingSkillCalls.set(b.id, {
+                    startedAt: Date.now(),
+                    skillName,
+                  });
+                  log('commander', `  ⏱️ Skill watchdog armado para ${skillName} (tool_use_id=${b.id.slice(0, 12)}…, deadline=${SKILL_WATCHDOG_MS/1000}s)`);
+                }
+              }
+            }
+          }
+        } else if (evt.type === 'user' && evt.message?.content) {
+          // #3418 CA-3 — Claude Code SDK envía los `tool_result` como mensajes
+          // tipo `user` con content que incluye bloques `tool_result` con el
+          // `tool_use_id` matcheando el `tool_use` original. Limpiamos el
+          // tracker para esos IDs.
+          const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
+          for (const b of blocks) {
+            if (b.type === 'tool_result' && b.tool_use_id && pendingSkillCalls.has(b.tool_use_id)) {
+              const pending = pendingSkillCalls.get(b.tool_use_id);
+              const dur = Date.now() - pending.startedAt;
+              pendingSkillCalls.delete(b.tool_use_id);
+              log('commander', `  ✓ Skill ${pending.skillName} completó en ${dur}ms (tool_use_id=${b.tool_use_id.slice(0, 12)}…)`);
             }
           }
         } else if (evt.type === 'result') {
@@ -7765,6 +7858,29 @@ function ejecutarClaude(prompt, textoOriginal) {
         finish(null, 'hard-timeout');
       }
     }, HARD_TIMEOUT_MS);
+
+    // #3418 CA-3 — Skill watchdog: revisa cada 5s si hay algún Skill
+    // (`/doc` o `/planner`) cuya emisión de `tool_use` excede los 60s sin
+    // `tool_result`. Si lo hay, mata el proceso (tree-kill en Windows),
+    // setea flag de timeout y deja que `finish()` propague el marcador al
+    // caller (procesarTextoLibre) para audit log + mensaje a Telegram.
+    // SEC-E (cleanup determinístico): killProc ya garantiza taskkill /T.
+    const skillWatchdogTimer = setInterval(() => {
+      if (resolved || pendingSkillCalls.size === 0) return;
+      const now = Date.now();
+      for (const [toolUseId, info] of pendingSkillCalls) {
+        const dur = now - info.startedAt;
+        if (dur >= SKILL_WATCHDOG_MS) {
+          skillTimedOut = true;
+          skillTimedOutInfo = { skillName: info.skillName, durationMs: dur, toolUseId };
+          pendingSkillCalls.clear();
+          log('commander', `🚨 SKILL_WATCHDOG: ${info.skillName} no completó en ${SKILL_WATCHDOG_MS/1000}s (esperado ${dur}ms) — killProc`);
+          killProc();
+          finish(null, 'skill-watchdog-timeout');
+          return;
+        }
+      }
+    }, 5000);
 
     proc.on('exit', (code) => finish(code, 'exit'));
     proc.on('close', (code) => finish(code, 'close'));
@@ -8376,8 +8492,27 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // --- #3250 — Detección de intent de creación de issues (CA-1). El LLM
     // decide la invocación real del Skill; acá usamos la heurística para
     // gatear SEC-5 (provider activo ≠ anthropic) y enriquecer el audit log.
-    const issueIntent = commanderIssueCreation.detectIssueCreationIntent(mensajeConsolidado);
+    //
+    // #3418 SEC-B / CA-9: leemos el `prevContext` desde commander-history.jsonl
+    // para habilitar CONTINUATION_PATTERNS. Sin contexto previo (ej: primer
+    // mensaje del operador, o último intent matched fue hace >5min), los
+    // continuativos NO matchean — backward-compat exacto con el comportamiento
+    // pre-#3418.
+    const prevContext = readPrevIssueCreationContext(historyFile);
+    const issueIntent = commanderIssueCreation.detectIssueCreationIntent(mensajeConsolidado, prevContext);
     const wantsIssueCreation = issueIntent.intent !== commanderIssueCreation.INTENT_NONE;
+
+    // #3418 CA-9: persistir el intent clasificado en el historial para que
+    // el próximo turno tenga `prevContext`. Solo si la detección fue
+    // positiva (no inflamos el JSONL para mensajes neutros).
+    if (wantsIssueCreation) {
+      appendCommanderHistory(historyFile, {
+        direction: 'in_intent',
+        intent: issueIntent.intent,
+        matched: issueIntent.matched,
+        continuation: !!issueIntent.continuation,
+      });
+    }
 
     // --- #3250 — SEC-5: bloqueo cuando el provider efectivo NO es Anthropic.
     // Los providers no-Anthropic (Cerebras/Gemini/NVIDIA/Codex) no tienen Skill
@@ -8510,26 +8645,72 @@ Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
 
       if (wantsIssueCreation) {
         try {
-          const outcome = commanderIssueCreation.inspectResponseForOutcome(respuesta || '');
+          // #3418 CA-3: detectar marcador de SKILL_TIMEOUT emitido por
+          // ejecutarClaude cuando el watchdog mató el proceso. Si está
+          // presente, mapear a SKILL_RESULT_TIMEOUT + telemetría con
+          // timeout_ms, y enviar mensaje específico a Telegram. Si no,
+          // seguimos el flow normal de inspección de outcome.
+          const timeoutMatch = /\[SKILL_TIMEOUT:(\w+):(\d+)ms\]/.exec(respuesta || '');
           const expectedSkill = issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SPLIT ? 'planner' : 'doc';
-          const skillResult = outcome.issuesCreated.length > 0 ? 'ok'
-            : (outcome.skillsMentioned.length === 0 ? 'error' : 'unknown');
-          commanderIssueCreation.logSkillInvocation({
-            pipelineDir: PIPELINE,
-            from: textoLibre[0].from || null,
-            inputText: mensajeConsolidado,
-            inputTextTruncated: inputWasTruncated,
-            skillInvoked: outcome.skillsMentioned[0] || expectedSkill,
-            skillResult,
-            issueCreated: outcome.issuesCreated.length === 1 ? outcome.issuesCreated[0] : (outcome.issuesCreated.length > 1 ? outcome.issuesCreated : undefined),
-            durationMs: Date.now() - skillInvocationStartedAt,
-            provider: 'anthropic',
-            intent: issueIntent.intent,
-            error: skillResult === 'error' ? 'no_skill_invoked_or_no_issue_created' : undefined,
-            senderAllowed: true,
-          }, { log });
-          if (skillResult === 'error') {
-            log('commander', `⚠️ SEC-1: respuesta del Commander no menciona invocación de doc/planner ni issue creado — posible fallback silencioso`);
+          if (timeoutMatch) {
+            const timedOutSkill = timeoutMatch[1];
+            const timeoutDuration = Number(timeoutMatch[2]);
+            commanderIssueCreation.logSkillInvocation({
+              pipelineDir: PIPELINE,
+              from: textoLibre[0].from || null,
+              inputText: mensajeConsolidado,
+              inputTextTruncated: inputWasTruncated,
+              skillInvoked: timedOutSkill || expectedSkill,
+              skillResult: commanderIssueCreation.SKILL_RESULT_TIMEOUT,
+              durationMs: Date.now() - skillInvocationStartedAt,
+              timeoutMs: timeoutDuration,
+              provider: 'anthropic',
+              intent: issueIntent.intent,
+              error: 'skill_watchdog_timeout_60s',
+              senderAllowed: true,
+            }, { log });
+            try {
+              const msg = commanderIssueCreation.formatSkillFailureResponse({ kind: 'timeout' });
+              sendTelegram(msg);
+            } catch { /* best-effort */ }
+            // Reemplazamos `respuesta` por el mensaje al operador (sin
+            // marcador) para que no termine viajando como texto literal.
+            respuesta = commanderIssueCreation.formatSkillFailureResponse({ kind: 'timeout' });
+          } else {
+            // #3418 SEC-D / CA-3 distinción crítica: el helper
+            // `inferSkillResult` centraliza el mapeo a enum cerrado y
+            // distingue `launching_no_complete` vs `error`.
+            const outcome = commanderIssueCreation.inspectResponseForOutcome(respuesta || '');
+            const skillResult = commanderIssueCreation.inferSkillResult({
+              outcome,
+              toolUseEmitted: false,         // no llegan eventos estructurados acá
+              toolResultEmitted: false,
+              timedOut: false,
+            });
+            commanderIssueCreation.logSkillInvocation({
+              pipelineDir: PIPELINE,
+              from: textoLibre[0].from || null,
+              inputText: mensajeConsolidado,
+              inputTextTruncated: inputWasTruncated,
+              skillInvoked: outcome.skillsMentioned[0] || expectedSkill,
+              skillResult,
+              issueCreated: outcome.issuesCreated.length === 1 ? outcome.issuesCreated[0] : (outcome.issuesCreated.length > 1 ? outcome.issuesCreated : undefined),
+              durationMs: Date.now() - skillInvocationStartedAt,
+              provider: 'anthropic',
+              intent: issueIntent.intent,
+              error: skillResult === commanderIssueCreation.SKILL_RESULT_ERROR
+                ? 'no_skill_invoked_or_no_issue_created'
+                : (skillResult === commanderIssueCreation.SKILL_RESULT_LAUNCHING_NO_COMPLETE
+                    ? 'launching_marker_without_tool_use'
+                    : undefined),
+              senderAllowed: true,
+            }, { log });
+            if (skillResult === commanderIssueCreation.SKILL_RESULT_LAUNCHING_NO_COMPLETE) {
+              log('commander', `🚨 CA-3: Commander anunció Skill pero no lo invocó (launching_no_complete) — enviando mensaje específico a Telegram`);
+              try { sendTelegram(commanderIssueCreation.formatSkillFailureResponse({ kind: 'launching_no_complete' })); } catch { /* best-effort */ }
+            } else if (skillResult === commanderIssueCreation.SKILL_RESULT_ERROR) {
+              log('commander', `⚠️ SEC-1: respuesta del Commander no menciona invocación de doc/planner ni issue creado — posible fallback silencioso`);
+            }
           }
         } catch (auditErr) {
           log('commander', `audit log de issue-creation falló (best-effort): ${auditErr.message}`);

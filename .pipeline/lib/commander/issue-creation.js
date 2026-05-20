@@ -45,12 +45,29 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// Reutilizamos el redactor del módulo `redact-read` para SEC-C (#3418):
+// los errores que se reenvían al operador via Telegram pueden contener
+// tokens (AWS keys, JWT, PATs de gh, etc.) que viajan en stack traces.
+// Redactamos ANTES de truncar para no exponerlos en ningún chunk visible.
+let _redactReadOutput = null;
+try {
+    _redactReadOutput = require('./redact-read').redactReadOutput;
+} catch {
+    // En entornos de test el módulo puede no estar disponible; degradamos a
+    // passthrough — el truncado a 200 chars sigue aplicando.
+    _redactReadOutput = (input) => ({ text: input || '', redactedCount: 0 });
+}
+
 // -----------------------------------------------------------------------------
 // Allowlist de skills invocables desde Telegram para creación de issues.
 // SEC-1: cualquier otro skill (delivery, builder, reset, qa, ghostbusters,
 // auth, etc.) está PROHIBIDO desde un pedido de creación de issue. El prompt
 // declara esto al LLM en mayúsculas; este módulo provee el list canónico
 // para inspección runtime.
+//
+// #3418 SEC-A: la ampliación de patterns NO debe agregar nuevos skills acá.
+// El test `commander-issue-creation.test.js` verifica con snapshot la igualdad
+// estricta `['doc', 'planner']`.
 // -----------------------------------------------------------------------------
 const ALLOWED_SKILLS_FOR_ISSUE_CREATION = Object.freeze(['doc', 'planner']);
 
@@ -58,6 +75,41 @@ const ALLOWED_SKILLS_FOR_ISSUE_CREATION = Object.freeze(['doc', 'planner']);
 const INTENT_NONE = 'none';
 const INTENT_CREATE_SIMPLE = 'create_simple';
 const INTENT_CREATE_SPLIT = 'create_split';
+
+// Conjunto cerrado de intents matchables — usado para validar que el
+// `prevContext` viene con un valor que reconocemos antes de habilitar
+// patterns continuativos.
+const MATCHED_INTENTS = Object.freeze([INTENT_CREATE_SIMPLE, INTENT_CREATE_SPLIT]);
+
+// -----------------------------------------------------------------------------
+// #3418 SEC-D — Enum cerrado para `skill_result` del audit log. Valores:
+//   ok                     — Skill se invocó y al menos 1 issue se creó.
+//   error                  — Skill arrancó pero no se creó nada (gh rechazó,
+//                            args inválidos detectados post-hoc, etc.).
+//   blocked                — SEC-2/SEC-5 cortaron antes del spawn (sender no
+//                            autorizado, provider ≠ anthropic).
+//   timeout                — El watchdog de 60s mató al Skill (CA-3).
+//   launching_no_complete  — El LLM dijo "Launching skill: ..." pero nunca
+//                            emitió el evento `tool_use` (sin reloj para el
+//                            watchdog, sin issue creado).
+//   invalid_args           — Skill se invocó con args malformados (detectable
+//                            por gh o por el propio handler del Skill).
+// -----------------------------------------------------------------------------
+const SKILL_RESULT_OK = 'ok';
+const SKILL_RESULT_ERROR = 'error';
+const SKILL_RESULT_BLOCKED = 'blocked';
+const SKILL_RESULT_TIMEOUT = 'timeout';
+const SKILL_RESULT_LAUNCHING_NO_COMPLETE = 'launching_no_complete';
+const SKILL_RESULT_INVALID_ARGS = 'invalid_args';
+
+const SKILL_RESULT_ENUM = Object.freeze([
+    SKILL_RESULT_OK,
+    SKILL_RESULT_ERROR,
+    SKILL_RESULT_BLOCKED,
+    SKILL_RESULT_TIMEOUT,
+    SKILL_RESULT_LAUNCHING_NO_COMPLETE,
+    SKILL_RESULT_INVALID_ARGS,
+]);
 
 // -----------------------------------------------------------------------------
 // Heurísticas en español para detectar el intent del usuario ANTES de armar
@@ -84,20 +136,119 @@ const SIMPLE_PATTERNS = Object.freeze([
     /\bgener[áa]\s+(?:un\s+)?(?:issue|ticket|historia)\b/i,
 ]);
 
+// -----------------------------------------------------------------------------
+// #3418 CA-1 — Patterns continuativos: frases que SOLO clasifican como intent
+// de creación cuando el turno previo del operador en la misma conversación ya
+// tenía un intent matched. Esta capa cubre frases ambiguas o con erratas que
+// no se detectaban antes (`Realos cuatro`, `Reintentá creándolo`, `Los cuatro
+// y agregálos`, `creálos`, `esos cuatro`).
+//
+// SEC-B (security): habilitar continuativos sin contexto reforzador abre
+// falsos positivos peligrosos (`reintentá el build`, `los 4 PRs que mergeé`,
+// `creálos como tasks en taskwarrior`). Por eso `detectIssueCreationIntent`
+// SOLO los evalúa cuando `prevContext.intent` es CREATE_SIMPLE o CREATE_SPLIT.
+//
+// El veredicto de un continuativo hereda el tipo del previo: si el turno
+// anterior fue SPLIT, el continuativo también clasifica como SPLIT (porque
+// la frase referencia el mismo lote). Si fue SIMPLE, el continuativo es
+// SIMPLE — salvo que el texto agregue marcadores de split explícitos.
+// -----------------------------------------------------------------------------
+const CONTINUATION_PATTERNS = Object.freeze([
+    // Pronombres + verbo de creación: "creálos", "armálos", "levantálos",
+    // "abrílos", "generálos". Cubre `Realos cuatro` (errata por `Creálos`)
+    // gracias a la rama opcional `re?[aá]los`.
+    /\b(?:cre[áa]|arm[áa]|levant[áa]|abr[íi]|gener[áa]|re[áa]l?)los\b/i,
+    // Gerundio + lo/los: "creándolo", "creándolos", "armándolos",
+    // "levantándolos", "abriéndolos", "generándolos". Cubre "Reintentá
+    // creándolos" — frase típica del operador.
+    /\b(?:cre[áa]ndolos?|arm[áa]ndolos?|levant[áa]ndolos?|abri[ée]ndolos?|gener[áa]ndolos?)\b/i,
+    // "creá los 4", "armá los cuatro", "levantá esos N", "abrí esos cuatro"
+    /\b(?:cre[áa]|arm[áa]|levant[áa]|abr[íi]|gener[áa])\s+(?:los|esos|esas|las)\s+(?:\d+|cuatro|tres|cinco|seis|siete|ocho|nueve|diez|todos|todas)\b/i,
+    // Referencia directa: "los 4", "los cuatro", "esos N", "esas tres".
+    // Aplica solo con contexto previo de creación matched.
+    /\b(?:los|esos|esas|las)\s+(?:\d+|cuatro|tres|cinco|seis|siete|ocho|nueve|diez)\b/i,
+    // Reintentos explícitos: "reintentá creándolos", "reintentá la creación",
+    // "reintitaba creándolo" (errata frecuente del operador). El verbo
+    // "reintent[áa]" sin objeto NO matchea — exigimos compañía de un verbo
+    // o sustantivo de creación.
+    /\breintit?[aáeé](?:b[aá])?\b/i,
+    // Agregalos / sumalos a la ola actual: el operador suele decir "agregálos"
+    // o "sumálos" cuando ya quedó claro que vienen issues nuevos.
+    /\b(?:agreg[áa]|sum[áa])los\b/i,
+]);
+
+// Patterns que SIEMPRE devuelven INTENT_NONE aunque hayan matcheado un
+// continuativo (anti-falsos-positivos). Se aplican como filtro POSTERIOR:
+// si el texto match un negativo, se descarta cualquier matching previo.
+//
+// Ejemplos cubiertos:
+//   "reintentá el build"           → build, no issues
+//   "los 4 PRs que mergeé"         → PRs, no issues
+//   "creálos como tasks en taskwarrior" → taskwarrior, no GitHub
+//   "los 4 daemons gradle"         → procesos, no issues
+//   "esos cuatro tests fallando"   → tests, no issues
+const ADVERSARIAL_NEGATIVE_PATTERNS = Object.freeze([
+    /\b(?:build|builds|compilaci[oó]n|gradle|daemon|daemons)\b/i,
+    /\b(?:pr|prs|pull\s+request|pull\s+requests|merge|mergeo|mergeado)\b/i,
+    /\btask(?:warrior|s)?\b/i,
+    /\b(?:test|tests|spec|specs)\b/i,
+    /\b(?:deploy|deployment|despliegue|release|releases)\b/i,
+    /\b(?:commit|commits|rebase|cherry-?pick)\b/i,
+    /\b(?:branch|branches|rama|ramas)\b/i,
+]);
+
 /**
  * Devuelve `{ intent, matched }` clasificando el texto consolidado del usuario.
  * `intent` es uno de `INTENT_NONE | INTENT_CREATE_SIMPLE | INTENT_CREATE_SPLIT`.
  * `matched` es el patrón que disparó la clasificación (o null si NONE).
+ *
+ * @param {string} text       Texto a clasificar.
+ * @param {object} prevContext (opcional) `{ intent: 'create_simple'|'create_split'|... }`
+ *   del turno anterior. Habilita CONTINUATION_PATTERNS (SEC-B). Sin esto, los
+ *   continuativos NUNCA matchean — comportamiento backward-compat.
  */
-function detectIssueCreationIntent(text) {
+function detectIssueCreationIntent(text, prevContext) {
     if (typeof text !== 'string' || !text.trim()) {
         return { intent: INTENT_NONE, matched: null };
     }
+
+    // Capa 1: patterns explícitos (siempre activos, no requieren contexto).
     for (const re of SPLIT_PATTERNS) {
         if (re.test(text)) return { intent: INTENT_CREATE_SPLIT, matched: re.source };
     }
     for (const re of SIMPLE_PATTERNS) {
         if (re.test(text)) return { intent: INTENT_CREATE_SIMPLE, matched: re.source };
+    }
+
+    // Capa 2: continuativos (SOLO con contexto reforzador del turno previo).
+    const prevIntent = prevContext && typeof prevContext === 'object' ? prevContext.intent : null;
+    const prevWasMatched = prevIntent && MATCHED_INTENTS.includes(prevIntent);
+    if (!prevWasMatched) {
+        return { intent: INTENT_NONE, matched: null };
+    }
+
+    // Anti-falsos-positivos: si el texto contiene términos de dominio
+    // ajenos (build, PR, test, deploy, etc.) descartamos aunque haya
+    // matched un continuativo.
+    for (const neg of ADVERSARIAL_NEGATIVE_PATTERNS) {
+        if (neg.test(text)) {
+            return { intent: INTENT_NONE, matched: null };
+        }
+    }
+
+    for (const re of CONTINUATION_PATTERNS) {
+        if (re.test(text)) {
+            // El continuativo hereda el intent del turno previo (si el split
+            // estaba en curso, sigue siendo split). Si la frase actual
+            // contiene marcadores de split explícitos, escalamos a split.
+            const inheritsSplit = prevIntent === INTENT_CREATE_SPLIT
+                || /\b(?:divid|splite|separ[áa]\s+en)\b/i.test(text);
+            return {
+                intent: inheritsSplit ? INTENT_CREATE_SPLIT : INTENT_CREATE_SIMPLE,
+                matched: re.source,
+                continuation: true,
+            };
+        }
     }
     return { intent: INTENT_NONE, matched: null };
 }
@@ -186,13 +337,26 @@ function _resolveAuditPath(pipelineDir) {
 /**
  * Append una línea JSON al audit log.
  *
- * Campos esperados (ver criterios PO):
+ * Campos esperados (ver criterios PO + #3418 SEC-D):
  *   timestamp, from { id, username }, input_text, input_text_truncated,
- *   skill_invoked, skill_args, skill_result ('ok'|'error'|'blocked'),
- *   issue_created, duration_ms, provider, error (opcional)
+ *   skill_invoked, skill_args, skill_result (enum cerrado, ver
+ *   `SKILL_RESULT_ENUM`), issue_created, duration_ms, provider,
+ *   error (opcional, redactado pre-truncate por SEC-C), timeout_ms
+ *   (cuando `skill_result === 'timeout'`).
  *
  * Cualquier campo `undefined` se omite del JSON resultante. El método es
  * best-effort: si falla la escritura, loggea y sigue.
+ *
+ * NOTAS DE SEGURIDAD
+ * ------------------
+ * - SEC-C: `error` y `inputText` se redactan con `redactReadOutput` ANTES de
+ *   truncarse. El módulo redact-read cubre AWS keys, JWT, gh PATs, gemini
+ *   keys, Telegram tokens y `password|secret|token=...` genéricos.
+ * - SEC-D: `skill_result` se valida contra `SKILL_RESULT_ENUM`. Valores fuera
+ *   del enum se loggean como `error` y el campo se omite del JSONL para no
+ *   inflar el forense con valores libres.
+ * - SEC-E: la escritura es `appendFileSync` (sync, no async) — bajo timeout
+ *   sigue garantizando que la línea queda atómica y completa.
  */
 function logSkillInvocation({
     pipelineDir,
@@ -209,6 +373,7 @@ function logSkillInvocation({
     error,
     senderAllowed,
     intent,
+    timeoutMs,
 }, opts = {}) {
     if (!pipelineDir) return false;
     const filePath = _resolveAuditPath(pipelineDir);
@@ -221,21 +386,41 @@ function logSkillInvocation({
         if (Object.keys(fromOut).length > 0) line.from = fromOut;
     }
     if (inputText !== undefined) {
-        // Preview corto en audit log; el texto completo va al historial del
-        // commander-history.jsonl. Acá guardamos los primeros 200 chars para
-        // tener contexto forense sin inflar el JSONL.
-        line.input_text = String(inputText).slice(0, 200);
+        // SEC-C: redactar ANTES de truncar el preview. Si la entrada contiene
+        // un token, queremos que no quede expuesto ni en los primeros 200
+        // chars.
+        const redacted = _redactReadOutput(String(inputText));
+        line.input_text = redacted.text.slice(0, 200);
         line.input_text_truncated = !!inputTextTruncated;
     }
     if (skillInvoked) line.skill_invoked = skillInvoked;
     if (skillArgs !== undefined) line.skill_args = String(skillArgs).slice(0, 500);
-    if (skillResult) line.skill_result = skillResult;
+    if (skillResult) {
+        // SEC-D: validar contra enum cerrado. Valor inválido → loggeamos
+        // alerta y omitimos del JSONL (no escribimos basura).
+        if (SKILL_RESULT_ENUM.includes(skillResult)) {
+            line.skill_result = skillResult;
+        } else {
+            try {
+                if (opts.log) opts.log('commander', `audit log: skill_result inválido "${skillResult}" (enum=${SKILL_RESULT_ENUM.join('|')}) — campo omitido`);
+            } catch { /* swallow */ }
+        }
+    }
     if (issueCreated !== undefined && issueCreated !== null) line.issue_created = issueCreated;
     if (typeof durationMs === 'number' && Number.isFinite(durationMs)) line.duration_ms = Math.round(durationMs);
     if (provider) line.provider = provider;
-    if (error) line.error = String(error).slice(0, 500);
+    if (error) {
+        // SEC-C: redactar ANTES de truncar a 500. El módulo redact-read maneja
+        // tokens, JWT, paths con credenciales embebidas, etc.
+        const redacted = _redactReadOutput(String(error));
+        line.error = redacted.text.slice(0, 500);
+    }
     if (senderAllowed !== undefined) line.sender_allowed = !!senderAllowed;
     if (intent) line.intent = intent;
+    // SEC-D / CA-3: `timeout_ms` SOLO cuando aplica al watchdog del Skill.
+    if (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        line.timeout_ms = Math.round(timeoutMs);
+    }
     try {
         fs.appendFileSync(filePath, JSON.stringify(line) + '\n');
         return true;
@@ -263,10 +448,17 @@ function formatBlockedByProviderResponse({ provider }) {
 
 // -----------------------------------------------------------------------------
 // CA-5 — Mensajes de error cuando el Skill falla. Variantes por causa según
-// la guideline UX. El kind viene del caller (timeout, quota, gh_error, generic).
+// la guideline UX. El kind viene del caller (timeout, quota, gh_error, generic,
+// no_skill_invoked, launching_no_complete, invalid_args).
+//
+// #3418 SEC-C — el `error` se redacta con `redactReadOutput` ANTES de truncar
+// a 200 chars. Cubre AWS keys, JWT, gh PATs, gemini keys, Telegram tokens y
+// `password|secret|token=...` genéricos que puedan venir en stack traces.
 // -----------------------------------------------------------------------------
 function formatSkillFailureResponse({ kind, error }) {
-    const errShort = error ? String(error).slice(0, 200) : '';
+    // SEC-C: redactar PRIMERO, truncar después.
+    const errRedacted = error ? _redactReadOutput(String(error)).text : '';
+    const errShort = errRedacted.slice(0, 200);
     switch (kind) {
         case 'timeout':
             return '⏱️ Tardó demasiado y no se creó el issue. Reintentá en un rato o usá /doc nueva por consola.';
@@ -276,6 +468,10 @@ function formatSkillFailureResponse({ kind, error }) {
             return `🐙 GitHub rechazó la creación${errShort ? ': ' + errShort : ''}. Reintentá o revisá manualmente.`;
         case 'no_skill_invoked':
             return `❌ La creación falló: el Commander no invocó /doc ni /planner como se esperaba. No se creó nada. Reintentá o usá consola.`;
+        case 'launching_no_complete':
+            return `❌ El Commander anunció /doc pero no llegó a invocarlo. No se creó nada. Reintentá explícitamente con /doc nueva <título>.`;
+        case 'invalid_args':
+            return `❌ El Skill /doc recibió argumentos inválidos${errShort ? ': ' + errShort : ''}. No se creó nada. Reformulá el pedido o usá /doc nueva por consola.`;
         default:
             return `❌ La creación falló${errShort ? ': ' + errShort : ''}. No se creó nada. Reintentá o creá manual por consola con /doc nueva ...`;
     }
@@ -326,10 +522,23 @@ function buildIssueCreationPromptBlock() {
 // invocó `doc` o `planner` o nada explícito. Heurística defensiva: el LLM
 // puede formatear la respuesta de varias formas pero las menciones de
 // `#NNNN creado` y `Skill(skill="..."` son patrones razonables.
+//
+// #3418 CA-3 — Detección de `launching_no_complete`:
+// El bug original era que cuando el LLM emitía texto tipo "Launching skill:
+// doc" pero NUNCA llegaba a invocar la tool real, la heurística devolvía
+// `skillResult: 'unknown'` y el operador no se enteraba de que la creación
+// había fallado. Ahora reconocemos ese marcador textual y permitimos que el
+// caller distinga ese caso para mapearlo a `SKILL_RESULT_LAUNCHING_NO_COMPLETE`.
 // -----------------------------------------------------------------------------
+
+// Marcadores que el LLM (Claude Code) imprime cuando ANUNCIA la invocación
+// de un Skill antes de emitir el evento `tool_use`. Si vemos uno de estos
+// y `issuesCreated === []`, el caller debería mapear a launching_no_complete.
+const LAUNCHING_MARKER_RE = /\b(?:Launching|Invocando|Lanzando)\s+(?:skill|el\s+skill)\s*:?\s*\/?(doc|planner)\b/i;
+
 function inspectResponseForOutcome(responseText) {
     if (typeof responseText !== 'string' || !responseText) {
-        return { issuesCreated: [], skillsMentioned: [] };
+        return { issuesCreated: [], skillsMentioned: [], launchingDetected: false };
     }
     const issuesCreated = [];
     // Pattern 1: "#NNNN creado" / "#NNNN created" / "#NNNN listo" — caso simple
@@ -356,7 +565,41 @@ function inspectResponseForOutcome(responseText) {
     const skillsMentioned = [];
     if (/\b\/?doc\b/i.test(responseText)) skillsMentioned.push('doc');
     if (/\b\/?planner\b/i.test(responseText)) skillsMentioned.push('planner');
-    return { issuesCreated, skillsMentioned };
+
+    // #3418 CA-3: detectar marcador textual de "Launching ..." para que el
+    // caller pueda decidir entre launching_no_complete vs error.
+    const launchingDetected = LAUNCHING_MARKER_RE.test(responseText);
+
+    return { issuesCreated, skillsMentioned, launchingDetected };
+}
+
+/**
+ * Helper de inferencia de `skill_result` a partir del outcome inspeccionado
+ * y los flags de runtime (toolUseEmitted, toolResultEmitted, timedOut).
+ *
+ * #3418 SEC-D — único punto que mapea el estado runtime al enum cerrado.
+ * Centraliza la lógica para que tests y producción se mantengan en sync.
+ *
+ * @param {object} args
+ *   - outcome: salida de `inspectResponseForOutcome`
+ *   - toolUseEmitted: boolean — el child emitió `tool_use:Skill`
+ *   - toolResultEmitted: boolean — llegó el `tool_use_result` correspondiente
+ *   - timedOut: boolean — el watchdog 60s disparó kill
+ * @returns {string} valor del enum SKILL_RESULT_*
+ */
+function inferSkillResult({ outcome, toolUseEmitted, toolResultEmitted, timedOut } = {}) {
+    if (timedOut) return SKILL_RESULT_TIMEOUT;
+    if (outcome && Array.isArray(outcome.issuesCreated) && outcome.issuesCreated.length > 0) {
+        return SKILL_RESULT_OK;
+    }
+    // Caso watchdog: tool_use llegó pero el result no — distinto de
+    // launching_no_complete (donde NUNCA hubo evento estructurado).
+    if (toolUseEmitted && !toolResultEmitted) return SKILL_RESULT_TIMEOUT;
+    // Caso bug del issue: el LLM dijo "Launching ..." pero nunca emitió
+    // tool_use. Sin issuesCreated y con marcador textual → launching_no_complete.
+    if (outcome && outcome.launchingDetected) return SKILL_RESULT_LAUNCHING_NO_COMPLETE;
+    // Caso clásico: ni invocó ni creó nada → error duro (no `unknown`).
+    return SKILL_RESULT_ERROR;
 }
 
 module.exports = {
@@ -364,7 +607,17 @@ module.exports = {
     INTENT_NONE,
     INTENT_CREATE_SIMPLE,
     INTENT_CREATE_SPLIT,
+    MATCHED_INTENTS,
     MAX_INPUT_CHARS,
+
+    // #3418 SEC-D — enum cerrado de skill_result
+    SKILL_RESULT_OK,
+    SKILL_RESULT_ERROR,
+    SKILL_RESULT_BLOCKED,
+    SKILL_RESULT_TIMEOUT,
+    SKILL_RESULT_LAUNCHING_NO_COMPLETE,
+    SKILL_RESULT_INVALID_ARGS,
+    SKILL_RESULT_ENUM,
 
     detectIssueCreationIntent,
     sanitizeIssueCreationInput,
@@ -375,9 +628,13 @@ module.exports = {
     formatSkillFailureResponse,
     buildIssueCreationPromptBlock,
     inspectResponseForOutcome,
+    inferSkillResult,
 
     // exports internos para tests
     _resolveAuditPath,
     _SPLIT_PATTERNS: SPLIT_PATTERNS,
     _SIMPLE_PATTERNS: SIMPLE_PATTERNS,
+    _CONTINUATION_PATTERNS: CONTINUATION_PATTERNS,
+    _ADVERSARIAL_NEGATIVE_PATTERNS: ADVERSARIAL_NEGATIVE_PATTERNS,
+    _LAUNCHING_MARKER_RE: LAUNCHING_MARKER_RE,
 };

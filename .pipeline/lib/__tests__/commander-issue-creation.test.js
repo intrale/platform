@@ -423,3 +423,264 @@ test('ALLOWED_SKILLS_FOR_ISSUE_CREATION: contiene exactamente doc y planner', ()
 test('ALLOWED_SKILLS_FOR_ISSUE_CREATION: es frozen (no se puede mutar)', () => {
     assert.equal(Object.isFrozen(ic.ALLOWED_SKILLS_FOR_ISSUE_CREATION), true);
 });
+
+// =============================================================================
+// #3418 — Patterns continuativos con contexto reforzador (CA-1 + SEC-B)
+// =============================================================================
+
+test('#3418 CA-1: "Realos cuatro" sin contexto → NONE (no falsos positivos)', () => {
+    const r = ic.detectIssueCreationIntent('Realos cuatro');
+    assert.equal(r.intent, ic.INTENT_NONE);
+});
+
+test('#3418 CA-1: "Realos cuatro" con contexto de creación previo → CREATE_SIMPLE', () => {
+    const r = ic.detectIssueCreationIntent('Realos cuatro', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.notEqual(r.intent, ic.INTENT_NONE);
+    assert.ok(r.continuation, 'debería marcar como continuation');
+});
+
+test('#3418 CA-1: "Reintentá creándolo" sin contexto → NONE', () => {
+    const r = ic.detectIssueCreationIntent('Reintentá creándolo');
+    assert.equal(r.intent, ic.INTENT_NONE);
+});
+
+test('#3418 CA-1: "Reintentá creándolos" con contexto → CREATE_SIMPLE', () => {
+    const r = ic.detectIssueCreationIntent('Reintentá creándolos', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.notEqual(r.intent, ic.INTENT_NONE);
+});
+
+test('#3418 CA-1: "Los cuatro y agregálos" con contexto previo → CREATE_SIMPLE', () => {
+    const r = ic.detectIssueCreationIntent('Los cuatro y agregálos a la ola actual', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.notEqual(r.intent, ic.INTENT_NONE);
+});
+
+test('#3418 CA-1: "creálos" con contexto → CREATE_SIMPLE', () => {
+    const r = ic.detectIssueCreationIntent('creálos rápido', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.equal(r.intent, ic.INTENT_CREATE_SIMPLE);
+});
+
+test('#3418 CA-1: "esos cuatro" con contexto de split previo → CREATE_SPLIT (herencia)', () => {
+    const r = ic.detectIssueCreationIntent('esos cuatro', { intent: ic.INTENT_CREATE_SPLIT });
+    assert.equal(r.intent, ic.INTENT_CREATE_SPLIT, 'herencia del tipo del previo');
+});
+
+test('#3418 CA-1: "los 4" sin contexto → NONE', () => {
+    const r = ic.detectIssueCreationIntent('los 4');
+    assert.equal(r.intent, ic.INTENT_NONE);
+});
+
+test('#3418 CA-1: "los 4" con contexto → CREATE_SIMPLE', () => {
+    const r = ic.detectIssueCreationIntent('los 4 estaría perfecto', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.notEqual(r.intent, ic.INTENT_NONE);
+});
+
+// SEC-B adversarial: frases que NO deben matchear (negativos)
+
+test('#3418 SEC-B adversarial: "reintentá el build" con contexto → NONE', () => {
+    const r = ic.detectIssueCreationIntent('reintentá el build que falló', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.equal(r.intent, ic.INTENT_NONE, 'build es dominio ajeno');
+});
+
+test('#3418 SEC-B adversarial: "los 4 PRs que mergeé" con contexto → NONE', () => {
+    const r = ic.detectIssueCreationIntent('los 4 PRs que mergeé', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.equal(r.intent, ic.INTENT_NONE, 'PR es dominio ajeno');
+});
+
+test('#3418 SEC-B adversarial: "creálos como tasks en taskwarrior" con contexto → NONE', () => {
+    const r = ic.detectIssueCreationIntent('creálos como tasks en taskwarrior', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.equal(r.intent, ic.INTENT_NONE, 'taskwarrior es dominio ajeno');
+});
+
+test('#3418 SEC-B adversarial: "esos cuatro tests fallando" con contexto → NONE', () => {
+    const r = ic.detectIssueCreationIntent('esos cuatro tests fallando', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.equal(r.intent, ic.INTENT_NONE, 'tests es dominio ajeno');
+});
+
+test('#3418 SEC-B adversarial: "los 4 daemons gradle" con contexto → NONE', () => {
+    const r = ic.detectIssueCreationIntent('los 4 daemons gradle vivos', { intent: ic.INTENT_CREATE_SIMPLE });
+    assert.equal(r.intent, ic.INTENT_NONE, 'daemons gradle es dominio ajeno');
+});
+
+test('#3418 SEC-B: prevContext con intent=none → continuativos no matchean', () => {
+    const r = ic.detectIssueCreationIntent('los 4 estaría perfecto', { intent: 'none' });
+    assert.equal(r.intent, ic.INTENT_NONE);
+});
+
+test('#3418 SEC-B: prevContext null → continuativos no matchean', () => {
+    const r = ic.detectIssueCreationIntent('los 4 estaría perfecto', null);
+    assert.equal(r.intent, ic.INTENT_NONE);
+});
+
+test('#3418 SEC-B: prevContext con intent invalido → continuativos no matchean', () => {
+    const r = ic.detectIssueCreationIntent('los 4 estaría perfecto', { intent: 'random_value' });
+    assert.equal(r.intent, ic.INTENT_NONE);
+});
+
+// =============================================================================
+// #3418 — Enum cerrado de skill_result (SEC-D)
+// =============================================================================
+
+test('#3418 SEC-D: SKILL_RESULT_ENUM contiene exactamente 6 valores', () => {
+    assert.deepEqual([...ic.SKILL_RESULT_ENUM].sort(), [
+        'blocked', 'error', 'invalid_args', 'launching_no_complete', 'ok', 'timeout',
+    ]);
+});
+
+test('#3418 SEC-D: SKILL_RESULT_ENUM es frozen', () => {
+    assert.equal(Object.isFrozen(ic.SKILL_RESULT_ENUM), true);
+});
+
+test('#3418 SEC-D: logSkillInvocation rechaza valores fuera del enum', () => {
+    const dir = mkTmpPipelineDir();
+    const calls = [];
+    ic.logSkillInvocation({
+        pipelineDir: dir,
+        skillInvoked: 'doc',
+        skillResult: 'invalid_value_xyz',
+    }, { log: (l, m) => calls.push([l, m]) });
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'logs', 'commander-skill-audit.jsonl'), 'utf8').trim());
+    assert.ok(!('skill_result' in parsed), 'skill_result inválido se omite');
+    assert.ok(calls.some(c => /skill_result inválido/.test(c[1])));
+});
+
+test('#3418 SEC-D: logSkillInvocation acepta timeoutMs cuando skill_result=timeout', () => {
+    const dir = mkTmpPipelineDir();
+    ic.logSkillInvocation({
+        pipelineDir: dir,
+        skillInvoked: 'doc',
+        skillResult: 'timeout',
+        timeoutMs: 60000,
+    });
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'logs', 'commander-skill-audit.jsonl'), 'utf8').trim());
+    assert.equal(parsed.skill_result, 'timeout');
+    assert.equal(parsed.timeout_ms, 60000);
+});
+
+test('#3418 SEC-D: logSkillInvocation acepta skill_result=launching_no_complete', () => {
+    const dir = mkTmpPipelineDir();
+    ic.logSkillInvocation({
+        pipelineDir: dir,
+        skillInvoked: 'doc',
+        skillResult: 'launching_no_complete',
+        error: 'launching_marker_without_tool_use',
+    });
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'logs', 'commander-skill-audit.jsonl'), 'utf8').trim());
+    assert.equal(parsed.skill_result, 'launching_no_complete');
+});
+
+// =============================================================================
+// #3418 SEC-C — Redacción de tokens antes de truncar
+// =============================================================================
+
+test('#3418 SEC-C: formatSkillFailureResponse redacta gh PAT antes de truncar', () => {
+    const err = 'gh: authentication failed using token ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890 — please re-auth';
+    const out = ic.formatSkillFailureResponse({ kind: 'gh_error', error: err });
+    assert.ok(!out.includes('ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890'), 'PAT no debe aparecer en mensaje');
+    assert.ok(out.includes('[REDACTED]') || /\*\*\*/.test(out), 'debe haber marcador de redacción');
+});
+
+test('#3418 SEC-C: formatSkillFailureResponse redacta AWS key', () => {
+    const err = 'AKIAIOSFODNN7EXAMPLE causó error de credenciales';
+    const out = ic.formatSkillFailureResponse({ kind: 'generic', error: err });
+    assert.ok(!out.includes('AKIAIOSFODNN7EXAMPLE'));
+});
+
+test('#3418 SEC-C: logSkillInvocation redacta gh PAT del campo error', () => {
+    const dir = mkTmpPipelineDir();
+    ic.logSkillInvocation({
+        pipelineDir: dir,
+        skillInvoked: 'doc',
+        skillResult: 'error',
+        error: 'gh failed: ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890 expired',
+    });
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'logs', 'commander-skill-audit.jsonl'), 'utf8').trim());
+    assert.ok(!parsed.error.includes('ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890'));
+});
+
+test('#3418 SEC-C: logSkillInvocation redacta JWT del campo input_text', () => {
+    const dir = mkTmpPipelineDir();
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    ic.logSkillInvocation({
+        pipelineDir: dir,
+        inputText: `creá un issue con token ${jwt}`,
+        skillInvoked: 'doc',
+        skillResult: 'ok',
+    });
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'logs', 'commander-skill-audit.jsonl'), 'utf8').trim());
+    assert.ok(!parsed.input_text.includes(jwt), 'JWT no debe aparecer en input_text');
+});
+
+// =============================================================================
+// #3418 CA-3 — Distinción launching_no_complete vs error en inspect/infer
+// =============================================================================
+
+test('#3418 CA-3: inspectResponseForOutcome detecta "Launching skill: doc"', () => {
+    const r = ic.inspectResponseForOutcome('Launching skill: doc para crear el issue...');
+    assert.equal(r.launchingDetected, true);
+});
+
+test('#3418 CA-3: inspectResponseForOutcome detecta "Invocando /doc nueva"', () => {
+    const r = ic.inspectResponseForOutcome('Invocando /doc nueva para registrar el bug');
+    // launchingDetected solo cubre "Launching|Invocando|Lanzando" + "skill: doc"
+    // pero `skillsMentioned` igual debe captar /doc
+    assert.ok(r.skillsMentioned.includes('doc'));
+});
+
+test('#3418 CA-3: inspectResponseForOutcome respuesta neutra → launchingDetected=false', () => {
+    const r = ic.inspectResponseForOutcome('Hola, todo bien');
+    assert.equal(r.launchingDetected, false);
+});
+
+test('#3418 CA-3: inferSkillResult prioriza timedOut sobre todo', () => {
+    const r = ic.inferSkillResult({
+        outcome: { issuesCreated: [3299], skillsMentioned: ['doc'], launchingDetected: false },
+        timedOut: true,
+    });
+    assert.equal(r, ic.SKILL_RESULT_TIMEOUT);
+});
+
+test('#3418 CA-3: inferSkillResult con issues creados → OK', () => {
+    const r = ic.inferSkillResult({
+        outcome: { issuesCreated: [3299], skillsMentioned: ['doc'], launchingDetected: false },
+    });
+    assert.equal(r, ic.SKILL_RESULT_OK);
+});
+
+test('#3418 CA-3: inferSkillResult con launching pero sin issues → launching_no_complete (no unknown)', () => {
+    const r = ic.inferSkillResult({
+        outcome: { issuesCreated: [], skillsMentioned: ['doc'], launchingDetected: true },
+    });
+    assert.equal(r, ic.SKILL_RESULT_LAUNCHING_NO_COMPLETE);
+});
+
+test('#3418 CA-3: inferSkillResult sin issues y sin launching → error duro', () => {
+    const r = ic.inferSkillResult({
+        outcome: { issuesCreated: [], skillsMentioned: [], launchingDetected: false },
+    });
+    assert.equal(r, ic.SKILL_RESULT_ERROR);
+});
+
+test('#3418 CA-3: inferSkillResult con tool_use emitted pero sin result → TIMEOUT', () => {
+    const r = ic.inferSkillResult({
+        outcome: { issuesCreated: [], skillsMentioned: ['doc'], launchingDetected: false },
+        toolUseEmitted: true,
+        toolResultEmitted: false,
+    });
+    assert.equal(r, ic.SKILL_RESULT_TIMEOUT);
+});
+
+// =============================================================================
+// #3418 UX — Mensaje de launching_no_complete
+// =============================================================================
+
+test('#3418 UX: formatSkillFailureResponse kind=launching_no_complete', () => {
+    const out = ic.formatSkillFailureResponse({ kind: 'launching_no_complete' });
+    assert.ok(/anunci[oó]/i.test(out));
+    assert.ok(/\/doc nueva/.test(out));
+});
+
+test('#3418 UX: formatSkillFailureResponse kind=invalid_args con detalle', () => {
+    const out = ic.formatSkillFailureResponse({ kind: 'invalid_args', error: 'título vacío' });
+    assert.ok(/argumentos inválidos/i.test(out));
+    assert.ok(out.includes('título vacío'));
+});
