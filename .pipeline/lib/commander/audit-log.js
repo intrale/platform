@@ -1,6 +1,10 @@
 // =============================================================================
 // audit-log.js — Log append-only del Commander determinístico
 // Issue #3257 · CA-10
+// Issue #3415 · CA-16 / SEC-1.6 — `filenamePrefix` configurable + `extraFields`
+//                                  para que `/rechazar` reuse este factory con
+//                                  schema extendido y rotación en
+//                                  `.pipeline/audit/rejections-YYYY-MM-DD.jsonl`.
 //
 // Cada comando que entra al router se asienta en
 // `.pipeline/logs/commander-audit.jsonl`. El handler invoca `record()` al final
@@ -9,7 +13,9 @@
 // Reglas de seguridad:
 // - El `raw_command` se guarda redactado (api keys/JWT/passwords masked).
 // - Los `args` se guardan como hash sha256 — no se persiste contenido crudo.
-// - El archivo rota por día: `commander-audit-YYYY-MM-DD.jsonl`.
+// - El archivo rota por día: `commander-audit-YYYY-MM-DD.jsonl` (o el prefix
+//   custom que pase el caller).
+// - El `filenamePrefix` se sanitiza contra path traversal — solo `[A-Za-z0-9_-]+`.
 //
 // Formato del registro:
 //   {
@@ -47,9 +53,23 @@ function todayStamp(date) {
  * Devuelve { record, currentPath, listToday }.
  *
  * @param {object} opts
- * @param {string} opts.dir         - directorio destino (se crea si no existe)
- * @param {function} [opts.redact]  - redactor de strings (default: identity)
- * @param {function} [opts.now]     - clock injectable (default: Date.now)
+ * @param {string} opts.dir              - directorio destino (se crea si no existe)
+ * @param {function} [opts.redact]       - redactor de strings (default: identity)
+ * @param {function} [opts.now]          - clock injectable (default: Date.now)
+ * @param {string} [opts.filenamePrefix] - prefijo del archivo (default 'commander-audit').
+ *                                          Issue #3415 / CA-16 / SEC-1.6: el handler de
+ *                                          `/rechazar` usa `filenamePrefix: 'rejections'` para
+ *                                          aislar el audit log en `rejections-YYYY-MM-DD.jsonl`.
+ *                                          Sanitizado contra path traversal — solo
+ *                                          `[A-Za-z0-9_-]+`, caso contrario se ignora y se
+ *                                          mantiene el default.
+ * @param {string[]} [opts.extraFields]  - whitelist de campos extra que `record({...})` puede
+ *                                          aportar y que se persisten en el JSONL. Issue #3415
+ *                                          CA-17: el handler de rechazar incluye `issue`,
+ *                                          `fase`, `fase_resolved`, `motivo`, `source`,
+ *                                          `raw_input`, `raw_input_hash`, `event_path`. Los
+ *                                          strings se redactan; los numéricos/booleanos se
+ *                                          persisten tal cual. Campos no listados se ignoran.
  */
 function createAuditLog(opts) {
     const options = opts || {};
@@ -60,12 +80,25 @@ function createAuditLog(opts) {
     const redact = typeof options.redact === 'function' ? options.redact : (s) => s;
     const now = typeof options.now === 'function' ? options.now : () => Date.now();
 
+    // Issue #3415 / CA-16 / SEC-1.6 — filenamePrefix configurable.
+    // Sanitización defensiva: solo aceptamos `[A-Za-z0-9_-]+` para evitar path traversal
+    // (ej. caller que sin querer pasa `../etc/passwd-`). Default retrocompatible.
+    const rawPrefix = typeof options.filenamePrefix === 'string' && options.filenamePrefix.length > 0
+        ? options.filenamePrefix
+        : 'commander-audit';
+    const filenamePrefix = /^[A-Za-z0-9_-]+$/.test(rawPrefix) ? rawPrefix : 'commander-audit';
+
+    const extraFieldsAllowed = Array.isArray(options.extraFields)
+        ? options.extraFields.filter((k) => typeof k === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+        : [];
+    const extraFieldsSet = new Set(extraFieldsAllowed);
+
     function ensureDir() {
         try { fs.mkdirSync(dir, { recursive: true }); } catch (_) { /* idempotente */ }
     }
 
     function currentPath(date) {
-        return path.join(dir, `commander-audit-${todayStamp(date)}.jsonl`);
+        return path.join(dir, `${filenamePrefix}-${todayStamp(date)}.jsonl`);
     }
 
     /**
@@ -93,6 +126,24 @@ function createAuditLog(opts) {
             result_status: entry.result_status,
             duration_ms: Number.isFinite(entry.duration_ms) ? entry.duration_ms : 0,
         };
+        // Issue #3415 / CA-17 — mergear campos extra de la whitelist. Strings pasan
+        // por el redactor; números/booleanos/null se persisten directo. Cualquier
+        // otro tipo se serializa con String() defensivo.
+        if (extraFieldsSet.size > 0) {
+            for (const key of extraFieldsSet) {
+                if (!Object.prototype.hasOwnProperty.call(entry, key)) continue;
+                const v = entry[key];
+                if (v === null || v === undefined) {
+                    row[key] = null;
+                } else if (typeof v === 'number' || typeof v === 'boolean') {
+                    row[key] = v;
+                } else if (typeof v === 'string') {
+                    row[key] = redact(v);
+                } else {
+                    row[key] = redact(String(v));
+                }
+            }
+        }
         const line = JSON.stringify(row) + '\n';
         try {
             fs.appendFileSync(currentPath(new Date(now())), line);
