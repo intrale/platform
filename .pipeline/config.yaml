@@ -438,6 +438,40 @@ handoff:
     - aprobacion
     - entrega
 
+# #3416 — Rebobinado del pipeline tras rechazo del operador.
+#
+# El operador dispara `/rechazar <issue> <alias>` desde Telegram. El Commander
+# valida y deja un archivo JSON en `.pipeline/eventos/pipeline-rejection/pendiente/`.
+# El `brazoRewind` del pulpo lo consume, valida (whitelist alias, fase no-futura,
+# punto de no retorno, deny-list de prompt injection), mata al agente activo si
+# corresponde, mueve el archivo `.<skill>` a la fase destino y postea comentario
+# en GitHub.
+#
+# Mitigaciones de seguridad (#3416 SEC-1..SEC-8 del análisis de security):
+#   - SEC-1 prompt injection: deny-list + cap 2KB + wrap XML `<rejection_feedback>`.
+#   - SEC-2 autorización: source debe ser `telegram-commander` o `cli-local`.
+#   - SEC-3 validación estricta de fase: whitelist enum cerrada.
+#   - SEC-4 path traversal: `Number(issue)` strict guard.
+#   - SEC-5 race con agente activo: SIGTERM → SIGKILL con grace period.
+#   - SEC-6 inyección comentario GitHub: motivo dentro de fenced code block.
+#   - SEC-7 audit log: hash chain SHA-256 reusando `lib/audit-log.js`.
+#   - SEC-8 rate limit suave: alerta (no bloqueo) ≥10 rewinds/hora.
+#
+# Ver: docs/pipeline/rewind-operador.md
+rewind:
+  # Tiempo de gracia antes de escalar SIGTERM → SIGKILL al agente activo.
+  # 30s es suficiente para que el agente termine un flush de logs pero corto
+  # para no trabar al operador esperando un rewind.
+  kill_grace_seconds: 30
+  # Ventana del rate limit suave (CA-8). El umbral es `rate_limit_threshold`
+  # rewinds por issue en esta ventana — al superar, alerta a Telegram, NO
+  # bloquea. Respeta la decisión de Leo de no tener circuit breaker.
+  rate_limit_window_minutes: 60
+  rate_limit_threshold: 10
+  # TTL de markers in-flight (CA-9 recovery). Si el pulpo crasha durante un
+  # rewind, los markers > ttl se limpian al boot y el operador puede reintentar.
+  in_flight_stale_minutes: 5
+
 # #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
 #
 # Cuando `env_isolation_enabled: true`, el pulpo filtra `process.env` antes de
