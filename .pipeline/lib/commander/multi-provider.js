@@ -639,6 +639,197 @@ function cannedDataResidencyResponse({ provider, blocked }) {
 }
 
 // -----------------------------------------------------------------------------
+// #3434 — runCommanderSpawn (wire post-spawn del parser de errores)
+//
+// El parser `lib/commander/provider-error-parser.js#parseProviderError` clasifica
+// la salida de un spawn LLM del Commander en categorías estructuradas
+// (`quota_exhausted | rate_limit | transient_5xx | auth | permanent_failure |
+// unknown`). Este wrapper conecta la decisión con dos efectos:
+//
+//   1. **setFlag**: si `errorClass ∈ {quota_exhausted, rate_limit}` →
+//      `quotaModule.setFlag({ provider, errorType, ... })`. El siguiente
+//      dispatch consulta el flag y rota al próximo provider de la chain.
+//      Para `transient_5xx | auth | permanent_failure | unknown` NO se
+//      escribe flag (ver matriz en parser).
+//
+//   2. **audit log**: emite `auditCommanderRequest()` con `event` derivado
+//      del veredicto del parser y `decision` documentando qué se hizo.
+//      Esto cierra CA-6 del issue (`chain_tried` refleja realmente todos
+//      los providers que se intentaron).
+//
+// El wrapper es **post-spawn estricto** — el caller decide qué pasar:
+//   - `stdout/stderr`: el caller debe pasar SOLO stderr (no stdout) para
+//     transport=cli, para evitar el confused-deputy del SR-1. Para
+//     transport=api, pasar la respuesta cruda del fetch (JSON/SSE entero).
+//   - `provider/transport`: inputs autoritativos. El parser falla cerrado
+//     si vienen vacíos o desconocidos.
+//   - `timedOut/exitCode/durationMs`: signals del wrapper de spawn. Se
+//     pasan tal cual al parser.
+//
+// El retorno del wrapper incluye el resultado del parser + flags de
+// efectos colaterales que el caller PUEDE necesitar (`flagSet: boolean`,
+// `auditLogged: boolean`). El caller decide si rotar el spawn al siguiente
+// provider en el MISMO turno (out of scope #3434; cubierto por #3275).
+// -----------------------------------------------------------------------------
+function runCommanderSpawn(opts = {}) {
+    const {
+        pipelineDir,
+        provider,
+        transport,
+        rawOutput,
+        timedOut,
+        exitCode,
+        durationMs,
+        chatId,
+        prompt,
+        requestId,
+        chainTried,
+        primaryProvider,
+        // inyectables tests
+        parserModule,
+        quotaModule,
+        auditLog,
+        fsImpl,
+        now,
+    } = opts;
+
+    const _parser = parserModule || require('./provider-error-parser');
+    const _quota = quotaModule || require('../quota-exhausted');
+
+    // 1. Clasificar via parser.
+    const verdict = _parser.parseProviderError(rawOutput, {
+        provider,
+        transport,
+        timedOut,
+        exitCode,
+        durationMs,
+        _quotaModule: _quota,
+    });
+
+    // 2. SR-7: persistir flag SOLO para quota_exhausted / rate_limit y
+    //    SOLO si el errorType extraído del evidence existe en la
+    //    KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER del provider. El parser
+    //    ya respetó esa allowlist al clasificar `quota_exhausted` por
+    //    shape estructural; para clases derivadas por regex heurístico
+    //    usamos un errorType genérico documentado por provider.
+    let flagSet = false;
+    if (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit') {
+        try {
+            const errorType = _selectErrorTypeForFlag(provider, verdict, _quota);
+            if (errorType) {
+                _quota.setFlag({
+                    provider,
+                    errorType,
+                    rawExcerpt: verdict.evidence,
+                    agent: COMMANDER_SKILL,
+                });
+                flagSet = true;
+            }
+        } catch (e) {
+            // best-effort: si setFlag falla, igual logueamos al audit.
+        }
+    }
+
+    // 3. Audit log unificado (SR-8).
+    let auditLogged = false;
+    if (pipelineDir) {
+        const decision =
+            verdict.errorClass === 'unknown' ? 'ignore' :
+            flagSet ? 'flag_set' :
+            verdict.shouldFallback ? 'fallback' :
+            'ignore';
+        try {
+            auditCommanderRequest({
+                pipelineDir,
+                event: 'provider_error_parsed',
+                providerEffective: provider,
+                providerIntended: primaryProvider || provider,
+                chainTried: Array.isArray(chainTried) ? chainTried : null,
+                chatId,
+                prompt,
+                latencyMs: durationMs,
+                requestId,
+                errorCode: verdict.errorClass,
+                auditLog,
+                fsImpl,
+                now,
+                // Sumamos el extracto saneado del evidence para diagnóstico.
+                // (no incluimos `raw` para no inflar el log).
+            });
+            auditLogged = true;
+        } catch { /* best-effort */ }
+    }
+
+    return {
+        ...verdict,
+        flagSet,
+        auditLogged,
+        decision:
+            verdict.errorClass === 'unknown' ? 'ignore' :
+            flagSet ? 'flag_set' :
+            verdict.shouldFallback ? 'fallback' :
+            'ignore',
+    };
+}
+
+// -----------------------------------------------------------------------------
+// _selectErrorTypeForFlag — elige un errorType válido de
+// KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER[provider] para persistir en el flag.
+//
+// SR-7: NUNCA persistir un errorType que no esté en la allowlist del
+// provider — eso contaminaría el flag y rompería la cross-validation del
+// `lib/agent-models-validate.js`. Si no podemos encontrar un valor seguro,
+// devolvemos `null` y el caller skipea el setFlag.
+//
+// Estrategia:
+//   1. Si el `evidence` parsea como JSON con shape `error_type` o `type` y
+//      ese valor está en la allowlist → usarlo.
+//   2. Si no, usar el primer valor de la allowlist como "default safe"
+//      del provider.
+//   3. Si la allowlist está vacía → null.
+// -----------------------------------------------------------------------------
+function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
+    const allowlist =
+        (quotaModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})[provider] || [];
+    if (allowlist.length === 0) return null;
+
+    // 1. Intentar extraer del evidence si es JSON.
+    try {
+        const trimmed = (verdict.evidence || '').trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('data:')) {
+            const jsonStr = trimmed.startsWith('data:')
+                ? trimmed.replace(/^data:\s*/, '')
+                : trimmed;
+            const parsed = JSON.parse(jsonStr);
+            // Buscar candidate en los shapes conocidos:
+            //   - Anthropic stream-json: { type:'result', is_error:true, error_type:'usage_limit_error' }
+            //   - OpenAI SSE: { event:'error', data:{ error:{ type, code } } }
+            //   - Alt OpenAI: { type:'response.error', error:{ type } }
+            //   - API directa: { error:{ type, code } }
+            const candidates = [
+                parsed.error_type,
+                parsed.error && parsed.error.type,
+                parsed.error && parsed.error.code,
+                parsed.data && parsed.data.error && parsed.data.error.type,
+                parsed.data && parsed.data.error && parsed.data.error.code,
+                // `parsed.type` solo si NO es marker SSE genérico
+                (parsed.type && parsed.type !== 'response.error' && parsed.type !== 'result')
+                    ? parsed.type
+                    : null,
+            ];
+            for (const candidate of candidates) {
+                if (candidate && allowlist.includes(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+    } catch { /* fallthrough */ }
+
+    // 2. Default safe = primer elemento de la allowlist del provider.
+    return allowlist[0];
+}
+
+// -----------------------------------------------------------------------------
 // safeBuildSpawn — wrapper defensivo para `handler.buildSpawn` que captura
 // el throw de los stubs no implementados (#3198 pendiente).
 //
@@ -697,6 +888,7 @@ module.exports = {
     readCommanderStats,
     safeBuildSpawn,
     enforceDataResidency,
+    runCommanderSpawn,
 
     cannedFallbackUnavailableResponse,
     cannedAllGatedResponse,
@@ -707,4 +899,5 @@ module.exports = {
     _auditFile: auditFile,
     _dedupStatePath: dedupStatePath,
     _loadDedupState: loadDedupState,
+    _selectErrorTypeForFlag,
 };

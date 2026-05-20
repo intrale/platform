@@ -1,0 +1,11 @@
+{
+  "_doc": "Fixture sintético: OpenAI/Codex SSE con error.type=insufficient_quota. Shape canónico documentado en platform.openai.com/docs/api-reference. Reemplazable cuando #3198 active el handler real de codex.",
+  "synthetic": true,
+  "source_url": "https://platform.openai.com/docs/guides/error-codes/api-errors",
+  "provider": "openai-codex",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "data: {\"event\":\"error\",\"data\":{\"error\":{\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\",\"message\":\"You exceeded your current quota, please check your plan and billing details.\"}}}"
+}

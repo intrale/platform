@@ -1,0 +1,11 @@
+{
+  "_doc": "Fixture sintético: Cerebras emite un 429 'puro' sin code en la allowlist de quota — clasifica como rate_limit (no quota). Es un caso transitorio de throughput, no de billing.",
+  "synthetic": true,
+  "source_url": "synthetic-rate-limit-transient",
+  "provider": "cerebras",
+  "transport": "api",
+  "expected_error_class": "rate_limit",
+  "expected_should_fallback": true,
+  "expected_retriable": true,
+  "raw": "{\"error\":{\"status\":429,\"message\":\"Concurrent request limit exceeded. Try again in 1s.\"}}"
+}
