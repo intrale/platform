@@ -77,6 +77,11 @@ const DETERMINISTIC_SLASH = new Set([
     'bloqueados',
     'unblock',
     'stop',
+    // Issue #3415 — `/rechazar` y sus aliases. El handler vive en
+    // `commander/rechazar-handler.js` y se inyecta como default handler.
+    'rechazar',
+    'reject',
+    'rebobinar',
 ]);
 
 // Slash-commands que SE clasifican como `llm` (creación/análisis con razonamiento).
@@ -120,6 +125,11 @@ const NLP_PATTERNS = [
     { regex: /\b(ghostbusters|matar fantasmas|matar zombis)\b/i, command: 'ghostbusters' },
     { regex: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, command: 'intake', llm: true },
     { regex: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, command: 'proponer', llm: true },
+    // Issue #3415 — NLP para `/rechazar` (texto natural). El residual del
+    // replace queda como args ("3381 ux el mockup..."). Capturamos verbos
+    // típicos: rechazá/rechazar, rebobiná/rebobinar, reject. El parser del
+    // handler tolera espacios y comas en el residual.
+    { regex: /^(?:rech[áa]z[áa]?|rech[áa]ce|rebobin[áa]?|reject)\s+/i, command: 'rechazar' },
 ];
 
 const MAX_SHORT_LENGTH = 80;     // Texto > 80 chars es conversación libre (CA-18)
@@ -258,6 +268,15 @@ const ARG_SCHEMAS = {
         allowedValues: [],
         hint: 'El comando es read-only — no acepta argumentos. Para destrabar la cuota, esperá al reset o borrá el flag manualmente con `rm .pipeline/quota-exhausted.json` (consola).',
     },
+    // Issue #3415 — `/rechazar` valida MÍNIMAMENTE acá. El parser estricto
+    // (SEC-1.5 issue + SEC-1.4 fase) vive en rechazar-handler.js para que
+    // el handler pueda diferenciar entre texto y audio transcripto.
+    // Acá solo gateamos: si llega texto plano (no audio), debe haber al
+    // menos algo de input. Para audio (sin args), dejamos pasar y que el
+    // handler decida (puede haber transcripción válida en _textoFinal).
+    rechazar: { allow: () => true },
+    reject: { allow: () => true },
+    rebobinar: { allow: () => true },
 };
 
 function validateArgs(command, args) {
@@ -326,6 +345,11 @@ function createDispatcher(opts) {
     const defaultHandlers = buildDefaultHandlers({
         pipelineRoot: options.pipelineRoot,
         logsDir: options.logsDir,
+        now: options.now,
+        // Issue #3415 — overrides para el handler de `/rechazar`. El caller
+        // (pulpo.js o tests) puede inyectar `whisperLocal`/`githubClient`/etc.
+        // Si no se inyectan, se usan los defaults reales (whisper-local.js + gh CLI).
+        rechazarDeps: options.rechazarDeps || null,
     });
     const handlers = { ...defaultHandlers, ...customHandlers };
 
@@ -583,7 +607,32 @@ function buildDefaultHandlers(ctx) {
     const PIPELINE = path.resolve(ctx.pipelineRoot);
     const LOG_DIR = path.resolve(ctx.logsDir);
 
+    // Issue #3415 — handler de `/rechazar` (singleton dentro del dispatcher,
+    // mantiene el auditor de rejections vivo entre dispatches).
+    const rechazarDeps = ctx.rechazarDeps || {};
+    const { createRechazarHandler } = require('./commander/rechazar-handler');
+    const rechazarHandler = createRechazarHandler({
+        pipelineRoot: PIPELINE,
+        auditDir: rechazarDeps.auditDir || path.join(PIPELINE, 'audit'),
+        rejectionsDir: rechazarDeps.rejectionsDir || path.join(PIPELINE, 'rejections'),
+        redactSensitive: rechazarDeps.redactSensitive || ((s) => baseRedact.redactSensitive(String(s || ''))),
+        whisperLocal: rechazarDeps.whisperLocal,
+        githubClient: rechazarDeps.githubClient,
+        now: ctx.now || rechazarDeps.now,
+        randomVariant: rechazarDeps.randomVariant,
+        maxAudioBytes: rechazarDeps.maxAudioBytes,
+        maxAudioDurationS: rechazarDeps.maxAudioDurationS,
+        maxStaleMs: rechazarDeps.maxStaleMs,
+        noReturnLabels: rechazarDeps.noReturnLabels,
+        logger: rechazarDeps.logger,
+    });
+
     return {
+        // Issue #3415 — aliases todos mapean al mismo handler.
+        rechazar: rechazarHandler.handle,
+        reject: rechazarHandler.handle,
+        rebobinar: rechazarHandler.handle,
+
         // Issue #3253 — CA-1: `/quota` read-only. Lee
         // `.pipeline/quota-exhausted.json` con whitelist estricta de campos
         // (CA-S2: nunca emite el JSON crudo, nunca expone paths absolutos).

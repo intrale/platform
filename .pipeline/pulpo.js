@@ -7869,10 +7869,22 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     //    y los handlers NUEVOS del CA-2 (tail / salud / descanso). Para los
     //    comandos legacy devuelve { status: 'no_handler' } y caemos al switch.
     try {
+      // Issue #3415 — pasar metadata adicional al dispatcher para que el
+      // handler de `/rechazar` aplique CA-9/CA-13/CA-14 (whisper-local,
+      // límites de audio, replay protection). Los handlers que no usan
+      // estos campos los ignoran (shape backward-compatible).
       result = await dispatcher.dispatch({
         from: m.from,
         chat_id: m.chat_id || getTelegramChatId(),
         text: m._textoFinal,
+        date: m.date,
+        voice: m.voice,
+        voice_path: m.voice_path,
+        voice_file_size: m.voice_file_size,
+        voice_duration: m.voice_duration,
+        _esAudio: m._esAudio,
+        _audio: m._audio,
+        _textoFinal: m._textoFinal,
       });
       if (result && result.reply !== null) {
         respuesta = result.reply;

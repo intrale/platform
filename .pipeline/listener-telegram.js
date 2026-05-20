@@ -354,6 +354,11 @@ async function enqueueMessage(update) {
   const rawText = msg.text || caption || '';
   const sanitizedText = sanitize(rawText);
 
+  // Issue #3415 / CA-13 — capturar metadata de voice (file_size, duration)
+  // para que el handler de `/rechazar` aplique límites de tamaño/duración
+  // ANTES de invocar a whisper-local. Sin estos campos el handler no tiene
+  // forma de gatear el audio sin descargarlo primero.
+  const voiceMeta = msg.voice || msg.audio || null;
   const content = {
     message_id: msg.message_id,
     from: msg.from?.first_name || 'unknown',
@@ -362,6 +367,8 @@ async function enqueueMessage(update) {
     photo_path: photoPath,
     voice: msg.voice?.file_id || msg.audio?.file_id || null,
     voice_path: voicePath,
+    voice_file_size: voiceMeta?.file_size || null,
+    voice_duration: voiceMeta?.duration || null,
     date: msg.date
   };
 
