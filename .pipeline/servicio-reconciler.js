@@ -33,6 +33,8 @@ require('./lib/sanitize-console').install();
 const { sanitize } = require('./sanitizer');
 const humanBlock = require('./lib/human-block');
 const admissionGate = require('./lib/admission-gate');
+// #3381 — Gate de screenshots+mockup (default OFF, activable por env var).
+const screenshotsMockupGate = require('./hooks/screenshots-mockup-gate');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -718,6 +720,94 @@ function reconcileAdmissionOrphans(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #3381 — Sweep del screenshots+mockup gate (default OFF)
+// -----------------------------------------------------------------------------
+//
+// Cuando SCREENSHOTS_MOCKUPS_GATE_ENABLED=1, escanea issues `Ready` en scope
+// (app:* o area:pipeline con archivos de dashboard) y alerta por Telegram si
+// alguno no tiene la sección `## Screenshots & Mockups` o el opt-out
+// `ux:no-visual`. NO revierte labels automáticamente — solo señaliza para
+// triaje humano + agente /ux. Mantener el principio "fail-soft" del rollout.
+
+function listReadyIssuesWithBody() {
+    try {
+        const raw = execSync(
+            `"${GH_BIN}" issue list --label "Ready" --state open --json number,labels,title,url,body --limit 500`,
+            { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true },
+        );
+        return JSON.parse(raw || '[]');
+    } catch (e) {
+        log(`Error listando Ready issues (screenshots gate): ${e.message.slice(0, 120)}`);
+        return null;
+    }
+}
+
+function enqueueScreenshotsGateAlert(issues) {
+    if (!Array.isArray(issues) || issues.length === 0) return false;
+    const lines = [
+        `🟠 Screenshots & Mockups gate — ${issues.length} issues Ready sin sección visual completa`,
+        '',
+    ];
+    for (const it of issues) {
+        const url = typeof it.url === 'string' && it.url ? it.url : `#${it.number}`;
+        const title = admissionGate.safeTitle(it.title || '');
+        const missing = Array.isArray(it.missing) ? it.missing.join(',') : 'unknown';
+        lines.push(`[#${it.number}](${url}) — ${title} — falta: ${missing}`);
+    }
+    lines.push('');
+    lines.push('Acción: invocar `/ux` o aplicar `ux:no-visual` con justificación.');
+    lines.push('Más detalle: docs/pipeline/ux-visual-flow.md');
+
+    const text = lines.join('\n');
+    try {
+        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
+        const filename = `${Date.now()}-screenshots-gate.json`;
+        fs.writeFileSync(
+            path.join(ADMISSION_TELEGRAM_QUEUE, filename),
+            JSON.stringify({ text, parse_mode: 'Markdown' }),
+            'utf8',
+        );
+        return true;
+    } catch (e) {
+        log(`Error encolando alerta screenshots-gate: ${e.message.slice(0, 120)}`);
+        return false;
+    }
+}
+
+function reconcileScreenshotsMockupGate(opts = {}) {
+    // Devuelve {appliedCount, skipped, reason}.
+    if (process.env[screenshotsMockupGate.FLAG_ENV_NAME] !== '1') {
+        return { skipped: true, reason: 'flag-off' };
+    }
+    const listFn = opts.listReady || listReadyIssuesWithBody;
+    const alertFn = opts.enqueueAlert || enqueueScreenshotsGateAlert;
+    const items = listFn();
+    if (items === null) return { skipped: true, reason: 'github-error' };
+
+    const blocked = [];
+    for (const it of items) {
+        const result = screenshotsMockupGate.evaluate({
+            labels: it.labels || [],
+            body: it.body || '',
+        }, { flag: '1' });
+        if (result.gate === 'block') {
+            blocked.push({
+                number: it.number,
+                title: it.title,
+                url: it.url,
+                missing: result.missing,
+            });
+        }
+    }
+
+    if (blocked.length === 0) {
+        return { appliedCount: 0, skipped: false };
+    }
+    const sent = alertFn(blocked);
+    return { appliedCount: blocked.length, alertSent: sent };
+}
+
+// -----------------------------------------------------------------------------
 // Loop principal
 // -----------------------------------------------------------------------------
 
@@ -783,13 +873,26 @@ function reconcileOnce() {
         admissionResult = { error: true };
     }
 
+    // #3381 — Sweep del screenshots+mockup gate (default OFF). Mismo principio
+    // que admission: fail-soft, no rompe el ciclo. Solo alerta — no auto-revert.
+    let screenshotsResult = null;
+    try {
+        screenshotsResult = reconcileScreenshotsMockupGate();
+    } catch (e) {
+        log(`Screenshots+mockup sweep error: ${e.message.slice(0, 120)}`);
+        screenshotsResult = { error: true };
+    }
+
     const elapsed = Date.now() - t0;
     lastRunAt = Date.now();
     const admissionSummary = admissionResult && !admissionResult.skipped && !admissionResult.error
         ? `, +${admissionResult.appliedCount || 0} admission${admissionResult.bootstrap ? ' [BOOTSTRAP]' : ''}`
         : '';
-    if (created || enqueued || archived || detected || resolved || (admissionResult && admissionResult.appliedCount)) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${admissionSummary}`);
+    const screenshotsSummary = screenshotsResult && !screenshotsResult.skipped && !screenshotsResult.error && screenshotsResult.appliedCount
+        ? `, +${screenshotsResult.appliedCount} screenshots-gate`
+        : '';
+    if (created || enqueued || archived || detected || resolved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount)) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${admissionSummary}${screenshotsSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
