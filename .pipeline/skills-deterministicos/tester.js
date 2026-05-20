@@ -297,7 +297,29 @@ function getChangedFilesVsMain(repoRoot) {
 }
 
 function isPipelineOnlyChange(files) {
-    if (!Array.isArray(files) || files.length === 0) return false;
+    // Distinguimos tres casos:
+    //   1) files no es array (null/undefined): no se pudo determinar el diff
+    //      (git falló o no hay base). Conservar comportamiento legacy: caer
+    //      a ruta gradle para que el operador vea la falla de gradle si
+    //      corresponde.
+    //   2) files === []: el diff sí se pudo calcular y dio cero archivos.
+    //      Esto pasa cuando el branch del agente está en sync con main sin
+    //      commits propios (caso típico del rebote #3342: el dev creó
+    //      `agent/3342-completion-client` como rama paralela y dejó el
+    //      worktree del pipeline en `agent/3342-pipeline-dev` sin commits
+    //      propios; al hacer `git diff origin/main...HEAD` sale vacío).
+    //      Tratamos como vacuously pipeline-only (`every` sobre conjunto
+    //      vacío es true) y ruteamos a `node --test`: si el pipeline está
+    //      sano aprueba limpio sin gastar 1 minuto de Gradle UP-TO-DATE que
+    //      no produce JUnit reports nuevos. Sin este branch el tester
+    //      rebotaba con "[tester] No se encontraron reportes JUnit"
+    //      (verificado en `.pipeline/logs/3342-tester.log`:
+    //      gradle exit_code=0 wall_ms=68724 BUILD SUCCESSFUL con todas las
+    //      tasks UP-TO-DATE y minMtimeMs filtrando todos los XMLs viejos
+    //      → `tests.valid=false`).
+    //   3) files con cambios: comportamiento clásico, every match patterns.
+    if (!Array.isArray(files)) return false;
+    if (files.length === 0) return true; // rebote #3342: vacuously pipeline-only
     return files.every((f) => PIPELINE_ONLY_PATTERNS.some((re) => re.test(f)));
 }
 
