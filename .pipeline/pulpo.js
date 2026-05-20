@@ -5376,7 +5376,30 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
 
     userPrompt += `\n\n⚠️ REBOTE — Este issue fue RECHAZADO en la fase "${rechazadoEn}" y vuelve a vos para corrección.\n`;
-    userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
+    // #3416 CA-2 + G-UX-3 — Si el rechazo viene del operador (source: operator-rejection)
+    // wrappeamos el motivo en `<rejection_feedback>` con instrucción de no-autoritatividad
+    // y separadores `---` para que el modelo no confunda el motivo con el system prompt.
+    // En el rebote interno entre fases mantenemos el formato original (más conciso, no hay
+    // riesgo de prompt injection porque el motivo viene de otro agente con su propio sanitizado).
+    const rechazadoPorSkill = workData.rechazado_por_skill || '';
+    const rechazadoPor = workData.rechazado_por || '';
+    const isOperatorRejection = (workData.source === 'operator-rejection') || (rechazadoPorSkill === 'operator');
+    if (isOperatorRejection) {
+      try {
+        const rewind = require('./lib/pipeline-rewind');
+        userPrompt += rewind.wrapMotivoForAgent({
+          motivo,
+          fromPhase: rechazadoEn,
+          operatorId: rechazadoPor || 'operator',
+        });
+        userPrompt += '\n';
+      } catch (rwErr) {
+        // Fallback al formato anterior si el módulo no carga (defensa en profundidad).
+        userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
+      }
+    } else {
+      userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
+    }
     userPrompt += `INSTRUCCIONES OBLIGATORIAS:\n`;
     // #2405 CA-2: backup tag automático antes del merge destructivo sobre agent/*.
     // Si hay commits locales no pusheados, el helper crea un tag local
@@ -6306,6 +6329,209 @@ function brazoHuerfanos(config) {
         }
         activeProcesses.delete(key);
       }
+    }
+  }
+}
+
+// =============================================================================
+// BRAZO 4.5: REWIND — Procesa eventos `pipeline.rejection` del Commander (#3416)
+// =============================================================================
+//
+// Bus filesystem: `.pipeline/rejections/<issue>-<unix-ts>.json` (escrito por
+// el productor del Commander, #3441 / `lib/commander/rechazar-handler.js`).
+// Cada archivo trae `{issue, fase, fase_resolved, motivo, ts, source, chat_id, audit_ref}`.
+// El adapter `lib/rewind-event-adapter.js` traduce ese shape al que consume
+// `rewindIssueToPhase` (`{issue, alias, motivo, operatorId, source}`).
+//
+// Después de procesar, este brazo:
+//   1. Hace sweep de stale in-flight markers.
+//   2. Lee los `.json` del root del directorio (NO subcarpetas).
+//   3. Normaliza el evento con el adapter.
+//   4. Llama a `rewindIssueToPhase` con `activeProcesses` + control de procesos.
+//   5. Postea comentario en GitHub (CA-3).
+//   6. Manda mensaje al operador por Telegram (G-UX-1..7).
+//   7. Mueve el archivo del evento a `listo/` subcarpeta (mantiene root limpio).
+// =============================================================================
+
+let _pipelineRewindMod = null;
+function getRewindModule() {
+  if (_pipelineRewindMod) return _pipelineRewindMod;
+  try { _pipelineRewindMod = require('./lib/pipeline-rewind'); } catch (e) {
+    log('rewind', `[ERROR] no se pudo cargar lib/pipeline-rewind: ${e.message}`);
+    return null;
+  }
+  return _pipelineRewindMod;
+}
+
+let _rewindMessagesMod = null;
+function getRewindMessagesModule() {
+  if (_rewindMessagesMod) return _rewindMessagesMod;
+  try { _rewindMessagesMod = require('./lib/rewind-messages'); } catch (e) {
+    log('rewind', `[ERROR] no se pudo cargar lib/rewind-messages: ${e.message}`);
+    return null;
+  }
+  return _rewindMessagesMod;
+}
+
+let _rewindAdapterMod = null;
+function getRewindAdapterModule() {
+  if (_rewindAdapterMod) return _rewindAdapterMod;
+  try { _rewindAdapterMod = require('./lib/rewind-event-adapter'); } catch (e) {
+    log('rewind', `[ERROR] no se pudo cargar lib/rewind-event-adapter: ${e.message}`);
+    return null;
+  }
+  return _rewindAdapterMod;
+}
+
+// El producer de eventos `pipeline.rejection` es `lib/commander/rechazar-handler.js`
+// (#3441, mergeado en main). Escribe en `.pipeline/rejections/<issue>-<unixTs>.json`
+// como bus filesystem flat. Después de procesar, el consumer mueve a `listo/`
+// subdir (mantiene el directorio raíz limpio para que el producer detecte
+// fácilmente eventos nuevos por inspección visual / scripts auxiliares).
+const REWIND_EVENTS_DIR = path.join(PIPELINE, 'rejections');
+
+async function brazoRewind(config) {
+  const rewindMod = getRewindModule();
+  const msgs = getRewindMessagesModule();
+  const adapter = getRewindAdapterModule();
+  if (!rewindMod || !msgs || !adapter) return; // Módulo no disponible — best-effort.
+
+  // Sweep stale in-flight markers (CA-9 recovery post-crash).
+  try {
+    const stale = rewindMod.sweepStaleInFlight(PIPELINE);
+    for (const s of stale) {
+      log('rewind', `♻️ marker stale limpiado: ${path.basename(s.file)} (step=${s.marker.step})`);
+    }
+  } catch (e) { log('rewind', `[WARN] sweep in-flight falló: ${e.message}`); }
+
+  // Producer escribe los .json directamente en `REWIND_EVENTS_DIR/` (sin
+  // subcarpeta `pendiente/`). Después de procesar movemos a `listo/`.
+  const pendDir = REWIND_EVENTS_DIR;
+  const listoDir = path.join(REWIND_EVENTS_DIR, 'listo');
+  let entries;
+  try { entries = fs.readdirSync(pendDir); }
+  catch { return; }
+
+  for (const name of entries) {
+    if (!name.endsWith('.json') || name.startsWith('.')) continue;
+    const filePath = path.join(pendDir, name);
+    // Saltear subdirs (listo/, etc.) — solo procesamos archivos del root.
+    try {
+      if (fs.statSync(filePath).isDirectory()) continue;
+    } catch { continue; }
+
+    let rawEvent;
+    try {
+      rawEvent = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (e) {
+      log('rewind', `[ERROR] evento corrupto ${name}: ${e.message} — moviendo a listo/`);
+      try { fs.mkdirSync(listoDir, { recursive: true }); moveFile(filePath, listoDir); } catch {}
+      continue;
+    }
+
+    // Traducir el shape del producer (#3441) al shape del consumer (#3416).
+    // Ver `lib/rewind-event-adapter.js` para el contrato detallado.
+    const event = adapter.normalizeProducerEvent(rawEvent);
+    const { issue, alias, motivo, operatorId, source } = event;
+    const transcribe = event._envelope && event._envelope.transcribe_source;
+    log('rewind', `📥 evento ${name} → #${issue} alias=${alias} source=${source}${transcribe ? ` (transcribe=${transcribe})` : ''}`);
+
+    let result;
+    try {
+      result = await rewindMod.rewindIssueToPhase({
+        issue,
+        alias,
+        motivo,
+        operatorId,
+        source,
+        config,
+        pipelineRoot: PIPELINE,
+        yaml,
+        activeProcesses,
+        options: {
+          killGraceMs: (config.rewind && config.rewind.kill_grace_seconds)
+            ? config.rewind.kill_grace_seconds * 1000
+            : rewindMod.DEFAULT_KILL_GRACE_MS,
+        },
+      });
+    } catch (e) {
+      log('rewind', `[ERROR] rewindIssueToPhase tiró excepción: ${e.message}`);
+      result = { ok: false, code: 'UNEXPECTED_ERROR', message: e.message };
+    }
+
+    // --- Reportar resultado al operador (G-UX-1..7) ---
+    try {
+      if (result.ok) {
+        // Postear comentario en GitHub (CA-3).
+        try {
+          const tmp = path.join(LOG_DIR, `rewind-comment-${issue}-${Date.now()}.md`);
+          fs.writeFileSync(tmp, result.commentBody);
+          execSync(`gh issue comment ${issue} --body-file "${tmp}"`, { stdio: 'pipe' });
+          try { fs.unlinkSync(tmp); } catch {}
+        } catch (e) {
+          log('rewind', `[WARN] no pude postear comentario en GitHub #${issue}: ${e.message}`);
+        }
+
+        // Mensaje principal de éxito.
+        sendTelegram(msgs.buildSuccessMessage({
+          issue,
+          target: result.target,
+          fromPipeline: result.fromPipeline,
+          fromFase: result.fromFase,
+        }));
+
+        // G-UX-4: aviso por truncate.
+        if (result.sanitization && result.sanitization.truncated) {
+          sendTelegram(msgs.buildTruncateMessage({
+            issue,
+            originalBytes: result.sanitization.originalBytes,
+          }));
+        }
+
+        // G-UX-6: alerta por rate limit suave (no bloqueo).
+        if (result.rateLimitTriggered) {
+          sendTelegram(msgs.buildRateLimitWarning({
+            issue,
+            recentCount: result.recentRewindCount,
+            target: result.target,
+          }));
+        }
+
+        log('rewind', `✅ #${issue} rebobinado a ${result.target.pipeline}/${result.target.fase}/${result.target.skill} (action=${result.moveAction}, killed=${!!(result.killResult && result.killResult.killed)})`);
+      } else {
+        const code = result.code;
+        let txt;
+        if (code === 'INJECTION_DETECTED') {
+          txt = msgs.buildInjectionBlockedMessage({
+            issue,
+            matchedDescription: result.sanitization && result.sanitization.matchedDescription,
+          });
+        } else {
+          txt = msgs.buildErrorMessage(code, {
+            issue,
+            alias,
+            normalizedAlias: alias,
+            source,
+            target: result.target,
+            fromPipeline: result.fromPipeline,
+            fromFase: result.fromFase,
+            error: result.message,
+            killGraceMs: rewindMod.DEFAULT_KILL_GRACE_MS,
+          });
+        }
+        sendTelegram(txt);
+        log('rewind', `⛔ #${issue} rewind bloqueado (${code}): ${result.message || ''}`);
+      }
+    } catch (e) {
+      log('rewind', `[WARN] reporte al operador falló: ${e.message}`);
+    }
+
+    // Mover evento a listo/.
+    try {
+      fs.mkdirSync(listoDir, { recursive: true });
+      moveFile(filePath, listoDir);
+    } catch (e) {
+      log('rewind', `[ERROR] no se pudo mover evento ${name} a listo/: ${e.message}`);
     }
   }
 }
@@ -9964,6 +10190,11 @@ async function mainLoop() {
         brazoBarrido(config);     // Cuarto: promover entre fases
         brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
         brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
+        // #3416 — rewind del operador (fire-and-forget). Procesa eventos en
+        // `.pipeline/rejections/<issue>-<unix-ts>.json` (escritos por el
+        // Commander #3441) y rebobina el issue a la fase indicada. No bloquea
+        // el loop.
+        brazoRewind(config).catch(e => log('rewind', `error en brazo async: ${e.message}`));
         // #2893: detección periódica de deps faltantes en pausa parcial (cada N ticks).
         // Fire-and-forget: consulta gh con cache TTL 5min, no bloquea el loop.
         brazoPartialPauseDeps(config).catch(e => log('pulpo', `[partial-pause-deps] error async: ${e.message}`));
