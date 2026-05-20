@@ -428,6 +428,28 @@
           "model_override": "llama-3.3-70b"
         }
       ]
+    },
+    "telegram-sherlock": {
+      "provider": "cerebras",
+      "model_override": "llama-3.3-70b",
+      "fallbacks": [
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        },
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5"
+        },
+        {
+          "provider": "anthropic",
+          "model_override": "claude-haiku-4-5"
+        }
+      ]
     }
   }
 }

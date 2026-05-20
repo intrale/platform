@@ -471,3 +471,29 @@ pipeline:
   #
   # Default: 90 días. Recomendado mínimo: 30 días (piso hardcoded).
   audit_retention_days: 90
+
+# =============================================================================
+# #3343 — Sherlock verifier adversarial (split de #3331)
+#
+# Sherlock corre como capa interna del Commander de Telegram: antes de mandar
+# cada respuesta, refuta el análisis con evidencia del estado actual del
+# sistema invocando un provider distinto al del Commander vía HTTP completion-
+# client (#3342). Si detecta inconsistencias, reelabora la respuesta (1 vez,
+# cap hardcoded). Si timeout/error/sin-provider-distinto, agrega disclaimer
+# F-6 y manda la original.
+#
+# Defensas (CA-SEC-1..9):
+#   - sherlock_enabled solo se lee desde este archivo (CA-SEC-7 anti-toggle
+#     remoto: cualquier intento de cambio via input del usuario emite
+#     `sherlock_toggle_attempt_ignored` en el audit log y se ignora).
+#   - sherlock_max_reelaboraciones es un CAP. El código aplica
+#     `Math.min(valor, 1)` así que aunque alguien edite y ponga 99 acá,
+#     el invariante hardcoded gana (CA-SEC-9). Mantener `1` documenta la
+#     intención y evita confusión.
+#   - sherlock_timeout_ms se respeta hasta un máximo de 30s (clamp en
+#     lib/sherlock-verifier.js para evitar starvation de turnos).
+# =============================================================================
+sherlock_enabled: true
+sherlock_timeout_ms: 10000
+sherlock_max_reelaboraciones: 1
+
