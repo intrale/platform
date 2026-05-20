@@ -441,11 +441,14 @@ handoff:
 # #3416 — Rebobinado del pipeline tras rechazo del operador.
 #
 # El operador dispara `/rechazar <issue> <alias>` desde Telegram. El Commander
-# valida y deja un archivo JSON en `.pipeline/eventos/pipeline-rejection/pendiente/`.
-# El `brazoRewind` del pulpo lo consume, valida (whitelist alias, fase no-futura,
-# punto de no retorno, deny-list de prompt injection), mata al agente activo si
-# corresponde, mueve el archivo `.<skill>` a la fase destino y postea comentario
-# en GitHub.
+# (productor #3441, `lib/commander/rechazar-handler.js`) valida y escribe un
+# archivo JSON en `.pipeline/rejections/<issue>-<unix-ts>.json`. El `brazoRewind`
+# del pulpo (consumer #3416) lo consume vía adapter
+# (`lib/rewind-event-adapter.js`), valida (whitelist alias, fase no-futura,
+# punto de no retorno, deny-list de prompt injection), mata al agente activo
+# si corresponde, mueve el archivo `.<skill>` a la fase destino y postea
+# comentario en GitHub. Tras procesar mueve el evento a
+# `.pipeline/rejections/listo/`.
 #
 # Mitigaciones de seguridad (#3416 SEC-1..SEC-8 del análisis de security):
 #   - SEC-1 prompt injection: deny-list + cap 2KB + wrap XML `<rejection_feedback>`.

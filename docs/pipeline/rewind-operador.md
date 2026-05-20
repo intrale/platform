@@ -1,7 +1,7 @@
 # Rewind del operador — Rebobinar el pipeline a una fase anterior
 
 > Tracking: issue [#3416](https://github.com/intrale/platform/issues/3416).
-> Producer del evento: [#3415](https://github.com/intrale/platform/issues/3415) (`/rechazar` del Commander).
+> Producer del evento: [#3441](https://github.com/intrale/platform/issues/3441) (`/rechazar` del Commander, mergeado en main).
 > Validador de no-retorno: [#3417](https://github.com/intrale/platform/issues/3417) (stub a `false` hasta que aterrice).
 
 Cuando rechazás un entregable parcial vía `/rechazar`, el pipeline rebobina el issue a la fase que pediste, mata al agente que está corriendo (si hay), mueve los archivos al `pendiente/` de la fase destino, deja un comentario en GitHub con trazabilidad y relanza al agente con tu feedback como input narrativo.
@@ -12,12 +12,15 @@ Esta doc es para vos, operador. No es spec de arquitectura — está pensada par
 
 ```
 operador
-  ↓ /rechazar <issue> <alias> [motivo libre]
-Telegram Commander
-  ↓ valida alias + chat_id + escribe evento JSON
-.pipeline/eventos/pipeline-rejection/pendiente/<ts>-<issue>.json
+  ↓ /rechazar <issue> <alias> [motivo libre]   (texto o audio whisper-local)
+Telegram Commander (rechazar-handler.js — #3441)
+  ↓ valida alias + chat_id allowlist + sanitiza motivo + escribe evento JSON
+.pipeline/rejections/<issue>-<unix-ts>.json
+  {issue, fase, fase_resolved, motivo, ts, source, chat_id, audit_ref}
   ↓ polling del Pulpo (brazoRewind, cada ~30s)
-Pulpo
+Pulpo (brazoRewind — #3416)
+  ↓ adapter `lib/rewind-event-adapter.js` traduce el shape del producer al
+    shape del consumer (fase→alias, chat_id→operatorId, source→'telegram-commander')
   ↓ resuelve alias → posición actual del issue → fase destino
   ↓ valida (fase upstream, no punto de no retorno, deny-list, source autorizado)
   ↓ mata al agente activo (SIGTERM → SIGKILL con 30s de gracia)
@@ -25,6 +28,7 @@ Pulpo
   ↓ append audit en .pipeline/audit/rewinds.jsonl (hash chain)
   ↓ postea comentario GitHub con marker <!-- rejection-event -->
   ↓ confirma al operador por Telegram (G-UX-1 a G-UX-6)
+  ↓ mueve evento procesado a .pipeline/rejections/listo/
 ```
 
 El agente reencolado va a ver tu motivo envuelto en `<rejection_feedback source="operator">` con instrucción explícita de tratarlo como dato narrativo no autoritativo (mitiga prompt injection).
