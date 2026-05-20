@@ -90,6 +90,7 @@ Al iniciar, parsear el primer argumento:
 | `tendencias` | Investigacion de tendencias | Seccion "Modo: Tendencias" |
 | `mejorar <pantalla>` | Propuestas de mejora concreta | Seccion "Modo: Mejorar" |
 | `guia` | Generar/actualizar guia UX | Seccion "Modo: Guia" |
+| `screenshot-mockup <issue>` | Captura actual + genera mockup esperado por LLM | Seccion "Modo: Screenshot+Mockup" |
 | sin argumento / `escalar` | Escalar issues UX detectados | Seccion "Modo: Escalar" |
 
 ---
@@ -546,6 +547,158 @@ Actualizar `.claude/skills/ux/ux-patterns.md` con:
 ### Archivo actualizado
 `.claude/skills/ux/ux-patterns.md` — [resumen de cambios]
 ```
+
+---
+
+## Modo: Screenshot+Mockup (`/ux screenshot-mockup <issue>`)
+
+**Workflow obligatorio en definición** para issues con impacto visual ([#3381](https://github.com/intrale/platform/issues/3381)). Genera DOS imágenes adjuntas al issue:
+
+1. **Estado actual** — captura de cómo se ve hoy.
+2. **Estado esperado** — mockup PNG generado por LLM (Anthropic SDK) a partir de HTML/CSS.
+
+Doc operativa completa: `docs/pipeline/ux-visual-flow.md`.
+
+### Cuándo correr este modo
+
+- Issues con label `app:client`, `app:business`, `app:delivery` (Caso B — Android).
+- Issues con `area:pipeline` que tocan `dashboard-v2.js`, `.pipeline/dashboard.js` o `.pipeline/public/` (Caso A — Dashboard).
+
+Si el issue NO está en scope (ej. `area:pipeline` puro de hooks/scripts) → no aplica este modo. Si el dev quiere opt-out explícito, aplica label `ux:no-visual` con justificación.
+
+### Pre-flight: verificar credenciales y dependencias (abort conditions)
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+
+# Verificar ANTHROPIC_API_KEY (CA-7)
+node -e "const c=require('./.pipeline/lib/credentials'); c.loadCredentials(); if(!process.env.ANTHROPIC_API_KEY){console.error('ABORT: falta providers.anthropic.api_key en credentials.json'); process.exit(1)}"
+
+# Verificar SDK y puppeteer instalados (CA-8)
+node -e "try{require('@anthropic-ai/sdk');require('puppeteer');console.log('SDK+puppeteer OK')}catch(e){console.error('ABORT: falta',e.message); process.exit(1)}"
+```
+
+Si CUALQUIERA falla → enviar alerta Telegram al operador y abortar este modo (no continuar con el resto de fases). El operador carga la credencial por terminal (regla `feedback_api-keys-terminal-only`) o instala el paquete con `npm install` en `.pipeline/`.
+
+### Paso S1: Determinar caso (A o B) y parámetros
+
+Del issue:
+- Labels → caso A (dashboard) o B (Android, con flavor `client`/`business`/`delivery`).
+- Descripción del cambio → input al prompt LLM (sacar del body del issue + análisis técnico de guru si existe).
+- Pantalla afectada (Caso B) → para buscar baseline en `qa/evidence/`.
+
+### Paso S2: Capturar estado actual
+
+**Caso A — Dashboard del Pulpo**:
+
+```js
+const sc = require('./.pipeline/lib/screenshot-capture');
+const result = await sc.capture({
+  outputPath: `dashboard-actual-${ts}.png`,
+  allowedRoot: '/path/al/worktree',
+});
+```
+
+Si `result.ok === false`:
+- `reason === 'dashboard-down'` → continuar SOLO con el esperado, anotar "baseline no disponible" en el comentario (CA-2).
+- `reason === 'puppeteer-missing'` → abortar este modo.
+
+**Caso B — App Android**:
+
+NO levantar emulador. Buscar la captura más reciente:
+
+```bash
+ls -t qa/evidence/*/screenshot-*.png 2>/dev/null | head -5
+ls -t docs/app-screenshots-reference/ 2>/dev/null | head -5
+```
+
+Si no existe baseline → documentar "sin baseline visual disponible — primera implementación" en el comentario y seguir solo con esperado (CA-4).
+
+### Paso S3: Generar mockup esperado con LLM
+
+```js
+const ux = require('./.pipeline/lib/ux-mockup-generator');
+const result = await ux.generate({
+  prompt: changeDescription,           // sacado del body del issue
+  caseKind: 'dashboard',                // o 'android'
+  flavor: 'client',                     // solo Android
+  state: 'base',                        // base | loading | error | empty (CA-UX-6)
+  outputPath: `dashboard-esperado-${ts}.png`,
+  repoRoot: '/path/al/worktree',
+  allowedRoot: '/path/al/worktree',
+});
+```
+
+Si `result.ok === false`:
+- `reason === 'missing-credentials'` → abort + alerta Telegram (CA-7).
+- `reason === 'sdk-missing'` → abort con instrucción `npm install @anthropic-ai/sdk` (CA-8).
+- `reason === 'llm-failed'` → reintentar una vez; si vuelve a fallar, anotar en el comentario "mockup pendiente, LLM no disponible" y seguir.
+
+**Estados a cubrir (CA-UX-6)**: para Caso B con flujos no-triviales (formularios, listas, autenticación), generar AL MENOS 2 estados: base + uno de borde (error/empty/loading según contexto). Para cambios cosméticos puros y para Caso A (dashboard) basta con el base.
+
+### Paso S4: Adjuntar PNGs al issue y actualizar body
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+
+# Subir cada PNG como comment con --body-file no funciona para imágenes;
+# usar la sintaxis con --body + ![](attached:...) o subir como comment con cuerpo:
+gh issue comment <N> --body "Estado actual generado por /ux: ![actual]($URL_DEL_PNG)"
+gh issue comment <N> --body "Estado esperado (LLM): ![esperado]($URL_DEL_PNG)"
+```
+
+Y actualizar el body del issue agregando la sección:
+
+```markdown
+## Screenshots & Mockups
+
+- **Estado actual**: ver comment con `dashboard-actual-<ts>.png` (o "sin baseline disponible — primera implementación")
+- **Estado esperado**: ver comment con `dashboard-esperado-<ts>.png` (mockup generado por LLM)
+```
+
+El hook `.pipeline/hooks/screenshots-mockup-gate.js` valida que esta sección exista con las dos referencias antes de permitir Ready (CA-9).
+
+### Paso S5: Reporte
+
+```
+## Screenshot + Mockup — Issue #<N>
+
+### Caso detectado
+- Tipo: [A — Dashboard | B — Android (flavor: <client|business|delivery>)]
+- Pantalla afectada: <nombre>
+
+### Estado actual
+- Fuente: [Playwright headless | qa/evidence/<issue>/ | docs/app-screenshots-reference/ | sin baseline]
+- Archivo adjunto: <filename>.png
+
+### Estado esperado
+- Modelo LLM usado: <claude-opus-4-7 | claude-sonnet-4-6>
+- Tokens consumidos: input <N>, output <N>
+- Estados generados: [base, error, ...] (CA-UX-6)
+- Archivo(s) adjunto(s): <filenames>.png
+
+### Warnings / Issues
+- [si hubo dashboard-down, tokens-not-loaded, etc.]
+```
+
+### Reglas inquebrantables del prompt LLM (CA-UX-1/2/3/10/11)
+
+El helper `ux-mockup-generator.js` ya inyecta estas reglas al prompt — no las repitas a mano:
+
+- WCAG AA (contraste 4.5:1 normal, 3:1 ≥18pt).
+- Touch targets Android ≥48dp con separación ≥8dp.
+- Tokens del sistema de diseño (paleta, tipografía, spacing, radii) — prohibido HEX arbitrarios.
+- Tipografía escala Material 3 (`displayLarge`..`labelSmall`).
+- HTML self-contained sin fetch externo ni scripts.
+- Temperature 0.3 (determinismo razonable entre runs).
+
+Tokens en `docs/design-system/tokens.json`. Si no existe, el helper usa defaults M3 + warning.
+
+### Seguridad
+
+- **Screenshots NUNCA con datos productivos** (PII/secrets). Usar entornos QA o datos sintéticos.
+- El helper sanitiza filenames y bloquea path traversal automáticamente.
+- URL del dashboard está hardcodeada (anti-SSRF). NO inventes URLs.
 
 ---
 
