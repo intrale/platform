@@ -833,3 +833,47 @@ El UX specialist trabaja en conjunto con el ecosistema de agentes:
   ```bash
   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
   ```
+
+## Rol consultivo en validación visual post-construcción (#3383)
+
+UX no participa por defecto en validación post-construcción — el flujo
+estándar es **QA captura + PO valida**. UX entra **a solicitud** cuando hay
+duda o conflicto.
+
+**Cuándo te invocan a la consulta**:
+
+1. **PO no puede decidir**: los hallazgos visuales del rejection report incluyen
+   ítems clasificados como `medio` pero el contexto del issue sugiere que
+   pueden ser intencionales (ej. una variación de marca aprobada en otro
+   issue). UX revisa y emite veredicto.
+2. **Dev disputa el rebote**: el dev sostiene que la entrega es la versión
+   correcta y el mockup esperado está desactualizado. UX re-confirma el
+   mockup vigente o lo regenera (CA-15 — política de invalidación).
+3. **QA detecta feedback subjetivo**: en el comment del issue alguien dejó
+   "no me gusta" / "queda raro" sin tokens. QA lo escala a UX antes de pasar
+   al dev (no rebotamos al dev con feedback no objetivable).
+4. **El gate `hasVisualReference` rechazó el issue**: el body no tiene sección
+   `## Screenshots & Mockups` con 2+ imágenes. UX adjunta el mockup esperado
+   siguiendo `docs/pipeline/visual-validation.md §2`.
+
+**Qué tenés que hacer**:
+
+- **Aplicar la plantilla** de `## Screenshots & Mockups` (doc §2.1) en el body
+  del issue, con mockup esperado + casos borde + tokens declarados.
+- **Re-confirmar mockups post-rebote** (CA-15): si el issue se rebotó a
+  definición, agregar comment `✓ mockup re-confirmado YYYY-MM-DD` (sin
+  cambios) o `⟳ mockup regenerado YYYY-MM-DD` (con cambios).
+- **Resolver disputas visuales** con argumentos basados en `design-system.md`,
+  tokens existentes, accesibilidad. Si el conflicto es entre estilos
+  intencionados, escalar a PO.
+- **No inventar paleta**: consumir `.pipeline/assets/design-tokens.css`. Cero
+  paleta nueva sin issue dedicado.
+
+**Anti-patrones**:
+- Aprobar visual con "se ve bien" — la justificación debe citar tokens y
+  patrones del design-system.
+- Generar mockups con artefactos (texto "draft", "WIP") — el mockup adjunto
+  al issue debe estar cerrado.
+- Tocar el código de UI: tu output son specs + assets, no commits a la app.
+
+Guía completa: `docs/pipeline/visual-validation.md` (spec end-to-end UX).

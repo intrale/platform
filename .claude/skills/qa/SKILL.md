@@ -442,3 +442,40 @@ gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "$LABEL" 2>/dev/n
 - Recordings van a `qa/recordings/` — NO commitear.
 - SIEMPRE reportar veredicto final, incluso sin fallos.
 - Para criterios de cobertura, exploracion abierta o issues ambiguos: consultar `docs/qa-doctrina.md`.
+
+## Validación visual post-construcción (#3383)
+
+Para issues con labels `app:client | app:business | app:delivery` que tengan
+sección `## Screenshots & Mockups` con mockup esperado adjunto:
+
+1. **Capturar la entrega real** en el mismo estado que muestra el mockup
+   (no comparar pantalla feliz vs estado vacío del mockup):
+   - Android: `adb exec-out screencap -p` en flow Maestro.
+   - Dashboard / web: `page.screenshot()` Playwright headless.
+2. **Sanitizar la captura** con `redact()` del módulo `.pipeline/lib/handoff.js`
+   antes de adjuntarla a evidencia o rejection report (CA-9 del issue #3383):
+   - Tokens JWT, AWS keys, emails reales, URLs firmadas, tarjetas de prueba.
+3. **Comparar visual: mockup vs screenshot**. Identificar diferencias
+   objetivables (citando tokens, números, patrones — nunca "no se ve bien").
+4. **Si difiere** — emitir rejection report con bloque side-by-side:
+   - Llamar `rejection-report.js` pasando `data.visualComparison` con
+     `mockup`, `delivery`, `diffs[{title,description,impact}]`,
+     `suggestedAction`.
+   - El PDF resultante (CA-12, CA-13) incluye las 3 secciones obligatorias:
+     mockup esperado, entrega actual, diferencias narradas.
+   - El audio narrado (CA-14, CA-UX-5) lee diferencias + acción sugerida
+     en menos de 60 segundos.
+5. **Aplicar criterio de impacto**:
+   - `alto`: bloquea o degrada la acción principal → rechazo seguro.
+   - `medio`: afecta jerarquía/legibilidad sin bloquear → rechazo justificable.
+   - `bajo`: cosmético → consultar con PO antes de rebote.
+
+Guía completa: `docs/pipeline/visual-validation.md §5` (checklist UX para QA
+durante captura).
+
+**Anti-patrones**:
+- Aprobar visual sin comparar contra el mockup adjunto (cuando existe).
+- Rebotar con feedback subjetivo ("queda raro", "medio feo") sin tokens/números.
+- Capturar con DevTools, Compose layout inspector u overlays de debug visibles.
+- Comparar contra mockup invalidado (rebotado a definición sin re-confirmación
+  de UX — ver CA-15).
