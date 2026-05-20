@@ -1,0 +1,11 @@
+{
+  "_doc": "Fixture ADVERSARIAL (SR-1): el modelo Anthropic emite en su RESPUESTA literal el texto 'Usage credits required' (porque el usuario lo pidió, porque alucinó, porque está citando docs). Este texto NO debe disparar quota_exhausted — el parser está diseñado para leer SOLO stderr, no stdout. Si el caller pasa stdout, el parser NO debería clasificar como quota_exhausted (defensa profundidad).",
+  "synthetic": true,
+  "source_url": "adversarial-confused-deputy",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "_note": "Este fixture documenta una limitación: el parser confía en que el caller pase SOLO stderr (no stdout). El test correspondiente valida que el CALLER hace esa separación. Si el caller pasa stdout envenenado, el parser SÍ clasifica quota_exhausted — la defensa estructural vive en el wrapper de spawn que separa los streams.",
+  "raw": "Hola, te respondo tu pregunta sobre el error 'Usage credits required' que aparece en la API de Anthropic. Es un error de billing..."
+}

@@ -1,0 +1,11 @@
+{
+  "_doc": "Fixture sintético: Cerebras API (OpenAI-compatible) emite JSON con error.code=rate_limit_exceeded ante 429. Cerebras DECLARA `rate_limit_exceeded` como `quota_error_types` en agent-models.json — eso significa que para cerebras, este code SE TRATA COMO CUOTA (no rate_limit clásico). El parser respeta la convención declarativa del provider. Para rate_limit puro ver el fixture cerebras-api-rate-limit-pure.json.",
+  "synthetic": true,
+  "source_url": "https://inference-docs.cerebras.ai/api-reference/chat-completions",
+  "provider": "cerebras",
+  "transport": "api",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "{\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for model llama-3.3-70b. Try again in 60s.\",\"status\":429}}"
+}

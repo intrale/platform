@@ -17,6 +17,7 @@
 7. [Security considerations](#7-security-considerations) — gestión de keys, CSRF, audit trail, fallbacks reales.
 8. [Hardening de free providers](#8-hardening-de-free-providers-3260) — secrets, alerts, telemetry.
 9. [Modo degradado del Commander (sin LLM)](#9-modo-degradado-del-commander-sin-llm) — `/quota`, cooldown destructivo, gate texto libre.
+10. [Parser robusto de errores in-flight del Commander (#3434)](#10-parser-robusto-de-errores-in-flight-del-commander-3434) — receta para agregar provider, threat model, anti-patterns.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -1238,6 +1239,129 @@ npm run smoke:commander
 ```
 
 El smoke usa fixture aislado en `.pipeline/tests/fixtures/quota-exhausted.json` y un pipeline temporal en `os.tmpdir()` — **nunca toca el estado real** del pipeline (CA-S6).
+
+---
+
+## 10. Parser robusto de errores in-flight del Commander (#3434)
+
+> **Audiencia:** dev que necesita agregar un nuevo provider al parser, auditar el threat model, o entender el wire post-spawn del Commander.
+> **Issue de origen:** [#3434](https://github.com/intrale/platform/issues/3434) — surgido del incidente 2026-05-20 cuando el Commander no rotó de provider durante el outage de cuota Anthropic.
+
+### 10.1 Qué hace el parser
+
+`lib/commander/provider-error-parser.js` clasifica la salida de cualquier spawn LLM del Commander en categorías estructuradas. Contrato público:
+
+```
+parseProviderError(rawOutput, ctx) → {
+  errorClass: 'quota_exhausted' | 'rate_limit' | 'transient_5xx' |
+              'auth' | 'permanent_failure' | 'unknown',
+  retriable: boolean,
+  shouldFallback: boolean,
+  raw: string,        // saneado, max 200 chars
+  evidence: string,   // línea/json que disparó la clasificación (saneado)
+}
+
+ctx = {
+  provider: 'anthropic' | 'openai-codex' | 'gemini-google' | 'cerebras' | 'nvidia-nim',
+  transport: 'api' | 'cli',
+  timedOut?: boolean,
+  exitCode?: number | null,
+  durationMs?: number,
+}
+```
+
+### 10.2 Matriz de decisión
+
+| errorClass         | shouldFallback | retriable | ¿caller llama setFlag? | Ejemplo                                    |
+|--------------------|----------------|-----------|------------------------|--------------------------------------------|
+| `quota_exhausted`  | true           | false     | **sí**                 | `usage_limit_error`, `insufficient_quota`  |
+| `rate_limit`       | true           | true      | **sí**                 | HTTP 429 puro sin code de allowlist        |
+| `transient_5xx`    | true           | true      | NO                     | Timeout, exit code ≠0, HTTP 5xx, overloaded |
+| `auth`             | true           | false     | NO                     | `authentication_error`, HTTP 401/403       |
+| `permanent_failure`| true           | false     | NO                     | `context_length_exceeded`, `model_not_found` |
+| `unknown`          | **false**      | false     | NO                     | Sin shape conocido y sin signals de timeout |
+
+**Por qué `permanent_failure` tiene `shouldFallback: true`:** rotar a otro provider puede resolver el caso (otro modelo PUEDE soportar context mayor), pero NO se persiste el flag porque eso bloquearía 7 días el provider por algo que no era cuota.
+
+### 10.3 Wire post-spawn en `multi-provider.js#runCommanderSpawn`
+
+```javascript
+const mp = require('.pipeline/lib/commander/multi-provider');
+
+const result = mp.runCommanderSpawn({
+    pipelineDir,
+    provider: 'anthropic',
+    transport: 'cli',
+    rawOutput: stderr,         // SOLO stderr para CLI (SR-1)
+    timedOut: spawnResult.timedOut,
+    exitCode: spawnResult.exitCode,
+    durationMs: spawnResult.durationMs,
+    chatId,
+    prompt,
+    requestId,
+    chainTried: ['anthropic'],
+    primaryProvider: 'anthropic',
+});
+
+// result.errorClass, result.shouldFallback, result.flagSet, result.decision
+// El siguiente dispatch consultará el flag (si fue persistido) y rotará.
+```
+
+### 10.4 Agregar un provider al parser
+
+El parser está diseñado para extender. Para sumar soporte a un provider nuevo:
+
+1. **Sumarlo a `KNOWN_PROVIDERS`** en `lib/commander/provider-error-parser.js`. Si el provider no aparece en esa allowlist, el parser falla cerrado (`unknown`).
+2. **Confirmar shape estructural** del provider en `lib/quota-exhausted.js#_detectAnthropic` o `_detectOpenAI`, o agregar un handler nuevo si el shape es disjunto (ej. Google Gemini con `error.status: 'RESOURCE_EXHAUSTED'`).
+3. **Declarar `quota_error_types`** del provider en `lib/quota-exhausted.js#KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER`. El parser usa esa allowlist para validar que `errorType` antes de devolver `quota_exhausted`.
+4. **Agregar fixtures** en `lib/commander/fixtures/provider-errors/` para cada `(provider, transport, errorClass)` esperado. Marcar como `synthetic: true` si no proviene de log real, e incluir `source_url` apuntando a la doc oficial.
+5. **Sumar tests** en `lib/commander/__tests__/provider-error-parser.test.js` con un caso por fixture.
+
+### 10.5 Threat model del parser
+
+El parser opera sobre output potencialmente adversarial. Cuatro adversarios identificados:
+
+| Adversario                         | Vector                                                            | OWASP    | Mitigación                                                            |
+|------------------------------------|-------------------------------------------------------------------|----------|-----------------------------------------------------------------------|
+| Modelo del propio CLI              | Emite literalmente `Usage credits required` en su respuesta       | A04      | Wire pasa SOLO stderr (no stdout) al parser. SR-1 documentado.        |
+| Usuario malicioso de Telegram      | Pide al modelo repetir strings de error para envenenar el detector | A04      | Misma defensa: stderr ≠ stdout. El modelo no controla stderr.         |
+| Provider degradado                 | Devuelve HTML genérico, payload trunco, headers con API keys      | A09      | `sanitizeRawExcerpt` redacta keys multi-proveedor antes de loguear.   |
+| Adversario sobre el audit log      | Inyecta CR/LF para corromper líneas JSONL                         | A03/A09  | Strip CR/LF/TAB en `sanitizeRawExcerpt`. Cap 200 chars por excerpt.   |
+
+### 10.6 Cómo NO contribuir un detector inseguro
+
+Anti-patterns que serán rechazados en code review:
+
+- ❌ **Regex con `.*` libre**: causa ReDoS. Usar cuantificadores acotados explícitos (`[^\n]{0,80}` máximo).
+- ❌ **Matchear contra `content`/`text` del modelo**: el modelo emite texto controlado por usuario; nunca usarlo como señal de error.
+- ❌ **Inferir `provider` desde `rawOutput`**: el caller pasa el provider autoritativo. Si el parser lo infiere, el adversario controla el provider.
+- ❌ **Sanitizar manualmente**: reusar `quota-exhausted.sanitizeRawExcerpt` siempre. Hay redacciones específicas (Bearer, JWT, AIza, sk-ant-) que un sanitizer ad-hoc se va a perder.
+- ❌ **Persistir `errorType` fuera de `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER[provider]`**: contamina el flag. El parser y el selector retornan `null` o `unknown` si el valor no es canónico.
+- ❌ **Loggear el `prompt` o `content` del modelo en el audit log**: regla SR-7 del Commander. Solo `prompt_hash` (SHA-256 truncado).
+- ❌ **No cap de input antes de regex**: un stdout de 100MB puede crashear el dispatcher. Cap 64KB obligatorio (`MAX_RAW_INPUT_BYTES`).
+
+### 10.7 Tests del parser
+
+```bash
+# Unit + integration + adversarial + regresión del incidente 2026-05-20:
+node --test .pipeline/lib/commander/__tests__/provider-error-parser.test.js
+
+# No-regresión en tests existentes del Commander:
+node --test .pipeline/lib/__tests__/commander-multi-provider.test.js
+node --test .pipeline/lib/__tests__/commander-llm-audit.test.js
+node --test .pipeline/lib/__tests__/quota-exhausted.test.js
+```
+
+Cobertura mínima exigida (CA del issue #3434):
+
+- **CA-1**: contrato con `timedOut/exitCode/durationMs` validado.
+- **CA-2**: al menos un fixture por `(provider, transport, errorClass esperado)`.
+- **CA-3**: defensa anti-DoS — input 1MB <50ms, payloads ReDoS <50ms.
+- **CA-4**: sanitización via `sanitizeRawExcerpt`, matriz `errorClass × shouldFallback × setFlag` documentada.
+- **CA-5**: wire post-spawn (`runCommanderSpawn`) con `setFlag` solo para quota/rate_limit.
+- **CA-6**: audit log con hash-chain via `appendChained`.
+- **CA-7**: documentación de receta + threat model + anti-patterns (esta sección).
+- **CA-8**: regresión del incidente 2026-05-20 (timeout 600s sin output clasifica `transient_5xx`).
 
 ---
 

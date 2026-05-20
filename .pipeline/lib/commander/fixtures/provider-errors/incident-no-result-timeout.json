@@ -1,0 +1,17 @@
+{
+  "_doc": "Fixture REAL del incidente 2026-05-20: spawn de Anthropic colgó 600 segundos (timeout HARD_TIMEOUT_MS=10min en pulpo.js) y devolvió error_code=no_result sin shape estructural útil. El audit log reportó latency_ms: 600156. Este caso NO se detecta por rawOutput (output vacío o stream truncado) sino por ctx.timedOut + ctx.durationMs.",
+  "synthetic": false,
+  "source_url": "logs/commander-dispatch-2026-05-20.jsonl#request_id=87e3bdb43779",
+  "captured_at": "2026-05-20T14:16:00Z",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "transient_5xx",
+  "expected_should_fallback": true,
+  "expected_retriable": true,
+  "raw": "",
+  "ctx": {
+    "timedOut": true,
+    "exitCode": null,
+    "durationMs": 600156
+  }
+}
