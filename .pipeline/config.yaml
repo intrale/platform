@@ -497,3 +497,41 @@ sherlock_enabled: true
 sherlock_timeout_ms: 10000
 sherlock_max_reelaboraciones: 1
 
+# =============================================================================
+# Notificación de entregables del pipeline (#3414)
+# =============================================================================
+# Cuando un skill notificable (guru, po, ux, planner) cierra una fase del
+# pipeline `definicion` con `resultado: aprobado`, el pulpo encola un mensaje
+# Telegram con preview del entregable + envelope canónico que `/rechazar`
+# (#3415) puede parsear. Es human-in-the-loop OPCIONAL y NO bloqueante.
+#
+# Reglas de seguridad (lib/deliverable-notify.js):
+#   - CA-SEC-1: validación de path del adjunto bajo `attachment_root`. Rechaza
+#     `..`, null-bytes, absolutes fuera del root y symlinks que escapan.
+#   - CA-SEC-2: envelope HTML comment con `skill`/`fase`/`pipeline` derivados
+#     del nombre del archivo y directorio — NUNCA del YAML editable del agente.
+#   - CA-SEC-3: audit log JSONL con content_hash + preview sanitizado (200
+#     chars max, redact defense-in-depth) + ruta relativa.
+#
+# Lo que SÍ es configurable acá:
+#   - enabled:               flag global. Default OFF (rollout gradual).
+#   - kill_switch:           override de enabled (true → apagado total runtime).
+#   - skills:                subset notificable. Cambios requieren OK humano.
+#   - truncate_chars:        cap del preview de `notas:` en el mensaje.
+#   - attachment_root:       root allowlisteado para adjuntos PNG del UX.
+#   - dedup_window_hours:    ventana de dedup por content_hash.
+#   - audit_file:            JSONL append-only. Path relativo al repo root.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar tests unitarios + smoke.
+#   2. Activar con `enabled: true` y observar audit JSONL durante 1-2 días.
+#   3. Si aparecen ruidos no esperados, `kill_switch: true` corta sin reiniciar.
+deliverable_notifications:
+  enabled: false
+  kill_switch: false
+  skills: [guru, po, ux, planner]
+  truncate_chars: 1500
+  attachment_root: ".pipeline/assets/mockups"
+  dedup_window_hours: 24
+  audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
+

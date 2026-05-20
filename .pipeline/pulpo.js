@@ -101,6 +101,10 @@ const fsForAgentModels = require('node:fs');
 // próximo agente; escritura post-exit reusa el mismo mecanismo. Default OFF
 // (rollout gradual via config.yaml → handoff.enabled).
 const handoff = require('./lib/handoff');
+// #3414 — Notificación Telegram de entregables del pipeline (human-in-the-loop
+// opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
+// fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
+const deliverableNotify = require('./lib/deliverable-notify');
 // #2891 PR-B — Detector de anomalías de consumo (cron interno).
 const { AnomalyDetector } = require('./anomaly-detector');
 // #2892 PR-C — Canal Telegram + estado del banner de alerta.
@@ -3700,6 +3704,46 @@ function brazoBarrido(config) {
           }
         }
 
+        // #3414 — Notificación Telegram de entregables del pipeline.
+        // Se invoca SOLO en el camino "todos aprobaron" — los caminos de rebote
+        // hacen `continue` mucho antes y nunca llegan acá. Default OFF en
+        // config.yaml. try/catch defensivo: cualquier fallo se loguea pero NUNCA
+        // bloquea el `moveFile` a procesado/ (CA-FN-8 zero-blocking).
+        try {
+          const notifyCfg = (config && config.deliverable_notifications) || {};
+          if (notifyCfg.enabled === true && notifyCfg.kill_switch !== true) {
+            const telegramQueueDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+            const titleCached = getIssueTitleCached(issue);
+            for (const r of resultados) {
+              if (r.resultado !== 'aprobado') continue;
+              // skill viene del NOMBRE DEL ARCHIVO, no del YAML editable (CA-SEC-2)
+              const notifySkill = skillFromFile(r.file.name);
+              const result = deliverableNotify.notify({
+                issue,
+                skill: notifySkill,
+                fase,
+                pipeline: pipelineName,
+                yaml: r,
+                title: titleCached,
+                config: notifyCfg,
+                pipelineRoot: ROOT,
+                telegramQueueDir,
+              });
+              if (result.ok) {
+                log('barrido', `📨 #${issue} notify deliverable → ${notifySkill}/${fase}`);
+              } else if (result.action === 'skipped' && result.reason !== 'skill_not_notifiable' && result.reason !== 'disabled') {
+                // dedup, kill_switch, etc → log de visibilidad operacional
+                log('barrido', `📨 #${issue} notify skipped (${notifySkill}/${fase}): ${result.reason}`);
+              } else if (result.action === 'error') {
+                log('barrido', `📨 notify falló #${issue}/${notifySkill}: ${result.reason}`);
+              }
+            }
+          }
+        } catch (e) {
+          // Defensa última: zero impact en happy path del barrido (CA-FN-8).
+          log('barrido', `📨 notify excepción #${issue}/${fase}: ${e.message}`);
+        }
+
         // Mover todos los archivos evaluados a procesado/
         for (const a of archivos) {
           moveFile(a.path, procesadoDir);
@@ -3769,6 +3813,33 @@ function getIssueText(issueNum) {
     issueTextCache.set(issueNum, { text, fetchedAt: Date.now() });
     return text;
   } catch {
+    return '';
+  }
+}
+
+// #3414 — Cache de títulos de issues para deliverable-notify. Reusa el patrón
+// del `issueTextCache` pero guarda el título crudo (no lowercased). TTL 10min.
+const issueTitleCache = new Map(); // issueNum → { title: string, fetchedAt: timestamp }
+const ISSUE_TITLE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getIssueTitleCached(issueNum) {
+  const key = String(issueNum);
+  const cached = issueTitleCache.get(key);
+  if (cached && (Date.now() - cached.fetchedAt) < ISSUE_TITLE_CACHE_TTL_MS) {
+    return cached.title;
+  }
+  try {
+    ghThrottle();
+    const raw = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json title`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true }
+    );
+    const { title = '' } = JSON.parse(raw);
+    issueTitleCache.set(key, { title, fetchedAt: Date.now() });
+    return title;
+  } catch {
+    // Fallback silencioso — la notificación funciona igual sin título
+    // (el helper degrada a header sin subtítulo).
     return '';
   }
 }
