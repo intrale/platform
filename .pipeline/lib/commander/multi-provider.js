@@ -173,6 +173,81 @@ function resolveCommanderProvider(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #3343 / CA-SEC-8 — resolveCommanderProviderExcluding
+//
+// Variante PURA del resolver que excluye un provider específico (el del
+// Commander del turno) y resuelve sobre un skill arbitrario (default
+// `telegram-sherlock`, la cadena invertida free-first del verifier adversarial).
+//
+// El requisito de "implementación pura" (sin estado global mutable) lo
+// cumplimos pasando un `quotaModule` wrappeado al `resolveSpawnWithFallback`
+// que reporta `shouldGateSpawn = true` para el `excludedProvider` y delega
+// el resto al `quotaModule` real. Así reutilizamos toda la lógica de
+// fallback (cycle protection, depth cap, audit, notify) sin tocar el state
+// global (el flag de cuota del provider excluido sigue intacto, no lo
+// borramos ni lo seteamos).
+//
+// Args:
+//   - excludedProvider: string del provider del Commander a excluir. Si no
+//     coincide con ningún provider del chain, no excluye nada.
+//   - skill: nombre del skill alternativo (default 'telegram-sherlock').
+//   - issue: para audit log (default 'sherlock-verify').
+//
+// Devuelve el mismo shape que `resolveCommanderProvider`. Si la chain entera
+// queda gateada por la exclusión + cuotas reales, `source: 'all-gated'`,
+// `gated: true`.
+// -----------------------------------------------------------------------------
+const SHERLOCK_SKILL = 'telegram-sherlock';
+
+function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
+    const {
+        pipelineDir,
+        log,
+        skill,
+        dispatchModule,
+        quotaModule,
+        fsImpl,
+        now,
+        issue,
+    } = opts;
+
+    const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
+    const _quotaBase = quotaModule || require('../quota-exhausted');
+
+    // Acepta string o array — Sherlock necesita excluir varios cuando va
+    // descartando providers no-HTTP-compatibles del chain. Normalizamos
+    // a Set<string>.
+    const excludedSet = new Set();
+    if (typeof excludedProvider === 'string' && excludedProvider) {
+        excludedSet.add(excludedProvider);
+    } else if (Array.isArray(excludedProvider)) {
+        for (const p of excludedProvider) {
+            if (typeof p === 'string' && p) excludedSet.add(p);
+        }
+    }
+
+    // Wrapper PURO: reportamos gateado los excluded; el resto pasa al real.
+    // No mutamos _quotaBase ni el filesystem.
+    const wrappedQuota = {
+        shouldGateSpawn(skillName, q = {}) {
+            if (q && excludedSet.has(q.provider)) return true;
+            return _quotaBase.shouldGateSpawn(skillName, q);
+        },
+        sanitizeRawExcerpt: _quotaBase.sanitizeRawExcerpt,
+    };
+
+    return _dispatch.resolveSpawnWithFallback({
+        skill: skill || SHERLOCK_SKILL,
+        issue: issue || 'sherlock-verify',
+        pipelineDir,
+        fsImpl,
+        quotaModule: wrappedQuota,
+        onLog: typeof log === 'function' ? log : () => {},
+        now,
+    });
+}
+
+// -----------------------------------------------------------------------------
 // CA-5 + UX-G1 — formatFallbackNotice
 //
 // El runtime de dispatch-with-fallback emite una notificación operativa
@@ -609,11 +684,13 @@ function cannedAllGatedResponse() {
 
 module.exports = {
     COMMANDER_SKILL,
+    SHERLOCK_SKILL,
     INJECTION_PATTERNS,
     DEDUP_WINDOW_MS,
 
     sanitizeUserPrompt,
     resolveCommanderProvider,
+    resolveCommanderProviderExcluding,
     formatFallbackNotice,
     shouldEmitFallbackNotice,
     auditCommanderRequest,

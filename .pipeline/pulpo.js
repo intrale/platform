@@ -52,6 +52,15 @@ const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // log con hash-chain (CA-4 / SR-3) y formatea las notificaciones a Leo según
 // UX-G1 (lenguaje natural, no log operativo).
 const commanderMP = require('./lib/commander/multi-provider');
+// #3343 — Sherlock verifier adversarial. Corre IN-PROCESS entre
+// `ejecutarClaude` y `sendTelegram` del flujo texto-libre. Refuta el análisis
+// con un provider distinto al del Commander. Bypass total si
+// config.yaml.sherlock_enabled=false. Ver lib/sherlock-verifier.js.
+const sherlockVerifier = require('./lib/sherlock-verifier');
+// #3343 — Sherlock necesita generar `turnId` para correlación cross-event
+// del audit log (sherlock_verification ↔ commander_response). Usamos
+// crypto.randomBytes(8) → 16 hex; bastante para forenses cruzados.
+const crypto = require('node:crypto');
 // #3250 — Delegación de creación de issues a /doc y /planner. Detección de
 // intent + sanitización + audit log JSONL + provider gate + allowlist de
 // sender. La invocación real del Skill tool sigue corriendo en la sesión
@@ -8215,6 +8224,129 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           try { moveFile(s._path, commanderListo); } catch {}
         }
       }
+
+      // --- SHERLOCK VERIFIER (#3343) ---
+      // Verificación adversarial pre-`sendTelegram`. Corre con un provider
+      // DISTINTO al del Commander (excludedProvider) y refuta el análisis con
+      // evidencia del estado actual. Si encuentra inconsistencias, dispara
+      // 1 reelaboración (cap hardcoded). Si timeout/error/sin-provider, agrega
+      // disclaimer F-6. Bypass total si `sherlock_enabled=false`.
+      //
+      // turnId se genera acá (no dentro del verifier) para que los turnos
+      // bypaseados también queden correlacionables vía `commander_response`.
+      const turnId = crypto.randomBytes(8).toString('hex');
+      let sherlockInvoked = false;
+      let sherlockDisclaimerType = null;
+      try {
+        // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
+        // — sólo contadores que el Commander pudo haber observado para que
+        // Sherlock cruce el claim "hay N issues pendientes" vs realidad.
+        let pendingCount = 0;
+        let trabajandoCount = 0;
+        try {
+          pendingCount = fs.readdirSync(commanderPendiente).length;
+        } catch {}
+        try {
+          trabajandoCount = fs.readdirSync(commanderTrabajando).length;
+        } catch {}
+        const systemStateSnapshot =
+          `commander_pendiente_files=${pendingCount}\n` +
+          `commander_trabajando_files=${trabajandoCount}\n` +
+          `timestamp_iso=${new Date().toISOString()}\n` +
+          `pipeline_dir=${PIPELINE}`;
+
+        // El provider del Commander hoy es siempre `anthropic` (ejecutarClaude
+        // hace spawn de claude CLI). Cuando #3258 introduzca cross-provider
+        // fallback al Commander, este valor vendrá del dispatcher.
+        const commanderProvider = 'anthropic';
+
+        const verdict = await sherlockVerifier.verify({
+          analysis: respuesta || '',
+          originalRequest: mensajeConsolidado,
+          systemState: systemStateSnapshot,
+          lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
+          excludedProvider: commanderProvider,
+          pipelineDir: PIPELINE,
+          configLoader: loadConfig,
+          log,
+        });
+        sherlockInvoked = verdict.verdict !== 'skipped';
+
+        if (verdict.verdict === 'rechazado' && verdict.inconsistencies.length >= 1) {
+          // CA-F-3 — reelaborar UNA vez (cap hardcoded en verifier).
+          log('commander', `🔍 Sherlock rechazó respuesta (provider=${verdict.sherlockProvider}, inconsistencies=${verdict.inconsistencies.length}). Reelaborando...`);
+          const inconsistenciesBlock = verdict.inconsistencies
+            .map((it, i) => `${i + 1}. CLAIM: ${it.claim}\n   CONTRADICCIÓN: ${it.contradiction}`)
+            .join('\n\n');
+          const reelaboratePrompt = `${userPrompt}
+
+RESPUESTA ANTERIOR (borrador, NO enviada al usuario todavía):
+${respuesta}
+
+El verificador Sherlock encontró ${verdict.inconsistencies.length} inconsistencia(s) entre tu análisis y el estado real del sistema:
+
+${inconsistenciesBlock}
+
+INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones detectadas. NO menciones que hubo verificación previa ni que reelaboraste — entregá una respuesta final natural.`;
+          try {
+            const reelaborada = await ejecutarClaude(reelaboratePrompt, 'reelaboración Sherlock');
+            if (typeof reelaborada === 'string' && reelaborada.trim()) {
+              respuesta = reelaborada;
+              // 2da pasada de verificación con el mismo excludedProvider.
+              const verdict2 = await sherlockVerifier.verify({
+                analysis: respuesta || '',
+                originalRequest: mensajeConsolidado,
+                systemState: systemStateSnapshot,
+                lastHourLogs: '',
+                excludedProvider: commanderProvider,
+                pipelineDir: PIPELINE,
+                configLoader: loadConfig,
+                log,
+              });
+              if (verdict2.verdict === 'rechazado' && verdict2.inconsistencies.length >= 1) {
+                // CA-F-5 — disclaimer "rechazado persistente".
+                sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY;
+                log('commander', `🔍 Sherlock rechazó la reelaboración también — disclaimer F-5 aplicado`);
+              } else if (verdict2.verdict === 'aborted') {
+                sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+                log('commander', `🔍 Sherlock aborted en 2da pasada (${verdict2.errorCode}) — disclaimer F-6 aplicado`);
+              }
+            }
+          } catch (re) {
+            log('commander', `⚠️ Reelaboración Sherlock falló: ${re.message}. Manteniendo respuesta original.`);
+            sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+          }
+        } else if (verdict.verdict === 'aborted') {
+          // CA-F-6 — timeout/schema-fail/sin-provider-distinto.
+          sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+          log('commander', `🔍 Sherlock aborted (${verdict.errorCode}: ${verdict.reason}) — disclaimer F-6 aplicado`);
+        } else if (verdict.verdict === 'ok') {
+          // CA-F-7 — silencio total cuando todo concuerda.
+          log('commander', `🔍 Sherlock OK (provider=${verdict.sherlockProvider}, ${verdict.durationMs}ms)`);
+        }
+      } catch (sherlockErr) {
+        // Defensa: un fallo de Sherlock NUNCA debe tirar el turno. Degradamos
+        // a respuesta original con disclaimer F-6 y seguimos.
+        log('commander', `⚠️ Sherlock excepción no manejada: ${sherlockErr.message} — degradando a F-6`);
+        sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+      }
+
+      if (sherlockDisclaimerType && respuesta) {
+        respuesta = sherlockVerifier.applyDisclaimer(respuesta, sherlockDisclaimerType);
+      }
+
+      // Audit de correlación turn-level (CA-A-3).
+      try {
+        commanderMP.auditCommanderRequest({
+          pipelineDir: PIPELINE,
+          event: 'commander_response',
+          providerEffective: 'anthropic',
+          chatId,
+          prompt: '', // no prompt crudo
+          errorCode: sherlockDisclaimerType,
+          requestId: turnId,
+        });
+      } catch { /* best-effort */ }
 
       // Actualizar sesión
       session.lastCommand = 'chat';
