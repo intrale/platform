@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 19 — Bloque side-by-side "Mockup esperado vs Entrega actual" en PDF de rejection report visual.
+  Issue #3383 — Validación visual post-construcción (QA + PO).
+
+  Demuestra:
+    - Header del rejection report (identidad pipeline + veredicto + meta multi-provider)
+    - Bloque comparativo side-by-side con altura igualada y etiquetas claras
+    - Diferencias narradas (texto humano, no diff automatizado en MVP)
+    - Tokens del design system (--surface-*, --semantic-danger, --brand-*)
+    - Accesibilidad: contraste AAA, labels descriptivos, sin depender de color
+  Resolución target: 1240x1754 (A4 a ~150dpi para impresión / PDF lectura cómoda).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1754" viewBox="0 0 1240 1754"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D"/>
+      <stop offset="100%" stop-color="#0A1C36"/>
+    </linearGradient>
+    <pattern id="placeholderMockup" patternUnits="userSpaceOnUse" width="32" height="32">
+      <rect width="32" height="32" fill="#1C2128"/>
+      <path d="M0 32 L32 0" stroke="#252B33" stroke-width="1"/>
+    </pattern>
+    <pattern id="placeholderEntrega" patternUnits="userSpaceOnUse" width="32" height="32">
+      <rect width="32" height="32" fill="#1C2128"/>
+      <path d="M0 0 L32 32" stroke="#252B33" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <!-- Fondo página -->
+  <rect width="1240" height="1754" fill="#0D1117"/>
+
+  <!-- =================== HEADER =================== -->
+  <rect x="0" y="0" width="1240" height="120" fill="url(#headerGrad)"/>
+  <rect x="0" y="119" width="1240" height="1" fill="#30363D"/>
+
+  <!-- Logo + nombre del reporte -->
+  <g transform="translate(48, 36)">
+    <rect width="48" height="48" rx="12" fill="#0D274D" stroke="#1890FF" stroke-width="1"/>
+    <path d="M24 10 L7 40 L41 40 Z" fill="none" stroke="url(#brandGrad)" stroke-width="3.5"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M24 22 L17 34 L31 34 Z" fill="url(#brandGrad)"/>
+  </g>
+  <text x="112" y="58" fill="#E6EDF3" font-size="22" font-weight="700">Intrale Pipeline V3</text>
+  <text x="112" y="80" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="2">REJECTION REPORT · VISUAL VALIDATION</text>
+
+  <!-- Veredicto (top-right) -->
+  <g transform="translate(984, 36)">
+    <rect width="208" height="48" rx="6" fill="#3B1F1B" stroke="#8B1A14"/>
+    <circle cx="22" cy="24" r="6" fill="#F85149"/>
+    <text x="38" y="29" fill="#F85149" font-size="14" font-weight="700">VISUAL MISMATCH</text>
+  </g>
+
+  <!-- ============ Issue title + meta ============ -->
+  <text x="48" y="172" fill="#E6EDF3" font-size="28" font-weight="700">#1842 — Onboarding empresa: paso 2 (datos fiscales)</text>
+
+  <g transform="translate(48, 192)">
+    <rect width="120" height="22" rx="11" fill="#1F2D3F"/>
+    <text x="60" y="16" text-anchor="middle" fill="#58A6FF" font-size="11" font-weight="600">qa · verificacion</text>
+    <rect x="132" width="92" height="22" rx="11" fill="#21262D"/>
+    <text x="178" y="16" text-anchor="middle" fill="#B1BAC4" font-size="11" font-weight="600" font-family="'Cascadia Code', monospace">claude · sonnet-4.6</text>
+    <rect x="236" width="138" height="22" rx="11" fill="#2A1F1C"/>
+    <text x="305" y="16" text-anchor="middle" fill="#F85149" font-size="11" font-weight="600">app:business</text>
+    <text x="404" y="16" fill="#8B949E" font-size="11">2026-05-20 14:32:01 · rebote 1/3</text>
+  </g>
+
+  <!-- =================== BLOQUE COMPARATIVO SIDE-BY-SIDE =================== -->
+  <!-- Encabezado de la sección -->
+  <rect x="48" y="248" width="6" height="32" fill="#F85149"/>
+  <text x="68" y="272" fill="#E6EDF3" font-size="20" font-weight="700">Comparación visual</text>
+  <text x="260" y="272" fill="#8B949E" font-size="12">mockup esperado (definición) · entrega actual (QA capturada)</text>
+
+  <!-- Columna izquierda: Mockup esperado -->
+  <g transform="translate(48, 300)">
+    <rect width="560" height="640" rx="8" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Header de columna -->
+    <rect width="560" height="44" rx="8" fill="#1C2128"/>
+    <rect y="36" width="560" height="8" fill="#1C2128"/>
+    <circle cx="20" cy="22" r="6" fill="#58A6FF"/>
+    <text x="36" y="27" fill="#E6EDF3" font-size="13" font-weight="700">MOCKUP ESPERADO</text>
+    <text x="200" y="27" fill="#8B949E" font-size="11">adjunto en definición · UX · 2026-05-15</text>
+    <rect x="448" y="10" width="104" height="24" rx="4" fill="#0F3D26" stroke="#196C2E"/>
+    <text x="500" y="26" text-anchor="middle" fill="#3FB950" font-size="11" font-weight="600">baseline · v2</text>
+
+    <!-- Marco del frame de la captura -->
+    <rect x="20" y="60" width="520" height="560" rx="6" fill="url(#placeholderMockup)" stroke="#30363D"/>
+
+    <!-- Annotation overlay: pantalla simulada -->
+    <g transform="translate(140, 130)">
+      <rect width="280" height="420" rx="20" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+      <!-- Status bar -->
+      <rect width="280" height="24" rx="20" fill="#0D274D"/>
+      <text x="14" y="16" fill="#E6EDF3" font-size="10" font-weight="600">9:41</text>
+      <text x="266" y="16" text-anchor="end" fill="#E6EDF3" font-size="10">100%</text>
+      <!-- Title bar -->
+      <rect y="24" width="280" height="48" fill="#0D274D"/>
+      <text x="14" y="55" fill="#00D6FF" font-size="13" font-weight="700">Onboarding · Paso 2 de 4</text>
+      <text x="266" y="55" text-anchor="end" fill="#B1BAC4" font-size="11">50%</text>
+      <!-- Progress -->
+      <rect y="72" width="140" height="3" fill="#00D6FF"/>
+      <!-- Form -->
+      <text x="20" y="106" fill="#E6EDF3" font-size="13" font-weight="600">Datos fiscales</text>
+      <text x="20" y="124" fill="#8B949E" font-size="10">Necesarios para emitir facturas</text>
+      <!-- CUIT -->
+      <text x="20" y="156" fill="#B1BAC4" font-size="10">CUIT *</text>
+      <rect x="20" y="162" width="240" height="36" rx="6" fill="#1C2128" stroke="#1890FF"/>
+      <text x="32" y="184" fill="#E6EDF3" font-size="12" font-family="monospace">30-71234567-0</text>
+      <!-- Razón social -->
+      <text x="20" y="216" fill="#B1BAC4" font-size="10">Razón social *</text>
+      <rect x="20" y="222" width="240" height="36" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <text x="32" y="244" fill="#6E7681" font-size="12" font-style="italic">Como figura en AFIP</text>
+      <!-- Condición -->
+      <text x="20" y="276" fill="#B1BAC4" font-size="10">Condición IVA *</text>
+      <rect x="20" y="282" width="240" height="36" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <text x="32" y="304" fill="#6E7681" font-size="12">Seleccioná una opción</text>
+      <text x="252" y="304" text-anchor="end" fill="#8B949E" font-size="12">▼</text>
+      <!-- CTA -->
+      <rect x="20" y="356" width="240" height="44" rx="22" fill="url(#brandGrad)"/>
+      <text x="140" y="383" text-anchor="middle" fill="#0A1C36" font-size="13" font-weight="700">Continuar</text>
+    </g>
+  </g>
+
+  <!-- Columna derecha: Entrega actual -->
+  <g transform="translate(632, 300)">
+    <rect width="560" height="640" rx="8" fill="#161B22" stroke="#8B1A14"/>
+
+    <!-- Header de columna -->
+    <rect width="560" height="44" rx="8" fill="#2A1F1C"/>
+    <rect y="36" width="560" height="8" fill="#2A1F1C"/>
+    <circle cx="20" cy="22" r="6" fill="#F85149"/>
+    <text x="36" y="27" fill="#E6EDF3" font-size="13" font-weight="700">ENTREGA ACTUAL</text>
+    <text x="194" y="27" fill="#8B949E" font-size="11">captura QA (emulador) · 2026-05-20 14:31</text>
+    <rect x="448" y="10" width="104" height="24" rx="4" fill="#3B1F1B" stroke="#8B1A14"/>
+    <text x="500" y="26" text-anchor="middle" fill="#F85149" font-size="11" font-weight="600">no matchea</text>
+
+    <!-- Marco del frame de la captura -->
+    <rect x="20" y="60" width="520" height="560" rx="6" fill="url(#placeholderEntrega)" stroke="#30363D"/>
+
+    <!-- Annotation overlay: pantalla actual con defectos -->
+    <g transform="translate(140, 130)">
+      <rect width="280" height="420" rx="20" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+      <!-- Status bar (correcta) -->
+      <rect width="280" height="24" rx="20" fill="#0D274D"/>
+      <text x="14" y="16" fill="#E6EDF3" font-size="10" font-weight="600">9:41</text>
+      <text x="266" y="16" text-anchor="end" fill="#E6EDF3" font-size="10">100%</text>
+      <!-- Title bar (DIFF: progreso roto) -->
+      <rect y="24" width="280" height="48" fill="#0D274D"/>
+      <text x="14" y="55" fill="#00D6FF" font-size="13" font-weight="700">Onboarding · Paso 2 de 4</text>
+      <text x="266" y="55" text-anchor="end" fill="#B1BAC4" font-size="11">25%</text>
+      <!-- DIFF marker D1: progress incorrecto -->
+      <rect y="72" width="70" height="3" fill="#F85149"/>
+      <circle cx="74" cy="73.5" r="8" fill="#F85149" stroke="#0D1117" stroke-width="1.5"/>
+      <text x="74" y="77" text-anchor="middle" fill="#0D1117" font-size="9" font-weight="700">1</text>
+      <!-- Form (DIFF: heading sin jerarquía) -->
+      <text x="20" y="106" fill="#B1BAC4" font-size="11">Datos fiscales</text>
+      <circle cx="120" cy="103" r="8" fill="#F85149" stroke="#0D1117" stroke-width="1.5"/>
+      <text x="120" y="107" text-anchor="middle" fill="#0D1117" font-size="9" font-weight="700">2</text>
+      <text x="20" y="124" fill="#8B949E" font-size="10">Necesarios para emitir facturas</text>
+      <!-- CUIT -->
+      <text x="20" y="156" fill="#B1BAC4" font-size="10">CUIT *</text>
+      <rect x="20" y="162" width="240" height="36" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <text x="32" y="184" fill="#E6EDF3" font-size="12" font-family="monospace">30-71234567-0</text>
+      <!-- Razón social -->
+      <text x="20" y="216" fill="#B1BAC4" font-size="10">Razón social *</text>
+      <rect x="20" y="222" width="240" height="36" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <text x="32" y="244" fill="#6E7681" font-size="12" font-style="italic">Como figura en AFIP</text>
+      <!-- Condición -->
+      <text x="20" y="276" fill="#B1BAC4" font-size="10">Condición IVA *</text>
+      <rect x="20" y="282" width="240" height="36" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <text x="32" y="304" fill="#6E7681" font-size="12">Seleccioná una opción</text>
+      <text x="252" y="304" text-anchor="end" fill="#8B949E" font-size="12">▼</text>
+      <!-- DIFF: CTA con color y forma incorrectos -->
+      <rect x="20" y="356" width="240" height="36" rx="6" fill="#1890FF"/>
+      <text x="140" y="379" text-anchor="middle" fill="#FFFFFF" font-size="12" font-weight="600">Continuar</text>
+      <circle cx="270" cy="374" r="10" fill="#F85149" stroke="#0D1117" stroke-width="1.5"/>
+      <text x="270" y="378" text-anchor="middle" fill="#0D1117" font-size="9" font-weight="700">3</text>
+    </g>
+  </g>
+
+  <!-- =================== DIFERENCIAS IDENTIFICADAS (texto humano) =================== -->
+  <rect x="48" y="980" width="6" height="32" fill="#D29922"/>
+  <text x="68" y="1004" fill="#E6EDF3" font-size="20" font-weight="700">Diferencias identificadas</text>
+  <text x="332" y="1004" fill="#8B949E" font-size="12">narradas por QA · 3 hallazgos · sin diff automatizado (MVP)</text>
+
+  <!-- Lista de diferencias -->
+  <g transform="translate(48, 1024)">
+    <!-- Diff 1 -->
+    <rect width="1144" height="100" rx="6" fill="#1C2128" stroke="#30363D"/>
+    <circle cx="32" cy="32" r="14" fill="#F85149"/>
+    <text x="32" y="38" text-anchor="middle" fill="#0D1117" font-size="14" font-weight="700">1</text>
+    <text x="60" y="38" fill="#E6EDF3" font-size="14" font-weight="700">Indicador de progreso muestra 25% en vez de 50%</text>
+    <text x="60" y="62" fill="#B1BAC4" font-size="12">El step 2 de 4 corresponde a 50% del flujo; la entrega calcula como si fueran 8 pasos. Ver mockup paso 72px vs entrega paso 70px.</text>
+    <text x="60" y="84" fill="#8B949E" font-size="11">Impacto · alto · el usuario percibe el flujo más largo de lo real, sube fricción de onboarding.</text>
+
+    <!-- Diff 2 -->
+    <rect y="116" width="1144" height="100" rx="6" fill="#1C2128" stroke="#30363D"/>
+    <circle cx="32" cy="148" r="14" fill="#F85149"/>
+    <text x="32" y="154" text-anchor="middle" fill="#0D1117" font-size="14" font-weight="700">2</text>
+    <text x="60" y="154" fill="#E6EDF3" font-size="14" font-weight="700">Heading "Datos fiscales" pierde jerarquía tipográfica</text>
+    <text x="60" y="178" fill="#B1BAC4" font-size="12">Mockup: 13px / weight 600 / text-primary. Entrega: 11px / weight 400 / text-secondary. Se confunde con el subtítulo.</text>
+    <text x="60" y="200" fill="#8B949E" font-size="11">Impacto · medio · el usuario no identifica el bloque temático del formulario.</text>
+
+    <!-- Diff 3 -->
+    <rect y="232" width="1144" height="100" rx="6" fill="#1C2128" stroke="#30363D"/>
+    <circle cx="32" cy="264" r="14" fill="#F85149"/>
+    <text x="32" y="270" text-anchor="middle" fill="#0D1117" font-size="14" font-weight="700">3</text>
+    <text x="60" y="270" fill="#E6EDF3" font-size="14" font-weight="700">CTA "Continuar" sin gradiente de marca y con radio incorrecto</text>
+    <text x="60" y="294" fill="#B1BAC4" font-size="12">Mockup: radius 22 (pill) + gradient brand-cyan→brand-blue, label en navy-deep. Entrega: radius 6 + brand-blue sólido, label blanco.</text>
+    <text x="60" y="316" fill="#8B949E" font-size="11">Impacto · alto · el CTA pierde identidad y no señala "acción principal" como en el resto de la app.</text>
+  </g>
+
+  <!-- =================== ACCIONES SIGUERIDAS =================== -->
+  <rect x="48" y="1396" width="6" height="32" fill="#3FB950"/>
+  <text x="68" y="1420" fill="#E6EDF3" font-size="20" font-weight="700">Acciones sugeridas</text>
+
+  <g transform="translate(48, 1440)">
+    <rect width="1144" height="140" rx="6" fill="#0F3D26" stroke="#196C2E"/>
+    <text x="24" y="34" fill="#3FB950" font-size="14" font-weight="700">→ Rebote a android-dev</text>
+    <text x="24" y="58" fill="#E6EDF3" font-size="12">Re-implementar respetando tokens de design-system: progress bar 50% step 2/4, heading 13px/600 text-primary, CTA pill 22px con brand gradient.</text>
+    <text x="24" y="82" fill="#E6EDF3" font-size="12">Referencia bloqueante: mockup esperado (definición · UX · 2026-05-15 · baseline v2).</text>
+    <text x="24" y="108" fill="#8B949E" font-size="11">Después de re-implementar, QA captura nuevo screenshot y re-corre comparación. Si el dev modifica el mockup esperado en vez de la entrega, UX debe re-confirmarlo (política de invalidación CA-15).</text>
+    <text x="24" y="128" fill="#8B949E" font-size="11">Si el dev considera que la entrega es la versión correcta y el mockup está desactualizado, abrir comentario en el issue antes de tocar y disputar con UX.</text>
+  </g>
+
+  <!-- =================== FOOTER =================== -->
+  <rect y="1690" width="1240" height="1" fill="#30363D"/>
+  <text x="48" y="1720" fill="#8B949E" font-size="11">Intrale Platform · Visual Validation Report v1 · #3383 · sanitizado (sin JWT/emails/URLs firmadas)</text>
+  <text x="1192" y="1720" text-anchor="end" fill="#8B949E" font-size="11" font-family="'Cascadia Code', monospace">checksum sha256: 4f1c…a7b3</text>
+</svg>
