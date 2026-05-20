@@ -340,10 +340,30 @@ test('isPipelineOnlyChange — false si hay archivos Kotlin/Compose', () => {
     ]), false);
 });
 
-test('isPipelineOnlyChange — false con array vacío', () => {
-    assert.equal(tester.isPipelineOnlyChange([]), false);
+test('isPipelineOnlyChange — false con null/undefined (diff no determinable)', () => {
+    // null/undefined significan "no se pudo calcular el diff" (git falló, base
+    // ausente, etc.). Conservamos el fallback a gradle por seguridad.
     assert.equal(tester.isPipelineOnlyChange(null), false);
     assert.equal(tester.isPipelineOnlyChange(undefined), false);
+});
+
+test('#3342 rev-1 — isPipelineOnlyChange devuelve true con array vacío (branch en sync con main)', () => {
+    // Cuando el branch del agente está en sync con main (porque la impl fue
+    // mergeada vía sibling branch — caso típico cuando el dev usa
+    // `agent/<issue>-completion-client` como rama de trabajo y el worktree del
+    // pipeline quedó en `agent/<issue>-pipeline-dev` sin commits), `git diff
+    // origin/main...HEAD` devuelve []. Antes el tester rebotaba con
+    // "No se encontraron reportes JUnit" porque caía a la ruta gradle, todo
+    // estaba UP-TO-DATE y ningún XML JUnit fresco quedaba para parsear. Ahora
+    // tratamos array vacío como vacuously pipeline-only (`every` sobre vacío
+    // es true por definición) y ruteamos a `node --test` que aprueba limpio si
+    // el pipeline está sano.
+    //
+    // Verificación empírica del bug original en `.pipeline/logs/3342-tester.log`:
+    //   [tester] git diff vs main: 0 archivos · pipeline_only=false
+    //   [tester] gradle exit_code=0 wall_ms=68724  (BUILD SUCCESSFUL UP-TO-DATE)
+    //   - ⏭️ No se encontraron reportes JUnit
+    assert.equal(tester.isPipelineOnlyChange([]), true);
 });
 
 test('isPipelineOnlyChange — paths fuera de los patrones permitidos rompen el match', () => {
