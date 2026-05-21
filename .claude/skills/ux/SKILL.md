@@ -730,7 +730,7 @@ Si el issue **NO** tiene `app:*` o tiene `ux:no-visual` → este modo no aplica.
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 
 # CA-S3 — credencial Anthropic vía credentials.js (NO parsear JSON a mano).
-node -e "const c=require('./.pipeline/lib/credentials'); c.loadCredentials(); if(!process.env.ANTHROPIC_API_KEY){console.error('ABORT: falta providers.anthropic.api_key en credentials.json'); process.exit(1)}"
+node -e "const c=require('./.pipeline/lib/credentials'); c.loadIntoEnv(); if(!process.env.ANTHROPIC_API_KEY){console.error('ABORT: falta providers.anthropic.api_key en credentials.json'); process.exit(1)}"
 
 # CA-4 — SDK + puppeteer instalados.
 node -e "try{require('@anthropic-ai/sdk');require('puppeteer');console.log('SDK+puppeteer OK')}catch(e){console.error('ABORT: falta',e.message); process.exit(1)}"
