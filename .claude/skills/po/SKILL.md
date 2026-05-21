@@ -879,3 +879,48 @@ Si se detectaron gaps nuevos, actualizar la sección "Gaps conocidos" en `.claud
   ```bash
   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
   ```
+
+## Criterio de aceptación visual en validación post-construcción (#3383)
+
+Para issues con labels `app:client | app:business | app:delivery`, además de
+los criterios de aceptación funcionales, validar visualmente que la entrega
+matchea el mockup esperado adjunto en definición.
+
+**Protocolo de validación**:
+
+1. **Verificar definición visual completa**:
+   - El issue tiene sección `## Screenshots & Mockups` con al menos un mockup
+     esperado + casos borde (vacío, error, datos largos).
+   - El mockup no fue invalidado por un rebote anterior sin re-confirmación de
+     UX (CA-15 — buscar comment `✓ mockup re-confirmado` o `⟳ mockup
+     regenerado` en el último ciclo).
+
+2. **Leer el rejection report visual** si QA emitió uno:
+   - El PDF incluye bloque side-by-side mockup vs entrega (CA-12).
+   - Lista de 3-5 diferencias narradas con título + descripción objetivable +
+     impacto clasificado (CA-13).
+   - Audio narrado (~60s) lee las diferencias + acción sugerida (CA-14).
+
+3. **Aplicar criterio de impacto al veredicto**:
+   - Si todos los hallazgos son **bajo**: el visual es probablemente aceptable.
+     Evaluar `WONTFIX` con razón documentada, no rebote.
+   - Si hay al menos uno **medio**: rebotar al dev — la jerarquía o legibilidad
+     está afectada.
+   - Si hay al menos uno **alto**: rebote bloqueante — afecta la acción
+     principal del usuario.
+
+4. **Validar objetividad de los hallazgos antes de rebotar**:
+   - Si un hallazgo dice "no me gusta" / "queda raro" / "medio feo" sin citar
+     tokens/números/patrones → escalar a UX antes de pasar al dev. No rebotamos
+     al dev con feedback subjetivo.
+   - Si hay duda sobre si el mockup sigue vigente → pedir re-confirmación a UX
+     antes de rebotar.
+
+**Anti-patrones**:
+- Aprobar funcional sin mirar el bloque side-by-side cuando el rejection
+  report visual está presente.
+- Rebotar al dev con feedback de UX que UX nunca validó.
+- Pasar por alto el visual mismatch porque "los tests pasan".
+
+Guía completa: `docs/pipeline/visual-validation.md §6` (checklist UX para PO
+durante validación visual).

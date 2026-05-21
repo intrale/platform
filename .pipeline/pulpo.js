@@ -39,6 +39,9 @@ const { redact } = require('./redact');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+// #3383 — Gate visual pre-promoción build→verificacion. Default OFF
+// (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
+const visualGate = require('./lib/visual-gate');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
@@ -3620,6 +3623,101 @@ function brazoBarrido(config) {
           const siguienteFase = fases[i + 1];
           const siguientePendiente = path.join(fasePath(pipelineName, siguienteFase), 'pendiente');
           const siguienteSkills = pipelineConfig.skills_por_fase[siguienteFase] || [];
+
+          // #3383 — Gate visual pre-promoción build → verificacion.
+          // Si el flag PIPELINE_VISUAL_GATE_ENABLED=1 y el issue tiene labels
+          // app:* sin sección "Screenshots & Mockups" con 2+ imágenes:
+          //   - NO se promueve a verificacion.
+          //   - Se postea (idempotentemente) el comment de bloqueo en GitHub.
+          //   - Se aplica el label needs:visual-baseline.
+          //   - Los archivos de build/listo/ se archivan (no reintenta el loop).
+          // Default OFF: el flag está en 0 mientras #3381 no esté en main.
+          if (visualGate.shouldEvaluateVisualGate({
+            pipelineName,
+            fromFase: fase,
+            toFase: siguienteFase,
+            labels: getIssueInfo(issue).labels,
+          })) {
+            // Refetch body+comments con caller sync. Usamos el helper local
+            // execSync de gh para no acoplar el barrido a callsAsync.
+            let issueBodyVG = '';
+            let issueLabelsVG = getIssueInfo(issue).labels;
+            let issueCommentsVG = [];
+            try {
+              ghThrottle();
+              const rawVG = execSync(
+                `"${GH_BIN}" issue view ${issue} --json body,labels,comments`,
+                { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+              );
+              const parsedVG = JSON.parse(rawVG || '{}');
+              issueBodyVG = typeof parsedVG.body === 'string' ? parsedVG.body : '';
+              issueLabelsVG = Array.isArray(parsedVG.labels) ? parsedVG.labels : issueLabelsVG;
+              issueCommentsVG = Array.isArray(parsedVG.comments) ? parsedVG.comments : [];
+            } catch (e) {
+              log('barrido', `#${issue} visual-gate: fetch falló (${e.message}) — fail-OPEN, sigue promoción normal`);
+            }
+            if (issueBodyVG) {
+              const decision = visualGate.evaluateVisualGate({
+                body: issueBodyVG,
+                labels: issueLabelsVG,
+              });
+              if (!decision.ok) {
+                const ev = visualGate.buildGateBlockEvent({
+                  issue,
+                  reason: decision.reason,
+                  images: decision.images,
+                });
+                log('barrido', `🔴 visual-gate-block #${issue} reason=${ev.reason} images=${ev.images} ${JSON.stringify(ev)}`);
+
+                // Idempotencia (CA-UX-2): no duplicar comment si ya está posteado.
+                if (!visualGate.commentMarkerPresent(issueCommentsVG)) {
+                  try {
+                    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                    fs.mkdirSync(ghQueueDir, { recursive: true });
+                    fs.writeFileSync(
+                      path.join(ghQueueDir, `${issue}-visual-gate-comment-${Date.now()}.json`),
+                      JSON.stringify({
+                        action: 'comment',
+                        issue: parseInt(issue),
+                        body: visualGate.buildBlockComment(),
+                      }),
+                    );
+                  } catch (e) {
+                    log('barrido', `Error encolando visual-gate comment #${issue}: ${e.message}`);
+                  }
+                } else {
+                  log('barrido', `#${issue} visual-gate-block — marker ya presente, skip duplicado`);
+                }
+
+                // Aplicar label needs:visual-baseline (idempotente desde GH side).
+                try {
+                  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                  fs.mkdirSync(ghQueueDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(ghQueueDir, `${issue}-visual-gate-label-${Date.now()}.json`),
+                    JSON.stringify({
+                      action: 'label',
+                      issue: parseInt(issue),
+                      label: visualGate.NEEDS_VISUAL_BASELINE_LABEL,
+                    }),
+                  );
+                } catch (e) {
+                  log('barrido', `Error encolando visual-gate label #${issue}: ${e.message}`);
+                }
+
+                // Archivar archivos evaluados (build/listo/<issue>.*) — no se promueve.
+                for (const a of archivos) {
+                  try { moveFile(a.path, procesadoDir); } catch {}
+                }
+                // Skip el resto del bloque de promoción: continuar con el próximo issue.
+                continue;
+              } else if (decision.reason === 'qa-skipped') {
+                log('barrido', `#${issue} visual-gate bypass (qa:skipped)`);
+              } else {
+                log('barrido', `#${issue} visual-gate ✓ images=${decision.images} — promueve a verificacion`);
+              }
+            }
+          }
 
           if (siguienteFase === 'dev' || siguienteFase === 'build' || siguienteFase === 'entrega') {
             // Fase de un solo skill

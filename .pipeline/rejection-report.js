@@ -1485,6 +1485,91 @@ function renderSessionMeta(session) {
 }
 
 // =============================================================================
+// renderVisualComparisonBlock(visualComparison) — Issue #3383 (CA-12, CA-13)
+//
+// Renderiza el bloque side-by-side mockup vs entrega cuando la causa del
+// rechazo es un visual mismatch. Layout y tokens descritos en
+// `docs/pipeline/visual-validation.md §4` y referencia visual en
+// `.pipeline/assets/mockups/19-rejection-visual-comparison.svg`.
+//
+// Shape esperado (todos opcionales — si falta, se renderiza placeholder):
+//   {
+//     mockup:   { src, label?, baseline?, timestamp? },
+//     delivery: { src, label?, timestamp? },
+//     diffs:    [ { title, description, impact: 'alto'|'medio'|'bajo' }, ... ],
+//     suggestedAction: { skill, text }
+//   }
+//
+// `src` puede ser:
+//   - data URI (`data:image/png;base64,...`) — ya sanitizado por el caller.
+//   - URL pública absoluta (`https://...`).
+//   - Path absoluto del filesystem (se lee como base64 inline).
+//
+// Si `visualComparison` es null/undefined, retorna cadena vacía (no render).
+// =============================================================================
+function renderVisualComparisonBlock(visualComparison) {
+  if (!visualComparison || typeof visualComparison !== 'object') return '';
+  const v = visualComparison;
+
+  const renderColumn = (col, side) => {
+    const label = escapeHtml(col?.label || (side === 'mockup' ? 'MOCKUP ESPERADO' : 'ENTREGA ACTUAL'));
+    const subtitle = escapeHtml(col?.subtitle ||
+      (side === 'mockup' ? 'adjunto en definición · UX' : 'captura QA · pipeline'));
+    const badge = side === 'mockup'
+      ? `<span class="badge badge-green">${escapeHtml('baseline · ' + (col?.baseline || 'v1'))}</span>`
+      : `<span class="badge badge-red">no matchea</span>`;
+    const borderClass = side === 'mockup' ? 'visual-col-mockup' : 'visual-col-delivery';
+    const imgHtml = col?.src
+      ? `<img src="${escapeHtml(col.src)}" alt="${label}" />`
+      : `<div class="visual-placeholder">⚠ ${label} no disponible</div>`;
+    return `
+      <div class="visual-col ${borderClass}">
+        <div class="visual-col-header">
+          <span class="visual-col-label">${label}</span>
+          ${badge}
+        </div>
+        <div class="visual-col-subtitle">${subtitle}</div>
+        <div class="visual-col-img">${imgHtml}</div>
+      </div>`;
+  };
+
+  const diffs = Array.isArray(v.diffs) ? v.diffs.slice(0, 5) : [];
+  const diffsBlock = diffs.length === 0
+    ? '<p><em>Sin hallazgos narrados disponibles. Revisión humana de QA pendiente.</em></p>'
+    : `<ol class="visual-diffs">
+        ${diffs.map((d, i) => {
+          const impact = (d?.impact || 'medio').toLowerCase();
+          const impactClass = impact === 'alto' ? 'badge-red'
+            : impact === 'medio' ? 'badge-yellow' : 'badge-blue';
+          return `<li>
+            <strong>${escapeHtml(d?.title || `Hallazgo ${i + 1}`)}</strong>
+            <p>${escapeHtml(d?.description || '')}</p>
+            <span class="badge ${impactClass}">impacto: ${escapeHtml(impact)}</span>
+          </li>`;
+        }).join('')}
+       </ol>`;
+
+  const actionBlock = v.suggestedAction
+    ? `<div class="visual-action">
+         <p><strong>→ Rebote a ${escapeHtml(v.suggestedAction.skill || 'dev')}</strong></p>
+         <p>${escapeHtml(v.suggestedAction.text || 'Re-implementar respetando el mockup referenciado.')}</p>
+       </div>`
+    : '';
+
+  return `
+<h2>Comparativo visual — mockup vs entrega</h2>
+<p><span class="badge badge-red">VISUAL MISMATCH</span></p>
+<div class="visual-compare">
+  ${renderColumn(v.mockup, 'mockup')}
+  ${renderColumn(v.delivery, 'delivery')}
+</div>
+<h3>Diferencias identificadas</h3>
+${diffsBlock}
+${actionBlock}
+`;
+}
+
+// =============================================================================
 // renderHtml(data) — reporte estricto v6: veredicto + causa única + evidencia
 // =============================================================================
 function renderHtml(data) {
@@ -1494,6 +1579,8 @@ function renderHtml(data) {
     logTail, readableLog, depIssues, autoCreatedDeps,
     preflight, evidence, primaryCause, verdict, inconclusive,
     sessionCtx,
+    // #3383 — bloque side-by-side opcional (visual mismatch en QA).
+    visualComparison,
   } = data;
   // (#3088 / CA-1) Contexto multi-provider; fallback defensivo si por algún
   // motivo `collectReportData` no lo pobló (tests legacy, callers viejos).
@@ -1576,6 +1663,23 @@ function renderHtml(data) {
   .gate-rejected { color: #c0392b; font-weight: 600; }
   .label-tag { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 0.8em; background: #ecf0f1; color: #2c3e50; margin: 1px; }
   .footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 0.8em; color: #999; text-align: center; }
+  /* #3383 — Bloque side-by-side mockup vs entrega (CA-12, CA-13). Tokens
+     consumidos sin nueva paleta — derivados de design-tokens.css ya en uso
+     en el dashboard. */
+  .visual-compare { display: flex; gap: 24px; margin: 12px 0; align-items: stretch; }
+  .visual-col { flex: 1 1 50%; background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; padding: 12px; display: flex; flex-direction: column; }
+  .visual-col-mockup { border-color: #ddd; }
+  .visual-col-delivery { border-color: #c0392b; box-shadow: 0 0 0 1px rgba(192,57,43,0.18); }
+  .visual-col-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .visual-col-label { font-weight: 700; font-size: 0.85em; letter-spacing: 1px; text-transform: uppercase; color: #2c3e50; }
+  .visual-col-subtitle { font-size: 0.78em; color: #7f8c8d; margin-bottom: 8px; }
+  .visual-col-img { flex: 1; background: #ecf0f1; border-radius: 4px; overflow: hidden; min-height: 220px; display: flex; align-items: center; justify-content: center; }
+  .visual-col-img img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+  .visual-placeholder { background: repeating-linear-gradient(45deg, #ecf0f1, #ecf0f1 8px, #dfe6e9 8px, #dfe6e9 16px); color: #c0392b; font-weight: 600; padding: 18px; text-align: center; font-size: 0.85em; width: 100%; }
+  .visual-diffs { padding-left: 20px; }
+  .visual-diffs li { margin-bottom: 10px; }
+  .visual-diffs strong { color: #2c3e50; }
+  .visual-action { background: #d5f5e3; border-left: 4px solid #27ae60; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
 </style>
 </head><body>
 
@@ -1586,6 +1690,8 @@ ${renderSessionMeta(session)}
 <div class="context-box">
   <h3>#${escapeHtml(issue)} &mdash; ${escapeHtml(issueCtx.title)}</h3>
 </div>
+
+${renderVisualComparisonBlock(visualComparison)}
 
 <h2>Causa identificada</h2>
 <div class="${inconclusive ? 'history-box' : 'rootcause-box'}">
@@ -1669,11 +1775,25 @@ function providerNarrationSuffix(data) {
 // generateNarration(data) — narración corta para TTS (20-30s, ~300 chars)
 // =============================================================================
 function generateNarration(data) {
-  const { issue, primaryCause, inconclusive, autoCreatedDeps } = data;
+  const { issue, primaryCause, inconclusive, autoCreatedDeps, visualComparison } = data;
 
   // (#3088 / CA-2) Sufijo determinístico opcional con provider+model. Vacío
   // cuando ninguna regla del audio se activa (la mayoría de los casos).
   const provSuffix = providerNarrationSuffix(data);
+
+  // #3383 / CA-UX-5 — audio narrado del rejection report visual: lee
+  // diferencias + acción sugerida, máximo 3 hallazgos, < 60 segundos.
+  // Solo se activa cuando el bloque side-by-side está presente.
+  if (visualComparison && Array.isArray(visualComparison.diffs) && visualComparison.diffs.length > 0) {
+    const diffs = visualComparison.diffs.slice(0, 3);
+    const list = diffs.map((d, i) => {
+      const title = (d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
+      const impact = (d?.impact || 'medio').toLowerCase();
+      return `${title} — impacto ${impact}`;
+    }).join('. ');
+    const actionSkill = visualComparison.suggestedAction?.skill || 'el desarrollador del área';
+    return `Issue ${issue}: rechazo visual. ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
+  }
 
   if (inconclusive) {
     return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.${provSuffix}`;
@@ -2102,6 +2222,8 @@ module.exports = {
   resolveSessionContext,
   // Helpers de bajo nivel — útiles para vectores de injection (SEC-1).
   escapeHtml,
+  // #3383 — bloque side-by-side (CA-12, CA-13).
+  renderVisualComparisonBlock,
   // Acceso a la implementación real de traceability (override en tests).
   _traceability: traceability,
 };
