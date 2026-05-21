@@ -91,6 +91,7 @@ Al iniciar, parsear el primer argumento:
 | `mejorar <pantalla>` | Propuestas de mejora concreta | Seccion "Modo: Mejorar" |
 | `guia` | Generar/actualizar guia UX | Seccion "Modo: Guia" |
 | `screenshot-mockup <issue>` | Captura actual + genera mockup esperado por LLM | Seccion "Modo: Screenshot+Mockup" |
+| `criterios-android <issue>` | Adjunta "Estado actual" + "Estado esperado" a un issue Android en definicion/criterios | Seccion "Modo: Criterios Android" |
 | sin argumento / `escalar` | Escalar issues UX detectados | Seccion "Modo: Escalar" |
 
 ---
@@ -699,6 +700,143 @@ Tokens en `docs/design-system/tokens.json`. Si no existe, el helper usa defaults
 - **Screenshots NUNCA con datos productivos** (PII/secrets). Usar entornos QA o datos sintéticos.
 - El helper sanitiza filenames y bloquea path traversal automáticamente.
 - URL del dashboard está hardcodeada (anti-SSRF). NO inventes URLs.
+
+---
+
+## Modo: Criterios Android (`/ux criterios-android <issue>`)
+
+**Workflow automatizado en fase `definicion/criterios`** para issues Android con impacto visual (#3408). Adjunta dos referencias visuales al issue:
+
+1. **Estado actual** — imagen real existente (de `docs/app-screenshots-reference/` o `qa/evidence/`), NUNCA generada.
+2. **Estado esperado** — mockup PNG generado por Anthropic SDK + puppeteer a partir de HTML/CSS, **sin emulador / AVD / APK**.
+
+Helpers consumidos:
+- `.pipeline/lib/ux-android-actual-lookup.js` — lookup del Estado actual (CA-3).
+- `.pipeline/lib/ux-mockup-generator.js` — generador del Estado esperado (compartido con #3381, CA-4).
+- `.pipeline/lib/ux-mockup-dataset.js` — items sintéticos por flavor (CA-UX-3).
+- `.pipeline/lib/credentials.js` — lectura de `anthropic.api_key` (CA-S3).
+
+### Cuándo correr este modo
+
+- Issue con label `app:client`, `app:business` o `app:delivery`.
+- Cambio visual detectado (el body menciona pantallas / UI / componentes).
+- Fase del pipeline `definicion/criterios` — antes de cualquier desarrollo.
+
+Si el issue **NO** tiene `app:*` o tiene `ux:no-visual` → este modo no aplica. Si el issue es de dashboard (`area:pipeline` que toca `dashboard-v2.js`) → usar `screenshot-mockup`, no este.
+
+### Pre-flight: abort conditions
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+
+# CA-S3 — credencial Anthropic vía credentials.js (NO parsear JSON a mano).
+node -e "const c=require('./.pipeline/lib/credentials'); c.loadIntoEnv(); if(!process.env.ANTHROPIC_API_KEY){console.error('ABORT: falta providers.anthropic.api_key en credentials.json'); process.exit(1)}"
+
+# CA-4 — SDK + puppeteer instalados.
+node -e "try{require('@anthropic-ai/sdk');require('puppeteer');console.log('SDK+puppeteer OK')}catch(e){console.error('ABORT: falta',e.message); process.exit(1)}"
+```
+
+Si cualquiera falla → alerta Telegram + abort. **No invocar emulador como fallback** (CA-5).
+
+### Paso C1: extraer parámetros del issue
+
+Del body + labels:
+- `pantalla` — nombre canónico (minúscula, regex `^[a-z0-9-]{1,40}$`). Si no se puede inferir → preguntar `/po` o usar el slug del título.
+- `flavor` — uno de `client|business|delivery` derivado del label `app:*`.
+- `cambioDescripcion` — descripción genérica y sanitizada del cambio (NO copiar PII del body literal, CA-S2). Strip caracteres de control, longitud máx 4 KB.
+
+### Paso C2: lookup del Estado actual (CA-3)
+
+```js
+const { lookup, describeSource } = require('./.pipeline/lib/ux-android-actual-lookup');
+const hit = lookup(pantalla, flavor, { repoRoot });
+// hit puede ser null si no hay evidencia previa
+```
+
+- Si `hit` es `null` → warning literal `Sin evidencia previa de Estado actual` en el comentario UX. `actual_source = "none"`.
+- Si `hit.alias` está presente → `actual_source = "${hit.source} (alias ${hit.alias.from}->${hit.alias.to})"`.
+- Si hay match → copiar el PNG a `qa/evidence/<issue>/ux-mockup-actual-<ts>.png` (no mover, no romper la fuente).
+
+### Paso C3: generar Estado esperado (CA-4)
+
+```js
+const ux = require('./.pipeline/lib/ux-mockup-generator');
+const ds = require('./.pipeline/lib/ux-mockup-dataset');
+
+// CA-UX-3 — inyectar items del dataset cuando aplica.
+const items = ds.mentionsListado(cambioDescripcion) ? ds.sample(flavor, 'products', 5) : [];
+
+const result = await ux.generate({
+  prompt: cambioDescripcion,          // YA sanitizado (CA-S2)
+  caseKind: 'android',
+  flavor,                              // CA-UX-8
+  state: 'base',
+  viewport: { width: 411, height: 891 }, // mdpi (CA-S4 valida bounds)
+  outputPath: `qa/evidence/${issue}/ux-mockup-esperado-${ts}.png`,
+  repoRoot,
+  allowedRoot: repoRoot,
+});
+```
+
+- Si `result.ok === false` y `reason === 'missing-credentials'` → abort + alerta Telegram. **NO emulador.**
+- Si `reason === 'sdk-missing'` → abort con instrucción `npm install @anthropic-ai/sdk`.
+- Si `reason === 'llm-failed'` → reintentar una vez con sonnet (el generator ya hace fallback opus→sonnet); si vuelve a fallar, abort.
+
+### Paso C4: armar y publicar el comentario UX (CA-6 + CA-UX-9)
+
+Estructura literal **exacta** (parseable por QA en `desarrollo/aprobacion`):
+
+```markdown
+## Referencias visuales (UX)
+
+### Estado actual
+
+![Estado actual](https://raw.githubusercontent.com/intrale/platform/<branch>/qa/evidence/<issue>/ux-mockup-actual-<ts>.png)
+
+> Fuente: `docs/app-screenshots-reference/<pantalla>/<archivo>` | `qa/evidence/<issue-anterior>/` | "sin evidencia"
+
+### Estado esperado
+
+![Estado esperado](https://raw.githubusercontent.com/intrale/platform/<branch>/qa/evidence/<issue>/ux-mockup-esperado-<ts>.png)
+
+> Mockup generado por Anthropic SDK (modelo `claude-opus-4-7`) — viewport 411x891 — tema `light` — flavor `<flavor>`.
+
+<!-- ux-meta: {"pantalla":"<pantalla>","flavor":"<flavor>","theme":"light","ts":"<iso>","mockup_tokens":<int>,"actual_source":"<docs|qa-evidence|none>","viewport":{"w":411,"h":891},"model":"claude-opus-4-7"} -->
+```
+
+Requisitos:
+- Headings literales (case-sensitive): `## Referencias visuales (UX)`, `### Estado actual`, `### Estado esperado`.
+- Imágenes referenciadas con URL raw de GitHub. Las PNG **se commitean** a `qa/evidence/<issue>/` en la rama del agente (Gap-2 resuelto por PO).
+- Bloque `<!-- ux-meta: {...} -->` JSON parseable con: `pantalla`, `flavor`, `theme`, `ts` (ISO 8601), `mockup_tokens` (number), `actual_source` (`"docs" | "qa-evidence" | "none"`, opcionalmente con sufijo `(alias x->y)`), `viewport.w`, `viewport.h`, `model`.
+
+Publicar con `gh issue comment <N> --body-file <archivo.md>` (cuerpo de texto, no upload binario — los PNG ya están en el repo).
+
+### Paso C5: NO invocar emulador (CA-5)
+
+Test explícito en este modo: nunca correr `adb`, `gradlew`, `emulator`, ni levantar AVDs. Si la generación del Estado esperado falla → abort, **no** caer a fallback de emulador.
+
+### Reglas de seguridad de este modo (CA-S1..S7)
+
+- **CA-S1 (path traversal)**: `lookup()` valida pantalla con regex y verifica con prefix-check. No tocar el helper desde código que bypasee la validación.
+- **CA-S2 (prompt injection / PII)**: la `cambioDescripcion` se construye con metadata + descripción genérica + items sintéticos del dataset. Nunca pegar el body del issue literal en el prompt.
+- **CA-S3 (credential safety)**: leer `ANTHROPIC_API_KEY` solo vía `.pipeline/lib/credentials.js`. Errores del SDK se loguean redactando la key.
+- **CA-S4 (viewport bounds)**: usar siempre `411×891` (validado por el generator).
+- **CA-S5 (Color.kt parsing)**: el generator inyecta tokens M3 desde `docs/design-system/tokens.json` (parser estricto del generator).
+- **CA-S6 (alias cerrado)**: aliases viven en `ux-android-actual-lookup.js` como constante. Para nuevos aliases → PR.
+- **CA-S7 (PNG temporal)**: el generator escribe el render directo al `outputPath` que le pasamos. Si querés un intermedio, usar `fs.mkdtempSync(os.tmpdir() + '/ux-mockup-')`.
+
+### Convención del comentario auditable (CA-UX-9)
+
+QA en `desarrollo/aprobacion` parsea el comentario con esta regex estable:
+
+```js
+const RE_BLOQUE = /^## Referencias visuales \(UX\)\s*$/m;
+const RE_ESTADO_ACTUAL = /^### Estado actual\s*$/m;
+const RE_ESTADO_ESPERADO = /^### Estado esperado\s*$/m;
+const RE_META = /<!--\s*ux-meta:\s*(\{[\s\S]*?\})\s*-->/;
+```
+
+Si el comentario UX no respeta esta convención literal → QA lo rechaza y rebota a `definicion/criterios`.
 
 ---
 
