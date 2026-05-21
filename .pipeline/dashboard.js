@@ -1922,10 +1922,15 @@ function generateHTML(state) {
       lcRetryingIcon = `<span class="lc-retry-icon" role="img" aria-hidden="true">🔁</span>`
         + `<span class="lc-retry-label" role="status" aria-label="${ariaLabel}" title="${tooltipText}" tabindex="0" onclick="event.stopPropagation()"></span>`;
     }
-    const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
+    // #2800 CA-2.3/CA-4.1 — escape unificado server-side (esc) tanto para
+    // atributos (title="...") como cuerpo (<div>${laneTitle}</div>) del card
+    // centerpiece. Antes solo se escapaban comillas (replace " → &quot;), lo
+    // que dejaba pasar `<script>` en el body de .lc-title (vector XSS).
+    const laneTitle = esc(data.title || `Issue #${issueNum}`);
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
-    // Data atributos para búsqueda client-side
-    const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
+    // Data atributos para búsqueda client-side. esc() ya escapa comillas,
+    // garantizando que no se rompa el atributo data-search.
+    const searchKey = esc((issueNum + ' ' + (data.title || '')).toLowerCase());
     // Prioridad para sort: orden manual del Issue Tracker es la única fuente
     // (#2691). Position 0 = más prioritario; cuanto menor el index, más arriba
     // en la lane. Sort es `b.priority - a.priority` (desc) → mayor priority =
@@ -2116,10 +2121,11 @@ function generateHTML(state) {
 
   const matrixHTML = `
     ${bloqueadosHTML}
-    <div class="matrix-section section-collapsible section-collapsed" id="issue-tracker" data-section="issue-tracker">
+    <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
+    <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
       <div class="matrix-header">
         <h2 class="section-title-clickable" onclick="toggleSection('issue-tracker')" title="Click para colapsar/expandir">
-          <span class="section-chevron">▼</span> 📊 Issue Tracker
+          <span class="section-chevron">▼</span> 🎯 Board Kanban · Pipeline <span class="kanban-v3-badge" aria-label="Versión 3">V3</span>
         </h2>
         <a class="section-popout" href="/?section=issue-tracker" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
         <div class="it-search-box">
@@ -4457,6 +4463,29 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .it-done-grid .lc-card{opacity:0.75}
 
 @media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
+/* #2800 CA-5.1 — refuerzo explícito del breakpoint mobile en 768px (queda
+   redundante con la regla 900px de arriba, pero hace el contrato verificable
+   con grep para QA). */
+@media(max-width:768px){.it-lanes{grid-template-columns:1fr}}
+
+/* #2800 — Board Kanban centerpiece (rediseño V3). Damos aire vertical antes
+   y después del bloque y un anchor invisible para deep-links
+   /dashboard#board-kanban. */
+.board-kanban-anchor{display:block;position:relative;top:-12px;height:1px;width:1px;visibility:hidden}
+.board-kanban-centerpiece{margin-top:var(--space-6,24px);scroll-margin-top:100px}
+.board-kanban-centerpiece + .kpi-tooltip + .kpis-row,
+.board-kanban-centerpiece ~ .kpis-row{margin-top:var(--space-8,32px)}
+/* Badge V3 inline para el título del Kanban. Color teal coherente con
+   .hdr-v3-badge (línea 4680) que ya usa el mismo lenguaje visual V3. */
+.kanban-v3-badge{
+  display:inline-flex;align-items:center;justify-content:center;
+  margin-left:6px;padding:1px 7px;border-radius:6px;
+  background:var(--teal-bg,rgba(45,212,191,0.12));
+  color:var(--teal,#2dd4bf);
+  border:1px solid var(--teal,#2dd4bf);
+  font-size:0.62em;font-weight:700;letter-spacing:0.5px;line-height:1.5;
+  vertical-align:middle;
+}
 
 .ic-hidden{display:none !important}
 
@@ -4827,6 +4856,14 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
   ${renderInfraHealth(state)}
 
+  <!-- #2800 — Board Kanban centerpiece: protagonista visual del dashboard V3.
+       Antes vivía al final del template, después de KPIs/Cola/Equipo/Servicios y
+       colapsado por default (mockup 01-home-dashboard.svg). Ahora aparece
+       inmediatamente debajo del header de infra para que el operador vea el
+       estado del trabajo (3 lanes) sin scrollear. KPIs/Equipo/Servicios quedan
+       como info secundaria más abajo. -->
+  ${matrixHTML}
+
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis-row">
     <div class="kpis kpis-6">
@@ -4983,7 +5020,8 @@ body.standalone .section-collapsed .section-body{display:block !important}
     </div>
   </div>
 
-  ${matrixHTML}
+  <!-- #2800 — matrixHTML antes vivía aquí (post Equipo/Servicios). Migrado al
+       centerpiece debajo del header de infra para el rediseño V3. -->
 
   ${historyHTML}
 
