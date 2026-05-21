@@ -1365,6 +1365,216 @@ Cobertura mínima exigida (CA del issue #3434):
 
 ---
 
+## 11. Fallback in-flight del Commander (#3275)
+
+**Estado**: implementación core entregada en #3275 (Ola N+2, 2026-05-21). Continuación natural de #3258 (pre-spawn) — cierra CA-3 del padre cubriendo el caso del primario que arranca OK pero **cae mid-turn**.
+
+### 11.1 Cuándo entra en juego
+
+- El provider primario aceptó el child y arrancó el stream (al menos un byte recibido). NO aplica si el spawn nunca emite — eso lo cubre el path pre-spawn de #3258.
+- A partir de ese punto, alguna de estas señales fuerza fallback in-flight:
+  - **5xx** del provider en cualquier turn post-spawn.
+  - **Timeout sin nuevo byte de stdout durante 30s** desde el último output (NO desde spawn).
+  - **EOF prematuro** del stream (cierre sin respuesta completa).
+- El clasificador es [`.pipeline/lib/commander/provider-error-parser.js#parseProviderError`](../../.pipeline/lib/commander/provider-error-parser.js) (§10), que mapea raw output → `errorClass ∈ { transient_5xx | timeout_no_new_bytes_30s | eof_premature | rate_limit | ... }`.
+
+### 11.2 Cuándo NO entra
+
+- Spawn lento (sin primer byte) → eso es pre-spawn (#3258 path).
+- Resultado exitoso del primario (happy path).
+- Errores permanentes (`auth`, `permanent_failure`) — esos NO disparan fallback in-flight; respuesta canned al usuario y degradación del provider.
+
+### 11.3 Decisiones operativas cerradas por PO
+
+| Decisión | Valor adoptado | CA |
+|---|---|---|
+| Política de output parcial | **Descarte total**. Hash SHA-256 al audit; contenido NO se entrega ni se concatena | CA-3 |
+| Detector de timeout | **Desde primer byte de stdout** (no desde spawn) | CA-1 |
+| Threshold timeout in-flight | **30s** sin nuevo byte | CA-1 |
+| UX al usuario | **Verbose**: `⚠️ <motivo> — reintentando con <secundario>.` | CA-5 |
+| Accounting | **Ambos costos al accounting interno** (no transferible al user) | CA-10 |
+| Cap de intentos | **1 fallback in-flight** (2 totales por turn) | CA-2 |
+| Pre-validación credenciales | **Todas al boot del Pulpo**; provider sin cred → degraded del ranking | CA-9 |
+| Audit log | **Hash-chain SHA-256 con file-lock cross-process** (`<file>.lock` O_EXCL) | CA-8 |
+| Budget global | **90s SR-5** desde spawn del primario | CA-7 |
+| Late-response del primario | **Descarte silencioso** + `late_response_discarded` + lock por `chat_id+request_id` | CA-4 |
+
+### 11.4 Diagrama de secuencia (happy + failure paths)
+
+```
+Usuario ── /comando ──▶ Pulpo (ejecutarClaude)
+                         │
+                         ├─ sanitizeUserPrompt (SR-4)
+                         ├─ resolveCommanderProvider (#3258, pre-spawn)
+                         ├─ enforceDataResidency (SR-1)
+                         │
+                         ├─ spawn primario (anthropic, ej.)
+                         │   ├─ stream OK ────────────▶ resolve(respuesta) ✅
+                         │   │
+                         │   └─ falla in-flight (5xx | timeout | EOF)
+                         │       │
+                         │       ▼
+                         │   decideInflightFallback({ primaryProvider, errorClass,
+                         │                            durationMs, partialOutput,
+                         │                            attemptIndex: 0, requestId })
+                         │       │
+                         │       ├─ attemptIndex >= 1?  ── sí ──▶ cap_exhausted + canned ❌
+                         │       ├─ durationMs >= 90s?  ── sí ──▶ global_budget_exceeded + canned ⏱️
+                         │       ├─ secundario degraded? ── sí ──▶ all_invalid_credentials + canned ❌
+                         │       └─ retornar { shouldRetry: true, secondaryProvider, noticeText UX-G1 }
+                         │
+                         ├─ sendTelegram(noticeText)  "⚠️ <motivo> — reintentando con X."
+                         ├─ enforceDataResidency(secondary)  ◀── re-ejecutar (CA-6)
+                         ├─ spawn secundario
+                         │   ├─ stream OK ────────────▶ resolve(respuesta)
+                         │   │                          acquireInflightLock(chatId, requestId)
+                         │   │                          noteInflightCompleted(success: true) ✅
+                         │   │
+                         │   └─ también falla ───────▶ canned ❌
+                         │                            noteInflightCompleted(success: false)
+                         │
+                         └─ (eventualmente) primario responde tarde
+                             └─ isLateResponseDuplicate? ── sí ──▶ descartar
+                                                                   noteLateResponseDiscarded ℹ️
+```
+
+### 11.5 Eventos del audit log (`commander-dispatch-YYYY-MM-DD.jsonl`)
+
+| Evento | Payload clave | Trigger |
+|---|---|---|
+| `inflight_fallback_initiated` | `primary_provider`, `primary_error_class`, `partial_output_hash`, `request_id`, `chat_id_hash`, `primary_duration_ms` | Se decide intentar el secundario |
+| `inflight_fallback_completed` | `primary_provider`, `secondary_provider`, `success: bool`, `secondary_duration_ms`, `secondary_tokens`, `cache_miss_due_to_provider_change` | Secundario terminó (éxito o falla) |
+| `inflight_fallback_exhausted` | `cap`, `primary_provider`, `partial_output_hash` | Segundo intento también falla → canned ❌ |
+| `inflight_fallback_global_timeout` | `primary_duration_ms`, `budget_ms` | Budget global 90s superado |
+| `inflight_fallback_all_gated` | `chain_tried` | No hay candidato libre |
+| `inflight_fallback_invalid_credentials` | `candidate_provider` | Secundario degraded por precheck |
+| `inflight_fallback_resolver_error` | `error_message` | Excepción interna del resolver (fail-closed) |
+| `late_response_discarded` | `primary_provider`, `partial_output_hash` | Late-response del primario llegó después del cierre del turn |
+
+Todos los eventos viajan por la misma cadena hash-chain SHA-256 vía `lib/audit-log.js#appendChained`. El append es **read-then-write con file-lock**: `<archivo>.lock` se crea con `O_EXCL`, retry con backoff hasta 5s, lockfile >30s se considera huérfano y se sobreescribe.
+
+### 11.6 Trade-offs y decisiones de diseño
+
+**¿Por qué descarte total del partial output (no concatenación)?**
+Security A03 (Injection output-side). Si concatenáramos los tokens parciales del primario al contexto del secundario, abriríamos vector de inyección via output hostil: un primario adversarial podría meter tokens que el secundario interpretaría como instrucciones nuevas. Descarte total elimina esa superficie. Costo: el secundario empieza desde el prompt sanitizado original, sin re-procesar (mismo SR-4 idempotente).
+
+**¿Por qué notificación verbose (no silenciosa)?**
+Transparencia operativa. Si Leo ve dos audios o latencia inusual, debe entender que hubo fallback. La regla `feedback_telegram-messages-natural.md` exige voseo argentino: `⚠️ <primario> tuvo un error del servidor — reintentando con <secundario>.` (NO `⚠️ Retrying with X` ni `[ERROR_5XX]`). El TTS de Murble **no** se dispara para el aviso intermedio (regla `feedback_audio-consolidation.md`); recién con la respuesta final del secundario.
+
+**¿Por qué cap=1 fallback?**
+Anti cost-amplification. Un primario adversarial diseñado para timeout intencional duplicaría tokens consumidos por turn si dejáramos cap > 1. Mantener cap=1 + budget 90s mantiene el peor caso acotado: ~2x el costo de un turn normal.
+
+**¿Por qué budget 90s?**
+Coincide con el límite ya documentado en `lib/commander/multi-provider.js:35-37` como primitiva reservada por #3258 para que #3275 la use. 90s es el corte superior de "el usuario todavía espera" en Telegram; pasado eso, mejor canned timeout que dejarlo colgado.
+
+**¿Por qué pre-validar credenciales al boot (no mid-flight)?**
+Si descubrimos mid-flight que el secundario no tiene credencial, el síntoma (timeout / canned response) es indistinguible de un timeout real → punto ciego diagnóstico. Pre-validar al boot devuelve un snapshot inmutable que el decisor consulta antes de elegir secundario. Costo: revocar una credencial requiere restart del Pulpo para refrescar el snapshot — política del PO acordada (no se cachea con TTL).
+
+**¿Por qué file-lock cross-process en audit?**
+Bajo `restart.js`, el pulpo viejo y el nuevo pueden solapar unos segundos. Sin lock, ambos leen el mismo `hash_prev` y escriben entries con cadena idéntica → chain rota → `verifyChain()` falla. El lock O_EXCL no requiere deps externas, es rápido (lockfile vacío) y tiene cleanup automático por staleness (>30s).
+
+### 11.7 UX-G1 — copy en español argentino natural
+
+| errorClass | Copy generado |
+|---|---|
+| `transient_5xx`, `5xx` | `⚠️ <primario> tuvo un error del servidor en medio de la respuesta — reintentando con <secundario>.` |
+| `timeout_no_new_bytes_30s`, `timeout` | `⚠️ <primario> se quedó en silencio (sin nueva respuesta hace 30s) — reintentando con <secundario>.` |
+| `eof_premature` | `⚠️ <primario> cortó la respuesta antes de tiempo — reintentando con <secundario>.` |
+| `rate_limit` | `⚠️ <primario> pegó contra el rate-limit a mitad del turno — reintentando con <secundario>.` |
+
+Si el secundario no soporta tool_use (ej. cerebras), se agrega segunda línea ℹ️ (UX-G3):
+
+```
+ℹ️ Modo conversacional: el commander no puede ejecutar comandos del pipeline en este request.
+```
+
+Emojis permitidos: **solo ⚠️ y ℹ️** para el flujo in-flight, **❌** para el exhausted canned y **⏱️** para el budget-exceeded canned. Cualquier otro emoji rompe la identidad consistente del Commander (UX-G7).
+
+### 11.8 Operativa: cómo invocar desde `ejecutarClaude` (esquema)
+
+El módulo es decisión pura — el caller (typically `pulpo.js#ejecutarClaude`) orquesta:
+
+```js
+const inflight = require('./lib/commander/inflight-fallback');
+const credPrecheck = require('./lib/commander/credentials-precheck');
+
+// 1. Al boot del Pulpo:
+const precheckRaw = credPrecheck.precheckCommanderProviderRanking({
+    pipelineDir: PIPELINE,
+    processEnv: process.env,
+});
+if (precheckRaw.allFailed) {
+    log('boot', credPrecheck.formatPrecheckReport(precheckRaw));
+    sendTelegramAlert('❌ Commander sin LLMs disponibles — abortando.');
+    process.exit(2);
+}
+const precheck = credPrecheck.makePrecheckHandle(precheckRaw);
+
+// 2. Por turn, cuando el primario falla in-flight:
+const requestId = inflight.generateRequestId({ chatId });
+const decision = inflight.decideInflightFallback({
+    primaryProvider: resolution.provider,
+    primaryErrorClass: verdict.errorClass,
+    primaryDurationMs: Date.now() - spawnStart,
+    primaryPartialOutput: stdoutBufferedFromPrimary,
+    attemptIndex: 0,
+    pipelineDir: PIPELINE,
+    chatId, requestId,
+    credentialsPrecheck: precheck,
+    log,
+});
+
+if (!decision.shouldRetry) {
+    sendTelegramPlain(decision.cannedResponse);
+    return;
+}
+
+sendTelegramPlain(decision.noticeText);
+// Re-ejecutar enforceDataResidency con secundario (CA-6 fail-closed)…
+// Spawn secundario…
+// Al entregar respuesta:
+inflight.acquireInflightLock({ chatId, requestId, secondaryProvider: decision.secondaryProvider });
+inflight.noteInflightCompleted({
+    pipelineDir: PIPELINE,
+    primaryProvider, secondaryProvider: decision.secondaryProvider,
+    success: true, secondaryDurationMs, secondaryTokens, chatId, requestId,
+});
+
+// Si más tarde llega late-response del primario:
+if (inflight.isLateResponseDuplicate({ chatId, requestId })) {
+    inflight.noteLateResponseDiscarded({
+        pipelineDir: PIPELINE, primaryProvider,
+        partialOutput, chatId, requestId,
+    });
+    // NO entregar al user.
+}
+```
+
+### 11.9 Métricas y observabilidad
+
+Eventos en el audit log del día permiten calcular (futuro endpoint dashboard `/api/multi-provider/commander-inflight-stats`):
+
+- `inflight_fallback_rate` — `count(inflight_fallback_initiated) / count(dispatch)` en ventana 24h.
+- `inflight_fallback_success_rate` — `count(completed && success) / count(initiated)`.
+- `late_response_discard_rate` — `count(late_response_discarded) / count(initiated)`.
+- `cost_amplification_factor` — sum tokens primario + sum tokens secundario / sum tokens del intento exitoso solo.
+
+### 11.10 Out of scope
+
+- Rate-limit por `chat_id` del Commander → cubierto por **#3454** (recomendación de security pendiente de aprobación humana, no bloquea).
+- Streaming concatenado de output parcial (rechazado por seguridad, CA-3).
+- Cobro al usuario por failure de infra (rechazado por política, CA-10).
+- Auto-degradación dinámica del ranking ante alto failure rate en ventana móvil → recomendación futura si se observa necesidad.
+- **Wire-up live en `pulpo.js#ejecutarClaude`**: la primitiva está entregada y testeada; el wire-up con el readline de Anthropic (Claude CLI) requiere instrumentar el "first-byte timer" y el detector de stream gap dentro del loop sync — se entrega como follow-up dedicado para no comprometer el HARD_TIMEOUT de 10min ya en producción.
+
+### 11.11 Tests
+
+- `.pipeline/lib/__tests__/commander-inflight-fallback.test.js` — 28 tests cubriendo CA-1..CA-9, formato UX-G1, file-lock, late-response.
+- `.pipeline/lib/__tests__/commander-multi-provider.test.js` — sin regresión.
+- `.pipeline/lib/__tests__/audit-log.test.js` — sin regresión (lock es opt-in vía param `lockMaxMs:0` en tests legacy).
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).

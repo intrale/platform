@@ -873,6 +873,14 @@ function cannedAllGatedResponse() {
     );
 }
 
+// -----------------------------------------------------------------------------
+// #3275 — Re-export del módulo de fallback in-flight para tener una sola
+// superficie pública en `require('./multi-provider')`. El módulo dedicado
+// vive en `./inflight-fallback.js` y tiene su propia suite de tests.
+// -----------------------------------------------------------------------------
+const inflight = require('./inflight-fallback');
+const credPrecheck = require('./credentials-precheck');
+
 module.exports = {
     COMMANDER_SKILL,
     SHERLOCK_SKILL,
@@ -893,6 +901,25 @@ module.exports = {
     cannedFallbackUnavailableResponse,
     cannedAllGatedResponse,
     cannedDataResidencyResponse,
+
+    // #3275 — in-flight fallback (re-export del módulo dedicado)
+    decideInflightFallback: inflight.decideInflightFallback,
+    noteInflightCompleted: inflight.noteInflightCompleted,
+    noteLateResponseDiscarded: inflight.noteLateResponseDiscarded,
+    formatInflightFallbackNotice: inflight.formatInflightFallbackNotice,
+    cannedInflightExhaustedResponse: inflight.cannedInflightExhaustedResponse,
+    cannedInflightBudgetTimeoutResponse: inflight.cannedInflightBudgetTimeoutResponse,
+    acquireInflightLock: inflight.acquireInflightLock,
+    isLateResponseDuplicate: inflight.isLateResponseDuplicate,
+    releaseInflightLock: inflight.releaseInflightLock,
+    generateRequestId: inflight.generateRequestId,
+    INFLIGHT_BUDGET_MS: inflight.DEFAULT_BUDGET_MS,
+    MAX_INFLIGHT_FALLBACKS: inflight.MAX_INFLIGHT_FALLBACKS,
+
+    // #3275 — credentials precheck al boot
+    precheckCommanderProviderRanking: credPrecheck.precheckCommanderProviderRanking,
+    makePrecheckHandle: credPrecheck.makePrecheckHandle,
+    formatPrecheckReport: credPrecheck.formatPrecheckReport,
 
     // exports internos para tests
     _hashFor: hashFor,

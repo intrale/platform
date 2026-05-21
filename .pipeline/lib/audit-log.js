@@ -92,16 +92,115 @@ function readLastHash(file, fsImpl) {
     return parsed.hash_self;
 }
 
+// -----------------------------------------------------------------------------
+// #3275 — CA-8: serialización de escrituras (mutex por archivo).
+//
+// El hash-chain es read-then-append. Dentro de un solo proceso Node, la
+// ejecución sync de `appendChained` no se interleava con otra (event loop
+// single-threaded), así que dos callbacks async que ambos llaman
+// `appendChained` quedan serializados de hecho.
+//
+// PERO en el escenario del fallback in-flight del Commander hay dos riesgos
+// reales:
+//   1. **Cross-process**: el restart.js puede solapar con el pulpo vivo unos
+//      segundos durante el handover; ambos escriben al mismo
+//      `commander-dispatch-YYYY-MM-DD.jsonl`. Sin file-lock, ambos leen el
+//      mismo `hash_prev` y emiten entries con la misma cadena → chain rota.
+//   2. **Late-response del primario** después de que el secundario ya escribió
+//      `inflight_fallback_completed`. Si el primero abre su sync window justo
+//      antes del switch del event loop al callback del secundario, el
+//      hash-chain igual queda OK (sync code no se interleava). Pero defense
+//      in depth: cualquier futura conversión a async I/O (fs.promises) abre
+//      la grieta, así que cementamos el lock ahora.
+//
+// Solución mínima sin dependencias: `fs.openSync(lockPath, 'wx')` (O_EXCL).
+// Si otro proceso tiene el lock, hacemos polling con backoff exponencial
+// acotado a `LOCK_RETRY_MAX_MS`. Si vence el budget, fallamos cerrado (no
+// escribir es preferible a romper la cadena).
+//
+// El lockfile vive junto al archivo de audit (`<file>.lock`). Si pulpo muere
+// con lock activo, el OS no lo libera automáticamente — por eso TAMBIÉN
+// chequeamos el mtime del lock: si tiene más de `LOCK_STALE_MS`, lo
+// consideramos huérfano y lo borramos antes de reintentar. Eso evita que un
+// crash del primario nos bloquee permanentemente.
+// -----------------------------------------------------------------------------
+
+const LOCK_RETRY_MAX_MS = 5000;        // budget total esperando lock
+const LOCK_RETRY_BACKOFF_START_MS = 5; // primer backoff
+const LOCK_RETRY_BACKOFF_MAX_MS = 200; // backoff cap
+const LOCK_STALE_MS = 30 * 1000;       // lockfile más viejo que 30s → huérfano
+
+function lockPathFor(file) {
+    return file + '.lock';
+}
+
+function _acquireFileLockSync(file, fsImpl, options = {}) {
+    const _fs = fsImpl || fs;
+    const lp = lockPathFor(file);
+    const start = Date.now();
+    const maxMs = Number.isFinite(options.maxMs) ? options.maxMs : LOCK_RETRY_MAX_MS;
+    const staleMs = Number.isFinite(options.staleMs) ? options.staleMs : LOCK_STALE_MS;
+    let backoff = LOCK_RETRY_BACKOFF_START_MS;
+
+    while (true) {
+        try {
+            const fd = _fs.openSync(lp, 'wx');
+            // Escribimos PID + timestamp para diagnóstico forense; no es
+            // autoritativo (el lock es la existencia del archivo).
+            try {
+                _fs.writeSync(fd, `${process.pid}|${Date.now()}\n`);
+            } catch { /* best-effort */ }
+            try { _fs.closeSync(fd); } catch {}
+            return { ok: true, lockPath: lp };
+        } catch (e) {
+            if (e.code !== 'EEXIST') {
+                // Errores inesperados: no podemos adquirir → fallar cerrado.
+                return { ok: false, reason: e.code || 'lock_open_error', error: e.message };
+            }
+            // EEXIST: lock tomado. Chequear staleness.
+            try {
+                const st = _fs.statSync(lp);
+                const age = Date.now() - Number(st.mtimeMs || 0);
+                if (age > staleMs) {
+                    try { _fs.unlinkSync(lp); } catch { /* otro lo limpió */ }
+                    continue;
+                }
+            } catch { /* lock desapareció → reintentar */ continue; }
+
+            if (Date.now() - start > maxMs) {
+                return { ok: false, reason: 'lock_timeout', heldFor: Date.now() - start };
+            }
+            // Busy-wait sync acotado (no podemos await en sync API).
+            const until = Date.now() + Math.min(backoff, LOCK_RETRY_BACKOFF_MAX_MS);
+            while (Date.now() < until) { /* spin */ }
+            backoff = Math.min(backoff * 2, LOCK_RETRY_BACKOFF_MAX_MS);
+        }
+    }
+}
+
+function _releaseFileLockSync(lockPath, fsImpl) {
+    const _fs = fsImpl || fs;
+    try { _fs.unlinkSync(lockPath); } catch { /* best-effort */ }
+}
+
 /**
  * Append append-only de una entry al archivo, encadenando vía hash_prev.
+ *
+ * #3275 CA-8: usa file-lock (`<file>.lock`) para serializar read-then-append
+ * cross-process. Si no se puede adquirir el lock en `LOCK_RETRY_MAX_MS`,
+ * fail-closed (mejor no escribir que romper la cadena).
+ *
+ * Opt-out: `lockMaxMs: 0` deshabilita el lock (uso interno para tests del
+ * propio mecanismo del lock — NO usar en runtime).
  *
  * @param {object} params
  * @param {string} params.file — path absoluto al .jsonl.
  * @param {object} params.entry — datos a persistir (no incluir hash_self).
  * @param {object} [params.fsImpl] — inyectable para tests.
+ * @param {number} [params.lockMaxMs] — override budget de adquisición de lock.
  * @returns {{hash_self: string, hash_prev: string, line: string}}
  */
-function appendChained({ file, entry, fsImpl } = {}) {
+function appendChained({ file, entry, fsImpl, lockMaxMs } = {}) {
     if (!file || typeof file !== 'string') {
         throw new Error('[audit-log] appendChained: parámetro "file" requerido.');
     }
@@ -116,16 +215,37 @@ function appendChained({ file, entry, fsImpl } = {}) {
         _fs.mkdirSync(dir, { recursive: true });
     }
 
-    const hashPrev = readLastHash(file, _fs);
-    const createdAt = entry.created_at || Date.now();
-    const fullEntry = { ...entry, created_at: createdAt, hash_prev: hashPrev };
-    const hashSelf = computeEntryHash(fullEntry, hashPrev);
-    const finalEntry = { ...fullEntry, hash_self: hashSelf };
-    const line = JSON.stringify(finalEntry) + '\n';
+    // #3275 CA-8 — adquirir lock antes del read-then-append.
+    const useLock = lockMaxMs !== 0;
+    let lock = null;
+    if (useLock) {
+        lock = _acquireFileLockSync(file, _fs, { maxMs: lockMaxMs });
+        if (!lock.ok) {
+            // Fail-closed: no podemos garantizar consistencia de la cadena.
+            throw new Error(
+                `[audit-log] No se pudo adquirir lock de ${file} (${lock.reason})` +
+                (lock.heldFor ? ` después de ${lock.heldFor}ms` : '') +
+                (lock.error ? `: ${lock.error}` : '')
+            );
+        }
+    }
 
-    _fs.appendFileSync(file, line, 'utf8');
+    try {
+        const hashPrev = readLastHash(file, _fs);
+        const createdAt = entry.created_at || Date.now();
+        const fullEntry = { ...entry, created_at: createdAt, hash_prev: hashPrev };
+        const hashSelf = computeEntryHash(fullEntry, hashPrev);
+        const finalEntry = { ...fullEntry, hash_self: hashSelf };
+        const line = JSON.stringify(finalEntry) + '\n';
 
-    return { hash_self: hashSelf, hash_prev: hashPrev, line };
+        _fs.appendFileSync(file, line, 'utf8');
+
+        return { hash_self: hashSelf, hash_prev: hashPrev, line };
+    } finally {
+        if (lock && lock.ok) {
+            _releaseFileLockSync(lock.lockPath, _fs);
+        }
+    }
 }
 
 /**
@@ -198,4 +318,10 @@ module.exports = {
     canonicalJsonStringify,
     computeEntryHash,
     readLastHash,
+    // #3275 CA-8 — file lock exportado para tests del propio mecanismo.
+    _acquireFileLockSync,
+    _releaseFileLockSync,
+    lockPathFor,
+    LOCK_RETRY_MAX_MS,
+    LOCK_STALE_MS,
 };
