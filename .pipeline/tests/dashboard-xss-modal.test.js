@@ -112,3 +112,150 @@ test('_escHtml extraído de la fuente neutraliza el payload XSS del rebote', () 
     assert.ok(out.includes('&lt;img'), 'el < debe estar escapado');
     assert.ok(out.includes('&quot;'), 'las " deben estar escapadas');
 });
+
+// ----- #2800 — Board Kanban centerpiece (rediseño V3) ------------------------
+//
+// El issue movió el Kanban al protagonista visual del dashboard. Estos tests
+// congelan los invariantes:
+//   1. laneTitle (título de cada card) usa esc() — antes solo escapaba comillas,
+//      lo que dejaba pasar `<script>` en el body de .lc-title (vector XSS si un
+//      MEMBER del repo crea un issue con título malicioso).
+//   2. matrixHTML ya NO arranca colapsado por default (CA-1.2).
+//   3. matrixHTML lleva el título "Board Kanban · Pipeline V3" + badge V3.
+//   4. matrixHTML se renderiza ANTES de kpis-row en el template (CA-1.1, CA-1.6).
+//   5. Existe el anchor `id="board-kanban"` para deep-links (CA-6.1).
+//   6. La media query mobile colapsa lanes a 1 columna en `<768px` (CA-5.1).
+
+test('#2800 — laneTitle escapa con esc() (no solo comillas) en cards del Kanban', () => {
+    // Anclamos la búsqueda al comentario único insertado por el fix.
+    const idx = src.indexOf('#2800 CA-2.3/CA-4.1');
+    assert.ok(idx > 0, 'el comentario del fix XSS debe existir junto al cambio');
+
+    // Aceptamos plantilla literal `Issue #${issueNum}` o concatenación cruda.
+    const laneTitleMatch = src.match(/const laneTitle = esc\(data\.title \|\| [`'"]/);
+    assert.ok(
+        laneTitleMatch,
+        'laneTitle debe construirse con esc(data.title || ...) — no con replace(/"/g) parcial',
+    );
+
+    // Aseguramos que la versión vieja (sólo escape de comillas) NO está más.
+    assert.doesNotMatch(
+        src,
+        /const laneTitle = \(data\.title[^)]*\)\.replace\(\/\"\/g, '&quot;'\)/,
+        'la versión vieja con escape parcial de comillas debe haberse eliminado',
+    );
+
+    // searchKey también debe pasar por esc() — sino el atributo data-search
+    // podría romperse con comillas o `<` en el título.
+    assert.match(
+        src,
+        /const searchKey = esc\(\(/,
+        'searchKey debe envolverse con esc() para evitar romper atributos del card',
+    );
+});
+
+test('#2800 — matrixHTML arranca expandido (sin section-collapsed default)', () => {
+    // Buscamos la declaración del template del Kanban (única ocurrencia).
+    const open = src.indexOf('const matrixHTML = `');
+    assert.ok(open > 0, 'el template matrixHTML debe existir');
+
+    // El cierre del template literal de matrixHTML es el primer `;` después del bloque.
+    const close = src.indexOf('`;', open);
+    assert.ok(close > open, 'cierre del template matrixHTML no encontrado');
+    const body = src.slice(open, close);
+
+    // Debe seguir teniendo la clase section-collapsible (toggleable) pero NO
+    // section-collapsed (default colapsado). Los usuarios que lo colapsen lo
+    // persisten en localStorage, ese path no se toca.
+    assert.match(body, /class="matrix-section section-collapsible board-kanban-centerpiece"/);
+    assert.doesNotMatch(
+        body,
+        /class="matrix-section section-collapsible section-collapsed"/,
+        'el default debe ser expandido — sin section-collapsed',
+    );
+});
+
+test('#2800 — título del Kanban es "Board Kanban · Pipeline V3" con badge V3', () => {
+    const open = src.indexOf('const matrixHTML = `');
+    const close = src.indexOf('`;', open);
+    const body = src.slice(open, close);
+
+    assert.match(
+        body,
+        /🎯 Board Kanban · Pipeline <span class="kanban-v3-badge"/,
+        'el título visible debe ser "🎯 Board Kanban · Pipeline V3"',
+    );
+    assert.match(
+        body,
+        /<span class="kanban-v3-badge"[^>]*>V3<\/span>/,
+        'el badge V3 debe estar presente dentro del título',
+    );
+});
+
+test('#2800 — anchor id="board-kanban" existe para deep-links', () => {
+    const open = src.indexOf('const matrixHTML = `');
+    const close = src.indexOf('`;', open);
+    const body = src.slice(open, close);
+
+    assert.match(
+        body,
+        /id="board-kanban"/,
+        'el anchor id="board-kanban" debe existir antes del bloque .matrix-section',
+    );
+});
+
+test('#2800 — matrixHTML se renderiza ANTES del bloque kpis-row (centerpiece)', () => {
+    // La fuente debe interpolar ${matrixHTML} antes de `<div class="kpis-row">`
+    // en la primera ocurrencia del HTML emitido. Si alguien lo vuelve a colocar
+    // al final, este test rompe.
+    const matrixIdx = src.indexOf('${matrixHTML}');
+    assert.ok(matrixIdx > 0, '${matrixHTML} debe seguir interpolado en algún lugar del template');
+
+    const kpisIdx = src.indexOf('<div class="kpis-row">');
+    assert.ok(kpisIdx > 0, 'el bloque kpis-row debe existir');
+
+    assert.ok(
+        matrixIdx < kpisIdx,
+        `matrixHTML debe interpolarse antes de kpis-row (matrixHTML=${matrixIdx}, kpis-row=${kpisIdx})`,
+    );
+
+    // Por consistencia con el rediseño, NO debe quedar una segunda
+    // interpolación de matrixHTML al final del template (legacy position).
+    const lastMatrix = src.lastIndexOf('${matrixHTML}');
+    assert.equal(
+        matrixIdx,
+        lastMatrix,
+        'solo debe haber UNA interpolación de matrixHTML — la del centerpiece',
+    );
+});
+
+test('#2800 — CA-5.1 media query mobile <768px colapsa lanes a 1 columna', () => {
+    // La regla legacy <900px ya cubre <768px, pero el CA pide trazabilidad
+    // explícita verificable con grep — agregamos rule específica para 768.
+    assert.match(
+        src,
+        /@media\(max-width:768px\)\{\.it-lanes\{grid-template-columns:1fr\}\}/,
+        'debe existir media query explícita <=768px para .it-lanes (CA-5.1)',
+    );
+});
+
+test('#2800 — payload XSS en título de issue queda neutralizado al pasar por esc()', () => {
+    // Reproducimos esc() server-side (línea 933) y validamos contra el payload
+    // de ataque típico que podría incrustarse en el título de un issue.
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    const payload = '<script>fetch("/api/kill-pipeline",{method:"POST"})</script>';
+    const escaped = esc(payload);
+
+    // Tanto el body de <div class="lc-title">${laneTitle}</div> como el
+    // atributo title="${laneTitle}" deben quedar seguros.
+    assert.ok(!escaped.includes('<script>'), '<script> debe quedar escapado');
+    assert.ok(escaped.includes('&lt;script&gt;'), '< y > deben estar escapados');
+    assert.ok(escaped.includes('&quot;'), 'las comillas dobles deben estar escapadas');
+});
