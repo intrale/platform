@@ -33,9 +33,10 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
-const { renderHtmlToPng } = require('./screenshot-capture');
+const { renderHtmlToPng, resolveSafeOutputPath } = require('./screenshot-capture');
 
 // -----------------------------------------------------------------------------
 // Constantes (CA-UX-11, CA-5)
@@ -51,9 +52,143 @@ const ANTHROPIC_MAX_RETRIES = 1; // un fallback al sonnet, no más
 const VIEWPORT_DASHBOARD = Object.freeze({ width: 1440, height: 900 });
 const VIEWPORT_ANDROID_MDPI = Object.freeze({ width: 411, height: 891 });
 
+// Bounds inquebrantables del viewport (CA-S4, consolidado en
+// definicion/criterios). Cualquier viewport fuera de este rango es abortado por
+// `validateViewport` antes de tocar puppeteer.
+const VIEWPORT_BOUNDS = Object.freeze({
+    minWidth: 320,
+    maxWidth: 4096,
+    minHeight: 240,
+    maxHeight: 8192,
+});
+
+// Prefijo identificable de un fragmento redactado en logs/alertas (CA-S3).
+// String pública usada por tests y por consumidores que quieren grep.
+const REDACTED_API_KEY_MARKER = '[REDACTED-API-KEY]';
+
+// Mínimo número de caracteres de un fragmento de la API key que disparan
+// redacción (CA-S3). 8 chars es suficientemente largo para no marcar palabras
+// genéricas, pero corto para atrapar prefijos/sufijos típicos que un SDK
+// pudiera dejar fugar.
+const REDACTED_MIN_FRAGMENT = 8;
+
 // Path al archivo de tokens. Si no existe, usamos defaults M3 documentados
 // in-code y emitimos un warning en el resultado (CA-UX-5).
 const TOKENS_PATH_REL = path.join('docs', 'design-system', 'tokens.json');
+
+// -----------------------------------------------------------------------------
+// Credential safety: redacción de la API key en mensajes (CA-S3)
+// -----------------------------------------------------------------------------
+
+/**
+ * Redacta la API key (y cualquier subcadena ≥ REDACTED_MIN_FRAGMENT chars
+ * contenida en ella) de un mensaje arbitrario. Devuelve siempre un string
+ * seguro para loguear, comentar en el issue o emitir por Telegram.
+ *
+ * Diseño:
+ *   - Si `apiKey` es null/undefined/string < 8 chars → no hace nada (devuelve
+ *     `msg` casteado a string). Evita falsos positivos cuando no hay clave.
+ *   - Reemplaza la clave entera primero (caso más común: 401 reflejado).
+ *   - Luego escanea fragmentos contiguos de la clave de longitud ≥ 8: si el
+ *     SDK loguea solo un prefijo/sufijo (e.g. `sk-ant-api03-XXXX...`),
+ *     igual se redacta.
+ *   - El escaneo es greedy desde el fragmento más largo posible para no dejar
+ *     pedazos pegados sin redactar.
+ *
+ * @param {unknown} msg
+ * @param {string|null|undefined} apiKey
+ * @returns {string}
+ */
+function redactKey(msg, apiKey) {
+    const s = typeof msg === 'string'
+        ? msg
+        : (msg == null ? '' : String(msg));
+    if (!s) return s;
+    if (typeof apiKey !== 'string' || apiKey.length < REDACTED_MIN_FRAGMENT) {
+        return s;
+    }
+
+    let out = s;
+    // 1) Reemplazo de la clave entera (caso típico).
+    if (out.indexOf(apiKey) !== -1) {
+        out = out.split(apiKey).join(REDACTED_API_KEY_MARKER);
+    }
+
+    // 2) Escaneo de fragmentos contiguos ≥ REDACTED_MIN_FRAGMENT.
+    //    Greedy desde el fragmento más largo en cada posición. Avanza por
+    //    posiciones de la clave, no del mensaje (la clave es corta y fija;
+    //    el mensaje puede tener cientos de chars).
+    let i = 0;
+    while (i <= apiKey.length - REDACTED_MIN_FRAGMENT) {
+        let matched = 0;
+        for (let len = apiKey.length - i; len >= REDACTED_MIN_FRAGMENT; len--) {
+            const frag = apiKey.slice(i, i + len);
+            if (out.indexOf(frag) !== -1) {
+                out = out.split(frag).join(REDACTED_API_KEY_MARKER);
+                matched = len;
+                break;
+            }
+        }
+        i += (matched > 0 ? matched : 1);
+    }
+    return out;
+}
+
+// -----------------------------------------------------------------------------
+// Validación del viewport (CA-S4)
+// -----------------------------------------------------------------------------
+
+/**
+ * Valida que el viewport esté dentro de los rangos consolidados en
+ * definicion/criterios: width ∈ [320, 4096], height ∈ [240, 8192].
+ *
+ * Cualquier valor no-numérico, NaN, Infinity o fuera de rango devuelve
+ * `{ ok:false, reason:'viewport-out-of-bounds', detail }`. El caller aborta
+ * sin tocar puppeteer.
+ *
+ * @param {unknown} v
+ * @returns {{ok:true} | {ok:false, reason:string, detail:string}}
+ */
+function validateViewport(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) {
+        return {
+            ok: false,
+            reason: 'viewport-out-of-bounds',
+            detail: 'viewport debe ser objeto con width/height numéricos',
+        };
+    }
+    const w = v.width;
+    const h = v.height;
+    if (typeof w !== 'number' || !Number.isFinite(w)) {
+        return {
+            ok: false,
+            reason: 'viewport-out-of-bounds',
+            detail: `viewport.width inválido (${String(w)}). Esperado número finito en [${VIEWPORT_BOUNDS.minWidth}, ${VIEWPORT_BOUNDS.maxWidth}].`,
+        };
+    }
+    if (typeof h !== 'number' || !Number.isFinite(h)) {
+        return {
+            ok: false,
+            reason: 'viewport-out-of-bounds',
+            detail: `viewport.height inválido (${String(h)}). Esperado número finito en [${VIEWPORT_BOUNDS.minHeight}, ${VIEWPORT_BOUNDS.maxHeight}].`,
+        };
+    }
+    if (w < VIEWPORT_BOUNDS.minWidth || w > VIEWPORT_BOUNDS.maxWidth) {
+        return {
+            ok: false,
+            reason: 'viewport-out-of-bounds',
+            detail: `viewport.width ${w} fuera de [${VIEWPORT_BOUNDS.minWidth}, ${VIEWPORT_BOUNDS.maxWidth}].`,
+        };
+    }
+    if (h < VIEWPORT_BOUNDS.minHeight || h > VIEWPORT_BOUNDS.maxHeight) {
+        return {
+            ok: false,
+            reason: 'viewport-out-of-bounds',
+            detail: `viewport.height ${h} fuera de [${VIEWPORT_BOUNDS.minHeight}, ${VIEWPORT_BOUNDS.maxHeight}].`,
+        };
+    }
+    return { ok: true };
+}
 
 // -----------------------------------------------------------------------------
 // Carga de design tokens (CA-UX-4/5)
@@ -277,6 +412,16 @@ async function generate(opts) {
         return { ok: false, reason: 'empty-prompt', detail: 'prompt vacío' };
     }
 
+    // CA-S4: validar viewport antes de hablarle a puppeteer.
+    const viewportCheck = validateViewport(viewport);
+    if (!viewportCheck.ok) {
+        return {
+            ok: false,
+            reason: viewportCheck.reason,
+            detail: viewportCheck.detail,
+        };
+    }
+
     const Anthropic = requireAnthropic();
     if (!Anthropic) {
         return {
@@ -304,21 +449,26 @@ async function generate(opts) {
     try {
         response = await callOnce(client, model, fullPrompt);
     } catch (eMain) {
+        // CA-S3: redactar la api key antes de exponerla en detail (el detail
+        // viaja a comments del issue, alertas Telegram y logs del pulpo).
+        const mainMsg = redactKey(eMain && eMain.message || eMain, apiKey).slice(0, 200);
         if (model === fallbackModel) {
             return {
                 ok: false,
                 reason: 'llm-failed',
-                detail: String(eMain && eMain.message || eMain).slice(0, 200),
+                detail: mainMsg,
             };
         }
         try {
             modelUsed = fallbackModel;
             response = await callOnce(client, fallbackModel, fullPrompt);
         } catch (eFallback) {
+            const fallbackMsg = redactKey(eFallback && eFallback.message || eFallback, apiKey).slice(0, 100);
+            const opusPart = redactKey(eMain && eMain.message || eMain, apiKey).slice(0, 100);
             return {
                 ok: false,
                 reason: 'llm-failed',
-                detail: `opus: ${String(eMain && eMain.message || eMain).slice(0, 100)} | sonnet: ${String(eFallback && eFallback.message || eFallback).slice(0, 100)}`,
+                detail: `opus: ${opusPart} | sonnet: ${fallbackMsg}`,
             };
         }
     }
@@ -334,30 +484,104 @@ async function generate(opts) {
         };
     }
 
-    const renderResult = await renderer({
-        html,
-        outputPath: _opts.outputPath,
-        allowedRoot,
-        viewport,
-    });
-
-    if (!renderResult || !renderResult.ok) {
+    // CA-S7: render del PNG a un directorio temporal seguro y luego rename al
+    // outputPath final. Si crashea entre screenshot y rename, el tmpDir cae
+    // junto al proceso (o lo limpiamos en finally); nunca queda un PNG parcial
+    // en qa/evidence/.
+    let finalOutputPath;
+    try {
+        finalOutputPath = resolveSafeOutputPath(_opts.outputPath, allowedRoot);
+    } catch (e) {
         return {
             ok: false,
-            reason: renderResult && renderResult.reason || 'render-failed',
-            detail: renderResult && renderResult.detail || 'sin detalle',
+            reason: 'unsafe-output-path',
+            detail: String(e && e.message || e).slice(0, 200),
             model: modelUsed,
             tokens: response.tokens,
         };
     }
 
-    return {
-        ok: true,
-        outputPath: renderResult.outputPath,
-        model: modelUsed,
-        tokens: response.tokens,
-        warning: tokensWarning,
-    };
+    let tmpDir = null;
+    try {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-mockup-'));
+        const tmpPath = path.join(tmpDir, path.basename(finalOutputPath));
+
+        const renderResult = await renderer({
+            html,
+            outputPath: tmpPath,
+            allowedRoot: tmpDir,
+            viewport,
+        });
+
+        if (!renderResult || !renderResult.ok) {
+            return {
+                ok: false,
+                reason: renderResult && renderResult.reason || 'render-failed',
+                detail: renderResult && renderResult.detail || 'sin detalle',
+                model: modelUsed,
+                tokens: response.tokens,
+            };
+        }
+
+        // Mover el PNG temporal a su destino definitivo (atomic dentro del
+        // mismo filesystem; si no, copia + unlink hace fallback).
+        try {
+            fs.mkdirSync(path.dirname(finalOutputPath), { recursive: true });
+        } catch (e) {
+            return {
+                ok: false,
+                reason: 'mkdir-final-failed',
+                detail: String(e && e.message || e).slice(0, 200),
+                model: modelUsed,
+                tokens: response.tokens,
+            };
+        }
+
+        try {
+            fs.renameSync(renderResult.outputPath, finalOutputPath);
+        } catch (eRename) {
+            // EXDEV (cross-device) en Windows con tmpdir en otro drive:
+            // fallback explícito copy + unlink.
+            if (eRename && eRename.code === 'EXDEV') {
+                try {
+                    fs.copyFileSync(renderResult.outputPath, finalOutputPath);
+                    fs.unlinkSync(renderResult.outputPath);
+                } catch (eCopy) {
+                    return {
+                        ok: false,
+                        reason: 'rename-failed',
+                        detail: String(eCopy && eCopy.message || eCopy).slice(0, 200),
+                        model: modelUsed,
+                        tokens: response.tokens,
+                    };
+                }
+            } else {
+                return {
+                    ok: false,
+                    reason: 'rename-failed',
+                    detail: String(eRename && eRename.message || eRename).slice(0, 200),
+                    model: modelUsed,
+                    tokens: response.tokens,
+                };
+            }
+        }
+
+        return {
+            ok: true,
+            outputPath: finalOutputPath,
+            model: modelUsed,
+            tokens: response.tokens,
+            warning: tokensWarning,
+        };
+    } finally {
+        // Cleanup del tmpDir pase lo que pase (PNG parcial por crash entre
+        // screenshot y rename, render-failed, success — todo).
+        if (tmpDir) {
+            try {
+                fs.rmSync(tmpDir, { recursive: true, force: true });
+            } catch { /* best-effort */ }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -372,12 +596,17 @@ module.exports = {
     MAX_TOKENS_OUTPUT,
     VIEWPORT_DASHBOARD,
     VIEWPORT_ANDROID_MDPI,
+    VIEWPORT_BOUNDS,
+    REDACTED_API_KEY_MARKER,
+    REDACTED_MIN_FRAGMENT,
     RULES_BLOCK,
     TOKENS_PATH_REL,
     // helpers internos (exportados para tests)
     loadDesignTokens,
     buildPrompt,
     extractHtml,
+    redactKey,
+    validateViewport,
     // API principal
     generate,
 };

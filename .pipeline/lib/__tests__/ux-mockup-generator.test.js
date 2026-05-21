@@ -182,13 +182,19 @@ function fakeAnthropicClass(htmlResponse) {
     };
 }
 
-test('generate: happy path llama SDK con temperature 0.3 y renderiza HTML', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
-    let rendererCalledWith = null;
-    const fakeRenderer = async (opts) => {
-        rendererCalledWith = opts;
+// Fake renderer que sí escribe el PNG temporal en outputPath (cumple el
+// contrato real del renderer: si ok=true, el archivo existe en outputPath).
+function fakeRendererThatWrites(captureRef) {
+    return async (opts) => {
+        if (captureRef) captureRef.value = opts;
+        fs.writeFileSync(opts.outputPath, 'fake-png-bytes');
         return { ok: true, outputPath: opts.outputPath };
     };
+}
+
+test('generate: happy path llama SDK con temperature 0.3 y renderiza HTML', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    const ref = { value: null };
     const result = await ux.generate({
         prompt: 'Cambio del header',
         caseKind: 'dashboard',
@@ -197,13 +203,15 @@ test('generate: happy path llama SDK con temperature 0.3 y renderiza HTML', asyn
         allowedRoot: tmp,
         apiKey: 'sk-test',
         _requireAnthropic: () => fakeAnthropicClass('<!DOCTYPE html><html><body>X</body></html>'),
-        _renderHtmlToPng: fakeRenderer,
+        _renderHtmlToPng: fakeRendererThatWrites(ref),
     });
     assert.equal(result.ok, true);
     assert.match(result.outputPath, /esperado\.png$/);
     assert.equal(result.tokens.input, 100);
     assert.equal(result.tokens.output, 200);
-    assert.match(rendererCalledWith.html, /<!DOCTYPE html>/);
+    assert.match(ref.value.html, /<!DOCTYPE html>/);
+    // El PNG final existe (rename desde tmpdir funcionó).
+    assert.equal(fs.existsSync(result.outputPath), true);
 });
 
 test('generate: SDK falla en opus pero éxito en sonnet (fallback CA-5)', async () => {
@@ -231,7 +239,7 @@ test('generate: SDK falla en opus pero éxito en sonnet (fallback CA-5)', async 
         allowedRoot: tmp,
         apiKey: 'sk-test',
         _requireAnthropic: () => FakeAnthropic,
-        _renderHtmlToPng: async (o) => ({ ok: true, outputPath: o.outputPath }),
+        _renderHtmlToPng: fakeRendererThatWrites(),
     });
     assert.equal(result.ok, true);
     assert.equal(result.model, 'claude-sonnet-4-6');
@@ -278,4 +286,304 @@ test('generate: respuesta sin HTML devuelve no-html-in-response', async () => {
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, 'no-html-in-response');
+});
+
+// =============================================================================
+// CA-S3 — Redacción de la API key en errores del SDK (credential safety)
+// =============================================================================
+
+test('redactKey: redacta la clave entera del mensaje', () => {
+    const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789';
+    const msg = `auth failed for ${key} please retry`;
+    const out = ux.redactKey(msg, key);
+    assert.equal(out.includes(key), false);
+    assert.match(out, /\[REDACTED-API-KEY\]/);
+});
+
+test('redactKey: redacta subcadenas ≥ 8 chars de la clave', () => {
+    const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789';
+    // El SDK loguea solo parte de la clave (prefijo común de 20 chars).
+    const fragment = key.slice(0, 20);
+    const msg = `bad key: ${fragment}... [truncated]`;
+    const out = ux.redactKey(msg, key);
+    assert.equal(out.includes(fragment), false);
+    assert.match(out, /\[REDACTED-API-KEY\]/);
+});
+
+test('redactKey: NO redacta cuando la clave es null/undefined/corta', () => {
+    assert.equal(ux.redactKey('foo bar', null), 'foo bar');
+    assert.equal(ux.redactKey('foo bar', undefined), 'foo bar');
+    assert.equal(ux.redactKey('foo bar', 'short'), 'foo bar');
+    assert.equal(ux.redactKey('foo bar', ''), 'foo bar');
+});
+
+test('redactKey: NO toca un mensaje que no contiene la clave', () => {
+    const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789';
+    const msg = 'rate limit exceeded';
+    assert.equal(ux.redactKey(msg, key), msg);
+});
+
+test('redactKey: tolera msg null/undefined/objeto', () => {
+    const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789';
+    assert.equal(ux.redactKey(null, key), '');
+    assert.equal(ux.redactKey(undefined, key), '');
+    assert.equal(typeof ux.redactKey({ foo: 1 }, key), 'string');
+});
+
+test('generate: cuando el SDK tira un error con la api key, el detail viene redactado (CA-S3)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    const apiKey = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789';
+    const FakeAnthropic = function () {
+        this.messages = {
+            create: async () => {
+                throw new Error(`auth failed for ${apiKey}`);
+            },
+        };
+    };
+    const result = await ux.generate({
+        prompt: 'X',
+        outputPath: 'esperado.png',
+        repoRoot: tmp,
+        allowedRoot: tmp,
+        apiKey,
+        _requireAnthropic: () => FakeAnthropic,
+        // Forzar que sea único intento (sin fallback)
+        model: 'claude-sonnet-4-6',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'llm-failed');
+    assert.equal(result.detail.includes(apiKey), false);
+    assert.match(result.detail, /\[REDACTED-API-KEY\]/);
+});
+
+test('generate: ambos modelos fallan con la key en el error → detail redactado (CA-S3)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    const apiKey = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789';
+    const FakeAnthropic = function () {
+        this.messages = {
+            create: async (params) => {
+                throw new Error(`401 for ${apiKey} on ${params.model}`);
+            },
+        };
+    };
+    const result = await ux.generate({
+        prompt: 'X',
+        outputPath: 'esperado.png',
+        repoRoot: tmp,
+        allowedRoot: tmp,
+        apiKey,
+        _requireAnthropic: () => FakeAnthropic,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'llm-failed');
+    assert.equal(result.detail.includes(apiKey), false);
+    assert.match(result.detail, /opus: .*\[REDACTED-API-KEY\].*\| sonnet: .*\[REDACTED-API-KEY\]/);
+});
+
+// =============================================================================
+// CA-S4 — Validación del viewport (bounds [320,4096] x [240,8192])
+// =============================================================================
+
+test('validateViewport: default 411x891 (Android mdpi) es válido', () => {
+    assert.equal(ux.validateViewport(ux.VIEWPORT_ANDROID_MDPI).ok, true);
+});
+
+test('validateViewport: default 1440x900 (dashboard) es válido', () => {
+    assert.equal(ux.validateViewport(ux.VIEWPORT_DASHBOARD).ok, true);
+});
+
+test('validateViewport: límites inferiores [320, 240] son válidos', () => {
+    assert.equal(ux.validateViewport({ width: 320, height: 240 }).ok, true);
+});
+
+test('validateViewport: límites superiores [4096, 8192] son válidos', () => {
+    assert.equal(ux.validateViewport({ width: 4096, height: 8192 }).ok, true);
+});
+
+test('validateViewport: width < 320 abort', () => {
+    const r = ux.validateViewport({ width: 319, height: 600 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+    assert.match(r.detail, /width 319/);
+});
+
+test('validateViewport: width > 4096 abort', () => {
+    const r = ux.validateViewport({ width: 100000, height: 600 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+    assert.match(r.detail, /4096/);
+});
+
+test('validateViewport: height < 240 abort', () => {
+    const r = ux.validateViewport({ width: 600, height: 239 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+});
+
+test('validateViewport: height > 8192 abort', () => {
+    const r = ux.validateViewport({ width: 600, height: 100000 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+});
+
+test('validateViewport: NaN width abort', () => {
+    const r = ux.validateViewport({ width: NaN, height: 600 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+});
+
+test('validateViewport: Infinity height abort', () => {
+    const r = ux.validateViewport({ width: 600, height: Infinity });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+});
+
+test('validateViewport: width 0 abort', () => {
+    const r = ux.validateViewport({ width: 0, height: 600 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+});
+
+test('validateViewport: width negativo abort', () => {
+    const r = ux.validateViewport({ width: -100, height: 600 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+});
+
+test('validateViewport: viewport no-objeto abort', () => {
+    assert.equal(ux.validateViewport(null).ok, false);
+    assert.equal(ux.validateViewport(undefined).ok, false);
+    assert.equal(ux.validateViewport('411x891').ok, false);
+    assert.equal(ux.validateViewport([411, 891]).ok, false);
+});
+
+test('validateViewport: width string abort', () => {
+    const r = ux.validateViewport({ width: '411', height: 891 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'viewport-out-of-bounds');
+});
+
+test('generate: viewport fuera de rango aborta antes de llamar al SDK (CA-S4)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    let sdkCalled = false;
+    const FakeAnthropic = function () {
+        this.messages = {
+            create: async () => {
+                sdkCalled = true;
+                return { content: [{ text: '```html\n<x></x>\n```' }], usage: {} };
+            },
+        };
+    };
+    const result = await ux.generate({
+        prompt: 'X',
+        outputPath: 'esperado.png',
+        repoRoot: tmp,
+        allowedRoot: tmp,
+        apiKey: 'sk-test',
+        viewport: { width: 100000, height: 100000 },
+        _requireAnthropic: () => FakeAnthropic,
+        _renderHtmlToPng: fakeRendererThatWrites(),
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'viewport-out-of-bounds');
+    assert.equal(sdkCalled, false, 'el SDK no debería haber sido invocado');
+});
+
+// =============================================================================
+// CA-S7 — PNG intermedio en tmpdir + rename atómico al outputPath final
+// =============================================================================
+
+test('generate: render escribe primero en tmpdir y después mueve al outputPath (CA-S7)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    let tmpDirSeenByRenderer = null;
+    const fakeRenderer = async (opts) => {
+        tmpDirSeenByRenderer = opts.allowedRoot;
+        // Verifica que el outputPath que recibe el renderer esté dentro del tmpdir
+        // del sistema, no en allowedRoot del caller.
+        assert.match(opts.outputPath, new RegExp(path.basename(opts.outputPath) + '$'));
+        assert.equal(opts.outputPath.startsWith(opts.allowedRoot), true);
+        fs.writeFileSync(opts.outputPath, 'fake-png-bytes');
+        return { ok: true, outputPath: opts.outputPath };
+    };
+    const result = await ux.generate({
+        prompt: 'X',
+        outputPath: 'esperado.png',
+        repoRoot: tmp,
+        allowedRoot: tmp,
+        apiKey: 'sk-test',
+        _requireAnthropic: () => fakeAnthropicClass('<!DOCTYPE html><html><body>X</body></html>'),
+        _renderHtmlToPng: fakeRenderer,
+    });
+    assert.equal(result.ok, true);
+    // El renderer vio un allowedRoot dentro de os.tmpdir().
+    assert.equal(tmpDirSeenByRenderer.startsWith(os.tmpdir()), true);
+    assert.match(tmpDirSeenByRenderer, /ux-mockup-/);
+    // El archivo final existe en allowedRoot del caller.
+    assert.equal(fs.existsSync(result.outputPath), true);
+    assert.equal(result.outputPath.startsWith(tmp), true);
+});
+
+test('generate: tmpDir queda limpio después de un render exitoso (CA-S7)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    let capturedTmpDir = null;
+    const fakeRenderer = async (opts) => {
+        capturedTmpDir = opts.allowedRoot;
+        fs.writeFileSync(opts.outputPath, 'fake-png-bytes');
+        return { ok: true, outputPath: opts.outputPath };
+    };
+    const result = await ux.generate({
+        prompt: 'X',
+        outputPath: 'esperado.png',
+        repoRoot: tmp,
+        allowedRoot: tmp,
+        apiKey: 'sk-test',
+        _requireAnthropic: () => fakeAnthropicClass('<!DOCTYPE html><html><body>X</body></html>'),
+        _renderHtmlToPng: fakeRenderer,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(fs.existsSync(capturedTmpDir), false, 'el tmpDir debería estar limpio');
+});
+
+test('generate: si el renderer crashea mid-flight, el tmpDir queda limpio (CA-S7)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    let capturedTmpDir = null;
+    let partialPngPath = null;
+    const fakeRenderer = async (opts) => {
+        capturedTmpDir = opts.allowedRoot;
+        // Simula crash mid-flight: escribe PNG parcial pero retorna error.
+        partialPngPath = opts.outputPath;
+        fs.writeFileSync(opts.outputPath, 'partial-bytes');
+        return { ok: false, reason: 'crashed-mid-flight', detail: 'simulación' };
+    };
+    const result = await ux.generate({
+        prompt: 'X',
+        outputPath: 'esperado.png',
+        repoRoot: tmp,
+        allowedRoot: tmp,
+        apiKey: 'sk-test',
+        _requireAnthropic: () => fakeAnthropicClass('<!DOCTYPE html><html><body>X</body></html>'),
+        _renderHtmlToPng: fakeRenderer,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'crashed-mid-flight');
+    // El PNG parcial NUNCA llegó a qa/evidence/ del caller.
+    assert.equal(fs.existsSync(path.join(tmp, 'esperado.png')), false);
+    // El tmpDir entero quedó limpio.
+    assert.equal(fs.existsSync(capturedTmpDir), false);
+    assert.equal(fs.existsSync(partialPngPath), false);
+});
+
+test('generate: outputPath con traversal (../) aborta antes de tocar tmpDir (CA-S7)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-test-'));
+    const result = await ux.generate({
+        prompt: 'X',
+        outputPath: '../../etc/passwd',
+        repoRoot: tmp,
+        allowedRoot: tmp,
+        apiKey: 'sk-test',
+        _requireAnthropic: () => fakeAnthropicClass('<!DOCTYPE html><html><body>X</body></html>'),
+        _renderHtmlToPng: fakeRendererThatWrites(),
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'unsafe-output-path');
 });
