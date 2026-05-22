@@ -39,6 +39,9 @@ const ENV_MAPPING = Object.freeze({
   // Telegram bot
   'telegram.bot_token':            'TELEGRAM_BOT_TOKEN',
   'telegram.chat_id':              'TELEGRAM_CHAT_ID',
+  // Chat del operador (Leo) para handlers proactivos (mockup UX, etc. — #3384).
+  // Si no está configurada, el handler correspondiente se autodeshabilita.
+  'telegram.leo_operator_chat_id': 'TELEGRAM_LEO_OPERATOR_CHAT_ID',
   // Providers IA (allowlist en agent-models-validate.js:ALLOWED_CREDENTIAL_ENV_VARS)
   'providers.openai.api_key':      'OPENAI_API_KEY',
   'providers.anthropic.api_key':   'ANTHROPIC_API_KEY',
