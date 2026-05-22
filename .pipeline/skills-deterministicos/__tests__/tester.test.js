@@ -561,9 +561,14 @@ test('#3092 rev-1 — isPipelineOnlyChange NO acepta otros subdirectorios de qa/
     // deben caer en pipeline-only:
     //   qa/build.gradle.kts         → módulo Gradle real (afecta build)
     //   qa/src/test/                → código Kotlin/JS de test
-    //   qa/scripts/                 → scripts de QA ejecutados por gradlew
+    //   qa/scripts/*.sh             → scripts shell de QA (pueden orquestar gradle)
     //   qa/test-cases/<id>.json     → casos consumidos por scripts QA
     //   qa/regression-suite.json    → catálogo de regresión
+    //
+    // Frontera afinada por rebote #3409: los archivos .js/.mjs/.cjs bajo
+    // `qa/scripts/` ahora SÍ caen en pipeline-only (son hooks Node.js
+    // puros que no consume Gradle), pero el resto sigue forzando ruta
+    // gradle. El test `#3409 rev-1` documenta el nuevo branch positivo.
     assert.equal(tester.isPipelineOnlyChange([
         '.pipeline/config.yaml',
         'qa/build.gradle.kts',
@@ -583,6 +588,67 @@ test('#3092 rev-1 — isPipelineOnlyChange NO acepta otros subdirectorios de qa/
     assert.equal(tester.isPipelineOnlyChange([
         '.pipeline/config.yaml',
         'qa/regression-suite.json',
+    ]), false);
+});
+
+// ── Rebote #3409 rev-1 ────────────────────────────────────────────────
+// El hook `qa/scripts/promote-screenshots.js` (Node.js puro, 434 líneas)
+// + sus 18 tests bajo `qa/scripts/__tests__/promote-screenshots.test.js`
+// + `.claude/skills/qa/SKILL.md` modificado + `docs/qa/screenshot-promotion.md`
+// + `package.json` formaron un cambio puramente pipeline-only que el
+// tester clasificó como mixto porque los .js bajo `qa/scripts/` no
+// matcheaban ningún pattern. Resultado: ruta gradle, 0 JUnit reports,
+// rebote por "No se encontraron reportes JUnit".
+//
+// Verificación de seguridad: `grep` por `qa/scripts` en `**/*.gradle*`
+// devuelve 0 referencias — Gradle no consume estos scripts; los invoca
+// el skill /qa (Node.js).
+test('#3409 rev-1 — isPipelineOnlyChange acepta qa/scripts/*.js y __tests__/*.test.js', () => {
+    // Hook Node.js bajo qa/scripts/ → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/promote-screenshots.js',
+    ]), true);
+    // Test del hook bajo qa/scripts/__tests__/ → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/__tests__/promote-screenshots.test.js',
+    ]), true);
+    // Variantes .mjs / .cjs también caen en pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/some-hook.mjs',
+    ]), true);
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/legacy-hook.cjs',
+    ]), true);
+    // Caso real del rebote #3409: 5 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/skills/qa/SKILL.md',
+        'docs/qa/screenshot-promotion.md',
+        'package.json',
+        'qa/scripts/__tests__/promote-screenshots.test.js',
+        'qa/scripts/promote-screenshots.js',
+    ]), true);
+});
+
+test('#3409 rev-1 — isPipelineOnlyChange mantiene la frontera #3092 para shells/configs/casos QA', () => {
+    // Los .sh bajo qa/scripts/ siguen forzando ruta gradle: pueden orquestar
+    // ejecuciones gradle/emulador y un cambio ahí debe verificarse en flujo
+    // QA real, no por tests Node aislados.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/qa-android.sh',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/promote-screenshots.js',
+        'qa/scripts/qa-android.sh',
+    ]), false);
+    // Subdirectorios anidados que NO son __tests__/ y archivos sin extensión
+    // .js/.mjs/.cjs no califican (defensa contra typos / archivos opacos).
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/promote-screenshots',  // sin extensión
+    ]), false);
+    // qa/scripts/ anidado dentro de un módulo NO debe disparar pipeline-only
+    // (mismo ancla a raíz que el resto de patrones #3092/#2398).
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/qa/scripts/foo.js',
     ]), false);
 });
 
@@ -733,6 +799,65 @@ test('findNodeTestFiles — encuentra *.test.js dentro de .pipeline/ y excluye n
     assert.ok(found.includes('.pipeline/metrics/__tests__/b.test.js'));
     assert.ok(!found.some((f) => f.includes('node_modules')), 'node_modules debe estar excluido');
     assert.ok(!found.some((f) => f.includes('desarrollo')), 'desarrollo/ debe estar excluido');
+});
+
+// Rebote #3409 rev-1: el tester corre `node --test` sobre los archivos que
+// findNodeTestFiles le devuelve. Sin esta extensión, los 18 tests del hook
+// `qa/scripts/promote-screenshots.js` no se ejecutaban en la ruta
+// pipeline-only y el tester aprobaba como qa:skipped sin haber corrido tests
+// reales. Acá validamos que el segundo root (`qa/scripts/__tests__/`) se
+// escanea de forma simétrica a `.pipeline/`.
+test('#3409 rev-1 — findNodeTestFiles escanea también qa/scripts/__tests__/', () => {
+    // Crear un repo fresco para no contaminar con tests de los otros casos.
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-3409-'));
+    // .pipeline/ test
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'pipe.test.js'), '// pipeline test');
+    // qa/scripts/__tests__/ test (objetivo del rebote)
+    fs.mkdirSync(path.join(fresh, 'qa', 'scripts', '__tests__'), { recursive: true });
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'scripts', '__tests__', 'promote-screenshots.test.js'),
+        '// qa script test'
+    );
+    // Archivos no-test bajo qa/scripts/__tests__/ → ignorados (no terminan en .test.js)
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'scripts', '__tests__', 'helpers.js'),
+        '// helper, sin sufijo .test.js'
+    );
+    // qa/scripts/promote-screenshots.js (NO está en __tests__/) → ignorado
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'scripts', 'promote-screenshots.js'),
+        '// hook implementation, no tests'
+    );
+    // qa/evidence/ no debe contar como root de tests (no es escaneado).
+    fs.mkdirSync(path.join(fresh, 'qa', 'evidence', '3409'), { recursive: true });
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'evidence', '3409', 'stray.test.js'),
+        '// no debe levantarse'
+    );
+
+    const found = tester.findNodeTestFiles(fresh).map((f) => path.relative(fresh, f).replace(/\\/g, '/'));
+    assert.ok(found.includes('.pipeline/tests/pipe.test.js'),
+        `esperaba .pipeline/tests/pipe.test.js, fue: ${JSON.stringify(found)}`);
+    assert.ok(found.includes('qa/scripts/__tests__/promote-screenshots.test.js'),
+        `esperaba qa/scripts/__tests__/promote-screenshots.test.js, fue: ${JSON.stringify(found)}`);
+    assert.ok(!found.some((f) => f.includes('helpers.js')), 'helpers.js no debe contarse como test');
+    assert.ok(!found.some((f) => f.endsWith('promote-screenshots.js') && !f.endsWith('.test.js')),
+        'el hook (no-test) no debe contarse');
+    assert.ok(!found.some((f) => f.includes('qa/evidence')),
+        'qa/evidence/ no debe escanearse aunque tenga *.test.js sueltos');
+});
+
+// Defensa: si qa/scripts/__tests__/ no existe en el repo, findNodeTestFiles
+// no debe romper. Esto cubre repos que no usan el patrón QA Node aún (ej.
+// worktrees viejos o forks limpios).
+test('#3409 rev-1 — findNodeTestFiles tolera ausencia de qa/scripts/__tests__/', () => {
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-3409-empty-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'only-pipe.test.js'), '// solo pipeline');
+    // qa/ NO existe.
+    const found = tester.findNodeTestFiles(fresh).map((f) => path.relative(fresh, f).replace(/\\/g, '/'));
+    assert.deepEqual(found, ['.pipeline/tests/only-pipe.test.js']);
 });
 
 test('runNodeTests — sin tests detectados devuelve no_tests:true y exit_code:0', async () => {
