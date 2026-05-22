@@ -356,6 +356,32 @@ Generar `qa/evidence/<issue>/qa-report.json` siguiendo el template de `docs/qa-t
 
 Usar `Write` tool para escribir el `qa-report.json`.
 
+## Paso V7c: Promoción de screenshots a librería (issue #3409)
+
+Después de escribir `qa-report.json`, si el `verdict` quedó `APROBADO` y el branch corresponde a un issue con label `app:client | app:business | app:delivery`, invocar el hook de promoción:
+
+```bash
+node qa/scripts/promote-screenshots.js \
+  --issue "$ISSUE_NUM" \
+  2>&1 | tail -20
+```
+
+El hook es **idempotente** y **fail-safe**:
+
+- Detecta PNGs en `qa/evidence/<issue>/`, los mapea a pantalla canónica + flavor, y copia atómicamente a `docs/app-screenshots-reference/<pantalla>/<pantalla>-<flavor>-<YYYY-MM-DD>.png`.
+- Si la política PII de #3385 no está disponible (módulo `qa/lib/pii-policy.js` ausente, contrato roto, o lanza al cargar), **NO promueve nada** y registra `PII policy unavailable — promotion skipped`. El repo es público — default seguro.
+- Si la librería `docs/app-screenshots-reference/` no existe en `main`, el hook falla con `screenshots-reference library missing — depends on #3407`. **NO crea la estructura on-demand** (eso es scope de #3407).
+- Re-ejecutar sobre el mismo run no duplica archivos: el hook compara hashes y emite `promoted 0 screenshots (already in library)`.
+- Logs accionables esperados:
+  - `promoted N screenshots to library` — happy path.
+  - `promoted 0 screenshots (already in library)` — idempotencia.
+  - `overwritten same-day screenshot <pantalla>/<flavor>` — versión nueva sobre la misma fecha.
+  - `PII detected — promotion skipped: <filename>` — flags PII activos.
+  - `PII policy unavailable — promotion skipped` — política no importable.
+  - `unmapped: <filename>` — el filename no mapeó a pantalla canónica (no aborta).
+
+El hook **no aborta** el QA: cualquier skip queda registrado para trazabilidad y el exit code sigue 0. Ver `docs/qa/screenshot-promotion.md` para el detalle operativo y la lista de heurísticas filename → pantalla canónica.
+
 ## Paso V7b: Enviar videos a Telegram
 
 Best-effort, no aborta el reporte:

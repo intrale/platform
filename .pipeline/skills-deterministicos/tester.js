@@ -186,24 +186,53 @@ const MODULE_DIRS = {
 //                    agentes pero NO la compilación Kotlin ni la cobertura
 //                    Kover. Encaja exactamente en pipeline-only.
 //
+// Rebote #3409 rev-1 (mismo síntoma, archivos distintos):
+//   - #3409 (hook `qa/scripts/promote-screenshots.js` para promover
+//     screenshots a la librería de referencia visual) entregó un cambio
+//     puramente Node.js bajo `qa/scripts/` + `qa/scripts/__tests__/` +
+//     `.claude/skills/qa/SKILL.md` + `docs/qa/screenshot-promotion.md` +
+//     `package.json`. Tres de los cinco archivos matcheaban patterns
+//     existentes, pero los dos archivos bajo `qa/scripts/*.js` rompían el
+//     match `every`. El tester cayó a la ruta gradle, corrió todas las
+//     tasks UP-TO-DATE (sin código Kotlin tocado) y produjo 0 JUnit
+//     reports → rebote "[tester] No se encontraron reportes JUnit".
+//     Verificación empírica en `.pipeline/logs/3409-tester.log`:
+//       [tester] git diff vs main: 5 archivos · pipeline_only=false
+//       [tester] gradle exit_code=0 wall_ms=56911 (BUILD SUCCESSFUL,
+//                tareas UP-TO-DATE)
+//       - No se encontraron reportes JUnit
+//
+//   El pattern agregado abajo (`/^qa\/scripts\/.*\.(js|mjs|cjs)$/`) es
+//   deliberadamente narrow: solo matchea archivos Node.js bajo qa/scripts/,
+//   NO archivos .sh, .kt, .gradle.kts. Esto mantiene la frontera del rebote
+//   #3092: `qa/scripts/qa-android.sh` y compañía siguen forzando ruta
+//   gradle (su modificación puede afectar el comportamiento del QA real),
+//   pero los hooks Node.js puros (`promote-screenshots.js`, `qa-narration.js`,
+//   `qa-summarize-results.js`, etc.) ahora caen en pipeline-only.
+//   Verificación de seguridad: `grep` por `qa/scripts` en
+//   `**/*.{kts,gradle,kt,properties}` devuelve 0 referencias, así que
+//   Gradle no consume estos scripts.
+//
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
 // `settings.gradle.kts`, `build.gradle.kts`, `qa/build.gradle.kts`,
-// `qa/src/`, `qa/scripts/`, `qa/test-cases/`, `qa/regression-suite.json` (todos
-// pueden afectar build/coverage o testing real). El test `paths fuera de los
-// patrones permitidos rompen el match` documenta y protege esa frontera.
+// `qa/src/`, `qa/scripts/*.sh` (scripts shell que pueden orquestar gradle),
+// `qa/test-cases/`, `qa/regression-suite.json` (todos pueden afectar
+// build/coverage o testing real). El test `paths fuera de los patrones
+// permitidos rompen el match` documenta y protege esa frontera.
 const PIPELINE_ONLY_PATTERNS = [
-    /^\.pipeline\//,        // pipeline V3 (Node.js)
-    /^docs\//,              // documentación pura
-    /^agents\//,            // reglas para agentes
-    /^\.github\//,          // GitHub Actions / templates
-    /^\.claude\//,          // skills/hooks/settings de Claude Code — fuera de Gradle
-    /^\.gitignore$/,        // gitignore root — no afecta compilación Kotlin
-    /^\.gitattributes$/,    // git attributes — no afecta compilación Kotlin
-    /^\.editorconfig$/,     // editor config — no afecta cobertura
-    /^\.husky\//,           // husky git hooks (Node.js) — fuera de classpath Gradle
-    /^package\.json$/,      // npm manifest — usado solo por `.pipeline/` Node.js
-    /^package-lock\.json$/, // npm lockfile — usado solo por `.pipeline/` Node.js
-    /^qa\/evidence\//,      // QA artifacts (video/screenshots/reports) — fuera de Gradle
+    /^\.pipeline\//,                       // pipeline V3 (Node.js)
+    /^docs\//,                             // documentación pura
+    /^agents\//,                           // reglas para agentes
+    /^\.github\//,                         // GitHub Actions / templates
+    /^\.claude\//,                         // skills/hooks/settings de Claude Code — fuera de Gradle
+    /^\.gitignore$/,                       // gitignore root — no afecta compilación Kotlin
+    /^\.gitattributes$/,                   // git attributes — no afecta compilación Kotlin
+    /^\.editorconfig$/,                    // editor config — no afecta cobertura
+    /^\.husky\//,                          // husky git hooks (Node.js) — fuera de classpath Gradle
+    /^package\.json$/,                     // npm manifest — usado solo por `.pipeline/` Node.js
+    /^package-lock\.json$/,                // npm lockfile — usado solo por `.pipeline/` Node.js
+    /^qa\/evidence\//,                     // QA artifacts (video/screenshots/reports) — fuera de Gradle
+    /^qa\/scripts\/.*\.(js|mjs|cjs)$/,     // Node.js scripts/hooks QA — fuera de Gradle (rebote #3409)
 ];
 
 /**
@@ -324,27 +353,42 @@ function isPipelineOnlyChange(files) {
 }
 
 /**
- * Encuentra recursivamente los archivos *.test.js dentro de `.pipeline/`,
- * excluyendo `node_modules` y directorios ocultos.
+ * Encuentra recursivamente los archivos *.test.js para la ruta pipeline-only.
+ *
+ * Roots escaneados:
+ *   - `.pipeline/` — tests del propio pipeline (V3, hooks, lib, etc.).
+ *   - `qa/scripts/__tests__/` — tests Node de hooks/scripts QA. Agregado
+ *     en el rebote #3409: el hook `promote-screenshots.js` y sus 18 tests
+ *     viven acá; sin escanear este root, los pipeline-only sin tests bajo
+ *     `.pipeline/` daban `no_tests:true` y aprobaban como qa:skipped en
+ *     vez de validar los tests reales que SI existen.
+ *
+ * Excluye `node_modules`, directorios ocultos, y backlogs/estado del
+ * pipeline (`desarrollo/`, `definicion/`, `logs/`).
  */
 function findNodeTestFiles(repoRoot) {
     const out = [];
-    const root = path.join(repoRoot, '.pipeline');
-    if (!fs.existsSync(root)) return out;
-    const stack = [root];
-    while (stack.length > 0) {
-        const cur = stack.pop();
-        let entries;
-        try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
-        for (const ent of entries) {
-            const full = path.join(cur, ent.name);
-            if (ent.isDirectory()) {
-                if (ent.name === 'node_modules' || ent.name.startsWith('.')) continue;
-                // Excluir backlogs/estado del pipeline (no contienen tests)
-                if (ent.name === 'desarrollo' || ent.name === 'definicion' || ent.name === 'logs') continue;
-                stack.push(full);
-            } else if (ent.isFile() && /\.test\.js$/i.test(ent.name)) {
-                out.push(full);
+    const roots = [
+        path.join(repoRoot, '.pipeline'),
+        path.join(repoRoot, 'qa', 'scripts', '__tests__'),
+    ];
+    for (const root of roots) {
+        if (!fs.existsSync(root)) continue;
+        const stack = [root];
+        while (stack.length > 0) {
+            const cur = stack.pop();
+            let entries;
+            try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+            for (const ent of entries) {
+                const full = path.join(cur, ent.name);
+                if (ent.isDirectory()) {
+                    if (ent.name === 'node_modules' || ent.name.startsWith('.')) continue;
+                    // Excluir backlogs/estado del pipeline (no contienen tests)
+                    if (ent.name === 'desarrollo' || ent.name === 'definicion' || ent.name === 'logs') continue;
+                    stack.push(full);
+                } else if (ent.isFile() && /\.test\.js$/i.test(ent.name)) {
+                    out.push(full);
+                }
             }
         }
     }
@@ -1210,6 +1254,23 @@ if (require.main === module) {
                     '.pipeline/lib/stale-branches.js',
                 ]);
                 if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con .claude/skills/<>/SKILL.md');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta qa/scripts/*.js + qa/scripts/__tests__/ (rebote #3409)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.claude/skills/qa/SKILL.md',
+                    'docs/qa/screenshot-promotion.md',
+                    'package.json',
+                    'qa/scripts/__tests__/promote-screenshots.test.js',
+                    'qa/scripts/promote-screenshots.js',
+                ]);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con qa/scripts/*.js (#3409)');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS sigue rechazando qa/scripts/*.sh (frontera #3092)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.pipeline/config.yaml',
+                    'qa/scripts/qa-android.sh',
+                ]);
+                if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con qa/scripts/qa-android.sh');
             }},
         ]);
         return;
