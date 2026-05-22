@@ -659,6 +659,32 @@ Y actualizar el body del issue agregando la sección:
 
 El hook `.pipeline/hooks/screenshots-mockup-gate.js` valida que esta sección exista con las dos referencias antes de permitir Ready (CA-9).
 
+### Paso S4.b: Notificar al operador por Telegram (issue #3384)
+
+**Después** de adjuntar el PNG del `esperado` al issue (paso anterior), invocar el handler `notifyMockupToOperator()` para que Leo reciba la imagen en su chat de Telegram sin tener que abrir GitHub. Se envía SOLO el "esperado" (no el "actual") — el objetivo es que el operador vea el cambio propuesto al instante.
+
+```js
+const { notifyMockupToOperator } = require('./.pipeline/lib/telegram-notifier');
+await notifyMockupToOperator({
+  issueNumber: <N>,
+  issueTitle: <título del issue tomado de gh issue view>,
+  caseType: <'dashboard' | 'android-client' | 'android-business' | 'android-delivery'>,
+  mockupPath: <path local al esperado.png recién generado>,
+  changeDescription: <descripción corta del cambio, misma que alimentó al LLM>,
+  // repoRoot opcional — default: process.env.PIPELINE_REPO_ROOT || process.cwd()
+});
+```
+
+**Reglas operativas:**
+
+- El `mockupPath` es **el archivo local recién generado por `ux-mockup-generator.js`**, NO se re-descarga del comment de GitHub (CA-F-4).
+- Si la credencial `telegram.leo_operator_chat_id` no está configurada, el handler se autoinhabilita silenciosamente (`{ ok: false, reason: 'no_operator_chat_id' }`) — no rompe el flow.
+- Si Telegram falla (red, 5xx, timeout 5s), el error queda en `.pipeline/logs/telegram-notifier.log` con el bot token redactado (CA-S-1); el cierre del issue **no se interrumpe** (CA-F-9 fail-soft).
+- Orden estricto: GitHub primero (gh issue comment con el PNG), Telegram después. Si Telegram falla antes de GitHub, el operador nunca podría revisar la versión adjunta al issue.
+- Si por algún motivo no querés que el handler se dispare en una corrida específica, agregá `telegram.notify_ux_mockups: false` en `.claude/settings.json`.
+
+Detalles de seguridad (validación de path, redacción de token, rate-limit, compresión opcional) están encapsulados en `.pipeline/lib/telegram-notifier.js`. Doc operativa completa: `docs/pipeline/telegram-handlers.md`.
+
 ### Paso S5: Reporte
 
 ```
