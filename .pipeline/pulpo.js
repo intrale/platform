@@ -830,17 +830,38 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
   const _fs = fsImpl || fs;
   const rootScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
   if (!issue || !ROOT) return rootScript;
+
+  // Rebote #3409 rev-2: cuando un cross-phase rebote deja MÁS de un worktree
+  // vivo para el mismo issue (típico android-dev → pipeline-dev), preferir el
+  // worktree más adelantado vs origin/main (más commits ahead). El picker
+  // central vive en lib/issue-worktree-picker.js para mantener la única fuente
+  // de verdad entre pulpo (este resolver) y tester.js (findIssueWorktree).
+  // Sin esto el resolver devolvía el primer match alfabético, ignorando los
+  // fixes que el segundo dev ya había commiteado en su worktree.
+  let picker = null;
+  try { picker = require('./lib/issue-worktree-picker'); } catch { picker = null; }
   let issueWorktree = null;
-  try {
-    const needle = `platform.agent-${issue}-`;
-    const worktrees = _execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true });
-    for (const line of String(worktrees).split('\n')) {
-      if (line.startsWith('worktree ') && line.includes(needle)) {
-        issueWorktree = line.replace('worktree ', '').trim();
-        break;
+  if (picker && typeof picker.pickIssueWorktree === 'function') {
+    try {
+      issueWorktree = picker.pickIssueWorktree(ROOT, issue, {
+        execSyncImpl: _execSync, fsImpl: _fs,
+      });
+    } catch { issueWorktree = null; }
+  } else {
+    // Fallback al algoritmo viejo si el picker no está disponible (no debería
+    // pasar porque el módulo se commitea junto con este cambio; defensivo
+    // contra fixes a medio aplicar). Toma el primer match alfabético.
+    try {
+      const needle = `platform.agent-${issue}-`;
+      const worktrees = _execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true });
+      for (const line of String(worktrees).split('\n')) {
+        if (line.startsWith('worktree ') && line.includes(needle)) {
+          issueWorktree = line.replace('worktree ', '').trim();
+          break;
+        }
       }
-    }
-  } catch { /* sin worktree, fallback a ROOT */ }
+    } catch { /* sin worktree, fallback a ROOT */ }
+  }
   if (issueWorktree) {
     const wtScript = path.join(issueWorktree, '.pipeline', 'skills-deterministicos', `${skill}.js`);
     if (_fs.existsSync(wtScript)) {

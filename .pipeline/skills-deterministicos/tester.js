@@ -282,9 +282,28 @@ function resolveGitDir() {
  *
  * Naming convention: los worktrees de agentes se llaman `platform.agent-<issue>-<skill>`
  * (ver pulpo.js → spawnCwd = worktreePath).
+ *
+ * Rebote #3409 rev-2: cuando un cross-phase rebote deja varios worktrees
+ * vivos para el mismo issue (ej. `platform.agent-3409-android-dev` +
+ * `platform.agent-3409-pipeline-dev`), preferimos el más adelantado vs
+ * `origin/main` (más commits ahead, ties por mtime de HEAD). El picker
+ * central vive en `../lib/issue-worktree-picker.js` para compartir la lógica
+ * con `pulpo.resolveDeterministicScript`. Sin este fix, este findIssueWorktree
+ * devolvía el primer match alfabético — para #3409 eso era android-dev (sin
+ * el fix qa/scripts) y el tester caía a ruta gradle eternamente.
  */
 function findIssueWorktree(repoRoot, issue) {
     if (!issue) return null;
+    let picker = null;
+    try { picker = require('../lib/issue-worktree-picker'); } catch { picker = null; }
+    if (picker && typeof picker.pickIssueWorktree === 'function') {
+        try {
+            return picker.pickIssueWorktree(repoRoot, issue) || null;
+        } catch { /* caer a fallback */ }
+    }
+    // Fallback al algoritmo viejo (primer match alfabético) si el picker no
+    // está disponible. No debería pasar — el módulo se commitea junto con este
+    // cambio — pero defensivo contra fixes a medio aplicar.
     let raw;
     try {
         raw = execSync('git worktree list --porcelain', {
@@ -297,7 +316,6 @@ function findIssueWorktree(repoRoot, issue) {
     for (const line of raw.split('\n')) {
         if (!line.startsWith('worktree ')) continue;
         const wt = line.replace('worktree ', '').trim();
-        // El worktree path contiene el slug `platform.agent-<issue>-<skill>`.
         if (wt && wt.includes(needle)) return wt;
     }
     return null;
