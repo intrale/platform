@@ -413,7 +413,7 @@
     },
     "telegram-commander": {
       "provider": "anthropic",
-      "model_override": "claude-opus-4-7",
+      "model_override": "claude-sonnet-4-7",
       "fallbacks": [
         {
           "provider": "openai-codex",
