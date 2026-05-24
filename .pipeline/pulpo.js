@@ -108,6 +108,11 @@ const handoff = require('./lib/handoff');
 // opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
 const deliverableNotify = require('./lib/deliverable-notify');
+// #3481 — Evaluación de completitud de fases paralelas que considera
+// artefactos varados en `procesado/` (con whitelist estricta + anti-race
+// contra pendiente/trabajando). Resuelve el deadlock cuando un skill cerró
+// OK en un ciclo previo y los demás vuelven a entrar por desbloqueo de deps.
+const phaseCompletion = require('./lib/phase-completion');
 // #2891 PR-B — Detector de anomalías de consumo (cron interno).
 const { AnomalyDetector } = require('./anomaly-detector');
 // #2892 PR-C — Canal Telegram + estado del banner de alerta.
@@ -2628,12 +2633,50 @@ function brazoBarrido(config) {
         const skillsEnListo = archivos.map(a => skillFromFile(a.name));
 
         let todosCompletos;
+        let origenPorSkill = null; // #3481 — para log estructurado en fases paralelas
         if (fase === 'dev' || fase === 'build' || fase === 'entrega') {
           // Fases de un solo skill: con 1 archivo alcanza
           todosCompletos = archivos.length >= 1;
         } else {
-          // Fases paralelas: todos los skills requeridos deben estar
-          todosCompletos = skillsRequeridos.every(s => skillsEnListo.includes(s));
+          // Fases paralelas: todos los skills requeridos deben estar.
+          //
+          // #3481 — Considerar también artefactos `aprobado` varados en
+          // `procesado/` de ciclos previos (caso: un skill cerró OK, los
+          // demás fueron rebloqueados por deps y vuelven a entrar). El
+          // módulo aplica whitelist estricta y excluye skills con
+          // artefactos vivos en pendiente/trabajando (anti-race).
+          const listoInputs = archivos.map(a => ({
+            skill: skillFromFile(a.name),
+            yaml: readYaml(a.path),
+          }));
+          const procesadoFasePath = path.join(fasePath(pipelineName, fase), 'procesado');
+          const pendienteFasePath = path.join(fasePath(pipelineName, fase), 'pendiente');
+          const trabajandoFasePath = path.join(fasePath(pipelineName, fase), 'trabajando');
+
+          // Solo archivos del mismo issue (filtra por prefijo "<issue>.").
+          const issuePrefix = issue + '.';
+          const procesadoInputs = listWorkFiles(procesadoFasePath)
+            .filter(a => a.name.startsWith(issuePrefix))
+            .map(a => ({
+              skill: skillFromFile(a.name),
+              yaml: readYaml(a.path), // readYaml ya es defensivo (try/catch → {})
+            }));
+          const pendienteSkills = listWorkFiles(pendienteFasePath)
+            .filter(a => a.name.startsWith(issuePrefix))
+            .map(a => skillFromFile(a.name));
+          const trabajandoSkills = listWorkFiles(trabajandoFasePath)
+            .filter(a => a.name.startsWith(issuePrefix))
+            .map(a => skillFromFile(a.name));
+
+          const evalResult = phaseCompletion.evaluateParallelPhaseCompletion({
+            skillsRequeridos,
+            listo: listoInputs,
+            procesado: procesadoInputs,
+            pendienteSkills,
+            trabajandoSkills,
+          });
+          todosCompletos = evalResult.todosCompletos;
+          origenPorSkill = evalResult.origenPorSkill;
         }
 
         // Leer resultados
@@ -3742,7 +3785,14 @@ function brazoBarrido(config) {
             }
           }
 
-          log('barrido', `#${issue} ${fase} ✓ → promovido a ${siguienteFase}`);
+          // #3481 — Si la promoción consideró artefactos varados en procesado/,
+          // logueamos el origen por skill para facilitar forensics futuras (CA-8).
+          const origenInfo = phaseCompletion.formatOrigenLog(origenPorSkill);
+          if (origenInfo) {
+            log('barrido', `#${issue} ${fase} ✓ → promovido a ${siguienteFase} (mezcla listo/+procesado/: ${origenInfo})`);
+          } else {
+            log('barrido', `#${issue} ${fase} ✓ → promovido a ${siguienteFase}`);
+          }
         } else {
           // Última fase completada — historia terminada
           // (#2305) Éxito end-to-end: resetear contador del CB de infra.
