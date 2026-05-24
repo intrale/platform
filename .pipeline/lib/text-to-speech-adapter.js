@@ -13,8 +13,11 @@
 //      antes de tocar markdown / emojis, sino el secret puede quedar
 //      residual legible en el audio.
 //   3. Enmascaramiento de emails (lib/redact.js).
-//   4. Reemplazo de modelos IA (Sonnet/Opus/Haiku/GPT-4o/claude-*),
-//      salvo opts.preserveModelNames=true.
+//   4. Reemplazo de modelos IA (Sonnet/Opus/Haiku/GPT-4o/claude-*) SOLO si
+//      opts.preserveModelNames=false. Por default los nombres se preservan
+//      tal cual (issue #3505: el reemplazo agresivo unificaba todo en "el
+//      agente" y Whisper lo transcribia como "gente", perdiendo trazabilidad
+//      de proveedor/modelo en operaciones).
 //   5. Sustitucion de URLs de GitHub por "link al issue NNNN" / "link al PR
 //      NNNN", resto por "link adjunto".
 //   6. Sustitucion de paths Windows / Unix por "archivo del pipeline" /
@@ -93,8 +96,10 @@ function redactSecretsInText(text) {
 }
 
 // -----------------------------------------------------------------------------
-// 2. MODELOS IA — patrones a omitir / reemplazar.
+// 2. MODELOS IA — patrones a omitir / reemplazar (opt-in via preserveModelNames=false).
 // -----------------------------------------------------------------------------
+// Por default los nombres se preservan tal cual (issue #3505). Esta funcion
+// solo se ejecuta cuando el caller pide explicitamente audio generico.
 // Match conservador: nombres conocidos + version opcional.
 const MODEL_NAME_REGEX = /\b(?:Sonnet|Opus|Haiku|Claude(?:-?(?:Opus|Sonnet|Haiku))?|GPT-?\d+(?:\.\d+)?(?:o|-turbo)?|claude-(?:opus|sonnet|haiku)-?\d*(?:\.\d+)*|gemini-?\d*(?:\.\d+)*(?:-pro|-flash)?|cerebras|codex)(?:\s+\d+(?:\.\d+)*)?/gi;
 
@@ -355,7 +360,9 @@ function summarizeHeuristic(text, maxChars) {
  * @param {string} text
  * @param {object} [opts]
  * @param {number} [opts.maxChars=1500]
- * @param {boolean} [opts.preserveModelNames=false]
+ * @param {boolean} [opts.preserveModelNames=true] - por default preserva
+ *   nombres de modelos/proveedores tal cual. Pasar false solo si se necesita
+ *   un audio totalmente genérico (uso histórico pre-#3505).
  * @param {boolean} [opts.summarize=true] - si false, no aplica heuristica.
  * @returns {{ script: string, droppedCategories: object, summarized: boolean, truncated: boolean }}
  */
@@ -363,7 +370,7 @@ function textToSpeechScript(text, opts = {}) {
     const maxChars = typeof opts.maxChars === 'number' && opts.maxChars > 0
         ? opts.maxChars
         : DEFAULT_MAX_OUTPUT_CHARS;
-    const preserveModelNames = opts.preserveModelNames === true;
+    const preserveModelNames = opts.preserveModelNames !== false;
     const enableSummary = opts.summarize !== false;
 
     const dropped = {

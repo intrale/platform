@@ -3,7 +3,7 @@
 //
 // Cobertura:
 //   - CA-3: emojis decorativos omitidos.
-//   - CA-4: modelos IA omitidos por default, preservables por flag.
+//   - CA-4: modelos IA preservados por default (#3505), strippables con flag.
 //   - CA-5: paths / hashes / URLs reformulados.
 //   - CA-6: markdown estructural fuera del audio.
 //   - CA-7: tablas cortas reformuladas a frase natural.
@@ -52,23 +52,42 @@ test('CA-3: simbolos de estado decorativos no se leen', () => {
 // CA-4 — Modelos IA
 // -----------------------------------------------------------------------------
 
-test('CA-4: nombre de modelo IA se omite por default', () => {
+test('CA-4 (#3505): nombre de modelo IA se preserva por default', () => {
     const input = 'Sonnet 4.6 proceso el delivery del PR';
     const { script, droppedCategories } = textToSpeechScript(input);
-    assert.ok(!/Sonnet/i.test(script), `no debe mencionar Sonnet, output=${script}`);
+    assert.ok(/Sonnet/i.test(script), `debe conservar Sonnet por default, output=${script}`);
+    assert.equal(droppedCategories.model, 0, 'no debe contar strips de modelo por default');
+});
+
+test('CA-4 (#3505): opts.preserveModelNames=true conserva nombres (explicito)', () => {
+    const input = 'Sonnet 4.6 reemplazo a Opus 4.7 como default';
+    const { script } = textToSpeechScript(input, { preserveModelNames: true });
+    assert.ok(/Sonnet/i.test(script), 'debe conservar Sonnet con flag explicito');
+    assert.ok(/Opus/i.test(script), 'debe conservar Opus con flag explicito');
+});
+
+test('CA-4 (#3505): opts.preserveModelNames=false strippea nombres (opt-out)', () => {
+    const input = 'Sonnet 4.6 proceso el delivery del PR';
+    const { script, droppedCategories } = textToSpeechScript(input, { preserveModelNames: false });
+    assert.ok(!/Sonnet/i.test(script), `con opt-out NO debe mencionar Sonnet, output=${script}`);
     assert.ok(droppedCategories.model >= 1);
 });
 
-test('CA-4: opts.preserveModelNames=true conserva nombres', () => {
-    const input = 'Sonnet 4.6 reemplazo a Opus 4.7 como default';
-    const { script } = textToSpeechScript(input, { preserveModelNames: true });
-    assert.ok(/Sonnet/i.test(script), 'debe conservar Sonnet con flag');
-    assert.ok(/Opus/i.test(script), 'debe conservar Opus con flag');
+test('CA-4 (#3505): GPT-4o se preserva por default, se strippea con opt-out', () => {
+    const def = textToSpeechScript('GPT-4o fallo en el delivery').script;
+    assert.ok(/GPT-?4o/i.test(def), 'por default debe preservar GPT-4o');
+
+    const optOut = textToSpeechScript('GPT-4o fallo en el delivery', { preserveModelNames: false }).script;
+    assert.ok(!/GPT-?4o/i.test(optOut));
 });
 
-test('CA-4: GPT-4o tambien se omite', () => {
-    const { script } = textToSpeechScript('GPT-4o fallo en el delivery');
-    assert.ok(!/GPT-?4o/i.test(script));
+test('CA-4 (#3505): Claude/Gemini/Cerebras/Codex preservados por default', () => {
+    const input = 'Claude, Gemini, Cerebras y Codex son los proveedores soportados';
+    const { script } = textToSpeechScript(input);
+    assert.ok(/Claude/.test(script));
+    assert.ok(/Gemini/.test(script));
+    assert.ok(/Cerebras/i.test(script));
+    assert.ok(/Codex/i.test(script));
 });
 
 // -----------------------------------------------------------------------------
@@ -386,11 +405,11 @@ test('fixture: /status report anonimizado', () => {
     ].join('\n');
     const { script, droppedCategories } = textToSpeechScript(status);
     assert.ok(!script.includes('🟢'));
-    assert.ok(!script.includes('Sonnet'));
+    assert.ok(script.includes('Sonnet'), '#3505: nombre de modelo se preserva por default');
     assert.ok(!script.includes('https://'));
     assert.ok(/link al issue 2958/.test(script));
     assert.ok(droppedCategories.url >= 1);
-    assert.ok(droppedCategories.model >= 1);
+    assert.equal(droppedCategories.model, 0, '#3505: cero strips de modelo por default');
 });
 
 test('fixture: rejection report con paths y secretos simulados', () => {
@@ -435,7 +454,24 @@ test('fixture: alerta de recuperacion infra', () => {
     assert.ok(/ETA proximo issue/.test(script));
 });
 
-test('fixture: status con tabla mediana y modelos IA', () => {
+test('fixture (#3505): status en prosa preserva nombres de modelos IA por default', () => {
+    const input = [
+        '# Reporte diario',
+        '',
+        'Hoy dev corrio con Sonnet 4.6 y qa cerro con Opus 4.7.',
+        'Cerebras fallo dos veces y Gemini cubrio el rebote.',
+        '',
+        'Sin incidentes.',
+    ].join('\n');
+    const { script, droppedCategories } = textToSpeechScript(input);
+    assert.ok(script.includes('Sonnet'), '#3505: Sonnet se preserva en audio por default');
+    assert.ok(script.includes('Opus'), '#3505: Opus se preserva en audio por default');
+    assert.ok(/Cerebras/i.test(script), '#3505: Cerebras se preserva');
+    assert.ok(/Gemini/i.test(script), '#3505: Gemini se preserva');
+    assert.equal(droppedCategories.model, 0, '#3505: cero strips de modelo por default');
+});
+
+test('fixture (#3505): status con tabla y opt-out aplica strip de modelos', () => {
     const input = [
         '# Reporte diario',
         '',
@@ -446,10 +482,9 @@ test('fixture: status con tabla mediana y modelos IA', () => {
         '',
         'Sin incidentes.',
     ].join('\n');
-    const { script } = textToSpeechScript(input);
+    const { script } = textToSpeechScript(input, { preserveModelNames: false });
     assert.ok(!script.includes('Sonnet'));
     assert.ok(!script.includes('Opus'));
-    assert.ok(!/^\|/m.test(script));
 });
 
 // -----------------------------------------------------------------------------
