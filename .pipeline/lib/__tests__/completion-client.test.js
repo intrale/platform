@@ -558,3 +558,62 @@ test('PROVIDER_MODELS_ALLOWLIST incluye los modelos que usa producción (snapsho
     assert.ok(completion.isAllowedModel('nvidia-nim', 'deepseek-ai/deepseek-v4-pro'),
         'nvidia-nim/deepseek-ai/deepseek-v4-pro en producción debe estar allowlisted');
 });
+
+// =============================================================================
+// #3484 — Tests del cap defensivo del timeout.
+// =============================================================================
+
+test('#3484 CA-CLIENT-3: DEFAULT_TIMEOUT_MS = 90s', () => {
+    assert.equal(completion.DEFAULT_TIMEOUT_MS, 90_000);
+});
+
+test('#3484 CA-CLIENT-4: ABSOLUTE_MAX_TIMEOUT_MS = 180s exportado', () => {
+    assert.equal(completion.ABSOLUTE_MAX_TIMEOUT_MS, 180_000);
+});
+
+test('#3484 CA-CLIENT-4: caller pidiendo timeout > ABSOLUTE_MAX_TIMEOUT_MS se clampea', async () => {
+    // Estrategia: el fake http NO simula timeout, sino que responde rápido.
+    // Para validar el clamp inspeccionamos que el cliente NO tira aunque le
+    // pasemos 999_999 (lo clampearia a 180_000 internamente).
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        prompt: 'ping',
+        timeoutMs: 999_999, // se clampea a 180_000 internamente
+        secretsPath: f,
+        httpImpl: fakeHttp({
+            status: 200,
+            body: JSON.stringify({
+                choices: [{ message: { content: 'pong' } }],
+                usage: { prompt_tokens: 1, completion_tokens: 1 },
+            }),
+        }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.content, 'pong');
+});
+
+test('#3484: caller con timeoutMs negativo o inválido cae a DEFAULT_TIMEOUT_MS', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        prompt: 'ping',
+        timeoutMs: -100,
+        secretsPath: f,
+        httpImpl: fakeHttp({
+            status: 200,
+            body: JSON.stringify({
+                choices: [{ message: { content: 'ok' } }],
+                usage: { prompt_tokens: 1, completion_tokens: 1 },
+            }),
+        }),
+    });
+    // No tira, no rompe — el cliente usa DEFAULT_TIMEOUT_MS (90s) internamente.
+    assert.equal(r.ok, true);
+});

@@ -18,6 +18,8 @@
 8. [Hardening de free providers](#8-hardening-de-free-providers-3260) — secrets, alerts, telemetry.
 9. [Modo degradado del Commander (sin LLM)](#9-modo-degradado-del-commander-sin-llm) — `/quota`, cooldown destructivo, gate texto libre.
 10. [Parser robusto de errores in-flight del Commander (#3434)](#10-parser-robusto-de-errores-in-flight-del-commander-3434) — receta para agregar provider, threat model, anti-patterns.
+11. [Fallback in-flight del Commander (#3275)](#11-fallback-in-flight-del-commander-3275) — gate UX, dedupe, tests.
+12. [Sherlock verifier — timeout y providers (#3484)](#12-sherlock-verifier--timeout-y-providers-3484) — opción B spawn-CLI, timeout cap, soft-timeout, audit enriquecido.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -1572,6 +1574,104 @@ Eventos en el audit log del día permiten calcular (futuro endpoint dashboard `/
 - `.pipeline/lib/__tests__/commander-inflight-fallback.test.js` — 28 tests cubriendo CA-1..CA-9, formato UX-G1, file-lock, late-response.
 - `.pipeline/lib/__tests__/commander-multi-provider.test.js` — sin regresión.
 - `.pipeline/lib/__tests__/audit-log.test.js` — sin regresión (lock es opt-in vía param `lockMaxMs:0` en tests legacy).
+
+---
+
+## 12. Sherlock verifier — timeout y providers (#3484)
+
+> **Issue de origen:** [#3484](https://github.com/intrale/platform/issues/3484) — quitar timeout local y eliminar requisito cross-provider.
+> **Predecesor:** [#3343](https://github.com/intrale/platform/issues/3343) Sherlock base + [#3342](https://github.com/intrale/platform/issues/3342) HTTP completion-client.
+
+### 12.1 Decisión arquitectónica (CA-DOC-3)
+
+Sherlock acepta dos transportes para invocar providers:
+
+- **HTTP completion-client** (`lib/multi-provider/completion-client.js`) — para providers OpenAI-compat: `cerebras`, `gemini-google`, `nvidia-nim`.
+- **Spawn CLI** (`lib/agent-launcher/providers/anthropic.js::buildSpawn`) — para Anthropic. **Opción B** del issue #3484, elegida por: (a) reusa la infra existente y bien testeada, (b) evita refactor multi-schema del cliente HTTP para soportar la Anthropic Messages API (que no es OpenAI-compat), (c) recommendation explícita de PO y guru en la fase `criterios`.
+
+Codex (`openai-codex`) sigue siendo stub ([#3076](https://github.com/intrale/platform/issues/3076) H3 pendiente) — Sherlock lo salta con gracia cuando aparece en la chain.
+
+### 12.2 Cambios concretos respecto al estado pre-#3484
+
+| Comportamiento | Pre-#3484 | Post-#3484 |
+|---|---|---|
+| Filtro de providers | Solo HTTP-compatible (`cerebras`, `gemini-google`, `nvidia-nim`) | Cualquier provider con handler implementado (HTTP o spawn) |
+| Exclusión cross-provider | Forzaba provider != Commander | Removida — permite same-provider (riesgo aceptado) |
+| Timeout local | Default 10s, clamp absoluto 30s | Removido — delegado a `completion-client` (90s default, 180s cap) |
+| Phrasing F-5/F-6 | Genérico, jerga técnica | Empático, primera persona, invita feedback (CA-UX-3, CA-UX-4) |
+| Audit log | `commanderProvider`, `sherlockProvider` | + `sameProvider`, `sameModel`, `commanderModel`, `transport` (CA-AUDIT-1) |
+
+### 12.3 Timeout y cap defensivo
+
+El presupuesto temporal vive en **dos lugares**:
+
+1. **`lib/multi-provider/completion-client.js`**:
+   - `DEFAULT_TIMEOUT_MS = 90_000` (90 s) — usado si el caller no pasa override.
+   - `ABSOLUTE_MAX_TIMEOUT_MS = 180_000` (3 min) — cap defensivo, **no removible** por el caller. Si alguien pasa `timeoutMs: 999999`, el cliente lo clampea silenciosamente.
+2. **`pulpo.js` turn handler** (`procesarTextoLibre`):
+   - `SHERLOCK_SOFT_TIMEOUT_MS = 120_000` (2 min) — soft-timeout que envuelve `verify()` + reelaboración + 2da `verify()`. Si dispara, el chat recibe el mensaje **CA-UX-2** sin jerga técnica y degradamos a disclaimer F-6.
+
+`config.yaml` mantiene `sherlock_timeout_ms` como **NO-OP** (back-compat con configs viejas). El loader lo ignora silenciosamente sin warn-spam. Removerlo en una próxima limpieza junto con los callers que lo lean.
+
+### 12.4 Adversariality reducida (riesgo aceptado)
+
+Pre-#3484, Sherlock garantizaba que su provider fuera distinto al del Commander para que dos modelos con biases distintos pudieran detectar contradicciones. Eso reducía la chance de un blind-spot compartido, pero en la práctica causaba fallback en cascada → timeout → F-6 silencioso constante.
+
+Leo aprobó (voz 2026-05-22) **aceptar el riesgo de adversariality reducida** a cambio de tener Sherlock funcionando consistentemente con razonamiento de buena calidad (Anthropic Haiku 4.5). Para no perder visibilidad del riesgo, el audit log emite:
+
+```json
+{
+  "event": "sherlock_verification",
+  "commander_provider": "anthropic",
+  "sherlock_provider": "anthropic",
+  "same_provider": true,
+  "same_model": false,
+  "commander_model": "claude-opus-4-7",
+  "sherlock_model": "claude-haiku-4-5",
+  "transport": "spawn",
+  "duration_ms": 47000
+}
+```
+
+**Métrica a monitorear** (alert futuro, no implementado en este issue): si `same_provider:true` supera el 80% del último día, alertar al operador — significa que la chain de fallback se está agotando antes de cambiar de provider. Issue de seguimiento abierto para dashboard widget.
+
+### 12.5 UX en Telegram (CA-UX-1, CA-UX-2)
+
+- **CA-UX-1 — typing refresh loop**: `pulpo.js::sendChatActionTyping()` se invoca cada 4 s mientras Sherlock corre. Sin este loop el indicador "escribiendo..." de Telegram fade-out a los ~5 s y el usuario siente que el bot se colgó. POST directo a `api.telegram.org/sendChatAction` (sin pasar por `svc-telegram` porque el servicio no maneja la acción y el indicador pierde valor si se atrasa por la cola).
+- **CA-UX-2 — soft-timeout 120 s**: si Sherlock + reelaboración + 2da pasada toma más de 2 min, mandamos `"Esta respuesta me está tomando más tiempo de lo normal. Te muestro la versión sin verificar — si querés, podemos revisarla juntos cuando me confirmes."` en lugar de bloquear el chat indefinidamente. La respuesta original se envía con disclaimer F-6.
+- **CA-UX-3 / CA-UX-4 — phrasing**: ver `lib/sherlock-verifier.js` constantes `DISCLAIMER_F5_PERSISTENT_INCONSISTENCY` y `DISCLAIMER_F6_VERIFICATION_FAILED`.
+
+### 12.6 Verificación operativa post-deploy
+
+Después de un `/restart` con este cambio activo:
+
+```bash
+# El audit log debe mostrar Anthropic como sherlock_provider primario.
+grep '"event":"sherlock_verification"' .pipeline/logs/commander-dispatch-*.jsonl | tail -10
+
+# Si todo el audit log tiene sherlock_provider != anthropic, la chain de
+# resolución no está agarrando el primer entry — bug. Espera-do (chain
+# anthropic-first aprobada en PR #3483):
+#   sherlock_provider: "anthropic"
+#   transport: "spawn"
+#   same_provider: true  ← porque Commander también usa anthropic hoy
+```
+
+Si en producción `transport: "spawn"` no aparece nunca, posibles causas:
+1. Anthropic está gateado por cuota → Sherlock cae a gemini-google (correcto, ver chain).
+2. El launcher `claude` no se detecta en runtime → revisar `agent-launcher/providers/anthropic.js::detectLauncher`.
+3. La chain `telegram-sherlock` en `agent-models.json` cambió → confirmar PR #3483 mergeado.
+
+### 12.7 Tests
+
+- `.pipeline/lib/__tests__/sherlock-verifier.test.js` — 39 tests cubriendo HTTP path, spawn path, audit enriquecido, back-compat, timeout cap, phrasing UX-3/UX-4.
+- `.pipeline/lib/__tests__/completion-client.test.js` — 37 tests + nuevos casos del cap absoluto.
+
+Correr:
+```bash
+node --test .pipeline/lib/__tests__/sherlock-verifier.test.js
+node --test .pipeline/lib/__tests__/completion-client.test.js
+```
 
 ---
 
