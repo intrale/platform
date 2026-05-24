@@ -25,7 +25,7 @@ Opciones:
 | Opcion | Default | Que hace |
 |---|---|---|
 | `maxChars` | `1500` | Cap del script. Si se excede, se aplica resumen heuristico. |
-| `preserveModelNames` | `false` | Si `true`, conserva nombres de modelo IA (Sonnet, Opus, etc.). Usar cuando el mensaje TRATA del modelo (ej. evento `agent-models-change`). |
+| `preserveModelNames` | `true` (desde #3505) | Por default conserva nombres de modelo IA y proveedor (Sonnet, Opus, Claude, Gemini, Cerebras, Codex, GPT-4o, etc.) tal cual — son palabras cortas que el motor TTS pronuncia bien y Whisper transcribe correctamente. Pasar `false` solo si se necesita un audio totalmente generico (uso historico pre-#3505). |
 | `summarize` | `true` | Si `false`, no aplica resumen aunque exceda `maxChars`. |
 
 ## Pipeline de transformacion (orden importa)
@@ -33,7 +33,7 @@ Opciones:
 1. **Cap defensivo** — input > `MAX_TTS_INPUT_CHARS` (50000) se trunca para evitar ReDoS.
 2. **Redaccion de secretos** — JWT, AWS access key, Telegram bot token, `Authorization: Bearer`, query strings `password=` / `token=` / `api_key=`, AWS secret key precedida de etiqueta. **PRIMERO**, antes de cualquier limpieza visual, para que el secret no quede residual en el audio.
 3. **Enmascaramiento de emails** — reusa `lib/redact.js`.
-4. **Modelos IA** — `Sonnet`, `Opus`, `Haiku`, `GPT-4o`, `claude-*`, `gemini-*`, etc. → `"el agente"` (salvo `preserveModelNames=true`).
+4. **Modelos IA** — preservados tal cual por default (desde #3505). Solo se reemplazan por `"el agente"` cuando el caller pasa `preserveModelNames: false` explicitamente.
 5. **URLs** — issue GitHub → `"link al issue NNNN"`, PR GitHub → `"link al PR NNNN"`, resto → `"link adjunto"`.
 6. **Paths** — `C:\...`, `.pipeline/...`, `./foo/bar.js` → `"archivo del pipeline"`.
 7. **Hashes de commit** — 7 a 40 hex aislados → `"commit reciente"`.
@@ -52,15 +52,17 @@ Opciones:
 
 Los emojis de **gravedad** (🚨 critico, ❌ falla) se omiten visualmente, pero las palabras adyacentes que indican severidad (`"critico"`, `"falla"`, `"bloqueado"`) **no se atenuan** — son la unica senal de urgencia en audio.
 
-### Modelos IA
+### Modelos IA (por default se PRESERVAN — #3505)
 
-| Input chat | Script auditivo |
+| Input chat | Script auditivo (default) |
 |---|---|
-| `Sonnet 4.6 proceso el delivery` | `el agente proceso el delivery` |
-| `Opus 4.7 fallo en QA` | `el agente fallo en QA` |
-| `GPT-4o quedo sin cuota` | `el agente quedo sin cuota` |
+| `Sonnet 4.6 proceso el delivery` | `Sonnet 4.6 proceso el delivery` |
+| `Opus 4.7 fallo en QA` | `Opus 4.7 fallo en QA` |
+| `GPT-4o quedo sin cuota` | `GPT-4o quedo sin cuota` |
 
-Excepcion: con `preserveModelNames: true` se conservan (evento `agent-models-change`, cambio de default global, etc.).
+Excepcion: con `preserveModelNames: false` se reemplazan por `"el agente"` (uso historico, hoy no hay callers que lo pidan).
+
+**Por que cambio** (issue #3505): el reemplazo por `"el agente"` provocaba que Whisper en el lado del receptor transcribiera la frase como `"gente"` (la `l` de `"el"` y la `a` de `"agente"` se pegan en la transcripcion), perdiendo la trazabilidad de que proveedor / modelo intervino en cada operacion.
 
 ### Paths, hashes, URLs
 
