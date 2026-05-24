@@ -572,3 +572,20 @@ deliverable_notifications:
   dedup_window_hours: 24
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
 
+# #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
+#
+# Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta
+# `/planner componer-ola <N>` o `/planner horizonte N`. La composición respeta
+# este cap como hard limit; los issues que no entran quedan en el backlog
+# remanente y se reportan al operador.
+#
+# Horizonte máximo: cuántas olas adelante puede planificar `/planner horizonte`.
+# Limitar evita que un descuido (ej. `horizonte 1000`) bloquee la terminal
+# imprimiendo miles de issues. SEC-1 del análisis de seguridad de #3488.
+#
+# Estos valores son leídos por `.pipeline/scripts/planner-waves-cli.js` con
+# defaults seguros si la sección no existe.
+waves:
+  capacity: 9
+  max_horizon: 12
+

@@ -1,7 +1,7 @@
 ---
 description: Planner — Planificación estratégica del proyecto — Gantt, dependencias, priorización y nuevas historias
 user-invocable: true
-argument-hint: "[planificar | sprint [N] [foco] | proponer | validar-tamaño <issue> | split <issue> | estado | <foco> [N]]"
+argument-hint: "[planificar | sprint [N] [foco] | olas | horizonte <N> | componer-ola <N> [--force] | proponer | validar-tamaño <issue> | split <issue> | estado | <foco> [N]]"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
 required_permissions: [file_read, bash, child_spawn, network_out]
@@ -35,6 +35,9 @@ Tu pensamiento esta moldeado por tres referentes de planificacion de producto:
 |-----------|------|
 | `planificar` | Plan completo: Gantt, dependencias, streams paralelos |
 | `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 7, rango recomendado: 7-10) |
+| `olas` | **Multi-ola (#3488)** — listar olas activa + planeadas + cerradas con % completion |
+| `horizonte <N>` | **Multi-ola (#3488)** — propuesta de composición para las próximas N olas (1 ≤ N ≤ 12) |
+| `componer-ola <N> [--force]` | **Multi-ola (#3488)** — armar ola N combinando carry-over + Ready + needs-definition |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
 | `validar-tamaño <issue>` | Clasificar una historia como S/M/L/XL con criterios objetivos |
 | `split <issue>` | Dividir una historia L/XL en sub-historias, crearlas con `/doc nueva` y lanzar `/po acceptance` para cada una |
@@ -848,6 +851,173 @@ Tamaño original: [L/XL] → Split en [N] sub-historias
 2. Las sub-historias ya están en los backlogs correspondientes
 3. Cerrar el issue padre #[N] cuando todas estén Done
 ```
+
+---
+
+## Modos multi-ola: `olas`, `horizonte`, `componer-ola` (#3488 Spike #3378 H2)
+
+Estos tres comandos extienden el skill con planificación multi-ola sobre el
+source-of-truth `.pipeline/waves.json` entregado por #3489 (H1) y la API
+`lib/waves.js`. La lógica vive en `.pipeline/scripts/planner-waves-cli.js`
+(invocable directamente con Node) y `.pipeline/lib/planner-waves.js` (lib
+pura testeable).
+
+**Por qué un script Node y no un prompt LLM**: los CA del issue exigen orden
+determinístico (carry-over → Ready → needs-def, cada grupo por prioridad),
+capacidad configurable, idempotencia y output JSON parseable. Hacerlo con
+texto en el skill es frágil y costoso en tokens; un script Node garantiza
+determinismo, tiene tests unitarios (`.pipeline/lib/__tests__/planner-waves.test.js`)
+y respeta los 7 requisitos de seguridad (SEC-1..SEC-7) del análisis de
+security del issue.
+
+### Configuración (`.pipeline/config.yaml` → sección `waves:`)
+
+```yaml
+waves:
+  capacity: 9       # CA-F5: máximo de issues por ola
+  max_horizon: 12   # SEC-1: tope para `horizonte N`
+```
+
+### Comando: `olas`
+
+Lista todas las olas con estado (activa, planificadas, archivadas) y %
+completion. Fuente: `lib/waves.js#listWaves()`.
+
+**Invocación:**
+```bash
+node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js olas
+```
+
+**Output esperado (markdown):**
+```
+## Olas del pipeline — 2026-05-24
+
+| Ola | Estado | Issues | Completado | Fecha objetivo | Goal |
+|-----|--------|--------|------------|----------------|------|
+| 5   | 🟢 active   | 7  | 4/7 (57%)  | 2026-05-30 | Wave foundations |
+| 6   | 🟡 planned  | 9  | 0/9 (0%)   | 2026-06-06 | Planner multi-wave |
+| 4   | ✅ archived | 6  | 6/6 (100%) | 2026-05-23 | Pre-wave hardening |
+
+**Resumen:** 1 activa · 1 planeada(s) · 1 cerrada(s)
+```
+
+**Si no hay olas registradas:** mensaje `⚠️ No hay olas registradas...` con
+sugerencia `/planner componer-ola 1` para crear la primera.
+
+### Comando: `horizonte <N>`
+
+Propone composición para las próximas `N` olas a partir de la siguiente a la
+activa. Cada ola consume del backlog (Ready + needs-definition) sin duplicar.
+
+**Restricciones (SEC-1):** `N` debe ser entero en `[1, 12]`.
+
+**Invocación:**
+```bash
+node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js horizonte 3
+```
+
+**Output esperado (markdown):**
+```
+## Horizonte propuesto — próximas 3 ola(s)
+
+### Ola 6 — propuesta (capacidad: 9 issues)
+- Carry-over: 2 issue(s)
+  1. 🟡 #NNN título... (M) priority:high → Stream A
+  2. 🟡 #NNN título... (S) priority:high → Stream B
+- Ready: 4 issue(s)
+  3. 🟢 #NNN título... (M) priority:high → Stream A
+  ...
+- Needs-definition (por prioridad): 3 issue(s)
+  ...
+
+### Ola 7 — propuesta (capacidad: 9 issues)
+...
+
+**Backlog restante post-horizonte:** 5 issue(s) (3 Ready, 2 needs-definition)
+```
+
+### Comando: `componer-ola <N> [--force] [--json]`
+
+Compone la ola `N` combinando: **carry-over** (issues incompletos de la ola
+N-1 que siguen OPEN en GitHub) → **Ready** (por prioridad) →
+**needs-definition** (por prioridad). Respeta `waves.capacity` y emite
+warnings cuando hay alertas (carry-over masivo, backlog remanente, ola vacía).
+
+**Restricciones:**
+- SEC-1: `N` entero en `[1, 9999]`.
+- SEC-5: si la ola N ya existe (activa o planeada), responde con mensaje
+  idempotente — **no sobrescribe** sin `--force`.
+
+**Flags:**
+- `--force` — recomponer aunque la ola exista (planeado para H3; por ahora
+  responde "NOT IMPLEMENTED" para evitar destruir estado por accidente).
+- `--json` — devolver solo el bloque JSON estructurado (para pipes
+  downstream).
+
+**Invocación:**
+```bash
+node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js componer-ola 6
+```
+
+**Output esperado:** El CLI imprime markdown legible seguido de un bloque
+fenced \`\`\`json\`\`\` con la estructura completa. Ver el test
+`renderComposeWave: bloque JSON es parseable (SEC-3)` para el shape exacto.
+Resumen:
+
+- `## Ola N — composición propuesta`
+- `**Capacidad configurada:** N`
+- 3 secciones (`### Carry-over...`, `### Ready (...)`, `### Needs-definition...`)
+  con bullets numerados continuos.
+- `### Validación` con checks `✅ Capacidad respetada`, `✅ Orden` y warnings
+  cuando aplique (`⚠️`, `🔴 CARRY_OVER_DOMINANT`, `⛔ EMPTY_WAVE`).
+- Bloque JSON estructurado con `wave`, `composed_at`, `capacity`, `groups`,
+  `warnings`, `issues[]` (cada issue con `number, source, priority, size, stream`).
+
+**Si el backlog está vacío (CA-V1):** mensaje `⛔ No hay issues disponibles...`
+con sugerencias (`/doc nueva`, revisar labels). NO modifica `waves.json`.
+
+### Cómo invocarlo desde un mensaje del usuario al skill
+
+Cuando el usuario escribe `/planner olas`, `/planner horizonte 3` o
+`/planner componer-ola 5`, ejecutar **directamente** el script con bash y
+emitir su output verbatim (sin interpretación LLM ni resumen):
+
+```bash
+# Detectar el subcomando del argumento
+case "$1" in
+  olas)
+    node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js olas
+    ;;
+  horizonte)
+    node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js horizonte "$2"
+    ;;
+  componer-ola)
+    # Pasar todos los argumentos extra (--force, --json) al CLI
+    node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js componer-ola "$2" "${@:3}"
+    ;;
+esac
+```
+
+**No re-interpretar el output del script** — su markdown ya respeta las
+guidelines de UX (paleta de emojis del skill, encabezados `##/###`,
+ancho 80 chars para Telegram mobile, escape de markdown en títulos). Cualquier
+"mejora" del LLM lo único que hace es romper el bloque JSON parseable o
+introducir variaciones que rompen consumers downstream.
+
+### Garantías de seguridad (referencia)
+
+| ID | Riesgo OWASP | Mitigación |
+|----|--------------|------------|
+| SEC-1 | A03 Injection en CLI args | `parseWaveNum` regex `^\d+$` + rango [1, 9999]; `parseHorizon` rango [1, 12] |
+| SEC-2 | A03 Markdown injection en títulos GitHub | `escapeMd` escapa `\ * _ [ ] ( ) \` ~ \| < > #`, strip control + zero-width |
+| SEC-3 | A03 JSON injection | output JSON SIEMPRE via `JSON.stringify` |
+| SEC-4 | A04 Race en writes | H2 NO escribe a `waves.json` (read-only); cuando lo necesite, delegará a `lib/waves.js` que ya es atomic |
+| SEC-5 | A04 Sobrescritura accidental | `componer-ola N` idempotente; requiere `--force` (no implementado en H2) |
+| SEC-6 | A05 Rate limit / OOM | `gh issue list --limit 200` con warning si pega el cap |
+| SEC-7 | A08 Schema corrupto | `assertWaveState` valida shape antes de operar; mensajes claros si `waves.json` está roto |
+
+Ver `.pipeline/lib/__tests__/planner-waves.test.js` para los 45 tests que
+verifican estas garantías.
 
 ---
 
