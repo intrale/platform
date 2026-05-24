@@ -763,8 +763,12 @@ function reencolarInfraBloqueados(config) {
 
 // --- Utilidades ---
 
-// Partir texto en chunks para TTS respetando límites de oraciones
-function splitTextForTTSChunks(text, maxChars) {
+// Partir texto en chunks para TTS respetando límites de oraciones.
+// Default 1500: Edge TTS trunca audios internamente cerca de 2500-3000 chars
+// en español; con 1500 el texto efectivo queda muy por debajo del umbral
+// observado. Issue #3485. (Copia idéntica a la de multimedia.js; consolidación
+// futura tracked en #3515.)
+function splitTextForTTSChunks(text, maxChars = 1500) {
   if (text.length <= maxChars) return [text];
   const sentences = text.split(/(?<=[.!?])\s+/);
   const chunks = [];
@@ -6936,18 +6940,21 @@ async function cmdStatus(config) {
         }
       } catch {}
 
-      const statusChunks = splitTextForTTSChunks(narration, 3800);
+      // Cap a 1500 chars para evitar truncado interno de Edge TTS en español (#3485).
+      const statusChunks = splitTextForTTSChunks(narration, 1500);
+      log('commander', `[status] TTS chunks generados: total_parts=${statusChunks.length} (texto=${narration.length} chars, cap=1500)`);
       let prevProviderStatus = loadTtsState().lastProvider;
       for (let i = 0; i < statusChunks.length; i++) {
         let chunkText = statusChunks.length > 1
           ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
           : statusChunks[i];
-        const meta = await textToSpeechWithMeta(chunkText);
+        const ttsOpts = { chunkInfo: { index: i, total: statusChunks.length } };
+        const meta = await textToSpeechWithMeta(chunkText, ttsOpts);
         if (meta && meta.buffer) {
           const intro = i === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
           if (intro) {
             // Reenviar el primer chunk con el preámbulo de transición
-            const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`);
+            const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`, ttsOpts);
             if (reMeta && reMeta.buffer) {
               await sendVoiceTelegram(reMeta.buffer, botToken, chatId);
               log('commander', `[status] Audio TTS parte 1/${statusChunks.length} enviado con intro (provider=${reMeta.provider})`);
@@ -9053,21 +9060,24 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // Si hubo audio → intentar TTS
         if (esAudio) {
           try {
-            const chatChunks = splitTextForTTSChunks(respuesta, 3800);
+            // Cap a 1500 chars para evitar truncado interno de Edge TTS en español (#3485).
+            const chatChunks = splitTextForTTSChunks(respuesta, 1500);
+            log('commander', `[chat] TTS chunks generados: total_parts=${chatChunks.length} (texto=${respuesta.length} chars, cap=1500)`);
             let prevProvider = loadTtsState().lastProvider;
             for (let i = 0; i < chatChunks.length; i++) {
               const baseChunk = chatChunks.length > 1
                 ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
                 : chatChunks[i];
+              const ttsOpts = { chunkInfo: { index: i, total: chatChunks.length } };
               // Primero probamos a ver qué provider gana para este chunk
-              const meta = await textToSpeechWithMeta(baseChunk);
+              const meta = await textToSpeechWithMeta(baseChunk, ttsOpts);
               if (!meta || !meta.buffer) continue;
 
               const intro = i === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
               let finalBuffer = meta.buffer;
               let finalProvider = meta.provider;
               if (intro) {
-                const reMeta = await textToSpeechWithMeta(`${intro} ${baseChunk}`);
+                const reMeta = await textToSpeechWithMeta(`${intro} ${baseChunk}`, ttsOpts);
                 if (reMeta && reMeta.buffer) {
                   finalBuffer = reMeta.buffer;
                   finalProvider = reMeta.provider;

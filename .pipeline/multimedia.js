@@ -444,18 +444,21 @@ function getTransitionIntro(newProvider, prevProvider, profileName = 'default') 
 
 // --- OpenAI TTS ---
 
-function textToSpeechOpenAI(text, profileName = 'default') {
+function textToSpeechOpenAI(text, profileName = 'default', chunkInfo = null) {
   const config = loadConfig();
   const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
   if (!apiKey) { log('TTS[openai]: falta openai_api_key'); return Promise.resolve(null); }
 
   const ttsCfg = loadTtsConfig(profileName).openai;
+  const inputText = text.substring(0, 4096);
+  const estimatedSec = estimateTtsDurationSec(inputText.length);
+  const chunkTag = formatChunkInfo(chunkInfo);
 
   return new Promise((resolve) => {
     // OpenAI TTS soporta hasta 4096 chars — NO truncar, los callers manejan chunking
     const body = JSON.stringify({
       model: ttsCfg.model,
-      input: text.substring(0, 4096),
+      input: inputText,
       voice: ttsCfg.voice,
       instructions: ttsCfg.instructions,
       response_format: ttsCfg.response_format || 'opus'
@@ -477,7 +480,7 @@ function textToSpeechOpenAI(text, profileName = 'default') {
       res.on('end', () => {
         const buffer = Buffer.concat(chunks);
         if (res.statusCode === 200 && buffer.length > 100) {
-          log(`TTS[openai] generado: ${buffer.length} bytes`);
+          log(`TTS[openai] generado: ${buffer.length} bytes chars=${inputText.length} duracion_est=${estimatedSec}s${chunkTag}`);
           resolve(buffer);
         } else {
           log(`TTS[openai] error: status=${res.statusCode}, size=${buffer.length}`);
@@ -557,13 +560,28 @@ function mp3ToOpus(mp3Path) {
   });
 }
 
-function textToSpeechEdge(text, profileName = 'default') {
+// #3485: estimación de duración para detectar truncado interno de Edge TTS.
+// Para español, ~15 chars/seg es una regla pragmática que aproxima el ritmo
+// natural de la voz "es-AR" usada. Útil como leading indicator si el archivo
+// generado sale más corto de lo esperado.
+function estimateTtsDurationSec(chars) {
+  return Math.max(1, Math.round(chars / 15));
+}
+
+function formatChunkInfo(chunkInfo) {
+  if (!chunkInfo || typeof chunkInfo.index !== 'number' || typeof chunkInfo.total !== 'number') return '';
+  return ` chunk=${chunkInfo.index + 1}/${chunkInfo.total} total_parts=${chunkInfo.total}`;
+}
+
+function textToSpeechEdge(text, profileName = 'default', chunkInfo = null) {
   const ttsCfg = loadTtsConfig(profileName).edge;
   const tmpDir = path.join(os.tmpdir(), 'intrale-edge-tts');
   try { fs.mkdirSync(tmpDir, { recursive: true }); } catch {}
   const mp3Path = path.join(tmpDir, `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp3`);
   const bin = findEdgeTtsExe();
   const input = text.substring(0, 5000);
+  const estimatedSec = estimateTtsDurationSec(input.length);
+  const chunkTag = formatChunkInfo(chunkInfo);
 
   return new Promise((resolve) => {
     const args = [
@@ -587,7 +605,7 @@ function textToSpeechEdge(text, profileName = 'default') {
       const opusBuf = await mp3ToOpus(mp3Path);
       try { fs.unlinkSync(mp3Path); } catch {}
       if (opusBuf && opusBuf.length > 100) {
-        log(`TTS[edge] generado: ${opusBuf.length} bytes (voz=${ttsCfg.voice})`);
+        log(`TTS[edge] generado: ${opusBuf.length} bytes (voz=${ttsCfg.voice}) chars=${input.length} duracion_est=${estimatedSec}s${chunkTag}`);
         resolve(opusBuf);
       } else {
         log(`TTS[edge] conversion fallida`);
@@ -611,10 +629,10 @@ function sanitizeForTts(text) {
 
 // --- TTS con priorización dinámica + fallback ---
 
-async function textToSpeechByProvider(provider, text, profileName = 'default') {
+async function textToSpeechByProvider(provider, text, profileName = 'default', chunkInfo = null) {
   const cleaned = sanitizeForTts(text);
-  if (provider === 'openai') return textToSpeechOpenAI(cleaned, profileName);
-  if (provider === 'edge') return textToSpeechEdge(cleaned, profileName);
+  if (provider === 'openai') return textToSpeechOpenAI(cleaned, profileName, chunkInfo);
+  if (provider === 'edge') return textToSpeechEdge(cleaned, profileName, chunkInfo);
   log(`TTS: provider desconocido '${provider}'`);
   return null;
 }
@@ -627,17 +645,21 @@ async function textToSpeechByProvider(provider, text, profileName = 'default') {
  */
 async function textToSpeechWithMeta(text, opts = {}) {
   const profileName = opts.profile || 'default';
+  // #3485: chunkInfo opcional { index, total } para que el log del provider
+  // identifique la pieza dentro de la respuesta total y permita detectar
+  // truncados a futuro.
+  const chunkInfo = opts.chunkInfo || null;
   const cfg = loadTtsConfig(profileName);
   const forced = process.env.TTS_PROVIDER;
   if (forced) {
     log(`TTS[${profileName}] forzado por env: ${forced}`);
-    const buf = await textToSpeechByProvider(forced, text, profileName);
+    const buf = await textToSpeechByProvider(forced, text, profileName, chunkInfo);
     return buf ? { buffer: buf, provider: forced, profile: profileName } : null;
   }
 
   const primary = cfg.primary || 'openai';
   log(`TTS[${profileName}]: intentando primary=${primary}`);
-  const bufPrimary = await textToSpeechByProvider(primary, text, profileName);
+  const bufPrimary = await textToSpeechByProvider(primary, text, profileName, chunkInfo);
   if (bufPrimary) return { buffer: bufPrimary, provider: primary, profile: profileName };
 
   const fallback = cfg.fallback;
@@ -646,7 +668,7 @@ async function textToSpeechWithMeta(text, opts = {}) {
     return null;
   }
   log(`TTS[${profileName}]: primary fallo, probando fallback=${fallback}`);
-  const bufFallback = await textToSpeechByProvider(fallback, text, profileName);
+  const bufFallback = await textToSpeechByProvider(fallback, text, profileName, chunkInfo);
   return bufFallback ? { buffer: bufFallback, provider: fallback, profile: profileName } : null;
 }
 
@@ -697,8 +719,12 @@ function sendVoiceTelegram(audioBuffer, botToken, chatId) {
   });
 }
 
-// Partir texto en chunks para TTS respetando límites de oraciones
-function splitTextForTTSChunks(text, maxChars) {
+// Partir texto en chunks para TTS respetando límites de oraciones.
+// Default 1500 chars: Edge TTS empieza a truncar audios internamente cerca de
+// 2500-3000 chars en español; con 1500 más prefijo "Parte X de N. " (≤17 chars)
+// el texto efectivo queda muy por debajo del umbral observado (margen ~1000).
+// Issue #3485.
+function splitTextForTTSChunks(text, maxChars = 1500) {
   if (text.length <= maxChars) return [text];
   const sentences = text.split(/(?<=[.!?])\s+/);
   const chunks = [];
