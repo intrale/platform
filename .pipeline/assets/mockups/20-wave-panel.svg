@@ -1,0 +1,642 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 20 — Widget de Proximas Olas (#3487 — Spike #3378 H3)
+  -----------------------------------------------------------------------------
+  Demuestra:
+    - Layout en kiosk vertical 1080x1920 (target explicito del issue)
+    - Ola ACTIVA expandida con 6 issues (header + lista de issues)
+    - Proxima ola (lookahead 1) con colores desaturados para diferenciacion visual
+    - Cada issue muestra: ID, titulo (truncado a ~40 chars), prioridad (label color),
+      size (S/M/L/XL pill), estado (badge ready/needs-def/in-progress)
+    - Botones colapsar/expandir (ic-collapse / ic-expand) sobre cada ola
+    - Estado "Planificacion no disponible" como inset en la esquina inferior
+      (mockup explicativo del fallback que pide CA "waves.json ausente")
+    - Panel inline con timestamp "actualizado hace 12s" para visibilizar el
+      polling 30s sin flicker (CA "morphing manual de DOM")
+
+  Sistema visual:
+    - 100% reuso de design-tokens.css (sin nuevos tonos de marca)
+    - Acento de ola ACTIVA: var(--purple) #BC8CFF — lane-definicion (planning)
+    - Acento de ola PROXIMA: var(--purple-dim) #8957E5 — mismo arbol pero
+      saturacion bajada, refuerza "esto viene despues"
+    - Colores de prioridad (whitelist closed):
+        critical => --danger    #F85149  (rojo)
+        high     => --retry     #F59E0B  (ambar)
+        medium   => --warning   #D29922  (mostaza)
+        low      => --text-dim  #8B949E  (gris)
+    - Colores de estado (whitelist closed):
+        ready       => --success #3FB950  (verde)
+        needs-def   => --warning #D29922  (amarillo)
+        in-progress => --info    #58A6FF  (azul)
+        blocked     => --danger  #F85149  (rojo)
+        unknown     => --text-dim #8B949E (fallback seguro, NO se asume otro)
+    - Iconos: ic-wave (cabecera del widget), ic-collapse/ic-expand (toggles),
+      ic-deps-graph (issue con dependencias visibles).
+
+  Accesibilidad:
+    - Contraste verificado: textos primarios 14.8:1, secundarios 9.7:1, dim 5.3:1
+    - Sin informacion solo por color: prioridad combina color + texto label;
+      estado combina color + texto + glyph
+    - aria-label sobre cada wave-row y cada toggle (en la implementacion real)
+    - Tamano minimo de touch target en los toggles: 32x32 (sobra para kiosk)
+
+  Seguridad (alineado al review de security #3487):
+    - Todo texto proveniente de `waves.json` (nombre de ola, goal, titulo de
+      issue) se escapa con escapeHtml() o se inyecta via textContent.
+    - El mockup ilustra titulos truncados a 40 chars con elipsis — la
+      validacion de tipos del endpoint corta a 200 chars como hard cap (whitelist).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-label="Mockup widget proximas olas del dashboard pipeline V3, kiosk vertical 1080x1920">
+  <defs>
+    <linearGradient id="brandGradWP" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="purpleGradWP" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#BC8CFF"/>
+      <stop offset="100%" stop-color="#8957E5"/>
+    </linearGradient>
+    <linearGradient id="purpleDimGradWP" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#8957E5"/>
+      <stop offset="100%" stop-color="#5B3CA6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo dashboard -->
+  <rect width="1080" height="1920" fill="#0D1117"/>
+
+  <!-- ===================== Header del kiosk ===================== -->
+  <rect x="0" y="0" width="1080" height="72" fill="#161B22"/>
+  <rect x="0" y="71" width="1080" height="1" fill="#30363D"/>
+  <g transform="translate(32, 22)">
+    <rect width="30" height="30" rx="8" fill="#0D274D"/>
+    <path d="M15 6.5 L4.5 24 L25.5 24 Z" fill="none" stroke="url(#brandGradWP)" stroke-width="2.4" stroke-linejoin="round"/>
+    <path d="M15 14 L10 22 L20 22 Z" fill="url(#brandGradWP)"/>
+  </g>
+  <text x="74" y="46" fill="#E6EDF3" font-size="18" font-weight="700">Intrale Pipeline</text>
+  <text x="252" y="46" fill="#8B949E" font-size="14">- Planificacion multi-ola</text>
+  <!-- Reloj kiosk -->
+  <g transform="translate(900, 22)">
+    <rect width="148" height="30" rx="15" fill="#161B22" stroke="#30363D"/>
+    <text x="74" y="20" fill="#E6EDF3" font-size="14" font-weight="600" text-anchor="middle">14:32 - lun</text>
+  </g>
+
+  <!-- ===================== Titulo del widget ===================== -->
+  <g transform="translate(32, 108)">
+    <!-- ic-wave inline -->
+    <g stroke="#BC8CFF" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 14 C 6 6, 12 6, 18 14 S 30 22, 36 14"/>
+      <path d="M0 26 C 6 18, 12 18, 18 26 S 30 34, 36 26" opacity="0.6"/>
+    </g>
+  </g>
+  <text x="86" y="138" fill="#E6EDF3" font-size="28" font-weight="700">Proximas Olas</text>
+  <text x="32" y="172" fill="#8B949E" font-size="14">
+    Lookahead 1 - fuente: waves.json - actualizado hace 12s - polling 30s sin flicker
+  </text>
+
+  <!-- ===================== OLA ACTIVA (Ola 42) — expandida ===================== -->
+  <g transform="translate(32, 200)">
+    <!-- Panel container -->
+    <rect width="1016" height="780" rx="14" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+    <!-- Borde superior degradado (acento ola activa = purple) -->
+    <rect width="1016" height="4" rx="2" fill="url(#purpleGradWP)"/>
+
+    <!-- Header de la ola -->
+    <g transform="translate(24, 28)">
+      <!-- Badge "ACTIVA" -->
+      <g>
+        <rect width="92" height="28" rx="14" fill="#BC8CFF" fill-opacity="0.18"
+              stroke="#BC8CFF" stroke-opacity="0.45"/>
+        <circle cx="14" cy="14" r="4" fill="#3FB950"/>
+        <text x="56" y="19" fill="#BC8CFF" font-size="12" font-weight="700"
+              letter-spacing="1" text-anchor="middle">ACTIVA</text>
+      </g>
+
+      <text x="108" y="20" fill="#E6EDF3" font-size="22" font-weight="700">Ola 42</text>
+      <text x="178" y="20" fill="#B1BAC4" font-size="18" font-weight="500">- Multi-provider rollout</text>
+
+      <!-- Toggle collapse a la derecha -->
+      <g transform="translate(936, -4)" cursor="pointer">
+        <rect width="32" height="32" rx="8" fill="#1C2128" stroke="#30363D"/>
+        <g transform="translate(4, 4)" stroke="#8B949E" stroke-width="1.5" fill="none"
+           stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2.7" y="2.7" width="18.7" height="18.7" rx="3.5"/>
+          <path d="M7 16 L12 11 L17 16" stroke-width="2"/>
+        </g>
+      </g>
+
+      <!-- Meta info (started_at + goal) -->
+      <text x="0" y="48" fill="#8B949E" font-size="13">
+        Iniciada: 2026-05-20 09:00 - Objetivo:
+      </text>
+      <text x="172" y="48" fill="#B1BAC4" font-size="13">
+        consolidar multi-provider en pipeline V3 con failover automatico
+      </text>
+
+      <!-- Conteo -->
+      <text x="0" y="74" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="1.2">
+        6 ISSUES - 3 READY - 2 IN-PROGRESS - 1 NEEDS-DEF
+      </text>
+    </g>
+
+    <!-- Separador -->
+    <line x1="24" y1="124" x2="992" y2="124" stroke="#30363D"/>
+
+    <!-- ===== Tabla de issues (header) ===== -->
+    <g transform="translate(24, 144)" font-size="11" fill="#8B949E"
+       font-weight="600" letter-spacing="1.2">
+      <text x="0">ID</text>
+      <text x="84">TITULO</text>
+      <text x="600">PRIORIDAD</text>
+      <text x="760">SIZE</text>
+      <text x="836">ESTADO</text>
+    </g>
+    <line x1="24" y1="156" x2="992" y2="156" stroke="#30363D"/>
+
+    <!-- ===== Issue 1: #3259 critical, L, in-progress ===== -->
+    <g transform="translate(24, 178)" font-size="14">
+      <text fill="#E6EDF3" font-weight="600">#3259</text>
+      <text x="84" fill="#E6EDF3">Continuidad del Pulpo ante caida de providers</text>
+      <!-- Priority pill -->
+      <g transform="translate(600, -14)">
+        <rect width="86" height="22" rx="11" fill="#F85149" fill-opacity="0.14"
+              stroke="#F85149" stroke-opacity="0.35"/>
+        <text x="43" y="15" fill="#F85149" font-size="11" font-weight="700"
+              text-anchor="middle">critical</text>
+      </g>
+      <!-- Size pill -->
+      <g transform="translate(760, -14)">
+        <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700"
+              text-anchor="middle">L</text>
+      </g>
+      <!-- Status badge -->
+      <g transform="translate(836, -14)">
+        <rect width="124" height="22" rx="11" fill="#58A6FF" fill-opacity="0.14"
+              stroke="#58A6FF" stroke-opacity="0.35"/>
+        <circle cx="14" cy="11" r="4" fill="#58A6FF"/>
+        <text x="74" y="15" fill="#58A6FF" font-size="11" font-weight="600"
+              text-anchor="middle">in-progress</text>
+      </g>
+    </g>
+    <line x1="24" y1="200" x2="992" y2="200" stroke="#21262D"/>
+
+    <!-- ===== Issue 2: #3487 high, M, in-progress (este mismo) ===== -->
+    <g transform="translate(24, 222)" font-size="14">
+      <text fill="#E6EDF3" font-weight="600">#3487</text>
+      <text x="84" fill="#E6EDF3">Dashboard: widget de proximas olas</text>
+      <g transform="translate(600, -14)">
+        <rect width="86" height="22" rx="11" fill="#F59E0B" fill-opacity="0.14"
+              stroke="#F59E0B" stroke-opacity="0.35"/>
+        <text x="43" y="15" fill="#F59E0B" font-size="11" font-weight="700"
+              text-anchor="middle">high</text>
+      </g>
+      <g transform="translate(760, -14)">
+        <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700"
+              text-anchor="middle">M</text>
+      </g>
+      <g transform="translate(836, -14)">
+        <rect width="124" height="22" rx="11" fill="#58A6FF" fill-opacity="0.14"
+              stroke="#58A6FF" stroke-opacity="0.35"/>
+        <circle cx="14" cy="11" r="4" fill="#58A6FF"/>
+        <text x="74" y="15" fill="#58A6FF" font-size="11" font-weight="600"
+              text-anchor="middle">in-progress</text>
+      </g>
+    </g>
+    <line x1="24" y1="244" x2="992" y2="244" stroke="#21262D"/>
+
+    <!-- ===== Issue 3: #3488 high, M, ready ===== -->
+    <g transform="translate(24, 266)" font-size="14">
+      <text fill="#E6EDF3" font-weight="600">#3488</text>
+      <text x="84" fill="#E6EDF3">Planner: expansion para multi-ola con criterio Q</text>
+      <g transform="translate(600, -14)">
+        <rect width="86" height="22" rx="11" fill="#F59E0B" fill-opacity="0.14"
+              stroke="#F59E0B" stroke-opacity="0.35"/>
+        <text x="43" y="15" fill="#F59E0B" font-size="11" font-weight="700"
+              text-anchor="middle">high</text>
+      </g>
+      <g transform="translate(760, -14)">
+        <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700"
+              text-anchor="middle">M</text>
+      </g>
+      <g transform="translate(836, -14)">
+        <rect width="124" height="22" rx="11" fill="#3FB950" fill-opacity="0.14"
+              stroke="#3FB950" stroke-opacity="0.35"/>
+        <circle cx="14" cy="11" r="4" fill="#3FB950"/>
+        <text x="74" y="15" fill="#3FB950" font-size="11" font-weight="600"
+              text-anchor="middle">ready</text>
+      </g>
+    </g>
+    <line x1="24" y1="288" x2="992" y2="288" stroke="#21262D"/>
+
+    <!-- ===== Issue 4: #3493 medium, S, ready ===== -->
+    <g transform="translate(24, 310)" font-size="14">
+      <text fill="#E6EDF3" font-weight="600">#3493</text>
+      <text x="84" fill="#E6EDF3">Telegram: comandos /wave para inspeccion</text>
+      <g transform="translate(600, -14)">
+        <rect width="86" height="22" rx="11" fill="#D29922" fill-opacity="0.14"
+              stroke="#D29922" stroke-opacity="0.35"/>
+        <text x="43" y="15" fill="#D29922" font-size="11" font-weight="700"
+              text-anchor="middle">medium</text>
+      </g>
+      <g transform="translate(760, -14)">
+        <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700"
+              text-anchor="middle">S</text>
+      </g>
+      <g transform="translate(836, -14)">
+        <rect width="124" height="22" rx="11" fill="#3FB950" fill-opacity="0.14"
+              stroke="#3FB950" stroke-opacity="0.35"/>
+        <circle cx="14" cy="11" r="4" fill="#3FB950"/>
+        <text x="74" y="15" fill="#3FB950" font-size="11" font-weight="600"
+              text-anchor="middle">ready</text>
+      </g>
+    </g>
+    <line x1="24" y1="332" x2="992" y2="332" stroke="#21262D"/>
+
+    <!-- ===== Issue 5: #3500 medium, S, needs-def ===== -->
+    <g transform="translate(24, 354)" font-size="14">
+      <text fill="#E6EDF3" font-weight="600">#3500</text>
+      <text x="84" fill="#E6EDF3">Auditoria de handoff: alerta umbral 20%...</text>
+      <g transform="translate(600, -14)">
+        <rect width="86" height="22" rx="11" fill="#D29922" fill-opacity="0.14"
+              stroke="#D29922" stroke-opacity="0.35"/>
+        <text x="43" y="15" fill="#D29922" font-size="11" font-weight="700"
+              text-anchor="middle">medium</text>
+      </g>
+      <g transform="translate(760, -14)">
+        <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700"
+              text-anchor="middle">S</text>
+      </g>
+      <g transform="translate(836, -14)">
+        <rect width="124" height="22" rx="11" fill="#D29922" fill-opacity="0.14"
+              stroke="#D29922" stroke-opacity="0.35"/>
+        <circle cx="14" cy="11" r="4" fill="#D29922"/>
+        <text x="74" y="15" fill="#D29922" font-size="11" font-weight="600"
+              text-anchor="middle">needs-def</text>
+      </g>
+    </g>
+    <line x1="24" y1="376" x2="992" y2="376" stroke="#21262D"/>
+
+    <!-- ===== Issue 6: #3505 low, S, ready ===== -->
+    <g transform="translate(24, 398)" font-size="14">
+      <text fill="#E6EDF3" font-weight="600">#3505</text>
+      <text x="84" fill="#E6EDF3">Telemetria adicional de tokens por skill</text>
+      <g transform="translate(600, -14)">
+        <rect width="86" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <text x="43" y="15" fill="#8B949E" font-size="11" font-weight="700"
+              text-anchor="middle">low</text>
+      </g>
+      <g transform="translate(760, -14)">
+        <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700"
+              text-anchor="middle">S</text>
+      </g>
+      <g transform="translate(836, -14)">
+        <rect width="124" height="22" rx="11" fill="#3FB950" fill-opacity="0.14"
+              stroke="#3FB950" stroke-opacity="0.35"/>
+        <circle cx="14" cy="11" r="4" fill="#3FB950"/>
+        <text x="74" y="15" fill="#3FB950" font-size="11" font-weight="600"
+              text-anchor="middle">ready</text>
+      </g>
+    </g>
+
+    <!-- Footer mini barra de progreso -->
+    <g transform="translate(24, 460)">
+      <text fill="#8B949E" font-size="12" font-weight="600" letter-spacing="1.2">
+        PROGRESO DE OLA
+      </text>
+      <!-- Track -->
+      <rect x="0" y="22" width="968" height="8" rx="4" fill="#1C2128" stroke="#30363D"/>
+      <!-- Fill (50% = 3 ready de 6) -->
+      <rect x="0" y="22" width="484" height="8" rx="4" fill="url(#purpleGradWP)"/>
+      <!-- Etiquetas -->
+      <text x="0" y="56" fill="#B1BAC4" font-size="12">3 de 6 listas - 50%</text>
+      <text x="968" y="56" fill="#8B949E" font-size="12" text-anchor="end">
+        ETA: 2-3 dias - segun velocidad reciente
+      </text>
+    </g>
+
+    <!-- Banda de hint para morphing -->
+    <g transform="translate(24, 560)">
+      <rect width="968" height="48" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="20" y="22" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="1">
+        POLLING
+      </text>
+      <text x="20" y="40" fill="#B1BAC4" font-size="13">
+        fetch /api/dash/waves cada 30s - el DOM se actualiza por id sin reemplazar
+        el container (morphing manual, cero flicker)
+      </text>
+    </g>
+
+    <!-- Anotacion visual: que pasa si un estado cambia entre fetches -->
+    <g transform="translate(24, 628)">
+      <text fill="#8B949E" font-size="12" font-weight="600" letter-spacing="1.2">
+        EJEMPLO: SI #3500 PASA A `ready` ENTRE FETCHES
+      </text>
+      <g transform="translate(0, 18)">
+        <rect width="968" height="86" rx="8" fill="#1C2128" stroke="#30363D"/>
+        <!-- antes -->
+        <text x="20" y="28" fill="#8B949E" font-size="11" letter-spacing="0.8">ANTES (t=0)</text>
+        <g transform="translate(20, 38)">
+          <rect width="124" height="22" rx="11" fill="#D29922" fill-opacity="0.14"
+                stroke="#D29922" stroke-opacity="0.35"/>
+          <text x="62" y="15" fill="#D29922" font-size="11" font-weight="600"
+                text-anchor="middle">needs-def</text>
+        </g>
+        <!-- flecha -->
+        <g transform="translate(168, 46)" stroke="#8B949E" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" fill="none">
+          <path d="M0 4 L24 4 M18 0 L24 4 L18 8"/>
+        </g>
+        <!-- despues -->
+        <text x="220" y="28" fill="#8B949E" font-size="11" letter-spacing="0.8">DESPUES (t=30s)</text>
+        <g transform="translate(220, 38)">
+          <rect width="124" height="22" rx="11" fill="#3FB950" fill-opacity="0.14"
+                stroke="#3FB950" stroke-opacity="0.35"/>
+          <text x="62" y="15" fill="#3FB950" font-size="11" font-weight="600"
+                text-anchor="middle">ready</text>
+        </g>
+        <text x="368" y="54" fill="#8B949E" font-size="12">
+          el badge se actualiza in-place via querySelector('#wave-42-issue-3500-status')
+          - sin re-render del panel
+        </text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===================== OLA PROXIMA (Ola 43) — desaturada, expandida ===================== -->
+  <g transform="translate(32, 1010)">
+    <rect width="1016" height="430" rx="14" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+    <!-- Borde superior dim (proxima ola) -->
+    <rect width="1016" height="4" rx="2" fill="url(#purpleDimGradWP)" opacity="0.7"/>
+
+    <!-- Header -->
+    <g transform="translate(24, 28)">
+      <!-- Badge "PROXIMA" -->
+      <g>
+        <rect width="108" height="28" rx="14" fill="#8957E5" fill-opacity="0.14"
+              stroke="#8957E5" stroke-opacity="0.35"/>
+        <circle cx="14" cy="14" r="4" fill="#8B949E"/>
+        <text x="64" y="19" fill="#8957E5" font-size="12" font-weight="700"
+              letter-spacing="1" text-anchor="middle">PROXIMA</text>
+      </g>
+
+      <text x="124" y="20" fill="#E6EDF3" font-size="22" font-weight="700"
+            opacity="0.85">Ola 43</text>
+      <text x="194" y="20" fill="#B1BAC4" font-size="18" font-weight="500" opacity="0.8">
+        - Hardening de seguridad y observabilidad
+      </text>
+
+      <!-- Toggle collapse -->
+      <g transform="translate(936, -4)" cursor="pointer">
+        <rect width="32" height="32" rx="8" fill="#1C2128" stroke="#30363D"/>
+        <g transform="translate(4, 4)" stroke="#8B949E" stroke-width="1.5" fill="none"
+           stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2.7" y="2.7" width="18.7" height="18.7" rx="3.5"/>
+          <path d="M7 16 L12 11 L17 16" stroke-width="2"/>
+        </g>
+      </g>
+
+      <text x="0" y="48" fill="#8B949E" font-size="13" opacity="0.85">
+        Estimada: post Ola 42 - lookahead 1 - planner expansion #3488
+      </text>
+
+      <text x="0" y="74" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="1.2">
+        4 ISSUES - 2 READY - 2 NEEDS-DEF - (desaturado: no operativo aun)
+      </text>
+    </g>
+
+    <line x1="24" y1="124" x2="992" y2="124" stroke="#30363D"/>
+
+    <g opacity="0.78">
+      <!-- Issue 1: #3510 high, M, needs-def -->
+      <g transform="translate(24, 156)" font-size="14">
+        <text fill="#B1BAC4" font-weight="600">#3510</text>
+        <text x="84" fill="#B1BAC4">Auditoria mensual de permisos por skill</text>
+        <g transform="translate(600, -14)">
+          <rect width="86" height="22" rx="11" fill="#F59E0B" fill-opacity="0.10"
+                stroke="#F59E0B" stroke-opacity="0.30"/>
+          <text x="43" y="15" fill="#F59E0B" font-size="11" font-weight="700"
+                text-anchor="middle">high</text>
+        </g>
+        <g transform="translate(760, -14)">
+          <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+          <text x="20" y="15" fill="#8B949E" font-size="11" font-weight="700"
+                text-anchor="middle">M</text>
+        </g>
+        <g transform="translate(836, -14)">
+          <rect width="124" height="22" rx="11" fill="#D29922" fill-opacity="0.10"
+                stroke="#D29922" stroke-opacity="0.30"/>
+          <circle cx="14" cy="11" r="4" fill="#D29922"/>
+          <text x="74" y="15" fill="#D29922" font-size="11" font-weight="600"
+                text-anchor="middle">needs-def</text>
+        </g>
+      </g>
+      <line x1="24" y1="178" x2="992" y2="178" stroke="#21262D"/>
+
+      <!-- Issue 2: #3515 medium, S, ready -->
+      <g transform="translate(24, 200)" font-size="14">
+        <text fill="#B1BAC4" font-weight="600">#3515</text>
+        <text x="84" fill="#B1BAC4">Metricas SSE: backpressure y reconexion auto</text>
+        <g transform="translate(600, -14)">
+          <rect width="86" height="22" rx="11" fill="#D29922" fill-opacity="0.10"
+                stroke="#D29922" stroke-opacity="0.30"/>
+          <text x="43" y="15" fill="#D29922" font-size="11" font-weight="700"
+                text-anchor="middle">medium</text>
+        </g>
+        <g transform="translate(760, -14)">
+          <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+          <text x="20" y="15" fill="#8B949E" font-size="11" font-weight="700"
+                text-anchor="middle">S</text>
+        </g>
+        <g transform="translate(836, -14)">
+          <rect width="124" height="22" rx="11" fill="#3FB950" fill-opacity="0.10"
+                stroke="#3FB950" stroke-opacity="0.30"/>
+          <circle cx="14" cy="11" r="4" fill="#3FB950"/>
+          <text x="74" y="15" fill="#3FB950" font-size="11" font-weight="600"
+                text-anchor="middle">ready</text>
+        </g>
+      </g>
+      <line x1="24" y1="222" x2="992" y2="222" stroke="#21262D"/>
+
+      <!-- Issue 3: #3520 medium, L, needs-def -->
+      <g transform="translate(24, 244)" font-size="14">
+        <text fill="#B1BAC4" font-weight="600">#3520</text>
+        <text x="84" fill="#B1BAC4">Reset condicional segun health del Pulpo</text>
+        <g transform="translate(600, -14)">
+          <rect width="86" height="22" rx="11" fill="#D29922" fill-opacity="0.10"
+                stroke="#D29922" stroke-opacity="0.30"/>
+          <text x="43" y="15" fill="#D29922" font-size="11" font-weight="700"
+                text-anchor="middle">medium</text>
+        </g>
+        <g transform="translate(760, -14)">
+          <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+          <text x="20" y="15" fill="#8B949E" font-size="11" font-weight="700"
+                text-anchor="middle">L</text>
+        </g>
+        <g transform="translate(836, -14)">
+          <rect width="124" height="22" rx="11" fill="#D29922" fill-opacity="0.10"
+                stroke="#D29922" stroke-opacity="0.30"/>
+          <circle cx="14" cy="11" r="4" fill="#D29922"/>
+          <text x="74" y="15" fill="#D29922" font-size="11" font-weight="600"
+                text-anchor="middle">needs-def</text>
+        </g>
+      </g>
+      <line x1="24" y1="266" x2="992" y2="266" stroke="#21262D"/>
+
+      <!-- Issue 4: #3528 low, S, ready -->
+      <g transform="translate(24, 288)" font-size="14">
+        <text fill="#B1BAC4" font-weight="600">#3528</text>
+        <text x="84" fill="#B1BAC4">CSV export del consumo semanal</text>
+        <g transform="translate(600, -14)">
+          <rect width="86" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+          <text x="43" y="15" fill="#8B949E" font-size="11" font-weight="700"
+                text-anchor="middle">low</text>
+        </g>
+        <g transform="translate(760, -14)">
+          <rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+          <text x="20" y="15" fill="#8B949E" font-size="11" font-weight="700"
+                text-anchor="middle">S</text>
+        </g>
+        <g transform="translate(836, -14)">
+          <rect width="124" height="22" rx="11" fill="#3FB950" fill-opacity="0.10"
+                stroke="#3FB950" stroke-opacity="0.30"/>
+          <circle cx="14" cy="11" r="4" fill="#3FB950"/>
+          <text x="74" y="15" fill="#3FB950" font-size="11" font-weight="600"
+                text-anchor="middle">ready</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Banda explicativa de desaturacion -->
+    <g transform="translate(24, 350)">
+      <rect width="968" height="48" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="20" y="22" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="1">
+        DECISION VISUAL
+      </text>
+      <text x="20" y="40" fill="#B1BAC4" font-size="13">
+        Los issues de la proxima ola se renderean con opacity 0.78 + colores semanticos
+        en alpha 0.10 - se distinguen sin perder legibilidad.
+      </text>
+    </g>
+  </g>
+
+  <!-- ===================== Estado vacio (waves.json no disponible) ===================== -->
+  <g transform="translate(32, 1470)">
+    <rect width="1016" height="180" rx="14" fill="#161B22" stroke="#30363D" stroke-dasharray="4 3"/>
+    <text x="24" y="36" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1.2">
+      ESTADO DE FALLBACK (waves.json ausente o invalido)
+    </text>
+
+    <!-- Layout interno: ic-wave + mensaje -->
+    <g transform="translate(36, 64)">
+      <g stroke="#8B949E" stroke-width="2.4" fill="none" stroke-linecap="round"
+         stroke-linejoin="round" opacity="0.55">
+        <path d="M0 28 C 14 12, 28 12, 42 28 S 70 44, 84 28"/>
+        <path d="M0 56 C 14 40, 28 40, 42 56 S 70 72, 84 56" opacity="0.6"/>
+      </g>
+    </g>
+
+    <text x="160" y="92" fill="#E6EDF3" font-size="18" font-weight="600">
+      Planificacion no disponible
+    </text>
+    <text x="160" y="118" fill="#B1BAC4" font-size="13">
+      El planner todavia no genero waves.json - esperando la proxima ronda.
+    </text>
+    <text x="160" y="138" fill="#8B949E" font-size="12">
+      El widget conserva su espacio - sin errores en consola - retry automatico cada 30s.
+    </text>
+
+    <!-- Boton silenced retry -->
+    <g transform="translate(836, 70)">
+      <rect width="156" height="44" rx="22" fill="#1C2128" stroke="#30363D"/>
+      <text x="78" y="28" fill="#B1BAC4" font-size="13" font-weight="600"
+            text-anchor="middle">Reintentar ahora</text>
+    </g>
+  </g>
+
+  <!-- ===================== Leyenda de tokens (footer) ===================== -->
+  <g transform="translate(32, 1680)">
+    <rect width="1016" height="200" rx="14" fill="#161B22" stroke="#30363D"/>
+
+    <text x="24" y="32" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="1.2">
+      LEYENDA - PRIORIDAD - SIZE - ESTADO
+    </text>
+
+    <!-- Prioridad -->
+    <g transform="translate(24, 56)" font-size="12">
+      <text fill="#8B949E" font-weight="600" letter-spacing="0.6">PRIORIDAD</text>
+      <g transform="translate(0, 16)">
+        <g><rect width="86" height="22" rx="11" fill="#F85149" fill-opacity="0.14"
+                  stroke="#F85149" stroke-opacity="0.35"/>
+           <text x="43" y="15" fill="#F85149" font-size="11" font-weight="700" text-anchor="middle">critical</text></g>
+        <g transform="translate(96, 0)"><rect width="86" height="22" rx="11" fill="#F59E0B" fill-opacity="0.14"
+                  stroke="#F59E0B" stroke-opacity="0.35"/>
+           <text x="43" y="15" fill="#F59E0B" font-size="11" font-weight="700" text-anchor="middle">high</text></g>
+        <g transform="translate(192, 0)"><rect width="86" height="22" rx="11" fill="#D29922" fill-opacity="0.14"
+                  stroke="#D29922" stroke-opacity="0.35"/>
+           <text x="43" y="15" fill="#D29922" font-size="11" font-weight="700" text-anchor="middle">medium</text></g>
+        <g transform="translate(288, 0)"><rect width="86" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+           <text x="43" y="15" fill="#8B949E" font-size="11" font-weight="700" text-anchor="middle">low</text></g>
+      </g>
+    </g>
+
+    <!-- Size -->
+    <g transform="translate(420, 56)" font-size="12">
+      <text fill="#8B949E" font-weight="600" letter-spacing="0.6">SIZE</text>
+      <g transform="translate(0, 16)">
+        <g><rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+           <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700" text-anchor="middle">S</text></g>
+        <g transform="translate(48, 0)"><rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+           <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700" text-anchor="middle">M</text></g>
+        <g transform="translate(96, 0)"><rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+           <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700" text-anchor="middle">L</text></g>
+        <g transform="translate(144, 0)"><rect width="40" height="22" rx="6" fill="#1C2128" stroke="#30363D"/>
+           <text x="20" y="15" fill="#B1BAC4" font-size="11" font-weight="700" text-anchor="middle">XL</text></g>
+      </g>
+      <text x="0" y="56" fill="#8B949E" font-size="11">
+        Whitelist cerrado: S/M/L/XL - case-insensitive.
+      </text>
+    </g>
+
+    <!-- Estado -->
+    <g transform="translate(640, 56)" font-size="12">
+      <text fill="#8B949E" font-weight="600" letter-spacing="0.6">ESTADO</text>
+      <g transform="translate(0, 16)">
+        <g><rect width="124" height="22" rx="11" fill="#3FB950" fill-opacity="0.14"
+                  stroke="#3FB950" stroke-opacity="0.35"/>
+           <circle cx="14" cy="11" r="4" fill="#3FB950"/>
+           <text x="74" y="15" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">ready</text></g>
+        <g transform="translate(132, 0)"><rect width="124" height="22" rx="11" fill="#D29922" fill-opacity="0.14"
+                  stroke="#D29922" stroke-opacity="0.35"/>
+           <circle cx="14" cy="11" r="4" fill="#D29922"/>
+           <text x="74" y="15" fill="#D29922" font-size="11" font-weight="600" text-anchor="middle">needs-def</text></g>
+      </g>
+      <g transform="translate(0, 44)">
+        <g><rect width="124" height="22" rx="11" fill="#58A6FF" fill-opacity="0.14"
+                  stroke="#58A6FF" stroke-opacity="0.35"/>
+           <circle cx="14" cy="11" r="4" fill="#58A6FF"/>
+           <text x="74" y="15" fill="#58A6FF" font-size="11" font-weight="600" text-anchor="middle">in-progress</text></g>
+        <g transform="translate(132, 0)"><rect width="124" height="22" rx="11" fill="#F85149" fill-opacity="0.14"
+                  stroke="#F85149" stroke-opacity="0.35"/>
+           <circle cx="14" cy="11" r="4" fill="#F85149"/>
+           <text x="74" y="15" fill="#F85149" font-size="11" font-weight="600" text-anchor="middle">blocked</text></g>
+      </g>
+    </g>
+
+    <!-- Accesibilidad -->
+    <g transform="translate(24, 156)">
+      <text fill="#8B949E" font-size="11">
+        Accesibilidad: cada estado combina color + glyph + texto - cumple WCAG AA -
+        nunca informacion solo por color.
+      </text>
+    </g>
+  </g>
+
+</svg>
