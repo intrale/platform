@@ -347,6 +347,77 @@ No existe un campo `allowedModels[]` por skill en el schema vigente. La restricc
 
 Si necesitás una restricción más fina ("este skill solo puede usar Haiku o Sonnet, nunca Opus"), abrir issue de seguridad — hoy se hace por convención + review.
 
+### 3.6 Clasificador HTTP cross-provider de errores (#3486)
+
+Antes de [#3486](https://github.com/intrale/platform/issues/3486) la decisión "¿este código HTTP del provider debería disparar fallback?" estaba duplicada en tres archivos:
+
+- `lib/multi-provider/completion-client.js` — matriz statusCode→reason para los free providers OpenAI-compat (Cerebras, Gemini, NVIDIA NIM).
+- `lib/multi-provider/live-ping.js` — un `interpret(status, bodyExcerpt)` por provider, con regex literales duplicados.
+- `lib/commander/provider-error-parser.js` — path `transport: 'api'` con su propia matriz para 401/403/429/5xx.
+
+Cualquier cambio sutil (agregar 402 = quota_exhausted, ajustar el regex de "insufficient_quota") requería actualizar los tres en sincronía. El refactor de #3486 introdujo **`lib/http-error-classifier.js`** como fuente única.
+
+#### Contrato
+
+```js
+const { classifyHttpError } = require('.pipeline/lib/http-error-classifier');
+
+// Función pura, sin I/O. No lanza excepciones.
+classifyHttpError(statusCode, responseBody, provider) → {
+  category:          'success' | 'billing' | 'rate_limit' | 'auth' | 'transient' | 'unknown',
+  reason:            'ok' | 'quota_exhausted' | 'rate_limited' | 'invalid_credentials'
+                     | 'forbidden' | 'server_error' | 'unclassified',
+  isQuotaError:      boolean,
+  httpStatus:        number | null,
+  classifierVersion: '1.0',
+  detail?:           string  // opcional, redactado, capeado a 512 bytes
+}
+```
+
+#### Matriz
+
+| HTTP status | category | reason | isQuotaError |
+|---|---|---|---|
+| 2xx | success | ok | false |
+| 401 | auth | invalid_credentials | false |
+| 403 | auth | forbidden | false |
+| 402 | billing | quota_exhausted | **true** |
+| 429 + body matches `QUOTA_BODY_PATTERN` | billing | quota_exhausted | **true** |
+| 429 (sin match de quota) | rate_limit | rate_limited | **true** |
+| 400 + body matches `GEMINI_API_KEY_INVALID_PATTERN` | auth | invalid_credentials | false |
+| 5xx | transient | server_error | false |
+| null / NaN / "abc" / fuera de [100, 599] | unknown | unclassified | false |
+| Otros 4xx (404, 422, …) | unknown | unclassified | false |
+
+#### Defensas de seguridad incorporadas
+
+- **SR-1 (CWE-1333 ReDoS)**: body truncado a `MAX_BODY_BYTES` (16KB) ANTES de aplicar regex. Patrones con alternation literal, sin `.*` libre, sin nested quantifiers. Auditable por grep.
+- **SR-2 (CWE-117 / CWE-532)**: `detail` opcional pasa por `lib/redact.js#redactSensitive` y se capea a `DETAIL_MAX_BYTES` (512 bytes). El output NO incluye raw body completo. El `category`/`reason` son códigos canónicos, nunca fragmentos del body.
+- **SR-4 (CWE-285)**: 401/403 → siempre `isQuotaError: false`. No hay excepción por provider. Esto evita enmascarar credenciales inválidas como cuota agotada (degrade silencioso de integridad).
+- **SR-5 (CWE-20)**: inputs null/no-numéricos caen a `unknown` sin lanzar. El parámetro `provider` es **informativo** (logging/hints) y **NO** altera la matriz HTTP base. Un atacante que pueda manipular el string `provider` (config envenenada) no puede forzar que un 401 se reclasifique como 200.
+- **SR-7**: cero npm nuevas. Solo `node:` stdlib.
+
+#### Cómo agregar un provider nuevo
+
+**NO se modifica el clasificador.** Trabaja solo sobre `statusCode` + regex sobre body acotado. El parámetro `provider` no entra en la matriz. Si el provider nuevo devuelve un marcador de quota que no matchea `QUOTA_BODY_PATTERN`, se agrega al regex centralizado (no en cada call site).
+
+#### Lo que el clasificador NO reemplaza
+
+- **`quota_error_types` en `agent-models.json`** sigue siendo `required` en el schema y cubre el **canal CLI** (claude-code/codex via stream-json o stderr donde no hay HTTP status visible al wrapper). Cross-validado contra `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` en `quota-exhausted.js` (defensa SEC-2 de [#3077](https://github.com/intrale/platform/issues/3077) contra adulteración de `agent-models.json`).
+- **`KNOWN_HINTS_BY_PROVIDER` en `provider-exhaustion-pause.js`** sigue siendo texto humanizado para mensajes Telegram. El clasificador da la `category` (operativa); el hint humano se compone aparte.
+
+#### Consumidores actuales
+
+| Consumer | Cómo lo usa | Shape externo que mantiene |
+|---|---|---|
+| `completion-client.js` | Llama `classifyHttpError(statusCode, bodyText, provider)`. Mapea `category=auth` → `type: 'auth_error'`, resto → `type: 'http_error'`. | `{type, reason, statusCode, detail?}` (contrato Sherlock) |
+| `live-ping.js` | Vía helper `_classifyForLivePing(provider, status, bodyExcerpt)`. Aplica overrides legacy (openai/elevenlabs: 429 plain → `quota_exhausted`). | `{ok, reason, provider, statusCode, latency_ms}` |
+| `provider-error-parser.js` | Solo en `transport: 'api'`, como **última red de salvataje** cuando el parser estructural (canal JSON) no matcheó pero hay `status` extraído del body. Mapeo `category → errorClass` en `_mapClassifierToErrorClass`. | `{errorClass, retriable, shouldFallback, raw, evidence}` |
+
+#### Tests
+
+`lib/__tests__/http-error-classifier.test.js` cubre 37 casos: happy path (2xx, 402, 429-quota, 429-rate), validación de inputs (null, NaN, "abc", string-numérico, fuera de rango), permisos (401/403 nunca como cuota), edge cases (5xx, 400-Gemini, body 100KB, Buffer, objeto malformado), info-leak (detail redactado y capeado), inmutabilidad del provider param, audit metadata (`classifierVersion` presente en todo retorno), y ReDoS-safety del regex de quota (1MB adversarial en <50ms).
+
 ---
 
 ## 4. Configuración por agente

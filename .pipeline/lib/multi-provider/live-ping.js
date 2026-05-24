@@ -13,6 +13,17 @@
 //     ('invalid_credentials' / 'quota_exhausted' / 'rate_limited' / 'unknown').
 //
 // Timeout obligatorio: 8s. Sin timeout, un provider colgado bloquea el dashboard.
+//
+// #3486 — Clasificación HTTP delegada
+// ------------------------------------
+// La matriz statusCode → reason de cada provider ahora delega al clasificador
+// universal (`lib/http-error-classifier.js`). Cada provider mantiene su
+// `interpret()` por compatibilidad con el shape `{ ok, reason }` exigido por
+// tests/consumers, pero internamente todos llaman al mismo helper. Los regex
+// literales que vivían en este archivo (alternation de 'usage_limit',
+// 'insufficient_quota', etc.) se eliminaron — la fuente única ahora es el
+// clasificador. Los OVERRIDES por provider (ej. openai trata 429 plain como
+// quota históricamente) se aplican post-clasificación para no romper consumers.
 // =============================================================================
 'use strict';
 
@@ -20,6 +31,65 @@ const https = require('node:https');
 const { URL } = require('node:url');
 
 const secretsRw = require('./secrets-rw');
+const httpClassifier = require('../http-error-classifier');
+
+// -----------------------------------------------------------------------------
+// classifyForLivePing — adapta el output del clasificador al shape histórico
+// de live-ping `{ ok, reason }`. Aplica overrides por provider donde el
+// pipeline tenía una semántica específica que debemos preservar.
+//
+// Mapeo base (clasificador → live-ping reason):
+//   success/ok                 → { ok: true,  reason: 'authenticated' }
+//   auth/invalid_credentials   → { ok: false, reason: 'invalid_credentials' }
+//   auth/forbidden             → { ok: false, reason: 'forbidden' }
+//   billing/quota_exhausted    → { ok: false, reason: 'quota_exhausted' }
+//   rate_limit/rate_limited    → { ok: false, reason: 'rate_limited' }
+//   transient/server_error     → { ok: false, reason: 'unknown' }   (legacy)
+//   unknown/unclassified       → { ok: false, reason: 'unknown' }
+//
+// Overrides documentados:
+//   - openai, elevenlabs: 429 SIN body matchable se reportaba históricamente
+//     como 'quota_exhausted' (sus interpret() no recibían bodyExcerpt). Lo
+//     mantenemos para no romper consumers del dashboard / health alerts.
+//   - openai: no tenía branch 403 — mapeamos 403 a 'invalid_credentials' (más
+//     suave que 'forbidden' para preservar el comportamiento previo que caía
+//     a 'unknown'). Pero como 'forbidden' es estrictamente más informativo y
+//     ningún consumer hardcodea 'unknown' para 403, dejamos el default.
+// -----------------------------------------------------------------------------
+function classifyForLivePing(provider, status, bodyExcerpt) {
+    const c = httpClassifier.classifyHttpError(status, bodyExcerpt, provider);
+    let ok, reason;
+    switch (c.category) {
+        case 'success':
+            ok = true;
+            reason = 'authenticated';
+            break;
+        case 'auth':
+            ok = false;
+            reason = c.reason; // invalid_credentials | forbidden
+            break;
+        case 'billing':
+            ok = false;
+            reason = 'quota_exhausted';
+            break;
+        case 'rate_limit':
+            ok = false;
+            reason = 'rate_limited';
+            break;
+        case 'transient':
+        case 'unknown':
+        default:
+            ok = false;
+            reason = 'unknown';
+    }
+    // Overrides por provider que preservan semántica legacy.
+    if ((provider === 'openai' || provider === 'elevenlabs') && reason === 'rate_limited') {
+        // El interpret legacy de openai/elevenlabs tratada 429 como quota
+        // siempre (sin discriminar por body). Preservar comportamiento.
+        reason = 'quota_exhausted';
+    }
+    return { ok, reason };
+}
 
 const PROVIDER_PING_ENDPOINTS = Object.freeze({
     anthropic: {
@@ -35,18 +105,8 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
             'anthropic-version': '2023-06-01',
             'content-type': 'application/json',
         }),
-        interpret: (status, bodyExcerpt) => {
-            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
-            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
-            if (status === 403) return { ok: false, reason: 'forbidden' };
-            if (status === 429) {
-                if (/usage_limit|weekly_quota|insufficient_quota/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'quota_exhausted' };
-                }
-                return { ok: false, reason: 'rate_limited' };
-            }
-            return { ok: false, reason: 'unknown' };
-        },
+        interpret: (status, bodyExcerpt) =>
+            classifyForLivePing('anthropic', status, bodyExcerpt),
     },
     openai: {
         url: 'https://api.openai.com/v1/models',
@@ -55,24 +115,16 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
         headers: (key) => ({
             'authorization': `Bearer ${key}`,
         }),
-        interpret: (status) => {
-            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
-            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
-            if (status === 429) return { ok: false, reason: 'quota_exhausted' };
-            return { ok: false, reason: 'unknown' };
-        },
+        interpret: (status, bodyExcerpt) =>
+            classifyForLivePing('openai', status, bodyExcerpt),
     },
     elevenlabs: {
         url: 'https://api.elevenlabs.io/v1/voices',
         method: 'GET',
         body: () => null,
         headers: (key) => ({ 'xi-api-key': key }),
-        interpret: (status) => {
-            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
-            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
-            if (status === 429) return { ok: false, reason: 'quota_exhausted' };
-            return { ok: false, reason: 'unknown' };
-        },
+        interpret: (status, bodyExcerpt) =>
+            classifyForLivePing('elevenlabs', status, bodyExcerpt),
     },
     // ─── Free providers — red de salvataje del pipeline (#3260 SR-2 / SR-7).
     //
@@ -85,32 +137,19 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
     //   - Header de auth en `Authorization` / `x-api-key` / `x-goog-api-key`,
     //     **nunca en query string** (defense-in-depth contra leaks en logs;
     //     `key` ya está en `SENSITIVE_QUERY_KEYS` para protegerlo igualmente).
-    //   - Reason codes genéricos: `authenticated` / `invalid_credentials` /
-    //     `forbidden` / `quota_exhausted` / `rate_limited` / `unknown`. Nunca
-    //     códigos provider-specific (filtran detalle al panel).
+    //   - El `interpret()` delega al clasificador HTTP universal (#3486). NO
+    //     duplicar regex de cuota acá — agregar marcadores al clasificador.
     //
     // NVIDIA NIM (#3243): API OpenAI-compatible, key viaja en `Authorization:
     // Bearer`. Endpoint de listado `/v1/models`. Reason codes alineados al set
-    // genérico (SR-4 del análisis de seguridad). Free tier sin límites públicos
-    // documentados — `quota_exhausted` se infiere por body match si NVIDIA
-    // empieza a publicar `insufficient_quota` (placeholder conservador).
+    // genérico (SR-4 del análisis de seguridad).
     'nvidia-nim': {
         url: 'https://integrate.api.nvidia.com/v1/models',
         method: 'GET',
         body: () => null,
         headers: (key) => ({ 'authorization': `Bearer ${key}` }),
-        interpret: (status, bodyExcerpt) => {
-            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
-            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
-            if (status === 403) return { ok: false, reason: 'forbidden' };
-            if (status === 429) {
-                if (/insufficient_quota|quota|monthly_limit/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'quota_exhausted' };
-                }
-                return { ok: false, reason: 'rate_limited' };
-            }
-            return { ok: false, reason: 'unknown' };
-        },
+        interpret: (status, bodyExcerpt) =>
+            classifyForLivePing('nvidia-nim', status, bodyExcerpt),
     },
     // Groq fue descontinuado (#3353, mayo 2026): la organización dueña de las
     // keys fue bloqueada por Groq sin aviso ("organization_restricted") y la
@@ -125,48 +164,16 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
         method: 'GET',
         body: () => null,
         headers: (key) => ({ 'x-goog-api-key': key }),
-        interpret: (status, bodyExcerpt) => {
-            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
-            if (status === 400) {
-                // Gemini devuelve 400 cuando la API key tiene formato inválido
-                // (ej. demasiado corta). Lo tratamos como invalid_credentials.
-                if (/API key not valid|API_KEY_INVALID/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'invalid_credentials' };
-                }
-                return { ok: false, reason: 'unknown' };
-            }
-            if (status === 401 || status === 403) {
-                if (/permission|forbidden|insufficient/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'forbidden' };
-                }
-                return { ok: false, reason: 'invalid_credentials' };
-            }
-            if (status === 429) {
-                if (/quota|exceeded/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'quota_exhausted' };
-                }
-                return { ok: false, reason: 'rate_limited' };
-            }
-            return { ok: false, reason: 'unknown' };
-        },
+        interpret: (status, bodyExcerpt) =>
+            classifyForLivePing('gemini-google', status, bodyExcerpt),
     },
     cerebras: {
         url: 'https://api.cerebras.ai/v1/models',
         method: 'GET',
         body: () => null,
         headers: (key) => ({ 'authorization': `Bearer ${key}` }),
-        interpret: (status, bodyExcerpt) => {
-            if (status >= 200 && status < 300) return { ok: true, reason: 'authenticated' };
-            if (status === 401) return { ok: false, reason: 'invalid_credentials' };
-            if (status === 403) return { ok: false, reason: 'forbidden' };
-            if (status === 429) {
-                if (/quota|exceeded|insufficient/i.test(bodyExcerpt)) {
-                    return { ok: false, reason: 'quota_exhausted' };
-                }
-                return { ok: false, reason: 'rate_limited' };
-            }
-            return { ok: false, reason: 'unknown' };
-        },
+        interpret: (status, bodyExcerpt) =>
+            classifyForLivePing('cerebras', status, bodyExcerpt),
     },
 });
 
@@ -258,4 +265,6 @@ module.exports = {
     isAllowedProvider,
     PROVIDER_PING_ENDPOINTS,
     TIMEOUT_MS,
+    // Exportado para tests del refactor #3486.
+    _classifyForLivePing: classifyForLivePing,
 };

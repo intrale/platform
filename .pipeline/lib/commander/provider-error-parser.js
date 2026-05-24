@@ -73,8 +73,26 @@
 // SR-9 Bounded SSE parser: lectura línea por línea con cap 16KB por línea.
 //
 // Sin dependencias externas (Node puro: nada nuevo en node_modules).
+//
+// #3486 — Integración con clasificador HTTP universal
+// ----------------------------------------------------
+// El parser sigue siendo el especialista en errores ESTRUCTURADOS (JSON shape
+// del body: error.type, error.code, error.status). Eso cubre el canal CLI y
+// gran parte del canal API. Donde delega al clasificador HTTP universal
+// (`lib/http-error-classifier.js`) es en el path `transport: 'api'` cuando:
+//   1. Extrajimos un `status` numérico del body parseado.
+//   2. Ninguno de los checks específicos del parser matcheó.
+// En ese fallback, el clasificador agrega cobertura uniforme para 402, 5xx,
+// 4xx misceláneos sin que el parser tenga que duplicar la matriz. Para el
+// resto (CLI stderr, shape estructural, classifyByContext) el parser mantiene
+// su lógica — el canal CLI no tiene HTTP status visible y el clasificador no
+// aporta.
 // =============================================================================
 'use strict';
+
+// #3486: clasificador HTTP universal para fallback de clasificación cuando el
+// parser estructural no matchea pero hay statusCode extraído del body.
+const httpClassifier = require('../http-error-classifier');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -402,6 +420,23 @@ function detectFromApiResponse(input, provider, quotaModule) {
                 };
             }
 
+            // #3486: fallback al clasificador HTTP universal. Si extrajimos
+            // un status numérico válido pero ninguno de los checks específicos
+            // matcheó, el clasificador puede mapear códigos no cubiertos
+            // (típicamente 402 Payment Required, o un 5xx con shape genérico).
+            // El parser sigue mandando para shapes estructurados — esto es
+            // solo "última red de salvataje" antes del permanent_failure.
+            if (status >= 100 && status <= 599) {
+                const c = httpClassifier.classifyHttpError(status, input, provider);
+                const mapped = mapClassifierToErrorClass(c);
+                if (mapped) {
+                    return {
+                        errorClass: mapped,
+                        evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+                    };
+                }
+            }
+
             // Algún error reportado pero sin clase clara → permanent_failure
             // por defensa (fallback no va a empeorar; el caller no setFlaguea
             // así que no contamina el flag).
@@ -451,6 +486,31 @@ function detectFromApiResponse(input, provider, quotaModule) {
     }
 
     return null;
+}
+
+// -----------------------------------------------------------------------------
+// mapClassifierToErrorClass — adapta el output del clasificador HTTP universal
+// (#3486) al enum `errorClass` del parser. Es un mapeo conservador: solo
+// devuelve errorClass cuando el clasificador da una categoría accionable.
+//   billing/quota_exhausted    → 'quota_exhausted'
+//   rate_limit/rate_limited    → 'rate_limit'
+//   auth/*                     → 'auth'
+//   transient/server_error     → 'transient_5xx'
+//   success / unknown          → null (el caller decide; típicamente cae a
+//                                permanent_failure por defensa de fallback).
+// -----------------------------------------------------------------------------
+function mapClassifierToErrorClass(c) {
+    if (!c || typeof c !== 'object') return null;
+    switch (c.category) {
+        case 'billing':   return 'quota_exhausted';
+        case 'rate_limit': return 'rate_limit';
+        case 'auth':      return 'auth';
+        case 'transient': return 'transient_5xx';
+        case 'success':
+        case 'unknown':
+        default:
+            return null;
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -614,6 +674,7 @@ module.exports = {
     _detectFromCliStderr: detectFromCliStderr,
     _detectFromApiResponse: detectFromApiResponse,
     _classifyByContext: classifyByContext,
+    _mapClassifierToErrorClass: mapClassifierToErrorClass,
     _CLI_QUOTA_PATTERNS: CLI_QUOTA_PATTERNS,
     _CLI_RATE_LIMIT_PATTERNS: CLI_RATE_LIMIT_PATTERNS,
     _CLI_AUTH_PATTERNS: CLI_AUTH_PATTERNS,
