@@ -24,9 +24,9 @@ Opciones:
 
 | Opcion | Default | Que hace |
 |---|---|---|
-| `maxChars` | `1500` | Cap del script. Si se excede, se aplica resumen heuristico. |
+| `maxChars` | `1500` | Cap del script cuando `summarize=true`. Si se excede, se aplica resumen heuristico. |
 | `preserveModelNames` | `true` (desde #3505) | Por default conserva nombres de modelo IA y proveedor (Sonnet, Opus, Claude, Gemini, Cerebras, Codex, GPT-4o, etc.) tal cual — son palabras cortas que el motor TTS pronuncia bien y Whisper transcribe correctamente. Pasar `false` solo si se necesita un audio totalmente generico (uso historico pre-#3505). |
-| `summarize` | `true` | Si `false`, no aplica resumen aunque exceda `maxChars`. |
+| `summarize` | `true` en `textToSpeechScript` · **`false` en `sanitizeForTts`** (desde #3512) | Si `false`, no aplica resumen aunque exceda `maxChars`. `sanitizeForTts` lo desactiva por default porque los callers (`pulpo.js`, `multimedia.js`) ya chunkean el texto a 3800 chars antes de invocar TTS; si el adapter resumiera cada chunk a 1500, perderiamos ~60% del audio en cada mensaje largo. Pasar `summarize: true` explicito cuando se quiera un digest acotado. |
 
 ## Pipeline de transformacion (orden importa)
 
@@ -38,7 +38,7 @@ Opciones:
 6. **Paths** — `C:\...`, `.pipeline/...`, `./foo/bar.js` → `"archivo del pipeline"`.
 7. **Hashes de commit** — 7 a 40 hex aislados → `"commit reciente"`.
 8. **Markdown + emojis + tablas** — headers, listas, code blocks, italicas, negritas, blockquotes, emojis decorativos. Tablas cortas (<= 4 filas x <= 4 columnas) se reformulan a frase natural; tablas grandes caen al fallback CSV.
-9. **Resumen heuristico** — si supera `maxChars`, conserva primer parrafo + primeras oraciones de los siguientes parrafos hasta llenar el cap.
+9. **Resumen heuristico** — opt-in. Solo se aplica si el caller pasa `summarize: true` (default en `textToSpeechScript`) y supera `maxChars`. **No se aplica desde `sanitizeForTts`** (desde #3512) porque los callers reales ya chunkean a 3800 chars y un resumen ah comeria 60% del audio.
 
 ## Catalogo de reglas (con ejemplos antes/despues)
 

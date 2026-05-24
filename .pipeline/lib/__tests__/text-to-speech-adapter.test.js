@@ -384,6 +384,45 @@ test('compat: sanitizeForTts con undefined devuelve undefined', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #3512 — sanitizeForTts por default NO debe resumir
+// -----------------------------------------------------------------------------
+
+test('#3512: sanitizeForTts NO resume texto >1500 chars por default', () => {
+    // Construir texto plano sin markdown, >1500 chars y >3800 chars para
+    // emular un chunk del caller (pulpo.js chunkea a 3800).
+    const oracion = 'Esta es una oracion de prueba con datos numericos como 42 y 1234 que ocupa un espacio razonable. ';
+    const input = oracion.repeat(50); // ~5000 chars
+    assert.ok(input.length > 3800, 'fixture debe ser mayor a 3800 chars');
+
+    const out = sanitizeForTts(input);
+
+    // Si se hubiera resumido, el output seria <=1500 chars.
+    assert.ok(
+        out.length > 3000,
+        `sanitizeForTts truncar a ${out.length} chars indica que el resumen sigue activo por default (#3512)`
+    );
+});
+
+test('#3512: sanitizeForTts respeta opt-in summarize:true cuando el caller lo pide', () => {
+    const oracion = 'Otra oracion larga que se repite para forzar resumen heuristico. ';
+    const input = oracion.repeat(40); // ~2600 chars
+    assert.ok(input.length > 1500);
+
+    const out = sanitizeForTts(input, { summarize: true, maxChars: 800 });
+
+    assert.ok(out.length <= 900, 'con summarize:true explicito si debe resumir');
+});
+
+test('#3512: textToSpeechScript mantiene resumen por default (opt-out backward compat)', () => {
+    // textToSpeechScript NO cambia su default — sigue resumiendo si supera maxChars.
+    const oracion = 'Texto largo para probar default de textToSpeechScript. ';
+    const input = oracion.repeat(50);
+    const { script, summarized } = textToSpeechScript(input);
+    assert.equal(summarized, true, 'textToSpeechScript sigue resumiendo por default');
+    assert.ok(script.length <= 1600, 'maxChars default 1500 se respeta');
+});
+
+// -----------------------------------------------------------------------------
 // Fixtures realistas (CA-14: anonimizadas, sin PII real)
 // -----------------------------------------------------------------------------
 

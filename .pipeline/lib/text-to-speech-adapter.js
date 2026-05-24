@@ -27,10 +27,17 @@
 //   8. Limpieza visual de markdown (headers, listas, code blocks, tablas
 //      a frase natural, emojis decorativos).
 //   9. Resumen heuristico si supera maxChars (default 1500).
+//      OJO (#3512): este resumen NO se aplica desde sanitizeForTts, porque
+//      los callers de TTS chunkean el texto antes (splitTextForTTSChunks a
+//      3800 chars). Si el adapter resumiera cada chunk perderiamos ~60% del
+//      texto en cada audio. El resumen es opt-in via textToSpeechScript({
+//      summarize: true, maxChars: N }) cuando el caller realmente quiere un
+//      digest acotado y no un audio fiel del texto completo.
 //
 // API publica:
 //   textToSpeechScript(text, opts) -> { script, droppedCategories, summarized }
-//   sanitizeForTts(text)          -> string (compat con multimedia.js)
+//   sanitizeForTts(text)          -> string (compat con multimedia.js).
+//                                    Por default summarize=false (#3512).
 //
 // Garantiza idempotencia: adapter(adapter(x).script).script === adapter(x).script.
 // =============================================================================
@@ -457,13 +464,23 @@ function textToSpeechScript(text, opts = {}) {
 
 /**
  * Compat con multimedia.js — devuelve solo el script.
+ *
+ * IMPORTANTE (#3512): por default NO resume. Los callers (multimedia.js,
+ * pulpo.js) ya chunkean el texto a 3800 chars antes de enviarlo al TTS;
+ * si el adapter aplicara summarize=true cada chunk se truncaria a 1500
+ * chars y los audios saldrian recortados al ~40% del texto real.
+ *
+ * Si necesitas un digest, usa textToSpeechScript({ summarize: true, maxChars }).
+ *
  * @param {string} text
  * @param {object} [opts]
+ * @param {boolean} [opts.summarize=false] - opt-in al resumen heuristico.
  * @returns {string}
  */
 function sanitizeForTts(text, opts = {}) {
     if (text == null) return text;
-    return textToSpeechScript(text, opts).script;
+    const effectiveOpts = { summarize: false, ...opts };
+    return textToSpeechScript(text, effectiveOpts).script;
 }
 
 module.exports = {
