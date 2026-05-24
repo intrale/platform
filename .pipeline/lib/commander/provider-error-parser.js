@@ -21,7 +21,8 @@
 // ----------------
 //   parseProviderError(rawOutput, ctx) → {
 //     errorClass: 'quota_exhausted' | 'rate_limit' | 'transient_5xx' |
-//                 'auth' | 'permanent_failure' | 'unknown',
+//                 'auth' | 'permanent_failure' | 'cli_1m_context_glitch' |
+//                 'unknown',
 //     retriable: boolean,
 //     shouldFallback: boolean,
 //     raw: string,        // saneado (max 200 chars, sin secrets, sin CR/LF)
@@ -37,13 +38,26 @@
 //   }
 //
 // MATRIZ errorClass × shouldFallback × ¿caller llama setFlag?
-//   | errorClass         | shouldFallback | setFlag? |
-//   | quota_exhausted    | true           | sí       |
-//   | rate_limit         | true           | sí       |
-//   | transient_5xx      | true           | NO       |
-//   | auth               | true           | NO       |
-//   | permanent_failure  | true           | NO       |  ← cubre context_length, model_not_found
-//   | unknown            | false          | NO       |
+//   | errorClass              | shouldFallback | setFlag? |
+//   | quota_exhausted         | true           | sí       |
+//   | rate_limit              | true           | sí       |
+//   | transient_5xx           | true           | NO       |
+//   | auth                    | true           | NO       |
+//   | permanent_failure       | true           | NO       |  ← cubre context_length, model_not_found
+//   | cli_1m_context_glitch   | false          | NO       |  ← #3506: bug del CLI Anthropic con Opus 4.7 1M, NO contaminar el flag de quota ni saltar provider
+//   | unknown                 | false          | NO       |
+//
+// #3506 — cli_1m_context_glitch
+// -----------------------------
+// El CLI de Anthropic Claude Code tira intermitentemente
+// `"Usage credits required for 1M context"` aunque el plan Claude Max 20x
+// SÍ incluya 1M context para Opus 4.7. Antes de #3506, el patrón genérico
+// `Usage credits required` clasificaba el caso como `quota_exhausted`,
+// disparando setFlag y fallback a Codex/Gemini — desperdiciando Anthropic
+// estando sano. Este errorClass aísla el subcaso: `retriable: true`,
+// `shouldFallback: false`. El caller (pulpo.js / ejecutarClaude) decide la
+// política de retry/backoff y la eventual degradación a 200K. Si los retries
+// fallan, el caller puede escalar a fallback explícito.
 //
 // SCOPE DE SEGURIDAD (SR-1..SR-9 del issue)
 // -----------------------------------------
@@ -140,6 +154,14 @@ const KNOWN_TRANSPORTS = Object.freeze(new Set(['api', 'cli']));
 // los más específicos van primero (quota_exhausted antes que rate_limit
 // genérico).
 // -----------------------------------------------------------------------------
+
+// #3506 — Pattern específico del bug del CLI Anthropic Claude Code con
+// Opus 4.7 1M context. DEBE evaluarse ANTES de los CLI_QUOTA_PATTERNS
+// porque su texto solapa con el genérico "Usage credits required".
+// Sin esta separación, el caso del 1M glitch (que NO es cuota real) se
+// clasifica como quota_exhausted y dispara fallback innecesario.
+const CLI_1M_CONTEXT_GLITCH_PATTERN =
+    /\bUsage\s+credits?\s+required\s+for\s+1M\s+context\b/i;
 
 // Errores CLI que indican cuota agotada (Anthropic claude-code, codex).
 // Estos textos vienen del stderr o del último frame del stream cuando el
@@ -294,6 +316,18 @@ function detectFromCliStderr(input, provider, quotaModule) {
         for (const line of lines) {
             const parsed = parseJsonOrSSE(line);
             if (!parsed) continue;
+            // #3506: subcaso del glitch del CLI Anthropic con 1M context. Hay que
+            // verificarlo ANTES de delegar a _detectAnthropic porque el shape suele
+            // venir con `error_type: 'usage_limit_error'` y matchearía como quota.
+            const textChunks = [parsed.result, parsed.error, parsed.message, parsed.error_message]
+                .filter(s => typeof s === 'string')
+                .join(' ');
+            if (textChunks && CLI_1M_CONTEXT_GLITCH_PATTERN.test(textChunks)) {
+                return {
+                    errorClass: 'cli_1m_context_glitch',
+                    evidence: line,
+                };
+            }
             const r = quotaModule._detectAnthropic(parsed, allowlist);
             if (r && r.matched) {
                 return {
@@ -320,6 +354,13 @@ function detectFromCliStderr(input, provider, quotaModule) {
     }
 
     // 3. Heurística regex (CLI stderr de texto libre).
+    // #3506: el subcaso "Usage credits required for 1M context" se evalúa
+    // ANTES del genérico para evitar misclassification a quota_exhausted.
+    for (const line of lines) {
+        if (CLI_1M_CONTEXT_GLITCH_PATTERN.test(line)) {
+            return { errorClass: 'cli_1m_context_glitch', evidence: line };
+        }
+    }
     for (const line of lines) {
         // Cuota
         for (const re of CLI_QUOTA_PATTERNS) {
@@ -372,6 +413,15 @@ function detectFromApiResponse(input, provider, quotaModule) {
             const code = typeof errObj.code === 'string' ? errObj.code : '';
             const status = Number(errObj.status) || Number(fullParsed.status) || 0;
             const message = typeof errObj.message === 'string' ? errObj.message : '';
+
+            // #3506: subcaso del glitch CLI con 1M context (puede venir tambien
+            // por API directa con mismo texto en `message`).
+            if (message && CLI_1M_CONTEXT_GLITCH_PATTERN.test(message)) {
+                return {
+                    errorClass: 'cli_1m_context_glitch',
+                    evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+                };
+            }
 
             // Quota / billing.
             const allowlist = (quotaModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})[provider] || [];
@@ -563,6 +613,10 @@ function classifyShouldFallback(errorClass) {
         case 'auth':
         case 'permanent_failure':
             return true;
+        // #3506: el glitch del CLI con 1M context NO debe rotar provider en el
+        // primer intento. El caller hace retry en mismo provider; si los retries
+        // fallan, escala explícitamente.
+        case 'cli_1m_context_glitch':
         case 'unknown':
         default:
             return false;
@@ -570,10 +624,13 @@ function classifyShouldFallback(errorClass) {
 }
 
 // retriable: si reintenta el MISMO provider podría resolverse en seg/min.
-// quota_exhausted/auth/permanent_failure son NO retriable; rate_limit y
-// transient_5xx sí (idealmente con backoff exponencial, fuera de scope acá).
+// quota_exhausted/auth/permanent_failure son NO retriable; rate_limit,
+// transient_5xx y cli_1m_context_glitch sí (este último con degradación
+// opcional 1M→200K en el último intento).
 function classifyRetriable(errorClass) {
-    return errorClass === 'rate_limit' || errorClass === 'transient_5xx';
+    return errorClass === 'rate_limit'
+        || errorClass === 'transient_5xx'
+        || errorClass === 'cli_1m_context_glitch';
 }
 
 // -----------------------------------------------------------------------------
@@ -680,4 +737,5 @@ module.exports = {
     _CLI_AUTH_PATTERNS: CLI_AUTH_PATTERNS,
     _CLI_PERMANENT_PATTERNS: CLI_PERMANENT_PATTERNS,
     _CLI_TRANSIENT_PATTERNS: CLI_TRANSIENT_PATTERNS,
+    _CLI_1M_CONTEXT_GLITCH_PATTERN: CLI_1M_CONTEXT_GLITCH_PATTERN,
 };

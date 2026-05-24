@@ -126,6 +126,92 @@ test('OpenAI context_length_exceeded clasifica permanent_failure con shouldFallb
 });
 
 // -----------------------------------------------------------------------------
+// 2.bis #3506 — cli_1m_context_glitch: bug del CLI Anthropic con Opus 4.7 1M
+//
+// El CLI tira `"Usage credits required for 1M context"` aunque el plan Claude
+// Max 20x SÍ cubra 1M. Debe clasificar `cli_1m_context_glitch` (no
+// `quota_exhausted`), con retriable=true y shouldFallback=false — preservar el
+// provider activo y dejar la política de retry al caller.
+// -----------------------------------------------------------------------------
+
+test('#3506 CLI Anthropic stream-json estructural con "1M context" clasifica cli_1m_context_glitch', () => {
+    const fx = loadFixture('anthropic-cli-1m-context-glitch-structural.json');
+    const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });
+    assert.equal(r.errorClass, fx.expected_error_class);
+    assert.equal(r.shouldFallback, fx.expected_should_fallback,
+        'NO debe rotar provider — Anthropic está sano, es un glitch del CLI');
+    assert.equal(r.retriable, fx.expected_retriable,
+        'SÍ es retriable: mismo provider con backoff');
+    assert.ok(r.evidence.length > 0, 'evidence debe traer el frame detectado');
+});
+
+test('#3506 CLI Anthropic texto libre "Usage credits required for 1M context" clasifica cli_1m_context_glitch', () => {
+    // Caso: el CLI imprime el mensaje en stderr sin wrappear en JSON estructural.
+    // El parser cae al heurístico-regex y debe clasificar igual.
+    const raw = 'API Error: Usage credits required for 1M context';
+    const r = parseProviderError(raw, { provider: 'anthropic', transport: 'cli' });
+    assert.equal(r.errorClass, 'cli_1m_context_glitch');
+    assert.equal(r.shouldFallback, false);
+    assert.equal(r.retriable, true);
+});
+
+test('#3506 el subcaso de 1M context tiene prioridad sobre el genérico "Usage credits required"', () => {
+    // Sin "1M context" → quota_exhausted (cuota real). Con "1M context" → glitch.
+    // Esto garantiza que la separación entre cuota real vs bug del CLI funciona.
+    const real = 'API Error: Usage credits required';
+    const glitch = 'API Error: Usage credits required for 1M context';
+
+    const rReal = parseProviderError(real, { provider: 'anthropic', transport: 'cli' });
+    const rGlitch = parseProviderError(glitch, { provider: 'anthropic', transport: 'cli' });
+
+    assert.equal(rReal.errorClass, 'quota_exhausted',
+        'cuota real (sin "1M context") debe seguir clasificando quota_exhausted');
+    assert.equal(rGlitch.errorClass, 'cli_1m_context_glitch',
+        'el subcaso del 1M debe tener prioridad sobre el genérico');
+});
+
+test('#3506 API directa con "Usage credits required for 1M context" en error.message también clasifica cli_1m_context_glitch', () => {
+    // Cobertura del path API: misma defensa para el wire HTTP directo.
+    const raw = '{"error":{"type":"usage_limit_error","message":"Usage credits required for 1M context"}}';
+    const r = parseProviderError(raw, { provider: 'anthropic', transport: 'api' });
+    assert.equal(r.errorClass, 'cli_1m_context_glitch');
+    assert.equal(r.shouldFallback, false);
+    assert.equal(r.retriable, true);
+});
+
+test('#3506 _detectAnthropic marca cliGlitch=true (sin matched) en shape estructural con 1M context', () => {
+    // Cobertura unitaria del cambio en quota-exhausted.js: el detector
+    // estructural no debe marcar matched=true; debe avisar al caller que es
+    // un glitch para que no contamine el flag de quota.
+    const quota = require('../../quota-exhausted');
+    const evt = {
+        type: 'result',
+        is_error: true,
+        error_type: 'usage_limit_error',
+        error: 'API Error: Usage credits required for 1M context',
+    };
+    const r = quota._detectAnthropic(evt, ['usage_limit_error']);
+    assert.equal(r.matched, false, 'NO debe marcar matched=true (sino contamina flag)');
+    assert.equal(r.cliGlitch, true, 'debe marcar cliGlitch=true para que el caller aplique política propia');
+    assert.equal(r.glitchType, 'cli_1m_context_glitch');
+});
+
+test('#3506 _detectAnthropic sigue matcheando cuota REAL si el texto no menciona 1M context', () => {
+    // Regresión: el cambio NO debe romper la detección de cuota real.
+    const quota = require('../../quota-exhausted');
+    const evt = {
+        type: 'result',
+        is_error: true,
+        error_type: 'usage_limit_error',
+        error: 'API Error: weekly quota exceeded',
+    };
+    const r = quota._detectAnthropic(evt, ['usage_limit_error']);
+    assert.equal(r.matched, true);
+    assert.equal(r.errorType, 'usage_limit_error');
+    assert.equal(r.cliGlitch, undefined);
+});
+
+// -----------------------------------------------------------------------------
 // 3. Defensa anti-DoS (SR-3) — input gigante no debe colgar el parser
 // -----------------------------------------------------------------------------
 
@@ -297,12 +383,16 @@ test('classifyShouldFallback respeta la matriz documentada', () => {
     assert.equal(parser.classifyShouldFallback('transient_5xx'), true);
     assert.equal(parser.classifyShouldFallback('auth'), true);
     assert.equal(parser.classifyShouldFallback('permanent_failure'), true);
+    // #3506: el glitch del CLI con 1M no rota provider — el caller hace retry.
+    assert.equal(parser.classifyShouldFallback('cli_1m_context_glitch'), false);
     assert.equal(parser.classifyShouldFallback('unknown'), false);
 });
 
-test('classifyRetriable: solo rate_limit y transient_5xx son retriable', () => {
+test('classifyRetriable: rate_limit, transient_5xx y cli_1m_context_glitch son retriable', () => {
     assert.equal(parser.classifyRetriable('rate_limit'), true);
     assert.equal(parser.classifyRetriable('transient_5xx'), true);
+    // #3506: el glitch del CLI es retriable en el mismo provider con backoff.
+    assert.equal(parser.classifyRetriable('cli_1m_context_glitch'), true);
     assert.equal(parser.classifyRetriable('quota_exhausted'), false);
     assert.equal(parser.classifyRetriable('auth'), false);
     assert.equal(parser.classifyRetriable('permanent_failure'), false);

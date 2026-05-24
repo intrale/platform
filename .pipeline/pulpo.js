@@ -7943,7 +7943,21 @@ function ejecutarClaude(prompt, textoOriginal) {
             const det = cmdProviderDef
               ? quotaExhausted.detectQuotaError(evt, cmdProviderDef)
               : quotaExhausted.detectFromResultEvent(evt, cfg);
-            if (det.matched) {
+            if (det.cliGlitch) {
+              // #3506: bug del CLI Anthropic Claude Code — "Usage credits required
+              // for 1M context" pese a que el plan Claude Max 20x SÍ incluye 1M
+              // para Opus 4.7. NO seteamos flag de quota (Anthropic está sano)
+              // ni saltamos provider. Avisamos al usuario para que reintente.
+              log('commander', `🐞 cli_1m_context_glitch detectado (provider=${cmdProvider}, glitchType="${det.glitchType}") — Anthropic sano, bug upstream del CLI con Opus 4.7 1M. NO seteando flag de quota.`);
+              try {
+                sendTelegramPlain(
+                  `🐞 Bug intermitente del CLI de Anthropic Claude Code: pidió 1M context y devolvió ` +
+                  `"Usage credits required" aunque el plan Claude Max 20x sí lo cubra. ` +
+                  `Estoy preservando Anthropic como activo (no salto a otro proveedor). ` +
+                  `Reintentá tu pedido en unos segundos.`
+                );
+              } catch { /* best-effort */ }
+            } else if (det.matched) {
               log('commander', `🚫 quota_detector: provider=${cmdProvider}, error_type="${det.errorType}" detectado — seteando flag`);
               quotaExhausted.setFlag({
                 errorType: det.errorType,
