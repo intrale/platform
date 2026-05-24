@@ -76,6 +76,11 @@ const https = require('node:https');
 const { URL } = require('node:url');
 
 const secretsRw = require('./secrets-rw');
+// #3486: clasificador HTTP universal. Delegamos la matriz statusCode→reason
+// para que la lógica viva en un solo módulo cross-provider. Mantiene el shape
+// de error tipado `{type, reason, statusCode, detail?}` exigido por el cron de
+// Sherlock y los tests existentes — solo cambia la fuente del `reason`.
+const httpClassifier = require('../http-error-classifier');
 
 // ---------------------------------------------------------------------------
 // Endpoints hardcoded — anti-SSRF. Solo proveedores OpenAI-compatible.
@@ -293,40 +298,42 @@ async function complete({
         };
     }
 
-    if (statusCode === 401) {
-        return {
-            ok: false,
-            error: { type: 'auth_error', reason: 'invalid_credentials', statusCode },
-            ...baseResult,
-            durationMs: Date.now() - startedAt,
-        };
-    }
-    if (statusCode === 403) {
-        return {
-            ok: false,
-            error: { type: 'auth_error', reason: 'forbidden', statusCode },
-            ...baseResult,
-            durationMs: Date.now() - startedAt,
-        };
-    }
-    if (statusCode === 429) {
-        // Discriminamos quota (consumido el cupo) vs rate (RPM puntual). El
-        // body del provider típicamente contiene 'insufficient_quota' /
-        // 'monthly_limit' para quota y 'rate_limit_exceeded' a secas para rate.
-        const reason = /\b(quota|insufficient_quota|monthly_limit|tokens_per_day|day_limit)\b/i.test(bodyText)
-            ? 'quota_exhausted'
-            : 'rate_limited';
-        return {
-            ok: false,
-            error: { type: 'http_error', reason, statusCode },
-            ...baseResult,
-            durationMs: Date.now() - startedAt,
-        };
-    }
+    // #3486: clasificación HTTP delegada al módulo único. El shape externo
+    // del error tipado se mantiene 1:1 con el contrato previo (Sherlock + tests):
+    //   - 401 → { type: 'auth_error', reason: 'invalid_credentials', statusCode }
+    //   - 403 → { type: 'auth_error', reason: 'forbidden', statusCode }
+    //   - 429 + body quota → { type: 'http_error', reason: 'quota_exhausted', statusCode }
+    //   - 429 sin quota → { type: 'http_error', reason: 'rate_limited', statusCode }
+    //   - 5xx / 4xx unknown → { type: 'http_error', reason: 'unknown', statusCode, detail }
     if (statusCode < 200 || statusCode >= 300) {
+        const classification = httpClassifier.classifyHttpError(statusCode, bodyText, provider);
+        // Mapeo de category → type tipado de este cliente. El `reason` del
+        // clasificador es canónico; lo reusamos tal cual salvo `server_error`
+        // que históricamente reportamos como `unknown` para no tocar consumers.
+        let type;
+        let reason = classification.reason;
+        if (classification.category === 'auth') {
+            type = 'auth_error';
+            // reason ya es invalid_credentials | forbidden
+        } else {
+            type = 'http_error';
+            if (classification.category === 'unknown' || classification.category === 'transient') {
+                // Preservar contrato previo: cualquier 5xx o 4xx no-tipado
+                // se reportaba como reason: 'unknown' al consumer.
+                reason = 'unknown';
+            }
+        }
+        const errorObj = { type, reason, statusCode };
+        // 5xx / 4xx unknown históricamente incluían detail con snippet del body.
+        // Mantenemos ese comportamiento delegando al snippet redactado del
+        // clasificador cuando aplique.
+        if ((classification.category === 'unknown' || classification.category === 'transient')
+            && bodyText) {
+            errorObj.detail = bodyText.slice(0, 512);
+        }
         return {
             ok: false,
-            error: { type: 'http_error', reason: 'unknown', statusCode, detail: bodyText.slice(0, 512) },
+            error: errorObj,
             ...baseResult,
             durationMs: Date.now() - startedAt,
         };
