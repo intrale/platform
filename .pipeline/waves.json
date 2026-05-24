@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "meta": {
+    "created_at": "2026-05-24T00:00:00Z",
+    "updated_at": "2026-05-24T00:00:00Z",
+    "updated_by": "System",
+    "source": "manual",
+    "note": "Inicialización vacía de waves.json — H1 #3489. Se irá poblando vía /planner y Commander."
+  },
+  "active_wave": null,
+  "planned_waves": [],
+  "archived_waves": [],
+  "dependencies": []
+}

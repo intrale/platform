@@ -164,6 +164,10 @@ scripts/planner-plan.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero
 .pipeline/.issue-title-cache.json
 .pipeline/.issue-summary-cache.json
+# #3489 — backups timestamped de waves.json (snapshots de planificación multi-ola).
+# Solo se versiona el HEAD de waves.json; archived/ es efímero por máquina.
+.pipeline/archived/
+
 # #3012 — snapshots de cuota Claude Desktop (PNG + JSONL + lockfile + estado alerter)
 # CA-7: PNG con email Max + % uso + USD overage NO se commitea (PII at-rest).
 .pipeline/quota-snapshots/
