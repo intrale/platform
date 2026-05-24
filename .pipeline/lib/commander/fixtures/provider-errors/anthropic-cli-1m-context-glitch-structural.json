@@ -1,0 +1,10 @@
+{
+  "_doc": "Fixture #3506: bug del CLI Anthropic Claude Code con Opus 4.7 1M context. El shape estructural llega como type=result, is_error=true, error_type=usage_limit_error, PERO el campo error/result contiene 'Usage credits required for 1M context'. El parser debe clasificar cli_1m_context_glitch (NO quota_exhausted) para preservar el provider activo y no contaminar el flag.",
+  "synthetic": true,
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "cli_1m_context_glitch",
+  "expected_should_fallback": false,
+  "expected_retriable": true,
+  "raw": "{\"type\":\"result\",\"is_error\":true,\"error_type\":\"usage_limit_error\",\"error\":\"API Error: Usage credits required for 1M context\",\"session_id\":\"sess_xyz789\"}"
+}

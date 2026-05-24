@@ -652,6 +652,14 @@ function appendAudit(entry, opts = {}) {
  *
  *   Match: `evt.type === 'result' && evt.is_error === true && evt.error_type ∈ allowlist`
  */
+// #3506: pattern del glitch del CLI Anthropic Claude Code con Opus 4.7 1M.
+// El CLI tira "Usage credits required for 1M context" intermitentemente
+// aunque el plan Claude Max 20x incluya 1M para Opus 4.7. NO es cuota real
+// — no debe contaminar el flag global ni disparar fallback cross-provider.
+// Detalle completo en `lib/commander/provider-error-parser.js` (#3506).
+const _CLI_1M_CONTEXT_GLITCH_PATTERN =
+    /\bUsage\s+credits?\s+required\s+for\s+1M\s+context\b/i;
+
 function _detectAnthropic(evt, allowlist) {
     if (!evt || typeof evt !== 'object') return { matched: false };
     if (evt.type !== 'result') return { matched: false };
@@ -659,6 +667,21 @@ function _detectAnthropic(evt, allowlist) {
     const errorType = typeof evt.error_type === 'string' ? evt.error_type : null;
     if (!errorType) return { matched: false };
     if (!allowlist.includes(errorType)) return { matched: false };
+
+    // #3506: subcase del glitch del CLI con 1M context. Si el mensaje
+    // estructural lo identifica, marcamos `cliGlitch: true` y NO matched —
+    // el caller debe inspeccionar el flag y aplicar política propia
+    // (retry sin contaminar el flag global de quota).
+    const textChunks = [evt.result, evt.error, evt.message, evt.error_message]
+        .filter(s => typeof s === 'string')
+        .join(' ');
+    if (textChunks && _CLI_1M_CONTEXT_GLITCH_PATTERN.test(textChunks)) {
+        return {
+            matched: false,
+            cliGlitch: true,
+            glitchType: 'cli_1m_context_glitch',
+        };
+    }
     return { matched: true, errorType };
 }
 
@@ -853,4 +876,5 @@ module.exports = {
     _writeJsonAtomic: writeJsonAtomic,
     _detectAnthropic,
     _detectOpenAI,
+    _CLI_1M_CONTEXT_GLITCH_PATTERN,
 };
