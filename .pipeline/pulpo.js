@@ -8918,19 +8918,55 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         }
       }
 
-      // --- SHERLOCK VERIFIER (#3343) ---
-      // Verificación adversarial pre-`sendTelegram`. Corre con un provider
-      // DISTINTO al del Commander (excludedProvider) y refuta el análisis con
-      // evidencia del estado actual. Si encuentra inconsistencias, dispara
-      // 1 reelaboración (cap hardcoded). Si timeout/error/sin-provider, agrega
-      // disclaimer F-6. Bypass total si `sherlock_enabled=false`.
+      // --- SHERLOCK VERIFIER (#3343, modificado por #3484) ---
+      // Verificación adversarial pre-`sendTelegram`. Corre con el provider de
+      // mejor calidad disponible (chain `telegram-sherlock`, Anthropic Haiku
+      // primero) y refuta el análisis con evidencia del estado actual. Si
+      // encuentra inconsistencias, dispara 1 reelaboración (cap hardcoded).
+      // Si timeout/error/sin-provider, agrega disclaimer F-6. Bypass total si
+      // `sherlock_enabled=false`.
+      //
+      // #3484: Sherlock ya NO se restringe a un provider distinto al del
+      // Commander — la decisión arquitectónica documentada en
+      // docs/pipeline/multi-provider.md acepta el riesgo de adversariality
+      // reducida a cambio de tener Sherlock funcionando consistentemente.
+      // El audit log registra `same_provider`/`same_model` para monitoreo.
+      //
+      // CA-UX-1 (#3484): mientras Sherlock corre, refrescamos el indicador
+      // "escribiendo..." de Telegram cada 4s. Sin este loop, el usuario ve
+      // el indicador fadear a los ~5s y siente que el bot se colgó (peor UX
+      // que el problema que estamos resolviendo).
+      //
+      // CA-UX-2 (#3484): un soft-timeout de 120s envuelve TODO el bloque
+      // (Sherlock + posible reelaboración + 2da Sherlock). Si dispara antes
+      // de tener verdict, mandamos un mensaje honesto al usuario en lugar
+      // de bloquear el chat indefinidamente.
       //
       // turnId se genera acá (no dentro del verifier) para que los turnos
       // bypaseados también queden correlacionables vía `commander_response`.
       const turnId = crypto.randomBytes(8).toString('hex');
       let sherlockInvoked = false;
       let sherlockDisclaimerType = null;
-      try {
+      let sherlockSoftTimedOut = false;
+
+      // CA-UX-1: typing refresh loop. Se arranca antes y se limpia en finally.
+      let typingTimer = null;
+      const startTypingLoop = () => {
+        try { sendChatActionTyping(); } catch {}
+        typingTimer = setInterval(() => {
+          try { sendChatActionTyping(); } catch {}
+        }, 4000);
+      };
+      const stopTypingLoop = () => {
+        if (typingTimer) { try { clearInterval(typingTimer); } catch {} typingTimer = null; }
+      };
+
+      // CA-UX-2: soft-timeout 120s. Promise.race contra el bloque completo de
+      // verificación. Si gana el timeout, marcamos sherlockSoftTimedOut y
+      // forzamos disclaimer F-6 + mensaje específico al usuario.
+      const SHERLOCK_SOFT_TIMEOUT_MS = 120_000;
+
+      const sherlockBlock = (async () => {
         // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
         // — sólo contadores que el Commander pudo haber observado para que
         // Sherlock cruce el claim "hay N issues pendientes" vs realidad.
@@ -8951,23 +8987,29 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // El provider del Commander hoy es siempre `anthropic` (ejecutarClaude
         // hace spawn de claude CLI). Cuando #3258 introduzca cross-provider
         // fallback al Commander, este valor vendrá del dispatcher.
+        // commanderModel queda null hasta que ejecutarClaude exponga el
+        // modelo efectivo — por ahora el audit log lo registra como null y
+        // same_model siempre es false (degradado consciente, CA-AUDIT-1).
         const commanderProvider = 'anthropic';
+        const commanderModel = null;
 
         const verdict = await sherlockVerifier.verify({
           analysis: respuesta || '',
           originalRequest: mensajeConsolidado,
           systemState: systemStateSnapshot,
           lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
-          excludedProvider: commanderProvider,
+          commanderProvider,
+          commanderModel,
           pipelineDir: PIPELINE,
           configLoader: loadConfig,
           log,
+          cwd: ROOT,
         });
         sherlockInvoked = verdict.verdict !== 'skipped';
 
         if (verdict.verdict === 'rechazado' && verdict.inconsistencies.length >= 1) {
           // CA-F-3 — reelaborar UNA vez (cap hardcoded en verifier).
-          log('commander', `🔍 Sherlock rechazó respuesta (provider=${verdict.sherlockProvider}, inconsistencies=${verdict.inconsistencies.length}). Reelaborando...`);
+          log('commander', `🔍 Sherlock rechazó respuesta (provider=${verdict.sherlockProvider}, transport=${verdict.transport}, same_provider=${verdict.sameProvider}, inconsistencies=${verdict.inconsistencies.length}). Reelaborando...`);
           const inconsistenciesBlock = verdict.inconsistencies
             .map((it, i) => `${i + 1}. CLAIM: ${it.claim}\n   CONTRADICCIÓN: ${it.contradiction}`)
             .join('\n\n');
@@ -8985,16 +9027,18 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             const reelaborada = await ejecutarClaude(reelaboratePrompt, 'reelaboración Sherlock');
             if (typeof reelaborada === 'string' && reelaborada.trim()) {
               respuesta = reelaborada;
-              // 2da pasada de verificación con el mismo excludedProvider.
+              // 2da pasada de verificación con el mismo commanderProvider.
               const verdict2 = await sherlockVerifier.verify({
                 analysis: respuesta || '',
                 originalRequest: mensajeConsolidado,
                 systemState: systemStateSnapshot,
                 lastHourLogs: '',
-                excludedProvider: commanderProvider,
+                commanderProvider,
+                commanderModel,
                 pipelineDir: PIPELINE,
                 configLoader: loadConfig,
                 log,
+                cwd: ROOT,
               });
               if (verdict2.verdict === 'rechazado' && verdict2.inconsistencies.length >= 1) {
                 // CA-F-5 — disclaimer "rechazado persistente".
@@ -9010,17 +9054,46 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
           }
         } else if (verdict.verdict === 'aborted') {
-          // CA-F-6 — timeout/schema-fail/sin-provider-distinto.
+          // CA-F-6 — timeout/schema-fail/sin-provider.
           sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
           log('commander', `🔍 Sherlock aborted (${verdict.errorCode}: ${verdict.reason}) — disclaimer F-6 aplicado`);
         } else if (verdict.verdict === 'ok') {
           // CA-F-7 — silencio total cuando todo concuerda.
-          log('commander', `🔍 Sherlock OK (provider=${verdict.sherlockProvider}, ${verdict.durationMs}ms)`);
+          log('commander', `🔍 Sherlock OK (provider=${verdict.sherlockProvider}, transport=${verdict.transport}, same_provider=${verdict.sameProvider}, ${verdict.durationMs}ms)`);
         }
+      })();
+
+      try {
+        startTypingLoop();
+        await Promise.race([
+          sherlockBlock,
+          new Promise((resolve) => setTimeout(() => {
+            sherlockSoftTimedOut = true;
+            resolve();
+          }, SHERLOCK_SOFT_TIMEOUT_MS)),
+        ]);
       } catch (sherlockErr) {
         // Defensa: un fallo de Sherlock NUNCA debe tirar el turno. Degradamos
         // a respuesta original con disclaimer F-6 y seguimos.
         log('commander', `⚠️ Sherlock excepción no manejada: ${sherlockErr.message} — degradando a F-6`);
+        sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+      } finally {
+        stopTypingLoop();
+      }
+
+      if (sherlockSoftTimedOut) {
+        // CA-UX-2 — soft-timeout del turn handler. Avisamos al usuario sin
+        // jerga técnica y degradamos a F-6. La respuesta original (sin
+        // reelaboración garantizada) se envía igual debajo. El audit
+        // post-turn registra el outcome para telemetría.
+        log('commander', `⏱️ Sherlock soft-timeout ${SHERLOCK_SOFT_TIMEOUT_MS}ms disparó — liberando chat con mensaje UX-2`);
+        try {
+          sendTelegramPlain(
+            'Esta respuesta me está tomando más tiempo de lo normal. ' +
+            'Te muestro la versión sin verificar — si querés, podemos ' +
+            'revisarla juntos cuando me confirmes.'
+          );
+        } catch { /* best-effort */ }
         sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
       }
 
@@ -9179,6 +9252,33 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     req.end();
     log('telegram', `Enviado directo (${msg.length} chars)`);
   }
+}
+
+// #3484 CA-UX-1 — sendChatActionTyping: refresca el indicador "escribiendo..."
+// de Telegram durante operaciones largas (Sherlock + Claude). El indicador
+// nativo dura ~5s, por eso el caller debe llamar esto cada 4s en loop.
+// Best-effort, fire-and-forget — no bloquea el turn handler. POST directo
+// (no encolado vía svc-telegram) porque el servicio no maneja sendChatAction
+// y el indicador pierde valor si se atrasa por la cola.
+function sendChatActionTyping() {
+  const token = getTelegramToken();
+  const chatId = getTelegramChatId();
+  if (!token || !chatId) return;
+  try {
+    const https = require('https');
+    const data = JSON.stringify({ chat_id: chatId, action: 'typing' });
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendChatAction`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: 3000,
+    });
+    req.on('error', () => { /* best-effort, sin log para no spammear */ });
+    req.on('timeout', () => { try { req.destroy(); } catch {} });
+    req.write(data);
+    req.end();
+  } catch { /* swallow — no debe interrumpir el flow */ }
 }
 
 function _loadTgSecrets() {

@@ -8,19 +8,42 @@
 // análisis por confiar en memory/contexto previo en lugar de re-verificar
 // el estado actual del sistema. Sherlock institucionaliza la contraposición:
 //   - prompt invariante ("fiscal")
-//   - provider DISTINTO al del Commander
-//   - timeout defensivo (10s default)
+//   - el provider de mejor calidad disponible (orden compartido con Commander)
+//   - timeout delegado al completion-client (90s default, 180s cap)
 //   - disclaimer si falla la verificación
 //   - cap reelaboración hardcoded = 1
 //
 // Sherlock NO es un skill de agente — corre IN-PROCESS dentro del flujo
 // `recogerTextoLibre` del pulpo, entre `ejecutarClaude` y `sendTelegram`.
 // El pulpo lo wirea con `verify(...)`; este módulo no toca filesystem ni
-// red por su cuenta (todo se inyecta vía completion-client).
+// red por su cuenta (todo se inyecta vía completion-client o spawn-CLI).
+//
+// CAMBIOS #3484 (2026-05-23) — Decisión Opción B (spawn CLI para Anthropic)
+// --------------------------------------------------------------------------
+// Hasta esta versión Sherlock SOLO usaba providers HTTP-compatible (cerebras /
+// gemini-google / nvidia-nim) y EXCLUÍA el provider del Commander para
+// preservar adversariality. Combinado con un clamp de timeout en 10s, eso
+// causaba que Sherlock cayera en fallback en cascada y muriera en F-6
+// silencioso casi siempre.
+//
+// Cambios:
+//   1. Se removió el filtro `HTTP_COMPATIBLE_PROVIDERS` que saltaba providers
+//      no-HTTP. Sherlock ahora acepta cualquier provider de la chain
+//      telegram-sherlock. Para Anthropic usa spawn CLI (Opción B) reusando
+//      `agent-launcher/providers/anthropic.js`. Codex sigue siendo stub
+//      (#3076 H3 pendiente) y se salta con gracia hasta que H3 entregue.
+//   2. Se removió el clamp local de timeout (`ABSOLUTE_MAX_TIMEOUT_MS=30s`).
+//      El presupuesto vive en el cliente HTTP (90s default, 180s cap).
+//   3. Se removió la exclusión cross-provider — Sherlock puede usar el mismo
+//      provider que el Commander. Adversariality reducida es riesgo aceptado
+//      (Leo, 2026-05-22 voz). El audit log registra `same_provider` y
+//      `same_model` para monitorearlo (CA-AUDIT-1).
+//   4. Disclaimers F-5/F-6 actualizados al phrasing aprobado por UX
+//      (CA-UX-3/UX-4).
 //
 // FLOW (resumido — el flujo completo está en pulpo.js):
 //   Commander responde →
-//     Sherlock.verify(analysis, originalRequest, systemState, excludedProvider)
+//     Sherlock.verify(analysis, originalRequest, systemState, commanderProvider)
 //       → si verdict=ok → respuesta original sin cambios
 //       → si verdict=rechazado y reelaboraciones < 1 →
 //            Commander reelabora con `inconsistencies` →
@@ -71,48 +94,56 @@ const commanderMP = require('./commander/multi-provider');
 // Invariante CA-SEC-9 — hardcoded, NO depende de config.
 const HARDCODED_MAX_REELABORACIONES = 1;
 
-// Clamp defensivo del timeout — config no puede pedir más de 30s para
-// evitar starvation de turnos Telegram.
-const ABSOLUTE_MAX_TIMEOUT_MS = 30_000;
-const DEFAULT_TIMEOUT_MS = 10_000;
-
 // Cap defensivo de inconsistencias aceptadas en el output del Sherlock
 // (CA-SEC-6). Si el modelo dice "encontré 50 inconsistencias", recortamos
 // a las primeras 5. Más que eso es ruido o intento de DoS de payload.
 const MAX_INCONSISTENCIES = 5;
 
-// Allowlist de providers HTTP-compatibles (consumibles por completion-client).
-// `openai-codex` y `anthropic` quedan en la chain `telegram-sherlock` para
-// el futuro (cuando se sume spawn-vía-completion-client) pero hoy Sherlock
-// los salta. Si todos los HTTP-compatibles están gateados, abortamos con F-6.
-const HTTP_COMPATIBLE_PROVIDERS = Object.freeze(new Set([
+// Providers que Sherlock invoca vía HTTP completion-client. El resto se
+// despacha vía spawn-CLI (cuando hay handler disponible) o se saltea.
+// Para sumar uno nuevo: agregarlo acá Y a `PROVIDER_COMPLETION_ENDPOINTS`
+// de `lib/multi-provider/completion-client.js`.
+const HTTP_COMPLETION_PROVIDERS = Object.freeze(new Set([
     'cerebras',
     'gemini-google',
     'nvidia-nim',
 ]));
 
+// Providers que Sherlock invoca vía spawn CLI (Opción B de #3484).
+// Anthropic es el único soportado hoy: reusa el launcher detection de
+// `agent-launcher/providers/anthropic.js` y manda el prompt por stdin con
+// `--output-format text`. Codex queda pendiente (#3076 H3).
+const SPAWN_COMPLETION_PROVIDERS = Object.freeze(new Set([
+    'anthropic',
+]));
+
+// Timeout default que Sherlock pasa al completion-client / spawn helper si
+// no recibe override por config. El cliente HTTP tiene su propio cap absoluto
+// (180s) que es la defensa real; este número es solo conveniencia + back-compat
+// con tests/callers viejos. Histórico: era 10s (clampado a 30s) — insuficiente.
+const DEFAULT_TIMEOUT_MS = 90_000;
+
 // -----------------------------------------------------------------------------
 // Disclaimers (CA-F-5/F-6) — constantes string en español, voseo argentino.
-// UX guidelines del padre #3331:
-//   - voseo ("verificá manualmente")
+// UX guidelines (#3331 + #3484 CA-UX-3/UX-4):
+//   - voseo ("decímelo", "revisamos juntos")
 //   - sin sello visible cuando verdict=ok
 //   - diferenciación timeout (F-6) vs inconsistencia persistente (F-5)
-//   - info accionable al usuario
+//   - tono empático, primera persona, invita feedback
 //   - sin avisar pre-Sherlock
 // El pool de variantes rotativas queda para #3339 (no en este scope).
 // -----------------------------------------------------------------------------
 const DISCLAIMER_F5_PERSISTENT_INCONSISTENCY = (
     '\n\n' +
-    '⚠️ Sherlock detectó inconsistencias en mi respuesta incluso después de ' +
-    'reelaborar. Te paso la versión reelaborada igual, pero verificá manualmente ' +
-    'antes de decidir.'
+    '🔍 Detecté una inconsistencia en mi primera respuesta y la ajusté. ' +
+    'Si la versión anterior te parecía mejor, decime y la reviso.'
 );
 
 const DISCLAIMER_F6_VERIFICATION_FAILED = (
     '\n\n' +
-    '⚠️ No pude verificar esta respuesta con Sherlock (timeout o sin provider ' +
-    'distinto disponible). Te la paso sin contraste — revisá los datos manualmente ' +
-    'si vas a actuar sobre algo crítico.'
+    'ℹ️ No pude verificar esta respuesta con el verificador adversarial — ' +
+    'te muestro la versión original. Si notás algo raro, decímelo y la ' +
+    'revisamos juntos.'
 );
 
 const DISCLAIMER_TYPES = Object.freeze({
@@ -132,12 +163,18 @@ function hashFor(s) {
 }
 
 // -----------------------------------------------------------------------------
-// loadSherlockConfig — lee config.yaml (sherlock_enabled, timeout,
-// max_reelaboraciones). Aplica clamps defensivos (CA-SEC-9, CA-L-1).
+// loadSherlockConfig — lee config.yaml (sherlock_enabled, max_reelaboraciones).
+// Aplica clamps defensivos (CA-SEC-9).
 //
 // CA-SEC-7: solo lee del archivo, NUNCA acepta `enabled` por argumento del
 // usuario. El caller (pulpo.js) lo pasa con `configLoader` inyectable solo
 // para tests; en producción siempre es el `loadConfig` real.
+//
+// #3484: `sherlock_timeout_ms` se ignora — el presupuesto vive en el
+// completion-client. Si está presente en config viejas, devolvemos `timeoutMs`
+// con el DEFAULT_TIMEOUT_MS pero NO clampeamos al valor declarado. La compat
+// es importante: configs en producción todavía tienen el campo y el cargador
+// debe tolerarlo sin warn-spammear.
 // -----------------------------------------------------------------------------
 function loadSherlockConfig({ configLoader } = {}) {
     let cfg = {};
@@ -147,10 +184,10 @@ function loadSherlockConfig({ configLoader } = {}) {
         cfg = {};
     }
     const enabled = cfg.sherlock_enabled === false ? false : true; // default ON
-    const timeoutRaw = Number(cfg.sherlock_timeout_ms);
-    const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0
-        ? Math.min(timeoutRaw, ABSOLUTE_MAX_TIMEOUT_MS)
-        : DEFAULT_TIMEOUT_MS;
+    // #3484 — `sherlock_timeout_ms` deprecated. Devolvemos DEFAULT_TIMEOUT_MS
+    // siempre. El campo se mantiene en el shape de retorno por compat con
+    // callers/tests que lo lean, pero NO refleja config user-facing.
+    const timeoutMs = DEFAULT_TIMEOUT_MS;
     // CA-SEC-9 — el cap es 1, no importa qué diga config.
     const maxRaw = Number(cfg.sherlock_max_reelaboraciones);
     const maxReelab = Number.isFinite(maxRaw) && maxRaw >= 0
@@ -274,15 +311,19 @@ function parseAndValidateSherlockOutput(raw) {
 
 // -----------------------------------------------------------------------------
 // resolveSherlockProvider — encuentra el primer provider de la chain
-// `telegram-sherlock` que sea HTTP-compatible y NO esté excluido. Itera
-// agregando providers no-HTTP a la lista de excluidos hasta encontrar uno
-// válido o agotar la chain.
+// `telegram-sherlock` que tenga handler implementado en Sherlock (HTTP o
+// spawn). Itera agregando providers no-soportados a la lista de excluidos
+// hasta encontrar uno válido o agotar la chain.
 //
-// Recibe `excludedProvider` (string del Commander). Devuelve `{provider,
-// model}` o `null` si no hay candidato.
+// #3484: ya NO se excluye al commanderProvider. Sherlock puede usar el
+// mismo provider que el Commander — se acepta adversariality reducida y se
+// registra `same_provider` en el audit log (CA-AUDIT-1).
+//
+// Devuelve `{provider, model, transport: 'http'|'spawn'}` o `null` si no
+// hay candidato implementado en toda la chain.
 // -----------------------------------------------------------------------------
 function resolveSherlockProvider({
-    excludedProvider,
+    excludedProvider,  // mantenido en signature por back-compat; ignorado (#3484)
     pipelineDir,
     log,
     quotaModule,
@@ -291,10 +332,10 @@ function resolveSherlockProvider({
     now,
     maxIterations = 6,
 }) {
+    // #3484: `excludedProvider` se ignora a propósito (back-compat). El
+    // único motivo para excluir un provider acá es que NO tengamos handler
+    // implementado todavía (ej. openai-codex es stub).
     const excluded = new Set();
-    if (typeof excludedProvider === 'string' && excludedProvider) {
-        excluded.add(excludedProvider);
-    }
     for (let i = 0; i < maxIterations; i++) {
         let res;
         try {
@@ -319,19 +360,186 @@ function resolveSherlockProvider({
         if (!res || !res.provider || res.gated) {
             return null;
         }
-        if (HTTP_COMPATIBLE_PROVIDERS.has(res.provider)) {
+        if (HTTP_COMPLETION_PROVIDERS.has(res.provider)) {
             return {
                 provider: res.provider,
                 model: res.model || null,
+                transport: 'http',
                 source: res.source,
                 fallbackUsed: res.fallbackUsed,
                 chainTried: res.chainTried,
             };
         }
-        // Provider no-HTTP — excluir y seguir.
+        if (SPAWN_COMPLETION_PROVIDERS.has(res.provider)) {
+            return {
+                provider: res.provider,
+                model: res.model || null,
+                transport: 'spawn',
+                source: res.source,
+                fallbackUsed: res.fallbackUsed,
+                chainTried: res.chainTried,
+            };
+        }
+        // Provider sin handler en Sherlock (ej. openai-codex stub #3076) —
+        // excluir y seguir con el próximo de la chain.
+        if (typeof log === 'function') {
+            log('sherlock', `provider ${res.provider} no tiene handler en Sherlock — fallback al siguiente`);
+        }
         excluded.add(res.provider);
     }
     return null;
+}
+
+// -----------------------------------------------------------------------------
+// spawnAnthropicComplete — invoca `claude` CLI con el prompt por stdin y
+// devuelve el shape canónico de completion-client (`{ok, content, ...}`).
+//
+// Reusa `agent-launcher/providers/anthropic.js::detectLauncher` para detectar
+// el binario/launcher correcto (compat con Claude Code ≥2.1.114 native exe,
+// cli.js legacy, cmd shim, etc.). Pasa `--permission-mode bypassPermissions`
+// + `--output-format text` para obtener la respuesta cruda directamente.
+//
+// Timeout: respeta el `timeoutMs` recibido (clampado por el caller al
+// ABSOLUTE_MAX_TIMEOUT_MS del cliente HTTP). Si no hay respuesta antes,
+// mata el child con SIGTERM y devuelve `error.type === 'timeout'`.
+//
+// SECURITY:
+//   - El prompt va por stdin (no como arg) → no aparece en `ps aux` ni en
+//     command-line logs del SO.
+//   - El env del child se hereda del parent + `CLAUDE_PROJECT_DIR=ROOT` (mismo
+//     patrón que `ejecutarClaude` en pulpo.js).
+//   - El stdout se trunca a 64KB (mismo cap que completion-client) para
+//     defensa anti-DoS de payload.
+// -----------------------------------------------------------------------------
+const SPAWN_MAX_STDOUT_BYTES = 64 * 1024;
+
+function spawnAnthropicComplete({
+    prompt,
+    timeoutMs,
+    spawnImpl,
+    anthropicHandler,
+    cwd,
+    env,
+}) {
+    return new Promise((resolve) => {
+        const startedAt = Date.now();
+        const _spawn = spawnImpl || require('node:child_process').spawn;
+        const handler = anthropicHandler || require('./agent-launcher/providers/anthropic');
+
+        let spawnSpec;
+        try {
+            spawnSpec = handler.buildSpawn({
+                args: [
+                    '-p',
+                    '--output-format', 'text',
+                    '--permission-mode', 'bypassPermissions',
+                ],
+                cwd: cwd || process.cwd(),
+                env: env || { ...process.env, CLAUDE_PROJECT_DIR: cwd || process.cwd() },
+            });
+        } catch (e) {
+            return resolve({
+                ok: false,
+                error: { type: 'spawn_unavailable', detail: e && e.message ? e.message : String(e) },
+                provider: 'anthropic',
+                durationMs: Date.now() - startedAt,
+            });
+        }
+
+        let child;
+        try {
+            // El child espera stdin (`'pipe'`) para recibir el prompt.
+            const opts = Object.assign({}, spawnSpec.spawnOpts, { stdio: ['pipe', 'pipe', 'pipe'] });
+            child = _spawn(spawnSpec.cmd, spawnSpec.args, opts);
+        } catch (e) {
+            return resolve({
+                ok: false,
+                error: { type: 'spawn_failed', detail: e && e.message ? e.message : String(e) },
+                provider: 'anthropic',
+                durationMs: Date.now() - startedAt,
+            });
+        }
+
+        let stdoutBuf = Buffer.alloc(0);
+        let stderrBuf = Buffer.alloc(0);
+        let truncated = false;
+        let resolved = false;
+
+        const finish = (result) => {
+            if (resolved) return;
+            resolved = true;
+            try { clearTimeout(timer); } catch {}
+            resolve(Object.assign({ provider: 'anthropic', durationMs: Date.now() - startedAt }, result));
+        };
+
+        const timer = setTimeout(() => {
+            try { child.kill('SIGTERM'); } catch {}
+            finish({
+                ok: false,
+                error: { type: 'timeout', detail: `spawn anthropic superó timeoutMs=${timeoutMs}` },
+            });
+        }, Math.max(1_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+
+        try {
+            if (child.stdin && typeof child.stdin.write === 'function') {
+                child.stdin.write(prompt);
+                child.stdin.end();
+            }
+        } catch (e) {
+            return finish({
+                ok: false,
+                error: { type: 'spawn_failed', detail: `stdin write: ${e && e.message ? e.message : String(e)}` },
+            });
+        }
+
+        if (child.stdout) {
+            child.stdout.on('data', (chunk) => {
+                if (truncated) return;
+                if (stdoutBuf.length + chunk.length > SPAWN_MAX_STDOUT_BYTES) {
+                    truncated = true;
+                    try { child.kill('SIGTERM'); } catch {}
+                    return finish({
+                        ok: false,
+                        error: { type: 'invalid_response', reason: 'body_too_large', detail: `stdout > ${SPAWN_MAX_STDOUT_BYTES} bytes` },
+                    });
+                }
+                stdoutBuf = Buffer.concat([stdoutBuf, chunk]);
+            });
+        }
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                // Limitamos stderr para no inflar memoria — solo importa el primer KB.
+                if (stderrBuf.length < 2048) {
+                    stderrBuf = Buffer.concat([stderrBuf, chunk.slice(0, 2048 - stderrBuf.length)]);
+                }
+            });
+        }
+
+        child.on('error', (e) => {
+            finish({
+                ok: false,
+                error: { type: 'spawn_error', detail: e && e.message ? e.message : String(e) },
+            });
+        });
+
+        child.on('exit', (code) => {
+            if (resolved) return;
+            const stdout = stdoutBuf.toString('utf8').trim();
+            const stderr = stderrBuf.toString('utf8').trim();
+            if (code === 0 && stdout) {
+                return finish({
+                    ok: true,
+                    content: stdout,
+                    inputTokens: 0,   // CLI text-mode no expone tokens — best-effort
+                    outputTokens: 0,
+                });
+            }
+            return finish({
+                ok: false,
+                error: { type: 'spawn_exit', detail: `exit=${code}; stderr=${stderr.slice(0, 400)}` },
+            });
+        });
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -372,17 +580,26 @@ function emitAuditEvent({ pipelineDir, event, payload, fsImpl, auditLog, now }) 
 // verify — la API principal del módulo. Llamada desde pulpo.js post-`ejecutarClaude`.
 //
 // Args (obligatorios):
-//   - analysis:        string de la respuesta del Commander (la que iba a Telegram)
-//   - originalRequest: texto del usuario que disparó este turno
-//   - systemState:     snapshot del estado pre-respuesta (lo que el Commander
-//                      observó; el Sherlock lo usa para contrastar)
-//   - lastHourLogs:    opcional, slice de logs de la última hora
-//   - excludedProvider: provider del Commander a evitar (CA-SEC-8)
-//   - pipelineDir:     para audit log
+//   - analysis:         string de la respuesta del Commander (la que iba a Telegram)
+//   - originalRequest:  texto del usuario que disparó este turno
+//   - systemState:      snapshot del estado pre-respuesta (lo que el Commander
+//                       observó; el Sherlock lo usa para contrastar)
+//   - lastHourLogs:     opcional, slice de logs de la última hora
+//   - commanderProvider: provider efectivo que usó el Commander (audit log).
+//                       #3484: ya NO se usa para excluir provider en Sherlock,
+//                       solo para registrar `same_provider`/`same_model`.
+//   - commanderModel:   modelo efectivo del Commander (audit). Opcional.
+//   - pipelineDir:      para audit log
+//
+// Args (back-compat, opcionales):
+//   - excludedProvider: alias legacy de `commanderProvider`. Mantenido para
+//                       que callers viejos no rompan. #3484: ignorado como
+//                       criterio de exclusión.
 //
 // Args (opcionales — inyectables para tests):
-//   - completionClient, configLoader, log, fsImpl, auditLog, now, quotaModule,
-//     dispatchModule
+//   - completionClient, spawnAnthropic, configLoader, log, fsImpl, auditLog,
+//     now, quotaModule, dispatchModule, residencyModule, anthropicHandler,
+//     spawnImpl, cwd, env
 //
 // Returns:
 //   {
@@ -391,8 +608,12 @@ function emitAuditEvent({ pipelineDir, event, payload, fsImpl, auditLog, now }) 
 //     inconsistencies: [{claim, contradiction}],
 //     inconsistenciesTruncated: boolean,
 //     sherlockProvider, sherlockModel,
+//     transport: 'http' | 'spawn' | null,
+//     sameProvider: boolean,    // CA-AUDIT-1 (#3484)
+//     sameModel: boolean,       // CA-AUDIT-1 (#3484)
+//     commanderProvider, commanderModel,
 //     durationMs, inputTokens, outputTokens,
-//     errorCode: string | null,    // 'timeout' | 'no_http_provider' | 'schema_violation' | 'residency_blocked' | 'disabled' | null
+//     errorCode: string | null,    // 'timeout' | 'no_provider' | 'schema_violation' | 'residency_blocked' | 'disabled' | null
 //     suggestedDisclaimer: null | DISCLAIMER_TYPES.*,
 //   }
 // El caller decide si reelabora, agrega disclaimer y manda a Telegram.
@@ -404,11 +625,22 @@ async function verify(opts = {}) {
         originalRequest,
         systemState,
         lastHourLogs,
-        excludedProvider,
         pipelineDir,
+
+        // back-compat: si el caller pasa `excludedProvider`, lo tratamos como
+        // `commanderProvider` (mismo string). #3484: ya NO se excluye, solo
+        // se loguea para `same_provider`.
+        excludedProvider,
+        commanderProvider: commanderProviderArg,
+        commanderModel: commanderModelArg,
 
         // inyectables tests
         completionClient,
+        spawnAnthropic,
+        anthropicHandler,
+        spawnImpl,
+        cwd,
+        env,
         configLoader,
         log,
         fsImpl,
@@ -419,9 +651,13 @@ async function verify(opts = {}) {
         residencyModule,
     } = opts;
 
+    const commanderProvider = commanderProviderArg || excludedProvider || null;
+    const commanderModel = commanderModelArg || null;
+
     const _log = typeof log === 'function' ? log : () => {};
     const _now = Number.isFinite(now) ? now : Date.now();
     const _completion = completionClient || require('./multi-provider/completion-client');
+    const _spawnAnthropic = typeof spawnAnthropic === 'function' ? spawnAnthropic : spawnAnthropicComplete;
     const _residency = residencyModule || null; // commanderMP.enforceDataResidency lo carga solo
 
     const cfg = loadSherlockConfig({ configLoader });
@@ -434,7 +670,7 @@ async function verify(opts = {}) {
             event: 'sherlock_skipped_disabled',
             payload: {
                 analysisHash: hashFor(analysis),
-                commanderProvider: excludedProvider || null,
+                commanderProvider,
                 durationMs: 0,
             },
         });
@@ -445,6 +681,11 @@ async function verify(opts = {}) {
             inconsistenciesTruncated: false,
             sherlockProvider: null,
             sherlockModel: null,
+            transport: null,
+            sameProvider: false,
+            sameModel: false,
+            commanderProvider,
+            commanderModel,
             durationMs: 0,
             inputTokens: 0,
             outputTokens: 0,
@@ -463,10 +704,11 @@ async function verify(opts = {}) {
         _log('sherlock', `🛡️ CA-SEC-1: analysis recortado (injection patterns=${san.hits.join('|')})`);
     }
 
-    // Resolución de provider — itera la chain telegram-sherlock excluyendo
-    // el commanderProvider + cualquier provider no-HTTP que aparezca.
+    // Resolución de provider — itera la chain telegram-sherlock. #3484:
+    // YA NO se excluye al commanderProvider; solo se saltan providers que
+    // no tienen handler implementado en Sherlock.
     const resolved = resolveSherlockProvider({
-        excludedProvider,
+        excludedProvider: null,
         pipelineDir,
         log: _log,
         quotaModule,
@@ -481,24 +723,35 @@ async function verify(opts = {}) {
             event: 'sherlock_verification',
             payload: {
                 analysisHash: hashFor(analysis),
-                commanderProvider: excludedProvider || null,
+                commanderProvider,
                 durationMs: Date.now() - startedAt,
-                errorCode: 'no_http_provider',
+                errorCode: 'no_provider',
             },
         });
         return {
             verdict: 'aborted',
-            reason: 'no_http_provider_available',
+            reason: 'no_provider_available',
             inconsistencies: [],
             inconsistenciesTruncated: false,
             sherlockProvider: null,
             sherlockModel: null,
+            transport: null,
+            sameProvider: false,
+            sameModel: false,
+            commanderProvider,
+            commanderModel,
             durationMs: Date.now() - startedAt,
             inputTokens: 0,
             outputTokens: 0,
-            errorCode: 'no_http_provider',
+            errorCode: 'no_provider',
             suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
         };
+    }
+
+    const sameProvider = !!(commanderProvider && commanderProvider === resolved.provider);
+    const sameModel = !!(sameProvider && commanderModel && resolved.model && commanderModel === resolved.model);
+    if (sameProvider) {
+        _log('sherlock', `🔍 same_provider=true (commander=${commanderProvider}/${commanderModel || '?'}, sherlock=${resolved.provider}/${resolved.model || '?'}) — adversariality reducida (#3484 riesgo aceptado)`);
     }
 
     // CA-SEC-3 — data-residency fail-closed ANTES del provider call.
@@ -520,7 +773,7 @@ async function verify(opts = {}) {
             event: 'sherlock_aborted_residency',
             payload: {
                 analysisHash: hashFor(analysis),
-                commanderProvider: excludedProvider || null,
+                commanderProvider,
                 sherlockProvider: resolved.provider,
                 durationMs: Date.now() - startedAt,
                 errorCode: drCheck.reason,
@@ -533,6 +786,11 @@ async function verify(opts = {}) {
             inconsistenciesTruncated: false,
             sherlockProvider: resolved.provider,
             sherlockModel: resolved.model,
+            transport: resolved.transport,
+            sameProvider,
+            sameModel,
+            commanderProvider,
+            commanderModel,
             durationMs: Date.now() - startedAt,
             inputTokens: 0,
             outputTokens: 0,
@@ -549,19 +807,35 @@ async function verify(opts = {}) {
         lastHourLogs,
     });
 
-    // Invocar completion-client con timeout configurado.
+    // Despacho según transport. HTTP → completion-client; SPAWN → spawn helper
+    // de Anthropic. El timeout (cfg.timeoutMs = 90s default) va al transporte;
+    // ambos respetan su propio cap absoluto (180s en el cliente HTTP, mismo
+    // valor efectivo en el spawn vía clamp del caller cuando aplique).
     let httpResult;
     try {
-        httpResult = await _completion.complete({
-            provider: resolved.provider,
-            model: resolved.model,
-            prompt,
-            timeoutMs: cfg.timeoutMs,
-            maxTokens: 1024,
-            temperature: 0,
-        });
+        if (resolved.transport === 'spawn' && resolved.provider === 'anthropic') {
+            httpResult = await _spawnAnthropic({
+                prompt,
+                timeoutMs: cfg.timeoutMs,
+                spawnImpl,
+                anthropicHandler,
+                cwd,
+                env,
+            });
+            // Normalizamos shape extra para igualar contrato del completion-client.
+            httpResult.model = resolved.model;
+        } else {
+            httpResult = await _completion.complete({
+                provider: resolved.provider,
+                model: resolved.model,
+                prompt,
+                timeoutMs: cfg.timeoutMs,
+                maxTokens: 1024,
+                temperature: 0,
+            });
+        }
     } catch (e) {
-        // complete() NO debería tirar (devuelve {ok:false}), pero defendemos.
+        // complete()/spawn() NO deberían tirar (devuelven {ok:false}), pero defendemos.
         httpResult = {
             ok: false,
             error: { type: 'unknown', detail: e && e.message ? e.message : String(e) },
@@ -580,7 +854,7 @@ async function verify(opts = {}) {
             event: 'sherlock_verification',
             payload: {
                 analysisHash: hashFor(analysis),
-                commanderProvider: excludedProvider || null,
+                commanderProvider,
                 sherlockProvider: resolved.provider,
                 durationMs: totalMs,
                 errorCode: httpResult.error ? httpResult.error.type : 'unknown',
@@ -593,6 +867,11 @@ async function verify(opts = {}) {
             inconsistenciesTruncated: false,
             sherlockProvider: resolved.provider,
             sherlockModel: resolved.model,
+            transport: resolved.transport,
+            sameProvider,
+            sameModel,
+            commanderProvider,
+            commanderModel,
             durationMs: totalMs,
             inputTokens: 0,
             outputTokens: 0,
@@ -609,7 +888,7 @@ async function verify(opts = {}) {
             event: 'sherlock_schema_violation',
             payload: {
                 analysisHash: hashFor(analysis),
-                commanderProvider: excludedProvider || null,
+                commanderProvider,
                 sherlockProvider: resolved.provider,
                 durationMs: totalMs,
                 inputTokens: httpResult.inputTokens,
@@ -624,6 +903,11 @@ async function verify(opts = {}) {
             inconsistenciesTruncated: false,
             sherlockProvider: resolved.provider,
             sherlockModel: resolved.model,
+            transport: resolved.transport,
+            sameProvider,
+            sameModel,
+            commanderProvider,
+            commanderModel,
             durationMs: totalMs,
             inputTokens: httpResult.inputTokens || 0,
             outputTokens: httpResult.outputTokens || 0,
@@ -641,7 +925,7 @@ async function verify(opts = {}) {
         event: 'sherlock_verification',
         payload: {
             analysisHash: hashFor(analysis),
-            commanderProvider: excludedProvider || null,
+            commanderProvider,
             sherlockProvider: resolved.provider,
             durationMs: totalMs,
             inputTokens: httpResult.inputTokens,
@@ -660,6 +944,11 @@ async function verify(opts = {}) {
         inconsistenciesTruncated: parsed.data.inconsistenciesTruncated,
         sherlockProvider: resolved.provider,
         sherlockModel: resolved.model,
+        transport: resolved.transport,
+        sameProvider,
+        sameModel,
+        commanderProvider,
+        commanderModel,
         durationMs: totalMs,
         inputTokens: httpResult.inputTokens || 0,
         outputTokens: httpResult.outputTokens || 0,
@@ -711,9 +1000,13 @@ module.exports = {
     // constantes
     HARDCODED_MAX_REELABORACIONES,
     DEFAULT_TIMEOUT_MS,
-    ABSOLUTE_MAX_TIMEOUT_MS,
     MAX_INCONSISTENCIES,
-    HTTP_COMPATIBLE_PROVIDERS,
+    HTTP_COMPLETION_PROVIDERS,
+    SPAWN_COMPLETION_PROVIDERS,
+    // Alias deprecated (#3484) — mantenido por back-compat con callers viejos.
+    // En la próxima limpieza removerlo. Apunta al set HTTP para no romper
+    // checks tipo `HTTP_COMPATIBLE_PROVIDERS.has(p)`.
+    HTTP_COMPATIBLE_PROVIDERS: HTTP_COMPLETION_PROVIDERS,
     DISCLAIMER_F5_PERSISTENT_INCONSISTENCY,
     DISCLAIMER_F6_VERIFICATION_FAILED,
     DISCLAIMER_TYPES,
@@ -724,4 +1017,5 @@ module.exports = {
     _buildFiscalPrompt: buildFiscalPrompt,
     _parseAndValidateSherlockOutput: parseAndValidateSherlockOutput,
     _resolveSherlockProvider: resolveSherlockProvider,
+    _spawnAnthropicComplete: spawnAnthropicComplete,
 };
