@@ -72,6 +72,11 @@ Sintaxis Handlebars básica, sin lógica embebida:
 | `procesos-node.md`            | `procesos node`                    | CA-2 #7     |
 | `salud-pulpo.md`              | `salud del pulpo`                  | CA-2 #8     |
 | `modo-descanso.md`            | `modo descanso lookup`             | CA-2 #9     |
+| `wave-status.md`              | `/wave status [--audio]`           | #3493 CA-3 / CA-13 |
+| `wave-next.md`                | `/wave next`                       | #3493 CA-4 / CA-13 |
+| `wave-add-ok.md`              | `/wave add <num> #issue` (ok)      | #3493 CA-7 / CA-13 |
+| `wave-promote-ok.md`          | `/wave promote` (ok)               | #3493 CA-8 / CA-13 |
+| `wave-error.md`               | `/wave` (errores subcomando)       | #3493 CA-5 .. CA-9 |
 | `error-rate-limit.md`         | (cualquiera, gate CA-11)           | CA-11       |
 | `error-unknown.md`            | comando no clasificado             | CA-1 / CA-7 |
 | `error-invalid-args.md`       | args no validan schema             | CA-8        |
