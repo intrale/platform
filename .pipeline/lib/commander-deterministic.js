@@ -213,20 +213,77 @@ const LISTADO_FILTERS = new Set([
 ]);
 
 // #3262 — `/wave` admite el flag opcional `--audio` para activar TTS opt-in (CA-9 / PO-CA-9).
-// Cualquier otro arg es rechazado para no abrir vectores adicionales.
-const WAVE_FLAGS = new Set(['', '--audio']);
+// #3493 — H5 expande la sintaxis a subcomandos: `/wave [status [--audio] | next | add <num> #issue | promote]`.
+// La forma antigua `/wave` y `/wave --audio` se preservan (backward compat → status).
+const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote']);
+
+/**
+ * Parsea `args` de `/wave` y devuelve `{ subcommand, audio, waveNumber, issueNumber }`
+ * o `null` si la sintaxis no matchea ningún subcomando válido.
+ *
+ * Reglas de validación estricta (CA-5 security refuerzo pt.2):
+ *   - Sin args, o solo `--audio` → backward-compat con #3262 → `status`.
+ *   - `status [--audio]`         → status con audio opt-in.
+ *   - `next`                     → próxima ola, sin args extra.
+ *   - `add <num> #issue`         → `num` entero positivo, `#issue` matchea `^#\d+$`.
+ *   - `promote`                  → promote, sin args extra.
+ *   - Cualquier otra combinación devuelve `null` (handler genera error claro).
+ */
+function parseWaveArgs(rawArgs) {
+    const tokens = String(rawArgs || '').trim().split(/\s+/).filter(Boolean);
+    // Caso vacío → status backward-compat.
+    if (tokens.length === 0) {
+        return { subcommand: 'status', audio: false };
+    }
+    const head = tokens[0].toLowerCase();
+    // Backward-compat: `/wave --audio` (sin subcomando explícito) → status con audio.
+    if (head === '--audio' && tokens.length === 1) {
+        return { subcommand: 'status', audio: true };
+    }
+    if (!WAVE_SUBCOMMANDS.has(head)) return null;
+
+    if (head === 'status') {
+        if (tokens.length === 1) return { subcommand: 'status', audio: false };
+        if (tokens.length === 2 && tokens[1].toLowerCase() === '--audio') {
+            return { subcommand: 'status', audio: true };
+        }
+        return null;
+    }
+    if (head === 'next' || head === 'promote') {
+        if (tokens.length !== 1) return null;
+        return { subcommand: head };
+    }
+    if (head === 'add') {
+        // Schema estricto: exactamente 3 tokens (`add`, num, #issue) — sin extras.
+        if (tokens.length !== 3) return null;
+        const numToken = tokens[1];
+        const issueToken = tokens[2];
+        // `num` debe ser entero positivo decimal puro (no floats, no negativos, no hex).
+        if (!/^\d+$/.test(numToken)) return null;
+        const waveNumber = parseInt(numToken, 10);
+        if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+        // `#issue` matchea exacto `#` + dígitos.
+        if (!/^#\d+$/.test(issueToken)) return null;
+        const issueNumber = parseInt(issueToken.slice(1), 10);
+        if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
+        return { subcommand: 'add', waveNumber, issueNumber };
+    }
+    return null;
+}
 
 const ARG_SCHEMAS = {
     status: { allow: () => true },
     snapshot: { allow: () => true },
     wave: {
         allow(args) {
-            const norm = String(args || '').toLowerCase().trim();
-            return WAVE_FLAGS.has(norm);
+            // #3493 — Acepta subcomandos status/next/add/promote y backward-compat.
+            // Validación estricta delegada en parseWaveArgs (rechaza floats, regex
+            // mismatch, tokens extra → security CA-5).
+            return parseWaveArgs(args) !== null;
         },
-        usage: 'wave [--audio]',
-        allowedValues: ['--audio'],
-        hint: 'Sin args o con `--audio` para incluir resumen TTS opt-in.',
+        usage: 'wave [status [--audio] | next | add <num> #issue | promote]',
+        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'promote'],
+        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `promote`. Sin subcomando equivale a `status`.',
     },
     listado: {
         allow(args) {
@@ -607,6 +664,21 @@ function buildDefaultHandlers(ctx) {
     const PIPELINE = path.resolve(ctx.pipelineRoot);
     const LOG_DIR = path.resolve(ctx.logsDir);
 
+    // #3493 — Cooldown destructivo específico para subcomandos de `/wave`.
+    // El cooldown global del dispatcher es per-comando (`wave`), no per-subcomando.
+    // Como `/wave status` y `/wave next` son read-only y `/wave add` y
+    // `/wave promote` son destructivos, NO podemos meter `wave` en el set global
+    // (gatearía las lecturas). Spawneamos uno aislado con claves virtuales
+    // (`wave-add`, `wave-promote`) y ventana de 30s — más corta que el default
+    // 60s porque las mutaciones son granulares y la idempotencia de
+    // `waves.addIssueToWave` (no-op si ya está) ya cubre el doble-tap accidental.
+    // CA-9 — destructiveCooldown MUST en add/promote (refuerzo security pt.3).
+    const waveSubCooldown = createDestructiveCooldown({
+        cooldownMs: 30 * 1000,
+        destructiveCommands: ['wave-add', 'wave-promote'],
+        now: ctx.now,
+    });
+
     // Issue #3415 — handler de `/rechazar` (singleton dentro del dispatcher,
     // mantiene el auditor de rejections vivo entre dispatches).
     const rechazarDeps = ctx.rechazarDeps || {};
@@ -768,67 +840,60 @@ function buildDefaultHandlers(ctx) {
             });
         },
 
-        wave: async ({ args }) => {
-            // #3262 — Snapshot ejecutivo de la ola para Telegram. Combina
-            // resolveActiveWave (active-wave.json / partial-pause / fallback FS)
-            // + buildWaveSnapshot (cálculo determinístico de %, ETA, bloqueos)
-            // + renderWaveSnapshot (MarkdownV2 listo para enviar).
+        wave: async ({ args, message }) => {
+            // #3262 — Snapshot ejecutivo de la ola para Telegram.
+            // #3493 — H5 expande a 4 subcomandos:
+            //   status [--audio] | next | add <num> #issue | promote
             //
-            // El flag opcional `--audio` activa la generación del texto TTS
-            // (CA-9). Si el caller (pulpo) puede emitir voice, lo hará; si no,
-            // queda como metadato extra que no rompe el reply principal.
+            // Reutiliza la infraestructura existente:
+            //   - wave-resolver / wave-snapshot / wave-renderer → render `status`.
+            //   - lib/waves.js (H1 #3489) → CRUD de `waves.json` (next/add/promote).
+            //   - partial-pause.js → actualizar `.partial-pause.json` post-promote.
+            //   - destructive-cooldown (waveSubCooldown) → MUST en add/promote (CA-9).
+            //   - audit-log via dispatcher → CA-10. Acá solo retornamos reply/status.
             //
-            // Performance (CA-16): usa wave-state con TTL cache 2s. Re-usar
-            // dashboard.getCachedPipelineState no es viable acá porque
-            // `dashboard.js` arranca un HTTP server al require (side effect
-            // imposible desde el commander singleton). wave-state es un
-            // módulo paralelo que replica las pocas funciones de state que
-            // necesitamos sin esos side effects.
-            const resolver = require('./wave-resolver');
-            const snapshotMod = require('./wave-snapshot');
-            const rendererMod = require('./wave-renderer');
-            const stateMod = require('./wave-state');
-
-            const wave = resolver.resolveActiveWave({ pipelineRoot: PIPELINE });
-            const state = stateMod.getCachedWaveState({ pipelineRoot: PIPELINE });
-
-            // Listado de bloqueados (best-effort).
-            let blocked = [];
-            try {
-                // eslint-disable-next-line global-require
-                const humanBlock = require('./human-block');
-                if (typeof humanBlock.listBlockedIssues === 'function') {
-                    blocked = humanBlock.listBlockedIssues() || [];
-                }
-            } catch (_) { /* sin bloqueados detectables */ }
-
-            // Closed: heurística — labels `closed` o estado `procesado` de entrega.
-            // No consultamos GitHub API (CA-8, sin red).
-            const closedIssues = new Set();
-            for (const id of wave.issues) {
-                const data = state.issueMatrix && state.issueMatrix[String(id)];
-                if (!data) continue;
-                const labels = Array.isArray(data.labels) ? data.labels : [];
-                const labelNames = labels.map((l) => (typeof l === 'string' ? l : (l && l.name) || '')).filter(Boolean);
-                if (labelNames.includes('closed') || labelNames.includes('done')) {
-                    closedIssues.add(Number(id));
-                }
+            // Performance (CA-11): todo el handler corre sin red, sin LLM, sin
+            // subprocess. < 500ms p99 incluso con scan FS de issues conocidos
+            // (cache 30s vía getKnownIssues).
+            const parsed = parseWaveArgs(args);
+            // Defensa en profundidad: si validateArgs dejó pasar algo malformado
+            // (no debería suceder por ARG_SCHEMAS.wave.allow), respondemos error
+            // en español sin colgar el dispatcher.
+            if (!parsed) {
+                return fillTemplate('wave-error', {
+                    'error-kind': 'subcomando-invalido',
+                    message: 'Subcomando inválido. Usá: `status` · `next` · `add <num> #issue` · `promote`.',
+                });
             }
 
-            const snapshot = snapshotMod.buildWaveSnapshot({
-                state,
-                wave,
-                blocked,
-                closedIssues,
-            });
-
-            const reply = rendererMod.renderWaveSnapshot(snapshot);
-
-            // CA-9: TTS opt-in solo si --audio.
-            const wantsAudio = String(args || '').toLowerCase().trim() === '--audio';
-            const audioText = wantsAudio ? rendererMod.renderAudioText(snapshot) : null;
-
-            return { reply, audioText };
+            // Mapeo subcomando → handler dedicado. Cada uno responde { reply, audioText? }.
+            switch (parsed.subcommand) {
+                case 'status':
+                    return handleWaveStatus({ pipelineRoot: PIPELINE, audio: parsed.audio });
+                case 'next':
+                    return handleWaveNext({ pipelineRoot: PIPELINE });
+                case 'add':
+                    return handleWaveAdd({
+                        pipelineRoot: PIPELINE,
+                        waveNumber: parsed.waveNumber,
+                        issueNumber: parsed.issueNumber,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                case 'promote':
+                    return handleWavePromote({
+                        pipelineRoot: PIPELINE,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                default:
+                    return fillTemplate('wave-error', {
+                        'error-kind': 'subcomando-no-soportado',
+                        message: `Subcomando "${parsed.subcommand}" no soportado.`,
+                    });
+            }
         },
 
         snapshot: async () => {
@@ -1332,6 +1397,385 @@ function buildDefaultHandlers(ctx) {
 }
 
 // -----------------------------------------------------------------------------
+// #3493 — SUB-HANDLERS DE `/wave` (H5)
+//
+// Cuatro funciones puras que reciben el contexto necesario y devuelven el shape
+// `{ reply, audioText? }` que el dispatcher espera. Separadas del handler
+// principal para mantener cada subcomando testeable de forma aislada.
+//
+// Reglas comunes:
+//   - Sin red, sin LLM, sin subprocess. Solo `lib/waves.js` (FS atómico) +
+//     `partial-pause.js` + `wave-renderer.js`.
+//   - Antes de operaciones destructivas (add/promote) → `waves.invalidateCache()`
+//     (CA-7 / CA-8 — read-fresh para evitar TOCTOU sobre el TTL de 2s).
+//   - Mutaciones SIEMPRE marcan `meta.source: 'telegram-commander/wave-<sub>'`
+//     y `meta.updated_by` con el chat. CA-7 / CA-8 visibilidad de origen.
+//   - Errores rebotan al template `wave-error` con `error-kind` semántico.
+// -----------------------------------------------------------------------------
+
+// Cache de issues conocidos del pipeline (CA-6 — existence check < 500ms).
+// Scope: in-memory por proceso. TTL 30s — suficiente para ráfagas de
+// `/wave add` consecutivos sin recorrer FS otra vez.
+const knownIssuesCache = new Map(); // pipelineRoot → { issues: Set<number>, ts }
+
+/**
+ * Lista los issues con artefactos vivos en el pipeline. Recorre
+ * `desarrollo/**` y `definicion/**` buscando archivos `<num>.<skill>`.
+ * No consulta GitHub (CA-6 — sin `gh issue view` sincrónico).
+ *
+ * @param {string} pipelineRoot
+ * @returns {Set<number>}
+ */
+function getKnownIssues(pipelineRoot) {
+    const nowMs = Date.now();
+    const cached = knownIssuesCache.get(pipelineRoot);
+    if (cached && (nowMs - cached.ts) < 30 * 1000) return cached.issues;
+
+    const issues = new Set();
+    const roots = [
+        path.join(pipelineRoot, 'desarrollo'),
+        path.join(pipelineRoot, 'definicion'),
+    ];
+    function walk(dir, depth) {
+        if (depth > 4) return; // guardia anti-loop simbólico
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+        catch (_) { return; }
+        for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) { walk(full, depth + 1); continue; }
+            // Convención del pipeline: artefactos se nombran `<issue>.<skill>` o
+            // `<issue>.<skill>.<sufijo>` (ej. `3493.pipeline-dev`, `3493.guru.json`).
+            const m = e.name.match(/^(\d+)\.[\w.-]+$/);
+            if (m) issues.add(Number(m[1]));
+        }
+    }
+    for (const r of roots) walk(r, 0);
+
+    knownIssuesCache.set(pipelineRoot, { issues, ts: nowMs });
+    return issues;
+}
+
+/**
+ * Invalida la cache de issues conocidos. Útil para tests deterministas.
+ */
+function invalidateKnownIssuesCache(pipelineRoot) {
+    if (pipelineRoot === undefined) knownIssuesCache.clear();
+    else knownIssuesCache.delete(pipelineRoot);
+}
+
+/**
+ * `/wave status [--audio]` — Reusa el snapshot ejecutivo de #3262 (CA-3 DRY).
+ * Si `waves.json` tiene `active_wave`, lo usa como source-of-truth; si no,
+ * cae al resolver legacy (`.partial-pause.json`) — último bullet de CA-3.
+ */
+async function handleWaveStatus({ pipelineRoot, audio }) {
+    const resolver = require('./wave-resolver');
+    const snapshotMod = require('./wave-snapshot');
+    const rendererMod = require('./wave-renderer');
+    const stateMod = require('./wave-state');
+    const waves = require('./waves');
+
+    // Path 1: waves.json poblado → preferir su shape canónico.
+    let wave;
+    let usingLegacy = false;
+    const activeFromWaves = waves.getActiveWave();
+    if (activeFromWaves && Array.isArray(activeFromWaves.issues) && activeFromWaves.issues.length > 0) {
+        wave = {
+            label: activeFromWaves.name || `Ola ${activeFromWaves.number}`,
+            issues: activeFromWaves.issues.map((i) => Number(i.number)).filter(Boolean),
+            number: activeFromWaves.number,
+        };
+    } else {
+        // Path 2: fallback legacy a `.partial-pause.json` (CA-3 último bullet).
+        usingLegacy = true;
+        wave = resolver.resolveActiveWave({ pipelineRoot });
+    }
+
+    const state = stateMod.getCachedWaveState({ pipelineRoot });
+
+    let blocked = [];
+    try {
+        const humanBlock = require('./human-block');
+        if (typeof humanBlock.listBlockedIssues === 'function') {
+            blocked = humanBlock.listBlockedIssues() || [];
+        }
+    } catch (_) { /* sin bloqueados */ }
+
+    const closedIssues = new Set();
+    for (const id of wave.issues) {
+        const data = state.issueMatrix && state.issueMatrix[String(id)];
+        if (!data) continue;
+        const labels = Array.isArray(data.labels) ? data.labels : [];
+        const labelNames = labels
+            .map((l) => (typeof l === 'string' ? l : (l && l.name) || ''))
+            .filter(Boolean);
+        if (labelNames.includes('closed') || labelNames.includes('done')) {
+            closedIssues.add(Number(id));
+        }
+    }
+
+    const snapshot = snapshotMod.buildWaveSnapshot({ state, wave, blocked, closedIssues });
+    const snapshotMd = rendererMod.renderWaveSnapshot(snapshot);
+    const audioText = audio ? rendererMod.renderAudioText(snapshot) : null;
+    // CA-13 — render por template wave-status (`{{{snapshot}}}` triple-brace para
+    // no re-escapar MarkdownV2 ya producido por wave-renderer).
+    const reply = fillTemplate('wave-status', {
+        snapshot: snapshotMd,
+        'using-legacy': usingLegacy,
+        'audio-sent': !!audioText,
+    });
+    return { reply, audioText };
+}
+
+/**
+ * `/wave next` — Lista candidatos de la próxima ola desde `waves.json`.
+ * Si no hay `planned_waves[0]`, mensaje cálido (UX guidelines).
+ */
+async function handleWaveNext({ pipelineRoot }) {
+    const waves = require('./waves');
+    waves.invalidateCache(); // CA-16 — opcional acá pero garantiza freshness.
+    const state = waves.loadWaves();
+    const next = Array.isArray(state.planned_waves) && state.planned_waves.length > 0
+        ? state.planned_waves[0]
+        : null;
+    if (!next) {
+        return { reply: fillTemplate('wave-next', { 'has-next': false }) };
+    }
+    const issues = Array.isArray(next.issues) ? next.issues : [];
+    return {
+        reply: fillTemplate('wave-next', {
+            'has-next': true,
+            'wave-number': next.number,
+            goal: next.goal || '',
+            'has-goal': !!next.goal,
+            'issues-count': issues.length,
+            'has-issues': issues.length > 0,
+            issues: issues.map((i) => {
+                const num = typeof i === 'object' && i ? i.number : i;
+                const size = typeof i === 'object' && i && typeof i.size === 'string' ? i.size : null;
+                const rationale = typeof i === 'object' && i && typeof i.rationale === 'string' ? i.rationale : null;
+                return {
+                    number: Number(num),
+                    'has-size': !!size,
+                    size: size || '',
+                    'has-rationale': !!rationale,
+                    rationale: rationale || '(sin rationale aún)',
+                };
+            }),
+        }),
+    };
+}
+
+/**
+ * `/wave add <num> #issue` — Mueve un issue a una ola específica.
+ * Aplica:
+ *   - destructiveCooldown (CA-9, MUST).
+ *   - Existence check del issue (CA-6).
+ *   - Validación waveNumber ∈ [1, totalOlas] (CA-5).
+ *   - Read-fresh (`invalidateCache`) antes de mutación (CA-7).
+ *   - Atomic write via `waves.save` (CA-7).
+ *   - Conflict detection si el issue ya está en otra ola.
+ */
+async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, chatId, from }) {
+    // CA-9 — Cooldown previo. Defensa contra doble-tap accidental.
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-add');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave add\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+    // CA-7 — read-fresh: invalidamos el TTL cache antes de leer y mutar.
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+    const active = state.active_wave || null;
+    const totalOlas = (active ? 1 : 0) + planned.length;
+
+    // CA-5 — Validación de rango. `waveNumber` debe corresponder a una ola
+    // existente. La política simple: aceptamos `waveNumber` ∈ [1, totalOlas]
+    // mapeando 1 = active_wave (si existe) y 2..N = planned_waves[0..N-2].
+    // Si el caller pide una ola que no existe, error semántico claro.
+    let targetWaveExists = false;
+    let targetWaveResolved = null;
+    if (active && active.number === waveNumber) {
+        targetWaveExists = true;
+        targetWaveResolved = active;
+    } else {
+        const w = planned.find((p) => p.number === waveNumber);
+        if (w) { targetWaveExists = true; targetWaveResolved = w; }
+    }
+    if (!targetWaveExists) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'wave_not_found',
+                message: `No encontré la ola \`${waveNumber}\`. Olas disponibles: ${describeAvailableWaves(active, planned)}.`,
+            }),
+        };
+    }
+
+    // CA-6 — Existence check del issue. Cache 30s + recorrido FS, sin red.
+    const known = getKnownIssues(pipelineRoot);
+    if (!known.has(issueNumber)) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'unknown_issue',
+                message: `No encontré #${issueNumber} en el pipeline. ¿Lo escribiste bien? ¿O es de un repo distinto?`,
+            }),
+        };
+    }
+
+    // CA-7 — Mutación. addIssueToWave es atómico (waves.save → tmp+rename).
+    try {
+        waves.addIssueToWave(waveNumber, { number: issueNumber }, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-add',
+            note: `move issue #${issueNumber} → wave ${waveNumber}`,
+        });
+    } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        // Detección de conflict: addIssueToWave lanza con "ya está en ola N".
+        if (/ya está en ola/i.test(msg)) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'conflict',
+                    message: msg + '. Si querés moverlo de verdad, primero sacalo de allá.',
+                }),
+            };
+        }
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló escribiendo el estado: ${msg}`,
+            }),
+        };
+    }
+
+    // Releer estado para devolver el tamaño actualizado de la ola destino.
+    waves.invalidateCache();
+    const refreshed = waves.loadWaves();
+    const refreshedTarget = (refreshed.active_wave && refreshed.active_wave.number === waveNumber)
+        ? refreshed.active_wave
+        : (refreshed.planned_waves || []).find((w) => w.number === waveNumber);
+    const newSize = refreshedTarget && Array.isArray(refreshedTarget.issues)
+        ? refreshedTarget.issues.length
+        : 1;
+
+    // CA-9 — Marcar éxito en el cooldown DESPUÉS del write.
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-add');
+
+    return {
+        reply: fillTemplate('wave-add-ok', {
+            'issue-number': issueNumber,
+            'wave-number': waveNumber,
+            'wave-name': (targetWaveResolved && targetWaveResolved.name) || `Ola ${waveNumber}`,
+            'new-size': newSize,
+        }),
+    };
+}
+
+/**
+ * `/wave promote` — Promueve `planned_waves[0]` a `active_wave`.
+ * Aplica:
+ *   - destructiveCooldown (CA-9, MUST).
+ *   - Read-fresh antes de mutación (CA-8).
+ *   - `promoteWaveToActive` archiva la activa anterior (delegado en H1).
+ *   - Recalcula allowlist con `getAllowlist()` y la escribe vía
+ *     `partial-pause.setPartialPause` (no edición manual del JSON).
+ */
+async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-promote');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave promote\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+    const partialPause = require('./partial-pause');
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+    if (planned.length === 0) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'no_next_wave',
+                message: 'No hay ola próxima para promover. El planner tiene que componer una primero.',
+            }),
+        };
+    }
+
+    const oldWaveNumber = state.active_wave ? state.active_wave.number : null;
+    const newWave = planned[0];
+    const newWaveNumber = newWave.number;
+
+    try {
+        waves.promoteWaveToActive(newWaveNumber, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-promote',
+            note: `promote wave ${newWaveNumber} → active (desde Telegram)`,
+        });
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló promoviendo la ola: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    // Recalcular allowlist desde la nueva ola activa y aplicar vía partial-pause.
+    waves.invalidateCache();
+    const newAllowlist = waves.getAllowlist();
+    let allowlistApplied = false;
+    let allowlistErrorMsg = null;
+    try {
+        partialPause.setPartialPause(newAllowlist, { source: 'telegram-commander/wave-promote' });
+        allowlistApplied = true;
+    } catch (e) {
+        allowlistErrorMsg = String(e && e.message ? e.message : e);
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-promote');
+
+    return {
+        reply: fillTemplate('wave-promote-ok', {
+            'has-old-wave': oldWaveNumber !== null,
+            'old-wave-number': oldWaveNumber || 0,
+            'new-wave-number': newWaveNumber,
+            'new-wave-name': newWave.name || `Ola ${newWaveNumber}`,
+            'allowlist-size': newAllowlist.length,
+            'allowlist-applied': allowlistApplied,
+            'has-allowlist-error': !!allowlistErrorMsg,
+            'allowlist-error': allowlistErrorMsg || '',
+        }),
+    };
+}
+
+/**
+ * Helper de UX: humaniza las olas disponibles para el mensaje de error
+ * `wave_not_found`. Devuelve algo como "1 (activa) o 2, 3".
+ */
+function describeAvailableWaves(active, planned) {
+    const parts = [];
+    if (active) parts.push(`${active.number} (activa)`);
+    for (const p of planned) parts.push(String(p.number));
+    return parts.length > 0 ? parts.join(', ') : 'ninguna';
+}
+
+// -----------------------------------------------------------------------------
 // UTILIDADES INTERNAS
 // -----------------------------------------------------------------------------
 
@@ -1494,4 +1938,15 @@ module.exports = {
     LLM_SLASH,
     NLP_PATTERNS,
     ARG_SCHEMAS,
+    // #3493 — exports para tests de subcomandos `/wave`.
+    parseWaveArgs,
+    _waveInternal: {
+        handleWaveStatus,
+        handleWaveNext,
+        handleWaveAdd,
+        handleWavePromote,
+        getKnownIssues,
+        invalidateKnownIssuesCache,
+        describeAvailableWaves,
+    },
 };
