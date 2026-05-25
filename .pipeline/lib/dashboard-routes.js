@@ -169,6 +169,28 @@ const API_ROUTES = {
     // documentado en CA-C2 (nombre humano-friendly para curl/debug).
     '/api/dash/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
     '/api/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
+    // #3492 — ETA agregada por ola (probabilística p50/p75/p90). El cálculo
+    // vive en `lib/eta-wave.js`; dashboard.js lo refresca fire-and-forget en
+    // un cache TTL 30s y lo publica en `state.olaETA`. Si el módulo no cargó
+    // (pipeline antiguo) o el primer refresh aún no completó, devolvemos
+    // `{ ready: false }` para que la vista muestre placeholder sin error.
+    // Formato de minutos (`45m` / `1h 2m`) se calcula en la VISTA (CA-23).
+    '/api/dash/ola-eta': (state) => {
+        const data = state && state.olaETA;
+        if (!data) return { ready: false };
+        return {
+            ready: true,
+            issues: data.issues || [],
+            totalP50: data.totalP50,
+            totalP75: data.totalP75,
+            totalP90: data.totalP90,
+            byIssue: data.byIssue || {},
+            concurrencyUsed: data.concurrencyUsed,
+            bySize: data.bySize,
+            rebounceRate: data.rebounceRate,
+            refreshedAt: data.refreshedAt,
+        };
+    },
     // #3259 / CA-6 — Despachos por provider últimas 24h (lectura del activity
     // log). Síncrono y barato; el card en la home dashboard lo poltea cada 30s.
     '/api/dash/dispatch-by-provider': () => {
