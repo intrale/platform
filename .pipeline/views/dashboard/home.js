@@ -153,6 +153,125 @@ function homeStyles() {
 .kpi-quota-row.kpi-bad .kpi-quota-row-value { color: var(--in-bad); }
 .kpi-quota-row.kpi-ok .kpi-quota-row-value { color: var(--in-ok); }
 
+/* #3492 — Panel "Ola actual · ETA" (probabilístico p50/p75/p90).
+   Vive entre el KPI grid y la areas-bar. Tres filas grandes (p50/p75/p90)
+   + badge de samples<5 (CA-22) + breakdown por size (CA-21). El formato de
+   minutos (45m / 1h 2m) se calcula en el cliente vía fmtMin() (CA-23). */
+.ola-eta-section {
+    background: linear-gradient(180deg, rgba(60,140,255,0.05), transparent 80%), var(--in-bg-2);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius);
+    padding: 18px 22px;
+    box-shadow: var(--in-shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.ola-eta-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.ola-eta-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--in-fg);
+    font-weight: 600;
+}
+.ola-eta-subtitle {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+}
+.ola-eta-low-samples {
+    display: none;          /* mostrado por JS cuando totalSamples < 5 (CA-22) */
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,193,7,0.12);
+    border: 1px solid rgba(255,193,7,0.35);
+    color: var(--in-warn);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.ola-eta-low-samples[data-show="1"] { display: inline-flex; }
+.ola-eta-low-samples-icon { font-size: 12px; }
+.ola-eta-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+.ola-eta-cell {
+    background: var(--in-bg-3);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius-sm);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.ola-eta-cell-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--in-fg-dim);
+}
+.ola-eta-cell-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--in-fg);
+    font-variant-numeric: tabular-nums;
+    font-family: var(--in-mono);
+}
+.ola-eta-cell-sub {
+    font-size: 10px;
+    color: var(--in-fg-soft);
+}
+.ola-eta-bysize {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+.ola-eta-size-pill {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    border: 1px solid var(--in-border-soft);
+    border-radius: var(--in-radius-sm);
+    background: var(--in-bg-3);
+}
+.ola-eta-size-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--in-fg-dim);
+}
+.ola-eta-size-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--in-fg);
+    font-variant-numeric: tabular-nums;
+    font-family: var(--in-mono);
+}
+.ola-eta-size-samples {
+    font-size: 10px;
+    color: var(--in-fg-soft);
+}
+.ola-eta-empty {
+    display: none;
+    padding: 14px;
+    color: var(--in-fg-dim);
+    font-size: 12px;
+    text-align: center;
+}
+.ola-eta-section[data-empty="1"] .ola-eta-grid { display: none; }
+.ola-eta-section[data-empty="1"] .ola-eta-bysize { display: none; }
+.ola-eta-section[data-empty="1"] .ola-eta-empty { display: block; }
+
 /* Active section */
 .active-section {
     background: linear-gradient(180deg, rgba(46,230,193,0.05), transparent 80%), var(--in-bg-2);
@@ -1948,6 +2067,91 @@ async function pauseIssueHome(issue){
 // la duplicacion generaba ruido y semaforos amarillos espurios. Ver
 // mp-live-providers en multi-provider.js para el reemplazo.
 
+// #3492 — Formato de minutos para la vista (CA-23): la libreria entrega
+// enteros, la vista los convierte a "45m" / "1h 2m" / "—". Convencion:
+//   null/0/NaN  → "—"  (sin dato)
+//   menor a 60  → "{n}m"
+//   60 o mas    → "{h}h {m}m" (omite "0m")
+function fmtMin(n){
+    if(n == null || !Number.isFinite(n) || n <= 0) return '—';
+    const total = Math.round(n);
+    if(total < 60) return total + 'm';
+    const h = Math.floor(total / 60);
+    const m = total % 60;
+    if(m === 0) return h + 'h';
+    return h + 'h ' + m + 'm';
+}
+
+// #3492 — Tick para /api/dash/ola-eta (polling 30s). Layout SSR ya esta;
+// este handler solo hidrata textos por id sin reemplazar containers (patron
+// anti-flicker del kiosk). Si ready=false (cache aun tibio) o issues==0,
+// alterna data-empty=1 y muestra el placeholder.
+async function tickOlaETA(){
+    const section = document.getElementById('ola-eta-section');
+    if(!section) return;
+    const d = await fetchJson('/api/dash/ola-eta');
+    if(!d){
+        // Endpoint no respondio — dejamos el ultimo estado en pantalla.
+        return;
+    }
+    if(!d.ready){
+        section.setAttribute('data-empty', '1');
+        setText('ola-eta-subtitle', 'preparando cálculo…');
+        return;
+    }
+    const issues = Array.isArray(d.issues) ? d.issues : [];
+    if(issues.length === 0){
+        section.setAttribute('data-empty', '1');
+        setText('ola-eta-subtitle', 'sin issues activos');
+        const lo = document.getElementById('ola-eta-low-samples');
+        if(lo) lo.setAttribute('data-show', '0');
+        return;
+    }
+    section.setAttribute('data-empty', '0');
+
+    // Subtitulo: cantidad de issues + concurrency.
+    const conc = d.concurrencyUsed != null ? d.concurrencyUsed : 3;
+    const issuesLabel = issues.length === 1 ? '1 issue' : (issues.length + ' issues');
+    setText('ola-eta-subtitle', issuesLabel + ' · concurrency ' + conc);
+
+    // Tres celdas principales (formato calculado aca — CA-23).
+    setText('ola-eta-p50', fmtMin(d.totalP50));
+    setText('ola-eta-p75', fmtMin(d.totalP75));
+    setText('ola-eta-p90', fmtMin(d.totalP90));
+
+    // Breakdown por size (CA-21 — labels en espanol). El endpoint manda
+    // bySize: { S:{avgTime,stddev,samples}, M:{...}, L:{...} }.
+    const bySize = d.bySize || {};
+    let totalSamples = 0;
+    for(const sz of ['S','M','L']){
+        const info = bySize[sz] || { avgTime: 0, samples: 0 };
+        const samples = info.samples || 0;
+        totalSamples += samples;
+        setText('ola-eta-size-' + sz + '-value', fmtMin(info.avgTime));
+        setText('ola-eta-size-' + sz + '-samples',
+            samples === 0 ? 'sin samples · default' :
+            (samples === 1 ? '1 sample histórico' : (samples + ' samples históricos'))
+        );
+    }
+
+    // Badge "estimacion con poca muestra" (CA-22). Mostramos si la suma
+    // global de samples es menor a 5, o si algun size en uso en la ola
+    // actual tiene menos de 5 samples (CA-22 — confianza pobre).
+    const sizesEnOla = new Set();
+    if(d.byIssue && typeof d.byIssue === 'object'){
+        for(const v of Object.values(d.byIssue)){
+            if(v && v.sizeCanonical) sizesEnOla.add(v.sizeCanonical);
+        }
+    }
+    let lowSamples = totalSamples < 5;
+    for(const sz of sizesEnOla){
+        const info = bySize[sz];
+        if(!info || (info.samples || 0) < 5){ lowSamples = true; break; }
+    }
+    const lo = document.getElementById('ola-eta-low-samples');
+    if(lo) lo.setAttribute('data-show', lowSamples ? '1' : '0');
+}
+
 const POLLS = [
     { fn: tickHeader, ms: 5000 },
     { fn: tickKpis, ms: 60000 },
@@ -1966,6 +2170,11 @@ const POLLS = [
     { fn: tickActive, ms: 2000 },
     { fn: tickRecent, ms: 10000 },
     { fn: tickQueue, ms: 5000 },
+    // #3492 — ETA de la ola actual (p50/p75/p90). TTL del cache server-side
+    // es 30s; polling cliente alineado para que cada tick toque el cache
+    // recién refrescado sin saturar el cálculo (que escanea markers FS +
+    // stream JSONL).
+    { fn: tickOlaETA, ms: 30000 },
     // #3239 — badge de la tarjeta /multi-provider. 10s alcanza: el panel
     // raramente cambia y el endpoint sólo lee el JSON canónico + secrets.
     { fn: tickMultiProvider, ms: 10000 },
@@ -2198,6 +2407,61 @@ function renderHomeHTML(opts) {
           <span class="kpi-quota-row-value" id="kpi-quota-week-pct">…</span>
           <span class="kpi-quota-row-eta" id="kpi-quota-week-eta">·</span>
         </div>
+      </div>
+    </section>
+
+    <!--
+      #3492 — Panel "Ola actual · ETA" (probabilístico p50/p75/p90).
+      Render placeholder en SSR; tickOlaETA() hidrata los valores reales desde
+      /api/dash/ola-eta (polling 30s). Labels visibles en español (CA-21),
+      badge "estimación con poca muestra" si samples menor a 5 (CA-22),
+      formato minutos "45m" / "1h 2m" se computa en fmtMin() del cliente (CA-23).
+    -->
+    <section class="ola-eta-section" id="ola-eta-section" aria-label="ETA de la ola actual" data-empty="0">
+      <div class="ola-eta-header">
+        <span class="ola-eta-title">⏳ Ola actual · ETA</span>
+        <span class="ola-eta-subtitle" id="ola-eta-subtitle">…</span>
+        <span class="ola-eta-low-samples" id="ola-eta-low-samples" role="status" aria-live="polite" data-show="0">
+          <span class="ola-eta-low-samples-icon" aria-hidden="true">⚠</span>
+          estimación con poca muestra
+        </span>
+      </div>
+      <div class="ola-eta-grid">
+        <div class="ola-eta-cell">
+          <span class="ola-eta-cell-label">P50 (mediana)</span>
+          <span class="ola-eta-cell-value" id="ola-eta-p50">·</span>
+          <span class="ola-eta-cell-sub">tiempo restante esperado</span>
+        </div>
+        <div class="ola-eta-cell">
+          <span class="ola-eta-cell-label">P75</span>
+          <span class="ola-eta-cell-value" id="ola-eta-p75">·</span>
+          <span class="ola-eta-cell-sub">3 de 4 olas terminan antes</span>
+        </div>
+        <div class="ola-eta-cell">
+          <span class="ola-eta-cell-label">P90 (peor caso)</span>
+          <span class="ola-eta-cell-value" id="ola-eta-p90">·</span>
+          <span class="ola-eta-cell-sub">9 de 10 olas terminan antes</span>
+        </div>
+      </div>
+      <div class="ola-eta-bysize" id="ola-eta-bysize">
+        <div class="ola-eta-size-pill" id="ola-eta-size-S">
+          <span class="ola-eta-size-label">simple</span>
+          <span class="ola-eta-size-value" id="ola-eta-size-S-value">·</span>
+          <span class="ola-eta-size-samples" id="ola-eta-size-S-samples">sin samples</span>
+        </div>
+        <div class="ola-eta-size-pill" id="ola-eta-size-M">
+          <span class="ola-eta-size-label">medio</span>
+          <span class="ola-eta-size-value" id="ola-eta-size-M-value">·</span>
+          <span class="ola-eta-size-samples" id="ola-eta-size-M-samples">sin samples</span>
+        </div>
+        <div class="ola-eta-size-pill" id="ola-eta-size-L">
+          <span class="ola-eta-size-label">grande</span>
+          <span class="ola-eta-size-value" id="ola-eta-size-L-value">·</span>
+          <span class="ola-eta-size-samples" id="ola-eta-size-L-samples">sin samples</span>
+        </div>
+      </div>
+      <div class="ola-eta-empty" id="ola-eta-empty">
+        Sin issues activos. La ETA aparece cuando el pipeline está trabajando.
       </div>
     </section>
 

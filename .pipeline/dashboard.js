@@ -47,6 +47,15 @@ try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcion
 let etaLib = null;
 try { etaLib = require('./lib/eta'); } catch { /* opcional */ }
 
+// ETA por ola (issue #3492 / Spike #3378 H4): calculadora probabilística
+// p50/p75/p90 a partir de markers FS + metrics-history.jsonl. Best-effort
+// require: si el módulo no carga (pipeline antiguo) el dashboard sigue
+// funcionando sin el panel "Ola actual · ETA". Las funciones son async,
+// por eso el refresh corre fire-and-forget contra un cache TTL 30s y el
+// `state.olaETA` sale del cache (la lectura sigue siendo sync).
+let etaWaveLib = null;
+try { etaWaveLib = require('./lib/eta-wave'); } catch { /* opcional */ }
+
 // #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
 let restModeState = null;
 try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */ }
@@ -384,6 +393,66 @@ function fmtTime(ms) {
 let _stateCache = null;
 let _stateCacheAt = 0;
 const STATE_CACHE_TTL_MS = 2000;
+
+// #3492 — Cache de la ETA agregada por ola actual. El cálculo es async (depende
+// de streaming de metrics-history.jsonl + markers FS) pero el `state` se construye
+// sync. Patrón fire-and-forget: cada llamada a `getPipelineState()` programa un
+// refresh si el cache es viejo, y publica el último valor cacheado. TTL 30s
+// (alineado con `ANALYSIS_CACHE_TTL_MS` de `lib/eta-wave.js`).
+let _olaETACache = null;
+let _olaETACacheAt = 0;
+let _olaETARefreshInflight = false;
+const OLA_ETA_CACHE_TTL_MS = 30000;
+const OLA_ETA_CONCURRENCY = 3;   // mismo límite que coordinator.js (3 agentes simultáneos)
+
+function _scheduleOlaETARefresh(state) {
+  if (!etaWaveLib) return;
+  const now = Date.now();
+  if (_olaETARefreshInflight) return;
+  if (_olaETACache && (now - _olaETACacheAt) < OLA_ETA_CACHE_TTL_MS) return;
+
+  // Determinar la "ola actual": issues con estado != procesado en alguna fase.
+  // Reuso el `issueMatrix` ya construido por getPipelineState() — sin re-escaneo FS.
+  const olaIssues = [];
+  const seen = new Set();
+  for (const [issueStr, info] of Object.entries(state.issueMatrix || {})) {
+    if (!info || !info.estadoActual) continue;
+    if (info.estadoActual === 'procesado') continue;
+    const num = Number(issueStr);
+    if (!Number.isInteger(num) || num <= 0) continue;
+    if (seen.has(num)) continue;
+    seen.add(num);
+    olaIssues.push(num);
+  }
+
+  _olaETARefreshInflight = true;
+  // CA-20: invocación con `await` semántico vía Promise (la función es async).
+  Promise.resolve()
+    .then(async () => {
+      const olaResult = await etaWaveLib.calculateOlaETA(olaIssues, OLA_ETA_CONCURRENCY);
+      const historical = await etaWaveLib.analyzeHistoricalMetrics();
+      return { olaResult, historical };
+    })
+    .then(({ olaResult, historical }) => {
+      _olaETACache = {
+        issues: olaIssues,
+        totalP50: olaResult.totalP50,
+        totalP75: olaResult.totalP75,
+        totalP90: olaResult.totalP90,
+        byIssue: olaResult.byIssue,
+        concurrencyUsed: olaResult.concurrencyUsed,
+        bySize: historical.bySize,
+        rebounceRate: historical.rebounceRate,
+        refreshedAt: Date.now(),
+      };
+      _olaETACacheAt = Date.now();
+    })
+    .catch((err) => {
+      // Log silencioso — el dashboard sigue sirviendo el cache viejo (o null) sin romper.
+      try { log(`olaETA refresh error: ${err && err.message ? err.message : err}`); } catch {}
+    })
+    .finally(() => { _olaETARefreshInflight = false; });
+}
 
 function getCachedPipelineState() {
   const now = Date.now();
@@ -818,6 +887,13 @@ function getPipelineState() {
     cpuHistory: resourceHistory.cpu.slice(),
     memHistory: resourceHistory.mem.slice()
   };
+
+  // #3492 — ETA agregada por ola (probabilística, p50/p75/p90). Refresh async
+  // fire-and-forget contra cache TTL 30s para no bloquear el render sync.
+  // Cuando el cache aún no está listo (primer tick), `state.olaETA = null`
+  // y el cliente muestra el placeholder hasta el siguiente polling.
+  _scheduleOlaETARefresh(state);
+  state.olaETA = _olaETACache;
 
   return state;
 }
