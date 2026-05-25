@@ -565,6 +565,19 @@ function emitAuditEvent({ pipelineDir, event, payload, fsImpl, auditLog, now }) 
             errorCode: payload && payload.errorCode || null,
             // NO mandamos prompt — solo hashes en `extra`
             prompt: payload && payload.analysisHash || '',
+            // CA-AUDIT-1 (#3484) — Propagamos los 5 campos enriched que el
+            // verifier ya calcula en `verify()` (sameProvider, sameModel,
+            // commanderModel, sherlockModel, transport). El audit-log los
+            // persiste al JSONL para análisis cross-provider posterior.
+            // Documentado en docs/pipeline/multi-provider.md (líneas 1602,
+            // 1622-1634). Cuando el payload no los tenga (eventos legacy o
+            // pre-resolve como `sherlock_skipped_disabled`), se envían como
+            // null/undefined y el audit los registra como null.
+            sameProvider: payload && typeof payload.sameProvider === 'boolean' ? payload.sameProvider : null,
+            sameModel: payload && typeof payload.sameModel === 'boolean' ? payload.sameModel : null,
+            commanderModel: payload && payload.commanderModel || null,
+            sherlockModel: payload && payload.sherlockModel || null,
+            transport: payload && payload.transport || null,
             fsImpl,
             auditLog,
             now,
@@ -671,7 +684,13 @@ async function verify(opts = {}) {
             payload: {
                 analysisHash: hashFor(analysis),
                 commanderProvider,
+                commanderModel,
                 durationMs: 0,
+                // CA-AUDIT-1 (#3484) — sin resolved aún; no hay sherlock provider/model.
+                sameProvider: false,
+                sameModel: false,
+                sherlockModel: null,
+                transport: null,
             },
         });
         return {
@@ -724,8 +743,14 @@ async function verify(opts = {}) {
             payload: {
                 analysisHash: hashFor(analysis),
                 commanderProvider,
+                commanderModel,
                 durationMs: Date.now() - startedAt,
                 errorCode: 'no_provider',
+                // CA-AUDIT-1 (#3484) — no hay provider Sherlock disponible.
+                sameProvider: false,
+                sameModel: false,
+                sherlockModel: null,
+                transport: null,
             },
         });
         return {
@@ -774,9 +799,15 @@ async function verify(opts = {}) {
             payload: {
                 analysisHash: hashFor(analysis),
                 commanderProvider,
+                commanderModel,
                 sherlockProvider: resolved.provider,
                 durationMs: Date.now() - startedAt,
                 errorCode: drCheck.reason,
+                // CA-AUDIT-1 (#3484) — campos enriched a partir del resolved.
+                sameProvider,
+                sameModel,
+                sherlockModel: resolved.model,
+                transport: resolved.transport,
             },
         });
         return {
@@ -855,9 +886,15 @@ async function verify(opts = {}) {
             payload: {
                 analysisHash: hashFor(analysis),
                 commanderProvider,
+                commanderModel,
                 sherlockProvider: resolved.provider,
                 durationMs: totalMs,
                 errorCode: httpResult.error ? httpResult.error.type : 'unknown',
+                // CA-AUDIT-1 (#3484) — campos enriched.
+                sameProvider,
+                sameModel,
+                sherlockModel: resolved.model,
+                transport: resolved.transport,
             },
         });
         return {
@@ -889,11 +926,17 @@ async function verify(opts = {}) {
             payload: {
                 analysisHash: hashFor(analysis),
                 commanderProvider,
+                commanderModel,
                 sherlockProvider: resolved.provider,
                 durationMs: totalMs,
                 inputTokens: httpResult.inputTokens,
                 outputTokens: httpResult.outputTokens,
                 errorCode: parsed.reason,
+                // CA-AUDIT-1 (#3484) — campos enriched.
+                sameProvider,
+                sameModel,
+                sherlockModel: resolved.model,
+                transport: resolved.transport,
             },
         });
         return {
@@ -926,6 +969,7 @@ async function verify(opts = {}) {
         payload: {
             analysisHash: hashFor(analysis),
             commanderProvider,
+            commanderModel,
             sherlockProvider: resolved.provider,
             durationMs: totalMs,
             inputTokens: httpResult.inputTokens,
@@ -934,6 +978,14 @@ async function verify(opts = {}) {
             // del audit no los expone como campos top-level. Quedan implícitos
             // en la lectura del JSONL (analysisHash al menos preserva trazabilidad).
             errorCode: null,
+            // CA-AUDIT-1 (#3484) — campos enriched para análisis cross-provider.
+            // sameProvider/sameModel ya calculados arriba; sherlockModel/transport
+            // del resolved. El audit-log persiste estos 5 campos al JSONL para
+            // que las consultas de adversariality reducida sean trazables.
+            sameProvider,
+            sameModel,
+            sherlockModel: resolved.model,
+            transport: resolved.transport,
         },
     });
 

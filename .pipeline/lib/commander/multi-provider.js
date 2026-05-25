@@ -390,6 +390,14 @@ function auditCommanderRequest(opts = {}) {
         errorCode,
         injectionHits,
         supportsToolUse,
+        // CA-AUDIT-1 (#3484) — Campos enriched para análisis cross-provider
+        // del Sherlock. Vienen opcionalmente; cuando el caller (sherlock-verifier)
+        // los provee, los persistimos al JSONL para auditoría.
+        sameProvider,
+        sameModel,
+        commanderModel,
+        sherlockModel,
+        transport,
         // inyectables tests
         fsImpl,
         auditLog,
@@ -416,6 +424,15 @@ function auditCommanderRequest(opts = {}) {
         error_code: errorCode || null,
         injection_hits: Array.isArray(injectionHits) ? injectionHits.length : 0,
         supports_tool_use: typeof supportsToolUse === 'boolean' ? supportsToolUse : null,
+        // CA-AUDIT-1 (#3484) — 5 campos enriched. Solo se incluyen cuando el
+        // caller los provee (caller típico: sherlock-verifier.emitAuditEvent).
+        // Para eventos del Commander puro quedan en null/undefined y no
+        // afectan el shape canónico.
+        same_provider: typeof sameProvider === 'boolean' ? sameProvider : null,
+        same_model: typeof sameModel === 'boolean' ? sameModel : null,
+        commander_model: commanderModel || null,
+        sherlock_model: sherlockModel || null,
+        transport: transport || null,
     };
 
     try {

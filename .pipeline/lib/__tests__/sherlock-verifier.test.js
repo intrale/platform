@@ -985,3 +985,171 @@ test('#3484 CA-CLIENT-4: ABSOLUTE_MAX_TIMEOUT_MS del cliente = 180s', () => {
     const client = require('../multi-provider/completion-client');
     assert.equal(client.ABSOLUTE_MAX_TIMEOUT_MS, 180_000);
 });
+
+// =============================================================================
+// #3484 CA-AUDIT-1 — Persistencia JSONL de los 5 campos enriched
+// (sameProvider, sameModel, commanderModel, sherlockModel, transport).
+//
+// Estos tests leen el archivo JSONL escrito por audit-log.appendChained y
+// validan que los 5 campos aparezcan persistidos en cada entry. Es la prueba
+// final de CA-AUDIT-1 que faltaba en los 5 rebotes de PO/Review/UX.
+// Documentado en docs/pipeline/multi-provider.md:1602, 1622-1634.
+// =============================================================================
+
+function readAuditEntries(pipelineDir) {
+    const logsDir = path.join(pipelineDir, 'logs');
+    if (!fs.existsSync(logsDir)) return [];
+    const out = [];
+    for (const f of fs.readdirSync(logsDir)) {
+        const full = path.join(logsDir, f);
+        const content = fs.readFileSync(full, 'utf8');
+        for (const line of content.split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            try {
+                out.push(JSON.parse(line));
+            } catch { /* skip malformed */ }
+        }
+    }
+    return out;
+}
+
+test('#3484 CA-AUDIT-1: JSONL persiste los 5 campos enriched (verdict ok, sameProvider=true)', async () => {
+    const dir = mkTmpPipelineDir();
+    const okResp = {
+        ok: true,
+        content: JSON.stringify({ verdict: 'ok', reason: 'todo ok', inconsistencies: [] }),
+        inputTokens: 12, outputTokens: 8, durationMs: 75,
+    };
+    await sherlock.verify({
+        analysis: 'analisis cualquiera',
+        originalRequest: '?',
+        systemState: 'estado',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient(okResp),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+    });
+    const entries = readAuditEntries(dir);
+    assert.ok(entries.length >= 1, 'debe haber al menos 1 entry en el JSONL');
+    const verification = entries.find(e => e.event === 'sherlock_verification');
+    assert.ok(verification, 'debe existir un evento sherlock_verification persistido');
+    // Los 5 campos enriched deben estar presentes y con los valores esperados.
+    assert.equal(verification.same_provider, true, 'same_provider=true persistido');
+    assert.equal(verification.same_model, true, 'same_model=true persistido');
+    assert.equal(verification.commander_model, 'llama-3.3-70b', 'commander_model persistido');
+    assert.equal(verification.sherlock_model, 'llama-3.3-70b', 'sherlock_model persistido');
+    assert.equal(verification.transport, 'http', 'transport persistido');
+});
+
+test('#3484 CA-AUDIT-1: JSONL persiste sameProvider=false cuando commander y sherlock difieren', async () => {
+    const dir = mkTmpPipelineDir();
+    const okResp = {
+        ok: true,
+        content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
+        inputTokens: 10, outputTokens: 5, durationMs: 50,
+    };
+    await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'anthropic',
+        commanderModel: 'claude-opus-4-7',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient(okResp),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+    });
+    const entries = readAuditEntries(dir);
+    const verification = entries.find(e => e.event === 'sherlock_verification');
+    assert.ok(verification, 'evento sherlock_verification debe estar persistido');
+    assert.equal(verification.same_provider, false, 'commander=anthropic vs sherlock=cerebras → same_provider=false');
+    assert.equal(verification.same_model, false, 'modelos distintos → same_model=false');
+    assert.equal(verification.commander_model, 'claude-opus-4-7');
+    assert.equal(verification.sherlock_model, 'llama-3.3-70b');
+    assert.equal(verification.transport, 'http');
+});
+
+test('#3484 CA-AUDIT-1: JSONL persiste transport=spawn cuando Sherlock usa Anthropic CLI', async () => {
+    const dir = mkTmpPipelineDir();
+    const spawnResp = {
+        ok: true,
+        content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
+        inputTokens: 0, outputTokens: 0, durationMs: 400,
+    };
+    await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'anthropic',
+        commanderModel: 'claude-opus-4-7',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        // El completionClient no debería ser llamado — anthropic usa spawn.
+        completionClient: fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } }),
+        spawnAnthropic: fakeSpawnAnthropic(spawnResp),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_ANTH_FIRST }),
+        residencyModule: fakeResidencyOk(),
+    });
+    const entries = readAuditEntries(dir);
+    const verification = entries.find(e => e.event === 'sherlock_verification');
+    assert.ok(verification, 'sherlock_verification debe estar persistido');
+    assert.equal(verification.transport, 'spawn', 'CLI Anthropic → transport=spawn persistido');
+    assert.equal(verification.same_provider, true, 'commander=anthropic, sherlock=anthropic → true');
+    assert.equal(verification.same_model, false, 'commander=opus vs sherlock=haiku → false');
+    assert.equal(verification.commander_model, 'claude-opus-4-7');
+    assert.equal(verification.sherlock_model, 'claude-haiku-4-5');
+});
+
+test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_schema_violation', async () => {
+    const dir = mkTmpPipelineDir();
+    const badResp = {
+        ok: true,
+        content: 'esto no es JSON válido',
+        inputTokens: 5, outputTokens: 3, durationMs: 30,
+    };
+    await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient(badResp),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+    });
+    const entries = readAuditEntries(dir);
+    const violation = entries.find(e => e.event === 'sherlock_schema_violation');
+    assert.ok(violation, 'sherlock_schema_violation debe estar persistido');
+    assert.equal(violation.same_provider, true);
+    assert.equal(violation.same_model, true);
+    assert.equal(violation.commander_model, 'llama-3.3-70b');
+    assert.equal(violation.sherlock_model, 'llama-3.3-70b');
+    assert.equal(violation.transport, 'http');
+});
+
+test('#3484 CA-AUDIT-1: JSONL persiste campos enriched también en sherlock_aborted_residency', async () => {
+    const dir = mkTmpPipelineDir();
+    await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient({ ok: true, content: '{}', inputTokens: 0, outputTokens: 0, durationMs: 0 }),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyBlock(),
+    });
+    const entries = readAuditEntries(dir);
+    const aborted = entries.find(e => e.event === 'sherlock_aborted_residency');
+    assert.ok(aborted, 'sherlock_aborted_residency debe estar persistido');
+    assert.equal(aborted.same_provider, true);
+    assert.equal(aborted.same_model, true);
+    assert.equal(aborted.commander_model, 'llama-3.3-70b');
+    assert.equal(aborted.sherlock_model, 'llama-3.3-70b');
+    assert.equal(aborted.transport, 'http');
+});
