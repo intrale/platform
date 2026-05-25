@@ -942,4 +942,40 @@
     <path d="M15 15 L20 20" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
   </symbol>
 
+  <!-- =========================================================================
+       OLAS DE PLANIFICACION (#3487 — widget de proximas olas en dashboard V3)
+       Convencion: metafora de oceano/onda. Color por defecto: var(--lane-definicion)
+       para la ola activa, var(--purple-dim) para la proxima (desaturada).
+       ========================================================================= -->
+
+  <!-- ic-wave: dos crestas de onda apiladas. Identidad del widget de olas en
+       el dashboard. Forma reconocible incluso en tamano pequeno (badge 14px). -->
+  <symbol id="ic-wave" viewBox="0 0 24 24">
+    <path d="M3 9 C 6 6, 9 6, 12 9 S 18 12, 21 9"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M3 15 C 6 12, 9 12, 12 15 S 18 18, 21 15"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
+  </symbol>
+
+  <!-- ic-collapse: chevron hacia arriba dentro de un cuadrado redondeado.
+       Boton para contraer una ola (mostrar solo el header, ocultar issues).
+       En el codigo se tinta con var(--text-dim); hover sube a var(--text-primary). -->
+  <symbol id="ic-collapse" viewBox="0 0 24 24">
+    <rect x="3.5" y="3.5" width="17" height="17" rx="3.5" fill="none"
+          stroke="currentColor" stroke-width="1.5"/>
+    <path d="M8 14 L12 10 L16 14" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-expand: chevron hacia abajo dentro de un cuadrado redondeado.
+       Boton para expandir una ola colapsada. Simetria visual con ic-collapse. -->
+  <symbol id="ic-expand" viewBox="0 0 24 24">
+    <rect x="3.5" y="3.5" width="17" height="17" rx="3.5" fill="none"
+          stroke="currentColor" stroke-width="1.5"/>
+    <path d="M8 10 L12 14 L16 10" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
 </svg>

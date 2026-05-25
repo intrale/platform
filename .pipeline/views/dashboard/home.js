@@ -974,6 +974,295 @@ function homeStyles() {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* =========================================================================
+   #3487 — Widget "Próximas Olas" (Spike #3378 H3)
+   Tokens: --purple (activa), --purple-dim (próxima), semánticos (success/
+   warning/info/danger) + --text-dim para fallbacks unknown. Layout vertical
+   responsive al kiosk 1080×1920. Morphing manual (no se reemplaza el
+   container, sólo se mutan hijos por id).
+   ========================================================================= */
+.wave-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: var(--in-bg-2);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius);
+    padding: 18px 22px;
+    box-shadow: var(--in-shadow);
+}
+.wave-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--in-border-soft);
+}
+.wave-panel-header-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--in-fg);
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.wave-panel-header-title-icon {
+    width: 18px; height: 18px;
+    color: var(--purple, #BC8CFF);
+}
+.wave-panel-header-meta {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    font-family: var(--in-mono);
+}
+.wave-row {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    border-radius: var(--in-radius-sm);
+    background: var(--in-bg-3);
+    border: 1px solid var(--in-border);
+    border-left: 3px solid var(--purple, #BC8CFF);
+    transition: opacity 0.25s;
+}
+.wave-row[data-kind="next"] {
+    border-left-color: var(--purple-dim, #8957E5);
+    opacity: 0.82;
+}
+.wave-row-head {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+}
+.wave-row-toggle {
+    background: transparent;
+    border: 1px solid var(--in-border);
+    color: var(--text-dim, var(--in-fg-dim));
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, border-color 0.15s;
+    padding: 0;
+}
+.wave-row-toggle:hover { color: var(--in-fg); border-color: var(--in-fg-dim); }
+.wave-row-toggle svg { width: 18px; height: 18px; }
+.wave-row-title {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.wave-row-title-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--in-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.wave-row-title-goal {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.wave-row-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    background: var(--purple-bg, rgba(188,140,255,0.14));
+    color: var(--purple, #BC8CFF);
+    border: 1px solid var(--purple, #BC8CFF);
+}
+.wave-row[data-kind="next"] .wave-row-badge {
+    background: rgba(137, 87, 229, 0.10);
+    color: var(--purple-dim, #8957E5);
+    border-color: var(--purple-dim, #8957E5);
+}
+.wave-row-count {
+    font-size: 11px;
+    color: var(--in-fg-dim);
+    font-family: var(--in-mono);
+    font-variant-numeric: tabular-nums;
+}
+.wave-row-issues {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.wave-row.is-collapsed .wave-row-issues { display: none; }
+.wave-issue {
+    display: grid;
+    grid-template-columns: 70px 1fr 80px 60px 110px;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--in-radius-sm);
+    background: var(--in-bg-2);
+    border: 1px solid var(--in-border-soft);
+    font-size: 13px;
+}
+.wave-issue-id {
+    font-family: var(--in-mono);
+    color: var(--in-fg-dim);
+    font-variant-numeric: tabular-nums;
+}
+.wave-issue-id a {
+    color: inherit;
+    text-decoration: none;
+}
+.wave-issue-id a:hover { color: var(--in-accent); text-decoration: underline; }
+.wave-issue-title {
+    color: var(--in-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.wave-pill {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-align: center;
+    border: 1px solid transparent;
+}
+/* Priority pills */
+.wave-pill[data-priority="critical"] {
+    background: var(--danger-bg, rgba(248,81,73,0.14));
+    color: var(--danger, #F85149);
+    border-color: var(--danger, #F85149);
+}
+.wave-pill[data-priority="high"] {
+    background: rgba(245, 158, 11, 0.14);
+    color: #F59E0B;
+    border-color: #F59E0B;
+}
+.wave-pill[data-priority="medium"] {
+    background: var(--warning-bg, rgba(210,153,34,0.14));
+    color: var(--warning, #D29922);
+    border-color: var(--warning, #D29922);
+}
+.wave-pill[data-priority="low"],
+.wave-pill[data-priority="unknown"] {
+    background: transparent;
+    color: var(--text-dim, var(--in-fg-dim));
+    border-color: var(--in-border);
+}
+/* Size pills */
+.wave-pill[data-kind="size"] {
+    background: var(--in-bg-3);
+    color: var(--in-fg);
+    border-color: var(--in-border);
+}
+.wave-pill[data-kind="size"][data-size="unknown"] {
+    color: var(--text-dim, var(--in-fg-dim));
+}
+/* Status badges: combinan color + glyph + texto (WCAG AA) */
+.wave-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    justify-content: center;
+}
+.wave-badge::before {
+    font-size: 10px;
+    display: inline-block;
+    width: 8px;
+    text-align: center;
+}
+.wave-badge[data-status="ready"] {
+    background: var(--success-bg, rgba(63,185,80,0.14));
+    color: var(--success, #3FB950);
+    border-color: var(--success, #3FB950);
+}
+.wave-badge[data-status="ready"]::before { content: "●"; }
+.wave-badge[data-status="needs-def"] {
+    background: var(--warning-bg, rgba(210,153,34,0.14));
+    color: var(--warning, #D29922);
+    border-color: var(--warning, #D29922);
+}
+.wave-badge[data-status="needs-def"]::before { content: "◐"; }
+.wave-badge[data-status="in-progress"] {
+    background: var(--info-bg, rgba(88,166,255,0.14));
+    color: var(--info, #58A6FF);
+    border-color: var(--info, #58A6FF);
+}
+.wave-badge[data-status="in-progress"]::before { content: "▶"; }
+.wave-badge[data-status="blocked"] {
+    background: var(--danger-bg, rgba(248,81,73,0.14));
+    color: var(--danger, #F85149);
+    border-color: var(--danger, #F85149);
+}
+.wave-badge[data-status="blocked"]::before { content: "■"; }
+.wave-badge[data-status="completed"] {
+    background: transparent;
+    color: var(--text-dim, var(--in-fg-dim));
+    border-color: var(--in-border);
+}
+.wave-badge[data-status="completed"]::before { content: "✓"; }
+.wave-badge[data-status="unknown"] {
+    background: transparent;
+    color: var(--text-dim, var(--in-fg-dim));
+    border-color: var(--in-border);
+}
+.wave-badge[data-status="unknown"]::before { content: "?"; }
+/* Próxima ola: desaturar semánticos */
+.wave-row[data-kind="next"] .wave-pill,
+.wave-row[data-kind="next"] .wave-badge {
+    opacity: 0.86;
+}
+/* Estado vacío (Planificación no disponible) */
+.wave-panel-empty {
+    text-align: center;
+    padding: 32px 16px;
+    border: 1px dashed var(--in-border);
+    border-radius: var(--in-radius-sm);
+    color: var(--in-fg-dim);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+.wave-panel-empty-icon {
+    width: 32px; height: 32px;
+    opacity: 0.55;
+    color: var(--purple, #BC8CFF);
+}
+.wave-panel-empty-msg { font-size: 13px; }
+.wave-panel-empty-retry {
+    background: transparent;
+    border: 1px solid var(--in-border);
+    color: var(--in-fg-dim);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+.wave-panel-empty-retry:hover {
+    color: var(--in-fg);
+    border-color: var(--in-fg-dim);
+}
 `;
 }
 
@@ -2067,6 +2356,266 @@ async function pauseIssueHome(issue){
 // la duplicacion generaba ruido y semaforos amarillos espurios. Ver
 // mp-live-providers en multi-provider.js para el reemplazo.
 
+// =========================================================================
+// #3487 — Widget "Próximas Olas" (Spike #3378 H3)
+// Polling cada 30s sobre /api/dash/waves. Morphing manual: actualizamos
+// elementos por id sin reemplazar el container #wave-panel ni los hijos
+// #wave-active-container / #wave-next-container. Persistencia de
+// collapse/expand en sessionStorage con clave wave-panel-state-<number>.
+//
+// Security (cruzado con review #3487):
+//   - TODO string del payload se inserta vía textContent o escapeHtml() —
+//     NUNCA innerHTML con campos crudos.
+//   - El endpoint server-side ya filtra a whitelist y trunca title a 200,
+//     acá igual aplicamos textContent para defensa en profundidad.
+//   - sessionStorage almacena solo flags booleanos por número de ola.
+// =========================================================================
+const GITHUB_ISSUE_BASE = 'https://github.com/intrale/platform/issues/';
+
+function waveCollapseKey(num){ return 'wave-panel-state-' + num; }
+function waveIsCollapsed(num){
+    try { return sessionStorage.getItem(waveCollapseKey(num)) === 'collapsed'; }
+    catch { return false; }
+}
+function waveSetCollapsed(num, collapsed){
+    try {
+        if (collapsed) sessionStorage.setItem(waveCollapseKey(num), 'collapsed');
+        else sessionStorage.removeItem(waveCollapseKey(num));
+    } catch {}
+}
+
+function wavePriorityLabel(p){
+    switch(p){
+        case 'critical': return 'Crítica';
+        case 'high':     return 'Alta';
+        case 'medium':   return 'Media';
+        case 'low':      return 'Baja';
+        default:         return 'Desconocida';
+    }
+}
+function waveStatusLabel(s){
+    switch(s){
+        case 'ready':       return 'Lista';
+        case 'needs-def':   return 'Por definir';
+        case 'in-progress': return 'En curso';
+        case 'blocked':     return 'Bloqueada';
+        case 'completed':   return 'Hecho';
+        default:            return 'Desconocido';
+    }
+}
+function waveSizeLabel(s){
+    return (s === 'unknown') ? '?' : s.toUpperCase();
+}
+
+// Crea (o devuelve cacheado) el row DOM de una ola. Estructura estable:
+// el row se identifica por id wave-row-<n> y los hijos por
+// wave-<n>-name/-goal/-count/-issues-list. Cuando los datos cambian solo
+// mutamos textContent / dataset — nunca reemplazamos el container.
+function renderWaveRowSkeleton(wave, kind){
+    const row = document.createElement('div');
+    row.className = 'wave-row';
+    row.id = 'wave-row-' + wave.number;
+    row.dataset.kind = kind; // 'active' | 'next'
+    row.innerHTML =
+        '<div class="wave-row-head">'+
+        '  <button type="button" class="wave-row-toggle" aria-label="Colapsar/expandir ola" data-wave-toggle="'+wave.number+'">'+
+        '    <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-collapse"/></svg>'+
+        '  </button>'+
+        '  <div class="wave-row-title">'+
+        '    <span class="wave-row-title-name" id="wave-'+wave.number+'-name"></span>'+
+        '    <span class="wave-row-title-goal" id="wave-'+wave.number+'-goal"></span>'+
+        '  </div>'+
+        '  <span class="wave-row-badge">'+(kind==='next' ? 'PRÓXIMA' : 'ACTIVA')+'</span>'+
+        '  <span class="wave-row-count" id="wave-'+wave.number+'-count"></span>'+
+        '</div>'+
+        '<div class="wave-row-issues" id="wave-'+wave.number+'-issues-list"></div>';
+    return row;
+}
+
+// Morphing: actualiza textContent + dataset de un row existente, sin
+// re-crear el DOM. Si cambia la cantidad o el orden de issues, agrega/
+// remueve nodos hijos por id manteniendo los que no cambiaron.
+function morphWaveRow(row, wave){
+    setText('wave-'+wave.number+'-name', 'Ola ' + wave.number + (wave.name ? ' · ' + wave.name : ''));
+    setText('wave-'+wave.number+'-goal', wave.goal || '');
+    const issues = Array.isArray(wave.issues) ? wave.issues : [];
+    setText('wave-'+wave.number+'-count', issues.length + (issues.length === 1 ? ' issue' : ' issues'));
+
+    const list = document.getElementById('wave-'+wave.number+'-issues-list');
+    if (!list) return;
+    const seen = new Set();
+    for (const issue of issues) {
+        const issueId = 'wave-' + wave.number + '-issue-' + issue.id;
+        seen.add(issueId);
+        let node = document.getElementById(issueId);
+        if (!node) {
+            node = document.createElement('div');
+            node.className = 'wave-issue';
+            node.id = issueId;
+            node.innerHTML =
+                '<span class="wave-issue-id" id="'+issueId+'-id"></span>'+
+                '<span class="wave-issue-title" id="'+issueId+'-title"></span>'+
+                '<span class="wave-pill" data-kind="priority" id="'+issueId+'-priority"></span>'+
+                '<span class="wave-pill" data-kind="size" id="'+issueId+'-size"></span>'+
+                '<span class="wave-badge" id="'+issueId+'-status"></span>';
+            list.appendChild(node);
+        }
+        // ID + link (defensa en profundidad: textContent + href controlado)
+        const idEl = document.getElementById(issueId+'-id');
+        if (idEl) {
+            const link = '<a href="'+escapeHtml(GITHUB_ISSUE_BASE + issue.id)+'" target="_blank" rel="noopener">#'+issue.id+'</a>';
+            if (idEl.innerHTML !== link) idEl.innerHTML = link;
+        }
+        // Título: textContent (CA-8 / security) + truncado visual a 40 chars.
+        const titleEl = document.getElementById(issueId+'-title');
+        if (titleEl) {
+            const shortTitle = (issue.title || '').length > 40
+                ? (issue.title || '').slice(0, 40) + '…'
+                : (issue.title || '');
+            if (titleEl.textContent !== shortTitle) titleEl.textContent = shortTitle;
+            if (titleEl.title !== (issue.title || '')) titleEl.title = (issue.title || '');
+        }
+        // Priority pill
+        const prioEl = document.getElementById(issueId+'-priority');
+        if (prioEl) {
+            if (prioEl.dataset.priority !== issue.priority) prioEl.dataset.priority = issue.priority;
+            const txt = wavePriorityLabel(issue.priority);
+            if (prioEl.textContent !== txt) prioEl.textContent = txt;
+        }
+        // Size pill
+        const sizeEl = document.getElementById(issueId+'-size');
+        if (sizeEl) {
+            if (sizeEl.dataset.size !== issue.size) sizeEl.dataset.size = issue.size;
+            const txt = waveSizeLabel(issue.size);
+            if (sizeEl.textContent !== txt) sizeEl.textContent = txt;
+        }
+        // Status badge
+        const statusEl = document.getElementById(issueId+'-status');
+        if (statusEl) {
+            if (statusEl.dataset.status !== issue.status) statusEl.dataset.status = issue.status;
+            const txt = waveStatusLabel(issue.status);
+            if (statusEl.textContent !== txt) statusEl.textContent = txt;
+        }
+    }
+    // Remover issues que ya no están — preserva los que siguen.
+    Array.from(list.children).forEach(child => {
+        if (!seen.has(child.id)) list.removeChild(child);
+    });
+}
+
+function applyWaveCollapseState(row, number){
+    const collapsed = waveIsCollapsed(number);
+    row.classList.toggle('is-collapsed', collapsed);
+    const toggleBtn = row.querySelector('.wave-row-toggle');
+    if (toggleBtn) {
+        const useEl = toggleBtn.querySelector('use');
+        if (useEl) useEl.setAttribute('href', collapsed ? '#ic-expand' : '#ic-collapse');
+        toggleBtn.title = collapsed ? 'Expandir ola' : 'Colapsar ola';
+    }
+}
+
+function bindWaveToggle(container){
+    if (container.dataset._waveBound === '1') return;
+    container.dataset._waveBound = '1';
+    container.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('[data-wave-toggle]');
+        if (!btn) return;
+        const num = Number(btn.dataset.waveToggle);
+        if (!Number.isFinite(num)) return;
+        const row = document.getElementById('wave-row-' + num);
+        if (!row) return;
+        const nowCollapsed = !row.classList.contains('is-collapsed');
+        waveSetCollapsed(num, nowCollapsed);
+        applyWaveCollapseState(row, num);
+    });
+}
+
+async function tickWaves(){
+    const d = await fetchJson('/api/dash/waves');
+    const empty = document.getElementById('wave-panel-empty');
+    const activeContainer = document.getElementById('wave-active-container');
+    const nextContainer = document.getElementById('wave-next-container');
+    const meta = document.getElementById('wave-panel-updated');
+    if (!activeContainer || !nextContainer) return;
+
+    // Endpoint best-effort: si el fetch falló o devuelve estructura vacía,
+    // mostramos estado vacío sin reemplazar el container raíz (CA-7).
+    const hasActive = !!(d && d.active_wave);
+    const hasNext = !!(d && d.next_wave);
+
+    if (meta && d && d.updated_at) {
+        const ts = Date.parse(d.updated_at);
+        if (Number.isFinite(ts)) {
+            const dt = new Date(ts);
+            meta.textContent = 'Actualizado ' + String(dt.getHours()).padStart(2,'0') + ':' + String(dt.getMinutes()).padStart(2,'0');
+        }
+    }
+
+    if (!hasActive && !hasNext) {
+        if (empty) {
+            empty.style.display = '';
+            const msgEl = document.getElementById('wave-panel-empty-msg');
+            if (msgEl) {
+                const msg = (d && typeof d.message === 'string' && d.message)
+                    ? d.message
+                    : 'Planificación no disponible — esperando próxima ola';
+                if (msgEl.textContent !== msg) msgEl.textContent = msg;
+            }
+        }
+        // Limpiar containers de olas previas (si las hubo).
+        if (activeContainer.firstChild) activeContainer.innerHTML = '';
+        if (nextContainer.firstChild) nextContainer.innerHTML = '';
+        return;
+    }
+
+    if (empty) empty.style.display = 'none';
+
+    // Active wave: re-aprovechar el row si el número no cambió; recrear
+    // (con morphing) si la ola cambió de número.
+    if (hasActive) {
+        const wave = d.active_wave;
+        let row = activeContainer.querySelector('.wave-row');
+        if (!row || Number(row.dataset.waveNumber) !== wave.number) {
+            activeContainer.innerHTML = '';
+            row = renderWaveRowSkeleton(wave, 'active');
+            row.dataset.waveNumber = String(wave.number);
+            activeContainer.appendChild(row);
+            applyWaveCollapseState(row, wave.number);
+        }
+        morphWaveRow(row, wave);
+    } else if (activeContainer.firstChild) {
+        activeContainer.innerHTML = '';
+    }
+
+    if (hasNext) {
+        const wave = d.next_wave;
+        let row = nextContainer.querySelector('.wave-row');
+        if (!row || Number(row.dataset.waveNumber) !== wave.number) {
+            nextContainer.innerHTML = '';
+            row = renderWaveRowSkeleton(wave, 'next');
+            row.dataset.waveNumber = String(wave.number);
+            nextContainer.appendChild(row);
+            applyWaveCollapseState(row, wave.number);
+        }
+        morphWaveRow(row, wave);
+    } else if (nextContainer.firstChild) {
+        nextContainer.innerHTML = '';
+    }
+
+    bindWaveToggle(activeContainer);
+    bindWaveToggle(nextContainer);
+}
+
+// Bind del botón "Reintentar ahora" del estado vacío. Fuerza un fetch
+// fuera del ciclo de polling de 30s — útil cuando el operador acaba de
+// poblar waves.json y quiere ver el efecto inmediato sin esperar.
+function bindWaveRetry(){
+    const btn = document.getElementById('wave-panel-retry');
+    if (!btn || btn.dataset._bound === '1') return;
+    btn.dataset._bound = '1';
+    btn.addEventListener('click', () => { tickWaves().catch(()=>{}); });
+}
+
 // #3492 — Formato de minutos para la vista (CA-23): la libreria entrega
 // enteros, la vista los convierte a "45m" / "1h 2m" / "—". Convencion:
 //   null/0/NaN  → "—"  (sin dato)
@@ -2179,11 +2728,18 @@ const POLLS = [
     // raramente cambia y el endpoint sólo lee el JSON canónico + secrets.
     { fn: tickMultiProvider, ms: 10000 },
     // #3361 — ticker de salud de providers removido del home (se movió a Providers).
+    // #3487 — widget "Próximas Olas". Polling 30s alineado con la spec —
+    // el endpoint es barato (read+parse de waves.json) y la planificación
+    // no cambia más rápido que eso. El operador puede forzar refresh con
+    // el botón "Reintentar ahora" del estado vacío.
+    { fn: tickWaves, ms: 30000 },
 ];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 // #3035 — Bind del toggle "Solo con error" antes del primer poll para
 // que el handler ya esté escuchando si el usuario hace click apenas carga.
 bindRecentFilter();
+// #3487 — Bind del botón "Reintentar ahora" del wave-panel (estado vacío).
+bindWaveRetry();
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
 
@@ -2278,6 +2834,22 @@ function renderQuotaBannerSsr(quotaState) {
   </section>`;
 }
 
+// #3487 — Carga el sprite SVG del filesystem para inyectarlo inline en el
+// HTML del home V3. Permite usar `<use href="#ic-wave"/>` (referencia interna)
+// sin depender de un static asset handler para `/assets/icons/sprite.svg`.
+// Lazy + cache (un solo IO por proceso). Degrada silenciosamente a '' si el
+// archivo no está disponible — el dashboard sigue rendereando sin íconos.
+let _spriteCacheHome = null;
+function loadIconSpriteHome() {
+    if (_spriteCacheHome !== null) return _spriteCacheHome;
+    try {
+        _spriteCacheHome = fs.readFileSync(path.join(__dirname, '..', '..', 'assets', 'icons', 'sprite.svg'), 'utf8');
+    } catch {
+        _spriteCacheHome = '';
+    }
+    return _spriteCacheHome;
+}
+
 function renderHomeHTML(opts) {
     // `opts.quotaState` permite al caller pasar el state precomputado (evita
     // doble lectura del flag si el dashboard ya lo tiene en mano). Sin opts,
@@ -2290,6 +2862,7 @@ function renderHomeHTML(opts) {
     const theme = loadTheme();
     const styles = homeStyles();
     const script = renderClientScript();
+    const spriteInline = loadIconSpriteHome();
     const areasHtml = AREAS.map(a => `
       <a class="area-pill" href="${a.href}" target="_blank" rel="noopener" title="${a.sub}">
         <span class="area-pill-badge area-pill-badge-zero" id="badge-${a.key}">·</span>
@@ -2307,6 +2880,10 @@ function renderHomeHTML(opts) {
 <style>${styles}</style>
 </head>
 <body>
+<!-- #3487 — Sprite SVG inline para resolver use href=#ic-* sin
+     depender de un static asset handler. Oculto con display:none, los
+     símbolos siguen siendo referenciables por id. -->
+<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="kiosk-frame">
   <header class="in-header">
     <div class="in-header-brand">
@@ -2518,6 +3095,32 @@ function renderHomeHTML(opts) {
         </span>
       </div>
       <div class="line-list" id="queue-list"></div>
+    </section>
+
+    <!--
+      #3487 — Widget "Próximas Olas" (Spike #3378 H3).
+      Layout vertical para kiosk 1080×1920. El container #wave-panel SIEMPRE
+      ocupa su espacio (CA-1). tickWaves() puebla #wave-active-container y
+      #wave-next-container con DOM morphing manual (sin reemplazar el
+      container raíz). Polling cada 30s + botón "Reintentar ahora". Cuando
+      el endpoint retorna { active_wave: null, next_wave: null } se muestra
+      el estado vacío "Planificación no disponible" sin romper el layout.
+    -->
+    <section class="wave-panel" id="wave-panel" aria-label="Próximas Olas">
+      <div class="wave-panel-header">
+        <h2 class="wave-panel-header-title">
+          <svg class="wave-panel-header-title-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-wave"/></svg>
+          Próximas Olas
+        </h2>
+        <span class="wave-panel-header-meta" id="wave-panel-updated">—</span>
+      </div>
+      <div id="wave-active-container"></div>
+      <div id="wave-next-container"></div>
+      <div class="wave-panel-empty" id="wave-panel-empty" style="display:none">
+        <svg class="wave-panel-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-wave"/></svg>
+        <div class="wave-panel-empty-msg" id="wave-panel-empty-msg">Planificación no disponible — esperando próxima ola</div>
+        <button type="button" class="wave-panel-empty-retry" id="wave-panel-retry" title="Forzar refresh fuera del polling de 30s">Reintentar ahora</button>
+      </div>
     </section>
 
   </main>

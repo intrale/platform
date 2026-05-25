@@ -67,6 +67,13 @@ try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 let providerHealth = null;
 try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
 
+// #3487 — Lectura defensiva de la fuente de verdad multi-ola (#3489 H1).
+// Si el módulo no carga (pre-merge en un checkout antiguo), el endpoint
+// `/api/dash/waves` devuelve estructura vacía con `message`, alineado
+// con el CA-7 (Planificación no disponible) sin tirar 500.
+let waves = null;
+try { waves = require('./waves'); } catch { /* opcional */ }
+
 // #3259 — Rate-limit inline (security A05): hasta #3285 entregue el middleware
 // reusable, mantenemos un semáforo simple en memoria por IP. 6 req/min cubre
 // auto-refresh del dashboard (cada 30s = 2 req/min) + headroom para debugging.
@@ -83,6 +90,89 @@ function rateLimitAllow(ip, now = Date.now()) {
     arr.push(now);
     _rateLimitState.set(ip, arr);
     return true;
+}
+
+// #3487 — Whitelists cerrados para el endpoint /api/dash/waves. Cualquier
+// valor fuera de estos sets se reemplaza por "unknown" antes de servirlo
+// (security review: no propagar campos crudos del filesystem al cliente).
+const WAVES_PRIORITY_WHITELIST = new Set(['critical', 'high', 'medium', 'low']);
+const WAVES_SIZE_WHITELIST = new Set(['s', 'm', 'l', 'xl']);
+const WAVES_STATUS_WHITELIST = new Set(['ready', 'needs-def', 'in-progress', 'blocked', 'completed']);
+const WAVES_TITLE_MAX_CHARS = 200;
+const WAVES_UNKNOWN = 'unknown';
+
+/**
+ * Normaliza un issue de una ola al shape mínimo {id, title, priority, size,
+ * status}. NO usa spread — copia campo por campo para que cualquier campo
+ * extra que venga de waves.json (intencional o accidental) NO se propague.
+ *
+ * @param {*} raw — entrada cruda (puede ser cualquier cosa)
+ * @returns {{id:number,title:string,priority:string,size:string,status:string}|null}
+ */
+function normalizeWaveIssue(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const idNum = Number(typeof raw.number !== 'undefined' ? raw.number : raw.id);
+    if (!Number.isInteger(idNum) || idNum <= 0) return null;
+    const rawTitle = typeof raw.title === 'string' ? raw.title : '';
+    const title = rawTitle.length > WAVES_TITLE_MAX_CHARS
+        ? rawTitle.slice(0, WAVES_TITLE_MAX_CHARS)
+        : rawTitle;
+    const p = typeof raw.priority === 'string' ? raw.priority.toLowerCase() : '';
+    const priority = WAVES_PRIORITY_WHITELIST.has(p) ? p : WAVES_UNKNOWN;
+    const s = typeof raw.size === 'string' ? raw.size.toLowerCase() : '';
+    const size = WAVES_SIZE_WHITELIST.has(s) ? s : WAVES_UNKNOWN;
+    const st = typeof raw.status === 'string' ? raw.status.toLowerCase() : '';
+    const status = WAVES_STATUS_WHITELIST.has(st) ? st : WAVES_UNKNOWN;
+    return { id: idNum, title, priority, size, status };
+}
+
+/**
+ * Normaliza una ola al shape público {number, name, goal, started_at, issues}.
+ * Igual que normalizeWaveIssue: campo por campo, sin spread.
+ */
+function normalizeWave(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const number = Number(raw.number);
+    if (!Number.isInteger(number)) return null;
+    const name = typeof raw.name === 'string' ? raw.name.slice(0, WAVES_TITLE_MAX_CHARS) : '';
+    const goal = typeof raw.goal === 'string' ? raw.goal.slice(0, WAVES_TITLE_MAX_CHARS) : '';
+    const started_at = typeof raw.started_at === 'string' ? raw.started_at : null;
+    const issues = Array.isArray(raw.issues)
+        ? raw.issues.map(normalizeWaveIssue).filter(Boolean)
+        : [];
+    return { number, name, goal, started_at, issues };
+}
+
+/**
+ * Construye el payload de /api/dash/waves desde lib/waves.js. Si la librería
+ * no cargó o falla la lectura, retorna estructura vacía con `message` —
+ * NUNCA expone paths, ENOENT ni stack traces (security CA-4/CA-8).
+ */
+function buildWavesPayload() {
+    const updated_at = new Date().toISOString();
+    if (!waves) {
+        return { active_wave: null, next_wave: null, updated_at, message: 'Planificación no disponible' };
+    }
+    let active = null;
+    let nextWave = null;
+    try {
+        active = waves.getActiveWave();
+    } catch {
+        // No volcar el error al cliente — degradación silenciosa.
+        active = null;
+    }
+    if (active) {
+        try {
+            nextWave = waves.getPlannedWave(active.number + 1);
+        } catch {
+            nextWave = null;
+        }
+    }
+    const normActive = normalizeWave(active);
+    const normNext = normalizeWave(nextWave);
+    const payload = { active_wave: normActive, next_wave: normNext, updated_at };
+    if (!normActive && !normNext) payload.message = 'Planificación no disponible';
+    return payload;
 }
 
 const HTML_ROUTES = {
@@ -201,6 +291,14 @@ const API_ROUTES = {
         if (!providerHealth) return { error: 'module_unavailable', total: 0, totals: {} };
         return providerHealth.getDispatchByProvider();
     },
+    // #3487 — Widget "Próximas Olas". Endpoint best-effort: consume
+    // lib/waves.js, retorna {active_wave, next_wave, updated_at} con
+    // whitelist explícito de campos y normalización a strings/numbers
+    // conocidos. Cualquier error de lectura/parse degrada a payload
+    // vacío con `message: "Planificación no disponible"` y HTTP 200
+    // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
+    // con el resto de /api/dash/*.
+    '/api/dash/waves': () => buildWavesPayload(),
 };
 
 // #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
@@ -309,4 +407,17 @@ function handle(req, res, ctx) {
     return false;
 }
 
-module.exports = { handle };
+module.exports = {
+    handle,
+    // Exportados para tests (#3487).
+    _internal: {
+        buildWavesPayload,
+        normalizeWave,
+        normalizeWaveIssue,
+        WAVES_PRIORITY_WHITELIST,
+        WAVES_SIZE_WHITELIST,
+        WAVES_STATUS_WHITELIST,
+        WAVES_TITLE_MAX_CHARS,
+        WAVES_UNKNOWN,
+    },
+};
