@@ -514,10 +514,11 @@ pipeline:
 #
 # Sherlock corre como capa interna del Commander de Telegram: antes de mandar
 # cada respuesta, refuta el análisis con evidencia del estado actual del
-# sistema invocando un provider distinto al del Commander vía HTTP completion-
-# client (#3342). Si detecta inconsistencias, reelabora la respuesta (1 vez,
-# cap hardcoded). Si timeout/error/sin-provider-distinto, agrega disclaimer
-# F-6 y manda la original.
+# sistema. Usa la chain `telegram-sherlock` de `agent-models.json` con el orden
+# de calidad aprobado (Anthropic Haiku 4.5 → Codex → Gemini → Cerebras →
+# NVIDIA NIM). Si detecta inconsistencias, reelabora la respuesta (1 vez, cap
+# hardcoded). Si timeout/error/sin-provider, agrega disclaimer F-6 y manda la
+# original.
 #
 # Defensas (CA-SEC-1..9):
 #   - sherlock_enabled solo se lee desde este archivo (CA-SEC-7 anti-toggle
@@ -527,11 +528,21 @@ pipeline:
 #     `Math.min(valor, 1)` así que aunque alguien edite y ponga 99 acá,
 #     el invariante hardcoded gana (CA-SEC-9). Mantener `1` documenta la
 #     intención y evita confusión.
-#   - sherlock_timeout_ms se respeta hasta un máximo de 30s (clamp en
-#     lib/sherlock-verifier.js para evitar starvation de turnos).
+#
+# Timeout (#3484, 2026-05-23):
+#   El timeout local de Sherlock se ELIMINÓ — quedaba en 10s (default) con
+#   clamp absoluto 30s, insuficiente para verificación adversarial real. Ahora
+#   el presupuesto se delega al `lib/multi-provider/completion-client.js`:
+#     - DEFAULT_TIMEOUT_MS  =  90 s   (per-request)
+#     - ABSOLUTE_MAX_TIMEOUT_MS = 180 s (cap defensivo, no removible)
+#   La defensa adicional vive en `pulpo.js` con un soft-timeout de 120s para
+#   todo el turn handler — si Sherlock cuelga, libera el chat con mensaje
+#   honesto al usuario (UX-2 / CA-UX-2).
+#   `sherlock_timeout_ms` quedó como NO-OP: si está presente, se ignora con un
+#   warning en el log. NO removerlo de configs viejas — el cargador es tolerante.
 # =============================================================================
 sherlock_enabled: true
-sherlock_timeout_ms: 10000
+# sherlock_timeout_ms: 10000      # DEPRECATED (#3484) — ahora delegado al cliente.
 sherlock_max_reelaboraciones: 1
 
 # =============================================================================

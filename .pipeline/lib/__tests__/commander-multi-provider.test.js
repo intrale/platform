@@ -710,3 +710,76 @@ test('SR-1 — sidecar real: anthropic pasa todo, incluso paths que matchearían
         cleanup(dir);
     }
 });
+
+// -----------------------------------------------------------------------------
+// #3484 CA-AUDIT-1 — Persistencia JSONL de los 5 campos enriched del Sherlock
+// (sameProvider, sameModel, commanderModel, sherlockModel, transport).
+//
+// El audit log canónico ahora acepta estos campos opcionales en el shape de
+// la entry. Verificamos persistencia leyendo el JSONL escrito.
+// Documentado en docs/pipeline/multi-provider.md:1602, 1622-1634.
+// -----------------------------------------------------------------------------
+
+test('#3484 CA-AUDIT-1 — auditCommanderRequest persiste los 5 campos enriched cuando se proveen', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const ok = cmp.auditCommanderRequest({
+            pipelineDir: dir,
+            event: 'sherlock_verification',
+            providerIntended: 'anthropic',
+            providerEffective: 'cerebras',
+            prompt: 'hash placeholder',
+            tokens: { input: 10, output: 5 },
+            latencyMs: 120,
+            errorCode: null,
+            // Los 5 campos enriched (CA-AUDIT-1).
+            sameProvider: false,
+            sameModel: false,
+            commanderModel: 'claude-opus-4-7',
+            sherlockModel: 'llama-3.3-70b',
+            transport: 'http',
+        });
+        assert.equal(ok, true);
+        const files = fs.readdirSync(path.join(dir, 'logs')).filter(f => f.startsWith('commander-dispatch-'));
+        assert.equal(files.length, 1);
+        const content = fs.readFileSync(path.join(dir, 'logs', files[0]), 'utf8').trim();
+        const entry = JSON.parse(content.split('\n').pop());
+        // Los 5 campos deben aparecer en la entry persistida.
+        assert.equal(entry.same_provider, false, 'same_provider persistido');
+        assert.equal(entry.same_model, false, 'same_model persistido');
+        assert.equal(entry.commander_model, 'claude-opus-4-7', 'commander_model persistido');
+        assert.equal(entry.sherlock_model, 'llama-3.3-70b', 'sherlock_model persistido');
+        assert.equal(entry.transport, 'http', 'transport persistido');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#3484 CA-AUDIT-1 — auditCommanderRequest deja los 5 campos en null cuando no se proveen (back-compat)', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // Llamada al estilo viejo (sin campos enriched) — no debe romper el shape.
+        const ok = cmp.auditCommanderRequest({
+            pipelineDir: dir,
+            event: 'dispatch',
+            providerIntended: 'anthropic',
+            providerEffective: 'anthropic',
+            prompt: 'cualquier cosa',
+            tokens: { input: 5, output: 2 },
+            latencyMs: 80,
+            errorCode: null,
+        });
+        assert.equal(ok, true);
+        const files = fs.readdirSync(path.join(dir, 'logs')).filter(f => f.startsWith('commander-dispatch-'));
+        const content = fs.readFileSync(path.join(dir, 'logs', files[0]), 'utf8').trim();
+        const entry = JSON.parse(content.split('\n').pop());
+        // Los 5 campos persisten como null (no rompen el shape canónico).
+        assert.equal(entry.same_provider, null);
+        assert.equal(entry.same_model, null);
+        assert.equal(entry.commander_model, null);
+        assert.equal(entry.sherlock_model, null);
+        assert.equal(entry.transport, null);
+    } finally {
+        cleanup(dir);
+    }
+});

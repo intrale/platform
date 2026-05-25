@@ -44,8 +44,13 @@
 //     provider (sólo `content`/`inputTokens`/`outputTokens`).
 //
 // DoS / resource exhaustion:
-//   - Timeout configurable (default 10s) en `req.setTimeout` + handler que
-//     destruye con `code: 'ETIMEDOUT'`.
+//   - Timeout configurable (default 90s, cap defensivo 180s) en `req.setTimeout`
+//     + handler que destruye con `code: 'ETIMEDOUT'`. El cap absoluto
+//     (`ABSOLUTE_MAX_TIMEOUT_MS`) NO puede ser removido por el caller — protege
+//     al cliente Telegram de quedar bloqueado por una respuesta colgada.
+//     Histórico: el default era 10s + Sherlock clampaba a 30s — insuficiente
+//     para razonamiento adversarial real (issue #3484). Subido a 90s con cap
+//     180s en mayo 2026.
 //   - Body cap 64KB (`MAX_BODY_BYTES`). Si el provider devuelve más, abortamos
 //     con `error: {type: 'invalid_response', reason: 'body_too_large'}`.
 //
@@ -152,7 +157,17 @@ const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
     ]),
 });
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+// Timeout default — 90s. Cubre razonamiento adversarial real de Sherlock
+// (#3484) sin presión de reloj. Histórico: era 10s — insuficiente para
+// providers que tardan 20-40s en razonar sobre análisis largos.
+const DEFAULT_TIMEOUT_MS = 90_000;
+
+// Cap defensivo absoluto del timeout — el caller puede pedir hasta este valor.
+// Más allá de 3 minutos un turno de Telegram empieza a sentirse colgado y
+// arriesga a que el usuario mande mensajes adicionales pensando que el bot
+// murió. NO removible desde caller — protege al chat de bloqueos infinitos.
+const ABSOLUTE_MAX_TIMEOUT_MS = 180_000;
+
 const MAX_BODY_BYTES = 64 * 1024; // 64KB — cap defensivo contra DoS.
 
 function isAllowedProvider(provider) {
@@ -212,6 +227,13 @@ async function complete({
 } = {}) {
     const startedAt = Date.now();
     const baseResult = { provider, model };
+
+    // Cap defensivo absoluto — defensa-en-profundidad contra callers que
+    // pasen timeouts excesivos (intencional o por bug). NO se removible.
+    const rawTimeout = Number(timeoutMs);
+    const effectiveTimeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0
+        ? Math.min(rawTimeout, ABSOLUTE_MAX_TIMEOUT_MS)
+        : DEFAULT_TIMEOUT_MS;
 
     if (!isAllowedProvider(provider)) {
         return {
@@ -274,13 +296,13 @@ async function complete({
 
     let httpResult;
     try {
-        httpResult = await doRequest({ spec, key, body, timeoutMs, httpImpl });
+        httpResult = await doRequest({ spec, key, body, timeoutMs: effectiveTimeoutMs, httpImpl });
     } catch (e) {
         const isTimeout = e && (e.code === 'ETIMEDOUT' || e.code === 'ESOCKETTIMEDOUT');
         return {
             ok: false,
             error: isTimeout
-                ? { type: 'timeout', detail: `request superó timeoutMs=${timeoutMs}` }
+                ? { type: 'timeout', detail: `request superó timeoutMs=${effectiveTimeoutMs}` }
                 : { type: 'http_error', reason: 'network_error', detail: e && e.message ? e.message : String(e) },
             ...baseResult,
             durationMs: Date.now() - startedAt,
@@ -446,5 +468,6 @@ module.exports = {
     PROVIDER_COMPLETION_ENDPOINTS,
     PROVIDER_MODELS_ALLOWLIST,
     DEFAULT_TIMEOUT_MS,
+    ABSOLUTE_MAX_TIMEOUT_MS,
     MAX_BODY_BYTES,
 };
