@@ -63,7 +63,9 @@ test('validateArgs: wave --audio es válido', () => {
 test('validateArgs: wave con flag desconocido es inválido', () => {
     const v = commanderDet.validateArgs('wave', '--video');
     assert.equal(v.ok, false);
-    assert.match(v.usage, /wave \[--audio\]/);
+    // #3493 — H5 expandió usage a subcomandos: `wave [status [--audio] | next | add <num> #issue | promote]`.
+    // El regex anterior `/wave \[--audio\]/` correspondía a la sintaxis pre-H5 (#3262, solo snapshot).
+    assert.match(v.usage, /wave \[status \[--audio\] \| next \| add/);
 });
 
 test('validateArgs: wave con args arbitrarios es inválido (defensa de injection)', () => {
