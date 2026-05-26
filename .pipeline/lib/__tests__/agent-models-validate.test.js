@@ -1060,14 +1060,17 @@ test('#3220 + #3353 · ALLOWED_CREDENTIAL_ENV_VARS incluye CEREBRAS_API_KEY (sin
   assert.ok(!vars.includes('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
 });
 
-test('#3220 + #3353 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por providers vivos (sin groq)', () => {
+test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por providers vivos (sin groq, con alternativos #3501)', () => {
   const models = validateMod.ALLOWED_MODELS_BY_LAUNCHER;
   assert.ok(models, 'ALLOWED_MODELS_BY_LAUNCHER debe exportarse');
   assert.ok(Object.isFrozen(models), 'top-level debe estar congelado');
   assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-7']);
   assert.deepEqual([...models.codex].sort(), ['gpt-5', 'gpt-5-codex']);
-  assert.deepEqual([...models['gemini-google']], ['gemini-2.0-flash']);
-  assert.deepEqual([...models.cerebras], ['llama-3.3-70b']);
+  // #3501 — gemini-1.5-flash y llama-3.1-70b agregados como modelos alternativos
+  // para preservar adversariality intra-provider en Sherlock (ver
+  // sherlock-verifier.js::resolveSherlockProvider).
+  assert.deepEqual([...models['gemini-google']].sort(), ['gemini-1.5-flash', 'gemini-2.0-flash']);
+  assert.deepEqual([...models.cerebras].sort(), ['llama-3.1-70b', 'llama-3.3-70b']);
   // #3353 — `groq` no debe estar en la allowlist de modelos.
   assert.equal(models.groq, undefined, 'groq debería estar removido tras #3353');
 });

@@ -19,7 +19,7 @@
 9. [Modo degradado del Commander (sin LLM)](#9-modo-degradado-del-commander-sin-llm) — `/quota`, cooldown destructivo, gate texto libre.
 10. [Parser robusto de errores in-flight del Commander (#3434)](#10-parser-robusto-de-errores-in-flight-del-commander-3434) — receta para agregar provider, threat model, anti-patterns.
 11. [Fallback in-flight del Commander (#3275)](#11-fallback-in-flight-del-commander-3275) — gate UX, dedupe, tests.
-12. [Sherlock verifier — timeout y providers (#3484)](#12-sherlock-verifier--timeout-y-providers-3484) — opción B spawn-CLI, timeout cap, soft-timeout, audit enriquecido.
+12. [Sherlock verifier — timeout y providers (#3484)](#12-sherlock-verifier--timeout-y-providers-3484) — opción B spawn-CLI, timeout cap, soft-timeout, audit enriquecido. §12.8 cubre swap intra-provider para preservar adversariality (#3501).
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -1743,6 +1743,105 @@ Correr:
 node --test .pipeline/lib/__tests__/sherlock-verifier.test.js
 node --test .pipeline/lib/__tests__/completion-client.test.js
 ```
+
+### 12.8 Swap intra-provider para preservar adversariality (#3501)
+
+Mejora incremental sobre §12.4. Cuando Sherlock termina usando el mismo provider y el mismo modelo que el Commander, la policy de swap intra-provider intenta diferenciar el modelo (dentro del mismo provider) antes de aceptar la coincidencia. Esto recupera adversariality parcial — un blind-spot de `claude-opus-4-7` no necesariamente coincide con el de `claude-haiku-4-5` por diferencias en distillation, training data y temperature defaults.
+
+#### Comportamiento
+
+| Caso | Antes (#3484) | Post-#3501 |
+|---|---|---|
+| `commander=anthropic/opus`, sherlock chain ofrece `anthropic/haiku` (config #3221) | `same_provider:true`, `same_model:false` — sherlock usa haiku, NO dispara swap | Igual — el `model_override` ya diferencia, swap es no-op |
+| `commander=gemini-google/gemini-2.0-flash`, chain ofrece `gemini-google/gemini-2.0-flash` (mismo modelo) | `same_provider:true`, `same_model:true` — adversariality reducida aceptada | El resolver lee `alternative_models[]` del provider y elige `gemini-1.5-flash`; emite `sherlock_model_swap`. Resultado final: `sameModel:false` |
+| `commander=cerebras/llama-3.3-70b`, chain ofrece `cerebras/llama-3.3-70b`, provider SIN `alternative_models` declarado | `same_provider:true`, `same_model:true` — aceptado | Igual — default-safe, política inactiva (opt-in puro) |
+
+#### Cómo configurarlo
+
+En `agent-models.json` se declara `alternative_models: string[]` opcional dentro de `providers.<name>`:
+
+```json
+{
+  "providers": {
+    "gemini-google": {
+      "model": "gemini-2.0-flash",
+      "alternative_models": ["gemini-1.5-flash"]
+    },
+    "cerebras": {
+      "model": "llama-3.3-70b",
+      "alternative_models": ["llama-3.1-70b"]
+    }
+  }
+}
+```
+
+Cada modelo de `alternative_models[]` debe estar en `ALLOWED_MODELS_BY_LAUNCHER` de `lib/agent-models-validate.js`. Si declarás un modelo fuera de la allowlist, el boot del pulpo aborta con exit code 2 (defensa anti-supply-chain, CA-SEC-SWAP-1).
+
+#### Default-safe
+
+- Provider SIN `alternative_models` → la policy es inactiva. El comportamiento es idéntico a §12.4 (acepta `same_provider:true, same_model:true` como riesgo aceptado).
+- Provider CON `alternative_models` vacío después de filtrar el modelo del Commander → idem (la policy no encuentra candidato real, mantiene mismo provider).
+- `anthropic` y `openai-codex` no declaran `alternative_models` porque su diferenciación de modelo ya está resuelta vía `model_override` en `skills.telegram-sherlock` (config #3221). `telegram-commander` apunta a `claude-opus-4-7`, `telegram-sherlock` a `claude-haiku-4-5` — `sameProvider:true`, `sameModel:false` sin necesidad de swap.
+
+#### Caps defensivos
+
+- `maxItems: 3` en el schema sobre `alternative_models[]` — anti-cost-amplification (CA-SEC-SWAP-2).
+- `HARDCODED_MAX_MODEL_SWAPS = 2` en runtime — defense in depth, cap independiente del schema (CA-SEC-SWAP-3).
+- El swap **NO** consume budget de reelaboración (CA-SEC-9 invariante `HARDCODED_MAX_REELABORACIONES=1` intacto). El swap ocurre dentro de la misma verificación, no es un turn nuevo (CA-SEC-SWAP-4).
+
+#### Evento de audit `sherlock_model_swap`
+
+Cuando dispara la policy, emite una entry adicional al JSONL del día:
+
+```json
+{
+  "event": "sherlock_model_swap",
+  "provider_effective": "gemini-google",
+  "swap_model_origen": "gemini-2.0-flash",
+  "swap_model_destino": "gemini-1.5-flash",
+  "swap_reason": "same_model_avoidance",
+  "same_provider": true,
+  "same_model": false,
+  "commander_model": "gemini-2.0-flash",
+  "sherlock_model": "gemini-1.5-flash",
+  "transport": "http"
+}
+```
+
+Filtrado típico para análisis operativo:
+
+```bash
+jq 'select(.event=="sherlock_model_swap")' .pipeline/logs/commander-dispatch-*.jsonl
+
+# Frecuencia de swap por provider (última semana)
+jq -r 'select(.event=="sherlock_model_swap") | .provider_effective' \
+  .pipeline/logs/commander-dispatch-*.jsonl | sort | uniq -c
+```
+
+#### UX en Telegram (CA-11)
+
+`lib/sherlock-verifier.js::formatVerifiedFooter()` produce una línea informativa para el caller (pulpo.js) cuando Sherlock verifica:
+
+- Sin swap: `Verificado por: anthropic/claude-haiku-4-5`
+- Con swap: `Verificado por: gemini-google/gemini-1.5-flash (swap desde gemini-2.0-flash)`
+
+Reglas UX (CA-UX-SWAP-1): UNA línea, sin emojis, sin tono celebratorio. La diferencia es informativa, no celebratoria — respeta `feedback_telegram-messages-natural.md` y `project_v3-efficiency-priority.md`.
+
+#### Métrica de éxito (post-merge, ventana 1-2 semanas)
+
+- `same_provider:true` mantiene el orden de magnitud actual (no se penaliza por el cambio).
+- `same_model:true` cae a < 20 % del subset `same_provider:true` (objetivo del #3501).
+- Evento `sherlock_model_swap` aparece al menos una vez por provider que declare `alternative_models` (prueba de que la policy se ejercita).
+- Cero incidentes de boot abortado por `alternative_models` mal declarado (gracias a CA-SEC-SWAP-1).
+
+#### Tests
+
+- `#3501 CA-14`: anthropic opus↔haiku via config #3221 NO dispara swap (modelos ya distintos).
+- `#3501 CA-15`: swap intra-provider en gemini-google emite `sherlock_model_swap` con campos diferenciados.
+- `#3501 CA-16 (CA-SEC-SWAP-6)`: `alternative_models` con modelo fuera de allowlist → `validate()` exit code 2.
+- `#3501 CA-17`: invariante cap reelaboración=1 intacto, swap NO consume budget.
+- `#3501 CA-18`: provider sin `alternative_models` → comportamiento post-#3484 preservado (default-safe, opt-in puro).
+- `#3501 CA-11`: `formatVerifiedFooter` incluye `(swap desde X)` cuando aplica.
 
 ---
 

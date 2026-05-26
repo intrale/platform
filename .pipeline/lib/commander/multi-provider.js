@@ -398,6 +398,13 @@ function auditCommanderRequest(opts = {}) {
         commanderModel,
         sherlockModel,
         transport,
+        // #3501 CA-5 — Campos específicos del evento `sherlock_model_swap`.
+        // Solo se incluyen cuando el caller (sherlock-verifier) los provee
+        // para que el operador pueda filtrar con jq sin parser ad-hoc:
+        //   jq 'select(.event=="sherlock_model_swap" and .provider_effective=="gemini-google")'
+        swapModelOrigen,
+        swapModelDestino,
+        swapReason,
         // inyectables tests
         fsImpl,
         auditLog,
@@ -433,6 +440,11 @@ function auditCommanderRequest(opts = {}) {
         commander_model: commanderModel || null,
         sherlock_model: sherlockModel || null,
         transport: transport || null,
+        // #3501 CA-5 — Campos del evento de swap. Para eventos que NO sean
+        // `sherlock_model_swap` quedan en null y no afectan el shape canónico.
+        swap_model_origen: swapModelOrigen || null,
+        swap_model_destino: swapModelDestino || null,
+        swap_reason: swapReason || null,
     };
 
     try {

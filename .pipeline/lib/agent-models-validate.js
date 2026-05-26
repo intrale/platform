@@ -133,11 +133,23 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     'gpt-5-codex',
     'gpt-5',
   ]),
+  // #3501 — `gemini-1.5-flash` se agrega como modelo alternativo del provider
+  // gemini-google para que Sherlock pueda preservar adversariality parcial
+  // cuando coincide en provider con el Commander. La policy de swap intra-provider
+  // vive en lib/sherlock-verifier.js::resolveSherlockProvider (CA-3); la
+  // declaración del modelo como alternative_models vive en agent-models.json.
   'gemini-google': Object.freeze([
     'gemini-2.0-flash',
+    'gemini-1.5-flash',
   ]),
+  // #3501 — `llama-3.1-70b` se agrega como modelo alternativo del provider
+  // cerebras (mismo motivo que arriba). Cerebras Cloud lo expone como modelo
+  // de generación anterior, estable y con el mismo tokenizer base que el
+  // default `llama-3.3-70b` — apto para swap intra-provider sin cambios de
+  // prompt template.
   cerebras: Object.freeze([
     'llama-3.3-70b',
+    'llama-3.1-70b',
   ]),
   // #3243 — NVIDIA NIM expone modelos hosted con naming `vendor/model`. La
   // allowlist se inicializa con los 2 modelos sign-off del issue (DeepSeek
@@ -483,6 +495,54 @@ function validateCrossReferences(config) {
             message: `model "${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${providerDef.launcher}"] (válidos: [${allowedModels.join(', ')}])`,
             fix: 'usar uno de los modelos soportados por el launcher o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js (decisión de plataforma — requiere review)',
           });
+        }
+      }
+      // #3501 CA-SEC-SWAP-1 — alternative_models[] debe estar en
+      // ALLOWED_MODELS_BY_LAUNCHER del launcher del provider. Defensa
+      // anti-supply-chain idéntica a la de `model` y `model_override`:
+      // un atacante con write-access al config no puede declarar un
+      // modelo arbitrario fuera de la allowlist para swap intra-provider.
+      //
+      // Anti-leak: si el valor matchea un patrón de secret hardcoded
+      // conocido, se redacta con [REDACTED]. Mismo patrón que `model`.
+      //
+      // Defense in depth contra el cap del schema (maxItems: 3): aunque
+      // ajv ya capea por items.maxItems, validamos cada item igual para
+      // que un swap del schema no abra ventana de bypass.
+      if (providerDef && Array.isArray(providerDef.alternative_models)
+          && typeof providerDef.launcher === 'string') {
+        const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[providerDef.launcher];
+        for (let i = 0; i < providerDef.alternative_models.length; i++) {
+          const altModel = providerDef.alternative_models[i];
+          if (typeof altModel !== 'string' || altModel.length === 0) {
+            // Schema ya rechaza, defense in depth.
+            errors.push({
+              path: `#/providers/${key}/alternative_models/${i}`,
+              message: `alternative_models[${i}] debe ser string no vacío`,
+              fix: 'declarar un modelo válido o quitar el item',
+            });
+            continue;
+          }
+          // El default del provider NO debería estar en alternative_models —
+          // sería un no-op (swap a sí mismo). Marcamos para que el operador
+          // limpie la config.
+          if (providerDef.model && altModel === providerDef.model) {
+            errors.push({
+              path: `#/providers/${key}/alternative_models/${i}`,
+              message: `alternative_models[${i}]="${altModel}" duplica el model default del provider — no aporta adversariality`,
+              fix: `quitar "${altModel}" de alternative_models — el swap a sí mismo es no-op`,
+            });
+            continue;
+          }
+          if (Array.isArray(allowedModels) && allowedModels.length > 0
+              && !allowedModels.includes(altModel)) {
+            const safeValue = looksLikeSecret(altModel) ? '[REDACTED]' : altModel;
+            errors.push({
+              path: `#/providers/${key}/alternative_models/${i}`,
+              message: `alternative_models[${i}]="${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${providerDef.launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+              fix: 'usar uno de los modelos soportados por el launcher o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js (decisión de plataforma — requiere review)',
+            });
+          }
         }
       }
     }

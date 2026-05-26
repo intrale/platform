@@ -1369,3 +1369,334 @@ test('#3558: sherlock_verification final incluye attemptCount/fallbackUsed/chain
     // en otros tests). Acá validamos que el audit no rompió por los campos extra.
     assert.equal(typeof verification.same_provider, 'boolean');
 });
+// =============================================================================
+// #3501 — Tests del swap intra-provider para preservar adversariality cuando
+// commander y sherlock coinciden en provider+model. Cobertura CA-14..CA-18.
+//
+// Diseño: los tests escriben un agent-models.json fixture en pipelineDir para
+// que `readAlternativeModelsForProvider` pueda leer la config real. El resto
+// del flow se inyecta con los fakes ya existentes.
+// =============================================================================
+
+function writeAgentModelsFixture(pipelineDir, providersOverride) {
+    const cfg = {
+        $schema: './agent-models.schema.json',
+        default_provider: 'anthropic',
+        providers: Object.assign({
+            anthropic: {
+                launcher: 'claude',
+                model: 'claude-opus-4-7',
+                spawn_args_template: ['-p', '{user_prompt}'],
+                output_parser: 'anthropic-stream-json',
+                quota_error_types: ['usage_limit_error'],
+                supports_tool_use: true,
+                prompt_caching: { supported: true, ttl_seconds_default: 300 },
+                credentials_env: ['ANTHROPIC_API_KEY'],
+                permissions_mode: 'bypassPermissions',
+            },
+            cerebras: {
+                launcher: 'cerebras',
+                model: 'llama-3.3-70b',
+                spawn_args_template: ['--model', '{model}'],
+                output_parser: 'openai-sse',
+                quota_error_types: ['rate_limit_exceeded'],
+                supports_tool_use: false,
+                prompt_caching: { supported: false },
+                credentials_env: ['CEREBRAS_API_KEY'],
+                permissions_mode: 'bypassPermissions',
+                alternative_models: ['llama-3.1-70b'],
+            },
+            'gemini-google': {
+                launcher: 'gemini-google',
+                model: 'gemini-2.0-flash',
+                spawn_args_template: ['--model', '{model}'],
+                output_parser: 'gemini-stream',
+                quota_error_types: ['quota_exceeded'],
+                supports_tool_use: true,
+                prompt_caching: { supported: false },
+                credentials_env: ['GEMINI_API_KEY'],
+                permissions_mode: 'bypassPermissions',
+                alternative_models: ['gemini-1.5-flash'],
+            },
+        }, providersOverride || {}),
+        skills: {
+            'telegram-sherlock': { provider: 'anthropic' },
+        },
+    };
+    fs.writeFileSync(path.join(pipelineDir, 'agent-models.json'), JSON.stringify(cfg, null, 2));
+    return cfg;
+}
+
+// =============================================================================
+// CA-14 — Happy path Anthropic: commander=anthropic/opus, sherlock chain
+// devuelve anthropic/haiku via model_override → same_provider:true,
+// same_model:false. NO debe disparar swap (la diferenciación de modelo ya
+// está resuelta declarativamente por config #3221).
+// =============================================================================
+test('#3501 CA-14: anthropic opus↔haiku via config #3221 NO dispara swap (modelos ya distintos)', async () => {
+    const dir = mkTmpPipelineDir();
+    writeAgentModelsFixture(dir);
+    const okResp = {
+        ok: true,
+        content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
+        inputTokens: 10, outputTokens: 5, durationMs: 30,
+    };
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'anthropic',
+        commanderModel: 'claude-opus-4-7',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } }),
+        spawnAnthropic: fakeSpawnAnthropic(okResp),
+        quotaModule: fakeQuotaAllPass(),
+        // Chain devuelve anthropic con modelo haiku (diferente al opus del commander).
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'anthropic', model: 'claude-haiku-4-5' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.sameProvider, true, 'commander+sherlock=anthropic → same_provider=true');
+    assert.equal(result.sameModel, false, 'opus vs haiku → same_model=false');
+    assert.equal(result.modelSwap.swapped, false, 'modelos ya distintos → NO swap');
+    assert.equal(result.modelSwap.originalModel, null);
+    assert.equal(result.sherlockModel, 'claude-haiku-4-5');
+    // No debería aparecer evento sherlock_model_swap.
+    const entries = readAuditEntries(dir);
+    const swapEvt = entries.find(e => e.event === 'sherlock_model_swap');
+    assert.equal(swapEvt, undefined, 'sin swap → no debe persistirse evento sherlock_model_swap');
+});
+
+// =============================================================================
+// CA-15 — Swap Gemini: commander=gemini-google/gemini-2.0-flash, sherlock
+// chain devuelve gemini-google/gemini-2.0-flash (mismo modelo), agent-models
+// declara alternative_models=['gemini-1.5-flash'] → swap a gemini-1.5-flash,
+// evento sherlock_model_swap emitido con campos diferenciados.
+// =============================================================================
+test('#3501 CA-15: swap intra-provider en gemini-google emite sherlock_model_swap con campos diferenciados', async () => {
+    const dir = mkTmpPipelineDir();
+    writeAgentModelsFixture(dir);
+    const okResp = {
+        ok: true,
+        content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
+        inputTokens: 10, outputTokens: 5, durationMs: 30,
+    };
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'gemini-google',
+        commanderModel: 'gemini-2.0-flash',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient(okResp),
+        quotaModule: fakeQuotaAllPass(),
+        // Chain devuelve gemini-google con el mismo modelo que el commander
+        // — debería disparar el swap.
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.sameProvider, true, 'commander+sherlock=gemini-google → same_provider=true');
+    assert.equal(result.sameModel, false, 'post-swap → sherlock pasa a usar gemini-1.5-flash, distinto del commander');
+    assert.equal(result.modelSwap.swapped, true, 'mismo provider+model → debe disparar swap');
+    assert.equal(result.modelSwap.originalModel, 'gemini-2.0-flash', 'originalModel = modelo del commander/resuelto antes del swap');
+    assert.equal(result.modelSwap.reason, 'same_model_avoidance');
+    assert.equal(result.sherlockModel, 'gemini-1.5-flash', 'sherlock resuelve al modelo alternativo declarado');
+    // Evento sherlock_model_swap debe estar persistido con campos diferenciados.
+    const entries = readAuditEntries(dir);
+    const swapEvt = entries.find(e => e.event === 'sherlock_model_swap');
+    assert.ok(swapEvt, 'evento sherlock_model_swap debe estar persistido');
+    assert.equal(swapEvt.swap_model_origen, 'gemini-2.0-flash');
+    assert.equal(swapEvt.swap_model_destino, 'gemini-1.5-flash');
+    assert.equal(swapEvt.swap_reason, 'same_model_avoidance');
+    assert.equal(swapEvt.same_provider, true);
+    assert.equal(swapEvt.same_model, false, 'post-swap same_model=false (sherlock pasó a alternativo)');
+});
+
+// =============================================================================
+// CA-16 (CA-SEC-SWAP-6) — Test validación schema: fixture con
+// `alternative_models: ['modelo-no-permitido']` → validador del boot rechaza
+// con exit code 2 (anti-regresión de la cross-validation SEC-1).
+// =============================================================================
+test('#3501 CA-16 (CA-SEC-SWAP-6): alternative_models con modelo fuera de ALLOWED_MODELS_BY_LAUNCHER → validate falla con exitCode 2', () => {
+    const validator = require('../agent-models-validate');
+    const cfg = {
+        $schema: './agent-models.schema.json',
+        default_provider: 'cerebras',
+        providers: {
+            cerebras: {
+                launcher: 'cerebras',
+                model: 'llama-3.3-70b',
+                spawn_args_template: ['--model', '{model}'],
+                output_parser: 'openai-sse',
+                quota_error_types: ['rate_limit_exceeded'],
+                supports_tool_use: false,
+                prompt_caching: { supported: false },
+                credentials_env: ['CEREBRAS_API_KEY'],
+                permissions_mode: 'bypassPermissions',
+                // Modelo fuera de ALLOWED_MODELS_BY_LAUNCHER['cerebras'].
+                alternative_models: ['modelo-no-permitido-inventado'],
+            },
+        },
+        skills: {
+            'backend-dev': { provider: 'cerebras' },
+        },
+    };
+    const tmpPath = path.join(os.tmpdir(), `sherlock-3501-swap6-${Date.now()}-${process.pid}.json`);
+    fs.writeFileSync(tmpPath, JSON.stringify(cfg));
+    const result = validator.validate(tmpPath);
+    fs.unlinkSync(tmpPath);
+    assert.equal(result.ok, false, 'validador debe rechazar modelo fuera de allowlist');
+    assert.equal(result.exitCode, 2, 'exit code 2 = INVALID_CONFIG');
+    const swapErr = result.errors.find(e => /alternative_models/.test(e.path));
+    assert.ok(swapErr, 'debe emitir error específico de alternative_models');
+    assert.match(swapErr.message, /ALLOWED_MODELS_BY_LAUNCHER/);
+});
+
+// =============================================================================
+// CA-17 — Invariante reelaboración intacto: ejercitar swap NO afecta el cap
+// hardcoded de reelaboraciones. Comprobamos:
+//   1. La constante HARDCODED_MAX_REELABORACIONES sigue siendo 1.
+//   2. Una verify() que dispara swap devuelve resultado funcionalmente
+//      idéntico al pre-swap (verdict, inconsistencias) — el swap NO se
+//      cuenta como reelaboración (asunto del caller, no del verifier).
+// =============================================================================
+test('#3501 CA-17: invariante cap reelaboración=1 intacto, swap NO consume budget', async () => {
+    // (1) La constante no cambió.
+    assert.equal(sherlock.HARDCODED_MAX_REELABORACIONES, 1,
+        'CA-SEC-9 invariante: cap reelaboración hardcoded sigue siendo 1');
+    // Defense-in-depth: la nueva constante HARDCODED_MAX_MODEL_SWAPS está
+    // separada y NO interfiere con la de reelaboración.
+    assert.equal(sherlock.HARDCODED_MAX_MODEL_SWAPS, 2,
+        'CA-SEC-SWAP-3 invariante: cap swap intra-provider=2 (independiente de reelaboración)');
+
+    // (2) Ejercitar swap y verificar que el resultado es funcional.
+    const dir = mkTmpPipelineDir();
+    writeAgentModelsFixture(dir);
+    const okResp = {
+        ok: true,
+        content: JSON.stringify({
+            verdict: 'rechazado',
+            reason: 'inconsistencia detectada por sherlock con modelo alternativo',
+            inconsistencies: [{ claim: 'X', contradiction: 'Y' }],
+        }),
+        inputTokens: 20, outputTokens: 10, durationMs: 50,
+    };
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader({ sherlock_max_reelaboraciones: 99 }), // intento de bypass — clampado a 1.
+        completionClient: fakeCompletionClient(okResp),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'cerebras', model: 'llama-3.3-70b' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    // Swap se ejerció, NO afectó el flow funcional del verdict.
+    assert.equal(result.modelSwap.swapped, true);
+    assert.equal(result.sherlockModel, 'llama-3.1-70b');
+    assert.equal(result.verdict, 'rechazado');
+    assert.equal(result.inconsistencies.length, 1);
+    // El config loader debió aplicar el clamp a 1 igual que antes del swap.
+    const cfg = sherlock._loadSherlockConfig({
+        configLoader: defaultConfigLoader({ sherlock_max_reelaboraciones: 99 }),
+    });
+    assert.equal(cfg.maxReelaboraciones, 1, 'cap reelaboración clampado a 1 incluso con bypass de config');
+});
+
+// =============================================================================
+// CA-18 — Default-safe: provider SIN alternative_models declarado en
+// agent-models.json → comportamiento idéntico al actual post-#3484 (no swap,
+// se mantiene mismo provider/model — Leo aceptó adversariality reducida
+// 2026-05-22). Garantía de que el cambio es opt-in puro y NO regresiona el
+// flow de #3484 cuando no hay alternativos configurados.
+// =============================================================================
+test('#3501 CA-18: provider sin alternative_models → comportamiento idéntico al post-#3484 (default-safe, opt-in puro)', async () => {
+    const dir = mkTmpPipelineDir();
+    // Fixture override: cerebras SIN alternative_models.
+    writeAgentModelsFixture(dir, {
+        cerebras: {
+            launcher: 'cerebras',
+            model: 'llama-3.3-70b',
+            spawn_args_template: ['--model', '{model}'],
+            output_parser: 'openai-sse',
+            quota_error_types: ['rate_limit_exceeded'],
+            supports_tool_use: false,
+            prompt_caching: { supported: false },
+            credentials_env: ['CEREBRAS_API_KEY'],
+            permissions_mode: 'bypassPermissions',
+            // sin alternative_models → política inactiva
+        },
+    });
+    const okResp = {
+        ok: true,
+        content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
+        inputTokens: 10, outputTokens: 5, durationMs: 30,
+    };
+    // Chain devuelve cerebras (mismo que commander). Sin alternative_models,
+    // el resolver acepta same_provider tal cual post-#3484 (NO fallback al
+    // siguiente provider — eso sería breaking change del flujo aceptado).
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient(okResp),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'cerebras', model: 'llama-3.3-70b' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    // Sin alternative_models → NO swap, NO fallback al siguiente provider.
+    // El resolver mantiene cerebras+llama-3.3-70b (comportamiento post-#3484).
+    assert.equal(result.modelSwap.swapped, false, 'sin alternative_models → NO swap intra-provider');
+    assert.equal(result.sherlockProvider, 'cerebras', 'default-safe: NO fallback al siguiente provider (post-#3484)');
+    assert.equal(result.sherlockModel, 'llama-3.3-70b');
+    assert.equal(result.sameProvider, true, 'mismo provider preservado');
+    assert.equal(result.sameModel, true, 'mismo modelo preservado (adversariality reducida aceptada)');
+    // Evento sherlock_model_swap NO debe aparecer en este caso.
+    const entries = readAuditEntries(dir);
+    const swapEvt = entries.find(e => e.event === 'sherlock_model_swap');
+    assert.equal(swapEvt, undefined);
+    // CA-11: footer sin sufijo "swap desde".
+    const footer = sherlock.formatVerifiedFooter({
+        sherlockProvider: result.sherlockProvider,
+        sherlockModel: result.sherlockModel,
+        modelSwap: result.modelSwap,
+    });
+    assert.equal(footer, 'Verificado por: cerebras/llama-3.3-70b');
+    assert.ok(!/swap desde/.test(footer));
+});
+
+// =============================================================================
+// #3501 CA-11 — formatVerifiedFooter con swap: incluye sufijo "(swap desde
+// <model-origen>)" cuando aplica. Test del helper directamente (sin verify).
+// =============================================================================
+test('#3501 CA-11: formatVerifiedFooter incluye "(swap desde X)" cuando hubo swap, no agrega emojis ni tono celebratorio', () => {
+    // Caso swap.
+    const withSwap = sherlock.formatVerifiedFooter({
+        sherlockProvider: 'gemini-google',
+        sherlockModel: 'gemini-1.5-flash',
+        modelSwap: { swapped: true, originalModel: 'gemini-2.0-flash', reason: 'same_model_avoidance' },
+    });
+    assert.equal(withSwap, 'Verificado por: gemini-google/gemini-1.5-flash (swap desde gemini-2.0-flash)');
+    // Sin emojis.
+    assert.ok(!/[\u{1F300}-\u{1FAFF}]/u.test(withSwap), 'no debe contener emojis (UX-G1: tono natural, no celebratorio)');
+
+    // Caso sin swap.
+    const noSwap = sherlock.formatVerifiedFooter({
+        sherlockProvider: 'anthropic',
+        sherlockModel: 'claude-haiku-4-5',
+        modelSwap: { swapped: false, originalModel: null, reason: null },
+    });
+    assert.equal(noSwap, 'Verificado por: anthropic/claude-haiku-4-5');
+
+    // Caso degenerado: sin sherlockProvider → string vacío (caller decide no agregar).
+    assert.equal(sherlock.formatVerifiedFooter({ sherlockProvider: null }), '');
+});
