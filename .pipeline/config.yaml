@@ -577,7 +577,7 @@ sherlock_max_reelaboraciones: 1
 deliverable_notifications:
   enabled: true
   kill_switch: false
-  skills: [guru, po, ux, planner, architect]
+  skills: [guru, po, ux, planner]
   truncate_chars: 1500
   attachment_root: ".pipeline/assets/mockups"
   dedup_window_hours: 24
