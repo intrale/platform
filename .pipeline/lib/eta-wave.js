@@ -37,6 +37,13 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 
+// #3517 — infra de scanning de markers extraída a `lib/eta-markers.js` para
+// compartir lógica con `lib/eta.js` y `dashboard.js`. Las APIs públicas de
+// este módulo (calculateIssueETA, calculateOlaETA, analyzeHistoricalMetrics,
+// mapSizeToCanonical, getIssueSize) no cambian — solo dejamos de duplicar
+// el walk del FS y los filtros de duración.
+const etaMarkers = require('./eta-markers');
+
 // ─── Constantes públicas ───────────────────────────────────────────────────
 
 const SIZE_VOCAB = {
@@ -81,9 +88,11 @@ const CONCURRENCY_MIN = 1;
 const CONCURRENCY_MAX = 50;
 const CONCURRENCY_DEFAULT = 3;
 
-// Límites de duración válida por marker (mismo criterio que dashboard.js).
-const MIN_VALID_DURATION_MS = 5000;          // <5s = probablemente run espurio
-const MAX_VALID_DURATION_MS = 4 * 3600 * 1000; // >4h = probablemente abandono
+// Límites de duración válida por marker. Re-exportados desde `eta-markers.js`
+// (#3517) — son la fuente única de verdad para los tres consumidores que antes
+// duplicaban estos literales (eta-wave, eta, dashboard).
+const MIN_VALID_DURATION_MS = etaMarkers.MIN_VALID_DURATION_MS;
+const MAX_VALID_DURATION_MS = etaMarkers.MAX_VALID_DURATION_MS;
 
 // Cache TTL del análisis histórico (sigue el patrón de waves.js).
 const ANALYSIS_CACHE_TTL_MS = 30 * 1000;
@@ -234,86 +243,28 @@ function getIssueSize(issueNumber) {
 }
 
 // ─── Lectura de markers FS (per-issue / per-fase) ──────────────────────────
-
-function _listProcessedFiles(faseDir) {
-    const out = [];
-    for (const estado of ['procesado', 'listo']) {
-        const dir = path.join(faseDir, estado);
-        let names = [];
-        try { names = fs.readdirSync(dir); } catch { continue; }
-        for (const name of names) {
-            if (!name || name.startsWith('.') || name.startsWith('_')) continue;
-            out.push({ dir, name });
-        }
-    }
-    return out;
-}
-
-function _hasRejectionMarker(filePath) {
-    // Lee el archivo y busca `resultado: rechazado` al inicio de línea.
-    // Lectura sincrónica de archivos pequeños del pipeline (no del JSONL).
-    try {
-        const txt = fs.readFileSync(filePath, 'utf8');
-        return /^[ \t]*resultado[ \t]*:[ \t]*rechazado\b/m.test(txt);
-    } catch {
-        return false;
-    }
-}
+//
+// #3517 — Toda la infraestructura de walk + filtros + parsing de markers
+// vive ahora en `lib/eta-markers.js`. Este wrapper solo adapta la API a la
+// shape histórica que `analyzeHistoricalMetrics` consume (perIssue + perFase
+// + totalProcessed + totalRejected, sin perFaseSkill que es del dashboard).
+// Mantenemos `includeRejection: true` para preservar el comportamiento
+// previo: el `rebounceRate` cae a markers FS si el JSONL no aporta señal,
+// y eso necesita la detección de `resultado: rechazado` en cada marker.
 
 function _collectMarkers() {
-    const root = pipelineDir();
-    const perIssue = {};   // issueNumber → { totalMs, fases:{fase:ms}, rejected:bool }
-    const perFase = {};    // fase → [ms]
-    let totalProcessed = 0;
-    let totalRejected = 0;
-
-    let pipelineDirs = [];
-    try {
-        pipelineDirs = fs.readdirSync(root, { withFileTypes: true })
-            .filter((d) => d.isDirectory() && (d.name === 'desarrollo' || d.name === 'definicion'))
-            .map((d) => path.join(root, d.name));
-    } catch {
-        return { perIssue, perFase, totalProcessed, totalRejected };
-    }
-
-    for (const pdir of pipelineDirs) {
-        let faseNames = [];
-        try {
-            faseNames = fs.readdirSync(pdir, { withFileTypes: true })
-                .filter((d) => d.isDirectory())
-                .map((d) => d.name);
-        } catch { continue; }
-
-        for (const fase of faseNames) {
-            const faseDir = path.join(pdir, fase);
-            const files = _listProcessedFiles(faseDir);
-            for (const { dir, name } of files) {
-                const fullPath = path.join(dir, name);
-                let st;
-                try { st = fs.statSync(fullPath); } catch { continue; }
-                const dur = st.ctimeMs - st.birthtimeMs;
-                if (!Number.isFinite(dur) || dur <= MIN_VALID_DURATION_MS || dur > MAX_VALID_DURATION_MS) continue;
-
-                const issueStr = name.split('.')[0];
-                const issue = Number(issueStr);
-                if (!Number.isInteger(issue) || issue <= 0) continue;
-
-                totalProcessed++;
-                if (!perIssue[issue]) perIssue[issue] = { totalMs: 0, fases: {}, rejected: false };
-                perIssue[issue].totalMs += dur;
-                perIssue[issue].fases[fase] = (perIssue[issue].fases[fase] || 0) + dur;
-                if (!perFase[fase]) perFase[fase] = [];
-                perFase[fase].push(dur);
-
-                if (_hasRejectionMarker(fullPath)) {
-                    perIssue[issue].rejected = true;
-                    totalRejected++;
-                }
-            }
-        }
-    }
-
-    return { perIssue, perFase, totalProcessed, totalRejected };
+    const result = etaMarkers.collectMarkers({
+        root: pipelineDir(),
+        includeRejection: true,
+    });
+    // Compat byte-a-byte con el shape histórico — descartamos `perFaseSkill`
+    // que es nuevo y solo lo consume el dashboard.
+    return {
+        perIssue: result.perIssue,
+        perFase: result.perFase,
+        totalProcessed: result.totalProcessed,
+        totalRejected: result.totalRejected,
+    };
 }
 
 // ─── Streaming JSONL (CA-12) ───────────────────────────────────────────────
