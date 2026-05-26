@@ -49,6 +49,10 @@ const humanBlock = require('./lib/human-block');
 const partialPause = require('./lib/partial-pause');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
+// #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
+// Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
+// formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
+const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
 // #3258 — Multi-provider fallback chain para el Commander de Telegram. Reusa
 // el runtime de dispatch-with-fallback (#3198) con `skill: 'telegram-commander'`.
 // Sanitiza input del usuario, deduplica avisos de fallback (SR-6), emite audit
@@ -7938,13 +7942,35 @@ function ejecutarClaude(prompt, textoOriginal) {
               // para Opus 4.7. NO seteamos flag de quota (Anthropic está sano)
               // ni saltamos provider. Avisamos al usuario para que reintente.
               log('commander', `🐞 cli_1m_context_glitch detectado (provider=${cmdProvider}, glitchType="${det.glitchType}") — Anthropic sano, bug upstream del CLI con Opus 4.7 1M. NO seteando flag de quota.`);
+              // #3508 CA-3 / SEC-5: registrar hit en commander-session.json
+              // (contador + last_hit_at) y loggear con shape sanitizado (sin
+              // prompt del usuario, sin context del agente).
+              let hitState = null;
               try {
-                sendTelegramPlain(
+                const hit = oneMWorkaround.recordHit({ sessionFile: SESSION_FILE });
+                hitState = hit.state;
+                if (hit.corrupt && hit.corrupt.length > 0) {
+                  // SEC-4: corrupciones del JSON se loggean pero no crashean.
+                  log('commander', `[anthropic-1m] session_corrupt: ${JSON.stringify(hit.corrupt)}`);
+                }
+                const hitLog = oneMWorkaround.sanitizeHitLog({
+                  timestamp: new Date().toISOString(),
+                  provider: cmdProvider,
+                  evidence: quotaExhausted.sanitizeRawExcerpt ? quotaExhausted.sanitizeRawExcerpt(line) : '',
+                });
+                log('commander', `[anthropic-1m] hit registrado: ${JSON.stringify(hitLog)} (total=${hitState.hits_total})`);
+              } catch (e) { log('commander', `[anthropic-1m] recordHit falló (best-effort): ${e.message}`); }
+              try {
+                // #3508 UX-1 / CA-5: extender el mensaje con el estado actual del
+                // workaround (hits y último hit) y la sugerencia operativa.
+                const baseMsg =
                   `🐞 Bug intermitente del CLI de Anthropic Claude Code: pidió 1M context y devolvió ` +
                   `"Usage credits required" aunque el plan Claude Max 20x sí lo cubra. ` +
                   `Estoy preservando Anthropic como activo (no salto a otro proveedor). ` +
-                  `Reintentá tu pedido en unos segundos.`
-                );
+                  `Reintentá tu pedido en unos segundos.`;
+                let extension = '';
+                try { extension = oneMWorkaround.formatHitExtension({ sessionFile: SESSION_FILE }); } catch {}
+                sendTelegramPlain(baseMsg + extension);
               } catch { /* best-effort */ }
             } else if (det.matched) {
               log('commander', `🚫 quota_detector: provider=${cmdProvider}, error_type="${det.errorType}" detectado — seteando flag`);
@@ -10352,6 +10378,17 @@ async function mainLoop() {
   log('pulpo', `Pipeline: ${PIPELINE}`);
   log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
 
+  // #3508 CA-7 / UX-4 — Log de startup informativo del workaround Anthropic 1M.
+  // Una sola línea que confirma al operador el estado del flag y los hits
+  // acumulados. Si el JSON de session está corrupto, formatStartupLogLine cae
+  // al estado vacío sin tirar (readState defensivo).
+  try {
+    const startupLine = oneMWorkaround.formatStartupLogLine({ sessionFile: SESSION_FILE });
+    log('pulpo', startupLine);
+  } catch (e) {
+    log('pulpo', `WARN anthropic-1m startup log falló: ${e.message}`);
+  }
+
   // #3085 / S7 — audit trail one-shot al boot: registrar qué env vars del
   // operador NO entraron en allowlist/scopes. Sin valores, solo nombre + hash
   // truncado SHA-256-12 para forensia (CA-10). Se escribe SIEMPRE (incluso
@@ -10555,6 +10592,42 @@ async function mainLoop() {
     log('agent-models', `Cron iniciado: cada ${AGENT_MODELS_CHECK_INTERVAL_MIN}min, cursor en .pipeline/agent-models-last-notified.json`);
   } catch (e) {
     log('agent-models', `No se pudo iniciar el cron: ${e.message}`);
+  }
+
+  // #3508 CA-4 — Tick periódico del TTL del workaround Anthropic 1M.
+  // Cada hora chequea si pasaron >14 días sin hits y el flag sigue activo →
+  // emite alerta Telegram con cooldown 7 días. Reusa el módulo
+  // anthropic-1m-workaround (decisión centralizada, sin lógica de fechas acá).
+  // Si tira, NO mata el pulpo (es accesorio, igual que agent-models).
+  const ANTHROPIC_1M_TTL_CHECK_INTERVAL_MIN = 60;
+  try {
+    const tickAnthropic1mTtl = () => {
+      try {
+        const decision = oneMWorkaround.checkTtlAlert({ sessionFile: SESSION_FILE });
+        if (decision.corrupt && decision.corrupt.length > 0) {
+          // SEC-4: si la corrupción fue en last_alert_sent_at, readState ya lo
+          // reseteó a null, así que el tick puede continuar y emitir.
+          log('commander', `[anthropic-1m] session_corrupt en tick TTL: ${JSON.stringify(decision.corrupt)}`);
+        }
+        if (!decision.shouldEmit) {
+          return; // razones: flag_disabled | no_hits_ever | ttl_not_reached | cooldown_active.
+        }
+        // CA-6 + UX-2: mensaje canónico construido por el módulo.
+        const body = oneMWorkaround.formatTtlAlertMessage({ sessionFile: SESSION_FILE });
+        try { sendTelegramPlain(body); } catch { /* best-effort */ }
+        // CA-4 / SEC-6: persistir last_alert_sent_at para activar el cooldown.
+        oneMWorkaround.recordAlertSent({ sessionFile: SESSION_FILE });
+        log('commander', `[anthropic-1m] alerta TTL emitida (último hit=${decision.state.last_hit_at}, hits=${decision.state.hits_total}). Cooldown ${oneMWorkaround.COOLDOWN_DAYS}d activo.`);
+      } catch (e) {
+        log('commander', `[anthropic-1m] tick TTL error (best-effort): ${e.message}`);
+      }
+    };
+    // Primer tick a los 5min post-arranque, después cada hora.
+    setTimeout(tickAnthropic1mTtl, 5 * 60 * 1000);
+    setInterval(tickAnthropic1mTtl, ANTHROPIC_1M_TTL_CHECK_INTERVAL_MIN * 60 * 1000);
+    log('commander', `[anthropic-1m] cron TTL iniciado: cada ${ANTHROPIC_1M_TTL_CHECK_INTERVAL_MIN}min`);
+  } catch (e) {
+    log('commander', `[anthropic-1m] no pude iniciar cron TTL: ${e.message}`);
   }
 
   while (running) {
