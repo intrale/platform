@@ -108,6 +108,12 @@
 // parser estructural no matchea pero hay statusCode extraído del body.
 const httpClassifier = require('../http-error-classifier');
 
+// #3508 — feature flag operativo del workaround #3506. Lo chequeamos ANTES de
+// `CLI_1M_CONTEXT_GLITCH_PATTERN` para permitir kill-switch sin redeploy.
+// Con flag OFF el error cae al path genérico `quota_exhausted` (comportamiento
+// pre-#3506). Default = enabled (SEC-3).
+const oneMWorkaround = require('./anthropic-1m-workaround');
+
 // -----------------------------------------------------------------------------
 // Constantes
 // -----------------------------------------------------------------------------
@@ -310,6 +316,13 @@ function detectFromCliStderr(input, provider, quotaModule) {
         return null;
     };
 
+    // #3508 SEC-2: short-circuit del feature flag ANTES de los regex pesados.
+    // Cuando el operador desactiva el workaround (`ANTHROPIC_1M_WORKAROUND_ENABLED=0`),
+    // saltamos la rama `cli_1m_context_glitch` y dejamos que el error caiga al
+    // path genérico `quota_exhausted` (comportamiento pre-#3506). Preserva las
+    // garantías ReDoS de #3506 (tests 1MB <50ms) en ambos modos.
+    const workaroundEnabled = oneMWorkaround.isWorkaroundEnabled();
+
     // 1. Shape estructural (Anthropic stream-json).
     const allowlist = (quotaModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})[provider] || [];
     if (allowlist.length > 0 && typeof quotaModule._detectAnthropic === 'function') {
@@ -319,14 +332,17 @@ function detectFromCliStderr(input, provider, quotaModule) {
             // #3506: subcaso del glitch del CLI Anthropic con 1M context. Hay que
             // verificarlo ANTES de delegar a _detectAnthropic porque el shape suele
             // venir con `error_type: 'usage_limit_error'` y matchearía como quota.
-            const textChunks = [parsed.result, parsed.error, parsed.message, parsed.error_message]
-                .filter(s => typeof s === 'string')
-                .join(' ');
-            if (textChunks && CLI_1M_CONTEXT_GLITCH_PATTERN.test(textChunks)) {
-                return {
-                    errorClass: 'cli_1m_context_glitch',
-                    evidence: line,
-                };
+            // #3508 SEC-2: solo evaluamos el regex si el workaround está activo.
+            if (workaroundEnabled) {
+                const textChunks = [parsed.result, parsed.error, parsed.message, parsed.error_message]
+                    .filter(s => typeof s === 'string')
+                    .join(' ');
+                if (textChunks && CLI_1M_CONTEXT_GLITCH_PATTERN.test(textChunks)) {
+                    return {
+                        errorClass: 'cli_1m_context_glitch',
+                        evidence: line,
+                    };
+                }
             }
             const r = quotaModule._detectAnthropic(parsed, allowlist);
             if (r && r.matched) {
@@ -356,9 +372,12 @@ function detectFromCliStderr(input, provider, quotaModule) {
     // 3. Heurística regex (CLI stderr de texto libre).
     // #3506: el subcaso "Usage credits required for 1M context" se evalúa
     // ANTES del genérico para evitar misclassification a quota_exhausted.
-    for (const line of lines) {
-        if (CLI_1M_CONTEXT_GLITCH_PATTERN.test(line)) {
-            return { errorClass: 'cli_1m_context_glitch', evidence: line };
+    // #3508 SEC-2: short-circuit del flag para preservar ReDoS budget con OFF.
+    if (workaroundEnabled) {
+        for (const line of lines) {
+            if (CLI_1M_CONTEXT_GLITCH_PATTERN.test(line)) {
+                return { errorClass: 'cli_1m_context_glitch', evidence: line };
+            }
         }
     }
     for (const line of lines) {
@@ -416,7 +435,8 @@ function detectFromApiResponse(input, provider, quotaModule) {
 
             // #3506: subcaso del glitch CLI con 1M context (puede venir tambien
             // por API directa con mismo texto en `message`).
-            if (message && CLI_1M_CONTEXT_GLITCH_PATTERN.test(message)) {
+            // #3508 SEC-2: short-circuit del feature flag antes del regex.
+            if (oneMWorkaround.isWorkaroundEnabled() && message && CLI_1M_CONTEXT_GLITCH_PATTERN.test(message)) {
                 return {
                     errorClass: 'cli_1m_context_glitch',
                     evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),

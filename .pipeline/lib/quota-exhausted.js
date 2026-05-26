@@ -672,15 +672,25 @@ function _detectAnthropic(evt, allowlist) {
     // estructural lo identifica, marcamos `cliGlitch: true` y NO matched —
     // el caller debe inspeccionar el flag y aplicar política propia
     // (retry sin contaminar el flag global de quota).
-    const textChunks = [evt.result, evt.error, evt.message, evt.error_message]
-        .filter(s => typeof s === 'string')
-        .join(' ');
-    if (textChunks && _CLI_1M_CONTEXT_GLITCH_PATTERN.test(textChunks)) {
-        return {
-            matched: false,
-            cliGlitch: true,
-            glitchType: 'cli_1m_context_glitch',
-        };
+    // #3508 SEC-2: feature flag operativo. Si el operador desactiva el
+    // workaround (`ANTHROPIC_1M_WORKAROUND_ENABLED=0`), saltamos el regex y
+    // dejamos que el error caiga al path genérico `quota_exhausted`. Carga
+    // perezosa del módulo para no introducir ciclo de require al boot.
+    let oneMEnabled = true;
+    try {
+        oneMEnabled = require('./commander/anthropic-1m-workaround').isWorkaroundEnabled();
+    } catch { /* defensa: si el módulo no carga, mantener comportamiento #3506 */ }
+    if (oneMEnabled) {
+        const textChunks = [evt.result, evt.error, evt.message, evt.error_message]
+            .filter(s => typeof s === 'string')
+            .join(' ');
+        if (textChunks && _CLI_1M_CONTEXT_GLITCH_PATTERN.test(textChunks)) {
+            return {
+                matched: false,
+                cliGlitch: true,
+                glitchType: 'cli_1m_context_glitch',
+            };
+        }
     }
     return { matched: true, errorType };
 }
