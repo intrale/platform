@@ -763,43 +763,9 @@ function reencolarInfraBloqueados(config) {
 
 // --- Utilidades ---
 
-// Partir texto en chunks para TTS respetando límites de oraciones.
-// Default 1500: Edge TTS trunca audios internamente cerca de 2500-3000 chars
-// en español; con 1500 el texto efectivo queda muy por debajo del umbral
-// observado. Issue #3485. (Copia idéntica a la de multimedia.js; consolidación
-// futura tracked en #3515.)
-function splitTextForTTSChunks(text, maxChars = 1500) {
-  if (text.length <= maxChars) return [text];
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  const chunks = [];
-  let current = '';
-  for (const sentence of sentences) {
-    if ((current + ' ' + sentence).length > maxChars && current.length > 0) {
-      chunks.push(current.trim());
-      current = sentence;
-    } else {
-      current = current ? current + ' ' + sentence : sentence;
-    }
-  }
-  if (current.trim()) chunks.push(current.trim());
-  // Oraciones individuales más largas que maxChars → corte por palabras
-  const result = [];
-  for (const chunk of chunks) {
-    if (chunk.length <= maxChars) { result.push(chunk); continue; }
-    const words = chunk.split(/\s+/);
-    let part = '';
-    for (const word of words) {
-      if ((part + ' ' + word).length > maxChars && part.length > 0) {
-        result.push(part.trim());
-        part = word;
-      } else {
-        part = part ? part + ' ' + word : word;
-      }
-    }
-    if (part.trim()) result.push(part.trim());
-  }
-  return result;
-}
+// Nota: `splitTextForTTSChunks` vive en `./multimedia` (módulo dueño de TTS).
+// Issue #3515 consolidó el algoritmo allí; los scopes que lo usan importan la
+// función vía destructuring del `require('./multimedia')` local.
 
 function log(brazo, msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -6924,7 +6890,7 @@ async function cmdStatus(config) {
 
   // Audio TTS de la narración
   try {
-    const { textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro } = require('./multimedia');
+    const { textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, splitTextForTTSChunks } = require('./multimedia');
     const botToken = getTelegramToken();
     const chatId = getTelegramChatId();
     if (botToken && chatId) {
@@ -8394,7 +8360,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, transcriptionFailureMessage } = require('./multimedia');
+  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, transcriptionFailureMessage, splitTextForTTSChunks } = require('./multimedia');
   const session = loadSession();
 
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
