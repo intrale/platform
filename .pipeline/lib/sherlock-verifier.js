@@ -90,6 +90,22 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const commanderMP = require('./commander/multi-provider');
+// #3558 — Cascada de reintentos entre providers/modelos para Sherlock.
+// Implementa CA-F1..F6 + CA-SEC-3-RECHECK / CA-SEC-SKIP-QUOTA /
+// CA-SEC-CASCADE-CAP / CA-SEC-AUDIT-REDACT / CA-SEC-CRED-FILTER /
+// CA-INV-ADVERSARIAL / CA-INV-SCHEMA.
+const retryChain = require('./sherlock-retry-chain');
+
+// Cap defensivo de cantidad de providers que la cascada de Sherlock arma desde
+// la chain `telegram-sherlock`. Alineado con CA-F2 (`maxProviders: 3`).
+const SHERLOCK_CASCADE_MAX_PROVIDERS = 3;
+
+// Cap defensivo de tiempo total de la cascada (ms). Alineado con
+// `ABSOLUTE_MAX_TIMEOUT_MS` del completion-client (CA-SEC-CASCADE-CAP).
+const SHERLOCK_CASCADE_MAX_TOTAL_MS = 180_000;
+
+// Cap defensivo de modelos por provider en la cascada (CA-F2).
+const SHERLOCK_CASCADE_MAX_ATTEMPTS_PER_PROVIDER = 2;
 
 // Invariante CA-SEC-9 — hardcoded, NO depende de config.
 const HARDCODED_MAX_REELABORACIONES = 1;
@@ -324,6 +340,7 @@ function parseAndValidateSherlockOutput(raw) {
 // -----------------------------------------------------------------------------
 function resolveSherlockProvider({
     excludedProvider,  // mantenido en signature por back-compat; ignorado (#3484)
+    initialExcluded,   // #3558 — providers ya intentados por la cascada
     pipelineDir,
     log,
     quotaModule,
@@ -335,7 +352,21 @@ function resolveSherlockProvider({
     // #3484: `excludedProvider` se ignora a propósito (back-compat). El
     // único motivo para excluir un provider acá es que NO tengamos handler
     // implementado todavía (ej. openai-codex es stub).
+    // #3558: `initialExcluded` permite arrancar el resolver con un set
+    // pre-poblado, usado por la cascada para saltar providers ya probados
+    // sin tocar la semántica original (que sigue ignorando `excludedProvider`).
     const excluded = new Set();
+    if (initialExcluded) {
+        if (initialExcluded instanceof Set) {
+            for (const p of initialExcluded) {
+                if (typeof p === 'string' && p) excluded.add(p);
+            }
+        } else if (Array.isArray(initialExcluded)) {
+            for (const p of initialExcluded) {
+                if (typeof p === 'string' && p) excluded.add(p);
+            }
+        }
+    }
     for (let i = 0; i < maxIterations; i++) {
         let res;
         try {
@@ -838,14 +869,44 @@ async function verify(opts = {}) {
         lastHourLogs,
     });
 
-    // Despacho según transport. HTTP → completion-client; SPAWN → spawn helper
-    // de Anthropic. El timeout (cfg.timeoutMs = 90s default) va al transporte;
-    // ambos respetan su propio cap absoluto (180s en el cliente HTTP, mismo
-    // valor efectivo en el spawn vía clamp del caller cuando aplique).
-    let httpResult;
-    try {
-        if (resolved.transport === 'spawn' && resolved.provider === 'anthropic') {
-            httpResult = await _spawnAnthropic({
+    // -------------------------------------------------------------------------
+    // #3558 — Cascada de reintentos entre providers/modelos.
+    //
+    // Estrategia:
+    //   1. Pre-resolver la cadena de candidatos (initial + fallbacks via
+    //      resolveSherlockProvider con `initialExcluded` creciente).
+    //   2. Delegar la iteración a `retryChain.retryInCascade`, que gestiona
+    //      la rotación de modelos same-provider (CA-INV-ADVERSARIAL), el cap
+    //      de tiempo (CA-SEC-CASCADE-CAP), la clasificación de errores
+    //      (CA-SEC-SKIP-QUOTA), la residency-recheck (CA-SEC-3-RECHECK) y la
+    //      auditoría de cada intento (CA-F3 + CA-SEC-AUDIT-REDACT).
+    // -------------------------------------------------------------------------
+
+    // 1. Construir la cadena de candidatos (initial + hasta SHERLOCK_CASCADE_MAX_PROVIDERS-1 fallbacks).
+    const cascadeChain = [resolved];
+    const alreadyTriedProviders = new Set([resolved.provider]);
+    for (let i = 1; i < SHERLOCK_CASCADE_MAX_PROVIDERS; i++) {
+        const next = resolveSherlockProvider({
+            initialExcluded: alreadyTriedProviders,
+            pipelineDir,
+            log: _log,
+            quotaModule,
+            dispatchModule,
+            fsImpl,
+            now: _now,
+        });
+        if (!next || !next.provider) break;
+        if (alreadyTriedProviders.has(next.provider)) break;
+        cascadeChain.push(next);
+        alreadyTriedProviders.add(next.provider);
+    }
+
+    // 2. Wrappers inyectables para retryInCascade.
+    //
+    // `cascadeComplete` rutea HTTP vs spawn según el transport del candidato.
+    const cascadeComplete = async ({ provider, model, transport }) => {
+        if (transport === 'spawn' && provider === 'anthropic') {
+            const r = await _spawnAnthropic({
                 prompt,
                 timeoutMs: cfg.timeoutMs,
                 spawnImpl,
@@ -854,32 +915,118 @@ async function verify(opts = {}) {
                 env,
             });
             // Normalizamos shape extra para igualar contrato del completion-client.
-            httpResult.model = resolved.model;
-        } else {
-            httpResult = await _completion.complete({
-                provider: resolved.provider,
-                model: resolved.model,
-                prompt,
-                timeoutMs: cfg.timeoutMs,
-                maxTokens: 1024,
-                temperature: 0,
-            });
+            if (r && typeof r === 'object') r.model = model;
+            return r;
         }
-    } catch (e) {
-        // complete()/spawn() NO deberían tirar (devuelven {ok:false}), pero defendemos.
-        httpResult = {
-            ok: false,
-            error: { type: 'unknown', detail: e && e.message ? e.message : String(e) },
-            provider: resolved.provider,
-            model: resolved.model,
-            durationMs: Date.now() - startedAt,
-        };
-    }
+        return await _completion.complete({
+            provider,
+            model,
+            prompt,
+            timeoutMs: cfg.timeoutMs,
+            maxTokens: 1024,
+            temperature: 0,
+        });
+    };
+
+    // `cascadeHasCredential` filtra providers sin key managed antes de iterar
+    // (CA-SEC-CRED-FILTER). Anthropic vía spawn-CLI no usa key managed.
+    const _secretsRw = require('./multi-provider/secrets-rw');
+    const cascadeHasCredential = (provider) => {
+        // Anthropic spawn-CLI usa OAuth/MAX login; no hay key managed.
+        if (provider === 'anthropic') return true;
+        try {
+            return !!_secretsRw.getRawKey({ provider, fsImpl });
+        } catch {
+            return false;
+        }
+    };
+
+    // `cascadeResidency` re-corre enforceDataResidency para cada provider
+    // distinto del inicial (CA-SEC-3-RECHECK). El inicial ya fue validado
+    // arriba (líneas 783-831); skip para evitar emitir `data_residency_check`
+    // dos veces por el mismo provider.
+    const cascadeResidency = (provider) => {
+        if (provider === resolved.provider) return { ok: true };
+        const dr = commanderMP.enforceDataResidency({
+            pipelineDir,
+            provider,
+            paths: [],
+            log: _log,
+            chatId: null,
+            prompt: safeAnalysis,
+            drfModule: _residency,
+            auditLog,
+            fsImpl,
+            now: _now,
+        });
+        if (dr && dr.ok) return { ok: true };
+        return { ok: false, reason: (dr && dr.reason) || 'residency_blocked' };
+    };
+
+    // `cascadeEmit` enriquece cada evento de la cascada con campos canónicos
+    // del verifier (analysisHash, commanderProvider, sameProvider, transport)
+    // antes de delegarlo a `emitAuditEvent`. CA-SEC-AUDIT-REDACT: nunca
+    // propaga prompt, body, ni stderr — solo metadatos tipados.
+    const cascadeEmit = ({ event, payload }) => {
+        if (!payload) payload = {};
+        const candTransport = (cascadeChain.find(c => c.provider === payload.provider) || {}).transport || null;
+        const candSameProvider = !!(commanderProvider && payload.provider && commanderProvider === payload.provider);
+        const candSameModel = !!(candSameProvider && commanderModel && payload.model && commanderModel === payload.model);
+        // El `errorCode` canónico del audit usa reason si existe, sino type.
+        let errorCode = null;
+        if (payload.error && typeof payload.error === 'object') {
+            errorCode = payload.error.reason || payload.error.type || null;
+        }
+        emitAuditEvent({
+            pipelineDir, fsImpl, auditLog, now: _now,
+            event,
+            payload: {
+                analysisHash: hashFor(analysis),
+                commanderProvider,
+                commanderModel,
+                sherlockProvider: payload.provider || null,
+                sherlockModel: payload.model || null,
+                transport: candTransport,
+                sameProvider: candSameProvider,
+                sameModel: candSameModel,
+                durationMs: Number.isFinite(payload.durationMs) ? payload.durationMs : 0,
+                errorCode,
+                // Campos específicos del retry: attemptNumber, error (redacted),
+                // reason (para provider_skipped), severity. Estos viajan en
+                // `extra` del audit-log (no top-level), pero por simplicidad y
+                // back-compat con el shape actual los dejamos en el payload.
+                attemptNumber: payload.attemptNumber || null,
+                retryError: payload.error || null,
+                providerSkippedReason: payload.reason || null,
+            },
+        });
+    };
+
+    // 3. Ejecutar la cascada.
+    const cascadeResult = await retryChain.retryInCascade({
+        chain: cascadeChain,
+        initialProvider: resolved.provider,
+        initialModel: resolved.model,
+        initialTransport: resolved.transport,
+        complete: cascadeComplete,
+        parseAndValidate: parseAndValidateSherlockOutput,
+        modelsAllowlist: (_completion && _completion.PROVIDER_MODELS_ALLOWLIST)
+            || require('./multi-provider/completion-client').PROVIDER_MODELS_ALLOWLIST,
+        hasCredential: cascadeHasCredential,
+        enforceResidency: cascadeResidency,
+        emitAuditEvent: cascadeEmit,
+        maxAttemptsPerProvider: SHERLOCK_CASCADE_MAX_ATTEMPTS_PER_PROVIDER,
+        maxProviders: SHERLOCK_CASCADE_MAX_PROVIDERS,
+        maxTotalCascadeMs: SHERLOCK_CASCADE_MAX_TOTAL_MS,
+        log: _log,
+        now: () => Date.now(),
+    });
 
     const totalMs = Date.now() - startedAt;
 
-    if (!httpResult.ok) {
-        const isTimeout = httpResult.error && httpResult.error.type === 'timeout';
+    // 4. Manejar el resultado.
+    if (!cascadeResult.ok) {
+        // CA-F5 — DISCLAIMER_F6 SOLO cuando la cascada agota o se gatilla el cap.
         emitAuditEvent({
             pipelineDir, fsImpl, auditLog, now: _now,
             event: 'sherlock_verification',
@@ -889,17 +1036,28 @@ async function verify(opts = {}) {
                 commanderModel,
                 sherlockProvider: resolved.provider,
                 durationMs: totalMs,
-                errorCode: httpResult.error ? httpResult.error.type : 'unknown',
+                errorCode: cascadeResult.errorCode,
                 // CA-AUDIT-1 (#3484) — campos enriched.
                 sameProvider,
                 sameModel,
                 sherlockModel: resolved.model,
                 transport: resolved.transport,
+                // CA-F4 (#3558) — campos enriched de cascada.
+                attemptCount: cascadeResult.attemptsCount,
+                fallbackUsed: cascadeResult.fallbackUsed,
+                chainTried: cascadeResult.chainTried,
+                cascadeAbortedByCap: cascadeResult.cascadeAbortedByCap,
             },
         });
+        const lastErr = cascadeResult.lastError || {};
+        const reason = cascadeResult.cascadeAbortedByCap
+            ? 'cascade_timeout'
+            : (lastErr.type === 'schema_violation' ? `schema_violation:${lastErr.parseErrorCode || 'unknown'}`
+              : (lastErr.type === 'timeout' ? 'timeout'
+                : `provider_error:${lastErr.type || lastErr.reason || 'unknown'}`));
         return {
             verdict: 'aborted',
-            reason: isTimeout ? 'timeout' : `provider_error:${httpResult.error && httpResult.error.type || 'unknown'}`,
+            reason,
             inconsistencies: [],
             inconsistenciesTruncated: false,
             sherlockProvider: resolved.provider,
@@ -912,52 +1070,23 @@ async function verify(opts = {}) {
             durationMs: totalMs,
             inputTokens: 0,
             outputTokens: 0,
-            errorCode: isTimeout ? 'timeout' : 'provider_error',
+            errorCode: cascadeResult.errorCode,
             suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
+            attemptCount: cascadeResult.attemptsCount,
+            fallbackUsed: cascadeResult.fallbackUsed,
+            chainTried: cascadeResult.chainTried,
+            cascadeAbortedByCap: cascadeResult.cascadeAbortedByCap,
         };
     }
 
-    // CA-SEC-6 — parseo + validación strict.
-    const parsed = parseAndValidateSherlockOutput(httpResult.content);
-    if (!parsed.ok) {
-        emitAuditEvent({
-            pipelineDir, fsImpl, auditLog, now: _now,
-            event: 'sherlock_schema_violation',
-            payload: {
-                analysisHash: hashFor(analysis),
-                commanderProvider,
-                commanderModel,
-                sherlockProvider: resolved.provider,
-                durationMs: totalMs,
-                inputTokens: httpResult.inputTokens,
-                outputTokens: httpResult.outputTokens,
-                errorCode: parsed.reason,
-                // CA-AUDIT-1 (#3484) — campos enriched.
-                sameProvider,
-                sameModel,
-                sherlockModel: resolved.model,
-                transport: resolved.transport,
-            },
-        });
-        return {
-            verdict: 'aborted',
-            reason: `schema_violation:${parsed.reason}`,
-            inconsistencies: [],
-            inconsistenciesTruncated: false,
-            sherlockProvider: resolved.provider,
-            sherlockModel: resolved.model,
-            transport: resolved.transport,
-            sameProvider,
-            sameModel,
-            commanderProvider,
-            commanderModel,
-            durationMs: totalMs,
-            inputTokens: httpResult.inputTokens || 0,
-            outputTokens: httpResult.outputTokens || 0,
-            errorCode: 'schema_violation',
-            suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
-        };
-    }
+    // Cascada exitosa — al menos un intento devolvió httpResult.ok + schema válido.
+    const httpResult = cascadeResult.httpResult;
+    const parsed = cascadeResult.parsed;
+    const finalProvider = cascadeResult.providerUsed;
+    const finalModel = cascadeResult.modelUsed;
+    const finalTransport = cascadeResult.transportUsed;
+    const finalSameProvider = !!(commanderProvider && finalProvider && commanderProvider === finalProvider);
+    const finalSameModel = !!(finalSameProvider && commanderModel && finalModel && commanderModel === finalModel);
 
     // CA-SEC-8 — solo hashes en el audit log (claim/contradiction nunca crudos).
     const claimHashes = parsed.data.inconsistencies.map(it => hashFor(it.claim));
@@ -970,22 +1099,21 @@ async function verify(opts = {}) {
             analysisHash: hashFor(analysis),
             commanderProvider,
             commanderModel,
-            sherlockProvider: resolved.provider,
+            sherlockProvider: finalProvider,
             durationMs: totalMs,
             inputTokens: httpResult.inputTokens,
             outputTokens: httpResult.outputTokens,
-            // Estos hashes viajan vía prompt_hash composite — el shape canónico
-            // del audit no los expone como campos top-level. Quedan implícitos
-            // en la lectura del JSONL (analysisHash al menos preserva trazabilidad).
             errorCode: null,
             // CA-AUDIT-1 (#3484) — campos enriched para análisis cross-provider.
-            // sameProvider/sameModel ya calculados arriba; sherlockModel/transport
-            // del resolved. El audit-log persiste estos 5 campos al JSONL para
-            // que las consultas de adversariality reducida sean trazables.
-            sameProvider,
-            sameModel,
-            sherlockModel: resolved.model,
-            transport: resolved.transport,
+            sameProvider: finalSameProvider,
+            sameModel: finalSameModel,
+            sherlockModel: finalModel,
+            transport: finalTransport,
+            // CA-F4 (#3558) — campos enriched de cascada.
+            attemptCount: cascadeResult.attemptsCount,
+            fallbackUsed: cascadeResult.fallbackUsed,
+            chainTried: cascadeResult.chainTried,
+            cascadeAbortedByCap: false,
         },
     });
 
@@ -994,11 +1122,11 @@ async function verify(opts = {}) {
         reason: parsed.data.reason,
         inconsistencies: parsed.data.inconsistencies,
         inconsistenciesTruncated: parsed.data.inconsistenciesTruncated,
-        sherlockProvider: resolved.provider,
-        sherlockModel: resolved.model,
-        transport: resolved.transport,
-        sameProvider,
-        sameModel,
+        sherlockProvider: finalProvider,
+        sherlockModel: finalModel,
+        transport: finalTransport,
+        sameProvider: finalSameProvider,
+        sameModel: finalSameModel,
         commanderProvider,
         commanderModel,
         durationMs: totalMs,
@@ -1008,6 +1136,10 @@ async function verify(opts = {}) {
         suggestedDisclaimer: DISCLAIMER_TYPES.NONE, // el caller decide F-5 vs nada
         claimHashes,
         contradictionHashes,
+        // CA-F4 (#3558) — campos enriched de cascada disponibles para el caller.
+        attemptCount: cascadeResult.attemptsCount,
+        fallbackUsed: cascadeResult.fallbackUsed,
+        chainTried: cascadeResult.chainTried,
     };
 }
 
@@ -1055,6 +1187,10 @@ module.exports = {
     MAX_INCONSISTENCIES,
     HTTP_COMPLETION_PROVIDERS,
     SPAWN_COMPLETION_PROVIDERS,
+    // #3558 — caps de cascada (exportados para tests + docs).
+    SHERLOCK_CASCADE_MAX_PROVIDERS,
+    SHERLOCK_CASCADE_MAX_TOTAL_MS,
+    SHERLOCK_CASCADE_MAX_ATTEMPTS_PER_PROVIDER,
     // Alias deprecated (#3484) — mantenido por back-compat con callers viejos.
     // En la próxima limpieza removerlo. Apunta al set HTTP para no romper
     // checks tipo `HTTP_COMPATIBLE_PROVIDERS.has(p)`.
