@@ -56,6 +56,12 @@ try { etaLib = require('./lib/eta'); } catch { /* opcional */ }
 let etaWaveLib = null;
 try { etaWaveLib = require('./lib/eta-wave'); } catch { /* opcional */ }
 
+// Infra compartida de scanning de markers FS (#3517). Best-effort require:
+// si el módulo no está, el builder de `state.etaAverages` cae al inline
+// histórico para no romper el dashboard.
+let etaMarkersLib = null;
+try { etaMarkersLib = require('./lib/eta-markers'); } catch { /* opcional */ }
+
 // #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
 let restModeState = null;
 try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */ }
@@ -635,37 +641,57 @@ function getPipelineState() {
     } catch { /* defensivo */ }
   }
 
-  // ETA: calcular promedios históricos por skill+fase desde archivos procesados
-  // Usa mtime (escritura resultado) - ctime (creación archivo) como proxy de duración
-  state.etaAverages = {}; // key: "fase/skill" → avgMs
-  for (const { pipeline: pName, fase } of allFases) {
-    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
-    const listoDir = path.join(PIPELINE, pName, fase, 'listo');
-    for (const dir of [procesadoDir, listoDir]) {
-      for (const f of listWorkFiles(dir)) {
-        const skill = f.split('.').slice(1).join('.');
-        const st = fileStat(path.join(dir, f));
-        if (!st) continue;
-        // duración = ctime - birthtime (ctime = movido a procesado, birthtime = creación original)
-        const dur = st.ctimeMs - st.birthtimeMs;
-        if (dur <= 5000 || dur > 4 * 3600000) continue; // descartar <5s o >4h
-        const key = `${fase}/${skill}`;
-        if (!state.etaAverages[key]) state.etaAverages[key] = { total: 0, count: 0 };
-        state.etaAverages[key].total += dur;
-        state.etaAverages[key].count++;
+  // ETA: calcular promedios históricos por skill+fase desde archivos procesados.
+  // Usa ctime (movido a procesado) - birthtime (creación) como proxy de duración.
+  //
+  // #3517 — el walk + filtros + agregación viven ahora en `lib/eta-markers.js`;
+  // este builder solo expone la vista `perFaseSkill` como `state.etaAverages`.
+  // El shape, las keys (`${fase}/${skill}` finegrain + `${fase}` coarse) y los
+  // valores `{ total, count, avgMs }` son byte-a-byte iguales al inline previo.
+  // Si el módulo no está disponible (best-effort require falló), caemos al
+  // inline histórico para no degradar el dashboard en ningún caso.
+  state.etaAverages = {};
+  if (etaMarkersLib) {
+    try {
+      const markers = etaMarkersLib.collectMarkers({
+        root: PIPELINE,
+        allFases,
+        includeRejection: false,
+      });
+      state.etaAverages = markers.perFaseSkill || {};
+    } catch {
+      state.etaAverages = {};
+    }
+  } else {
+    // Fallback: inline histórico (mantener vivo el dashboard si el extracto
+    // a `eta-markers.js` falla por cualquier motivo). Idéntico al previo.
+    for (const { pipeline: pName, fase } of allFases) {
+      const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
+      const listoDir = path.join(PIPELINE, pName, fase, 'listo');
+      for (const dir of [procesadoDir, listoDir]) {
+        for (const f of listWorkFiles(dir)) {
+          const skill = f.split('.').slice(1).join('.');
+          const st = fileStat(path.join(dir, f));
+          if (!st) continue;
+          const dur = st.ctimeMs - st.birthtimeMs;
+          if (dur <= 5000 || dur > 4 * 3600000) continue;
+          const key = `${fase}/${skill}`;
+          if (!state.etaAverages[key]) state.etaAverages[key] = { total: 0, count: 0 };
+          state.etaAverages[key].total += dur;
+          state.etaAverages[key].count++;
+        }
       }
     }
-  }
-  // Calcular promedios y también por fase (sin skill)
-  for (const [key, data] of Object.entries(state.etaAverages)) {
-    data.avgMs = Math.round(data.total / data.count);
-    const fase = key.split('/')[0];
-    if (!state.etaAverages[fase]) state.etaAverages[fase] = { total: 0, count: 0 };
-    state.etaAverages[fase].total += data.total;
-    state.etaAverages[fase].count += data.count;
-  }
-  for (const [key, data] of Object.entries(state.etaAverages)) {
-    if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
+    for (const [key, data] of Object.entries(state.etaAverages)) {
+      data.avgMs = Math.round(data.total / data.count);
+      const fase = key.split('/')[0];
+      if (!state.etaAverages[fase]) state.etaAverages[fase] = { total: 0, count: 0 };
+      state.etaAverages[fase].total += data.total;
+      state.etaAverages[fase].count += data.count;
+    }
+    for (const [key, data] of Object.entries(state.etaAverages)) {
+      if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
+    }
   }
 
   // V3 — Bloqueados esperando humano (issue #2478)
