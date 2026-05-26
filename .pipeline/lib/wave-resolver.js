@@ -1,35 +1,45 @@
 // =============================================================================
-// wave-resolver.js — Resolver de "ola activa" para el snapshot ejecutivo (#3262).
+// wave-resolver.js — Resolver de "ola activa" para el snapshot ejecutivo.
 //
-// Responde la pregunta "¿qué issues integran la ola actual?" mirando, en orden
-// de prioridad:
+// Responde la pregunta "¿qué issues integran la ola actual?" delegando en la
+// source-of-truth canónica `lib/waves.js` (issue #3502) y degradando con
+// gracia si esa fuente no tiene una ola activa poblada.
 //
-//   1. `.pipeline/active-wave.json`  → fuente canónica (formato preferido).
-//      Schema: { label: "N+5", issues: [3253, 3257, ...], opened_at, source }
+// Cascada de fuentes (en orden de prioridad):
 //
-//   2. `.pipeline/.partial-pause.json`  → fuente actual de hecho. Cuando Leo
-//      arranca una ola edita la allowlist; los issues incluidos son la ola.
+//   1. `lib/waves.js` → `waves.getActiveWave()` lee `.pipeline/waves.json`
+//      con TTL cache 2s. Es la única fuente canónica desde #3489 / H1.
+//      → source: 'waves.json'.
+//
+//   2. `.pipeline/.partial-pause.json` → fuente legacy de hecho mientras
+//      `waves.json` no esté poblado. Migration path heredado del diseño
+//      original; se mantiene para compatibilidad operativa.
 //      Schema: { allowed_issues: [...], created_at, source }
+//      → source: 'partial-pause.json'.
 //
 //   3. Fallback: todos los issues con archivos activos en el pipeline.
 //      Etiqueta "Ola actual (sin label)" — degradación grácil (CA-15).
-//
-// La idea de tener `active-wave.json` como esquema separado viene de la
-// recomendación de guru en el análisis técnico del issue: hoy hay deriva
-// (allowlist, comentarios libres, milestones) y queremos un punto único de
-// verdad para "ola actual". Este módulo lo lee si existe pero NO falla si no.
+//      → source: 'fs-fallback'.
 //
 // Reglas inquebrantables:
 // - Sin red. Sin GitHub API. Solo filesystem propio del pipeline.
 // - Sin throw a callers: cualquier excepción de I/O degrada al siguiente nivel.
 // - Cero acoplamiento con dashboard.js — recibe el state como parámetro cuando
 //   necesita derivar issues activos del filesystem (camino fallback).
+// - Shape externo PRESERVADO: { label, issues, openedAt, source, resolved }.
+//   `wave-snapshot.js` y `wave-renderer.js` consumen este shape sin cambios.
+//
+// Histórico:
+//   - Pre-#3502: la cascada arrancaba con `active-wave.json` (archivo que
+//     NUNCA existió en disco real) y caía a `.partial-pause.json`. Esa función
+//     muerta (`readActiveWaveFile`) fue eliminada en #3502.
 // =============================================================================
 
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const waves = require('./waves');
 
 // Constantes de pipeline — replicadas localmente para no acoplar con
 // dashboard.js (que carga config.yaml y arrastra deps innecesarias).
@@ -37,37 +47,100 @@ const PIPELINE_NAMES = ['definicion', 'desarrollo'];
 const ACTIVE_STATES = ['pendiente', 'trabajando', 'listo'];
 
 /**
- * Lee `active-wave.json` si existe y es válido.
+ * Normaliza un identificador de issue tolerando AMBOS shapes que aparecen en
+ * el wild (CA-4 — normalizador defensivo por schema drift de `waves.json`):
+ *
+ *   - { number: 3501 }       ← shape canónico esperado por `lib/waves.js`.
+ *   - 3501                   ← shape "flat" del `waves.json` real en disco hoy.
+ *   - "#3501" / " 3501 "     ← strings con/sin prefijo o whitespace.
+ *
+ * Devuelve int positivo o null si no es válido.
+ *
+ * @param {*} value
+ * @returns {number|null}
+ */
+function normalizeIssueNumber(value) {
+    // Pattern defensivo `i.number ?? i` — flagged por guru en el análisis.
+    const raw = (value && typeof value === 'object') ? value.number : value;
+    if (raw === null || raw === undefined) return null;
+    const n = Number(String(raw).trim().replace(/^#/, ''));
+    return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Calcula el `pipelineDir` que `lib/waves.js` resolvería internamente.
+ *
+ * `waves.js` usa `PIPELINE_DIR_OVERRIDE` (si está definida) o `__dirname/..`
+ * dentro de `.pipeline/lib/`. Como este resolver vive en el mismo directorio,
+ * `path.resolve(__dirname, '..')` coincide con el cálculo de waves.js cuando
+ * no hay override. Esto nos permite saber si necesitamos hacer override
+ * temporal del env var (caso típico: tests con pipelineRoot en tmp dir).
+ *
+ * @returns {string} path absoluto al directorio `.pipeline`
+ */
+function effectiveWavesPipelineDir() {
+    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
+    return path.resolve(__dirname, '..');
+}
+
+/**
+ * Lee la ola activa delegando en `lib/waves.js` (source-of-truth canónica).
+ *
+ * Si `pipelineRoot` no coincide con el directorio que `lib/waves.js` resolvería
+ * internamente, se hace override temporal de `PIPELINE_DIR_OVERRIDE` para
+ * forzar a `waves.js` a leer el `waves.json` del root pedido (caso típico:
+ * tests con tmp dirs). El override se restaura en `finally` y se invalida la
+ * cache antes y después para no contaminar otros consumers.
+ *
+ * En producción `pipelineRoot` coincide naturalmente con `pipelineDir()` de
+ * waves.js, así que el override es no-op y la cache TTL 2s se hereda (CA-9).
  *
  * @param {string} pipelineRoot
- * @returns {{label: string, issues: number[], openedAt: string|null, source: string}|null}
+ * @returns {{label: string, issues: number[], openedAt: string|null, source: 'waves.json'}|null}
  */
-function readActiveWaveFile(pipelineRoot) {
-    const file = path.join(pipelineRoot, 'active-wave.json');
-    let raw;
+function readFromWavesJson(pipelineRoot) {
+    const wavesDir = effectiveWavesPipelineDir();
+    const needsOverride = path.resolve(pipelineRoot) !== path.resolve(wavesDir);
+    const prevOverride = process.env.PIPELINE_DIR_OVERRIDE;
+
+    if (needsOverride) {
+        process.env.PIPELINE_DIR_OVERRIDE = pipelineRoot;
+        waves.invalidateCache();
+    }
+
+    let active;
     try {
-        raw = fs.readFileSync(file, 'utf8');
+        active = waves.getActiveWave();
     } catch {
+        active = null;
+    } finally {
+        if (needsOverride) {
+            if (prevOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+            else process.env.PIPELINE_DIR_OVERRIDE = prevOverride;
+            waves.invalidateCache();
+        }
+    }
+
+    if (!active || !Array.isArray(active.issues) || active.issues.length === 0) {
         return null;
     }
-    let parsed;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        return null;
-    }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const label = typeof parsed.label === 'string' ? parsed.label.trim() : '';
-    const issuesRaw = Array.isArray(parsed.issues) ? parsed.issues : [];
-    const issues = issuesRaw
-        .map((n) => Number(String(n).replace(/^#/, '').trim()))
-        .filter((n) => Number.isInteger(n) && n > 0);
-    if (!label || issues.length === 0) return null;
+
+    // CA-4 — normalizador defensivo: tolera issues como int planos o {number}.
+    const issues = active.issues
+        .map(normalizeIssueNumber)
+        .filter(Boolean);
+    if (issues.length === 0) return null;
+
+    const nameTrim = typeof active.name === 'string' ? active.name.trim() : '';
+    const label = nameTrim
+        || (active.number != null ? `Ola ${active.number}` : 'Ola actual');
+    const openedAt = typeof active.started_at === 'string' ? active.started_at : null;
+
     return {
         label,
         issues: [...new Set(issues)].sort((a, b) => a - b),
-        openedAt: typeof parsed.opened_at === 'string' ? parsed.opened_at : null,
-        source: 'active-wave.json',
+        openedAt,
+        source: 'waves.json',
     };
 }
 
@@ -94,8 +167,8 @@ function readPartialPauseFile(pipelineRoot) {
     if (!parsed || typeof parsed !== 'object') return null;
     const issuesRaw = Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [];
     const issues = issuesRaw
-        .map((n) => Number(String(n).replace(/^#/, '').trim()))
-        .filter((n) => Number.isInteger(n) && n > 0);
+        .map(normalizeIssueNumber)
+        .filter(Boolean);
     if (issues.length === 0) return null;
     return {
         label: 'Ola actual',
@@ -154,7 +227,7 @@ function collectActiveIssuesFromFs(pipelineRoot) {
  *   label: string,
  *   issues: number[],
  *   openedAt: string|null,
- *   source: 'active-wave.json'|'partial-pause.json'|'fs-fallback',
+ *   source: 'waves.json'|'partial-pause.json'|'fs-fallback',
  *   resolved: boolean,
  * }}
  */
@@ -164,8 +237,8 @@ function resolveActiveWave(opts) {
         return { label: 'Ola actual (sin label)', issues: [], openedAt: null, source: 'fs-fallback', resolved: false };
     }
 
-    const fromFile = readActiveWaveFile(pipelineRoot);
-    if (fromFile) return { ...fromFile, resolved: true };
+    const fromWaves = readFromWavesJson(pipelineRoot);
+    if (fromWaves) return { ...fromWaves, resolved: true };
 
     const fromPartial = readPartialPauseFile(pipelineRoot);
     if (fromPartial) return { ...fromPartial, resolved: true };
@@ -178,8 +251,10 @@ module.exports = {
     resolveActiveWave,
     // Exports internos para tests
     _internal: {
-        readActiveWaveFile,
+        readFromWavesJson,
         readPartialPauseFile,
         collectActiveIssuesFromFs,
+        normalizeIssueNumber,
+        effectiveWavesPipelineDir,
     },
 };

@@ -1466,31 +1466,21 @@ function invalidateKnownIssuesCache(pipelineRoot) {
 
 /**
  * `/wave status [--audio]` — Reusa el snapshot ejecutivo de #3262 (CA-3 DRY).
- * Si `waves.json` tiene `active_wave`, lo usa como source-of-truth; si no,
- * cae al resolver legacy (`.partial-pause.json`) — último bullet de CA-3.
+ *
+ * Post-#3502: el resolver delega internamente en `lib/waves.js` como
+ * source-of-truth única. Ya no necesitamos rama dual acá — la cascada
+ * (waves.json → partial-pause → fs-fallback) vive del lado del resolver.
+ * `usingLegacy` se infiere del `wave.source` para mantener la nota discreta
+ * del template `wave-status` cuando no se está leyendo de `waves.json`.
  */
 async function handleWaveStatus({ pipelineRoot, audio }) {
     const resolver = require('./wave-resolver');
     const snapshotMod = require('./wave-snapshot');
     const rendererMod = require('./wave-renderer');
     const stateMod = require('./wave-state');
-    const waves = require('./waves');
 
-    // Path 1: waves.json poblado → preferir su shape canónico.
-    let wave;
-    let usingLegacy = false;
-    const activeFromWaves = waves.getActiveWave();
-    if (activeFromWaves && Array.isArray(activeFromWaves.issues) && activeFromWaves.issues.length > 0) {
-        wave = {
-            label: activeFromWaves.name || `Ola ${activeFromWaves.number}`,
-            issues: activeFromWaves.issues.map((i) => Number(i.number)).filter(Boolean),
-            number: activeFromWaves.number,
-        };
-    } else {
-        // Path 2: fallback legacy a `.partial-pause.json` (CA-3 último bullet).
-        usingLegacy = true;
-        wave = resolver.resolveActiveWave({ pipelineRoot });
-    }
+    const wave = resolver.resolveActiveWave({ pipelineRoot });
+    const usingLegacy = wave.source !== 'waves.json';
 
     const state = stateMod.getCachedWaveState({ pipelineRoot });
 
