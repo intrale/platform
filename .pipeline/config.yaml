@@ -575,9 +575,9 @@ sherlock_max_reelaboraciones: 1
 #   2. Activar con `enabled: true` y observar audit JSONL durante 1-2 días.
 #   3. Si aparecen ruidos no esperados, `kill_switch: true` corta sin reiniciar.
 deliverable_notifications:
-  enabled: false
+  enabled: true
   kill_switch: false
-  skills: [guru, po, ux, planner]
+  skills: [guru, po, ux, planner, architect]
   truncate_chars: 1500
   attachment_root: ".pipeline/assets/mockups"
   dedup_window_hours: 24
