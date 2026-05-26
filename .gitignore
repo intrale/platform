@@ -168,6 +168,10 @@ scripts/planner-plan.json
 # Solo se versiona el HEAD de waves.json; archived/ es efímero por máquina.
 .pipeline/archived/
 
+# #3539 — audios .ogg generados por deliverable-notify (CA-SEC-8).
+# El cleanup/retencion sera tratado en #3544.
+.pipeline/audio/
+
 # #3012 — snapshots de cuota Claude Desktop (PNG + JSONL + lockfile + estado alerter)
 # CA-7: PNG con email Max + % uso + USD overage NO se commitea (PII at-rest).
 .pipeline/quota-snapshots/

@@ -570,10 +570,26 @@ sherlock_max_reelaboraciones: 1
 #   - dedup_window_hours:    ventana de dedup por content_hash.
 #   - audit_file:            JSONL append-only. Path relativo al repo root.
 #
+# #3539 (CA-UX-9) — audio TTS automático junto con la notificación de texto.
+#   - audio_enabled:         dispara TTS post-enqueue del texto (fire-and-forget).
+#                            Default OFF (rollout gradual). Cuando esta en true,
+#                            cada notificacion enviada genera 1-3 chunks .ogg
+#                            con la voz del skill (Sócrates para guru, Meche para
+#                            po, Lili para ux, Don Julio para planner).
+#   - kill_switch_audio:     corta SOLO el audio sin afectar el texto/foto
+#                            (independiente de kill_switch).
+#   - audio_root:            root donde se persisten los .ogg generados
+#                            (relativo al repo). Listado en .gitignore.
+#   - max_tts_chunks:        cap de chunks por notificacion (CA-SEC-2 anti
+#                            chunk-bombing). Default 3.
+#   - tts_chunk_timeout_ms:  timeout por chunk TTS (CA-SEC-4). Default 30000.
+#
 # Rollout sugerido:
 #   1. Mergear con `enabled: false`. Validar tests unitarios + smoke.
 #   2. Activar con `enabled: true` y observar audit JSONL durante 1-2 días.
 #   3. Si aparecen ruidos no esperados, `kill_switch: true` corta sin reiniciar.
+#   4. Para audio: activar `audio_enabled: true` cuando el texto se valide en
+#      caliente (rollout independiente).
 deliverable_notifications:
   enabled: true
   kill_switch: false
@@ -582,6 +598,13 @@ deliverable_notifications:
   attachment_root: ".pipeline/assets/mockups"
   dedup_window_hours: 24
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
+  # #3539 — audio TTS opcional. Default OFF (rollout gradual). Activar con OK
+  # operativo y monitorear audit JSONL para records `kind:'audio'`.
+  audio_enabled: false
+  kill_switch_audio: false
+  audio_root: ".pipeline/audio/notifications"
+  max_tts_chunks: 3
+  tts_chunk_timeout_ms: 30000
 
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #

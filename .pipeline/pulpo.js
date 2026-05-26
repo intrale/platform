@@ -3883,6 +3883,22 @@ function brazoBarrido(config) {
               });
               if (result.ok) {
                 log('barrido', `📨 #${issue} notify deliverable → ${notifySkill}/${fase}`);
+                // #3539 (CA-UX-9 / CA-FN-3) — audio TTS fire-and-forget.
+                // `audioTask` es una Promise<auditPatch|null> que ya tiene
+                // .catch interno; la enganchamos para loguear, pero NO la
+                // awaitamos (mantiene non-blocking real del barrido).
+                if (result.audioTask && typeof result.audioTask.then === 'function') {
+                  result.audioTask.then((patch) => {
+                    if (patch && patch.audio_error) {
+                      const code = patch.audio_error.code || 'ERR';
+                      log('barrido', `🎙️ #${issue} audio TTS falló (${notifySkill}): ${code}`);
+                    } else if (patch && Array.isArray(patch.audio_file_paths)) {
+                      const n = patch.audio_file_paths.length;
+                      const trunc = patch.audio_truncated ? ' (truncado a 3)' : '';
+                      log('barrido', `🎙️ #${issue} audio TTS enviado → ${notifySkill} (${n} chunk${n === 1 ? '' : 's'}${trunc})`);
+                    }
+                  }).catch(() => {/* ya capturado dentro del módulo */});
+                }
               } else if (result.action === 'skipped' && result.reason !== 'skill_not_notifiable' && result.reason !== 'disabled') {
                 // dedup, kill_switch, etc → log de visibilidad operacional
                 log('barrido', `📨 #${issue} notify skipped (${notifySkill}/${fase}): ${result.reason}`);
