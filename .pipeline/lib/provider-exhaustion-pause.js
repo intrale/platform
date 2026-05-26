@@ -80,6 +80,12 @@ try { auditLogLib = require('./audit-log'); } catch { /* opcional */ }
 let quotaModule = null;
 try { quotaModule = require('./quota-exhausted'); } catch { /* opcional */ }
 
+// Loader de `agent-models.json` (#3498). Fuente única para humanizar los hints
+// de quota en el mensaje Telegram. Si no carga, `getQuotaHint` degrada a
+// fallback genérico — el barrido nunca se cae por un loader opcional.
+let agentModelsLib = null;
+try { agentModelsLib = require('./agent-models'); } catch { /* opcional */ }
+
 // -----------------------------------------------------------------------------
 // Constantes (todas configurables vía opts del caller para tests + flex)
 // -----------------------------------------------------------------------------
@@ -109,16 +115,23 @@ const TELEGRAM_QUEUE_SUBDIR = path.join('servicios', 'telegram', 'pendiente');
 // Subdir de markers de notificación. Una entrada por issue.
 const NOTIFY_MARKER_SUBDIR = path.join('state', 'exhaustion-notified');
 
-// Tipos de error esperables por provider — para humanizar el detalle del
-// Telegram. Si el caller no pasa `error_types`, mostramos `unknown`.
-const KNOWN_HINTS_BY_PROVIDER = Object.freeze({
-    anthropic: 'usage_limit_error / weekly_quota_exhausted',
-    'openai-codex': 'insufficient_quota / billing_hard_limit_reached',
-    'gemini-google': 'quota_exceeded / resource_exhausted',
-    // Groq descontinuado en #3353 — sin hint hardcoded para el provider.
-    cerebras: 'rate_limit_exceeded / quota_exceeded',
-    'nvidia-nim': 'rate_limit_exceeded / quota_exceeded / insufficient_quota',
-});
+// Hints humanizados por provider (#3498).
+//
+// Fuente única de verdad: `agent-models.json#providers.<id>.quota_error_types`.
+// Antes (rebote 0 de #3259) esto era una tabla `KNOWN_HINTS_BY_PROVIDER`
+// hardcoded — quedaba en drift con `agent-models.json` (incidente Ola N+10
+// 2026-05-26: el hint Telegram no reflejaba `snapshot_threshold_90` aunque
+// estaba en el JSON). #3498 cierra esa deuda derivando el hint del JSON con
+// `getQuotaHint(provider, opts)`.
+//
+// Constantes del helper:
+const QUOTA_HINT_FALLBACK = 'quota_exhausted';
+const QUOTA_HINT_FALLBACK_DEGRADED = 'quota_exhausted (config indisponible)';
+// Cap defensivo — invariante de seguridad (CA-9 / SEC-1):
+//   1) Previene DoS por mensaje > 4096 bytes (límite Telegram).
+//   2) Mantiene legibilidad de la línea del operador (UX-1).
+// Cap aplicado ANTES del `.join(' / ')`.
+const QUOTA_HINT_MAX_ELEMENTS = 5;
 
 // -----------------------------------------------------------------------------
 // Path helpers
@@ -180,6 +193,142 @@ function sanitizeForTelegram(text) {
         str = str.slice(0, TELEGRAM_MAX_BYTES - 32) + '\n[... truncado]';
     }
     return str;
+}
+
+// -----------------------------------------------------------------------------
+// Quota hint helper (#3498) — derivado de agent-models.json#quota_error_types
+// -----------------------------------------------------------------------------
+
+// Cache memoizado lazy del config validado.
+//   `null` = todavía no se intentó cargar (estado virgen del proceso).
+//   Objeto literal `{}` = se intentó cargar y falló — modo degradado.
+//   Objeto con `providers` = cargado OK.
+// Pulpo se reinicia con `restart.js` y no hace hot-reload, así que una sola
+// carga por vida de proceso es coherente (CA-6).
+let _quotaHintsCache = null;
+let _quotaHintsLoadFailed = false;
+let _quotaHintsWarningEmitted = false;
+
+/**
+ * Sanitiza un elemento individual de `quota_error_types` antes del join.
+ * Defense in depth sobre `sanitizeForTelegram` (que se aplica al mensaje
+ * completo aguas abajo). Elimina caracteres Markdown que podrían romper
+ * el render Telegram o inyectar links (CA-10 / SEC-2 / UX-4).
+ *
+ * Nota deliberada de diseño: el underscore (`_`) NO se elimina aunque sea
+ * el marcador de italic en Markdown. Los identificadores en
+ * `quota_error_types` son snake_case (`usage_limit_error`,
+ * `weekly_quota_exhausted`, etc.) y eliminarlo destruiría el contenido que
+ * el operador necesita leer — esto pisaría CA-14 (anti-regresión del
+ * wording vs el hardcoded previo). El render italic ocasional no abre
+ * vector de injection (no inyecta links, no levanta scripts) y la baseline
+ * del módulo lo viene tolerando desde #3259. Los chars realmente
+ * peligrosos (`*`, backtick, `[`, `]`, `(`, `)`) sí se filtran.
+ */
+function sanitizeHintElement(s) {
+    return String(s == null ? '' : s).replace(/[*`\[\]()]/g, '');
+}
+
+function _logQuotaHintWarning(opts) {
+    if (_quotaHintsWarningEmitted) return;
+    _quotaHintsWarningEmitted = true;
+    const logger = (opts && opts.logger) || console;
+    try {
+        if (logger && typeof logger.warn === 'function') {
+            logger.warn('[provider-exhaustion-pause] agent-models.json no disponible o corrupto — getQuotaHint cae a fallback genérico');
+        }
+    } catch { /* logger inválido — silenciar */ }
+}
+
+/**
+ * Devuelve el hint humanizado del provider para el mensaje Telegram al
+ * operador. Fuente única de verdad: `agent-models.json#providers.<id>.quota_error_types`.
+ *
+ * Comportamiento:
+ *   - Provider con `quota_error_types` poblado → strings sanitizados unidos por `' / '`
+ *     (hasta {@link QUOTA_HINT_MAX_ELEMENTS} elementos).
+ *   - Provider con `quota_error_types: []` o ausente → `'quota_exhausted'`.
+ *   - Provider inexistente en el config → `'quota_exhausted'`.
+ *   - `agent-models.json` corrupto / no cargable → `'quota_exhausted (config indisponible)'`
+ *     + warning loggeado una sola vez (no spam por invocación).
+ *
+ * Defensas (invariantes documentadas):
+ *   - Cap `slice(0, 5)` ANTES del join (CA-9 / SEC-1).
+ *   - Sanitización por elemento previa al join (CA-10 / SEC-2 / UX-4).
+ *
+ * @param {string} provider — identificador del provider (ej. `'anthropic'`).
+ * @param {object} [opts]
+ * @param {object} [opts.agentModels] — config inyectado para tests; tiene
+ *   precedencia sobre la cache memoizada (CA-5).
+ * @param {object} [opts.logger] — logger custom para el warning del caso
+ *   corrupto; default `console`.
+ * @returns {string} hint humanizado.
+ */
+function getQuotaHint(provider, opts = {}) {
+    let config = null;
+    let degraded = false;
+
+    // 1) Inyección explícita (testeable, prioritaria). NO toca el cache global.
+    if (opts.agentModels && typeof opts.agentModels === 'object') {
+        config = opts.agentModels;
+    } else {
+        // 2) Cache lazy — cargar una sola vez por vida del proceso.
+        if (_quotaHintsCache === null) {
+            try {
+                if (!agentModelsLib || typeof agentModelsLib.loadAndValidate !== 'function') {
+                    throw new Error('agent-models loader unavailable');
+                }
+                const result = agentModelsLib.loadAndValidate();
+                if (result && result.ok && result.config && typeof result.config === 'object') {
+                    _quotaHintsCache = result.config;
+                    _quotaHintsLoadFailed = false;
+                } else {
+                    _quotaHintsCache = {};
+                    _quotaHintsLoadFailed = true;
+                    _logQuotaHintWarning(opts);
+                }
+            } catch {
+                _quotaHintsCache = {};
+                _quotaHintsLoadFailed = true;
+                _logQuotaHintWarning(opts);
+            }
+        }
+        config = _quotaHintsCache;
+        degraded = _quotaHintsLoadFailed;
+    }
+
+    // 3) Extraer `quota_error_types` defensivamente.
+    let types = null;
+    try {
+        const providerNode = config && config.providers && config.providers[provider];
+        if (providerNode && Array.isArray(providerNode.quota_error_types)) {
+            types = providerNode.quota_error_types;
+        }
+    } catch { /* defensive — caemos a fallback abajo */ }
+
+    if (Array.isArray(types) && types.length > 0) {
+        const joined = types
+            .slice(0, QUOTA_HINT_MAX_ELEMENTS)
+            .map(sanitizeHintElement)
+            .filter(s => s.length > 0)
+            .join(' / ');
+        if (joined.length > 0) return joined;
+        // Todos los elementos quedaron vacíos tras la sanitización → fallback.
+    }
+
+    return degraded ? QUOTA_HINT_FALLBACK_DEGRADED : QUOTA_HINT_FALLBACK;
+}
+
+/**
+ * Resetea el cache memoizado del helper. Pensado únicamente para tests
+ * (entre casos). NO usar desde producción — el cache es lazy y consistente
+ * durante la vida del proceso (Pulpo se reinicia con `restart.js`, sin
+ * hot-reload).
+ */
+function _resetQuotaHintsCache() {
+    _quotaHintsCache = null;
+    _quotaHintsLoadFailed = false;
+    _quotaHintsWarningEmitted = false;
 }
 
 // -----------------------------------------------------------------------------
@@ -374,8 +523,12 @@ function shouldNotify(issue, payload, opts = {}) {
  * NO Markdown porque el body puede traer chain con guiones; el servicio
  * Telegram lo encola con `parse_mode: 'Markdown'` por defecto pero el
  * caller puede pedir plain.
+ *
+ * @param {object} payload — datos del evento de exhaustion.
+ * @param {object} [opts] — overrides (propagados a `getQuotaHint`). Permite
+ *   inyectar `agentModels` para tests sin tocar el cache global (#3498 CA-5).
  */
-function formatExhaustionMessage(payload) {
+function formatExhaustionMessage(payload, opts = {}) {
     const skill = String(payload.skill || 'unknown');
     const issue = isValidIssue(payload.issue) ? Number(payload.issue) : null;
     const title = payload.title ? String(payload.title) : '';
@@ -383,7 +536,10 @@ function formatExhaustionMessage(payload) {
     const chain = Array.isArray(payload.chain_tried) && payload.chain_tried.length
         ? payload.chain_tried.join(' -> ')
         : primary;
-    const hint = KNOWN_HINTS_BY_PROVIDER[primary] || 'quota_exhausted';
+    // #3498: hint derivado de `agent-models.json#quota_error_types`; el helper
+    // mantiene fallback genérico si el provider no está en el config o si el
+    // JSON no carga. Nunca tira.
+    const hint = getQuotaHint(primary, opts);
     const retrySec = Math.max(60, Math.round(Number(payload.retry_interval_ms || DEFAULT_RETRY_INTERVAL_MS) / 1000));
     const issueLink = issue
         ? `[#${issue}${title ? ' — ' + title.slice(0, 80) : ''}](https://github.com/${GH_REPO}/issues/${issue})`
@@ -556,7 +712,7 @@ function reportExhaustion(payload, opts = {}) {
     const decision = shouldNotify(issue, payload, opts);
     out.notify_reason = decision.reason;
     if (decision.notify) {
-        const text = formatExhaustionMessage(payload);
+        const text = formatExhaustionMessage(payload, opts);
         const tg = enqueueTelegram(text, { ...opts, filenameTag: 'exhaustion-pause' });
         out.notified = tg.ok;
         if (tg.file) out.telegram_file = tg.file;
@@ -715,6 +871,11 @@ module.exports = {
     telegramQueueDir,
     exhaustionAuditFile,
 
+    // #3498: helper memoizado del hint humanizado + reset para tests.
+    getQuotaHint,
+    sanitizeHintElement,
+    _resetQuotaHintsCache,
+
     // Constantes
     EXHAUSTION_LABEL,
     GH_REPO,
@@ -724,5 +885,8 @@ module.exports = {
     DEFAULT_RETRY_INTERVAL_MS,
     TELEGRAM_QUEUE_SUBDIR,
     NOTIFY_MARKER_SUBDIR,
-    KNOWN_HINTS_BY_PROVIDER,
+    // #3498: constantes nuevas del helper.
+    QUOTA_HINT_FALLBACK,
+    QUOTA_HINT_FALLBACK_DEGRADED,
+    QUOTA_HINT_MAX_ELEMENTS,
 };

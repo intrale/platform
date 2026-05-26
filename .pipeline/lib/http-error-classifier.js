@@ -31,10 +31,10 @@
 // - NO reemplaza `quota_error_types` en `agent-models.json`: esa allowlist
 //   cubre el canal CLI (claude-code/codex via stream-json o stderr), donde NO
 //   hay HTTP status visible al wrapper. Este clasificador cubre el canal API.
-// - NO reemplaza `KNOWN_HINTS_BY_PROVIDER` en `provider-exhaustion-pause.js`:
-//   esos hints son texto humanizado para mensajes Telegram, no clasificación.
-//   El consumer puede combinar la `category` de acá con el hint humano de
-//   allá.
+// - NO reemplaza `getQuotaHint(provider)` en `provider-exhaustion-pause.js`:
+//   ese helper humaniza el detalle del mensaje Telegram derivando de
+//   `agent-models.json#quota_error_types` (#3498) — no es clasificación. El
+//   consumer puede combinar la `category` de acá con el hint humano de allá.
 //
 // MATRIZ
 // ------

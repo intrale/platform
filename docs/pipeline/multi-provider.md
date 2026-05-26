@@ -406,7 +406,7 @@ classifyHttpError(statusCode, responseBody, provider) → {
 #### Lo que el clasificador NO reemplaza
 
 - **`quota_error_types` en `agent-models.json`** sigue siendo `required` en el schema y cubre el **canal CLI** (claude-code/codex via stream-json o stderr donde no hay HTTP status visible al wrapper). Cross-validado contra `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` en `quota-exhausted.js` (defensa SEC-2 de [#3077](https://github.com/intrale/platform/issues/3077) contra adulteración de `agent-models.json`).
-- **`KNOWN_HINTS_BY_PROVIDER` en `provider-exhaustion-pause.js`** sigue siendo texto humanizado para mensajes Telegram. El clasificador da la `category` (operativa); el hint humano se compone aparte.
+- **El hint humanizado del mensaje Telegram** se compone aparte vía `getQuotaHint(provider)` en `provider-exhaustion-pause.js` ([#3498](https://github.com/intrale/platform/issues/3498)). Desde el refactor de #3498 ese helper se **deriva automáticamente** de `agent-models.json#providers.<id>.quota_error_types` con cap defensivo de 5 elementos, sanitización por elemento y fallback `'quota_exhausted'` (o `'quota_exhausted (config indisponible)'` si el JSON no carga). **Agregar un patrón nuevo es ahora un PR de un solo archivo (`agent-models.json`)**; el mensaje Telegram refleja el cambio al próximo restart del Pulpo, sin tocar la tabla manual `KNOWN_HINTS_BY_PROVIDER` (eliminada). El clasificador HTTP da la `category` operativa; el hint humano se compone aparte y vive en el panel del operador.
 
 #### Consumidores actuales
 
