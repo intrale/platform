@@ -1,0 +1,80 @@
+{
+  "ts": "2026-05-26T23:16:40.958Z",
+  "providers": [
+    {
+      "provider": "anthropic",
+      "label": "Anthropic",
+      "state": "red",
+      "reason_code": "no_key_configured",
+      "status_code": null,
+      "latency_ms": null,
+      "rate_limit_hit_24h": 0,
+      "last_checked_at": "2026-05-26T23:16:40.959Z",
+      "key_status": "absent",
+      "free_tier_notes": null
+    },
+    {
+      "provider": "openai",
+      "label": "OpenAI / Codex",
+      "state": "red",
+      "reason_code": "forbidden",
+      "status_code": 403,
+      "latency_ms": 1149,
+      "rate_limit_hit_24h": 0,
+      "last_checked_at": "2026-05-26T23:16:42.108Z",
+      "key_status": "present",
+      "free_tier_notes": null
+    },
+    {
+      "provider": "elevenlabs",
+      "label": "ElevenLabs",
+      "state": "red",
+      "reason_code": "no_key_configured",
+      "status_code": null,
+      "latency_ms": null,
+      "rate_limit_hit_24h": 0,
+      "last_checked_at": "2026-05-26T23:16:42.108Z",
+      "key_status": "absent",
+      "free_tier_notes": null
+    },
+    {
+      "provider": "gemini-google",
+      "label": "Gemini (Google AI Studio)",
+      "state": "green",
+      "reason_code": "authenticated",
+      "status_code": 200,
+      "latency_ms": 1062,
+      "rate_limit_hit_24h": 0,
+      "last_checked_at": "2026-05-26T23:16:43.171Z",
+      "key_status": "present",
+      "free_tier_notes": "RPM 15 / RPD 1500 / TPM 1M (free) — ver docs/pipeline/multi-provider.md §8."
+    },
+    {
+      "provider": "cerebras",
+      "label": "Cerebras",
+      "state": "green",
+      "reason_code": "authenticated",
+      "status_code": 200,
+      "latency_ms": 256,
+      "rate_limit_hit_24h": 0,
+      "last_checked_at": "2026-05-26T23:16:43.427Z",
+      "key_status": "present",
+      "free_tier_notes": "RPM 30 / TPM 60K (free) — ver docs/pipeline/multi-provider.md §8."
+    },
+    {
+      "provider": "nvidia-nim",
+      "label": "NVIDIA NIM",
+      "state": "green",
+      "reason_code": "authenticated",
+      "status_code": 200,
+      "latency_ms": 641,
+      "rate_limit_hit_24h": 0,
+      "last_checked_at": "2026-05-26T23:16:44.069Z",
+      "key_status": "present",
+      "free_tier_notes": "Free tier sin RPM/RPD/MOQ públicos — ver docs/pipeline/multi-provider.md §8."
+    }
+  ],
+  "green_count": 3,
+  "yellow_count": 0,
+  "red_count": 3
+}

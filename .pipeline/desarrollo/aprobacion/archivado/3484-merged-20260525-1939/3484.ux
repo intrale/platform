@@ -1,0 +1,138 @@
+issue: 3484
+fase: aprobacion
+pipeline: desarrollo
+rebote: true
+rebote_numero: 0
+rebote_tipo: infra
+motivo_rechazo: |
+  [po] [po] OCTAVO rechazo consecutivo — gap CA-AUDIT-1 PERSISTE en HEAD de
+  `agent/3484-pipeline-dev`. Estado IDÉNTICO al rebote #7. Issue ya tiene
+  label `needs-human` aplicado pero el loop sigue ejecutando.
+
+  Issue de scope `area:pipeline` sin `app:*` → PASO 0.A: no requiere video.
+  Evaluación por revisión técnica del código que iría al merge desde esta rama.
+
+  ## Estado verificado empíricamente en esta pasada
+
+  $ git rev-parse HEAD
+  → a435636694183fd34965f899ead3855f7c36587d
+    (idéntico al rebote anterior — el commit fix sigue ausente acá)
+
+  $ git status --short
+  →  M .pipeline/lib/__tests__/sherlock-verifier.test.js
+     M .pipeline/lib/commander/multi-provider.js
+     M .pipeline/lib/sherlock-verifier.js
+
+  $ git diff --shortstat
+  → 3 files changed, 182 insertions(+)
+    (working tree con los cambios pero sin commitear)
+
+  $ git branch --show-current
+  → agent/3484-pipeline-dev
+
+  $ gh pr list --search "head:agent/3484-pipeline-dev" --state all
+  → []  (sigue sin PR desde esta rama)
+
+  $ gh pr list --state open --search "3484"
+  → #3534  head=agent/3484-ca-audit-1-enriched-jsonl  base=main  OPEN
+    (el fix vive ahí, no acá)
+
+  $ git log --all --source --oneline -- .pipeline/lib/__tests__/sherlock-verifier.test.js
+  → cfcccfd1  refs/heads/agent/3484-ca-audit-1-enriched-jsonl  fix(#3484): emit 5 enriched audit fields
+    e975ed29  refs/heads/agent/3484-ca-audit-1-enriched-jsonl  feat(sherlock): quitar timeout local y permitir same-provider
+    a4356366  refs/heads/agent/3484-pipeline-dev  feat(sherlock): quitar timeout local y permitir same-provider
+    948cc6b5  refs/remotes/origin/agent/3484-pipeline-dev  feat(sherlock): quitar timeout local y permitir same-provider
+
+  $ gh issue view 3484 --json labels --jq '.labels[].name'
+  → enhancement, Ready, priority:high, size:medium, area:pipeline, needs-human
+
+  ## Verificación empírica claim-por-claim (todos PERSISTEN en HEAD)
+
+  ### Claim 1 — emitAuditEvent NO pasa los 5 campos enriched (PERSISTE)
+
+  $ git show HEAD:.pipeline/lib/sherlock-verifier.js | sed -n '545,580p'
+  → emitAuditEvent (líneas 550-577 en HEAD) pasa al wrapper sólo 7 campos
+    canónicos: providerEffective, providerIntended, chainTried, tokens,
+    latencyMs, errorCode, prompt. NO se incluye sameProvider, sameModel,
+    commanderModel, sherlockModel, transport.
+
+  ### Claim 2 — entry de auditCommanderRequest sin slots top-level (PERSISTE)
+
+  $ git show HEAD:.pipeline/lib/commander/multi-provider.js | sed -n '395,425p'
+  → entry contiene event, skill, provider_intended, provider_effective,
+    chain_tried, tokens, cost_usd, latency_ms, request_id, chat_id_hash,
+    prompt_hash, error_code, injection_hits, supports_tool_use. NO incluye
+    same_provider, same_model, commander_model, sherlock_model, transport.
+
+  ### Claim 3 — doc multi-provider.md contradice código de HEAD (PERSISTE)
+
+  $ git show HEAD:docs/pipeline/multi-provider.md | grep -nE "same_provider|sherlock_model|commander_model"
+  → 1698: "same_provider": true,
+    1700: "commander_model": "claude-opus-4-7",
+    1701: "sherlock_model": "claude-haiku-4-5",
+    1707: alert futuro sobre same_provider > 80%
+    1728: same_provider: true  ← porque Commander también usa anthropic hoy
+  La doc documenta los campos como persistidos; HEAD no los persiste.
+
+  ### Claim 4 — tests no verifican persistencia JSONL en HEAD (PERSISTE)
+
+  $ git log --all --source --oneline -- .pipeline/lib/__tests__/sherlock-verifier.test.js
+  → El commit cfcccfd1 que agrega los 4 tests CA-AUDIT-1 vive sólo en
+    `refs/heads/agent/3484-ca-audit-1-enriched-jsonl`. HEAD de esta rama
+    (`agent/3484-pipeline-dev` @ a4356366) NO contiene esos tests.
+
+  ## Diagnóstico — loop automático trabado, needs-human ya aplicado
+
+  Esta es la octava iteración consecutiva con el MISMO gap. El issue YA
+  tiene `needs-human` aplicado (verificado en gh issue view), por lo que
+  el loop NO debería estar ejecutando aprobación. Si está corriendo
+  igualmente, hay un problema separado de respeto del label en el pulpo.
+
+  Aprobar este HEAD significaría:
+    a) Mergear a main con CA-AUDIT-1 incumplido.
+    b) docs/pipeline/multi-provider.md líneas 1698-1701, 1707, 1728
+       documentarían telemetría que el código no emite.
+    c) CA-SEC-NEW-3 sin auditoría persistente.
+    d) Romper el contrato con el dashboard widget de same_provider monitoring.
+
+  Sin verificación empírica de los 5 campos enriched en HEAD del PR que
+  va a main, no puedo aprobar.
+
+  ## Acción concreta esperada (operador humano — needs-human ya aplicado)
+
+  Sigue vigente la recomendación del rebote previo. En orden de menor riesgo:
+
+  1. Cherry-pick + push (más limpio):
+        $ git checkout agent/3484-pipeline-dev
+        $ git cherry-pick cfcccfd1
+        $ git push origin agent/3484-pipeline-dev
+        $ gh pr create --base main --head agent/3484-pipeline-dev \
+            --title "feat(sherlock): quitar timeout local, permitir \
+                     same-provider + CA-AUDIT-1 enriched (#3484)"
+        $ gh pr close 3534 --comment "Consolidado en PR principal de #3484"
+     → Re-disparar aprobación del pipeline.
+
+  2. Mergear PR #3534 primero, rebasar después:
+        - Merge de PR #3534 a main (CA-AUDIT-1 entregado).
+        - Rebase de agent/3484-pipeline-dev sobre main.
+        - Abrir PR de agent/3484-pipeline-dev → main con todo el resto.
+        - Re-disparar aprobación.
+
+  3. Investigar por qué el pipeline sigue ejecutando aprobación con
+     `needs-human` ya aplicado. Tracking aparte; no bloquea las acciones
+     1 o 2.
+
+  ## Resto del cambio en HEAD — aprobado al cerrar el gap CA-AUDIT-1
+
+  Verificado sin observaciones nuevas (mismo veredicto que rebotes #6-#7):
+    - Remoción del clamp local + delegación a completion-client 90s/180s
+      (CA-CLIENT-3/CA-CLIENT-4).
+    - Spawn-CLI Anthropic vía buildSpawn (Opción B aprobada).
+    - Phrasing F-5/F-6 OK (CA-UX-3/CA-UX-4).
+    - Typing refresh loop + soft-timeout 120s en pulpo.js (CA-UX-1/CA-UX-2).
+    - Back-compat `excludedProvider` alias + `sherlock_timeout_ms` NO-OP.
+
+  Cerrado el gap CA-AUDIT-1 en HEAD (no en working tree, no en PR
+  separado) → aprobación inmediata sin más vueltas.
+rechazado_en_fase: aprobacion
+rebote_numero_infra: 1

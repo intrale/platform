@@ -1584,6 +1584,16 @@
     ],
     "fetchedAt": 1776810118754
   },
+  "2374": {
+    "title": "bug(pipeline): preservar agentes en vuelo (restart/pause) + diferenciar rebote infra vs codigo",
+    "labels": [
+      "bug",
+      "Ready",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
   "2393": {
     "title": "fix: build rechazó: Build falla en `:app:composeApp:bundleBusinessReleaseClassesToRun",
     "labels": [
@@ -1596,6 +1606,16 @@
       "qa:dependency"
     ],
     "fetchedAt": 1776810118754
+  },
+  "2398": {
+    "title": "Ghostbuster: limpiar branches locales agent/* stale (refs muertos bloqueando pipeline)",
+    "labels": [
+      "bug",
+      "Ready",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
   },
   "2399": {
     "title": "fix: android-dev rechazó: Rebote improcedente: no hay código de android-dev para corr",
@@ -2425,6 +2445,2132 @@
       "area:pipeline"
     ],
     "fetchedAt": 1777061823129
+  },
+  "2536": {
+    "title": "fix(pipeline): linter.js usa REPO_ROOT del repo principal en lugar del worktree del agente",
+    "labels": [
+      "bug",
+      "Ready",
+      "tipo:infra",
+      "priority:high",
+      "needs-human"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2538": {
+    "title": "[Split de #2520] Backend: canal dedicado events.jsonl + aggregator robusto + seguridad server-side",
+    "labels": [
+      "bug",
+      "Ready",
+      "area:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2539": {
+    "title": "[Split de #2520] Frontend: /consumo refresh confiable, estados vacíos, errores con retry, XSS safe + test E2E",
+    "labels": [
+      "bug",
+      "area:infra",
+      "needs-definition",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2550": {
+    "title": "fix(dashboard): 'Entregados 24h' cuenta deliveries rechazados como entregados",
+    "labels": [
+      "bug",
+      "area:infra",
+      "needs-definition",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2551": {
+    "title": "fix(pipeline): delivery determinístico falla con 'rebase conflict: unstaged changes' en worktree post-#2537",
+    "labels": [
+      "bug",
+      "Ready",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2558": {
+    "title": "[Split de #2470] feat(app:business): UI del dueño - form invitación + lista de empleados",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "split",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2559": {
+    "title": "feat(pipeline): exponer /ghostbusters como skill de Claude Code (línea de comandos)",
+    "labels": [
+      "enhancement",
+      "needs-definition",
+      "size:simple",
+      "priority:low",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2560": {
+    "title": "perf(pipeline): brazoDesbloqueo paraleliza consultas a gh y no bloquea el loop principal",
+    "labels": [
+      "enhancement",
+      "needs-definition",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2565": {
+    "title": "[Split de #2470] feat(app:business): UI del invitado - landing + onboarding + App Links",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "split",
+      "blocked:dependencies",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2570": {
+    "title": "[Split de #2473] feat: AuditLog tabla + helper logAuditEvent + sanitización metadata",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2572": {
+    "title": "[Split de #2473] feat: integración fail-closed (WAL) de audit log con 4 acciones sensibles",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2574": {
+    "title": "[Split de #2473] feat: anonimización GDPR (HMAC + Secrets Manager) + runbook infra audit log",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend",
+      "size:medium",
+      "blocked:dependencies",
+      "blocked:routing-manual"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2586": {
+    "title": "[Split de #2475] feat: pantalla Actividad base con timeline y gate por rol OWNER",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2587": {
+    "title": "[Split de #2475] feat: filtros, persistencia y detalle expandido en pantalla Actividad",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2588": {
+    "title": "[Split de #2475] feat: export CSV multiplataforma con proteccion injection y AUDIT_EXPORT",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "split",
+      "blocked:dependencies",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2591": {
+    "title": "fix(pipeline): pulpo aborta fast-fail si no encuentra worktree del issue (eliminar fallback a ROOT)",
+    "labels": [
+      "bug",
+      "Ready",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2599": {
+    "title": "feat(dashboard): ETA del Issue Tracker suma todas las fases/agentes restantes, no solo el activo",
+    "labels": [
+      "enhancement",
+      "needs-definition",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2631": {
+    "title": "[Split de #2558] feat(app:business): Form de invitación de empleado",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2635": {
+    "title": "[Split de #2558] feat(app:business): Lista de invitaciones con acciones (cancelar/reenviar/eliminar)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2643": {
+    "title": "[Split de #2565] feat(app:business): Landing del invitado + deeplink infra (App Links)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2644": {
+    "title": "[Split de #2565] feat(app:business): Onboarding post-aceptación del invitado",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2645": {
+    "title": "[Split de #2565] feat(app:business): Registro inline del invitado (needsRegistration)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2694": {
+    "title": "[Split de #2588] feat: export CSV foundation + Android (sanitizer, backend AUDIT_EXPORT atomic, preview modal, actual Android)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "split",
+      "blocked:dependencies",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2695": {
+    "title": "[Split de #2588] feat: export CSV cross-platform actuals (iOS, Desktop/JVM, Wasm)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "area:configuracion",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2730": {
+    "title": "[Split de #2694] feat(backend): GET /{business}/audit?export=true con AUDIT_EXPORT atomico, limite 10k y headers HTTP defensivos",
+    "labels": [
+      "enhancement",
+      "needs-definition",
+      "feature:configuracion-negocio",
+      "priority:high",
+      "area:backend",
+      "size:medium",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2743": {
+    "title": "[Split de #2441] Frontend business — Infra de roles + RequireRole + gating home + BusinessSelector",
+    "labels": [
+      "Ready",
+      "app:business",
+      "priority:high",
+      "split",
+      "qa:dependency",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2748": {
+    "title": "[Split de #2441] Frontend business — Pantalla Equipo + invitación + aceptación por deep link",
+    "labels": [
+      "Ready",
+      "app:business",
+      "priority:high",
+      "split",
+      "qa:dependency",
+      "blocked:dependencies",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2756": {
+    "title": "[Split de #2456] Navegación a BusinessSoundConfigScreen desde Dashboard y Orders",
+    "labels": [
+      "Ready",
+      "app:business",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2761": {
+    "title": "[Split de #2456] Foreground Service Android para alertas de pedidos en background",
+    "labels": [
+      "Ready",
+      "app:business",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2788": {
+    "title": "[Split de #2743] Frontend business — Capa de datos (modelo + servicios + persistencia)",
+    "labels": [
+      "Ready",
+      "app:business",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2789": {
+    "title": "[Split de #2743] Frontend business — Componentes UI reutilizables (RequireRole + RoleChip + tokens)",
+    "labels": [
+      "Ready",
+      "app:business",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2800": {
+    "title": "Dashboard V3 — Board Kanban como protagonista (cards estilo mockup)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2801": {
+    "title": "feat(dashboard): rediseño kiosk vertical 1080x1920 con tabs satélite y refresh independiente",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "area:pipeline",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2820": {
+    "title": "[Split de #2748] Frontend business — Pantalla Equipo + CRUD empleados (lista, invitar, revocar, cambiar rol)",
+    "labels": [
+      "Ready",
+      "app:business",
+      "priority:high",
+      "size:medium",
+      "qa:dependency"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2882": {
+    "title": "Ventana horaria 'modo descanso' (solo determinísticos) + alerta de consumo anómalo de tokens",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "priority:high",
+      "split",
+      "blocked:dependencies",
+      "area:pipeline",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2890": {
+    "title": "[Split de #2882] PR-A: Modo descanso (gating horario + persistencia + UI básica)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2891": {
+    "title": "[Split de #2882] PR-B: Hourly baseline + detector de anomalías de consumo",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline",
+      "needs-human"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2892": {
+    "title": "[Split de #2882] PR-C: Telegram + banner dashboard + acuse y snooze de alerta",
+    "labels": [
+      "enhancement",
+      "area:dashboard",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2893": {
+    "title": "Pausa parcial: auto-incluir dependencias del issue habilitado + alerta UX",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2894": {
+    "title": "Dashboard: cards de issues deben mostrar agentes ejecutados / pendientes para diagnosticar issues estancados",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "area:pipeline",
+      "needs-human"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2895": {
+    "title": "Dashboard: tiempos por agente + ETA total del issue en cards de la ventana Pipeline",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2900": {
+    "title": "Dashboard: visualizar trayectoria de rebotes en cards e historial (origen, destino, contador)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "area:infra",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2904": {
+    "title": "Dashboard: comando /report <seccion> en Telegram para reportes on-demand mobile-friendly",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2955": {
+    "title": "feat(pipeline): modo fallback deterministico cuando se acaba cuota Anthropic",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "split",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2956": {
+    "title": "feat(pipeline): pipeline agnostico de proveedor/modelo de IA (Anthropic, OpenAI/Codex, etc.)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "qa:passed",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2958": {
+    "title": "feat(telegram): adaptar texto-a-voz a la experiencia auditiva (sin describir emojis ni mencionar el modelo)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "qa:passed",
+      "priority:medium",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2974": {
+    "title": "[Split de #2955] Detector de cuota Anthropic + gate determinístico para skills LLM",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2975": {
+    "title": "[Split de #2955] Notificaciones Telegram de cuota agotada + respuesta canned del commander",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013097
+  },
+  "2976": {
+    "title": "[Split de #2955] Banner amarillo en dashboard con countdown a reset de cuota Anthropic",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "2993": {
+    "title": "feat(pipeline): handoff de resumen cross-agente para reducir recarga de contexto por issue",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "2994": {
+    "title": "[Pipeline] Reconciler GitHub re-aplica labels stale después de destrabe manual (race condition)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "priority:medium",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3002": {
+    "title": "fix(pipeline): brazoDesbloqueo no parsea correctamente la lista de dependencias del comentario del pipeline",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "priority:medium",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3008": {
+    "title": "Lectura precisa de cuota Claude desde cliente desktop (screenshot + parse) — complementa heurístico",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "priority:medium",
+      "split",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3012": {
+    "title": "[Split de #3008] Captura + parse + persistencia de snapshots de cuota Claude Desktop",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "priority:medium",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3013": {
+    "title": "[Split de #3008] Integración de snapshots con detector/banner + calibración EMA + UX",
+    "labels": [
+      "Ready",
+      "area:infra",
+      "qa:passed",
+      "priority:medium",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3015": {
+    "title": "spike(infra): evaluar modelo de IA local como fallback cuando se agota la cuota de proveedores pagos",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:medium",
+      "size:medium"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3023": {
+    "title": "feat(dashboard): filtrar 'próximos 10 en cola' por allowlist de pausa parcial",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "app:client",
+      "qa:skipped",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3025": {
+    "title": "fix(pipeline): tests del stub gh fallan por concurrencia en Windows (EBUSY/NTFS) — reemplazar mock externo por inyección de dependencia",
+    "labels": [
+      "bug",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3030": {
+    "title": "feat(pipeline): mejorar mensaje Telegram de fin de pipeline de desarrollo — reflejar estado real (mergeado / listo / pendiente QA)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "app:client",
+      "qa:passed",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3035": {
+    "title": "feat(dashboard): filtro 'solo con error' + timestamp de fin + diferenciación visual ✓/✗ en 'Últimos 10 Ejecutados'",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3045": {
+    "title": "feat(dashboard): reorganizar encabezado, barra de tabs en una línea y visibilidad de pausa parcial en cola",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "app:client",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3049": {
+    "title": "fix(pipeline): rest-mode.json se pierde en cada /restart por git reset --hard FETCH_HEAD",
+    "labels": [
+      "bug",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "qa:skipped",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3058": {
+    "title": "fix(pipeline): brazoDesbloqueo se cuelga silencioso por gh hang en Windows — incidente 2026-05-07 04:33 UTC con #3008",
+    "labels": [
+      "bug",
+      "duplicate",
+      "tipo:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline",
+      "needs-human"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3059": {
+    "title": "fix(pipeline): brazo de desbloqueo se cuelga silencioso cuando 'gh issue view' no responde en Windows (timeout no mata el proceso)",
+    "labels": [
+      "bug",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "qa:skipped",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3065": {
+    "title": "spike(pipeline): revisar diseño multi-provider — 3 inconsistencias detectadas (consulta operador en deadlock + foco cross-modelo + autonomía por agente)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:client",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3072": {
+    "title": "feat(pipeline): crear .pipeline/agent-models.json + schema + eliminar hardcode 'claude-opus-4-7' [H1 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3073": {
+    "title": "security(pipeline): sanitizer extendido con regex para API keys multi-proveedor (sk-, AIza, etc.) [S2 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:skipped",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3074": {
+    "title": "refactor(pipeline): mover lanzarAgenteClaude a lib/agent-launcher.js con dispatch por provider [H2 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:high",
+      "area:pipeline",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3075": {
+    "title": "feat(pipeline): adaptador OpenAI/Codex (launcher + args + SSE parser + tokens) [H3 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "priority:high",
+      "area:pipeline",
+      "size:large",
+      "needs-human"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3076": {
+    "title": "refactor(pipeline): externalizar DETERMINISTIC_SKILLS a agent-models.json [H4 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3077": {
+    "title": "feat(pipeline): generalizar quota-detector con tabla quota_error_types por proveedor [H5 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3078": {
+    "title": "feat(pipeline): classifyExecutionMode con dispatch por provider en session:end [H6 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "app:client",
+      "qa:skipped",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3079": {
+    "title": "feat(pipeline): test E2E con skill no crítico corriendo en openai-codex [H7 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "priority:high",
+      "size:medium",
+      "blocked:dependencies",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3080": {
+    "title": "security(pipeline): inventario y rotación de credenciales de proveedores de IA [S1 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3081": {
+    "title": "security(pipeline): validación schema + allowlist para agent-models.json [S3 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3082": {
+    "title": "security(pipeline): permission model mapping cross-provider + tests de paridad [S4 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3083": {
+    "title": "security(pipeline): audit trail dinámico con provider/model/cli_version/git_sha [S5 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "size:simple",
+      "priority:high",
+      "area:backend",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3084": {
+    "title": "security/governance: política TOS / data residency / DPA por proveedor [S6 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3085": {
+    "title": "security(pipeline): aislamiento de credenciales por proceso (env allowlist + key del provider) [S7 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3086": {
+    "title": "feat(dashboard-v3): provider:model por agente activo + columna model_used en histórico [U1 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3087": {
+    "title": "feat(telegram): notificar cambios de provider/model con costo estimado vs anterior [U2 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "size:simple",
+      "priority:low",
+      "area:backend",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3088": {
+    "title": "feat(rejection-reports): incluir provider/model/cli_version en PDF y audio [U3 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "size:simple",
+      "priority:low",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3089": {
+    "title": "feat(pipeline): script validate-agent-models.js [U4 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3090": {
+    "title": "feat(dashboard-v3): comparativa de costo cross-provider por skill + alerta umbral [U5 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline",
+      "needs-human"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3091": {
+    "title": "feat(metrics): normalizar costos cross-provider en metrics/aggregator.js [M1 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:medium",
+      "area:backend",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3092": {
+    "title": "feat(metrics): migrar weekly-quota.js a quotaUsage(provider, ...) [M2 multi-provider]",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:medium",
+      "area:backend",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3140": {
+    "title": "bug(pipeline): pre-flight de emulador se dispara para cualquier skill en fase verificacion (no solo qa)",
+    "labels": [
+      "bug",
+      "Ready",
+      "qa:passed",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3142": {
+    "title": "feat(dashboard): solapa para likear issues candidatos a allowlist de pausa parcial",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3154": {
+    "title": "Reintroducir validateCredentialsEnvPresence con awareness de launcher (claude=OAuth, otros=env)",
+    "labels": [
+      "Ready",
+      "area:infra"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3166": {
+    "title": "[investigación] Análisis de eficiencia de uso de cuota en skills LLM del pipeline V3 (BLOQUEADO por multi-provider)",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "priority:critical",
+      "size:medium",
+      "blocked:dependencies",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3175": {
+    "title": "feat(pipeline): garantizar que todo issue/PR creado lleve label de admisión (needs-definition o Ready)",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3176": {
+    "title": "docs(multi-provider): documentacion completa del esquema multi-provider del pipeline",
+    "labels": [
+      "Ready",
+      "docs",
+      "tipo:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3177": {
+    "title": "feat(dashboard): apartado de configuracion grafica multi-provider del pipeline",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "priority:medium",
+      "area:pipeline",
+      "size:large"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3178": {
+    "title": "feat(pipeline): pulpo permeable — admitir issues huerfanos sin label de admision al barrido",
+    "labels": [
+      "tipo:infra",
+      "needs-definition",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3186": {
+    "title": "fix(pipeline): reconciler debe archivar marker bloqueado-humano cuando el guardian re-aprueba",
+    "labels": [
+      "bug",
+      "Ready",
+      "tipo:infra",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3193": {
+    "title": "feat(pipeline): brazoDesbloqueo permeable a deps en body del issue (no solo marker en comentarios)",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3198": {
+    "title": "[guru] Implementar consumer runtime de skill.fallbacks[] en agent-launcher (dispatch con retry cross-provider)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3200": {
+    "title": "feat(pipeline): spike — evaluar 3er provider gratuito como fallback para multi-provider (post Claude+Codex)",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835013814
+  },
+  "3219": {
+    "title": "chore(pipeline): desactivar agente scrum (zombi) y mover a _frozen/",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3220": {
+    "title": "feat(pipeline): agregar providers groq, gemini-google y cerebras al schema multi-provider",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3221": {
+    "title": "feat(pipeline): cargar config multi-provider con orden sign-off 2026-05-15 (15 skills)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3229": {
+    "title": "fix(pipeline): separar estados blocked:dependencies vs needs-human en el Pulpo",
+    "labels": [
+      "bug",
+      "Ready",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3230": {
+    "title": "feat(pipeline): modo descanso con múltiples periodos por día de la semana",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:medium",
+      "split",
+      "blocked:dependencies",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3239": {
+    "title": "feat(dashboard): agregar tarjeta de acceso a /multi-provider en el home",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3241": {
+    "title": "[Split de #3230] feat(pipeline): schema semanal + runtime + endpoint /api/rest-mode",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3242": {
+    "title": "[Split de #3230] feat(pipeline): rediseño UI /modo-descanso con grid semanal",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3243": {
+    "title": "feat(pipeline): integrar NVIDIA NIM como provider free (DeepSeek V4-Pro + Kimi K2.6)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3250": {
+    "title": "feat(commander): reutilizar /doc y /planner cuando el Telegram Commander crea issues (paridad con consola)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3251": {
+    "title": "spike: validar comportamiento del pipeline cuando se agota la cuota Claude (fallbacks reales en Pulpo + Telegram Commander)",
+    "labels": [
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline",
+      "spike"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3253": {
+    "title": "[pipeline] Telegram Commander es SPoF en Claude — habilitar multi-provider o modo degradado sin LLM",
+    "labels": [
+      "bug",
+      "Ready",
+      "priority:critical",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3257": {
+    "title": "feat(telegram): commander determinístico — separar comandos de status/listado/snapshot del flujo LLM",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3258": {
+    "title": "feat(telegram): aplicar multi-provider fallback chain al commander para comandos LLM",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3259": {
+    "title": "feat(pipeline): garantizar continuidad del Pulpo ante caída de Claude (failover orquestador)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3260": {
+    "title": "feat(pipeline): hardening de free providers para garantizar continuidad de cuota (Groq/Gemini/Cerebras/NVIDIA-NIM)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3262": {
+    "title": "feat(commander): snapshot ejecutivo de Ola en Telegram (avance %, ETA, puntos de intervención)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3275": {
+    "title": "[security] fallback in-flight del Commander con security review dedicado (continuación CA-3 de #3258)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline",
+      "source:recommendation"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3303": {
+    "title": "fix(servicio-github): escapado de saltos de línea rompe parsing del detector de dependencias del Pulpo",
+    "labels": [
+      "bug",
+      "Ready",
+      "priority:critical",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3310": {
+    "title": "Scrubbing automatico de API keys en mensajes entrantes de Telegram + patron Groq en sanitizer",
+    "labels": [
+      "Ready",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3313": {
+    "title": "fix(dashboard): /multi-provider lee de telegram-config.json legacy en lugar de credentials.json",
+    "labels": [
+      "bug",
+      "Ready",
+      "area:infra",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3317": {
+    "title": "[security] Scrubbing retroactivo de commander-history.jsonl con sanitize() one-off",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "size:simple",
+      "priority:high",
+      "area:pipeline",
+      "source:recommendation"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3331": {
+    "title": "Rol Verificador adversarial (Sherlock) — second-pass analysis para Commander del pipeline V3",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "split",
+      "blocked:dependencies",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3342": {
+    "title": "[Split de #3331] HTTP completion-client genérico para providers free (Cerebras/Groq/Gemini)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3343": {
+    "title": "[Split de #3331] Sherlock verifier core + wire en Commander + skill virtual telegram-sherlock",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3353": {
+    "title": "Remover Groq del pipeline multi-provider — política inestable de restricciones",
+    "labels": [
+      "Ready",
+      "tipo:infra",
+      "priority:high",
+      "area:pipeline",
+      "size:large"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3356": {
+    "title": "Rediseñar encabezado del large board principal — información clara y separada",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3357": {
+    "title": "Corregir cálculo de KPIs del dashboard — PRs, tokens, cycle time, rebote, quota",
+    "labels": [
+      "bug",
+      "Ready",
+      "tipo:infra",
+      "qa:passed",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3358": {
+    "title": "Reorganizar barra de acceso directo a ventanas del dashboard — 1 fila compacta",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "size:simple",
+      "priority:low",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3359": {
+    "title": "fix(dashboard): Próximos 10 en cola muestra vacío cuando hay items habilitados",
+    "labels": [
+      "bug",
+      "Ready",
+      "tipo:infra",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3361": {
+    "title": "Rediseñar área 'Continuidad del Pulpo' — moverla a ventana Providers",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3373": {
+    "title": "Bug: fast-fail-rebote archiva .po/.ux sin restituir al destrabar",
+    "labels": [
+      "bug",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3378": {
+    "title": "Spike: formalizar la planificación multi-ola del pipeline V3",
+    "labels": [
+      "Ready",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline",
+      "spike"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3381": {
+    "title": "Workflow obligatorio: UX captura screenshot + mockup en definición",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3382": {
+    "title": "Protocolo UX Android: referencias visuales sin emulador (usar evidencia previa)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "app:business",
+      "app:client",
+      "app:delivery",
+      "priority:high",
+      "split",
+      "blocked:dependencies"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3383": {
+    "title": "Validación visual post-construcción: mockup vs entrega (QA + PO)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3384": {
+    "title": "Notificación Telegram de mockup esperado al operador en fase de definición (UX)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3407": {
+    "title": "[Split de #3382] Estructura librería screenshots Android + documentación operativa + migración inicial",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3408": {
+    "title": "[Split de #3382] Helpers UX (lookup + mockup generator) integrados al skill /ux para issues Android",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3409": {
+    "title": "[Split de #3382] Hook QA post-ejecución que promueve screenshots a librería app-screenshots-reference",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3414": {
+    "title": "Notificación Telegram de entregables parciales del pipeline (human-in-the-loop opcional)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3415": {
+    "title": "Comando /rechazar en Telegram (texto + audio whisper) con audit log estructurado",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3416": {
+    "title": "Rebobinado del pipeline a fase específica tras rechazo del operador",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3417": {
+    "title": "Puntos de no retorno del pipeline: bloqueo explícito de intervención post-delivery",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3418": {
+    "title": "Bug: invocaciones de Skill /doc desde el Commander fallan silenciosamente sin crear issues",
+    "labels": [
+      "bug",
+      "Ready",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3434": {
+    "title": "[pipeline] Parser robusto de errores in-flight del Commander para fallback multi-provider (API + CLI)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3435": {
+    "title": "[guru] Generalizar parser de errores in-flight a todos los spawns LLM del pipeline (no solo Commander)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:low",
+      "split",
+      "blocked:dependencies",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3472": {
+    "title": "[review] wire-up live del fallback in-flight del Commander en pulpo.js#ejecutarClaude",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:low",
+      "split",
+      "blocked:dependencies",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3481": {
+    "title": "Bug: Brazo de promoción validación→verificación queda frenado cuando artefacto (.ux) cierra en ciclo anterior",
+    "labels": [
+      "bug",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3484": {
+    "title": "Sherlock — quitar timeout y eliminar requisito cross-provider",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835014619
+  },
+  "3485": {
+    "title": "Audio splitter Telegram — bajar cap a 1500 chars para evitar truncado Edge TTS",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3486": {
+    "title": "Error classifier HTTP cross-provider para fallback inteligente",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3487": {
+    "title": "[Spike #3378 - H3] Dashboard: widget de próximas olas con issues y ETA",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3488": {
+    "title": "[Spike #3378 - H2] Planner: nuevos modos olas, horizonte y componer-ola",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3489": {
+    "title": "[Spike #3378 - H1] waves.json como source of truth de la planificación multi-ola + lib/waves.js",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3492": {
+    "title": "[Spike #3378 - H4] Calculadora ETA probabilística por ola y por issue",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "tipo:infra",
+      "area:infra",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline",
+      "spike"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3493": {
+    "title": "[Spike #3378 - H5] Telegram Commander: comandos /wave para gestionar olas",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline",
+      "spike"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3494": {
+    "title": "Commander Telegram: bajar contexto de 1M a 200K standard",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3498": {
+    "title": "[guru] Derivar KNOWN_HINTS_BY_PROVIDER de agent-models.json#quota_error_types",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "size:simple",
+      "priority:low",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3501": {
+    "title": "[po] Preferir modelo distinto en same_provider para preservar adversariality",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:low",
+      "size:medium",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3502": {
+    "title": "[guru] Migrar wave-resolver.js a consumir lib/waves.js como fuente canónica",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "priority:low",
+      "size:medium",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3505": {
+    "title": "Bug: TTS Telegram reemplaza nombres de proveedores y modelos por 'gente'",
+    "labels": [
+      "bug",
+      "needs-definition",
+      "size:simple",
+      "priority:high",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3506": {
+    "title": "Workaround: Opus 4.7 1M context falla aleatoriamente en Max 20x (bug Anthropic upstream)",
+    "labels": [
+      "bug",
+      "needs-definition",
+      "priority:critical",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3507": {
+    "title": "Discovery: Rol 'Arquitecto' en fase de definición de issues para reducir esfuerzo dev",
+    "labels": [
+      "Ready",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline",
+      "spike"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3508": {
+    "title": "[security] Feature flag con auto-disable TTL para workaround Opus 1M (#3506)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:passed",
+      "priority:low",
+      "size:medium",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3515": {
+    "title": "[guru] Consolidar splitTextForTTSChunks duplicado entre pulpo.js y multimedia.js",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "size:simple",
+      "priority:low",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3517": {
+    "title": "[guru] Consolidar lib/eta.js (#2895) con calculadora ETA probabilística (#3492)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "priority:low",
+      "size:medium",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3518": {
+    "title": "[security] Atomic writes + lock para waves.json en operaciones destructivas del Commander",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:low",
+      "size:medium",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3520": {
+    "title": "[security] Rollback transaccional si /wave promote falla a mitad de camino (waves.json vs allowlist)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:low",
+      "size:medium",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3526": {
+    "title": "Análisis cuantitativo retrospectivo: ahorro de tokens con rol Arquitecto (sub-tarea #3507)",
+    "labels": [
+      "Ready",
+      "size:simple",
+      "priority:medium",
+      "area:pipeline",
+      "spike"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3529": {
+    "title": "[review] Dashboard pasa size:* label de issueMatrix al consumir calculateOlaETA (precedencia D3 #3492)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "priority:low",
+      "area:pipeline",
+      "source:recommendation",
+      "tipo:recomendacion",
+      "recommendation:approved"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3539": {
+    "title": "CA-UX-9: Audio TTS en notificaciones de entregables parciales (épico #3414)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3540": {
+    "title": "Adjuntos multimedia (documento, imagen, video) en notificaciones de entregables parciales",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3541": {
+    "title": "Entregables parciales del CUA: notificaciones Telegram estructuradas",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3542": {
+    "title": "Delimitar responsabilidades: Guru (investigador/innovador) vs Architect (técnico/componentes)",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "qa:skipped",
+      "priority:medium",
+      "size:medium",
+      "area:pipeline",
+      "needs-human"
+    ],
+    "fetchedAt": 1779835015336
+  },
+  "3558": {
+    "title": "Sherlock verifier: implementar fallback en cascada entre providers/modelos",
+    "labels": [
+      "Ready",
+      "qa:skipped",
+      "priority:high",
+      "size:medium",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1779835015336
   },
   "2519-comment": {
     "title": "",
