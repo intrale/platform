@@ -62,6 +62,28 @@ function notasMultilinea(extraLines) {
     return base.join('\n');
 }
 
+// #3540 (CA-SEC-EXT-2) — bytes con magic headers válidos para tests.
+// resolveAttachments verifica magic bytes contra el MIME derivado de la
+// extensión; los fixtures necesitan empezar con la signature correcta.
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+const JPEG_SIGNATURE = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]);
+const PDF_SIGNATURE = Buffer.from('%PDF-1.4\n', 'utf8');
+const GIF_SIGNATURE = Buffer.from('GIF89a', 'utf8');
+const MP4_SIGNATURE = Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x18]),         // atom size BE
+    Buffer.from('ftypisom', 'utf8'),                // ftyp + brand
+    Buffer.from([0x00, 0x00, 0x02, 0x00]),         // minor version
+    Buffer.from('isomiso2', 'utf8'),                // compat brands
+]);
+const WEBM_SIGNATURE = Buffer.from([0x1A, 0x45, 0xDF, 0xA3, 0xA3, 0x42, 0x86, 0x81]);
+
+function writeFakeAsset(absPath, signature, totalBytes) {
+    const total = totalBytes || (signature.length + 8);
+    const padding = Buffer.alloc(Math.max(0, total - signature.length), 0);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, Buffer.concat([signature, padding]));
+}
+
 // -----------------------------------------------------------------------------
 // CA-UX-2 · emojis canónicos
 // -----------------------------------------------------------------------------
@@ -314,11 +336,10 @@ test('CA-FN-4 + CA-SEC-1 · buildPreview rechaza photo con path-traversal y degr
 test('CA-FN-4 · buildPreview para ux con PNG válido produce sendPhoto + caption corto', () => {
     const { root, cleanup } = mkTmpRoot();
     try {
-        // Crear el PNG fake en el root
+        // Crear el PNG fake (con signature válida) en el root
         const mockupsDir = path.join(root, '.pipeline', 'assets', 'mockups');
-        fs.mkdirSync(mockupsDir, { recursive: true });
         const photoPath = path.join(mockupsDir, '3414.png');
-        fs.writeFileSync(photoPath, 'fake');
+        writeFakeAsset(photoPath, PNG_SIGNATURE);
 
         const out = dn.buildPreview({
             issue: 3414,
@@ -426,8 +447,7 @@ test('CA-SEC-3 · auditRecord nunca persiste path absoluto en attachment_path', 
     const { root, cleanup } = mkTmpRoot();
     try {
         const mockupsDir = path.join(root, '.pipeline', 'assets', 'mockups');
-        fs.mkdirSync(mockupsDir, { recursive: true });
-        fs.writeFileSync(path.join(mockupsDir, 'x.png'), 'fake');
+        writeFakeAsset(path.join(mockupsDir, 'x.png'), PNG_SIGNATURE);
 
         const out = dn.buildPreview({
             issue: 999,
