@@ -213,6 +213,34 @@ const MODULE_DIRS = {
 //   `**/*.{kts,gradle,kt,properties}` devuelve 0 referencias, así que
 //   Gradle no consume estos scripts.
 //
+//   - #3576 (Hook onSpawnExit cross-skill + audit unificado) entregó un
+//     script bash auxiliar `scripts/diff-parser-codepaths.sh` que compara
+//     paridad entre los codepaths legacy y generalized leyendo el log
+//     textual del pulpo. Es 100% pipeline-only — un log-analyzer que ni
+//     siquiera está referenciado por Gradle (ver verificación de
+//     seguridad abajo) — pero el archivo cae bajo `scripts/` que no tiene
+//     pattern de allowlist. El cambio del PR incluía:
+//       .pipeline/lib/agent-launcher/*  (matchea ^\.pipeline\/)
+//       .pipeline/lib/quota-exhausted.js
+//       .pipeline/pulpo.js
+//       docs/pipeline/multi-provider.md (matchea ^docs\/)
+//       scripts/diff-parser-codepaths.sh  ← rompía el `every` match
+//     El tester cayó a ruta gradle, todo UP-TO-DATE, 0 JUnit reports →
+//     rebote "[tester] No se encontraron reportes JUnit". Verificación en
+//     `.pipeline/logs/3576-tester.log`:
+//       [tester] git diff vs main: 13 archivos · pipeline_only=false
+//       [tester] gradle exit_code=0 wall_ms=65814 BUILD SUCCESSFUL UP-TO-DATE
+//       - No se encontraron reportes JUnit
+//
+//   El pattern agregado abajo (`/^scripts\/diff-parser-codepaths\.sh$/`)
+//   es deliberadamente exacto (no wildcard sobre `scripts/`): otros
+//   scripts en `scripts/` como `local-up.sh`, `local-app.sh`,
+//   `smart-build.sh` SÍ orquestan Gradle/AWS y deben seguir forzando la
+//   ruta gradle. Verificación de seguridad: `grep` por
+//   `scripts/diff-parser-codepaths` en `**/*.{kts,gradle,kt,properties}`
+//   devuelve 0 referencias; el script es invocado únicamente a mano por
+//   el operador (documentado en `docs/pipeline/multi-provider.md`).
+//
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
 // `settings.gradle.kts`, `build.gradle.kts`, `qa/build.gradle.kts`,
 // `qa/src/`, `qa/scripts/*.sh` (scripts shell que pueden orquestar gradle),
@@ -233,6 +261,7 @@ const PIPELINE_ONLY_PATTERNS = [
     /^package-lock\.json$/,                // npm lockfile — usado solo por `.pipeline/` Node.js
     /^qa\/evidence\//,                     // QA artifacts (video/screenshots/reports) — fuera de Gradle
     /^qa\/scripts\/.*\.(js|mjs|cjs)$/,     // Node.js scripts/hooks QA — fuera de Gradle (rebote #3409)
+    /^scripts\/diff-parser-codepaths\.sh$/, // log-analyzer pipeline (rebote #3576) — NO toca Gradle
 ];
 
 /**
