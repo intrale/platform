@@ -82,33 +82,57 @@ const INTENT_CREATE_SPLIT = 'create_split';
 const MATCHED_INTENTS = Object.freeze([INTENT_CREATE_SIMPLE, INTENT_CREATE_SPLIT]);
 
 // -----------------------------------------------------------------------------
-// #3418 SEC-D — Enum cerrado para `skill_result` del audit log. Valores:
-//   ok                     — Skill se invocó y al menos 1 issue se creó.
-//   error                  — Skill arrancó pero no se creó nada (gh rechazó,
-//                            args inválidos detectados post-hoc, etc.).
+// #3418 SEC-D + #3587 CA-3 — Enum cerrado para `skill_result` del audit log.
+//
+// El enum completo (post #3587):
+//   success                — Skill se invocó y al menos 1 issue se creó.
+//                            (alias de `ok`; preferido en código nuevo).
+//   ok                     — alias legacy de `success` (back-compat con líneas
+//                            del JSONL pre-#3587 y tests existentes).
+//   timeout                — El watchdog de 60s mató al Skill.
+//   skill_not_invoked      — El LLM terminó sin emitir `tool_use:Skill`. El
+//                            campo `tool_used_instead` documenta qué tool usó
+//                            (Bash, Read, etc.) o `null` si no usó ninguna.
+//                            REEMPLAZA el string opaco genérico que existía
+//                            antes (#3587 CA-3).
+//   skill_failed           — `tool_use:Skill` se emitió y el subskill corrió,
+//                            pero el `tool_result` indicó error o no se
+//                            pudo extraer `issue_number`. El campo `error`
+//                            contiene el mensaje (redactado).
 //   blocked                — SEC-2/SEC-5 cortaron antes del spawn (sender no
 //                            autorizado, provider ≠ anthropic).
-//   timeout                — El watchdog de 60s mató al Skill (CA-3).
 //   launching_no_complete  — El LLM dijo "Launching skill: ..." pero nunca
 //                            emitió el evento `tool_use` (sin reloj para el
-//                            watchdog, sin issue creado).
+//                            watchdog, sin issue creado). Caso de borde
+//                            cubierto por #3418 CA-3.
 //   invalid_args           — Skill se invocó con args malformados (detectable
 //                            por gh o por el propio handler del Skill).
+//   error                  — alias legacy genérico (back-compat).
+//
+// #3587 CA-3 — para clasificar correctamente, `inferSkillResult` ahora acepta
+// `toolUseSequence` (lista de tool_use observados en stream-json). Sin ese
+// dato, cae al modo legacy (toolUseEmitted booleano).
 // -----------------------------------------------------------------------------
-const SKILL_RESULT_OK = 'ok';
-const SKILL_RESULT_ERROR = 'error';
+const SKILL_RESULT_SUCCESS = 'success';
+const SKILL_RESULT_OK = 'ok'; // alias legacy
+const SKILL_RESULT_ERROR = 'error'; // alias legacy genérico
 const SKILL_RESULT_BLOCKED = 'blocked';
 const SKILL_RESULT_TIMEOUT = 'timeout';
 const SKILL_RESULT_LAUNCHING_NO_COMPLETE = 'launching_no_complete';
 const SKILL_RESULT_INVALID_ARGS = 'invalid_args';
+const SKILL_RESULT_SKILL_NOT_INVOKED = 'skill_not_invoked';
+const SKILL_RESULT_SKILL_FAILED = 'skill_failed';
 
 const SKILL_RESULT_ENUM = Object.freeze([
+    SKILL_RESULT_SUCCESS,
     SKILL_RESULT_OK,
     SKILL_RESULT_ERROR,
     SKILL_RESULT_BLOCKED,
     SKILL_RESULT_TIMEOUT,
     SKILL_RESULT_LAUNCHING_NO_COMPLETE,
     SKILL_RESULT_INVALID_ARGS,
+    SKILL_RESULT_SKILL_NOT_INVOKED,
+    SKILL_RESULT_SKILL_FAILED,
 ]);
 
 // -----------------------------------------------------------------------------
@@ -334,15 +358,142 @@ function _resolveAuditPath(pipelineDir) {
     return path.join(dir, 'commander-skill-audit.jsonl');
 }
 
+// -----------------------------------------------------------------------------
+// #3587 CA-1 — Helpers de redacción + truncado para los nuevos campos del
+// audit log (`tool_use_sequence`, `tool_results_summary`, `subprocess`,
+// `tool_used_instead`).
+//
+// REQUISITO SEC-1 levantado por security en #3587: TODOS los nuevos campos
+// que vienen del subprocess (stdout/stderr/args/tool_use.input/tool_result.content)
+// pasan por `_redactReadOutput` ANTES del `appendFileSync` y del truncado.
+// Sin esto introduciríamos un vector de exfiltración A09 (security logging)
+// cuando el LLM toque, por ej, `Bash gh auth status` o lea credenciales.
+//
+// Caps de tamaño (defensa A08 — software & data integrity):
+//   - `input_preview` por tool_use: 512 chars.
+//   - `content_tail` por tool_result: 512 chars.
+//   - `args_redacted` del subprocess: 512 chars (string flat con sep ` `).
+//   - `tool_use_sequence`: máximo 32 entradas (después se trunca con marker).
+//   - `tool_results_summary`: máximo 32 entradas.
+// -----------------------------------------------------------------------------
+const _MAX_TOOL_USE_ENTRIES = 32;
+const _MAX_TOOL_RESULT_ENTRIES = 32;
+const _MAX_PREVIEW_CHARS = 512;
+const _MAX_ARGS_CHARS = 512;
+
+function _safeStringify(v) {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'string') return v;
+    try { return JSON.stringify(v); } catch { return String(v); }
+}
+
+function _redactAndTruncate(input, cap) {
+    if (input === undefined || input === null) return '';
+    const s = _safeStringify(input);
+    if (!s) return '';
+    const redacted = _redactReadOutput(s).text;
+    return redacted.length > cap ? redacted.slice(0, cap) : redacted;
+}
+
+/**
+ * Sanitiza y trunca `tool_use_sequence` para el audit log.
+ * Cada entrada: `{name, input_preview, id_short}`.
+ */
+function _sanitizeToolUseSequence(seq) {
+    if (!Array.isArray(seq) || seq.length === 0) return undefined;
+    const truncated = seq.slice(0, _MAX_TOOL_USE_ENTRIES);
+    const out = truncated.map((entry) => {
+        if (!entry || typeof entry !== 'object') return { name: 'unknown' };
+        const row = {};
+        row.name = typeof entry.name === 'string' ? entry.name.slice(0, 64) : 'unknown';
+        if (entry.input !== undefined) {
+            row.input_preview = _redactAndTruncate(entry.input, _MAX_PREVIEW_CHARS);
+        } else if (entry.input_preview !== undefined) {
+            row.input_preview = _redactAndTruncate(entry.input_preview, _MAX_PREVIEW_CHARS);
+        }
+        if (entry.id && typeof entry.id === 'string') row.id_short = entry.id.slice(0, 12);
+        if (typeof entry.tsMs === 'number' && Number.isFinite(entry.tsMs)) row.ts_ms = Math.round(entry.tsMs);
+        return row;
+    });
+    if (seq.length > _MAX_TOOL_USE_ENTRIES) {
+        out.push({ name: '_truncated', extra: seq.length - _MAX_TOOL_USE_ENTRIES });
+    }
+    return out;
+}
+
+/**
+ * Sanitiza y trunca `tool_results_summary` para el audit log.
+ * Cada entrada: `{tool_use_id_short, content_tail, is_error}`.
+ */
+function _sanitizeToolResultsSummary(results) {
+    if (!Array.isArray(results) || results.length === 0) return undefined;
+    const truncated = results.slice(0, _MAX_TOOL_RESULT_ENTRIES);
+    const out = truncated.map((r) => {
+        if (!r || typeof r !== 'object') return { content_tail: '' };
+        const row = {};
+        if (r.tool_use_id && typeof r.tool_use_id === 'string') row.tool_use_id_short = r.tool_use_id.slice(0, 12);
+        if (r.toolUseId && typeof r.toolUseId === 'string') row.tool_use_id_short = r.toolUseId.slice(0, 12);
+        if (r.content !== undefined) {
+            row.content_tail = _redactAndTruncate(r.content, _MAX_PREVIEW_CHARS);
+        } else if (r.content_tail !== undefined) {
+            row.content_tail = _redactAndTruncate(r.content_tail, _MAX_PREVIEW_CHARS);
+        }
+        if (typeof r.isError === 'boolean') row.is_error = r.isError;
+        if (typeof r.is_error === 'boolean') row.is_error = r.is_error;
+        return row;
+    });
+    if (results.length > _MAX_TOOL_RESULT_ENTRIES) {
+        out.push({ content_tail: '_truncated', extra: results.length - _MAX_TOOL_RESULT_ENTRIES });
+    }
+    return out;
+}
+
+/**
+ * Sanitiza `subprocess` metadata. Args pasan por redactor: pueden contener
+ * paths con credenciales embebidas o flags con tokens (raro pero posible).
+ */
+function _sanitizeSubprocess(sp) {
+    if (!sp || typeof sp !== 'object') return undefined;
+    const row = {};
+    if (sp.cmd && typeof sp.cmd === 'string') row.cmd = sp.cmd.slice(0, 128);
+    if (Array.isArray(sp.args)) {
+        const flat = sp.args.map(_safeStringify).join(' ');
+        row.args_redacted = _redactAndTruncate(flat, _MAX_ARGS_CHARS);
+    } else if (sp.args_redacted) {
+        row.args_redacted = _redactAndTruncate(sp.args_redacted, _MAX_ARGS_CHARS);
+    }
+    if (typeof sp.exitCode === 'number' || sp.exitCode === null) row.exit_code = sp.exitCode;
+    if (typeof sp.exit_code === 'number' || sp.exit_code === null) row.exit_code = sp.exit_code;
+    if (typeof sp.durationMs === 'number' && Number.isFinite(sp.durationMs)) row.duration_ms = Math.round(sp.durationMs);
+    if (typeof sp.duration_ms === 'number' && Number.isFinite(sp.duration_ms)) row.duration_ms = Math.round(sp.duration_ms);
+    if (typeof sp.killedByWatchdog === 'boolean') row.killed_by_watchdog = sp.killedByWatchdog;
+    if (typeof sp.killed_by_watchdog === 'boolean') row.killed_by_watchdog = sp.killed_by_watchdog;
+    return Object.keys(row).length > 0 ? row : undefined;
+}
+
 /**
  * Append una línea JSON al audit log.
  *
- * Campos esperados (ver criterios PO + #3418 SEC-D):
+ * Campos esperados (ver criterios PO + #3418 SEC-D + #3587 CA-1):
  *   timestamp, from { id, username }, input_text, input_text_truncated,
  *   skill_invoked, skill_args, skill_result (enum cerrado, ver
  *   `SKILL_RESULT_ENUM`), issue_created, duration_ms, provider,
  *   error (opcional, redactado pre-truncate por SEC-C), timeout_ms
  *   (cuando `skill_result === 'timeout'`).
+ *
+ * Campos #3587 (nuevos, CA-1):
+ *   tool_use_sequence — `[{name, input_preview, id_short, ts_ms}]` con TODOS
+ *     los `tool_use` que el LLM emitió en orden. `name` permite ver si invocó
+ *     Skill, Bash, Read, etc. Cada `input_preview` pasa por `_redactReadOutput`
+ *     ANTES de truncarse a 512 chars (SEC-1 #3587).
+ *   tool_results_summary — `[{tool_use_id_short, content_tail, is_error}]` con
+ *     un tail redactado del output de cada tool_result.
+ *   subprocess — `{cmd, args_redacted, exit_code, duration_ms,
+ *     killed_by_watchdog}` con metadata del child process Claude.
+ *   tool_used_instead — string con el `name` de la primera tool no-Skill que
+ *     el LLM invocó cuando `skill_result === 'skill_not_invoked'`. Útil para
+ *     confirmar la hipótesis "el LLM eligió Bash en vez de Skill" sin tener
+ *     que parsear `tool_use_sequence` manualmente.
  *
  * Cualquier campo `undefined` se omite del JSON resultante. El método es
  * best-effort: si falla la escritura, loggea y sigue.
@@ -357,6 +508,11 @@ function _resolveAuditPath(pipelineDir) {
  *   inflar el forense con valores libres.
  * - SEC-E: la escritura es `appendFileSync` (sync, no async) — bajo timeout
  *   sigue garantizando que la línea queda atómica y completa.
+ * - SEC-1 (#3587 security): los nuevos campos `tool_use_sequence`,
+ *   `tool_results_summary`, `subprocess` se redactan con `_redactReadOutput`
+ *   ANTES de truncar y serializar (helpers `_sanitize*` arriba). Cierra el
+ *   gap A09 levantado por security: sin esto, un `tool_use:Bash` que lea
+ *   `~/.claude/secrets/credentials.json` filtraría el contenido al JSONL.
  */
 function logSkillInvocation({
     pipelineDir,
@@ -374,6 +530,11 @@ function logSkillInvocation({
     senderAllowed,
     intent,
     timeoutMs,
+    // #3587 CA-1 — nuevos campos de instrumentación (todos opcionales).
+    toolUseSequence,
+    toolResultsSummary,
+    subprocess,
+    toolUsedInstead,
 }, opts = {}) {
     if (!pipelineDir) return false;
     const filePath = _resolveAuditPath(pipelineDir);
@@ -421,6 +582,17 @@ function logSkillInvocation({
     if (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
         line.timeout_ms = Math.round(timeoutMs);
     }
+    // #3587 CA-1 — nuevos campos de instrumentación (redactados ya por los
+    // helpers `_sanitize*`). Si vienen `undefined` no se serializan.
+    const tus = _sanitizeToolUseSequence(toolUseSequence);
+    if (tus) line.tool_use_sequence = tus;
+    const trs = _sanitizeToolResultsSummary(toolResultsSummary);
+    if (trs) line.tool_results_summary = trs;
+    const sp = _sanitizeSubprocess(subprocess);
+    if (sp) line.subprocess = sp;
+    if (typeof toolUsedInstead === 'string' && toolUsedInstead.trim()) {
+        line.tool_used_instead = toolUsedInstead.slice(0, 64);
+    }
     try {
         fs.appendFileSync(filePath, JSON.stringify(line) + '\n');
         return true;
@@ -447,33 +619,88 @@ function formatBlockedByProviderResponse({ provider }) {
 }
 
 // -----------------------------------------------------------------------------
-// CA-5 — Mensajes de error cuando el Skill falla. Variantes por causa según
-// la guideline UX. El kind viene del caller (timeout, quota, gh_error, generic,
-// no_skill_invoked, launching_no_complete, invalid_args).
+// CA-5 / #3587 CA-4 — Mensajes de error cuando el Skill falla. Variantes por
+// causa según la guideline UX (revisada en #3587 por el rol UX):
+//
+//   Símbolos monocromos por categoría:
+//     ✓  success            (no se usa acá; los OK los maneja el flow normal)
+//     ⏰  timeout            (factual, mencionar los segundos)
+//     ⚠  skill_not_invoked  (mencionar QUÉ tool usó en su lugar)
+//     ✗  skill_failed / generic / invalid_args / gh_error
+//     🔌  quota              (degradación del provider)
+//
+//   Tono: argento natural, compañero de trabajo. NO usar emojis multicolor
+//   ruidosos (🚀/🎉) — el operador lee decenas de mensajes por día.
+//
+//   Variabilidad: para `timeout` hay 3 variantes que rotamos por seed (la
+//   posición del milisegundo actual mod 3) — evita que los mensajes
+//   repetitivos cansen al operador.
+//
+//   Multilinea: errores cuentan motivo + contexto + hint en hasta 4 líneas.
+//   Success queda en 1 línea (el flow lo arma fuera de este helper).
+//
+//   Cap: máximo 6 líneas por mensaje — más que eso queda incómodo en celular
+//   vertical, lo demás vive en audit log.
+//
+// El kind viene del caller (timeout, quota, gh_error, generic,
+// no_skill_invoked, launching_no_complete, invalid_args, skill_not_invoked,
+// skill_failed). Aliases retro-compat: `no_skill_invoked` se mantiene como
+// alias de `skill_not_invoked` para callers existentes.
 //
 // #3418 SEC-C — el `error` se redacta con `redactReadOutput` ANTES de truncar
 // a 200 chars. Cubre AWS keys, JWT, gh PATs, gemini keys, Telegram tokens y
 // `password|secret|token=...` genéricos que puedan venir en stack traces.
+// #3587 CA-4 — `toolUsedInstead` (opcional) se incluye en el mensaje cuando
+// `kind` es skill_not_invoked, para que el operador entienda QUÉ tool tomó
+// el lugar de /doc (típicamente "Bash").
 // -----------------------------------------------------------------------------
-function formatSkillFailureResponse({ kind, error }) {
+function _timeoutVariant(durationMs) {
+    // Rotación determinística para no ser molesto al operador: si vienen
+    // varios timeouts en la misma sesión, no son todos textualmente iguales.
+    const secs = durationMs && Number.isFinite(durationMs) ? Math.round(durationMs / 1000) : null;
+    const secsStr = secs ? `${secs}s` : 'demasiado';
+    const variants = [
+        `⏰ Cortó a los ${secsStr} — el subskill no terminó a tiempo.\nReintentá o, si urge, abrilo desde consola con /doc nueva ...`,
+        `⏰ Timeout a los ${secsStr}. El doc/planner tarda más que el budget.\nProbá de nuevo o usá la consola.`,
+        `⏰ ${secsStr} sin respuesta del subskill. Lo maté y liberé recursos.\nReintentá si querés, o levantá el issue a mano con /doc nueva ...`,
+    ];
+    // Pseudoseed estable dentro del mismo segundo (suficiente para variar entre
+    // sesiones y no requiere import de crypto).
+    const seed = (Date.now() / 1000) | 0;
+    return variants[seed % variants.length];
+}
+
+function formatSkillFailureResponse({ kind, error, toolUsedInstead, durationMs }) {
     // SEC-C: redactar PRIMERO, truncar después.
     const errRedacted = error ? _redactReadOutput(String(error)).text : '';
     const errShort = errRedacted.slice(0, 200);
+    const usedTool = typeof toolUsedInstead === 'string' && toolUsedInstead.trim()
+        ? toolUsedInstead.trim().slice(0, 32)
+        : null;
     switch (kind) {
         case 'timeout':
-            return '⏱️ Tardó demasiado y no se creó el issue. Reintentá en un rato o usá /doc nueva por consola.';
+            return _timeoutVariant(durationMs);
         case 'quota':
-            return '🔌 El cerebro del Commander está saturado ahora. No se creó nada. Reintentá o usá consola.';
+            return '🔌 El cerebro del Commander está saturado ahora. No se creó nada.\nReintentá en un rato o usá /doc nueva por consola.';
         case 'gh_error':
-            return `🐙 GitHub rechazó la creación${errShort ? ': ' + errShort : ''}. Reintentá o revisá manualmente.`;
-        case 'no_skill_invoked':
-            return `❌ La creación falló: el Commander no invocó /doc ni /planner como se esperaba. No se creó nada. Reintentá o usá consola.`;
+            return `✗ GitHub rechazó la creación${errShort ? ': ' + errShort : ''}.\nReintentá o revisá manualmente con gh issue list.`;
+        case 'skill_not_invoked':
+        case 'no_skill_invoked': {
+            // CA-4: mencionar QUÉ tool usó el LLM en su lugar — es lo que más
+            // ayuda al operador a entender el bug.
+            const insteadLine = usedTool
+                ? `El modelo agarró ${usedTool} en vez de la tool Skill — no creé el issue por seguridad.`
+                : 'El modelo no invocó /doc ni /planner como se esperaba.';
+            return `⚠ ${insteadLine}\nProbá de nuevo o abrilo a mano con /doc nueva <título>.`;
+        }
         case 'launching_no_complete':
-            return `❌ El Commander anunció /doc pero no llegó a invocarlo. No se creó nada. Reintentá explícitamente con /doc nueva <título>.`;
+            return `⚠ El Commander anunció /doc pero no llegó a invocarlo. No se creó nada.\nReintentá explícitamente con /doc nueva <título>.`;
+        case 'skill_failed':
+            return `✗ El Skill /doc se invocó pero no creó el issue${errShort ? ': ' + errShort : ''}.\nMirá el audit log para más detalle o reintentá con /doc nueva por consola.`;
         case 'invalid_args':
-            return `❌ El Skill /doc recibió argumentos inválidos${errShort ? ': ' + errShort : ''}. No se creó nada. Reformulá el pedido o usá /doc nueva por consola.`;
+            return `✗ El Skill /doc recibió argumentos inválidos${errShort ? ': ' + errShort : ''}.\nReformulá el pedido o usá /doc nueva por consola.`;
         default:
-            return `❌ La creación falló${errShort ? ': ' + errShort : ''}. No se creó nada. Reintentá o creá manual por consola con /doc nueva ...`;
+            return `✗ La creación falló${errShort ? ': ' + errShort : ''}.\nReintentá o creá manual por consola con /doc nueva ...`;
     }
 }
 
@@ -575,31 +802,123 @@ function inspectResponseForOutcome(responseText) {
 
 /**
  * Helper de inferencia de `skill_result` a partir del outcome inspeccionado
- * y los flags de runtime (toolUseEmitted, toolResultEmitted, timedOut).
+ * y los flags de runtime.
  *
- * #3418 SEC-D — único punto que mapea el estado runtime al enum cerrado.
- * Centraliza la lógica para que tests y producción se mantengan en sync.
+ * #3418 SEC-D / #3587 CA-3 — único punto que mapea el estado runtime al enum
+ * cerrado. Centraliza la lógica para que tests y producción se mantengan en
+ * sync.
+ *
+ * MODO INSTRUMENTADO (preferido, #3587 CA-1)
+ * ------------------------------------------
+ * Cuando el caller provee `toolUseSequence` (array de `{name, input, id}`
+ * capturado del stream-json del child) y opcionalmente `toolResultsSummary`,
+ * la clasificación es más precisa:
+ *   - hay `tool_use:Skill` con name en allowlist:
+ *       - el `tool_result` correspondiente es `is_error: true` → `skill_failed`
+ *       - issuesCreated vacío → `skill_failed` (skill corrió pero no creó nada)
+ *       - issuesCreated > 0 → `success`
+ *   - NO hay `tool_use:Skill`:
+ *       - hubo otra tool (Bash/Read/Edit/...) → `skill_not_invoked`
+ *       - el caller puede leer `inferToolUsedInstead(toolUseSequence)` para
+ *         saber cuál tool tomó el lugar
+ *       - marcador textual "Launching ..." sin tool_use → `launching_no_complete`
+ *       - nada → `skill_not_invoked`
+ *
+ * MODO LEGACY (back-compat)
+ * -------------------------
+ * Si `toolUseSequence` viene `undefined`, cae al comportamiento original
+ * basado en `toolUseEmitted` / `toolResultEmitted` booleanos. Mapea a `ok` /
+ * `error` / `timeout` / `launching_no_complete` (sin `success` ni
+ * `skill_not_invoked` / `skill_failed`, que son del modo instrumentado).
  *
  * @param {object} args
  *   - outcome: salida de `inspectResponseForOutcome`
- *   - toolUseEmitted: boolean — el child emitió `tool_use:Skill`
- *   - toolResultEmitted: boolean — llegó el `tool_use_result` correspondiente
+ *   - toolUseSequence: (opcional, #3587) array de tool_use observados
+ *   - toolResultsSummary: (opcional, #3587) array de tool_result observados
+ *   - toolUseEmitted: (legacy) boolean — el child emitió `tool_use:Skill`
+ *   - toolResultEmitted: (legacy) boolean — llegó el `tool_use_result`
  *   - timedOut: boolean — el watchdog 60s disparó kill
  * @returns {string} valor del enum SKILL_RESULT_*
  */
-function inferSkillResult({ outcome, toolUseEmitted, toolResultEmitted, timedOut } = {}) {
+function inferSkillResult({
+    outcome,
+    toolUseSequence,
+    toolResultsSummary,
+    toolUseEmitted,
+    toolResultEmitted,
+    timedOut,
+} = {}) {
     if (timedOut) return SKILL_RESULT_TIMEOUT;
-    if (outcome && Array.isArray(outcome.issuesCreated) && outcome.issuesCreated.length > 0) {
-        return SKILL_RESULT_OK;
+
+    const issuesCount = outcome && Array.isArray(outcome.issuesCreated) ? outcome.issuesCreated.length : 0;
+
+    // MODO INSTRUMENTADO — preferido cuando el caller pasa toolUseSequence.
+    if (Array.isArray(toolUseSequence)) {
+        const skillCalls = toolUseSequence.filter((e) => {
+            if (!e || typeof e !== 'object') return false;
+            if (e.name !== 'Skill') return false;
+            const sk = e.input && typeof e.input.skill === 'string' ? e.input.skill : null;
+            return sk && ALLOWED_SKILLS_FOR_ISSUE_CREATION.includes(sk);
+        });
+        if (skillCalls.length > 0) {
+            // Hubo intento real de invocar Skill /doc o /planner.
+            // Si algún tool_result asociado es is_error → skill_failed.
+            const skillIds = new Set(skillCalls.map((c) => c.id).filter(Boolean));
+            const hasErrorResult = Array.isArray(toolResultsSummary) && toolResultsSummary.some((r) => {
+                if (!r || typeof r !== 'object') return false;
+                const id = r.tool_use_id || r.toolUseId;
+                const isErr = r.isError || r.is_error;
+                return id && skillIds.has(id) && isErr;
+            });
+            if (hasErrorResult) return SKILL_RESULT_SKILL_FAILED;
+            if (issuesCount > 0) return SKILL_RESULT_SUCCESS;
+            // Skill se invocó, no falló explícitamente, pero el detector no vio
+            // issue creado. Eso es skill_failed (el subskill no entregó lo que
+            // tenía que entregar) — no skill_not_invoked.
+            return SKILL_RESULT_SKILL_FAILED;
+        }
+        // No hubo Skill. ¿Hubo otra tool? Eso lo reporta tool_used_instead
+        // pero la clasificación de skill_result es skill_not_invoked.
+        if (issuesCount > 0) {
+            // Caso raro pero posible: la respuesta menciona "#NNNN creado" sin
+            // que hayamos visto un Skill (el LLM podría haber usado Bash gh
+            // issue create y el number sigue siendo válido). Mantenemos
+            // `success` porque empíricamente el issue se creó — pero el campo
+            // `tool_used_instead` documentará el bypass.
+            return SKILL_RESULT_SUCCESS;
+        }
+        if (outcome && outcome.launchingDetected) return SKILL_RESULT_LAUNCHING_NO_COMPLETE;
+        return SKILL_RESULT_SKILL_NOT_INVOKED;
     }
-    // Caso watchdog: tool_use llegó pero el result no — distinto de
-    // launching_no_complete (donde NUNCA hubo evento estructurado).
+
+    // MODO LEGACY (back-compat con callers pre-#3587 y tests existentes).
+    if (issuesCount > 0) return SKILL_RESULT_OK;
     if (toolUseEmitted && !toolResultEmitted) return SKILL_RESULT_TIMEOUT;
-    // Caso bug del issue: el LLM dijo "Launching ..." pero nunca emitió
-    // tool_use. Sin issuesCreated y con marcador textual → launching_no_complete.
     if (outcome && outcome.launchingDetected) return SKILL_RESULT_LAUNCHING_NO_COMPLETE;
-    // Caso clásico: ni invocó ni creó nada → error duro (no `unknown`).
     return SKILL_RESULT_ERROR;
+}
+
+/**
+ * #3587 CA-1 — Dado un `tool_use_sequence`, devuelve el `name` de la primera
+ * tool que NO sea Skill (o sea Skill pero con skill fuera de la allowlist).
+ * Sirve para poblar `tool_used_instead` en el audit log y armar el mensaje
+ * a Telegram (CA-4) explicando qué hizo el LLM en lugar de Skill /doc.
+ *
+ * @param {Array} seq
+ * @returns {string|null}
+ */
+function inferToolUsedInstead(seq) {
+    if (!Array.isArray(seq) || seq.length === 0) return null;
+    for (const entry of seq) {
+        if (!entry || typeof entry !== 'object') continue;
+        if (entry.name !== 'Skill') return typeof entry.name === 'string' ? entry.name : null;
+        // Skill con name fuera de allowlist también cuenta como "instead".
+        const sk = entry.input && typeof entry.input.skill === 'string' ? entry.input.skill : null;
+        if (sk && !ALLOWED_SKILLS_FOR_ISSUE_CREATION.includes(sk)) {
+            return `Skill:${sk}`;
+        }
+    }
+    return null;
 }
 
 module.exports = {
@@ -610,13 +929,16 @@ module.exports = {
     MATCHED_INTENTS,
     MAX_INPUT_CHARS,
 
-    // #3418 SEC-D — enum cerrado de skill_result
+    // #3418 SEC-D + #3587 CA-3 — enum cerrado de skill_result
+    SKILL_RESULT_SUCCESS,
     SKILL_RESULT_OK,
     SKILL_RESULT_ERROR,
     SKILL_RESULT_BLOCKED,
     SKILL_RESULT_TIMEOUT,
     SKILL_RESULT_LAUNCHING_NO_COMPLETE,
     SKILL_RESULT_INVALID_ARGS,
+    SKILL_RESULT_SKILL_NOT_INVOKED,
+    SKILL_RESULT_SKILL_FAILED,
     SKILL_RESULT_ENUM,
 
     detectIssueCreationIntent,
@@ -629,6 +951,7 @@ module.exports = {
     buildIssueCreationPromptBlock,
     inspectResponseForOutcome,
     inferSkillResult,
+    inferToolUsedInstead,
 
     // exports internos para tests
     _resolveAuditPath,
@@ -637,4 +960,7 @@ module.exports = {
     _CONTINUATION_PATTERNS: CONTINUATION_PATTERNS,
     _ADVERSARIAL_NEGATIVE_PATTERNS: ADVERSARIAL_NEGATIVE_PATTERNS,
     _LAUNCHING_MARKER_RE: LAUNCHING_MARKER_RE,
+    _sanitizeToolUseSequence,
+    _sanitizeToolResultsSummary,
+    _sanitizeSubprocess,
 };
