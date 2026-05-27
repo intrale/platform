@@ -88,7 +88,10 @@
       "credentials_env": [
         "GEMINI_API_KEY"
       ],
-      "permissions_mode": "bypassPermissions"
+      "permissions_mode": "bypassPermissions",
+      "alternative_models": [
+        "gemini-1.5-flash"
+      ]
     },
     "cerebras": {
       "launcher": "cerebras",
@@ -113,7 +116,10 @@
       "credentials_env": [
         "CEREBRAS_API_KEY"
       ],
-      "permissions_mode": "bypassPermissions"
+      "permissions_mode": "bypassPermissions",
+      "alternative_models": [
+        "llama-3.1-70b"
+      ]
     },
     "nvidia-nim": {
       "launcher": "nvidia-nim",

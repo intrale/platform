@@ -130,6 +130,13 @@
           "type": "string",
           "description": "Cómo se exhibe este provider en la ventana Providers del dashboard. 'live' = se pingea y se muestra el semáforo en vivo. 'not_applicable' = se muestra como 'NO APLICA' (badge informativo, sin semáforo). Default 'live'. #3361 — separa la visualización de la lista canónica para que listConfiguredProviders() siga siendo la fuente de verdad única.",
           "enum": ["live", "not_applicable"]
+        },
+        "alternative_models": {
+          "type": "array",
+          "description": "Modelos alternativos del mismo provider que Sherlock puede usar para preservar adversariality parcial cuando el Commander y Sherlock coinciden en provider (#3501). Lista ordenada por preferencia. Si `commanderProvider === sherlockProvider` y `commanderModel === sherlockModel`, el resolver itera estos modelos antes de saltar al siguiente provider de la chain. Cada entry se cross-valida contra `ALLOWED_MODELS_BY_LAUNCHER` en lib/agent-models-validate.js (defensa anti-supply-chain CA-SEC-SWAP-1). Caps `maxItems: 3` + `uniqueItems: true` evitan cost-amplification (CA-SEC-SWAP-2). Ausencia o lista vacía → política inactiva para este provider, comportamiento idéntico al actual (CA-4 default-safe).",
+          "items": { "type": "string", "minLength": 1 },
+          "maxItems": 3,
+          "uniqueItems": true
         }
       }
     },
