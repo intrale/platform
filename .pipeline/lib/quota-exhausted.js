@@ -215,7 +215,56 @@ function ensureDir(dir) {
  *
  * Si el rename falla (FS lleno, permisos), limpia tmp y propaga el error.
  * El caller (typically pulpo.js) decide si ignorarlo (best-effort) o no.
+ *
+ * #3575 — Retry bounded en `fs.renameSync`
+ * ---------------------------------------
+ * En Windows, `fs.renameSync` puede fallar con `EBUSY|EPERM|EEXIST` cuando
+ * dos procesos renombran al mismo destino casi simultáneamente (handle
+ * brevemente abierto por antivirus, indexador o el propio FS). En POSIX el
+ * rename es atómico y este path raramente dispara, pero el costo del retry
+ * acotado es despreciable.
+ *
+ * Cap explícito (anti-DoS): máximo 3 intentos y ≤50ms totales. Si el
+ * destino está realmente bloqueado, propagamos al caller en vez de spinear
+ * el proceso indefinidamente.
  */
+const RENAME_RETRY_MAX_ATTEMPTS = 3;
+const RENAME_RETRY_MAX_TOTAL_MS = 50;
+const RENAME_RETRY_INITIAL_MS = 5;
+const RENAME_RETRYABLE_ERRORS = new Set(['EBUSY', 'EPERM', 'EEXIST']);
+
+function sleepSyncMs(ms) {
+    // Busy-wait acotado a milisegundos (es lo único síncrono que da Node sin
+    // deps nuevas). El cap del caller mantiene esto bajo 50ms totales.
+    const end = Date.now() + ms;
+    // eslint-disable-next-line no-empty
+    while (Date.now() < end) {}
+}
+
+function renameWithRetry(tmp, filepath) {
+    let lastErr = null;
+    let delayMs = RENAME_RETRY_INITIAL_MS;
+    const totalDeadline = Date.now() + RENAME_RETRY_MAX_TOTAL_MS;
+    for (let attempt = 1; attempt <= RENAME_RETRY_MAX_ATTEMPTS; attempt++) {
+        try {
+            fs.renameSync(tmp, filepath);
+            return;
+        } catch (err) {
+            lastErr = err;
+            const code = err && err.code;
+            const retriable = RENAME_RETRYABLE_ERRORS.has(code);
+            const lastAttempt = attempt === RENAME_RETRY_MAX_ATTEMPTS;
+            const overBudget = Date.now() + delayMs > totalDeadline;
+            if (!retriable || lastAttempt || overBudget) throw err;
+            sleepSyncMs(delayMs);
+            delayMs = Math.min(delayMs * 2, totalDeadline - Date.now());
+            if (delayMs <= 0) throw lastErr;
+        }
+    }
+    // Defensivo (no debería alcanzarse): el loop sale por return o throw.
+    throw lastErr || new Error('renameWithRetry: unexpected fallthrough');
+}
+
 function writeJsonAtomic(filepath, data) {
     ensureDir(tmpDir());
     ensureDir(path.dirname(filepath));
@@ -232,7 +281,7 @@ function writeJsonAtomic(filepath, data) {
         try { fs.closeSync(fd); } catch {}
     }
     try {
-        fs.renameSync(tmp, filepath);
+        renameWithRetry(tmp, filepath);
     } catch (err) {
         try { fs.unlinkSync(tmp); } catch {}
         throw err;
@@ -569,6 +618,35 @@ function clearFlag(opts = {}) {
  *   - `errorType` truncado a 128 chars (CA-6 editorial) para acomodar codes
  *     largos de OpenAI tipo `tokens_per_minute_rate_limit_exceeded_for_org_x`.
  *   - Si `provider` viene, se pasa también al audit log (CA-10 / SEC-7).
+ *
+ * #3575 — Contrato de atomicidad y last-writer-wins
+ * -------------------------------------------------
+ * La persistencia se hace vía `writeJsonAtomic`, que ejecuta:
+ *   1. `fs.writeFileSync(tmp, 0o600) + fs.fsyncSync` sobre un archivo
+ *      temporal en `tmpDir()` con sufijo `pid.timestamp.tmp` (único por
+ *      escritor).
+ *   2. `fs.renameSync(tmp, flagFile())` — atómico en POSIX. En Windows el
+ *      rename es semi-atómico y puede dispararse `EBUSY|EPERM|EEXIST`;
+ *      `writeJsonAtomic` aplica retry bounded (3 intentos / ≤50ms totales)
+ *      sobre esos códigos para amortiguar el flake sin riesgo de spin
+ *      infinito.
+ *
+ * Bajo concurrencia (N procesos invocando `setFlag` simultáneamente):
+ *   - **El JSON final SIEMPRE es válido** (no truncado, no campos perdidos):
+ *     cada escritor renombra su propio tmp completo y `renameSync` es
+ *     atómico — no hay punto en el que un lector pueda observar un archivo
+ *     parcialmente escrito.
+ *   - **Last-writer-wins**: el `pattern_matched`, `provider`, `model`,
+ *     `resets_at` finales corresponden al proceso que ganó el rename. Los
+ *     campos perdidos de los otros escritores existen en el audit log
+ *     (`appendChained`) — esa es la fuente de verdad para auditoría
+ *     cross-skill.
+ *   - El permiso `0o600` se preserva en cada rename (mode del tmp se
+ *     conserva). En POSIX, asserción anti-regresión:
+ *     `(fs.statSync(flagFile()).mode & 0o777) === 0o600`.
+ *
+ * Esta atomicidad es prerequisito para que #3576 habilite `setFlag` desde
+ * más call sites (cross-skill) sin race conditions.
  *
  * @param {object} opts
  * @param {string} opts.errorType valor del error_type del CLI (debe estar en allowlist)
