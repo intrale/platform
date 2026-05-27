@@ -133,6 +133,11 @@ function isIssueAllowedInState(issue, state) {
 /**
  * Activa la pausa parcial con un allowlist de issues.
  * Lista vacía → elimina el marker (equivalente a clear).
+ *
+ * #3520 — Write atómico vía tmp+rename. Sustituye al `writeFileSync` directo
+ * que dejaba el JSON truncado ante un kill -9 mid-write. Es prerequisito para
+ * la transacción multi-archivo de `lib/waves.promoteWaveAtomic`.
+ *
  * @param {Array<number|string>} issues
  * @param {{
  *   source?: string,
@@ -169,12 +174,105 @@ function setPartialPause(issues, opts = {}) {
         }
         if (Object.keys(filtered).length > 0) data.dep_sources = filtered;
     }
-    fs.writeFileSync(partialFile(), JSON.stringify(data, null, 2));
+    writeAtomic(partialFile(), JSON.stringify(data, null, 2));
     return {
         ok: true,
         allowedIssues: unique,
         msg: `Pausa parcial activa — allowed: ${unique.map(i => `#${i}`).join(', ')}`,
     };
+}
+
+/**
+ * Variante atómica que además devuelve un snapshot del estado previo para
+ * habilitar rollback transaccional (#3520).
+ *
+ * Diferencias vs `setPartialPause`:
+ *   - Antes de escribir, captura el contenido y SHA-256 del archivo previo
+ *     (o `null` si no existía). Permite a `lib/waves.promoteWaveAtomic`
+ *     restaurar exactamente el estado anterior sin depender de timestamped
+ *     backups en `archived/`.
+ *   - Write atómico (tmp + renameSync), idéntico a `setPartialPause`.
+ *   - Lista vacía no elimina el marker — escribe `allowed_issues: []` para
+ *     que la transacción tenga un estado uniforme (la limpieza la hace el
+ *     caller si corresponde a su semántica).
+ *
+ * @param {Array<number|string>} issues
+ * @param {{source?: string, acceptedDepRisk?: boolean, depSources?: Object}} [opts]
+ * @returns {{
+ *   ok: boolean,
+ *   allowedIssues: number[],
+ *   msg: string,
+ *   prevBuffer: Buffer|null,
+ *   prevSha: string|null,
+ *   existedBefore: boolean,
+ * }}
+ */
+function setPartialPauseAtomic(issues, opts = {}) {
+    // 1) Snapshot del estado previo (para rollback del caller).
+    let prevBuffer = null;
+    let prevSha = null;
+    let existedBefore = false;
+    try {
+        prevBuffer = fs.readFileSync(partialFile());
+        prevSha = require('crypto').createHash('sha256').update(prevBuffer).digest('hex');
+        existedBefore = true;
+    } catch (err) {
+        if (err && err.code !== 'ENOENT') throw err;
+    }
+
+    // 2) Normalización y escritura (misma semántica que setPartialPause salvo
+    //    que lista vacía no borra — siempre escribe un JSON válido).
+    const normalized = (Array.isArray(issues) ? issues : [])
+        .map(normalizeIssue)
+        .filter(Boolean);
+    const unique = [...new Set(normalized)].sort((a, b) => a - b);
+
+    const data = {
+        allowed_issues: unique,
+        created_at: new Date().toISOString(),
+        source: opts.source || 'unknown',
+    };
+    if (opts.acceptedDepRisk === true) data.accepted_dep_risk = true;
+    if (opts.depSources && typeof opts.depSources === 'object') {
+        const filtered = {};
+        for (const k of Object.keys(opts.depSources)) {
+            const n = normalizeIssue(k);
+            if (n && unique.includes(n)) {
+                filtered[String(n)] = opts.depSources[k];
+            }
+        }
+        if (Object.keys(filtered).length > 0) data.dep_sources = filtered;
+    }
+    writeAtomic(partialFile(), JSON.stringify(data, null, 2));
+
+    return {
+        ok: true,
+        allowedIssues: unique,
+        msg: unique.length > 0
+            ? `Pausa parcial activa — allowed: ${unique.map(i => `#${i}`).join(', ')}`
+            : 'Pausa parcial activa con allowlist vacía (no bloquea)',
+        prevBuffer,
+        prevSha,
+        existedBefore,
+    };
+}
+
+/**
+ * Helper interno: write atómico con tmp + renameSync.
+ * No expuesto — uso interno de `setPartialPause` / `setPartialPauseAtomic`.
+ *
+ * @param {string} targetPath
+ * @param {string} content
+ */
+function writeAtomic(targetPath, content) {
+    const tmp = `${targetPath}.tmp.${process.pid}.${Date.now()}`;
+    try {
+        fs.writeFileSync(tmp, content);
+        fs.renameSync(tmp, targetPath);
+    } catch (err) {
+        try { fs.unlinkSync(tmp); } catch {}
+        throw err;
+    }
 }
 
 /**
@@ -210,6 +308,7 @@ module.exports = {
     isIssueAllowed,
     isIssueAllowedInState,
     setPartialPause,
+    setPartialPauseAtomic, // #3520
     clearPartialPause,
     resumeAll,
     _paths: () => ({ PARTIAL_FILE: partialFile(), PAUSE_FILE: pauseFile() }),

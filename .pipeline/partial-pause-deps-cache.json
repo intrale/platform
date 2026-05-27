@@ -1,0 +1,115 @@
+{
+  "issues": {
+    "3435": {
+      "state": "open",
+      "deps": [],
+      "title": "[guru] Generalizar parser de errores in-flight a todos los spawns LLM del pipeline (no solo Commander)",
+      "fetchedAt": 1779837535544
+    },
+    "3472": {
+      "state": "open",
+      "deps": [],
+      "title": "[review] wire-up live del fallback in-flight del Commander en pulpo.js#ejecutarClaude",
+      "fetchedAt": 1779837536797
+    },
+    "3498": {
+      "state": "open",
+      "deps": [],
+      "title": "[guru] Derivar KNOWN_HINTS_BY_PROVIDER de agent-models.json#quota_error_types",
+      "fetchedAt": 1779837537968
+    },
+    "3501": {
+      "state": "open",
+      "deps": [],
+      "title": "[po] Preferir modelo distinto en same_provider para preservar adversariality",
+      "fetchedAt": 1779837539160
+    },
+    "3502": {
+      "state": "closed",
+      "deps": [],
+      "title": "[guru] Migrar wave-resolver.js a consumir lib/waves.js como fuente canónica",
+      "fetchedAt": 1779837540531
+    },
+    "3507": {
+      "state": "closed",
+      "deps": [
+        3526
+      ],
+      "title": "Discovery: Rol 'Arquitecto' en fase de definición de issues para reducir esfuerzo dev",
+      "fetchedAt": 1779837541744
+    },
+    "3508": {
+      "state": "closed",
+      "deps": [],
+      "title": "[security] Feature flag con auto-disable TTL para workaround Opus 1M (#3506)",
+      "fetchedAt": 1779837544211
+    },
+    "3515": {
+      "state": "closed",
+      "deps": [],
+      "title": "[guru] Consolidar splitTextForTTSChunks duplicado entre pulpo.js y multimedia.js",
+      "fetchedAt": 1779837545602
+    },
+    "3517": {
+      "state": "closed",
+      "deps": [],
+      "title": "[guru] Consolidar lib/eta.js (#2895) con calculadora ETA probabilística (#3492)",
+      "fetchedAt": 1779837546660
+    },
+    "3518": {
+      "state": "open",
+      "deps": [],
+      "title": "[security] Atomic writes + lock para waves.json en operaciones destructivas del Commander",
+      "fetchedAt": 1779837548166
+    },
+    "3520": {
+      "state": "open",
+      "deps": [],
+      "title": "[security] Rollback transaccional si /wave promote falla a mitad de camino (waves.json vs allowlist)",
+      "fetchedAt": 1779837549532
+    },
+    "3526": {
+      "state": "closed",
+      "deps": [],
+      "title": "Análisis cuantitativo retrospectivo: ahorro de tokens con rol Arquitecto (sub-tarea #3507)",
+      "fetchedAt": 1779837541744
+    },
+    "3529": {
+      "state": "open",
+      "deps": [],
+      "title": "[review] Dashboard pasa size:* label de issueMatrix al consumir calculateOlaETA (precedencia D3 #3492)",
+      "fetchedAt": 1779837550785
+    },
+    "3539": {
+      "state": "closed",
+      "deps": [],
+      "title": "CA-UX-9: Audio TTS en notificaciones de entregables parciales (épico #3414)",
+      "fetchedAt": 1779837551957
+    },
+    "3540": {
+      "state": "open",
+      "deps": [],
+      "title": "Adjuntos multimedia (documento, imagen, video) en notificaciones de entregables parciales",
+      "fetchedAt": 1779837553103
+    },
+    "3541": {
+      "state": "open",
+      "deps": [],
+      "title": "Entregables parciales del CUA: notificaciones Telegram estructuradas",
+      "fetchedAt": 1779837554381
+    },
+    "3542": {
+      "state": "open",
+      "deps": [],
+      "title": "Delimitar responsabilidades: Guru (investigador/innovador) vs Architect (técnico/componentes)",
+      "fetchedAt": 1779837555723
+    },
+    "3558": {
+      "state": "closed",
+      "deps": [],
+      "title": "Sherlock verifier: implementar fallback en cascada entre providers/modelos",
+      "fetchedAt": 1779837556865
+    }
+  },
+  "updatedAt": 1779837556865
+}

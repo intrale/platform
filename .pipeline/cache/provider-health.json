@@ -1,0 +1,44 @@
+{
+  "providers": {
+    "openai-codex": {
+      "status": "unknown",
+      "reason": "forbidden",
+      "last_ping_ts": "2026-05-26T16:32:18.942Z",
+      "last_ping_ts_ms": 1779813138942,
+      "last_quota_flag_ts": null,
+      "resets_at": null
+    },
+    "gemini-google": {
+      "status": "ok",
+      "reason": "authenticated",
+      "last_ping_ts": "2026-05-26T16:32:18.942Z",
+      "last_ping_ts_ms": 1779813138942,
+      "last_quota_flag_ts": null,
+      "resets_at": null
+    },
+    "cerebras": {
+      "status": "ok",
+      "reason": "authenticated",
+      "last_ping_ts": "2026-05-26T16:32:18.942Z",
+      "last_ping_ts_ms": 1779813138942,
+      "last_quota_flag_ts": null,
+      "resets_at": null
+    },
+    "nvidia-nim": {
+      "status": "ok",
+      "reason": "authenticated",
+      "last_ping_ts": "2026-05-26T16:32:18.942Z",
+      "last_ping_ts_ms": 1779813138942,
+      "last_quota_flag_ts": null,
+      "resets_at": null
+    },
+    "deterministic": {
+      "status": "unknown",
+      "reason": "no_ping_endpoint",
+      "last_ping_ts": "2026-05-26T16:32:18.942Z",
+      "last_ping_ts_ms": 1779813138942,
+      "last_quota_flag_ts": null,
+      "resets_at": null
+    }
+  }
+}

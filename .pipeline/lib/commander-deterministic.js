@@ -1673,12 +1673,22 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
 
 /**
  * `/wave promote` — Promueve `planned_waves[0]` a `active_wave`.
- * Aplica:
+ *
+ * #3520 — Ejecuta la transacción atómica multi-archivo vía
+ * `waves.promoteWaveAtomic`, que internamente:
+ *   - Crea snapshot de waves.json y .partial-pause.json en archived/.
+ *   - Escribe marker `wave-promote.in-progress.json` con fsync.
+ *   - Aplica `promoteWaveToActive` (waves.json) y `setPartialPauseAtomic`
+ *     (.partial-pause.json) secuencialmente.
+ *   - Si la segunda escritura falla, rollback inline desde el snapshot.
+ *   - Si crashea entre las dos escrituras, el boot recovery del próximo
+ *     pulpo (pulpo.js → waves.recoverIncompletePromote()) restaura.
+ *
+ * Aplica además:
  *   - destructiveCooldown (CA-9, MUST).
+ *   - Gate fail-closed: si hay `wave-promote.failed.*.json` activo,
+ *     bloquea con mensaje accionable (CA-C3 / CA-D3).
  *   - Read-fresh antes de mutación (CA-8).
- *   - `promoteWaveToActive` archiva la activa anterior (delegado en H1).
- *   - Recalcula allowlist con `getAllowlist()` y la escribe vía
- *     `partial-pause.setPartialPause` (no edición manual del JSON).
  */
 async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
     if (cooldown && chatId) {
@@ -1694,7 +1704,21 @@ async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
     }
 
     const waves = require('./waves');
-    const partialPause = require('./partial-pause');
+
+    // #3520 — Gate fail-closed: si recovery automático no pudo restaurar
+    // una transacción anterior, NO permitimos nuevas promociones hasta que
+    // un humano inspeccione y borre el .failed.
+    const blocked = waves.isWavePromoteBlocked();
+    if (blocked.blocked) {
+        const markerNames = blocked.markers.map((p) => require('path').basename(p)).join(', ');
+        return {
+            reply: fillTemplate('wave-promote-blocked', {
+                'failed-markers': markerNames,
+                'archived-dir': '.pipeline/archived/',
+            }),
+        };
+    }
+
     waves.invalidateCache();
     const state = waves.loadWaves();
     const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
@@ -1707,15 +1731,15 @@ async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
         };
     }
 
-    const oldWaveNumber = state.active_wave ? state.active_wave.number : null;
     const newWave = planned[0];
     const newWaveNumber = newWave.number;
 
+    let result;
     try {
-        waves.promoteWaveToActive(newWaveNumber, {
+        result = waves.promoteWaveAtomic(newWaveNumber, {
             updated_by: from || 'Leo',
             source: 'telegram-commander/wave-promote',
-            note: `promote wave ${newWaveNumber} → active (desde Telegram)`,
+            note: `promote wave ${newWaveNumber} → active (desde Telegram, atomic)`,
         });
     } catch (e) {
         return {
@@ -1726,30 +1750,20 @@ async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
         };
     }
 
-    // Recalcular allowlist desde la nueva ola activa y aplicar vía partial-pause.
-    waves.invalidateCache();
-    const newAllowlist = waves.getAllowlist();
-    let allowlistApplied = false;
-    let allowlistErrorMsg = null;
-    try {
-        partialPause.setPartialPause(newAllowlist, { source: 'telegram-commander/wave-promote' });
-        allowlistApplied = true;
-    } catch (e) {
-        allowlistErrorMsg = String(e && e.message ? e.message : e);
-    }
-
     if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-promote');
 
     return {
         reply: fillTemplate('wave-promote-ok', {
-            'has-old-wave': oldWaveNumber !== null,
-            'old-wave-number': oldWaveNumber || 0,
-            'new-wave-number': newWaveNumber,
-            'new-wave-name': newWave.name || `Ola ${newWaveNumber}`,
-            'allowlist-size': newAllowlist.length,
-            'allowlist-applied': allowlistApplied,
-            'has-allowlist-error': !!allowlistErrorMsg,
-            'allowlist-error': allowlistErrorMsg || '',
+            'has-old-wave': result.oldWaveNumber !== null,
+            'old-wave-number': result.oldWaveNumber || 0,
+            'new-wave-number': result.newWaveNumber,
+            'new-wave-name': result.newWaveName,
+            'allowlist-size': result.newAllowlist.length,
+            'added-count': result.added.length,
+            'removed-count': result.removed.length,
+            'allowlist-applied': true,
+            'has-allowlist-error': false,
+            'allowlist-error': '',
         }),
     };
 }
