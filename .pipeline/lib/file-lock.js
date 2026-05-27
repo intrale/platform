@@ -26,8 +26,15 @@
 //
 // Política de reintentos (security req #2)
 // -----------------------------------------
-//   timeout: 5000ms total
-//   max retries: 3 (con jitter 50-200ms entre intentos)
+//   timeout: 5000ms total (boundary primaria — el loop termina cuando se
+//            agota este presupuesto, no antes).
+//   max retries: 3 (informativo / soft signal — usado para reporting en el
+//                   mensaje de error; el loop NO termina solo por agotarlo).
+//   jitter: 50-200ms entre intentos. Bajo contención de N workers, varios
+//           reintentos son normales: 10 workers × ~80ms cada uno serializado
+//           = ~800ms bajo lock + jitter. El timeout de 5000ms cubre ~50 retries
+//           en el peor caso, que es lo que necesitamos para que todos converjan
+//           antes de tirar ELOCK_TIMEOUT.
 //   en fallo final: notifica Telegram + tira excepción (NUNCA esperar inf).
 //
 // Permisos (security req #6)
@@ -216,13 +223,16 @@ function isStale(meta, lockPath) {
 function acquireLockSync(filePath, opts) {
     const lockPath = lockPathOf(filePath);
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
+    // maxRetries es informativo (aparece en el mensaje de error para reporting).
+    // El loop NO termina por agotarlo; solo por agotar el budget de timeoutMs.
+    // Bajo contención de N workers concurrentes, varios reintentos son esperables
+    // y forzar un cap bajo causa lock-starvation espuria (CA-8 regression).
     const maxRetries = opts.maxRetries != null ? opts.maxRetries : DEFAULT_MAX_RETRIES;
     const startedAt = Date.now();
     let attempts = 0;
     let lastErr = null;
 
-    while (attempts <= maxRetries) {
-        if (Date.now() - startedAt > timeoutMs) break;
+    while (Date.now() - startedAt <= timeoutMs) {
         try {
             const fd = fs.openSync(lockPath, 'wx', POSIX_LOCK_MODE);
             const meta = {
@@ -251,7 +261,10 @@ function acquireLockSync(filePath, opts) {
                     continue;
                 }
                 attempts++;
-                const wait = jitter(50, 200);
+                // Bound el wait por lo que reste del timeout para no excederlo.
+                const remaining = timeoutMs - (Date.now() - startedAt);
+                if (remaining <= 0) break;
+                const wait = Math.min(jitter(50, 200), remaining);
                 const deadline = Date.now() + wait;
                 while (Date.now() < deadline) { /* busy wait */ }
                 continue;
@@ -264,7 +277,7 @@ function acquireLockSync(filePath, opts) {
     const errMsg = lastErr ? lastErr.message : 'timeout sin error específico';
     const meta = readLockMeta(lockPath) || {};
     const e = new Error(
-        `withLockSync: timeout ${timeoutMs}ms tras ${attempts} reintentos (elapsed=${elapsed}ms) — `
+        `withLockSync: timeout ${timeoutMs}ms tras ${attempts} reintentos (elapsed=${elapsed}ms, maxRetries=${maxRetries}) — `
         + `holder pid=${meta.pid || '?'} host=${meta.hostname || '?'} start=${meta.startTime || '?'}. `
         + `Último error: ${errMsg}`,
     );
@@ -316,13 +329,14 @@ function withLockSync(filePath, fn, opts = {}) {
 async function acquireLock(filePath, opts) {
     const lockPath = lockPathOf(filePath);
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
+    // maxRetries informativo (ver acquireLockSync). El loop usa timeoutMs como
+    // boundary primaria; maxRetries solo aparece en el error final para diag.
     const maxRetries = opts.maxRetries != null ? opts.maxRetries : DEFAULT_MAX_RETRIES;
     const startedAt = Date.now();
     let attempts = 0;
     let lastErr = null;
 
-    while (attempts <= maxRetries) {
-        if (Date.now() - startedAt > timeoutMs) break;
+    while (Date.now() - startedAt <= timeoutMs) {
         try {
             const fd = fs.openSync(lockPath, 'wx', POSIX_LOCK_MODE);
             const meta = {
@@ -354,7 +368,9 @@ async function acquireLock(filePath, opts) {
                 }
                 // Holder vivo — esperar con jitter y reintentar.
                 attempts++;
-                const wait = jitter(50, 200);
+                const remaining = timeoutMs - (Date.now() - startedAt);
+                if (remaining <= 0) break;
+                const wait = Math.min(jitter(50, 200), remaining);
                 await new Promise((r) => setTimeout(r, wait));
                 continue;
             }
@@ -367,7 +383,7 @@ async function acquireLock(filePath, opts) {
     const errMsg = lastErr ? lastErr.message : 'timeout sin error específico';
     const meta = readLockMeta(lockPath) || {};
     const e = new Error(
-        `withLock: timeout ${timeoutMs}ms tras ${attempts} reintentos (elapsed=${elapsed}ms) — `
+        `withLock: timeout ${timeoutMs}ms tras ${attempts} reintentos (elapsed=${elapsed}ms, maxRetries=${maxRetries}) — `
         + `holder pid=${meta.pid || '?'} host=${meta.hostname || '?'} start=${meta.startTime || '?'}. `
         + `Último error: ${errMsg}`,
     );
