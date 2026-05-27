@@ -1,4 +1,4 @@
-🌊 *Ola promovida*
+✅ *Ola N → N\+1 promovida atómicamente*
 
 {{#if has-old-wave}}
 *Archivada:* ola \#{{old-wave-number}}
@@ -7,10 +7,11 @@
 
 ━━━━━━━━━━━━━━━━━━━━
 
-{{#if allowlist-applied}}
-✅ *Allowlist actualizada:* {{allowlist-size}} issue\(s\) admitidos en `.partial-pause.json`\.
-{{else}}
-⚠️ *Allowlist no se pudo actualizar:* {{allowlist-error}}\. Revisá manualmente `.partial-pause.json`\.
-{{/if}}
+📋 *Allowlist actualizada* \({{allowlist-size}} issue\(s\) admitidos\)
+  • removidos: {{removed-count}} de ola anterior
+  • agregados: {{added-count}} de ola nueva
 
-_Cambio versionado en `.pipeline/waves.json` · source `telegram-commander/wave-promote`_
+🗂 *Snapshot pre\-promote* conservado en `archived/` mientras la transacción estuvo abierta\.
+🔒 *Marker transaccional* cerrado limpiamente \(sin recovery pendiente\)\.
+
+_Cambio versionado en `.pipeline/waves.json` · source `telegram-commander/wave-promote` · transacción atómica `#3520`_

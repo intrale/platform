@@ -10378,6 +10378,68 @@ async function mainLoop() {
   log('pulpo', `Pipeline: ${PIPELINE}`);
   log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
 
+  // #3520 — Boot hook: recovery automático si /wave promote crasheó mid-transaction.
+  // Si encuentra marker stale (>TTL), restaura ambos archivos desde el snapshot
+  // y pushea un Telegram proactivo a Leo (CA-D2). Si la recovery falla
+  // (SHA mismatch, .bak corrupto), escribe wave-promote.failed.<ts>.json y deja
+  // bloqueado /wave promote hasta intervención manual (CA-C2 + CA-D3).
+  //
+  // Best-effort: si la lib falla por algo inesperado, NO matamos el pulpo —
+  // el boot debe ser robusto, y el operador se entera por logs si algo raro
+  // pasó. La transacción próxima la frena el gate del Commander si quedó .failed.
+  try {
+    const waves = require('./lib/waves');
+    const promoteRecovery = waves.recoverIncompletePromote();
+    if (promoteRecovery && promoteRecovery.action === 'recovered') {
+      const m = promoteRecovery.originalMarker || {};
+      const startedAt = m.started_at || 'desconocido';
+      const from = m.wave_number_from != null ? `#${m.wave_number_from}` : 'sin previa';
+      const to = m.wave_number_to != null ? `#${m.wave_number_to}` : 'desconocida';
+      // #3520 CA-D5 — log WARN visible (no info/debug).
+      log('pulpo', `WARN [wave-recovery] /wave promote crashed at ${startedAt}, restaurado desde snapshot (de ola ${from} → ${to}).`);
+      // #3520 CA-D2 — push Telegram proactivo a Leo. Best-effort: si sendTelegram
+      // no está listo todavía o falla, NO bloqueamos el boot.
+      try {
+        sendTelegram(
+          `⚠️ *Recovery automático detectado al boot del pulpo*\n\n` +
+          `\`/wave promote\` ejecutado el _${startedAt}_ NO completó (crash mid\\-transaction).\n` +
+          `Estado restaurado a pre\\-promote desde snapshot en \`archived/\`.\n\n` +
+          `• waves.json: revertido a ola ${from}\n` +
+          `• .partial\\-pause.json: revertido a allowlist de ola ${from}\n\n` +
+          `_Sugerencia:_ revisá logs del crash anterior antes de reintentar \`/wave promote\`.`
+        );
+      } catch (e) {
+        log('pulpo', `WARN [wave-recovery] no pude enviar push proactivo: ${e.message}`);
+      }
+    } else if (promoteRecovery && promoteRecovery.action === 'failed') {
+      // #3520 CA-D3 — fail-closed: push con instrucciones accionables.
+      const reason = promoteRecovery.reason || 'razón desconocida';
+      const failedPath = promoteRecovery.failedMarkerPath || '(desconocido)';
+      log('pulpo', `WARN [wave-recovery] FAIL-CLOSED: ${reason}. Marker .failed escrito en ${failedPath}.`);
+      try {
+        sendTelegram(
+          `🚫 *Recovery automática FALLÓ tras crash de /wave promote*\n\n` +
+          `Razón: \`${reason.replace(/[`*_\[\]()]/g, '')}\`\n\n` +
+          `El sistema está en estado consistente actual pero NO se puede garantizar qué configuración estaba antes del crash original.\n\n` +
+          `*Acción manual requerida:*\n` +
+          `1. Inspeccionar \`.pipeline/archived/partial-pause-rollback-*.json\` y \`.pipeline/archived/waves-rollback-*.json\`.\n` +
+          `2. Decidir si restaurar manualmente o aceptar el estado actual.\n` +
+          `3. Borrar \`.pipeline/wave-promote.failed.*.json\` cuando esté resuelto.\n\n` +
+          `_Hasta entonces, \`/wave promote\` queda inhabilitado._`
+        );
+      } catch (e) {
+        log('pulpo', `WARN [wave-recovery] no pude enviar alerta fail-closed: ${e.message}`);
+      }
+    } else if (promoteRecovery && promoteRecovery.action === 'in_progress') {
+      log('pulpo', `[wave-recovery] marker fresco — transacción potencialmente activa, no actúo: ${promoteRecovery.reason}`);
+    } else if (promoteRecovery && promoteRecovery.action === 'lock_lost') {
+      log('pulpo', `[wave-recovery] otro proceso capturó el marker primero: ${promoteRecovery.reason}`);
+    }
+    // action='noop' → caso normal, sin log.
+  } catch (e) {
+    log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
+  }
+
   // #3508 CA-7 / UX-4 — Log de startup informativo del workaround Anthropic 1M.
   // Una sola línea que confirma al operador el estado del flag y los hits
   // acumulados. Si el JSON de session está corrupto, formatStartupLogLine cae
