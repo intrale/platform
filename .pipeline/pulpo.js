@@ -6062,17 +6062,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // para gatear futuros spawns LLM. Si el spawn fue exitoso (exit 0 sin
     // result is_error), drenado proactivo del flag (CA-3 del padre).
     // SIEMPRE best-effort: el detector NUNCA puede romper el lifecycle del agente.
+    //
+    // #3576 CA-3 — Feature flag PIPELINE_GENERALIZED_PARSER_ENABLED (default OFF):
+    //   - OFF (legacy): código inline de abajo — preserva comportamiento
+    //     pre-#3576 byte-identical hasta que el rollout 3-olas valide paridad.
+    //   - ON  (generalized): delega al hook `onSpawnExit` del dispatcher
+    //     que reusa `lib/agent-launcher/provider-error-parser` para
+    //     clasificación cross-skill unificada (#3576 CA-2 + CA-8).
+    //
+    // Ambos paths emiten un log estructurado `{codepath, skill, provider,
+    // error_class}` con emojis 🛡️/🆕 SOLO en el log textual (NO en JSON)
+    // para diff manual de paridad (refinación R3 guru + R2 ux).
     if (!useDeterministicSkill) {
       try {
+        const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
         const cfg = (loadConfig() || {}).quota_detector || {};
         const auditEnabled = cfg.audit_log_enabled !== false;
         const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
         let raw = '';
         try { raw = fs.readFileSync(logPath, 'utf8'); } catch {}
 
-        // #3077 CA-4 / CA-5: dispatcher por provider. Resolvemos el providerDef
-        // del skill y usamos el handler correcto (anthropic-stream-json u
-        // openai-sse). Caer a Anthropic legacy si el skill no tiene resolución.
+        // Resolución provider/model del skill — necesaria en ambos paths.
         let skillProvider = null;
         let skillModel = null;
         let providerDef = null;
@@ -6082,54 +6092,101 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           providerDef = getSkillProviderDef(skillProvider);
         } catch { /* defensa */ }
 
-        let matched = false;
-        let matchedLine = '';
-        let matchedDetail = null;
-        if (raw) {
-          for (const line of raw.split('\n')) {
-            if (!line.startsWith('{')) continue;
-            let evt;
-            try { evt = JSON.parse(line); } catch { continue; }
-            // Si tenemos providerDef, dispatcher por provider; sino legacy.
-            const det = providerDef
-              ? quotaExhausted.detectQuotaError(evt, providerDef)
-              : quotaExhausted.detectFromResultEvent(evt, cfg);
-            if (det.matched) {
-              matched = true;
-              matchedLine = line;
-              matchedDetail = { evt, errorType: det.errorType };
-              break;
+        const generalizedEnabled = dispatcher.isGeneralizedParserEnabled();
+
+        if (generalizedEnabled) {
+          // -----------------------------------------------------------------
+          // #3576 path generalizado — delegación al hook cross-skill.
+          // -----------------------------------------------------------------
+          const result = dispatcher.onSpawnExit({
+            skill,
+            issue,
+            provider: skillProvider,
+            // El log del agente Claude es shape stream-json — tratamos
+            // como transport 'cli' (mismo shape estructural).
+            transport: 'cli',
+            rawOutput: raw,
+            exitCode: code,
+            timedOut: false,
+            durationMs: Math.round(elapsedSec * 1000),
+            pipelineDir: PIPELINE,
+            onLog: log,
+          });
+          log('lanzamiento',
+            `${dispatcher.CODEPATH_EMOJI.generalized} codepath=generalized skill=${skill} ` +
+            `provider=${skillProvider || 'unknown'} error_class=${result.errorClass} ` +
+            `flag_set=${result.flagSet} decision=${result.decision}`);
+          if (result.errorClass === 'quota_exhausted' && result.flagSet) {
+            log('lanzamiento', `🚫 ${skill}:#${issue} reportó cuota agotada (provider=${skillProvider || 'unknown'}) — flag seteado por hook generalizado`);
+          } else if (code === 0) {
+            // Drenado proactivo — mantiene CA-3 padre + #3077 CA-8 scope per-provider.
+            try {
+              quotaExhausted.clearFlag({
+                event: 'success_spawn',
+                reason: `${skill}:#${issue}`,
+                provider: skillProvider,
+                model: skillModel,
+              });
+            } catch {}
+          }
+        } else {
+          // -----------------------------------------------------------------
+          // Legacy path (default en main) — comportamiento previo a #3576.
+          // -----------------------------------------------------------------
+          let matched = false;
+          let matchedLine = '';
+          let matchedDetail = null;
+          if (raw) {
+            for (const line of raw.split('\n')) {
+              if (!line.startsWith('{')) continue;
+              let evt;
+              try { evt = JSON.parse(line); } catch { continue; }
+              // Si tenemos providerDef, dispatcher por provider; sino legacy.
+              const det = providerDef
+                ? quotaExhausted.detectQuotaError(evt, providerDef)
+                : quotaExhausted.detectFromResultEvent(evt, cfg);
+              if (det.matched) {
+                matched = true;
+                matchedLine = line;
+                matchedDetail = { evt, errorType: det.errorType };
+                break;
+              }
             }
           }
-        }
-        if (matched) {
-          log('lanzamiento', `🚫 ${skill}:#${issue} reportó cuota agotada (provider=${skillProvider || 'unknown'}, error_type="${matchedDetail.errorType}") — seteando flag`);
-          quotaExhausted.setFlag({
-            errorType: matchedDetail.errorType,
-            // #3077 SEC-1 / SEC-7: provider/model del skill que disparó.
-            provider: skillProvider,
-            model: skillModel,
-            resetsAt: matchedDetail.evt.resets_at,
-            // #3077 SEC-6: cap configurable por provider (Anthropic 7d,
-            // OpenAI 31d). Si providerDef define resets_at_cap_max_days, se
-            // usa; sino caemos al cfg legacy de config.yaml.
-            maxDays: (providerDef && providerDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
-            agent: skill,
-            rawExcerpt: matchedLine,
-            auditLogEnabled: auditEnabled,
-          });
-        } else if (code === 0) {
-          // CA-3 del padre: spawn exitoso → drenado proactivo del flag.
-          // #3077 CA-8: scope por provider — si el flag activo es de otro
-          // provider, NO se limpia.
-          try {
-            quotaExhausted.clearFlag({
-              event: 'success_spawn',
-              reason: `${skill}:#${issue}`,
+          const legacyErrorClass = matched ? 'quota_exhausted' : (code === 0 ? 'success' : 'unknown');
+          log('lanzamiento',
+            `${dispatcher.CODEPATH_EMOJI.legacy} codepath=legacy skill=${skill} ` +
+            `provider=${skillProvider || 'unknown'} error_class=${legacyErrorClass} ` +
+            `matched=${matched}`);
+          if (matched) {
+            log('lanzamiento', `🚫 ${skill}:#${issue} reportó cuota agotada (provider=${skillProvider || 'unknown'}, error_type="${matchedDetail.errorType}") — seteando flag`);
+            quotaExhausted.setFlag({
+              errorType: matchedDetail.errorType,
+              // #3077 SEC-1 / SEC-7: provider/model del skill que disparó.
               provider: skillProvider,
               model: skillModel,
+              resetsAt: matchedDetail.evt.resets_at,
+              // #3077 SEC-6: cap configurable por provider (Anthropic 7d,
+              // OpenAI 31d). Si providerDef define resets_at_cap_max_days, se
+              // usa; sino caemos al cfg legacy de config.yaml.
+              maxDays: (providerDef && providerDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
+              agent: skill,
+              rawExcerpt: matchedLine,
+              auditLogEnabled: auditEnabled,
             });
-          } catch {}
+          } else if (code === 0) {
+            // CA-3 del padre: spawn exitoso → drenado proactivo del flag.
+            // #3077 CA-8: scope por provider — si el flag activo es de otro
+            // provider, NO se limpia.
+            try {
+              quotaExhausted.clearFlag({
+                event: 'success_spawn',
+                reason: `${skill}:#${issue}`,
+                provider: skillProvider,
+                model: skillModel,
+              });
+            } catch {}
+          }
         }
       } catch (qErr) {
         log('lanzamiento', `quota_detector (agent log) falló (best-effort) para ${skill}:#${issue}: ${qErr.message}`);
@@ -8111,9 +8168,50 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
               cmdModel = cmdProviderDef ? cmdProviderDef.model : null;
             } catch { /* defensa */ }
 
+            // #3576 CA-3 — Feature flag PIPELINE_GENERALIZED_PARSER_ENABLED.
+            //   - OFF (legacy): código abajo — preserva comportamiento
+            //     pre-#3576 (cliGlitch detection inline + setFlag).
+            //   - ON  (generalized): delega a onSpawnExit. El hook clasifica
+            //     `cli_1m_context_glitch` como categoría aparte (matriz docu).
+            const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
+            const generalizedEnabled = dispatcher.isGeneralizedParserEnabled();
+
+            // Veredicto generalizado (solo se usa si el flag está ON).
+            let generalizedVerdict = null;
+            if (generalizedEnabled) {
+              try {
+                generalizedVerdict = dispatcher.onSpawnExit({
+                  skill: 'commander',
+                  provider: cmdProvider,
+                  transport: 'cli',
+                  rawOutput: line, // JSON line del stream-json
+                  exitCode: 0,     // result event llegó, todavía no hubo exit
+                  timedOut: false,
+                  durationMs: Date.now() - startTime,
+                  pipelineDir: PIPELINE,
+                  onLog: (lvl, msg) => log('commander', msg),
+                });
+                log('commander',
+                  `${dispatcher.CODEPATH_EMOJI.generalized} codepath=generalized ` +
+                  `skill=commander provider=${cmdProvider} ` +
+                  `error_class=${generalizedVerdict.errorClass} ` +
+                  `flag_set=${generalizedVerdict.flagSet} ` +
+                  `decision=${generalizedVerdict.decision}`);
+              } catch (e) {
+                log('commander', `[#3576] onSpawnExit tiró (best-effort): ${e && e.message}`);
+              }
+            }
+
             const det = cmdProviderDef
               ? quotaExhausted.detectQuotaError(evt, cmdProviderDef)
               : quotaExhausted.detectFromResultEvent(evt, cfg);
+            if (!generalizedEnabled) {
+              log('commander',
+                `${dispatcher.CODEPATH_EMOJI.legacy} codepath=legacy ` +
+                `skill=commander provider=${cmdProvider} ` +
+                `error_class=${det.cliGlitch ? 'cli_1m_context_glitch' : det.matched ? 'quota_exhausted' : 'unknown'} ` +
+                `matched=${det.matched === true}`);
+            }
             if (det.cliGlitch) {
               // #3506: bug del CLI Anthropic Claude Code — "Usage credits required
               // for 1M context" pese a que el plan Claude Max 20x SÍ incluye 1M
@@ -8151,17 +8249,24 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
                 sendTelegramPlain(baseMsg + extension);
               } catch { /* best-effort */ }
             } else if (det.matched) {
-              log('commander', `🚫 quota_detector: provider=${cmdProvider}, error_type="${det.errorType}" detectado — seteando flag`);
-              quotaExhausted.setFlag({
-                errorType: det.errorType,
-                provider: cmdProvider,
-                model: cmdModel,
-                resetsAt: evt.resets_at,
-                maxDays: (cmdProviderDef && cmdProviderDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
-                agent: 'commander',
-                rawExcerpt: line,
-                auditLogEnabled: cfg.audit_log_enabled !== false,
-              });
+              // #3576 CA-3: en modo generalizado el hook ya invocó setFlag
+              // (con audit log unificado + hash-chain). En legacy seguimos
+              // setFlag inline para no romper la fast-path histórica.
+              if (generalizedEnabled && generalizedVerdict && generalizedVerdict.flagSet) {
+                log('commander', `🚫 quota_detector (generalized): provider=${cmdProvider}, error_class=${generalizedVerdict.errorClass} — flag ya seteado por hook`);
+              } else {
+                log('commander', `🚫 quota_detector: provider=${cmdProvider}, error_type="${det.errorType}" detectado — seteando flag`);
+                quotaExhausted.setFlag({
+                  errorType: det.errorType,
+                  provider: cmdProvider,
+                  model: cmdModel,
+                  resetsAt: evt.resets_at,
+                  maxDays: (cmdProviderDef && cmdProviderDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
+                  agent: 'commander',
+                  rawExcerpt: line,
+                  auditLogEnabled: cfg.audit_log_enabled !== false,
+                });
+              }
             } else if (evt.is_error !== true) {
               // CA-3 (issue padre): un spawn exitoso prueba que la cuota volvió
               // antes del resets_at calculado → drenado proactivo.

@@ -1,0 +1,12 @@
+{
+  "_doc": "Fixture saneado: planner sobre Anthropic CLI sin shape estructural — el CLI escupió 'API Error: Usage credits required' en stderr libre. Debe matchear por regex acotado (CLI_QUOTA_PATTERNS) sin disparar ReDoS.",
+  "synthetic": false,
+  "source": "sanitized from .pipeline/logs/<issue>-planner.log stderr",
+  "skill": "planner",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "API Error: Usage credits required. Please verify your billing settings at https://console.anthropic.com (key redacted)."
+}

@@ -1,0 +1,12 @@
+{
+  "_doc": "Fixture saneado: guru corriendo sobre Anthropic CLI emitió un result event stream-json con shape estructural type=result, is_error=true, error_type=usage_limit_error. AKIA/JWT/sk-* fueron redactados antes de pegar. Cross-skill: confirma que el parser unificado clasifica idéntico al detector legacy.",
+  "synthetic": false,
+  "source": "sanitized from .pipeline/logs/<issue>-guru.log (real)",
+  "skill": "guru",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "{\"type\":\"result\",\"is_error\":true,\"error_type\":\"usage_limit_error\",\"error\":\"You have reached your weekly usage limit. Resets at 2026-06-03T00:00:00Z.\",\"session_id\":\"sess_<REDACTED>\"}"
+}

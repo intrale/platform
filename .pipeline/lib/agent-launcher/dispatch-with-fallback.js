@@ -86,6 +86,293 @@ const { resolveProviderForSkill, getProviderHandler } = require('./resolve-provi
 // 5 es generoso para la mayoría de configs (Anthropic → OpenAI → Gemini → ...).
 const MAX_FALLBACK_DEPTH = 5;
 
+// =============================================================================
+// #3576 — Hook `onSpawnExit` cross-skill
+// =============================================================================
+//
+// Centraliza el parseo del raw output post-spawn y la decisión de set/clear
+// flag de cuota. Antes de #3576 había dos call sites inline en pulpo.js
+// (skills + commander) con shapes distintos. Esta función unifica el wire.
+//
+// CONTRATO PÚBLICO (#3576 CA-2)
+// -----------------------------
+//   onSpawnExit({
+//     skill,                  // nombre del skill (string, requerido)
+//     provider,               // provider efectivo del spawn (string, requerido)
+//     transport,              // 'api' | 'cli' (string, requerido)
+//     rawOutput,              // string con stderr / output del child
+//     exitCode,               // number | null
+//     timedOut,               // boolean
+//     durationMs,             // number ms desde spawn hasta exit
+//     firstByteAt,            // (opt) timestamp del primer byte SSE recibido
+//     issue,                  // (opt) número de issue para audit
+//     pipelineDir,            // (opt) override para tests
+//     parserModule,           // (opt) override para tests
+//     quotaModule,            // (opt) override para tests
+//     auditLog,               // (opt) override require('../audit-log')
+//     fsImpl,                 // (opt) override fs
+//     onLog,                  // (opt) callback(level, msg) — best-effort logging
+//     now,                    // (opt) Date.now() override
+//   }) → {
+//     errorClass,             // 'quota_exhausted' | 'rate_limit' | 'transient_5xx' |
+//                             // 'auth' | 'permanent_failure' | 'cli_1m_context_glitch' |
+//                             // 'unknown'
+//     shouldFallback,         // bool — política de fallback recomendada
+//     retriable,              // bool — si reintentar el mismo provider tiene sentido
+//     raw,                    // string saneado por sanitizeRawExcerpt (max 200c)
+//     evidence,               // string saneado de la línea/frame que disparó
+//     flagSet,                // bool — si invocamos setFlag (quota_exhausted / rate_limit)
+//     auditLogged,            // bool — si emitimos audit entry
+//     decision,               // 'flag_set' | 'fallback' | 'ignore'
+//     codepath,               // 'generalized' (siempre acá; el legacy mantiene 'legacy')
+//   }
+//
+// GARANTÍAS DE SEGURIDAD (#3576 NEW-1 + SR-1..SR-9)
+// -------------------------------------------------
+// - **Never throws**: cualquier excepción del parser/setFlag/audit se atrapa
+//   y se devuelve un veredicto neutro (`errorClass: 'unknown'`). El
+//   `child.on('exit')` lifecycle del caller NO se rompe.
+// - **Sanitización**: el `raw` y `evidence` que se devuelven al caller ya
+//   pasaron por `quotaModule.sanitizeRawExcerpt`. AKIA/JWT/sk-* nunca llegan
+//   a logs ni Telegram.
+// - **Audit log unificado** (#3576 CA-8): shape `{ ts, skill, provider,
+//   transport, errorClass, evidence, shouldFallback }` con hash-chain SHA-256
+//   via `appendChained`. Mismo shape para skills y commander.
+// - **SIN escritura a `.pipeline/handoff/`**: el hook NO toca el canal
+//   cross-agente. Si el caller quiere narrarlo, lo hace por separado.
+// - **SR-6**: el parser NO llama setFlag; el hook SÍ, pero SOLO si
+//   `errorClass ∈ {quota_exhausted, rate_limit}` y el errorType extraído
+//   está en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER[provider]`.
+// =============================================================================
+
+// Feature flag operativo (#3576 CA-9): controla el wire desde pulpo.js. El
+// hook en sí siempre está disponible para tests y rollouts manuales — la
+// variable solo influye en pulpo.js#postSpawn (legacy vs generalized).
+// Default '0' (OFF) en `main` para minimizar blast-radius hasta que la
+// paridad esté validada por ola (ver docs/pipeline/multi-provider.md).
+const FEATURE_FLAG_NAME = 'PIPELINE_GENERALIZED_PARSER_ENABLED';
+function isGeneralizedParserEnabled(envOverride) {
+    const env = envOverride || process.env || {};
+    return env[FEATURE_FLAG_NAME] === '1';
+}
+
+// Discriminadores visuales (#3576 CA-3 + UX). Reservados para logs TEXTUALES
+// (`onLog`/`log('lanzamiento', ...)`) — NUNCA escribimos estos glyphs en
+// campos JSON del audit log para no romper consumers que parsean línea por
+// línea.
+const CODEPATH_EMOJI = Object.freeze({
+    legacy: '🛡️',
+    generalized: '🆕',
+});
+
+// Audit log dedicado a la decisión post-spawn unificada (#3576 CA-8).
+// Convención: archivo dedicado distinto del `cross-provider-dispatch-*`
+// para separar "decisión pre-spawn de fallback" (CA-1 del dispatcher) de
+// "clasificación post-spawn del error real" (CA-2 del hook). Mismo
+// directorio `.pipeline/logs/`, rotación diaria.
+function spawnExitAuditFile(pipelineDir, now = new Date()) {
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(now.getUTCDate()).padStart(2, '0');
+    return path.join(pipelineDir, 'logs', `spawn-exit-${yyyy}-${mm}-${dd}.jsonl`);
+}
+
+// -----------------------------------------------------------------------------
+// _selectErrorTypeForFlag — réplica del helper del Commander
+// (lib/commander/multi-provider.js:820). Lo duplicamos acá para evitar
+// require cruzado agent-launcher ↔ commander (acoplamiento que el split
+// #3575 deliberadamente eliminó).
+//
+// SR-7: NUNCA persistir un errorType fuera de
+// KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER[provider]. Si no podemos extraer un
+// valor de la allowlist, devolvemos null y el caller omite setFlag.
+// -----------------------------------------------------------------------------
+function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
+    const allowlist =
+        (quotaModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})[provider] || [];
+    if (allowlist.length === 0) return null;
+
+    try {
+        const trimmed = (verdict.evidence || '').trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('data:')) {
+            const jsonStr = trimmed.startsWith('data:')
+                ? trimmed.replace(/^data:\s*/, '')
+                : trimmed;
+            const parsed = JSON.parse(jsonStr);
+            const candidates = [
+                parsed.error_type,
+                parsed.error && parsed.error.type,
+                parsed.error && parsed.error.code,
+                parsed.data && parsed.data.error && parsed.data.error.type,
+                parsed.data && parsed.data.error && parsed.data.error.code,
+                (parsed.type && parsed.type !== 'response.error' && parsed.type !== 'result')
+                    ? parsed.type
+                    : null,
+            ];
+            for (const candidate of candidates) {
+                if (candidate && allowlist.includes(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+    } catch { /* fallthrough */ }
+
+    // Default safe = primer elemento de la allowlist del provider.
+    return allowlist[0];
+}
+
+// -----------------------------------------------------------------------------
+// onSpawnExit — hook centralizado post-spawn (#3576 CA-2).
+//
+// **Never throws**: cualquier error interno se atrapa y devuelve un veredicto
+// neutro. El caller puede usar el retorno para decidir log/telegram, pero la
+// vida del child.on('exit') NO depende de que esto funcione.
+// -----------------------------------------------------------------------------
+function onSpawnExit(opts = {}) {
+    // Defensive defaults — NUNCA throw por inputs mal formados.
+    const neutral = {
+        errorClass: 'unknown',
+        shouldFallback: false,
+        retriable: false,
+        raw: '',
+        evidence: '',
+        flagSet: false,
+        auditLogged: false,
+        decision: 'ignore',
+        codepath: 'generalized',
+    };
+
+    let verdict = null;
+    let flagSet = false;
+    let auditLogged = false;
+
+    try {
+        const {
+            skill,
+            provider,
+            transport,
+            rawOutput,
+            exitCode,
+            timedOut,
+            durationMs,
+            firstByteAt,
+            issue,
+            pipelineDir,
+            parserModule,
+            quotaModule,
+            auditLog,
+            fsImpl,
+            onLog,
+            now,
+        } = opts;
+
+        const log = typeof onLog === 'function' ? onLog : () => {};
+        const _parser = parserModule || require('./provider-error-parser');
+        const _quota = quotaModule || require('../quota-exhausted');
+        const _now = Number.isFinite(now) ? now : Date.now();
+
+        // 1. Clasificar via parser generalizado. El parser ya es defensivo y
+        // NUNCA tira — pero envolvemos por defense in depth.
+        try {
+            verdict = _parser.parseProviderError(rawOutput, {
+                provider,
+                transport,
+                timedOut,
+                exitCode,
+                durationMs,
+                _quotaModule: _quota,
+            });
+        } catch (e) {
+            // Cualquier throw del parser → veredicto neutro + log best-effort.
+            try { log('lanzamiento', `${CODEPATH_EMOJI.generalized} onSpawnExit: parser tiró ${e && e.message}`); } catch {}
+            return { ...neutral, codepath: 'generalized' };
+        }
+
+        // Sanitizamos el evidence/raw que devolvemos (defense in depth — el
+        // parser ya los sanea, pero re-aplicamos por si vino con shape raro).
+        const sanitize = (_quota && typeof _quota.sanitizeRawExcerpt === 'function')
+            ? _quota.sanitizeRawExcerpt
+            : ((s) => String(s == null ? '' : s).slice(0, 200));
+        const safeEvidence = sanitize(verdict.evidence || '');
+        const safeRaw = sanitize(verdict.raw || '');
+
+        // 2. setFlag SOLO para quota_exhausted/rate_limit y SOLO si hay errorType
+        // válido contra la allowlist. NEW-2 (atomic setFlag) ya está garantizado
+        // por #3575 → este hook puede ser invocado desde múltiples skills sin
+        // race conditions.
+        if (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit') {
+            try {
+                const errorType = _selectErrorTypeForFlag(provider, verdict, _quota);
+                if (errorType && typeof _quota.setFlag === 'function') {
+                    _quota.setFlag({
+                        provider,
+                        errorType,
+                        rawExcerpt: safeEvidence,
+                        agent: skill || null,
+                    });
+                    flagSet = true;
+                }
+            } catch (e) {
+                try { log('lanzamiento', `${CODEPATH_EMOJI.generalized} onSpawnExit: setFlag tiró (best-effort): ${e && e.message}`); } catch {}
+            }
+        }
+
+        // 3. Audit log unificado (#3576 CA-8). Shape común para skills/commander.
+        //    Hash-chain via appendChained. Sin emojis dentro del JSON (UX R2).
+        if (pipelineDir) {
+            try {
+                const _audit = auditLog || require('../audit-log');
+                const file = spawnExitAuditFile(pipelineDir, new Date(_now));
+                const auditEntry = {
+                    ts: new Date(_now).toISOString(),
+                    skill: skill || null,
+                    issue: (issue == null) ? null : Number(issue) || String(issue),
+                    provider: provider || null,
+                    transport: transport || null,
+                    error_class: verdict.errorClass,
+                    evidence: safeEvidence,
+                    raw_excerpt: safeRaw,
+                    should_fallback: !!verdict.shouldFallback,
+                    retriable: !!verdict.retriable,
+                    flag_set: flagSet,
+                    exit_code: (exitCode === null || exitCode === undefined) ? null : Number(exitCode),
+                    timed_out: timedOut === true,
+                    duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+                    // Signal C — first-byte ts (opcional, puede ser undefined si
+                    // el transport no lo expone).
+                    first_byte_at: Number.isFinite(firstByteAt) ? Math.round(firstByteAt) : null,
+                    codepath: 'generalized',
+                };
+                _audit.appendChained({ file, entry: auditEntry, fsImpl });
+                auditLogged = true;
+            } catch (e) {
+                try { log('lanzamiento', `${CODEPATH_EMOJI.generalized} onSpawnExit: audit tiró (best-effort): ${e && e.message}`); } catch {}
+            }
+        }
+
+        const decision =
+            verdict.errorClass === 'unknown' ? 'ignore' :
+            flagSet ? 'flag_set' :
+            verdict.shouldFallback ? 'fallback' :
+            'ignore';
+
+        return {
+            errorClass: verdict.errorClass,
+            shouldFallback: !!verdict.shouldFallback,
+            retriable: !!verdict.retriable,
+            raw: safeRaw,
+            evidence: safeEvidence,
+            flagSet,
+            auditLogged,
+            decision,
+            codepath: 'generalized',
+        };
+    } catch (e) {
+        // Catch-all defense in depth — NUNCA debemos romper child.on('exit').
+        return { ...neutral, codepath: 'generalized' };
+    }
+}
+
 // Sub-directorio donde se encola la notificación Telegram (servicio drainer
 // la procesa fuera del path crítico del pulpo).
 const TELEGRAM_QUEUE_SUBDIR = path.join('servicios', 'telegram', 'pendiente');
@@ -579,7 +866,16 @@ module.exports = {
     dispatchAuditFile,
     MAX_FALLBACK_DEPTH,
     TELEGRAM_QUEUE_SUBDIR,
+
+    // #3576 — Hook generalizado post-spawn cross-skill.
+    onSpawnExit,
+    isGeneralizedParserEnabled,
+    spawnExitAuditFile,
+    FEATURE_FLAG_NAME,
+    CODEPATH_EMOJI,
+
     // exposed for tests
     _readAgentModelsRaw: readAgentModelsRaw,
     _auditAppend: auditAppend,
+    _selectErrorTypeForFlag,
 };

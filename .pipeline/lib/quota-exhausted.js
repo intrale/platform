@@ -303,10 +303,11 @@ function writeJsonAtomic(filepath, data) {
 // falsos positivos contra texto natural. Si un nuevo provider agrega un
 // patrón propio, sumarlo acá con review humano.
 const API_KEY_PATTERNS = [
+    // Anthropic específico (`sk-ant-...`). PRIMERO para que matchee antes
+    // del sk-* genérico (sino el genérico se traga el ant- y queda residuo).
+    /\bsk-ant-[A-Za-z0-9_\-]{16,}\b/g,
     // Anthropic + OpenAI (`sk-...`, 20+ chars opacos)
     /\bsk-[A-Za-z0-9_\-]{16,}\b/g,
-    // Anthropic específico (`sk-ant-...`)
-    /\bsk-ant-[A-Za-z0-9_\-]{16,}\b/g,
     // Google API keys (`AIza...`, 35 chars en total)
     /\bAIza[0-9A-Za-z_\-]{30,}\b/g,
     // Google OAuth tokens (`ya29...`)
@@ -315,6 +316,11 @@ const API_KEY_PATTERNS = [
     /\bBearer\s+[A-Za-z0-9_\-\.]{16,}/gi,
     // JWT (3 segmentos base64url separados por puntos)
     /\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b/g,
+    // #3576 NEW-1 — AWS access keys (AKIA + 16 alfanum) y temporary
+    // credentials (ASIA prefix). Cubre el caso en que un agente o el
+    // commander pegue accidentalmente un dump del entorno de AWS en
+    // stderr/stdout del CLI.
+    /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
 ];
 
 /**
