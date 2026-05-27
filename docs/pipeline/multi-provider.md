@@ -1436,6 +1436,136 @@ Cobertura mínima exigida (CA del issue #3434):
 - **CA-7**: documentación de receta + threat model + anti-patterns (esta sección).
 - **CA-8**: regresión del incidente 2026-05-20 (timeout 600s sin output clasifica `transient_5xx`).
 
+### 10.bis Generalización cross-skill del parser (#3576)
+
+**Estado**: implementación core entregada en #3576 (Ola N+3, 2026-05-27). Continuación natural de #3434 (parser scoped Commander) — generaliza la clasificación post-spawn a TODOS los skills del pipeline, no solo al Commander.
+
+#### Qué cambió
+
+Hasta #3576 había **dos call sites inline** en `pulpo.js` que parseaban el log del spawn LLM ad-hoc:
+
+- `pulpo.js:6122` (skills regulares): leía `<issue>-<skill>.log`, iteraba líneas, llamaba `quotaExhausted.detectQuotaError(evt, providerDef)`.
+- `pulpo.js:7972` (commander): mismo loop sobre el stream `result` event del CLI Anthropic.
+
+#3576 los reemplaza por **una llamada al hook centralizado** `dispatcher.onSpawnExit(...)` (definido en `lib/agent-launcher/dispatch-with-fallback.js`). El hook:
+
+1. Invoca `parseProviderError` (módulo `lib/agent-launcher/provider-error-parser`) que delega a `quotaModule._detectAnthropic`/`_detectOpenAI` con la allowlist canónica.
+2. Si `errorClass === 'quota_exhausted'` (o `rate_limit`), invoca `quotaExhausted.setFlag(...)` (centralizado).
+3. Sanitiza `rawOutput` con `sanitizeRawExcerpt` antes de loguear/emitir (NEW-1: nada de `AKIA…`/`sk-…`/`JWT` en logs ni Telegram).
+4. Emite audit log unificado con shape `{ts, skill, provider, transport, error_class, evidence, should_fallback, flag_set, hash_prev, hash_self, ...}` via `appendChained` (hash-chain SHA-256).
+5. **`try/catch` envolvente, never throws** — el `child.on('exit')` lifecycle del caller NO se rompe aunque el parser/setFlag/audit explote.
+
+#### Feature flag `PIPELINE_GENERALIZED_PARSER_ENABLED` — rollout gradual
+
+**Default en `main`: `'0'` (OFF)**. El comportamiento legacy (inline) sigue siendo el mismo byte-identical hasta que el operador active el flag por ola.
+
+```bash
+# OFF (default): código legacy inline en pulpo.js — comportamiento previo.
+unset PIPELINE_GENERALIZED_PARSER_ENABLED
+# o explícitamente
+export PIPELINE_GENERALIZED_PARSER_ENABLED=0
+
+# ON: pulpo.js delega al hook onSpawnExit del dispatcher.
+export PIPELINE_GENERALIZED_PARSER_ENABLED=1
+```
+
+Activación operativa: reiniciar el pulpo (`node .pipeline/restart.js`) tras setear la env var. El pulpo lee el flag por dispatch (no cachea al boot), así que el cambio toma efecto a partir del siguiente spawn.
+
+#### Plan de rollout en 3 olas (#3576 CA-9)
+
+El rollout es **por ola**, con paridad de 24h entre el path legacy y el generalizado antes de avanzar:
+
+##### Ola 1 — `builder` y `tester`
+
+Skills determinísticos en su mayoría (`commander-deterministic.js`, `tester` con runs Gradle). Menor blast-radius:
+
+```bash
+# 1. Activar para builder/tester con flag por skill (manual hoy, automatizable
+#    en una iteración siguiente con un mapeo skill → flag).
+export PIPELINE_GENERALIZED_PARSER_ENABLED=1
+# 2. Reiniciar el pulpo.
+node .pipeline/restart.js
+# 3. Observar 24h. Cada spawn de builder/tester emite logs con discriminador
+#    🆕 (generalized). Comparar con la última ventana legacy (🛡️).
+```
+
+##### Ola 2 — `guru` y `planner`
+
+Output más variable que builder/tester (LLM real). Una vez Ola 1 con paridad cerrada:
+
+```bash
+# Sin cambios de env (el flag es global hoy). Esperar 24h con la flag activa
+# después de que builder/tester demuestren paridad. El operador valida que
+# guru/planner mantienen errorClass=quota_exhausted/transient_5xx donde el
+# legacy detectaba match.
+```
+
+##### Ola 3 — `commander`
+
+El mayor blast-radius (Telegram bot, atención al usuario). Solo cuando Olas 1+2 cerraron con cero mismatches:
+
+```bash
+# La activación es la misma env var, pero el operador verifica explícitamente
+# durante 24h que el commander mantenga la detección del bug #3506
+# (cli_1m_context_glitch) sin contaminar el flag de quota.
+```
+
+#### Criterio de paridad por ola
+
+**Avanzar a la siguiente ola si `(legacy_class vs generalized_class) === 0 mismatches durante 24h`**, contra la ventana inmediatamente anterior.
+
+El script `scripts/diff-parser-codepaths.sh` (commiteado con #3576) compara las líneas del log textual emitidas por ambos paths:
+
+```bash
+# Comparar las últimas 24h de logs del pulpo:
+bash scripts/diff-parser-codepaths.sh .pipeline/logs/pulpo-$(date -u +%Y-%m-%d).log
+
+# Output esperado: "0 mismatches" → avanzar ola. Cualquier número > 0 →
+# investigar manualmente cada mismatch antes de seguir.
+```
+
+#### Audit log unificado (CA-8)
+
+Ambos paths (legacy y generalized) emiten registros separados:
+
+- **Legacy**: usa el audit log histórico de `quotaExhausted.appendAudit(...)` (sin hash-chain estricto).
+- **Generalized**: usa `lib/audit-log.appendChained(...)` con SHA-256 chain en `.pipeline/logs/spawn-exit-YYYY-MM-DD.jsonl`.
+
+Validar la chain post-dispatch en CI:
+
+```bash
+node -e "
+const a = require('./.pipeline/lib/audit-log');
+const r = a.verifyChain('.pipeline/logs/spawn-exit-2026-05-27.jsonl');
+if (!r.ok) process.exit(1);
+console.log('chain OK: ' + r.entriesChecked + ' entries');
+"
+```
+
+#### Eliminación del legacy inline — post-rollout
+
+**No se borra en #3576**. Issue de seguimiento se abrirá cuando:
+
+1. Ola 3 (commander) acumule 24h continuas con cero mismatches.
+2. El operador confirme explícitamente en `pipeline-stable` que el generalized path está estable.
+
+Solo entonces se elimina el bloque legacy de `pulpo.js:6122` y `pulpo.js:7972`. Hasta entonces, el flag OFF garantiza rollback inmediato sin redeploy (cambiar env var + restart, sin patch).
+
+#### Anti-patrones a evitar
+
+- **No activar el flag en producción sin smoke-test previo** en un ciclo de QA E2E completo. La regresión silenciosa del parser sobre un shape inesperado puede dejar el flag de cuota desincronizado.
+- **No borrar el bloque legacy "porque ya funciona"** sin las 24h de paridad cerradas por ola. La presencia del legacy ES el rollback path.
+- **No mezclar olas** (ej. activar Ola 1 y Ola 3 simultáneamente). El flag es global hoy; respetar la cadena 1 → 2 → 3 con paridad 24h entre cada paso.
+
+#### CAs verificables (#3576)
+
+- **CA-2**: `node -e "const d = require('./.pipeline/lib/agent-launcher/dispatch-with-fallback'); console.log(typeof d.onSpawnExit)"` → `function`.
+- **CA-3**: `grep -nE "codepath=(legacy|generalized)" .pipeline/pulpo.js | wc -l` ≥ 4 (ambos paths emiten log estructurado en ambos call sites).
+- **CA-4**: `node -e "const a = require('./.pipeline/lib/agent-launcher/providers/anthropic'); console.log(a.detectQuotaExhausted.length)"` (sigue siendo 4-5 args; refactor backward-compat).
+- **CA-7**: `ls .pipeline/lib/agent-launcher/__tests__/provider-error-parser.test.js .pipeline/lib/agent-launcher/__tests__/onSpawnExit.test.js` → ambos existen.
+- **CA-8**: el audit log `.pipeline/logs/spawn-exit-*.jsonl` valida con `verifyChain`.
+- **CA-9**: `grep PIPELINE_GENERALIZED_PARSER_ENABLED .pipeline/lib/agent-launcher/dispatch-with-fallback.js` matchea el flag.
+
 ---
 
 ## 11. Fallback in-flight del Commander (#3275)

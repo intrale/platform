@@ -663,6 +663,78 @@ test('#3092 rev-1 — isPipelineOnlyChange NO confunde qa/evidence en subdirecto
     ]), false);
 });
 
+// ── Rebote #3576 rev-1 ────────────────────────────────────────────────
+// El #3576 (Hook onSpawnExit cross-skill + audit unificado) entregó un
+// script bash auxiliar `scripts/diff-parser-codepaths.sh` que compara
+// paridad entre los codepaths legacy y generalized leyendo el log textual
+// del pulpo. Es 100% pipeline-only — un log-analyzer que ni siquiera está
+// referenciado por Gradle — pero el archivo cae bajo `scripts/` que no
+// tenía pattern de allowlist. El cambio del PR incluía:
+//   .pipeline/lib/agent-launcher/...
+//   .pipeline/lib/quota-exhausted.js
+//   .pipeline/pulpo.js
+//   docs/pipeline/multi-provider.md
+//   scripts/diff-parser-codepaths.sh   ← rompía el `every` match
+// El tester cayó a la ruta gradle, todo UP-TO-DATE, 0 JUnit reports →
+// rebote "[tester] No se encontraron reportes JUnit". Verificación
+// empírica en `.pipeline/logs/3576-tester.log`:
+//   [tester] git diff vs main: 13 archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 wall_ms=65814 BUILD SUCCESSFUL UP-TO-DATE
+//   - No se encontraron reportes JUnit
+//
+// Verificación de seguridad: `grep` por `scripts/diff-parser-codepaths`
+// en `**/*.{kts,gradle,kt,properties}` devuelve 0 referencias — Gradle
+// no consume este script; se invoca a mano por el operador (documentado
+// en `docs/pipeline/multi-provider.md`).
+test('#3576 rev-1 — isPipelineOnlyChange acepta scripts/diff-parser-codepaths.sh', () => {
+    // Script aislado → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/diff-parser-codepaths.sh',
+    ]), true);
+    // Caso real del rebote #3576: 13 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/builder-timeout-noresult.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/commander-anthropic-result-event.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/guru-anthropic-cli-usage-limit.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/planner-anthropic-cli-credits-required.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/qa-openai-codex-sse-insufficient-quota.json',
+        '.pipeline/lib/agent-launcher/__tests__/onSpawnExit.test.js',
+        '.pipeline/lib/agent-launcher/__tests__/provider-error-parser.test.js',
+        '.pipeline/lib/agent-launcher/dispatch-with-fallback.js',
+        '.pipeline/lib/agent-launcher/providers/anthropic.js',
+        '.pipeline/lib/quota-exhausted.js',
+        '.pipeline/pulpo.js',
+        'docs/pipeline/multi-provider.md',
+        'scripts/diff-parser-codepaths.sh',
+    ]), true);
+});
+
+test('#3576 rev-1 — isPipelineOnlyChange mantiene la frontera de scripts/ (resto sigue forzando gradle)', () => {
+    // El pattern es exacto a `scripts/diff-parser-codepaths.sh` — el resto de
+    // `scripts/` puede orquestar Gradle/AWS/emulador y debe seguir cayendo a
+    // ruta gradle. Defensa contra falsos positivos.
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/local-up.sh',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/local-app.sh',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/smart-build.sh',
+    ]), false);
+    // Variantes sospechosas — typos / renames — siguen forzando gradle.
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/diff-parser-codepaths.bash',  // extensión distinta
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/diff-parser-codepaths',       // sin extensión
+    ]), false);
+    // Anidamiento bajo módulos (improbable pero posible) no debe disparar.
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/scripts/diff-parser-codepaths.sh',
+    ]), false);
+});
+
 // ── Rebote #2398 rev-1 ────────────────────────────────────────────
 // El cambio del ghostbusters (#2398) tocó archivos puramente Node.js bajo
 // `.pipeline/lib/` + `.pipeline/ghostbusters.js` + el archivo de

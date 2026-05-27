@@ -1,0 +1,12 @@
+{
+  "_doc": "Fixture saneado: commander (Telegram bot LLM) sobre Anthropic CLI emitió un result event stream-json con shape estructural. Misma forma que skills regulares — el commander es un skill más para el hook. Verifica unificación cross-skill.",
+  "synthetic": false,
+  "source": "sanitized from .pipeline/logs/commander-dispatch-<date>.jsonl",
+  "skill": "commander",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "{\"type\":\"result\",\"is_error\":true,\"error_type\":\"usage_limit_error\",\"error\":\"weekly_quota_exhausted\",\"session_id\":\"sess_<REDACTED>\",\"resets_at\":\"2026-06-03T00:00:00Z\"}"
+}

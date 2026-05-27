@@ -1,0 +1,12 @@
+{
+  "_doc": "Fixture saneado: qa con provider openai-codex via CLI SSE — el frame final emitió event=error con error.type=insufficient_quota. El parser debe clasificar quota_exhausted respetando KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['openai-codex'].",
+  "synthetic": false,
+  "source": "sanitized from .pipeline/logs/<issue>-qa.log SSE stream",
+  "skill": "qa",
+  "provider": "openai-codex",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "data: {\"event\":\"chunk\",\"data\":{\"delta\":\"texto saneado del modelo\"}}\ndata: {\"event\":\"error\",\"data\":{\"error\":{\"type\":\"insufficient_quota\",\"message\":\"You exceeded your current quota, please check your plan and billing details.\",\"code\":\"insufficient_quota\"}}}\n"
+}
