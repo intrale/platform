@@ -7516,10 +7516,39 @@ function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOrigina
   return msg;
 }
 
-function ejecutarClaude(prompt, textoOriginal) {
+// #3587 CA-1 — Instrumentación opcional del subprocess Claude para que el
+// caller pueda armar audit log con tool_use_sequence, tool_results_summary
+// y subprocess metadata. El parámetro `trace` es un objeto que se llena por
+// referencia; si el caller no lo pasa, el comportamiento es exactamente el
+// previo (back-compat con los 3 callsites existentes que no necesitan trace).
+//
+// Forma del trace post-call:
+//   trace.toolUseSequence — [{name, input, id, tsMs}]
+//   trace.toolResultsSummary — [{tool_use_id, content, isError, tsMs}]
+//   trace.subprocess — {cmd, args, exitCode, durationMs, killedByWatchdog}
+//
+// Los previews NO se redactan ni truncan en ejecutarClaude — esa
+// responsabilidad la toma `logSkillInvocation` (`_sanitize*` helpers en
+// `issue-creation.js`). Centralizar la redacción evita duplicarla en cada
+// callsite y mantiene el `trace` útil también para debugging local.
+function ejecutarClaude(prompt, textoOriginal, trace) {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
     const startTimeForAudit = Date.now();
+    // #3587 CA-1 — colector opcional de trace. Inicializamos siempre las
+    // listas para evitar checks defensivos en cada push.
+    const _trace = trace && typeof trace === 'object' ? trace : null;
+    if (_trace) {
+      _trace.toolUseSequence = [];
+      _trace.toolResultsSummary = [];
+      _trace.subprocess = {
+        cmd: null,
+        args: null,
+        exitCode: null,
+        durationMs: 0,
+        killedByWatchdog: false,
+      };
+    }
 
     // #3258 — SR-4: sanitizar el input del usuario ANTES de cualquier dispatch.
     // Si detecta patrones de prompt-injection, recorta al primer match y
@@ -7779,6 +7808,12 @@ function ejecutarClaude(prompt, textoOriginal) {
       windowsHide: true
     });
 
+    // #3587 CA-1 — registrar metadata del spawn en el trace (Anthropic path).
+    if (_trace) {
+      _trace.subprocess.cmd = cmdSpawn;
+      _trace.subprocess.args = Array.isArray(cmdArgs) ? cmdArgs.slice(0, 16) : [];
+    }
+
     // #3258 — SR-4: pasamos el prompt SANITIZADO al LLM, no el original.
     proc.stdin.write(promptForLLM);
     proc.stdin.end();
@@ -7813,6 +7848,12 @@ function ejecutarClaude(prompt, textoOriginal) {
       clearInterval(skillWatchdogTimer);
       rl.close();
       const elapsed = Math.round((Date.now() - startTime) / 1000);
+      // #3587 CA-1 — finalizar subprocess metadata en el trace antes de resolver.
+      if (_trace && _trace.subprocess) {
+        _trace.subprocess.exitCode = (code === null || code === undefined) ? null : Number(code);
+        _trace.subprocess.durationMs = Date.now() - startTime;
+        // killedByWatchdog ya se setea desde el skillWatchdogTimer.
+      }
       log('commander', `Claude terminó (${reason}, code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
       // #3418 CA-3 — si el watchdog detectó timeout de Skill, anexamos
       // marcador al texto final para que el caller pueda distinguir el caso
@@ -7882,6 +7923,17 @@ function ejecutarClaude(prompt, textoOriginal) {
               toolCount++;
               lastToolDesc = b.input?.description || b.input?.command?.slice(0, 50) || b.name || '';
               log('commander', `  [tool ${toolCount}] ${b.name}: ${lastToolDesc.slice(0, 80)}`);
+              // #3587 CA-1 — registrar el tool_use en el trace. Guardamos
+              // `input` RAW: la redacción + truncado los aplica el sanitizer
+              // del audit log cuando se escribe el JSONL.
+              if (_trace) {
+                _trace.toolUseSequence.push({
+                  name: typeof b.name === 'string' ? b.name : 'unknown',
+                  input: b.input,
+                  id: typeof b.id === 'string' ? b.id : null,
+                  tsMs: Date.now() - startTime,
+                });
+              }
               // #3418 CA-3 — arrancar reloj del watchdog SOLO para
               // tool_use cuyo `name === 'Skill'` Y el `input.skill` esté
               // en la allowlist (`doc`/`planner`). Para otras tools
@@ -7907,11 +7959,35 @@ function ejecutarClaude(prompt, textoOriginal) {
           // tracker para esos IDs.
           const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
           for (const b of blocks) {
-            if (b.type === 'tool_result' && b.tool_use_id && pendingSkillCalls.has(b.tool_use_id)) {
-              const pending = pendingSkillCalls.get(b.tool_use_id);
-              const dur = Date.now() - pending.startedAt;
-              pendingSkillCalls.delete(b.tool_use_id);
-              log('commander', `  ✓ Skill ${pending.skillName} completó en ${dur}ms (tool_use_id=${b.tool_use_id.slice(0, 12)}…)`);
+            if (b.type === 'tool_result' && b.tool_use_id) {
+              // #3587 CA-1 — registrar TODOS los tool_result en el trace
+              // (no solo los de Skill). El sanitizer del audit log se encarga
+              // del redact + truncate. `content` puede ser string o array de
+              // bloques — normalizamos a string para el trace.
+              if (_trace) {
+                let contentStr = '';
+                if (typeof b.content === 'string') {
+                  contentStr = b.content;
+                } else if (Array.isArray(b.content)) {
+                  contentStr = b.content
+                    .map((c) => (c && c.type === 'text' && typeof c.text === 'string') ? c.text : '')
+                    .filter(Boolean)
+                    .join('\n');
+                }
+                _trace.toolResultsSummary.push({
+                  tool_use_id: b.tool_use_id,
+                  content: contentStr,
+                  isError: b.is_error === true,
+                  tsMs: Date.now() - startTime,
+                });
+              }
+              // #3418 CA-3 — bookkeeping del watchdog (sólo para Skill).
+              if (pendingSkillCalls.has(b.tool_use_id)) {
+                const pending = pendingSkillCalls.get(b.tool_use_id);
+                const dur = Date.now() - pending.startedAt;
+                pendingSkillCalls.delete(b.tool_use_id);
+                log('commander', `  ✓ Skill ${pending.skillName} completó en ${dur}ms (tool_use_id=${b.tool_use_id.slice(0, 12)}…)`);
+              }
             }
           }
         } else if (evt.type === 'result') {
@@ -8051,6 +8127,9 @@ function ejecutarClaude(prompt, textoOriginal) {
           skillTimedOut = true;
           skillTimedOutInfo = { skillName: info.skillName, durationMs: dur, toolUseId };
           pendingSkillCalls.clear();
+          // #3587 CA-1 — marcar el trace para que el caller sepa que el
+          // subprocess murió por el watchdog (vs HARD_TIMEOUT vs exit normal).
+          if (_trace && _trace.subprocess) _trace.subprocess.killedByWatchdog = true;
           log('commander', `🚨 SKILL_WATCHDOG: ${info.skillName} no completó en ${SKILL_WATCHDOG_MS/1000}s (esperado ${dur}ms) — killProc`);
           killProc();
           finish(null, 'skill-watchdog-timeout');
@@ -8816,8 +8895,14 @@ Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
       // escribimos una línea por intento de creación de issue con el resultado
       // (skill invocado, issue creado, duración, error). Sólo si la heurística
       // detectó intent — para texto libre genérico no inflamos el log.
+      //
+      // #3587 CA-1 — pasamos `trace = {}` para que ejecutarClaude registre
+      // tool_use_sequence + tool_results_summary + subprocess metadata. Solo
+      // lo aprovechamos para audit log + clasificación cuando
+      // `wantsIssueCreation` (no inflamos audit para texto libre genérico).
+      const claudeTrace = wantsIssueCreation ? {} : undefined;
       skillInvocationStartedAt = Date.now();
-      let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado);
+      let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado, claudeTrace);
       log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
       if (wantsIssueCreation) {
@@ -8845,25 +8930,49 @@ Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
               intent: issueIntent.intent,
               error: 'skill_watchdog_timeout_60s',
               senderAllowed: true,
+              // #3587 CA-1 — instrumentación (trace ya cerrado por finish()).
+              toolUseSequence: claudeTrace && claudeTrace.toolUseSequence,
+              toolResultsSummary: claudeTrace && claudeTrace.toolResultsSummary,
+              subprocess: claudeTrace && claudeTrace.subprocess,
             }, { log });
             try {
-              const msg = commanderIssueCreation.formatSkillFailureResponse({ kind: 'timeout' });
+              const msg = commanderIssueCreation.formatSkillFailureResponse({ kind: 'timeout', durationMs: timeoutDuration });
               sendTelegram(msg);
             } catch { /* best-effort */ }
             // Reemplazamos `respuesta` por el mensaje al operador (sin
             // marcador) para que no termine viajando como texto literal.
-            respuesta = commanderIssueCreation.formatSkillFailureResponse({ kind: 'timeout' });
+            respuesta = commanderIssueCreation.formatSkillFailureResponse({ kind: 'timeout', durationMs: timeoutDuration });
           } else {
-            // #3418 SEC-D / CA-3 distinción crítica: el helper
-            // `inferSkillResult` centraliza el mapeo a enum cerrado y
-            // distingue `launching_no_complete` vs `error`.
+            // #3587 CA-2/CA-3 — fix de causa raíz. Antes pasábamos
+            // toolUseEmitted=false hardcoded porque no teníamos los eventos
+            // estructurados acá. Con `claudeTrace` populado por ejecutarClaude,
+            // `inferSkillResult` puede distinguir entre:
+            //   - El LLM eligió Bash gh issue create (skill_not_invoked, con
+            //     `tool_used_instead='Bash'`)
+            //   - El Skill se invocó y falló (skill_failed)
+            //   - El Skill creó issue OK (success)
             const outcome = commanderIssueCreation.inspectResponseForOutcome(respuesta || '');
             const skillResult = commanderIssueCreation.inferSkillResult({
               outcome,
-              toolUseEmitted: false,         // no llegan eventos estructurados acá
-              toolResultEmitted: false,
+              toolUseSequence: claudeTrace && claudeTrace.toolUseSequence,
+              toolResultsSummary: claudeTrace && claudeTrace.toolResultsSummary,
               timedOut: false,
             });
+            const toolUsedInstead = commanderIssueCreation.inferToolUsedInstead(
+              claudeTrace && claudeTrace.toolUseSequence
+            );
+            // #3587 CA-3 — error string específico por categoría. NO usar
+            // el string opaco antiguo (removido); usar etiquetas accionables.
+            let auditError;
+            if (skillResult === commanderIssueCreation.SKILL_RESULT_SKILL_NOT_INVOKED) {
+              auditError = toolUsedInstead
+                ? `skill_not_invoked:llm_used_${toolUsedInstead}_instead`
+                : 'skill_not_invoked:llm_emitted_no_tool';
+            } else if (skillResult === commanderIssueCreation.SKILL_RESULT_SKILL_FAILED) {
+              auditError = 'skill_failed:invoked_but_no_issue_created';
+            } else if (skillResult === commanderIssueCreation.SKILL_RESULT_LAUNCHING_NO_COMPLETE) {
+              auditError = 'launching_marker_without_tool_use';
+            }
             commanderIssueCreation.logSkillInvocation({
               pipelineDir: PIPELINE,
               from: textoLibre[0].from || null,
@@ -8875,18 +8984,30 @@ Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
               durationMs: Date.now() - skillInvocationStartedAt,
               provider: 'anthropic',
               intent: issueIntent.intent,
-              error: skillResult === commanderIssueCreation.SKILL_RESULT_ERROR
-                ? 'no_skill_invoked_or_no_issue_created'
-                : (skillResult === commanderIssueCreation.SKILL_RESULT_LAUNCHING_NO_COMPLETE
-                    ? 'launching_marker_without_tool_use'
-                    : undefined),
+              error: auditError,
               senderAllowed: true,
+              // #3587 CA-1 — instrumentación completa al audit log.
+              toolUseSequence: claudeTrace && claudeTrace.toolUseSequence,
+              toolResultsSummary: claudeTrace && claudeTrace.toolResultsSummary,
+              subprocess: claudeTrace && claudeTrace.subprocess,
+              toolUsedInstead,
             }, { log });
+            // #3587 CA-4 — reporte preciso a Telegram con UX guidelines
+            // (símbolos + tono natural + mención de tool usado).
             if (skillResult === commanderIssueCreation.SKILL_RESULT_LAUNCHING_NO_COMPLETE) {
               log('commander', `🚨 CA-3: Commander anunció Skill pero no lo invocó (launching_no_complete) — enviando mensaje específico a Telegram`);
               try { sendTelegram(commanderIssueCreation.formatSkillFailureResponse({ kind: 'launching_no_complete' })); } catch { /* best-effort */ }
-            } else if (skillResult === commanderIssueCreation.SKILL_RESULT_ERROR) {
-              log('commander', `⚠️ SEC-1: respuesta del Commander no menciona invocación de doc/planner ni issue creado — posible fallback silencioso`);
+            } else if (skillResult === commanderIssueCreation.SKILL_RESULT_SKILL_NOT_INVOKED) {
+              log('commander', `⚠️ CA-2/CA-4: LLM no invocó Skill — tool_used_instead=${toolUsedInstead || 'none'} — enviando mensaje específico a Telegram`);
+              try {
+                sendTelegram(commanderIssueCreation.formatSkillFailureResponse({
+                  kind: 'skill_not_invoked',
+                  toolUsedInstead,
+                }));
+              } catch { /* best-effort */ }
+            } else if (skillResult === commanderIssueCreation.SKILL_RESULT_SKILL_FAILED) {
+              log('commander', `⚠️ CA-4: Skill se invocó pero no creó issue — enviando mensaje específico a Telegram`);
+              try { sendTelegram(commanderIssueCreation.formatSkillFailureResponse({ kind: 'skill_failed' })); } catch { /* best-effort */ }
             }
           }
         } catch (auditErr) {

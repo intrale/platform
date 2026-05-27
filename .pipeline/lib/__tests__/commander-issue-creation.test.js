@@ -307,9 +307,13 @@ test('formatBlockedByProviderResponse: provider=anthropic no muestra failover', 
 // -----------------------------------------------------------------------------
 
 test('formatSkillFailureResponse: kind=timeout', () => {
+    // #3587 CA-4 — copy migrado a UX guidelines: símbolo ⏰ (no ⏱️), texto
+    // variado por seed temporal (3 variantes). Verificamos que el mensaje
+    // contiene el símbolo y al menos uno de los fragmentos esperados.
     const out = ic.formatSkillFailureResponse({ kind: 'timeout' });
-    assert.ok(/Tardó demasiado/.test(out));
-    assert.ok(/⏱️/.test(out));
+    assert.ok(/⏰/.test(out), 'debe usar símbolo monocromo ⏰');
+    assert.ok(/Cortó|Timeout|sin respuesta/i.test(out),
+        `debe contener alguna de las variantes UX guideline, got: ${out}`);
 });
 
 test('formatSkillFailureResponse: kind=quota', () => {
@@ -520,9 +524,14 @@ test('#3418 SEC-B: prevContext con intent invalido → continuativos no matchean
 // #3418 — Enum cerrado de skill_result (SEC-D)
 // =============================================================================
 
-test('#3418 SEC-D: SKILL_RESULT_ENUM contiene exactamente 6 valores', () => {
+test('#3418 SEC-D + #3587 CA-3: SKILL_RESULT_ENUM contiene los 9 valores cerrados', () => {
+    // #3587 CA-3 — el enum se amplió de 6 a 9 valores agregando `success`,
+    // `skill_not_invoked`, `skill_failed`. Los 6 originales se mantienen
+    // como aliases legacy o estados válidos (`ok`, `error`, `blocked`,
+    // `timeout`, `launching_no_complete`, `invalid_args`).
     assert.deepEqual([...ic.SKILL_RESULT_ENUM].sort(), [
-        'blocked', 'error', 'invalid_args', 'launching_no_complete', 'ok', 'timeout',
+        'blocked', 'error', 'invalid_args', 'launching_no_complete', 'ok',
+        'skill_failed', 'skill_not_invoked', 'success', 'timeout',
     ]);
 });
 
