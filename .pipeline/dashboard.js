@@ -419,6 +419,19 @@ function _scheduleOlaETARefresh(state) {
 
   // Determinar la "ola actual": issues con estado != procesado en alguna fase.
   // Reuso el `issueMatrix` ya construido por getPipelineState() — sin re-escaneo FS.
+  //
+  // #3529 — Precedencia D3 (label > roadmap > fallback M): si el issue tiene un
+  // label `size:*` en `info.labels` (poblado vía titleCache desde GitHub), lo
+  // pasamos a `calculateOlaETA` como `{ number, size }` para que la librería
+  // use el label fresco en lugar del roadmap. Si no hay label `size:*`, se
+  // pushea `num` plano y la librería resuelve vía roadmap/fallback.
+  //
+  // Requisitos de seguridad (security SEC-1..SEC-4):
+  // - Match anclado al prefijo `size:` (case-insensitive) → evita falsos
+  //   positivos con labels que casualmente contengan "size" (ej. `app:client-sized`).
+  // - Determinístico ante labels duplicados: primer match del array.
+  // - Tolera labels malformados sin abortar el render: try/catch + fallback a `num`.
+  // - No persiste el size derivado: queda en memoria de `olaIssues[]`.
   const olaIssues = [];
   const seen = new Set();
   for (const [issueStr, info] of Object.entries(state.issueMatrix || {})) {
@@ -428,7 +441,20 @@ function _scheduleOlaETARefresh(state) {
     if (!Number.isInteger(num) || num <= 0) continue;
     if (seen.has(num)) continue;
     seen.add(num);
-    olaIssues.push(num);
+    let sizeLabel = null;
+    try {
+      const labels = Array.isArray(info.labels) ? info.labels : null;
+      if (labels) {
+        for (const l of labels) {
+          if (typeof l !== 'string') continue;
+          if (l.toLowerCase().startsWith('size:')) { sizeLabel = l; break; }
+        }
+      }
+    } catch {
+      sizeLabel = null;
+    }
+    if (sizeLabel) olaIssues.push({ number: num, size: sizeLabel });
+    else olaIssues.push(num);
   }
 
   _olaETARefreshInflight = true;
