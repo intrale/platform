@@ -42,6 +42,12 @@ const crypto = require('node:crypto');
 const { sanitizeTelegramPayload } = require('./sanitize-payload');
 const { redactSensitive } = require('./redact');
 const { narrativeSanitizePreview } = require('./narrative-sanitize');
+const {
+    mimeForPath,
+    verifyMagicBytes,
+    probeVideoDurationSeconds,
+    MIME_TO_KIND,
+} = require('./multimedia-attachment');
 
 // -----------------------------------------------------------------------------
 // CA-UX-2 — Emojis canónicos fijos por skill. Cualquier skill no listado cae
@@ -68,6 +74,70 @@ const DEFAULT_DEDUP_HOURS = 24;
 
 // CA-SEC-1 — root allowlisteado por defecto para adjuntos.
 const DEFAULT_ATTACHMENT_ROOT = '.pipeline/assets/mockups';
+
+// =============================================================================
+// #3540 — Adjuntos multimedia (V1)
+// =============================================================================
+// Tipos soportados: document, image, video, animation. HTML diferido a V2
+// (requiere DOMPurify+jsdom, ver #3547 — security agent CA-SEC-EXT-4).
+//
+// Convención: el agente puede declarar adjuntos de dos formas:
+//   1. Forma nueva (#3540): `yaml.attachments = [{ type, path, ... }]`.
+//   2. Forma legacy (#3414): `yaml.photo` o `yaml.mockup` — se mapea a
+//      `attachments[0] = { type: 'image', path: <photo> }` para ux.
+//
+// CA-SEC-EXT-1 — roots por tipo (declarados en config.attachment_roots).
+// Si un tipo no tiene root explícito, cae al `attachment_root` legacy (image).
+const DEFAULT_ATTACHMENT_ROOTS = Object.freeze({
+    document:  '.pipeline/assets/docs',
+    image:     '.pipeline/assets/mockups',
+    video:     '.pipeline/assets/videos',
+    animation: '.pipeline/assets/animations',
+});
+
+// CA-SEC-EXT-5 — caps absolutos para evitar resource exhaustion.
+const DEFAULT_ATTACHMENT_MAX_COUNT = 5;
+const DEFAULT_ATTACHMENT_MAX_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
+const DEFAULT_VIDEO_MAX_DURATION_S = 300; // 5 min
+
+// CA-FUNC-1 — declaración por skill de tipos+formatos esperados. Defaults
+// suficientes para que skills no listados en config sigan funcionando con
+// los tipos del issue. Cualquier extensión fuera de aquí va a "format_not_allowed".
+const DEFAULT_ATTACHMENTS_PER_SKILL = Object.freeze({
+    guru:    { types: ['document'], formats: ['.pdf', '.md'] },
+    po:      { types: ['document'], formats: ['.pdf', '.md'] },
+    planner: { types: ['document'], formats: ['.pdf', '.md'] },
+    ux:      { types: ['image', 'video', 'animation'], formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm', '.gif'] },
+    qa:      { types: ['video', 'document'], formats: ['.mp4', '.webm', '.pdf'] },
+});
+
+// CA-UX-EXT-2 — marker emoji por tipo de adjunto (segunda línea del caption).
+const ATTACHMENT_TYPE_EMOJI = Object.freeze({
+    document:  '📄',
+    image:     '🖼️',
+    video:     '🎬',
+    animation: '🎞️',
+});
+
+// CA-UX-EXT-2 — etiqueta humana por tipo, para el subtítulo del caption.
+const ATTACHMENT_TYPE_LABEL = Object.freeze({
+    document:  'documento',
+    image:     'imagen',
+    video:     'video',
+    animation: 'animación',
+});
+
+// CA-UX-EXT-4 — orden de envío con múltiples adjuntos:
+// texto → image → document → video → animation.
+const ATTACHMENT_TYPE_ORDER = Object.freeze(['image', 'document', 'video', 'animation']);
+
+// Mapeo tipo → método Telegram + nombre del field en el dropfile.
+const ATTACHMENT_DROPFILE_FIELD = Object.freeze({
+    document:  'document',
+    image:     'photo',
+    video:     'video',
+    animation: 'animation',
+});
 
 // CA-SEC-3 — preview truncado en el audit log.
 const AUDIT_PREVIEW_MAX = 200;
@@ -247,6 +317,395 @@ function validateAttachmentPath(candidate, opts) {
 }
 
 /**
+ * Normaliza las declaraciones de adjuntos del YAML del agente a un array
+ * `[{ type, path }]`. Acepta tres formas:
+ *
+ *   1. **Forma nueva (#3540)**: `yaml.attachments = [{ type: 'document',
+ *      path: '...' }, ...]`. El `type` debe ser uno de
+ *      document/image/video/animation; si falta o es inválido, se descarta.
+ *
+ *   2. **Legacy `yaml.photo` / `yaml.mockup`** (compat #3414): se mapea a
+ *      `{ type: 'image', path: <yaml.photo|yaml.mockup> }`.
+ *
+ *   3. Cualquier otra forma → array vacío.
+ *
+ * NO valida nada — eso es responsabilidad de `resolveAttachments`. Esta
+ * función solo normaliza la forma de los inputs.
+ *
+ * @param {object} yaml - YAML del archivo procesado.
+ * @returns {Array<{ type: string, path: string, descriptor?: string }>}
+ */
+function normalizeAttachmentDeclarations(yaml) {
+    if (!yaml || typeof yaml !== 'object') return [];
+    const out = [];
+
+    // Forma nueva.
+    if (Array.isArray(yaml.attachments)) {
+        for (const entry of yaml.attachments) {
+            if (!entry || typeof entry !== 'object') continue;
+            const type = typeof entry.type === 'string' ? entry.type.toLowerCase() : '';
+            const p = typeof entry.path === 'string' ? entry.path : '';
+            if (!type || !p) continue;
+            out.push({
+                type,
+                path: p,
+                descriptor: typeof entry.descriptor === 'string' ? entry.descriptor : undefined,
+            });
+        }
+    }
+
+    // Back-compat: photo / mockup → image. Solo se agrega si no hay ya un
+    // attachment del mismo path (evita duplicados cuando el agente declara
+    // ambas formas).
+    const legacyPhoto = typeof yaml.photo === 'string'
+        ? yaml.photo
+        : (typeof yaml.mockup === 'string' ? yaml.mockup : null);
+    if (legacyPhoto && !out.some((a) => a.path === legacyPhoto)) {
+        out.push({ type: 'image', path: legacyPhoto });
+    }
+
+    return out;
+}
+
+/**
+ * CA-UX-EXT-3 — Construye un filename legible para Telegram a partir del
+ * contexto del issue y el adjunto. Patrón: `<issue>-<skill>-<descriptor>.<ext>`.
+ *
+ * Si el agente declaró `attachment.descriptor`, se usa como sufijo; si no, se
+ * deriva del basename del archivo (sin extensión).
+ *
+ * Sanitiza para evitar caracteres patológicos en el filename HTTP multipart:
+ * permitidos `[a-zA-Z0-9_.-]`, el resto se reemplaza por `-`.
+ *
+ * @param {object} args
+ * @param {string|number} args.issue
+ * @param {string} args.skill
+ * @param {string} args.attachmentPath - path original declarado.
+ * @param {string} [args.descriptor]   - override del agente.
+ * @returns {string}
+ */
+function buildAttachmentFilename(args) {
+    const issue = parseInt(args.issue, 10);
+    const skill = String(args.skill || 'skill');
+    const ext = path.extname(args.attachmentPath || '').toLowerCase();
+    const baseDescriptor = args.descriptor
+        ? args.descriptor
+        : path.basename(args.attachmentPath || '', ext);
+    const safe = String(baseDescriptor)
+        .replace(/[^a-zA-Z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40) || 'attach';
+    return `${issue}-${skill}-${safe}${ext}`;
+}
+
+/**
+ * CA-FUNC-1..5 / CA-SEC-EXT-1..3,5..7 — Resuelve los adjuntos declarados:
+ *
+ *   - Normaliza forma (legacy + nueva).
+ *   - Filtra por config.attachments_per_skill[skill].types (rechaza tipos no
+ *     permitidos para ese skill).
+ *   - Valida extensión contra `formats` permitidos.
+ *   - Resuelve root por tipo (config.attachment_roots[type] o default).
+ *   - Llama `validateAttachmentPath` (path traversal, null-byte, outside_root,
+ *     symlink_escape).
+ *   - Verifica magic bytes contra MIME declarado por extensión.
+ *   - Verifica tamaño <= attachment_max_size_bytes (default 50 MB).
+ *   - Si es video, llama probeVideoDurationSeconds y rechaza si excede
+ *     video_max_duration_s (default 300s).
+ *   - Aplica cap de cantidad (default 5 adjuntos).
+ *
+ * NUNCA tira excepción. Cada adjunto produce un record con `accepted: bool` y
+ * datos suficientes para audit.
+ *
+ * @param {object} args
+ * @param {string} args.skill
+ * @param {object} args.yaml
+ * @param {object} args.config
+ * @param {string} args.pipelineRoot
+ * @param {object} [args.deps] - hooks de tests:
+ *     probeVideoDurationSeconds (override del probe ffprobe).
+ * @returns {Array<object>} array de records (orden de entrada preservado).
+ *     Forma de cada record cuando `accepted=true`:
+ *       { accepted: true, type, mime, absolute, relative, size,
+ *         filename, magic_byte_verified, duration_s? }
+ *     Forma cuando `accepted=false`:
+ *       { accepted: false, type, relative?, reject_reason, ...extra }
+ */
+function resolveAttachments(args) {
+    const { skill, yaml, config, pipelineRoot, deps } = args;
+    const cfg = config || {};
+
+    const perSkillCfg = (cfg.attachments_per_skill && cfg.attachments_per_skill[skill])
+        || DEFAULT_ATTACHMENTS_PER_SKILL[skill]
+        || null;
+    const allowedTypes = perSkillCfg && Array.isArray(perSkillCfg.types) ? perSkillCfg.types : null;
+    const allowedFormats = perSkillCfg && Array.isArray(perSkillCfg.formats) ? perSkillCfg.formats : null;
+
+    const roots = Object.assign({}, DEFAULT_ATTACHMENT_ROOTS,
+        (cfg.attachment_roots && typeof cfg.attachment_roots === 'object') ? cfg.attachment_roots : {});
+    // Back-compat: si el agente seteó `attachment_root` (config legacy #3414),
+    // sobreescribe el de image (mockups).
+    if (typeof cfg.attachment_root === 'string') {
+        roots.image = cfg.attachment_root;
+    }
+
+    const maxCount = Number.isFinite(cfg.attachment_max_count)
+        ? cfg.attachment_max_count
+        : DEFAULT_ATTACHMENT_MAX_COUNT;
+    const maxSizeBytes = Number.isFinite(cfg.attachment_max_size_bytes)
+        ? cfg.attachment_max_size_bytes
+        : DEFAULT_ATTACHMENT_MAX_SIZE_BYTES;
+    const videoMaxDurationS = Number.isFinite(cfg.attachment_video_max_duration_s)
+        ? cfg.attachment_video_max_duration_s
+        : DEFAULT_VIDEO_MAX_DURATION_S;
+
+    const declarations = normalizeAttachmentDeclarations(yaml);
+    const records = [];
+
+    for (let i = 0; i < declarations.length; i++) {
+        const decl = declarations[i];
+
+        // CA-SEC-EXT-5 — cap de cantidad. Aplicamos ANTES de procesar para no
+        // gastar trabajo en adjuntos que igual no van a entrar.
+        if (records.filter((r) => r.accepted).length >= maxCount) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: decl.path,
+                reject_reason: 'max_count_exceeded',
+            });
+            continue;
+        }
+
+        // CA-FUNC-1 — el tipo debe ser uno de los soportados en V1 y estar en
+        // la lista permitida para el skill.
+        if (!Object.prototype.hasOwnProperty.call(ATTACHMENT_DROPFILE_FIELD, decl.type)) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: decl.path,
+                reject_reason: 'type_not_supported',
+            });
+            continue;
+        }
+        if (allowedTypes && !allowedTypes.includes(decl.type)) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: decl.path,
+                reject_reason: 'type_not_allowed_for_skill',
+            });
+            continue;
+        }
+
+        // CA-SEC-EXT-1 — Validación de path PRIMERO (parent_segment, null_byte,
+        // outside_root, symlink_escape). Va ANTES del format check porque
+        // traversal/null-byte son hard-stops de seguridad: la razón del rechazo
+        // debe reflejar el vector (no decir "format_not_allowed" cuando el path
+        // intenta escapar del root).
+        const rootForType = roots[decl.type] || DEFAULT_ATTACHMENT_ROOT;
+        const validation = validateAttachmentPath(decl.path, {
+            root: rootForType,
+            pipelineRoot,
+        });
+        if (!validation.ok) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: decl.path,
+                reject_reason: validation.reason || 'invalid_path',
+            });
+            continue;
+        }
+
+        // CA-FUNC-1 — validación negativa de extensión (después de path-safety).
+        const ext = path.extname(decl.path).toLowerCase();
+        if (allowedFormats && !allowedFormats.includes(ext)) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                reject_reason: 'format_not_allowed',
+            });
+            continue;
+        }
+        if (!fs.existsSync(validation.absolute)) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                reject_reason: 'file_not_found',
+            });
+            continue;
+        }
+
+        // CA-SEC-EXT-5 — cap de tamaño ANTES de leer magic bytes / probe.
+        let size = 0;
+        try {
+            const st = fs.statSync(validation.absolute);
+            size = st.size;
+            if (!st.isFile()) {
+                records.push({
+                    accepted: false,
+                    type: decl.type,
+                    relative: validation.relative,
+                    reject_reason: 'not_a_file',
+                });
+                continue;
+            }
+        } catch {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                reject_reason: 'stat_failed',
+            });
+            continue;
+        }
+        if (size > maxSizeBytes) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                size,
+                reject_reason: 'size_exceeded',
+            });
+            continue;
+        }
+        if (size === 0) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                size: 0,
+                reject_reason: 'empty_file',
+            });
+            continue;
+        }
+
+        // CA-SEC-EXT-2 — MIME por magic bytes.
+        const mime = mimeForPath(validation.absolute);
+        if (!mime) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                reject_reason: 'mime_unknown',
+            });
+            continue;
+        }
+        // El tipo declarado por el agente debe coincidir con el kind derivado
+        // del MIME. Evita que un agente declare un .pdf como type:'image'.
+        const kindByMime = MIME_TO_KIND[mime];
+        if (kindByMime && kindByMime !== decl.type) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                reject_reason: 'type_mime_mismatch',
+            });
+            continue;
+        }
+        const magic = verifyMagicBytes(validation.absolute, mime);
+        if (!magic.ok) {
+            records.push({
+                accepted: false,
+                type: decl.type,
+                relative: validation.relative,
+                reject_reason: magic.reason || 'mime_mismatch',
+            });
+            continue;
+        }
+
+        // CA-SEC-EXT-3 — duración para video. Animation (GIF) y document no
+        // requieren probe. Si ffprobe no está disponible o falla, NO rechazamos
+        // el adjunto silenciosamente — marcamos `duration_probe_failed` para
+        // audit y dejamos pasar (no bloqueante, defense-in-depth contra
+        // ambientes sin ffprobe). Si ffprobe responde con duración > cap,
+        // rechazamos `duration_exceeded`.
+        let durationS = null;
+        let durationProbeFailed = false;
+        if (decl.type === 'video') {
+            const probeFn = (deps && typeof deps.probeVideoDurationSeconds === 'function')
+                ? deps.probeVideoDurationSeconds
+                : probeVideoDurationSeconds;
+            try {
+                const probe = probeFn(validation.absolute, {});
+                if (probe && probe.ok) {
+                    durationS = probe.duration_s;
+                    if (durationS > videoMaxDurationS) {
+                        records.push({
+                            accepted: false,
+                            type: decl.type,
+                            relative: validation.relative,
+                            size,
+                            duration_s: durationS,
+                            reject_reason: 'duration_exceeded',
+                        });
+                        continue;
+                    }
+                } else {
+                    durationProbeFailed = true;
+                }
+            } catch {
+                durationProbeFailed = true;
+            }
+        }
+
+        const filename = buildAttachmentFilename({
+            issue: args.issue,
+            skill,
+            attachmentPath: decl.path,
+            descriptor: decl.descriptor,
+        });
+
+        const record = {
+            accepted: true,
+            type: decl.type,
+            mime,
+            absolute: validation.absolute,
+            relative: validation.relative,
+            size,
+            filename,
+            magic_byte_verified: magic.skipped !== true,
+        };
+        if (durationS !== null) record.duration_s = durationS;
+        if (durationProbeFailed) record.duration_probe_failed = true;
+
+        records.push(record);
+    }
+
+    return records;
+}
+
+/**
+ * CA-UX-EXT-1 / CA-UX-EXT-2 — Caption canónico para un adjunto. Reusa el
+ * header del preview de texto + agrega subtítulo con marker emoji del tipo
+ * + link + envelope. CA-UX-EXT-7: <1024 chars (sin preview de notas).
+ *
+ * @param {object} input
+ * @param {string|number} input.issue
+ * @param {string} input.title
+ * @param {string} input.fase
+ * @param {string} input.skill
+ * @param {string} input.envelope
+ * @param {string} input.attachmentType - document/image/video/animation
+ * @returns {string}
+ */
+function buildAttachmentCaption(input) {
+    const emoji = emojiForSkill(input.skill);
+    const header = `${emoji} #${input.issue}${HEADER_SEP}${input.fase}${HEADER_SEP}${input.skill}`;
+    const subtitle = shortenTitle(input.title || '');
+    const typeMarker = ATTACHMENT_TYPE_EMOJI[input.attachmentType] || '';
+    const typeLabel = ATTACHMENT_TYPE_LABEL[input.attachmentType] || input.attachmentType || '';
+    const typeLine = typeMarker ? `${typeMarker} ${typeLabel}` : typeLabel;
+    const link = `🔗 https://github.com/intrale/platform/issues/${input.issue}`;
+    return [header, subtitle, typeLine, '', link, '', input.envelope]
+        .filter((p) => p !== null && p !== undefined && p !== '')
+        .join('\n');
+}
+
+/**
  * CA-FN-5 / CA-SEC-2 — Arma el envelope canónico HTML comment con los campos
  * de routing. Los campos se serializan a JSON one-line para que el parser de
  * `/rechazar` (#3415) pueda matchear sin ambigüedad.
@@ -383,7 +842,6 @@ function buildPreview(args) {
 
     const cfg = config || {};
     const truncateChars = Number.isFinite(cfg.truncate_chars) ? cfg.truncate_chars : DEFAULT_TRUNCATE_CHARS;
-    const attachmentRoot = typeof cfg.attachment_root === 'string' ? cfg.attachment_root : DEFAULT_ATTACHMENT_ROOT;
 
     const rawNotes = extractRawNotes(yaml);
     const previewTrunc = truncatePreserveLines(rawNotes, truncateChars);
@@ -392,60 +850,103 @@ function buildPreview(args) {
     // nunca del YAML — defensa CA-SEC-2.
     const envelope = buildEnvelope({ issue, fase, skill, pipeline });
 
-    // Resolver adjunto (solo `ux`, CA-FN-4).
-    let attachment = null;
-    let attachmentRejected = false;
-    let rejectionReason = null;
+    // #3540 — Resolución de adjuntos. resolveAttachments() acepta tanto la
+    // forma legacy (yaml.photo/yaml.mockup) como la nueva (yaml.attachments[]).
+    const attachmentRecords = resolveAttachments({
+        issue,
+        skill,
+        yaml,
+        config: cfg,
+        pipelineRoot,
+        deps: args.deps,
+    });
+    const accepted = attachmentRecords.filter((r) => r.accepted);
+    const rejected = attachmentRecords.filter((r) => !r.accepted);
 
-    if (skill === 'ux') {
-        const declaredPath = typeof yaml?.photo === 'string'
-            ? yaml.photo
-            : (typeof yaml?.mockup === 'string' ? yaml.mockup : null);
+    // Modo legacy (#3414): si el agente solo declaró `photo`/`mockup` (sin
+    // `attachments[]`) Y el resultado es exactamente UN adjunto aceptado,
+    // preservamos el comportamiento histórico: sendPhoto + caption corto en
+    // el primer (único) mensaje. Esto preserva compat con tests/callers que
+    // dependen de `out.payload.photo`.
+    const declaredArray = Array.isArray(yaml && yaml.attachments);
+    const declaredLegacyPhoto = !declaredArray
+        && (typeof (yaml && yaml.photo) === 'string'
+            || typeof (yaml && yaml.mockup) === 'string');
+    const isLegacySinglePhotoMode = declaredLegacyPhoto
+        && accepted.length === 1
+        && accepted[0].type === 'image';
 
-        if (declaredPath) {
-            const validation = validateAttachmentPath(declaredPath, {
-                root: attachmentRoot,
-                pipelineRoot,
-            });
-            if (validation.ok && fs.existsSync(validation.absolute)) {
-                attachment = {
-                    absolute: validation.absolute,
-                    relative: validation.relative,
-                };
-            } else {
-                attachmentRejected = true;
-                rejectionReason = validation.ok ? 'file_not_found' : validation.reason;
-            }
-        }
+    // CA-UX-EXT-5 — footer no-alarmista cuando hay rechazos. NO menciona los
+    // motivos técnicos, solo cantidad y referencia al issue.
+    let footerNote = '';
+    if (rejected.length > 0) {
+        const n = rejected.length;
+        const plural = n === 1 ? '' : 's';
+        footerNote = `\n\n_Nota: ${n} adjunto${plural} omitido${plural} (formato no soportado o tamaño excedido). Ver issue completo._`;
     }
 
-    // Construir payload Telegram (text-only o foto+caption).
     let payload;
-    if (attachment) {
-        // sendPhoto multipart: el servicio-telegram soporta { photo: <ruta abs>, caption, parse_mode }.
+    const extraDropfiles = [];
+
+    if (isLegacySinglePhotoMode) {
+        // Comportamiento legacy preservado (#3414).
+        const a = accepted[0];
         payload = {
-            photo: attachment.absolute,
-            caption: buildCaption({
-                issue, title, fase, skill, envelope,
-            }),
+            photo: a.absolute,
+            caption: buildCaption({ issue, title, fase, skill, envelope }),
             parse_mode: 'Markdown',
+            filename: a.filename,
         };
-    } else {
+    } else if (accepted.length === 0) {
+        // Sin adjuntos válidos: text-only (igual con/ sin rechazos).
+        const textBody = (previewTrunc || '') + footerNote;
         payload = {
             text: buildText({
                 issue, title, fase, skill,
-                preview: previewTrunc,
+                preview: textBody,
                 envelope,
             }),
             parse_mode: 'Markdown',
         };
+    } else {
+        // V1 multi-adjunto: CA-UX-EXT-4 fija el orden texto → image → document
+        // → video → animation. El payload principal es texto; los adjuntos van
+        // en extraDropfiles.
+        const textBody = (previewTrunc || '') + footerNote;
+        payload = {
+            text: buildText({
+                issue, title, fase, skill,
+                preview: textBody,
+                envelope,
+            }),
+            parse_mode: 'Markdown',
+        };
+        const ordered = [...accepted].sort((a, b) => {
+            const ia = ATTACHMENT_TYPE_ORDER.indexOf(a.type);
+            const ib = ATTACHMENT_TYPE_ORDER.indexOf(b.type);
+            return ia - ib;
+        });
+        for (const a of ordered) {
+            const fieldName = ATTACHMENT_DROPFILE_FIELD[a.type];
+            if (!fieldName) continue; // tipo no soportado (defensa)
+            const dropPayload = {
+                [fieldName]: a.absolute,
+                caption: buildAttachmentCaption({
+                    issue, title, fase, skill, envelope,
+                    attachmentType: a.type,
+                }),
+                parse_mode: 'Markdown',
+                filename: a.filename,
+            };
+            extraDropfiles.push(sanitizeTelegramPayload(dropPayload));
+        }
     }
 
     // El sanitizer de Telegram ya se aplica en `servicio-telegram.js` al leer
     // el dropfile, pero defense-in-depth: sanitizamos acá también.
     const sanitizedPayload = sanitizeTelegramPayload(payload);
 
-    // Audit record (CA-SEC-3).
+    // Audit record (CA-SEC-3 + CA-SEC-EXT-6).
     const auditPreview = (() => {
         const source = sanitizedPayload.text || sanitizedPayload.caption || '';
         // redact defense-in-depth + truncar a 200 chars.
@@ -456,6 +957,39 @@ function buildPreview(args) {
             : redactedStr;
     })();
 
+    // CA-SEC-EXT-6 — array `attachments[]` solo con paths relativos + metadata
+    // segura. Sin `absolute`. Pasamos cada record por `redactSensitive` defense-
+    // in-depth aunque hoy paths no contengan secrets (mantiene la barrera).
+    const attachmentsAudit = attachmentRecords.map((r) => {
+        const rec = {
+            type: r.type,
+            path: typeof r.relative === 'string' ? r.relative : null,
+            mime: r.mime || null,
+            size: Number.isFinite(r.size) ? r.size : null,
+            sent_ok: r.accepted === true,
+        };
+        if (r.accepted) {
+            if (r.duration_s != null) rec.duration_s = r.duration_s;
+            if (r.duration_probe_failed) rec.duration_probe_failed = true;
+            if (typeof r.magic_byte_verified === 'boolean') {
+                rec.magic_byte_verified = r.magic_byte_verified;
+            }
+            if (typeof r.filename === 'string') rec.filename = r.filename;
+        } else {
+            rec.reject_reason = r.reject_reason || 'unknown';
+        }
+        // Redact defense-in-depth sobre el path (paths con tokens en URLs raros).
+        if (typeof rec.path === 'string') {
+            const redacted = redactSensitive(rec.path);
+            if (typeof redacted === 'string') rec.path = redacted;
+        }
+        return rec;
+    });
+
+    // Campos legacy preservados para back-compat (#3414).
+    const legacyFirstAccepted = accepted.find((r) => r.type === 'image') || accepted[0] || null;
+    const legacyFirstRejected = rejected[0] || null;
+
     const auditRecord = {
         ts: new Date().toISOString(),
         issue: parseInt(issue, 10),
@@ -465,18 +999,25 @@ function buildPreview(args) {
         // SHA-256 del notas crudo (antes del sanitize) para dedup.
         content_hash: contentHash(rawNotes),
         preview: auditPreview,
-        attachment_path: attachment ? attachment.relative : null,
+        // Legacy: primer adjunto aceptado (o null).
+        attachment_path: legacyFirstAccepted ? legacyFirstAccepted.relative : null,
     };
-    if (attachmentRejected) {
+    if (attachmentsAudit.length > 0) {
+        auditRecord.attachments = attachmentsAudit;
+    }
+    if (legacyFirstRejected) {
         auditRecord.attachment_rejected = true;
-        auditRecord.attachment_reject_reason = rejectionReason || 'unknown';
+        auditRecord.attachment_reject_reason = legacyFirstRejected.reject_reason || 'unknown';
     }
 
     return {
         payload: sanitizedPayload,
         auditRecord,
-        attachmentRejected,
-        rejectionReason,
+        attachments: attachmentRecords,
+        extraDropfiles,
+        // Legacy fields para back-compat con callers actuales:
+        attachmentRejected: rejected.length > 0,
+        rejectionReason: legacyFirstRejected ? legacyFirstRejected.reject_reason : null,
     };
 }
 
@@ -964,18 +1505,33 @@ function notify(args) {
             return { ok: false, action: 'skipped', reason: 'dedup' };
         }
 
-        // Enqueue dropfile Telegram (fire-and-forget).
+        // Enqueue dropfile(s) Telegram (fire-and-forget).
+        // #3540 — soporta múltiples dropfiles (texto + 0..N adjuntos). El
+        // orden viene de buildPreview (text → image → document → video →
+        // animation). Cada uno tiene un timestamp incremental (now + idx)
+        // para que el servicio-telegram los procese en orden lexical estable.
         const now = (deps && typeof deps.now === 'function') ? deps.now() : Date.now();
-        const dropfileName = `${now}-deliverable-${issue}-${skill}.json`;
-        const dropfilePath = path.join(telegramQueueDir, dropfileName);
-
         const writer = (deps && typeof deps.writeQueueFile === 'function')
             ? deps.writeQueueFile
             : (p, payload) => {
                 fs.mkdirSync(path.dirname(p), { recursive: true });
                 fs.writeFileSync(p, JSON.stringify(payload), 'utf8');
             };
-        writer(dropfilePath, built.payload);
+
+        const allDropfiles = [built.payload, ...(built.extraDropfiles || [])];
+        const dropfileNames = [];
+        for (let i = 0; i < allDropfiles.length; i++) {
+            // ts incremental para preservar el orden de envío. El servicio
+            // ordena por nombre de archivo (timestamp + sufijo).
+            const ts = now + i;
+            // Si hay extras, agregamos un sufijo `-NN` para distinguirlos en disco.
+            const suffix = allDropfiles.length > 1 ? `-${String(i).padStart(2, '0')}` : '';
+            const dropfileName = `${ts}-deliverable-${issue}-${skill}${suffix}.json`;
+            const dropfilePath = path.join(telegramQueueDir, dropfileName);
+            writer(dropfilePath, allDropfiles[i]);
+            dropfileNames.push(path.basename(dropfilePath));
+        }
+        const firstDropfileName = dropfileNames[0];
 
         // CA-UX-9 (#3539) — si audio está habilitado y el patch del audit
         // se va a generar async, marcamos el record texto con `audio_pending`
@@ -986,8 +1542,11 @@ function notify(args) {
         const finalAudit = {
             ...built.auditRecord,
             telegram_enqueue_ok: true,
-            dropfile: path.basename(dropfilePath),
+            dropfile: firstDropfileName,
         };
+        if (dropfileNames.length > 1) {
+            finalAudit.dropfiles = dropfileNames;
+        }
         if (audioEnabled) finalAudit.audio_pending = true;
         appendAudit(auditPath, finalAudit);
 
@@ -1055,6 +1614,8 @@ module.exports = {
     generateAudioNotifications,
     partitionForTts,
     resolveTtsProfile,
+    // API pública — adjuntos multimedia (#3540)
+    resolveAttachments,
 
     // Constantes
     SKILL_EMOJIS,
@@ -1073,6 +1634,16 @@ module.exports = {
     TTS_TRUNCATION_SUFFIX,
     DEFAULT_AUDIO_ROOT,
     KNOWN_TTS_PROFILES,
+    // Constantes — adjuntos multimedia (#3540)
+    DEFAULT_ATTACHMENT_ROOTS,
+    DEFAULT_ATTACHMENT_MAX_COUNT,
+    DEFAULT_ATTACHMENT_MAX_SIZE_BYTES,
+    DEFAULT_VIDEO_MAX_DURATION_S,
+    DEFAULT_ATTACHMENTS_PER_SKILL,
+    ATTACHMENT_TYPE_EMOJI,
+    ATTACHMENT_TYPE_LABEL,
+    ATTACHMENT_TYPE_ORDER,
+    ATTACHMENT_DROPFILE_FIELD,
 
     // Helpers (exportados para tests)
     __forTests__: {
@@ -1088,5 +1659,9 @@ module.exports = {
         // audio TTS
         withTimeout,
         safeRedact,
+        // adjuntos multimedia (#3540)
+        normalizeAttachmentDeclarations,
+        buildAttachmentFilename,
+        buildAttachmentCaption,
     },
 };

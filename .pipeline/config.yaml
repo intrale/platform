@@ -606,6 +606,33 @@ deliverable_notifications:
   max_tts_chunks: 3
   tts_chunk_timeout_ms: 30000
 
+  # =========================================================================
+  # #3540 — Adjuntos multimedia (V1: document, image, video, animation).
+  # HTML diferido a V2 (requiere DOMPurify+jsdom, #3547 sin mergear).
+  # =========================================================================
+  # CA-FUNC-1: por skill, qué tipos de adjuntos esperar + qué extensiones.
+  # Validación negativa: cualquier extensión fuera de `formats` se rechaza
+  # (`format_not_allowed`) sin bloquear el resto.
+  attachments_per_skill:
+    guru:    { types: [document],                   formats: [.pdf, .md] }
+    po:      { types: [document],                   formats: [.pdf, .md] }
+    planner: { types: [document],                   formats: [.pdf, .md] }
+    ux:      { types: [image, video, animation],    formats: [.png, .jpg, .jpeg, .mp4, .webm, .gif] }
+    qa:      { types: [video, document],            formats: [.mp4, .webm, .pdf] }
+
+  # CA-SEC-EXT-1: root allowlisteado por tipo. Cualquier path fuera del root
+  # configurado se rechaza con `outside_root` SIN tocar disco.
+  attachment_roots:
+    document:  ".pipeline/assets/docs"
+    image:     ".pipeline/assets/mockups"
+    video:     ".pipeline/assets/videos"
+    animation: ".pipeline/assets/animations"
+
+  # CA-SEC-EXT-5: caps absolutos contra resource exhaustion.
+  attachment_max_count: 5                     # >5 adjuntos por notificación → resto rechazado
+  attachment_max_size_bytes: 52428800         # 50 MB cap local (más que los 20 MB Telegram)
+  attachment_video_max_duration_s: 300        # 5 min máximo por video (ffprobe duration check)
+
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #
 # Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta

@@ -90,17 +90,32 @@ async function telegramSend(method, params) {
   }
 }
 
-/** Enviar documento/foto via multipart form-data usando http-client seguro. */
+/** Enviar documento/foto/video/animation via multipart form-data usando http-client seguro.
+ *
+ * #3540 (CA-UX-EXT-3): el caller puede pasar `extra.filename` para sobreescribir
+ * el filename que ve el usuario en Telegram (default: basename del path en disco).
+ * El filename declarado por el caller NUNCA se inyecta crudo — se sanitiza
+ * `[^A-Za-z0-9._-]+ → '-'` para evitar CRLF injection en el header HTTP.
+ */
 async function telegramSendMultipart(method, fieldName, filePath, extra = {}) {
   const boundary = '----PipelineV2' + Date.now();
-  const filename = path.basename(filePath);
+  // CA-UX-EXT-3 + defensa CRLF: si el caller pasó `filename`, lo usamos
+  // sanitizado; si no, basename del path en disco.
+  const rawFilename = (typeof extra.filename === 'string' && extra.filename.length > 0)
+    ? extra.filename
+    : path.basename(filePath);
+  const filename = rawFilename.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80) || path.basename(filePath);
   const fileData = fs.readFileSync(filePath);
+
+  // `filename` NO debe viajar como form-field aparte: ya está en el Content-Disposition.
+  const extraFields = { ...extra };
+  delete extraFields.filename;
 
   let prologue = '';
   // chat_id field
   prologue += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${CHAT_ID}\r\n`;
   // extra fields (caption, parse_mode, etc.)
-  for (const [key, val] of Object.entries(extra)) {
+  for (const [key, val] of Object.entries(extraFields)) {
     prologue += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
   }
   // file field header
@@ -192,18 +207,37 @@ async function processQueue() {
       // #2334: sanitizar text/caption ANTES de llegar al API de Telegram.
       const data = sanitizeTelegramPayload(rawData);
 
-      if (data.document && fs.existsSync(data.document)) {
-        // Enviar documento real via multipart
+      // #3540 — multimedia attachments: document/photo/video/animation.
+      // Cada rama es estructuralmente idéntica salvo el método Telegram y el
+      // nombre del field multipart. CA-UX-EXT-3: pasamos `filename` (si el
+      // dropfile lo trae) para que el usuario vea un nombre legible.
+      const multipartType = data.document && fs.existsSync(data.document) ? 'document'
+        : data.photo && fs.existsSync(data.photo) ? 'photo'
+        : data.video && fs.existsSync(data.video) ? 'video'
+        : data.animation && fs.existsSync(data.animation) ? 'animation'
+        : null;
+
+      if (multipartType) {
+        const methodByType = {
+          document:  'sendDocument',
+          photo:     'sendPhoto',
+          video:     'sendVideo',
+          animation: 'sendAnimation',
+        };
         const extra = {};
         if (data.caption) extra.caption = data.caption;
         if (data.parse_mode) extra.parse_mode = data.parse_mode;
-        await telegramSendMultipart('sendDocument', 'document', data.document, extra);
-      } else if (data.photo && fs.existsSync(data.photo)) {
-        // Enviar foto real via multipart
-        const extra = {};
-        if (data.caption) extra.caption = data.caption;
-        if (data.parse_mode) extra.parse_mode = data.parse_mode;
-        await telegramSendMultipart('sendPhoto', 'photo', data.photo, extra);
+        if (data.filename) extra.filename = data.filename;
+        await telegramSendMultipart(
+          methodByType[multipartType],
+          multipartType,
+          data[multipartType],
+          extra,
+        );
+        // CA-SEC-EXT-5 — Telegram bot rate limit por chat ~20 msg/min.
+        // Sleep conservador entre envíos de adjuntos para no superar.
+        // Solo aplica a multimedia (texto puro queda con la velocidad histórica).
+        await new Promise((r) => setTimeout(r, 1200));
       } else if (data.text) {
         // #2921: partir mensajes largos en chunks <= 3500 chars con prefijo (i/N).
         // Telegram API limita sendMessage a 4096; antes se truncaba silenciosamente.
