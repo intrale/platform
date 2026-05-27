@@ -59,6 +59,14 @@ const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
 // log con hash-chain (CA-4 / SR-3) y formatea las notificaciones a Leo según
 // UX-G1 (lenguaje natural, no log operativo).
 const commanderMP = require('./lib/commander/multi-provider');
+// #3577 — Detectores in-stream del Commander en modo SHADOW (parte 1/2 del
+// split de #3472). Observan first-byte/stream-gap/eof-premature/transient-5xx
+// y los emiten al audit log SIN matar el primario ni spawnear secundario.
+// Wire-up real va en #3578.
+const inflightShadow = require('./lib/commander/inflight-shadow-detectors');
+// #3577 — generateRequestId para correlación cross-event (CA-S6): el mismo
+// requestId se propaga a TODOS los `auditCommanderRequest` del turn.
+const inflightFallback = require('./lib/commander/inflight-fallback');
 // #3343 — Sherlock verifier adversarial. Corre IN-PROCESS entre
 // `ejecutarClaude` y `sendTelegram` del flujo texto-libre. Refuta el análisis
 // con un provider distinto al del Commander. Bypass total si
@@ -7550,6 +7558,15 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
       };
     }
 
+    // #3577 CA-S6 — generar UN requestId al inicio del turn y propagarlo
+    // a TODOS los `auditCommanderRequest` (prompt_injection_attempt, gated_all,
+    // fallback_used, dispatch, inflight_signal_observed). Sin esto no hay
+    // correlación cross-event al revisar el audit log.
+    const turnRequestId = inflightFallback.generateRequestId({
+      chatId: getTelegramChatId(),
+      now: startTimeForAudit,
+    });
+
     // #3258 — SR-4: sanitizar el input del usuario ANTES de cualquier dispatch.
     // Si detecta patrones de prompt-injection, recorta al primer match y
     // dejamos constancia en el audit log (best-effort). El prompt efectivo que
@@ -7567,6 +7584,7 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
           chatId: getTelegramChatId(),
           prompt: prompt,
           injectionHits: sanRes.hits,
+          requestId: turnRequestId, // #3577 CA-S6
         });
       } catch { /* best-effort */ }
     }
@@ -7600,6 +7618,7 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
           chatId: getTelegramChatId(),
           prompt: prompt,
           errorCode: 'quota_exhausted',
+          requestId: turnRequestId, // #3577 CA-S6
         });
       } catch { /* best-effort */ }
       return resolve(commanderMP.cannedAllGatedResponse());
@@ -7744,6 +7763,7 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
           latencyMs: Date.now() - startTimeForAudit,
           errorCode: safe.ok ? null : 'not_implemented',
           injectionHits: sanRes.hits,
+          requestId: turnRequestId, // #3577 CA-S6
         });
       } catch { /* best-effort */ }
       if (!safe.ok) {
@@ -7784,6 +7804,7 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
             prompt: prompt,
             latencyMs: elapsed,
             errorCode: stdout ? null : 'empty_output',
+            requestId: turnRequestId, // #3577 CA-S6
           });
         } catch { /* best-effort */ }
         resolve(stdout || `No pude completar tu pedido vía ${resolution.provider}. Intentá de nuevo.`);
@@ -7840,13 +7861,69 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
     let skillTimedOut = false; // flag que finish() expone al caller
     let skillTimedOutInfo = null; // { skillName, durationMs }
 
+    // =============================================================================
+    // #3577 — Detectores in-stream SHADOW (parte 1/2 del split de #3472).
+    //
+    // Observan first-byte/stream-gap/eof-premature/transient-5xx y emiten al
+    // audit log SIN matar el primario ni spawnear secundario. Wire-up real va
+    // en #3578. Ver `lib/commander/inflight-shadow-detectors.js` y el CA del PO.
+    //
+    // CA-A5: HARD_TIMEOUT 10min intocado.
+    // CA-A6: SKILL_WATCHDOG_MS intocado; pendingSkillCalls NUNCA se muta acá.
+    // CA-S7: PROHIBIDO invocar decideInflightFallback/acquireInflightLock/etc.
+    // =============================================================================
+    let lastLineAt = 0;            // CA-A2: timestamp del último line recibido del rl
+    let firstByteFired = false;    // CA-A1: flag — solo emitir UNA vez por turn
+    let streamGapFired = false;    // CA-A2: flag — solo emitir UNA vez por turn
+    let eofPrematureFired = false; // CA-A3: flag — solo emitir UNA vez por turn
+    let transient5xxFired = false; // CA-A4: flag — solo emitir UNA vez por turn
+
+    // _emitShadowSignal — helper único de write al audit log (SR-S1 → appendChained).
+    // Allowlist garantizada por `buildInflightSignalEntry` (SR-S2).
+    function _emitShadowSignal(errorClass) {
+      try {
+        const entry = inflightShadow.buildInflightSignalEntry({
+          errorClass,
+          chatId: getTelegramChatId(),
+          requestId: turnRequestId,
+          primaryProvider: resolution.primaryProvider || 'anthropic',
+          providerEffective: resolution.provider,
+          startTime,
+          now: Date.now(),
+          partialOutput: lastText, // se hashea, NUNCA se guarda contenido (SR-S2)
+        });
+        inflightShadow.emitInflightSignal({ pipelineDir: PIPELINE, entry });
+        log('commander', `🔎 [shadow] inflight_signal_observed{error_class=${errorClass}, request_id=${turnRequestId.slice(0, 20)}…}`);
+      } catch (e) {
+        log('commander', `⚠️ shadow detector emit falló (best-effort): ${e.message}`);
+      }
+    }
+
     function finish(code, reason) {
       if (resolved) return;
       resolved = true;
       clearInterval(progressTimer);
       clearTimeout(hardTimer);
       clearInterval(skillWatchdogTimer);
+      // #3577 CA-S3 — cleanup determinístico de los timers shadow para evitar
+      // handle leak en el Commander (proceso de larga vida, días).
+      clearTimeout(firstByteShadowTimer);
+      clearInterval(streamGapShadowTimer);
       rl.close();
+
+      // #3577 CA-A3 / R-3 — eof_premature shadow.
+      // Emitir si exit con code != 0, sin result event ni texto.
+      // R-3 guard: si finalResult está seteado, el code != 0 puede ser por
+      // el workaround #25629 (result OK + killProc 3s); no es eof prematuro.
+      if (inflightShadow.shouldFireEofPremature({
+        code,
+        finalResult,
+        lastText,
+        alreadyFired: eofPrematureFired,
+      })) {
+        eofPrematureFired = true;
+        _emitShadowSignal('eof_premature');
+      }
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       // #3587 CA-1 — finalizar subprocess metadata en el trace antes de resolver.
       if (_trace && _trace.subprocess) {
@@ -7890,6 +7967,7 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
           errorCode: (finalResult && finalResult.result) || lastText ? null : 'no_result',
           injectionHits: sanRes.hits,
           supportsToolUse: true,
+          requestId: turnRequestId, // #3577 CA-S6
         });
       } catch { /* best-effort */ }
       if (finalResult?.result) {
@@ -7912,9 +7990,33 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
 
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
     rl.on('line', (line) => {
+      // #3577 CA-A2 / R-6 — actualizar timestamp del último line ANTES del
+      // filtro de empty lines. La métrica de gap se mide sobre lines del
+      // JSON-stream, no sobre bytes crudos de `proc.stdout.on('data')`.
+      lastLineAt = Date.now();
       if (!line.trim()) return;
       try {
         const evt = JSON.parse(line);
+
+        // #3577 CA-A4 / SR-S4 / R-7 — transient_5xx shadow detector.
+        // Match estructurado por shape (NO substring). Excluye cli_1m_context_glitch
+        // (R-7) usando el detector dedicado de `quotaExhausted`.
+        if (!transient5xxFired) {
+          const cliGlitchDetector = (e) => {
+            try {
+              let providerDef = null;
+              try { providerDef = getSkillProviderDef('anthropic'); } catch { /* defensa */ }
+              if (!providerDef) return false;
+              const det = quotaExhausted.detectQuotaError(e, providerDef);
+              return !!(det && det.cliGlitch);
+            } catch { return false; }
+          };
+          if (inflightShadow.detectTransient5xx(evt, { cliGlitchDetector })) {
+            transient5xxFired = true;
+            _emitShadowSignal('transient_5xx');
+          }
+        }
+
         if (evt.type === 'assistant' && evt.message?.content) {
           const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
           for (const b of blocks) {
@@ -8135,6 +8237,38 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
           finish(null, 'skill-watchdog-timeout');
           return;
         }
+      }
+    }, 5000);
+
+    // #3577 CA-A1 — first-byte timer (15s sin recibir el primer line).
+    // Modo shadow: solo emite al audit, NO mata el primario.
+    const firstByteShadowTimer = setTimeout(() => {
+      if (resolved) return;
+      if (inflightShadow.shouldFireFirstByte({
+        startTime,
+        now: Date.now(),
+        lastLineAt,
+        alreadyFired: firstByteFired,
+      })) {
+        firstByteFired = true;
+        _emitShadowSignal('timeout_first_byte');
+      }
+    }, inflightShadow.FIRST_BYTE_THRESHOLD_MS);
+
+    // #3577 CA-A2 / R-1 / SR-S5 — stream-gap detector (30s sin nuevos lines).
+    // Implementado con setInterval(5000), NO busy-wait. Pausado mientras hay
+    // Skill in-flight (el SKILL_WATCHDOG_MS=60s cubre Skills con semántica propia).
+    // Modo shadow: solo emite al audit.
+    const streamGapShadowTimer = setInterval(() => {
+      if (resolved) return;
+      if (inflightShadow.shouldFireStreamGap({
+        lastLineAt,
+        now: Date.now(),
+        pendingSkillCallsSize: pendingSkillCalls.size,
+        alreadyFired: streamGapFired,
+      })) {
+        streamGapFired = true;
+        _emitShadowSignal('timeout_no_new_bytes_30s');
       }
     }, 5000);
 
