@@ -172,6 +172,26 @@ test('diffAllowlists: added/removed correctos', () => {
     } finally { teardownTmp(dir); }
 });
 
+test('detectDesync: waves.json con active_wave:null → no_waves_yet (#3518 fix)', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        // Estado inicial/legacy: waves.json existe pero sin ola promovida.
+        // partial-pause tiene allowlist seteado manualmente. NO es desync.
+        fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify({
+            version: '1.0',
+            meta: { updated_at: new Date().toISOString() },
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [],
+        }));
+        writePartial(dir, [3518, 3541, 3577]);
+        const res = mod.detectDesync({ skipAlert: true });
+        assert.equal(res.desync, false, 'active_wave:null debe tratarse como no_waves_yet');
+        assert.equal(res.reason, 'no_waves_yet');
+        assert.equal(mod.isDesyncFlagSet(), false);
+    } finally { teardownTmp(dir); }
+});
+
 test('detectDesync: waves.json corrupto → no es desync (reason no_waves_yet)', () => {
     const { dir, mod } = setupTmp();
     try {

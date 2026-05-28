@@ -83,7 +83,11 @@ function readWavesAllowlist(opts = {}) {
     }
     if (!parsed || typeof parsed !== 'object') return null;
     const active = parsed.active_wave;
-    if (!active || !Array.isArray(active.issues)) return [];
+    // active_wave === null/undefined: no hay ola promovida vía Commander todavía
+    // (estado inicial o legacy con allowlist seteado manualmente). NO es desync,
+    // es ausencia de canónica → mismo trato que "waves.json no existe".
+    if (active === null || active === undefined) return null;
+    if (typeof active !== 'object' || !Array.isArray(active.issues)) return [];
     return active.issues
         .filter((i) => i && i.status !== 'completed')
         .map((i) => normalizeIssue(i && i.number))
