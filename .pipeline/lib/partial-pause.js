@@ -29,6 +29,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const { withLockSync } = require('./file-lock');
+const { notifyTelegram } = require('./notify-telegram');
+const { atomicWriteFile } = require('./waves');
+
+const LOCK_TIMEOUT_MS = 5000;
+const LOCK_MAX_RETRIES = 3;
 
 function pipelineDir() {
     // Permitir override en tests vía env var
@@ -174,12 +180,23 @@ function setPartialPause(issues, opts = {}) {
         }
         if (Object.keys(filtered).length > 0) data.dep_sources = filtered;
     }
-    writeAtomic(partialFile(), JSON.stringify(data, null, 2));
-    return {
-        ok: true,
-        allowedIssues: unique,
-        msg: `Pausa parcial activa — allowed: ${unique.map(i => `#${i}`).join(', ')}`,
-    };
+    // CA-2: write atómico (tmp + fsync + rename) bajo lock. Antes era un
+    // writeFileSync directo — si dos /wave promote llegaban a la vez, el
+    // segundo podía pisar al primero o dejar un JSON truncado si moría
+    // a mitad del write.
+    return withLockSync(partialFile(), () => {
+        atomicWriteFile(partialFile(), JSON.stringify(data, null, 2));
+        return {
+            ok: true,
+            allowedIssues: unique,
+            msg: `Pausa parcial activa — allowed: ${unique.map(i => `#${i}`).join(', ')}`,
+        };
+    }, {
+        component: 'partial-pause-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
 }
 
 /**
@@ -277,14 +294,24 @@ function writeAtomic(targetPath, content) {
 
 /**
  * Desactiva la pausa parcial (elimina marker).
+ *
+ * CA-2: bajo lock para evitar que un unlink pise un write en curso.
+ *
  * @returns {{ok: boolean, existed: boolean}}
  */
 function clearPartialPause() {
-    const existed = fs.existsSync(partialFile());
-    if (existed) {
-        try { fs.unlinkSync(partialFile()); } catch {}
-    }
-    return { ok: true, existed };
+    return withLockSync(partialFile(), () => {
+        const existed = fs.existsSync(partialFile());
+        if (existed) {
+            try { fs.unlinkSync(partialFile()); } catch {}
+        }
+        return { ok: true, existed };
+    }, {
+        component: 'partial-pause-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
 }
 
 /**

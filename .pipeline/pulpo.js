@@ -47,6 +47,8 @@ const visualGate = require('./lib/visual-gate');
 const humanBlock = require('./lib/human-block');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+// #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
+const desyncDetector = require('./lib/desync-detector');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -9950,12 +9952,24 @@ function brazoIntake(config) {
 
 let running = true;
 let paused = false;
+// #3518 CA-6 — bloqueo por desync entre waves.json y .partial-pause.json.
+// El detector crea/borra `.desync-detected.flag`; mientras exista, los brazos
+// que dispatchan trabajo (intake/desbloqueo/barrido/lanzamiento) quedan inertes.
+// Mirror del patrón `paused`: el ciclo igual gira (priority windows, commander,
+// telegram drain, multi-provider health), pero NO arranca agentes nuevos hasta
+// que un humano audite y borre el flag.
+let desyncBlocked = false;
+let desyncBlockedNotifiedTick = 0;
 
 // Archivo de control para pausar/reanudar desde fuera
 const PAUSE_FILE = path.join(PIPELINE, '.paused');
 
 function checkPauseFile() {
   paused = fs.existsSync(PAUSE_FILE);
+}
+
+function checkDesyncFlag() {
+  desyncBlocked = desyncDetector.isDesyncFlagSet();
 }
 
 // =============================================================================
@@ -10833,6 +10847,21 @@ async function mainLoop() {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
   }
 
+  // #3518 CA-6 — Chequeo de desync al boot: compara waves.json contra
+  // .partial-pause.json. Si hay mismatch, crea flag + alerta Telegram. El
+  // human-block existente lo levanta y pausa los skills hasta intervención.
+  // Si crashea por cualquier razón, NO mata al pulpo (best-effort).
+  try {
+    const desync = desyncDetector.detectDesync();
+    if (desync.desync) {
+      log('pulpo', `WARN desync-detector: ${desync.reason} added=${JSON.stringify(desync.added)} removed=${JSON.stringify(desync.removed)} flag=${desync.flag_path || 'no'}`);
+    } else {
+      log('pulpo', `desync-detector OK (${desync.reason || 'in_sync'})`);
+    }
+  } catch (e) {
+    log('pulpo', `WARN desync-detector falló: ${e.message}`);
+  }
+
   // #3508 CA-7 / UX-4 — Log de startup informativo del workaround Anthropic 1M.
   // Una sola línea que confirma al operador el estado del flag y los hits
   // acumulados. Si el JSON de session está corrupto, formatStartupLogLine cae
@@ -11088,6 +11117,7 @@ async function mainLoop() {
   while (running) {
     try {
       checkPauseFile();
+      checkDesyncFlag();
 
       const config = loadConfig(); // Reload cada ciclo para hot-reload
 
@@ -11130,7 +11160,7 @@ async function mainLoop() {
         // require puede fallar si el módulo no existe (build viejo); no es fatal.
       }
 
-      if (!paused) {
+      if (!paused && !desyncBlocked) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
 
@@ -11166,8 +11196,15 @@ async function mainLoop() {
         // label `provider-exhaustion-pause` y los destraba si algún provider
         // de su chain se liberó. Fire-and-forget — no bloquea el loop.
         brazoProviderExhaustionRetry(config);
-      } else {
+      } else if (paused) {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
+      } else {
+        // #3518 CA-6 — desync detectado. Loop alive pero NO se dispatcha.
+        // Solo logueamos cada N ticks (1 cada ~5min) para no inundar.
+        desyncBlockedNotifiedTick = (desyncBlockedNotifiedTick + 1) % 10;
+        if (desyncBlockedNotifiedTick === 1) {
+          log('pulpo', 'BLOQUEADO POR DESYNC — dispatch suspendido. Auditar y borrar .pipeline/.desync-detected.flag para reanudar.');
+        }
       }
     } catch (e) {
       log('pulpo', `ERROR en ciclo: ${e.message}`);

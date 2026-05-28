@@ -35,6 +35,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { withLockSync } = require('./file-lock');
+const { notifyTelegram } = require('./notify-telegram');
 
 const SCHEMA_VERSION = '1.0';
 const CACHE_TTL_MS = 2000;
@@ -42,6 +44,14 @@ const CACHE_TTL_MS = 2000;
 // #3520 — TTL para considerar un marker `wave-promote.in-progress.json`
 // como stale (rollback automático). Configurable vía env para tests.
 const DEFAULT_PROMOTE_RECOVERY_TTL_MS = 30 * 1000;
+
+// Reintentos para rename en Windows ante EPERM/EBUSY (antivirus, indexer, etc.)
+const RENAME_MAX_RETRIES = 3;
+const RENAME_RETRY_BACKOFF_MS = 50;
+
+// Lock acquisition: 5s timeout, 3 retries con jitter.
+const LOCK_TIMEOUT_MS = 5000;
+const LOCK_MAX_RETRIES = 3;
 
 // Cache por pipelineRoot — mismo shape que wave-state.js.
 const cache = new Map(); // pipelineRoot → { state, ts }
@@ -70,6 +80,63 @@ function listPromoteFailedMarkers() {
             .map((f) => path.join(pipelineDir(), f));
     } catch {
         return [];
+    }
+}
+
+// CA-7: validar que archived/ resuelva dentro de .pipeline/ — defensa en
+// profundidad ante symlink traversal.
+function assertArchivedDirSafe() {
+    const root = path.resolve(pipelineDir());
+    const target = path.resolve(archivedDir());
+    if (target !== root && !target.startsWith(root + path.sep)) {
+        throw new Error(`archived/ resuelve fuera de pipelineDir: ${target} ∉ ${root}`);
+    }
+    if (fs.existsSync(target)) {
+        let real;
+        try { real = fs.realpathSync(target); } catch { real = target; }
+        if (real !== root && !real.startsWith(root + path.sep)) {
+            throw new Error(`archived/ symlink apunta fuera de pipelineDir: ${real} ∉ ${root}`);
+        }
+    }
+}
+
+/**
+ * Write atómico con fsync y reintentos en Windows (CA-1, CA-2 shared helper).
+ * Exportado para que partial-pause.js use la misma implementación (DRY).
+ */
+function atomicWriteFile(targetPath, data) {
+    const tmp = targetPath + '.tmp';
+    let wroteTmp = false;
+    try {
+        fs.writeFileSync(tmp, data);
+        wroteTmp = true;
+        const fd = fs.openSync(tmp, 'r+');
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+
+        let attempt = 0;
+        let lastErr = null;
+        while (attempt < RENAME_MAX_RETRIES) {
+            try {
+                fs.renameSync(tmp, targetPath);
+                wroteTmp = false;
+                return;
+            } catch (err) {
+                lastErr = err;
+                const code = err && err.code;
+                if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+                    attempt++;
+                    const deadline = Date.now() + RENAME_RETRY_BACKOFF_MS;
+                    while (Date.now() < deadline) { /* spin defensivo */ }
+                    continue;
+                }
+                throw err;
+            }
+        }
+        throw lastErr || new Error('rename agotó reintentos sin error específico');
+    } finally {
+        if (wroteTmp) {
+            try { fs.unlinkSync(tmp); } catch {}
+        }
     }
 }
 
@@ -275,6 +342,23 @@ function addIssueToWave(waveNumber, issue, meta = {}) {
         throw new Error(`addIssueToWave: issue.number inválido (${issue.number})`);
     }
 
+    // CA-3 + lost-update fix: el read-modify-write completo debe correr bajo
+    // lock, no solo el write. Antes, dos procesos podían loadWaves() del
+    // mismo estado base, mutar en memoria, y el segundo saveState() pisaba
+    // al primero. La reentrancia de withLockSync hace que el saveState
+    // interno comparta este mismo lock sin re-adquirir.
+    return withLockSync(wavesFile(), () => addIssueToWaveLocked(waveNumber, issue, n, meta), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function addIssueToWaveLocked(waveNumber, issue, n, meta) {
+    // CA-4: invalidar cache ANTES de leer. Garantiza que veamos el último
+    // commit en disco sin depender de que el caller se acordara de hacerlo.
+    invalidateCache();
     const state = loadWaves();
 
     // Verificar conflicto en otras olas.
@@ -330,6 +414,18 @@ function addIssueToWave(waveNumber, issue, meta = {}) {
  * @throws si la ola planificada no existe
  */
 function promoteWaveToActive(waveNumber, metadata = {}) {
+    // Read-modify-write completo bajo lock (mismo fix que addIssueToWave).
+    return withLockSync(wavesFile(), () => promoteWaveToActiveLocked(waveNumber, metadata), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function promoteWaveToActiveLocked(waveNumber, metadata) {
+    // CA-4: invalidar cache ANTES de leer (idem addIssueToWave).
+    invalidateCache();
     const state = loadWaves();
     const idx = state.planned_waves.findIndex((x) => x.number === waveNumber);
     if (idx < 0) {
@@ -524,8 +620,34 @@ function save(metadata = {}) {
 
 /**
  * Variante interna: persiste un state ya construido (evita re-load).
+ *
+ * Concurrencia: usa `withLock` sobre waves.json para serializar writes
+ * destructivos del Commander. El lock se libera siempre en finally (CA-3).
+ *
+ * Integridad: el merge meta + read-modify-write se hace bajo el lock, con
+ * re-read del disco para evitar last-write-wins basado en TTL cache stale
+ * (security gap #c — Optimistic Concurrency Control vía re-load).
+ *
+ * Atomicidad: tmp + fsync + rename con retry EPERM/EBUSY en Windows (CA-1).
+ *
+ * Schema validation: el state que se persiste pasa por `validateStateStrict`
+ * primero. Un state corrupto NO se escribe nunca (CA-5).
  */
 function saveState(state, metadata = {}) {
+    // CA-3: sync porque los callers existentes (addIssueToWave,
+    // promoteWaveToActive y el commander) no esperan Promise. Cambiar a async
+    // sería breaking. withLockSync usa busy-wait corto durante el jitter, lo
+    // cual es aceptable para la frecuencia de escrituras destructivas (humano
+    // por Telegram, no path caliente).
+    return withLockSync(wavesFile(), () => saveStateLocked(state, metadata), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function saveStateLocked(state, metadata = {}) {
     if (!state.meta) state.meta = {};
     state.meta.updated_at = nowIso();
     if (metadata.updated_by) state.meta.updated_by = metadata.updated_by;
@@ -533,10 +655,37 @@ function saveState(state, metadata = {}) {
     if (metadata.note) state.meta.note = metadata.note;
     if (!state.meta.created_at) state.meta.created_at = state.meta.updated_at;
 
+    // CA-5: validar shape ANTES de persistir. Un state inválido se rechaza
+    // con excepción + alerta — preferimos perder el write a corromper disco.
+    const validationErrors = validateStateStrict(state, { source: 'pre-write' });
+    if (validationErrors.length > 0) {
+        const msg = `waves.json: shape inválida pre-write — ${validationErrors.join('; ')}`;
+        try {
+            notifyTelegram({
+                level: 'error',
+                component: 'waves-schema',
+                message: 'shape inválida detectada pre-write',
+                detail: validationErrors.join('; '),
+                action: 'Pipeline en modo human-block. Revisá el state antes de re-disparar el write.',
+                diag: `jq . ${wavesFile()}.tmp 2>/dev/null || cat ${wavesFile()}.tmp`,
+            });
+        } catch {}
+        const e = new Error(msg);
+        e.code = 'EWAVES_SCHEMA';
+        throw e;
+    }
+
+    // CA-7: validar archived/ antes de tocarlo (defensa symlink traversal).
+    try { assertArchivedDirSafe(); } catch (err) {
+        logWarn(`assertArchivedDirSafe falló: ${err.message}. Continuando sin backup.`);
+    }
+
     // Backup ANTES de sobreescribir (si existe waves.json previo).
     try {
         if (fs.existsSync(wavesFile())) {
             ensureDir(archivedDir());
+            // ts viene exclusivamente de state.meta.updated_at (derivado de
+            // Date.now() vía nowIso) — security req: nunca de input externo.
             const ts = state.meta.updated_at.replace(/[:.]/g, '-');
             const backup = path.join(archivedDir(), `waves.${ts}.json`);
             try {
@@ -549,20 +698,139 @@ function saveState(state, metadata = {}) {
         logWarn(`Error preparando backup: ${err.message}`);
     }
 
-    // Write atómico: tmp + renameSync.
-    const tmp = wavesFile() + '.tmp';
+    // Write atómico vía helper compartido (CA-1: tmp + fsync + rename + retry).
     try {
-        fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-        fs.renameSync(tmp, wavesFile());
+        atomicWriteFile(wavesFile(), JSON.stringify(state, null, 2));
     } catch (err) {
         logWarn(`Error escribiendo waves.json: ${err.message}`);
-        try { fs.unlinkSync(tmp); } catch {}
         throw err;
     }
 
     // Invalidar cache post-save.
     invalidateCache();
     logInfo(`waves.json persistido (updated_by=${state.meta.updated_by}, source=${state.meta.source}).`);
+}
+
+/**
+ * Validación estricta de shape (CA-5). Devuelve array de errores.
+ * Si hay 0 errores → state válido. Si hay > 0 → caller decide (excepción
+ * vs degradación). Esta función NUNCA tira ni auto-repara.
+ *
+ * Comparado con `validate()` (legacy boolean + log), esta variante:
+ *   - Es pura (no escribe a console).
+ *   - Devuelve errores detallados accionables.
+ *   - Es la base de la verificación pre-write y post-load strict.
+ */
+function validateStateStrict(raw, opts = {}) {
+    const errors = [];
+    if (!raw || typeof raw !== 'object') {
+        errors.push('state debe ser objeto');
+        return errors;
+    }
+    if (raw.version !== SCHEMA_VERSION) {
+        errors.push(`version esperada ${SCHEMA_VERSION}, recibida ${JSON.stringify(raw.version)}`);
+    }
+    if (!raw.meta || typeof raw.meta !== 'object') {
+        errors.push('meta ausente o no-objeto');
+    } else {
+        // meta.updated_at debe ser ISO parseable.
+        if (typeof raw.meta.updated_at !== 'string' || !Number.isFinite(Date.parse(raw.meta.updated_at))) {
+            errors.push(`meta.updated_at no es ISO string parseable (recibido: ${JSON.stringify(raw.meta.updated_at)})`);
+        }
+    }
+    if (raw.active_wave !== null && raw.active_wave !== undefined && typeof raw.active_wave !== 'object') {
+        errors.push(`active_wave debe ser objeto o null, recibido: ${typeof raw.active_wave}`);
+    }
+    if (raw.active_wave && typeof raw.active_wave === 'object' && raw.active_wave.issues !== undefined && !Array.isArray(raw.active_wave.issues)) {
+        errors.push('active_wave.issues debe ser array');
+    }
+    if (raw.planned_waves !== undefined && !Array.isArray(raw.planned_waves)) {
+        errors.push('planned_waves debe ser array');
+    }
+    if (raw.archived_waves !== undefined && !Array.isArray(raw.archived_waves)) {
+        errors.push('archived_waves debe ser array');
+    }
+    if (raw.dependencies !== undefined && !Array.isArray(raw.dependencies)) {
+        errors.push('dependencies debe ser array');
+    }
+    return errors;
+}
+
+/**
+ * Variante strict de loadWaves (CA-5). Lee el DISCO sin tolerancia: si el
+ * shape no matchea, tira excepción + emite alerta Telegram. NO normaliza
+ * defaults silenciosamente (eso lo hace loadWaves legacy, intencionalmente
+ * permisivo para los consumers existentes).
+ *
+ * Use case: cualquier código nuevo (CA-6 desync detector, futuros consumers)
+ * debería preferir esta variante. El callsite de loadWaves legacy queda
+ * intacto para no romper consumers.
+ *
+ * @throws Error con code='EWAVES_SCHEMA' si el shape es inválido.
+ */
+function loadStateStrict() {
+    const file = wavesFile();
+    if (!fs.existsSync(file)) {
+        // Sin archivo → estado vacío válido. NO alertar (caso normal en startup
+        // fresco, no es corrupción).
+        return emptyState();
+    }
+    let raw;
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    } catch (err) {
+        const msg = `waves.json: no se pudo leer (${err.message})`;
+        try {
+            notifyTelegram({
+                level: 'error',
+                component: 'waves-schema',
+                message: 'read falló sobre waves.json',
+                detail: err.message,
+                action: 'Verificá permisos/espacio en disco. Pipeline en modo human-block.',
+                diag: `ls -la ${file} && df -h`,
+            });
+        } catch {}
+        const e = new Error(msg);
+        e.code = 'EWAVES_READ';
+        throw e;
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (err) {
+        const msg = `waves.json: JSON inválido (${err.message})`;
+        try {
+            notifyTelegram({
+                level: 'error',
+                component: 'waves-schema',
+                message: 'JSON corrupto en waves.json',
+                detail: err.message,
+                action: 'Pipeline en modo human-block. Revisá el archivo o restaurá desde archived/.',
+                diag: `cat ${file}`,
+            });
+        } catch {}
+        const e = new Error(msg);
+        e.code = 'EWAVES_JSON';
+        throw e;
+    }
+    const errors = validateStateStrict(parsed, { source: 'post-load' });
+    if (errors.length > 0) {
+        try {
+            notifyTelegram({
+                level: 'error',
+                component: 'waves-schema',
+                message: 'shape inválida tras load',
+                detail: errors.join('; '),
+                action: 'Pipeline en modo human-block. Revisá el archivo antes de continuar.',
+                diag: `jq . ${file}`,
+            });
+        } catch {}
+        const e = new Error(`waves.json: shape inválida — ${errors.join('; ')}`);
+        e.code = 'EWAVES_SCHEMA';
+        e.errors = errors;
+        throw e;
+    }
+    return parsed;
 }
 
 /**
@@ -1160,9 +1428,16 @@ module.exports = {
     promoteWaveAtomic,
     recoverIncompletePromote,
     isWavePromoteBlocked,
+    // CA-5: variantes strict que tiran si el shape rompe.
+    loadStateStrict,
+    validateStateStrict,
+    // CA-1: helper de write atómico reusable por partial-pause.js.
+    atomicWriteFile,
     // Constantes públicas
     SCHEMA_VERSION,
     CACHE_TTL_MS,
+    LOCK_TIMEOUT_MS,
+    LOCK_MAX_RETRIES,
     // Helpers expuestos para tests
     _paths: () => ({
         WAVES_FILE: wavesFile(),
@@ -1180,5 +1455,6 @@ module.exports = {
         writeMarkerFsync,
         updateMarkerFsync,
         listPromoteFailedMarkers,
+        assertArchivedDirSafe,
     },
 };
