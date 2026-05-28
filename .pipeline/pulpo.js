@@ -8616,6 +8616,16 @@ function parseCommand(text) {
 let _commanderDispatcher = null;
 function getCommanderDispatcher() {
   if (_commanderDispatcher) return _commanderDispatcher;
+
+  // Issue #3541 — bloque `cua` del config.yaml. Si no existe, queda objeto
+  // vacío y el dispatcher resuelve `enabled=false` por inercia (rollout OFF).
+  // El operador activa el feature seteando `cua.enabled: true` en config.yaml
+  // — sin este wiring, el flag se ignora aunque exista (gap reportado por PO).
+  const _cfgRoot = (() => {
+    try { return loadConfig() || {}; } catch (_) { return {}; }
+  })();
+  const _cuaCfg = (_cfgRoot && typeof _cfgRoot.cua === 'object' && _cfgRoot.cua) || {};
+
   _commanderDispatcher = commanderDet.createDispatcher({
     pipelineRoot: PIPELINE,
     logsDir: LOG_DIR,
@@ -8625,6 +8635,29 @@ function getCommanderDispatcher() {
     // ghostbusters/reset. Mitiga pulsado accidental en mobile + restart
     // encadenado por loops upstream. Layer adicional al rate-limit.
     destructiveCooldown: { cooldownMs: 60 * 1000 },
+    // Issue #3541 — cua emitter wiring. `config` viaja completo al
+    // createCuaEmitter (resuelve `enabled` + `kill_switch` + `notifiable_stages`
+    // + `allowed_commands`). `telegramQueueDir` es donde el commander deposita
+    // el .json + .ogg para que `servicio-telegram` los entregue.
+    cua: {
+      config: _cuaCfg,
+      pipelineRoot: PIPELINE,
+      telegramQueueDir: path.join(PIPELINE, 'servicios', 'telegram', 'pendiente'),
+      log: (...args) => log('cua', ...args),
+    },
+    // Issue #3541 — CA-SEC-6: el handler de `/rechazar` necesita la allowlist
+    // de operadores autorizados a rebobinar entregables CUA + la whitelist de
+    // comandos. Sin esto, todo `/rechazar <cua>` cae fail-closed con
+    // `unauthorized_rebobinar`/`invalid_cua_command` aunque el operador
+    // legítimo esté wireado en `cua.operator_chat_ids`.
+    rechazarDeps: {
+      cuaOperatorChatIds: Array.isArray(_cuaCfg.operator_chat_ids)
+        ? _cuaCfg.operator_chat_ids
+        : [],
+      allowedCuaCommands: Array.isArray(_cuaCfg.allowed_commands)
+        ? _cuaCfg.allowed_commands
+        : [],
+    },
   });
   return _commanderDispatcher;
 }

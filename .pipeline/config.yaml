@@ -633,6 +633,102 @@ deliverable_notifications:
   attachment_max_size_bytes: 52428800         # 50 MB cap local (más que los 20 MB Telegram)
   attachment_video_max_duration_s: 300        # 5 min máximo por video (ffprobe duration check)
 
+# Issue #3541 — Entregables parciales del CUA (Comando de Usuario Asistido).
+#
+# Cuando el operador ejecuta un comando determinístico (ej. /cargar-ola, /wave
+# promote, /listado), el commander emite stages intermedios (`init`,
+# `validation`, `analysis`, `completion`) que se notifican a Telegram con
+# texto + audio TTS + adjuntos opcionales. La pieza vive en
+# `.pipeline/lib/deliverable-notify.js` (notifyCua) y se invoca desde
+# `commander-deterministic.js` con CA-TEC-2 (filtrado en el caller).
+#
+# Flags:
+#   - enabled:                kill principal. Default false → rollout gradual.
+#                             Activar con OK operativo y revisar audit JSONL
+#                             antes de subir el flag a true en main.
+#   - kill_switch:            corta sin reiniciar el pulpo (CA-FUNC-5).
+#   - notifiable_stages:      qué stages se notifican. Quitar entradas para
+#                             rebajar verbosity. `init` y `completion` son los
+#                             más útiles para baseline; `validation` y
+#                             `analysis` para comandos complejos.
+#   - allowed_commands:       whitelist sincronizada con SEC-3 del security
+#                             agent. Doble check con regex `^[a-z][a-z0-9-]{0,40}$`.
+#                             Comandos fuera de esta lista → audit
+#                             `invalid_command` y NO notifican.
+#   - truncate_chars:         max chars del preview narrable. Excede →
+#                             truncatePreserveLines + ' (continúa en el issue)'.
+#                             Default 1500 (igual que pipeline issues).
+#   - dedup_window_hours:     CA-UX-7 — ventana de dedup. Default 1h (NO 24h
+#                             del patrón issues — el operador corre comandos
+#                             repetidos varias veces el mismo día).
+#   - max_attachment_bytes:   CA-SEC-2 — cap antes del upload (default 5 MB).
+#                             Rechazo previo con audit `attachment_too_large`.
+#   - attachment_subroot:     subdir bajo `.pipeline/cua-outputs/` (root
+#                             hardcodeado, CA-SEC-5). Vacío = root directo.
+#   - audit_file:             JSONL append-only — mismo archivo que
+#                             deliverable_notifications, discriminado por
+#                             skill:'cua' + command presente.
+#   - audio_enabled:          CA-FUNC-3 — audio TTS opt-in (default OFF).
+#                             Activar después del rollout texto-only.
+#   - kill_switch_audio:      corta audio sin afectar texto.
+#   - audio_root:             ruta de los .ogg generados (default compartido
+#                             con notifications).
+#
+# Rollout sugerido (mismo patrón que #3414/#3539):
+#   1. Mergear con `enabled: false`. Validar tests unitarios + smoke local.
+#   2. Activar `enabled: true` + `audio_enabled: false`. Observar audit JSONL
+#      por 1-2 días para detectar ruido.
+#   3. Una vez estable, `audio_enabled: true` para activar TTS.
+#   4. Si aparece ruido inesperado, `kill_switch: true` corta sin reiniciar.
+cua:
+  enabled: false
+  kill_switch: false
+  notifiable_stages: [init, validation, analysis, completion]
+  # Sincronizado con security SEC-3. AGREGAR comandos nuevos solo después de
+  # decidir su nombre canónico (debe matchear regex `^[a-z][a-z0-9-]{0,40}$`).
+  allowed_commands:
+    - load-wave
+    - wave
+    - validate-issue
+    - generate-report
+    - listado
+    - status
+    - snapshot
+    - allowlist
+    - tail
+    - dashboard-up
+    - dashboard-down
+    - screenshot
+    - procesos
+    - salud
+    - descanso
+    - quota
+    - actividad
+    - ghostbusters
+    - pausar
+    - reanudar
+    - costos
+    - limpiar
+    - restart
+    - bloqueados
+    - stop
+  truncate_chars: 1500
+  dedup_window_hours: 1
+  max_attachment_bytes: 5242880  # 5 MB (CA-SEC-2)
+  attachment_subroot: ""           # default: directo bajo .pipeline/cua-outputs/
+  audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
+  # Issue #3541 — CA-SEC-6: chat_ids autorizados a `/rechazar` CUA. Vacío =
+  # nadie autorizado (fail closed). Sumar el chat_id del operador Leo cuando
+  # se active el feature.
+  operator_chat_ids: []
+  # Audio TTS opt-in (CA-FUNC-3, CA-UX-3). Default OFF — el rollout texto se
+  # estabiliza antes.
+  audio_enabled: false
+  kill_switch_audio: false
+  audio_root: ".pipeline/audio/notifications"
+  max_tts_chunks: 3
+  tts_chunk_timeout_ms: 30000
+
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #
 # Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta

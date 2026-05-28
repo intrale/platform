@@ -42,6 +42,21 @@ const {
 const { redactReadOutput } = require('./commander/redact-read');
 const baseRedact = require('./redact');
 
+// Issue #3541 — Notificación CUA fire-and-forget. Se carga lazy en
+// `createDispatcher` para no encarecer el require del módulo cuando el feature
+// está apagado (default OFF en config.yaml). Tests pueden inyectar un stub vía
+// `opts.cua.deps`.
+let _deliverableNotifyModule = null;
+function _loadDeliverableNotify() {
+    if (_deliverableNotifyModule) return _deliverableNotifyModule;
+    try {
+        _deliverableNotifyModule = require('./deliverable-notify');
+        return _deliverableNotifyModule;
+    } catch (e) {
+        return null;
+    }
+}
+
 // -----------------------------------------------------------------------------
 // CLASIFICADOR (CA-1 / CA-7)
 // -----------------------------------------------------------------------------
@@ -350,6 +365,93 @@ function validateArgs(command, args) {
 }
 
 // -----------------------------------------------------------------------------
+// CUA NOTIFY EMITTER (#3541)
+// -----------------------------------------------------------------------------
+
+/**
+ * Crea un emisor de notificaciones CUA atado al config del pipeline. La
+ * fachada `emit(entregable)` se inyecta en cada handler determinístico vía
+ * `ctx.cuaEmit`. Si el feature está apagado (default), `emit` es un noop que
+ * devuelve `{ ok: false, action: 'skipped', reason: 'disabled' }` sin tocar
+ * ningún side-effect.
+ *
+ * CA-TEC-2 — Filtrado de stages se aplica acá (el caller). `notifyCua` también
+ * lo verifica como defensa, pero el camino feliz nunca llega allá si el stage
+ * no está en `cua.notifiable_stages`.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - bloque `cua` del config.yaml.
+ * @param {string} opts.pipelineRoot
+ * @param {string} opts.telegramQueueDir
+ * @param {object} [opts.deps]
+ * @param {function} [opts.log] - logger del caller (pulpo.log) para visibilidad.
+ * @returns {{ emit: function, enabled: boolean, notifiableStages: string[], allowedCommands: string[] }}
+ */
+function createCuaEmitter(opts) {
+    const o = opts || {};
+    const cfg = o.config || {};
+    const enabled = cfg.enabled === true && cfg.kill_switch !== true;
+    const notifiableStages = Array.isArray(cfg.notifiable_stages) && cfg.notifiable_stages.length > 0
+        ? cfg.notifiable_stages
+        : [];
+    const allowedCommands = Array.isArray(cfg.allowed_commands) ? cfg.allowed_commands : [];
+    const log = typeof o.log === 'function' ? o.log : (() => {});
+
+    function emit(entregable) {
+        if (!enabled) {
+            return { ok: false, action: 'skipped', reason: 'disabled' };
+        }
+        if (!entregable || typeof entregable !== 'object') {
+            return { ok: false, action: 'skipped', reason: 'invalid_entregable' };
+        }
+        // CA-TEC-2 — filtro stage en el caller. Si el stage no está en la
+        // lista, ni siquiera invocamos notifyCua (más barato).
+        if (notifiableStages.length > 0 && !notifiableStages.includes(entregable.stage)) {
+            return { ok: false, action: 'skipped', reason: 'stage_not_notifiable' };
+        }
+        const mod = (o.deps && o.deps.deliverableNotify) || _loadDeliverableNotify();
+        if (!mod || typeof mod.notifyCua !== 'function') {
+            return { ok: false, action: 'skipped', reason: 'module_unavailable' };
+        }
+        let result;
+        try {
+            result = mod.notifyCua({
+                entregable,
+                config: cfg,
+                pipelineRoot: o.pipelineRoot,
+                telegramQueueDir: o.telegramQueueDir,
+                deps: o.deps,
+            });
+        } catch (e) {
+            // notifyCua ya captura todo; si llegamos acá es algo del módulo.
+            return { ok: false, action: 'error', reason: (e && e.message) || String(e) };
+        }
+
+        // CA-FUNC-9 — fire-and-forget. El audit ya quedó persistido sync;
+        // sólo el audioTask es async. Lo enganchamos a un .catch defensivo
+        // para que cualquier rejection sin handler quede silenciada.
+        if (result && result.audioTask && typeof result.audioTask.then === 'function') {
+            result.audioTask.catch(() => {});
+        }
+        if (result && result.ok) {
+            log('cua', `⚙️ /${entregable.command} ${entregable.stage} → enqueued`);
+        } else if (result && result.action === 'rejected') {
+            log('cua', `⚙️ /${entregable.command || '?'} rechazado: ${result.reason}`);
+        } else if (result && result.action === 'skipped' && result.reason !== 'disabled') {
+            log('cua', `⚙️ /${entregable.command || '?'} skipped (${result.reason})`);
+        }
+        return result;
+    }
+
+    return {
+        emit,
+        enabled,
+        notifiableStages,
+        allowedCommands,
+    };
+}
+
+// -----------------------------------------------------------------------------
 // FACTORY DE DISPATCHER
 // -----------------------------------------------------------------------------
 
@@ -395,6 +497,19 @@ function createDispatcher(opts) {
     const now = typeof options.now === 'function' ? options.now : () => Date.now();
 
     const expectedChatId = options.expectedChatId ? String(options.expectedChatId) : null;
+
+    // Issue #3541 — Emisor de notificaciones CUA. Si el caller no inyecta el
+    // bloque `cua`, queda un emitter "noop" que devuelve `disabled`. Esto deja
+    // toda la lógica downstream homogénea — los handlers siempre tienen un
+    // `cuaEmit` válido aunque el feature esté apagado.
+    const cuaOpts = options.cua || {};
+    const cuaEmitter = createCuaEmitter({
+        config: cuaOpts.config,
+        pipelineRoot: cuaOpts.pipelineRoot || options.pipelineRoot,
+        telegramQueueDir: cuaOpts.telegramQueueDir,
+        deps: cuaOpts.deps,
+        log: cuaOpts.log,
+    });
 
     // Defaults: handlers stub que el caller (pulpo.js) puede overridear con
     // implementaciones reales. El módulo no asume infra — devuelve "stub" si
@@ -573,8 +688,34 @@ function createDispatcher(opts) {
         let reply = null;
         let audioText = null;
         let status = 'ok';
+        // Issue #3541 — Si el comando ejecutado está en `cua.allowed_commands`
+        // y el feature está habilitado, emitimos automáticamente `init` antes
+        // del handler y `completion` después. Los handlers pueden también
+        // emitir `validation`/`analysis` desde dentro usando `ctx.cuaEmit`.
+        // Cumple CA-FUNC-6 (enqueue por stage) y CA-TEC-2 (filtro en caller).
+        const cuaShouldAutoEmit = cuaEmitter.enabled
+            && cuaEmitter.allowedCommands.length > 0
+            && cuaEmitter.allowedCommands.includes(intent.command);
+        const handlerStartedAt = now();
+        if (cuaShouldAutoEmit) {
+            cuaEmitter.emit({
+                command: intent.command,
+                stage: 'init',
+                status: 'in_progress',
+                preview: `⏳ Comando \`${intent.command}\` iniciado.`,
+                args: typeof intent.args === 'string' && intent.args.length > 0 ? intent.args : undefined,
+            });
+        }
         try {
-            const result = await handler({ args: intent.args, message, intent });
+            const result = await handler({
+                args: intent.args,
+                message,
+                intent,
+                // Issue #3541 — `cuaEmit` disponible para que handlers complejos
+                // emitan stages intermedios (`validation`, `analysis`) cuando
+                // identifican un hito interno. Es noop si CUA está apagado.
+                cuaEmit: cuaEmitter.emit,
+            });
             if (typeof result === 'string') {
                 reply = result;
             } else if (result && typeof result === 'object') {
@@ -589,6 +730,22 @@ function createDispatcher(opts) {
         } catch (e) {
             status = 'error';
             try { process.stderr.write(`[commander-deterministic] handler ${intent.command} falló: ${e.message}\n`); } catch (_) {}
+        }
+        // Issue #3541 — completion stage. `status` mapea a `ok`/`fail` según
+        // cómo terminó el handler.
+        if (cuaShouldAutoEmit) {
+            const durationS = Math.max(0, (now() - handlerStartedAt) / 1000);
+            const completedOk = status === 'ok' && reply !== null;
+            cuaEmitter.emit({
+                command: intent.command,
+                stage: 'completion',
+                status: completedOk ? 'ok' : 'fail',
+                preview: completedOk
+                    ? `Comando \`${intent.command}\` completado.`
+                    : `Comando \`${intent.command}\` terminó con errores.`,
+                args: typeof intent.args === 'string' && intent.args.length > 0 ? intent.args : undefined,
+                duration: durationS,
+            });
         }
         // Issue #3253 — CA-4: grabar success solo si efectivamente devolvimos
         // una respuesta no nula. Si el handler retornó null (ej. legacy
@@ -645,6 +802,11 @@ function createDispatcher(opts) {
         destructiveCooldown,
         markDestructiveSuccess,
         checkDestructiveCooldown,
+        // Issue #3541 — expuesto para que callers externos (ej. handlers que
+        // viven fuera del switch del dispatcher) puedan emitir entregables
+        // CUA con el mismo emisor inicializado.
+        cuaEmit: cuaEmitter.emit,
+        cuaEmitter,
         DETERMINISTIC_SLASH,
         LLM_SLASH,
         ARG_SCHEMAS,
@@ -697,6 +859,16 @@ function buildDefaultHandlers(ctx) {
         maxStaleMs: rechazarDeps.maxStaleMs,
         noReturnLabels: rechazarDeps.noReturnLabels,
         logger: rechazarDeps.logger,
+        // Issue #3541 / CA-SEC-6 — propagar la allowlist de operadores
+        // autorizados a rebobinar entregables CUA + whitelist de comandos
+        // desde el caller (pulpo.js). Sin esto, todo `/rechazar <cua>` cae en
+        // `unauthorized_rebobinar` aunque pulpo wiree `cua.enabled: true`.
+        cuaOperatorChatIds: Array.isArray(rechazarDeps.cuaOperatorChatIds)
+            ? rechazarDeps.cuaOperatorChatIds
+            : [],
+        allowedCuaCommands: Array.isArray(rechazarDeps.allowedCuaCommands)
+            ? rechazarDeps.allowedCuaCommands
+            : [],
     });
 
     return {
@@ -1938,6 +2110,10 @@ module.exports = {
     validateArgs,
     createDispatcher,
     computeRoutingMetrics,
+    // Issue #3541 — emisor CUA reutilizable por callers que no usan el
+    // dispatcher completo (ej. handlers de pulpo.js fuera del switch
+    // determinístico). Pasa por la misma validación + dedup + audio fire-and-forget.
+    createCuaEmitter,
     DETERMINISTIC_SLASH,
     LLM_SLASH,
     NLP_PATTERNS,
