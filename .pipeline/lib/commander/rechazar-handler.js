@@ -64,7 +64,19 @@ const STATUS = {
     STALE: 'stale',
     EVENT_WRITE_FAILED: 'event_write_failed',
     INSUFFICIENT_FIELDS: 'insufficient_fields',
+    // Issue #3541 — CUA result_status:
+    OK_CUA: 'ok_cua',
+    UNAUTHORIZED_REBOBINAR: 'unauthorized_rebobinar',
+    INVALID_CUA_COMMAND: 'invalid_cua_command',
+    INVALID_CUA_STAGE: 'invalid_cua_stage',
 };
+
+// Issue #3541 — Stages reconocidos para `/rechazar <command> <stage> <motivo>`.
+const CUA_STAGES = new Set(['init', 'validation', 'analysis', 'completion']);
+
+// Issue #3541 — Regex defensiva de `command` CUA (sincronizada con la del
+// schema y `deliverable-notify.CUA_COMMAND_REGEX`).
+const CUA_COMMAND_REGEX_RH = /^[a-z][a-z0-9-]{0,40}$/;
 
 // ---------------------------------------------------------------------------
 // Parsers.
@@ -176,6 +188,38 @@ function escapeRegex(s) {
     return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Issue #3541 — Parser específico para rechazo de entregable CUA. Acepta:
+ *   `<command> <stage> <motivo>`
+ * donde `<command>` matchea `^[a-z][a-z0-9-]{0,40}$` y `<stage>` ∈
+ * `{init, validation, analysis, completion}`. Si el primer token NO matchea
+ * el regex de comando CUA, devuelve `{ ok: false }` y el caller cae al parser
+ * de issues regulares.
+ *
+ * @param {string} input
+ * @returns {{ok: boolean, command?: string, stage?: string, motivo?: string, error?: string}}
+ */
+function parseCuaTextArgs(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return { ok: false, error: 'empty' };
+
+    const m = raw.match(/^(\S+)\s+(\S+)\s+([\s\S]+?)\s*$/);
+    if (!m) return { ok: false, error: 'shape' };
+    const rawCommand = m[1];
+    const rawStage = m[2].toLowerCase();
+    const motivo = m[3].trim();
+
+    if (!CUA_COMMAND_REGEX_RH.test(rawCommand)) {
+        return { ok: false, error: 'not_cua_command' };
+    }
+    if (!CUA_STAGES.has(rawStage)) {
+        return { ok: false, error: 'invalid_stage', rawStage };
+    }
+    if (!motivo) return { ok: false, error: 'motivo' };
+
+    return { ok: true, command: rawCommand, stage: rawStage, motivo };
+}
+
 // ---------------------------------------------------------------------------
 // Default gh client (CA-15 / SEC-1.9). Se puede inyectar para tests.
 // ---------------------------------------------------------------------------
@@ -246,6 +290,22 @@ function createRechazarHandler(opts) {
     const maxStaleMs = Number.isFinite(options.maxStaleMs) ? options.maxStaleMs : DEFAULT_MAX_STALE_MS;
     const noReturnLabels = Array.isArray(options.noReturnLabels) ? options.noReturnLabels : DEFAULT_NO_RETURN_LABELS;
     const logger = typeof options.logger === 'function' ? options.logger : () => {};
+
+    // Issue #3541 / CA-SEC-6 — Allowlist explícita de operadores autorizados a
+    // rebobinar entregables CUA. Default: array vacío → fail closed cuando
+    // alguien intenta `/rechazar <cua-cmd> ...` (rebobinar CUA exige opt-in
+    // explícito del operador). El listener Telegram ya filtra por
+    // `expectedChatId`, así que en producción este check es defense-in-depth.
+    const cuaOperatorChatIds = Array.isArray(options.cuaOperatorChatIds)
+        ? options.cuaOperatorChatIds.map(String)
+        : [];
+
+    // Issue #3541 — Lista cerrada de comandos CUA habilitados (sincronizada con
+    // `cua.allowed_commands` del config.yaml). Si está vacía, todo `/rechazar
+    // <cua>` cae con `invalid_cua_command`.
+    const allowedCuaCommands = Array.isArray(options.allowedCuaCommands)
+        ? options.allowedCuaCommands
+        : [];
 
     // CA-16 / SEC-1.6 — auditor exclusivo para rejections con whitelist de
     // campos extendidos (CA-17). Reusa createAuditLog con filenamePrefix custom.
@@ -430,6 +490,25 @@ function createRechazarHandler(opts) {
             }
         }
 
+        // ----- Issue #3541 / CA-FUNC-8 — Detección de rama CUA ------------
+        // ANTES del parser de issue: si el primer token NO es numérico y SÍ
+        // matchea el regex de comando CUA, asumimos que el operador está
+        // rechazando un entregable CUA. Esto preserva CA-FUNC-8 ("/rechazar
+        // sigue funcionando para issues regulares") porque solo entramos a
+        // este branch cuando es inequívocamente CUA.
+        if (!esAudio) {
+            const cuaParsed = parseCuaTextArgs(args);
+            if (cuaParsed.ok) {
+                return await handleCuaRejection({
+                    parsed: cuaParsed,
+                    args,
+                    message,
+                    baseEntry,
+                    start,
+                });
+            }
+        }
+
         // ----- Parser de campos --------------------------------------------
         // Texto plano por slash command: `args` ya viene como
         // `<issue> <fase> <motivo>` (CA-1).
@@ -595,7 +674,117 @@ function createRechazarHandler(opts) {
         });
     }
 
-    return { handle, auditor, STATUS, parseTextArgs, parseAudioTranscript };
+    /**
+     * Issue #3541 / CA-FUNC-8 / CA-SEC-6 / CA-UX-6 — Procesa el rechazo de un
+     * entregable CUA. Reglas:
+     *   - SEC-6: chat_id debe estar en `cuaOperatorChatIds`. Si no, audit
+     *     `unauthorized_rebobinar` y respuesta "⛔ No autorizado…" — copy
+     *     legible (CA-UX-6, sin tecnicismos).
+     *   - Command debe estar en `allowedCuaCommands`. Si no, audit
+     *     `invalid_cua_command` y respuesta clara.
+     *   - Stage ya validado por el parser (enum cerrado).
+     *   - Persiste evento JSON en `<rejectionsDir>/cua-<command>-<stage>-<ts>.json`.
+     *   - Respuesta: "⚙️ Comando `<command>` rebobinado en stage `<stage>`".
+     */
+    async function handleCuaRejection({ parsed, args, message, baseEntry, start }) {
+        const chatId = message && message.chat_id !== undefined ? String(message.chat_id) : null;
+
+        // CA-SEC-6 — Allowlist explícita de operadores. Si la lista está vacía,
+        // fail closed: nadie puede rebobinar CUA hasta que se configure.
+        const isAuthorized = chatId !== null
+            && cuaOperatorChatIds.length > 0
+            && cuaOperatorChatIds.includes(chatId);
+        if (!isAuthorized) {
+            auditor.record({
+                ...baseEntry,
+                result_status: STATUS.UNAUTHORIZED_REBOBINAR,
+                duration_ms: now() - start,
+                source: 'text',
+                raw_input: redactSensitive(args || ''),
+                raw_input_hash: sha256Hex(args || ''),
+            });
+            // CA-UX-6: copy legible, sin tecnicismos.
+            return '⛔ No autorizado para rebobinar comandos CUA. Pedile a Leo que te sume al allowlist de operadores.';
+        }
+
+        // Comando debe estar en la whitelist sincronizada con cua.allowed_commands.
+        if (allowedCuaCommands.length === 0 || !allowedCuaCommands.includes(parsed.command)) {
+            auditor.record({
+                ...baseEntry,
+                result_status: STATUS.INVALID_CUA_COMMAND,
+                duration_ms: now() - start,
+                source: 'text',
+                raw_input: redactSensitive(args || ''),
+                raw_input_hash: sha256Hex(args || ''),
+            });
+            return `⚠️ No conozco el comando CUA \`${parsed.command}\`. Comandos válidos: ${allowedCuaCommands.length > 0 ? allowedCuaCommands.join(', ') : '(ninguno configurado)'}.`;
+        }
+
+        // Stage ya validado por el parser, defense in depth.
+        if (!CUA_STAGES.has(parsed.stage)) {
+            auditor.record({
+                ...baseEntry,
+                result_status: STATUS.INVALID_CUA_STAGE,
+                duration_ms: now() - start,
+                source: 'text',
+                raw_input: redactSensitive(args || ''),
+                raw_input_hash: sha256Hex(args || ''),
+            });
+            return `⚠️ El stage \`${parsed.stage}\` no es válido para CUA. Stages aceptados: ${Array.from(CUA_STAGES).join(', ')}.`;
+        }
+
+        // Escribir evento JSON para handshake con consumer CUA.
+        const ts = new Date(now()).toISOString();
+        const unixTs = Math.floor(now() / 1000);
+        const safeCommand = parsed.command.replace(/[^a-z0-9-]/g, '_');
+        const eventPath = path.join(rejectionsDir, `cua-${safeCommand}-${parsed.stage}-${unixTs}.json`);
+        const eventPayload = {
+            kind: 'cua_rejection',
+            issue: null,
+            command: parsed.command,
+            stage: parsed.stage,
+            motivo: redactSensitive(parsed.motivo),
+            ts,
+            source: 'text',
+            chat_id: chatId,
+            audit_ref: null,
+        };
+        let eventWriteError = null;
+        try {
+            try { fs.mkdirSync(rejectionsDir, { recursive: true }); } catch (_) { /* idempotente */ }
+            eventPayload.audit_ref = path.basename(auditor.currentPath(new Date(now())));
+            fs.writeFileSync(eventPath, JSON.stringify(eventPayload, null, 2));
+        } catch (e) {
+            eventWriteError = e.message;
+            logger(`[rechazar] no pude escribir evento CUA ${eventPath}: ${e.message}`);
+        }
+
+        const finalStatus = eventWriteError ? STATUS.EVENT_WRITE_FAILED : STATUS.OK_CUA;
+        auditor.record({
+            ...baseEntry,
+            result_status: finalStatus,
+            duration_ms: now() - start,
+            source: 'text',
+            raw_input: redactSensitive(args || ''),
+            raw_input_hash: sha256Hex(args || ''),
+            // Reusamos `fase` para describir el stage CUA en el audit — los
+            // consumers ya saben parsear ambos (issue/cua) por presencia del
+            // campo `command`.
+            fase: parsed.stage,
+            fase_resolved: `cua/${parsed.stage}`,
+            motivo: redactSensitive(parsed.motivo),
+            event_path: eventWriteError ? null : eventPath,
+        });
+
+        if (eventWriteError) {
+            return `⚠️ No pude registrar el rebobinado de \`${parsed.command}\`: ${String(eventWriteError).slice(0, 200)}`;
+        }
+
+        // CA-UX-6 — copy legible, sin tecnicismos.
+        return `⚙️ Comando \`${parsed.command}\` rebobinado en stage \`${parsed.stage}\`.`;
+    }
+
+    return { handle, auditor, STATUS, parseTextArgs, parseAudioTranscript, parseCuaTextArgs };
 }
 
 /**
@@ -615,6 +804,10 @@ module.exports = {
     createRechazarHandler,
     parseTextArgs,
     parseAudioTranscript,
+    // Issue #3541 — parser CUA exportado para tests.
+    parseCuaTextArgs,
+    CUA_STAGES,
+    CUA_COMMAND_REGEX_RH,
     STATUS,
     DEFAULT_MAX_AUDIO_BYTES,
     DEFAULT_MAX_AUDIO_DURATION_S,

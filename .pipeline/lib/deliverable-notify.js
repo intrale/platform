@@ -53,12 +53,17 @@ const {
 // CA-UX-2 — Emojis canónicos fijos por skill. Cualquier skill no listado cae
 // a 📦 (fallback neutral). El set debe coincidir con el subset configurado en
 // `deliverable_notifications.skills`.
+//
+// `cua` (#3541) — skill ficticio agregador de eventos de comandos CUA. NO es
+// un agente real; lo usa `notifyCua()` para discriminar las notificaciones de
+// stages de comandos vs entregables de issues. Header inequívoco "⚙️ /<cmd>".
 // -----------------------------------------------------------------------------
 const SKILL_EMOJIS = Object.freeze({
     guru: '🔍',
     po: '📋',
     ux: '🎨',
     planner: '🗺️',
+    cua: '⚙️',
 });
 
 const DEFAULT_FALLBACK_EMOJI = '📦';
@@ -1601,6 +1606,944 @@ function notify(args) {
     }
 }
 
+// =============================================================================
+// CUA — Entregables parciales del Comando de Usuario Asistido (issue #3541)
+// =============================================================================
+//
+// La superficie CUA es paralela a la de issues: el operador ejecuta comandos
+// (ej. `/cargar-ola n11`) y cada comando tiene stages internos notificables
+// (`init`, `validation`, `analysis`, `completion`). `notifyCua()` arma el
+// payload Telegram + el audit record exactamente como `notify()` lo hace para
+// issues, pero discriminando por `command` en lugar de `issue`.
+//
+// CA mapping del issue #3541:
+//   - CA-FUNC-1 / CA-SEC-4 — schema CUA validado con Ajv en runtime.
+//   - CA-FUNC-2 — skill ficticio `cua` + envelope con `command`.
+//   - CA-FUNC-3 / CA-UX-3 — audio TTS con `redactSensitive` previo.
+//   - CA-FUNC-4 / CA-SEC-1 / CA-SEC-2 / CA-SEC-5 — adjuntos con whitelist de
+//     extensiones + cap de tamaño + root hardcodeado.
+//   - CA-FUNC-7 / CA-SEC-8 — audit con `command` (string) + `issue: null` y
+//     dedup key `sha256(command + stage + ts_minuto + preview_hash)`.
+//   - CA-UX-1..5 — emojis de status, copy reglado, header `⚙️ /<cmd> — <stage>`.
+//   - CA-SEC-3 — whitelist + regex de `command`.
+//   - CA-SEC-7 — redact ANTES del TTS (igual que notify de issues).
+// =============================================================================
+
+// CA-SEC-1 — Whitelist hardcodeada de extensiones permitidas para sendDocument
+// CUA. NO configurable (defensa contra tampering desde config.yaml). Cualquier
+// extensión fuera de esta lista (.exe/.bat/.sh/.ps1/.cmd/.scr/.js/.html/.lnk…)
+// se rechaza con audit `attachment_rejected: extension_not_allowed`.
+const ALLOWED_CUA_EXTENSIONS = Object.freeze([
+    'json', 'csv', 'xlsx', 'pdf', 'txt', 'md', 'log',
+]);
+
+// CA-SEC-2 — Cap por defecto del tamaño de adjuntos CUA. Configurable vía
+// `cua.max_attachment_bytes` en config.yaml, default 5 MB. Anti DoS al bot y
+// anti exfil masiva accidental.
+const DEFAULT_CUA_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+// CA-SEC-5 — Root hardcodeado donde CUA persiste sus outputs. El path-traversal
+// (CA-SEC-1 del patrón #3414) se aplica con este root. Solo es configurable el
+// subdirectorio bajo este root (`cua.attachment_subroot`), nunca el root mismo
+// — ningún caller puede declarar una ruta absoluta.
+const CUA_ATTACHMENT_ROOT = '.pipeline/cua-outputs';
+
+// CA-UX-7 — Ventana de dedup default para CUA. NO heredamos las 24h del patrón
+// de issues — el operador corre comandos varias veces el mismo día, 24h
+// silenciaría notificaciones legítimas. Default 1h, configurable vía
+// `cua.dedup_window_hours` en config.yaml.
+const DEFAULT_CUA_DEDUP_HOURS = 1;
+
+// CA-SEC-3 — Regex defensiva de `command`. Refuerza la pertenencia a la
+// whitelist `cua.allowed_commands`. Doble validación = defense-in-depth.
+const CUA_COMMAND_REGEX = /^[a-z][a-z0-9-]{0,40}$/;
+
+// CA-UX-1 — Iconografía de status documentada por el ux agent. La tabla está
+// codificada acá para que el copy del preview/header sea consistente.
+const CUA_STATUS_EMOJIS = Object.freeze({
+    init: '⏳',
+    validation_ok: '✅',
+    validation_fail: '❌',
+    analysis: '🔍',
+    completion_ok: '🎯',
+    completion_fail: '⚠️',
+    in_progress: '🔄',
+});
+
+// CA-UX-1 — Emoji de adjunto adjunto al footer si el entregable trae archivo.
+const CUA_ATTACHMENT_EMOJI = '📎';
+
+// CA-UX-2 — Cap absoluto del preview narrable. Más largo se trunca con
+// `TRUNCATE_SUFFIX` (igual que en notify de issues).
+const CUA_PREVIEW_NARRABLE_MAX = 200;
+
+// CA-SEC-4 — Cache del compilador Ajv. Se carga una sola vez por proceso.
+let _cuaSchemaValidator = null;
+
+/**
+ * CA-SEC-4 — Carga + compila el schema CUA con Ajv draft-07. Cachea el
+ * validator para evitar recompilar en cada notificación.
+ *
+ * @param {object} [deps] - hooks de tests (loadSchema, ajv).
+ * @returns {{ ok: boolean, validate?: function, error?: string }}
+ */
+function getCuaSchemaValidator(deps) {
+    if (_cuaSchemaValidator) return { ok: true, validate: _cuaSchemaValidator };
+
+    try {
+        // Permitir inyección directa de un validator pre-compilado (tests).
+        if (deps && typeof deps.cuaSchemaValidator === 'function') {
+            _cuaSchemaValidator = deps.cuaSchemaValidator;
+            return { ok: true, validate: _cuaSchemaValidator };
+        }
+
+        const Ajv = (deps && deps.ajv)
+            ? deps.ajv
+            : require('ajv');
+        const loadSchema = (deps && typeof deps.loadSchema === 'function')
+            ? deps.loadSchema
+            : () => {
+                const schemaPath = path.resolve(
+                    __dirname, '..', 'esquemas', 'cua-entregable.schema.json',
+                );
+                return JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+            };
+        const schema = loadSchema();
+        const ajv = new Ajv({ allErrors: true, strict: false });
+        _cuaSchemaValidator = ajv.compile(schema);
+        return { ok: true, validate: _cuaSchemaValidator };
+    } catch (e) {
+        return { ok: false, error: (e && e.message) || String(e) };
+    }
+}
+
+/**
+ * CA-SEC-4 — Resetea la cache del validator (solo tests).
+ */
+function __resetCuaSchemaValidator() {
+    _cuaSchemaValidator = null;
+}
+
+/**
+ * CA-SEC-3 — Valida que el `command` esté en la whitelist explícita Y matchee
+ * la regex defensiva. Falla cualquier check → reject con motivo discriminable.
+ *
+ * @param {string} command
+ * @param {string[]} allowedCommands - lista de cua.allowed_commands del config.
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+function validateCuaCommand(command, allowedCommands) {
+    if (typeof command !== 'string' || command.length === 0) {
+        return { ok: false, reason: 'empty_command' };
+    }
+    if (!CUA_COMMAND_REGEX.test(command)) {
+        return { ok: false, reason: 'command_regex_mismatch' };
+    }
+    if (!Array.isArray(allowedCommands) || allowedCommands.length === 0) {
+        // Sin whitelist configurada → fail closed (rechazar antes que
+        // permitir cualquier `command`).
+        return { ok: false, reason: 'no_allowed_commands_configured' };
+    }
+    if (!allowedCommands.includes(command)) {
+        return { ok: false, reason: 'command_not_in_whitelist' };
+    }
+    return { ok: true };
+}
+
+/**
+ * CA-SEC-1 — Devuelve la extensión normalizada (lowercase, sin punto) del path.
+ * Acepta tanto `.json` como `json`.
+ */
+function _normalizeExt(input) {
+    if (typeof input !== 'string') return '';
+    return input.replace(/^\./, '').toLowerCase();
+}
+
+/**
+ * CA-SEC-1 / CA-SEC-2 — Valida el adjunto CUA: whitelist de extensión,
+ * coherencia extensión declarada vs extensión real, existencia, tamaño bajo
+ * cap configurado, path-traversal contra `CUA_ATTACHMENT_ROOT`. NUNCA lanza.
+ *
+ * @param {object} attachment - { type, path, filename?, caption? }
+ * @param {object} opts
+ * @param {string} opts.pipelineRoot
+ * @param {string} [opts.subroot] - subdir bajo CUA_ATTACHMENT_ROOT.
+ * @param {number} [opts.maxBytes] - default DEFAULT_CUA_MAX_ATTACHMENT_BYTES.
+ * @returns {{ ok: boolean, absolute?: string, relative?: string, sizeBytes?: number, reason?: string }}
+ */
+function validateCuaAttachment(attachment, opts) {
+    if (!attachment || typeof attachment !== 'object') {
+        return { ok: false, reason: 'attachment_missing' };
+    }
+    const declaredType = _normalizeExt(attachment.type);
+    const declaredPath = typeof attachment.path === 'string' ? attachment.path : '';
+    const maxBytes = (opts && Number.isFinite(opts.maxBytes))
+        ? opts.maxBytes
+        : DEFAULT_CUA_MAX_ATTACHMENT_BYTES;
+    const subroot = (opts && typeof opts.subroot === 'string' && opts.subroot.length > 0)
+        ? opts.subroot
+        : '';
+    const pipelineRoot = (opts && opts.pipelineRoot) || process.cwd();
+
+    if (!ALLOWED_CUA_EXTENSIONS.includes(declaredType)) {
+        return { ok: false, reason: 'extension_not_allowed' };
+    }
+    if (declaredPath.length === 0) {
+        return { ok: false, reason: 'empty_path' };
+    }
+
+    // CA-SEC-5: root hardcodeado + subroot opcional configurable. Lo
+    // verificamos PRIMERO (path traversal es el flag más crítico — si llega
+    // un `..` o un path fuera del root no queremos emitir un motivo
+    // secundario como extension_mismatch).
+    const effectiveRoot = subroot.length > 0
+        ? path.join(CUA_ATTACHMENT_ROOT, subroot)
+        : CUA_ATTACHMENT_ROOT;
+    const validation = validateAttachmentPath(declaredPath, {
+        root: effectiveRoot,
+        pipelineRoot,
+    });
+    if (!validation.ok) {
+        return { ok: false, reason: validation.reason || 'path_invalid' };
+    }
+
+    // Defense in depth: la extensión real del archivo debe coincidir con la
+    // declarada. Esto bloquea casos como `attachment.type: 'json'` + `path:
+    // 'malware.exe'` (que pasaría la whitelist de `type` pero el archivo es
+    // ejecutable).
+    const realExt = _normalizeExt(path.extname(declaredPath));
+    if (realExt !== declaredType) {
+        return { ok: false, reason: 'extension_mismatch' };
+    }
+    if (!fs.existsSync(validation.absolute)) {
+        return { ok: false, reason: 'file_not_found' };
+    }
+
+    // CA-SEC-2 — cap de tamaño antes del upload.
+    let sizeBytes = 0;
+    try {
+        const stat = fs.statSync(validation.absolute);
+        sizeBytes = stat.size;
+    } catch (e) {
+        return { ok: false, reason: 'stat_failed' };
+    }
+    if (sizeBytes > maxBytes) {
+        return { ok: false, reason: 'attachment_too_large' };
+    }
+
+    return {
+        ok: true,
+        absolute: validation.absolute,
+        relative: validation.relative,
+        sizeBytes,
+    };
+}
+
+/**
+ * CA-UX-1 — Devuelve el emoji apropiado según (stage, status).
+ *
+ * Reglas:
+ *   - init → ⏳
+ *   - validation + ok → ✅, validation + fail → ❌
+ *   - analysis → 🔍
+ *   - completion + ok → 🎯, completion + fail → ⚠️
+ *   - status=in_progress → 🔄 (override de cualquier stage)
+ */
+function emojiForCuaStatus(stage, status) {
+    if (status === 'in_progress') return CUA_STATUS_EMOJIS.in_progress;
+    if (stage === 'init') return CUA_STATUS_EMOJIS.init;
+    if (stage === 'validation') {
+        return status === 'fail' ? CUA_STATUS_EMOJIS.validation_fail : CUA_STATUS_EMOJIS.validation_ok;
+    }
+    if (stage === 'analysis') return CUA_STATUS_EMOJIS.analysis;
+    if (stage === 'completion') {
+        return status === 'fail' ? CUA_STATUS_EMOJIS.completion_fail : CUA_STATUS_EMOJIS.completion_ok;
+    }
+    return DEFAULT_FALLBACK_EMOJI;
+}
+
+/**
+ * CA-FUNC-2 / CA-SEC-8 — Envelope HTML comment con `command` (en vez de
+ * `issue`). El parser de `/rechazar` discrimina por `command != null`.
+ */
+function buildCuaEnvelope(meta) {
+    const payload = {
+        issue: null,
+        command: String(meta.command || ''),
+        stage: String(meta.stage || ''),
+        skill: 'cua',
+        pipeline: 'cua',
+        ts: typeof meta.ts === 'number' ? meta.ts : Math.floor(Date.now() / 1000),
+    };
+    return `<!-- pipeline-meta ${JSON.stringify(payload)} -->`;
+}
+
+/**
+ * CA-SEC-8 — Dedup key específica de CUA. Toma `ts_minuto` (truncado al
+ * minuto) + `preview_hash` (sha256 corto) para que dos invocaciones idénticas
+ * dentro del mismo minuto se deduplican, pero variantes en el preview se
+ * notifican.
+ */
+function buildCuaDedupHash(command, stage, tsMs, preview) {
+    const tsMin = Math.floor((Number.isFinite(tsMs) ? tsMs : Date.now()) / 60000) * 60000;
+    const previewHash = contentHash(String(preview || '')).slice(0, 16);
+    return contentHash(`${command}|${stage}|${tsMin}|${previewHash}`);
+}
+
+/**
+ * CA-UX-3 — Strip de emojis + paths/hashes largos del texto que se manda al
+ * TTS. Los emojis quedan visibles en Telegram pero no se narran (los TTS los
+ * leen literal o los saltean feo). Paths/hashes ≥20 chars se reemplazan por un
+ * sustantivo en español (`archivo adjunto`/`identificador`).
+ */
+function sanitizeCuaForTts(text) {
+    if (typeof text !== 'string') return '';
+    let out = text;
+    // Stripear emojis y símbolos pictográficos (rango Unicode aproximado).
+    out = out.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2700}-\u{27BF}\u{2B00}-\u{2BFF}]/gu, ' ');
+    // Reemplazar paths y hashes largos por sustantivo.
+    out = out.replace(/[\w./\\-]{20,}/g, 'archivo adjunto');
+    // Colapsar espacios.
+    out = out.replace(/\s+/g, ' ').trim();
+    return out;
+}
+
+/**
+ * CA-UX-5 — Header inequívoco para notificación CUA:
+ *   `⚙️ /<command> [args] — <stage>`
+ *
+ * NO usa `#NNNN` (eso confunde al operador con issues).
+ */
+function buildCuaHeader(command, stage, args) {
+    const cleanArgs = typeof args === 'string' && args.trim().length > 0
+        ? ' ' + args.trim()
+        : '';
+    return `⚙️ /${command}${cleanArgs}${HEADER_SEP}${stage}`;
+}
+
+/**
+ * CA-FUNC-2 / CA-UX-2 / CA-UX-5 — Construye el cuerpo de texto del entregable
+ * CUA.
+ *
+ * Formato:
+ *   ⚙️ /<command> <args> — <stage>
+ *   <statusEmoji> <preview line 1 (≤200 chars)>
+ *   [<resto del preview expandido>]
+ *
+ *   [⏱ <duration>s]
+ *   [📎 <attachment.filename> adjunto abajo]
+ *
+ *   <envelope (invisible)>
+ */
+function buildCuaText(input) {
+    const header = buildCuaHeader(input.command, input.stage, input.args);
+    const statusEmoji = emojiForCuaStatus(input.stage, input.status);
+    const previewRaw = typeof input.preview === 'string' ? input.preview : '';
+    const previewTrunc = truncatePreserveLines(previewRaw, input.truncateChars || DEFAULT_TRUNCATE_CHARS);
+    // CA-UX-2: si el preview no empieza con emoji, prefijar el de status.
+    // Detectamos "emoji" por presencia de char no-ASCII en posición 0.
+    const startsWithEmoji = previewTrunc.length > 0 && previewTrunc.charCodeAt(0) > 127;
+    const previewBody = startsWithEmoji ? previewTrunc : `${statusEmoji} ${previewTrunc || '_sin preview_'}`;
+
+    const lines = [header, previewBody];
+    if (Number.isFinite(input.duration) && input.duration > 0) {
+        lines.push('');
+        lines.push(`⏱ ${input.duration.toFixed(1)}s`);
+    }
+    if (input.attachmentFilename) {
+        lines.push(`${CUA_ATTACHMENT_EMOJI} ${input.attachmentFilename} adjunto abajo`);
+    }
+    lines.push('');
+    lines.push(input.envelope);
+    return lines.join('\n');
+}
+
+/**
+ * Construye el caption del adjunto CUA (caso `sendDocument` con caption). El
+ * caption es breve — sin preview expandido — porque Telegram cortea feo cuando
+ * un caption excede 1024 chars.
+ */
+function buildCuaCaption(input) {
+    const header = buildCuaHeader(input.command, input.stage, input.args);
+    const customCaption = typeof input.caption === 'string' && input.caption.trim().length > 0
+        ? input.caption.trim()
+        : '';
+    const lines = [header];
+    if (customCaption) {
+        lines.push('');
+        lines.push(customCaption);
+    }
+    lines.push('');
+    lines.push(input.envelope);
+    return lines.join('\n');
+}
+
+/**
+ * CA-FUNC-2 / CA-FUNC-4 / CA-SEC-1/2/4/5 — Construye el payload Telegram del
+ * entregable CUA. Es la contraparte de `buildPreview()` para issues.
+ *
+ * Pasos:
+ *   1. Schema validation con Ajv (CA-SEC-4) → fail closed.
+ *   2. Validación de `command` (CA-SEC-3).
+ *   3. Validación de `attachment` si existe (CA-SEC-1, 2, 5).
+ *   4. Envelope con `command` + `issue: null` (CA-SEC-8).
+ *   5. Build text-only o sendDocument con caption.
+ *   6. Audit record con `command`, `issue: null`, dedup_key específica.
+ *
+ * @param {object} args
+ * @param {object} args.entregable - { command, stage, status, preview?, attachment?, duration?, error?, args? }
+ * @param {object} args.config - bloque cua del config.yaml.
+ * @param {string} args.pipelineRoot
+ * @param {object} [args.deps] - cuaSchemaValidator override, etc.
+ * @returns {object} { ok, payload?, auditRecord?, dedupHash?, attachmentRejected?, reason? }
+ */
+function buildCuaPayload(args) {
+    const { entregable, config, pipelineRoot, deps } = args;
+    const cfg = config || {};
+
+    // CA-SEC-4 — validación de schema antes de cualquier otra cosa.
+    const validator = getCuaSchemaValidator(deps);
+    if (!validator.ok) {
+        return { ok: false, reason: 'schema_loader_failed', schemaLoaderError: validator.error };
+    }
+    if (!validator.validate(entregable)) {
+        const firstError = (validator.validate.errors && validator.validate.errors[0]) || null;
+        return {
+            ok: false,
+            reason: 'schema_invalid',
+            schemaErrors: validator.validate.errors || null,
+            schemaFirstError: firstError
+                ? `${firstError.instancePath || '/'} ${firstError.message || ''}`.trim()
+                : null,
+        };
+    }
+
+    const command = entregable.command;
+    const stage = entregable.stage;
+    const status = entregable.status;
+    const preview = typeof entregable.preview === 'string' ? entregable.preview : '';
+    const attachment = entregable.attachment || null;
+    const truncateChars = Number.isFinite(cfg.truncate_chars)
+        ? cfg.truncate_chars
+        : DEFAULT_TRUNCATE_CHARS;
+
+    // CA-SEC-3 — whitelist + regex del command (defense in depth contra
+    // schema bypass por un Ajv mal configurado).
+    const allowedCommands = Array.isArray(cfg.allowed_commands) ? cfg.allowed_commands : [];
+    const cmdCheck = validateCuaCommand(command, allowedCommands);
+    if (!cmdCheck.ok) {
+        return { ok: false, reason: cmdCheck.reason };
+    }
+
+    // Adjunto (CA-SEC-1/2/5).
+    let attachmentResolved = null;
+    let attachmentRejected = false;
+    let rejectionReason = null;
+    if (attachment) {
+        const maxBytes = Number.isFinite(cfg.max_attachment_bytes)
+            ? cfg.max_attachment_bytes
+            : DEFAULT_CUA_MAX_ATTACHMENT_BYTES;
+        const attachCheck = validateCuaAttachment(attachment, {
+            pipelineRoot,
+            subroot: cfg.attachment_subroot,
+            maxBytes,
+        });
+        if (attachCheck.ok) {
+            attachmentResolved = attachCheck;
+        } else {
+            attachmentRejected = true;
+            rejectionReason = attachCheck.reason || 'unknown';
+        }
+    }
+
+    const envelope = buildCuaEnvelope({ command, stage });
+    const attachmentFilename = attachmentResolved
+        ? (typeof attachment.filename === 'string' && attachment.filename.length > 0
+            ? attachment.filename
+            : path.basename(attachmentResolved.absolute))
+        : null;
+
+    let payload;
+    if (attachmentResolved) {
+        // sendDocument con caption legible (CA-UX-4).
+        payload = {
+            document: attachmentResolved.absolute,
+            filename: attachmentFilename,
+            caption: buildCuaCaption({
+                command, stage,
+                args: entregable.args,
+                caption: typeof attachment.caption === 'string' && attachment.caption.length > 0
+                    ? attachment.caption
+                    : `${attachmentFilename} (${humanBytesShort(attachmentResolved.sizeBytes)})`,
+                envelope,
+            }),
+            parse_mode: 'Markdown',
+        };
+    } else {
+        payload = {
+            text: buildCuaText({
+                command, stage, status,
+                args: entregable.args,
+                preview,
+                duration: entregable.duration,
+                attachmentFilename: null,
+                envelope,
+                truncateChars,
+            }),
+            parse_mode: 'Markdown',
+        };
+    }
+
+    const sanitizedPayload = sanitizeTelegramPayload(payload);
+
+    // Dedup hash CA-SEC-8: (command, stage, ts_minuto, preview_hash).
+    const dedupHash = buildCuaDedupHash(command, stage, Date.now(), preview);
+
+    // Audit preview redactado (CA-SEC-3 patrón #3414).
+    const auditPreview = (() => {
+        const source = sanitizedPayload.text || sanitizedPayload.caption || '';
+        const redacted = redactSensitive(source);
+        const redactedStr = typeof redacted === 'string' ? redacted : String(source);
+        return redactedStr.length > AUDIT_PREVIEW_MAX
+            ? redactedStr.slice(0, AUDIT_PREVIEW_MAX - 1) + '…'
+            : redactedStr;
+    })();
+
+    const auditRecord = {
+        ts: new Date().toISOString(),
+        // CA-FUNC-7 — `issue: null` explícito (NO omitido) para que consumers
+        // sepan distinguir CUA de issues sin lookup.
+        issue: null,
+        command: String(command),
+        stage: String(stage),
+        status: String(status),
+        skill: 'cua',
+        pipeline: 'cua',
+        // Hash dedicado CUA (CA-SEC-8). NO compatible con content_hash del
+        // pipeline de issues — son canales separados.
+        dedup_hash: dedupHash,
+        // Mantenemos `content_hash` también para herramientas que asumen su
+        // presencia (preview hash, ignorando ts).
+        content_hash: contentHash(String(preview || '')),
+        preview: auditPreview,
+        attachment_path: attachmentResolved ? attachmentResolved.relative : null,
+        attachment_size_bytes: attachmentResolved ? attachmentResolved.sizeBytes : null,
+        duration: Number.isFinite(entregable.duration) ? entregable.duration : null,
+    };
+    if (attachmentRejected) {
+        auditRecord.attachment_rejected = true;
+        auditRecord.attachment_reject_reason = rejectionReason || 'unknown';
+    }
+
+    return {
+        ok: true,
+        payload: sanitizedPayload,
+        auditRecord,
+        dedupHash,
+        attachmentRejected,
+        rejectionReason,
+    };
+}
+
+/**
+ * CA-FUNC-7 / CA-SEC-8 — Dedup específica para CUA. Igual lógica que
+ * `shouldSkipByDedup` pero compara `(command, stage, dedup_hash)` en lugar de
+ * `(issue, skill, content_hash)`.
+ */
+function shouldSkipCuaByDedup(args) {
+    const { auditPath, command, stage } = args;
+    const hash = args.dedupHash;
+    const windowHours = Number.isFinite(args.windowHours)
+        ? args.windowHours
+        : DEFAULT_CUA_DEDUP_HOURS;
+
+    if (!auditPath || typeof hash !== 'string' || hash.length === 0) return false;
+    if (!fs.existsSync(auditPath)) return false;
+
+    const cutoffMs = Date.now() - windowHours * 3600 * 1000;
+    let raw;
+    try { raw = fs.readFileSync(auditPath, 'utf8'); }
+    catch { return false; }
+
+    const lines = raw.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (!line) continue;
+        let entry;
+        try { entry = JSON.parse(line); } catch { continue; }
+        if (!entry || typeof entry !== 'object') continue;
+        if (entry.skipped_dedup) continue;
+        if (entry.kind === 'audio') continue;
+        // Solo records CUA (skill='cua' y command presente).
+        if (entry.skill !== 'cua') continue;
+        if (entry.command !== command) continue;
+        if (entry.stage !== stage) continue;
+        if (entry.dedup_hash !== hash) continue;
+        const tsMs = Date.parse(entry.ts || '');
+        if (Number.isFinite(tsMs) && tsMs >= cutoffMs) return true;
+    }
+    return false;
+}
+
+/**
+ * Bytes humanizados cortos para caption (5.3 MB / 412 KB / 87 B). Sin
+ * dependencias.
+ */
+function humanBytesShort(n) {
+    if (!Number.isFinite(n)) return '?';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/**
+ * CA-FUNC-3 / CA-UX-3 / CA-SEC-7 — Genera el audio TTS del preview CUA.
+ * Reusa el módulo `multimedia.js` igual que el audio de issues, pero
+ * sanitiza el texto con `sanitizeCuaForTts` ANTES (CA-UX-3) y aplica
+ * `redactSensitive` ANTES del TTS (CA-SEC-7, explicitado desde UX).
+ *
+ * @param {object} args
+ * @param {string} args.command
+ * @param {string} args.stage
+ * @param {string} args.narrationText - preview ya validado.
+ * @param {string} args.dedupHash
+ * @param {object} args.config
+ * @param {string} args.pipelineRoot
+ * @param {object} [args.deps]
+ * @returns {Promise<object>} patch para appendAudit con kind:'audio_cua'.
+ */
+async function generateCuaAudioNotifications(args) {
+    const startedAt = Date.now();
+    const {
+        command, stage, narrationText, dedupHash,
+        config, pipelineRoot, deps,
+    } = args;
+    const cfg = config || {};
+    const audioRoot = typeof cfg.audio_root === 'string' ? cfg.audio_root : DEFAULT_AUDIO_ROOT;
+    const chunkTimeoutMs = Number.isFinite(cfg.tts_chunk_timeout_ms)
+        ? cfg.tts_chunk_timeout_ms
+        : TTS_CHUNK_TIMEOUT_MS;
+    const maxChunks = Number.isFinite(cfg.max_tts_chunks)
+        ? cfg.max_tts_chunks
+        : MAX_TTS_CHUNKS;
+
+    const basePatch = {
+        ts: new Date().toISOString(),
+        kind: 'audio_cua',
+        issue: null,
+        command: String(command || ''),
+        stage: String(stage || ''),
+        skill: 'cua',
+        pipeline: 'cua',
+        dedup_hash: dedupHash,
+    };
+
+    try {
+        // Perfil TTS: si el spec define perfil `cua` en multimedia.js lo
+        // usamos; sino caemos a default con flag fallback.
+        const { profile, fallback } = resolveTtsProfile('cua', deps);
+        basePatch.audio_profile = profile;
+        if (fallback) basePatch.tts_profile_fallback = true;
+
+        // CA-SEC-7 — redactar PRIMERO (antes de cualquier transformación que
+        // pueda enmascarar el formato de los secrets).
+        const redacted = redactSensitive(String(narrationText || ''));
+        const redactedStr = typeof redacted === 'string' ? redacted : String(narrationText || '');
+        // CA-UX-3 — strip emojis + paths/hashes largos + narrative-sanitize.
+        const stripped = sanitizeCuaForTts(redactedStr);
+        const sanitized = narrativeSanitizePreview(stripped);
+
+        if (!sanitized || sanitized.length === 0) {
+            basePatch.audio_skipped = true;
+            basePatch.audio_skip_reason = 'empty_after_sanitize';
+            return basePatch;
+        }
+
+        const { chunks, truncated } = partitionForTts(sanitized, {
+            max: MAX_TTS_CHARS,
+            cap: maxChunks,
+        });
+        basePatch.audio_chunks_count = chunks.length;
+        basePatch.audio_truncated = truncated;
+        if (chunks.length === 0) {
+            basePatch.audio_skipped = true;
+            basePatch.audio_skip_reason = 'empty_chunks';
+            return basePatch;
+        }
+
+        let botToken = null, chatId = null;
+        try {
+            const loader = (deps && typeof deps.loadTelegramSecrets === 'function')
+                ? deps.loadTelegramSecrets
+                : require('./telegram-secrets').loadTelegramSecrets;
+            const sec = loader({});
+            botToken = sec.bot_token;
+            chatId = sec.chat_id;
+        } catch (credErr) {
+            basePatch.audio_error = {
+                code: credErr?.code || 'CREDS_MISSING',
+                message: safeRedact(credErr),
+            };
+            basePatch.audio_duration_ms = Date.now() - startedAt;
+            return basePatch;
+        }
+
+        const ttsFn = (deps && typeof deps.textToSpeechWithMeta === 'function')
+            ? deps.textToSpeechWithMeta
+            : (text, opts) => require('../multimedia').textToSpeechWithMeta(text, opts);
+        const sendFn = (deps && typeof deps.sendVoiceTelegram === 'function')
+            ? deps.sendVoiceTelegram
+            : (buf, t, c) => require('../multimedia').sendVoiceTelegram(buf, t, c);
+        const nowFn = (deps && typeof deps.now === 'function') ? deps.now : () => Date.now();
+        const writerFn = (deps && typeof deps.writeAudioFile === 'function')
+            ? deps.writeAudioFile
+            : (absPath, buf) => {
+                fs.mkdirSync(path.dirname(absPath), { recursive: true });
+                fs.writeFileSync(absPath, buf);
+            };
+
+        const audioAbsRoot = path.isAbsolute(audioRoot)
+            ? audioRoot
+            : path.resolve(pipelineRoot || process.cwd(), audioRoot);
+
+        const audioFilePaths = [];
+        const chunkErrors = [];
+        let consecutiveTimeouts = 0;
+        const breakerLimit = TTS_CIRCUIT_BREAKER_TIMEOUTS;
+
+        for (let i = 0; i < chunks.length; i++) {
+            if (consecutiveTimeouts >= breakerLimit) {
+                chunkErrors.push({ index: i, code: 'CIRCUIT_BREAKER', message: 'breaker_open' });
+                break;
+            }
+            const chunkText = chunks[i];
+            try {
+                const meta = await withTimeout(
+                    ttsFn(chunkText, { profile }),
+                    chunkTimeoutMs,
+                    `tts_timeout_chunk_${i}`,
+                );
+                if (!meta || !meta.buffer) {
+                    chunkErrors.push({ index: i, code: 'TTS_EMPTY', message: 'sin buffer' });
+                    consecutiveTimeouts = 0;
+                    continue;
+                }
+                consecutiveTimeouts = 0;
+                const fname = `${nowFn()}-cua-${String(command).replace(/[^a-z0-9-]/g, '_')}-${stage}-chunk${i}.ogg`;
+                const fpath = path.join(audioAbsRoot, fname);
+                writerFn(fpath, meta.buffer);
+                const rel = path.relative(pipelineRoot || process.cwd(), fpath).replace(/\\/g, '/');
+                audioFilePaths.push(rel);
+                try {
+                    await withTimeout(sendFn(meta.buffer, botToken, chatId), chunkTimeoutMs, 'send_timeout');
+                } catch (sendErr) {
+                    chunkErrors.push({ index: i, code: 'SEND_FAILED', message: safeRedact(sendErr) });
+                }
+            } catch (e) {
+                const isTimeout = e && (e.code === 'TTS_TIMEOUT' || /timeout/i.test(String(e.message || '')));
+                if (isTimeout) consecutiveTimeouts++;
+                else consecutiveTimeouts = 0;
+                chunkErrors.push({
+                    index: i,
+                    code: isTimeout ? 'TIMEOUT' : (e?.code || 'TTS_ERROR'),
+                    message: safeRedact(e),
+                });
+            }
+        }
+
+        basePatch.audio_file_paths = audioFilePaths;
+        if (chunkErrors.length > 0) {
+            basePatch.audio_error = chunkErrors.length === 1
+                ? chunkErrors[0]
+                : { code: 'MULTI', message: `${chunkErrors.length} chunks fallaron`, details: chunkErrors };
+        }
+        basePatch.audio_duration_ms = Date.now() - startedAt;
+        return basePatch;
+    } catch (e) {
+        basePatch.audio_error = { code: e?.code || 'UNEXPECTED', message: safeRedact(e) };
+        basePatch.audio_duration_ms = Date.now() - startedAt;
+        return basePatch;
+    }
+}
+
+/**
+ * Fachada CUA — el equivalente a `notify()` para entregables del CUA.
+ * Combina:
+ *   - Kill switches + enabled.
+ *   - Validación de schema, command, attachment (fail closed en todos).
+ *   - Construcción del payload.
+ *   - Dedup CUA-specific.
+ *   - Enqueue dropfile Telegram (fire-and-forget).
+ *   - Audio TTS async (fire-and-forget).
+ *   - Audit append.
+ *
+ * Garantiza `zero-blocking`: cualquier error se captura y devuelve
+ * `{ ok: false, ... }` sin propagar (CA-FUNC-9).
+ *
+ * @param {object} args
+ * @param {object} args.entregable - validado contra cua-entregable.schema.json.
+ * @param {object} args.config - bloque `cua` del config.yaml.
+ * @param {string} args.pipelineRoot
+ * @param {string} args.telegramQueueDir
+ * @param {object} [args.deps]
+ * @returns {{ ok: boolean, action: string, reason?: string, payload?: object, audit?: object, audioTask?: Promise }}
+ */
+function notifyCua(args) {
+    try {
+        const { entregable, config, pipelineRoot, telegramQueueDir, deps } = args;
+        const cfg = config || {};
+
+        if (cfg.kill_switch === true) {
+            return { ok: false, action: 'skipped', reason: 'kill_switch' };
+        }
+        if (cfg.enabled !== true) {
+            return { ok: false, action: 'skipped', reason: 'disabled' };
+        }
+
+        // CA-SEC-4 — schema fail-closed PRIMERO. Si el entregable tiene un
+        // stage no enum o un command malformado, queremos verlo como
+        // `rejected` con audit `schema_invalid` antes que como un skip
+        // silencioso por `stage_not_notifiable` (que sería engañoso).
+        const built = buildCuaPayload({ entregable, config: cfg, pipelineRoot, deps });
+        if (!built.ok) {
+            // CA-SEC-4: error de schema/command/attachment → audit fail-closed.
+            const auditPath = _resolveAuditPath(cfg, pipelineRoot);
+            try {
+                appendAudit(auditPath, {
+                    ts: new Date().toISOString(),
+                    issue: null,
+                    command: entregable && entregable.command ? String(entregable.command) : null,
+                    stage: entregable && entregable.stage ? String(entregable.stage) : null,
+                    skill: 'cua',
+                    pipeline: 'cua',
+                    rejected: true,
+                    reject_reason: built.reason,
+                    schema_first_error: built.schemaFirstError || null,
+                });
+            } catch {}
+            return { ok: false, action: 'rejected', reason: built.reason, schemaFirstError: built.schemaFirstError };
+        }
+
+        // Filtro por stage notificable. CA-TEC-2 dice que esto se hace en el
+        // caller (commander-deterministic), pero también lo verificamos acá
+        // como defensa (idempotencia). Se ejecuta DESPUÉS del schema check
+        // para que stages inválidos se reporten como `rejected` y no como
+        // `skipped`.
+        const notifiableStages = Array.isArray(cfg.notifiable_stages) && cfg.notifiable_stages.length > 0
+            ? cfg.notifiable_stages
+            : ['init', 'validation', 'analysis', 'completion'];
+        if (!notifiableStages.includes(entregable.stage)) {
+            return { ok: false, action: 'skipped', reason: 'stage_not_notifiable' };
+        }
+
+        // Dedup CA-SEC-8.
+        const auditPath = _resolveAuditPath(cfg, pipelineRoot);
+        const windowHours = Number.isFinite(cfg.dedup_window_hours)
+            ? cfg.dedup_window_hours
+            : DEFAULT_CUA_DEDUP_HOURS;
+
+        if (shouldSkipCuaByDedup({
+            auditPath,
+            command: entregable.command,
+            stage: entregable.stage,
+            dedupHash: built.dedupHash,
+            windowHours,
+        })) {
+            appendAudit(auditPath, {
+                ts: new Date().toISOString(),
+                issue: null,
+                command: entregable.command,
+                stage: entregable.stage,
+                skill: 'cua',
+                pipeline: 'cua',
+                dedup_hash: built.dedupHash,
+                skipped_dedup: true,
+            });
+            return { ok: false, action: 'skipped', reason: 'dedup' };
+        }
+
+        // Enqueue dropfile.
+        const now = (deps && typeof deps.now === 'function') ? deps.now() : Date.now();
+        const safeCommand = String(entregable.command).replace(/[^a-z0-9-]/g, '_');
+        const dropfileName = `${now}-cua-${safeCommand}-${entregable.stage}.json`;
+        const dropfilePath = path.join(telegramQueueDir, dropfileName);
+        const writer = (deps && typeof deps.writeQueueFile === 'function')
+            ? deps.writeQueueFile
+            : (p, payload) => {
+                fs.mkdirSync(path.dirname(p), { recursive: true });
+                fs.writeFileSync(p, JSON.stringify(payload), 'utf8');
+            };
+        writer(dropfilePath, built.payload);
+
+        const audioEnabled = cfg.audio_enabled === true && cfg.kill_switch_audio !== true;
+        const finalAudit = {
+            ...built.auditRecord,
+            telegram_enqueue_ok: true,
+            dropfile: path.basename(dropfilePath),
+        };
+        if (audioEnabled) finalAudit.audio_pending = true;
+        appendAudit(auditPath, finalAudit);
+
+        // Audio fire-and-forget.
+        let audioTask = null;
+        if (audioEnabled) {
+            const narrationText = built.payload.text || built.payload.caption || '';
+            audioTask = generateCuaAudioNotifications({
+                command: entregable.command,
+                stage: entregable.stage,
+                narrationText,
+                dedupHash: built.dedupHash,
+                config: cfg,
+                pipelineRoot,
+                deps,
+            }).then((patch) => {
+                try { appendAudit(auditPath, patch); } catch {}
+                return patch;
+            }).catch((e) => {
+                try {
+                    appendAudit(auditPath, {
+                        ts: new Date().toISOString(),
+                        kind: 'audio_cua',
+                        issue: null,
+                        command: entregable.command,
+                        skill: 'cua',
+                        dedup_hash: built.dedupHash,
+                        audio_error: { code: 'UNHANDLED', message: safeRedact(e) },
+                    });
+                } catch {}
+                return null;
+            });
+        }
+
+        return {
+            ok: true,
+            action: 'enqueued',
+            payload: built.payload,
+            audit: finalAudit,
+            attachmentRejected: built.attachmentRejected || false,
+            attachmentRejectionReason: built.rejectionReason || null,
+            audioTask,
+        };
+    } catch (e) {
+        return { ok: false, action: 'error', reason: (e && e.message) || String(e) };
+    }
+}
+
+/**
+ * Resolución del path absoluto al audit JSONL. Comparte el mismo archivo que
+ * el patrón de issues — el discriminador es `skill: 'cua'` + `command`
+ * presente.
+ */
+function _resolveAuditPath(cfg, pipelineRoot) {
+    const auditFile = (cfg && typeof cfg.audit_file === 'string' && cfg.audit_file.length > 0)
+        ? cfg.audit_file
+        : '.pipeline/audit/deliverable-notifications.jsonl';
+    return path.isAbsolute(auditFile)
+        ? auditFile
+        : path.resolve(pipelineRoot || process.cwd(), auditFile);
+}
+
 // -----------------------------------------------------------------------------
 // Exports
 // -----------------------------------------------------------------------------
@@ -1614,6 +2557,14 @@ module.exports = {
     generateAudioNotifications,
     partitionForTts,
     resolveTtsProfile,
+    // API pública — CUA (#3541)
+    notifyCua,
+    buildCuaPayload,
+    shouldSkipCuaByDedup,
+    generateCuaAudioNotifications,
+    validateCuaCommand,
+    validateCuaAttachment,
+    getCuaSchemaValidator,
     // API pública — adjuntos multimedia (#3540)
     resolveAttachments,
 
@@ -1634,6 +2585,13 @@ module.exports = {
     TTS_TRUNCATION_SUFFIX,
     DEFAULT_AUDIO_ROOT,
     KNOWN_TTS_PROFILES,
+    // Constantes — CUA (#3541)
+    ALLOWED_CUA_EXTENSIONS,
+    DEFAULT_CUA_MAX_ATTACHMENT_BYTES,
+    CUA_ATTACHMENT_ROOT,
+    DEFAULT_CUA_DEDUP_HOURS,
+    CUA_COMMAND_REGEX,
+    CUA_STATUS_EMOJIS,
     // Constantes — adjuntos multimedia (#3540)
     DEFAULT_ATTACHMENT_ROOTS,
     DEFAULT_ATTACHMENT_MAX_COUNT,
@@ -1659,6 +2617,16 @@ module.exports = {
         // audio TTS
         withTimeout,
         safeRedact,
+        // CUA
+        emojiForCuaStatus,
+        buildCuaEnvelope,
+        buildCuaDedupHash,
+        sanitizeCuaForTts,
+        buildCuaHeader,
+        buildCuaText,
+        buildCuaCaption,
+        humanBytesShort,
+        __resetCuaSchemaValidator,
         // adjuntos multimedia (#3540)
         normalizeAttachmentDeclarations,
         buildAttachmentFilename,
