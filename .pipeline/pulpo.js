@@ -47,6 +47,8 @@ const visualGate = require('./lib/visual-gate');
 const humanBlock = require('./lib/human-block');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+// #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
+const desyncDetector = require('./lib/desync-detector');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -10831,6 +10833,21 @@ async function mainLoop() {
     // action='noop' → caso normal, sin log.
   } catch (e) {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
+  }
+
+  // #3518 CA-6 — Chequeo de desync al boot: compara waves.json contra
+  // .partial-pause.json. Si hay mismatch, crea flag + alerta Telegram. El
+  // human-block existente lo levanta y pausa los skills hasta intervención.
+  // Si crashea por cualquier razón, NO mata al pulpo (best-effort).
+  try {
+    const desync = desyncDetector.detectDesync();
+    if (desync.desync) {
+      log('pulpo', `WARN desync-detector: ${desync.reason} added=${JSON.stringify(desync.added)} removed=${JSON.stringify(desync.removed)} flag=${desync.flag_path || 'no'}`);
+    } else {
+      log('pulpo', `desync-detector OK (${desync.reason || 'in_sync'})`);
+    }
+  } catch (e) {
+    log('pulpo', `WARN desync-detector falló: ${e.message}`);
   }
 
   // #3508 CA-7 / UX-4 — Log de startup informativo del workaround Anthropic 1M.
