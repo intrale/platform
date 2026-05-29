@@ -5881,6 +5881,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
   }
 
+  // #3605 — Registrar stdin del child en agent-ipc si el skill opt-in
+  // (`interactive_supported: true` en agent-models.json). Solo así el endpoint
+  // /api/agent-chat del dashboard puede canalizar mensajes operador→agente.
+  // Default OFF: si el skill no opt-in, NO se registra y el endpoint responde
+  // 412 Precondition Failed con motivo claro. Preserva I3 del launcher.
+  //
+  // El `unregisterAgent` lo hace el `child.on('exit')` más abajo.
+  if (launchResult.interactive_supported === true && child && child.stdin) {
+    try {
+      const agentIpc = require('./lib/agent-ipc');
+      agentIpc.getRegistry().registerAgent(
+        String(issue), String(skill), String(fase || ''), child.stdin, { pid: child.pid }
+      );
+      log('lanzamiento', `💬 ${skill}:#${issue} registrado en agent-ipc (interactive_supported=true, PID ${child.pid})`);
+    } catch (e) {
+      // Best-effort: si el registro falla, el agente sigue corriendo
+      // normalmente; solo se pierde la capacidad de chat operador→agente.
+      log('lanzamiento', `agent-ipc.registerAgent falló para ${skill}:#${issue}: ${e.message}`);
+    }
+  }
+
   // #2801 — parseTokensFromLog delega ahora al handler del provider resuelto
   // por `launchAgent`. Cada provider trae su propia implementación (Anthropic
   // parsea stream-json; deterministic devuelve zeros — no consume LLM tokens).
@@ -6056,6 +6077,19 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     try { agentLogWriter.close().catch(() => {}); } catch {}
     // Cancelar watchdog de timeout (ya terminó, por el motivo que sea)
     clearTimeout(watchdog);
+
+    // #3605 — Desregistrar del agent-ipc registry. Idempotente: si nunca se
+    // registró (interactive_supported=false), unregister es no-op. Drena
+    // promesas pendientes en la cola con AGENT_DEAD para no dejar callers
+    // colgados del endpoint /api/agent-chat.
+    if (launchResult.interactive_supported === true) {
+      try {
+        const agentIpc = require('./lib/agent-ipc');
+        agentIpc.getRegistry().unregisterAgent(String(issue), String(skill), String(fase || ''));
+      } catch (e) {
+        log('lanzamiento', `agent-ipc.unregisterAgent falló para ${skill}:#${issue}: ${e.message}`);
+      }
+    }
 
     const elapsedSec = (Date.now() - launchTime) / 1000;
 

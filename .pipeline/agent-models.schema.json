@@ -160,6 +160,10 @@
           "type": "array",
           "description": "Lista ordenada de providers fallback para este skill. Si el provider primario falla (cuota / 5xx / circuit-breaker), el pulpo intenta con el siguiente. Cada item DEBE existir en 'providers'. Validación cruzada en lib/agent-models-validate.js. Vacío o ausente = usar solo el provider primario. Issue #3177 (UI dashboard) + apertura para H7/M2. Issue #3221 (multi-provider per-agent order): cada item puede ser (a) un string con el nombre del provider (legacy, usa el `model` default del provider) o (b) un objeto `{provider, model_override}` que pin-ea el modelo del provider para este skill — necesario para el orden sign-off 2026-05-15 donde, por ejemplo, qa quiere `gpt-5` (vision) en lugar del `gpt-5-codex` default de openai-codex.",
           "items": { "$ref": "#/$defs/fallbackEntry" }
+        },
+        "interactive_supported": {
+          "type": "boolean",
+          "description": "Issue #3605: opt-in para habilitar chat operador↔agente vía stdin pipe. Si true, agent-launcher abre stdio[0]='pipe' (en vez de 'ignore' default), pulpo registra el child en lib/agent-ipc y el endpoint /api/agent-chat acepta mensajes para este skill. Default false preserva el invariante I3 del agent-launcher (regresión cero CA-4). Solo válido para providers que soportan input incremental por stdin (anthropic CLI sí; gemini-google HTTP no). El endpoint responde 412 Precondition Failed si el cliente intenta usar este flag con un provider que no lo soporta. NO documentar en agent-models.json sin coordinar con docs/pipeline/multi-provider.md."
         }
       }
     },

@@ -83,14 +83,17 @@ function _resetLauncherCacheForTesting() {
 // Acá solo prependemos `prefixArgs` del launcher (ej. la ruta a cli.js cuando
 // usamos node directo) y armamos `spawnOpts` con shell del launcher.
 // -----------------------------------------------------------------------------
-function buildSpawn({ args, cwd, env }) {
+function buildSpawn({ args, cwd, env, interactive_supported }) {
     const launcher = getLauncher();
+    // #3605 — Opt-in por skill+provider. Default 'ignore' preserva I3
+    // (regresión cero CA-4); 'pipe' habilita stdin para chat operador→agente.
+    const stdin = interactive_supported === true ? 'pipe' : 'ignore';
     return {
         cmd: launcher.cmd,
         args: [...launcher.prefixArgs, ...args],
         spawnOpts: {
             cwd,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: [stdin, 'pipe', 'pipe'],
             detached: false,
             shell: launcher.shell,
             windowsHide: true,

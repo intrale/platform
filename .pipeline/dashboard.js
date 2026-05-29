@@ -8202,11 +8202,34 @@ function generateLogViewerHTML(filename, isLive) {
   let sharedTheme = '';
   try { sharedTheme = fs.readFileSync(path.join(__dirname, 'views', 'dashboard', 'theme.css'), 'utf8'); }
   catch { /* fallback al CSS local de abajo */ }
+
+  // #3605 — Panel de chat operador↔agente. Best-effort: si el módulo no se
+  // puede cargar (rollout transitorio, dep faltante), el log viewer sigue
+  // funcionando sin la feature en vez de fallar.
+  let chatBundle = null;
+  try {
+    const chatPanel = require('./views/log-viewer/chat-panel');
+    const parsed = chatPanel.parseLogFileName(filename);
+    if (parsed) {
+      // La fase no se infiere del filename; el endpoint /api/agent-chat la
+      // recibe del cliente. Para el frontend del panel pasamos string vacío
+      // (el JS la lee del dataset si está; si no, el server resuelve por
+      // (issue, skill) buscando el agente activo).
+      chatBundle = chatPanel.buildChatPanel({
+        logFile: filename,
+        issue: parsed.issue,
+        skill: parsed.skill,
+        fase: '',
+      });
+    }
+  } catch (e) { log(`chat-panel disabled: ${e.message}`); }
+
   return `<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="utf-8">
 <title>${title} — Log Viewer · Intrale</title>
 <style>${sharedTheme}</style>
+<style>${chatBundle ? chatBundle.css : ''}</style>
 <style>
 :root{--bg:var(--in-bg);--sf:var(--in-bg-2);--tx:var(--in-fg);--dim:var(--in-fg-dim);--bd:var(--in-border);--ac:var(--in-info);--gn:var(--in-ok);--rd:var(--in-bad);--yl:var(--in-warn);--or:#d18616}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -8248,6 +8271,7 @@ input[type=text]:focus{outline:none;border-color:var(--ac)}
 .scroll-btn.visible{display:block}
 </style>
 </head><body>
+${chatBundle ? chatBundle.sprite : ''}
 <div class="lv-topbar">
   <a class="lv-back" href="/" target="_self">Operación</a>
   <span class="lv-logo">i</span>
@@ -8266,6 +8290,7 @@ input[type=text]:focus{outline:none;border-color:var(--ac)}
 </div>
 <div class="log-body" id="body"></div>
 <button class="scroll-btn" id="scrollBtn" onclick="scrollBottom()">⬇ Ir al final</button>
+${chatBundle ? chatBundle.html : ''}
 <script>
 const body = document.getElementById('body');
 const statsEl = document.getElementById('stats');
@@ -8497,6 +8522,7 @@ es.onerror = function() {
   document.querySelector('.badge').className = 'badge badge-done';
   document.querySelector('.badge').textContent = '✓ Desconectado';
 };
+${chatBundle ? chatBundle.js : ''}
 </script>
 </body></html>`;
 }
@@ -8893,6 +8919,36 @@ const server = http.createServer((req, res) => {
       }
     });
     return;
+  }
+
+  // =========================================================================
+  // #3605 — Chat operador↔agente (canal en ventana de logs)
+  //
+  //   POST /api/agent-chat                  → envía mensaje al agente activo
+  //     body: { issue, skill, fase, message, messageId? }
+  //     resp: { ok:true, status, queued_at, message_id }
+  //     errors: 400 / 403 / 410 / 412 / 415 / 429 / 500
+  //
+  //   GET /api/agent-chat/history?logFile=X → historial completo desde JSONL
+  //     resp: { ok:true, entries:[...], truncated?:true }
+  //     errors: 400 / 403 / 404 / 500
+  //
+  // Defensa (CA-S1..S8):
+  //   - isLoopback (127.0.0.1/::1 only) → 403
+  //   - Origin/Referer contra localhost:3200 / 127.0.0.1:3200 → 403
+  //   - Content-Type application/json estricto en POST → 415
+  //   - logFile validado contra regex ^\d+\.[\w-]+\.log$ o build-\d+\.log → 400
+  //   - rate limit token-bucket 10 msg/s por (issue,skill,fase) → 429
+  //   - sanitización del mensaje: slice(0,2000) + strip ctrl chars
+  //   - framing XML <operator-message> server-side (defensa anti prompt-injection)
+  //   - redact.js antes de persistir en .chat.jsonl
+  //   - file-lock para append atómico (.chat.jsonl)
+  //   - rotación a 5MB (.chat.jsonl.1, .chat.jsonl.2, max 3)
+  //   - audit log enriquecido: message_id server-derived, remoteAddress, userAgent
+  // =========================================================================
+  if (req.url && req.url.startsWith('/api/agent-chat')) {
+    const agentChat = require('./lib/agent-chat-handler');
+    return agentChat.handle(req, res, { PIPELINE, LOG_DIR, log });
   }
 
   // =========================================================================

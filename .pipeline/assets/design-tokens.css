@@ -245,6 +245,75 @@
   --pulpo-resumed-glow:        var(--shadow-glow-ok);
 
   /* ---------------------------------------------------------------------------
+   * 3.f CHAT OPERADOR-AGENTE (#3605 — log viewer chat panel)
+   * Tokens dedicados al sistema de chat acoplado al log viewer. Reusan la
+   * paleta existente con alias semanticos para que el dashboard pueda tematizar
+   * el panel sin tocar la familia "brand"/"semantic".
+   *
+   * Decisiones de diseno:
+   *   - OPERADOR (humano) = familia --brand-cyan. Comunica "TU input" + es
+   *     el unico contexto donde la marca aparece como interactiva (los logs
+   *     del agente NO usan brand). Se diferencia claramente del agente.
+   *   - AGENTE (IA) = familia --purple. Mismo arbol semantico que la lane
+   *     "definicion"/"planning" — refuerza que el agente esta "pensando".
+   *     Distinto del --info (azul accion) y del --brand (interactividad humana).
+   *   - DEAD (agente terminado) = familia --danger. Solo el cartel + estado;
+   *     NO se aplica a burbujas previas (el historial sigue legible).
+   *
+   * Contraste verificado contra surface-0 (#0D1117) y contra cada *-bg:
+   *   - chat-operator       (#00D6FF) = 11.4:1 AAA Normal
+   *   - chat-operator-fg    (#E6EDF3) sobre chat-operator-bg = 11.8:1 AAA
+   *   - chat-agent          (#BC8CFF) = 8.7:1 AAA Large + AA Normal
+   *   - chat-agent-fg       (#E6EDF3) sobre chat-agent-bg = 11.5:1 AAA
+   *   - chat-disabled       (#F85149) = 4.9:1 AA Normal (texto del cartel)
+   *
+   * Restricciones (heredadas del review de security #3605):
+   *   - El acento de operador NUNCA se usa en mensajes del agente (asymetria
+   *     visual obligatoria para que el operador no confunda quien dijo que).
+   *   - El borde lateral de cada burbuja (operador derecha, agente izquierda)
+   *     es no-decorativo: codifica el sender complementando el avatar.
+   * -------------------------------------------------------------------------- */
+
+  /* OPERADOR (humano que envia indicacion) — cyan de marca */
+  --chat-operator:             var(--brand-cyan);            /* acento, avatar, borde lateral */
+  --chat-operator-dim:         var(--brand-cyan-dim);        /* hover/border sutil */
+  --chat-operator-bg:          rgba(0, 214, 255, 0.10);      /* fondo de burbuja */
+  --chat-operator-border:      rgba(0, 214, 255, 0.30);      /* borde de burbuja */
+  --chat-operator-fg:          var(--text-primary);          /* texto del mensaje */
+
+  /* AGENTE (respuesta del proceso IA) — purpura */
+  --chat-agent:                var(--purple);                /* acento, avatar, borde lateral */
+  --chat-agent-dim:            var(--purple-dim);            /* hover/border sutil */
+  --chat-agent-bg:             rgba(188, 140, 255, 0.10);    /* fondo de burbuja */
+  --chat-agent-border:         rgba(188, 140, 255, 0.30);    /* borde de burbuja */
+  --chat-agent-fg:             var(--text-primary);          /* texto del mensaje */
+
+  /* ESTADOS DE ENTREGA (IPC) — reusan colores semanticos */
+  --chat-status-sent:          var(--success);               /* doble check verde */
+  --chat-status-pending:       var(--warning);               /* reloj amarillo */
+  --chat-status-failed:        var(--danger);                /* cruz roja (timeout 5s) */
+
+  /* AGENTE TERMINADO — cartel "sin agente activo" */
+  --chat-disabled:             var(--danger);                /* borde + icono del cartel */
+  --chat-disabled-bg:          rgba(248, 81, 73, 0.10);      /* fondo del cartel */
+  --chat-disabled-fg:          var(--text-primary);          /* texto explicativo */
+
+  /* PANEL CHAT — superficie y divisores */
+  --chat-panel-bg:             var(--surface-0);             /* fondo del panel completo */
+  --chat-panel-header-bg:      var(--surface-1);             /* header del panel */
+  --chat-panel-input-bg:       var(--surface-1);             /* contenedor del input */
+  --chat-panel-input-field:    var(--surface-0);             /* textarea (mas oscuro para contraste) */
+  --chat-panel-divider:        var(--border-strong);         /* split draggable log/chat */
+
+  /* TIMESTAMP relativo en cada burbuja */
+  --chat-timestamp-fg:         var(--text-dim);              /* "hace 2 min" */
+
+  /* COLAPSADO (tira inferior) — acento de marca cuando hay agente activo */
+  --chat-collapsed-accent:     var(--brand-cyan);            /* franja vertical 3px */
+  --chat-collapsed-badge-bg:   rgba(0, 214, 255, 0.18);      /* badge "N nuevos" */
+  --chat-collapsed-badge-fg:   var(--brand-cyan);            /* texto del badge */
+
+  /* ---------------------------------------------------------------------------
    * 4. ACENTOS POR LANE (board del dashboard)
    * Cada lane tiene un color distintivo para reforzar la identidad del flujo.
    * -------------------------------------------------------------------------- */
