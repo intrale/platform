@@ -122,6 +122,20 @@ function ic(name, ariaLabel, extraClass) {
   return `<svg class="${cls}"${aria}><use href="#ic-${name}"/></svg>`;
 }
 
+// #3625 CA-5 — Renderer del widget de Audit trail · Allowlist mutations.
+// Wrapper alrededor de lib/audit-trail-renderer.js para mantener el dashboard
+// "simétrico" (el slice vive en lib/dashboard-slices.js, las rows en
+// lib/audit-trail-renderer.js). Si el módulo falla al cargar, fallback a
+// empty-state para no romper el render del dashboard entero.
+let _auditTrailRenderer = null;
+try { _auditTrailRenderer = require('./lib/audit-trail-renderer'); } catch {}
+function renderPartialPauseAuditRows(entries) {
+  if (_auditTrailRenderer && typeof _auditTrailRenderer.renderRows === 'function') {
+    return _auditTrailRenderer.renderRows(entries);
+  }
+  return '<tr><td colspan="6" class="ppa-empty">Renderer no disponible — recargá el dashboard tras restart del pulpo.</td></tr>';
+}
+
 // --- Componentes gestionables (start/stop) ---
 const COMPONENTS = [
   { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
@@ -1363,6 +1377,24 @@ function generateHTML(state) {
   try {
     const ac = require('./lib/allowlist-candidates');
     allowlistCandidatesList = ac.readCandidates().candidates || [];
+  } catch {}
+
+  // #3625 CA-5 — Audit trail de mutaciones de .partial-pause.json (widget en panel Pipeline,
+  // debajo de "Allowlist & Candidatos"). Estados visuales A/B/C/D + 5 KPI cards + 2 banners
+  // condicionales (hash-chain roto / mutaciones sin autoría). Polling cada 30s vía
+  // /api/dash/partial-pause-audit. Spec en .pipeline/assets/mockups/narrativa-allowlist-audit-trail.md
+  let partialPauseAuditData = {
+    entries: [],
+    stats: { total: 0, authorized: 0, rejected: 0, unknown: 0, since: null },
+    chain_broken: false,
+    chain_broken_at: null,
+    chain_entries_checked: 0,
+    has_unauthorized_non_backfill: false,
+  };
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const slice = slices.partialPauseAuditSlice({}, { limit: 3 });
+    if (slice && !slice.error) partialPauseAuditData = slice;
   } catch {}
 
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
@@ -4733,6 +4765,73 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .reco-btn-reject{border-color:#f85149;color:#f85149}
 .reco-btn-reject:hover{background:rgba(248,81,73,0.12)}
 
+/* ============================================================
+ * #3625 CA-5 — Widget de Audit trail · Allowlist mutations
+ * Estados visuales A/B/C/D + 5 KPIs + banners condicionales.
+ * Spec: .pipeline/assets/mockups/narrativa-allowlist-audit-trail.md
+ * Mockup: .pipeline/assets/mockups/22-allowlist-audit-trail.svg
+ * Consume tokens de design-tokens.css (zero hardcoded colors).
+ * ============================================================ */
+.ppa-section{margin:8px 0;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.02)}
+.ppa-section > summary{cursor:pointer;padding:10px 12px;color:var(--text-secondary,var(--dim));font-weight:600;font-size:0.92em;list-style:none;display:flex;align-items:center;gap:8px}
+.ppa-section > summary::-webkit-details-marker{display:none}
+.ppa-section[open] > summary{border-bottom:1px solid rgba(255,255,255,0.06)}
+.ppa-section-body{padding:14px}
+.ppa-banner{padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:0.86em;display:flex;align-items:flex-start;gap:8px;line-height:1.4}
+.ppa-banner-critical{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,#f85149);border:1px solid var(--danger,rgba(248,81,73,0.45));border-left:4px solid var(--danger,#f85149)}
+.ppa-banner-warning{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,#d29922);border:1px solid var(--warning,rgba(210,153,34,0.45));border-left:4px solid var(--warning,#d29922)}
+.ppa-banner code{background:rgba(255,255,255,0.08);padding:1px 6px;border-radius:3px;font-family:'SF Mono',Consolas,monospace;font-size:0.92em}
+.ppa-kpis{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+@media (max-width:1100px){.ppa-kpis{grid-template-columns:repeat(2,1fr)}.ppa-kpis > div:nth-child(5){grid-column:1/-1}}
+.ppa-kpi{background:var(--surface-1,var(--sf));border:1px solid var(--border-default,var(--bd));border-radius:8px;padding:12px 14px;position:relative;overflow:hidden}
+.ppa-kpi::before{content:'';position:absolute;left:0;top:0;right:0;height:3px;background:var(--border-default,var(--bd));border-radius:8px 8px 0 0}
+.ppa-kpi-auth::before{background:var(--success,#3fb950)}
+.ppa-kpi-rejected::before{background:var(--danger,#f85149)}
+.ppa-kpi-unknown::before{background:var(--warning,#d29922)}
+.ppa-kpi-chain::before{background:var(--info,#58a6ff)}
+.ppa-kpi-label{font-size:10px;color:var(--text-secondary,var(--dim));letter-spacing:1px;font-weight:600;text-transform:uppercase;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.ppa-kpi-label svg{width:14px;height:14px;flex:0 0 auto}
+.ppa-kpi-value{font-size:24px;font-weight:700;color:var(--text-primary,var(--tx));font-variant-numeric:tabular-nums;line-height:1.1}
+.ppa-kpi-value.ppa-value-success{color:var(--success,#3fb950)}
+.ppa-kpi-value.ppa-value-danger{color:var(--danger,#f85149)}
+.ppa-kpi-value.ppa-value-warning{color:var(--warning,#d29922)}
+.ppa-kpi-value.ppa-value-dim{color:var(--text-dim,var(--dim2))}
+.ppa-kpi-sub{font-size:10px;color:var(--text-secondary,var(--dim));margin-top:4px}
+.ppa-table-wrap{background:var(--surface-1,var(--sf));border:1px solid var(--border-default,var(--bd));border-radius:8px;overflow:hidden}
+.ppa-table{width:100%;border-collapse:collapse;font-size:12px}
+.ppa-table thead th{background:var(--surface-2,var(--sf2));text-align:left;padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text-secondary,var(--dim));border-bottom:1px solid var(--border-default,var(--bd))}
+.ppa-table tbody td{padding:10px 12px;border-bottom:1px solid var(--border-default,var(--bd));vertical-align:top;color:var(--text-secondary,var(--tx))}
+.ppa-table tbody tr:last-child td{border-bottom:0}
+.ppa-row-A{background:transparent}
+.ppa-row-B{background:transparent}
+.ppa-row-C{background:var(--danger-bg,rgba(248,81,73,0.08));border-left:4px solid var(--danger,#f85149)}
+.ppa-row-D{background:var(--warning-bg,rgba(210,153,34,0.08));border-left:4px solid var(--warning,#d29922)}
+.ppa-source-pill,.ppa-action-pill,.ppa-auth-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.ppa-source-pill svg,.ppa-action-pill svg,.ppa-auth-pill svg{width:12px;height:12px}
+.ppa-pill-human{background:var(--purple-bg,rgba(188,140,255,0.15));color:var(--purple,#bc8cff)}
+.ppa-pill-machine{background:var(--info-bg,rgba(88,166,255,0.15));color:var(--info,#58a6ff)}
+.ppa-pill-unknown{background:var(--warning-bg,rgba(210,153,34,0.15));color:var(--warning,#d29922)}
+.ppa-pill-success{background:var(--success-bg,rgba(63,185,80,0.15));color:var(--success,#3fb950)}
+.ppa-pill-info{background:var(--info-bg,rgba(88,166,255,0.15));color:var(--info,#58a6ff)}
+.ppa-pill-danger{background:var(--danger-bg,rgba(248,81,73,0.15));color:var(--danger,#f85149)}
+.ppa-pill-warning{background:var(--warning-bg,rgba(210,153,34,0.15));color:var(--warning,#d29922)}
+.ppa-diff{font-family:'SF Mono',Consolas,monospace;font-size:11px;line-height:1.4}
+.ppa-diff-add{color:var(--success,#3fb950);font-weight:600}
+.ppa-diff-rem{color:var(--text-dim,var(--dim2));font-weight:600}
+.ppa-diff-rem-rejected{color:var(--danger,#f85149);font-weight:600}
+.ppa-just{max-width:220px;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ppa-just-redacted{font-style:italic;color:var(--warning,#d29922)}
+.ppa-microcopy{font-size:10px;color:var(--text-dim,var(--dim2));margin-top:2px;line-height:1.3}
+.ppa-microcopy-rejected{color:var(--danger,#f85149);font-weight:600}
+.ppa-microcopy-backfill{color:var(--warning,#d29922)}
+.ppa-when{font-family:'SF Mono',Consolas,monospace;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap}
+.ppa-footer{margin-top:10px;font-size:11px;color:var(--text-dim,var(--dim2));text-align:right}
+.ppa-footer code{background:rgba(255,255,255,0.06);padding:1px 6px;border-radius:3px;font-family:'SF Mono',Consolas,monospace}
+.ppa-footer a{color:var(--info,#58a6ff);text-decoration:none}
+.ppa-footer a:hover{text-decoration:underline}
+.ppa-empty{padding:20px;text-align:center;color:var(--text-dim,var(--dim));font-size:12px;font-style:italic}
+@media (prefers-reduced-motion: reduce){.ppa-banner,.ppa-table tbody tr{transition:none}}
+
 </style></head>
 <body>
   ${loadIconSprite()}
@@ -4903,6 +5002,91 @@ body.standalone .section-collapsed .section-body{display:block !important}
         <input id="allowlist-like-input" type="text" placeholder="Número de issue (ej: 3140)" inputmode="numeric" pattern="\\d+" style="flex:0 0 200px;padding:6px 8px;background:#0d1117;color:#c9d1d9;border:1px solid rgba(255,255,255,0.15);border-radius:4px;font-size:0.85em;font-family:'SF Mono',Consolas,monospace">
         <input id="allowlist-like-reason" type="text" placeholder="Razón (opcional, max 500)" maxlength="500" style="flex:1;padding:6px 8px;background:#0d1117;color:#c9d1d9;border:1px solid rgba(255,255,255,0.15);border-radius:4px;font-size:0.85em">
         <button onclick="allowlistLike()" style="padding:6px 12px;background:var(--purple,#bc8cff);color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-size:0.85em;font-weight:600">❤️ likear</button>
+      </div>
+    </div>
+  </details>
+  <!-- ============================================================
+       #3625 CA-5 · Audit trail de mutaciones de .partial-pause.json
+       Endpoint: /api/dash/partial-pause-audit (alias /api/partial-pause-audit)
+       Slice: dashboard-slices.js · partialPauseAuditSlice
+       Polling: 30s (ver refreshAuditTrail() abajo).
+       Mockup: .pipeline/assets/mockups/22-allowlist-audit-trail.svg
+       Narrativa: .pipeline/assets/mockups/narrativa-allowlist-audit-trail.md
+       ============================================================ -->
+  <details open id="panel-allowlist-audit" class="section ppa-section" data-test-id="panel-allowlist-audit">
+    <summary>
+      ${ic('fallback-chain', 'audit log')}
+      <span>Audit trail &middot; Allowlist mutations</span>
+      <span class="dim" style="font-weight:normal;font-size:0.85em">— últimas 24h · hash-chain auditable</span>
+    </summary>
+    <div class="ppa-section-body">
+      <!-- Banner crítico: hash-chain roto (display dinámico) -->
+      <div id="ppa-banner-chain" class="ppa-banner ppa-banner-critical" role="alert" aria-live="assertive" style="display:${partialPauseAuditData.chain_broken ? 'flex' : 'none'};">
+        <span aria-hidden="true">⛓</span>
+        <span>
+          <strong>Hash-chain del audit log roto en entry #<span id="ppa-broken-at">${esc(String(partialPauseAuditData.chain_broken_at || '?'))}</span>.</strong>
+          Escrituras nuevas bloqueadas hasta intervención humana. Ver <code>docs/pipeline/audit-recovery.md</code> para procedimiento de recovery.
+        </span>
+      </div>
+      <!-- Banner condicional: mutaciones sin autoría (no backfill) -->
+      <div id="ppa-banner-unauth" class="ppa-banner ppa-banner-warning" role="alert" aria-live="polite" style="display:${partialPauseAuditData.has_unauthorized_non_backfill ? 'flex' : 'none'};">
+        <span aria-hidden="true">⚠</span>
+        <span>
+          <strong><span id="ppa-unauth-count">${(partialPauseAuditData.entries || []).filter(e => e.visual === 'unauthorized' && !e.backfill).length}</span> mutación(es) sin autoría detectada(s)</strong> — alerta enviada al Commander. Revisalo antes del próximo restart del pipeline.
+        </span>
+      </div>
+
+      <!-- 5 KPI cards (24h metrics + hash-chain status) -->
+      <div class="ppa-kpis" data-test-id="ppa-kpis">
+        <div class="ppa-kpi">
+          <div class="ppa-kpi-label">Mutaciones 24h</div>
+          <div class="ppa-kpi-value" id="ppa-kpi-total" aria-label="Mutaciones últimas 24h">${Number(partialPauseAuditData.stats.total || 0)}</div>
+          <div class="ppa-kpi-sub">total append-only</div>
+        </div>
+        <div class="ppa-kpi ppa-kpi-auth">
+          <div class="ppa-kpi-label">${ic('architect-approved', 'autorizadas')}<span>Autorizadas</span></div>
+          <div class="ppa-kpi-value ppa-value-success" id="ppa-kpi-auth" aria-label="Mutaciones autorizadas">${Number(partialPauseAuditData.stats.authorized || 0)}</div>
+          <div class="ppa-kpi-sub">por enum cerrado</div>
+        </div>
+        <div class="ppa-kpi ppa-kpi-rejected">
+          <div class="ppa-kpi-label">${ic('architect-rejected', 'rechazadas')}<span>Rejected</span></div>
+          <div class="ppa-kpi-value ${Number(partialPauseAuditData.stats.rejected || 0) > 0 ? 'ppa-value-danger' : 'ppa-value-dim'}" id="ppa-kpi-rejected" aria-label="Mutaciones rechazadas por el gate">${Number(partialPauseAuditData.stats.rejected || 0)}</div>
+          <div class="ppa-kpi-sub">por gate (CA-2)</div>
+        </div>
+        <div class="ppa-kpi ppa-kpi-unknown">
+          <div class="ppa-kpi-label">${ic('health-warn', 'sin autoria')}<span>Sin autoría</span></div>
+          <div class="ppa-kpi-value ${Number(partialPauseAuditData.stats.unknown || 0) > 0 ? 'ppa-value-warning' : 'ppa-value-dim'}" id="ppa-kpi-unknown" aria-label="Mutaciones sin autoría registrada">${Number(partialPauseAuditData.stats.unknown || 0)}</div>
+          <div class="ppa-kpi-sub">authorized_by=null</div>
+        </div>
+        <div class="ppa-kpi ppa-kpi-chain">
+          <div class="ppa-kpi-label">${ic('estado-partial-pause', 'hash chain')}<span>Hash-chain</span></div>
+          <div class="ppa-kpi-value ${partialPauseAuditData.chain_broken ? 'ppa-value-danger' : 'ppa-value-success'}" id="ppa-kpi-chain" aria-label="Estado del hash-chain del audit log">${partialPauseAuditData.chain_broken ? '✗ ROTO' : '✓ ' + Number(partialPauseAuditData.chain_entries_checked || 0)}</div>
+          <div class="ppa-kpi-sub" id="ppa-kpi-chain-sub">${partialPauseAuditData.chain_broken ? 'entry #' + esc(String(partialPauseAuditData.chain_broken_at || '?')) : 'entries verificadas'}</div>
+        </div>
+      </div>
+
+      <!-- Tabla últimas mutaciones -->
+      <div class="ppa-table-wrap">
+        <table class="ppa-table" data-test-id="ppa-table">
+          <thead><tr>
+            <th>Cuándo</th>
+            <th>Source</th>
+            <th>Acción</th>
+            <th>Diff</th>
+            <th>Autorizado por</th>
+            <th>Justificación</th>
+          </tr></thead>
+          <tbody id="ppa-tbody" aria-live="polite">
+            ${renderPartialPauseAuditRows(partialPauseAuditData.entries)}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="ppa-footer">
+        <span id="ppa-updated-at">Server-side render · refresh polling 30s</span> ·
+        Endpoint: <a href="/api/dash/partial-pause-audit">/api/dash/partial-pause-audit</a> ·
+        Spec: <code>narrativa-allowlist-audit-trail.md</code> · CA-5 de
+        <a href="https://github.com/intrale/platform/issues/3625" target="_blank" rel="noopener noreferrer">#3625</a>
       </div>
     </div>
   </details>
@@ -5916,6 +6100,145 @@ if (typeof window !== 'undefined') {
   window.addEventListener('DOMContentLoaded', function() {
     refreshDepsBanner();
     setInterval(refreshDepsBanner, 30 * 1000);
+  });
+}
+
+// #3625 CA-5 — Refresh client-side del widget de Audit trail.
+// Polling cada 30s + skip si tab oculto (no quemar batería).
+// Renderer client-side equivalente al server-side renderPartialPauseAuditRows.
+function _ppaClientEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function _ppaIcUse(name, label) {
+  // Replica el helper server-side ic() — usa <use href="#ic-NAME"/>
+  const aria = label ? ' role="img" aria-label="' + _ppaClientEsc(label) + '"' : ' aria-hidden="true"';
+  return '<svg class="pl-ic"' + aria + '><use href="#ic-' + _ppaClientEsc(name) + '"/></svg>';
+}
+function _ppaRenderRow(e) {
+  const visual = e && e.visual ? String(e.visual) : 'human';
+  const stateCls = visual === 'rejected' ? 'ppa-row-C'
+    : visual === 'unauthorized' ? 'ppa-row-D'
+    : visual === 'subsystem' ? 'ppa-row-B' : 'ppa-row-A';
+  let whenLocal = '—', whenIso = '';
+  try {
+    const d = e.timestamp ? new Date(e.timestamp) : null;
+    if (d && !isNaN(d.getTime())) {
+      whenIso = d.toISOString();
+      whenLocal = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+  } catch (_) {}
+  const source = _ppaClientEsc(e.source || 'unknown');
+  let sourcePillCls = 'ppa-pill-machine';
+  if (visual === 'human') sourcePillCls = 'ppa-pill-human';
+  else if (visual === 'rejected' || visual === 'unauthorized') sourcePillCls = 'ppa-pill-unknown';
+  const action = String(e.action || 'write');
+  let actionPillCls = 'ppa-pill-info';
+  if (action === 'reject') actionPillCls = 'ppa-pill-danger';
+  else if (action === 'backfill') actionPillCls = 'ppa-pill-warning';
+  else if (action === 'write') actionPillCls = visual === 'unauthorized' ? 'ppa-pill-warning' : 'ppa-pill-success';
+  const diff = e.diff || { added: [], removed: [] };
+  const added = Array.isArray(diff.added) ? diff.added : [];
+  const removed = Array.isArray(diff.removed) ? diff.removed : [];
+  const remCls = visual === 'rejected' ? 'ppa-diff-rem-rejected' : 'ppa-diff-rem';
+  let diffHtml = '';
+  if (added.length) diffHtml += '<div class="ppa-diff-add">+ [' + added.map(function(n){return '#' + Number(n);}).join(', ') + ']</div>';
+  if (removed.length) diffHtml += '<div class="' + remCls + '">- [' + removed.map(function(n){return '#' + Number(n);}).join(', ') + ']' + (visual === 'rejected' ? ' <span class="ppa-diff-rem" style="font-weight:normal;">propuesto, no aplicado</span>' : '') + '</div>';
+  if (!diffHtml) diffHtml = '<span class="ppa-diff-rem">—</span>';
+  const authBy = e.authorized_by;
+  let authChip = '';
+  if (visual === 'rejected') {
+    authChip = '<span class="ppa-auth-pill ppa-pill-danger">' + _ppaIcUse('architect-rejected', 'gate REJECTED') + '<span>null · gate REJECTED</span></span>';
+  } else if (visual === 'unauthorized') {
+    const tag = e.backfill ? 'null · BACKFILL' : 'null';
+    authChip = '<span class="ppa-auth-pill ppa-pill-warning">' + _ppaIcUse('health-warn', 'sin autoria') + '<span>' + _ppaClientEsc(tag) + '</span></span>';
+  } else if (visual === 'human') {
+    authChip = '<span class="ppa-auth-pill ppa-pill-success">' + _ppaIcUse('architect-approved', 'autorizado humano') + '<span>' + _ppaClientEsc(authBy || 'commander:leo') + '</span></span>';
+  } else {
+    authChip = '<span class="ppa-auth-pill ppa-pill-info">' + _ppaIcUse('estado-partial-pause', 'autorizado subsistema') + '<span>' + _ppaClientEsc(authBy || 'subsystem') + '</span></span>';
+  }
+  const just = String(e.justification || '');
+  const justTrunc = e.justification_truncated ? ' …' : '';
+  const justRedacted = e.justification_redacted;
+  const justCls = justRedacted ? 'ppa-just ppa-just-redacted' : 'ppa-just';
+  const justHtml = just ? '<div class="' + justCls + '" title="' + _ppaClientEsc(just + justTrunc) + '">' + _ppaClientEsc(just) + _ppaClientEsc(justTrunc) + '</div>' : '<span class="ppa-diff-rem">—</span>';
+  let microcopy = '';
+  if (visual === 'rejected') microcopy = '<div class="ppa-microcopy ppa-microcopy-rejected">REJECTED por gate · CA-2 enum cerrado</div>';
+  else if (visual === 'unauthorized' && e.backfill) microcopy = '<div class="ppa-microcopy ppa-microcopy-backfill">Backfill · entry preexistente al gate</div>';
+  else if (visual === 'unauthorized') microcopy = '<div class="ppa-microcopy ppa-microcopy-rejected">Bypass detectado · revisar urgente</div>';
+  return ''
+    + '<tr class="' + stateCls + '" data-visual="' + _ppaClientEsc(visual) + '">'
+    + '<td><span class="ppa-when" title="' + _ppaClientEsc(whenIso) + '">' + _ppaClientEsc(whenLocal) + '</span></td>'
+    + '<td><span class="ppa-source-pill ' + sourcePillCls + '" title="Origen: ' + _ppaClientEsc(source) + '"><span>' + source + '</span></span></td>'
+    + '<td><span class="ppa-action-pill ' + actionPillCls + '"><span>' + _ppaClientEsc(action) + '</span></span></td>'
+    + '<td><div class="ppa-diff">' + diffHtml + '</div></td>'
+    + '<td>' + authChip + '</td>'
+    + '<td>' + justHtml + microcopy + '</td>'
+    + '</tr>';
+}
+function renderAuditTrail(data) {
+  if (!data || typeof data !== 'object') return;
+  const stats = data.stats || {};
+  const total = Number(stats.total || 0);
+  const auth = Number(stats.authorized || 0);
+  const rej = Number(stats.rejected || 0);
+  const unk = Number(stats.unknown || 0);
+  const tEl = document.getElementById('ppa-kpi-total'); if (tEl) tEl.textContent = String(total);
+  const aEl = document.getElementById('ppa-kpi-auth'); if (aEl) aEl.textContent = String(auth);
+  const rEl = document.getElementById('ppa-kpi-rejected');
+  if (rEl) { rEl.textContent = String(rej); rEl.className = 'ppa-kpi-value ' + (rej > 0 ? 'ppa-value-danger' : 'ppa-value-dim'); }
+  const uEl = document.getElementById('ppa-kpi-unknown');
+  if (uEl) { uEl.textContent = String(unk); uEl.className = 'ppa-kpi-value ' + (unk > 0 ? 'ppa-value-warning' : 'ppa-value-dim'); }
+  // Hash-chain card
+  const cEl = document.getElementById('ppa-kpi-chain');
+  if (cEl) {
+    cEl.textContent = data.chain_broken ? '✗ ROTO' : '✓ ' + Number(data.chain_entries_checked || 0);
+    cEl.className = 'ppa-kpi-value ' + (data.chain_broken ? 'ppa-value-danger' : 'ppa-value-success');
+  }
+  const cSub = document.getElementById('ppa-kpi-chain-sub');
+  if (cSub) cSub.textContent = data.chain_broken ? ('entry #' + String(data.chain_broken_at || '?')) : 'entries verificadas';
+  // Banner crítico hash-chain
+  const bChain = document.getElementById('ppa-banner-chain');
+  if (bChain) bChain.style.display = data.chain_broken ? 'flex' : 'none';
+  const bAt = document.getElementById('ppa-broken-at');
+  if (bAt && data.chain_broken) bAt.textContent = String(data.chain_broken_at || '?');
+  // Banner condicional sin autoría
+  const bUnauth = document.getElementById('ppa-banner-unauth');
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  const unauthCount = entries.filter(function(e){ return e.visual === 'unauthorized' && !e.backfill; }).length;
+  if (bUnauth) bUnauth.style.display = data.has_unauthorized_non_backfill ? 'flex' : 'none';
+  const uCount = document.getElementById('ppa-unauth-count'); if (uCount) uCount.textContent = String(unauthCount);
+  // Tabla
+  const tbody = document.getElementById('ppa-tbody');
+  if (tbody) {
+    if (!entries.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="ppa-empty">Sin mutaciones registradas todavía — el audit log se hidrata cuando se aplica la primera mutación a <code>.partial-pause.json</code>.</td></tr>';
+    } else {
+      tbody.innerHTML = entries.map(_ppaRenderRow).join('');
+    }
+  }
+  // Last updated stamp
+  const upd = document.getElementById('ppa-updated-at');
+  if (upd) {
+    try { upd.textContent = 'Última actualización: ' + new Date().toLocaleTimeString('es-AR'); } catch (_) {}
+  }
+}
+async function refreshAuditTrail() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    const r = await fetch('/api/dash/partial-pause-audit', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderAuditTrail(data);
+  } catch (_) {
+    // Best-effort: silenciar errores de red transitorios; el polling vuelve a intentar en 30s.
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshAuditTrail();
+    setInterval(refreshAuditTrail, 30 * 1000);
   });
 }
 

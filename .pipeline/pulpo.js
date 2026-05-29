@@ -7045,6 +7045,29 @@ async function cmdStatus(config) {
     lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
+  // #3625 CA-5 — Métrica de mutaciones de la allowlist en las últimas 24h.
+  // Si statsSince() falla (módulo no disponible, audit log corrupto, etc.) se
+  // omite sin romper el resto del /status (best-effort, mismo criterio que el
+  // snapshot block).
+  let auditStats = null;
+  try {
+    const ppa = require('./lib/partial-pause-audit');
+    auditStats = ppa.statsSince({});
+    if (auditStats && Number.isFinite(auditStats.total) && auditStats.total >= 0) {
+      lines.push(`\n*Auditoría allowlist (últimas 24h)*`);
+      lines.push(`  📜 Mutaciones: ${auditStats.total} (${auditStats.authorized} autorizadas / ${auditStats.rejected} rejected / ${auditStats.unknown} sin autoría)`);
+      // Verificación del hash-chain (best-effort, no bloquea si falla)
+      try {
+        const chain = ppa.verifyChain();
+        if (chain && chain.ok === false) {
+          lines.push(`  🛑 Hash-chain ROTO en entry #${chain.brokenAt || '?'} — escrituras nuevas bloqueadas`);
+        }
+      } catch {}
+    }
+  } catch (e) {
+    log('commander', `[status] Auditoría allowlist no disponible: ${e.message}`);
+  }
+
   // #3013 — bloque de snapshot fresco (narrativa §3, CA-UX-8). Sólo se
   // agrega si hay snapshot real fresco; sin él, el `/status` queda
   // idéntico al pre-feature (CA-15).
@@ -7107,6 +7130,18 @@ async function cmdStatus(config) {
         if (ppMode.mode === 'partial_pause') {
           narration += `Pipeline en pausa parcial, procesando solo ${ppMode.allowedIssues.length} ${ppMode.allowedIssues.length === 1 ? 'issue' : 'issues'}. `;
         }
+      }
+      // #3625 CA-5 — Métrica de auditoría de la allowlist en la narración TTS.
+      // Sólo se incluye si hubo mutaciones en las últimas 24h y la estadística
+      // está disponible (auditStats se calculó arriba para el bloque textual).
+      if (auditStats && Number(auditStats.total) > 0) {
+        narration += `Hubo ${auditStats.total} ${auditStats.total === 1 ? 'mutación' : 'mutaciones'} en la allowlist en las últimas 24 horas`;
+        const parts = [];
+        if (auditStats.authorized > 0) parts.push(`${auditStats.authorized} ${auditStats.authorized === 1 ? 'autorizada' : 'autorizadas'}`);
+        if (auditStats.rejected > 0) parts.push(`${auditStats.rejected} ${auditStats.rejected === 1 ? 'rechazada' : 'rechazadas'}`);
+        if (auditStats.unknown > 0) parts.push(`${auditStats.unknown} sin autoría`);
+        if (parts.length) narration += `, de las cuales ${parts.join(', ')}`;
+        narration += '. ';
       }
       // PRs del día
       try {
