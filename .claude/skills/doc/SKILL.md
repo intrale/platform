@@ -80,46 +80,55 @@ gh pr list --repo intrale/platform --state open --json number,title,url,author
 
 Recibís una descripción en lenguaje natural (ej: "Agregar búsqueda por voz en el catálogo de productos del cliente").
 
-### Paso 1: Buscar duplicados
+### Paso 1: Buscar duplicados (#3625 CA-4)
 
-Antes de crear, verificar si ya existe uno similar en GitHub.
+Antes de crear, verificar si ya existe uno similar en GitHub usando el
+detector **determinístico** del pipeline (Jaccard sobre tokens normalizados,
+umbral 0.7).
 
-**Extraer palabras clave del argumento** (palabras de 4+ caracteres, ignorar artículos/preposiciones):
-
-Por ejemplo, de `"Pantalla de perfil de usuario"` → `pantalla perfil usuario`
+**No improvises la búsqueda con `gh issue list --search`**. Usar el módulo:
 
 ```bash
-# Búsqueda en issues abiertos
-gh issue list --repo intrale/platform --state open \
-  --search "KEYWORD1 KEYWORD2 KEYWORD3" \
-  --json number,title,labels,state --limit 10
-
-# Búsqueda en issues cerrados (últimos 5)
-gh issue list --repo intrale/platform --state closed \
-  --search "KEYWORD1 KEYWORD2 KEYWORD3" \
-  --json number,title,labels,state --limit 5
+# Título propuesto (escapar comillas con \").
+node -e "const d=require('./.pipeline/lib/duplicate-detector'); const r=d.findSimilar(process.argv[1]); console.log(JSON.stringify(r, null, 2));" "Título propuesto del nuevo issue"
 ```
 
-**Estimar similitud:**
-- ≥ 80% palabras en común → **match alto** (probablemente duplicado)
-- 50–79% → **match medio** (posible duplicado)
-- < 50% → **match bajo** (probablemente distinto)
-
-**Mostrar al usuario:**
-
-```
-Buscando duplicados para: "[descripción propuesta]"
-
-  #892 "Pantalla de perfil — datos personales" (OPEN, app:client) — 85% match
-  #1001 "Editar perfil de usuario" (CLOSED) — 70% match
-
-¿Actualizar #892 en vez de crear una nueva historia? [S/n]
-```
+El módulo:
+- Trae los 50 issues OPEN más recientes vía `gh issue list` (cache 30s).
+- Tokeniza el título eliminando stopwords ES/EN, signos, acentos.
+- Calcula Jaccard contra cada candidato.
+- Devuelve los matches con score ≥ 0.7 ordenados desc.
 
 **Decisión:**
-- Si hay **match alto (≥ 80%) en issue OPEN**: preguntar si actualizar. Si acepta → ejecutar modo `refinar <N>` y detener este flujo. Si no → continuar.
-- Si hay **match alto en issue CLOSED**: informar y preguntar si reabrirlo o crear nuevo.
-- Si **no hay matches altos** o el usuario elige continuar: seguir sin interrupciones.
+- Si `hasDuplicate: true` (al menos un match ≥ 0.7) → **NO crear** el issue.
+  Mostrar al usuario:
+  ```
+  ⚠️ Posible duplicado detectado:
+    #<topMatch.number> "<topMatch.title>" — <score>% match (umbral 70%)
+    <otros matches si los hay>
+
+  Opciones:
+  1. /doc refinar <N>     → actualizar el existente en vez de crear
+  2. /doc nueva --force-duplicate "razón ≥ 20 chars" <desc>
+                          → forzar creación (queda en audit log)
+  3. Cancelar y revisar manualmente
+  ```
+  Esperar respuesta del operador. Sin respuesta en 5 min → cancelar y avisar.
+
+- Si `--force-duplicate "razón válida"` viene en el argumento original
+  (regex: `--force-duplicate\s+"([^"]{20,})"`) → permitir creación pero
+  ANTES, loguear el override en el audit dedicado:
+  ```bash
+  node -e "const d=require('./.pipeline/lib/duplicate-detector'); const r=d.findSimilar(process.argv[1]); const log=d.logForceDuplicate({title:process.argv[1], matches:r.matches, justification:process.argv[2], author:'commander:leo'}); console.log(JSON.stringify(log));" "TÍTULO" "RAZÓN DEL OVERRIDE >= 20 chars"
+  ```
+  La razón corta (< 20 chars) hace fallar el log y aborta la creación.
+
+- Si `hasDuplicate: false` → continuar con el flujo normal sin interrupciones.
+
+**Threat model**: la métrica es Jaccard puro sobre strings (no LLM, no
+embeddings), así que `title` es seguro contra prompt-injection. Si en el
+futuro se cambia a embeddings/LLM, se DEBE sanitizar el input antes y
+re-evaluar el threat model (documentado en `lib/duplicate-detector.js`).
 
 ### Paso 2: Analizar el codebase
 

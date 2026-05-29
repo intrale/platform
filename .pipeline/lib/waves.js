@@ -1209,10 +1209,14 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
         invalidateCache();
 
         // Paso 2: aplicar allowlist nueva.
+        // #3625 — Pasar authorizedBy: 'wave-promote' para que el gate de
+        // partial-pause acepte los removals que provoca la rotación de olas.
         newAllowlist = getAllowlist();
         const partialPause = require('./partial-pause');
         partialPause.setPartialPauseAtomic(newAllowlist, {
             source: metadata.source || 'wave-promote-atomic',
+            authorizedBy: 'wave-promote',
+            justification: metadata.note || `promote wave ${waveNumber} → active (atomic)`,
         });
     } catch (err) {
         // Rollback inmediato: ambos archivos vuelven al snapshot.

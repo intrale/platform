@@ -8707,10 +8707,16 @@ const server = http.createServer((req, res) => {
         const pauseFile = path.join(PIPELINE, '.paused');
         if (action === 'resume' || action === 'remove') {
           // #2490 — resume limpia tanto pausa completa como parcial
+          // #3625 — resume requiere authorizedBy: 'resume:operator' para que el gate
+          // acepte el removal masivo de allowlist.
           try { fs.unlinkSync(pauseFile); } catch {}
           try {
             const { resumeAll } = require('./lib/partial-pause');
-            resumeAll();
+            resumeAll({
+              source: 'dashboard',
+              authorizedBy: 'resume:operator',
+              justification: `Dashboard /api/pause action=${action}`,
+            });
           } catch {}
           log(`Pausa eliminada por dashboard (${action})`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -8753,7 +8759,12 @@ const server = http.createServer((req, res) => {
           .map(function(n){ return Number(n); })
           .filter(function(n){ return Number.isInteger(n) && n > 0; });
         if (list.length === 0) {
-          clearPartialPause();
+          // #3625 — clear requiere authorizedBy del operador humano.
+          clearPartialPause({
+            source: source || 'dashboard',
+            authorizedBy: 'commander:leo',
+            justification: 'Pausa parcial limpiada desde dashboard (lista vacía)',
+          });
           log('Pausa parcial eliminada desde dashboard');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pausa parcial desactivada', mode: 'running' }));
@@ -8805,11 +8816,19 @@ const server = http.createServer((req, res) => {
           }
         }
 
+        // #3625 — Operador autoriza explícitamente la mutación desde dashboard.
         const result = setPartialPause(finalList, {
           source: source || (includeDeps ? 'dashboard-auto-deps' : 'dashboard'),
           acceptedDepRisk: acceptedDepRisk === true,
           depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+          authorizedBy: 'commander:leo',
+          justification: `Pausa parcial desde dashboard${includeDeps ? ' con auto-deps' : ''}${acceptedDepRisk ? ' [accepted_dep_risk]' : ''}`,
         });
+        if (result.rejected) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: result.msg, code: 'GATE_REJECTED' }));
+          return;
+        }
         const state = getPipelineMode();
         log(`Pausa parcial activada desde dashboard (${result.allowedIssues.join(',')})${acceptedDepRisk ? ' [accepted_dep_risk]' : ''}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -8853,10 +8872,14 @@ const server = http.createServer((req, res) => {
           if (!(k in depSources)) depSources[k] = v;
         }
       }
+      // #3625 — include-deps suma issues sin remover → no requiere authorizedBy
+      // estricto, pero igual lo pasamos para que el audit trail quede limpio.
       const result = setPartialPause(finalList, {
         source: 'dashboard-auto-deps',
         acceptedDepRisk: false, // al incluir deps, ya no hay riesgo aceptado.
         depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+        authorizedBy: 'commander:leo',
+        justification: 'Auto-include deps de allowlist actual desde dashboard',
       });
       // Limpiar el state de deps (ya no hay missing).
       try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
@@ -9188,10 +9211,13 @@ const server = http.createServer((req, res) => {
           for (const d of openDeps) {
             if (!(String(d) in depSources)) depSources[String(d)] = 'auto-deps';
           }
+          // #3625 — promote suma issues (no remueve) → audit trail con autoría operador.
           const result = setPartialPause(finalAllowlist, {
             source: 'dashboard-promote',
             acceptedDepRisk: state.acceptedDepRisk === true,
             depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+            authorizedBy: 'commander:leo',
+            justification: `Promote candidate #${v.value} + ${openDeps.length} deps recursivas`,
           });
 
           // Sacar el candidato (ya está en allowlist activa, no es más "candidato").

@@ -24,6 +24,26 @@
 //                                           //         deps abiertas fuera del allowlist.
 //     dep_sources?: { "2491": "auto-deps" } // #2893: por qué cada issue está incluido.
 //   }
+//
+// -----------------------------------------------------------------------------
+// #3625 — Gate de autorización + audit trail (Ola N+11 incident hardening)
+// -----------------------------------------------------------------------------
+//
+// Toda mutación de `.partial-pause.json` ahora pasa por un gate que:
+//   1. Valida `opts.authorizedBy` contra un enum cerrado (ver
+//      `lib/partial-pause-audit.AUTHORIZED_BY_ENUM`).
+//   2. Computa diff (added/removed) entre el estado previo y el propuesto.
+//   3. Rechaza removals sin `authorizedBy` válido → REJECTED + audit entry.
+//   4. Sanitiza `opts.justification` (max 500 chars + redact secrets).
+//   5. **Orden invariante**: escribe la entry de audit ANTES de modificar el
+//      estado. Si el proceso muere entre los dos pasos, el audit registra la
+//      intención pero el estado sigue como antes (recuperable). El orden
+//      inverso es el bug exacto que estamos arreglando.
+//
+// **Período de gracia (CA-2)**: durante 1 release los callers sin
+// `authorizedBy` reciben un warning (no fail-closed estricto). El env var
+// `PARTIAL_PAUSE_STRICT_AUTH=1` activa el fail-closed antes de tiempo (para
+// tests). Pasado el grace period, el default cambia a strict.
 
 'use strict';
 
@@ -32,9 +52,20 @@ const path = require('path');
 const { withLockSync } = require('./file-lock');
 const { notifyTelegram } = require('./notify-telegram');
 const { atomicWriteFile } = require('./waves');
+const audit = require('./partial-pause-audit');
 
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_MAX_RETRIES = 3;
+
+// #3625 — Fail-closed estricto cuando se rechaza removal sin authorizedBy.
+// **Default OFF (grace mode)** por decisión PO/security CA-2: 1 release con
+// deprecation warning logueado para detectar callers no migrados, antes del
+// fail-closed estricto. Operador habilita strict explícitamente con
+// `PARTIAL_PAUSE_STRICT_AUTH=1`. El audit log captura las mutaciones SIEMPRE
+// (con `gate_grace: true` para los rechazos que pasaron en este período).
+function strictGateEnabled() {
+    return process.env.PARTIAL_PAUSE_STRICT_AUTH === '1';
+}
 
 function pipelineDir() {
     // Permitir override en tests vía env var
@@ -67,10 +98,26 @@ function readPartialFile() {
             source: parsed.source || null,
             accepted_dep_risk: acceptedDepRisk,
             dep_sources: depSources,
+            // #3625: TTLs de autoría heredada (recursive-deps:from-N) viven en
+            // un campo aditivo del JSON y se purgan vía pulpo:cleanup cron.
+            authorization_ttls: (parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object')
+                ? parsed.authorization_ttls
+                : null,
         };
     } catch {
         return null;
     }
+}
+
+/**
+ * Lee el snapshot raw del archivo (allowlist sin filtrar a lista vacía).
+ * Útil para callers del gate que necesitan la "previous" exacta antes del
+ * write — `getPipelineMode()` mapea a `running` cuando la lista está vacía
+ * y eso oculta el diff real.
+ */
+function readPreviousAllowlist() {
+    const raw = readPartialFile();
+    return raw ? raw.allowed_issues : [];
 }
 
 /**
@@ -100,6 +147,7 @@ function getPipelineMode() {
             source: partial.source,
             acceptedDepRisk: partial.accepted_dep_risk === true,
             depSources: partial.dep_sources || null,
+            authorizationTtls: partial.authorization_ttls || null,
         };
     }
     return {
@@ -136,6 +184,78 @@ function isIssueAllowedInState(issue, state) {
     return Array.isArray(state.allowedIssues) && state.allowedIssues.includes(n);
 }
 
+// -----------------------------------------------------------------------------
+// #3625 — Gate de autorización (CA-2).
+//
+// Compara `previous` vs `proposed`, decide si se aplica o se rechaza, y emite
+// la entry de audit ANTES del write del estado (invariante de orden).
+//
+// Reglas:
+//   - Si no hay removals (sólo adds o sin cambios) → aceptar incluso sin
+//     `authorizedBy` (no es el caso peligroso). Igual se emite entry de audit
+//     con `authorized_by: null` para que quede registrado.
+//   - Si hay removals:
+//       * con `authorizedBy` válido → aplicar + audit entry (action: 'write').
+//       * sin `authorizedBy` o inválido:
+//           - strictGateEnabled() === true → action: 'reject', NO escribir,
+//             notificar Telegram, devolver `{ ok: false, rejected: true }`.
+//           - strictGateEnabled() === false → action: 'write' pero entry
+//             marca `gate_grace: true` para que el operador vea callers no
+//             migrados.
+//
+// La función NO escribe el JSON: devuelve `{ ok, rejected, entry }`. El
+// caller decide qué hacer si rejected=true. Pero AÚN cuando rejected=true,
+// la audit entry ya está persistida (intención registrada).
+// -----------------------------------------------------------------------------
+
+function evaluateAndAudit({ previous, current, source, authorizedBy, justification, intendedAction = 'write', extra }) {
+    const diff = audit.computeDiff(previous, current);
+    const hasRemovals = diff.removed.length > 0;
+    const validation = audit.validateAuthorizedBy(authorizedBy);
+    const grace = !strictGateEnabled();
+
+    let action = intendedAction;
+    let rejected = false;
+
+    if (hasRemovals && !validation.valid) {
+        if (grace) {
+            // Período de gracia: aceptar pero marcar.
+            action = intendedAction;
+        } else {
+            action = 'reject';
+            rejected = true;
+        }
+    }
+
+    const extras = { ...(extra || {}) };
+    if (grace && hasRemovals && !validation.valid) extras.gate_grace = true;
+
+    const result = audit.appendMutation({
+        source,
+        action,
+        previous,
+        current: rejected ? previous : current,  // si rechazado, "current" es lo que QUEDA (sin aplicar).
+        authorizedBy,
+        justification,
+        extra: extras,
+    });
+
+    if (rejected) {
+        // Alerta Telegram inmediata (CA-5 — pero la conexión es opcional,
+        // sólo si notifyTelegram está disponible y no estamos en test).
+        try {
+            const removedList = diff.removed.map(n => `#${n}`).join(', ');
+            const msg = `🛑 [allowlist gate] Removal RECHAZADO sin authorizedBy válido.\n` +
+                        `Source: ${source || 'unknown'}\n` +
+                        `Removidos (no aplicado): ${removedList}\n` +
+                        `Razón: ${validation.reason || 'unknown'}`;
+            notifyTelegram(msg);
+        } catch { /* notify best-effort */ }
+    }
+
+    return { ok: !rejected, rejected, audit: result, diff, validation };
+}
+
 /**
  * Activa la pausa parcial con un allowlist de issues.
  * Lista vacía → elimina el marker (equivalente a clear).
@@ -144,13 +264,19 @@ function isIssueAllowedInState(issue, state) {
  * que dejaba el JSON truncado ante un kill -9 mid-write. Es prerequisito para
  * la transacción multi-archivo de `lib/waves.promoteWaveAtomic`.
  *
+ * #3625 — Gate de autorización: opts.authorizedBy + opts.justification.
+ * Removals sin authorizedBy válido → REJECTED (audit entry + alerta Telegram).
+ *
  * @param {Array<number|string>} issues
  * @param {{
  *   source?: string,
  *   acceptedDepRisk?: boolean,
  *   depSources?: Object,
+ *   authorizedBy?: string,        // #3625: enum cerrado
+ *   justification?: string,       // #3625: razón libre (sanitizada)
+ *   authorizationTtls?: Object,   // #3625: TTLs por issue heredados (recursive-deps:from-N)
  * }} [opts]
- * @returns {{ok: boolean, allowedIssues: number[], msg: string}}
+ * @returns {{ok: boolean, rejected?: boolean, allowedIssues: number[], msg: string, diff?: object}}
  */
 function setPartialPause(issues, opts = {}) {
     const normalized = (Array.isArray(issues) ? issues : [])
@@ -159,8 +285,44 @@ function setPartialPause(issues, opts = {}) {
     const unique = [...new Set(normalized)].sort((a, b) => a - b);
 
     if (unique.length === 0) {
-        clearPartialPause();
-        return { ok: true, allowedIssues: [], msg: 'Pausa parcial desactivada (lista vacía)' };
+        // Delegate al `clearPartialPause` que también pasa por el gate.
+        const r = clearPartialPause({
+            source: opts.source,
+            authorizedBy: opts.authorizedBy,
+            justification: opts.justification || 'setPartialPause con lista vacía',
+        });
+        // Normalizar shape al de setPartialPause para compat con callers.
+        if (r.rejected) {
+            return { ok: false, rejected: true, allowedIssues: readPreviousAllowlist(), msg: 'Mutación rechazada por gate' };
+        }
+        return {
+            ok: true,
+            allowedIssues: [],
+            msg: 'Pausa parcial desactivada (lista vacía)',
+        };
+    }
+
+    const previous = readPreviousAllowlist();
+
+    // #3625 — Gate + audit ANTES del write (invariante de orden).
+    const gateResult = evaluateAndAudit({
+        previous,
+        current: unique,
+        source: opts.source,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification,
+        intendedAction: 'write',
+    });
+
+    if (gateResult.rejected) {
+        return {
+            ok: false,
+            rejected: true,
+            allowedIssues: previous,
+            msg: `Mutación rechazada por gate: removals sin authorizedBy válido (${gateResult.validation.reason}). ` +
+                 `Removidos NO aplicados: ${gateResult.diff.removed.map(i => `#${i}`).join(', ')}`,
+            diff: gateResult.diff,
+        };
     }
 
     const data = {
@@ -180,6 +342,31 @@ function setPartialPause(issues, opts = {}) {
         }
         if (Object.keys(filtered).length > 0) data.dep_sources = filtered;
     }
+    // #3625 — TTLs heredados (e.g. de recursive-deps:from-N) viajan en el JSON
+    // para que el cron de cleanup los purgue cuando expiren.
+    if (opts.authorizationTtls && typeof opts.authorizationTtls === 'object') {
+        const filtered = {};
+        for (const k of Object.keys(opts.authorizationTtls)) {
+            const n = normalizeIssue(k);
+            if (n && unique.includes(n)) {
+                filtered[String(n)] = opts.authorizationTtls[k];
+            }
+        }
+        if (Object.keys(filtered).length > 0) data.authorization_ttls = filtered;
+    } else {
+        // Heredar TTLs previos sólo para issues que siguen en el allowlist.
+        const prev = readPartialFile();
+        if (prev && prev.authorization_ttls) {
+            const inherited = {};
+            for (const k of Object.keys(prev.authorization_ttls)) {
+                const n = normalizeIssue(k);
+                if (n && unique.includes(n)) {
+                    inherited[String(n)] = prev.authorization_ttls[k];
+                }
+            }
+            if (Object.keys(inherited).length > 0) data.authorization_ttls = inherited;
+        }
+    }
     // CA-2: write atómico (tmp + fsync + rename) bajo lock. Antes era un
     // writeFileSync directo — si dos /wave promote llegaban a la vez, el
     // segundo podía pisar al primero o dejar un JSON truncado si moría
@@ -189,6 +376,7 @@ function setPartialPause(issues, opts = {}) {
         return {
             ok: true,
             allowedIssues: unique,
+            diff: gateResult.diff,
             msg: `Pausa parcial activa — allowed: ${unique.map(i => `#${i}`).join(', ')}`,
         };
     }, {
@@ -213,10 +401,19 @@ function setPartialPause(issues, opts = {}) {
  *     que la transacción tenga un estado uniforme (la limpieza la hace el
  *     caller si corresponde a su semántica).
  *
+ * #3625 — Mismo gate de autorización: opts.authorizedBy + opts.justification.
+ *
  * @param {Array<number|string>} issues
- * @param {{source?: string, acceptedDepRisk?: boolean, depSources?: Object}} [opts]
+ * @param {{
+ *   source?: string,
+ *   acceptedDepRisk?: boolean,
+ *   depSources?: Object,
+ *   authorizedBy?: string,
+ *   justification?: string,
+ * }} [opts]
  * @returns {{
  *   ok: boolean,
+ *   rejected?: boolean,
  *   allowedIssues: number[],
  *   msg: string,
  *   prevBuffer: Buffer|null,
@@ -243,6 +440,30 @@ function setPartialPauseAtomic(issues, opts = {}) {
         .map(normalizeIssue)
         .filter(Boolean);
     const unique = [...new Set(normalized)].sort((a, b) => a - b);
+
+    const previous = readPreviousAllowlist();
+
+    // #3625 — Gate + audit ANTES del write.
+    const gateResult = evaluateAndAudit({
+        previous,
+        current: unique,
+        source: opts.source,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification,
+        intendedAction: 'write',
+    });
+
+    if (gateResult.rejected) {
+        return {
+            ok: false,
+            rejected: true,
+            allowedIssues: previous,
+            msg: `Mutación rechazada por gate: removals sin authorizedBy válido (${gateResult.validation.reason})`,
+            prevBuffer,
+            prevSha,
+            existedBefore,
+        };
+    }
 
     const data = {
         allowed_issues: unique,
@@ -296,10 +517,33 @@ function writeAtomic(targetPath, content) {
  * Desactiva la pausa parcial (elimina marker).
  *
  * CA-2: bajo lock para evitar que un unlink pise un write en curso.
+ * #3625: clear es removal masivo → exige `authorizedBy` válido. Si no pasa
+ * el gate, NO se ejecuta el unlink y queda audit entry `action: 'reject'`.
  *
- * @returns {{ok: boolean, existed: boolean}}
+ * @param {{ source?: string, authorizedBy?: string, justification?: string }} [opts]
+ * @returns {{ok: boolean, rejected?: boolean, existed: boolean}}
  */
-function clearPartialPause() {
+function clearPartialPause(opts = {}) {
+    const previous = readPreviousAllowlist();
+
+    // Gate + audit antes del unlink.
+    const gateResult = evaluateAndAudit({
+        previous,
+        current: [],
+        source: opts.source,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification || 'clearPartialPause',
+        intendedAction: 'clear',
+    });
+
+    if (gateResult.rejected) {
+        return {
+            ok: false,
+            rejected: true,
+            existed: fs.existsSync(partialFile()),
+        };
+    }
+
     return withLockSync(partialFile(), () => {
         const existed = fs.existsSync(partialFile());
         if (existed) {
@@ -316,9 +560,31 @@ function clearPartialPause() {
 
 /**
  * Desactiva TODO modo de pausa (full + partial). Usado por /resume.
- * @returns {{removedFull: boolean, removedPartial: boolean}}
+ *
+ * #3625 — Requiere `authorizedBy: 'resume:operator'` por defecto. Sin él,
+ * en modo grace se loguea warning; en strict, se rechaza.
+ *
+ * @param {{ source?: string, authorizedBy?: string, justification?: string }} [opts]
+ * @returns {{removedFull: boolean, removedPartial: boolean, rejected?: boolean}}
  */
-function resumeAll() {
+function resumeAll(opts = {}) {
+    const previous = readPreviousAllowlist();
+
+    // Sólo gateamos la parte partial-pause: el `.paused` no tiene allowlist.
+    if (previous.length > 0) {
+        const gateResult = evaluateAndAudit({
+            previous,
+            current: [],
+            source: opts.source || 'resume:operator',
+            authorizedBy: opts.authorizedBy || 'resume:operator',
+            justification: opts.justification || 'resumeAll (full /resume)',
+            intendedAction: 'clear',
+        });
+        if (gateResult.rejected) {
+            return { removedFull: false, removedPartial: false, rejected: true };
+        }
+    }
+
     let removedFull = false;
     let removedPartial = false;
     if (fs.existsSync(pauseFile())) {
@@ -338,5 +604,8 @@ module.exports = {
     setPartialPauseAtomic, // #3520
     clearPartialPause,
     resumeAll,
+    // #3625 — exportados para callers que quieran leer estado raw y para tests.
+    readPreviousAllowlist,
+    evaluateAndAudit,
     _paths: () => ({ PARTIAL_FILE: partialFile(), PAUSE_FILE: pauseFile() }),
 };

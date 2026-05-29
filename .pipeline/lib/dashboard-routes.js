@@ -277,6 +277,11 @@ const API_ROUTES = {
     // documentado en CA-C2 (nombre humano-friendly para curl/debug).
     '/api/dash/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
     '/api/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
+    // #3625 CA-5 — widget de audit trail de mutaciones a la allowlist
+    // (partial-pause). Devuelve las últimas N entries del audit log, stats
+    // de 24h y estado del hash-chain. Refresh natural 30s desde el cliente.
+    '/api/dash/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
+    '/api/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
     // #3492 — ETA agregada por ola (probabilística p50/p75/p90). El cálculo
     // vive en `lib/eta-wave.js`; dashboard.js lo refresca fire-and-forget en
     // un cache TTL 30s y lo publica en `state.olaETA`. Si el módulo no cargó
