@@ -190,6 +190,13 @@ function launchAgent({
                 model: resolution.model || null,
                 handler: PROVIDERS.anthropic,
                 source: 'fallback-deterministic-script-missing',
+                // #3605 — En fallback NO heredamos el flag deterministic; el
+                // skill original era deterministic y la decisión de soporte
+                // interactive aplica al provider que realmente termina corriendo.
+                // Default false: anthropic recibe `'ignore'` salvo que el skill
+                // tenga config explícita para anthropic (que en este caso no
+                // tiene, porque era deterministic). Es decisión conservadora.
+                interactive_supported: false,
             };
         } else {
             // El script existe → delegamos al handler determinístico.
@@ -198,6 +205,8 @@ function launchAgent({
             // del return permite al caller loggear "ejecutado en modo determinístico".
             const spawnDef = determ.buildSpawn({
                 skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl: _fs,
+                // #3605 — Opt-in. Solo si agent-models.json marca el skill como interactive_supported.
+                interactive_supported: resolution.interactive_supported === true,
             });
             const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
             return {
@@ -207,6 +216,9 @@ function launchAgent({
                 source: resolution.source,
                 scriptPath: spawnDef.scriptPath || scriptPath,
                 handler: determ,
+                // #3605 — Propagamos el flag al caller (pulpo) para que decida
+                // si invocar agent-ipc.registerAgent. Default false.
+                interactive_supported: resolution.interactive_supported === true,
             };
         }
     }
@@ -215,7 +227,11 @@ function launchAgent({
     //    Los providers LLM reciben `args` ya construidos por el caller (pulpo
     //    arma --system-prompt-file, --output-format, etc.).
     const handler = effective.handler;
-    const spawnDef = handler.buildSpawn({ args, cwd, env });
+    const spawnDef = handler.buildSpawn({
+        args, cwd, env,
+        // #3605 — Opt-in por skill+provider. Default false preserva I3.
+        interactive_supported: effective.interactive_supported === true,
+    });
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
     return {
         child,
@@ -224,6 +240,7 @@ function launchAgent({
         source: effective.source,
         scriptPath: null,
         handler,
+        interactive_supported: effective.interactive_supported === true,
     };
 }
 

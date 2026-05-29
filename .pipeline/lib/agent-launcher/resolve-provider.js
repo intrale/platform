@@ -109,12 +109,19 @@ function resolveProviderForSkill(skill, opts = {}) {
     //    (no consulta agent-models.json, son Node puro y sin tokens).
     const determHandler = PROVIDER_HANDLERS.deterministic;
     if (determHandler.isDeterministic(skill)) {
+        // #3605 — `interactive_supported` puede estar declarado por skill en
+        // agent-models.json incluso para skills determinísticos (un script Node
+        // que implemente un loop de lectura de stdin sí podría aprovecharlo).
+        // Si no está, default false (preserva I3 del agent-launcher).
+        const models0 = readAgentModels(pipelineDir, fsImpl);
+        const skillCfg0 = (models0 && !models0.__readError && models0.skills && models0.skills[skill]) || null;
         return {
             provider: 'deterministic',
             model: null,
             mode: 'native',
             handler: determHandler,
             source: 'deterministic-allowlist',
+            interactive_supported: !!(skillCfg0 && skillCfg0.interactive_supported === true),
         };
     }
 
@@ -127,6 +134,7 @@ function resolveProviderForSkill(skill, opts = {}) {
             mode: 'bypassPermissions',
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-no-config',
+            interactive_supported: false,
         };
     }
     if (models.__readError) {
@@ -137,6 +145,7 @@ function resolveProviderForSkill(skill, opts = {}) {
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-read-error',
             warning: `agent-models.json no se pudo parsear: ${models.__readError}`,
+            interactive_supported: false,
         };
     }
 
@@ -150,6 +159,7 @@ function resolveProviderForSkill(skill, opts = {}) {
             mode: resolvePermissionMode(models, 'anthropic'),
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-skill-not-found',
+            interactive_supported: false,
         };
     }
 
@@ -166,6 +176,11 @@ function resolveProviderForSkill(skill, opts = {}) {
         mode: resolvePermissionMode(models, providerName),
         handler,
         source: 'agent-models',
+        // #3605 — Opt-in por skill+provider. Solo cuando true:
+        //   (a) agent-launcher pisa `stdio[0] = 'pipe'` para habilitar IPC.
+        //   (b) el endpoint /api/agent-chat acepta mensajes para este skill.
+        // Default false: NO se cambia I3 global (regresión cero CA-4).
+        interactive_supported: skillCfg.interactive_supported === true,
     };
 }
 

@@ -71,7 +71,7 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
 //
 // Defensa I4: el `skill` debe estar en DETERMINISTIC_SKILLS. Si no, throw.
 // -----------------------------------------------------------------------------
-function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl }) {
+function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl, interactive_supported }) {
     if (!isDeterministic(skill)) {
         throw new Error(
             `[agent-launcher/deterministic] skill "${skill}" no está en la allowlist de skills determinísticos.\n` +
@@ -80,12 +80,15 @@ function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, on
         );
     }
     const scriptPath = resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl });
+    // #3605 — Opt-in. Default 'ignore'; 'pipe' habilita IPC operador→agente.
+    // Sólo aplica si el skill determinístico implementa loop de lectura de stdin.
+    const stdin = interactive_supported === true ? 'pipe' : 'ignore';
     return {
         cmd: process.execPath,
         args: [scriptPath, String(issue), `--trabajando=${trabajandoPath}`],
         spawnOpts: {
             cwd,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: [stdin, 'pipe', 'pipe'],
             detached: false,
             // Defensa I1: shell:false SIEMPRE para skills determinísticos.
             shell: false,
