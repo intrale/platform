@@ -147,31 +147,49 @@ function normalizeWave(raw) {
  * Construye el payload de /api/dash/waves desde lib/waves.js. Si la librería
  * no cargó o falla la lectura, retorna estructura vacía con `message` —
  * NUNCA expone paths, ENOENT ni stack traces (security CA-4/CA-8).
+ *
+ * #3616 — Usa `getHorizon(5)` para devolver la ola activa + las próximas 5
+ * planificadas. Cada wave pasa por `normalizeWave` (whitelist por campo) —
+ * no se expone path interno, hash, timestamp de boot ni stack traces.
+ *
+ * Backward compat: el payload mantiene `active_wave` + `next_wave` (la primera
+ * planificada) por si algún cliente viejo los lee directamente — el frontend
+ * nuevo prefiere iterar `planned[]`.
  */
 function buildWavesPayload() {
     const updated_at = new Date().toISOString();
     if (!waves) {
-        return { active_wave: null, next_wave: null, updated_at, message: 'Planificación no disponible' };
+        return {
+            active_wave: null,
+            next_wave: null,
+            planned: [],
+            updated_at,
+            message: 'Planificación no disponible',
+        };
     }
-    let active = null;
-    let nextWave = null;
+    let horizon = [];
     try {
-        active = waves.getActiveWave();
+        // getHorizon devuelve [activa, planned[0], ..., planned[N-1]] con
+        // status taggeado por la lib. Lo desempacamos por status para
+        // construir el payload público.
+        horizon = waves.getHorizon(5) || [];
     } catch {
-        // No volcar el error al cliente — degradación silenciosa.
-        active = null;
+        horizon = [];
     }
-    if (active) {
-        try {
-            nextWave = waves.getPlannedWave(active.number + 1);
-        } catch {
-            nextWave = null;
-        }
+    const rawActive = horizon.find((w) => w && w.status === 'active') || null;
+    const rawPlanned = horizon.filter((w) => w && w.status === 'planned');
+    const normActive = normalizeWave(rawActive);
+    const normPlanned = rawPlanned.map(normalizeWave).filter(Boolean);
+    const normNext = normPlanned.length > 0 ? normPlanned[0] : null;
+    const payload = {
+        active_wave: normActive,
+        next_wave: normNext,
+        planned: normPlanned,
+        updated_at,
+    };
+    if (!normActive && normPlanned.length === 0) {
+        payload.message = 'Planificación no disponible';
     }
-    const normActive = normalizeWave(active);
-    const normNext = normalizeWave(nextWave);
-    const payload = { active_wave: normActive, next_wave: normNext, updated_at };
-    if (!normActive && !normNext) payload.message = 'Planificación no disponible';
     return payload;
 }
 

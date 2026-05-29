@@ -121,6 +121,7 @@ test('buildWavesPayload retorna estructura vacía con message cuando no hay acti
     const routes = fresh();
     const payload = withFakeWaves(
         {
+            getHorizon: () => [],
             getActiveWave: () => null,
             getPlannedWave: () => null,
         },
@@ -133,6 +134,7 @@ test('buildWavesPayload retorna estructura vacía con message cuando no hay acti
     );
     assert.equal(payload.active_wave, null);
     assert.equal(payload.next_wave, null);
+    assert.deepEqual(payload.planned, []);
     assert.equal(payload.message, 'Planificación no disponible');
     assert.equal(typeof payload.updated_at, 'string');
 });
@@ -143,6 +145,7 @@ test('buildWavesPayload retorna active + next normalizados sin propagar extras',
         name: 'Ola 7',
         goal: 'Cerrar épico #3378',
         started_at: '2026-05-24T10:00:00Z',
+        status: 'active',
         issues: [
             {
                 number: 3487,
@@ -166,6 +169,7 @@ test('buildWavesPayload retorna active + next normalizados sin propagar extras',
         number: 8,
         name: 'Ola 8',
         goal: 'Multi-provider',
+        status: 'planned',
         issues: [
             { number: 3500, title: 'API health', priority: 'high', size: 'l', status: 'needs-def' },
         ],
@@ -173,6 +177,7 @@ test('buildWavesPayload retorna active + next normalizados sin propagar extras',
     delete require.cache[require.resolve('../dashboard-routes')];
     const payload = withFakeWaves(
         {
+            getHorizon: () => [fakeActive, fakeNext],
             getActiveWave: () => fakeActive,
             getPlannedWave: (n) => (n === 8 ? fakeNext : null),
         },
@@ -190,15 +195,17 @@ test('buildWavesPayload retorna active + next normalizados sin propagar extras',
     assert.equal('secrets' in payload.active_wave, false);
     assert.equal(payload.next_wave.number, 8);
     assert.equal(payload.next_wave.issues[0].id, 3500);
+    // #3616 — el payload ahora trae `planned[]` con TODAS las planificadas.
+    assert.equal(payload.planned.length, 1);
+    assert.equal(payload.planned[0].number, 8);
     assert.equal(payload.message, undefined);
 });
 
-test('buildWavesPayload degrada a payload vacío si getActiveWave tira', () => {
+test('buildWavesPayload degrada a payload vacío si getHorizon tira', () => {
     delete require.cache[require.resolve('../dashboard-routes')];
     const payload = withFakeWaves(
         {
-            getActiveWave: () => { throw new Error('disk on fire'); },
-            getPlannedWave: () => null,
+            getHorizon: () => { throw new Error('disk on fire'); },
         },
         () => {
             delete require.cache[require.resolve('../dashboard-routes')];
@@ -207,6 +214,7 @@ test('buildWavesPayload degrada a payload vacío si getActiveWave tira', () => {
     );
     assert.equal(payload.active_wave, null);
     assert.equal(payload.next_wave, null);
+    assert.deepEqual(payload.planned, []);
     assert.equal(payload.message, 'Planificación no disponible');
 });
 
@@ -214,8 +222,7 @@ test('buildWavesPayload nunca expone paths/ENOENT en el payload', () => {
     delete require.cache[require.resolve('../dashboard-routes')];
     const payload = withFakeWaves(
         {
-            getActiveWave: () => { const e = new Error('ENOENT: no such file /tmp/x'); e.code = 'ENOENT'; throw e; },
-            getPlannedWave: () => null,
+            getHorizon: () => { const e = new Error('ENOENT: no such file /tmp/x'); e.code = 'ENOENT'; throw e; },
         },
         () => {
             delete require.cache[require.resolve('../dashboard-routes')];
@@ -225,6 +232,56 @@ test('buildWavesPayload nunca expone paths/ENOENT en el payload', () => {
     const serialized = JSON.stringify(payload);
     assert.equal(serialized.includes('ENOENT'), false);
     assert.equal(serialized.includes('/tmp/'), false);
+});
+
+// #3616 — Tests específicos del horizonte 5 y planned[].
+test('#3616: buildWavesPayload expone planned[] con TODAS las olas del horizonte', () => {
+    const fakeActive = {
+        number: 10, name: 'Ola activa', goal: '', status: 'active',
+        issues: [{ number: 1001, title: 'A', priority: 'medium', size: 'm', status: 'in-progress' }],
+    };
+    const planned1 = { number: 11, name: 'Próxima 1', goal: '', status: 'planned', issues: [] };
+    const planned2 = { number: 12, name: 'Próxima 2', goal: '', status: 'planned', issues: [] };
+    const planned3 = { number: 13, name: 'Próxima 3', goal: '', status: 'planned', issues: [] };
+    const planned4 = { number: 14, name: 'Próxima 4', goal: '', status: 'planned', issues: [] };
+    const planned5 = { number: 15, name: 'Próxima 5', goal: '', status: 'planned', issues: [] };
+    delete require.cache[require.resolve('../dashboard-routes')];
+    const payload = withFakeWaves(
+        {
+            getHorizon: (n) => {
+                assert.equal(n, 5, 'dashboard debe pedir 5 olas del horizonte');
+                return [fakeActive, planned1, planned2, planned3, planned4, planned5];
+            },
+        },
+        () => {
+            delete require.cache[require.resolve('../dashboard-routes')];
+            return require('../dashboard-routes')._internal.buildWavesPayload();
+        },
+    );
+    assert.equal(payload.active_wave.number, 10);
+    assert.equal(payload.planned.length, 5);
+    assert.equal(payload.planned[0].number, 11);
+    assert.equal(payload.planned[4].number, 15);
+    assert.equal(payload.next_wave.number, 11, 'next_wave debe ser la primera planificada por backward compat');
+});
+
+test('#3616: buildWavesPayload con ola activa + sin planned devuelve planned=[]', () => {
+    const fakeActive = {
+        number: 7, name: 'Sola', goal: '', status: 'active',
+        issues: [{ number: 700, title: 'X', priority: 'low', size: 's', status: 'ready' }],
+    };
+    delete require.cache[require.resolve('../dashboard-routes')];
+    const payload = withFakeWaves(
+        { getHorizon: () => [fakeActive] },
+        () => {
+            delete require.cache[require.resolve('../dashboard-routes')];
+            return require('../dashboard-routes')._internal.buildWavesPayload();
+        },
+    );
+    assert.equal(payload.active_wave.number, 7);
+    assert.deepEqual(payload.planned, []);
+    assert.equal(payload.next_wave, null);
+    assert.equal(payload.message, undefined, 'con activa NO debe mostrar mensaje vacío');
 });
 
 test('normalizeWave filtra issues inválidos y se queda con los válidos', () => {

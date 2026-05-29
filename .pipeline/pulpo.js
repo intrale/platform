@@ -10881,6 +10881,36 @@ async function mainLoop() {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
   }
 
+  // #3616 — Boot hook: seed inicial de waves.json desde .partial-pause.json.
+  // CORRE ANTES del desync-detector (línea ~10855) para evitar el falso
+  // positivo que generaría comparar `waves.allowlist=[]` (vacío) contra
+  // `partial.allowlist=[3616, ...]` (operativo) — el desync-detector hoy lo
+  // tolera con `no_waves_yet`, pero apenas el init complete, la canónica
+  // queda poblada y la comparación pasa a ser estricta.
+  //
+  // Idempotente: si waves.json ya tiene active_wave, el init es no-op.
+  // Fail-closed: si .partial-pause.json está malformado, NO toca waves.json.
+  // Best-effort sobre el boot: si la lib falla por algo inesperado, NO
+  // matamos el pulpo — preferimos arrancar con allowlist vacía que dejar
+  // el pipeline fuera de servicio.
+  try {
+    const { initWavesFromPartial } = require('./scripts/init-waves-from-partial');
+    const initResult = initWavesFromPartial();
+    if (initResult.action === 'seeded') {
+      log('pulpo', `[init-waves] waves.json sembrado: ola #${initResult.waveNumber} con ${initResult.allowlist.length} issue(s).`);
+    } else if (initResult.action === 'aborted_invalid_partial') {
+      log('pulpo', `WARN [init-waves] fail-closed: .partial-pause.json malformado. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
+    } else if (initResult.action === 'aborted_waves_corrupt') {
+      log('pulpo', `WARN [init-waves] fail-closed: waves.json corrupto. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
+    } else if (initResult.action === 'noop_already_seeded') {
+      log('pulpo', `[init-waves] noop — active_wave #${initResult.waveNumber} ya existente.`);
+    } else {
+      log('pulpo', `[init-waves] noop — ${initResult.reason || initResult.action}.`);
+    }
+  } catch (e) {
+    log('pulpo', `WARN [init-waves] boot hook falló: ${e.message}`);
+  }
+
   // #3518 CA-6 — Chequeo de desync al boot: compara waves.json contra
   // .partial-pause.json. Si hay mismatch, crea flag + alerta Telegram. El
   // human-block existente lo levanta y pausa los skills hasta intervención.

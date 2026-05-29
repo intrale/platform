@@ -2538,10 +2538,23 @@ async function tickWaves(){
     const meta = document.getElementById('wave-panel-updated');
     if (!activeContainer || !nextContainer) return;
 
-    // Endpoint best-effort: si el fetch falló o devuelve estructura vacía,
-    // mostramos estado vacío sin reemplazar el container raíz (CA-7).
+    // #3616 — el payload trae { active_wave, next_wave, planned[], updated_at }.
+    // planned[] reemplaza el next_wave único y permite iterar hasta 5 olas.
+    // Fallback: si el server no entrega planned[] (cliente viejo + dashboard
+    // nuevo, o viceversa) usamos next_wave como lista de 1 ítem.
     const hasActive = !!(d && d.active_wave);
-    const hasNext = !!(d && d.next_wave);
+    let plannedList = [];
+    if (d && Array.isArray(d.planned) && d.planned.length > 0) {
+        plannedList = d.planned;
+    } else if (d && d.next_wave) {
+        plannedList = [d.next_wave];
+    }
+    // Cap visual a 3 para kiosk 1080×1920 (UX guideline #2 — sin scroll interno).
+    // El indicador "+N más" se renderiza si plannedList.length > 3.
+    const MAX_PLANNED_VISIBLE = 3;
+    const visiblePlanned = plannedList.slice(0, MAX_PLANNED_VISIBLE);
+    const hiddenPlannedCount = Math.max(0, plannedList.length - visiblePlanned.length);
+    const hasPlanned = plannedList.length > 0;
 
     if (meta && d && d.updated_at) {
         const ts = Date.parse(d.updated_at);
@@ -2551,7 +2564,7 @@ async function tickWaves(){
         }
     }
 
-    if (!hasActive && !hasNext) {
+    if (!hasActive && !hasPlanned) {
         if (empty) {
             empty.style.display = '';
             const msgEl = document.getElementById('wave-panel-empty-msg');
@@ -2587,17 +2600,47 @@ async function tickWaves(){
         activeContainer.innerHTML = '';
     }
 
-    if (hasNext) {
-        const wave = d.next_wave;
-        let row = nextContainer.querySelector('.wave-row');
-        if (!row || Number(row.dataset.waveNumber) !== wave.number) {
-            nextContainer.innerHTML = '';
-            row = renderWaveRowSkeleton(wave, 'next');
-            row.dataset.waveNumber = String(wave.number);
-            nextContainer.appendChild(row);
-            applyWaveCollapseState(row, wave.number);
+    if (hasPlanned) {
+        // #3616 — render de múltiples olas planificadas con morphing por número.
+        // Mantenemos los rows existentes que sigan en la lista (preserva el
+        // estado de colapso del usuario por sessionStorage), y agregamos/
+        // sacamos los que cambian sin re-crear el container raíz (anti-flicker).
+        const seenNumbers = new Set();
+        for (const wave of visiblePlanned) {
+            if (!wave || !Number.isFinite(wave.number)) continue;
+            seenNumbers.add(wave.number);
+            const rowId = 'wave-row-' + wave.number;
+            let row = document.getElementById(rowId);
+            if (!row || row.parentNode !== nextContainer) {
+                row = renderWaveRowSkeleton(wave, 'next');
+                row.dataset.waveNumber = String(wave.number);
+                nextContainer.appendChild(row);
+                applyWaveCollapseState(row, wave.number);
+            }
+            morphWaveRow(row, wave);
         }
-        morphWaveRow(row, wave);
+        // Sacar olas que ya no están en el horizonte.
+        Array.from(nextContainer.children).forEach((child) => {
+            if (child.id === 'wave-planned-overflow') return;
+            const n = Number(child.dataset.waveNumber);
+            if (!Number.isFinite(n) || !seenNumbers.has(n)) {
+                nextContainer.removeChild(child);
+            }
+        });
+        // "+N más" — render del indicador de overflow (UX guideline #2).
+        let overflow = document.getElementById('wave-planned-overflow');
+        if (hiddenPlannedCount > 0) {
+            if (!overflow) {
+                overflow = document.createElement('div');
+                overflow.className = 'wave-planned-overflow';
+                overflow.id = 'wave-planned-overflow';
+                nextContainer.appendChild(overflow);
+            }
+            const txt = '+' + hiddenPlannedCount + ' más planificada' + (hiddenPlannedCount === 1 ? '' : 's');
+            if (overflow.textContent !== txt) overflow.textContent = txt;
+        } else if (overflow) {
+            overflow.parentNode && overflow.parentNode.removeChild(overflow);
+        }
     } else if (nextContainer.firstChild) {
         nextContainer.innerHTML = '';
     }
