@@ -1,0 +1,800 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 23 — Widget "Multi-Provider Smoke Test Coverage" (#3669)
+  -----------------------------------------------------------------------------
+  Vista del widget que vive en el tab "Multi-Provider" del dashboard interno
+  (puerto 3200) DEBAJO de las cards de salud del mockup 17. Cubre el CA del
+  issue #3669: matriz (skill x provider) -> estado PASS/WARN/FAIL/SKIPPED con
+  buckets de latencia, freshness del ultimo run y link a issues auto-creados
+  por FAILs.
+
+  Diseño guiado por los REQ-SEC del analisis security (#3669):
+    - REQ-SEC-5 (caps): el boton "Ejecutar harness" muestra el progreso
+      serializado y cap (X / 60 spawns) — refuerza visualmente que la corrida
+      no es paralela.
+    - REQ-SEC-6 (coordinacion): banner superior indica el estado de la
+      coordinacion con el pipeline productivo (pausa parcial allowlist + halt
+      total). Si el pipeline esta running productivo el boton se deshabilita.
+    - REQ-SEC-9 (info no sensible): latencias en buckets discretos (no valores
+      absolutos), provider id sin hostnames, raw output reemplazado por hash.
+    - REQ-SEC-10 (issues sin info sensible): links a issues auto-creados por
+      FAIL muestran skill+provider+error_class, NO raw_output.
+
+  Convencion:
+    - Paleta: design-tokens.css (var(--surface-*), var(--success/warning/danger))
+    - Iconos providers: copiados del mockup 17 por reuso simbolico (igual sprite)
+    - Tipografia: var(--font-sans) en estilos inline
+    - WCAG AA: ratios verificados (PASS=#3FB950 sobre #0D1117 = 6.4:1 AA Normal;
+      WARN=#D29922 = 7.0:1 AAA Large; FAIL=#F85149 = 5.8:1 AA Normal;
+      SKIPPED=#8B949E = 5.3:1 AA Normal)
+    - Estados de la celda: 4 estados x 5 buckets de latencia (no se infiere
+      info por color solo: cada celda tiene glyph + tooltip + bucket de latencia)
+
+  Trazabilidad criterios UX:
+    - CA-UX-1: matriz visualmente parseable de un vistazo (skills filas,
+      providers columnas, celdas codificadas por estado + bucket de latencia)
+    - CA-UX-2: leyenda compacta SIEMPRE visible (no esconder en tooltip)
+    - CA-UX-3: freshness del ultimo run (timestamp + duracion + totales)
+    - CA-UX-4: link a issues auto-creados por FAIL (cumple REQ-SEC-10)
+    - CA-UX-5: accion "Ejecutar harness" con guard de pausa parcial (REQ-SEC-6)
+    - CA-UX-6: tooltip de celda muestra error_class taxonomica, NO raw output
+    - CA-UX-7: providers que no aplican a un skill se muestran como celda vacia
+      con patron rayado diagonal — diferente de FAIL/SKIPPED por motivo claro
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1180" font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- Provider icons reusados del sprite (familia identitaria comun) -->
+    <symbol id="m-provider-anthropic" viewBox="0 0 24 24">
+      <path d="M7 4 L4 20 H7.5 L9 16 H15 L16.5 20 H20 L17 4 H14.5 L12 11 L9.5 4 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-provider-openai" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M12 7 L16 10 V14 L12 17 L8 14 V10 Z" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-provider-openai-codex" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M9 10 L6.5 12 L9 14 M15 10 L17.5 12 L15 14 M13.5 9 L10.5 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-provider-gemini" viewBox="0 0 24 24">
+      <path d="M12 2.5 L17 12 L12 21.5 L7 12 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M2.5 12 L12 17 L21.5 12 L12 7 Z" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round" opacity="0.55"/>
+    </symbol>
+    <symbol id="m-provider-cerebras" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M7 7 H17 M7 10 H17 M7 13 H17 M7 16 H17" stroke="currentColor" stroke-width="1.1"/>
+      <path d="M7 7 V17 M10 7 V17 M13 7 V17 M16 7 V17" stroke="currentColor" stroke-width="1.1"/>
+      <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+    </symbol>
+    <!-- Glyphs de estado de celda — siempre acompañan al color (no info por color solo) -->
+    <symbol id="m-cell-pass" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="currentColor" opacity="0.18"/>
+      <path d="M7.5 12.5 L10.5 15.5 L16.5 8.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-cell-warn" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="currentColor" opacity="0.18"/>
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 10 V14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-cell-fail" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="currentColor" opacity="0.18"/>
+      <path d="M8 8 L16 16 M16 8 L8 16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-cell-skipped" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.4 2.6"/>
+      <path d="M8 12 H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-cell-na" viewBox="0 0 24 24">
+      <!-- Patron diagonal para N/A (provider no aplica al skill por diseño) -->
+      <rect x="3" y="3" width="18" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.4"/>
+      <path d="M5 19 L19 5 M9 19 L19 9 M15 19 L19 15 M5 13 L13 5 M5 9 L9 5" stroke="currentColor" stroke-width="0.9" opacity="0.4"/>
+    </symbol>
+    <symbol id="m-play" viewBox="0 0 24 24">
+      <path d="M7 4 L19 12 L7 20 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M12 7 V12 L15.5 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-pause-lock" viewBox="0 0 24 24">
+      <rect x="6" y="6" width="3.5" height="12" rx="1" fill="currentColor"/>
+      <rect x="14.5" y="6" width="3.5" height="12" rx="1" fill="currentColor"/>
+      <rect x="9.5" y="14" width="5" height="5" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M11 14 V12.5 A1 1 0 0 1 13 12.5 V14" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    </symbol>
+    <symbol id="m-shield-check" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M8.5 12.5 L11 15 L15.5 9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-issue" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="12" r="2.5" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="8" r="1" fill="currentColor"/>
+      <path d="M12 11 V17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-link-out" viewBox="0 0 24 24">
+      <path d="M14 4 H20 V10 M20 4 L11 13 M19 14 V19 H5 V5 H10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <!-- Patron rayado para N/A cells -->
+    <pattern id="hatch-na" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="6" stroke="#30363D" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <!-- =========================================================================
+       FONDO + GRID
+       ========================================================================= -->
+  <rect width="1440" height="1180" fill="#0D1117"/>
+
+  <!-- =========================================================================
+       HEADER (idéntico al resto del dashboard)
+       ========================================================================= -->
+  <g>
+    <rect x="0" y="0" width="1440" height="62" fill="#161B22"/>
+    <line x1="0" y1="62" x2="1440" y2="62" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(24,16)">
+      <svg width="30" height="30" viewBox="0 0 24 24" color="#00D6FF">
+        <path d="M12 3 L3 19 L21 19 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+        <path d="M12 10 L8.8 15.3 L15.2 15.3 Z" fill="currentColor"/>
+      </svg>
+    </g>
+    <text x="62" y="38" fill="#E6EDF3" font-size="18" font-weight="600" letter-spacing="0.02em">Intrale Pipeline · V3</text>
+    <g font-size="14" font-weight="500">
+      <text x="320"  y="38" fill="#8B949E">Board</text>
+      <text x="400"  y="38" fill="#8B949E">Agentes</text>
+      <text x="490"  y="38" fill="#8B949E">Consumo</text>
+      <rect x="585" y="22" width="180" height="30" rx="6" fill="rgba(45,212,191,0.10)" stroke="#2DD4BF" stroke-width="1"/>
+      <text x="623" y="42" fill="#2DD4BF" font-weight="600">Multi-Provider</text>
+      <text x="785" y="38" fill="#8B949E">Leyenda</text>
+    </g>
+    <g transform="translate(1310,38)">
+      <text fill="#E6EDF3" font-size="18" font-weight="500" font-family="'SF Mono', Consolas, monospace">29/05 · 21:48</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       BREADCRUMB + TITULO
+       ========================================================================= -->
+  <text x="24"  y="100" fill="#8B949E" font-size="13">Multi-Provider · Smoke Test Coverage (#3669)</text>
+  <text x="24"  y="138" fill="#E6EDF3" font-size="28" font-weight="600">Cobertura del fallback chain — matriz skill × provider</text>
+  <text x="24"  y="166" fill="#B1BAC4" font-size="14">Validacion empirica de que cada agente puede correr end-to-end con cada uno de sus providers configurados. Data leida del snapshot persistido en <tspan font-family="'SF Mono', Consolas, monospace" fill="#8B949E">.pipeline/multi-provider-coverage.json</tspan> — el panel NO dispara invocaciones al abrir.</text>
+
+  <!-- =========================================================================
+       BANNER SUPERIOR — meta del ultimo run + accion (CA-UX-3 / CA-UX-5)
+       ========================================================================= -->
+  <g transform="translate(24,184)">
+    <rect width="1392" height="58" rx="8" fill="rgba(45,212,191,0.06)" stroke="#2DD4BF" stroke-width="1"/>
+    <g transform="translate(16,17)" color="#2DD4BF">
+      <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg>
+    </g>
+    <text x="52" y="32" fill="#2DD4BF" font-size="13" font-weight="500">Ultimo run · OK</text>
+    <text x="160" y="32" fill="#B1BAC4" font-size="13">
+      <tspan>2026-05-29 14:32 ART</tspan>
+      <tspan dx="22" fill="#6E7681">·</tspan>
+      <tspan dx="14">hace 7h 16m</tspan>
+      <tspan dx="22" fill="#6E7681">·</tspan>
+      <tspan dx="14">duracion 18m 42s</tspan>
+      <tspan dx="22" fill="#6E7681">·</tspan>
+      <tspan dx="14">cap 60 spawns · usados 47/60</tspan>
+      <tspan dx="22" fill="#6E7681">·</tspan>
+      <tspan dx="14">concurrencia 1 (serializado)</tspan>
+    </text>
+    <!-- Boton ejecutar harness -->
+    <g transform="translate(1140,12)">
+      <rect width="240" height="34" rx="6" fill="rgba(45,212,191,0.12)" stroke="#2DD4BF" stroke-width="1.4"/>
+      <g transform="translate(14,9)" color="#2DD4BF">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-play"/></svg>
+      </g>
+      <text x="38" y="22" fill="#2DD4BF" font-size="13" font-weight="600">Ejecutar harness</text>
+      <text x="170" y="22" fill="#8B949E" font-size="11" font-family="'SF Mono', Consolas, monospace">~20 min</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       BANNER SECUNDARIO — guard de coordinacion REQ-SEC-6
+       ========================================================================= -->
+  <g transform="translate(24,252)">
+    <rect width="1392" height="38" rx="6" fill="rgba(124,92,255,0.10)" stroke="#7C5CFF" stroke-width="1"/>
+    <g transform="translate(14,11)" color="#7C5CFF">
+      <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-pause-lock"/></svg>
+    </g>
+    <text x="38" y="24" fill="#C5B7FF" font-size="12" font-weight="500">Coordinacion con pipeline productivo</text>
+    <text x="232" y="24" fill="#B1BAC4" font-size="12">
+      <tspan>Modo descanso activo (ventana 02:00-06:00 ART)</tspan>
+      <tspan dx="18" fill="#6E7681">·</tspan>
+      <tspan dx="10">.partial-pause.json allowlist: <tspan font-family="'SF Mono', Consolas, monospace" fill="#C5B7FF">multi-provider-smoke-test</tspan></tspan>
+      <tspan dx="18" fill="#6E7681">·</tspan>
+      <tspan dx="10">resto del pipeline pausado</tspan>
+    </text>
+    <text x="1378" y="24" fill="#8B949E" font-size="11" font-family="'SF Mono', Consolas, monospace" text-anchor="end">REQ-SEC-6</text>
+  </g>
+
+  <!-- =========================================================================
+       LEYENDA — siempre visible (CA-UX-2)
+       Cuatro estados de celda + cinco buckets de latencia
+       ========================================================================= -->
+  <g transform="translate(24,308)">
+    <rect width="1392" height="74" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <text x="16" y="22" fill="#8B949E" font-size="11" letter-spacing="0.05em" font-weight="600">LEYENDA</text>
+    <!-- Estados -->
+    <text x="16" y="46" fill="#8B949E" font-size="11">Estado:</text>
+    <g transform="translate(70,32)">
+      <g color="#3FB950">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg>
+      </g>
+      <text x="26" y="14" fill="#3FB950" font-size="12" font-weight="600">PASS</text>
+      <text x="68" y="14" fill="#8B949E" font-size="11">exit=0 · well-formed · SLA ok</text>
+    </g>
+    <g transform="translate(280,32)">
+      <g color="#D29922">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-cell-warn"/></svg>
+      </g>
+      <text x="26" y="14" fill="#D29922" font-size="12" font-weight="600">WARN</text>
+      <text x="74" y="14" fill="#8B949E" font-size="11">exit=0 · divergencia o latencia 2-5×</text>
+    </g>
+    <g transform="translate(530,32)">
+      <g color="#F85149">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-cell-fail"/></svg>
+      </g>
+      <text x="26" y="14" fill="#F85149" font-size="12" font-weight="600">FAIL</text>
+      <text x="66" y="14" fill="#8B949E" font-size="11">exit≠0 · timeout · quota · auth · parser</text>
+    </g>
+    <g transform="translate(800,32)">
+      <g color="#8B949E">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-cell-skipped"/></svg>
+      </g>
+      <text x="26" y="14" fill="#8B949E" font-size="12" font-weight="600">SKIPPED</text>
+      <text x="86" y="14" fill="#8B949E" font-size="11">API key faltante (no se invoca)</text>
+    </g>
+    <g transform="translate(1050,32)">
+      <g color="#484F58">
+        <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg>
+      </g>
+      <text x="26" y="14" fill="#8B949E" font-size="12" font-weight="600">N/A</text>
+      <text x="58" y="14" fill="#8B949E" font-size="11">provider no aplica al skill (por diseño)</text>
+    </g>
+    <!-- Buckets de latencia (REQ-SEC-9) -->
+    <text x="16" y="68" fill="#8B949E" font-size="11">Latencia:</text>
+    <g transform="translate(80,58)" font-size="11" font-family="'SF Mono', Consolas, monospace">
+      <g>
+        <rect width="68" height="16" rx="3" fill="rgba(0,214,255,0.14)" stroke="#00D6FF" stroke-width="0.8"/>
+        <text x="34" y="12" fill="#00D6FF" text-anchor="middle">&lt;100ms</text>
+      </g>
+      <g transform="translate(78,0)">
+        <rect width="68" height="16" rx="3" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="0.8"/>
+        <text x="34" y="12" fill="#58A6FF" text-anchor="middle">&lt;500ms</text>
+      </g>
+      <g transform="translate(156,0)">
+        <rect width="68" height="16" rx="3" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.8"/>
+        <text x="34" y="12" fill="#B1BAC4" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(234,0)">
+        <rect width="68" height="16" rx="3" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="0.8"/>
+        <text x="34" y="12" fill="#D29922" text-anchor="middle">&lt;10s</text>
+      </g>
+      <g transform="translate(312,0)">
+        <rect width="68" height="16" rx="3" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="0.8"/>
+        <text x="34" y="12" fill="#F85149" text-anchor="middle">&gt;10s</text>
+      </g>
+    </g>
+    <text x="500" y="68" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">timing oracle bucketizado — REQ-SEC-9 (no se exponen valores absolutos)</text>
+  </g>
+
+  <!-- =========================================================================
+       MATRIZ DE COBERTURA — skills (filas) × providers (columnas)
+       CA-UX-1: parseable de un vistazo
+       ========================================================================= -->
+  <g transform="translate(24,402)">
+    <rect width="1010" height="640" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Header de columnas (providers) -->
+    <text x="16" y="26" fill="#8B949E" font-size="11" letter-spacing="0.05em" font-weight="600">SKILL</text>
+    <g transform="translate(280,18)" font-size="11" letter-spacing="0.04em" font-weight="600" text-anchor="middle">
+      <g>
+        <g transform="translate(-12,-4)" color="#E5946B">
+          <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-provider-anthropic"/></svg>
+        </g>
+        <text x="58" y="-3" fill="#E5946B">ANTHROPIC</text>
+      </g>
+      <g transform="translate(150,0)">
+        <g transform="translate(-12,-4)" color="#10B981">
+          <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-provider-openai-codex"/></svg>
+        </g>
+        <text x="58" y="-3" fill="#10B981">OPENAI-CODEX</text>
+      </g>
+      <g transform="translate(300,0)">
+        <g transform="translate(-12,-4)" color="#8AB4F8">
+          <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-provider-gemini"/></svg>
+        </g>
+        <text x="58" y="-3" fill="#8AB4F8">GEMINI</text>
+      </g>
+      <g transform="translate(450,0)">
+        <g transform="translate(-12,-4)" color="#FFD166">
+          <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-provider-cerebras"/></svg>
+        </g>
+        <text x="58" y="-3" fill="#FFD166">CEREBRAS</text>
+      </g>
+      <g transform="translate(600,0)">
+        <g transform="translate(-12,-4)" color="#76B900">
+          <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-provider-anthropic"/></svg>
+        </g>
+        <text x="58" y="-3" fill="#76B900">NVIDIA-NIM</text>
+      </g>
+    </g>
+    <line x1="0" y1="44" x2="1010" y2="44" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Filas de skills — 15 skills LLM + 1 nota -->
+    <!-- Template fila: 16 left padding skill name; 5 cells de 130x36 con spacing -->
+    <!-- Helper: para cada cell, color del estado + glyph + bucket de latencia -->
+
+    <!-- FILA 1: backend-dev — PASS, PASS, N/A, PASS, N/A -->
+    <g transform="translate(0,52)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">backend-dev</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">opus-4-7 (primary)</text>
+      <!-- Cell anthropic PASS <2s -->
+      <g transform="translate(220,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950">
+          <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg>
+        </g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <!-- Cell openai-codex PASS <2s -->
+      <g transform="translate(370,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950">
+          <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg>
+        </g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <!-- Cell gemini N/A -->
+      <g transform="translate(520,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58">
+          <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg>
+        </g>
+        <text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+      </g>
+      <!-- Cell cerebras PASS <500ms -->
+      <g transform="translate(670,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950">
+          <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg>
+        </g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="50" height="13" rx="2.5" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="0.6"/>
+        <text x="63" y="28" fill="#58A6FF" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;500ms</text>
+      </g>
+      <!-- Cell nvidia-nim N/A -->
+      <g transform="translate(820,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58">
+          <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg>
+        </g>
+        <text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+      </g>
+    </g>
+
+    <!-- FILA 2: android-dev — PASS, PASS, PASS, PASS, N/A -->
+    <g transform="translate(0,98)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">android-dev</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">opus-4-7 (primary)</text>
+      <g transform="translate(220,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(370,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(520,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="40" height="13" rx="2.5" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="0.6"/>
+        <text x="58" y="28" fill="#D29922" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;10s</text>
+      </g>
+      <g transform="translate(670,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="50" height="13" rx="2.5" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="0.6"/>
+        <text x="63" y="28" fill="#58A6FF" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;500ms</text>
+      </g>
+      <g transform="translate(820,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g>
+        <text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+      </g>
+    </g>
+
+    <!-- FILA 3: qa — PASS, PASS, WARN, PASS, N/A (Gemini con divergencia) -->
+    <g transform="translate(0,144)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">qa</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">opus-4-7 (primary)</text>
+      <g transform="translate(220,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(370,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <!-- Cell gemini WARN <10s -->
+      <g transform="translate(520,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="1.2"/>
+        <g transform="translate(8,5)" color="#D29922"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-warn"/></svg></g>
+        <text x="38" y="14" fill="#D29922" font-size="11" font-weight="600">WARN</text>
+        <rect x="38" y="18" width="40" height="13" rx="2.5" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="0.6"/>
+        <text x="58" y="28" fill="#D29922" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;10s</text>
+      </g>
+      <g transform="translate(670,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(820,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g>
+        <text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+      </g>
+    </g>
+
+    <!-- FILA 4: security — PASS, PASS, N/A, PASS, N/A (sin Gemini por TOS sensible) -->
+    <g transform="translate(0,190)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">security</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">opus-4-7 (primary)</text>
+      <g transform="translate(220,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(370,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(520,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g>
+        <text x="38" y="14" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+        <text x="38" y="29" fill="#6E7681" font-size="9">TOS sensible</text>
+      </g>
+      <g transform="translate(670,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(820,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g>
+        <text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+      </g>
+    </g>
+
+    <!-- FILA 5: review — PASS, FAIL, N/A, PASS, N/A (codex FAIL) -->
+    <g transform="translate(0,236)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">review</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">sonnet-4-7 (primary)</text>
+      <g transform="translate(220,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="50" height="13" rx="2.5" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="0.6"/>
+        <text x="63" y="28" fill="#58A6FF" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;500ms</text>
+      </g>
+      <!-- FAIL openai-codex -->
+      <g transform="translate(370,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.4"/>
+        <g transform="translate(8,5)" color="#F85149"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-fail"/></svg></g>
+        <text x="38" y="14" fill="#F85149" font-size="11" font-weight="600">FAIL</text>
+        <text x="38" y="28" fill="#F85149" font-size="9" font-family="'SF Mono', Consolas, monospace">timeout · #3680</text>
+      </g>
+      <g transform="translate(520,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g>
+        <text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+      </g>
+      <g transform="translate(670,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g>
+        <text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text>
+        <rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/>
+        <text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text>
+      </g>
+      <g transform="translate(820,8)">
+        <rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/>
+        <g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g>
+        <text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text>
+      </g>
+    </g>
+
+    <!-- FILA 6: po (filas 6 a 9 abreviadas con mismo patron mixto) — PASS x5 -->
+    <g transform="translate(0,282)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">po</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">opus-4-7 (primary)</text>
+      <g transform="translate(220,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/><text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text></g>
+      <g transform="translate(370,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/><text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text></g>
+      <g transform="translate(520,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="40" height="13" rx="2.5" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="0.6"/><text x="58" y="28" fill="#D29922" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;10s</text></g>
+      <g transform="translate(670,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="50" height="13" rx="2.5" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="0.6"/><text x="63" y="28" fill="#58A6FF" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;500ms</text></g>
+      <g transform="translate(820,8)"><rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/><g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g><text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text></g>
+    </g>
+
+    <!-- FILA 7: ux — SKIPPED cerebras -->
+    <g transform="translate(0,328)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">ux</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">opus-4-7 (primary)</text>
+      <g transform="translate(220,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/><text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text></g>
+      <g transform="translate(370,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/><text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text></g>
+      <g transform="translate(520,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="40" height="13" rx="2.5" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="0.6"/><text x="58" y="28" fill="#D29922" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;10s</text></g>
+      <!-- SKIPPED cerebras -->
+      <g transform="translate(670,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(139,148,158,0.10)" stroke="#8B949E" stroke-width="1" stroke-dasharray="3 2"/>
+        <g transform="translate(8,5)" color="#8B949E"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-skipped"/></svg></g>
+        <text x="38" y="14" fill="#8B949E" font-size="11" font-weight="600">SKIPPED</text>
+        <text x="38" y="28" fill="#6E7681" font-size="9" font-family="'SF Mono', Consolas, monospace">key faltante</text>
+      </g>
+      <g transform="translate(820,8)"><rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/><g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g><text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text></g>
+    </g>
+
+    <!-- FILA 8: guru — PASS, PASS, N/A, PASS, PASS (incluye nvidia-nim) -->
+    <g transform="translate(0,374)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">guru</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">sonnet-4-7 (primary)</text>
+      <g transform="translate(220,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/><text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text></g>
+      <g transform="translate(370,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="44" height="13" rx="2.5" fill="rgba(177,186,196,0.14)" stroke="#B1BAC4" stroke-width="0.6"/><text x="60" y="28" fill="#B1BAC4" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;2s</text></g>
+      <g transform="translate(520,8)"><rect width="130" height="34" rx="6" fill="url(#hatch-na)" stroke="#30363D" stroke-width="1"/><g transform="translate(8,5)" color="#484F58"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-na"/></svg></g><text x="38" y="22" fill="#8B949E" font-size="11" font-weight="600">N/A</text></g>
+      <g transform="translate(670,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="50" height="13" rx="2.5" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="0.6"/><text x="63" y="28" fill="#58A6FF" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;500ms</text></g>
+      <!-- nvidia-nim PASS -->
+      <g transform="translate(820,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="40" height="13" rx="2.5" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="0.6"/><text x="58" y="28" fill="#D29922" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;10s</text></g>
+    </g>
+
+    <!-- FILA 9: telegram-sherlock — FAIL en todos los fallbacks (bug upstream conocido) -->
+    <g transform="translate(0,420)" font-size="13">
+      <text x="16" y="22" fill="#E6EDF3" font-weight="500">telegram-sherlock</text>
+      <text x="16" y="36" fill="#6E7681" font-size="11">haiku-4-5 (primary) · bug paralelo</text>
+      <g transform="translate(220,8)"><rect width="130" height="34" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/><g transform="translate(8,5)" color="#3FB950"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-pass"/></svg></g><text x="38" y="14" fill="#3FB950" font-size="11" font-weight="600">PASS</text><rect x="38" y="18" width="50" height="13" rx="2.5" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="0.6"/><text x="63" y="28" fill="#58A6FF" font-size="9.5" font-family="'SF Mono', Consolas, monospace" text-anchor="middle">&lt;500ms</text></g>
+      <g transform="translate(370,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.4"/>
+        <g transform="translate(8,5)" color="#F85149"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-fail"/></svg></g>
+        <text x="38" y="14" fill="#F85149" font-size="11" font-weight="600">FAIL</text>
+        <text x="38" y="28" fill="#F85149" font-size="9" font-family="'SF Mono', Consolas, monospace">parser · #3681</text>
+      </g>
+      <g transform="translate(520,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.4"/>
+        <g transform="translate(8,5)" color="#F85149"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-fail"/></svg></g>
+        <text x="38" y="14" fill="#F85149" font-size="11" font-weight="600">FAIL</text>
+        <text x="38" y="28" fill="#F85149" font-size="9" font-family="'SF Mono', Consolas, monospace">parser · #3681</text>
+      </g>
+      <g transform="translate(670,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.4"/>
+        <g transform="translate(8,5)" color="#F85149"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-fail"/></svg></g>
+        <text x="38" y="14" fill="#F85149" font-size="11" font-weight="600">FAIL</text>
+        <text x="38" y="28" fill="#F85149" font-size="9" font-family="'SF Mono', Consolas, monospace">parser · #3681</text>
+      </g>
+      <g transform="translate(820,8)">
+        <rect width="130" height="34" rx="6" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.4"/>
+        <g transform="translate(8,5)" color="#F85149"><svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-cell-fail"/></svg></g>
+        <text x="38" y="14" fill="#F85149" font-size="11" font-weight="600">FAIL</text>
+        <text x="38" y="28" fill="#F85149" font-size="9" font-family="'SF Mono', Consolas, monospace">parser · #3681</text>
+      </g>
+    </g>
+
+    <!-- Indicador "ver +6 skills mas" -->
+    <g transform="translate(0,476)">
+      <line x1="16" y1="0" x2="994" y2="0" stroke="#21262D" stroke-width="1"/>
+      <text x="505" y="22" fill="#8B949E" font-size="12" text-anchor="middle">— 6 skills mas (doc · planner · ops · auth · web-dev · pipeline-dev) —</text>
+      <text x="505" y="40" fill="#6E7681" font-size="11" text-anchor="middle">scroll vertical · todas las celdas con el mismo schema visual</text>
+    </g>
+
+    <!-- Resumen del run (footer del card) -->
+    <line x1="0" y1="546" x2="1010" y2="546" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,556)">
+      <text x="0" y="20" fill="#8B949E" font-size="11" letter-spacing="0.05em" font-weight="600">RESUMEN DEL ULTIMO RUN</text>
+      <g transform="translate(0,32)" font-size="13" font-family="'SF Mono', Consolas, monospace">
+        <g>
+          <rect width="78" height="26" rx="4" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-width="0.8"/>
+          <text x="10" y="18" fill="#3FB950" font-weight="600">PASS</text>
+          <text x="56" y="18" fill="#3FB950" text-anchor="end">39</text>
+        </g>
+        <g transform="translate(90,0)">
+          <rect width="78" height="26" rx="4" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="0.8"/>
+          <text x="10" y="18" fill="#D29922" font-weight="600">WARN</text>
+          <text x="56" y="18" fill="#D29922" text-anchor="end">2</text>
+        </g>
+        <g transform="translate(180,0)">
+          <rect width="78" height="26" rx="4" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="0.8"/>
+          <text x="10" y="18" fill="#F85149" font-weight="600">FAIL</text>
+          <text x="56" y="18" fill="#F85149" text-anchor="end">5</text>
+        </g>
+        <g transform="translate(270,0)">
+          <rect width="98" height="26" rx="4" fill="rgba(139,148,158,0.12)" stroke="#8B949E" stroke-width="0.8"/>
+          <text x="10" y="18" fill="#8B949E" font-weight="600">SKIPPED</text>
+          <text x="74" y="18" fill="#8B949E" text-anchor="end">1</text>
+        </g>
+        <g transform="translate(382,0)">
+          <rect width="78" height="26" rx="4" fill="rgba(72,79,88,0.20)" stroke="#484F58" stroke-width="0.8"/>
+          <text x="10" y="18" fill="#8B949E" font-weight="600">N/A</text>
+          <text x="56" y="18" fill="#8B949E" text-anchor="end">28</text>
+        </g>
+        <text x="490" y="18" fill="#B1BAC4" font-weight="400" font-family="-apple-system, sans-serif" font-size="12">cobertura efectiva: <tspan fill="#3FB950" font-weight="600">85%</tspan> (39 PASS de 46 esperadas)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       PANEL LATERAL DERECHO — issues auto-creados por FAIL (CA-UX-4 / REQ-SEC-10)
+       ========================================================================= -->
+  <g transform="translate(1054,402)">
+    <rect width="362" height="640" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(16,18)" color="#F85149">
+      <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-issue"/></svg>
+    </g>
+    <text x="44" y="32" fill="#E6EDF3" font-size="14" font-weight="600">Issues auto-creados</text>
+    <text x="16" y="56" fill="#8B949E" font-size="11">5 FAILs del ultimo run · cada uno con error_class taxonomica</text>
+    <line x1="16" y1="72" x2="346" y2="72" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Issue 1 -->
+    <g transform="translate(16,88)">
+      <rect width="330" height="92" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="14" y="22" fill="#E6EDF3" font-size="13" font-weight="600">#3681 telegram-sherlock parser FAIL (4 providers)</text>
+      <text x="14" y="40" fill="#B1BAC4" font-size="11">
+        <tspan fill="#8B949E">skill:</tspan>
+        <tspan dx="4" font-family="'SF Mono', Consolas, monospace">telegram-sherlock</tspan>
+      </text>
+      <text x="14" y="56" fill="#B1BAC4" font-size="11">
+        <tspan fill="#8B949E">error_class:</tspan>
+        <tspan dx="4" fill="#F85149" font-family="'SF Mono', Consolas, monospace">parser.malformed_response</tspan>
+      </text>
+      <text x="14" y="72" fill="#B1BAC4" font-size="11">
+        <tspan fill="#8B949E">evidence:</tspan>
+        <tspan dx="4" fill="#6E7681" font-family="'SF Mono', Consolas, monospace">sha256:8f3a…b9c2</tspan>
+      </text>
+      <g transform="translate(280,72)" color="#58A6FF">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-link-out"/></svg>
+      </g>
+    </g>
+
+    <!-- Issue 2 -->
+    <g transform="translate(16,196)">
+      <rect width="330" height="92" rx="6" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="14" y="22" fill="#E6EDF3" font-size="13" font-weight="600">#3680 review openai-codex timeout</text>
+      <text x="14" y="40" fill="#B1BAC4" font-size="11">
+        <tspan fill="#8B949E">skill:</tspan>
+        <tspan dx="4" font-family="'SF Mono', Consolas, monospace">review</tspan>
+        <tspan dx="14" fill="#8B949E">provider:</tspan>
+        <tspan dx="4" fill="#10B981" font-family="'SF Mono', Consolas, monospace">openai-codex</tspan>
+      </text>
+      <text x="14" y="56" fill="#B1BAC4" font-size="11">
+        <tspan fill="#8B949E">error_class:</tspan>
+        <tspan dx="4" fill="#F85149" font-family="'SF Mono', Consolas, monospace">transport.timeout</tspan>
+      </text>
+      <text x="14" y="72" fill="#B1BAC4" font-size="11">
+        <tspan fill="#8B949E">latency:</tspan>
+        <tspan dx="4" fill="#F85149" font-family="'SF Mono', Consolas, monospace">&gt;10s (cap)</tspan>
+      </text>
+      <g transform="translate(280,72)" color="#58A6FF">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-link-out"/></svg>
+      </g>
+    </g>
+
+    <text x="16" y="316" fill="#6E7681" font-size="11">+ 3 issues mas (ver listado completo en /multi-provider/coverage)</text>
+
+    <!-- Notas REQ-SEC-10 — explicacion del por que de la economia de info -->
+    <line x1="16" y1="340" x2="346" y2="340" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,358)" color="#8B949E">
+      <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-info"/></svg>
+    </g>
+    <text x="40" y="370" fill="#8B949E" font-size="11" font-weight="600">REQ-SEC-10</text>
+    <text x="16" y="392" fill="#B1BAC4" font-size="11">
+      <tspan x="16" dy="0">Cada issue contiene SOLO:</tspan>
+      <tspan x="16" dy="16" font-family="'SF Mono', Consolas, monospace" fill="#8B949E">skill · provider · error_class</tspan>
+      <tspan x="16" dy="14" font-family="'SF Mono', Consolas, monospace" fill="#8B949E">latency_bucket · evidence_hash</tspan>
+    </text>
+    <text x="16" y="448" fill="#B1BAC4" font-size="11">NUNCA raw output del provider (puede contener prompt fragmentado o trazas del request). El hash referencia el blob redactado en audit log.</text>
+
+    <line x1="16" y1="506" x2="346" y2="506" stroke="#21262D" stroke-width="1"/>
+    <text x="16" y="528" fill="#8B949E" font-size="11" letter-spacing="0.05em" font-weight="600">FUENTES DE DATA</text>
+    <g transform="translate(16,540)" font-size="11" font-family="'SF Mono', Consolas, monospace" fill="#8B949E">
+      <text x="0" y="14">
+        <tspan>matriz:</tspan>
+        <tspan dx="6" fill="#B1BAC4">multi-provider-coverage.json</tspan>
+      </text>
+      <text x="0" y="30">
+        <tspan>audit:</tspan>
+        <tspan dx="6" fill="#B1BAC4">audit/multi-provider-smoke-test-*.jsonl</tspan>
+      </text>
+      <text x="0" y="46">
+        <tspan>docs:</tspan>
+        <tspan dx="6" fill="#B1BAC4">docs/pipeline/multi-provider-coverage.md</tspan>
+      </text>
+      <text x="0" y="62">
+        <tspan>hash-chain:</tspan>
+        <tspan dx="6" fill="#B1BAC4">SHA-256 (REQ-SEC-7)</tspan>
+      </text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       FOOTER — info de sistema
+       ========================================================================= -->
+  <g transform="translate(24,1064)">
+    <text x="0" y="14" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">
+      <tspan>Widget consume snapshot persistido (no dispara invocaciones al renderizar)</tspan>
+      <tspan dx="22" fill="#484F58">·</tspan>
+      <tspan dx="14">DOM morphing anti-flicker</tspan>
+      <tspan dx="22" fill="#484F58">·</tspan>
+      <tspan dx="14">refresh 30s</tspan>
+      <tspan dx="22" fill="#484F58">·</tspan>
+      <tspan dx="14">cumple R2/R6 #3086 (allowlist providers)</tspan>
+    </text>
+    <text x="0" y="30" fill="#484F58" font-size="11" font-family="'SF Mono', Consolas, monospace">
+      <tspan>Mockup #23 · UX criterios #3669 · design-tokens.css familia 3.c/3.d (providers) + 3 (semanticos)</tspan>
+    </text>
+  </g>
+
+  <!-- =========================================================================
+       TOOLTIP DEMO (CA-UX-6) — overlay flotante con detalle de cell hover
+       Mostrado en celda WARN de qa × gemini como ejemplo
+       ========================================================================= -->
+  <g transform="translate(660,520)">
+    <!-- Pointer hacia la celda -->
+    <path d="M0 14 L-14 4" stroke="#7C5CFF" stroke-width="1.5"/>
+    <rect width="320" height="180" rx="8" fill="#252B33" stroke="#7C5CFF" stroke-width="1.4"/>
+    <g transform="translate(14,16)" color="#7C5CFF">
+      <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-info"/></svg>
+    </g>
+    <text x="38" y="28" fill="#C5B7FF" font-size="12" font-weight="600">Detalle de celda · qa × gemini</text>
+
+    <g transform="translate(14,46)" font-size="11" font-family="'SF Mono', Consolas, monospace">
+      <text x="0" y="16" fill="#8B949E">estado:</text>
+      <text x="80" y="16" fill="#D29922" font-weight="600">WARN</text>
+
+      <text x="0" y="34" fill="#8B949E">latencia:</text>
+      <text x="80" y="34" fill="#D29922">&lt;10s (bucket)</text>
+
+      <text x="0" y="52" fill="#8B949E">divergencia:</text>
+      <text x="80" y="52" fill="#D29922">structural-shape OK · length 3.2× baseline</text>
+
+      <text x="0" y="70" fill="#8B949E">model:</text>
+      <text x="80" y="70" fill="#B1BAC4">gemini-2.0-flash-exp</text>
+
+      <text x="0" y="88" fill="#8B949E">timestamp:</text>
+      <text x="80" y="88" fill="#B1BAC4">14:38:22 ART</text>
+
+      <text x="0" y="106" fill="#8B949E">evidence:</text>
+      <text x="80" y="106" fill="#6E7681">sha256:a4f1…6e7d</text>
+    </g>
+
+    <line x1="14" y1="148" x2="306" y2="148" stroke="#30363D" stroke-width="1"/>
+    <text x="14" y="166" fill="#8B949E" font-size="10.5">Sin raw output · cumple REQ-SEC-9 (timing bucketizado) y REQ-SEC-10 (hash en vez de raw)</text>
+  </g>
+</svg>
