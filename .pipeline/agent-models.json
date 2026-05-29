@@ -362,6 +362,24 @@
         }
       ]
     },
+    "architect": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-7",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5-codex"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "llama-3.3-70b"
+        }
+      ]
+    },
     "ops": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-7",

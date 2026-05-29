@@ -7,7 +7,7 @@ pipelines:
     fase_rechazo: null  # No hay rechazo en definición (se escala al usuario)
     skills_por_fase:
       analisis: [guru, security]
-      criterios: [po, ux]
+      criterios: [po, ux, architect]  # #3613 — architect entra en `criterios` con espera blanda (docs/pipeline/architect-role.md §2)
       sizing: [planner]
 
   desarrollo:
@@ -19,7 +19,7 @@ pipelines:
       build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       linteo: [linter]                           # Determinístico (Node, #2491) — chequeos mecánicos antes del LLM
-      aprobacion: [review, po, ux]
+      aprobacion: [review, po, ux, architect]   # #3613 — architect Fase 2: verifica adherencia diff vs receta firmada (architect-role.md §9)
       entrega: [delivery]
 
 # Concurrencia máxima por rol (instancias simultáneas de Claude)
@@ -29,6 +29,7 @@ concurrencia:
   ux: 2
   guru: 2
   security: 2
+  architect: 2           # #3613 — mismo nivel que po/ux/guru; corre en `criterios` y `aprobacion`
   planner: 1             # Necesita ver panorama completo
 
   # Desarrollo — worktree por issue
@@ -728,6 +729,38 @@ cua:
   audio_root: ".pipeline/audio/notifications"
   max_tts_chunks: 3
   tts_chunk_timeout_ms: 30000
+
+# =============================================================================
+# #3613 — Bootstrap del skill `architect` (paraguas #3559, spike #3507)
+# =============================================================================
+# El skill `architect` corre en dos fases:
+#   1. `definicion/criterios` — produce la receta técnica ("Detalles Técnicos")
+#      antes de que el issue se promueva a `Ready`. Debe esperar (espera
+#      blanda, docs/pipeline/architect-role.md §2) hasta que al menos uno
+#      entre PO o UX deje un comment en `criterios`. El polling NO se
+#      ejecuta como instrucción del prompt LLM (caro y propenso a errores);
+#      vive en banda como wiring determinístico del agent-launcher que
+#      dispara al architect cuando hay primer comment PO/UX en `criterios`
+#      o cuando expira el cap.
+#   2. `desarrollo/aprobacion` — verifica adherencia diff vs receta firmada
+#      (architect-role.md §9). En esta fase NO hay espera blanda.
+#
+# Lo configurable acá:
+#   - poll_cap_min: tope superior (en minutos) de la espera blanda en
+#                   `criterios`. Default 30 min. Si tras este cap no
+#                   aparecen comments PO/UX, el architect arranca igual
+#                   con lo que tenga (body refinado + análisis previos).
+#   - poll_interval_seconds: cadencia del polling en banda. Default 30s.
+#                            Mantener corto para no introducir latencia
+#                            visible al pipeline.
+#
+# CAPs hardcoded (NO configurables desde acá por defensa anti-config-malicioso,
+# patrón cost_anomaly_alert.max_snooze_hours):
+#   - El polling efectivo se clamp a [1, 120] minutos en lib/agent-launcher.
+#     Aunque alguien edite y ponga `poll_cap_min: 9999`, el cap absoluto gana.
+architect:
+  poll_cap_min: 30
+  poll_interval_seconds: 30
 
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #

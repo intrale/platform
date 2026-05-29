@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/intrale/platform/.pipeline/agent-models.schema.json",
   "title": "agent-models.json — schema multi-proveedor del pipeline V3 (#3081 + #3065 + #3077)",
-  "description": "Schema canónico para .pipeline/agent-models.json. Source-of-truth del enum de 'launcher' y 'output_parser' es lib/agent-models-validate.js — el validador inyecta los enums programáticamente al cargar el schema (composición), evitando drift schema↔código. La cross-validación de quota_error_types contra la meta-allowlist por provider vive en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — #3077 SEC-2 (defensa anti-supply-chain).",
+  "description": "Schema canónico para .pipeline/agent-models.json. Source-of-truth del enum de 'launcher' y 'output_parser' es lib/agent-models-validate.js — el validador inyecta los enums programáticamente al cargar el schema (composición), evitando drift schema↔código. La cross-validación de quota_error_types contra la meta-allowlist por provider vive en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — #3077 SEC-2 (defensa anti-supply-chain). #3613 (bootstrap del skill `architect`): la sección `skills` usa `additionalProperties: { $ref: skillAssignment }` sin allowlist explícita de nombres, por lo que el agregado del skill `architect` no requiere cambio funcional al schema. Este `_doc` se actualiza primero (commit aparte) para auditar el orden inquebrantable schema → JSON (SEC-2 #3081).",
   "type": "object",
   "required": ["default_provider", "providers", "skills"],
   "additionalProperties": false,
