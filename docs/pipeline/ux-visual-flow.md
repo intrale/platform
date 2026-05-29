@@ -3,6 +3,8 @@
 > **Issue origen:** [#3381](https://github.com/intrale/platform/issues/3381).
 > **Estado:** rollout gradual, default **OFF** (`SCREENSHOTS_MOCKUPS_GATE_ENABLED=1` para activar el gate).
 > **Audiencia:** `/ux`, `/po`, `/qa`, devs de Android (`/android-dev`) y de pipeline (`/pipeline-dev`).
+>
+> ⚠️ **Tecnología real (clarificación 2026-05-29 · issue #3647):** los mockups se generan con **Anthropic SDK + HTML/CSS + Puppeteer**. **NO se usa Claude Design** (claude.ai/design). Claude Design vive en el bucket Max separado y no tiene endpoint programable que el pipeline pueda integrar — se evaluó en la definición original del #3381 y se descartó. Si una memoria/documentación menciona "Claude Design" como fuente del flujo, está desactualizada respecto a la implementación real entregada.
 
 ## Por qué existe
 

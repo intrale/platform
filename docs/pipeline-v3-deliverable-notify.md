@@ -172,6 +172,115 @@ try {
 El `try/catch` garantiza CA-FN-8: cualquier error del notify NUNCA bloquea el
 `moveFile` que cierra la promoción de fase.
 
+## Attachments por skill (issue #3647)
+
+Hasta Ola N+11, todas las notificaciones salían text-only: el campo
+`yaml.attachments[]` venía sin poblar porque ningún integrador conectaba los
+artefactos generados por cada skill al payload. El issue #3647 cierra ese gap
+agregando un helper compartido.
+
+### Helper `collectAttachmentsForSkill`
+
+Vive en
+[`.pipeline/lib/skill-deliverable-attachments.js`](../.pipeline/lib/skill-deliverable-attachments.js)
+y expone:
+
+```js
+const helper = require('./lib/skill-deliverable-attachments');
+const list = helper.collectAttachmentsForSkill(skill, issueNumber, phase, {
+    pipelineRoot,
+});
+// → [{ type: 'image'|'document'|'video'|'animation', path, descriptor }]
+```
+
+Es **puro / stateless**, escanea disco y devuelve la lista de adjuntos
+issue-scoped que encontró para ese skill. No genera mockups, no valida magic
+bytes ni allowlists — esa validación final la hace
+`deliverable-notify.resolveAttachments` downstream.
+
+### Catálogo de fuentes por skill
+
+| Skill   | Directorios inspeccionados (issue-scoped)           | Formatos         | `type`     |
+|---------|-----------------------------------------------------|------------------|------------|
+| `ux`    | `.pipeline/assets/mockups/<issue>/`                 | `.png .jpg .gif` | `image`    |
+|         | `qa/evidence/<issue>/`                              | `.png .jpg .gif` | `image`    |
+|         | `qa/evidence/<issue>/`                              | `.mp4 .webm`     | `video`    |
+|         | `.pipeline/assets/mockups/` (filename con `<issue>`) | `.png .jpg .gif` | `image`    |
+| `po`    | `.pipeline/assets/docs/<issue>/`                    | `.pdf .md`       | `document` |
+|         | `.pipeline/assets/docs/` (filename con `<issue>`)   | `.pdf .md`       | `document` |
+| `guru`  | `.pipeline/assets/docs/<issue>/`                    | `.pdf .md`       | `document` |
+|         | `.pipeline/assets/docs/` (filename con `<issue>`)   | `.pdf .md`       | `document` |
+| `planner` | `.pipeline/assets/docs/<issue>/`                  | `.pdf .md .png .svg` | `document` |
+|         | `.pipeline/assets/docs/` (filename con `<issue>`)   | `.pdf .md`       | `document` |
+| `cua`   | `.pipeline/cua-outputs/<issue>/`                    | `.png .mp4 .pdf` | (inferido) |
+
+### CA-1.4: glob scoping issue-scoped obligatorio
+
+Cada fuente del catálogo está estrictamente scopeada al issue:
+
+- vía directorio (`.pipeline/assets/mockups/<issue>/`), o
+- vía filename con `<issue>` literal (`.pipeline/assets/mockups/3647-actual.png`).
+
+El helper valida en runtime que ningún source pierda el scoping
+(`sourceIsIssueScoped`). Si una entrada futura del catálogo se modificara y
+perdiera el scoping, se descarta silenciosamente en lugar de contaminar
+notifications entre issues vecinos.
+
+### Orden visual (UX-only)
+
+Para `ux` el orden de los adjuntos es:
+
+1. `actual` / `baseline` — estado actual del producto.
+2. `esperado` / `mockup` — estado propuesto.
+3. `narrativa` — descripción del cambio.
+
+Razón: el operador escanea de izquierda a derecha y espera el contraste
+"antes → después" en ese orden. Para otros skills el orden es alfabético
+estable.
+
+### Integración en `pulpo.js`
+
+```js
+// .pipeline/pulpo.js (~línea 3853, dentro del barrido de notificación)
+const fsAttachments = skillDeliverableAttachments.collectAttachmentsForSkill(
+  notifySkill, issue, fase, { pipelineRoot: ROOT },
+);
+if (Array.isArray(fsAttachments) && fsAttachments.length > 0) {
+  const existing = Array.isArray(r.attachments) ? r.attachments.slice() : [];
+  const seenPaths = new Set(existing.map((a) => (a && a.path) || ''));
+  for (const a of fsAttachments) {
+    if (a && !seenPaths.has(a.path)) {
+      existing.push(a);
+      seenPaths.add(a.path);
+    }
+  }
+  r.attachments = existing;
+}
+// luego deliverable-notify.notify({ ... yaml: r, ... })
+```
+
+El `try/catch` defensivo garantiza que un fallo del helper NUNCA bloquee la
+notificación. Si el helper devuelve `[]`, el notify cae al path text-only sin
+romper (regresión CA-6 cubierta por tests).
+
+### Configurabilidad
+
+Hoy el catálogo `SKILL_SOURCES` está hardcodeado en el helper. Si en el futuro
+se necesita configurar fuentes adicionales por entorno (ej. agregar
+`docs/app-screenshots-reference/<issue>/` para el caso B Android sin
+emulador), se puede agregar un bloque `attachments_per_skill[skill].sources`
+en `config.yaml` y leerlo desde el helper. Por ahora el catálogo refleja la
+convención usada por `screenshot-capture.js`, `ux-mockup-generator.js` y el
+gate `screenshots-mockup-gate.js`.
+
+### Estado del gate `SCREENSHOTS_MOCKUPS_GATE_ENABLED`
+
+El issue #3647 entrega el helper + la integración. La activación del gate
+visual del `/ux` queda **default OFF** (opción b del CA-4): el helper sólo
+adjunta los artefactos que ya estén en disco. Cuando se active el gate full
+en un issue separado (input desde telemetría #3656), las notificaciones de
+`ux` traerán automáticamente los 2 PNGs generados sin más cambios.
+
 ## Out of scope (NO incluido en #3414)
 
 - Comando `/rechazar` y su parser → **#3415** (receiver del envelope).
