@@ -122,6 +122,7 @@ const handoff = require('./lib/handoff');
 // opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
 const deliverableNotify = require('./lib/deliverable-notify');
+const skillDeliverableAttachments = require('./lib/skill-deliverable-attachments');
 // #3481 — Evaluación de completitud de fases paralelas que considera
 // artefactos varados en `procesado/` (con whitelist estricta + anti-race
 // contra pendiente/trabajando). Resuelve el deadlock cuando un skill cerró
@@ -3850,6 +3851,33 @@ function brazoBarrido(config) {
               if (r.resultado !== 'aprobado') continue;
               // skill viene del NOMBRE DEL ARCHIVO, no del YAML editable (CA-SEC-2)
               const notifySkill = skillFromFile(r.file.name);
+
+              // #3647 — CA-2: barrer disco buscando entregables por skill y
+              // fusionarlos en `yaml.attachments` antes de notificar. El helper
+              // es issue-scoped (CA-1.4) y nunca tira; si no encuentra nada
+              // devuelve []. La validación final (path traversal, magic bytes,
+              // allowlist) la hace `deliverable-notify.resolveAttachments`.
+              try {
+                const fsAttachments = skillDeliverableAttachments.collectAttachmentsForSkill(
+                  notifySkill, issue, fase, { pipelineRoot: ROOT },
+                );
+                if (Array.isArray(fsAttachments) && fsAttachments.length > 0) {
+                  const existing = Array.isArray(r.attachments) ? r.attachments.slice() : [];
+                  const seenPaths = new Set(existing.map((a) => (a && a.path) || ''));
+                  for (const a of fsAttachments) {
+                    if (a && !seenPaths.has(a.path)) {
+                      existing.push(a);
+                      seenPaths.add(a.path);
+                    }
+                  }
+                  r.attachments = existing;
+                  log('barrido', `📎 #${issue} attachments por skill ${notifySkill}: ${fsAttachments.length} (helper)`);
+                }
+              } catch (e) {
+                // Nunca bloquear notify por un fallo del helper.
+                log('barrido', `📎 #${issue} helper attachments error (${notifySkill}): ${e.message}`);
+              }
+
               const result = deliverableNotify.notify({
                 issue,
                 skill: notifySkill,
