@@ -547,6 +547,23 @@ sherlock_enabled: true
 sherlock_max_reelaboraciones: 1
 
 # =============================================================================
+# Agrupamiento de bursts de notificaciones Telegram (#3668)
+# =============================================================================
+# El drainer `servicio-telegram.js` agrupa archivos en `servicios/telegram/
+# pendiente/` por clave (`pid + meta.type + skill + issue`) dentro de una
+# ventana temporal antes de enviar a Telegram. Si N>1 archivos coinciden, se
+# emite UN mensaje consolidado enumerando provider+error_class de cada intento
+# (CA-1..CA-5 / S-5).
+#
+# El cap hardcoded en `lib/telegram-burst-grouper.js` clampea el valor a
+# [BURST_WINDOW_MIN_MS=10s, BURST_WINDOW_MAX_MS=300s] sin importar lo que diga
+# este archivo (S-10 — defense in depth contra config inválida o malicia).
+#
+# Default 60_000ms (60s) — cubre cascadas Sherlock de ~7ms-200ms holgadamente
+# y produce 1 mensaje cada 60s en el peor caso.
+telegram_burst_window_ms: 60000
+
+# =============================================================================
 # Notificación de entregables del pipeline (#3414)
 # =============================================================================
 # Cuando un skill notificable (guru, po, ux, planner) cierra una fase del

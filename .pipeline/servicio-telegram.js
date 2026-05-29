@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const yaml = require('js-yaml');
 const httpClient = require('./lib/http-client');
 const { ERROR_CODES } = require('./lib/constants');
 // #2334 / CA6: patch console.* para que NUNCA se escriba un secreto al
@@ -24,6 +25,11 @@ require('./lib/sanitize-console').install();
 const { sanitize } = require('./sanitizer');
 const { sanitizeTelegramPayload } = require('./lib/sanitize-payload');
 const { splitLongMessage } = require('./lib/split-long-message');
+// #3668 — Agrupador de bursts de notificaciones. El drainer aplica
+// `groupByBurst` ANTES de mover archivos a trabajando/, así un cascade de
+// fallback emite UN mensaje consolidado en vez de N mensajes idénticos
+// separados por ~7ms. Ver `.pipeline/lib/telegram-burst-grouper.js`.
+const burstGrouper = require('./lib/telegram-burst-grouper');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
@@ -33,6 +39,18 @@ const LISTO = path.join(QUEUE_DIR, 'listo');
 
 const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
+const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
+
+// #3668 — config loader best-effort para `telegram_burst_window_ms`. Si el
+// YAML no existe o no parsea, el grupo del burst usa el default hardcoded en
+// el módulo y NO crashea el drainer (anti-DoS de booting).
+function loadPipelineConfig() {
+  try {
+    return yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
 const { loadTelegramSecrets } = require('./lib/telegram-secrets');
 const health = require('./lib/telegram-health');
 
@@ -192,11 +210,96 @@ function recoverOrphans() {
   if (discarded > 0) log(`Recovery: ${discarded} zombies viejos (>${ORPHAN_MAX_AGE_MS/60000}min) movidos a listo/ (no se reintentan)`);
 }
 
+// #3668 — Procesa un grupo de burst (N>=2 archivos del mismo skill+issue+pid+type
+// dentro de la ventana). Mueve cada archivo a trabajando/, manda 1 solo mensaje
+// consolidado, y archiva todos los demás a listo/ con suffix
+// `-bursted-consolidated.json` para trazabilidad (auditoría no se agrupa, CA-5
+// — cada emisor ya escribió su entry JSONL antes de encolar el archivo).
+async function processBurstGroup(group, consolidatedText) {
+  if (!group || !group.files || group.files.length === 0) return;
+  // 1) Mover TODOS los archivos del burst a trabajando/. Lo hacemos primero
+  //    para que otro proceso no los tome mientras procesamos el consolidado.
+  const trabajandoPaths = [];
+  for (const f of group.files) {
+    const trabajandoPath = path.join(TRABAJANDO, f.file);
+    try {
+      fs.renameSync(f.filePath, trabajandoPath);
+      trabajandoPaths.push({ name: f.file, path: trabajandoPath });
+    } catch {
+      // Si otro proceso lo tomó, lo saltamos — el burst queda parcialmente
+      // consolidado. NO es ideal pero es mejor que duplicar mensajes.
+    }
+  }
+  if (trabajandoPaths.length === 0) return;
+
+  // 2) Mandar 1 solo mensaje consolidado.
+  try {
+    const params = { text: consolidatedText, parse_mode: 'MarkdownV2' };
+    const chunks = splitLongMessage(consolidatedText);
+    for (let i = 0; i < chunks.length; i++) {
+      await telegramSend('sendMessage', { ...params, text: chunks[i] });
+    }
+  } catch (e) {
+    log(`Error enviando consolidado de burst (${trabajandoPaths.length} archivos, key=${group.key}): ${e.message}`);
+    // Devolver el primer archivo a pendiente/ para reintento; los demás
+    // quedan en trabajando/ y los recogerá `recoverOrphans` si pasan >15min.
+    if (trabajandoPaths[0]) {
+      try { fs.renameSync(trabajandoPaths[0].path, path.join(PENDIENTE, trabajandoPaths[0].name)); } catch {}
+    }
+    return;
+  }
+
+  // 3) Archivar todos los archivos del burst en listo/ con marcador.
+  for (let i = 0; i < trabajandoPaths.length; i++) {
+    const entry = trabajandoPaths[i];
+    const tag = i === 0 ? '-bursted-leader' : '-bursted-consolidated';
+    const listoName = entry.name.replace(/\.json$/, `${tag}.json`);
+    const listoPath = path.join(LISTO, listoName);
+    try { fs.renameSync(entry.path, listoPath); } catch {}
+  }
+  log(`Consolidado: ${trabajandoPaths.length} mensajes en burst (key=${group.key.split('|').slice(1).join('|')})`);
+}
+
 async function processQueue() {
   const files = listWorkFiles(PENDIENTE);
   if (files.length === 0) return;
 
-  for (const file of files) {
+  // #3668 — Burst grouping previo al sendMessage. Cargamos config + agrupamos.
+  // Los grupos de tamaño 1 caen al loop legacy de abajo (envío individual).
+  // Los grupos de tamaño >=2 se procesan en `processBurstGroup`.
+  const cfgRes = burstGrouper.loadBurstConfig({
+    configLoader: loadPipelineConfig,
+    log: (_tag, msg) => log(msg),
+  });
+  const groups = burstGrouper.groupByBurst({
+    fileEntries: files,
+    windowMs: cfgRes.windowMs,
+  });
+
+  const singletonFiles = [];
+  for (const g of groups) {
+    if (g.key === '__unparseable__' || g.files.length < 2) {
+      // 1 archivo o malformado → flujo legacy individual.
+      const f = g.files[0];
+      if (f && f.filePath) {
+        singletonFiles.push({ name: f.file, path: f.filePath });
+      }
+      continue;
+    }
+    // Burst real (N>=2) → consolidar.
+    const consolidated = burstGrouper.formatConsolidatedMessage(g);
+    if (!consolidated) {
+      // Defensive: si el formateador devolvió null por algún motivo, caemos
+      // al flujo legacy para no perder el mensaje.
+      for (const f of g.files) {
+        if (f && f.filePath) singletonFiles.push({ name: f.file, path: f.filePath });
+      }
+      continue;
+    }
+    await processBurstGroup(g, consolidated);
+  }
+
+  for (const file of singletonFiles) {
     const trabajandoPath = path.join(TRABAJANDO, file.name);
     try {
       fs.renameSync(file.path, trabajandoPath);
