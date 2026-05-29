@@ -49,6 +49,14 @@ const humanBlock = require('./lib/human-block');
 const partialPause = require('./lib/partial-pause');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
 const desyncDetector = require('./lib/desync-detector');
+// #3617 REQ-SEC-2 — Flag persistente cuando init-waves falla en boot. Bloquea
+// el dispatch hasta que el operador corrija el input. Patrón idéntico a
+// `.desync-detected.flag`.
+const initFailedState = require('./lib/init-failed-state');
+// #3617 REQ-SEC-6 — Counter de ciclos limpios consecutivos del desync-detector.
+// Gate empírico para la futura remoción del fallback legacy de getAllowlist()
+// en PR2 (issue separado): se necesitan 3+ ticks limpios verificables.
+const desyncCleanCycles = require('./lib/desync-clean-cycles');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -9995,6 +10003,14 @@ let paused = false;
 let desyncBlocked = false;
 let desyncBlockedNotifiedTick = 0;
 
+// #3617 REQ-SEC-2 — Gate de dispatch cuando el bootstrap de waves.json falla
+// en el boot. Mismo patrón que `desyncBlocked`: el loop sigue vivo (commander,
+// telegram, healthcheck, etc.) pero NO se asignan agentes nuevos hasta que el
+// operador corrija el input y borre `.pipeline/.init-failed.flag` (o un boot
+// posterior con input válido limpie el flag automáticamente).
+let initFailedBlocked = false;
+let initFailedBlockedNotifiedTick = 0;
+
 // Archivo de control para pausar/reanudar desde fuera
 const PAUSE_FILE = path.join(PIPELINE, '.paused');
 
@@ -10004,6 +10020,41 @@ function checkPauseFile() {
 
 function checkDesyncFlag() {
   desyncBlocked = desyncDetector.isDesyncFlagSet();
+  // #3617 REQ-SEC-6 — Counter de ciclos limpios para gating PR2. Cada tick que
+  // el detector encuentra el estado consistente cuenta como ciclo limpio.
+  // El módulo dedupa por hash de estado (si dos ticks tienen el mismo
+  // {waves_allowlist, partial_allowlist}, solo el primero incrementa). Si el
+  // detector ve desync, reset a 0.
+  try {
+    if (desyncBlocked) {
+      desyncCleanCycles.recordDirtyCycle();
+    } else {
+      // Hash determinístico del par {waves, partial}. Reusa la lib desync-ack
+      // para consistencia con el banner del dashboard.
+      let hash = null;
+      try {
+        const desyncAck = require('./lib/desync-ack');
+        const wavesLib = require('./lib/waves');
+        const wavesAllow = wavesLib.getAllowlist() || [];
+        let partialAllow = [];
+        try {
+          const partialMode = partialPause.getPipelineMode();
+          partialAllow = (partialMode && partialMode.allowedIssues) || [];
+        } catch {}
+        hash = desyncAck.computeStateHash({
+          waves_allowlist: wavesAllow,
+          partial_allowlist: partialAllow,
+        });
+      } catch {}
+      desyncCleanCycles.recordCleanCycle(hash);
+    }
+  } catch (e) {
+    log('pulpo', `WARN [clean-cycles] tick falló: ${e.message}`);
+  }
+}
+
+function checkInitFailedFlag() {
+  initFailedBlocked = initFailedState.isInitFailedSet();
 }
 
 // =============================================================================
@@ -10898,14 +10949,52 @@ async function mainLoop() {
     const initResult = initWavesFromPartial();
     if (initResult.action === 'seeded') {
       log('pulpo', `[init-waves] waves.json sembrado: ola #${initResult.waveNumber} con ${initResult.allowlist.length} issue(s).`);
+      // #3617 REQ-SEC-2: recovery automática — si había init-failed flag de un
+      // boot previo y este init pasó OK, limpiamos el flag para destrabar el
+      // dispatch sin intervención humana.
+      try { initFailedState.clearInitFailed(); } catch (e) {
+        log('pulpo', `WARN [init-waves] clearInitFailed falló: ${e.message}`);
+      }
     } else if (initResult.action === 'aborted_invalid_partial') {
       log('pulpo', `WARN [init-waves] fail-closed: .partial-pause.json malformado. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
+      // #3617 REQ-SEC-2: persistir flag bloqueante + Telegram crítico (G-UX-1).
+      // El dispatch loop respeta initFailedBlocked igual que desyncBlocked.
+      try {
+        initFailedState.setInitFailed({
+          reason: 'partial-pause malformado',
+          errors: initResult.errors || [],
+          source_sha256: null,
+        });
+      } catch (e) {
+        log('pulpo', `WARN [init-waves] setInitFailed falló: ${e.message}`);
+      }
+      try {
+        sendTelegram('🔴 Pipeline bloqueado por bootstrap fallido — .partial-pause.json malformado. Revisar y borrar .pipeline/.init-failed.flag.');
+      } catch (e) {
+        log('pulpo', `WARN [init-waves] Telegram critico falló: ${e.message}`);
+      }
     } else if (initResult.action === 'aborted_waves_corrupt') {
       log('pulpo', `WARN [init-waves] fail-closed: waves.json corrupto. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
+      try {
+        initFailedState.setInitFailed({
+          reason: 'waves.json corrupto',
+          errors: initResult.errors || [],
+          source_sha256: null,
+        });
+      } catch (e) {
+        log('pulpo', `WARN [init-waves] setInitFailed falló: ${e.message}`);
+      }
+      try {
+        sendTelegram('🔴 Pipeline bloqueado por bootstrap fallido — waves.json corrupto. Revisar y borrar .pipeline/.init-failed.flag.');
+      } catch (e) {
+        log('pulpo', `WARN [init-waves] Telegram critico falló: ${e.message}`);
+      }
     } else if (initResult.action === 'noop_already_seeded') {
       log('pulpo', `[init-waves] noop — active_wave #${initResult.waveNumber} ya existente.`);
+      try { initFailedState.clearInitFailed(); } catch {}
     } else {
       log('pulpo', `[init-waves] noop — ${initResult.reason || initResult.action}.`);
+      try { initFailedState.clearInitFailed(); } catch {}
     }
   } catch (e) {
     log('pulpo', `WARN [init-waves] boot hook falló: ${e.message}`);
@@ -11182,6 +11271,7 @@ async function mainLoop() {
     try {
       checkPauseFile();
       checkDesyncFlag();
+      checkInitFailedFlag();
 
       const config = loadConfig(); // Reload cada ciclo para hot-reload
 
@@ -11224,7 +11314,7 @@ async function mainLoop() {
         // require puede fallar si el módulo no existe (build viejo); no es fatal.
       }
 
-      if (!paused && !desyncBlocked) {
+      if (!paused && !desyncBlocked && !initFailedBlocked) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
 
@@ -11262,6 +11352,14 @@ async function mainLoop() {
         brazoProviderExhaustionRetry(config);
       } else if (paused) {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
+      } else if (initFailedBlocked) {
+        // #3617 REQ-SEC-2 — bootstrap waves.json falló en boot. Loop alive
+        // pero NO se dispatcha. Mismo patrón rate-limit que desync para no
+        // inundar el log.
+        initFailedBlockedNotifiedTick = (initFailedBlockedNotifiedTick + 1) % 10;
+        if (initFailedBlockedNotifiedTick === 1) {
+          log('pulpo', 'BLOQUEADO POR INIT-FAILED — dispatch suspendido. Corregir input y borrar .pipeline/.init-failed.flag para reanudar.');
+        }
       } else {
         // #3518 CA-6 — desync detectado. Loop alive pero NO se dispatcha.
         // Solo logueamos cada N ticks (1 cada ~5min) para no inundar.

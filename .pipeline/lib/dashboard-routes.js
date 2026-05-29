@@ -74,6 +74,29 @@ try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
 let waves = null;
 try { waves = require('./waves'); } catch { /* opcional */ }
 
+// #3617 REQ-SEC-3 — Flag persistente del bootstrap fallido (REQ-SEC-2). El
+// dashboard renderiza un banner CRÍTICO (--danger) cuando este flag existe.
+let initFailedState = null;
+try { initFailedState = require('./init-failed-state'); } catch { /* opcional */ }
+
+// #3617 REQ-SEC-3 — Reconocimiento operacional del banner desync (CA-PO-3).
+// Permite al operador silenciar el banner para un estado de divergencia
+// específico (identificado por SHA-256). Si el estado cambia, banner reaparece.
+let desyncAck = null;
+try { desyncAck = require('./desync-ack'); } catch { /* opcional */ }
+
+// #3617 REQ-SEC-6 — Counter de ciclos limpios. Threshold ≥3 marca
+// `ready_for_pr2` (remoción del fallback legacy de getAllowlist gateado
+// empíricamente).
+let desyncCleanCycles = null;
+try { desyncCleanCycles = require('./desync-clean-cycles'); } catch { /* opcional */ }
+
+// #3617 REQ-SEC-3 — Lectura del flag principal de desync para componer el
+// payload del banner (hash + acknowledged + detail). Defensivo: si el módulo
+// no carga, el endpoint devuelve `{ active: false }` y el banner queda invisible.
+let desyncDetector = null;
+try { desyncDetector = require('./desync-detector'); } catch { /* opcional */ }
+
 // #3259 — Rate-limit inline (security A05): hasta #3285 entregue el middleware
 // reusable, mantenemos un semáforo simple en memoria por IP. 6 req/min cubre
 // auto-refresh del dashboard (cada 30s = 2 req/min) + headroom para debugging.
@@ -317,6 +340,103 @@ const API_ROUTES = {
     // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
     // con el resto de /api/dash/*.
     '/api/dash/waves': () => buildWavesPayload(),
+    // #3617 REQ-SEC-3 — Banner CRÍTICO bloqueante: el bootstrap de waves.json
+    // falló en el último boot y el dispatch del Pulpo está suspendido. Payload
+    // mínimo (ts, reason, errors[]) — sin contenido raw del filesystem
+    // (security req 3 del análisis). Si el módulo no cargó, devuelve `null`.
+    '/api/dash/init-failed': () => {
+        if (!initFailedState) return null;
+        try {
+            const data = initFailedState.readInitFailed();
+            return data; // null si no existe el flag, payload si existe.
+        } catch (e) {
+            return null;
+        }
+    },
+    // #3617 REQ-SEC-3 — Banner WARNING de desync waves↔partial-pause. Compone
+    // {active, hash, acknowledged, detail{added, removed}}. El frontend lo
+    // renderiza con tokens --warning (G-UX-2). El banner reaparece si el hash
+    // cambia (operador acknowledged un estado distinto al actual).
+    '/api/dash/desync-banner': () => {
+        if (!desyncDetector || !desyncAck) {
+            return { active: false, hash: null, acknowledged: false, detail: null };
+        }
+        try {
+            const flagSet = desyncDetector.isDesyncFlagSet();
+            if (!flagSet) {
+                return { active: false, hash: null, acknowledged: false, detail: null };
+            }
+            // Re-detect SIN crear flag/alerta (esos ya están dueños del boot).
+            const det = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true });
+            const hash = desyncAck.computeStateHash({
+                waves_allowlist: det.waves_allowlist || [],
+                partial_allowlist: det.partial_allowlist || [],
+            });
+            return {
+                active: true,
+                hash,
+                acknowledged: desyncAck.isAcknowledged(hash),
+                detail: {
+                    added: Array.isArray(det.added) ? det.added : [],
+                    removed: Array.isArray(det.removed) ? det.removed : [],
+                    reason: det.reason || null,
+                },
+            };
+        } catch (e) {
+            return { active: false, hash: null, acknowledged: false, detail: null };
+        }
+    },
+    // #3617 REQ-SEC-6 — Counter de ciclos limpios. Threshold ≥3 marca
+    // `ready_for_pr2` (gate empírico para remoción del fallback legacy).
+    '/api/dash/desync-clean-cycles': () => {
+        if (!desyncCleanCycles) {
+            return { count: 0, ready_for_pr2: false, last_tick_at: null, last_reset_at: null };
+        }
+        try {
+            const c = desyncCleanCycles.readCounter();
+            return {
+                count: c.count || 0,
+                ready_for_pr2: (c.count || 0) >= 3,
+                last_tick_at: c.last_tick_at,
+                last_reset_at: c.last_reset_at,
+            };
+        } catch (e) {
+            return { count: 0, ready_for_pr2: false, last_tick_at: null, last_reset_at: null };
+        }
+    },
+};
+
+// #3617 REQ-SEC-3 — POST endpoints (acknowledgement del banner desync). El
+// handler de abajo procesa POSTs específicos y lee el body. Cualquier ruta no
+// registrada acá retorna 405.
+const POST_API_ROUTES = {
+    '/api/dash/desync/acknowledge': (body) => {
+        if (!desyncDetector || !desyncAck) {
+            return { status: 503, payload: { error: 'module_unavailable' } };
+        }
+        try {
+            const det = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true });
+            const hash = desyncAck.computeStateHash({
+                waves_allowlist: det.waves_allowlist || [],
+                partial_allowlist: det.partial_allowlist || [],
+            });
+            // Si el operador mandó un hash, exigimos que coincida con el actual
+            // para prevenir ack de un estado distinto al que el dashboard mostró.
+            if (body && typeof body.hash === 'string' && body.hash !== hash) {
+                return {
+                    status: 409,
+                    payload: { error: 'state_changed', expected: body.hash, current: hash },
+                };
+            }
+            const result = desyncAck.acknowledge(hash, { source: 'dashboard' });
+            if (!result.ok) {
+                return { status: 500, payload: { error: result.error || 'ack_failed' } };
+            }
+            return { status: 200, payload: { ok: true, hash } };
+        } catch (e) {
+            return { status: 500, payload: { error: e.message || String(e) } };
+        }
+    },
 };
 
 // #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
@@ -354,6 +474,52 @@ function sendHtml(res, html) {
  */
 function handle(req, res, ctx) {
     const url = req.url;
+    // #3617 REQ-SEC-3 — POST de acknowledgement del banner desync. Lee body
+    // JSON con límite duro (1KB) — body más grande devuelve 413. Rate-limit
+    // por IP (mismo store que /api/pulpo/provider-health). Cualquier path no
+    // registrado en POST_API_ROUTES devuelve 405.
+    if (req.method === 'POST') {
+        const apiPath = url.split('?')[0];
+        if (!POST_API_ROUTES[apiPath]) {
+            // Si no es un POST que conocemos, dejá pasar al fallback de
+            // dashboard.js (preserva legacy POST handlers existentes).
+            return false;
+        }
+        const ip = (req.socket && req.socket.remoteAddress) || 'unknown';
+        if (!rateLimitAllow(ip)) {
+            sendJson(res, { error: 'rate_limited', retry_after_s: 60 }, 503);
+            return true;
+        }
+        let body = '';
+        let aborted = false;
+        const MAX_BODY = 1024;
+        req.on('data', (chunk) => {
+            body += chunk;
+            if (body.length > MAX_BODY) {
+                aborted = true;
+                sendJson(res, { error: 'body_too_large', max: MAX_BODY }, 413);
+                req.destroy();
+            }
+        });
+        req.on('end', () => {
+            if (aborted) return;
+            let parsed = {};
+            if (body.length > 0) {
+                try { parsed = JSON.parse(body); }
+                catch { return sendJson(res, { error: 'invalid_json' }, 400); }
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    return sendJson(res, { error: 'invalid_payload_shape' }, 400);
+                }
+            }
+            try {
+                const { status, payload } = POST_API_ROUTES[apiPath](parsed);
+                sendJson(res, payload, status);
+            } catch (e) {
+                sendJson(res, { error: e.message || String(e) }, 500);
+            }
+        });
+        return true;
+    }
     if (req.method !== 'GET') return false;
 
     // `/` y `/v3` (alias retrocompat) sirven la nueva home kiosk vertical.

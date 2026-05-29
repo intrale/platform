@@ -21,10 +21,64 @@ function loadTheme() {
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('../../lib/quota-exhausted-state'); } catch { /* opcional */ }
 
+// #3617 REQ-SEC-3 — Estados iniciales SSR para los banners de seguridad. Si los
+// módulos no cargan (pre-merge en checkout antiguo), devolvemos shapes vacíos
+// que el cliente actualiza tras el primer poll sin romper render.
+let initFailedStateMod = null;
+try { initFailedStateMod = require('../../lib/init-failed-state'); } catch { /* opcional */ }
+let desyncAckMod = null;
+try { desyncAckMod = require('../../lib/desync-ack'); } catch { /* opcional */ }
+let desyncDetectorMod = null;
+try { desyncDetectorMod = require('../../lib/desync-detector'); } catch { /* opcional */ }
+let desyncCleanCyclesMod = null;
+try { desyncCleanCyclesMod = require('../../lib/desync-clean-cycles'); } catch { /* opcional */ }
+
 function getInitialQuotaState() {
     if (!quotaExhaustedState) return { active: false };
     try { return quotaExhaustedState.getQuotaState(); }
     catch { return { active: false }; }
+}
+
+function getInitialInitFailedState() {
+    if (!initFailedStateMod) return null;
+    try { return initFailedStateMod.readInitFailed(); }
+    catch { return null; }
+}
+
+function getInitialDesyncBannerState() {
+    if (!desyncDetectorMod || !desyncAckMod) {
+        return { active: false, hash: null, acknowledged: false, detail: null };
+    }
+    try {
+        if (!desyncDetectorMod.isDesyncFlagSet()) {
+            return { active: false, hash: null, acknowledged: false, detail: null };
+        }
+        const det = desyncDetectorMod.detectDesync({ skipFlag: true, skipAlert: true });
+        const hash = desyncAckMod.computeStateHash({
+            waves_allowlist: det.waves_allowlist || [],
+            partial_allowlist: det.partial_allowlist || [],
+        });
+        return {
+            active: true,
+            hash,
+            acknowledged: desyncAckMod.isAcknowledged(hash),
+            detail: {
+                added: Array.isArray(det.added) ? det.added : [],
+                removed: Array.isArray(det.removed) ? det.removed : [],
+                reason: det.reason || null,
+            },
+        };
+    } catch {
+        return { active: false, hash: null, acknowledged: false, detail: null };
+    }
+}
+
+function getInitialCleanCyclesState() {
+    if (!desyncCleanCyclesMod) return { count: 0, ready_for_pr2: false };
+    try {
+        const c = desyncCleanCyclesMod.readCounter();
+        return { count: c.count || 0, ready_for_pr2: (c.count || 0) >= 3 };
+    } catch { return { count: 0, ready_for_pr2: false }; }
 }
 
 // HTML escape para el SSR. El cliente tiene su propio escapeHtml() embebido
@@ -718,6 +772,90 @@ function homeStyles() {
  * empuja contenido; usa padding y se inserta en el flujo natural cuando
  * data-active="true". Mientras hidden ocupa 0px (display:none).
  * ========================================================================= */
+/* =========================================================================
+ * #3617 REQ-SEC-3 / G-UX-1 / G-UX-2 / G-UX-6 — Banners operativos de seguridad.
+ * Cero inline colors: todo va por tokens semánticos --danger / --warning /
+ * --info que se resuelven desde theme.css del proyecto. El skeleton hidden
+ * ocupa 0px (display:none) cuando data-active="false" → la página tiene exacto
+ * el mismo layout pre/post merge si no hay banners activos.
+ * ========================================================================= */
+.op-banner {
+    display: none;
+    margin: 0 22px;
+    padding: 14px 18px;
+    border-radius: var(--in-radius, 8px);
+    font-size: 13px;
+    line-height: 1.4;
+    grid-template-columns: auto 1fr auto;
+    column-gap: 16px;
+    align-items: center;
+    border: 1px solid transparent;
+}
+.op-banner[data-active="true"] { display: grid; }
+.op-banner-critical {
+    background: var(--danger-bg, rgba(248, 81, 73, 0.14));
+    color: var(--danger, #F85149);
+    border-color: var(--danger, #F85149);
+    border-left: 4px solid var(--danger, #F85149);
+}
+.op-banner-warning {
+    background: var(--warning-bg, rgba(210, 153, 34, 0.14));
+    color: var(--warning, #D29922);
+    border-color: var(--warning, #D29922);
+    border-left: 4px solid var(--warning, #D29922);
+}
+.op-banner-icon {
+    font-size: 22px;
+    line-height: 1;
+    flex: 0 0 28px;
+}
+.op-banner-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+.op-banner-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--in-fg, #c9d1d9);
+}
+.op-banner-sub {
+    color: var(--in-fg-dim, #8b949e);
+    font-size: 12px;
+}
+.op-banner-sub code {
+    background: var(--in-bg-3, rgba(110,118,129,0.4));
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 11px;
+}
+.op-banner-actions { display: flex; gap: 8px; }
+.op-banner-btn {
+    background: transparent;
+    color: var(--in-fg, #c9d1d9);
+    border: 1px solid var(--in-border, #30363d);
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+}
+.op-banner-btn:hover {
+    background: var(--in-bg-3, rgba(110,118,129,0.2));
+}
+.op-banner-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.op-banner-inline-btn {
+    background: transparent;
+    color: inherit;
+    border: 1px solid currentColor;
+    padding: 0 4px;
+    border-radius: 2px;
+    font-size: inherit;
+    cursor: default;
+}
+
 .quota-exhausted-banner {
     display: none;
     margin: 0 22px;
@@ -2744,6 +2882,108 @@ async function tickOlaETA(){
     if(lo) lo.setAttribute('data-show', lowSamples ? '1' : '0');
 }
 
+// #3617 REQ-SEC-3 — Polling del banner CRÍTICO init-failed. Si el endpoint
+// devuelve null → ocultar. Si devuelve payload → mostrar + actualizar texto.
+// 30s alineado con el tick del desync-detector que llena el flag — más rápido
+// no aporta porque el flag solo cambia en boot del pulpo.
+async function tickInitFailedBanner(){
+    const banner = document.getElementById('op-banner-init-failed');
+    if (!banner) return;
+    const d = await fetchJson('/api/dash/init-failed');
+    if (!d) {
+        if (banner.dataset.active === 'true') {
+            banner.dataset.active = 'false';
+            banner.setAttribute('aria-hidden', 'true');
+            const title = document.getElementById('op-banner-init-failed-title');
+            const sub = document.getElementById('op-banner-init-failed-sub');
+            if (title) title.textContent = '';
+            if (sub) sub.textContent = '';
+        }
+        return;
+    }
+    const reason = String(d.reason || 'desconocido');
+    const ts = String(d.ts || '');
+    const errors = Array.isArray(d.errors) ? d.errors : [];
+    const firstError = errors.length > 0 ? String(errors[0]).slice(0, 160) : '';
+    const titleText = 'Bootstrap fallido — dispatch del Pulpo suspendido';
+    const subText = 'Razón: ' + reason + ' · Detectado: ' + ts +
+        (errors.length > 0 ? ' · ' + errors.length + ' error(es): ' + firstError : '') +
+        '. Corregir el input y borrar .pipeline/.init-failed.flag para reanudar.';
+    const title = document.getElementById('op-banner-init-failed-title');
+    const sub = document.getElementById('op-banner-init-failed-sub');
+    if (title && title.textContent !== titleText) title.textContent = titleText;
+    if (sub && sub.textContent !== subText) sub.textContent = subText;
+    if (banner.dataset.active !== 'true') {
+        banner.dataset.active = 'true';
+        banner.setAttribute('aria-hidden', 'false');
+    }
+}
+
+// #3617 REQ-SEC-3 — Polling del banner WARNING desync. Oculto cuando no hay
+// flag o cuando el operador acknowledgea. Reaparece si el hash cambia.
+async function tickDesyncBanner(){
+    const banner = document.getElementById('op-banner-desync');
+    if (!banner) return;
+    const d = await fetchJson('/api/dash/desync-banner');
+    const visible = !!(d && d.active && !d.acknowledged);
+    if (!visible) {
+        if (banner.dataset.active === 'true') {
+            banner.dataset.active = 'false';
+            banner.setAttribute('aria-hidden', 'true');
+        }
+        return;
+    }
+    const detail = d.detail || {};
+    const added = Array.isArray(detail.added) ? detail.added : [];
+    const removed = Array.isArray(detail.removed) ? detail.removed : [];
+    const parts = [];
+    if (added.length > 0) parts.push('+' + added.length + ' en waves');
+    if (removed.length > 0) parts.push(removed.length + ' faltan en partial-pause');
+    const summary = parts.length > 0 ? parts.join(' · ') : 'estado divergente';
+    const titleText = 'Desincronización detectada — waves.json ↔ .partial-pause.json';
+    const subText = summary + '. El dispatch está pausado. Auditar y corregir, después reconocer oculta este aviso.';
+    const title = document.getElementById('op-banner-desync-title');
+    const sub = document.getElementById('op-banner-desync-sub');
+    const btn = document.getElementById('op-banner-desync-ack');
+    if (title && title.textContent !== titleText) title.textContent = titleText;
+    if (sub && sub.textContent !== subText) sub.textContent = subText;
+    if (btn) btn.dataset.hash = String(d.hash || '');
+    if (banner.dataset.active !== 'true') {
+        banner.dataset.active = 'true';
+        banner.setAttribute('aria-hidden', 'false');
+    }
+}
+
+// #3617 — Handler del botón "Reconocer" del banner desync. Hace POST con el
+// hash actual; si el server devuelve 200, el polling subsiguiente oculta el
+// banner. Si devuelve 409 (state_changed), refrescamos el banner para mostrar
+// el estado nuevo.
+function bindDesyncAck(){
+    const btn = document.getElementById('op-banner-desync-ack');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        const hash = btn.dataset.hash || '';
+        if (!hash) return;
+        btn.disabled = true;
+        try {
+            const res = await fetch('/api/dash/desync/acknowledge', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hash }),
+            });
+            if (res.ok) {
+                // El polling siguiente ocultará el banner.
+                tickDesyncBanner().catch(()=>{});
+            } else if (res.status === 409) {
+                // El estado cambió mientras el operador miraba — re-render.
+                tickDesyncBanner().catch(()=>{});
+            }
+        } catch {} finally {
+            btn.disabled = false;
+        }
+    });
+}
+
 const POLLS = [
     { fn: tickHeader, ms: 5000 },
     { fn: tickKpis, ms: 60000 },
@@ -2776,6 +3016,12 @@ const POLLS = [
     // no cambia más rápido que eso. El operador puede forzar refresh con
     // el botón "Reintentar ahora" del estado vacío.
     { fn: tickWaves, ms: 30000 },
+    // #3617 REQ-SEC-3 — Banners de seguridad del bootstrap waves.json y
+    // detector de desync. 30s alineado con tickWaves (cambian al mismo ritmo:
+    // boot del pulpo + ticks del desync-detector cada minuto). Si el flag
+    // aparece/desaparece, el banner muta en el siguiente tick sin reload.
+    { fn: tickInitFailedBanner, ms: 30000 },
+    { fn: tickDesyncBanner, ms: 30000 },
 ];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 // #3035 — Bind del toggle "Solo con error" antes del primer poll para
@@ -2783,6 +3029,8 @@ async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 bindRecentFilter();
 // #3487 — Bind del botón "Reintentar ahora" del wave-panel (estado vacío).
 bindWaveRetry();
+// #3617 REQ-SEC-3 — Bind del botón "Reconocer" del banner desync.
+bindDesyncAck();
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
 
@@ -2877,6 +3125,77 @@ function renderQuotaBannerSsr(quotaState) {
   </section>`;
 }
 
+// #3617 REQ-SEC-3 / G-UX-1 — Banner CRÍTICO bloqueante cuando el bootstrap de
+// waves.json falló en el último boot del Pulpo. Tokens semánticos --danger
+// (cero inline colors). Skeleton invisible cuando no hay flag — el cliente lo
+// activa en el primer poll cuando aparece. Mantener IDs para que el tick
+// client-side mute texto sin recrear DOM (anti-flicker).
+function renderInitFailedBannerSsr(state) {
+    if (!state) {
+        return `
+  <section class="op-banner op-banner-critical" id="op-banner-init-failed"
+           role="alert" aria-live="assertive" aria-hidden="true" data-active="false">
+    <div class="op-banner-icon" aria-hidden="true">🔴</div>
+    <div class="op-banner-content">
+      <div class="op-banner-title" id="op-banner-init-failed-title"></div>
+      <div class="op-banner-sub" id="op-banner-init-failed-sub"></div>
+    </div>
+  </section>`;
+    }
+    const reason = escapeHtmlSsr(state.reason || 'desconocido');
+    const ts = escapeHtmlSsr(state.ts || '');
+    const errorsCount = Array.isArray(state.errors) ? state.errors.length : 0;
+    const firstError = errorsCount > 0 ? escapeHtmlSsr(String(state.errors[0]).slice(0, 160)) : '';
+    return `
+  <section class="op-banner op-banner-critical" id="op-banner-init-failed"
+           role="alert" aria-live="assertive" aria-hidden="false" data-active="true">
+    <div class="op-banner-icon" aria-hidden="true">🔴</div>
+    <div class="op-banner-content">
+      <div class="op-banner-title" id="op-banner-init-failed-title">Bootstrap fallido — dispatch del Pulpo suspendido</div>
+      <div class="op-banner-sub" id="op-banner-init-failed-sub">Razón: ${reason} · Detectado: ${ts}${errorsCount > 0 ? ` · ${errorsCount} error(es): ${firstError}` : ''}. Corregir el input y borrar <code>.pipeline/.init-failed.flag</code> para reanudar.</div>
+    </div>
+  </section>`;
+}
+
+// #3617 REQ-SEC-3 / G-UX-2 — Banner WARNING reconocible de desync waves↔partial.
+// Tokens semánticos --warning. Si el operador acknowledgea, el banner se
+// oculta hasta que el hash del estado cambie (nueva divergencia distinta).
+function renderDesyncBannerSsr(state) {
+    if (!state || !state.active || state.acknowledged) {
+        return `
+  <section class="op-banner op-banner-warning" id="op-banner-desync"
+           role="status" aria-live="polite" aria-hidden="true" data-active="false">
+    <div class="op-banner-icon" aria-hidden="true">⚠️</div>
+    <div class="op-banner-content">
+      <div class="op-banner-title" id="op-banner-desync-title"></div>
+      <div class="op-banner-sub" id="op-banner-desync-sub"></div>
+    </div>
+    <div class="op-banner-actions">
+      <button class="op-banner-btn" id="op-banner-desync-ack" type="button" data-hash="">Reconocer</button>
+    </div>
+  </section>`;
+    }
+    const hash = escapeHtmlSsr(state.hash || '');
+    const detail = state.detail || {};
+    const added = Array.isArray(detail.added) ? detail.added : [];
+    const removed = Array.isArray(detail.removed) ? detail.removed : [];
+    const addedSummary = added.length > 0 ? `+${added.length} en waves` : '';
+    const removedSummary = removed.length > 0 ? `${removed.length} faltan en partial-pause` : '';
+    const summary = [addedSummary, removedSummary].filter(Boolean).join(' · ') || 'estado divergente';
+    return `
+  <section class="op-banner op-banner-warning" id="op-banner-desync"
+           role="status" aria-live="polite" aria-hidden="false" data-active="true">
+    <div class="op-banner-icon" aria-hidden="true">⚠️</div>
+    <div class="op-banner-content">
+      <div class="op-banner-title" id="op-banner-desync-title">Desincronización detectada — waves.json ↔ .partial-pause.json</div>
+      <div class="op-banner-sub" id="op-banner-desync-sub">${escapeHtmlSsr(summary)}. El dispatch está pausado. Auditar y corregir, después <button class="op-banner-inline-btn" disabled>reconocer</button> oculta este aviso.</div>
+    </div>
+    <div class="op-banner-actions">
+      <button class="op-banner-btn" id="op-banner-desync-ack" type="button" data-hash="${hash}">Reconocer</button>
+    </div>
+  </section>`;
+}
+
 // #3487 — Carga el sprite SVG del filesystem para inyectarlo inline en el
 // HTML del home V3. Permite usar `<use href="#ic-wave"/>` (referencia interna)
 // sin depender de un static asset handler para `/assets/icons/sprite.svg`.
@@ -2901,6 +3220,13 @@ function renderHomeHTML(opts) {
     const _opts = opts || {};
     const quotaState = _opts.quotaState || getInitialQuotaState();
     const quotaBannerHtml = renderQuotaBannerSsr(quotaState);
+    // #3617 REQ-SEC-3 — SSR de banners de seguridad. Si el caller pasa
+    // estados, los usamos; sino leemos defensivamente. Vacíos colapsan a
+    // skeleton invisible (data-active="false") sin texto sensible.
+    const initFailedSt = _opts.initFailedState !== undefined ? _opts.initFailedState : getInitialInitFailedState();
+    const desyncSt = _opts.desyncBannerState !== undefined ? _opts.desyncBannerState : getInitialDesyncBannerState();
+    const initFailedBannerHtml = renderInitFailedBannerSsr(initFailedSt);
+    const desyncBannerHtml = renderDesyncBannerSsr(desyncSt);
 
     const theme = loadTheme();
     const styles = homeStyles();
@@ -2963,6 +3289,8 @@ function renderHomeHTML(opts) {
   </header>
 
   ${quotaBannerHtml}
+  ${initFailedBannerHtml}
+  ${desyncBannerHtml}
 
   <!--
     #3013 — Banner real-snapshot (4 estados: fresh, stale, missing,
