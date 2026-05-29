@@ -222,6 +222,65 @@
   </symbol>
 
   <!-- =========================================================================
+       WIDGET ARCHITECT (issue #3559 — B6 dashboard V3, 4 estados)
+       -----------------------------------------------------------------------
+       Motivo base: escuadra de arquitecto (set-square) en cuadrante inferior
+       izquierdo. Indicador de estado en esquina superior derecha. Lectura
+       distintiva a 13px (tamano del badge en .lc-state-badge).
+
+       Mapeo cromatico (definido via CSS, no inline en SVG):
+         .lc-state-architect-pending   → var(--text-dim)   gris  (espera blanda)
+         .lc-state-architect-running   → var(--warning)    ambar (analizando)
+         .lc-state-architect-approved  → var(--success)    verde (receta firmada)
+         .lc-state-architect-rejected  → var(--danger)     rojo  (requiere ajustes)
+
+       Consistencia: viewBox 24x24, stroke=currentColor, sw=1.75, outline-only,
+       linecaps round — alineado con ic-estado-* del mismo sprite.
+       ========================================================================= -->
+
+  <!-- ic-architect-pending: escuadra + reloj (esperando comments PO+UX) -->
+  <symbol id="ic-architect-pending" viewBox="0 0 24 24">
+    <path d="M3 6 L3 20 L17 20 Z" fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M6 9 L6 17 L14 17 Z" fill="none" stroke="currentColor" stroke-width="1.2"
+          stroke-linejoin="round" opacity="0.55"/>
+    <circle cx="19" cy="6" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M19 4 V6 L21 7" fill="none" stroke="currentColor" stroke-width="1.4"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-architect-running: escuadra + 3 puntos (architect analizando) -->
+  <symbol id="ic-architect-running" viewBox="0 0 24 24">
+    <path d="M3 6 L3 20 L17 20 Z" fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M6 9 L6 17 L14 17 Z" fill="none" stroke="currentColor" stroke-width="1.2"
+          stroke-linejoin="round" opacity="0.55"/>
+    <circle cx="18.5" cy="5.5" r="1.2" fill="currentColor"/>
+    <circle cx="22" cy="5.5" r="1.2" fill="currentColor" opacity="0.65"/>
+    <circle cx="20.25" cy="9" r="1.2" fill="currentColor" opacity="0.35"/>
+  </symbol>
+
+  <!-- ic-architect-approved: escuadra + check (receta firmada / Fase 2 OK) -->
+  <symbol id="ic-architect-approved" viewBox="0 0 24 24">
+    <path d="M3 6 L3 20 L17 20 Z" fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M6 9 L6 17 L14 17 Z" fill="none" stroke="currentColor" stroke-width="1.2"
+          stroke-linejoin="round" opacity="0.55"/>
+    <path d="M16 6.5 L18.5 9 L22.5 4.5" fill="none" stroke="currentColor"
+          stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-architect-rejected: escuadra + X (desviacion detectada en Fase 2) -->
+  <symbol id="ic-architect-rejected" viewBox="0 0 24 24">
+    <path d="M3 6 L3 20 L17 20 Z" fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M6 9 L6 17 L14 17 Z" fill="none" stroke="currentColor" stroke-width="1.2"
+          stroke-linejoin="round" opacity="0.55"/>
+    <path d="M16.5 4 L22 9.5 M22 4 L16.5 9.5" stroke="currentColor"
+          stroke-width="1.9" stroke-linecap="round"/>
+  </symbol>
+
+  <!-- =========================================================================
        EXTRAS UTILES (dashboard UX)
        ========================================================================= -->
 
