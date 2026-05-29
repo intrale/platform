@@ -1037,4 +1037,79 @@
           stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
   </symbol>
 
+  <!-- =========================================================================
+       SISTEMA DE CHAT OPERADOR-AGENTE (#3605)
+       Iconos para el panel de chat acoplado al log viewer. Toda la familia
+       comparte trazo 1.75 y rinde bien en 14-20 px (uso tipico en el panel).
+       ========================================================================= -->
+
+  <!-- ic-chat-bubble: globo de dialogo con 3 puntos.
+       Header colapsable del panel de chat. Tintada con var(--brand-cyan)
+       cuando hay agente activo / mensajes; var(--text-dim) si esta inactivo. -->
+  <symbol id="ic-chat-bubble" viewBox="0 0 24 24">
+    <path d="M3 7 a4 4 0 0 1 4-4 h10 a4 4 0 0 1 4 4 v8 a4 4 0 0 1 -4 4 h-7 l-4 4 v-4 h-3 a4 4 0 0 1 -4 -4 z"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="8.5" cy="11" r="1" fill="currentColor"/>
+    <circle cx="12" cy="11" r="1" fill="currentColor"/>
+    <circle cx="15.5" cy="11" r="1" fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-chat-operator: silueta humana minimalista con anillo.
+       Avatar del operador en cada burbuja. Distingue al humano del agente.
+       Tintada con var(--chat-operator) = var(--brand-cyan). -->
+  <symbol id="ic-chat-operator" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <circle cx="12" cy="10" r="3" fill="currentColor"/>
+    <path d="M6.5 18.5 a6 6 0 0 1 11 0" fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-chat-agent: estrella/chispa (spark) dentro de marco cuadrado.
+       Avatar del agente IA en cada burbuja. Evoca proceso automatizado
+       distinto del humano. Tintada con var(--chat-agent) = var(--purple). -->
+  <symbol id="ic-chat-agent" viewBox="0 0 24 24">
+    <rect x="3" y="3" width="18" height="18" rx="4.5" fill="none"
+          stroke="currentColor" stroke-width="1.5"/>
+    <path d="M12 7 L13.8 11 L18 12 L13.8 13 L12 17 L10.2 13 L6 12 L10.2 11 Z"
+          fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-chat-collapsed: chevron arriba — accion "expandir panel".
+       Apuntar arriba comunica "el panel se levanta desde abajo". -->
+  <symbol id="ic-chat-collapsed" viewBox="0 0 24 24">
+    <path d="M6 15 L12 9 L18 15" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-chat-expanded: chevron abajo — accion "colapsar panel". -->
+  <symbol id="ic-chat-expanded" viewBox="0 0 24 24">
+    <path d="M6 9 L12 15 L18 9" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-chat-sent: doble check (entrega + lectura confirmada por IPC).
+       Tintada con var(--success) cuando la IPC confirma. -->
+  <symbol id="ic-chat-sent" viewBox="0 0 24 24">
+    <path d="M3 13 L8 18 L15 9" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M11 13 L14 16 L21 7" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-chat-pending: reloj/clock minimalista — entrega en curso.
+       Tintada con var(--warning) mientras se espera ACK del IPC. -->
+  <symbol id="ic-chat-pending" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+    <path d="M12 7 L12 12 L16 14" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-chat-send: paper-plane minimal — boton de envio.
+       Tintada con var(--bg-on-brand) #0D1117 cuando se renderiza sobre
+       el gradient de marca; con var(--text-dim) cuando esta deshabilitada. -->
+  <symbol id="ic-chat-send" viewBox="0 0 24 24">
+    <path d="M3 12 L21 4 L17 21 L13 13 L5 11 Z" fill="currentColor"
+          stroke="currentColor" stroke-width="1" stroke-linejoin="round"/>
+  </symbol>
+
 </svg>
