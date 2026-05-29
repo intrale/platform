@@ -7045,6 +7045,29 @@ async function cmdStatus(config) {
     lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
+  // #3625 CA-5 — Métrica de mutaciones de la allowlist en las últimas 24h.
+  // Si statsSince() falla (módulo no disponible, audit log corrupto, etc.) se
+  // omite sin romper el resto del /status (best-effort, mismo criterio que el
+  // snapshot block).
+  let auditStats = null;
+  try {
+    const ppa = require('./lib/partial-pause-audit');
+    auditStats = ppa.statsSince({});
+    if (auditStats && Number.isFinite(auditStats.total) && auditStats.total >= 0) {
+      lines.push(`\n*Auditoría allowlist (últimas 24h)*`);
+      lines.push(`  📜 Mutaciones: ${auditStats.total} (${auditStats.authorized} autorizadas / ${auditStats.rejected} rejected / ${auditStats.unknown} sin autoría)`);
+      // Verificación del hash-chain (best-effort, no bloquea si falla)
+      try {
+        const chain = ppa.verifyChain();
+        if (chain && chain.ok === false) {
+          lines.push(`  🛑 Hash-chain ROTO en entry #${chain.brokenAt || '?'} — escrituras nuevas bloqueadas`);
+        }
+      } catch {}
+    }
+  } catch (e) {
+    log('commander', `[status] Auditoría allowlist no disponible: ${e.message}`);
+  }
+
   // #3013 — bloque de snapshot fresco (narrativa §3, CA-UX-8). Sólo se
   // agrega si hay snapshot real fresco; sin él, el `/status` queda
   // idéntico al pre-feature (CA-15).
@@ -7107,6 +7130,18 @@ async function cmdStatus(config) {
         if (ppMode.mode === 'partial_pause') {
           narration += `Pipeline en pausa parcial, procesando solo ${ppMode.allowedIssues.length} ${ppMode.allowedIssues.length === 1 ? 'issue' : 'issues'}. `;
         }
+      }
+      // #3625 CA-5 — Métrica de auditoría de la allowlist en la narración TTS.
+      // Sólo se incluye si hubo mutaciones en las últimas 24h y la estadística
+      // está disponible (auditStats se calculó arriba para el bloque textual).
+      if (auditStats && Number(auditStats.total) > 0) {
+        narration += `Hubo ${auditStats.total} ${auditStats.total === 1 ? 'mutación' : 'mutaciones'} en la allowlist en las últimas 24 horas`;
+        const parts = [];
+        if (auditStats.authorized > 0) parts.push(`${auditStats.authorized} ${auditStats.authorized === 1 ? 'autorizada' : 'autorizadas'}`);
+        if (auditStats.rejected > 0) parts.push(`${auditStats.rejected} ${auditStats.rejected === 1 ? 'rechazada' : 'rechazadas'}`);
+        if (auditStats.unknown > 0) parts.push(`${auditStats.unknown} sin autoría`);
+        if (parts.length) narration += `, de las cuales ${parts.join(', ')}`;
+        narration += '. ';
       }
       // PRs del día
       try {
@@ -7249,7 +7284,13 @@ function cmdPausar() {
 
 function cmdReanudar() {
   // #2490 — /reanudar limpia tanto pausa completa como parcial.
-  const { removedFull, removedPartial } = partialPause.resumeAll();
+  // #3625 — pasar authorizedBy: 'resume:operator' para que el gate acepte
+  // el removal de toda la allowlist con autoría trazable.
+  const { removedFull, removedPartial } = partialPause.resumeAll({
+    source: 'telegram',
+    authorizedBy: 'resume:operator',
+    justification: '/reanudar desde Telegram Commander',
+  });
   paused = false;
   const parts = [];
   if (removedFull) parts.push('pausa completa');
@@ -7270,7 +7311,15 @@ function cmdPausaParcial(args) {
     return '⚠️ Uso: `/pause-partial 2490 2491`\n\nActiva pausa parcial con los issues indicados. El pipeline sigue corriendo solo para esos números, el resto queda pausado.';
   }
   const issues = nums.map(n => parseInt(n, 10));
-  const result = partialPause.setPartialPause(issues, { source: 'telegram' });
+  // #3625 — gate: comando del operador desde Telegram → commander:leo.
+  const result = partialPause.setPartialPause(issues, {
+    source: 'telegram',
+    authorizedBy: 'commander:leo',
+    justification: `/pause-partial ${nums.join(' ')} desde Telegram`,
+  });
+  if (result.rejected) {
+    return `🛑 Mutación rechazada por gate: ${result.msg}`;
+  }
   const list = result.allowedIssues.map(i => `#${i}`).join(', ');
   return `⏸️ *Pausa parcial activa*\nIssues permitidos: ${list}\n\n_Todo el resto del pipeline queda pausado hasta que hagas /reanudar._`;
 }
@@ -9411,6 +9460,46 @@ Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
               log('commander', `⚠️ CA-4: Skill se invocó pero no creó issue — enviando mensaje específico a Telegram`);
               try { sendTelegram(commanderIssueCreation.formatSkillFailureResponse({ kind: 'skill_failed' })); } catch { /* best-effort */ }
             }
+
+            // #3625 CA-3 — Auto-promoción de hijos a allowlist cuando hubo split exitoso.
+            // El padre se infiere del mensaje original: si menciona exactamente un #N,
+            // ese es el padre del split. Multi-#N → no inferimos (operador debe promover
+            // manualmente — más seguro que adivinar).
+            if (
+              skillResult === commanderIssueCreation.SKILL_RESULT_SUCCESS &&
+              issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SPLIT &&
+              Array.isArray(outcome.issuesCreated) &&
+              outcome.issuesCreated.length > 0
+            ) {
+              try {
+                const parentMatches = mensajeConsolidado.match(/#(\d{2,6})/g) || [];
+                const parentCandidates = [...new Set(parentMatches.map(m => Number(m.slice(1))))]
+                  .filter(n => !outcome.issuesCreated.includes(n));
+                if (parentCandidates.length === 1) {
+                  const parentIssue = parentCandidates[0];
+                  const recursivePromote = require('./lib/allowlist-recursive-promote');
+                  const promoteResult = recursivePromote.autoPromoteSplitChildren({
+                    parentIssue,
+                    childrenIssues: outcome.issuesCreated,
+                  });
+                  if (promoteResult.promoted && Array.isArray(promoteResult.added) && promoteResult.added.length > 0) {
+                    log('commander', `🧩 Auto-promote: hijos de #${parentIssue} agregados a allowlist (TTL 48h): ${promoteResult.added.join(',')}`);
+                    try {
+                      sendTelegram(
+                        `🧩 Auto-promoted a allowlist (TTL 48h, herencia de #${parentIssue}):\n` +
+                        promoteResult.added.map(n => `• #${n}`).join('\n')
+                      );
+                    } catch { /* best-effort */ }
+                  } else if (promoteResult.gateRejected) {
+                    log('commander', `⚠️ Auto-promote bloqueado por gate. Promover manualmente.`);
+                  }
+                } else if (parentCandidates.length > 1) {
+                  log('commander', `🧩 Auto-promote: padre ambiguo (${parentCandidates.length} #N en el mensaje), skip — operador debe promover manualmente`);
+                }
+              } catch (autoPromoteErr) {
+                log('commander', `Auto-promote falló (best-effort, no bloquea): ${autoPromoteErr.message}`);
+              }
+            }
           }
         } catch (auditErr) {
           log('commander', `audit log de issue-creation falló (best-effort): ${auditErr.message}`);
@@ -11270,6 +11359,60 @@ async function mainLoop() {
     log('commander', `[anthropic-1m] cron TTL iniciado: cada ${ANTHROPIC_1M_TTL_CHECK_INTERVAL_MIN}min`);
   } catch (e) {
     log('commander', `[anthropic-1m] no pude iniciar cron TTL: ${e.message}`);
+  }
+
+  // #3625 CA-3 — Cron de cleanup de TTLs de autoría heredada
+  // (recursive-deps:from-N). Cada hora chequea si hay issues en la allowlist
+  // cuya autorización heredada venció (48h por default) y los remueve con
+  // authorizedBy: 'pulpo:cleanup'. Si tira, no mata el pulpo (accesorio).
+  const RECURSIVE_TTL_CHECK_INTERVAL_MIN = 60;
+  try {
+    const tickRecursiveTtl = () => {
+      try {
+        const recursivePromote = require('./lib/allowlist-recursive-promote');
+        const result = recursivePromote.expireRecursiveAuthorizations();
+        if (result.expired && result.expired.length > 0) {
+          log('commander', `[recursive-ttl] removidos por TTL expirado: ${result.expired.join(',')}`);
+        }
+      } catch (e) {
+        log('commander', `[recursive-ttl] tick error (best-effort): ${e.message}`);
+      }
+    };
+    // Primer tick 10min post-arranque, después cada hora.
+    setTimeout(tickRecursiveTtl, 10 * 60 * 1000);
+    setInterval(tickRecursiveTtl, RECURSIVE_TTL_CHECK_INTERVAL_MIN * 60 * 1000);
+    log('commander', `[recursive-ttl] cron iniciado: cada ${RECURSIVE_TTL_CHECK_INTERVAL_MIN}min`);
+  } catch (e) {
+    log('commander', `[recursive-ttl] no pude iniciar cron: ${e.message}`);
+  }
+
+  // #3625 CA-1 — Cron de verificación de hash-chain del audit log de
+  // mutaciones a allowlist. Cada 30min ejecuta verifyChain(); si rompe,
+  // alerta Telegram con severidad alta. NO bloquea writes (eso lo hace el
+  // verifyChain on-startup más arriba — acá es defense-in-depth periódica).
+  const PARTIAL_PAUSE_AUDIT_VERIFY_INTERVAL_MIN = 30;
+  try {
+    const tickAuditVerify = () => {
+      try {
+        const ppa = require('./lib/partial-pause-audit');
+        const result = ppa.verifyChain();
+        if (!result.ok) {
+          const msg = `🚨 [audit-chain-broken] El hash-chain de partial-pause-mutations.jsonl está roto en entry ${result.brokenAt}.\n` +
+                      `Razón: ${result.reason}\n` +
+                      `Esto indica corrupción o tampering. Investigar de inmediato.`;
+          try { sendTelegramPlain(msg); } catch { /* best-effort */ }
+          log('audit', msg);
+        }
+      } catch (e) {
+        log('audit', `[partial-pause-audit] verifyChain falló (best-effort): ${e.message}`);
+      }
+    };
+    // Primer tick a los 2min post-arranque (boot), después cada 30min.
+    setTimeout(tickAuditVerify, 2 * 60 * 1000);
+    setInterval(tickAuditVerify, PARTIAL_PAUSE_AUDIT_VERIFY_INTERVAL_MIN * 60 * 1000);
+    log('audit', `[partial-pause-audit] verifyChain cron iniciado: cada ${PARTIAL_PAUSE_AUDIT_VERIFY_INTERVAL_MIN}min`);
+  } catch (e) {
+    log('audit', `[partial-pause-audit] no pude iniciar cron de verifyChain: ${e.message}`);
   }
 
   while (running) {

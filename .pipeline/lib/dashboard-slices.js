@@ -1308,6 +1308,79 @@ function handoffMetricsSlice(state, ctx) {
     };
 }
 
+// #3625 CA-5 — Widget de audit trail de mutaciones a la allowlist.
+//
+// Devuelve un slice consumible por el dashboard con:
+//   - Las últimas N entries del audit log (default 3, configurable via opts).
+//   - Stats de las últimas 24h (total, autorizadas, rechazadas, sin autoría).
+//   - Estado del hash-chain (`verifyChain`).
+//
+// Cada entry se mapea a 4 estados visuales (UX-#3625):
+//   - 'human'        → mutación OK por humano (commander:leo).
+//   - 'subsystem'    → mutación OK por subsistema (waves, planner-split, etc.).
+//   - 'rejected'     → action: 'reject' (gate bloqueó la mutación).
+//   - 'unauthorized' → action 'write' pero authorized_by null (puerta trasera).
+//
+// La UI usa estos estados para colores/iconos. Si el hash-chain está roto,
+// emitimos `chain_broken: true` para que la UI dispare el banner crítico.
+function partialPauseAuditSlice(state, ctx) {
+    const _ctx = ctx || {};
+    const limit = Number.isFinite(_ctx.limit) && _ctx.limit > 0 ? _ctx.limit : 3;
+    let entries = [];
+    let stats = { total: 0, authorized: 0, rejected: 0, unknown: 0, since: null };
+    let chainStatus = { ok: true, entriesChecked: 0 };
+    try {
+        const ppa = require('./partial-pause-audit');
+        entries = ppa.tail(limit);
+        stats = ppa.statsSince({});
+        chainStatus = ppa.verifyChain();
+    } catch (err) {
+        return {
+            entries: [],
+            stats,
+            chain_broken: false,
+            chain_error: err && err.message,
+            error: 'partial_pause_audit_unavailable',
+        };
+    }
+
+    const mapped = entries.map((e) => {
+        let visual = 'human';
+        if (e.action === 'reject') visual = 'rejected';
+        else if (!e.authorized_by) visual = 'unauthorized';
+        else if (e.authorized_by === 'commander:leo') visual = 'human';
+        else visual = 'subsystem';
+        return {
+            timestamp: e.timestamp,
+            source: e.source,
+            action: e.action,
+            authorized_by: e.authorized_by,
+            justification: (e.justification || '').slice(0, 80),
+            justification_truncated: (e.justification || '').length > 80,
+            justification_redacted: !!e.justification_redacted,
+            diff: e.diff || { added: [], removed: [] },
+            visual,
+            backfill: !!e._backfill,
+        };
+    });
+
+    // Cualquier entry con autoría null y NO marcada como backfill dispara el
+    // banner condicional "Sin autoría".
+    const hasUnauthorizedNonBackfill = mapped.some(
+        (e) => e.visual === 'unauthorized' && !e.backfill
+    );
+
+    return {
+        entries: mapped,
+        stats,
+        chain_broken: !chainStatus.ok,
+        chain_broken_at: chainStatus.brokenAt || null,
+        chain_broken_reason: chainStatus.reason || null,
+        chain_entries_checked: chainStatus.entriesChecked || 0,
+        has_unauthorized_non_backfill: hasUnauthorizedNonBackfill,
+    };
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -1324,6 +1397,8 @@ module.exports = {
     reconcilerStaleOrdersSlice,
     // #2993 — widget de handoff
     handoffMetricsSlice,
+    // #3625 — widget de audit trail de allowlist
+    partialPauseAuditSlice,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,
