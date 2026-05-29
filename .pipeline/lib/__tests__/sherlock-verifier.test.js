@@ -184,7 +184,7 @@ test('T-1: detecta inconsistencia entre claim del Commander y system_state', asy
 // T-2 — Escenario timeout → respuesta con disclaimer F-6.
 // CA-F-6 + CA-SEC-1 (resilencia ante fallos del provider).
 // =============================================================================
-test('T-2: timeout del completion-client devuelve aborted + disclaimer F-6 (#3558: cascada agota)', async () => {
+test('T-2: timeout del completion-client devuelve aborted + disclaimer F-6 (#3668: single-provider)', async () => {
     const dir = mkTmpPipelineDir();
     const completionTimeout = {
         ok: false,
@@ -206,13 +206,14 @@ test('T-2: timeout del completion-client devuelve aborted + disclaimer F-6 (#355
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'aborted');
-    // #3558 — cuando TODOS los providers de la cascada fallan con timeout, el
-    // errorCode canónico es `exhausted_cascade` (CA-F5). El detalle de que el
-    // último error fue timeout queda en el audit log vía `sherlock_retry_attempt`.
-    assert.equal(result.errorCode, 'exhausted_cascade');
+    // #3668 — single-provider: el errorCode canónico es el del error real
+    // (`timeout`), NO `exhausted_cascade` (la cascada fue removida).
+    assert.equal(result.errorCode, 'timeout');
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
-    assert.ok(result.attemptCount >= 1, 'al menos 1 intento contabilizado');
-    assert.ok(Array.isArray(result.chainTried) && result.chainTried.length >= 1);
+    // CA-9 shape stable post-#3668:
+    assert.equal(result.attemptCount, 1, 'attemptCount siempre 1 post-#3668');
+    assert.equal(result.fallbackUsed, false, 'fallbackUsed siempre false post-#3668');
+    assert.ok(Array.isArray(result.chainTried) && result.chainTried.length === 1);
     const final = sherlock.applyDisclaimer('Texto base.', result.suggestedDisclaimer);
     // #3484 — phrasing actualizado por CA-UX-3.
     assert.match(final, /No pude verificar esta respuesta con el verificador adversarial/);
@@ -487,7 +488,7 @@ test('CA-SEC-6: cap inconsistencies <= 5 trunca y marca truncated', () => {
     assert.equal(r.data.inconsistenciesTruncated, true);
 });
 
-test('CA-SEC-6: schema_violation emite evento al audit log y devuelve aborted (#3558: cascada agota)', async () => {
+test('CA-SEC-6: schema_violation emite evento al audit log y devuelve aborted (#3668: single-provider)', async () => {
     const dir = mkTmpPipelineDir();
     const badOutput = {
         ok: true,
@@ -504,13 +505,13 @@ test('CA-SEC-6: schema_violation emite evento al audit log y devuelve aborted (#
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'aborted');
-    // #3558 — schema_violation se contabiliza por cada intento de la cascada y
-    // emite `sherlock_retry_attempt` con `reason: 'schema_violation'`. El verify
-    // retorna errorCode canónico `exhausted_cascade` (CA-F5) cuando todos los
-    // providers fallan; el detalle del último parse error vive en `result.reason`.
-    assert.equal(result.errorCode, 'exhausted_cascade');
+    // #3668 — single-provider: el errorCode canónico es `schema_violation`,
+    // NO `exhausted_cascade`. La cascada fue removida.
+    assert.equal(result.errorCode, 'schema_violation');
     assert.match(result.reason, /schema_violation/);
-    assert.ok(result.attemptCount >= 1);
+    // CA-9 shape stable post-#3668:
+    assert.equal(result.attemptCount, 1);
+    assert.equal(result.fallbackUsed, false);
 });
 
 // =============================================================================
@@ -1114,7 +1115,7 @@ test('#3484 CA-AUDIT-1: JSONL persiste transport=spawn cuando Sherlock usa Anthr
     assert.equal(verification.sherlock_model, 'claude-haiku-4-5');
 });
 
-test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_verification con schema_violation (#3558)', async () => {
+test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_verification con schema_violation (#3668)', async () => {
     const dir = mkTmpPipelineDir();
     const badResp = {
         ok: true,
@@ -1133,10 +1134,10 @@ test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_ve
         residencyModule: fakeResidencyOk(),
     });
     const entries = readAuditEntries(dir);
-    // #3558 — `sherlock_schema_violation` ya no se emite como evento dedicado;
-    // ahora cada intento fallido por schema dispara `sherlock_retry_attempt` y
-    // el evento final es `sherlock_verification` con errorCode='exhausted_cascade'.
-    // CA-AUDIT-1 sigue requiriendo los 5 campos enriched en ese evento final.
+    // #3668 — Sherlock single-provider emite el evento dedicado
+    // `sherlock_schema_violation` cuando el output del modelo no respeta el
+    // schema. El `sherlock_verification` final tiene errorCode='schema_violation'.
+    // CA-AUDIT-1 sigue requiriendo los 5 campos enriched en ambos eventos.
     const verification = entries.find(e => e.event === 'sherlock_verification');
     assert.ok(verification, 'sherlock_verification debe estar persistido');
     assert.equal(verification.same_provider, true);
@@ -1144,10 +1145,10 @@ test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_ve
     assert.equal(verification.commander_model, 'llama-3.3-70b');
     assert.equal(verification.sherlock_model, 'llama-3.3-70b');
     assert.equal(verification.transport, 'http');
-    assert.equal(verification.error_code, 'exhausted_cascade');
-    // Y al menos un retry_attempt registró el schema_violation por intento.
-    const retryAttempt = entries.find(e => e.event === 'sherlock_retry_attempt');
-    assert.ok(retryAttempt, 'sherlock_retry_attempt debe estar persistido por cada intento fallido');
+    assert.equal(verification.error_code, 'schema_violation');
+    // El evento dedicado de schema_violation también está persistido.
+    const schemaEvent = entries.find(e => e.event === 'sherlock_schema_violation');
+    assert.ok(schemaEvent, 'sherlock_schema_violation debe estar persistido');
 });
 
 test('#3484 CA-AUDIT-1: JSONL persiste campos enriched también en sherlock_aborted_residency', async () => {
@@ -1183,55 +1184,15 @@ test('#3484 CA-AUDIT-1: JSONL persiste campos enriched también en sherlock_abor
 //      fallbackUsed=false (preserva adversariality).
 // =============================================================================
 
-test('#3558 E2E: primer provider timeout, segundo provider responde OK (fallbackUsed=true)', async () => {
-    const dir = mkTmpPipelineDir();
-    const providerCalls = [];
-    const completionClient = {
-        complete: async ({ provider, model }) => {
-            providerCalls.push({ provider, model });
-            if (provider === 'cerebras') {
-                return {
-                    ok: false,
-                    error: { type: 'timeout', detail: 'request superó timeoutMs' },
-                    durationMs: 90_000,
-                };
-            }
-            return {
-                ok: true,
-                content: JSON.stringify({ verdict: 'ok', reason: 'todo consistente', inconsistencies: [] }),
-                inputTokens: 10, outputTokens: 5, durationMs: 80,
-            };
-        },
-    };
-    const result = await sherlock.verify({
-        analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'anthropic',
-        commanderModel: 'claude-opus-4-7',
-        pipelineDir: dir,
-        configLoader: defaultConfigLoader(),
-        completionClient,
-        quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
-        residencyModule: fakeResidencyOk(),
-    });
-    assert.equal(result.verdict, 'ok');
-    assert.equal(result.sherlockProvider, 'gemini-google', 'fallback al segundo provider');
-    assert.equal(result.fallbackUsed, true);
-    assert.ok(result.attemptCount >= 2, 'al menos 2 intentos contabilizados');
-    assert.ok(Array.isArray(result.chainTried));
-    assert.ok(result.chainTried.includes('cerebras'));
-    assert.ok(result.chainTried.includes('gemini-google'));
-    // Audit: al menos 1 sherlock_retry_attempt con error.type='timeout' para cerebras.
-    const entries = readAuditEntries(dir);
-    const retryAttempts = entries.filter(e => e.event === 'sherlock_retry_attempt');
-    assert.ok(retryAttempts.length >= 1, 'al menos 1 retry_attempt persistido');
-    // El sherlock_verification final tiene errorCode=null + fallbackUsed=true.
-    const verification = entries.find(e => e.event === 'sherlock_verification');
-    assert.ok(verification);
-    assert.equal(verification.error_code, null);
-});
+// =============================================================================
+// #3668 — Tests post-refactor single-provider. La cascada de #3558 fue removida
+// (lib/sherlock-retry-chain.js eliminado). Sherlock ahora invoca al provider
+// resuelto UNA sola vez; si falla, devuelve aborted + F-6 sin probar otro
+// provider. El shape del retorno preserva attemptCount/fallbackUsed/chainTried
+// (CA-9) para no romper consumers downstream.
+// =============================================================================
 
-test('#3558 E2E: todos los providers fallan → verdict=aborted + chainTried completo', async () => {
+test('#3668: provider único falla → verdict=aborted con shape stable', async () => {
     const dir = mkTmpPipelineDir();
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
@@ -1248,60 +1209,57 @@ test('#3558 E2E: todos los providers fallan → verdict=aborted + chainTried com
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'aborted');
-    assert.equal(result.errorCode, 'exhausted_cascade');
+    assert.equal(result.errorCode, 'timeout');
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
-    assert.equal(result.fallbackUsed, true);
-    assert.ok(result.attemptCount >= 2, `attemptCount=${result.attemptCount}`);
+    // CA-9 — shape stable post-single-provider.
+    assert.equal(result.fallbackUsed, false, 'fallbackUsed siempre false post-#3668');
+    assert.equal(result.attemptCount, 1, 'attemptCount siempre 1 post-#3668');
     assert.ok(Array.isArray(result.chainTried));
-    assert.ok(result.chainTried.length >= 2, 'chainTried debe incluir al menos 2 providers');
+    assert.equal(result.chainTried.length, 1, 'chainTried siempre length 1 post-#3668');
 });
 
-test('#3558 E2E: same-provider rota modelo en schema_violation, preserva fallbackUsed=false', async () => {
+test('#3668 CA-7: provider no disponible → emite sherlock_skipped_provider_unavailable + F-6', async () => {
     const dir = mkTmpPipelineDir();
-    const callsByModel = {};
-    const completionClient = {
-        complete: async ({ provider, model }) => {
-            callsByModel[model] = (callsByModel[model] || 0) + 1;
-            if (provider === 'cerebras' && model === 'llama-3.3-70b') {
-                // Primer modelo de cerebras devuelve JSON inválido.
-                return {
-                    ok: true,
-                    content: 'esto no es JSON valido',
-                    inputTokens: 5, outputTokens: 2, durationMs: 50,
-                };
-            }
-            if (provider === 'cerebras') {
-                // Otro modelo de cerebras responde OK.
-                return {
-                    ok: true,
-                    content: JSON.stringify({ verdict: 'ok', reason: 'consistente', inconsistencies: [] }),
-                    inputTokens: 10, outputTokens: 5, durationMs: 60,
-                };
-            }
-            // No deberíamos llegar acá (cerebras debería responder en el 2do intento).
-            return { ok: false, error: { type: 'timeout' }, durationMs: 90_000 };
-        },
+    // dispatchModule devuelve gated:true → resolveSherlockProvider retorna null
+    // → debe emitirse el evento nuevo `sherlock_skipped_provider_unavailable`.
+    const fakeDispatcherGated = {
+        resolveSpawnWithFallback: () => ({
+            provider: null,
+            model: null,
+            handler: null,
+            source: 'all-gated',
+            gated: true,
+            fallbackUsed: null,
+            primaryProvider: 'anthropic',
+            chainTried: ['anthropic'],
+            crossProvider: false,
+            depthExceeded: false,
+        }),
     };
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient,
+        completionClient: fakeCompletionClient({ ok: true, content: '{}', durationMs: 0 }),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        dispatchModule: fakeDispatcherGated,
         residencyModule: fakeResidencyOk(),
     });
-    assert.equal(result.verdict, 'ok');
-    assert.equal(result.sherlockProvider, 'cerebras', 'mismo provider, segundo modelo');
-    assert.notEqual(result.sherlockModel, 'llama-3.3-70b', 'modelo distinto al inicial');
-    assert.equal(result.fallbackUsed, false, 'same-provider preserva adversariality');
-    assert.equal(result.attemptCount, 2);
+    assert.equal(result.verdict, 'aborted');
+    assert.equal(result.errorCode, 'no_provider');
+    assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
+    // El disclaimer F-6 se aplica via applyDisclaimer al texto del Commander.
+    const finalText = sherlock.applyDisclaimer('Respuesta del Commander', result.suggestedDisclaimer);
+    assert.match(finalText, /No pude verificar esta respuesta/);
+    // CA-7 — nuevo evento `sherlock_skipped_provider_unavailable` persistido.
+    const entries = readAuditEntries(dir);
+    const skipped = entries.find(e => e.event === 'sherlock_skipped_provider_unavailable');
+    assert.ok(skipped, 'sherlock_skipped_provider_unavailable debe estar persistido');
 });
 
-test('#3558 E2E: PII no aparece en sherlock_retry_attempt persistidos (CA-SEC-AUDIT-REDACT)', async () => {
+test('#3668: provider falla con detail PII → NO aparece en audit log (CA-SEC-AUDIT-REDACT)', async () => {
     const dir = mkTmpPipelineDir();
-    // detail con datos sensibles que NUNCA deberían persistirse en el audit log.
     const PII_DNI = '99887766';
     const PII_SECRET = 'sk_PII_ABCDEF12345678';
     await sherlock.verify({
@@ -1324,50 +1282,16 @@ test('#3558 E2E: PII no aparece en sherlock_retry_attempt persistidos (CA-SEC-AU
         residencyModule: fakeResidencyOk(),
     });
     const entries = readAuditEntries(dir);
-    const retries = entries.filter(e => e.event === 'sherlock_retry_attempt');
-    assert.ok(retries.length > 0, 'al menos 1 retry_attempt');
+    assert.ok(entries.length > 0, 'al menos 1 entrada de audit');
     // PII NO debe aparecer literalmente en NINGUNA entrada del audit log.
+    // El audit-log canónico solo persiste error_code (ej. 'unknown'), nunca
+    // `detail` con texto libre — defense in depth aunque la fuente del detail
+    // hubiera tenido DNI/secret.
     for (const entry of entries) {
         const serialized = JSON.stringify(entry);
         assert.ok(!serialized.includes(PII_DNI), `DNI no debe aparecer en ${entry.event}`);
         assert.ok(!serialized.includes(PII_SECRET), `secret no debe aparecer en ${entry.event}`);
     }
-});
-
-test('#3558: sherlock_verification final incluye attemptCount/fallbackUsed/chainTried', async () => {
-    const dir = mkTmpPipelineDir();
-    let calls = 0;
-    const completionClient = {
-        complete: async () => {
-            calls++;
-            if (calls === 1) {
-                return { ok: false, error: { type: 'timeout' }, durationMs: 90_000 };
-            }
-            return {
-                ok: true,
-                content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
-                inputTokens: 10, outputTokens: 5, durationMs: 60,
-            };
-        },
-    };
-    await sherlock.verify({
-        analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'anthropic',
-        pipelineDir: dir,
-        configLoader: defaultConfigLoader(),
-        completionClient,
-        quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
-        residencyModule: fakeResidencyOk(),
-    });
-    const entries = readAuditEntries(dir);
-    const verification = entries.find(e => e.event === 'sherlock_verification');
-    assert.ok(verification, 'sherlock_verification persistido');
-    // El shape del audit-log no expone attemptCount/fallbackUsed top-level
-    // por el shape canónico; quedan en el payload original via emitAuditEvent.
-    // Lo importante: la propia respuesta de verify() los expone (validado
-    // en otros tests). Acá validamos que el audit no rompió por los campos extra.
-    assert.equal(typeof verification.same_provider, 'boolean');
 });
 // =============================================================================
 // #3501 — Tests del swap intra-provider para preservar adversariality cuando
