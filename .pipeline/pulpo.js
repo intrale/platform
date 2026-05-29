@@ -3789,6 +3789,72 @@ function brazoBarrido(config) {
           // el intake de desarrollo no lo va a encontrar (gh issue list es
           // case-sensitive en --label). Ver fix #2801 / PR #2827.
           if (pipelineName === 'definicion') {
+            // #3614 — Gate architect-signoff (B3 del paraguas #3559).
+            // Se invoca JUSTO antes del enqueueing del label "Ready"
+            // (hallazgo R1 del análisis guru: NO en servicio-github.js, que
+            // es worker downstream). Cuando `architect.enabled !== true` el
+            // módulo cortocircuita (kill switch R6 / CA-14) y devuelve
+            // approve sin escribir nada en JSONL.
+            //
+            // En modo dry-run el gate logguea pero NUNCA bloquea (CA-5);
+            // sólo en `enforce` un veredicto block impide el enqueueing.
+            let architectGateBlocked = false;
+            try {
+              const architectCfg = (config && config.architect) || {};
+              if (architectCfg.enabled === true) {
+                const architectGate = require('./lib/architect-signoff-gate');
+                // Cargar body + comments del issue. Reutilizamos `gh` con
+                // timeout corto: el barrido no debe quedar colgado por red.
+                let issueJson = null;
+                try {
+                  const raw = execSync(`${GH_BIN} issue view ${issue} --json number,body,createdAt,comments`,
+                    { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true });
+                  issueJson = JSON.parse(raw);
+                } catch (e) {
+                  log('barrido', `#${issue} architect-gate: ERROR cargando issue (${e.message}) — gate mode=${architectCfg.gate_mode}`);
+                  if (architectCfg.gate_mode === 'enforce') {
+                    architectGateBlocked = true;
+                    sendTelegram(`🛑 #${issue} architect-gate (enforce) bloqueó promoción por error de carga: ${e.message}`);
+                  }
+                }
+                if (issueJson) {
+                  const gateResult = architectGate.evaluate({
+                    issue: { number: issueJson.number, createdAt: issueJson.createdAt },
+                    body: issueJson.body,
+                    comments: issueJson.comments || [],
+                    config: architectCfg,
+                  });
+                  // En `enforce`, un block efectivo paraliza la promoción.
+                  // En `dry-run`, decision siempre llega como 'approve' (R3).
+                  if (gateResult.decision === 'block') {
+                    architectGateBlocked = true;
+                    log('barrido', `#${issue} architect-gate BLOQUEÓ promoción (mode=${gateResult.gate_mode}): ${gateResult.reason}`);
+                    sendTelegram(`🛑 #${issue} architect-gate bloqueó promoción a Ready: ${gateResult.reason}`);
+                  } else {
+                    log('barrido', `#${issue} architect-gate ${gateResult.gate_mode}: ${gateResult.original_decision} (efectivo=${gateResult.decision}) — ${gateResult.reason}`);
+                  }
+                }
+              }
+            } catch (e) {
+              // Defensa última: si el gate revienta con un bug, NO debe
+              // tumbar al pulpo. En enforce avisamos por Telegram y
+              // bloqueamos (fail-cerrado); en dry-run logueamos y seguimos.
+              const archMode = (config && config.architect && config.architect.gate_mode) || 'dry-run';
+              log('barrido', `#${issue} architect-gate ERROR inesperado: ${e.message} (mode=${archMode})`);
+              if (archMode === 'enforce') {
+                architectGateBlocked = true;
+                sendTelegram(`🛑 #${issue} architect-gate ERROR inesperado (enforce → bloquea): ${e.message}`);
+              }
+            }
+
+            if (architectGateBlocked) {
+              // Saltamos el enqueueing del label Ready. El issue queda en
+              // estado completado del pipeline definicion pero sin promoción
+              // efectiva. La nueva pasada del architect (re-firma con marker
+              // + signoff en tokens.jsonl) destraba en barridos posteriores.
+              continue;
+            }
+
             const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
             const labelFile = path.join(ghQueueDir, `${issue}-ready-${Date.now()}.json`);
             fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'Ready' }));
