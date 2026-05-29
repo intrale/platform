@@ -471,37 +471,64 @@ function promoteWaveToActiveLocked(waveNumber, metadata) {
     });
 }
 
+// #3616 — Dedupe del aviso "allowlist vacío" por boot del proceso. El módulo
+// se carga una sola vez por pulpo, así que un flag in-memory alcanza para
+// evitar spam Telegram cuando varios callers llaman a getAllowlist() en el
+// mismo boot. Se resetea explícitamente en tests.
+let _emptyAllowlistAlertedThisBoot = false;
+function _resetEmptyAllowlistDedupeForTests() {
+    _emptyAllowlistAlertedThisBoot = false;
+}
+
 /**
  * Allowlist de issues procesables por el pipeline desde la ola activa.
  * Filtra issues con status `completed`. Compatible con consumers de
  * `.partial-pause.json` (return: number[]).
  *
- * Backward compat: si waves.json no tiene ola activa con issues, cae a leer
- * `.partial-pause.json` (migration path).
+ * #3616 — **Sin fallback silencioso** a `.partial-pause.json`. Si waves.json
+ * no tiene ola activa con issues, devuelve `[]` explícito + emite alerta
+ * Telegram dedupada por boot (UNA sola vez por proceso). El init
+ * `init-waves-from-partial.js` corre antes en `pulpo.js:boot()` y siembra
+ * waves.json desde la allowlist operativa, así que en operación normal este
+ * código sólo devuelve `[]` cuando realmente no hay planificación.
+ *
+ * El mensaje Telegram NO incluye contenido raw del filesystem (security req 3):
+ * sólo el evento y la sugerencia accionable.
  *
  * @example
  *   const allowed = getAllowlist();
- *   // → [3451, 3452, 3453]
+ *   // → [3451, 3452, 3453]  (ola activa)
+ *   // → []                  (sin ola activa)
  *
  * @returns {number[]} números de issue
  */
 function getAllowlist() {
     const active = getActiveWave();
     if (active && Array.isArray(active.issues) && active.issues.length > 0) {
-        return active.issues
+        const issues = active.issues
             .filter((i) => i.status !== 'completed')
             .map((i) => normalizeIssue(i.number))
             .filter(Boolean);
+        return issues;
     }
-    // Fallback a .partial-pause.json para no romper consumers durante la transición.
-    try {
-        const raw = fs.readFileSync(partialFile(), 'utf8');
-        const parsed = JSON.parse(raw);
-        const arr = Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [];
-        return arr.map(normalizeIssue).filter(Boolean);
-    } catch {
-        return [];
+    // Sin ola activa con issues → allowlist vacía explícita. Alertar UNA vez
+    // por boot para que el operador vea el problema en Telegram sin spam.
+    if (!_emptyAllowlistAlertedThisBoot) {
+        _emptyAllowlistAlertedThisBoot = true;
+        try {
+            notifyTelegram({
+                level: 'warn',
+                component: 'waves-allowlist',
+                message: 'Pipeline sin ola activa — allowlist vacía',
+                detail: 'No hay issues pendientes en waves.json. Si esperás algo en marcha, ' +
+                    'iniciá con `/wave promote N+X` o revisá con `/wave status`.',
+                action: 'Verificá planificación: `/wave status` o inspeccioná .pipeline/waves.json',
+            });
+        } catch (err) {
+            logWarn(`alerta "allowlist vacío" falló: ${err.message}`);
+        }
     }
+    return [];
 }
 
 /**
@@ -1456,5 +1483,7 @@ module.exports = {
         updateMarkerFsync,
         listPromoteFailedMarkers,
         assertArchivedDirSafe,
+        // #3616 — reset del dedupe in-memory de la alerta "allowlist vacío".
+        _resetEmptyAllowlistDedupeForTests,
     },
 };
