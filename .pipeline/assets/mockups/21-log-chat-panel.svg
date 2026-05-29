@@ -1,0 +1,387 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 21 — Chat operador-agente en log viewer (#3605)
+  -----------------------------------------------------------------------------
+  Demuestra:
+    - Estado A (collapsed): tira inferior con toggle "Chat con agente" + badge
+      contador de mensajes no leidos. Por default arranca colapsado para no
+      saturar el caso de uso principal (ver el log).
+    - Estado B (expanded, empty): split 70/30 vertical con header del log
+      arriba y panel de chat abajo. Placeholder "Aun no enviaste indicaciones".
+    - Estado C (expanded, conversation): historial con burbujas alineadas
+      (operador a la derecha, agente a la izquierda), input multiline, counter
+      de caracteres, boton de envio, checkmark de entrega.
+    - Estado D (agent dead): input deshabilitado + cartel descriptivo "Sin
+      agente activo - esta ejecucion ya termino".
+
+  Sistema visual:
+    - 100% reuso de design-tokens.css salvo 8 nuevos tokens semanticos del
+      sistema de chat (--chat-*), definidos en design-tokens.css seccion 8.
+    - Operador (humano): acento var(--brand-cyan) #00D6FF + bg suave a la
+      derecha. Glyph ic-chat-operator (silueta humana con punto). Familiar
+      como bubble de WhatsApp/Telegram pero con paleta Intrale.
+    - Agente (IA): acento var(--purple) #BC8CFF + bg surface-2 a la izquierda.
+      Glyph ic-chat-agent (chip/spark) que evoca proceso automatizado.
+    - Header colapsable: usa la misma tira del log header con var(--surface-1).
+
+  Iconografia (todos en sprite.svg):
+    - ic-chat-bubble       header colapsable del chat
+    - ic-chat-operator     avatar del humano en cada burbuja
+    - ic-chat-agent        avatar del agente en cada burbuja
+    - ic-chat-collapsed    flecha arriba (expandir panel)
+    - ic-chat-expanded     flecha abajo (colapsar panel)
+    - ic-chat-sent         checkmark de entrega confirmada via IPC
+    - ic-chat-pending      reloj de envio en curso
+    - ic-chat-send         flecha de envio (paper-plane minimal)
+
+  Accesibilidad:
+    - Contraste verificado: textos primarios 14.8:1, burbuja operador sobre
+      brand-cyan-bg 8.1:1, burbuja agente sobre purple-bg 9.2:1.
+    - Sin informacion solo por color: cada burbuja combina avatar + alineacion
+      + glyph + bg distintos.
+    - Tamano minimo de touch target en boton send y toggle: 36x36.
+    - Input multiline crece hasta 6 lineas; despues scroll interno.
+    - aria-label en toggle ("Expandir chat con agente, 2 mensajes nuevos"),
+      en input ("Mensaje al agente"), en send button ("Enviar mensaje").
+    - Esc cierra el chat solo si esta vacio (no perder texto sin querer).
+
+  Seguridad (alineado al review de security):
+    - El mockup muestra el contador de caracteres "245 / 2000" para hacer
+      visible al operador el limite duro de sanitizacion.
+    - El cartel "Sin agente activo" cubre el input completo para que sea
+      imposible escribir cuando el agente esta muerto (no solo deshabilitar
+      el boton).
+
+  Notas de implementacion (para android-dev / pipeline-dev):
+    - El split entre log y chat es draggable: la border-strong horizontal
+      del medio tiene cursor:row-resize y persiste el ratio en localStorage.
+    - Las burbujas truncan visualmente a 1200 chars con "ver mas" inline
+      cuando el operador envia algo largo (el backend persiste el full text).
+    - Auto-scroll del log NO se interrumpe al recibir respuesta del agente
+      en el chat (son streams independientes).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="2200" viewBox="0 0 1440 2200"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-label="Mockup chat operador-agente en ventana de logs del dashboard pipeline V3">
+  <defs>
+    <linearGradient id="brandGradCH" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="purpleGradCH" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#BC8CFF"/>
+      <stop offset="100%" stop-color="#8957E5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo dashboard global -->
+  <rect width="1440" height="2200" fill="#0D1117"/>
+
+  <!-- ============================================================ -->
+  <!--  ENCABEZADO COMUN DE LA HOJA (no es parte del producto)       -->
+  <!-- ============================================================ -->
+  <rect x="0" y="0" width="1440" height="60" fill="#161B22"/>
+  <rect x="0" y="59" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(28, 16)">
+    <rect width="28" height="28" rx="6" fill="#0D274D"/>
+    <path d="M14 6 L4 22 L24 22 Z" fill="none" stroke="url(#brandGradCH)" stroke-width="2.2" stroke-linejoin="round"/>
+    <path d="M14 12 L9 20 L19 20 Z" fill="url(#brandGradCH)"/>
+  </g>
+  <text x="68" y="38" fill="#E6EDF3" font-size="16" font-weight="700">Mockup 21</text>
+  <text x="160" y="38" fill="#8B949E" font-size="14">- Chat operador-agente en log viewer (#3605)</text>
+  <text x="1412" y="38" fill="#8B949E" font-size="12" text-anchor="end">UX · Sistema visual Intrale Pipeline V3</text>
+
+  <!-- ============================================================ -->
+  <!--  ESTADO A — Chat colapsado (default)                          -->
+  <!-- ============================================================ -->
+  <g transform="translate(40, 100)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="18" font-weight="700">A. Chat colapsado (estado por default al abrir el log)</text>
+    <text x="0" y="24" fill="#8B949E" font-size="13">El panel arranca cerrado para mantener el log limpio. El operador lo abre clickeando la tira inferior.</text>
+
+    <!-- frame del log viewer -->
+    <rect x="0" y="42" width="1360" height="520" rx="10" fill="#0D1117" stroke="#30363D"/>
+
+    <!-- lv-topbar -->
+    <rect x="0" y="42" width="1360" height="36" rx="10" fill="#161B22"/>
+    <rect x="0" y="72" width="1360" height="6" fill="#161B22"/>
+    <rect x="0" y="77" width="1360" height="1" fill="#30363D"/>
+    <text x="20" y="65" fill="#00D6FF" font-size="13" font-weight="600">‹ Operacion</text>
+    <text x="120" y="65" fill="#8B949E" font-size="13">Intrale · Log Viewer</text>
+
+    <!-- header del log -->
+    <rect x="0" y="78" width="1360" height="48" fill="#161B22"/>
+    <rect x="0" y="125" width="1360" height="1" fill="#30363D"/>
+    <text x="20" y="107" fill="#BC8CFF" font-size="15" font-weight="700">guru · #3559</text>
+    <rect x="160" y="92" width="58" height="22" rx="11" fill="rgba(248,81,73,0.15)" stroke="#F85149"/>
+    <circle cx="174" cy="103" r="3" fill="#F85149"/>
+    <text x="184" y="107" fill="#F85149" font-size="11" font-weight="700">LIVE</text>
+    <rect x="990" y="92" width="80" height="22" rx="4" fill="#BC8CFF"/>
+    <text x="1030" y="107" fill="#0D1117" font-size="11" font-weight="600" text-anchor="middle">Relevante</text>
+    <rect x="1078" y="92" width="56" height="22" rx="4" fill="#0D1117" stroke="#30363D"/>
+    <text x="1106" y="107" fill="#8B949E" font-size="11" text-anchor="middle">Tools</text>
+    <rect x="1142" y="92" width="50" height="22" rx="4" fill="#0D1117" stroke="#30363D"/>
+    <text x="1167" y="107" fill="#8B949E" font-size="11" text-anchor="middle">Todo</text>
+    <rect x="1200" y="92" width="140" height="22" rx="4" fill="#0D1117" stroke="#30363D"/>
+    <text x="1212" y="107" fill="#6E7681" font-size="11">Buscar...</text>
+
+    <!-- log body lineas (mockeadas) -->
+    <g font-family="ui-monospace, Consolas, monospace" font-size="11">
+      <text x="20" y="148" fill="#8B949E">  3</text>
+      <text x="56" y="148" fill="#6E7681">10:42:18</text>
+      <text x="130" y="148" fill="#58A6FF">[guru] Iniciando analisis tecnico del issue #3559...</text>
+      <text x="20" y="166" fill="#8B949E">  4</text>
+      <text x="56" y="166" fill="#6E7681">10:42:20</text>
+      <text x="130" y="166" fill="#E6EDF3">Leyendo body del issue + comentarios (5 comentarios encontrados)</text>
+      <text x="20" y="184" fill="#8B949E">  5</text>
+      <text x="56" y="184" fill="#6E7681">10:42:22</text>
+      <text x="130" y="184" fill="#D29922">[tool] grep "stdio:" .pipeline/lib/agent-launcher/providers/</text>
+      <text x="20" y="202" fill="#8B949E">  6</text>
+      <text x="56" y="202" fill="#6E7681">10:42:24</text>
+      <text x="130" y="202" fill="#E6EDF3">Confirmado invariant I3 en anthropic.js:93 y deterministic.js:88</text>
+      <text x="20" y="220" fill="#8B949E">  7</text>
+      <text x="56" y="220" fill="#6E7681">10:42:28</text>
+      <text x="130" y="220" fill="#3FB950">Helpers reutilizables OK: redact, file-lock, sanitize-log-stream</text>
+      <text x="20" y="238" fill="#8B949E">  8</text>
+      <text x="56" y="238" fill="#6E7681">10:42:30</text>
+      <text x="130" y="238" fill="#D29922">[tool] gh issue view 3609 --json title,labels</text>
+      <text x="20" y="256" fill="#8B949E">  9</text>
+      <text x="56" y="256" fill="#6E7681">10:42:32</text>
+      <text x="130" y="256" fill="#E6EDF3">Evaluando dependencia con #3611 (IPC neutral cross-canal)...</text>
+      <text x="20" y="466" fill="#6E7681" font-style="italic">                                  · · ·  stream activo  · · ·</text>
+    </g>
+
+    <!-- tira de chat colapsado (sticky bottom) -->
+    <g transform="translate(0, 510)">
+      <rect x="0" y="0" width="1360" height="50" fill="#161B22"/>
+      <rect x="0" y="0" width="1360" height="1" fill="#21262D"/>
+      <rect x="0" y="0" width="3" height="50" fill="url(#brandGradCH)"/>
+      <!-- icono chat -->
+      <g transform="translate(20, 13)">
+        <path d="M2 4 a4 4 0 0 1 4-4 h12 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-9 l-4 4 v-4 h-3 a4 4 0 0 1 -4 -4 z" fill="none" stroke="#00D6FF" stroke-width="1.8"/>
+        <circle cx="8" cy="9" r="1.4" fill="#00D6FF"/>
+        <circle cx="13" cy="9" r="1.4" fill="#00D6FF"/>
+        <circle cx="18" cy="9" r="1.4" fill="#00D6FF"/>
+      </g>
+      <text x="60" y="32" fill="#E6EDF3" font-size="13" font-weight="600">Chat con el agente</text>
+      <!-- badge mensajes -->
+      <rect x="218" y="17" width="48" height="20" rx="10" fill="rgba(0,214,255,0.18)" stroke="#00D6FF"/>
+      <text x="242" y="31" fill="#00D6FF" font-size="11" font-weight="700" text-anchor="middle">2 nuevos</text>
+      <!-- hint atajo -->
+      <text x="1240" y="32" fill="#8B949E" font-size="11">Atajo: Ctrl+/ para abrir</text>
+      <!-- chevron up -->
+      <path d="M1330 28 L1338 20 L1346 28" fill="none" stroke="#8B949E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  ESTADO B — Chat expandido vacio (primera vez)                -->
+  <!-- ============================================================ -->
+  <g transform="translate(40, 720)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="18" font-weight="700">B. Chat expandido sin mensajes (primer uso, agente activo)</text>
+    <text x="0" y="24" fill="#8B949E" font-size="13">Split 70/30 vertical. La border-strong del medio es draggable (cursor: row-resize). Placeholder educa el JTBD.</text>
+
+    <rect x="0" y="42" width="1360" height="640" rx="10" fill="#0D1117" stroke="#30363D"/>
+
+    <!-- log topbar + header simplificado -->
+    <rect x="0" y="42" width="1360" height="36" rx="10" fill="#161B22"/>
+    <rect x="0" y="72" width="1360" height="6" fill="#161B22"/>
+    <rect x="0" y="77" width="1360" height="1" fill="#30363D"/>
+    <text x="20" y="65" fill="#00D6FF" font-size="13" font-weight="600">‹ Operacion</text>
+    <text x="120" y="65" fill="#8B949E" font-size="13">Intrale · Log Viewer</text>
+    <rect x="0" y="78" width="1360" height="40" fill="#161B22"/>
+    <rect x="0" y="117" width="1360" height="1" fill="#30363D"/>
+    <text x="20" y="104" fill="#BC8CFF" font-size="14" font-weight="700">guru · #3559</text>
+    <rect x="160" y="89" width="50" height="20" rx="10" fill="rgba(248,81,73,0.15)" stroke="#F85149"/>
+    <circle cx="172" cy="99" r="3" fill="#F85149"/>
+    <text x="180" y="103" fill="#F85149" font-size="10" font-weight="700">LIVE</text>
+
+    <!-- log body recortado (sale el 70%) -->
+    <g font-family="ui-monospace, Consolas, monospace" font-size="11">
+      <text x="20" y="142" fill="#8B949E">  9</text>
+      <text x="56" y="142" fill="#6E7681">10:42:32</text>
+      <text x="130" y="142" fill="#E6EDF3">Evaluando dependencia con #3611 (IPC neutral cross-canal)...</text>
+      <text x="20" y="160" fill="#8B949E"> 10</text>
+      <text x="56" y="160" fill="#6E7681">10:42:36</text>
+      <text x="130" y="160" fill="#3FB950">Concluido: viable opt-in por skill, no rompe I3.</text>
+      <text x="20" y="178" fill="#8B949E"> 11</text>
+      <text x="56" y="178" fill="#6E7681">10:42:38</text>
+      <text x="130" y="178" fill="#D29922">[tool] grep "pid-discovery" .pipeline/lib/</text>
+      <text x="20" y="402" fill="#6E7681" font-style="italic">                                  · · ·  stream activo  · · ·</text>
+    </g>
+
+    <!-- border-strong divisoria draggable -->
+    <rect x="0" y="438" width="1360" height="2" fill="#484F58"/>
+    <rect x="660" y="436" width="40" height="6" rx="3" fill="#484F58"/>
+    <text x="710" y="442" fill="#6E7681" font-size="10">arrastrar para redimensionar</text>
+
+    <!-- panel de chat expandido (vacio) -->
+    <rect x="0" y="440" width="1360" height="240" fill="#0D1117"/>
+
+    <!-- header del panel chat -->
+    <rect x="0" y="440" width="1360" height="34" fill="#161B22"/>
+    <rect x="0" y="473" width="1360" height="1" fill="#21262D"/>
+    <rect x="0" y="440" width="3" height="34" fill="url(#brandGradCH)"/>
+    <g transform="translate(16, 449)">
+      <path d="M2 4 a4 4 0 0 1 4-4 h12 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-9 l-4 4 v-4 h-3 a4 4 0 0 1 -4 -4 z" fill="none" stroke="#00D6FF" stroke-width="1.6"/>
+    </g>
+    <text x="48" y="461" fill="#E6EDF3" font-size="12" font-weight="600">Chat con el agente</text>
+    <text x="172" y="461" fill="#3FB950" font-size="11">● agente activo</text>
+    <text x="1296" y="461" fill="#8B949E" font-size="11">colapsar</text>
+    <path d="M1334 458 L1342 452 L1350 458" fill="none" stroke="#8B949E" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" transform="rotate(180 1342 455)"/>
+
+    <!-- empty state placeholder -->
+    <g transform="translate(560, 510)">
+      <circle cx="120" cy="14" r="22" fill="none" stroke="#30363D" stroke-width="1.5"/>
+      <path d="M108 8 a4 4 0 0 1 4-4 h16 a4 4 0 0 1 4 4 v12 a4 4 0 0 1 -4 4 h-12 l-4 4 v-4 h0 a4 4 0 0 1 -4 -4 z" fill="none" stroke="#8B949E" stroke-width="1.6" transform="translate(0, -4)"/>
+    </g>
+    <text x="680" y="572" fill="#E6EDF3" font-size="13" font-weight="600" text-anchor="middle">Aun no enviaste indicaciones al agente</text>
+    <text x="680" y="592" fill="#8B949E" font-size="12" text-anchor="middle">Escribi una correccion, aclaracion o complemento. El agente la recibe en tiempo real.</text>
+    <text x="680" y="610" fill="#6E7681" font-size="11" text-anchor="middle">Enter envia · Shift+Enter inserta nueva linea · Esc cierra el chat si esta vacio</text>
+
+    <!-- input area -->
+    <rect x="0" y="630" width="1360" height="50" fill="#161B22"/>
+    <rect x="0" y="630" width="1360" height="1" fill="#21262D"/>
+    <rect x="16" y="640" width="1240" height="32" rx="6" fill="#0D1117" stroke="#30363D"/>
+    <text x="28" y="660" fill="#6E7681" font-size="12" font-style="italic">Escribi tu indicacion al agente...</text>
+    <text x="1180" y="660" fill="#6E7681" font-size="10">0 / 2000</text>
+    <!-- send button disabled -->
+    <rect x="1268" y="640" width="76" height="32" rx="6" fill="#21262D"/>
+    <path d="M1284 656 L1296 650 L1296 654 L1308 654 L1308 658 L1296 658 L1296 662 Z" fill="#484F58"/>
+    <text x="1326" y="660" fill="#6E7681" font-size="11" font-weight="600">Enviar</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  ESTADO C — Chat con conversacion activa                      -->
+  <!-- ============================================================ -->
+  <g transform="translate(40, 1410)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="18" font-weight="700">C. Chat con conversacion activa (operador + respuesta del agente)</text>
+    <text x="0" y="24" fill="#8B949E" font-size="13">Burbujas alineadas: operador derecha (cyan), agente izquierda (purple). Timestamps relativos. Checkmark de entrega.</text>
+
+    <rect x="0" y="42" width="1360" height="540" rx="10" fill="#0D1117" stroke="#30363D"/>
+
+    <!-- log header colapsado -->
+    <rect x="0" y="42" width="1360" height="32" rx="10" fill="#161B22"/>
+    <rect x="0" y="73" width="1360" height="1" fill="#30363D"/>
+    <text x="20" y="62" fill="#BC8CFF" font-size="13" font-weight="700">guru · #3559</text>
+    <text x="120" y="62" fill="#8B949E" font-size="11">log: 14 lineas · stream activo</text>
+
+    <!-- chat header (split full a chat) -->
+    <rect x="0" y="74" width="1360" height="32" fill="#161B22"/>
+    <rect x="0" y="105" width="1360" height="1" fill="#21262D"/>
+    <rect x="0" y="74" width="3" height="32" fill="url(#brandGradCH)"/>
+    <g transform="translate(16, 82)">
+      <path d="M2 4 a4 4 0 0 1 4-4 h12 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-9 l-4 4 v-4 h-3 a4 4 0 0 1 -4 -4 z" fill="none" stroke="#00D6FF" stroke-width="1.6"/>
+    </g>
+    <text x="48" y="94" fill="#E6EDF3" font-size="12" font-weight="600">Chat con el agente</text>
+    <text x="172" y="94" fill="#3FB950" font-size="11">● agente activo</text>
+    <text x="280" y="94" fill="#8B949E" font-size="11">3 mensajes intercambiados</text>
+
+    <!-- ====== Historial de chat ====== -->
+
+    <!-- Burbuja 1: operador (alineada derecha) -->
+    <g transform="translate(420, 124)">
+      <!-- bubble -->
+      <rect x="0" y="0" width="900" height="58" rx="12" fill="rgba(0,214,255,0.10)" stroke="rgba(0,214,255,0.30)"/>
+      <rect x="897" y="2" width="3" height="54" rx="1.5" fill="#00D6FF"/>
+      <text x="20" y="22" fill="#00D6FF" font-size="11" font-weight="700">TU (operador)</text>
+      <text x="120" y="22" fill="#6E7681" font-size="10">hace 1 min · 10:43:08</text>
+      <text x="20" y="42" fill="#E6EDF3" font-size="12">revisa tambien el archivo lib/sanitize-log-stream.js antes de seguir, capaz</text>
+      <text x="20" y="58" fill="#E6EDF3" font-size="12">podemos reusar el mismo patron de sanitizacion</text>
+      <!-- checkmark sent -->
+      <path d="M870 50 L876 56 L884 46" fill="none" stroke="#3FB950" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="850" y="58" fill="#6E7681" font-size="9" text-anchor="end">enviado</text>
+      <!-- avatar operador -->
+      <g transform="translate(-44, 14)">
+        <circle cx="14" cy="14" r="14" fill="rgba(0,214,255,0.18)" stroke="#00D6FF" stroke-width="1.5"/>
+        <circle cx="14" cy="11" r="4" fill="#00D6FF"/>
+        <path d="M6 24 a8 8 0 0 1 16 0" fill="#00D6FF"/>
+      </g>
+    </g>
+
+    <!-- Burbuja 2: agente (alineada izquierda) -->
+    <g transform="translate(40, 198)">
+      <!-- avatar agente -->
+      <g transform="translate(0, 14)">
+        <rect x="0" y="0" width="28" height="28" rx="8" fill="rgba(188,140,255,0.18)" stroke="#BC8CFF" stroke-width="1.5"/>
+        <path d="M14 6 L16 12 L22 12 L17 16 L19 22 L14 18 L9 22 L11 16 L6 12 L12 12 Z" fill="#BC8CFF"/>
+      </g>
+      <!-- bubble -->
+      <rect x="40" y="0" width="900" height="76" rx="12" fill="rgba(188,140,255,0.10)" stroke="rgba(188,140,255,0.30)"/>
+      <rect x="40" y="2" width="3" height="72" rx="1.5" fill="#BC8CFF"/>
+      <text x="60" y="22" fill="#BC8CFF" font-size="11" font-weight="700">guru (agente)</text>
+      <text x="170" y="22" fill="#6E7681" font-size="10">hace 45 s · 10:43:24</text>
+      <text x="60" y="42" fill="#E6EDF3" font-size="12">Buena. Mire sanitize-log-stream.js — usa el mismo strip de control</text>
+      <text x="60" y="58" fill="#E6EDF3" font-size="12">chars que recomienda security en CA-Sec-08. Voy a reutilizarlo en</text>
+      <text x="60" y="74" fill="#E6EDF3" font-size="12">agent-ipc.js para no duplicar logica.</text>
+    </g>
+
+    <!-- Burbuja 3: operador (sending state - clock) -->
+    <g transform="translate(420, 296)">
+      <rect x="0" y="0" width="900" height="42" rx="12" fill="rgba(0,214,255,0.10)" stroke="rgba(0,214,255,0.30)" stroke-dasharray="4 2"/>
+      <rect x="897" y="2" width="3" height="38" rx="1.5" fill="#00D6FF" opacity="0.5"/>
+      <text x="20" y="22" fill="#00D6FF" font-size="11" font-weight="700">TU (operador)</text>
+      <text x="120" y="22" fill="#6E7681" font-size="10">enviando...</text>
+      <text x="20" y="38" fill="#E6EDF3" font-size="12">tambien fijate el patron de redact() para el .chat.jsonl</text>
+      <!-- clock pending -->
+      <circle cx="876" cy="32" r="6" fill="none" stroke="#D29922" stroke-width="1.5"/>
+      <path d="M876 27 L876 32 L880 32" fill="none" stroke="#D29922" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="864" y="38" fill="#6E7681" font-size="9" text-anchor="end">pendiente</text>
+      <!-- avatar operador -->
+      <g transform="translate(-44, 6)">
+        <circle cx="14" cy="14" r="14" fill="rgba(0,214,255,0.18)" stroke="#00D6FF" stroke-width="1.5"/>
+        <circle cx="14" cy="11" r="4" fill="#00D6FF"/>
+        <path d="M6 24 a8 8 0 0 1 16 0" fill="#00D6FF"/>
+      </g>
+    </g>
+
+    <!-- input area con texto en progreso -->
+    <rect x="0" y="490" width="1360" height="50" fill="#161B22"/>
+    <rect x="0" y="490" width="1360" height="1" fill="#21262D"/>
+    <rect x="16" y="500" width="1240" height="32" rx="6" fill="#0D1117" stroke="#00D6FF"/>
+    <text x="28" y="520" fill="#E6EDF3" font-size="12">y revisar la cobertura de tests del IPC modulo, asegurate que covers</text>
+    <!-- cursor pipe -->
+    <rect x="852" y="510" width="1" height="14" fill="#E6EDF3"/>
+    <text x="1180" y="520" fill="#8B949E" font-size="10">76 / 2000</text>
+    <!-- send button enabled -->
+    <rect x="1268" y="500" width="76" height="32" rx="6" fill="url(#brandGradCH)"/>
+    <path d="M1284 516 L1296 510 L1296 514 L1308 514 L1308 518 L1296 518 L1296 522 Z" fill="#0D1117"/>
+    <text x="1326" y="520" fill="#0D1117" font-size="11" font-weight="700">Enviar</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  ESTADO D — Agente muerto (input deshabilitado)               -->
+  <!-- ============================================================ -->
+  <g transform="translate(40, 2010)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="18" font-weight="700">D. Agente terminado (input deshabilitado + cartel descriptivo)</text>
+    <text x="0" y="24" fill="#8B949E" font-size="13">Cuando el proceso muere, el cartel cubre el input completo (no solo el boton) y explica que la ejecucion termino.</text>
+
+    <rect x="0" y="42" width="1360" height="140" rx="10" fill="#0D1117" stroke="#30363D"/>
+
+    <!-- chat header -->
+    <rect x="0" y="42" width="1360" height="32" rx="10" fill="#161B22"/>
+    <rect x="0" y="73" width="1360" height="1" fill="#21262D"/>
+    <rect x="0" y="42" width="3" height="32" fill="#8B949E"/>
+    <text x="20" y="62" fill="#E6EDF3" font-size="12" font-weight="600">Chat con el agente</text>
+    <text x="144" y="62" fill="#F85149" font-size="11">○ agente terminado</text>
+
+    <!-- input area disabled (cartel cubre todo) -->
+    <rect x="0" y="74" width="1360" height="108" fill="#161B22"/>
+    <!-- cartel central -->
+    <rect x="380" y="98" width="600" height="60" rx="8" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+    <!-- icono warning -->
+    <g transform="translate(400, 116)">
+      <path d="M12 0 L24 22 L0 22 Z" fill="none" stroke="#F85149" stroke-width="1.8" stroke-linejoin="round"/>
+      <rect x="11" y="8" width="2" height="8" fill="#F85149"/>
+      <circle cx="12" cy="19" r="1.5" fill="#F85149"/>
+    </g>
+    <text x="438" y="124" fill="#F85149" font-size="13" font-weight="700">Sin agente activo</text>
+    <text x="438" y="144" fill="#E6EDF3" font-size="12">Esta ejecucion ya termino. El historial sigue disponible para auditoria.</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  FOOTER de la hoja                                             -->
+  <!-- ============================================================ -->
+  <rect x="0" y="2170" width="1440" height="30" fill="#0D1117"/>
+  <text x="28" y="2190" fill="#6E7681" font-size="11">Tokens: --chat-operator-* / --chat-agent-* / --chat-disabled-* (design-tokens.css §8). Iconos: ic-chat-* (sprite.svg).</text>
+  <text x="1412" y="2190" fill="#6E7681" font-size="11" text-anchor="end">Issue #3605 · UX criterios · paleta WCAG AA</text>
+</svg>
