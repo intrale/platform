@@ -762,6 +762,39 @@ architect:
   poll_cap_min: 30
   poll_interval_seconds: 30
 
+  # ===========================================================================
+  # #3614 — Gate de promoción criterios → Ready (B3 del paraguas #3559)
+  # ===========================================================================
+  # El gate verifica 3 condiciones antes de aprobar la promoción de un issue
+  # del pipeline `definicion` al label `Ready`:
+  #   1. Sección `## Detalles Técnicos` ≥200 chars en el body.
+  #   2. Comment con marker `<!-- architect-signoff issue=NNNN -->` del bot.
+  #   3. Entrada signoff con marker_hash matching en architect-tokens.jsonl.
+  #
+  # Defaults fail-safe (rollout sin sorpresas):
+  #   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch R6).
+  #   - `gate_mode: dry-run` → cuando se active, evalúa pero NO bloquea.
+  #
+  # Para activar el piloto:
+  #   1. `enabled: true` con `gate_mode: dry-run` (semanas 1-2 del rollout).
+  #   2. Una vez validado el go/no-go (<5% falsos positivos), cambiar a
+  #      `gate_mode: enforce`.
+  #
+  # `go_live_date`: ISO8601. Issues con `createdAt` anterior a esta fecha
+  # se grandfatherean automáticamente (CA-4), sin evaluar las 3 condiciones.
+  # Permite rollout sin paralizar issues legacy.
+  #
+  # `bot_login`: cuenta GitHub autorizada a emitir el marker comment. Default
+  # `architect-bot` (Opción A, cuenta dedicada — ver architect-rollout-plan.md
+  # §4). Si se opta por Opción B (github-actions), cambiar a
+  # `github-actions[bot]`.
+  #
+  # Ver: docs/pipeline/architect-rollout-plan.md, .pipeline/lib/architect-signoff-gate.js
+  enabled: false
+  gate_mode: dry-run
+  go_live_date: '2026-05-29T00:00:00Z'
+  bot_login: architect-bot
+
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #
 # Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta

@@ -114,6 +114,38 @@ Datos de `.pipeline/metrics/snapshot.json` (ventana `all` al 2026-05-26):
 
 **Opción A** si el architect se va a operacionalizar como rol estable. **Opción B** si el rollout queda en piloto extendido (menos costo de setup). El implementer decide al cerrar CA-C3.
 
+### Decisión cerrada (#3614, CA-6) — Opción A
+
+**Resolución:** se adopta **Opción A** (`architect-bot` dedicado).
+
+**Motivación:**
+
+- El gate B3 (criterios → Ready) es infraestructura de seguridad: el `author.login` del marker comment debe ser inequívoco para que `evalMarker` rechace markers de terceros. Mezclar con `github-actions[bot]` (Opción B) diluye la atribución porque GitHub Actions ya emite events de CI/checks/releases bajo la misma cuenta.
+- El gate ya consume `comment.authorAssociation` (`OWNER`/`MEMBER`/`COLLABORATOR`) y `author.login` simultáneamente (CA-3). Tener un login dedicado permite reglas más estrictas a futuro (`authorAssociation = MEMBER`, sin OWNER ni COLLABORATOR) sin colisionar con bots legacy.
+- El costo operativo del PAT se compensa por el resto del flujo: la rotación está cubierta por #3607 (rotación de credenciales) y el secret vive ya en `~/.claude/secrets/credentials.json` (memoria `feedback_credentials-unified.md`).
+
+**PAT scope mínimo de `architect-bot`:**
+
+| Permiso | Necesario | Justificación |
+|---|---|---|
+| `repo > metadata` | Read | Listar issues + comments del repo intrale/platform |
+| `repo > issues` | Read+Write | Postear comment con marker `<!-- architect-signoff issue=NNNN -->` |
+| Cualquier otro | NO | El bot NO crea PRs, NO mergea, NO toca branches, NO ejecuta workflows |
+
+PAT con expiración a 90 días, rotación trackeada por #3607 (mismo ciclo que el resto de credenciales del pipeline).
+
+**Default operativo durante el piloto** (semanas 1-2):
+
+```yaml
+architect:
+  enabled: false              # kill switch fail-safe — operador activa cuando esté listo
+  gate_mode: dry-run          # nunca bloquea en piloto
+  go_live_date: '2026-05-29T00:00:00Z'
+  bot_login: architect-bot    # Opción A
+```
+
+**Fallback si Opción A no se materializa:** si la cuenta dedicada no se crea antes del piloto, el operador puede cambiar `bot_login: 'github-actions[bot]'` para usar Opción B temporalmente. El gate sigue funcionando con `authorAssociation` como salvaguarda adicional. Documentar la elección en el commit que active el piloto.
+
 ## 5. Comunicación al equipo
 
 ### Pre-go-live (semana 0, día del merge CA-C3)
