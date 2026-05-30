@@ -8896,6 +8896,18 @@ let multiProviderView = null;
 try { multiProviderApi = require('./lib/multi-provider/api'); } catch (e) { log(`multi-provider api unavailable: ${e.message}`); }
 try { multiProviderView = require('./views/dashboard/multi-provider'); } catch (e) { log(`multi-provider view unavailable: ${e.message}`); }
 
+// #3681 (hijo B del épico #3669) — Widget Multi-Provider Coverage.
+// - El POST de disparo del harness vive en un módulo aparte porque
+//   `dashboard-routes.js::handle()` filtra `req.method !== 'GET'` y no puede
+//   registrar verbos POST. Lo mounteamos acá antes del catch-all.
+// - El GET de lectura del JSON sí va por dashboard-routes.js::API_ROUTES.
+// - La vista HTML del widget (/multi-provider-coverage) la servimos también
+//   acá, replicando el patrón de #3177.
+let multiProviderCoverageApi = null;
+let multiProviderCoverageView = null;
+try { multiProviderCoverageApi = require('./lib/multi-provider-coverage/api'); } catch (e) { log(`multi-provider-coverage api unavailable: ${e.message}`); }
+try { multiProviderCoverageView = require('./views/dashboard/multi-provider-coverage'); } catch (e) { log(`multi-provider-coverage view unavailable: ${e.message}`); }
+
 const server = http.createServer((req, res) => {
   // #3177 — Multi-Provider: HTML del panel y API REST asociada.
   // Mounted antes que el catch-all para que `/multi-provider` no caiga al legacy.
@@ -8905,6 +8917,17 @@ const server = http.createServer((req, res) => {
   if (multiProviderView && (req.url === '/multi-provider' || req.url === '/multi-provider/')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(multiProviderView.renderMultiProvider());
+    return;
+  }
+
+  // #3681 — Multi-Provider Coverage widget.
+  // POST de disparo del harness (mounteado primero porque tiene método propio).
+  if (multiProviderCoverageApi && multiProviderCoverageApi.route(req, res)) {
+    return;
+  }
+  if (multiProviderCoverageView && (req.url === '/multi-provider-coverage' || req.url === '/multi-provider-coverage/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(multiProviderCoverageView.renderMultiProviderCoverage());
     return;
   }
 
