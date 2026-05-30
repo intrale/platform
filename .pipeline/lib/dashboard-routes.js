@@ -213,6 +213,103 @@ const HTML_ROUTES = {
     '/modo-descanso': sat.renderModoDescanso,
 };
 
+// #3723 — Router cliente `?view=<slug>` + endpoint `/dashboard/partial`.
+//
+// Allowlist cerrada de slugs. Object.freeze para inmutabilidad runtime
+// (CA-S1 + CA-T1). Lookup directo por clave — NUNCA concatenar `slug` a
+// require()/fs.readFile/path.join. Las extracciones #3727..#3737 suman
+// entries acá (`'multi-provider'`, `'equipo'`, `'pipeline'`, etc.).
+//
+// `title` (sin prefijo "Intrale · ") se usa para el `document.title` desde
+// el cliente (CA-U2). El SSR ya emite el título completo dentro de cada
+// renderer (ver `home.js` → `<title>Intrale · Operación</title>`).
+//
+// `render(opts)` devuelve el HTML completo de la vista. Por ahora es el
+// mismo renderer del SSR, sin separación inner/shell — las extracciones
+// futuras (#3727..#3737) refactorizan a `renderXxxInner()`. R4 del análisis
+// de guru: los `<head>`/`<body>` redundantes insertados vía innerHTML los
+// browsers los ignoran; `<style>` queda inerte; `<script>` no se ejecuta.
+function _getQuotaStateSafe() {
+    if (!quotaExhaustedState) return null;
+    try { return quotaExhaustedState.getQuotaState(); } catch { return null; }
+}
+
+const VIEW_SLUGS = Object.freeze({
+    home: {
+        title: 'Operación',
+        render: (opts) => home.renderHomeHTML(Object.assign(
+            {},
+            opts || {},
+            { quotaState: _getQuotaStateSafe() }
+        )),
+    },
+    // #3727..#3737 sumarán acá:
+    // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
+    // 'multi-provider-coverage': { title: 'Multi-provider Coverage', render: () => mpc.renderMultiProviderCoverage() },
+    // 'equipo':                  { title: 'Equipo',                  render: () => sat.renderEquipo() },
+    // 'pipeline':                { title: 'Pipeline',                render: () => sat.renderPipeline() },
+    // ... una entry por cada ventana extraída.
+});
+
+// CA-S1 — fast-reject regex antes del lookup en allowlist. Defensa en
+// profundidad: si alguien renombrara un slug a algo "raro" igualmente
+// quedaría bloqueado por estructura. Acotado a 31 chars para evitar
+// memory pressure y para alinearse con conveniones de URLs cortas.
+const VIEW_SLUG_REGEX = /^[a-z][a-z0-9-]{0,30}$/;
+
+// Cap de tamaño del query param antes de regex (evita pasar payloads
+// arbitrarios al motor regex).
+const VIEW_SLUG_MAX_LEN = 64;
+
+// CA-S2 — loopback gate (defense-in-depth). El bind ya es 127.0.0.1 por
+// default (#3177 + #3191), pero validamos también acá por si en algún
+// momento se levanta con DASHBOARD_HOST=0.0.0.0 intencionalmente.
+function isLoopbackReq(req) {
+    const ra = (req && req.socket && req.socket.remoteAddress) || '';
+    return ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+}
+
+// CA-S3 — `Sec-Fetch-Site` defense-in-depth. SI el header está presente
+// debe ser `same-origin`. Ausencia se acepta (reload directo, browsers
+// viejos, herramientas tipo curl) — la barrera dura para esos casos es
+// CA-S2 (loopback). Documentado en el header del endpoint partial.
+function isSameOriginFetch(req) {
+    const site = req && req.headers && req.headers['sec-fetch-site'];
+    if (!site) return true;
+    return site === 'same-origin';
+}
+
+// CA-S5 — headers fijos del partial endpoint. Cache-Control no-store
+// evita que intermediarios cacheen un slice mutable; nosniff evita
+// reinterpretación por el navegador; Referrer-Policy no-referrer no
+// filtra a terceros.
+function sendPartialHtml(res, html) {
+    res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+        'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+}
+
+// Log estructurado de rechazo del partial (CA-S6). NO loggea el slug
+// completo crudo — sólo flags de control para detectar probing/abuse
+// sin dar pie a log-injection.
+function _logPartialRejected(req, reason, slugLen) {
+    try {
+        console.warn(JSON.stringify({
+            event: 'partial_rejected',
+            reason,
+            remoteAddr: (req && req.socket && req.socket.remoteAddress) || null,
+            secFetchSite: (req && req.headers && req.headers['sec-fetch-site']) || null,
+            slugLen: typeof slugLen === 'number' ? slugLen : null,
+            ts: new Date().toISOString(),
+        }));
+    } catch { /* logger no debe romper la respuesta */ }
+}
+
 const API_ROUTES = {
     '/api/dash/header': (state, ctx) => slices.headerSlice(state, ctx),
     '/api/dash/kpis': (state, ctx) => slices.kpisSlice(state, ctx),
@@ -403,7 +500,91 @@ function handle(req, res, ctx) {
         return true;
     }
 
-    const apiPath = url.split('?')[0];
+    const pathnameOnly = url.split('?')[0];
+
+    // #3723 — `/dashboard?view=<slug>` SSR shell + view inicial.
+    //
+    // CA-T1: deep-link directo (`/dashboard?view=foo` pegado en la barra
+    // del browser) renderiza SSR la vista correcta sin esperar JS. Slug
+    // desconocido → fallback a `home` con bandera `unknownViewRequested`
+    // para que el cliente muestre el banner CA-U5. NO devolvemos 400 en
+    // el SSR (el 400 vive solo en el partial endpoint, CA-S1) para no
+    // dejar al operador con pantalla en blanco si copió mal una URL.
+    //
+    // CA-S4: el slug NUNCA se refleja en el body — sólo el flag bool
+    // y el slug "efectivo" (que pertenece a la allowlist por
+    // construcción) se pasan al renderer.
+    if (pathnameOnly === '/dashboard' || pathnameOnly === '/dashboard/') {
+        let q;
+        try { q = new URL(url, 'http://x').searchParams; } catch { q = new URLSearchParams(); }
+        const raw = (q.get('view') || 'home').slice(0, VIEW_SLUG_MAX_LEN);
+        const valid = VIEW_SLUG_REGEX.test(raw) && Object.prototype.hasOwnProperty.call(VIEW_SLUGS, raw);
+        const slug = valid ? raw : 'home';
+        const opts = {
+            currentView: slug,
+            unknownViewRequested: !valid,
+        };
+        try {
+            sendHtml(res, VIEW_SLUGS[slug].render(opts));
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'dashboard_render_error', slug, msg: e.message, ts: new Date().toISOString() })); } catch {}
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('internal error');
+        }
+        return true;
+    }
+
+    // #3723 — `/dashboard/partial?view=<slug>` — lazy-load por DOM morphing.
+    //
+    // Orden de gates (acordado por architect + security):
+    //   CA-S2 loopback → CA-S3 Sec-Fetch-Site (sólo si presente) →
+    //   CA-S1 allowlist+regex → render.
+    //
+    // CA-S4: body genérico `'bad request'` en 400 — el slug NUNCA se refleja.
+    // Sólo va al logger estructurado JSON (CA-S6) con `slugLen` (no el slug
+    // crudo) para que probing automatizado quede visible sin abrir log-injection.
+    //
+    // CA-S7: este endpoint NO se agrega a `lib/screenshot-capture.js`
+    // ALLOWED_PATHS — el cliente browser lo invoca via `fetch` desde el
+    // propio dashboard ya cargado, NO via screenshot-capture headless.
+    if (pathnameOnly === '/dashboard/partial') {
+        // CA-S2 — loopback gate (defense-in-depth; bind ya es 127.0.0.1).
+        if (!isLoopbackReq(req)) {
+            _logPartialRejected(req, 'non_loopback');
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('forbidden');
+            return true;
+        }
+        // CA-S3 — Sec-Fetch-Site mismatch (sólo si está presente).
+        if (!isSameOriginFetch(req)) {
+            _logPartialRejected(req, 'cross_origin_fetch');
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('forbidden');
+            return true;
+        }
+        // CA-S1 — slug allowlist + regex.
+        let q;
+        try { q = new URL(url, 'http://x').searchParams; } catch { q = new URLSearchParams(); }
+        const reqSlug = (q.get('view') || '').slice(0, VIEW_SLUG_MAX_LEN);
+        if (!VIEW_SLUG_REGEX.test(reqSlug) || !Object.prototype.hasOwnProperty.call(VIEW_SLUGS, reqSlug)) {
+            _logPartialRejected(req, 'unknown_slug', reqSlug.length);
+            // CA-S1: 400, NO 404 (no leak de existencia).
+            // CA-S4: body genérico, el slug NUNCA se refleja.
+            res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('bad request');
+            return true;
+        }
+        try {
+            sendPartialHtml(res, VIEW_SLUGS[reqSlug].render({ currentView: reqSlug }));
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'partial_render_error', slug: reqSlug, msg: e.message, ts: new Date().toISOString() })); } catch {}
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('internal error');
+        }
+        return true;
+    }
+
+    const apiPath = pathnameOnly;
     if (API_ROUTES[apiPath]) {
         try {
             const state = ctx.getState();
@@ -469,7 +650,11 @@ function handle(req, res, ctx) {
 
 module.exports = {
     handle,
-    // Exportados para tests (#3487).
+    // #3723 — Allowlist canónica de slugs del router cliente.
+    // Fuente única consumida por el navbar (#3726). NO duplicar en otra parte.
+    VIEW_SLUGS,
+    VIEW_SLUG_REGEX,
+    // Exportados para tests (#3487, #3723).
     _internal: {
         buildWavesPayload,
         normalizeWave,
@@ -479,5 +664,10 @@ module.exports = {
         WAVES_STATUS_WHITELIST,
         WAVES_TITLE_MAX_CHARS,
         WAVES_UNKNOWN,
+        // #3723
+        isLoopbackReq,
+        isSameOriginFetch,
+        sendPartialHtml,
+        VIEW_SLUG_MAX_LEN,
     },
 };

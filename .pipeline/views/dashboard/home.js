@@ -2788,6 +2788,136 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
 
 // Pause polling when tab hidden (avoid wasted backend load)
 document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') runAll(); });
+
+// =============================================================================
+// #3723 — Router cliente del dashboard V3 (CA-T1 + CA-U1..U5).
+//
+// Allowlist regex en cliente como defense-in-depth (no es la barrera real;
+// la real vive en dashboard-routes.js → VIEW_SLUG_REGEX + VIEW_SLUGS).
+// Acá nos protege de XSS via slug pasado a fetch().
+// =============================================================================
+var __VIEW_BOOT = window.__VIEW_BOOT__ || { currentView: 'home', unknownViewRequested: false, titles: { home: 'Operación' } };
+function _safeSlug(s){ return /^[a-z][a-z0-9-]{0,30}$/.test(s) ? s : 'home'; }
+function _viewTitleFor(slug){
+    var t = (__VIEW_BOOT.titles && __VIEW_BOOT.titles[slug]) || slug || 'home';
+    return 'Intrale · ' + t.charAt(0).toUpperCase() + t.slice(1);
+}
+function _setViewTitle(slug){
+    try { document.title = _viewTitleFor(slug); } catch(e) {}
+}
+
+// CA-U1 — feedback de carga > 200ms (opacidad reducida) y revert si tarda
+// > 5s o falla (CA-U3). El cliente nunca deja #view-content vacío: si la
+// fetch falla mantenemos el contenido anterior y revertimos el pushState.
+function _setLoading(target, on){
+    if(!target) return;
+    if(on){
+        target.style.transition = 'opacity 0.18s';
+        // Retardo de 200ms — si la respuesta llega antes no se pinta el dimming.
+        target.dataset.loadingTimer = setTimeout(function(){ target.style.opacity = '0.5'; }, 200);
+    } else {
+        if(target.dataset.loadingTimer){ clearTimeout(Number(target.dataset.loadingTimer)); delete target.dataset.loadingTimer; }
+        target.style.opacity = '';
+    }
+}
+
+function loadView(slug, opts){
+    var safe = _safeSlug(slug);
+    var replace = opts && opts.replace === true;
+    var target = document.getElementById('view-content');
+    if(!target) return Promise.resolve();
+    var prevHtml = target.innerHTML;
+    var prevScroll = window.scrollY;
+    var prevView = target.getAttribute('data-current-view') || 'home';
+    var newUrl = '/dashboard?view=' + encodeURIComponent(safe);
+    // pushState ANTES del fetch para que el back funcione si el usuario
+    // navega rápido. Si la fetch falla, revertimos (CA-U3).
+    try {
+        if(replace) history.replaceState({ view: safe }, '', newUrl);
+        else history.pushState({ view: safe }, '', newUrl);
+    } catch(e) {}
+    _setLoading(target, true);
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timeoutId = setTimeout(function(){
+        if(controller) try { controller.abort(); } catch(e) {}
+    }, 5000);
+    return fetch('/dashboard/partial?view=' + encodeURIComponent(safe), {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'X-Requested-With': 'fetch' },
+        signal: controller ? controller.signal : undefined,
+    })
+    .then(function(r){
+        clearTimeout(timeoutId);
+        if(!r.ok) throw new Error('partial ' + r.status);
+        return r.text();
+    })
+    .then(function(html){
+        // R2 (guru) — anti-flicker boundary: innerHTML SOLO en #view-content.
+        target.innerHTML = html;
+        target.setAttribute('data-current-view', safe);
+        _setViewTitle(safe);
+        // R5 (guru) — preservar scroll position.
+        try { window.scrollTo(0, prevScroll); } catch(e) {}
+        _setLoading(target, false);
+        // Hook post-render para que cada vista re-bindee sus listeners en JS
+        // (CA-S8: no event handlers inline). Convencion: cada vista exporta
+        // initView_<slug> global; si no existe, no-op.
+        var initName = 'initView_' + safe.replace(/-/g, '_');
+        if(typeof window[initName] === 'function'){
+            try { window[initName](); } catch(e) { try { console.warn(initName, e.message); } catch(_) {} }
+        }
+        return true;
+    })
+    .catch(function(e){
+        clearTimeout(timeoutId);
+        // CA-U3 — error visible + revert: mantenemos contenido anterior,
+        // revertimos pushState y mostramos toast genérico (sin filtrar
+        // slug ni códigos crudos — CA-S4/S6 perspectiva UX).
+        try { target.innerHTML = prevHtml; } catch(_) {}
+        try {
+            var revertUrl = '/dashboard?view=' + encodeURIComponent(prevView);
+            history.replaceState({ view: prevView }, '', revertUrl);
+        } catch(_) {}
+        _setLoading(target, false);
+        if(typeof showToast === 'function'){
+            showToast('No se pudo cargar la vista', false);
+        }
+        try { console.warn('loadView', safe, e && e.message); } catch(_) {}
+        return false;
+    });
+}
+
+window.addEventListener('popstate', function(e){
+    var slug = (e.state && e.state.view) || 'home';
+    try {
+        var q = new URLSearchParams(location.search).get('view');
+        if(q) slug = q;
+    } catch(_) {}
+    // replace=true para no apilar entries adicionales al navegar back/forward.
+    loadView(slug, { replace: true });
+});
+
+document.addEventListener('click', function(e){
+    var t = e.target;
+    if(!t) return;
+    var a = (t.closest ? t.closest('[data-view-link]') : null);
+    if(!a) return;
+    var slug = a.getAttribute('data-view-link');
+    if(!slug) return;
+    e.preventDefault();
+    loadView(slug, { replace: false });
+});
+
+// SSR inicial: sincronizamos document.title con el view rendereado y
+// disparamos el toast CA-U5 si el SSR cayó al fallback por slug desconocido.
+_setViewTitle(__VIEW_BOOT.currentView || 'home');
+if(__VIEW_BOOT.unknownViewRequested === true && typeof showToast === 'function'){
+    // setTimeout para que el toast no compita con el primer paint del header.
+    setTimeout(function(){
+        showToast('La vista solicitada no existe — mostrando Inicio');
+    }, 250);
+}
 `;
 }
 
@@ -2898,9 +3028,20 @@ function renderHomeHTML(opts) {
     // doble lectura del flag si el dashboard ya lo tiene en mano). Sin opts,
     // leemos defensivamente — caso que vale para tests y para el route handler
     // simple del kiosk.
+    //
+    // #3723 — `opts.unknownViewRequested` (bool): si true, el SSR de
+    // `/dashboard?view=<slug-desconocido>` cayó al fallback `home` y debe
+    // mostrarse un toast informativo `CA-U5`. El slug NUNCA se refleja en
+    // el body (CA-S4); sólo viaja la bandera booleana.
+    //
+    // `opts.currentView` (string): slug activo, usado por el script cliente
+    // para sincronizar `document.title` y `history` en navegación. Siempre
+    // pertenece a la allowlist `VIEW_SLUGS` por construcción.
     const _opts = opts || {};
     const quotaState = _opts.quotaState || getInitialQuotaState();
     const quotaBannerHtml = renderQuotaBannerSsr(quotaState);
+    const currentView = typeof _opts.currentView === 'string' ? _opts.currentView : 'home';
+    const unknownViewRequested = _opts.unknownViewRequested === true;
 
     const theme = loadTheme();
     const styles = homeStyles();
@@ -2987,7 +3128,12 @@ function renderHomeHTML(opts) {
     se gestionan en su lugar canónico.
   -->
 
-  <main class="kiosk-body">
+  <!-- #3723 - anti-flicker boundary del router cliente (CA-T1 + R2 guru).
+       El interceptor loadView() SOLO reemplaza el innerHTML de #view-content;
+       sub-containers internos (kpi-cards, queue-list, etc.) siguen usando JSON
+       polling + DOM morphing manual por id (#2801). NO meter event handlers
+       inline aca (CA-S8) - todos los listeners se enganchan en JS post-render. -->
+  <main class="kiosk-body" id="view-content" data-current-view="${currentView}">
 
     <section class="kpi-grid" aria-label="KPIs">
       <div class="kpi-card" id="kpi-prs" title="PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.">
@@ -3174,6 +3320,18 @@ function renderHomeHTML(opts) {
   </footer>
 </div>
 
+<!-- #3723 - Boot config del router cliente. Se inyecta ANTES del script
+     principal para que loadView(), popstate y el handler de clicks
+     tengan disponibles los flags decididos en SSR. NO contiene datos
+     atacable-controlables (currentView es de la allowlist; el flag de
+     unknown es bool puro). -->
+<script>
+window.__VIEW_BOOT__ = ${JSON.stringify({
+    currentView,
+    unknownViewRequested,
+    titles: { home: 'Operación' },
+})};
+</script>
 <script>${script}</script>
 </body>
 </html>`;
