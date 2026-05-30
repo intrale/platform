@@ -38,6 +38,47 @@ const BODY_MAX_BYTES = 32 * 1024;
 const CHAT_FILE_ROTATE_BYTES = 5 * 1024 * 1024;
 const CHAT_FILE_MAX_ROTATIONS = 3; // .chat.jsonl + .chat.jsonl.1 + .chat.jsonl.2
 
+// CA-SEC-1 (issue #3721): validación estricta de params del body para
+// prevenir path traversal en `isAgentAlive`/`getAgentAliveDetails` (que
+// construye paths a `.claude/hooks/` y `.pipeline/<pipeline>/<fase>/`).
+// Regex idénticas a las de agent-ipc.js — duplicación intencional para
+// defensa en profundidad (el handler rechaza ANTES de invocar el módulo IPC).
+const RE_ISSUE = /^\d+$/;
+const RE_SKILL = /^[a-z0-9-]{1,32}$/;
+const VALID_FASES_HANDLER = [
+    'analisis', 'criterios', 'validacion',
+    'dev', 'build', 'verificacion', 'aprobacion',
+    'entrega', 'linteo',
+];
+const VALID_PIPELINES_HANDLER = ['desarrollo', 'definicion'];
+
+/**
+ * Valida los params del body POST antes de invocar `agent-ipc`.
+ * Retorna `{ ok: true }` si todos los campos cumplen, o
+ * `{ ok: false, field: '<field>' }` señalando cuál falló.
+ *
+ * @param {object} body
+ * @returns {{ ok: true } | { ok: false, field: string }}
+ */
+function validateChatParams(body) {
+    const { issue, skill, fase, pipeline } = body || {};
+    if (!RE_ISSUE.test(String(issue == null ? '' : issue))) {
+        return { ok: false, field: 'issue' };
+    }
+    if (!RE_SKILL.test(String(skill == null ? '' : skill))) {
+        return { ok: false, field: 'skill' };
+    }
+    if (!VALID_FASES_HANDLER.includes(String(fase == null ? '' : fase))) {
+        return { ok: false, field: 'fase' };
+    }
+    // pipeline es opcional (default 'desarrollo' en el agent-ipc); validamos
+    // solo si vino explícito.
+    if (pipeline !== undefined && !VALID_PIPELINES_HANDLER.includes(String(pipeline))) {
+        return { ok: false, field: 'pipeline' };
+    }
+    return { ok: true };
+}
+
 // Rate limiter token bucket por (issue, skill, fase). 10 msg/s con burst 10.
 // Cargado lazy para evitar penalizar el startup del dashboard si nadie usa la
 // feature.
@@ -176,6 +217,10 @@ function ipcCodeToHttpStatus(code) {
         case 'AGENT_DEAD': return 410;
         case 'QUEUE_FULL': return 429;
         case 'PIPE_BROKEN': return 410;
+        // Issue #3721 — nuevos códigos:
+        case 'OPERATOR_DELIMITER_INJECTION': return 400; // CA-SEC-2: rechazo de delimiter injection
+        case 'INVALID_PARAMS': return 400;               // CA-SEC-1: path traversal hardening
+        case 'AGENT_NOT_COMMUNICABLE': return 412;       // alive en FS pero sin canal IPC
         default: return 500;
     }
 }
@@ -277,6 +322,26 @@ function handlePost(req, res, ctx) {
             res.end(JSON.stringify({ ok: false, msg: 'issue y skill son obligatorios' }));
             return;
         }
+        // CA-SEC-1 (issue #3721): validación regex estricta de params ANTES
+        // del rate limit y ANTES del isAgentAlive. Rechaza intentos de
+        // path traversal en cascada FS de agent-ipc.
+        const paramCheck = validateChatParams(body);
+        if (!paramCheck.ok) {
+            if (log) {
+                try {
+                    log(`[agent-chat][SEC-1] params inválidos: field=${paramCheck.field} value=${JSON.stringify(body[paramCheck.field])}`);
+                } catch (_) { /* nunca bloquear por log */ }
+            }
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                ok: false,
+                msg: 'invalid params',
+                code: 'INVALID_PARAMS',
+                field: paramCheck.field,
+            }));
+            return;
+        }
+
         // CA-F9: validar mensaje no vacío. Cliente ya valida, defensa adicional.
         const sanitized = sanitizeOperatorMessage(message);
         if (!sanitized.trim()) {
@@ -298,14 +363,32 @@ function handlePost(req, res, ctx) {
             return;
         }
 
-        // CA-B1: agente debe estar vivo. agent-ipc.sendMessage rechaza si no.
+        // Issue #3721 — cascada de detección de vida + comunicabilidad.
+        // Discriminamos:
+        //   - alive=false → 410 (agente terminado de verdad).
+        //   - alive=true, communicable=false → 412 (vivo pero canal IPC no
+        //     disponible: pulpo reiniciado, skill sin interactive_supported,
+        //     o heartbeat huérfano).
+        //   - alive=true, communicable=true → continuar con sendMessage.
         const registry = agentIpc.getRegistry();
-        if (!registry.isAgentAlive(issue, skill, fase)) {
+        const pipeline = (body && body.pipeline) || 'desarrollo';
+        const status = registry.getAgentAliveDetails(issue, skill, fase, { pipeline });
+        if (!status.alive) {
             res.writeHead(410, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 ok: false,
-                msg: 'agente muerto',
-                reason: 'agente no registrado o terminado',
+                msg: 'agente terminado',
+                reason: status.reason,
+            }));
+            return;
+        }
+        if (!status.communicable) {
+            res.writeHead(412, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                ok: false,
+                msg: 'agente vivo pero canal IPC no disponible',
+                reason: status.reason,
+                hint: 'el pulpo puede haber reiniciado, o el skill no tiene interactive_supported:true en agent-models.json (ver #3748)',
             }));
             return;
         }
@@ -430,6 +513,7 @@ module.exports = {
     handle,
     // Para tests
     validateLogFileName,
+    validateChatParams,
     sanitizeOperatorMessage,
     readChatHistory,
     appendChatEntry,

@@ -61,6 +61,241 @@ test('ipcCodeToHttpStatus mapeo correcto', () => {
     assert.equal(handler.ipcCodeToHttpStatus(null), 500);
 });
 
+// Issue #3721 — nuevos códigos en ipcCodeToHttpStatus.
+test('ipcCodeToHttpStatus: OPERATOR_DELIMITER_INJECTION → 400 (CA-SEC-2)', () => {
+    assert.equal(handler.ipcCodeToHttpStatus('OPERATOR_DELIMITER_INJECTION'), 400);
+});
+
+test('ipcCodeToHttpStatus: INVALID_PARAMS → 400 (CA-SEC-1)', () => {
+    assert.equal(handler.ipcCodeToHttpStatus('INVALID_PARAMS'), 400);
+});
+
+test('ipcCodeToHttpStatus: AGENT_NOT_COMMUNICABLE → 412', () => {
+    assert.equal(handler.ipcCodeToHttpStatus('AGENT_NOT_COMMUNICABLE'), 412);
+});
+
+// -----------------------------------------------------------------------------
+// CA-SEC-1 (issue #3721): validateChatParams rechaza intentos de path
+// traversal y values fuera del enum del pipeline.
+// -----------------------------------------------------------------------------
+test('validateChatParams: body válido pasa', () => {
+    const r = handler.validateChatParams({ issue: '123', skill: 'guru', fase: 'dev' });
+    assert.deepEqual(r, { ok: true });
+});
+
+test('validateChatParams: body válido con pipeline explícito pasa', () => {
+    const r = handler.validateChatParams({
+        issue: '123', skill: 'guru', fase: 'analisis', pipeline: 'definicion',
+    });
+    assert.deepEqual(r, { ok: true });
+});
+
+test('validateChatParams: issue con path traversal → field=issue', () => {
+    const r = handler.validateChatParams({ issue: '../etc/passwd', skill: 'guru', fase: 'dev' });
+    assert.deepEqual(r, { ok: false, field: 'issue' });
+});
+
+test('validateChatParams: issue no-numérico → field=issue', () => {
+    const r = handler.validateChatParams({ issue: 'abc', skill: 'guru', fase: 'dev' });
+    assert.deepEqual(r, { ok: false, field: 'issue' });
+});
+
+test('validateChatParams: skill con slash → field=skill', () => {
+    assert.deepEqual(
+        handler.validateChatParams({ issue: '1', skill: 'foo/bar', fase: 'dev' }),
+        { ok: false, field: 'skill' },
+    );
+    assert.deepEqual(
+        handler.validateChatParams({ issue: '1', skill: 'foo\\bar', fase: 'dev' }),
+        { ok: false, field: 'skill' },
+    );
+});
+
+test('validateChatParams: fase fuera del enum → field=fase', () => {
+    assert.deepEqual(
+        handler.validateChatParams({ issue: '1', skill: 'guru', fase: 'hack' }),
+        { ok: false, field: 'fase' },
+    );
+    assert.deepEqual(
+        handler.validateChatParams({ issue: '1', skill: 'guru', fase: '' }),
+        { ok: false, field: 'fase' },
+    );
+});
+
+test('validateChatParams: pipeline fuera del enum → field=pipeline', () => {
+    const r = handler.validateChatParams({
+        issue: '1', skill: 'guru', fase: 'dev', pipeline: 'hack',
+    });
+    assert.deepEqual(r, { ok: false, field: 'pipeline' });
+});
+
+test('validateChatParams: pipeline omitido se permite (default desarrollo)', () => {
+    const r = handler.validateChatParams({ issue: '1', skill: 'guru', fase: 'dev' });
+    assert.deepEqual(r, { ok: true });
+});
+
+// -----------------------------------------------------------------------------
+// Tests de integración del POST /api/agent-chat (issue #3721).
+// Verifica la cascada discriminada 200 / 400 / 410 / 412 sin alzar un server
+// HTTP real: pasamos req/res fakes a handler.handle directamente.
+// -----------------------------------------------------------------------------
+const { EventEmitter } = require('node:events');
+const { __resetSingletonForTesting } = require('../agent-ipc');
+const pathMod = require('node:path');
+
+function makeReq({ body, headers = {}, method = 'POST', url = '/api/agent-chat', remote = '127.0.0.1' } = {}) {
+    const req = new EventEmitter();
+    req.method = method;
+    req.url = url;
+    req.headers = {
+        'content-type': 'application/json',
+        ...headers,
+    };
+    req.socket = { remoteAddress: remote };
+    // Emitir el body de forma asíncrona para que `readBodyJson` se enganche
+    // a 'data' y 'end' antes.
+    process.nextTick(() => {
+        if (body != null) {
+            req.emit('data', Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)));
+        }
+        req.emit('end');
+    });
+    req.destroy = () => {};
+    return req;
+}
+
+function makeRes() {
+    const res = {
+        statusCode: null,
+        headers: null,
+        body: '',
+        writeHead(code, headers) { this.statusCode = code; this.headers = headers; },
+        end(body) { this.body = body || ''; this.__done = true; },
+        __done: false,
+    };
+    return res;
+}
+
+function waitForRes(res, timeoutMs = 1000) {
+    return new Promise((resolve, reject) => {
+        const start = Date.now();
+        const tick = () => {
+            if (res.__done) return resolve(res);
+            if (Date.now() - start > timeoutMs) return reject(new Error('res timeout'));
+            setImmediate(tick);
+        };
+        tick();
+    });
+}
+
+const TMP_LOG_DIR = pathMod.join(os.tmpdir(), 'chat-handler-it-' + Date.now());
+
+test('handle POST: params inválidos (path traversal en issue) → 400 con field=issue', async () => {
+    __resetSingletonForTesting();
+    fs.mkdirSync(TMP_LOG_DIR, { recursive: true });
+    const req = makeReq({
+        body: { issue: '../etc/passwd', skill: 'guru', fase: 'dev', message: 'hola' },
+    });
+    const res = makeRes();
+    handler.handle(req, res, { PIPELINE: 'desarrollo', LOG_DIR: TMP_LOG_DIR, log: () => {} });
+    await waitForRes(res);
+    assert.equal(res.statusCode, 400);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.code, 'INVALID_PARAMS');
+    assert.equal(parsed.field, 'issue');
+});
+
+test('handle POST: fase fuera del enum → 400 con field=fase', async () => {
+    __resetSingletonForTesting();
+    const req = makeReq({
+        body: { issue: '123', skill: 'guru', fase: 'hack', message: 'hola' },
+    });
+    const res = makeRes();
+    handler.handle(req, res, { PIPELINE: 'desarrollo', LOG_DIR: TMP_LOG_DIR, log: () => {} });
+    await waitForRes(res);
+    assert.equal(res.statusCode, 400);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.field, 'fase');
+});
+
+test('handle POST: skill con slash → 400 con field=skill', async () => {
+    __resetSingletonForTesting();
+    const req = makeReq({
+        body: { issue: '123', skill: 'foo/bar', fase: 'dev', message: 'hola' },
+    });
+    const res = makeRes();
+    handler.handle(req, res, { PIPELINE: 'desarrollo', LOG_DIR: TMP_LOG_DIR, log: () => {} });
+    await waitForRes(res);
+    assert.equal(res.statusCode, 400);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.field, 'skill');
+});
+
+test('handle POST: agente vivo en FS sin registry → 412 con reason agent_alive_pulpo_restarted_or_no_interactive', async () => {
+    // Setup: fakear FS para que heartbeat 9999 sea fresco + carrier presente.
+    const REPO_ROOT_FAKE = '/fake/repo';
+    const now = 10_000_000;
+    const hbFile = pathMod.join(REPO_ROOT_FAKE, '.claude', 'hooks', 'agent-9999.heartbeat');
+    const carrier = pathMod.join(REPO_ROOT_FAKE, '.pipeline', 'desarrollo', 'dev', 'trabajando', '9999.guru');
+    const fakeFs = {
+        existsSync(p) { return p === hbFile || p === carrier; },
+        statSync(p) {
+            if (p === hbFile) return { mtimeMs: now - 10_000 };
+            const err = new Error('ENOENT'); err.code = 'ENOENT'; throw err;
+        },
+    };
+    __resetSingletonForTesting({
+        fsImpl: fakeFs,
+        repoRootImpl: REPO_ROOT_FAKE,
+        nowImpl: () => now,
+    });
+
+    const req = makeReq({
+        body: { issue: '9999', skill: 'guru', fase: 'dev', message: 'hola agente' },
+    });
+    const res = makeRes();
+    handler.handle(req, res, { PIPELINE: 'desarrollo', LOG_DIR: TMP_LOG_DIR, log: () => {} });
+    await waitForRes(res);
+    assert.equal(res.statusCode, 412);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.reason, 'agent_alive_pulpo_restarted_or_no_interactive');
+    assert.match(parsed.hint, /#3748/);
+});
+
+test('handle POST: agente realmente muerto (heartbeat expirado) → 410', async () => {
+    const REPO_ROOT_FAKE = '/fake/repo';
+    const now = 10_000_000;
+    // FS sin heartbeat → heartbeat_expired.
+    const fakeFs = {
+        existsSync() { return false; },
+        statSync() { const err = new Error('ENOENT'); err.code = 'ENOENT'; throw err; },
+    };
+    __resetSingletonForTesting({
+        fsImpl: fakeFs,
+        repoRootImpl: REPO_ROOT_FAKE,
+        nowImpl: () => now,
+    });
+
+    const req = makeReq({
+        body: { issue: '8888', skill: 'guru', fase: 'dev', message: 'hola' },
+    });
+    const res = makeRes();
+    handler.handle(req, res, { PIPELINE: 'desarrollo', LOG_DIR: TMP_LOG_DIR, log: () => {} });
+    await waitForRes(res);
+    assert.equal(res.statusCode, 410);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.reason, 'heartbeat_expired');
+});
+
+test('handle POST: cleanup del TMP_LOG_DIR', () => {
+    // Limpieza best-effort del directorio temporal compartido en los tests
+    // de integración.
+    try { fs.rmSync(TMP_LOG_DIR, { recursive: true, force: true }); } catch (_) {}
+    assert.ok(true);
+});
+
 // -----------------------------------------------------------------------------
 test('readChatHistory: archivo no existe → entries vacío', () => {
     const tmp = path.join(os.tmpdir(), 'chat-' + Date.now() + '.jsonl');
