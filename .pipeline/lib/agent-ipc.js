@@ -56,6 +56,8 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const nodeFs = require('node:fs');
+const nodePath = require('node:path');
 const { pidAlive } = require('./pid-discovery');
 
 // Cap default por agente. Saturación → 429 con reason "agente saturado".
@@ -67,6 +69,29 @@ const DEFAULT_QUEUE_CAP = 100;
 // el endpoint ya hace slice(0, 2000) — esto es safety net contra callers
 // directos del módulo).
 const MAX_MESSAGE_BYTES = 8 * 1024; // 8KB tras framing
+
+// Ventana de gracia para heartbeat. El hook `activity-logger.js` escribe el
+// heartbeat cada 60s (HEARTBEAT_INTERVAL_MS); dejamos 2× como margen para
+// agentes con throughput bajo y mitigamos el TOCTOU borderline señalado por
+// security en el análisis previo (issue #3721).
+const HEARTBEAT_GRACE_MS = 120 * 1000;
+
+// Enums para validación CA-SEC-1 (path-traversal hardening).
+const VALID_FASES = [
+    'analisis', 'criterios', 'validacion',
+    'dev', 'build', 'verificacion', 'aprobacion',
+    'entrega', 'linteo',
+];
+const VALID_PIPELINES = ['desarrollo', 'definicion'];
+
+// Regex de validación de input — explicit y conservadoras.
+const RE_ISSUE = /^\d+$/;
+const RE_SKILL = /^[a-z0-9-]{1,32}$/;
+
+// Substrings prohibidos en el cuerpo del mensaje (CA-SEC-2): rechazar
+// intentos de delimiter injection. Comparación case-insensitive vía
+// `String.prototype.toLowerCase()` antes de `.includes()`.
+const FORBIDDEN_DELIMITERS = ['<operator-message>', '</operator-message>'];
 
 /**
  * Construye una key compuesta para identificar un agente activo.
@@ -92,6 +117,16 @@ function _frameMessage(messageId, issueId, message) {
         .slice(0, MAX_MESSAGE_BYTES)
         // strip control chars excepto \n y \t (multiline legítimo)
         .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    // CA-SEC-2 (issue #3721): rechazar mensajes que contengan los
+    // delimitadores `<operator-message>` o `</operator-message>` (case
+    // insensitive). La decisión es **rechazar** (no escapar): el
+    // delimitador en el body del operador es señal clara de intento de
+    // delimiter-injection / role hijack. Devolvemos `null` y el caller
+    // (`sendMessage`) lo propaga como `code='OPERATOR_DELIMITER_INJECTION'`.
+    const lower = safe.toLowerCase();
+    for (const tok of FORBIDDEN_DELIMITERS) {
+        if (lower.includes(tok)) return null;
+    }
     return [
         `<operator-message timestamp="${timestamp}" issue="${String(issueId)}" message-id="${messageId}">`,
         safe,
@@ -111,8 +146,15 @@ class AgentIpcRegistry {
         this._queueCap = Number.isInteger(cfg.queueCap) && cfg.queueCap > 0
             ? cfg.queueCap
             : DEFAULT_QUEUE_CAP;
-        // Inyectable para tests.
+        // Inyectables para tests.
         this._pidAlive = (typeof cfg.pidAliveImpl === 'function') ? cfg.pidAliveImpl : pidAlive;
+        this._fsImpl = cfg.fsImpl || nodeFs;
+        this._nowImpl = (typeof cfg.nowImpl === 'function') ? cfg.nowImpl : Date.now;
+        // RepoRoot por default: dos niveles arriba de este archivo
+        // (`.pipeline/lib/agent-ipc.js` → root del repo).
+        this._repoRoot = cfg.repoRootImpl
+            ? cfg.repoRootImpl
+            : nodePath.resolve(__dirname, '..', '..');
     }
 
     /**
@@ -192,6 +234,16 @@ class AgentIpcRegistry {
 
         const messageId = (opts && opts.messageId) || randomUUID();
         const framed = _frameMessage(messageId, entry.issueId, message);
+        // CA-SEC-2 (issue #3721): si _frameMessage devolvió null, el body
+        // del mensaje contenía un delimitador `<operator-message>` o
+        // `</operator-message>` — intento de delimiter-injection. Rechazar
+        // con code tipado para que el handler lo mapee a HTTP 400.
+        if (framed === null) {
+            return Promise.reject(this._err(
+                'OPERATOR_DELIMITER_INJECTION',
+                'mensaje contiene delimitadores reservados',
+            ));
+        }
         const queuedAt = new Date().toISOString();
 
         return new Promise((resolve, reject) => {
@@ -208,14 +260,114 @@ class AgentIpcRegistry {
     }
 
     /**
-     * Verifica que el agente está vivo (registro + stream sano + PID vivo).
+     * Cascada de detección de vida + comunicabilidad del agente (issue #3721).
+     *
+     * Devuelve `{ alive, communicable, reason }` donde:
+     *   - `alive`: true si el agente está vivo según cualquiera de las fuentes
+     *     (registro in-memory canónico, heartbeat reciente en FS, carrier en FS).
+     *   - `communicable`: true SOLO si hay registro en memoria con stdin sano y
+     *     PID vivo. Es la única vía para mandar mensajes (canal IPC abierto).
+     *   - `reason`: string técnico que viaja al cliente para el tri-state
+     *     visual del Log Viewer (#3715). Valores posibles:
+     *       'registered' — caso canónico: hay registro IPC + stdin + PID vivos.
+     *       'agent_alive_pulpo_restarted_or_no_interactive' — heartbeat reciente
+     *         + carrier en `<pipeline>/<fase>/trabajando/` pero sin registro IPC.
+     *       'orphan_heartbeat' — heartbeat reciente sin carrier.
+     *       'heartbeat_expired' — heartbeat ausente o mtime > HEARTBEAT_GRACE_MS.
+     *       'invalid_params' — args fallaron validación CA-SEC-1 (NO toca FS).
+     *
+     * @param {string|number} issueId
+     * @param {string} skill
+     * @param {string} fase
+     * @param {object} [opts]
+     * @param {string} [opts.pipeline='desarrollo']
+     * @returns {{ alive: boolean, communicable: boolean, reason: string }}
      */
-    isAgentAlive(issueId, skill, fase) {
-        const entry = this._agents.get(_agentKey(issueId, skill, fase));
-        if (!entry) return false;
-        if (entry.stdin.destroyed || entry.stdin.writableEnded) return false;
-        if (entry.pid != null && !this._pidAlive(entry.pid)) return false;
-        return true;
+    getAgentAliveDetails(issueId, skill, fase, opts) {
+        const pipeline = (opts && opts.pipeline) || 'desarrollo';
+
+        // CA-SEC-1 (issue #3721): validación estricta ANTES de tocar FS para
+        // evitar path traversal. `fs.existsSync`/`fs.statSync` confirman
+        // existencia de archivos arbitrarios → info disclosure. Hard regex +
+        // enums.
+        const issueStr = String(issueId == null ? '' : issueId);
+        const skillStr = String(skill == null ? '' : skill);
+        const faseStr = String(fase == null ? '' : fase);
+        if (!RE_ISSUE.test(issueStr)) {
+            return { alive: false, communicable: false, reason: 'invalid_params' };
+        }
+        if (!RE_SKILL.test(skillStr)) {
+            return { alive: false, communicable: false, reason: 'invalid_params' };
+        }
+        if (!VALID_FASES.includes(faseStr)) {
+            return { alive: false, communicable: false, reason: 'invalid_params' };
+        }
+        if (!VALID_PIPELINES.includes(pipeline)) {
+            return { alive: false, communicable: false, reason: 'invalid_params' };
+        }
+
+        // Cascada 1: registry in-memory (canónico cuando interactive_supported=true).
+        const entry = this._agents.get(_agentKey(issueStr, skillStr, faseStr));
+        if (entry
+            && !entry.stdin.destroyed
+            && !entry.stdin.writableEnded) {
+            if (entry.pid == null || this._pidAlive(entry.pid)) {
+                return { alive: true, communicable: true, reason: 'registered' };
+            }
+        }
+
+        // Cascada 2-4: filesystem (heartbeat + carrier). Lectura defensiva,
+        // cualquier error de FS se trata como "no fresh".
+        const fs = this._fsImpl;
+        const now = this._nowImpl();
+        const hbFile = nodePath.join(
+            this._repoRoot, '.claude', 'hooks',
+            `agent-${issueStr}.heartbeat`,
+        );
+        const carrierFile = nodePath.join(
+            this._repoRoot, '.pipeline',
+            pipeline, faseStr, 'trabajando',
+            `${issueStr}.${skillStr}`,
+        );
+        let hbFresh = false;
+        try {
+            if (fs.existsSync(hbFile)) {
+                const stat = fs.statSync(hbFile);
+                hbFresh = (now - stat.mtimeMs) < HEARTBEAT_GRACE_MS;
+            }
+        } catch (_) { /* FS error → no fresh */ }
+
+        if (!hbFresh) {
+            return { alive: false, communicable: false, reason: 'heartbeat_expired' };
+        }
+        let hasCarrier = false;
+        try {
+            hasCarrier = fs.existsSync(carrierFile);
+        } catch (_) { hasCarrier = false; }
+        if (hasCarrier) {
+            return {
+                alive: true,
+                communicable: false,
+                reason: 'agent_alive_pulpo_restarted_or_no_interactive',
+            };
+        }
+        return { alive: true, communicable: false, reason: 'orphan_heartbeat' };
+    }
+
+    /**
+     * Verifica que el agente está vivo. Wrapper backward-compat sobre
+     * `getAgentAliveDetails`: el caller existente recibe boolean truthy
+     * sin cambios.
+     *
+     * NOTA: el chequeo de comunicabilidad (mandar mensaje vs solo "vivo")
+     * lo discrimina ahora `agent-chat-handler.js` con `getAgentAliveDetails`,
+     * que devuelve `communicable: true` SOLO si el registry in-memory tiene
+     * el agente con stdin sano. Tests legacy (`isAgentAlive('1','guru','dev')`)
+     * siguen funcionando porque cuando hay registro + stdin + PID vivo, el
+     * `reason` es `'registered'` y `alive=true`.
+     */
+    isAgentAlive(issueId, skill, fase, opts) {
+        return !!this.getAgentAliveDetails(issueId, skill, fase, opts).alive;
     }
 
     /**
@@ -361,4 +513,7 @@ module.exports = {
     _agentKey,
     _frameMessage,
     DEFAULT_QUEUE_CAP,
+    HEARTBEAT_GRACE_MS,
+    VALID_FASES,
+    VALID_PIPELINES,
 };
