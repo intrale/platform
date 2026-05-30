@@ -16,8 +16,11 @@ dashboard HTML, `/consumo`, PDFs de rejection y mensajes de Telegram.
 │   ├── 01-home-dashboard.svg  # Home del dashboard V3 (1440x900)
 │   ├── 02-issue-drilldown.svg # Drilldown de issue individual (1440x900)
 │   ├── 03-consumo.svg         # Pagina /consumo (1440x900)
+│   ├── 25-wizard-allowlist-flow.svg  # Wizard triaje allowlist (#3742, 1600x1280)
+│   ├── 28-wizard-crear-ola-flow.svg  # Wizard crear nueva ola (#3738, 1600x1340)
 │   ├── narrativa-lili.md      # Script narrado del sistema (para TTS)
-│   └── narrativa-lili.mp3     # Audio narrado con voz es-AR (perfil ux — Lili)
+│   ├── narrativa-lili.mp3     # Audio narrado con voz es-AR (perfil ux — Lili)
+│   └── narrativa-wizard-crear-ola.md # Narrativa wizard crear ola (#3738)
 └── fonts/
     └── README.md              # Por que esta vacia (system font stack, zero CDN)
 ```
