@@ -19,12 +19,14 @@ no bocetos de baja fidelidad). Cada mockup usa los tokens reales de
 | `16-continuidad-pulpo-card.svg`  | 1440x720   | Card "Continuidad del Pulpo" del dashboard (#3259 CA-6): pills por provider, barra apilada de despachos 24h, banner modo degradado |
 | `16b-telegram-exhaustion.svg`    | 1080x940   | Formato Telegram de pausa por exhaustion (#3259 CA-8) + destrabe automatico (#3259 CA-10) |
 | `17-multi-provider-health.svg`   | 1440x1180  | Seccion "Health" del tab Multi-Provider (#3260 CA-1..CA-6): banner cron + 4 cards por provider (verde/amarillo/rojo/muted) + feed Telegram con dedupe + KPIs + tabla free tier real |
+| `24-multi-provider-coverage-widget.svg` | 1440x1180 | Widget "Coverage" del tab Multi-Provider (#3681 split de #3669): matriz skill × provider con 5 estados (PASS/WARN/FAIL/SKIPPED/N/A) + 5 buckets de latencia, banner de último run, banner de coordinación con `--rest-mode`, botón "Ejecutar harness" con guard, panel lateral de issues auto-creados, tooltip popover custom, leyenda permanente. **Nota de numeración:** el issue #3681 referencia el archivo como `23-...` pero ese slot ya está ocupado por `23-ghost-artifacts-widget.svg` (#3638) — UX asignó el siguiente número libre (24). |
 | `narrativa-commander-routing.md` | —          | Script narrado del sistema visual del Commander determinístico (#3257) — generar mp3 en fase `dev` |
 | `narrativa-continuidad-pulpo.md` | —          | Guidelines UX + tabla de contrastes + reglas de copy de los mensajes Telegram (#3259) |
 | `narrativa-lili.md`              | —          | Script narrado del sistema visual base (mockups 01-03) |
 | `narrativa-lili.mp3`             | 4m 42s     | Audio TTS de la narrativa base, voz `es-AR-ElenaNeural` |
 | `narrativa-modo-descanso.md`     | —          | Script narrado del modo descanso (#2882, mockups 04-06) — generar mp3 en fase `dev` |
 | `narrativa-multi-provider-health.md` | —      | Guidelines UX + microcopy + reglas inquebrantables del panel Health (#3260, mockup 17) |
+| `narrativa-multi-provider-coverage.md` | —    | Guidelines UX + microcopy + tabla de iconografía + reglas inquebrantables del widget Coverage (#3681, mockup 24) — generar mp3 en fase `dev` |
 
 ## Ver los mockups
 
