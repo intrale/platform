@@ -724,3 +724,213 @@ test('#3221 · fallback shape inválido (number 42) → skip + audit fallback_in
     const invalidShape = audit.entries.find((e) => e.entry.event === 'fallback_invalid_shape');
     assert.ok(invalidShape, 'audit fallback_invalid_shape esperado');
 });
+
+// =============================================================================
+// #3680 · FORCE_PROVIDER_OVERRIDE branch
+//
+// Cubre CA-A8, CA-A10, CA-A11. El flag se inyecta como opts.env (per-spawn,
+// nunca process.env). El bypass del gate aplica SOLO para skills en
+// FORCED_OVERRIDE_ALLOWED_SKILLS. Cualquier otro skill → ignorar + audit
+// warning.
+// =============================================================================
+
+const { FORCED_OVERRIDE_ALLOWED_SKILLS } = require('../lib/agent-launcher/dispatch-with-fallback');
+
+test('#3680 · FORCE_PROVIDER_OVERRIDE bypass cuando skill está en allowlist', () => {
+    const models = baseAgentModels();
+    // Skill autorizado por #3680.
+    models.skills['multi-provider-smoke-test'] = {
+        provider: 'anthropic',
+        fallbacks: ['openai-codex'],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'multi-provider-smoke-test',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        // gated:true del primary — el override debe bypaseaer SIN consultar quota.
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic', 'openai-codex', 'gemini', 'cerebras'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'gemini', 'cerebras']),
+        auditLog: audit,
+        notify: fakeNotify(),
+        env: { FORCE_PROVIDER_OVERRIDE: 'cerebras' },
+    });
+
+    assert.equal(r.gated, false, 'override bypass del gate');
+    assert.equal(r.provider, 'cerebras');
+    assert.equal(r.source, 'forced-override');
+    assert.equal(r.fallbackUsed, null);
+    assert.deepEqual(r.chainTried, ['cerebras']);
+    assert.equal(r.crossProvider, false);
+
+    const overrideAudit = audit.entries.find(e => e.entry.event === 'forced_provider_override');
+    assert.ok(overrideAudit, 'audit forced_provider_override emitido');
+    assert.equal(overrideAudit.entry.skill, 'multi-provider-smoke-test');
+    assert.equal(overrideAudit.entry.forced_provider, 'cerebras');
+    assert.equal(overrideAudit.entry.source, 'smoke-test');
+    assert.ok('primary_provider_bypassed' in overrideAudit.entry, 'shape audit incluye primary_provider_bypassed');
+});
+
+test('#3680 · FORCE_PROVIDER_OVERRIDE IGNORADO cuando skill NO está en allowlist', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    // guru NO está en FORCED_OVERRIDE_ALLOWED_SKILLS — el override debe ignorarse
+    // y el flow legacy debe correr (en este caso el primary anthropic está libre).
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'gemini', 'cerebras']),
+        auditLog: audit,
+        notify: fakeNotify(),
+        env: { FORCE_PROVIDER_OVERRIDE: 'cerebras' },
+    });
+
+    // Sigue al flow legacy → primary anthropic (NO el override).
+    assert.equal(r.provider, 'anthropic');
+    assert.notEqual(r.source, 'forced-override');
+
+    const ignored = audit.entries.find(e => e.entry.event === 'forced_provider_override_ignored');
+    assert.ok(ignored, 'audit forced_provider_override_ignored emitido');
+    assert.equal(ignored.entry.skill, 'guru');
+    assert.equal(ignored.entry.forced_provider, 'cerebras');
+    assert.equal(ignored.entry.reason, 'skill_not_in_allowlist');
+    assert.deepEqual(ignored.entry.allowed_skills, FORCED_OVERRIDE_ALLOWED_SKILLS.slice());
+});
+
+test('#3680 · FORCE_PROVIDER_OVERRIDE ausente — flow legacy sin override (sanity check)', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+        // sin opts.env → no override.
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'anthropic');
+    assert.equal(r.source, 'agent-models');
+    // No debe emitir ningún audit event del override.
+    assert.ok(!audit.entries.find(e =>
+        e.entry.event === 'forced_provider_override' ||
+        e.entry.event === 'forced_provider_override_ignored' ||
+        e.entry.event === 'forced_provider_override_invalid_provider'
+    ), 'no audit del override cuando flag está ausente');
+});
+
+test('#3680 · FORCE_PROVIDER_OVERRIDE leído SOLO de opts.env (no de process.env del padre)', () => {
+    const models = baseAgentModels();
+    models.skills['multi-provider-smoke-test'] = {
+        provider: 'anthropic',
+        fallbacks: [],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    // Setear process.env.FORCE_PROVIDER_OVERRIDE en el test (anti-pattern, pero
+    // queremos verificar que el dispatcher NO lo lee desde ahí).
+    const ORIG = process.env.FORCE_PROVIDER_OVERRIDE;
+    process.env.FORCE_PROVIDER_OVERRIDE = 'cerebras';
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'multi-provider-smoke-test',
+            issue: ISSUE,
+            pipelineDir: PIPELINE_DIR,
+            fsImpl,
+            quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+            primaryResolver: fakeResolver,
+            auditLog: audit,
+            notify: fakeNotify(),
+            // NO pasamos opts.env. El dispatcher debe ignorar process.env.
+        });
+        // Primary anthropic — el override de process.env fue ignorado.
+        assert.equal(r.provider, 'anthropic');
+        assert.notEqual(r.source, 'forced-override');
+        assert.ok(!audit.entries.find(e => e.entry.event === 'forced_provider_override'),
+            'process.env del padre NO debe activar override (sólo opts.env del child)');
+    } finally {
+        if (ORIG === undefined) delete process.env.FORCE_PROVIDER_OVERRIDE;
+        else process.env.FORCE_PROVIDER_OVERRIDE = ORIG;
+    }
+});
+
+test('#3680 · FORCE_PROVIDER_OVERRIDE con provider inválido → audit + flow legacy', () => {
+    const models = baseAgentModels();
+    models.skills['multi-provider-smoke-test'] = {
+        provider: 'anthropic',
+        fallbacks: ['openai-codex'],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'multi-provider-smoke-test',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        primaryResolver: fakeResolver,
+        // Handler resolver SOLO acepta los providers válidos del fixture; pedimos uno fake.
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'gemini', 'cerebras']),
+        auditLog: audit,
+        notify: fakeNotify(),
+        env: { FORCE_PROVIDER_OVERRIDE: 'provider-fake-inexistente' },
+    });
+
+    // Provider inválido → no bypass; sigue al flow legacy (primary).
+    assert.equal(r.provider, 'anthropic');
+    assert.notEqual(r.source, 'forced-override');
+    const invalid = audit.entries.find(e => e.entry.event === 'forced_provider_override_invalid_provider');
+    assert.ok(invalid, 'audit forced_provider_override_invalid_provider emitido');
+    assert.equal(invalid.entry.forced_provider, 'provider-fake-inexistente');
+});
+
+test('#3680 · FORCE_PROVIDER_OVERRIDE shape del audit entry estable (CA-A11)', () => {
+    const models = baseAgentModels();
+    models.skills['multi-provider-smoke-test'] = {
+        provider: 'anthropic',
+        fallbacks: [{ provider: 'openai-codex', model_override: 'gpt-5-codex' }],
+    };
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    resolveSpawnWithFallback({
+        skill: 'multi-provider-smoke-test',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'gemini', 'cerebras']),
+        auditLog: audit,
+        notify: fakeNotify(),
+        env: { FORCE_PROVIDER_OVERRIDE: 'cerebras' },
+    });
+
+    const entry = audit.entries.find(e => e.entry.event === 'forced_provider_override');
+    assert.ok(entry, 'audit emitido');
+    // Shape exacto (CA-A11).
+    assert.equal(entry.entry.event, 'forced_provider_override');
+    assert.equal(typeof entry.entry.skill, 'string');
+    assert.equal(entry.entry.skill, 'multi-provider-smoke-test');
+    assert.equal(entry.entry.forced_provider, 'cerebras');
+    assert.equal(entry.entry.source, 'smoke-test');
+    assert.ok('primary_provider_bypassed' in entry.entry);
+});

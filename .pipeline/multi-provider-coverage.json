@@ -1,0 +1,973 @@
+{
+  "$schema": "./multi-provider-coverage.schema.json",
+  "_doc": "docs/pipeline/multi-provider-coverage.md",
+  "version": "1.0.0",
+  "generated_at": "2026-05-30T03:22:12.272Z",
+  "run_id": "run-1780111332272-65bbd43d",
+  "agent_models_source_sha256": "f1f7fbf29e1505dae4dca4c9260f5335dc2aed31b38fce4a013962d4d63d1db6",
+  "matrix": [
+    {
+      "skill": "backend-dev",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "backend-dev",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "backend-dev",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "backend-dev",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "backend-dev",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "pipeline-dev",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "pipeline-dev",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "pipeline-dev",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "pipeline-dev",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "pipeline-dev",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "android-dev",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "android-dev",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "android-dev",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "android-dev",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "android-dev",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "web-dev",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "web-dev",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "web-dev",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "web-dev",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "web-dev",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "security",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "security",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "security",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "security",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "security",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "qa",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "qa",
+      "provider": "openai-codex",
+      "model": "gpt-5",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "qa",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "qa",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "qa",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "review",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "review",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "review",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "review",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "review",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "po",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "po",
+      "provider": "openai-codex",
+      "model": "gpt-5",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "po",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "po",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "po",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "ux",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "ux",
+      "provider": "openai-codex",
+      "model": "gpt-5",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "ux",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "ux",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "ux",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "doc",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "doc",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "doc",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "doc",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "doc",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "planner",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "planner",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "planner",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "planner",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "planner",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "guru",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "guru",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "guru",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "guru",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "guru",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "architect",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "architect",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "architect",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "architect",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "architect",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "ops",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "ops",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "ops",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "ops",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "ops",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "perf",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "perf",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "perf",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "perf",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "perf",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "auth",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "auth",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "auth",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "auth",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "auth",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "refinar",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "refinar",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · single-provider por diseño"
+    },
+    {
+      "skill": "refinar",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · single-provider por diseño"
+    },
+    {
+      "skill": "refinar",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · single-provider por diseño"
+    },
+    {
+      "skill": "refinar",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · single-provider por diseño"
+    },
+    {
+      "skill": "telegram-commander",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-commander",
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-commander",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-commander",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-commander",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "N/A",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "N/A · no en fallback chain"
+    },
+    {
+      "skill": "telegram-sherlock",
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-sherlock",
+      "provider": "openai-codex",
+      "model": "gpt-5",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-sherlock",
+      "provider": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-sherlock",
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    },
+    {
+      "skill": "telegram-sherlock",
+      "provider": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "status": "SKIPPED",
+      "latency_bucket": "N/A",
+      "error_class": null,
+      "evidence_hash": null,
+      "reason": "matriz inicial (seed) — harness no ejecutado contra providers reales aún"
+    }
+  ],
+  "summary": {
+    "pass": 0,
+    "warn": 0,
+    "fail": 0,
+    "skipped": 66,
+    "na": 29,
+    "total_combinations": 95,
+    "skills_llm_count": 19,
+    "providers_llm_count": 5
+  },
+  "warnings": [
+    "Matriz inicial (seed). Para resultados reales correr el harness en ventana de pausa."
+  ]
+}

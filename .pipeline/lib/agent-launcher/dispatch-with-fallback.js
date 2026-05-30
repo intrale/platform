@@ -511,6 +511,19 @@ function auditAppend({ pipelineDir, fsImpl, entry, sanitize, auditLog, now }) {
 // 5. Si la chain supera MAX_FALLBACK_DEPTH → cortar + audit "depth_exceeded"
 //    + tratar como all-gated.
 // -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// #3680 CA-A10 — Allowlist hardcoded de skills que pueden activar
+// FORCE_PROVIDER_OVERRIDE. La defensa en profundidad es:
+//   1. Boot validator del pulpo padre aborta si process.env.FORCE_PROVIDER_OVERRIDE
+//      está seteada al arrancar (CA-A9).
+//   2. La rama de bypass acá lee el flag SÓLO desde opts.env (env del spawn
+//      child), nunca de process.env. El caller (harness) tiene que pasarlo
+//      explícito en el env del child.
+//   3. Sólo skills en esta lista pueden activar el bypass. Cualquier otro
+//      skill con el flag → audit warning + ignorar (no bypass).
+// -----------------------------------------------------------------------------
+const FORCED_OVERRIDE_ALLOWED_SKILLS = Object.freeze(['multi-provider-smoke-test']);
+
 function resolveSpawnWithFallback(opts = {}) {
     const {
         skill,
@@ -531,6 +544,116 @@ function resolveSpawnWithFallback(opts = {}) {
     const _resolveHandler = providerHandlerResolver || getProviderHandler;
     const _notify = notify || enqueueTelegramNotice;
     const _now = Number.isFinite(now) ? now : Date.now();
+
+    // -------------------------------------------------------------------------
+    // #3680 CA-A8 — FORCE_PROVIDER_OVERRIDE branch.
+    //
+    // Punto de inyección al inicio de resolveSpawnWithFallback, ANTES del
+    // resolveProvider primario y de cualquier gate de cuota. Bypass total
+    // (no consulta cuota, no consulta fallbacks) — el harness pide un
+    // provider específico y lo obtiene siempre que (a) el skill esté en la
+    // allowlist y (b) el provider sea válido en la tabla hardcoded de
+    // handlers.
+    //
+    // El flag se lee desde opts.env (env del spawn child), NUNCA de
+    // process.env del padre. El validator boot-time en pulpo.js aborta si
+    // process.env.FORCE_PROVIDER_OVERRIDE está presente al arrancar (CA-A9).
+    // -------------------------------------------------------------------------
+    const forcedProvider = (opts.env && typeof opts.env === 'object' && opts.env.FORCE_PROVIDER_OVERRIDE)
+        ? String(opts.env.FORCE_PROVIDER_OVERRIDE)
+        : null;
+    if (forcedProvider) {
+        if (!FORCED_OVERRIDE_ALLOWED_SKILLS.includes(skill)) {
+            // CA-A10: skill no autorizado → audit + IGNORAR (sigue flow normal).
+            auditAppend({
+                pipelineDir, fsImpl, sanitize: (s) => String(s || ''),
+                auditLog, now: _now,
+                entry: {
+                    event: 'forced_provider_override_ignored',
+                    skill,
+                    issue: issue || null,
+                    forced_provider: forcedProvider,
+                    reason: 'skill_not_in_allowlist',
+                    allowed_skills: FORCED_OVERRIDE_ALLOWED_SKILLS.slice(),
+                    raw_excerpt: `skill=${skill} forced=${forcedProvider} not_in_allowlist`,
+                },
+            });
+            log('lanzamiento', `⚠️ ${skill}:#${issue || '?'} FORCE_PROVIDER_OVERRIDE='${forcedProvider}' ignorado (skill no en allowlist).`);
+            // Sigue al flow normal — NO bypass.
+        } else {
+            // CA-A8 + CA-A11: bypass del gate + audit dedicado.
+            // Resolvemos el handler para validar que el provider existe
+            // (la tabla hardcoded en resolve-provider.js es la SoT de
+            // providers válidos — defense in depth contra typos del harness).
+            let resolvedHandler;
+            try {
+                resolvedHandler = _resolveHandler(forcedProvider);
+            } catch (e) {
+                auditAppend({
+                    pipelineDir, fsImpl, sanitize: (s) => String(s || ''),
+                    auditLog, now: _now,
+                    entry: {
+                        event: 'forced_provider_override_invalid_provider',
+                        skill,
+                        issue: issue || null,
+                        forced_provider: forcedProvider,
+                        reason: e.message,
+                        raw_excerpt: `skill=${skill} forced=${forcedProvider} invalid_provider`,
+                    },
+                });
+                // Sigue al flow normal — provider inválido no bypass.
+                resolvedHandler = null;
+            }
+            if (resolvedHandler) {
+                // Resolvemos el primary "natural" sólo para reportar qué
+                // estamos bypaseando (audit informativo, no afecta el spawn).
+                let primaryBypassed = null;
+                try {
+                    const p = _resolveProvider(skill, { pipelineDir, fsImpl });
+                    primaryBypassed = p && p.provider;
+                } catch { /* best-effort */ }
+
+                // Modelo efectivo del forced provider: el agent-models.json
+                // declara `providers.<x>.model` como default. Si querés
+                // modelo distinto, pasalo en opts.env.FORCE_PROVIDER_MODEL.
+                let forcedModel = (opts.env && opts.env.FORCE_PROVIDER_MODEL) || null;
+                if (!forcedModel) {
+                    try {
+                        const models = readAgentModelsRaw(pipelineDir, fsImpl);
+                        const pdef = models && models.providers && models.providers[forcedProvider];
+                        if (pdef && pdef.model) forcedModel = pdef.model;
+                    } catch { /* best-effort */ }
+                }
+
+                auditAppend({
+                    pipelineDir, fsImpl, sanitize: (s) => String(s || ''),
+                    auditLog, now: _now,
+                    entry: {
+                        event: 'forced_provider_override',
+                        skill,
+                        issue: issue || null,
+                        forced_provider: forcedProvider,
+                        primary_provider_bypassed: primaryBypassed,
+                        source: 'smoke-test',
+                        raw_excerpt: `skill=${skill} forced=${forcedProvider} bypass_primary=${primaryBypassed}`,
+                    },
+                });
+                log('lanzamiento', `🔬 ${skill}:#${issue || '?'} FORCE_PROVIDER_OVERRIDE='${forcedProvider}' (bypass de '${primaryBypassed}').`);
+                return {
+                    provider: forcedProvider,
+                    model: forcedModel,
+                    handler: resolvedHandler,
+                    source: 'forced-override',
+                    gated: false,
+                    fallbackUsed: null,
+                    primaryProvider: forcedProvider,
+                    chainTried: [forcedProvider],
+                    crossProvider: false,
+                    depthExceeded: false,
+                };
+            }
+        }
+    }
 
     // -------------------------------------------------------------------------
     // 1. Resolver el provider primario.
@@ -866,6 +989,9 @@ module.exports = {
     dispatchAuditFile,
     MAX_FALLBACK_DEPTH,
     TELEGRAM_QUEUE_SUBDIR,
+    // #3680 CA-A10 — allowlist hardcoded de skills que pueden activar
+    // FORCE_PROVIDER_OVERRIDE. Exportada para inspección/tests.
+    FORCED_OVERRIDE_ALLOWED_SKILLS,
 
     // #3576 — Hook generalizado post-spawn cross-skill.
     onSpawnExit,

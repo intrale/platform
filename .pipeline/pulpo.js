@@ -11644,6 +11644,32 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
   process.stderr.write('[validate] WARN agent-models validation SKIPPED via PULPO_SKIP_AGENT_MODELS_VALIDATE=1\n');
 }
 
+// --- VALIDACIÓN FORCE_PROVIDER_OVERRIDE (#3680 CA-A9) ---
+// Boot fail-fast: este flag es exclusivo del harness multi-provider-smoke-test
+// (per-spawn env del child). Si está presente en process.env del pulpo padre,
+// es bug operativo (export accidental por el operador) o intento de bypass
+// productivo. Cualquiera de los dos rompe la disciplina de routing — abortar
+// con exit 2 + mensaje accionable de 1 línea. Coherente con el resto de
+// validators (agent-models, data-residency) que ya usan exit 2.
+//
+// Escape hatch: PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE=1 acepta el flag igual.
+// SÓLO para emergencias de operación documentadas (rollback, debugging
+// excepcional). Loguea warning visible para que nadie lo use de default.
+if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE !== '1') {
+  process.stderr.write(
+    '[boot] FATAL FORCE_PROVIDER_OVERRIDE prohibido en runtime productivo — ' +
+    'uso exclusivo del harness multi-provider-smoke-test via env override del ' +
+    'spawn child. Unset la variable (`set FORCE_PROVIDER_OVERRIDE=` en Windows, ' +
+    '`unset FORCE_PROVIDER_OVERRIDE` en bash) y reintentar.\n'
+  );
+  process.exit(2);
+} else if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE === '1') {
+  process.stderr.write(
+    '[boot] WARN FORCE_PROVIDER_OVERRIDE presente con PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE=1 — ' +
+    'pipeline corre en modo override forzado. Sólo para emergencias documentadas.\n'
+  );
+}
+
 // --- VALIDACIÓN data-residency-exclusions.json (#3084, multi-provider §6.4) ---
 // Boot fail-closed antes de adquirir el singleton: si el sidecar de exclusiones
 // data-residency no carga, no parsea o no valida contra el schema, abortar con
