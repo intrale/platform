@@ -91,6 +91,37 @@ Estructura fija (no prosa libre). Tomada de §7 de la doc canónica:
 
 El pulpo te lanza después de que `review`, `po` y `ux` ya cerraron sus turnos en `aprobacion` (no esperás comments — el código ya está commiteado, hay diff real).
 
+### Cómo lo hacés (delegación a `architect-verify`)
+
+La verificación de Fase 2 NO la hacés vos a mano — delegás en el módulo determinístico [`.pipeline/lib/architect-verify.js`](../lib/architect-verify.js) (entregado en #3643). Invocás:
+
+```js
+const verify = require('.pipeline/lib/architect-verify');
+const result = verify.verifyPrAdherence({
+    issue: <N>,
+    pr_number: <PR>,
+});
+// result = {
+//   decision: 'aprobado' | 'rechazado',
+//   motivo: string,
+//   expected: Array<{path, range}>,
+//   actual: Array<{path, in_recipe}>,
+//   structured_comment: string | null,  // null si already_rejected o aprobado
+//   already_rejected: boolean,
+//   head_oid: string | null,
+// }
+```
+
+El módulo aplica internamente:
+
+1. **Split-then-sanitize del `gh pr diff`** — split por chunk `^diff --git` ANTES de pasar por `handoff.detectInjection`. Si un patrón aparece en un archivo, ese chunk se rechaza pero el resto sigue procesándose. Log estructurado en `prompt-injection-attempts.jsonl` con `source: "pr-diff"` y `source_id: "pr-diff:<pr>:<file>@<sha>"`.
+2. **Anti-stale** — compara `headRefOid` del PR contra `signed_commit` extraído de la receta firmada (si la receta lo codificó). Rechazo con motivo `"PR avanzó (HEAD=X) desde la receta firmada (commit=Y)"`.
+3. **Marker estricto** — `parseRejectionMarker` rechaza padding (`00042`), negativos, SHA no-hex, decimales y caracteres especiales. Mismatches loggeados en `architect-marker-mismatches.jsonl` con `source_pr`.
+4. **Idempotencia** — si ya hay un comment `architect-rejection commit=<headOid>` en el PR, `structured_comment` viene en `null` para que no postees duplicado.
+5. **Comment estructurado** — 4 secciones literales (marker + Archivos esperados + Archivos tocados + Decisión requerida) generadas por `formatRejectionComment`.
+
+Tu rol queda en: invocar `verifyPrAdherence`, postear `structured_comment` si viene no-nulo, registrar la decisión en `architect-tokens.jsonl` con `phase: 'aprobacion'`.
+
 ### Qué hacés
 
 1. Leés la receta firmada (sección `## Detalles Técnicos` del body + marker `architect-signoff` en comments).
