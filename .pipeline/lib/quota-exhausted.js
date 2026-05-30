@@ -224,21 +224,42 @@ function ensureDir(dir) {
  * rename es atómico y este path raramente dispara, pero el costo del retry
  * acotado es despreciable.
  *
- * Cap explícito (anti-DoS): máximo 3 intentos y ≤50ms totales. Si el
+ * Cap explícito (anti-DoS): máximo 5 intentos y ≤250ms totales. Si el
  * destino está realmente bloqueado, propagamos al caller en vez de spinear
  * el proceso indefinidamente.
+ *
+ * #3638 — Hardening anti-flake bajo full-suite load
+ * --------------------------------------------------
+ * El cap original (3 attempts / 50ms) era suficiente en isolation pero
+ * flakea bajo carga completa de tests Node (4000+) cuando 10 workers
+ * concurrentes contienden por el mismo destino:
+ *   1. CPU saturado → busy-wait de 5ms puede medirse en 30-50ms reales por
+ *      preemption del scheduler.
+ *   2. Sin jitter, los 10 workers retrian en los MISMOS instantes (5/10/20ms)
+ *      → thundering herd: las colisiones se reproducen en cada ronda.
+ * Fix: bump del budget a 5 attempts / 250ms + jitter aleatorio ±50% en
+ * cada delay para romper la sincronización. El peor caso sigue acotado
+ * (un solo escritor no puede spinear más de 250ms).
  */
-const RENAME_RETRY_MAX_ATTEMPTS = 3;
-const RENAME_RETRY_MAX_TOTAL_MS = 50;
+const RENAME_RETRY_MAX_ATTEMPTS = 5;
+const RENAME_RETRY_MAX_TOTAL_MS = 250;
 const RENAME_RETRY_INITIAL_MS = 5;
+const RENAME_RETRY_JITTER_RATIO = 0.5; // ±50% sobre el backoff calculado
 const RENAME_RETRYABLE_ERRORS = new Set(['EBUSY', 'EPERM', 'EEXIST']);
 
 function sleepSyncMs(ms) {
     // Busy-wait acotado a milisegundos (es lo único síncrono que da Node sin
-    // deps nuevas). El cap del caller mantiene esto bajo 50ms totales.
+    // deps nuevas). El cap del caller mantiene esto bajo 250ms totales.
     const end = Date.now() + ms;
     // eslint-disable-next-line no-empty
     while (Date.now() < end) {}
+}
+
+function jitter(baseMs) {
+    // ±RENAME_RETRY_JITTER_RATIO multiplicativo. Math.random() está OK acá:
+    // no es uso criptográfico, solo desincroniza retries de procesos paralelos.
+    const factor = 1 + (Math.random() * 2 - 1) * RENAME_RETRY_JITTER_RATIO;
+    return Math.max(1, Math.round(baseMs * factor));
 }
 
 function renameWithRetry(tmp, filepath) {
@@ -254,9 +275,10 @@ function renameWithRetry(tmp, filepath) {
             const code = err && err.code;
             const retriable = RENAME_RETRYABLE_ERRORS.has(code);
             const lastAttempt = attempt === RENAME_RETRY_MAX_ATTEMPTS;
-            const overBudget = Date.now() + delayMs > totalDeadline;
+            const sleepMs = jitter(delayMs);
+            const overBudget = Date.now() + sleepMs > totalDeadline;
             if (!retriable || lastAttempt || overBudget) throw err;
-            sleepSyncMs(delayMs);
+            sleepSyncMs(sleepMs);
             delayMs = Math.min(delayMs * 2, totalDeadline - Date.now());
             if (delayMs <= 0) throw lastErr;
         }
