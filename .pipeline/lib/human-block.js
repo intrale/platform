@@ -90,20 +90,10 @@ function emitDismissed(opts) {
 }
 
 // Artifacts auxiliares (.reason.json metadata, .guidance.txt de destrabe humano,
-// .comment.md de criterios PO, etc.) no son markers de skill. Si se cuentan
-// como markers, los listados devuelven entradas fantasma que el reconciler
-// no puede resolver (reaplicando needs-human, mostrando "po.comment.md" como
-// agente en la cola, etc.).
-//
-// Detección estructural: un marker válido tiene formato exacto `<issue>.<skill>`
-// con exactamente 2 segmentos separados por punto. Los skills configurados en
-// config.yaml (po, ux, guru, security, planner, backend-dev, android-dev,
-// web-dev, pipeline-dev, build, tester, qa, linter, review, delivery) no
-// contienen puntos. Cualquier filename con > 2 segmentos es artifact.
-function isMarkerArtifact(name) {
-    if (name.split('.').length > 2) return true;
-    return name.endsWith('.reason.json') || name.endsWith('.guidance.txt') || name.endsWith('.comment.md');
-}
+// .comment.md de criterios PO, etc.) no son markers de skill. Detección
+// centralizada en `lib/marker-artifact.js` (#3638 CA-F-1) — re-export para
+// preservar la API histórica (`require('./human-block').isMarkerArtifact`).
+const { isMarkerArtifact } = require('./marker-artifact');
 
 function findActiveMarker(issue) {
     const prefix = String(issue) + '.';

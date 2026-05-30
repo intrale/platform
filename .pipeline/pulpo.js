@@ -858,21 +858,12 @@ function writeYaml(filepath, data) {
   fs.writeFileSync(filepath, yaml.dump(data, { lineWidth: -1 }));
 }
 
-// Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
-// .reason.resolved-*.json, etc.). Reutilizamos el helper canónico de
-// `lib/human-block.js` para mantener una única definición. Sin este filtro el
-// pulpo levantaba `<issue>.<skill>.guidance.txt` como si fuera un marker de
-// agente, alcanzaba el invariante "skill no autorizado para esa fase" y mandaba
+// Artifacts auxiliares: detección centralizada en `lib/marker-artifact.js`
+// (#3638 CA-F-1). Sin este filtro el pulpo levantaba
+// `<issue>.<skill>.guidance.txt` como si fuera un marker de agente,
+// alcanzaba el invariante "skill no autorizado para esa fase" y mandaba
 // alerta Telegram falsa (incidente 2026-05-11 con #3073.pipeline-dev.guidance.txt).
-let _isMarkerArtifactPulpo;
-try { ({ isMarkerArtifact: _isMarkerArtifactPulpo } = require('./lib/human-block')); } catch { /* opcional */ }
-function isMarkerArtifactPulpo(name) {
-  if (typeof _isMarkerArtifactPulpo === 'function') return _isMarkerArtifactPulpo(name);
-  if (name.split('.').length > 2) return true;
-  return name.endsWith('.reason.json')
-    || name.endsWith('.guidance.txt')
-    || name.endsWith('.comment.md');
-}
+const { isMarkerArtifact: isMarkerArtifactPulpo } = require('./lib/marker-artifact');
 
 /** Listar archivos de trabajo (no .gitkeep, ni artifacts auxiliares) en una carpeta */
 function listWorkFiles(dir) {
@@ -1510,7 +1501,8 @@ function countRunningBySkill(skill) {
       const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
-          if (f.endsWith(`.${skill}`) && !f.startsWith('.')) count++;
+          if (f.startsWith('.') || isMarkerArtifactPulpo(f)) continue;
+          if (f.endsWith(`.${skill}`)) count++;
         }
       } catch {}
     }
@@ -1530,7 +1522,7 @@ function countRunningDevs() {
       const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
-          if (f.startsWith('.')) continue;
+          if (f.startsWith('.') || isMarkerArtifactPulpo(f)) continue;
           const s = f.split('.').pop();
           if (DEV_SKILLS.includes(s)) count++;
         }
@@ -1754,7 +1746,8 @@ function countTotalRunningAgents(config) {
       const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
-          if (!f.startsWith('.')) count++;
+          if (f.startsWith('.') || isMarkerArtifactPulpo(f)) continue;
+          count++;
         }
       } catch {}
     }
@@ -3296,6 +3289,7 @@ function brazoBarrido(config) {
                 const dir = path.join(fasePath('definicion', dFase), estado);
                 try {
                   for (const f of fs.readdirSync(dir)) {
+                    if (isMarkerArtifactPulpo(f)) continue;
                     if (f.startsWith(issue + '.')) {
                       const data = readYaml(path.join(dir, f));
                       if (data && data.rebote_tipo === 'routing' && data.rebote_routing_numero > routingBounces) {
@@ -10007,6 +10001,7 @@ function findLastRejection(pipelineName, issueNum, config) {
         try {
             for (const f of fs.readdirSync(dir)) {
                 if (!f.startsWith(issueNum + '.') || f.startsWith('.')) continue;
+                if (isMarkerArtifactPulpo(f)) continue;
                 const filepath = path.join(dir, f);
                 let data;
                 try { data = readYaml(filepath); } catch { continue; }
@@ -11359,6 +11354,43 @@ async function mainLoop() {
     log('commander', `[anthropic-1m] cron TTL iniciado: cada ${ANTHROPIC_1M_TTL_CHECK_INTERVAL_MIN}min`);
   } catch (e) {
     log('commander', `[anthropic-1m] no pude iniciar cron TTL: ${e.message}`);
+  }
+
+  // #3638 CA-F-7 — Ghost-artifact cleaner: barre carpetas operacionales en
+  // busca de artifacts huérfanos (.comment.md/.guidance.txt/.reason.json de
+  // issues CERRADOS sin marker activo) y los archiva en
+  // .pipeline/archivado/ghost-<ts>/. Audit log JSONL en
+  // .pipeline/audit/ghost-artifacts-cleanup.jsonl.
+  //
+  // Best-effort: si falla, NO mata el pulpo (el cleaner ya hace fail-safe
+  // interno por gh down, lock busy, etc.). Primer tick a los 2min post-arranque
+  // para no competir con el resto del boot; reintervalo cada 6h.
+  try {
+    const ghostCleaner = require('./lib/ghost-artifact-cleaner');
+    const GHOST_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 horas
+    const runGhostTick = async () => {
+      try {
+        const result = await ghostCleaner.runWithLock({
+          mode: 'execute',
+          repoRoot: ROOT,
+          pipelineRoot: PIPELINE,
+        });
+        if (result.lockSkip) {
+          log('pulpo', `[ghost-artifact] tick skip — lock busy`);
+        } else if (result.aborted) {
+          log('pulpo', `[ghost-artifact] tick abort — ${result.errors} errores`);
+        } else {
+          log('pulpo', `[ghost-artifact] tick OK — scanned=${result.scanned} archived=${result.archived} skipped=${result.skipped} errors=${result.errors} duration=${result.durationMs}ms`);
+        }
+      } catch (e) {
+        log('pulpo', `WARN [ghost-artifact] tick exception: ${e.message}`);
+      }
+    };
+    setTimeout(runGhostTick, 2 * 60 * 1000);
+    setInterval(runGhostTick, GHOST_INTERVAL_MS);
+    log('pulpo', `[ghost-artifact] cron iniciado: cada ${GHOST_INTERVAL_MS / (60 * 60 * 1000)}h`);
+  } catch (e) {
+    log('pulpo', `WARN [ghost-artifact] no pude iniciar cron: ${e.message}`);
   }
 
   // #3625 CA-3 — Cron de cleanup de TTLs de autoría heredada

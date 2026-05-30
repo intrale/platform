@@ -59,6 +59,7 @@ const path = require('path');
 const yaml = require('js-yaml');
 const trace = require('./traceability');
 const humanBlock = require('./human-block');
+const { isMarkerArtifact } = require('./marker-artifact');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const GH_QUEUE_DIR = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
@@ -757,9 +758,9 @@ function sweepFastFailRebotesFromProcesado(opts) {
         // antes de leer YAML (perf + defensa contra fanout enorme).
         if (!f.startsWith(prefix)) continue;
         if (f === '.gitkeep') continue;
-        if (f.endsWith('.reason.json') || f.endsWith('.guidance.txt') || f.endsWith('.comment.md')) continue;
-        // Markers válidos: <issue>.<skill> (≤2 segmentos)
-        if (f.split('.').length > 2) continue;
+        // #3638 CA-F-1: filtro centralizado de artifacts auxiliares y > 2
+        // segmentos. Importado de `lib/marker-artifact.js`.
+        if (isMarkerArtifact(f)) continue;
         scanned++;
         if (moved.length >= MAX_FILES_PER_ISSUE) { capped = true; break; }
 

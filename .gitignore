@@ -168,6 +168,13 @@ scripts/planner-plan.json
 # Solo se versiona el HEAD de waves.json; archived/ es efímero por máquina.
 .pipeline/archived/
 
+# #3638 CA-SEC-6 — ghost artifacts cleaner: nada del archivado (español) ni del
+# audit JSONL operacional debe ir al repo. Contienen paths internos, CAs viejos,
+# motivos de rechazo y metadata del pipeline. El cleaner verifica esto en boot
+# y aborta si los paths no están ignored (anti-regresión).
+.pipeline/archivado/
+.pipeline/audit/
+
 # #3539 — audios .ogg generados por deliverable-notify (CA-SEC-8).
 # El cleanup/retencion sera tratado en #3544.
 .pipeline/audio/
