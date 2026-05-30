@@ -22,7 +22,14 @@
 //     accepted_dep_risk?: true,             // #2893: el operador eligió continuar
 //                                           //         aceptando que un issue tiene
 //                                           //         deps abiertas fuera del allowlist.
-//     dep_sources?: { "2491": "auto-deps" } // #2893: por qué cada issue está incluido.
+//     dep_sources?: { "2491": "auto-deps" }, // #2893: por qué cada issue está incluido.
+//     allowed_skills?: ["multi-provider-smoke-test"]  // #3680 CA-A15: skills
+//                                           //         (no issues) habilitados para
+//                                           //         correr en la ventana de pausa.
+//                                           //         Co-existe con allowed_issues;
+//                                           //         el harness chequea su skill
+//                                           //         contra esta lista vía
+//                                           //         isSkillAllowed(name).
 //   }
 //
 // -----------------------------------------------------------------------------
@@ -92,8 +99,18 @@ function readPartialFile() {
         const depSources = (parsed.dep_sources && typeof parsed.dep_sources === 'object')
             ? parsed.dep_sources
             : null;
+        // #3680 CA-A15: allowed_skills co-existente con allowed_issues.
+        // Normalización: strings no vacíos, sin duplicados, orden estable.
+        const rawSkills = Array.isArray(parsed.allowed_skills) ? parsed.allowed_skills : [];
+        const allowedSkills = [...new Set(
+            rawSkills
+                .filter(s => typeof s === 'string')
+                .map(s => s.trim())
+                .filter(Boolean)
+        )].sort();
         return {
             allowed_issues: allowed,
+            allowed_skills: allowedSkills,
             created_at: parsed.created_at || null,
             source: parsed.source || null,
             accepted_dep_risk: acceptedDepRisk,
@@ -134,15 +151,23 @@ function readPreviousAllowlist() {
 function getPipelineMode() {
     if (fs.existsSync(pauseFile())) {
         return {
-            mode: 'paused', allowedIssues: [], createdAt: null, source: null,
+            mode: 'paused', allowedIssues: [], allowedSkills: [], createdAt: null, source: null,
             acceptedDepRisk: false, depSources: null,
         };
     }
     const partial = readPartialFile();
-    if (partial && partial.allowed_issues.length > 0) {
+    // #3680 CA-A15: el modo partial_pause se activa si hay allowed_issues O
+    // allowed_skills no vacíos. Antes era sólo allowed_issues; agregamos la
+    // disyunción para que un harness que se identifica por skill (no por issue
+    // concreto, ej. multi-provider-smoke-test) pueda activar la ventana sin
+    // sentinels mágicos en allowed_issues.
+    const hasIssues = partial && partial.allowed_issues.length > 0;
+    const hasSkills = partial && partial.allowed_skills && partial.allowed_skills.length > 0;
+    if (partial && (hasIssues || hasSkills)) {
         return {
             mode: 'partial_pause',
             allowedIssues: partial.allowed_issues,
+            allowedSkills: partial.allowed_skills || [],
             createdAt: partial.created_at,
             source: partial.source,
             acceptedDepRisk: partial.accepted_dep_risk === true,
@@ -151,7 +176,7 @@ function getPipelineMode() {
         };
     }
     return {
-        mode: 'running', allowedIssues: [], createdAt: null, source: null,
+        mode: 'running', allowedIssues: [], allowedSkills: [], createdAt: null, source: null,
         acceptedDepRisk: false, depSources: null,
     };
 }
@@ -182,6 +207,29 @@ function isIssueAllowedInState(issue, state) {
     if (!state || state.mode === 'paused') return false;
     if (state.mode === 'running') return true;
     return Array.isArray(state.allowedIssues) && state.allowedIssues.includes(n);
+}
+
+// -----------------------------------------------------------------------------
+// #3680 CA-A15 — isSkillAllowed / isSkillAllowedInState
+//
+// Hermana semántica de isIssueAllowed pero indexada por skill. Pensada para
+// componentes que no son issues concretos pero quieren correr en ventanas de
+// pausa (ej. multi-provider-smoke-test, harnesses de diagnóstico futuros).
+//
+// Política exactamente análoga:
+//   running         → true (no hay pausa)
+//   paused          → false (halt total)
+//   partial_pause   → skill ∈ allowedSkills
+// -----------------------------------------------------------------------------
+function isSkillAllowed(skillName) {
+    return isSkillAllowedInState(skillName, getPipelineMode());
+}
+
+function isSkillAllowedInState(skillName, state) {
+    if (typeof skillName !== 'string' || skillName.trim().length === 0) return false;
+    if (!state || state.mode === 'paused') return false;
+    if (state.mode === 'running') return true;
+    return Array.isArray(state.allowedSkills) && state.allowedSkills.includes(skillName.trim());
 }
 
 // -----------------------------------------------------------------------------
@@ -258,7 +306,7 @@ function evaluateAndAudit({ previous, current, source, authorizedBy, justificati
 
 /**
  * Activa la pausa parcial con un allowlist de issues.
- * Lista vacía → elimina el marker (equivalente a clear).
+ * Lista vacía + allowedSkills vacío → elimina el marker (equivalente a clear).
  *
  * #3520 — Write atómico vía tmp+rename. Sustituye al `writeFileSync` directo
  * que dejaba el JSON truncado ante un kill -9 mid-write. Es prerequisito para
@@ -266,6 +314,12 @@ function evaluateAndAudit({ previous, current, source, authorizedBy, justificati
  *
  * #3625 — Gate de autorización: opts.authorizedBy + opts.justification.
  * Removals sin authorizedBy válido → REJECTED (audit entry + alerta Telegram).
+ *
+ * #3680 CA-A15 — opts.allowedSkills: array de nombres de skill habilitados
+ * en la ventana (co-existente con allowed_issues). Permite activar la pausa
+ * SOLO con skills (sin issues) — caso del harness multi-provider-smoke-test.
+ * El gate de autorización sólo audita removals de issues (no de skills), pero
+ * la mutación del campo allowed_skills SÍ se persiste atómicamente bajo lock.
  *
  * @param {Array<number|string>} issues
  * @param {{
@@ -275,8 +329,9 @@ function evaluateAndAudit({ previous, current, source, authorizedBy, justificati
  *   authorizedBy?: string,        // #3625: enum cerrado
  *   justification?: string,       // #3625: razón libre (sanitizada)
  *   authorizationTtls?: Object,   // #3625: TTLs por issue heredados (recursive-deps:from-N)
+ *   allowedSkills?: string[],     // #3680: skills habilitados (co-existente con issues)
  * }} [opts]
- * @returns {{ok: boolean, rejected?: boolean, allowedIssues: number[], msg: string, diff?: object}}
+ * @returns {{ok: boolean, rejected?: boolean, allowedIssues: number[], allowedSkills?: string[], msg: string, diff?: object}}
  */
 function setPartialPause(issues, opts = {}) {
     const normalized = (Array.isArray(issues) ? issues : [])
@@ -284,7 +339,18 @@ function setPartialPause(issues, opts = {}) {
         .filter(Boolean);
     const unique = [...new Set(normalized)].sort((a, b) => a - b);
 
-    if (unique.length === 0) {
+    // #3680 — normalización paralela de allowedSkills.
+    const uniqueSkills = Array.isArray(opts.allowedSkills)
+        ? [...new Set(
+            opts.allowedSkills
+                .filter(s => typeof s === 'string')
+                .map(s => s.trim())
+                .filter(Boolean)
+        )].sort()
+        : [];
+
+    // Si tanto issues como skills están vacíos → comportamiento legacy (clear).
+    if (unique.length === 0 && uniqueSkills.length === 0) {
         // Delegate al `clearPartialPause` que también pasa por el gate.
         const r = clearPartialPause({
             source: opts.source,
@@ -293,11 +359,12 @@ function setPartialPause(issues, opts = {}) {
         });
         // Normalizar shape al de setPartialPause para compat con callers.
         if (r.rejected) {
-            return { ok: false, rejected: true, allowedIssues: readPreviousAllowlist(), msg: 'Mutación rechazada por gate' };
+            return { ok: false, rejected: true, allowedIssues: readPreviousAllowlist(), allowedSkills: [], msg: 'Mutación rechazada por gate' };
         }
         return {
             ok: true,
             allowedIssues: [],
+            allowedSkills: [],
             msg: 'Pausa parcial desactivada (lista vacía)',
         };
     }
@@ -330,6 +397,12 @@ function setPartialPause(issues, opts = {}) {
         created_at: new Date().toISOString(),
         source: opts.source || 'unknown',
     };
+    // #3680 CA-A15 — allowed_skills es campo aditivo. Sólo lo escribimos si
+    // el caller lo proveyó. Los lectores viejos (que no conocen el campo) lo
+    // ignoran sin romperse (regla aditiva original del marker, ver header).
+    if (uniqueSkills.length > 0) {
+        data.allowed_skills = uniqueSkills;
+    }
     if (opts.acceptedDepRisk === true) data.accepted_dep_risk = true;
     if (opts.depSources && typeof opts.depSources === 'object') {
         // Filtrar a las claves que efectivamente terminaron en el allowlist.
@@ -441,6 +514,16 @@ function setPartialPauseAtomic(issues, opts = {}) {
         .filter(Boolean);
     const unique = [...new Set(normalized)].sort((a, b) => a - b);
 
+    // #3680 CA-A15 — allowed_skills aditivo (igual que setPartialPause).
+    const uniqueSkills = Array.isArray(opts.allowedSkills)
+        ? [...new Set(
+            opts.allowedSkills
+                .filter(s => typeof s === 'string')
+                .map(s => s.trim())
+                .filter(Boolean)
+        )].sort()
+        : [];
+
     const previous = readPreviousAllowlist();
 
     // #3625 — Gate + audit ANTES del write.
@@ -470,6 +553,9 @@ function setPartialPauseAtomic(issues, opts = {}) {
         created_at: new Date().toISOString(),
         source: opts.source || 'unknown',
     };
+    if (uniqueSkills.length > 0) {
+        data.allowed_skills = uniqueSkills;
+    }
     if (opts.acceptedDepRisk === true) data.accepted_dep_risk = true;
     if (opts.depSources && typeof opts.depSources === 'object') {
         const filtered = {};
@@ -600,6 +686,9 @@ module.exports = {
     getPipelineMode,
     isIssueAllowed,
     isIssueAllowedInState,
+    // #3680 CA-A15 — variantes indexadas por skill (hermanas semánticas).
+    isSkillAllowed,
+    isSkillAllowedInState,
     setPartialPause,
     setPartialPauseAtomic, // #3520
     clearPartialPause,

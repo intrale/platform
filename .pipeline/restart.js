@@ -42,6 +42,30 @@ require('./lib/credentials').loadIntoEnv({
   logger: (m) => console.error(m),
 });
 
+// --- VALIDACIÓN FORCE_PROVIDER_OVERRIDE (#3680 CA-A9) ---
+// Boot fail-fast EN restart.js TAMBIÉN (no sólo pulpo). Si el operador hace
+// `set FORCE_PROVIDER_OVERRIDE=cerebras` y después `node .pipeline/restart.js`,
+// el flag se hereda a los spawn children del pulpo y rompe la disciplina de
+// routing productivo. Defense-in-depth contra esa misma ruta de bypass —
+// abortar acá mismo antes de matar/relanzar los componentes.
+//
+// Escape hatch: PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE=1 acepta el flag igual
+// (sólo emergencias documentadas).
+if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE !== '1') {
+  console.error(
+    '[restart] FATAL FORCE_PROVIDER_OVERRIDE prohibido en runtime productivo — ' +
+    'uso exclusivo del harness multi-provider-smoke-test (per-spawn env del child). ' +
+    'Unset la variable (`set FORCE_PROVIDER_OVERRIDE=` en Windows, ' +
+    '`unset FORCE_PROVIDER_OVERRIDE` en bash) y reintentar.'
+  );
+  process.exit(2);
+} else if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE === '1') {
+  console.error(
+    '[restart] WARN FORCE_PROVIDER_OVERRIDE presente con PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE=1 — ' +
+    'pipeline corre en modo override forzado. Sólo emergencias documentadas.'
+  );
+}
+
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
 
