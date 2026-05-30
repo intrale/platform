@@ -114,6 +114,14 @@ function loadIconSprite() {
   }
   return _iconSpriteCache;
 }
+// #3642 R2 — Setter test-only para resetear _iconSpriteCache desde tests sin
+// que la produccion pueda alterar el cache. El guard NODE_ENV=test garantiza
+// no-op fuera del runner de node --test. Permite cubrir CA-6 (degradacion
+// gracil) inyectando '' antes del subcase y verificando el render sin glifo.
+function __setIconSpriteCacheForTesting(value) {
+  if (process.env.NODE_ENV !== 'test') return;
+  _iconSpriteCache = value;
+}
 // Helper para inyectar un icono del sprite con aria-label.
 // Uso: ${ic('fase-dev', 'fase: desarrollo')}
 function ic(name, ariaLabel, extraClass) {
@@ -121,6 +129,14 @@ function ic(name, ariaLabel, extraClass) {
   const aria = ariaLabel ? ` role="img" aria-label="${String(ariaLabel).replace(/"/g, '&quot;')}"` : ' aria-hidden="true"';
   return `<svg class="${cls}"${aria}><use href="#ic-${name}"/></svg>`;
 }
+
+// #3642 — Resolver puro del estado del rol architect (Fase 1 criterios + Fase 2
+// aprobacion) + slice/renderer del badge. Modulos separados para test unitario
+// aislado. Defensivos por si los archivos faltan (no debe romper el dashboard).
+let _architectStateResolver = null;
+try { _architectStateResolver = require('./lib/architect-state-resolver'); } catch { /* opcional */ }
+let _architectSlices = null;
+try { _architectSlices = require('./lib/dashboard-slices'); } catch { /* opcional */ }
 
 // #3625 CA-5 — Renderer del widget de Audit trail · Allowlist mutations.
 // Wrapper alrededor de lib/audit-trail-renderer.js para mantener el dashboard
@@ -2110,6 +2126,21 @@ function generateHTML(state) {
     if (data.labels?.includes('needs-human')) {
       stateBadges.push(`<span class="lc-state-badge lc-state-needshuman" title="Circuit breaker o pedido explicito de intervencion humana" aria-label="necesita intervencion humana">${ic('estado-needs-human')} needs-human</span>`);
     }
+    // #3642 CA-1/CA-4 — Widget architect (4 estados). Insertar SEMANTICAMENTE
+    // entre needshuman y stale; los numeros de linea pueden driftear pero el
+    // orden es: crossphase → rebote → needshuman → architect → stale.
+    // El resolver y el renderer son modulos puros — cargados con try/catch
+    // defensivo arriba en el archivo. Si fallan, el badge se omite (no rompe
+    // la tarjeta).
+    if (_architectStateResolver && _architectSlices && typeof _architectSlices.architectBadgeHTML === 'function') {
+      try {
+        const archInfo = _architectStateResolver.resolveArchitectState(data.fases);
+        if (archInfo) {
+          const badgeHTML = _architectSlices.architectBadgeHTML(archInfo, { esc, ic });
+          if (badgeHTML) stateBadges.push(badgeHTML);
+        }
+      } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
+    }
     if (isStale && !isRetrying) {
       stateBadges.push(`<span class="lc-state-badge lc-state-stale" title="Sin actividad reciente: ${data.staleMin}m" aria-label="stale ${data.staleMin} minutos">${ic('estado-stale')} ${data.staleMin}m</span>`);
     }
@@ -3060,6 +3091,11 @@ ${loadDesignTokens()}
 .lc-state-needshuman{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5);animation:pausePulse 2s infinite}
 .lc-state-narrating{background:var(--teal-bg,rgba(45,212,191,0.14));color:var(--teal,#2DD4BF);border-color:rgba(45,212,191,0.4)}
 .lc-state-stale{background:rgba(139,148,158,0.12);color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.3)}
+/* #3642 CA-3 — Widget architect 4 estados. Tokens semanticos firmados por UX. */
+.lc-state-architect-pending{background:rgba(139,148,158,0.12);color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.3)}
+.lc-state-architect-running{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.4)}
+.lc-state-architect-approved{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gr));border-color:rgba(63,185,80,0.4)}
+.lc-state-architect-rejected{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5)}
 .lc-state-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 var(--space-3,10px) var(--space-2,6px);margin-top:-2px}
 /* ── Cola detallada (#3356) — 5ta sub-seccion del large board principal ─── */
 /* Las 5 sub-secciones del header son: (1) brand bar / hdr-bar-v3,            */

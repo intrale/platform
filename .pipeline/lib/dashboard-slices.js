@@ -1381,6 +1381,55 @@ function partialPauseAuditSlice(state, ctx) {
     };
 }
 
+// #3642 — Widget architect 4 estados. Slice consume el resolver puro
+// (lib/architect-state-resolver) y devuelve la informacion que el badge del
+// dashboard necesita para un issue dado. Defensivo si el resolver falta.
+let _architectResolver = null;
+try { _architectResolver = require('./architect-state-resolver'); } catch { /* opcional */ }
+let _architectBadge = null;
+try { _architectBadge = require('./architect-badge-renderer'); } catch { /* opcional */ }
+
+function architectStateSlice(state, issueNum) {
+    if (!_architectResolver || !state || !state.issueMatrix) return null;
+    const key = String(issueNum);
+    const data = state.issueMatrix[key];
+    if (!data || !data.fases) return null;
+    try {
+        return _architectResolver.resolveArchitectState(data.fases);
+    } catch {
+        return null;
+    }
+}
+
+// #3642 CA-1/CA-4/CA-5/CA-6/CA-IMPL-B6-XSS-DEFENSIVE — Renderer del badge.
+// Recibe `info` (resultado del resolver) y `{ esc, ic }` inyectados (las
+// helpers reales viven en dashboard.js; los tests pueden inyectar fakes).
+//
+// Switch explicito por estado — necesario para que el grep CA-2 sobre
+// `.pipeline/lib/dashboard-slices.js` encuentre las 4 referencias a
+// `ic('architect-<state>')`. Mantener las 4 literales (no concatenar).
+//
+// Defensa XSS: `esc()` sobre cada valor dinamico interpolado en title="" /
+// aria-label="" y en el cuerpo del span. El text/a11y vienen del helper
+// puro `architect-badge-renderer.js`, que ya garantiza formato HH:MM manual
+// + fallback `—` para fechas invalidas.
+function architectBadgeHTML(info, deps) {
+    if (!info || !info.state || !_architectBadge) return '';
+    if (!deps || typeof deps.esc !== 'function' || typeof deps.ic !== 'function') return '';
+    const { esc, ic } = deps;
+    const a11y = _architectBadge.architectAriaLabel(info);
+    const text = _architectBadge.architectBadgeText(info);
+    let svg = '';
+    switch (info.state) {
+        case 'pending':  svg = ic('architect-pending', a11y);  break;
+        case 'running':  svg = ic('architect-running', a11y);  break;
+        case 'approved': svg = ic('architect-approved', a11y); break;
+        case 'rejected': svg = ic('architect-rejected', a11y); break;
+        default: return '';
+    }
+    return `<span class="lc-state-badge lc-state-architect-${info.state}" title="${esc(a11y)}" aria-label="${esc(a11y)}">${svg} ${esc(text)}</span>`;
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -1399,6 +1448,9 @@ module.exports = {
     handoffMetricsSlice,
     // #3625 — widget de audit trail de allowlist
     partialPauseAuditSlice,
+    // #3642 — widget architect 4 estados
+    architectStateSlice,
+    architectBadgeHTML,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,
