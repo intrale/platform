@@ -240,6 +240,10 @@ const SAFE_IGNORE_2551 = new RegExp(
         '\\.pipeline\\/.*\\.heartbeat',
         '\\.pipeline\\/logs\\/.*',
         '\\.pipeline\\/locks\\/.*',
+        '\\.pipeline\\/audit\\/.*',
+        '\\.pipeline\\/audio\\/.*',
+        '\\.pipeline\\/archivado\\/.*',
+        '\\.pipeline\\/quota-snapshots\\/.*',
         'qa\\/evidence\\/.*',
         'lint-\\d+-report\\.(md|json)',
         '.*\\.stackdump',
@@ -268,6 +272,35 @@ test('#2551 CA-3 — SAFE_IGNORE preserva paths inocuos (no falso positivo)', ()
     assert.equal(SAFE_IGNORE_2551.test('.pipeline/skills-deterministicos/delivery.js'), false);
     assert.equal(SAFE_IGNORE_2551.test('docs/readme.md'), false);
     assert.equal(SAFE_IGNORE_2551.test('docs/qa/rejection-2551.md'), false);
+});
+
+// #3723 (rev-2) — Regresión: delivery fallaba al stagear archivos previamente
+// tracked dentro de carpetas .gitignore-adas (.pipeline/audit/, .pipeline/audio/,
+// .pipeline/quota-snapshots/, .pipeline/archivado/). El `git add -- <path>`
+// devuelve exit 1 con mensaje "paths ignored by .gitignore" aunque el archivo
+// esté tracked y la operación realmente quede aplicada. La defensa correcta
+// es filtrarlos en SAFE_IGNORE para no pasarlos a git add.
+test('#3723 — SAFE_IGNORE captura .pipeline/audit/*.jsonl (tracked previos al .gitignore #3707)', () => {
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/audit/architect-tokens.jsonl'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/audit/agent-models-notifications.jsonl'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/audit/deliverable-notifications.jsonl'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/audit/multi-provider-health.jsonl'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/audit/partial-pause-mutations.jsonl'), true);
+});
+
+test('#3723 — SAFE_IGNORE captura otras carpetas .gitignore-adas del pipeline (audio, archivado, quota-snapshots)', () => {
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/audio/notif-3723.ogg'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/archivado/3723.reason.json'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/quota-snapshots/2026-05-30.json'), true);
+});
+
+test('#3723 — SAFE_IGNORE NO captura paths legítimos del pipeline (skills, lib, roles)', () => {
+    // Defensa contra over-matching: los paths legítimos del repo NO deben filtrarse.
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/skills-deterministicos/delivery.js'), false);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/lib/handoff.js'), false);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/roles/delivery.md'), false);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/metrics/aggregator.js'), false);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/dashboard.js'), false);
 });
 
 test('#2551 CA-3 — SAFE_IGNORE preserva regla original (heartbeats, agent-registry, metrics)', () => {
