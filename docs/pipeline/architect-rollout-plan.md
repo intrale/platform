@@ -52,6 +52,76 @@ Este documento responde a CA-A2: fecha de go-live propuesta, plan de piloto opci
 - **No-go:** retroceder a dry-run otra semana, iterar, repetir piloto.
 - **Kill switch:** si en cualquier semana el architect causa caída del pipeline (gate bloqueando todo o consumiendo cuota desmedida), apagar el skill via `agent-models.json` (remover entrada `"architect"`) y volver a `criterios: [po, ux]`.
 
+### 2.X Métricas del piloto (datos reales)
+
+Las 4 métricas requeridas por CA-PO-PILOT-METRICS se computan **exclusivamente** desde fuentes append-only (CA-IMPL-PILOT-METRICS-SOURCE, A08 Integrity):
+
+- `.pipeline/audit/architect-tokens.jsonl` (writer `lib/architect-audit.js`, spec B4 de #3613).
+- `.pipeline/audit/prompt-injection-attempts.jsonl` (lazy creation; ENOENT → 0 intentos).
+
+Prohibido leer de `.pipeline/logs/*.log` o `pipeline-state-*.json` (no append-only, tampering ex-post posible). El script enforza esta policy con un test bloqueante (`node --test .pipeline/lib/__tests__/architect-pilot-metrics.test.js`) que falla si el source de `architect-pilot-metrics.js` referencia paths prohibidos.
+
+**Cómo regenerar el bloque automático:**
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+node .pipeline/scripts/architect-pilot-metrics.js --limit=5 --update-rollout-plan
+```
+
+El script reemplaza idempotentemente el contenido entre `<!-- pilot-metrics:auto -->` y `<!-- /pilot-metrics:auto -->`. Ejecuciones sucesivas sobreescriben, no duplican.
+
+<!-- pilot-metrics:auto -->
+
+### Métricas del piloto (datos reales, auto-generadas)
+
+_Pendientes — el script `architect-pilot-metrics.js` aún no se ejecutó sobre los issues del piloto. Para regenerar: `node .pipeline/scripts/architect-pilot-metrics.js --limit=5 --update-rollout-plan`._
+
+| Métrica | Valor | n | Umbral | Fuente |
+|---|---|---|---|---|
+| Latencia P50 criterios→signoff (min) | _pendiente_ | 0 | informativo | append-only |
+| Latencia P95 criterios→signoff (min) | _pendiente_ | 0 | informativo (n<10 indicativo) | append-only |
+| Tasa rechazo Fase 2 | _pendiente_ | 0 | < 30% | append-only |
+| Costo USD agregado piloto | _pendiente_ | 0 entries | ±30% vs $29/día×piloto | append-only |
+| Ratio qa:passed sin rebote architect | _pendiente_ | 0 | informativo | gh-api-mutable |
+| Intentos prompt-injection registrados | 0 | — | informativo | append-only |
+
+**Issues considerados:** _(ninguno — el piloto operativo todavía no fue ejecutado; el código del script + tests están listos para correr cuando los 5 issues `architect:enabled` cierren)._
+
+> **Nota sobre integridad (A08):** los valores marcados como `append-only` provienen exclusivamente de `.pipeline/audit/architect-tokens.jsonl` y `.pipeline/audit/prompt-injection-attempts.jsonl`. El valor marcado como `gh-api-mutable` cruza con labels GitHub (informativo, no decisorio para el go/no-go).
+
+> **Nota estadística:** con `n<10` los percentiles son indicativos, no robustos. Re-evaluar tras 4 semanas post-go-live total con `n>30` (alineado con el spike #3526).
+
+<!-- /pilot-metrics:auto -->
+
+### 2.Y Decisión go/no-go firmada (manual, NO auto-generado)
+
+**Esta sección la completa @leitolarreta al cerrar el piloto.** Plantilla a usar (CA-PO-PILOT-DECISION-TRACEABLE):
+
+```markdown
+#### Decisión go/no-go — piloto cerrado <YYYY-MM-DD>
+
+**Valores crudos** (de `.pipeline/audit/architect-tokens.jsonl` en commit `<SHA>`):
+
+- Latencia P50 criterios→signoff: `<min>` min
+- Latencia P95 criterios→signoff: `<min>` min
+- Tasa rechazo Fase 2: `<%>` (umbral aceptable: <30%)
+- Costo USD agregado piloto: `$<USD>` (estimación R4 base: $29/día × duración del piloto — desviación tolerada ±30%)
+- Ratio qa:passed sin rebote architect: `<%>` (informativo, gh-api-mutable)
+- Intentos prompt-injection registrados: `<N>`
+
+**Decisión:** [GO | NO-GO]
+
+**Justificación:** <texto explicando por qué los valores soportan la decisión>
+
+**Sign-off:** @leitolarreta — `<YYYY-MM-DDTHH:MM:SSZ>` — audit commit `<SHA>`
+```
+
+Reglas del sign-off:
+
+1. Los 5 valores cuantitativos deben citarse textualmente desde el bloque auto-generado de §2.X (no parafrasear ni redondear "a ojo").
+2. El commit SHA al que se refiere es el `git log -n1 .pipeline/audit/architect-tokens.jsonl` al momento del corte (defensa A08 contra ajuste post-hoc del JSONL).
+3. Sin sign-off humano firmado, el rollout total (semana 4) NO debe activarse — el gate de la decisión es esta sección, no el calendario.
+
 ## 3. Cálculo de impacto en cuota Anthropic
 
 ### Baseline actual (referencia)
@@ -148,21 +218,76 @@ architect:
 
 ## 5. Comunicación al equipo
 
-### Pre-go-live (semana 0, día del merge CA-C3)
+Los **3 comunicados** (pre-go-live, durante piloto, post-go-live) cumplen los 4 puntos de **CA-PO-COMM-CONTENT**:
 
-- Notificación Telegram al canal del equipo: `"Architect en dry-run. Sin cambios de gate aún. Detalles: architect-role.md"`.
-- Comment en issues activos del momento: `"A partir de YYYY-MM-DD, este issue podría recibir sección 'Detalles Técnicos' del rol Arquitecto. No requiere acción."`.
+1. **Qué cambia en el flujo del dev**: cuándo verá la tarjeta architect en el dashboard y qué significa cada estado (los 4 estados del widget se entregaron en #3642).
+2. **Cómo destrabar un issue rechazado por architect en Fase 2**: rebote a `criterios`, qué corregir en la receta, plazo esperado.
+3. **Quién mira el audit** `prompt-injection-attempts.jsonl` y `architect-codebase-sanitized.jsonl` ante sospecha (responsabilidad de monitoreo).
+4. **Cap de polling default (30 min)** y cómo identificar un issue "esperando architect" en el dashboard.
 
-### Durante el piloto (semanas 1–2)
+Canal estándar verificado (CA-PO-COMMS-CHANNEL-VERIFIED): **Telegram (canal del equipo)** como push primario + **comment en el issue umbrella #3559** como ancla persistente. Cada comunicado requiere al menos 1 acuse de recibo humano (reacción 👍 en Telegram o reply en el comment) registrado en §7 (DoD).
 
-- Daily digest en Telegram con métricas del piloto (issues procesados, costo, rebotes evitados).
-- Survey corto al equipo dev: "¿La receta del architect te ahorró tiempo? 1–5".
+### 5.1 Pre-go-live (semana 0, día del merge CA-C3)
 
-### Go-live total (semana 4)
+**Canal:** Telegram + comment en #3559.
 
-- Anuncio Telegram + canal del equipo.
-- Update de `CLAUDE.md` (sección Pipeline) con referencia al nuevo gate.
-- Update de `docs/pipeline-v2-diseno.md` con la nueva fase y skill.
+**Texto Telegram:**
+
+> 📣 *Architect en dry-run — sin cambios de gate aún*
+>
+> Lo que cambia para vos como dev (a partir de hoy):
+> 1. **Dashboard:** vas a empezar a ver la tarjeta `architect` con 4 estados posibles (pending / in_progress / signoff / rebote). Detalle visual: #3642. **No bloquea** en esta etapa, sólo informa.
+> 2. **Si un issue te rebota por architect en Fase 2** (post-merge): el ciclo manda el issue de vuelta a `criterios`, ajustás la receta según el motivo de rechazo y reentras. Plazo esperado de re-firma: ~30 min (cap de polling).
+> 3. **Audit de seguridad:** si sospechás de prompt-injection o redacción de codebase, los logs `prompt-injection-attempts.jsonl` y `architect-codebase-sanitized.jsonl` los monitorea @leitolarreta + el rol `security` semanalmente.
+> 4. **Polling:** issues "esperando architect" aparecen con el badge de estado `pending` o `in_progress` en el dashboard; el cap por default es 30 min.
+>
+> Detalles completos: `docs/pipeline/architect-role.md` y `architect-rollout-plan.md`. Cualquier duda o reacción negativa, replicar en este hilo.
+
+**Comment en issue umbrella #3559** (idéntico contenido, formato markdown nativo de GitHub).
+
+**Acuse de recibo registrado en:** §7 (DoD), checkbox "5.1 acuse recibido".
+
+### 5.2 Durante el piloto (semanas 1–2)
+
+**Canal:** Telegram (daily digest) + comment en #3559 al cierre de la semana 2.
+
+**Texto Telegram (digest diario, plantilla):**
+
+> 📊 *Piloto architect — día N/14*
+>
+> 1. **Estados del dashboard hoy:** `<N issues con signoff / N pending / N rebote>`. Si veías un issue tuyo en `pending` >30 min y te preocupó la latencia, comentá en el hilo.
+> 2. **Rebotes Fase 2 acumulados:** `<N>` issues. Si te rebotó alguno, el patrón documentado para destrabar está en §2 del rollout-plan.
+> 3. **Monitor de injection logs:** `<N intentos hoy>` (todos bloqueados). Sin sospechas → no requiere acción. Si subiera abruptamente, @leitolarreta investiga.
+> 4. **Cap polling sin cambios:** 30 min. Si ves issues "colgados" más de eso, abrí ticket pinneando la tarjeta del dashboard (#3642 documenta los estados visuales esperados).
+>
+> Métricas crudas del día: `node .pipeline/scripts/architect-pilot-metrics.js --limit=5 | jq`.
+
+**Survey corto al final de semana 2** (Telegram, anónimo): "¿La receta del architect te ahorró tiempo? 1–5. ¿Algún rebote injusto? Sí/No + detalle."
+
+**Acuse de recibo registrado en:** §7 (DoD), checkbox "5.2 acuse recibido".
+
+### 5.3 Post-go-live (semana 4)
+
+**Canal:** Telegram (anuncio formal) + comment en #3559 + update de `CLAUDE.md`.
+
+**Texto Telegram:**
+
+> 🚀 *Architect en go-live total*
+>
+> Decisión go/no-go firmada por @leitolarreta el `<YYYY-MM-DD>` (ver §2.Y del rollout-plan, sign-off con commit SHA del audit).
+>
+> 1. **Cambio en tu flujo:** el gate de promoción `criterios → Ready` ahora es activo para TODOS los dominios (`area:pipeline`, `area:backend`, `area:frontend`, etc.). La tarjeta architect en el dashboard pasa a ser bloqueante: sin signoff no hay promoción.
+> 2. **Destrabe Fase 2 sin cambios respecto al piloto:** rebote → `criterios` → ajustar receta → reentra. Si dudás del motivo, comentar en el issue para que @leitolarreta arbitre.
+> 3. **Audit semanal de injection logs:** @leitolarreta + `security` revisan `prompt-injection-attempts.jsonl` cada lunes. Si querés que se audite un comment específico, mencioná `@leitolarreta` con el `source_id` del comment.
+> 4. **Cap polling default (30 min):** si tu equipo opera con SLAs distintos, abrí issue solicitando override en `agent-models.json`.
+>
+> Toda la documentación actualizada en `docs/pipeline/architect-role.md` y `docs/pipeline-v2-diseno.md`.
+
+**Comment en issue umbrella #3559** anunciando cierre operativo del rollout.
+
+**Update de** `CLAUDE.md` (sección Pipeline) con referencia al nuevo gate activo.
+
+**Acuse de recibo registrado en:** §7 (DoD), checkbox "5.3 acuse recibido".
 
 ## 6. Rollback plan
 
@@ -179,14 +304,31 @@ Si tras 4 semanas post-go-live los KPIs no se cumplen:
 
 ## 7. Definition of Done del rollout
 
-- [ ] Issue hijo CA-C3 mergeado a `main`.
-- [ ] Audit logs operativos: `architect-tokens.jsonl`, `architect-signoff.jsonl`, `architect-grandfathered.jsonl`, `prompt-injection-attempts.jsonl`.
-- [ ] Piloto cerrado con 5 issues procesados, métricas capturadas.
-- [ ] Gate de promoción `criterios → Ready` activo y validado para `area:pipeline`.
-- [ ] Dashboard V3 muestra widget de 4 estados.
-- [ ] Cuenta del bot (Opción A o B) documentada y operativa.
+### Código (independiente del piloto operativo)
+
+- [x] Issue hijo CA-C3 mergeado a `main`.
+- [x] Audit logs operativos: `architect-tokens.jsonl`, `architect-signoff.jsonl`, `architect-grandfathered.jsonl`, `prompt-injection-attempts.jsonl` (writer en `lib/architect-audit.js`).
+- [x] Gate de promoción `criterios → Ready` activo y validado para `area:pipeline` (#3667 mergeado).
+- [x] Dashboard V3 muestra widget de 4 estados (#3642 mergeado).
+- [x] Cuenta del bot (Opción A `architect-bot`) documentada en §4.
+- [x] Script `architect-pilot-metrics.js` + tests bloqueantes (policy-as-test A08 + cómputo + ENOENT + idempotencia marker) mergeados (#3644).
+- [x] Comunicados redactados en §5 con los 4 puntos de CA-PO-COMM-CONTENT (#3644).
+
+### Operativo (requiere ejecución del piloto)
+
+- [ ] Piloto cerrado con 5 issues `architect:enabled` procesados.
+- [ ] Métricas capturadas: ejecutar `node .pipeline/scripts/architect-pilot-metrics.js --limit=5 --update-rollout-plan` y commitear el bloque actualizado en §2.X.
+- [ ] §2.Y "Decisión go/no-go firmada" completada por @leitolarreta con los 5 valores crudos + umbral + justificación + sign-off + fecha + commit SHA del audit.
 - [ ] KPIs §11 doc role medidos a 4 semanas post-go-live total.
-- [ ] Comunicación al equipo enviada (pre + post).
+
+### Comunicación (acuses de recibo)
+
+- [ ] Comunicado §5.1 (pre-go-live) enviado en Telegram + comment en #3559.
+- [ ] Acuse §5.1 registrado: <persona, fecha>.
+- [ ] Comunicado §5.2 (durante piloto) enviado al menos 1 vez por día durante semanas 1–2.
+- [ ] Acuse §5.2 registrado: <persona, fecha>.
+- [ ] Comunicado §5.3 (post-go-live) enviado en Telegram + comment en #3559 + update `CLAUDE.md`.
+- [ ] Acuse §5.3 registrado: <persona, fecha>.
 
 ## 8. Referencias
 
