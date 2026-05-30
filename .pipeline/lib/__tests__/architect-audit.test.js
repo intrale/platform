@@ -425,6 +425,122 @@ test('CA-7 · scanCodebaseChunk con chunk limpio NO loguea y devuelve texto orig
 });
 
 // -----------------------------------------------------------------------------
+// CA-PO-4 (#3643) · appendMarkerMismatch — writer nuevo append-only
+// -----------------------------------------------------------------------------
+
+test('CA-PO-4 · appendMarkerMismatch requiere reason (validación pre-disk)', () => {
+    const tmp = mkTmpPipeline();
+    try {
+        assert.throws(() => audit.appendMarkerMismatch({
+            issue_id: 3643,
+            raw_marker: '<!-- architect-rejection issue=42 commit=abc -->',
+            // sin reason
+        }, { pipelineDir: tmp.pipelineDir }));
+        // No debe haber escrito nada.
+        const p = audit.auditFilePath('markerMismatches', { pipelineDir: tmp.pipelineDir });
+        assert.equal(fs.existsSync(p), false);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('CA-PO-4 · appendMarkerMismatch valida issue_id (path traversal, vacío)', () => {
+    const tmp = mkTmpPipeline();
+    try {
+        assert.throws(() => audit.appendMarkerMismatch({
+            issue_id: '../etc/passwd',
+            raw_marker: 'foo',
+            reason: 'test',
+        }, { pipelineDir: tmp.pipelineDir }));
+        assert.throws(() => audit.appendMarkerMismatch({
+            issue_id: '',
+            raw_marker: 'foo',
+            reason: 'test',
+        }, { pipelineDir: tmp.pipelineDir }));
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('CA-PO-4 (estático R1) · architect-audit.js NO usa writeFileSync con markerMismatches', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'architect-audit.js'), 'utf8');
+    const codeOnly = src
+        .split('\n')
+        .filter(line => !/^\s*\/\//.test(line))
+        .filter(line => !/^\s*\*/.test(line))
+        .join('\n');
+    // Defensa estática: el path key `markerMismatches` jamás aparece como
+    // argumento de writeFileSync (R1 append-only).
+    assert.equal(/writeFileSync\s*\([^,]*markerMismatches/.test(codeOnly), false);
+    assert.equal(/writeFileSync\s*\([^,]*marker-mismatches/.test(codeOnly), false);
+});
+
+test('CA-PO-4 (funcional) · 2 appends persisten + orden canónico (timestamp primero)', () => {
+    const tmp = mkTmpPipeline();
+    try {
+        audit.appendMarkerMismatch({
+            issue_id: 3643,
+            raw_marker: '<!-- architect-rejection issue=42 commit=zzzz -->',
+            reason: 'commit no-hex',
+            source_pr: 9001,
+            timestamp: '2026-05-30T10:00:00Z',
+        }, { pipelineDir: tmp.pipelineDir });
+        audit.appendMarkerMismatch({
+            issue_id: 3643,
+            raw_marker: '<!-- architect-rejection issue=00042 commit=abc1234 -->',
+            reason: 'issue_id padding',
+            source_pr: 9002,
+            timestamp: '2026-05-30T10:01:00Z',
+        }, { pipelineDir: tmp.pipelineDir });
+
+        const records = readJsonl(audit.auditFilePath('markerMismatches', { pipelineDir: tmp.pipelineDir }));
+        assert.equal(records.length, 2);
+        assert.equal(records[0].source_pr, 9001);
+        assert.equal(records[1].source_pr, 9002);
+        assert.equal(Object.keys(records[0])[0], 'timestamp');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// -----------------------------------------------------------------------------
+// #3643 · appendPromptInjection acepta source="pr-diff" (extensión aditiva)
+// -----------------------------------------------------------------------------
+
+test('#3643 · appendPromptInjection acepta source="pr-diff" sin romper comment/body', () => {
+    const tmp = mkTmpPipeline();
+    try {
+        audit.appendPromptInjection({
+            issue_id: 3643,
+            phase: 'aprobacion',
+            source: 'pr-diff',
+            source_id: 'pr-diff:9999:evil.js@deadbeef',
+            pattern_matched: 'ignore previous',
+            action_taken: 'rejected_pr_promotion',
+        }, { pipelineDir: tmp.pipelineDir });
+        const records = readJsonl(audit.auditFilePath('promptInjection', { pipelineDir: tmp.pipelineDir }));
+        assert.equal(records.length, 1);
+        assert.equal(records[0].source, 'pr-diff');
+        assert.match(records[0].source_id, /pr-diff:9999:evil\.js@deadbeef/);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#3643 · appendPromptInjection sigue rechazando source desconocido (allowlist estricta)', () => {
+    const tmp = mkTmpPipeline();
+    try {
+        assert.throws(() => audit.appendPromptInjection({
+            issue_id: 3643,
+            phase: 'aprobacion',
+            source: 'webhook',  // ← no está en la allowlist
+        }, { pipelineDir: tmp.pipelineDir }));
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// -----------------------------------------------------------------------------
 // CA-9 · No-acceso a secrets / credentials / .env (defensa Gemini)
 // -----------------------------------------------------------------------------
 

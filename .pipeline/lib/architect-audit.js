@@ -62,6 +62,9 @@ const AUDIT_FILES = Object.freeze({
     tokens: 'architect-tokens.jsonl',
     promptInjection: 'prompt-injection-attempts.jsonl',
     codebaseSanitized: 'architect-codebase-sanitized.jsonl',
+    // #3643 — registro de markers `architect-rejection` malformados detectados
+    // por `architect-verify.parseRejectionMarker`. Append-only, mismas reglas R1.
+    markerMismatches: 'architect-marker-mismatches.jsonl',
 });
 
 // Valores permitidos para `phase` y `decision` del JSONL de tokens.
@@ -262,8 +265,8 @@ function appendTokens(params, opts) {
  * @param {object} params
  * @param {string|number} params.issue_id
  * @param {string} params.phase
- * @param {string} params.source - "comment" | "body"
- * @param {string} [params.source_id] - ID del comment (omit si source="body")
+ * @param {string} params.source - "comment" | "body" | "pr-diff" (#3643)
+ * @param {string} [params.source_id] - ID del comment (omit si source="body") | source_id sintético `pr-diff:<pr>:<file>@<sha>` para pr-diff
  * @param {string} [params.author]
  * @param {string} [params.pattern_matched]
  * @param {string} [params.action_taken]
@@ -274,8 +277,11 @@ function appendPromptInjection(params, opts) {
     const issueId = validateIssueId(params.issue_id);
     const phase = validatePhase(params.phase);
 
-    if (typeof params.source !== 'string' || !['comment', 'body'].includes(params.source)) {
-        throw new Error(`architect-audit: source inválido "${params.source}" (válidos: comment, body)`);
+    // `pr-diff` (CA-IMPL-B7-SANITIZE-DIFF, #3643) se suma a los sources
+    // canónicos. NO sustituye `comment`/`body` — el architect Fase 1 sigue
+    // usando esos. La extensión es aditiva, no breaking.
+    if (typeof params.source !== 'string' || !['comment', 'body', 'pr-diff'].includes(params.source)) {
+        throw new Error(`architect-audit: source inválido "${params.source}" (válidos: comment, body, pr-diff)`);
     }
 
     const record = {
@@ -340,6 +346,66 @@ function appendCodebaseSanitized(params, opts) {
     };
 
     appendRecord(auditFilePath('codebaseSanitized', opts), record);
+}
+
+// -----------------------------------------------------------------------------
+// Writer #4 — marker mismatches (CA-PO-4 / CA-IMPL-B7-MARKER-STRICT, #3643)
+// -----------------------------------------------------------------------------
+
+/**
+ * Escribe un record en `.pipeline/audit/architect-marker-mismatches.jsonl`.
+ *
+ * Se invoca desde `architect-verify.parseRejectionMarker` cada vez que un
+ * marker `architect-rejection` parsea pero falla validación de campos (SHA
+ * no-hex, issue_id con padding `00042`, issue_id ≤ 0, caracteres especiales
+ * en el payload, etc.). El marker se ignora silenciosamente — esta entrada
+ * deja audit trail para forensics + tuning de la regex.
+ *
+ * Spec del record:
+ *
+ *   {
+ *     timestamp: ISO8601,
+ *     issue_id: <entero positivo del contexto, NO del marker malformado>,
+ *     raw_marker: "<!-- architect-rejection issue=00042 commit=zzz -->",
+ *     reason: "issue_id padding/non-canonical",
+ *     source_pr: 123 | null
+ *   }
+ *
+ * `raw_marker` se trunca a 500 chars para evitar inflar el JSONL con payloads
+ * gigantes que podrían explotar el disco si un atacante embede markers
+ * patológicos. `issue_id` del record es el del **contexto** (el issue real
+ * que está siendo verificado), NO el campo `issue=` del marker malformado
+ * (ése puede ser hostil o malformado y NO confiamos en él).
+ *
+ * @param {object} params
+ * @param {string|number} params.issue_id - issue REAL del contexto, no del marker
+ * @param {string} params.raw_marker - marker completo malformado (se trunca a 500 chars)
+ * @param {string} params.reason - clasificación del fallo de parseo
+ * @param {number} [params.source_pr] - PR donde apareció el marker, si aplica
+ * @param {string} [params.timestamp]
+ * @param {object} [opts]
+ * @param {string} [opts.pipelineDir]
+ */
+function appendMarkerMismatch(params, opts) {
+    const issueId = validateIssueId(params.issue_id);
+
+    if (typeof params.reason !== 'string' || !params.reason) {
+        throw new Error('architect-audit: reason requerido en appendMarkerMismatch');
+    }
+
+    const record = {
+        timestamp: params.timestamp || new Date().toISOString(),
+        issue_id: Number(issueId),
+        raw_marker: typeof params.raw_marker === 'string'
+            ? params.raw_marker.slice(0, 500)
+            : '',
+        reason: params.reason,
+        source_pr: typeof params.source_pr === 'number' && Number.isFinite(params.source_pr)
+            ? params.source_pr
+            : null,
+    };
+
+    appendRecord(auditFilePath('markerMismatches', opts), record);
 }
 
 // -----------------------------------------------------------------------------
@@ -450,6 +516,7 @@ module.exports = {
     appendTokens,
     appendPromptInjection,
     appendCodebaseSanitized,
+    appendMarkerMismatch,  // #3643 — CA-PO-4 / CA-IMPL-B7-MARKER-STRICT
 
     // Sanitizer wrappers (CA-6, CA-7)
     scanIssueInput,
