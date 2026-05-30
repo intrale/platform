@@ -1,0 +1,38 @@
+{
+  "_doc": "Allowlist del ghost-artifact-lint (#3638 CA-F-11). Cada entry requiere razón documentada. files = archivo entero excluido. rules = excepción puntual {file,line,reason}. Revisar trimestralmente.",
+  "files": [
+    "test-concurrencia.js"
+  ],
+  "rules": [
+    {
+      "file": "lib/restart-orphan-annotator.js",
+      "line": 70,
+      "reason": "readdirSync(pipeDir) lista subdirectorios de fase (no contenido operacional). Los entries devueltos NO son markers; el verdadero filtro está en la línea 80 con AGENTE_FILE_REGEX que es estructuralmente equivalente a isMarkerArtifact (rechaza >2 segmentos)."
+    },
+    {
+      "file": "lib/restart-orphan-annotator.js",
+      "line": 80,
+      "reason": "Filtra con AGENTE_FILE_REGEX (^\\d+\\.[a-z][a-z0-9-]*$), que por construcción excluye .comment.md/.guidance.txt/.reason.json (más de 2 segmentos). Equivalente al invariant de isMarkerArtifact."
+    },
+    {
+      "file": "rollback.js",
+      "line": 87,
+      "reason": "readdirSync(PIPELINE_DIR) lista la raíz del pipeline para encontrar archivos .pid (PID files de procesos del pipeline). NO toca carpetas operacionales (definicion/desarrollo). El filtro implícito es endsWith('.pid')."
+    },
+    {
+      "file": "servicio-drive.js",
+      "line": 156,
+      "reason": "Filtro estructural por endsWith('.yaml') && includes('qa') sobre verificacion/procesado/. Solo lee markers reales de QA; los artifacts (.reason.json, .guidance.txt, .comment.md) están excluidos porque no terminan en .yaml."
+    },
+    {
+      "file": "ghostbusters.js",
+      "line": 401,
+      "reason": "Check `hasIssueActive`: solo determina si HAY archivos del issue (any prefix match), no levanta markers. Si hay .comment.md huérfano, sigue siendo señal válida de actividad del issue (cuestionable, pero no rompe invariantes). Trabajo del ghost-artifact-cleaner gestionar esos archivos huérfanos."
+    },
+    {
+      "file": "smoke-test.js",
+      "line": 189,
+      "reason": "Lee `servicios/commander/trabajando/` (no es definicion/desarrollo) buscando mensajes .json del commander. Filtro explícito endsWith('.json')."
+    }
+  ]
+}

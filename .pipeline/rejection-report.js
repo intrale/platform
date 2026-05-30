@@ -366,7 +366,9 @@ function getGateStatus(issueNum) {
   const gates = [];
   const verifyDir = path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo');
   try {
-    const files = fs.readdirSync(verifyDir).filter(fn => fn.startsWith(issueNum + '.'));
+    // #3638 CA-F-9: filtrar artifacts auxiliares para evitar falsos gates.
+    const { isMarkerArtifact } = require('./lib/marker-artifact');
+    const files = fs.readdirSync(verifyDir).filter(fn => fn.startsWith(issueNum + '.') && !isMarkerArtifact(fn));
     for (const fn of files) {
       try {
         const yaml = require('js-yaml');

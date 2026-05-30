@@ -70,18 +70,9 @@ try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */
 let restModeWindow = null;
 try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional */ }
 
-// Detector de artifacts auxiliares compartido con human-block.js: excluye
-// `.guidance.txt`, `.reason.json`, `.comment.md` y cualquier filename con
-// > 2 segmentos del listado de markers, así no aparecen como agentes fantasma.
-let _isMarkerArtifact;
-try { ({ isMarkerArtifact: _isMarkerArtifact } = require('./lib/human-block')); } catch { /* opcional */ }
-function isMarkerArtifact(name) {
-  if (typeof _isMarkerArtifact === 'function') return _isMarkerArtifact(name);
-  return name.split('.').length > 2
-      || name.endsWith('.reason.json')
-      || name.endsWith('.guidance.txt')
-      || name.endsWith('.comment.md');
-}
+// Artifacts auxiliares: detección centralizada en `lib/marker-artifact.js`
+// (#3638 CA-F-1).
+const { isMarkerArtifact } = require('./lib/marker-artifact');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -977,7 +968,65 @@ function getPipelineState() {
   _scheduleOlaETARefresh(state);
   state.olaETA = _olaETACache;
 
+  // #3638 CA-F-12 — Ghost artifacts widget: lee últimas 10 líneas del audit
+  // JSONL. Si hubo cleanup en últimas 24h → bandera ⚠ . Sin actividad ≥ 7 días → ✅.
+  state.ghostArtifacts = readGhostArtifactSummary();
+
   return state;
+}
+
+/**
+ * Lee las últimas N líneas del audit JSONL del ghost-artifact-cleaner.
+ * Tolera líneas malformadas (CA-SEC-5): try/catch por línea, descarta y warn.
+ * Nunca crashea el dashboard.
+ *
+ * @returns {{ enabled, lastRunIso, lastCleanupIso, status, recent, cleanupCount24h }}
+ */
+function readGhostArtifactSummary() {
+  const file = path.join(PIPELINE, 'audit', 'ghost-artifacts-cleanup.jsonl');
+  let raw = '';
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch {
+    return {
+      enabled: false,
+      lastRunIso: null,
+      lastCleanupIso: null,
+      status: 'unknown',
+      recent: [],
+      cleanupCount24h: 0,
+    };
+  }
+  const lines = raw.split('\n').filter(Boolean);
+  const parsed = [];
+  for (const line of lines) {
+    try { parsed.push(JSON.parse(line)); }
+    catch { /* CA-SEC-5: skip malformed, no crash */ }
+  }
+  // últimas 10 entradas
+  const recent = parsed.slice(-10).reverse();
+  const lastRun = parsed.length > 0 ? parsed[parsed.length - 1].timestamp : null;
+  const cleanups = parsed.filter(e => e && e.action === 'cleanup');
+  const lastCleanup = cleanups.length > 0 ? cleanups[cleanups.length - 1].timestamp : null;
+  const now = Date.now();
+  const cutoff24h = now - (24 * 60 * 60 * 1000);
+  const cutoff7d = now - (7 * 24 * 60 * 60 * 1000);
+  const cleanupCount24h = cleanups.filter(e => {
+    const t = Date.parse(e.timestamp || '');
+    return Number.isFinite(t) && t >= cutoff24h;
+  }).length;
+  let status;
+  if (cleanupCount24h > 0) status = 'recent-cleanup';
+  else if (lastCleanup && Date.parse(lastCleanup) < cutoff7d) status = 'clean';
+  else if (!lastCleanup && lastRun && Date.parse(lastRun) < cutoff7d) status = 'clean';
+  else status = 'idle';
+  return {
+    enabled: true,
+    lastRunIso: lastRun,
+    lastCleanupIso: lastCleanup,
+    status,
+    recent,
+    cleanupCount24h,
+  };
 }
 
 // --- HTML generation helpers ---
@@ -1358,6 +1407,85 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// #3638 CA-F-12 / CA-SEC-9 — Widget de estado del ghost-artifact-cleaner.
+// Renderiza los últimos eventos del audit JSONL escapando TODO valor por
+// escapeHtml() para prevenir XSS desde filenames maliciosos. Estados:
+//   - 'recent-cleanup': ic-ghost-cleanup + acento --warning (cleanup en últimas 24h)
+//   - 'clean':         ic-ghost-clean   + acento --success (sin actividad en 7 días)
+//   - 'idle' / 'unknown': ic-ghost-clean + acento --text-dim (info neutra)
+//
+// Iconografía y paleta tomadas de .pipeline/assets/mockups/narrativa-ghost-artifacts.md
+// (sección "Reglas de iconografia" + "Reglas de paleta"). Prohibido inventar
+// colores o usar emojis del SO: el sprite ya tiene los símbolos diseñados
+// (ic-ghost-clean, ic-ghost-cleanup, ic-archive-box) y design-tokens.css define
+// la familia semántica completa.
+function renderGhostArtifactsWidget(ghost) {
+  if (!ghost || ghost.enabled === false) {
+    return '<details class="collapse-section"><summary>' + ic('ghost-clean', 'Ghost artifacts') + ' Ghost artifacts<span>off</span></summary>'
+      + '<div class="collapse-body" style="padding:8px 12px"><div class="dim">Audit log no inicializado todavía. El cleaner crea <code>.pipeline/audit/ghost-artifacts-cleanup.jsonl</code> en su primer ciclo.</div></div></details>';
+  }
+  const status = ghost.status || 'idle';
+  let banner;
+  if (status === 'recent-cleanup') {
+    banner = `<div class="ga-banner ga-warn">${ic('ghost-cleanup', 'cleanup reciente')}<span>Ghost artifacts: ${ghost.cleanupCount24h} cleanup(s) en las últimas 24h. Revisá el audit log si es inesperado.</span></div>`;
+  } else if (status === 'clean') {
+    banner = `<div class="ga-banner ga-ok">${ic('ghost-clean', 'clean')}<span>Ghost artifacts: clean (sin actividad en últimos 7 días).</span></div>`;
+  } else {
+    banner = `<div class="ga-banner ga-idle">${ic('ghost-clean', 'idle')}<span>Ghost artifacts: idle. Última corrida ${ghost.lastRunIso ? escapeHtml(ghost.lastRunIso) : '—'}.</span></div>`;
+  }
+  const rows = (ghost.recent || []).map(e => {
+    const action = escapeHtml(e.action || '?');
+    const file = escapeHtml(e.file || '');
+    const reason = escapeHtml(e.reason || '');
+    const archivedTo = escapeHtml(e.archived_to || '');
+    const ts = escapeHtml(e.timestamp || '');
+    const context = escapeHtml(e.context || '');
+    const error = escapeHtml(e.error || '');
+    // ic-archive-box como icono auxiliar junto al destino archivado/ghost-*
+    // (convención de la narrativa: caja cerrada = destino del archivo movido).
+    const archivedCell = archivedTo
+      ? `<br><span class="dim ga-archived-to">${ic('archive-box', 'archivado a')} → ${archivedTo}</span>`
+      : '';
+    return `<tr>
+      <td>${ts}</td>
+      <td><span class="ga-action ga-action-${action}">${action}</span></td>
+      <td>${file}${archivedCell}</td>
+      <td>${reason}${error ? `<br><span class="dim">err: ${error}</span>` : ''}${context ? `<br><span class="dim">ctx: ${context}</span>` : ''}</td>
+    </tr>`;
+  }).join('');
+  const auditPath = '.pipeline/audit/ghost-artifacts-cleanup.jsonl';
+  return `<details class="collapse-section"><summary>${ic('ghost-clean', 'Ghost artifacts')} Ghost artifacts<span>${escapeHtml(status)}</span></summary>
+    <div class="collapse-body" style="padding:8px 12px">
+      <style>
+        /* Paleta reusa tokens semánticos de design-tokens.css §3.
+           Prohibido inventar colores; los fallbacks RGB son sólo defensivos. */
+        .ga-banner { padding:8px 12px; border-radius:4px; margin-bottom:8px; font-size:0.9em; display:flex; align-items:center; gap:8px; }
+        .ga-banner > .pl-ic { flex:none; width:16px; height:16px; }
+        .ga-banner.ga-warn { background:var(--warning-bg, rgba(210,153,34,0.18)); border-left:3px solid var(--warning, #D29922); }
+        .ga-banner.ga-warn > .pl-ic { color:var(--warning, #D29922); }
+        .ga-banner.ga-ok   { background:var(--success-bg, rgba(63,185,80,0.15)); border-left:3px solid var(--success, #3FB950); }
+        .ga-banner.ga-ok > .pl-ic { color:var(--success, #3FB950); }
+        .ga-banner.ga-idle { background:var(--deterministic-bg, rgba(110,118,129,0.15)); border-left:3px solid var(--text-dim, #8B949E); }
+        .ga-banner.ga-idle > .pl-ic { color:var(--text-dim, #8B949E); }
+        .ga-audit-table { width:100%; border-collapse:collapse; font-size:0.85em; }
+        .ga-audit-table th, .ga-audit-table td { padding:4px 8px; border-bottom:1px solid var(--border-subtle, rgba(110,118,129,0.2)); text-align:left; vertical-align:top; }
+        /* Chips de action: tokens semánticos por estado.
+           cleanup=success / no-op=neutro / skip=info / error=danger
+           (ver tabla "Chips de action" en narrativa-ghost-artifacts.md). */
+        .ga-action { padding:1px 6px; border-radius:3px; font-size:0.8em; border:1px solid transparent; }
+        .ga-action.ga-action-cleanup { background:var(--success-bg, rgba(63,185,80,0.14)); color:var(--success, #3FB950); border-color:var(--success-dim, #196C2E); }
+        .ga-action.ga-action-no-op   { background:var(--deterministic-bg, rgba(177,186,196,0.10)); color:var(--text-secondary, #B1BAC4); border-color:var(--border-strong, #484F58); }
+        .ga-action.ga-action-skip    { background:var(--info-bg, rgba(88,166,255,0.14)); color:var(--info, #58A6FF); border-color:var(--info-dim, #1F6FEB); }
+        .ga-action.ga-action-error   { background:var(--danger-bg, rgba(248,81,73,0.14)); color:var(--danger, #F85149); border-color:var(--danger-dim, #8B1A14); }
+        .ga-archived-to .pl-ic { width:12px; height:12px; color:var(--text-dim, #8B949E); margin-right:2px; }
+      </style>
+      ${banner}
+      <div style="margin-bottom:8px"><small class="dim">Audit log: <code>${escapeHtml(auditPath)}</code></small></div>
+      ${rows ? `<table class="ga-audit-table"><thead><tr><th>timestamp</th><th>action</th><th>file</th><th>reason / context</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="dim">Sin entradas en el audit log.</div>'}
+    </div>
+  </details>`;
 }
 
 // --- HTML generation ---
@@ -5372,6 +5500,8 @@ body.standalone .section-collapsed .section-body{display:block !important}
        centerpiece debajo del header de infra para el rediseño V3. -->
 
   ${historyHTML}
+
+  ${renderGhostArtifactsWidget(state.ghostArtifacts)}
 
   ${renderRecommendationsSection()}
 

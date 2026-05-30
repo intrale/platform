@@ -38,14 +38,9 @@ try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 // y cualquier filename con > 2 segmentos). Compartido con human-block para
 // que ambos listadores excluyan los mismos fantasmas. Fallback defensivo si
 // el módulo no carga.
-let isMarkerArtifact;
-try { ({ isMarkerArtifact } = require('./human-block')); } catch { /* opcional */ }
-if (typeof isMarkerArtifact !== 'function') {
-    isMarkerArtifact = (name) => name.split('.').length > 2
-        || name.endsWith('.reason.json')
-        || name.endsWith('.guidance.txt')
-        || name.endsWith('.comment.md');
-}
+// Artifacts auxiliares: detección centralizada en `lib/marker-artifact.js`
+// (#3638 CA-F-1).
+const { isMarkerArtifact } = require('./marker-artifact');
 
 function isDeterministicSkill(skill) {
     return DETERMINISTIC_SKILLS.has(String(skill || '').trim().toLowerCase());

@@ -1,0 +1,38 @@
+name: Ghost Artifact Lint
+
+# Issue #3638 — CA-SEC-8 (no-negociable): defensa en profundidad. El hook
+# pre-commit local es bypassable con `--no-verify`; este job duplica el lint
+# en CI y debe agregarse como required check de branch protection sobre
+# `main`.
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - '.pipeline/**'
+      - '.github/workflows/ghost-artifact-lint.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - '.pipeline/**'
+
+jobs:
+  ghost-artifact-lint:
+    runs-on: ubuntu-latest
+    name: Ghost artifact lint (isMarkerArtifact required)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run ghost-artifact lint
+        working-directory: .pipeline
+        run: node lib/ghost-artifact-lint.js --check
+
+      - name: Run ghost-artifact unit tests
+        working-directory: .pipeline
+        run: node --test lib/__tests__/ghost-artifact-cleaner.test.js lib/__tests__/ghost-artifact-lint.test.js lib/__tests__/marker-artifact.test.js

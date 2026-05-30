@@ -40,7 +40,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { isMarkerArtifact } = require('./human-block');
+// #3638 CA-F-1: import desde fuente canónica `lib/marker-artifact.js`.
+const { isMarkerArtifact } = require('./marker-artifact');
 
 // ─── Constantes públicas ───────────────────────────────────────────────────
 

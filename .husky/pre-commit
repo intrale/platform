@@ -79,4 +79,28 @@ if [ -f ".pipeline/lib/precommit-secret-scan.js" ]; then
   fi
 fi
 
+# =============================================================================
+# Issue #3638 CA-F-11 — Ghost-artifact lint sobre archivos del pipeline.
+#
+# Bloquea commits que introduzcan readdirSync sobre carpetas operacionales
+# (.pipeline/definicion/**, .pipeline/desarrollo/**) sin aplicar el filtro
+# `isMarkerArtifact`. Defensa en profundidad complementada por el job CI
+# `ghost-artifact-lint` (CA-SEC-8) que captura bypass con --no-verify.
+#
+# Solo corre cuando se tocan archivos bajo `.pipeline/`. Sin matches,
+# no consume tiempo del flujo normal de commits.
+# =============================================================================
+RUN_GHOST_LINT=0
+case "$TOUCHED_FILES" in
+  *".pipeline/"*) RUN_GHOST_LINT=1 ;;
+esac
+
+if [ "$RUN_GHOST_LINT" = "1" ] && [ -f ".pipeline/lib/ghost-artifact-lint.js" ]; then
+  node .pipeline/lib/ghost-artifact-lint.js --check
+  LINT_EXIT=$?
+  if [ "$LINT_EXIT" != "0" ]; then
+    exit $LINT_EXIT
+  fi
+fi
+
 exit 0

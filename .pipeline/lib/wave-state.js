@@ -84,12 +84,9 @@ function safeReadYaml(filepath) {
     return out;
 }
 
-function isMarkerArtifact(name) {
-    return name.split('.').length > 2
-        || name.endsWith('.reason.json')
-        || name.endsWith('.guidance.txt')
-        || name.endsWith('.comment.md');
-}
+// Artifacts auxiliares: detección centralizada en `lib/marker-artifact.js`
+// (#3638 CA-F-1).
+const { isMarkerArtifact } = require('./marker-artifact');
 
 function loadTitleCache(pipelineRoot) {
     const file = path.join(pipelineRoot, '.issue-title-cache.json');
