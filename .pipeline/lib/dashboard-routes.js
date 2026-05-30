@@ -74,6 +74,13 @@ try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
 let waves = null;
 try { waves = require('./waves'); } catch { /* opcional */ }
 
+// #3681 (hijo B del épico #3669) — Endpoint del widget Multi-Provider Coverage.
+// Lectura defensiva: si el módulo (o sus deps, ej. ajv) no cargan, el endpoint
+// devuelve el envelope `coverage_unavailable` con status 503 — degrada a
+// "widget vacío" sin romper el dashboard (CA-B2).
+let multiProviderCoverage = null;
+try { multiProviderCoverage = require('./multi-provider-coverage'); } catch { /* opcional */ }
+
 // #3259 — Rate-limit inline (security A05): hasta #3285 entregue el middleware
 // reusable, mantenemos un semáforo simple en memoria por IP. 6 req/min cubre
 // auto-refresh del dashboard (cada 30s = 2 req/min) + headroom para debugging.
@@ -322,6 +329,24 @@ const API_ROUTES = {
     // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
     // con el resto de /api/dash/*.
     '/api/dash/waves': () => buildWavesPayload(),
+    // #3681 — Widget Multi-Provider Coverage. Lee `.pipeline/multi-provider-coverage.json`
+    // (output runtime del harness #3680), valida con ajv contra el schema canónico
+    // y sanitiza el payload con whitelist explícita por campo. NUNCA expone
+    // API key prefixes, hostnames, latencias absolutas ni raw output (CA-B3 +
+    // REQ-SEC-B4). Si el JSON falta, no valida o el módulo (o ajv) no cargan,
+    // retorna `{error: 'coverage_unavailable', reason, _status: 503}` — el
+    // mapper de status en handle() lo convierte a HTTP 503 (CA-B2). Síncrono
+    // (lectura FS local barata, no se registra en ASYNC_API_ROUTES).
+    '/api/dash/multi-provider-coverage': () => {
+        if (!multiProviderCoverage) {
+            return { error: 'coverage_unavailable', reason: 'module_unavailable', _status: 503 };
+        }
+        try {
+            return multiProviderCoverage.buildCoveragePayload();
+        } catch {
+            return { error: 'coverage_unavailable', reason: 'io_error', _status: 503 };
+        }
+    },
 };
 
 // #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
@@ -394,7 +419,19 @@ function handle(req, res, ctx) {
                 query = new URLSearchParams();
             }
             const payload = API_ROUTES[apiPath](state, ctx, query);
-            sendJson(res, payload);
+            // #3681 — Patrón opt-in: si el handler emite `_status` (o el
+            // envelope canónico `coverage_unavailable`), lo mapeamos a HTTP
+            // 503 sin requerir refactor del resto de handlers. El campo
+            // `_status` se elimina del body — defensa: no exponer el
+            // mecanismo al cliente.
+            if (payload && typeof payload === 'object'
+                && (Number.isInteger(payload._status) || payload.error === 'coverage_unavailable')) {
+                const status = Number.isInteger(payload._status) ? payload._status : 503;
+                const { _status, ...body } = payload;
+                sendJson(res, body, status);
+            } else {
+                sendJson(res, payload);
+            }
         } catch (e) {
             sendJson(res, { error: e.message || String(e) }, 500);
         }
