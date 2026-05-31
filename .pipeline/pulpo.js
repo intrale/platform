@@ -9608,11 +9608,12 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // El provider del Commander hoy es siempre `anthropic` (ejecutarClaude
         // hace spawn de claude CLI). Cuando #3258 introduzca cross-provider
         // fallback al Commander, este valor vendrá del dispatcher.
-        // commanderModel queda null hasta que ejecutarClaude exponga el
-        // modelo efectivo — por ahora el audit log lo registra como null y
-        // same_model siempre es false (degradado consciente, CA-AUDIT-1).
+        //
+        // #3766 — `commanderModel` ya NO se calcula ni se pasa: la contradicción
+        // adversarial de Sherlock nace del rol (prompt fiscal), no de la
+        // diferencia de modelo/provider. El verifier sigue aceptando el
+        // parámetro en su signature por back-compat (ignorado).
         const commanderProvider = 'anthropic';
-        const commanderModel = null;
 
         const verdict = await sherlockVerifier.verify({
           analysis: respuesta || '',
@@ -9620,7 +9621,6 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           systemState: systemStateSnapshot,
           lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
           commanderProvider,
-          commanderModel,
           pipelineDir: PIPELINE,
           configLoader: loadConfig,
           log,
@@ -9655,7 +9655,6 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 systemState: systemStateSnapshot,
                 lastHourLogs: '',
                 commanderProvider,
-                commanderModel,
                 pipelineDir: PIPELINE,
                 configLoader: loadConfig,
                 log,
