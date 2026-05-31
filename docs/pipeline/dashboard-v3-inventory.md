@@ -453,6 +453,220 @@ curl -s 'http://127.0.0.1:3200/' | grep -c 'id="costos-window"\|data-section="co
 # Debe devolver 4
 ```
 
+## Ventana **Providers** — split #3737
+
+**Modulo destino:** `.pipeline/views/dashboard/providers.js`
+**Slug del router:** `?view=providers` (servido via router cerrado en #3723).
+**Mockup adjunto:** `.pipeline/assets/mockups/33-providers-v3.html` — HTML/CSS integrado, renderizable con Puppeteer (CA-F2). Narrativa en `narrativa-providers-v3.md`.
+**Origen declarado:** **Vista nueva — sin pieza heredada de `dashboard.js`.** Verificado empiricamente por `guru` (#issuecomment-4587478317): la palabra "Providers" en `dashboard.js` solo aparece en el drill-down de costos TTS (lineas 8150, 8407, 8415-8428, 9021-9060), que es scope del split de Costos (#3735). Esta historia CREA el modulo nuevo siguiendo la plantilla de `views/dashboard/home.js`. El verbo "EXTRAER" del scope del issue queda resuelto como NO APLICA (decision D1 del PO).
+**Out of scope:** edicion de bindings agente-provider, fallback chain, catalogo de modelos, permission overrides, health historico — todo eso vive en `?view=multi-provider` (#3733). KPIs de proveedor (tokens, latencia, cost por provider) tampoco entran en este split — decision D2 del PO, queda para #3729 KPIs. Wizard guiado de set inicial — decision D3 del PO, queda para sub-historia de "wizards" del epico.
+
+### Composicion de la ventana
+
+La ventana es **read-only operativa** (no read-only pura como KPIs): el operador puede disparar `Reload` para re-hidratar metadata desde `credentials.json`, pero NO puede escribir keys via UI (CA-PRV-6 / SEC-2 inquebrantable — set/rotate por terminal Windows).
+
+| Sub-bloque | ID DOM invariante | Proposito | Trigger de visibilidad |
+|---|---|---|---|
+| Leyenda de status + anti-leak callout | `#providers-legend` | Explica status `present`/`placeholder`/`absent`/`error` + advertencia SEC-1 visible | Siempre |
+| Grilla de provider cards | `#providers-list` | Una `<article class="provider-card">` por entry de `MANAGED_KEYS` | Siempre — si esta vacio (improbable), muestra "Sin providers gestionados" |
+| Reload global + Modal instructional | `#providers-ops` | Boton `Reload todo` + modal read-only "Como rotar / setear" con pasos de terminal | Siempre visible |
+| Audit callout | `#providers-audit` | Linea sobria explicando que se loguea en `lib/audit-log` (SEC-5/SEC-6) | Siempre |
+| Fallback inerte | (variante de `dashboard.js`) | Render minimo cuando `require` del modulo arroja | Solo si el require falla |
+
+### Diferenciacion con `?view=multi-provider` (#3733)
+
+Cruz operativa explicita — la cierra D0 del PO:
+
+| | `?view=providers` (este split) | `?view=multi-provider` (#3733) |
+|---|---|---|
+| **Audiencia** | Operador que mira el estado | Operador que cambia configuracion |
+| **Capacidad** | Read-only + reload-only | Read + write (bindings, fallback chain) |
+| **Datos** | Metadata masked + status + (futuro: metricas) | Bindings por agente, catalogo, overrides, health |
+| **Interacciones** | "Rotate" = modal instructional con comando de terminal | Editar binding, definir fallback chain, override permissions |
+| **Tabs** | Sin tabs (vista plana) | 5 tabs (1-Proveedores, 2-Por agente, 3-Catalogo, 5-Health, 6-Permission overrides) |
+| **Fuente de masking** | `lib/multi-provider/secrets-rw.js` (unica) | `lib/multi-provider/secrets-rw.js` (unica) |
+
+**Garantia anti-leak cross-route** (inquebrantable): ambas vistas obtienen metadata exclusivamente desde `lib/multi-provider/secrets-rw.js`. Ningun modulo de vista re-implementa masking propio — cualquier dato derivado de la key sale ya enmascarado desde el lib. Cierra el riesgo que `guru` levanto de "dos lugares que enmascarar".
+
+### Piezas que se crean (vista nueva — CA-A1, CA-A2)
+
+| Pieza | Fuente de datos | Token / icono | Tooltip CA-PRV-12 |
+|---|---|---|---|
+| Header de ventana + V3 badge | estatico | `--teal` (badge), `--text-primary` (titulo), `--info-bg` (link primario) | `"Volver a la vista Home del dashboard"` / `"Abrir consola Multi-Provider de configuracion avanzada"` / `"Abrir runbook de rotacion de credenciales"` |
+| Leyenda de status (4 chips dual-encoding) | estatico | `--success`/`--warning`/`--text-dim`/`--danger` (chips), `--success-bg`/`--warning-bg`/`--surface-2`/`--danger-bg` | (los chips se auto-explican) |
+| Anti-leak callout SEC-1 | estatico | `--danger`, `--danger-bg`, border `--danger` | `"Garantia SEC-1: la API key completa NUNCA viaja por HTTP. Aca solo se muestra el masked preview sk-•••••<last4>. El set/rotate se hace por terminal Windows."` |
+| Provider card (una por entry de `MANAGED_KEYS`) | `secrets-rw.listKeys()` retorna `{provider, jsonField, canonicalPath, label, editable, reason, free_tier_notes, status, masked, fingerprint}` | rail lateral 3px con `--provider-*` del token correspondiente | (por pieza interna, ver siguientes filas) |
+| Provider name + dot + sub-label | `spec.label` + `spec.free_tier_notes` o reason corto | `--provider-anthropic/openai/elevenlabs/gemini/cerebras/nvidia-nim` (dot color) | (auto-explicativo) |
+| Status badge dual-encoding (color + icono + texto) | `entry.status ∈ {present, placeholder, absent, error}` | mismo set que la leyenda | tooltip dinamico: `"Credencial cargada y valida. Last hydrate OK."` (present) / `"Hay un texto demo en el slot (REVOKED/PLACEHOLDER/EXAMPLE/etc.). Necesita set inicial desde terminal."` (placeholder) / `"No hay credencial cargada para este provider. El multi-provider fallback la salteara."` (absent) / `"Fallo la lectura. Ver detalle abajo. El multi-provider fallback omite este provider hasta que se resuelva."` (error) |
+| Meta `Masked` | `entry.masked` (ya enmascarado upstream) — NUNCA recomputar | `--brand-cyan` (mono) | `"Preview sk-•••••<last4>. Solo los primeros 6 y los ultimos 4 chars son visibles."` |
+| Meta `Fingerprint` | `entry.fingerprint` (SHA-256 truncado a 16 hex chars) | `--purple` (mono) | `"SHA-256(api_key) truncado a 16 chars hex. Sirve para comparar entre maquinas/backups sin exponer la key."` |
+| Meta `Path` (`canonicalPath`) | `entry.canonicalPath` | `--text-secondary` (mono) | — |
+| Meta `Editable UI` | `entry.editable` + `entry.reason` (cuando no editable) | `--text-secondary` | tooltip dinamico con `reason` cuando `editable=false` |
+| Meta `Detalle` (solo en `error`) | mensaje de error **sanitizado server-side** (sin paths absolutos, sin key material) | `--danger` (mono) | `"Mensaje de error sanitizado server-side. NO incluye la key, NO incluye paths absolutos del disco."` |
+| Boton `Reload` por card | endpoint `POST /api/providers/<name>/reload` (sin body) | `--info-bg`/`--info`/`--info-dim` (primary) | `"Releer credentials.json desde disco para volver a hidratar la metadata de este provider. NO recibe key por HTTP."` |
+| Boton `Como rotar` por card | abre el modal/section `#rotate-instructions` (anchor) | `--surface-2`/`--text-secondary` | `"Abrir instrucciones del comando de terminal para rotar la key (SEC-2: jamas se acepta key por HTTP)."` |
+| Boton `Rotate (n/a)` para Anthropic | deshabilitado, `aria-disabled="true"` | `--text-dim` (disabled) | `"Rotar la credencial de Anthropic no aplica por UI. Pasa por re-loguear Claude MAX desde el CLI."` |
+| Ops card `Reload global` | endpoint `POST /api/providers/reload` (sin body) — re-hidrata TODOS los providers | `--info-bg` (primary) | `"POST /api/providers/reload — sin body. Re-hidrata desde credentials.json. Audit log queda en lib/audit-log con timestamp + masked previews."` |
+| Helper text `SEC-3` debajo del reload global | estatico | `--text-dim` | (texto educativo, sin tooltip) |
+| Modal instructional `Como rotar / setear` | estatico — 4 pasos + 2 bloques `<pre><code>` con comandos | `--info-dim` (border), `--info` (border-left), `--surface-2` (pre bg) | (auto-explicativo, los pasos numerados son redundancia textual) |
+| Audit callout SEC-5/SEC-6 | estatico | `--surface-2`, border-dashed `--border-strong` | (auto-explicativo) |
+| Footer note (canales redundantes) | estatico | `--text-dim`, italic | (auto-explicativo) |
+
+### Piezas que NO entran (out-of-scope)
+
+| Pieza | Motivo |
+|---|---|
+| `<input type="password">` para rotar | CA-PRV-6 / SEC-2 inquebrantable. Memoria post-incidente Groq `feedback_api-keys-terminal-only`. Se rechaza en `aprobacion` si aparece. |
+| Edicion de bindings agente-provider | Scope de `?view=multi-provider` (#3733). |
+| Catalogo de modelos por provider | Idem #3733 / `multi-provider/model-catalog.js`. |
+| Fallback chain editor | Idem #3733. |
+| Permission overrides | Idem #3733. |
+| Health checks historicos / cron metrics | Idem #3733 / `multi-provider/health-*`. |
+| KPIs de tokens/latencia/cost por provider | Decision D2 del PO — queda para split de KPIs (#3729) decidir si los mueve aca cuando entre a `criterios`. Por ahora siguen en KPIs. |
+| Wizard guiado de set inicial | Decision D3 del PO — sub-historia de "wizards" del epico. Cualquier wizard que pida key por HTTP se rechaza por CA-PRV-6. |
+| Boton "Exportar credenciales" en cualquier forma | Diametralmente opuesto al objetivo del split. NO entra. |
+| Filtros / busqueda sobre el listado | El listado es corto (6 providers) — no justifica complejidad. |
+| Snapshot test cross-window de DOM IDs | Cubierto por #3755. |
+| Enforcement axe-core CI | Cubierto por #3717. WCAG AA validado manualmente. |
+
+### Datos personales / sensibles renderizados
+
+- **API keys reales**: PROHIBIDO. La vista consume `entry.masked` (`sk-•••••<last4>`) y `entry.fingerprint` (SHA-256 truncado). El raw value JAMAS sale del proceso Node — `secrets-rw.listKeys()` ya lo enmascara antes de devolver. CA-PRV-5 / SEC-1 verificable por `curl + grep -cE 'sk-(ant-)?[A-Za-z0-9_-]{20,}'` que debe devolver `0`.
+- **Paths absolutos del disco**: PROHIBIDO en mensajes de error visibles al cliente. Solo en `console.error` server-side. El campo `Detalle` de status `error` muestra mensaje generico saneado (ej. `"credentials.json no es JSON valido (linea 12)"`).
+- **Stack traces JS**: PROHIBIDO al cliente.
+- **PIDs y nombres de proceso**: el PID del requester se loguea en el audit trail (SEC-6) pero NO se renderiza en la ventana.
+
+Todos los campos dinamicos pasan por `escapeHtmlSsr` (CA-PRV-8 / SEC-4) — `provider.label`, `provider.reason`, `provider.free_tier_notes`, `entry.masked` (defensa en profundidad aunque ya viene saneado), `entry.fingerprint`, mensaje de error.
+
+### Endpoints state-changing que dispara (CA-PRV-7 / SEC-3)
+
+- `POST /api/providers/<name>/reload` — disparado por el boton `Reload` por card. **Sin body**. Re-hidrata solo ese provider.
+- `POST /api/providers/reload` — disparado por el boton `Reload todo`. **Sin body**. Re-hidrata todos.
+
+**Defensas in-line obligatorias** (CA-PRV-7 / SEC-3 inquebrantable):
+
+1. Validar `Origin === 'http://localhost:3200'` (o `Host === 'localhost:3200'` como fallback). Rechazar cross-site con `403 Forbidden`.
+2. Method debe ser `POST`. `GET`/`PUT`/`DELETE`/etc. retornan `405 Method Not Allowed`.
+3. Content-Type estricto `application/json` o ausente (sin body). Rechazar `application/x-www-form-urlencoded` con `415 Unsupported Media Type` (defense in depth — no estamos esperando body, pero el header signal previene un browser form attack).
+4. Body, si existe, debe ser `{}` o ausente. Cualquier campo extra (especialmente uno que parezca key) se ignora silenciosamente Y se loguea en audit-log como `suspicious_extra_fields` (CA-PRV-10 / SEC-6).
+5. Reusa `lib/multi-provider/csrf.js` si esta disponible (mismo patron que `?view=multi-provider`).
+
+### Audit trail (CA-PRV-10 / SEC-6)
+
+Cada reload escribe entrada NDJSON en `lib/audit-log` con:
+
+```json
+{
+  "ts": "2026-05-31T20:34:12.123Z",
+  "action": "provider-reload",
+  "provider": "openai",
+  "scope": "single",                  // o "all" para reload global
+  "masked_preview": "sk-proj-****8a01",
+  "fingerprint_before": "abc123...",  // del state anterior (null si era absent/error)
+  "fingerprint_after":  "def456...",  // del state nuevo
+  "requester_pid": 1234,
+  "requester_ip":  "127.0.0.1",
+  "result": "ok"                      // o "error: <mensaje saneado>"
+}
+```
+
+Los logs server-side (no audit, los generales `dashboard-*.log`) tambien solo loguean el masked — `grep -E "sk-[A-Za-z0-9_-]{20,}" logs/dashboard-*.log` debe devolver 0 lineas tras ejercitar el flow (CA-PRV-9 / SEC-5).
+
+### Dependencias de seguridad pendientes que afectan a la ventana
+
+| Issue | Tema | Como impacta |
+|---|---|---|
+| #3688 / #2532 / #2745 | CSP `script-src 'self'` del dashboard | SOFT (CA-PRV-20). Esta vista nace NUEVA — no se introducen `onclick=` inline ni `<script>` inline para evitar deuda contra CSP estricta. Documentar en PR. |
+| #3722 | Helper `lib/escape-html.js` compartido | SOFT. Si #3722 ya mergeo: import directo. Si no: `escapeHtmlSsr` inline copiado de `home.js:33-41` con `// TODO migrar a lib/escape-html.js post-#3722` (decision D5 del PO en #3731, aceptable aca tambien). |
+| #3765 | Helper `maskApiKey()` reusable (recomendacion `needs-human`) | SOFT. Si `needs-human` se aprueba antes que dev: usar el helper. Si no: confiar en `secrets-rw.maskValue()` que ya esta consolidado. |
+| #3781 | Test de invariante `MANAGED_KEYS ↔ ENV_MAPPING` (recomendacion `needs-human`) | SOFT. Es defensa contra drift cross-lib, no bloquea esta vista. |
+| #2901 | Escape unificado en `title=` attrs | Cubierto por defensa local del modulo (`escapeHtmlSsr` en cada interpolacion de `title`). |
+| #3755 | Snapshot test cross-window | SOFT. Recomendacion abierta. |
+| #3717 | Enforcement axe-core CI | SOFT. WCAG AA validado manualmente. |
+
+### Fallback inerte (CA-A3 / CA-PRV-14)
+
+Cuando `require('./views/dashboard/providers')` arroja (sintaxis rota, dependencia faltante, etc.), `dashboard.js` debe:
+
+1. Loguear `log('providers view unavailable: ' + e.message)` (patron consolidado en `dashboard.js:9027/9039`).
+2. Renderizar en el lugar del partial un cartel visible con:
+   - Icono warning (`stroke="#D29922"` / `--warning`).
+   - Titulo `"Ventana Providers no disponible"`.
+   - Subtitulo `"El modulo views/dashboard/providers.js fallo al cargar. Ver logs del dashboard para detalle."`
+   - Linea mono explicativa: `'log("providers view unavailable: " + e.message) emitido por dashboard.js — el render no queda en blanco.'`
+   - **Tip de recovery**: link a `/dashboard?view=multi-provider` como alternativa de consulta. La consola avanzada tambien muestra el estado de las keys (mismo masking via `secrets-rw.js`). El operador no queda ciego.
+3. **Critico**: NO dejar string vacio silencioso. Anti-patron rechazado en `verificacion`.
+
+Variante ilustrada en el mockup adjunto, seccion "VARIANTE FALLBACK INERTE".
+
+### Tests requeridos (CA-PRV-17 / CA-G1)
+
+`.pipeline/views/dashboard/__tests__/providers.test.js` con `node:test`. Cobertura minima (8 casos):
+
+1. **Render SSR con 6 providers en estado mixto** (2 `present`, 2 `placeholder`, 1 `absent`, 1 `error`) — HTML contiene 6 `<article class="provider-card">` + cada uno con su status badge correspondiente.
+2. **Render SSR con state vacio** (`listKeys()` devuelve `[]`, hipotetico) — mensaje "Sin providers gestionados", sin crash, IDs `#providers-list` + `#providers-legend` presentes.
+3. **Payload XSS canonico** sobre `provider.label`, `provider.reason`, `provider.free_tier_notes`, `entry.masked`, mensaje de error: payloads `<script>alert(1)</script>`, `"><img src=x onerror=alert(1)>`, `javascript:void(0)`. Asercion: HTML output NO contiene la string sin escapar, contiene `&lt;script` / `&lt;img`. **Incluye contenido de tooltips** (CA-PRV-8 / SEC-4).
+4. **Asercion CA-PRV-5 anti-leak**: HTML resultante de TODO test no matchea la regex `sk-(ant-)?[A-Za-z0-9_-]{20,}` ni `AIza[A-Za-z0-9_-]{30,}` (gemini-shape). Verificar tambien que ningun `data-*` attribute, comentario HTML, ni JSON embebido contiene la key completa.
+5. **Asercion CA-PRV-6**: el HTML NO contiene `<input type="password"`, `<input type=password`, `<textarea`, ni patron equivalente. Grep server-side: 0 matches.
+6. **Asercion CA-PRV-7**: simular `POST /api/providers/reload` con `Origin: http://evil.example.com` -> respuesta `403`. Variante con `Content-Type: application/x-www-form-urlencoded` -> `415`. Variante con method `GET` -> `405`.
+7. **Asercion CA-PRV-10**: tras un reload valido, `lib/audit-log` tiene una entrada NDJSON nueva con los campos esperados (`ts`, `action: 'provider-reload'`, `provider`, `masked_preview`, `fingerprint_before`, `fingerprint_after`, `requester_pid`, `result: 'ok'`).
+8. **IDs DOM invariantes presentes**: `#providers-list`, `#providers-legend`, `#rotate-instructions` (anchor del modal), `#providers-ops` (si el dev lo agrupa). Slugs estables para QA/UX cross-window.
+
+Tests **adicionales** en `lib/multi-provider/__tests__/secrets-rw.test.js` o `lib/multi-provider/api.test.js` (segun donde vivan los endpoints):
+
+- Reload de provider no gestionado (`POST /api/providers/inexistent/reload`) -> `404`.
+- Reload con body que incluye un campo `api_key` cualquiera -> ignorado + audit entry con `suspicious_extra_fields`.
+- Reload cuando `credentials.json` esta corrupto -> response 200 con estado `error` por provider + log generico server-side.
+
+**Cobertura minima:** 85% de lineas del modulo.
+
+**Fixtures (CA-PRV-11 / SEC-7):** los tests usan keys ficticias con prefijo `PLACEHOLDER_` o el helper `secrets-rw.isPlaceholder()`. Verificable: `grep -E "sk-(ant-)?[A-Za-z0-9_-]{20,}" .pipeline/views/dashboard/__tests__/providers.test.js` retorna 0.
+
+### Smoke curl (CA-PRV-18 / CA-G2)
+
+```bash
+# Render completo (legacy + query)
+curl -s 'http://127.0.0.1:3200/dashboard?view=providers' \
+  | grep -c 'id="providers-list"\|id="providers-legend"'
+# Debe devolver 2
+
+# Partial endpoint (router cerrado en #3723)
+curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:3200/dashboard/partial?view=providers'
+# Debe devolver 200
+
+# Anti-leak cross-route (SEC-1 verificable end-to-end)
+for view in providers multi-provider; do
+  curl -s "http://127.0.0.1:3200/dashboard?view=$view" \
+    | grep -cE 'sk-(ant-)?[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,}'
+done
+# Ambas deben devolver 0
+
+# Defensa CSRF / Origin guard (SEC-3 verificable end-to-end)
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST -H 'Origin: http://evil.example.com' \
+  'http://127.0.0.1:3200/api/providers/reload'
+# Debe devolver 403
+```
+
+### Accesibilidad WCAG AA (CA-PRV-19 / CA-E1..E4)
+
+- **Dual-encoding de status**: nunca solo color. Cada status badge tiene color + icono unicode (`✓`/`⚠`/`—`/`✕`) + texto en MAYUSCULAS (`PRESENT`/`PLACEHOLDER`/`ABSENT`/`ERROR`). Daltonismo cubierto.
+- **Touch target botones operativos**: `min-height: 36px` (provider-btn) + `min-height: 44px` (reload global primary). Cumple guideline WCAG 2.5.5 (Target Size, AAA reach).
+- **Contraste AA verificado** manualmente con devtools sobre el screenshot del PR. Tokens `--provider-*` ya tienen variantes `-fg` documentadas con ratio >= 10:1 sobre `-bg` (ver `design-tokens.css:143..223`).
+- **Keyboard navigation**: cada card es `tabindex="0"`, cada boton es nativo `<a class="provider-btn">` con `:focus-visible` outline. Modal "Como rotar" es estatico embebido (no overlay JS) — accesible por scroll/anchor.
+- **Screen readers**: cada card tiene `aria-label` resumiendo provider + status + masked. Cada boton tiene `aria-label` describiendo la accion. `aria-hidden="true"` en iconos unicode decorativos.
+
+### Coherencia con el resto del epico
+
+Esta ventana mantiene la identidad visual V3 establecida por las hermanas:
+
+- **Header**: titulo + V3 badge teal + acciones derecha (mismo formato que Matriz / KPIs / Ops).
+- **Leyenda**: misma posicion (debajo del header), mismo formato chip + dot + texto.
+- **Cards en grilla**: rail lateral 3px del token del subject (igual que Costos por skill, Historial por estado).
+- **Tooltips**: misma estetica (texto castellano, hardcoded server-side, escape en parte dinamica).
+- **Footer note**: misma posicion y tono ("Tip: si esta ventana se cae...").
+- **Fallback inerte**: mismo formato (icono warning + titulo + subtitulo + linea mono del log).
+
 ## Otras ventanas del epico #3715
 
 | Split | Ventana | Mockup | Estado |
@@ -467,8 +681,9 @@ curl -s 'http://127.0.0.1:3200/' | grep -c 'id="costos-window"\|data-section="co
 | #3732 | Ops | `assets/mockups/28-ops-v3.svg` | criterios |
 | #3733 | KPIs principales (home) | `assets/mockups/30-kpis-v3.html` | criterios |
 | #3734 | Historial | `assets/mockups/31-historial-v3.svg` | criterios |
-| #3735 | **Costos (este split)** | `assets/mockups/32-costos-v3.svg` | criterios |
+| #3735 | Costos | `assets/mockups/32-costos-v3.svg` | criterios |
 | #3736 | Modo descanso | — | pendiente |
+| #3737 | **Providers (este split)** | `assets/mockups/33-providers-v3.html` | criterios |
 
 > A medida que cada split entra a `criterios`, su `/ux` debe agregar la fila correspondiente con la tabla `pieza → fuente → destino`.
 

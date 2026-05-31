@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1080, initial-scale=1" />
+<title>Mockup Providers V3 — Ventana Providers del Dashboard V3</title>
+<!--
+  Mockup integral de la ventana "Providers" del dashboard V3.
+  Issue: #3737 (split de #3715).
+  Convención (espejo de 29-matriz-v3.html y 30-kpis-v3.html):
+    - UN solo HTML/CSS auto-contenido, renderizable con Puppeteer (CA-F2).
+    - Tokens importados desde `../design-tokens.css` (V3 — fuente única).
+    - Iconografía referenciada via `../icons/sprite.svg#ic-*` (fallback emoji
+      unicode embebido para que el mockup sea self-contained).
+    - Sin fetch externo, sin scripts.
+  Layout: kiosk vertical 1080×1920 — coherente con el resto del épico.
+  Estados representados:
+    1) Estado normal (todos los providers `present` o `placeholder`).
+    2) Estado degradado (1 provider `error` por credentials.json corrupto).
+    3) Modal "Cómo rotar desde terminal Windows" (instructional, read-only).
+    4) Variante fallback inerte (CA-A3 / SEC-7 / CA-PRV-14).
+  Seguridad inquebrantable (SEC-1..SEC-7 / CA-PRV-5..CA-PRV-11):
+    - Cada provider-card muestra masked `sk-•••••<last4>` y NUNCA la key real.
+    - Cada acción operativa tiene `title=` + `aria-label=`.
+    - Modal "Rotate" es read-only: explica el comando de terminal, no captura
+      la key por HTTP. NO hay <input type="password"> ni <textarea>.
+    - Anti-leak callout visible en la leyenda.
+  Decisiones del PO (#3737 D0/D1/D2/D3):
+    - D0: interpretación (b) — vista nueva, coexiste con /multi-provider.
+    - D1: "EXTRAER" del scope se resuelve como "vista nueva, sin pieza heredada".
+    - D2: KPIs de proveedor NO migran en este split (queda para #3729 KPIs).
+    - D3: wizard de configuración no entra (memoria api-keys-terminal-only).
+-->
+<link rel="stylesheet" href="../design-tokens.css" />
+<style>
+  /* Mockup-only — todo via tokens V3, prohibido HEX libres acá adentro. */
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .kiosk-frame {
+    width: 1080px;
+    min-height: 1920px;
+    margin: 0 auto;
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .mockup-banner {
+    background: var(--purple-bg);
+    border: 1px dashed var(--purple-dim);
+    color: var(--purple);
+    padding: 8px 14px;
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+  .icon { width: 1em; height: 1em; vertical-align: -0.15em; fill: currentColor; stroke: currentColor; }
+
+  /* =========================================================================
+     HEADER de la ventana (slug `providers`)
+     ========================================================================= */
+  .view-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 2px;
+  }
+  .view-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 1.35em;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .view-title .v3-badge {
+    background: var(--teal-bg);
+    color: var(--teal);
+    border: 1px solid var(--teal-dim);
+    padding: 2px 8px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .view-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .view-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    text-decoration: none;
+    min-height: 36px;
+    cursor: pointer;
+  }
+  .view-link:hover, .view-link:focus-visible {
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+  .view-link.primary {
+    background: var(--info-bg);
+    color: var(--info);
+    border-color: var(--info-dim);
+  }
+
+  /* =========================================================================
+     LEYENDA (CA-PRV-13 + CA-C3) — explica status y carácter operativo
+     Incluye el anti-leak callout (CA-PRV-5 visibilidad).
+     ========================================================================= */
+  .legend {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 12px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    align-items: center;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: 1px solid transparent;
+  }
+  .legend-badge.present     { color: var(--success); background: var(--success-bg, rgba(46,160,67,0.14)); border-color: var(--success); }
+  .legend-badge.placeholder { color: var(--warning); background: var(--warning-bg, rgba(210,153,34,0.14)); border-color: var(--warning); }
+  .legend-badge.absent      { color: var(--text-dim); background: var(--surface-2);                     border-color: var(--border-strong); }
+  .legend-badge.error       { color: var(--danger);  background: var(--danger-bg, rgba(248,81,73,0.14)); border-color: var(--danger); }
+  .legend-leak {
+    margin-left: auto;
+    color: var(--danger);
+    font-weight: 600;
+    background: var(--danger-bg, rgba(248,81,73,0.14));
+    border: 1px solid var(--danger);
+    padding: 4px 10px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 11px;
+  }
+
+  /* =========================================================================
+     PROVIDER CARDS — una card por entry de MANAGED_KEYS
+     ========================================================================= */
+  #providers-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  .provider-card {
+    position: relative;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 14px 16px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 174px;
+  }
+  /* Rail lateral 3px que codifica el provider (anti dual-encoding solo color) */
+  .provider-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    border-radius: var(--radius-md, 6px) 0 0 var(--radius-md, 6px);
+    background: var(--text-dim);
+  }
+  .provider-card.anthropic::before    { background: var(--provider-anthropic); }
+  .provider-card.openai::before       { background: var(--success); }
+  .provider-card.elevenlabs::before   { background: var(--rest-mode, var(--purple)); }
+  .provider-card.gemini-google::before{ background: var(--provider-gemini); }
+  .provider-card.cerebras::before     { background: var(--provider-cerebras); }
+  .provider-card.nvidia-nim::before   { background: var(--provider-nvidia-nim); }
+
+  .provider-card.is-error {
+    border-color: var(--danger-dim);
+    background: linear-gradient(180deg, var(--danger-bg, rgba(248,81,73,0.08)), var(--surface-1) 55%);
+  }
+
+  .provider-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .provider-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.05em;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .provider-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+  .provider-card.anthropic    .provider-dot { background: var(--provider-anthropic); }
+  .provider-card.openai       .provider-dot { background: var(--success); }
+  .provider-card.elevenlabs   .provider-dot { background: var(--rest-mode, var(--purple)); }
+  .provider-card.gemini-google .provider-dot { background: var(--provider-gemini); }
+  .provider-card.cerebras     .provider-dot { background: var(--provider-cerebras); }
+  .provider-card.nvidia-nim   .provider-dot { background: var(--provider-nvidia-nim); }
+
+  .provider-sub {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  /* Status badge — dual-encoding (color + icono + texto) — CA-PRV-19 */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: 1px solid transparent;
+  }
+  .status-badge.present     { color: var(--success); background: var(--success-bg, rgba(46,160,67,0.14)); border-color: var(--success); }
+  .status-badge.placeholder { color: var(--warning); background: var(--warning-bg, rgba(210,153,34,0.14)); border-color: var(--warning); }
+  .status-badge.absent      { color: var(--text-dim); background: var(--surface-2);                     border-color: var(--border-strong); }
+  .status-badge.error       { color: var(--danger);  background: var(--danger-bg, rgba(248,81,73,0.14)); border-color: var(--danger); }
+
+  /* Meta key:value (masked + fingerprint + path) */
+  .provider-meta {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 4px 10px;
+    font-size: 11.5px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .provider-meta-key   { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }
+  .provider-meta-val   { color: var(--text-secondary); word-break: break-all; }
+  .provider-meta-val.mask { color: var(--brand-cyan); font-weight: 600; letter-spacing: 0.02em; }
+  .provider-meta-val.fp   { color: var(--purple); }
+  .provider-meta-val.err  { color: var(--danger); }
+
+  /* Acciones operativas (Rotate / Reload / Docs) */
+  .provider-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+  }
+  .provider-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 7px 12px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 11.5px;
+    cursor: pointer;
+    min-height: 36px;  /* WCAG touch target — CA-PRV-19 */
+    text-decoration: none;
+  }
+  .provider-btn:hover, .provider-btn:focus-visible {
+    background: var(--surface-3, var(--surface-2));
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+  .provider-btn.primary {
+    background: var(--info-bg);
+    color: var(--info);
+    border-color: var(--info-dim);
+  }
+  .provider-btn.disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .provider-btn.danger {
+    background: var(--danger-bg, rgba(248,81,73,0.14));
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+
+  /* Sección de reload global + modal instructional */
+  .ops-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .ops-card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ops-card h3 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ops-card p {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+  }
+  .ops-card .helper {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  /* Modal "Cómo rotar desde terminal Windows" — visualmente embebido para que
+     el operador entienda el flujo sin necesidad de abrir un overlay. En la SSR
+     real, este bloque aparece dentro de un <dialog> o panel collapsible. */
+  .rotate-modal {
+    background: var(--surface-1);
+    border: 1px solid var(--info-dim);
+    border-left: 3px solid var(--info);
+    border-radius: var(--radius-md, 6px);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .rotate-modal h3 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--info);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .rotate-modal pre {
+    margin: 0;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    padding: 10px 12px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    color: var(--text-primary);
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .rotate-modal .step {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .rotate-modal .step-n {
+    color: var(--info);
+    font-weight: 700;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    min-width: 18px;
+  }
+
+  /* Sección "Anti-leak audit" / SEC-5 callout (visible al operador) */
+  .audit-callout {
+    background: var(--surface-2);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-md, 6px);
+    padding: 10px 14px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .audit-callout strong { color: var(--text-secondary); }
+
+  /* =========================================================================
+     VARIANTE FALLBACK INERTE (CA-A3 / SEC-7 / CA-PRV-14)
+     ========================================================================= */
+  .fallback-section { margin-top: 22px; }
+  .fallback-card {
+    background: var(--surface-1);
+    border: 1px dashed var(--warning);
+    border-radius: var(--radius-md, 6px);
+    padding: 14px 16px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .fallback-icon {
+    color: var(--warning);
+    font-size: 22px;
+    line-height: 1;
+  }
+  .fallback-card h3 {
+    margin: 0 0 4px 0;
+    font-size: 13px;
+    color: var(--warning);
+  }
+  .fallback-card p {
+    margin: 0 0 6px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .fallback-card code {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  /* =========================================================================
+     FOOTER (canales redundantes — coherente con el resto del épico)
+     ========================================================================= */
+  .footer-note {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    padding: 6px 0;
+    font-style: italic;
+  }
+  .footer-note kbd {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+
+  /* Divider visual entre estados normal y fallback */
+  .state-divider {
+    border: none;
+    border-top: 1px dashed var(--border-strong);
+    margin: 18px 0 0;
+  }
+  .state-divider-label {
+    display: block;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-top: -8px;
+    background: var(--surface-0);
+    width: fit-content;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 0 10px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="kiosk-frame">
+
+    <div class="mockup-banner">
+      MOCKUP UX · ISSUE #3737 · VENTANA PROVIDERS V3 — 1080×1920 — TOKENS V3
+    </div>
+
+    <!-- ===================================================================
+         HEADER de la ventana (slug `providers`)
+         =================================================================== -->
+    <header class="view-header" role="banner">
+      <h1 class="view-title">
+        <span aria-hidden="true">&#x1F511;</span>
+        Providers <span class="v3-badge" aria-label="Versión 3">V3</span>
+      </h1>
+      <nav class="view-actions" aria-label="Acciones de la ventana Providers">
+        <a class="view-link" href="/dashboard?view=home"
+           title="Volver a la vista Home del dashboard"
+           aria-label="Ir a la vista Home del dashboard">
+          <span aria-hidden="true">&larr;</span> Home
+        </a>
+        <a class="view-link" href="/dashboard?view=multi-provider"
+           title="Abrir la consola de configuración avanzada de Multi-Provider (bindings por agente, fallback chain, catálogo, health, permission overrides)"
+           aria-label="Abrir consola Multi-Provider de configuración avanzada">
+          <span aria-hidden="true">&#x2699;</span> Multi-Provider config &rarr;
+        </a>
+        <a class="view-link primary" href="/docs/runbooks/credential-rotation"
+           title="Abrir el runbook de rotación de credenciales (documentación interna)"
+           aria-label="Abrir runbook de rotación de credenciales">
+          <span aria-hidden="true">&#x1F4D6;</span> Runbook
+        </a>
+      </nav>
+    </header>
+
+    <!-- ===================================================================
+         LEYENDA (CA-PRV-13) — status + anti-leak callout
+         =================================================================== -->
+    <div class="legend" role="group" aria-label="Leyenda de status y advertencias">
+      <span class="legend-item">
+        <span class="legend-badge present" aria-hidden="true">&#x2713; PRESENT</span>
+        Credencial cargada y válida
+      </span>
+      <span class="legend-item">
+        <span class="legend-badge placeholder" aria-hidden="true">&#x26A0; PLACEHOLDER</span>
+        Texto demo (ej. REVOKED / EXAMPLE)
+      </span>
+      <span class="legend-item">
+        <span class="legend-badge absent" aria-hidden="true">&#x2014; ABSENT</span>
+        No configurada todavía
+      </span>
+      <span class="legend-item">
+        <span class="legend-badge error" aria-hidden="true">&#x2716; ERROR</span>
+        Falló la lectura de <code>credentials.json</code>
+      </span>
+      <span class="legend-leak" role="note"
+            title="Garantía SEC-1: la API key completa NUNCA viaja por HTTP. Acá solo se muestra el masked preview sk-•••••<last4>. El set/rotate se hace por terminal Windows."
+            aria-label="Ventana read-only para secrets. La API key NUNCA viaja por HTTP. Solo masked preview.">
+        &#x1F512; <strong>SEC-1</strong> · la API key jamás viaja por HTTP — solo masked
+      </span>
+    </div>
+
+    <!-- ===================================================================
+         PROVIDER CARDS (#providers-list)
+         Estado normal + 1 ERROR para ilustrar el degradado.
+         =================================================================== -->
+    <section id="providers-list" aria-label="Lista de proveedores gestionados">
+
+      <!-- 1. Anthropic — NOT editable (OAuth / Claude MAX) — present -->
+      <article class="provider-card anthropic" data-provider="anthropic" data-status="present" tabindex="0"
+               aria-label="Anthropic: status present, masked sk-ant-****4f7a, no editable por UI">
+        <div class="provider-head">
+          <div class="provider-name">
+            <span class="provider-dot" aria-hidden="true"></span>
+            Anthropic
+            <span class="provider-sub">Claude / OAuth MAX</span>
+          </div>
+          <span class="status-badge present"
+                title="Credencial cargada y válida. Last hydrate OK."
+                aria-label="Status: present">
+            <span aria-hidden="true">&#x2713;</span> Present
+          </span>
+        </div>
+        <div class="provider-meta">
+          <span class="provider-meta-key">Masked</span>
+          <span class="provider-meta-val mask"
+                title="Preview sk-•••••<last4>. Solo los primeros 6 y los últimos 4 chars son visibles."
+                aria-label="Masked preview sk hyphen ant guion siete g cinco asterisco asterisco asterisco asterisco cuatro f siete a">
+            sk-ant-****4f7a
+          </span>
+          <span class="provider-meta-key">Fingerprint</span>
+          <span class="provider-meta-val fp"
+                title="SHA-256(api_key) truncado a 16 chars hex. Sirve para comparar entre máquinas/backups sin exponer la key."
+                aria-label="Fingerprint b2a8 efc7 1d24 7e0b">
+            b2a8efc71d247e0b
+          </span>
+          <span class="provider-meta-key">Path</span>
+          <span class="provider-meta-val">providers.anthropic.api_key</span>
+          <span class="provider-meta-key">Editable UI</span>
+          <span class="provider-meta-val"
+                title="Anthropic usa OAuth / Claude MAX login. Rotar acá puede confundir el child env de Claude Code. La rotación pasa por el login del CLI, no por credentials.json.">
+            no &mdash; OAuth / MAX
+          </span>
+        </div>
+        <div class="provider-actions">
+          <a class="provider-btn primary" href="#reload"
+             title="Releer credentials.json desde disco para volver a hidratar la metadata de este provider. NO recibe key por HTTP."
+             aria-label="Reload metadata de Anthropic">
+            <span aria-hidden="true">&#x21BB;</span> Reload
+          </a>
+          <a class="provider-btn disabled" href="#rotate" aria-disabled="true"
+             title="Rotar la credencial de Anthropic no aplica por UI. Pasa por re-loguear Claude MAX desde el CLI."
+             aria-label="Rotate deshabilitado para Anthropic">
+            <span aria-hidden="true">&#x1F5DD;</span> Rotate (n/a)
+          </a>
+        </div>
+      </article>
+
+      <!-- 2. OpenAI / Codex — editable — present -->
+      <article class="provider-card openai" data-provider="openai" data-status="present" tabindex="0"
+               aria-label="OpenAI Codex: status present, masked sk-proj-****8a01">
+        <div class="provider-head">
+          <div class="provider-name">
+            <span class="provider-dot" aria-hidden="true"></span>
+            OpenAI / Codex
+            <span class="provider-sub">paid · provider 2</span>
+          </div>
+          <span class="status-badge present"
+                title="Credencial cargada y válida."
+                aria-label="Status: present">
+            <span aria-hidden="true">&#x2713;</span> Present
+          </span>
+        </div>
+        <div class="provider-meta">
+          <span class="provider-meta-key">Masked</span>
+          <span class="provider-meta-val mask" aria-label="Masked preview sk hyphen proj asterisco asterisco asterisco asterisco ocho a cero uno">
+            sk-proj-****8a01
+          </span>
+          <span class="provider-meta-key">Fingerprint</span>
+          <span class="provider-meta-val fp">c9d317e8a04b2f7d</span>
+          <span class="provider-meta-key">Path</span>
+          <span class="provider-meta-val">providers.openai.api_key</span>
+          <span class="provider-meta-key">Editable UI</span>
+          <span class="provider-meta-val">sí (rotate por terminal)</span>
+        </div>
+        <div class="provider-actions">
+          <a class="provider-btn primary" href="#reload"
+             title="Releer credentials.json desde disco después de actualizar la key desde terminal Windows."
+             aria-label="Reload metadata de OpenAI Codex">
+            <span aria-hidden="true">&#x21BB;</span> Reload
+          </a>
+          <a class="provider-btn" href="#rotate-instructions"
+             title="Abrir instrucciones del comando de terminal para rotar la key (SEC-2: jamás se acepta key por HTTP)."
+             aria-label="Cómo rotar la key de OpenAI Codex desde terminal">
+            <span aria-hidden="true">&#x1F5DD;</span> Cómo rotar
+          </a>
+        </div>
+      </article>
+
+      <!-- 3. ElevenLabs — editable — placeholder -->
+      <article class="provider-card elevenlabs" data-provider="elevenlabs" data-status="placeholder" tabindex="0"
+               aria-label="ElevenLabs: status placeholder, requiere set inicial desde terminal">
+        <div class="provider-head">
+          <div class="provider-name">
+            <span class="provider-dot" aria-hidden="true"></span>
+            ElevenLabs
+            <span class="provider-sub">TTS · multimedia</span>
+          </div>
+          <span class="status-badge placeholder"
+                title="Hay un texto demo en el slot (REVOKED/PLACEHOLDER/EXAMPLE/etc.). Necesita set inicial desde terminal."
+                aria-label="Status: placeholder">
+            <span aria-hidden="true">&#x26A0;</span> Placeholder
+          </span>
+        </div>
+        <div class="provider-meta">
+          <span class="provider-meta-key">Masked</span>
+          <span class="provider-meta-val mask">&mdash; (sin key real)</span>
+          <span class="provider-meta-key">Fingerprint</span>
+          <span class="provider-meta-val fp">&mdash;</span>
+          <span class="provider-meta-key">Path</span>
+          <span class="provider-meta-val">multimedia.elevenlabs_api_key</span>
+          <span class="provider-meta-key">Editable UI</span>
+          <span class="provider-meta-val">sí (rotate por terminal)</span>
+        </div>
+        <div class="provider-actions">
+          <a class="provider-btn primary" href="#rotate-instructions"
+             title="Abrir instrucciones del comando de terminal para pegar la key inicial."
+             aria-label="Cómo setear la key inicial de ElevenLabs desde terminal">
+            <span aria-hidden="true">&#x1F5DD;</span> Cómo configurar
+          </a>
+          <a class="provider-btn" href="#reload"
+             title="Releer credentials.json desde disco una vez que pegaste la key real."
+             aria-label="Reload metadata de ElevenLabs">
+            <span aria-hidden="true">&#x21BB;</span> Reload
+          </a>
+        </div>
+      </article>
+
+      <!-- 4. Gemini Google — editable — present -->
+      <article class="provider-card gemini-google" data-provider="gemini-google" data-status="present" tabindex="0"
+               aria-label="Gemini Google: status present, masked AIzaSy****8x21">
+        <div class="provider-head">
+          <div class="provider-name">
+            <span class="provider-dot" aria-hidden="true"></span>
+            Gemini (Google AI Studio)
+            <span class="provider-sub">free tier · RPM 15 / RPD 1500</span>
+          </div>
+          <span class="status-badge present"
+                title="Credencial cargada y válida."
+                aria-label="Status: present">
+            <span aria-hidden="true">&#x2713;</span> Present
+          </span>
+        </div>
+        <div class="provider-meta">
+          <span class="provider-meta-key">Masked</span>
+          <span class="provider-meta-val mask">AIzaSy****8x21</span>
+          <span class="provider-meta-key">Fingerprint</span>
+          <span class="provider-meta-val fp">7f1c92ab4d56e0a8</span>
+          <span class="provider-meta-key">Path</span>
+          <span class="provider-meta-val">providers.google.api_key</span>
+          <span class="provider-meta-key">Editable UI</span>
+          <span class="provider-meta-val">sí (rotate por terminal)</span>
+        </div>
+        <div class="provider-actions">
+          <a class="provider-btn primary" href="#reload"
+             title="Releer credentials.json desde disco."
+             aria-label="Reload metadata de Gemini">
+            <span aria-hidden="true">&#x21BB;</span> Reload
+          </a>
+          <a class="provider-btn" href="#rotate-instructions"
+             title="Abrir instrucciones del comando de terminal."
+             aria-label="Cómo rotar la key de Gemini desde terminal">
+            <span aria-hidden="true">&#x1F5DD;</span> Cómo rotar
+          </a>
+        </div>
+      </article>
+
+      <!-- 5. Cerebras — editable — absent -->
+      <article class="provider-card cerebras" data-provider="cerebras" data-status="absent" tabindex="0"
+               aria-label="Cerebras: status absent, sin configurar">
+        <div class="provider-head">
+          <div class="provider-name">
+            <span class="provider-dot" aria-hidden="true"></span>
+            Cerebras
+            <span class="provider-sub">free tier · RPM 30 / TPM 60K</span>
+          </div>
+          <span class="status-badge absent"
+                title="No hay credencial cargada para este provider. El multi-provider fallback la salteará."
+                aria-label="Status: absent">
+            <span aria-hidden="true">&mdash;</span> Absent
+          </span>
+        </div>
+        <div class="provider-meta">
+          <span class="provider-meta-key">Masked</span>
+          <span class="provider-meta-val">&mdash;</span>
+          <span class="provider-meta-key">Fingerprint</span>
+          <span class="provider-meta-val">&mdash;</span>
+          <span class="provider-meta-key">Path</span>
+          <span class="provider-meta-val">providers.cerebras.api_key</span>
+          <span class="provider-meta-key">Editable UI</span>
+          <span class="provider-meta-val">sí (rotate por terminal)</span>
+        </div>
+        <div class="provider-actions">
+          <a class="provider-btn primary" href="#rotate-instructions"
+             title="Abrir instrucciones del comando de terminal para configurar Cerebras."
+             aria-label="Cómo configurar Cerebras desde terminal">
+            <span aria-hidden="true">&#x1F5DD;</span> Cómo configurar
+          </a>
+        </div>
+      </article>
+
+      <!-- 6. NVIDIA NIM — editable — ERROR (ejemplo de degradado) -->
+      <article class="provider-card nvidia-nim is-error" data-provider="nvidia-nim" data-status="error" tabindex="0"
+               aria-label="NVIDIA NIM: status error, falló la lectura de credentials.json">
+        <div class="provider-head">
+          <div class="provider-name">
+            <span class="provider-dot" aria-hidden="true"></span>
+            NVIDIA NIM
+            <span class="provider-sub">free tier · sin RPM público</span>
+          </div>
+          <span class="status-badge error"
+                title="Falló la lectura. Ver detalle abajo. El multi-provider fallback omite este provider hasta que se resuelva."
+                aria-label="Status: error">
+            <span aria-hidden="true">&#x2716;</span> Error
+          </span>
+        </div>
+        <div class="provider-meta">
+          <span class="provider-meta-key">Masked</span>
+          <span class="provider-meta-val">&mdash;</span>
+          <span class="provider-meta-key">Fingerprint</span>
+          <span class="provider-meta-val">&mdash;</span>
+          <span class="provider-meta-key">Path</span>
+          <span class="provider-meta-val">providers.nvidia.api_key</span>
+          <span class="provider-meta-key">Detalle</span>
+          <span class="provider-meta-val err"
+                title="Mensaje de error sanitizado server-side. NO incluye la key, NO incluye paths absolutos del disco."
+                aria-label="Detalle del error: credentials.json no es JSON válido en línea 12">
+            credentials.json no es JSON válido (línea 12)
+          </span>
+        </div>
+        <div class="provider-actions">
+          <a class="provider-btn primary" href="#reload"
+             title="Reintentar leer credentials.json una vez que arregles el archivo."
+             aria-label="Reintentar lectura de credentials.json para NVIDIA NIM">
+            <span aria-hidden="true">&#x21BB;</span> Reintentar
+          </a>
+          <a class="provider-btn" href="#rotate-instructions"
+             title="Abrir instrucciones del comando de terminal."
+             aria-label="Cómo rotar la key de NVIDIA NIM desde terminal">
+            <span aria-hidden="true">&#x1F5DD;</span> Cómo rotar
+          </a>
+        </div>
+      </article>
+
+    </section>
+
+    <!-- ===================================================================
+         OPS ROW — Reload global + Modal instructional "Cómo rotar"
+         =================================================================== -->
+    <section class="ops-row" aria-label="Acciones operativas globales">
+      <div class="ops-card">
+        <h3>
+          <span aria-hidden="true">&#x21BB;</span> Reload global
+        </h3>
+        <p>
+          Vuelve a leer <code>~/.claude/secrets/credentials.json</code> desde disco
+          y re-hidrata la metadata de TODOS los providers de una sola vez.
+        </p>
+        <p class="helper">
+          <strong>SEC-3</strong> · solo acepta requests con
+          <code>Origin === http://localhost:3200</code>. Cualquier origin cross-site &rarr; <code>403</code>.
+        </p>
+        <div class="provider-actions">
+          <a class="provider-btn primary" href="#reload-all"
+             title="POST /api/providers/reload — sin body. Re-hidrata desde credentials.json. Audit log queda en lib/audit-log con timestamp + masked previews."
+             aria-label="Reload global de credenciales">
+            <span aria-hidden="true">&#x21BB;</span> Reload todo
+          </a>
+        </div>
+      </div>
+
+      <div id="rotate-instructions" class="rotate-modal" role="region"
+           aria-labelledby="rotate-instructions-title">
+        <h3 id="rotate-instructions-title">
+          <span aria-hidden="true">&#x1F5DD;</span> Cómo rotar / setear una key
+        </h3>
+        <div class="step">
+          <span class="step-n">1.</span>
+          <span>Abrí una terminal Windows (PowerShell o cmd) — <strong>no Telegram</strong>.</span>
+        </div>
+        <div class="step">
+          <span class="step-n">2.</span>
+          <span>Editá el archivo de credenciales con tu editor preferido:</span>
+        </div>
+        <pre><code>notepad %USERPROFILE%\.claude\secrets\credentials.json</code></pre>
+        <div class="step">
+          <span class="step-n">3.</span>
+          <span>Modificá el path canónico del provider, por ejemplo <code>providers.openai.api_key</code>:</span>
+        </div>
+        <pre><code>{
+  "providers": {
+    "openai": { "api_key": "sk-proj-&lt;NUEVA_KEY&gt;" }
+  }
+}</code></pre>
+        <div class="step">
+          <span class="step-n">4.</span>
+          <span>Guardá. Volvé al dashboard y clickeá <kbd>Reload</kbd> en la card del provider (o <kbd>Reload todo</kbd>) para re-hidratar.</span>
+        </div>
+        <p class="helper">
+          <strong>SEC-2</strong> inquebrantable &middot; este modal es <em>read-only</em>.
+          No hay <code>&lt;input type="password"&gt;</code> que postee la key al backend.
+          Regla post-incidente Groq 2026-05-17 (memoria <code>feedback_api-keys-terminal-only</code>).
+        </p>
+      </div>
+    </section>
+
+    <!-- ===================================================================
+         AUDIT CALLOUT — SEC-5/SEC-6
+         =================================================================== -->
+    <div class="audit-callout" role="note">
+      <span aria-hidden="true">&#x1F4DD;</span>
+      <span>
+        <strong>SEC-5/SEC-6</strong> &middot; cada Reload escribe una entrada en
+        <code>lib/audit-log</code> con timestamp, provider, masked preview,
+        fingerprint resultante y PID del requester. Los logs server-side
+        <strong>jamás</strong> contienen la API key real — solo el masked.
+      </span>
+    </div>
+
+    <!-- ===================================================================
+         FOOTER — canales redundantes (coherente con el resto del épico)
+         =================================================================== -->
+    <div class="footer-note">
+      Tip: si esta ventana se cae, también podés pedir el listado por Telegram con
+      <kbd>/providers</kbd>. Para rotar una key, siempre terminal Windows —
+      <em>nunca</em> Telegram (regla post-incidente Groq 2026-05-17).
+    </div>
+
+    <!-- ===================================================================
+         VARIANTE FALLBACK INERTE (CA-A3 / SEC-7 / CA-PRV-14)
+         =================================================================== -->
+    <hr class="state-divider" />
+    <span class="state-divider-label">Variante fallback inerte</span>
+
+    <section class="fallback-section" aria-label="Variante fallback inerte de la ventana Providers">
+      <div class="fallback-card" role="alert">
+        <div class="fallback-icon" aria-hidden="true">&#x26A0;</div>
+        <div>
+          <h3>Ventana Providers no disponible</h3>
+          <p>
+            El módulo <code>views/dashboard/providers.js</code> falló al cargar.
+            Ver logs del dashboard para detalle.
+          </p>
+          <p>
+            <code>log("providers view unavailable: " + e.message)</code> emitido
+            por <code>dashboard.js</code> — el render no queda en blanco.
+          </p>
+          <p style="margin-top:8px">
+            Mientras tanto, podés consultar el estado de los providers desde
+            <kbd>/dashboard?view=multi-provider</kbd> (consola avanzada — fuente
+            de masking compartida via <code>lib/multi-provider/secrets-rw.js</code>).
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</body>
+</html>
