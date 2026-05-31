@@ -1,0 +1,751 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 29 — Wizard "Configurar período de descanso" (#3739)
+  -----------------------------------------------------------------------------
+  Filmstrip de los 3 pasos del wizard registrado en
+    POST /dashboard/wizard/descanso/step
+  (depende del scaffolding entregado por #3724 wizards-base, router #3723,
+  escape-html.js #3722). Cada paso es una columna del filmstrip con la UI que
+  vería el operador en ese momento.
+
+  Fuente de verdad de criterios: comentario PO del issue
+    https://github.com/intrale/platform/issues/3739#issuecomment-4587198438
+  Receta técnica firmada: comentario architect-signoff del issue
+    https://github.com/intrale/platform/issues/3739#issuecomment-4587182032
+
+  Decisiones de diseño que constriñen al dev `/pipeline-dev`:
+    A. Stepper horizontal con 3 dots arriba del filmstrip — punto activo =
+       surface brand (cyan), completados = success (verde), futuros = surface-2.
+    B. Step 1 (ventana horaria): reutiliza el calendario semanal del mockup 05
+       (siete columnas de día + periodos por celda + cross-midnight). NO se
+       reinventa la grilla — el dev debe consumir el mismo componente que ya
+       sirve a /dashboard/modo-descanso. La novedad respecto al settings clásico
+       es que el cap 24h continuous-window es visible y bloquea el avance.
+    C. Step 2 (anomalías): read-only en este slice. Tres tarjetas grises que
+       muestran ratio_threshold, lookback_hours, max_snooze_hours vigentes
+       (leídos de config.yaml). Tooltip "para modificar, ver config.yaml" en
+       cada chip. Un checkbox "acknowledged" obligatorio para avanzar.
+    D. Step 3 (confirmación): muestra el preview de la próxima transición
+       calculado server-side con describeRestModeNow + nextWindowTransition.
+       Diff prev/next del schedule. Botón de confirmación con doble-check.
+    E. Tooltips por parámetro implementados como <button aria-describedby>
+       + role="tooltip" con delay 300ms hover / instantáneo focus, cerrables
+       con Esc (CA-G3 — escape unificado vía lib/escape-html.js).
+    F. Estados de error al pie del filmstrip:
+       - 400 cap CA-D2 excedido (continuous-window > 24h en un día)
+       - 400 field not editable (Step 2 con campo distinto a acknowledged)
+       - 410 Gone — sesión expirada por TTL 15min (heredado wizard-base)
+       - 403 no-loopback (POST desde IP externa)
+       - audit JSONL injection escapada (motivo con \n literal queda chained)
+
+  Convención (heredada de #3715):
+    - Paleta: design-tokens.css (var(--surface-*), var(--text-*), var(--brand-*),
+      var(--success), var(--warning), var(--danger), var(--info), var(--border-*),
+      var(--rest-mode), var(--rest-mode-fg), var(--alert-anomaly)). HEX literales
+      solo dentro del SVG standalone para preview directo — el dev usa tokens.
+    - Iconos: este mockup standalone inlinea símbolos para visualización offline.
+      El dev usa <use href="#ic-*"/> sobre sprite.svg, NO redibuja SVG raw.
+    - Tipografía: stack system (Segoe UI Variable / Roboto), tabular en counters.
+    - WCAG AA: pares texto/fondo >= 4.5:1 verificados sobre surface-0 (#0D1117)
+      y surface-1 (#161B22). Estados de error usan ícono + texto (no solo color).
+
+  Tamaño: 1600x1320 (filmstrip 3 pasos + estados de error + audit trail).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1320"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="restPanel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1F1645" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="todayCol" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7C5CFF" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#7C5CFF" stop-opacity="0.06"/>
+    </linearGradient>
+
+    <!-- ============ Iconos inline (preview standalone — el dev usa sprite.svg) ============ -->
+    <symbol id="m-wizard" viewBox="0 0 24 24">
+      <path d="M12 3 L13.5 7.5 L18 9 L13.5 10.5 L12 15 L10.5 10.5 L6 9 L10.5 7.5 Z"
+            fill="currentColor" opacity="0.85"/>
+      <circle cx="18.5" cy="17" r="1.6" fill="currentColor"/>
+      <circle cx="6" cy="18" r="1.1" fill="currentColor" opacity="0.7"/>
+    </symbol>
+    <symbol id="m-moon" viewBox="0 0 24 24">
+      <path d="M19 13.5 A8 8 0 1 1 10.5 5 A6 6 0 0 0 19 13.5 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="15.5" cy="6" r="0.7" fill="currentColor"/>
+      <circle cx="18" cy="9" r="0.5" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M12 7 V12 L15.5 14" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M12 10.5 V17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <circle cx="12" cy="7.5" r="1.05" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-warning" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 9.5 V14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-danger" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8 8 L16 16 M16 8 L8 16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-check" viewBox="0 0 24 24">
+      <path d="M4 12 L10 18 L20 6" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-check-double" viewBox="0 0 24 24">
+      <path d="M3 12 L7 16 L13 9" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M11 12 L15 16 L21 9" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-lock" viewBox="0 0 24 24">
+      <rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8 11 V7 A4 4 0 0 1 16 7 V11" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="12" cy="16" r="1.4" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-audit" viewBox="0 0 24 24">
+      <path d="M5 4 H17 A2 2 0 0 1 19 6 V18 A2 2 0 0 1 17 20 H7 A2 2 0 0 1 5 18 V4 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8 8 H16 M8 11 H14 M8 14 H16 M8 17 H12"
+            stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-arrow" viewBox="0 0 24 24">
+      <path d="M5 12 H19 M14 6 L19 12 L14 18" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-arrow-back" viewBox="0 0 24 24">
+      <path d="M19 12 H5 M10 6 L5 12 L10 18" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-shield" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8 12 L11 15 L16 9" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <!-- Fondo body (surface-0) -->
+  <rect width="1600" height="1320" fill="#0D1117"/>
+
+  <!--
+    =====================================================================
+    HEADER — Brand bar + breadcrumb del wizard
+    =====================================================================
+  -->
+  <g>
+    <rect x="16" y="16" width="1568" height="60" rx="8" fill="url(#headerGrad)" stroke="#21262D"/>
+
+    <!-- Logo + breadcrumb -->
+    <g transform="translate(28, 28)">
+      <rect width="36" height="36" rx="8" fill="#0D274D"/>
+      <use href="#m-moon" x="6" y="6" width="24" height="24" color="#C5B7FF"/>
+    </g>
+    <text x="76" y="42" fill="#E6EDF3" font-size="15" font-weight="700">Dashboard</text>
+    <text x="146" y="42" fill="#6E7681" font-size="13" font-weight="600">&#8250;</text>
+    <text x="160" y="42" fill="#B1BAC4" font-size="14" font-weight="600">Pipeline</text>
+    <text x="232" y="42" fill="#6E7681" font-size="13" font-weight="600">&#8250;</text>
+    <text x="246" y="42" fill="#E6EDF3" font-size="14" font-weight="700">Wizard · Configurar período de descanso</text>
+
+    <!-- Endpoint pill (right) -->
+    <g transform="translate(1336, 32)">
+      <rect width="230" height="28" rx="14" fill="#0D1117" stroke="#30363D"/>
+      <text x="14" y="18" fill="#7D8590" font-size="11" font-weight="600" letter-spacing="0.6">POST</text>
+      <text x="58" y="18" fill="#B1BAC4" font-size="12" font-family="'SF Mono','Consolas',monospace">/dashboard/wizard/descanso/step</text>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    STEPPER — 3 dots indicando progreso del flow
+    Estado mostrado: paso 3 en curso (1-2 completados, 3 activo).
+    =====================================================================
+  -->
+  <g transform="translate(16, 92)">
+    <rect width="1568" height="48" rx="8" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Step 1 (completado) -->
+    <g transform="translate(40, 24)">
+      <circle cx="0" cy="0" r="11" fill="#3FB950" fill-opacity="0.2" stroke="#3FB950"/>
+      <use href="#m-check-double" x="-8" y="-8" width="16" height="16" color="#3FB950"/>
+      <text x="22" y="5" fill="#B1BAC4" font-size="13" font-weight="600">1 · Ventana horaria</text>
+    </g>
+    <line x1="220" y1="24" x2="540" y2="24" stroke="#3FB950" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+    <!-- Step 2 (completado) -->
+    <g transform="translate(560, 24)">
+      <circle cx="0" cy="0" r="11" fill="#3FB950" fill-opacity="0.2" stroke="#3FB950"/>
+      <use href="#m-check-double" x="-8" y="-8" width="16" height="16" color="#3FB950"/>
+      <text x="22" y="5" fill="#B1BAC4" font-size="13" font-weight="600">2 · Detector de anomalías</text>
+    </g>
+    <line x1="760" y1="24" x2="1080" y2="24" stroke="#3FB950" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+    <!-- Step 3 (activo) -->
+    <g transform="translate(1100, 24)">
+      <circle cx="0" cy="0" r="12" fill="url(#brandGrad)" fill-opacity="0.85" stroke="#00D6FF"/>
+      <text x="0" y="4" fill="#0D1117" font-size="11" font-weight="800" text-anchor="middle">3</text>
+      <text x="22" y="5" fill="#E6EDF3" font-size="13" font-weight="700">Confirmación + preview</text>
+    </g>
+
+    <!-- Session TTL countdown (right) -->
+    <g transform="translate(1418, 24)">
+      <use href="#m-clock" x="-8" y="-8" width="16" height="16" color="#F0A500"/>
+      <text x="14" y="5" fill="#F0A500" font-size="12" font-weight="600" font-family="'SF Mono','Consolas',monospace">session · 11m 24s</text>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    FILMSTRIP — 3 cards horizontales (cada paso del wizard).
+    Cada card: 504 ancho x 660 alto. Layout: 16 + 504 + 12 + 504 + 12 + 504 + 16 = 1568.
+    =====================================================================
+  -->
+
+  <!-- ============ STEP 1 — Ventana horaria ============ -->
+  <g transform="translate(16, 156)">
+    <rect width="504" height="660" rx="12" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="504" height="3" rx="1.5" fill="url(#brandGrad)" opacity="0.4"/>
+
+    <!-- Card title -->
+    <g transform="translate(20, 30)">
+      <use href="#m-clock" x="0" y="-12" width="18" height="18" color="#C5B7FF"/>
+      <text x="26" y="2" fill="#E6EDF3" font-size="15" font-weight="700">Paso 1 · Ventana horaria</text>
+    </g>
+    <text x="20" y="62" fill="#8B949E" font-size="11.5">Definí los bloques de descanso por día. Cross-midnight permitido. Cap continuous-window 24h por día.</text>
+
+    <!-- Zona horaria + cap badge -->
+    <g transform="translate(20, 84)">
+      <text x="0" y="0" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.6">ZONA HORARIA</text>
+      <rect x="0" y="10" width="280" height="34" rx="8" fill="#0D1117" stroke="#30363D"/>
+      <text x="14" y="32" fill="#E6EDF3" font-size="13" font-family="'SF Mono','Consolas',monospace">America/Argentina/Buenos_Aires</text>
+
+      <!-- Cap CA-D2 chip + tooltip indicator -->
+      <g transform="translate(296, 10)">
+        <rect width="168" height="34" rx="8" fill="#7C5CFF" fill-opacity="0.14" stroke="#7C5CFF" stroke-opacity="0.55"/>
+        <use href="#m-lock" x="8" y="9" width="16" height="16" color="#C5B7FF"/>
+        <text x="30" y="22" fill="#C5B7FF" font-size="11" font-weight="700" letter-spacing="0.4">CAP 24h CONTINUO</text>
+        <circle cx="156" cy="17" r="7" fill="none" stroke="#C5B7FF" stroke-opacity="0.55"/>
+        <text x="156" y="21" fill="#C5B7FF" font-size="9" font-weight="800" text-anchor="middle">?</text>
+      </g>
+    </g>
+
+    <!-- Calendario semanal compacto (7 columnas) -->
+    <g transform="translate(20, 148)">
+      <rect width="464" height="332" rx="10" fill="url(#restPanel)" stroke="#30363D"/>
+      <text x="14" y="22" fill="#E6EDF3" font-size="12.5" font-weight="700">Calendario semanal</text>
+      <text x="14" y="38" fill="#8B949E" font-size="10.5">Tap un día para sumar periodos. + Periodo / × eliminar.</text>
+
+      <!-- Headers días -->
+      <g transform="translate(14, 50)" font-size="10" font-weight="700" letter-spacing="0.9">
+        <g><rect width="60" height="22" rx="4" fill="#7C5CFF" fill-opacity="0.22"/><text x="30" y="15" fill="#C5B7FF" text-anchor="middle">LUN</text></g>
+        <g transform="translate(66, 0)"><text x="30" y="15" fill="#8B949E" text-anchor="middle">MAR</text></g>
+        <g transform="translate(132, 0)"><text x="30" y="15" fill="#8B949E" text-anchor="middle">MIE</text></g>
+        <g transform="translate(198, 0)"><text x="30" y="15" fill="#8B949E" text-anchor="middle">JUE</text></g>
+        <g transform="translate(264, 0)"><text x="30" y="15" fill="#8B949E" text-anchor="middle">VIE</text></g>
+        <g transform="translate(330, 0)"><text x="30" y="15" fill="#F85149" text-anchor="middle">SAB</text></g>
+        <g transform="translate(396, 0)"><text x="30" y="15" fill="#8B949E" text-anchor="middle">DOM</text></g>
+      </g>
+
+      <!-- LUN: 1 periodo válido (22:00 → 07:00) -->
+      <g transform="translate(14, 84)">
+        <rect width="60" height="48" rx="6" fill="#7C5CFF" fill-opacity="0.18" stroke="#7C5CFF" stroke-opacity="0.6"/>
+        <text x="30" y="20" fill="#C5B7FF" font-size="9" text-anchor="middle" font-weight="700">NOCHE</text>
+        <text x="30" y="34" fill="#E6EDF3" font-size="10" text-anchor="middle" font-family="'SF Mono','Consolas',monospace">22:00→07:00</text>
+        <text x="30" y="44" fill="#8B949E" font-size="8" text-anchor="middle">540 min</text>
+      </g>
+      <!-- MAR -->
+      <g transform="translate(80, 84)">
+        <rect width="60" height="48" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="30" y="20" fill="#8B949E" font-size="9" text-anchor="middle" font-weight="700">NOCHE</text>
+        <text x="30" y="34" fill="#B1BAC4" font-size="10" text-anchor="middle" font-family="'SF Mono','Consolas',monospace">22:00→07:00</text>
+        <text x="30" y="44" fill="#6E7681" font-size="8" text-anchor="middle">540 min</text>
+      </g>
+      <!-- MIE: 2 periodos (siesta + noche) -->
+      <g transform="translate(146, 84)">
+        <rect width="60" height="22" rx="4" fill="#0D1117" stroke="#30363D"/>
+        <text x="30" y="14" fill="#B1BAC4" font-size="9" text-anchor="middle" font-family="'SF Mono','Consolas',monospace">13:00→14:30</text>
+      </g>
+      <g transform="translate(146, 110)">
+        <rect width="60" height="22" rx="4" fill="#0D1117" stroke="#30363D"/>
+        <text x="30" y="14" fill="#B1BAC4" font-size="9" text-anchor="middle" font-family="'SF Mono','Consolas',monospace">22:00→07:00</text>
+      </g>
+      <!-- JUE -->
+      <g transform="translate(212, 84)">
+        <rect width="60" height="48" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="30" y="20" fill="#8B949E" font-size="9" text-anchor="middle" font-weight="700">NOCHE</text>
+        <text x="30" y="34" fill="#B1BAC4" font-size="10" text-anchor="middle" font-family="'SF Mono','Consolas',monospace">22:00→07:00</text>
+        <text x="30" y="44" fill="#6E7681" font-size="8" text-anchor="middle">540 min</text>
+      </g>
+      <!-- VIE -->
+      <g transform="translate(278, 84)">
+        <rect width="60" height="48" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="30" y="20" fill="#8B949E" font-size="9" text-anchor="middle" font-weight="700">CORTO</text>
+        <text x="30" y="34" fill="#B1BAC4" font-size="10" text-anchor="middle" font-family="'SF Mono','Consolas',monospace">22:00→08:00</text>
+        <text x="30" y="44" fill="#6E7681" font-size="8" text-anchor="middle">600 min</text>
+      </g>
+      <!-- SAB: día con cap excedido (error visual + ícono warning) -->
+      <g transform="translate(344, 84)">
+        <rect width="60" height="48" rx="6" fill="#F85149" fill-opacity="0.16" stroke="#F85149" stroke-opacity="0.7"/>
+        <text x="30" y="20" fill="#F85149" font-size="9" text-anchor="middle" font-weight="700">EXCEDE</text>
+        <text x="30" y="34" fill="#E6EDF3" font-size="10" text-anchor="middle" font-family="'SF Mono','Consolas',monospace">00:00→23:59</text>
+        <text x="30" y="44" fill="#F85149" font-size="8" text-anchor="middle">×2 = 2880 min</text>
+        <use href="#m-warning" x="44" y="-2" width="14" height="14" color="#F85149"/>
+      </g>
+      <!-- DOM -->
+      <g transform="translate(410, 84)">
+        <rect width="60" height="48" rx="6" fill="none" stroke="#30363D" stroke-dasharray="3 3"/>
+        <text x="30" y="30" fill="#6E7681" font-size="10" text-anchor="middle">vacío</text>
+      </g>
+
+      <!-- Tooltip flotante sobre el día con error -->
+      <g transform="translate(180, 148)">
+        <path d="M170 0 L178 8 L184 8 L184 64 L8 64 L8 8 L162 8 Z"
+              fill="#1C2128" stroke="#F85149" stroke-opacity="0.7"/>
+        <use href="#m-warning" x="18" y="16" width="14" height="14" color="#F85149"/>
+        <text x="40" y="28" fill="#F85149" font-size="11" font-weight="700">CA-D2 violado</text>
+        <text x="18" y="48" fill="#B1BAC4" font-size="10.5">schedule.SAB: duración total continua</text>
+        <text x="18" y="60" fill="#B1BAC4" font-size="10.5">2880 min &gt; cap 1440 min (24h)</text>
+      </g>
+
+      <!-- Suma total + cap server-side -->
+      <g transform="translate(14, 246)">
+        <text x="0" y="0" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="0.4">TOTAL DE LA SEMANA</text>
+        <text x="0" y="22" fill="#E6EDF3" font-size="20" font-weight="700" font-family="'SF Mono','Consolas',monospace">3120 min</text>
+        <text x="98" y="22" fill="#8B949E" font-size="11">/ semana · 6 periodos</text>
+
+        <g transform="translate(238, 4)">
+          <rect width="212" height="48" rx="8" fill="#F85149" fill-opacity="0.10" stroke="#F85149" stroke-opacity="0.55"/>
+          <use href="#m-warning" x="10" y="14" width="20" height="20" color="#F85149"/>
+          <text x="38" y="22" fill="#F85149" font-size="11" font-weight="700">No puede avanzar</text>
+          <text x="38" y="38" fill="#B1BAC4" font-size="10">SAB excede el cap CA-D2 (24h)</text>
+        </g>
+      </g>
+
+      <!-- Tip de validación -->
+      <g transform="translate(14, 302)">
+        <use href="#m-info" x="0" y="0" width="14" height="14" color="#58A6FF"/>
+        <text x="20" y="11" fill="#7D8590" font-size="10.5">El cap se valida server-side en lib/rest-mode-window.js · validatePayload.</text>
+      </g>
+    </g>
+
+    <!-- Nav: atrás + continuar (deshabilitado) -->
+    <g transform="translate(20, 588)">
+      <rect width="100" height="44" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <use href="#m-arrow-back" x="14" y="13" width="18" height="18" color="#B1BAC4"/>
+      <text x="60" y="28" fill="#B1BAC4" font-size="13" font-weight="700" text-anchor="middle">Atrás</text>
+
+      <g transform="translate(180, 0)">
+        <rect width="284" height="44" rx="10" fill="#1C2128" stroke="#30363D"/>
+        <text x="142" y="28" fill="#6E7681" font-size="13" font-weight="800" text-anchor="middle" letter-spacing="0.6">CORREGIR Y CONTINUAR &#8594;</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============ STEP 2 — Detector de anomalías (read-only) ============ -->
+  <g transform="translate(532, 156)">
+    <rect width="504" height="660" rx="12" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="504" height="3" rx="1.5" fill="url(#brandGrad)" opacity="0.4"/>
+
+    <!-- Card title -->
+    <g transform="translate(20, 30)">
+      <use href="#m-shield" x="0" y="-12" width="18" height="18" color="#FF6B8A"/>
+      <text x="26" y="2" fill="#E6EDF3" font-size="15" font-weight="700">Paso 2 · Detector de anomalías</text>
+    </g>
+    <text x="20" y="62" fill="#8B949E" font-size="11.5">Mostramos los umbrales vigentes. Edición fuera de scope de este wizard — abrir
+      <tspan font-family="'SF Mono','Consolas',monospace" fill="#B1BAC4">config.yaml</tspan> directamente.</text>
+
+    <!-- Badge read-only -->
+    <g transform="translate(20, 84)">
+      <rect width="464" height="44" rx="8" fill="#0D274D" fill-opacity="0.45" stroke="#1F6FEB" stroke-opacity="0.5"/>
+      <use href="#m-info" x="14" y="13" width="18" height="18" color="#58A6FF"/>
+      <text x="42" y="22" fill="#E6EDF3" font-size="11.5" font-weight="600">Solo lectura — los valores se leen de cost_anomaly_alert</text>
+      <text x="42" y="38" fill="#B1BAC4" font-size="10.5">POST con cualquier campo distinto a acknowledged → 400 field not editable.</text>
+    </g>
+
+    <!-- Threshold 1: ratio_threshold -->
+    <g transform="translate(20, 148)">
+      <rect width="464" height="92" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="22" fill="#8B949E" font-size="10.5" letter-spacing="0.6" font-weight="700">ratio_threshold</text>
+      <text x="16" y="50" fill="#E6EDF3" font-size="26" font-weight="700" font-family="'SF Mono','Consolas',monospace">1.50</text>
+      <text x="86" y="50" fill="#6E7681" font-size="11">×</text>
+      <text x="98" y="50" fill="#8B949E" font-size="11">la mediana del lookback</text>
+
+      <!-- Tooltip trigger -->
+      <g transform="translate(436, 16)">
+        <circle cx="0" cy="0" r="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="0" y="4" fill="#B1BAC4" font-size="11" font-weight="800" text-anchor="middle">?</text>
+      </g>
+
+      <text x="16" y="76" fill="#B1BAC4" font-size="10.5">Cuando el consumo del slot supera 1.5× la mediana de la ventana de lookback, se</text>
+      <text x="16" y="88" fill="#B1BAC4" font-size="10.5">dispara wake-up y termina el modo descanso para revisión humana.</text>
+    </g>
+
+    <!-- Threshold 2: lookback_hours -->
+    <g transform="translate(20, 252)">
+      <rect width="464" height="92" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="22" fill="#8B949E" font-size="10.5" letter-spacing="0.6" font-weight="700">lookback_hours</text>
+      <text x="16" y="50" fill="#E6EDF3" font-size="26" font-weight="700" font-family="'SF Mono','Consolas',monospace">24</text>
+      <text x="56" y="50" fill="#8B949E" font-size="11">horas hacia atrás</text>
+
+      <g transform="translate(436, 16)">
+        <circle cx="0" cy="0" r="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="0" y="4" fill="#B1BAC4" font-size="11" font-weight="800" text-anchor="middle">?</text>
+      </g>
+
+      <text x="16" y="76" fill="#B1BAC4" font-size="10.5">Ventana móvil que define qué se considera "consumo normal". Más corta = más</text>
+      <text x="16" y="88" fill="#B1BAC4" font-size="10.5">sensible al pico inmediato; más larga = más tolerante.</text>
+    </g>
+
+    <!-- Threshold 3: max_snooze_hours -->
+    <g transform="translate(20, 356)">
+      <rect width="464" height="92" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="22" fill="#8B949E" font-size="10.5" letter-spacing="0.6" font-weight="700">max_snooze_hours</text>
+      <text x="16" y="50" fill="#E6EDF3" font-size="26" font-weight="700" font-family="'SF Mono','Consolas',monospace">24</text>
+      <g transform="translate(60, 38)">
+        <rect width="68" height="18" rx="9" fill="#7C5CFF" fill-opacity="0.18" stroke="#7C5CFF" stroke-opacity="0.55"/>
+        <use href="#m-lock" x="4" y="3" width="12" height="12" color="#C5B7FF"/>
+        <text x="20" y="13" fill="#C5B7FF" font-size="9" font-weight="700" letter-spacing="0.6">HARDCODED</text>
+      </g>
+      <text x="138" y="50" fill="#8B949E" font-size="11">tope absoluto del snooze</text>
+
+      <g transform="translate(436, 16)">
+        <circle cx="0" cy="0" r="10" fill="#0D1117" stroke="#30363D"/>
+        <text x="0" y="4" fill="#B1BAC4" font-size="11" font-weight="800" text-anchor="middle">?</text>
+      </g>
+
+      <text x="16" y="76" fill="#B1BAC4" font-size="10.5">Cap absoluto inviolable. MAX_SNOOZE_HOURS = 24 en lib/rest-mode-state.js:50.</text>
+      <text x="16" y="88" fill="#B1BAC4" font-size="10.5">No se puede subir desde UI — es defensa contra silenciar alertas indefinidamente.</text>
+    </g>
+
+    <!-- Acknowledge checkbox -->
+    <g transform="translate(20, 470)">
+      <rect width="464" height="58" rx="10" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.55"/>
+      <rect x="16" y="20" width="18" height="18" rx="4" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950"/>
+      <use href="#m-check" x="17" y="21" width="16" height="16" color="#3FB950"/>
+      <text x="46" y="25" fill="#E6EDF3" font-size="12.5" font-weight="700">Leí los umbrales vigentes</text>
+      <text x="46" y="42" fill="#B1BAC4" font-size="10.5">acknowledged: true · requerido para avanzar a confirmación.</text>
+    </g>
+
+    <!-- Nav: atrás + continuar (habilitado) -->
+    <g transform="translate(20, 588)">
+      <rect width="100" height="44" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <use href="#m-arrow-back" x="14" y="13" width="18" height="18" color="#B1BAC4"/>
+      <text x="60" y="28" fill="#B1BAC4" font-size="13" font-weight="700" text-anchor="middle">Atrás</text>
+
+      <g transform="translate(180, 0)">
+        <rect width="284" height="44" rx="10" fill="url(#brandGrad)"/>
+        <text x="142" y="28" fill="#0D1117" font-size="13" font-weight="800" text-anchor="middle" letter-spacing="0.6">CONTINUAR &#8594;</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============ STEP 3 — Confirmación + preview ============ -->
+  <g transform="translate(1048, 156)">
+    <rect width="504" height="660" rx="12" fill="#161B22" stroke="#00D6FF" stroke-opacity="0.45" stroke-width="1.5"/>
+    <rect x="0" y="0" width="504" height="3" rx="1.5" fill="url(#brandGrad)"/>
+
+    <!-- Card title -->
+    <g transform="translate(20, 30)">
+      <use href="#m-check-double" x="0" y="-12" width="18" height="18" color="#00D6FF"/>
+      <text x="26" y="2" fill="#E6EDF3" font-size="15" font-weight="700">Paso 3 · Confirmación + preview</text>
+    </g>
+    <text x="20" y="62" fill="#8B949E" font-size="11.5">Revisá el diff y la próxima transición. Al confirmar se persiste atómicamente y se chained en audit.</text>
+
+    <!-- Diff prev → next -->
+    <g transform="translate(20, 84)">
+      <rect width="464" height="178" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <text x="14" y="22" fill="#E6EDF3" font-size="12" font-weight="700">Diff del schedule</text>
+      <text x="14" y="38" fill="#8B949E" font-size="10.5">prev / next — campos modificados resaltados.</text>
+
+      <!-- Headers -->
+      <text x="14" y="62" fill="#B1BAC4" font-size="10.5" font-weight="600" letter-spacing="0.6">PREV</text>
+      <text x="240" y="62" fill="#B1BAC4" font-size="10.5" font-weight="600" letter-spacing="0.6">NEXT</text>
+
+      <line x1="226" y1="46" x2="226" y2="174" stroke="#30363D" stroke-dasharray="3 3"/>
+
+      <!-- Day-by-day rows -->
+      <g font-size="11" font-family="'SF Mono','Consolas',monospace">
+        <g transform="translate(14, 80)">
+          <text x="0" y="0" fill="#B1BAC4">MON · 22-07</text>
+          <text x="226" y="0" fill="#3FB950">MON · 22-07</text>
+          <text x="180" y="0" fill="#6E7681" font-family="-apple-system, 'Segoe UI', sans-serif">=</text>
+        </g>
+        <g transform="translate(14, 100)">
+          <text x="0" y="0" fill="#B1BAC4">TUE · —</text>
+          <text x="226" y="0" fill="#3FB950">TUE · 22-07</text>
+          <text x="180" y="0" fill="#3FB950" font-family="-apple-system, 'Segoe UI', sans-serif">+</text>
+        </g>
+        <g transform="translate(14, 120)">
+          <text x="0" y="0" fill="#B1BAC4">WED · 13-14 / 22-07</text>
+          <text x="226" y="0" fill="#3FB950">WED · 13-14 / 22-07</text>
+          <text x="180" y="0" fill="#6E7681" font-family="-apple-system, 'Segoe UI', sans-serif">=</text>
+        </g>
+        <g transform="translate(14, 140)">
+          <text x="0" y="0" fill="#B1BAC4">THU · 22-07</text>
+          <text x="226" y="0" fill="#3FB950">THU · 22-07</text>
+          <text x="180" y="0" fill="#6E7681" font-family="-apple-system, 'Segoe UI', sans-serif">=</text>
+        </g>
+        <g transform="translate(14, 160)">
+          <text x="0" y="0" fill="#7D8590">FRI · 23-08</text>
+          <text x="226" y="0" fill="#F85149">FRI · 22-08</text>
+          <text x="180" y="0" fill="#F0A500" font-family="-apple-system, 'Segoe UI', sans-serif">~</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Preview de próxima transición -->
+    <g transform="translate(20, 282)">
+      <rect width="464" height="116" rx="10" fill="url(#restPanel)" stroke="#7C5CFF" stroke-opacity="0.55"/>
+      <use href="#m-moon" x="14" y="14" width="22" height="22" color="#C5B7FF"/>
+      <text x="44" y="30" fill="#C5B7FF" font-size="11" font-weight="700" letter-spacing="0.6">PRÓXIMA TRANSICIÓN</text>
+      <text x="14" y="58" fill="#E6EDF3" font-size="16" font-weight="700">Modo descanso comienza en
+        <tspan fill="#C5B7FF" font-family="'SF Mono','Consolas',monospace">3 h 24 min</tspan>
+      </text>
+      <text x="14" y="80" fill="#B1BAC4" font-size="11.5">kind:
+        <tspan font-family="'SF Mono','Consolas',monospace" fill="#3FB950">enter</tspan> ·
+        when:
+        <tspan font-family="'SF Mono','Consolas',monospace" fill="#E6EDF3">today</tspan> ·
+        at:
+        <tspan font-family="'SF Mono','Consolas',monospace" fill="#E6EDF3">22:00</tspan>
+      </text>
+      <text x="14" y="98" fill="#7D8590" font-size="10.5">Calculado con describeRestModeNow + nextWindowTransition (lib/rest-mode-window.js).</text>
+    </g>
+
+    <!-- Motivo opcional + counter (escapado XSS) -->
+    <g transform="translate(20, 414)">
+      <text x="0" y="0" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.4">MOTIVO (opcional)</text>
+      <rect x="0" y="10" width="464" height="68" rx="8" fill="#0D1117" stroke="#30363D"/>
+      <text x="14" y="32" fill="#E6EDF3" font-size="12" font-family="-apple-system, 'Segoe UI', sans-serif">Ajuste pos-incidente del</text>
+      <text x="14" y="50" fill="#E6EDF3" font-size="12" font-family="-apple-system, 'Segoe UI', sans-serif">29/05 — bajamos sensibilidad SAB.</text>
+      <text x="438" y="74" fill="#7D8590" font-size="10" text-anchor="end" font-family="'SF Mono','Consolas',monospace">52 / 500</text>
+
+      <!-- Escape hint -->
+      <g transform="translate(0, 88)">
+        <use href="#m-shield" x="0" y="-4" width="14" height="14" color="#3FB950"/>
+        <text x="20" y="7" fill="#7D8590" font-size="10.5">Render server-side con escapeHtmlText (lib/escape-html.js · #3722).
+          <tspan font-family="'SF Mono','Consolas',monospace" fill="#B1BAC4">&lt;img&gt;</tspan>
+          → <tspan font-family="'SF Mono','Consolas',monospace" fill="#3FB950">&amp;lt;img&amp;gt;</tspan>
+        </text>
+      </g>
+    </g>
+
+    <!-- Audit trail preview chained -->
+    <g transform="translate(20, 532)">
+      <rect width="464" height="42" rx="8" fill="#0D1117" stroke="#30363D"/>
+      <use href="#m-audit" x="10" y="11" width="20" height="20" color="#BC8CFF"/>
+      <text x="38" y="22" fill="#E6EDF3" font-size="11.5" font-weight="700">Audit chain config-descanso-audit.jsonl</text>
+      <text x="38" y="36" fill="#B1BAC4" font-size="10.5" font-family="'SF Mono','Consolas',monospace">prev_hash a3f1b2 · action: config_descanso · actor: leo</text>
+    </g>
+
+    <!-- Nav: atrás + CONFIRMAR -->
+    <g transform="translate(20, 588)">
+      <rect width="100" height="44" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <use href="#m-arrow-back" x="14" y="13" width="18" height="18" color="#B1BAC4"/>
+      <text x="60" y="28" fill="#B1BAC4" font-size="13" font-weight="700" text-anchor="middle">Atrás</text>
+
+      <g transform="translate(132, 0)">
+        <rect width="332" height="44" rx="10" fill="#3FB950"/>
+        <use href="#m-check-double" x="18" y="13" width="18" height="18" color="#0D1117"/>
+        <text x="178" y="28" fill="#0D1117" font-size="13" font-weight="800" text-anchor="middle" letter-spacing="0.6">CONFIRMAR Y APLICAR</text>
+      </g>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    ESTADOS DE ERROR — fila inferior con los 5 casos cubiertos por tests.
+    =====================================================================
+  -->
+  <g transform="translate(16, 836)">
+    <text x="0" y="0" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="1.2">ESTADOS DE ERROR · COBERTURA EXPLÍCITA EN TESTS</text>
+
+    <!-- 1. 400 CA-D2 cap excedido -->
+    <g transform="translate(0, 16)">
+      <rect width="304" height="160" rx="10" fill="#161B22" stroke="#F85149" stroke-opacity="0.45"/>
+      <rect x="0" y="0" width="4" height="160" fill="#F85149"/>
+      <g transform="translate(20, 20)">
+        <use href="#m-warning" x="0" y="0" width="20" height="20" color="#F85149"/>
+        <text x="28" y="14" fill="#F85149" font-size="12" font-weight="700">400 · cap CA-D2</text>
+      </g>
+      <text x="20" y="60" fill="#E6EDF3" font-size="11.5" font-weight="700">Continuous-window &gt; 24h</text>
+      <text x="20" y="78" fill="#B1BAC4" font-size="10.5">Validación server-side dentro de</text>
+      <text x="20" y="92" fill="#B1BAC4" font-size="10.5">validatePayload. Bypass UI imposible.</text>
+      <g transform="translate(20, 106)">
+        <rect width="264" height="40" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="10" y="14" fill="#7D8590" font-size="9" font-family="'SF Mono','Consolas',monospace">POST /dashboard/wizard/descanso/step</text>
+        <text x="10" y="30" fill="#F85149" font-size="10" font-family="'SF Mono','Consolas',monospace">errors: [schedule.SAB excede CA-D2]</text>
+      </g>
+    </g>
+
+    <!-- 2. 400 field not editable (Step 2) -->
+    <g transform="translate(316, 16)">
+      <rect width="304" height="160" rx="10" fill="#161B22" stroke="#F85149" stroke-opacity="0.45"/>
+      <rect x="0" y="0" width="4" height="160" fill="#F85149"/>
+      <g transform="translate(20, 20)">
+        <use href="#m-lock" x="0" y="0" width="20" height="20" color="#F85149"/>
+        <text x="28" y="14" fill="#F85149" font-size="12" font-weight="700">400 · field not editable</text>
+      </g>
+      <text x="20" y="60" fill="#E6EDF3" font-size="11.5" font-weight="700">Step 2 sólo acepta acknowledged</text>
+      <text x="20" y="78" fill="#B1BAC4" font-size="10.5">POST con ratio_threshold u otros</text>
+      <text x="20" y="92" fill="#B1BAC4" font-size="10.5">campos editables → rechazo explícito.</text>
+      <g transform="translate(20, 106)">
+        <rect width="264" height="40" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="10" y="14" fill="#7D8590" font-size="9" font-family="'SF Mono','Consolas',monospace">body: {ratio_threshold: 999}</text>
+        <text x="10" y="30" fill="#F85149" font-size="10" font-family="'SF Mono','Consolas',monospace">errors: [field not editable]</text>
+      </g>
+    </g>
+
+    <!-- 3. 410 Gone — sesión expirada -->
+    <g transform="translate(632, 16)">
+      <rect width="304" height="160" rx="10" fill="#161B22" stroke="#F0A500" stroke-opacity="0.55"/>
+      <rect x="0" y="0" width="4" height="160" fill="#F0A500"/>
+      <g transform="translate(20, 20)">
+        <use href="#m-clock" x="0" y="0" width="20" height="20" color="#F0A500"/>
+        <text x="28" y="14" fill="#F0A500" font-size="12" font-weight="700">410 · session_expired</text>
+      </g>
+      <text x="20" y="60" fill="#E6EDF3" font-size="11.5" font-weight="700">TTL 15 min vencido</text>
+      <text x="20" y="78" fill="#B1BAC4" font-size="10.5">Heredado de lib/wizards/ (#3724).</text>
+      <text x="20" y="92" fill="#B1BAC4" font-size="10.5">Reiniciar el wizard desde paso 1.</text>
+      <g transform="translate(20, 106)">
+        <rect width="264" height="40" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="10" y="14" fill="#7D8590" font-size="9" font-family="'SF Mono','Consolas',monospace">session creada hace 16m</text>
+        <text x="10" y="30" fill="#F0A500" font-size="10" font-family="'SF Mono','Consolas',monospace">reason: session_expired</text>
+      </g>
+    </g>
+
+    <!-- 4. 403 no-loopback -->
+    <g transform="translate(948, 16)">
+      <rect width="304" height="160" rx="10" fill="#161B22" stroke="#F85149" stroke-opacity="0.45"/>
+      <rect x="0" y="0" width="4" height="160" fill="#F85149"/>
+      <g transform="translate(20, 20)">
+        <use href="#m-danger" x="0" y="0" width="20" height="20" color="#F85149"/>
+        <text x="28" y="14" fill="#F85149" font-size="12" font-weight="700">403 · not loopback</text>
+      </g>
+      <text x="20" y="60" fill="#E6EDF3" font-size="11.5" font-weight="700">POST desde IP externa</text>
+      <text x="20" y="78" fill="#B1BAC4" font-size="10.5">Dashboard sólo escucha en loopback.</text>
+      <text x="20" y="92" fill="#B1BAC4" font-size="10.5">Rechazo antes de parsear el body.</text>
+      <g transform="translate(20, 106)">
+        <rect width="264" height="40" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="10" y="14" fill="#7D8590" font-size="9" font-family="'SF Mono','Consolas',monospace">remoteAddress: 10.0.0.5</text>
+        <text x="10" y="30" fill="#F85149" font-size="10" font-family="'SF Mono','Consolas',monospace">status: 403 · body no leído</text>
+      </g>
+    </g>
+
+    <!-- 5. NDJSON injection escapada -->
+    <g transform="translate(1264, 16)">
+      <rect width="304" height="160" rx="10" fill="#161B22" stroke="#3FB950" stroke-opacity="0.45"/>
+      <rect x="0" y="0" width="4" height="160" fill="#3FB950"/>
+      <g transform="translate(20, 20)">
+        <use href="#m-shield" x="0" y="0" width="20" height="20" color="#3FB950"/>
+        <text x="28" y="14" fill="#3FB950" font-size="12" font-weight="700">Audit · injection escapada</text>
+      </g>
+      <text x="20" y="60" fill="#E6EDF3" font-size="11.5" font-weight="700">motivo con \n literal</text>
+      <text x="20" y="78" fill="#B1BAC4" font-size="10.5">audit-log.appendChained emite</text>
+      <text x="20" y="92" fill="#B1BAC4" font-size="10.5">JSON.stringify · una sola línea.</text>
+      <g transform="translate(20, 106)">
+        <rect width="264" height="40" rx="6" fill="#0D1117" stroke="#30363D"/>
+        <text x="10" y="14" fill="#7D8590" font-size="9" font-family="'SF Mono','Consolas',monospace">in: "linea1\nMALICIOUS"</text>
+        <text x="10" y="30" fill="#3FB950" font-size="10" font-family="'SF Mono','Consolas',monospace">out: "linea1\\nMALICIOUS" (1 row)</text>
+      </g>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    AUDIT TRAIL — fila de la chain con prev_hash + curr_hash
+    Demuestra el contrato CA-D5 del PO.
+    =====================================================================
+  -->
+  <g transform="translate(16, 1024)">
+    <rect width="1568" height="138" rx="12" fill="#0D1117" stroke="#30363D"/>
+    <g transform="translate(20, 22)">
+      <use href="#m-audit" x="0" y="0" width="22" height="22" color="#BC8CFF"/>
+      <text x="32" y="16" fill="#E6EDF3" font-size="13" font-weight="700">Audit chain — .pipeline/audit/config-descanso-audit.jsonl</text>
+      <text x="32" y="34" fill="#B1BAC4" font-size="11">Tamper-evident: cada entrada incluye prev_hash + curr_hash (SHA-256 sobre payload canónico).
+        Validable con node .pipeline/lib/audit-log.js verify.</text>
+    </g>
+
+    <!-- Row de muestra -->
+    <g transform="translate(20, 76)">
+      <rect width="1528" height="46" rx="8" fill="#161B22" stroke="#30363D"/>
+
+      <text x="14" y="20" fill="#7D8590" font-size="10" letter-spacing="0.6" font-weight="700">TS</text>
+      <text x="14" y="38" fill="#B1BAC4" font-size="11" font-family="'SF Mono','Consolas',monospace">2026-05-31T20:24:11Z</text>
+
+      <text x="194" y="20" fill="#7D8590" font-size="10" letter-spacing="0.6" font-weight="700">ACTOR</text>
+      <text x="194" y="38" fill="#B1BAC4" font-size="11" font-family="'SF Mono','Consolas',monospace">commander:leo</text>
+
+      <text x="354" y="20" fill="#7D8590" font-size="10" letter-spacing="0.6" font-weight="700">ACTION</text>
+      <text x="354" y="38" fill="#3FB950" font-size="11" font-family="'SF Mono','Consolas',monospace">config_descanso</text>
+
+      <text x="510" y="20" fill="#7D8590" font-size="10" letter-spacing="0.6" font-weight="700">CONFIG_DIFF</text>
+      <text x="510" y="38" fill="#B1BAC4" font-size="11" font-family="'SF Mono','Consolas',monospace">{prev: {schedule: …}, next: {schedule: …}}</text>
+
+      <text x="934" y="20" fill="#7D8590" font-size="10" letter-spacing="0.6" font-weight="700">PREV_HASH</text>
+      <text x="934" y="38" fill="#BC8CFF" font-size="11" font-family="'SF Mono','Consolas',monospace">a3f1b2c8…</text>
+
+      <text x="1100" y="20" fill="#7D8590" font-size="10" letter-spacing="0.6" font-weight="700">CURR_HASH</text>
+      <text x="1100" y="38" fill="#BC8CFF" font-size="11" font-family="'SF Mono','Consolas',monospace">d72ea91f…</text>
+
+      <g transform="translate(1410, 16)">
+        <rect width="100" height="22" rx="11" fill="#3FB950" fill-opacity="0.18" stroke="#3FB950" stroke-opacity="0.55"/>
+        <use href="#m-check" x="6" y="3" width="16" height="16" color="#3FB950"/>
+        <text x="56" y="15" fill="#3FB950" font-size="10.5" font-weight="700" text-anchor="middle">chain OK</text>
+      </g>
+    </g>
+  </g>
+
+  <!--
+    =====================================================================
+    Footer — Acceso a sprite.svg + tokens
+    =====================================================================
+  -->
+  <g transform="translate(16, 1182)">
+    <rect width="1568" height="118" rx="12" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(20, 24)">
+      <text x="0" y="0" fill="#E6EDF3" font-size="13" font-weight="700">Contrato para pipeline-dev</text>
+      <text x="0" y="22" fill="#B1BAC4" font-size="11.5">El render del wizard usa exclusivamente:</text>
+
+      <g font-family="'SF Mono','Consolas',monospace" font-size="11">
+        <g transform="translate(0, 38)">
+          <rect width="380" height="28" rx="6" fill="#0D1117" stroke="#30363D"/>
+          <text x="14" y="18" fill="#7BD7F5">var(--surface-*) · var(--rest-mode) · var(--alert-anomaly)</text>
+        </g>
+        <g transform="translate(394, 38)">
+          <rect width="380" height="28" rx="6" fill="#0D1117" stroke="#30363D"/>
+          <text x="14" y="18" fill="#7BD7F5">&lt;use href="#ic-moon"/&gt; sobre sprite.svg (no SVG inline)</text>
+        </g>
+        <g transform="translate(788, 38)">
+          <rect width="380" height="28" rx="6" fill="#0D1117" stroke="#30363D"/>
+          <text x="14" y="18" fill="#7BD7F5">escapeHtmlText(motivo) · escapeHtmlAttr(actor)</text>
+        </g>
+        <g transform="translate(1182, 38)">
+          <rect width="366" height="28" rx="6" fill="#0D1117" stroke="#30363D"/>
+          <text x="14" y="18" fill="#7BD7F5">role="tooltip" + aria-describedby (delay 300ms)</text>
+        </g>
+      </g>
+
+      <text x="0" y="86" fill="#7D8590" font-size="10.5">Tabla WCAG AA: indigo nocturno C5B7FF sobre surface-0 = 7.4:1 (AAA). Alerta anomalía FFD2DC sobre surface-0 = 13:1 (AAA). Verde de chain BC8CFF sobre surface-1 = 5.6:1 (AA).</text>
+    </g>
+  </g>
+
+</svg>
