@@ -202,6 +202,128 @@ curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:3200/dashboard/partia
 # Debe devolver 200
 ```
 
+## Ventana **Historial** — split #3734
+
+**Modulo destino:** `.pipeline/views/dashboard/historial.js`
+**Slug del router:** `?view=historial` (path legacy `/?section=historial` mantenido por compatibilidad).
+**Mockup adjunto:** `.pipeline/assets/mockups/31-historial-v3.svg` (1080×1920, kiosk vertical) + narrativa Lili en `narrativa-historial-v3.md`.
+**Contrato:** `renderHistorialSsr(state, opts)` donde `state.agentHistory[]` viene **ya armado y ordenado** desde el padre. El modulo NO toca `matrixEntries` (mitiga R6 acoplamiento upstream con #3728).
+**Out of scope:** filtros + busqueda + paginacion mas alla del cap 50 (tracked en #3778); CSRF/CSP estricta de `issueMoveTo*` (#3688 / #2532 / #2745); migracion `onclick` -> `data-attributes` (#3758); snapshot test cross-window de DOM IDs (#3755); enforcement axe-core CI (#3717).
+
+### Piezas que se preservan (CA-A1, CA-A2, CA-B1)
+
+| Pieza | Estado actual | Fuente de datos | Destino V3 | Token / icono | Tooltip CA-7 |
+|---|---|---|---|---|---|
+| Header colapsable + chevron | `dashboard.js:2986-2993` → `<h2 class="section-title-clickable" onclick="toggleSection('historial')">` | estatico (binding al estado global `collapsedSections`) | **Preserva**: invariante `id="agent-history"` + `data-section="historial"` para el DOM morphing. Chevron `▼` + texto. | `--info` (rail header), `--text-primary` (titulo), `--text-dim` (chevron) | `"Click para colapsar/expandir el panel del historial"` |
+| Chip count `N ejecuciones` | `dashboard.js:2992` → `<span class="ah-count">` | `agentHistory.length` | **Preserva**: chip pill `--info-bg` con borde `--info` y texto del mismo color. | `--info`, `--info-bg` | `"Total de ejecuciones de agentes registradas en este snapshot"` |
+| Popout a `/?section=historial` | `dashboard.js:2991` → `<a class="section-popout">` | estatico | **Preserva**: link `target="_blank"` + `rel="noopener noreferrer"`. Sprite `ic-link-out` reemplaza `↗`. | `--text-dim`, `--surface-1` (hover `--surface-2`) | `"Abrir el historial en una ventana independiente"` |
+| Card de ejecucion | `dashboard.js:2963-2974` → `<a class="ah-card">` | item de `agentHistory[]` | **Preserva**: layout horizontal denso (avatar + skill + chip prio + #issue + titulo + chip fase + chip estado + duracion + timestamp + acciones). Rail lateral 3px del color del estado (dual-encoding). | `--surface-1` (bg), `--border` (borde), rail `--info`/`--success`/`--danger`/`--text-dim` segun estado | (por accion, ver siguientes filas) |
+| Avatar persona (`.ah-avatar`) | `dashboard.js:2964` | `AGENT_PERSONA[h.skill]` (`dashboard.js:1557`) — fallback `{ icon: '⚙', name: skill, color: 'var(--dim)' }` | **Preserva**: circulo color persona con icono unicode. En carriers donde el sprite ya cubre el skill, se puede swap a `<svg><use href="#ic-*"/>`. | color persona (`AGENT_PERSONA[skill].color`), texto `--surface-0` para contraste | `"Agente {skillName}"` |
+| Chip posicion manual (`.lc-pos`) | `dashboard.js:2960-2961` | `manualOrderIndex.get(String(h.issue))` (Map, `dashboard.js:1591`) | **Preserva**: chip pill `#N+1` con tooltip explicativo. Solo si el issue esta en el indice. | `--brand-cyan-bg`, `--brand-cyan` | `"Posicion en el orden manual (1 = mas prioritario)"` |
+| Issue + titulo (`.ah-issue`) | `dashboard.js:2967` | `h.issue` + `h.titulo.slice(0,40)` | **Preserva**: `#N` en `--text-primary` + titulo truncado a 40 chars en `--text-secondary`. `escapeHtmlSsr` aplicado a `titulo`. | `--text-primary`, `--text-secondary` | `"#{issue} · {titulo completo escapado}"` |
+| Chip fase (`.ah-fase`) | `dashboard.js:2968` | `h.fase` | **Preserva**: chip pill con color de la lane correspondiente (criterios=purple, analisis=teal, dev=info, build=teal, verificacion=brand-cyan, aprobacion=success). Sprite `ic-fase-*` opcional. | tokens `--purple/--teal/--info/--brand-cyan/--success` | (no necesario, el texto explica) |
+| Chip estado (`.ah-status`) | `dashboard.js:2969` | combinacion `h.estado` + `h.resultado` | **Preserva**: glyph (●/✓/✗/—) + label (`En ejecucion`/`aprobado`/`rechazado`/`finalizado`). Dual-encoding obligatorio. | running=`--info`, ok=`--success`, fail=`--danger`, neutral=`--text-dim` | (no necesario, dual-encoding suficiente) |
+| Duracion (`.ah-dur`) | `dashboard.js:2970` | `fmtDuration(h.duration)` (`dashboard.js:396`) | **Preserva**: texto mono. En running muestra `"durando {Xm Ys}"`; en finalizados muestra `"{Xm Ys}"` neto. | `--text-dim`, `var(--font-mono)` | — |
+| Timestamp (`.ah-time`) | `dashboard.js:2971` | `new Date(ts).toLocaleString('es-AR', ...)` | **Preserva**: `DD/MM HH:MM`. Mono. | `--text-dim`, `var(--font-mono)` | — |
+| PrioActions (`.ah-prio-actions`) | `dashboard.js:2952-2959` → 4 botones `⏫▲▼⏬` | inline handlers `issueMoveToTop/Up/Down/Bottom(N)` que viven en `renderClientScript` del padre | **Preserva**: handlers `onclick` 1:1, NO se mueven al modulo (decision cerrada, igual que #3731). `Number(h.issue)` antes de inyectar (R5). Solo se rendea si `isRunning`. | `--surface-3` (bg), `--border-strong` (borde) | `"Mover al tope de la columna"` / `"Subir una posicion"` / `"Bajar una posicion"` / `"Mover al fondo de la columna"` |
+| Link PDF rejection (`.ah-pdf`) | `dashboard.js:2949-2951` | `h.hasRejectionPdf && isSafeFilename(h.rejectionPdf)` | **Preserva**: badge cuadrado con glyph `PDF` enmarcado, rail `--danger` para reforzar gravedad. Whitelist filename obligatoria (R3). | `--danger`, `--danger-bg`, `--danger` (texto) | `"Reporte de rechazo (PDF)"` |
+| Link Ver log (CTA card) | `dashboard.js:2946` → `href={isLog ? "/logs/view/..." : GH(issue)}` | `h.hasLog && isSafeFilename(h.logFile)`; fallback `ghBaseUrl + Number(h.issue)` | **Preserva**: CTA pill a la derecha. Texto `Ver log en vivo →` en running, `Ver log` en finalizados, `Ver #N en GitHub` cuando no hay log. | `--info` (texto running), `--text-dim` (finalizados), `--surface-2` (bg) | tooltip dinamico del tip actual `"Ver log · {skill} · #{issue}"` o `"Ver #{issue} en GitHub"` |
+| Toggle "Ver N mas" | `dashboard.js:2981-2983` → `<details class="ah-more"><summary class="ah-more-btn">` | hidden = `agentHistory.slice(15,50)` | **Preserva**: elemento nativo `<details>`, accesible por teclado, independiente del `toggleSection('historial')`. | `--info` (texto), `--surface-2` (bg al expandir) | (no necesario, el texto del summary explica) |
+
+### Piezas que se rediseñan (CA-C2)
+
+| Pieza | Estado actual | Destino V3 |
+|---|---|---|
+| Leyenda de estados | Ausente — el operador adivina que significa cada color de chip. | **Agrega leyenda CA-8**: bloque fijo arriba de la lista, antes del primer card. 4 chips (`En ejecucion`/`Aprobado`/`Rechazado`/`Finalizado sin resultado`) con dual-encoding (color + icono + texto). Hint a la derecha `"Trabajando-first; resto por timestamp desc"`. |
+| Emojis crudos del header (`📜`, `↗`) | inline en template literal | Reemplazados por `<svg><use href="#ic-*">` del sprite (`ic-fase-criterios` o un futuro `ic-historial` + `ic-link-out`). Mantener prefijo Unicode si se posterga el sprite (CA-22). |
+| Glyphs de estado (●/✓/✗/—) | Unicode inline | **Mantener Unicode** en este split (CA-22 explicito). Migracion a sprite trackeada como opcional dentro del propio CA — si se hace, agregar `ic-status-running/ok/fail/neutral` en `sprite.svg`. |
+| Tooltips ausentes en acciones | Solo `prioActions` y `pdfLink` tienen `title`; el resto carece. | **Agrega tooltips CA-7**: cada accion operativa y cada chip informativo lleva `title=` + (cuando aplica) `aria-label=`. Texto en castellano, hardcoded. Si incluye datos dinamicos, escape obligatorio. |
+| Chip count sin estilo distintivo | `<span class="ah-count">` simple sin pill ni borde | **Rediseña**: pill `--info-bg` con borde `--info-dim`. Refuerza identidad de la ventana como zona de consulta. |
+
+### Piezas que NO entran (out-of-scope)
+
+| Pieza | Motivo |
+|---|---|
+| Filtros por skill / resultado / issue | Cubierto por recomendacion abierta #3778 (`[ux] Filtros + busqueda en Historial`). |
+| Busqueda full-text del historial | Idem #3778. |
+| Paginacion mas alla del cap de 50 | Idem #3778. El cap se mantiene en 50 (15 visibles + 35 toggle) por riesgo de DoS render server-side (tracked en padre #3715). |
+| Migracion `onclick="issueMoveTo*"` -> `addEventListener + data-attrs` | Decision D4 heredada (igual que #3731): queda en #3758. CSP estricta `script-src 'self'` (#3688) lo forzara en una ola posterior. |
+| Migracion al helper `lib/escape-html.js` | Si #3722 mergea antes que esta hija entre a dev, import directo. Si no, fallback aceptable copiando `escapeHtmlSsr` inline desde `home.js:33-41` con TODO. |
+| Mover el armado de `agentHistory[]` al modulo | Decision cerrada por architect: el padre arma el array (a partir de `matrixEntries`) y el modulo recibe el array ya ordenado via `state.agentHistory`. Mitiga R6 (acoplamiento upstream con #3728). |
+| Snapshot test cross-window de DOM IDs | Cubierto por #3755 (aplicable a TODAS las ventanas extraidas). |
+| Enforcement axe-core CI | Cubierto por #3717. WCAG AA se valida manualmente en este PR. |
+| Acciones operativas mutantes que no sean `issueMoveTo*` | Fuera de scope. El historial es zona de consulta + reorden. Otras acciones (cancelar, retry) se manejan desde Equipo/Pipeline. |
+
+### Datos personales / sensibles renderizados
+
+**Ninguno detectado.** Todos los campos interpolados (`titulo`, `skill`, `fase`, `resultado`, `logFile`, `rejectionPdf`) son metadata publica del pipeline o de GitHub. Aun asi pasan TODOS por `escapeHtmlSsr` y los filenames adicionalmente por `isSafeFilename(/^[A-Za-z0-9._-]+$/)` por defensa en profundidad.
+
+### Endpoints state-changing que dispara (CA-5)
+
+- `POST /api/issue/<n>/move-to-top` — disparado por `issueMoveToTop(n)`.
+- `POST /api/issue/<n>/move-up` — disparado por `issueMoveUp(n)`.
+- `POST /api/issue/<n>/move-down` — disparado por `issueMoveDown(n)`.
+- `POST /api/issue/<n>/move-to-bottom` — disparado por `issueMoveToBottom(n)`.
+
+Solo visibles para cards `isRunning`. Comparten infraestructura CSRF/auth del resto del dashboard. **No es scope de este split fortalecerlos** — vive en #3688 / #2532 / #2745. El split solo debe garantizar que los handlers se referencian por nombre desde el SSR del modulo y NO se duplican.
+
+### Dependencias de seguridad pendientes que afectan a la ventana
+
+| Issue | Tema | Como impacta |
+|---|---|---|
+| #3722 | Helper `lib/escape-html.js` compartido | SOFT. Mientras no aterrice, usar `escapeHtmlSsr` inline copiado de `home.js:33-41`. Swap diferido. |
+| #3723 | Router cliente `?view=<slug>` | SOFT para CA-18. Si todavia no expone `?view=historial`, el smoke se valida via render completo. |
+| #2901 | Escape unificado en `title=` attrs | Cubierto por defensa local del modulo (escape de `tip` y todos los campos dinamicos). Cuando cierre, unificar. |
+| #3688 / #2532 / #2745 | CSP estricta + CSRF dashboard | NO bloquea este split. Cuando entren, `onclick="issueMoveTo*"` morira -> migracion en #3758. |
+| #3755 | Snapshot test cross-window | SOFT. Recomendacion abierta. |
+| #3758 | Migracion onclick -> data-attrs | SOFT. Recomendacion abierta. |
+| #3717 | Enforcement axe-core CI | SOFT. WCAG AA validado manualmente. |
+
+### Fallback inerte (CA-A3 / REQ-SEC-7)
+
+Cuando `require('./views/dashboard/historial')` arroja (sintaxis rota, dependencia faltante, etc.), `dashboard.js` debe:
+
+1. Loguear `log('historial view unavailable: ' + e.message)` (patron consolidado en `dashboard.js:9027/9039`).
+2. Renderizar en el lugar del partial un cartel visible con:
+   - Icono warning (`--warning`).
+   - Titulo `"Ventana Historial no disponible"`.
+   - Subtitulo `"El modulo views/dashboard/historial.js fallo al cargar. Ver logs del dashboard para detalle."`
+   - Linea mono explicativa: `'log("historial view unavailable: " + e.message) emitido por dashboard.js — el render no queda en blanco.'`
+3. NO dejar string vacio silencioso (anti-patron). Variante ilustrada en el mockup adjunto, seccion "VARIANTE FALLBACK INERTE".
+
+### Tests requeridos (CA-11..CA-17)
+
+`.pipeline/views/dashboard/__tests__/historial.test.js` con `node:test`. Cobertura minima (12 casos):
+
+1. Render vacio: `renderHistorialSsr({ agentHistory: [] }, opts)` retorna string vacio (el wrapper no se renderiza).
+2. Render basico: 1 entrada `procesado` aprobada -> HTML valido con `<div id="agent-history">`, `.ah-list`, 1 `.ah-card`.
+3. XSS en `titulo` (`<img src=x onerror=alert(1)>`) -> output sin `<img` literal, con `&lt;img`.
+4. XSS combinado en `logFile` (`"><script>1</script>`) -> link omitido (whitelist), fallback a GitHub.
+5. XSS en `resultado` (`"><svg onload=alert(1)>`) -> output escapado.
+6. XSS en `skill` (`<img onerror=alert(1)>`) -> escapado en `.ah-skill` y en `title=`.
+7. XSS en `fase` (`"><svg onload=1>`) -> escapado en `.ah-fase`.
+8. Path traversal en `logFile` (`../../etc/passwd`) -> link omitido.
+9. Path traversal en `rejectionPdf` (`../../../config`) -> `<a class="ah-pdf">` omitido.
+10. Anti-tabnabbing: parsear HTML del output y verificar que TODO `<a target="_blank">` lleva `rel="noopener noreferrer"`.
+11. Orden trabajando-first: mix 2 `trabajando` + 3 `procesado` -> las 2 trabajando aparecen antes (`ah-running` antes de `ah-ok` en posicion).
+12. Coercion `issue`: `agentHistory[0].issue = '1234; alert(1)'` -> `Number(...) === NaN` -> `prioActions` omitido.
+
+**Cobertura minima:** 85% de lineas del modulo (Istanbul / `node --test --experimental-test-coverage`).
+
+### Smoke curl (CA-18 / CA-G2)
+
+```bash
+# Si el router #3723 ya expone ?view=historial
+curl -s 'http://127.0.0.1:3200/dashboard?view=historial' | grep -q 'id="agent-history"'
+
+# Fallback si router todavia no expone el slug standalone
+curl -s 'http://127.0.0.1:3200/' | grep -q 'id="agent-history"'
+
+# Conteo de IDs invariantes
+curl -s 'http://127.0.0.1:3200/' | grep -c 'id="agent-history"\|data-section="historial"\|class="ah-list"'
+# Debe devolver 3
+```
+
 ## Otras ventanas del epico #3715
 
 | Split | Ventana | Mockup | Estado |
@@ -209,13 +331,13 @@ curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:3200/dashboard/partia
 | #3725 | Frame + brand bar | — | pendiente |
 | #3726 | Home (KPIs principales) | `assets/mockups/26-dashboard-main-v3.svg` | en flight |
 | #3727 | Equipo | — | pendiente |
-| #3728 | Pipeline (flujo de agentes) | — | en flight |
-| #3729 | Bloqueados | `assets/mockups/27-bloqueados-v3.svg` | en flight |
+| #3728 | Pipeline (flujo de agentes) | `assets/mockups/28-pipeline-v3.svg` | criterios |
+| #3729 | Bloqueados | `assets/mockups/27-bloqueados-v3.svg` | criterios |
 | #3730 | Issues | — | pendiente |
-| #3731 | **Matriz (este split)** | `assets/mockups/29-matriz-v3.html` | criterios |
-| #3732 | **Ops (este split)** | `assets/mockups/28-ops-v3.svg` | criterios |
-| #3733 | Multi-provider | — | pendiente |
-| #3734 | Multi-provider coverage | — | pendiente |
+| #3731 | Matriz | `assets/mockups/29-matriz-v3.html` | criterios |
+| #3732 | Ops | `assets/mockups/28-ops-v3.svg` | criterios |
+| #3733 | KPIs principales (home) | `assets/mockups/30-kpis-v3.html` | criterios |
+| #3734 | **Historial (este split)** | `assets/mockups/31-historial-v3.svg` | criterios |
 | #3735 | Allowlist audit trail | — | pendiente |
 | #3736 | Modo descanso | — | pendiente |
 

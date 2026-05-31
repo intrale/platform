@@ -1,0 +1,662 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 31 — Ventana Historial V3 (split de #3715, sub-historia #3734)
+  Resolucion target: 1080x1920 (kiosk vertical, identica al resto de la familia 26..30)
+  Demuestra:
+    - Layout del modulo standalone .pipeline/views/dashboard/historial.js extraido
+      del monolito (bloque dashboard.js:2894-3001).
+    - Header colapsable con chevron + count chip "N ejecuciones" + popout a /?section=historial.
+    - Leyenda CA-8 visible: chips con los 4 estados (trabajando / aprobado / rechazado / finalizado)
+      con dual-encoding (color + icono + texto) — WCAG AA CA-E1/E2/E3.
+    - Lista vertical de cards: trabajando-first, luego procesados por ts desc.
+    - Card en ejecucion: rail --info izquierdo, glyph circulo, prioActions visibles
+      (⏫ ▲ ▼ ⏬), chip "#N" de posicion manual cuando corresponde.
+    - Card aprobada: rail --success, glyph check.
+    - Card rechazada: rail --danger, glyph cruz, link al PDF de rejection (ic-link-out).
+    - Card neutral / finalizado sin resultado: rail --text-dim, glyph em-dash.
+    - Tooltips informativos (CA-7) en cada accion y zona accionable.
+    - Toggle "Ver N mas..." con <details><summary> nativo, independiente del
+      colapso global de la seccion (CA-24).
+    - VARIANTE FALLBACK INERTE (CA-A3 / REQ-SEC-7) ilustrada abajo del flujo
+      principal: cuando require('./views/dashboard/historial') arroja, el padre
+      muestra un cartel visible (NO string vacio silencioso).
+
+  Datos consumidos (state.agentHistory[], opts.{agentPersona, manualOrderIndex, fmtDuration, ghBaseUrl}):
+    issue          = numero de issue GitHub
+    titulo         = titulo del issue (truncado a 40 chars en display)
+    skill          = id del agente (architect/po/ux/guru/qa/builder/tester/...)
+    pipeline       = 'definicion' | 'desarrollo'
+    fase           = 'criterios' | 'analisis' | 'dev' | 'build' | 'aprobacion' | ...
+    estado         = 'trabajando' | 'listo' | 'procesado'
+    resultado      = 'aprobado' | 'rechazado' | null
+    duration       = ms transcurridos en la fase
+    startedAt      = ts epoch del inicio (running)
+    finishedAt     = ts epoch del cierre (finalizados)
+    hasLog         = boolean — habilita link al log viewer
+    logFile        = filename del log (filtrado por isSafeFilename antes de inyectar en href)
+    hasRejectionPdf= boolean — habilita el link al PDF de rejection
+    rejectionPdf   = filename del PDF (mismo filtro de whitelist)
+
+  Decisiones congeladas del mockup (PO + guru + security):
+    1. Cards densas, no tabla — cada agente con su persona (avatar + color)
+       para reconocimiento visual rapido en una lista larga.
+    2. Trabajando-first siempre, sin importar ts (clave para que el operador
+       vea lo que esta pasando ahora). CA-10 / CA-17.
+    3. Borde lateral 3px con color del estado (dual-encoding). Sin saturar:
+       el resto de la card en --surface-1.
+    4. PrioActions solo en cards 'trabajando'. Coercion numerica obligatoria
+       (Number(h.issue)) antes de inyectar en onclick — defensa XSS por
+       coercion debil. Si NaN, prioActions se omite. CA-3 / R5 del architect.
+    5. Chip "#N" de posicion manual: solo si manualOrderIndex.has(String(issue)).
+       Tooltip "Posicion en el orden manual (1 = mas prioritario)".
+    6. PDF link: solo si isSafeFilename(rejectionPdf). Si la whitelist falla,
+       link omitido (NO fallback). CA-5 / R3 del architect.
+    7. Log link primario: solo si isSafeFilename(logFile). Si falla, href cae
+       a ghBaseUrl + Number(h.issue). CA-5.
+    8. Leyenda CA-8 fija arriba de la lista, antes del primer card. Explica
+       los 4 estados con icono + texto. WCAG: nunca solo color.
+    9. Toggle "Ver mas" con <details><summary> nativo — accesible por teclado,
+       sin JS adicional. Cap duro 15 visibles + 35 ocultos = 50 totales.
+       Comentario inline aclara que <details> y toggleSection('historial')
+       son toggles independientes. CA-24.
+   10. Footer estatico fuera de scope del rediseno: documenta que filtros/
+       busqueda viven en #3778 (recomendacion abierta), no en este split.
+   11. Todos los estilos via tokens del design-tokens.css. Sin HEX libres.
+   12. Iconografia: sprite.svg para los glyphs del SO (popout, log-out, etc).
+       Los marcadores de estado (●, ✓, ✗, —) se mantienen Unicode hasta
+       que CA-22 decida migrar a sprite (dentro de scope opcional).
+
+  IDs DOM invariantes (CA-25 / R6 del architect — DOM morphing client-side):
+    #agent-history           (wrapper raiz)
+    data-section="historial" (data-attribute del DOM morphing)
+    .matrix-section          (clase del wrapper)
+    .matrix-header           (clase del header)
+    .section-title-clickable
+    .section-chevron
+    .section-popout
+    .section-body
+    .ah-list                 (contenedor de cards)
+    .ah-card                 (card individual)
+    .ah-running / .ah-ok / .ah-fail / .ah-neutral  (modificadores de estado)
+    .ah-avatar               (chip persona)
+    .ah-skill                (nombre del agente)
+    .ah-issue                (#N + titulo)
+    .ah-fase                 (chip fase)
+    .ah-status               (glyph + label)
+    .ah-dur                  (duracion)
+    .ah-time                 (timestamp)
+    .ah-count                (chip "N ejecuciones")
+    .ah-pdf                  (link al PDF de rejection)
+    .ah-prio-actions         (wrapper de los 4 botones)
+    .ah-more / .ah-more-btn / .ah-more-list  (toggle Ver mas)
+    .lc-pos                  (chip de posicion manual)
+
+  Out-of-scope explicito del split (NO ilustrado como funcional):
+    - Filtros por skill/resultado/issue                 -> #3778
+    - Busqueda full-text en el historial                -> #3778
+    - Paginacion mas alla del cap de 50                 -> #3778
+    - CSRF / CSP estricta para botones issueMoveTo*     -> #3688 / #2532 / #2745
+    - Migracion onclick -> data-attributes              -> #3758
+    - Snapshot test cross-window de DOM IDs             -> #3755
+    - Enforcement axe-core en CI                         -> #3717
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <!-- ============================================================
+       Tokens embebidos (self-contained, alineados con design-tokens.css)
+       ============================================================ -->
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="dangerStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F85149"/>
+      <stop offset="100%" stop-color="#8B1A14"/>
+    </linearGradient>
+    <linearGradient id="successStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3FB950"/>
+      <stop offset="100%" stop-color="#196C2E"/>
+    </linearGradient>
+    <linearGradient id="infoStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#58A6FF"/>
+      <stop offset="100%" stop-color="#1F6FEB"/>
+    </linearGradient>
+    <linearGradient id="purpleStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#BC8CFF"/>
+      <stop offset="100%" stop-color="#8957E5"/>
+    </linearGradient>
+    <linearGradient id="warningStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D29922"/>
+      <stop offset="100%" stop-color="#9E6A03"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ============================================================
+       Fondo kiosk
+       ============================================================ -->
+  <rect width="1080" height="1920" fill="#0D1117"/>
+
+  <!-- ============================================================
+       BRAND BAR superior (fuera de scope — referencia visual del frame)
+       ============================================================ -->
+  <rect x="0" y="0" width="1080" height="68" fill="url(#headerGrad)"/>
+  <rect x="0" y="67" width="1080" height="1" fill="#30363D"/>
+  <g opacity="0.55">
+    <circle cx="40" cy="34" r="14" fill="url(#brandGrad)"/>
+    <text x="68" y="40" font-size="18" font-weight="700" fill="#E6EDF3">INTRALE V3</text>
+    <text x="180" y="40" font-size="14" fill="#8B949E">/ Historial</text>
+  </g>
+  <text x="1040" y="40" font-size="11" fill="#6E7681" text-anchor="end">[area fuera de scope de #3734]</text>
+
+  <!-- ============================================================
+       CONTROL BAR (fuera de scope) — tab activa "Historial"
+       ============================================================ -->
+  <rect x="0" y="68" width="1080" height="56" fill="#161B22"/>
+  <rect x="0" y="123" width="1080" height="1" fill="#21262D"/>
+  <g opacity="0.6">
+    <rect x="22" y="82" width="84" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="64" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Home</text>
+    <rect x="116" y="82" width="118" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="175" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Bloqueados</text>
+    <rect x="244" y="82" width="86" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="287" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Ops</text>
+    <!-- Tab activa Historial -->
+    <rect x="340" y="82" width="116" height="28" rx="14" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="1.5"/>
+    <g transform="translate(354,89)">
+      <!-- glyph reloj-historial simplificado -->
+      <circle cx="7" cy="7" r="6" fill="none" stroke="#58A6FF" stroke-width="1.5"/>
+      <path d="M7 3.5 L7 7 L9.5 8.5" stroke="#58A6FF" stroke-width="1.5" stroke-linecap="round"/>
+    </g>
+    <text x="406" y="100" font-size="12" font-weight="600" fill="#58A6FF" text-anchor="middle">Historial</text>
+    <rect x="466" y="82" width="86" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="509" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Issues</text>
+    <text x="1040" y="100" font-size="11" fill="#6E7681" text-anchor="end">view=historial</text>
+  </g>
+
+  <!-- ============================================================
+       MAIN VIEW BOUNDARY — <main id="view-content"> del router #3773.
+       Todo lo de abajo es scope de #3734.
+       ============================================================ -->
+  <rect x="20" y="142" width="1040" height="1640" rx="14"
+        fill="#161B22" stroke="#30363D" stroke-width="1"/>
+  <text x="40" y="170" font-size="11" fill="#6E7681" font-family="monospace">&lt;main id="view-content" data-slug="historial"&gt;</text>
+
+  <!-- ============================================================
+       HEADER de la ventana — #agent-history > .matrix-header
+       ============================================================ -->
+  <g transform="translate(40,190)">
+    <!-- Rail lateral del header — info azul (el historial es lectura/consulta) -->
+    <rect x="0" y="0" width="4" height="76" fill="url(#infoStripe)" rx="2"/>
+
+    <!-- Avatar icono ventana — reloj con historial -->
+    <circle cx="44" cy="38" r="24" fill="rgba(88,166,255,0.16)"/>
+    <g transform="translate(28,22)" stroke="#58A6FF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="16" cy="16" r="13"/>
+      <path d="M16 7 L16 16 L22 19"/>
+    </g>
+
+    <!-- Chevron de colapso (.section-chevron) + titulo (.section-title-clickable) -->
+    <g transform="translate(80,18)">
+      <text x="0" y="20" font-size="12" fill="#8B949E" font-family="monospace">▼</text>
+      <text x="20" y="22" font-size="24" font-weight="700" fill="#E6EDF3">Historial de Ejecuciones</text>
+    </g>
+
+    <!-- Chip count (.ah-count) -->
+    <g transform="translate(80,46)">
+      <rect x="0" y="0" width="138" height="24" rx="12" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+      <text x="69" y="16" font-size="12" font-weight="600" fill="#58A6FF" text-anchor="middle">23 ejecuciones</text>
+    </g>
+
+    <!-- Popout (.section-popout) -->
+    <g transform="translate(960,18)">
+      <rect x="0" y="0" width="40" height="40" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <g transform="translate(11,11)" stroke="#8B949E" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 3 H17 V9"/>
+        <path d="M17 3 L9 11"/>
+        <path d="M14 13 V17 H3 V6 H7"/>
+      </g>
+    </g>
+    <text x="980" y="74" font-size="9" fill="#6E7681" text-anchor="middle" font-family="monospace">popout</text>
+
+    <!-- Leyenda CA-C5 del header -->
+    <text x="240" y="62" font-size="11" fill="#8B949E">
+      Lectura. Las acciones operativas (mover en cola, ver log, ver PDF de rechazo) son utilidades.
+    </text>
+  </g>
+
+  <!-- ============================================================
+       LEYENDA CA-8 — estados visuales (chips con dual-encoding)
+       ============================================================ -->
+  <g transform="translate(40,294)">
+    <rect x="0" y="0" width="1000" height="64" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="20" y="24" font-size="11" font-weight="600" fill="#B1BAC4" letter-spacing="0.08em">LEYENDA — ESTADOS DE EJECUCION</text>
+
+    <!-- Chip: trabajando (info) -->
+    <g transform="translate(20,36)">
+      <rect x="0" y="0" width="166" height="22" rx="11" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+      <circle cx="14" cy="11" r="4" fill="#58A6FF"/>
+      <text x="26" y="15" font-size="11" font-weight="600" fill="#58A6FF">En ejecucion (running)</text>
+    </g>
+
+    <!-- Chip: aprobado (success) -->
+    <g transform="translate(202,36)">
+      <rect x="0" y="0" width="132" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-opacity="0.4"/>
+      <path d="M9 11 L13 15 L19 8" fill="none" stroke="#3FB950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="28" y="15" font-size="11" font-weight="600" fill="#3FB950">Aprobado</text>
+    </g>
+
+    <!-- Chip: rechazado (danger) -->
+    <g transform="translate(350,36)">
+      <rect x="0" y="0" width="140" height="22" rx="11" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-opacity="0.4"/>
+      <path d="M9 8 L19 14 M19 8 L9 14" stroke="#F85149" stroke-width="2" stroke-linecap="round"/>
+      <text x="28" y="15" font-size="11" font-weight="600" fill="#F85149">Rechazado</text>
+    </g>
+
+    <!-- Chip: finalizado sin resultado (neutral) -->
+    <g transform="translate(506,36)">
+      <rect x="0" y="0" width="172" height="22" rx="11" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+      <path d="M9 11 L20 11" stroke="#8B949E" stroke-width="2" stroke-linecap="round"/>
+      <text x="28" y="15" font-size="11" font-weight="600" fill="#8B949E">Finalizado (sin resultado)</text>
+    </g>
+
+    <!-- Hint discreto a la derecha -->
+    <text x="980" y="50" font-size="11" fill="#6E7681" text-anchor="end">Trabajando-first; resto por timestamp desc</text>
+  </g>
+
+  <!-- ============================================================
+       LISTA DE CARDS — .ah-list
+       Renderizada con 5 cards visibles para el mockup; en runtime
+       son 15 visibles + toggle "Ver N mas" hasta cap 50.
+       ============================================================ -->
+
+  <!-- CARD #1 — running (architect en criterios de #3735) -->
+  <g transform="translate(40,378)">
+    <!-- Card base -->
+    <rect x="0" y="0" width="1000" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <!-- Rail estado info (running) -->
+    <rect x="0" y="0" width="3" height="86" fill="#58A6FF" rx="2"/>
+
+    <!-- Avatar persona (skill: architect, purple) -->
+    <g transform="translate(20,18)">
+      <circle cx="25" cy="25" r="25" fill="#BC8CFF"/>
+      <text x="25" y="32" font-size="22" font-weight="700" fill="#0D1117" text-anchor="middle">A</text>
+    </g>
+
+    <!-- Skill name -->
+    <text x="88" y="36" font-size="14" font-weight="600" fill="#E6EDF3">architect</text>
+    <!-- Chip posicion manual -->
+    <g transform="translate(88,46)">
+      <rect x="0" y="0" width="36" height="18" rx="9" fill="rgba(0,214,255,0.14)" stroke="#00D6FF" stroke-opacity="0.4"/>
+      <text x="18" y="13" font-size="10" font-weight="600" fill="#00D6FF" text-anchor="middle">#1</text>
+    </g>
+
+    <!-- Issue + titulo -->
+    <text x="208" y="34" font-size="13" font-weight="600" fill="#E6EDF3">#3735</text>
+    <text x="250" y="34" font-size="13" fill="#B1BAC4">[Split de #3715] Ventana Allowlist audit trail</text>
+
+    <!-- Chip fase -->
+    <g transform="translate(208,46)">
+      <rect x="0" y="0" width="78" height="20" rx="10" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-opacity="0.4"/>
+      <text x="39" y="14" font-size="11" fill="#BC8CFF" text-anchor="middle">criterios</text>
+    </g>
+
+    <!-- Status (running) -->
+    <g transform="translate(290,46)">
+      <rect x="0" y="0" width="120" height="20" rx="10" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+      <circle cx="14" cy="10" r="4" fill="#58A6FF">
+        <animate attributeName="opacity" values="0.4;1;0.4" dur="1.6s" repeatCount="indefinite"/>
+      </circle>
+      <text x="26" y="14" font-size="11" font-weight="600" fill="#58A6FF">En ejecucion</text>
+    </g>
+
+    <!-- Duracion + timestamp -->
+    <text x="620" y="36" font-size="12" fill="#8B949E" font-family="monospace" text-anchor="end">durando 2m 14s</text>
+    <text x="620" y="54" font-size="11" fill="#6E7681" font-family="monospace" text-anchor="end">31/05 17:42</text>
+
+    <!-- PrioActions (solo en running) -->
+    <g transform="translate(640,32)">
+      <g>
+        <rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/>
+        <text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">⏫</text>
+      </g>
+      <g transform="translate(38,0)">
+        <rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/>
+        <text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">▲</text>
+      </g>
+      <g transform="translate(76,0)">
+        <rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/>
+        <text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">▼</text>
+      </g>
+      <g transform="translate(114,0)">
+        <rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/>
+        <text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">⏬</text>
+      </g>
+    </g>
+
+    <!-- Ver log primario (CTA principal a la derecha) -->
+    <g transform="translate(820,30)">
+      <rect x="0" y="0" width="160" height="30" rx="15" fill="#252B33" stroke="#484F58"/>
+      <text x="80" y="20" font-size="12" font-weight="600" fill="#58A6FF" text-anchor="middle">Ver log en vivo →</text>
+    </g>
+    <text x="900" y="76" font-size="10" fill="#6E7681" text-anchor="middle" font-family="monospace">/logs/view/architect-3735-criterios.log?live=1</text>
+  </g>
+
+  <!-- CARD #2 — running con log + chip de posicion manual -->
+  <g transform="translate(40,478)">
+    <rect x="0" y="0" width="1000" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="86" fill="#58A6FF" rx="2"/>
+
+    <!-- Persona ux (cyan) -->
+    <g transform="translate(20,18)">
+      <circle cx="25" cy="25" r="25" fill="#00D6FF"/>
+      <text x="25" y="32" font-size="22" font-weight="700" fill="#0D1117" text-anchor="middle">U</text>
+    </g>
+    <text x="88" y="36" font-size="14" font-weight="600" fill="#E6EDF3">ux</text>
+    <g transform="translate(88,46)">
+      <rect x="0" y="0" width="36" height="18" rx="9" fill="rgba(0,214,255,0.14)" stroke="#00D6FF" stroke-opacity="0.4"/>
+      <text x="18" y="13" font-size="10" font-weight="600" fill="#00D6FF" text-anchor="middle">#2</text>
+    </g>
+
+    <text x="208" y="34" font-size="13" font-weight="600" fill="#E6EDF3">#3734</text>
+    <text x="250" y="34" font-size="13" fill="#B1BAC4">[Split de #3715] Ventana Historial: extraccion + redise...</text>
+
+    <g transform="translate(208,46)">
+      <rect x="0" y="0" width="78" height="20" rx="10" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-opacity="0.4"/>
+      <text x="39" y="14" font-size="11" fill="#BC8CFF" text-anchor="middle">criterios</text>
+    </g>
+    <g transform="translate(290,46)">
+      <rect x="0" y="0" width="120" height="20" rx="10" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+      <circle cx="14" cy="10" r="4" fill="#58A6FF">
+        <animate attributeName="opacity" values="0.4;1;0.4" dur="1.6s" repeatCount="indefinite"/>
+      </circle>
+      <text x="26" y="14" font-size="11" font-weight="600" fill="#58A6FF">En ejecucion</text>
+    </g>
+
+    <text x="620" y="36" font-size="12" fill="#8B949E" font-family="monospace" text-anchor="end">durando 47s</text>
+    <text x="620" y="54" font-size="11" fill="#6E7681" font-family="monospace" text-anchor="end">31/05 17:44</text>
+
+    <g transform="translate(640,32)">
+      <rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/>
+      <text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">⏫</text>
+      <g transform="translate(38,0)"><rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/><text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">▲</text></g>
+      <g transform="translate(76,0)"><rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/><text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">▼</text></g>
+      <g transform="translate(114,0)"><rect x="0" y="0" width="32" height="26" rx="6" fill="#252B33" stroke="#484F58"/><text x="16" y="18" font-size="14" fill="#E6EDF3" text-anchor="middle">⏬</text></g>
+    </g>
+
+    <g transform="translate(820,30)">
+      <rect x="0" y="0" width="160" height="30" rx="15" fill="#252B33" stroke="#484F58"/>
+      <text x="80" y="20" font-size="12" font-weight="600" fill="#58A6FF" text-anchor="middle">Ver log en vivo →</text>
+    </g>
+  </g>
+
+  <!-- CARD #3 — aprobado (po + criterios) -->
+  <g transform="translate(40,578)">
+    <rect x="0" y="0" width="1000" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="86" fill="#3FB950" rx="2"/>
+
+    <!-- Persona po (teal) -->
+    <g transform="translate(20,18)">
+      <circle cx="25" cy="25" r="25" fill="#2DD4BF"/>
+      <text x="25" y="32" font-size="22" font-weight="700" fill="#0D1117" text-anchor="middle">P</text>
+    </g>
+    <text x="88" y="36" font-size="14" font-weight="600" fill="#E6EDF3">po</text>
+
+    <text x="208" y="34" font-size="13" font-weight="600" fill="#E6EDF3">#3733</text>
+    <text x="250" y="34" font-size="13" fill="#B1BAC4">[Split de #3715] Ventana KPIs principales (home)</text>
+
+    <g transform="translate(208,46)">
+      <rect x="0" y="0" width="78" height="20" rx="10" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-opacity="0.4"/>
+      <text x="39" y="14" font-size="11" fill="#BC8CFF" text-anchor="middle">criterios</text>
+    </g>
+    <g transform="translate(290,46)">
+      <rect x="0" y="0" width="100" height="20" rx="10" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-opacity="0.4"/>
+      <path d="M11 12 L15 16 L21 9" fill="none" stroke="#3FB950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="11" font-weight="600" fill="#3FB950" text-anchor="middle">aprobado</text>
+    </g>
+
+    <text x="620" y="36" font-size="12" fill="#8B949E" font-family="monospace" text-anchor="end">3m 22s</text>
+    <text x="620" y="54" font-size="11" fill="#6E7681" font-family="monospace" text-anchor="end">31/05 17:31</text>
+
+    <!-- Sin prioActions (no running) -->
+    <g transform="translate(820,30)">
+      <rect x="0" y="0" width="160" height="30" rx="15" fill="#252B33" stroke="#484F58"/>
+      <text x="80" y="20" font-size="12" font-weight="600" fill="#8B949E" text-anchor="middle">Ver log</text>
+    </g>
+    <text x="900" y="76" font-size="10" fill="#6E7681" text-anchor="middle" font-family="monospace">/logs/view/po-3733-criterios.log</text>
+  </g>
+
+  <!-- CARD #4 — rechazado con PDF link (qa rechazo build) -->
+  <g transform="translate(40,678)">
+    <rect x="0" y="0" width="1000" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="86" fill="#F85149" rx="2"/>
+
+    <!-- Persona qa (warning) -->
+    <g transform="translate(20,18)">
+      <circle cx="25" cy="25" r="25" fill="#D29922"/>
+      <text x="25" y="32" font-size="22" font-weight="700" fill="#0D1117" text-anchor="middle">Q</text>
+    </g>
+    <text x="88" y="36" font-size="14" font-weight="600" fill="#E6EDF3">qa</text>
+
+    <text x="208" y="34" font-size="13" font-weight="600" fill="#E6EDF3">#3681</text>
+    <text x="250" y="34" font-size="13" fill="#B1BAC4">Multi-provider coverage widget — fixture estatico no...</text>
+
+    <g transform="translate(208,46)">
+      <rect x="0" y="0" width="92" height="20" rx="10" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-opacity="0.4"/>
+      <text x="46" y="14" font-size="11" fill="#2DD4BF" text-anchor="middle">verificacion</text>
+    </g>
+    <g transform="translate(304,46)">
+      <rect x="0" y="0" width="108" height="20" rx="10" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-opacity="0.4"/>
+      <path d="M11 9 L21 15 M21 9 L11 15" stroke="#F85149" stroke-width="2" stroke-linecap="round"/>
+      <text x="64" y="14" font-size="11" font-weight="600" fill="#F85149" text-anchor="middle">rechazado</text>
+    </g>
+
+    <text x="620" y="36" font-size="12" fill="#8B949E" font-family="monospace" text-anchor="end">4m 18s</text>
+    <text x="620" y="54" font-size="11" fill="#6E7681" font-family="monospace" text-anchor="end">31/05 17:18</text>
+
+    <!-- PDF link + Ver log -->
+    <g transform="translate(660,32)">
+      <rect x="0" y="0" width="44" height="30" rx="6" fill="#252B33" stroke="#F85149" stroke-opacity="0.5"/>
+      <g transform="translate(8,7)" fill="none" stroke="#F85149" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 2 H20 L25 7 V20 H5 Z"/>
+        <path d="M20 2 V7 H25"/>
+        <text x="14.5" y="17" font-size="7" font-weight="700" fill="#F85149" stroke="none" text-anchor="middle">PDF</text>
+      </g>
+    </g>
+    <text x="682" y="76" font-size="9" fill="#6E7681" text-anchor="middle" font-family="monospace">rejection-3681-qa.pdf</text>
+
+    <g transform="translate(820,30)">
+      <rect x="0" y="0" width="160" height="30" rx="15" fill="#252B33" stroke="#484F58"/>
+      <text x="80" y="20" font-size="12" font-weight="600" fill="#8B949E" text-anchor="middle">Ver log</text>
+    </g>
+  </g>
+
+  <!-- CARD #5 — finalizado neutral (sin resultado) -->
+  <g transform="translate(40,778)">
+    <rect x="0" y="0" width="1000" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="86" fill="#8B949E" rx="2"/>
+
+    <!-- Persona builder (deterministic, gris) -->
+    <g transform="translate(20,18)">
+      <circle cx="25" cy="25" r="25" fill="#B1BAC4"/>
+      <text x="25" y="32" font-size="22" font-weight="700" fill="#0D1117" text-anchor="middle">B</text>
+    </g>
+    <text x="88" y="36" font-size="14" font-weight="600" fill="#E6EDF3">builder</text>
+
+    <text x="208" y="34" font-size="13" font-weight="600" fill="#E6EDF3">#3680</text>
+    <text x="250" y="34" font-size="13" fill="#B1BAC4">Limpieza periodica de worktrees huerfanos en .pip...</text>
+
+    <g transform="translate(208,46)">
+      <rect x="0" y="0" width="58" height="20" rx="10" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-opacity="0.4"/>
+      <text x="29" y="14" font-size="11" fill="#2DD4BF" text-anchor="middle">build</text>
+    </g>
+    <g transform="translate(270,46)">
+      <rect x="0" y="0" width="106" height="20" rx="10" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+      <path d="M11 11 L21 11" stroke="#8B949E" stroke-width="2" stroke-linecap="round"/>
+      <text x="63" y="14" font-size="11" font-weight="600" fill="#8B949E" text-anchor="middle">finalizado</text>
+    </g>
+
+    <text x="620" y="36" font-size="12" fill="#8B949E" font-family="monospace" text-anchor="end">1m 02s</text>
+    <text x="620" y="54" font-size="11" fill="#6E7681" font-family="monospace" text-anchor="end">31/05 16:55</text>
+
+    <g transform="translate(820,30)">
+      <rect x="0" y="0" width="160" height="30" rx="15" fill="#252B33" stroke="#484F58"/>
+      <text x="80" y="20" font-size="12" font-weight="600" fill="#8B949E" text-anchor="middle">Ver log</text>
+    </g>
+  </g>
+
+  <!-- CARD #6 — aprobado (architect en analisis de #3766) — sin chip prio -->
+  <g transform="translate(40,878)">
+    <rect x="0" y="0" width="1000" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="86" fill="#3FB950" rx="2"/>
+
+    <g transform="translate(20,18)">
+      <circle cx="25" cy="25" r="25" fill="#BC8CFF"/>
+      <text x="25" y="32" font-size="22" font-weight="700" fill="#0D1117" text-anchor="middle">A</text>
+    </g>
+    <text x="88" y="36" font-size="14" font-weight="600" fill="#E6EDF3">architect</text>
+
+    <text x="208" y="34" font-size="13" font-weight="600" fill="#E6EDF3">#3766</text>
+    <text x="250" y="34" font-size="13" fill="#B1BAC4">Sherlock: rol adversarial, no modelo distinto</text>
+
+    <g transform="translate(208,46)">
+      <rect x="0" y="0" width="78" height="20" rx="10" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-opacity="0.4"/>
+      <text x="39" y="14" font-size="11" fill="#BC8CFF" text-anchor="middle">criterios</text>
+    </g>
+    <g transform="translate(290,46)">
+      <rect x="0" y="0" width="100" height="20" rx="10" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-opacity="0.4"/>
+      <path d="M11 12 L15 16 L21 9" fill="none" stroke="#3FB950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="11" font-weight="600" fill="#3FB950" text-anchor="middle">aprobado</text>
+    </g>
+
+    <text x="620" y="36" font-size="12" fill="#8B949E" font-family="monospace" text-anchor="end">2m 51s</text>
+    <text x="620" y="54" font-size="11" fill="#6E7681" font-family="monospace" text-anchor="end">31/05 16:40</text>
+
+    <g transform="translate(820,30)">
+      <rect x="0" y="0" width="160" height="30" rx="15" fill="#252B33" stroke="#484F58"/>
+      <text x="80" y="20" font-size="12" font-weight="600" fill="#8B949E" text-anchor="middle">Ver log</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       TOGGLE "VER N MAS" — .ah-more / <details><summary> nativo
+       ============================================================ -->
+  <g transform="translate(40,990)">
+    <rect x="0" y="0" width="1000" height="48" rx="12" fill="rgba(88,166,255,0.06)" stroke="#30363D" stroke-dasharray="4 4"/>
+    <text x="20" y="29" font-size="13" font-weight="600" fill="#58A6FF">▸ Ver 17 mas...</text>
+    <text x="980" y="29" font-size="11" fill="#6E7681" text-anchor="end" font-family="monospace">&lt;details class="ah-more"&gt; nativo, accesible por teclado · cap 50</text>
+  </g>
+
+  <!-- Annotation arrow apuntando al toggle -->
+  <g transform="translate(40,1046)">
+    <text x="0" y="14" font-size="11" fill="#8B949E">
+      <tspan font-weight="600">Toggle independiente</tspan>
+      <tspan> del colapso global de la seccion (CA-24). El toggleSection('historial') esconde la lista entera;</tspan>
+    </text>
+    <text x="0" y="32" font-size="11" fill="#8B949E">
+      <tspan>el </tspan>
+      <tspan font-family="monospace" fill="#B1BAC4">&lt;details&gt;</tspan>
+      <tspan> nativo solo expande las 17 (en este mockup) ocultas adicionales hasta el cap duro de 50.</tspan>
+    </text>
+  </g>
+
+  <!-- ============================================================
+       SEPARADOR + VARIANTE FALLBACK INERTE (CA-A3)
+       ============================================================ -->
+  <line x1="40" y1="1110" x2="1040" y2="1110" stroke="#30363D" stroke-dasharray="6 6"/>
+  <text x="40" y="1136" font-size="13" font-weight="700" fill="#D29922" letter-spacing="0.06em">
+    VARIANTE FALLBACK INERTE (CA-A3 / REQ-SEC-7)
+  </text>
+  <text x="40" y="1158" font-size="11" fill="#8B949E">
+    Cuando require('./views/dashboard/historial') arroja (sintaxis rota, dependencia faltante), dashboard.js
+  </text>
+  <text x="40" y="1175" font-size="11" fill="#8B949E">
+    renderiza este cartel visible. NUNCA queda string vacio silencioso (anti-patron).
+  </text>
+
+  <g transform="translate(40,1198)">
+    <rect x="0" y="0" width="1000" height="106" rx="12" fill="rgba(210,153,34,0.10)" stroke="#D29922" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="106" fill="url(#warningStripe)" rx="2"/>
+
+    <!-- Icon warning -->
+    <g transform="translate(28,28)" stroke="#D29922" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M25 4 L46 42 H4 Z"/>
+      <path d="M25 18 V28"/>
+      <circle cx="25" cy="34" r="1.5" fill="#D29922"/>
+    </g>
+
+    <text x="100" y="36" font-size="16" font-weight="700" fill="#E6EDF3">Ventana Historial no disponible</text>
+    <text x="100" y="58" font-size="12" fill="#B1BAC4">
+      El modulo views/dashboard/historial.js fallo al cargar. Ver logs del dashboard para detalle.
+    </text>
+    <text x="100" y="82" font-size="11" fill="#8B949E" font-family="monospace">
+      log("historial view unavailable: " + e.message) emitido por dashboard.js — el render no queda en blanco.
+    </text>
+  </g>
+
+  <!-- ============================================================
+       FOOTER tecnico — IDs invariantes + dependencias soft + out-of-scope
+       ============================================================ -->
+  <line x1="40" y1="1340" x2="1040" y2="1340" stroke="#30363D" stroke-dasharray="6 6"/>
+
+  <text x="40" y="1366" font-size="13" font-weight="700" fill="#E6EDF3" letter-spacing="0.06em">
+    NOTA TECNICA — IDs / CLASSES INVARIANTES (CA-25 / R6 DOM morphing)
+  </text>
+  <g transform="translate(40,1380)">
+    <rect x="0" y="0" width="1000" height="120" rx="10" fill="#1C2128" stroke="#30363D"/>
+    <text x="20" y="24" font-size="11" font-family="monospace" fill="#B1BAC4">
+      <tspan x="20" dy="0">#agent-history  ·  data-section="historial"  ·  .matrix-section  ·  .matrix-header  ·  .section-chevron</tspan>
+      <tspan x="20" dy="16">.section-title-clickable  ·  .section-popout  ·  .section-body  ·  .ah-list  ·  .ah-count</tspan>
+      <tspan x="20" dy="16">.ah-card  ·  .ah-running  ·  .ah-ok  ·  .ah-fail  ·  .ah-neutral</tspan>
+      <tspan x="20" dy="16">.ah-avatar  ·  .ah-skill  ·  .ah-issue  ·  .ah-fase  ·  .ah-status  ·  .ah-dur  ·  .ah-time</tspan>
+      <tspan x="20" dy="16">.ah-pdf  ·  .ah-prio-actions  ·  .ah-more  ·  .ah-more-btn  ·  .ah-more-list  ·  .lc-pos</tspan>
+    </text>
+  </g>
+
+  <text x="40" y="1528" font-size="13" font-weight="700" fill="#E6EDF3" letter-spacing="0.06em">
+    DEFENSAS DE SEGURIDAD (CA-4, CA-5, CA-6 + R2/R3/R4/R5 del architect)
+  </text>
+  <g transform="translate(40,1542)">
+    <rect x="0" y="0" width="1000" height="98" rx="10" fill="#1C2128" stroke="#30363D"/>
+    <text x="20" y="22" font-size="11" fill="#B1BAC4">
+      <tspan x="20" dy="0">• escapeHtmlSsr() sobre todo campo dinamico (titulo, skill, fase, resultado, logFile, rejectionPdf, tip).</tspan>
+      <tspan x="20" dy="16">• isSafeFilename(s) = /^[A-Za-z0-9._-]+$/ para logFile / rejectionPdf antes de inyectar en href.</tspan>
+      <tspan x="20" dy="16">• Number(h.issue) antes de inyectar en onclick="issueMoveTo*(...)" — defensa anti coercion debil.</tspan>
+      <tspan x="20" dy="16">• rel="noopener noreferrer" en TODO &lt;a target="_blank"&gt; — anti-tabnabbing #2523.</tspan>
+      <tspan x="20" dy="16">• Tooltips dinamicos: la parte variable pasa por escapeHtmlSsr antes de meterse en title=.</tspan>
+    </text>
+  </g>
+
+  <text x="40" y="1668" font-size="13" font-weight="700" fill="#E6EDF3" letter-spacing="0.06em">
+    OUT-OF-SCOPE (no se ilustra como funcional)
+  </text>
+  <g transform="translate(40,1682)">
+    <rect x="0" y="0" width="1000" height="92" rx="10" fill="#1C2128" stroke="#30363D"/>
+    <text x="20" y="22" font-size="11" fill="#8B949E">
+      <tspan x="20" dy="0">• Filtros por skill/resultado/issue + busqueda full-text + paginacion mas alla del cap 50 -&gt; #3778</tspan>
+      <tspan x="20" dy="16">• CSP estricta + CSRF en botones issueMoveTo* -&gt; #3688 / #2532 / #2745</tspan>
+      <tspan x="20" dy="16">• Migracion onclick inline -&gt; data-attributes + delegation -&gt; #3758</tspan>
+      <tspan x="20" dy="16">• Snapshot test cross-window de DOM IDs -&gt; #3755 — Enforcement axe-core CI -&gt; #3717</tspan>
+    </text>
+  </g>
+
+  <!-- ============================================================
+       END MAIN BOUNDARY
+       ============================================================ -->
+  <text x="40" y="1820" font-size="11" fill="#6E7681" font-family="monospace">&lt;/main&gt;</text>
+
+  <!-- ============================================================
+       FOOTER del kiosk — referencia visual del frame (fuera de scope)
+       ============================================================ -->
+  <g transform="translate(40,1858)">
+    <text x="0" y="20" font-size="11" fill="#6E7681">
+      Pipeline V3 — Dashboard operador  ·  split #3734 de #3715  ·  mockup 31  ·  UX (Lili)  ·  31/05/2026
+    </text>
+    <text x="1000" y="20" font-size="11" fill="#6E7681" text-anchor="end">tokens: design-tokens.css  ·  iconos: sprite.svg</text>
+  </g>
+</svg>
