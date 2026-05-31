@@ -280,6 +280,16 @@ async function main() {
             // cuando corren con cwd=worktree (PR #2537): logs del linter, locks transitorios,
             // qa evidence, lint reports. Sin esto, después del commit el árbol queda con
             // tracked-modified o untracked y el rebase/push tropieza con archivos espurios.
+            // #3723 (rev-2): ampliado a carpetas .gitignore-adas del propio
+            // pipeline (`.pipeline/audit/`, `.pipeline/audio/`,
+            // `.pipeline/quota-snapshots/`, `.pipeline/archivado/`). Estas
+            // están en .gitignore desde #3707 (ghost artifacts cleanup) pero
+            // algunos archivos quedaron tracked de épocas previas. Cuando se
+            // modifican, `getChangedFiles` los reporta y `git add -- <path>`
+            // explota con "paths ignored by .gitignore" + exit 1 aunque el
+            // archivo esté tracked. Defense-in-depth: filtrarlos en SAFE_IGNORE
+            // ANTES de pasarlos a `git add`. La untrack-ación real se hace
+            // con `git rm --cached` en el commit que introduce esta línea.
             const SAFE_IGNORE = new RegExp(
                 '^(?:' + [
                     '\\.claude\\/hooks\\/agent-\\d+\\.heartbeat',
@@ -289,6 +299,10 @@ async function main() {
                     '\\.pipeline\\/.*\\.heartbeat',
                     '\\.pipeline\\/logs\\/.*',
                     '\\.pipeline\\/locks\\/.*',
+                    '\\.pipeline\\/audit\\/.*',
+                    '\\.pipeline\\/audio\\/.*',
+                    '\\.pipeline\\/archivado\\/.*',
+                    '\\.pipeline\\/quota-snapshots\\/.*',
                     'qa\\/evidence\\/.*',
                     'lint-\\d+-report\\.(md|json)',
                     '.*\\.stackdump',
