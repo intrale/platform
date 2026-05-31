@@ -667,6 +667,176 @@ Esta ventana mantiene la identidad visual V3 establecida por las hermanas:
 - **Footer note**: misma posicion y tono ("Tip: si esta ventana se cae...").
 - **Fallback inerte**: mismo formato (icono warning + titulo + subtitulo + linea mono del log).
 
+## Ventana **Descanso** — split #3736
+
+**Modulo destino:** `.pipeline/views/dashboard/descanso.js` (NUEVO — extraido de `satellites.js:1561-2106`).
+**Slug del router:** `?view=descanso` (slug nuevo, sin `modo-`) + **path legacy** `/modo-descanso` preservado sin redirect (CA-3736-B1, B2, B3). Ambos coexisten — son origenes operativos distintos (deep-link directo vs router cliente). Mismo patron que adopto Ops con su slug `ops` + path legacy `/ops`.
+**Mockup adjunto:** `.pipeline/assets/mockups/34-descanso-v3.svg` (1080x1920, kiosk vertical). Narrativa en `narrativa-descanso-v3.md`.
+**Origen declarado:** **Extraccion mecanica** de `renderModoDescanso()` en `satellites.js:1561-2106` (~545 lineas: body HTML + CSS + JS embebido + cierre con `pageShell(...)`). El nuevo modulo replica el patron canonico de `home.js`/`multi-provider.js` (inline shell, sin importar `pageShell` del monolito). Decision D1 confirmada por architect.
+**Out of scope:** introducir CSRF nuevo en `POST /api/rest-mode` (CA-3736-I3 — el endpoint ya esta hardened con audit `rest-mode-audit.jsonl` / SEC-A03), consolidar la duplicacion deliberada cliente/backend de validacion `rest-mode-schedule.js` (CA-3736-A4 — preservar tal cual con FE-SEC-1), migrar al helper `lib/escape-html.js` compartido (CA-3736-E1 — fuera de scope, es split aparte #2901), wizard de doble confirmacion, preview live del countdown.
+
+### Composicion de la ventana
+
+La ventana es **read + write operativa** sobre la schedule del modo descanso. Toda la hidratacion es **client-side** via `fetch('/api/rest-mode')` cada 8s — el SSR solo emite estructura + textos hardcodeados, NO recibe state del servidor. Mutaciones via `POST /api/rest-mode` con hot-reload sin reinicio del pipeline.
+
+| Sub-bloque | ID DOM invariante | Proposito | Trigger de visibilidad |
+|---|---|---|---|
+| Header de ventana + V3 badge + rail luna | (textual + `<svg use href="#ic-rest-mode">`) | Titulo "Modo descanso · calendario semanal" + badge teal V3 + subtitulo "gating de skills LLM · hot-reload sin reinicio" | Siempre |
+| Hint text explicativo | (estatico) | Tres lineas: skills deterministicos siguen corriendo / cuales son / bypass labels priority:critical | Siempre |
+| Status pill / banner | `#rm-status` (clases `.rm-status .rm-active` o `.rm-status .rm-inactive`) | Dual-encoding (icono luna + color rest-mode + texto). Activo muestra `currentPeriod` + `periodsToday` + `nextPeriod`. Inactivo muestra "Pipeline opera sin restricciones". | Siempre — el estado se deriva del slice |
+| Checkbox "Activar" | `#rm-active` (input checkbox) | Toggle de activacion total. Si destildado, el pipeline opera sin restricciones (CA-1.9 heredado de #2882). | Siempre |
+| Input "Zona horaria" + datalist | `#rm-timezone` + `#rm-tz-list` | Combobox con default `America/Argentina/Buenos_Aires`. Data list hidratado client-side via `Intl.supportedValuesOf('timeZone')` (con fallback a `TZ_DEFAULTS` estatico). | Siempre |
+| Grilla semanal 7 columnas | `#rm-grid` (con atributo `data-rm-editing="0|1"`) | Lun..Dom, cada columna con N periodos (`max 24`). Caption por periodo: `☀ Dia completo` (00:00–23:59) / `🌙 Cruza medianoche · +1 dia` (start>end) / sin caption (intra-dia normal). Conteo `N/24` en header de columna (warning si N≥1, danger si overlap). | Siempre — el grid es el core funcional |
+| Botones `+ Periodo` por columna | `.rm-col-add` (uno por dia, dentro del grid) | Agrega periodo nuevo `22:00–07:00` (default sensato para inicio nocturno). Disabled si `list.length >= MAX_PERIODS_PER_DAY`. | Siempre, disabled si cap alcanzado |
+| Botones `✕` remove por periodo | `.rm-period-remove` (uno por periodo) | Elimina periodo del state local + re-renderiza grid. | Solo cuando hay periodos |
+| Errors box | `#rm-errors` (hidden si vacio) + `#rm-error-count` (badge) | Validacion cliente: overlap entre periodos, HH:MM invalido, cap excedido. Texto: "Errores de validacion de cliente (nota: el backend revalida igual)". | Solo cuando `validateScheduleClient().errors.length > 0` |
+| Boton "💾 Guardar configuracion" + msg | `#rm-save` + `#rm-msg` (`.rm-ok` / `.rm-err`) | Submit del form. Disabled si hay errores cliente. Mensaje post-submit: "✓ Guardado · hot-reload sin reinicio del pipeline." (ok) / "✗ <error sanitizado>" (err). | Siempre, disabled si validacion falla |
+| Meta footer | `#rm-bypass` + `#rm-updated` + `.rm-meta` | Bypass labels (read-only desde `config.yaml`, chips de color por familia) + ultima actualizacion humanizada `es-AR`. | Siempre |
+| Leyenda visual | (estatico, parte del shell SSR) | 6 items: periodo activo, dia completo, cruza medianoche, error, conteo, deterministicos. Cumple WCAG AA porque cada status tiene dual-encoding (color + icono + texto). | Siempre |
+| Fallback inerte | (variante de `dashboard.js`) | Render minimo cuando `require('./views/dashboard/descanso')` arroja. | Solo si el require falla |
+
+### Piezas que se preservan (CA-3736-A1, A4 + heredados CA-B1)
+
+| Pieza | Estado actual | Fuente de datos | Destino V3 | Token / icono | Tooltip CA-3736-C* |
+|---|---|---|---|---|---|
+| Status header con `currentPeriod`/`nextPeriod`/`periodsToday` | `satellites.js:1942-1983` (renderStatus client-side) | `payload.window.active`, `payload.currentPeriod`, `payload.nextPeriod`, `payload.periodsToday` (slice enriquecido #3241) | **Preserva + rediseña**: dual-encoding (icono luna `ic-rest-mode` + color `--rest-mode-fg` sobre `--rest-mode-bg` + texto descriptivo) | `--rest-mode`, `--rest-mode-bg`, `--rest-mode-fg`, `--rest-mode-dim`. Icono `#ic-rest-mode` | (textos auto-explicativos en pill) |
+| Checkbox "Activar modo descanso" | `satellites.js:1574` | `payload.window.active` (boolean) | **Preserva**: input checkbox nativo + label en strong. **Formaliza tooltip operativo** existente como `title=` + `aria-label=` (CA-3736-C1). | `--rest-mode` (checked), `--border-strong` (default) | `"Si destildas, el pipeline opera sin restricciones (CA-1.9)"` |
+| Zona horaria | `satellites.js:1578-1583` | `payload.window.timezone` | **Preserva**: input texto + datalist hidratado client-side. Default `America/Argentina/Buenos_Aires`. | `--surface-0` (input), `var(--font-mono)` (texto) | — |
+| Grilla semanal (7 columnas) | `satellites.js:1585-1665` (CSS) + `1801-1853` (buildGrid) | `payload.schedule` (schema nuevo CA-8.1) o `payload.window.start/end/days` (legacy mapeado) | **Preserva**: estructura 7 cols + max 24 periodos/dia. Validacion cliente espejo backend permanece tal cual (CA-3736-A4 / FE-SEC-1, NO consolidar). | `--surface-1` (col), `--rest-mode-bg` (periodo activo), `--danger-bg` (periodo error), `--warning` (conteo ≥1), `--border-strong` (col vacio) | — (por boton interno, ver siguientes filas) |
+| Boton `+ Periodo` por columna | `satellites.js:1840-1848` | (estatico — agrega periodo `22:00–07:00` al state) | **Preserva**: boton dashed con texto centrado. Disabled si cap. **Formaliza tooltip operativo** existente (`addBtn.title`) como `title=` + `aria-label=` (CA-3736-C3). | `--border-strong` (default), `--rest-mode-fg` (hover) | `"Maximo 24 periodos por dia"` |
+| Boton `✕` remove por periodo | `satellites.js:1882-1888` | (estatico — elimina periodo del state local) | **Preserva**: boton ghost minimal. **Formaliza tooltip operativo** existente (`aria-label`) como `title=` + `aria-label=` (CA-3736-C4). | `--text-dim` (default), `--danger` (hover) | `"Eliminar periodo"` |
+| Errors box con validacion cliente | `satellites.js:1908-1927` (refreshErrorsBox) | `validateScheduleClient(scheduleState)` (overlap/HH:MM/cap) | **Preserva**: caja con borde danger atenuado + ul de items. Texto literal preservado para no romper expectativa del operador. | `--danger`, `--danger-bg` | — |
+| Boton "💾 Guardar configuracion" | `satellites.js:1590` + `2066-2098` (submit handler) | (form submit → `POST /api/rest-mode`) | **Preserva**: boton primary en color rest-mode. Disabled si validacion falla. **Formaliza tooltip operativo** que NO existia (nuevo) — CA-3736-C2. | `--rest-mode-bg` (bg), `--rest-mode` (border), `--rest-mode-fg` (text) | `"Hot-reload sin reinicio del pipeline. El backend revalida la grilla."` |
+| Meta footer (`bypass` + `updatedAt`) | `satellites.js:1595-1599` (HTML) + `1976-1982` (hidratacion) | `payload.bypassLabels` (array de strings, viene de `config.yaml`) + `payload.window.updatedAt` (ISO) | **Preserva + rediseña**: chips de color por familia (priority:critical → danger, rest-mode:exclude → rest-mode). `updatedAt` humanizado con `toLocaleString('es-AR')`. | `--danger-bg` (priority:critical/bypass chips), `--rest-mode-bg` (rest-mode:exclude chip), `var(--font-mono)` (timestamp) | — (chips auto-explicativos) |
+
+### Piezas que se rediseñan (CA-3736 herencia CA-C2)
+
+| Pieza | Estado actual | Fuente de datos | Destino V3 | Token / icono | Tooltip |
+|---|---|---|---|---|---|
+| Status pill + countdown panel | Status pill simple con icono + texto (1942-1983) | `payload.currentPeriod` + derivable: `currentPeriod.end - now` en minutos | **Rediseña**: status pill mantiene icono + texto, y agrega un mini panel a la derecha con 3 celdas: "Cierra en `4h 46m`" + "Periodos hoy `2/24`" + "Skills LLM `en cola`". Reusa exclusivamente el slice enriquecido del PR #3241 (no agrega request nuevo). | `--rest-mode-bg`, `--rest-mode-fg`, `var(--font-mono)` | — (cifras auto-explicativas) |
+| Header con badge V3 | Header simple `<h2 class="in-section-title">` | (estatico) | **Rediseña**: agrega rail lateral `linearGradient restMoonRail` + badge teal "V3" + subtitulo "gating de skills LLM · hot-reload sin reinicio" para alinear con la identidad V3 del epico. | `--teal` (V3 badge), `--text-primary`, `--text-secondary` | — |
+| Leyenda visual | NO existe en el codigo actual | (estatico — agregado nuevo por el split) | **Nueva**: 6 items con dual-encoding para cubrir CA-E1 (WCAG AA). Misma posicion que las demas ventanas V3 (debajo del meta footer, antes del out-of-scope). | Tokens del sistema | — (auto-explicativa) |
+
+### Piezas que NO entran (out-of-scope — CA-3736-I3, A4, E1)
+
+| Pieza | Motivo |
+|---|---|
+| CSRF nuevo en `POST /api/rest-mode` | CA-3736-I3. El endpoint ya esta hardened (Origin/Host guard + audit `rest-mode-audit.jsonl` SEC-A03). Introducir CSRF nuevo es scope de #3688/#2532/#2745 cuando aterrice CSP estricta. |
+| Consolidar duplicacion cliente/backend de validacion (`overlap`/`HH:MM`/`MAX_PERIODS_PER_DAY`) | CA-3736-A4. Es decision deliberada del split #2890 PR-A (FE-SEC-1). El comentario inline `satellites.js:1668-1669` justifica defensa en profundidad cliente+backend. Consolidar a modulo client-side compartido es refactor cross-ventana fuera de este split. |
+| Migracion a `lib/escape-html.js` compartido | CA-3736-E1. El helper aun no existe en main (dep #1 del epico, verificado por architect con `ls .pipeline/lib/escape-html.js` → No such file). Migracion es PR separado #2901 que toca TODAS las ventanas extraidas en una sola pasada. Mientras tanto, inline `escapeHtmlSsr` con cobertura OWASP canonica `& < > " ' /` (mismo cuerpo que `home.js:33-41`). |
+| Wizard de doble confirmacion para "Guardar" | Decision UX consciente: el operador ya tiene feedback inmediato (errores cliente + msg post-submit + auditoria server-side). El wizard introduce friccion innecesaria para una configuracion reversible. |
+| Preview live del countdown mientras edita | Decision UX: el countdown live ya se muestra en el status pill (hidratado por polling cada 8s). Un preview adicional en el form duplicaria informacion sin valor agregado. El usuario ve el efecto post-submit. |
+| Helper compartido `validateScheduleClient` extraido a `lib/rest-mode-schedule-client.js` | CA-3736-A4. Espejo del backend `lib/rest-mode-schedule.js`. Consolidar es refactor cross-modulo fuera de scope. |
+| Redirect entre `/modo-descanso` y `?view=descanso` | CA-3736-B3. Son origenes operativos distintos. Misma decision que tomo Ops con su slug + path legacy. |
+| Snapshot test cross-window de DOM IDs | Cubierto por recomendacion abierta #3755. |
+| Enforcement axe-core CI | Cubierto por recomendacion abierta #3717. WCAG AA validado manualmente sobre el screenshot del PR. |
+
+### Datos personales / sensibles renderizados
+
+- **Schedule del operador** (`schedule[day]` con periodos HH:MM): no es PII, pero define ventanas operativas del pipeline. Auditado server-side en `rest-mode-audit.jsonl` (SEC-A03).
+- **Timezone**: no es PII (es metadata del operador). Default `America/Argentina/Buenos_Aires` hardcoded en el codigo.
+- **Bypass labels**: viene de `config.yaml` (read-only). No hay PII. Se renderiza directamente como chip text.
+- **`updatedAt`**: ISO timestamp, humanizado con `toLocaleString('es-AR')` client-side. No es PII.
+
+Todos los campos dinamicos que aterricen al SSR (si en el futuro se interpola algun valor, ej. timezone default) DEBEN pasar por `escapeHtmlSsr` (CA-3736-D3 / E1+E2). Hoy el SSR no interpola — el XSS guard se concentra en el JS embebido del modulo (validacion: no usa `innerHTML` con datos del servidor, ver test D3).
+
+### Endpoints state-changing que dispara (CA-3736-I3 — ya hardened SEC-A03)
+
+- `POST /api/rest-mode` — disparado por el form submit. Body: `{ active, timezone, schedule, manual }`. Re-valida server-side con `lib/rest-mode-schedule.js` (overlap, HH:MM, MAX_PERIODS_PER_DAY). Audit trail en `rest-mode-audit.jsonl`. Hot-reload sin reinicio via watcher de `rest-mode-state.js`.
+
+**Defensas inquebrantables del endpoint** (ya implementadas, NO se tocan en este split):
+
+1. Validar `Origin === 'http://localhost:3200'` (o `Host === 'localhost:3200'` como fallback).
+2. Method debe ser `POST`. Otros metodos retornan `405`.
+3. Content-Type estricto `application/json`. Otros retornan `415`.
+4. Body sanitizado server-side antes de aceptar (whitelist de fields: `active`, `timezone`, `schedule`, `manual`).
+5. Backend revalida la grilla — el cliente NO es fuente de verdad (FE-SEC-1).
+
+### Dependencias de seguridad pendientes que afectan a la ventana
+
+| Issue | Tema | Como impacta |
+|---|---|---|
+| #3722 / #2901 | Helper `lib/escape-html.js` compartido | SOFT (CA-3736-E1). Mientras no aterrice: inline `escapeHtmlSsr` con cobertura OWASP canonica. Cuando aterrice: PR de unificacion toca todas las ventanas en una pasada. |
+| #3688 / #2532 / #2745 | CSP `script-src 'self'` del dashboard | SOFT (CA-3736-I3). Esta ventana NO introduce `onclick=` inline ni `<script>` inline nuevos (el JS embebido vive dentro del shell del modulo). Documentar en PR. |
+| #3755 | Snapshot test cross-window de DOM IDs | SOFT. Recomendacion abierta. Cubre `#rm-status`, `#rm-form`, `#rm-grid`, `#rm-errors`, `#rm-bypass`, `#rm-updated` como invariantes cross-window. |
+| #3717 | Enforcement axe-core CI | SOFT. WCAG AA validado manualmente sobre el screenshot del PR. |
+
+### Fallback inerte (CA-A3 / CA-3736-A2)
+
+Cuando `require('./views/dashboard/descanso')` arroja, `dashboard.js` debe:
+
+1. Loguear `log('descanso view unavailable: ' + e.message)` (patron consolidado en `dashboard.js:9027/9039`).
+2. Renderizar en el lugar del partial un cartel visible con:
+   - Icono warning (`stroke="#D29922"` / `--warning`).
+   - Titulo `"Ventana Descanso no disponible"`.
+   - Subtitulo `"El modulo views/dashboard/descanso.js fallo al cargar. Ver logs del dashboard para detalle."`
+   - Linea mono explicativa: `'log("descanso view unavailable: " + e.message) emitido por dashboard.js — el render no queda en blanco.'`
+   - **Tip de recovery**: el path legacy `/modo-descanso` sigue activo via guard en `dashboard-routes.js` (CA-3736-B1). Patron: `() => (descansoView && descansoView.renderDescanso) ? descansoView.renderDescanso() : sat.renderModoDescanso()`.
+3. **Critico**: NO dejar string vacio silencioso. Anti-patron rechazado en `verificacion`.
+
+Variante ilustrada en el mockup adjunto, seccion "VARIANTE FALLBACK INERTE".
+
+### Tests requeridos (CA-3736-D1..D5 / CA-G1)
+
+`.pipeline/views/dashboard/__tests__/descanso.test.js` con `node:test`. Cobertura minima (4 casos consolidados — patron base `__tests__/router.test.js`):
+
+1. **Exports canonicos del modulo**: `slug === 'descanso'`, `renderDescanso` y `renderDescansoInner` son funciones. Cubre CA-3736-A1.
+2. **Render SSR emite estructura esperada**: `renderDescanso()` retorna string que matchea regex de cada selector estructural (`rm-status`, `rm-grid`, `rm-bypass`, `rm-updated`, `rm-form`). Cubre CA-3736-D2.
+3. **XSS guard sobre JS embebido**: extraer el contenido del `<script>` embebido y assertar que NO usa `\.innerHTML\s*=` con datos del servidor. El SSR de esta ventana no interpola state — el riesgo XSS vive en el JS embebido (toda hidratacion via `fetch('/api/rest-mode')` debe pasar por `textContent`/`createElement`). Cubre CA-3736-D3.
+4. **Escape OWASP canonico sobre payload XSS**: pasar `opts = { tz: '<img src=x onerror=alert(1)>' }` a `renderDescanso()` y assertar que el output NO contiene la string sin escapar. Si el modulo NO interpola `opts.tz` (caso actual), el test sigue verde — pero garantiza que cualquier interpolacion futura pase por `escapeHtmlSsr`. Cubre CA-3736-D3 + E2.
+
+Tests **adicionales** sobre router (cuando `VIEW_SLUGS['descanso']` se registre):
+
+- `__tests__/router.test.js` debe seguir verde despues del cambio en `VIEW_SLUGS` y `HTML_ROUTES['/modo-descanso']`. Cubre CA-3736-B1, B2.
+
+**Cobertura minima:** 100% de los exports del nuevo modulo (3 exports, todos testeados). Comando: `node --test .pipeline/views/dashboard/__tests__/descanso.test.js` debe pasar en verde sin warnings de deprecation (CA-3736-D5).
+
+### Smoke curl (CA-3736-D4 / CA-G2)
+
+```bash
+# Path legacy (preserva CA-3736-B1)
+curl -s 'http://127.0.0.1:3200/modo-descanso' \
+  | grep -cE 'rm-grid|rm-status|rm-form|rm-bypass'
+# Debe devolver 4
+
+# Nuevo slug (CA-3736-B2, cuando se registre en VIEW_SLUGS)
+curl -s 'http://127.0.0.1:3200/dashboard?view=descanso' \
+  | grep -cE 'rm-grid|rm-status|rm-form|rm-bypass'
+# Debe devolver 4
+
+# Partial endpoint (router cerrado en #3723)
+curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:3200/dashboard/partial?view=descanso'
+# Debe devolver 200
+
+# Defensa Origin guard del endpoint hardened (verificable end-to-end, ya implementado SEC-A03)
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST -H 'Origin: http://evil.example.com' -H 'Content-Type: application/json' \
+  -d '{"active":true,"timezone":"UTC","schedule":{}}' \
+  'http://127.0.0.1:3200/api/rest-mode'
+# Debe devolver 403
+```
+
+### Accesibilidad WCAG AA (CA-3736-F1..F4 / CA-E1..E4)
+
+- **Dual-encoding de status**: nunca solo color. Status header tiene color (`--rest-mode-fg` sobre `--rest-mode-bg`) + icono unicode (`🌙` activo / `○` inactivo) + texto descriptivo (`"Activa · ahora HH:MM–HH:MM"` o `"Inactivo · pipeline opera sin restricciones"`). Daltonismo cubierto.
+- **Touch target botones operativos**: boton `Guardar` 40px alto, botones `+ Periodo` 32px (acceptable AA, no AAA), boton `✕` 22px (compacto pero accesible — patron del monolito preservado). Reusa `min-height` y `padding` heredados del CSS.
+- **Contraste AA verificado** sobre los tokens: `--rest-mode-fg` (#C5B7FF) sobre `--rest-mode-bg` (rgba(124,92,255,0.16)) tiene ratio >= 7.4:1 documentado en `design-tokens.css:91`. Texto secundario `--text-secondary` sobre `--surface-1` >= 9.7:1.
+- **Keyboard navigation**: todas las acciones operativas son nativas (`<input type="checkbox">`, `<button type="submit">`, `<button type="button">`). Tab/Enter/Space funcionan. `<label for="...">` une cada input con su label semantico. No hay `<div onclick>` (CA-3736-F2).
+- **Tooltips no son la unica fuente de informacion**: el texto visible del boton ya comunica la accion base (`Guardar configuracion`, `+ Periodo`, `✕`). El tooltip aporta contexto adicional, no semantica unica (CA-3736-F3).
+- **`aria-label` en botones con solo emoji**: el boton `✕` tiene `aria-label="Eliminar periodo"` (CA-3736-F4). El boton de guardar tiene texto visible ademas del emoji 💾.
+
+### Coherencia con el resto del epico
+
+Esta ventana mantiene la identidad visual V3 establecida por las hermanas:
+
+- **Header**: titulo + V3 badge teal + rail lateral con gradiente semantico (igual que Matriz / KPIs / Ops / Bloqueados / Costos / Historial / Providers).
+- **Hint text**: 3 lineas cortas debajo del header explicando que hace la ventana (igual que Bloqueados / Ops).
+- **Status pill dual-encoding**: misma estetica que Costos (banner anomalia) / Historial (rail por estado).
+- **Grid cards**: rail lateral 3px del token del subject (`--rest-mode` activo, `--border-strong` vacio, `--danger` error). Igual que Costos por skill / Historial por estado / Bloqueados por severidad.
+- **Tooltips**: misma estetica (texto castellano, hardcoded server-side, escape canonico OWASP en parte dinamica si la hubiera).
+- **Footer note out-of-scope**: misma posicion y formato (boundary dashed + tone neutro).
+- **Fallback inerte**: mismo formato (icono warning + titulo + subtitulo + linea mono del log + tip de recovery).
+
 ## Otras ventanas del epico #3715
 
 | Split | Ventana | Mockup | Estado |
@@ -682,8 +852,8 @@ Esta ventana mantiene la identidad visual V3 establecida por las hermanas:
 | #3733 | KPIs principales (home) | `assets/mockups/30-kpis-v3.html` | criterios |
 | #3734 | Historial | `assets/mockups/31-historial-v3.svg` | criterios |
 | #3735 | Costos | `assets/mockups/32-costos-v3.svg` | criterios |
-| #3736 | Modo descanso | — | pendiente |
-| #3737 | **Providers (este split)** | `assets/mockups/33-providers-v3.html` | criterios |
+| #3736 | **Descanso (este split)** | `assets/mockups/34-descanso-v3.svg` | criterios |
+| #3737 | Providers | `assets/mockups/33-providers-v3.html` | criterios |
 
 > A medida que cada split entra a `criterios`, su `/ux` debe agregar la fila correspondiente con la tabla `pieza → fuente → destino`.
 

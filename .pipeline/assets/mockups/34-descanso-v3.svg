@@ -1,0 +1,661 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 34 — Ventana Descanso V3 (split de #3715, sub-historia #3736)
+  Resolucion target: 1080x1920 (kiosk vertical, identica al resto del epico V3)
+  Demuestra:
+    - Layout de la ventana standalone dentro de <main id="view-content" data-slug="descanso">.
+    - Status header dual-encoding (icono luna + color rest-mode + texto descriptivo),
+      cumple WCAG AA (CA-F1-F4).
+    - Grilla semanal 7 columnas (Lun..Dom) con periodos, badges "Dia completo" /
+      "Cruza medianoche", validacion cliente espejo backend (FE-SEC-1).
+    - Tooltips obligatorios (CA-3736-C1..C4) marcados como bocadillos amarillos
+      sobre cada accion operativa (checkbox + boton Guardar + boton + Periodo
+      + boton ✕ remove).
+    - Meta footer con bypass labels (read-only desde config.yaml) + updatedAt.
+    - Variante "Fallback inerte" (CA-A3) si require() del modulo falla.
+    - Variante "Out of scope" (acciones que NO entran en este split, alineado
+      con CA-3736-I3 — no se introduce CSRF nuevo, POST /api/rest-mode hardened).
+
+  Tokens consumidos del design-tokens.css (sin HEX libres, CA-3736-E1+E2):
+    --rest-mode (#7C5CFF), --rest-mode-dim, --rest-mode-bg, --rest-mode-fg
+    --surface-0/-1/-2/-3, --border, --border-strong
+    --text-primary, --text-secondary, --text-dim
+    --success/-bg, --warning/-bg, --danger/-bg, --info/-bg
+    --teal (V3 badge), --brand-cyan (icono brand)
+
+  Iconografia consumida desde sprite.svg (sin SVG inline, CA-F3):
+    #ic-rest-mode (luna creciente)         — status header
+    #ic-deterministic (engranaje)           — leyenda "Skills que siguen corriendo"
+    #ic-snooze (campana con zeta)           — bypass labels (read-only)
+    #ic-cost-anomaly (pico)                 — sin uso aca (queda para banner Costos)
+
+  IDs DOM que el dev debe emitir en SSR (CA-3736-A1, A2, D2):
+    - descanso-view              (root del modulo, <main data-slug="descanso">)
+    - rm-status                  (status pill/banner activo o inactivo)
+    - rm-form                    (form que envuelve checkbox + tz + grid + actions)
+    - rm-active                  (checkbox "Activar modo descanso")
+    - rm-timezone                (input texto + datalist Intl.supportedValuesOf)
+    - rm-grid                    (grid semanal de 7 columnas)
+    - rm-errors                  (box de errores cliente, hidden si vacio)
+    - rm-save                    (boton "💾 Guardar configuracion")
+    - rm-msg                     (banner inline de feedback post-submit)
+    - rm-bypass                  (span con bypass labels read-only)
+    - rm-updated                 (span con updatedAt humanizado)
+
+  Endpoints REST consumidos (CA-3736-I3 — sin CSRF nuevo, ya hardened SEC-A03):
+    - GET  /api/rest-mode           — payload { window, schedule, currentPeriod,
+                                                  nextPeriod, periodsToday,
+                                                  bypassLabels, ... }
+    - POST /api/rest-mode           — { active, timezone, schedule, manual }
+                                       hot-reload sin reinicio + audit
+                                       rest-mode-audit.jsonl
+
+  Decisiones congeladas (siguen el contrato del #3715 + receta architect):
+    1. Slug nuevo `descanso` (sin `modo-`), path legacy `/modo-descanso` mantenido
+       sin redirect (CA-3736-B1, B2, B3). Ambos coexisten, son origenes operativos
+       distintos (deep-link directo vs router cliente).
+    2. Inline `escapeHtmlSsr` cubriendo OWASP `& < > " ' /`, igual que home.js:33-41.
+       Migracion a lib/escape-html.js queda para #2901 (split aparte del epico).
+    3. SSR no recibe state — toda hidratacion es client-side via fetch('/api/rest-mode')
+       cada 8s. XSS guard se concentra en el JS embebido: textContent / createElement,
+       NUNCA innerHTML con datos del servidor (CA-3736-D3).
+    4. 4 tooltips operativos formalizados con title + aria-label (CA-3736-C1..C4):
+       - Checkbox "Activar": "Si destildas, el pipeline opera sin restricciones (CA-1.9)"
+       - Boton "Guardar": "Hot-reload sin reinicio del pipeline. El backend revalida la grilla."
+       - Boton "+ Periodo": "Maximo 24 periodos por dia"
+       - Boton "✕": "Eliminar periodo"
+    5. Duplicacion deliberada cliente/backend de validacion (overlap/HH:MM/cap
+       MAX_PERIODS_PER_DAY) preservada tal cual con comentario inline FE-SEC-1.
+       NO consolidar a modulo client-side compartido en este split (CA-3736-A4).
+    6. Fallback inerte (CA-A3 / CA-3736-A2): si require('./views/dashboard/descanso')
+       falla, dashboard.js loguea + renderiza cartel visible. Variante ilustrada
+       abajo.
+    7. Sin tokens nuevos. Sin iconos nuevos. Sin componentes nuevos del design-system.
+       Reusa todo el contrato heredado de #3715 + tokens de #2882 PR-A.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <!-- ============================================================
+       Tokens embebidos (self-contained, alineado con design-tokens.css)
+       ============================================================ -->
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="restHeaderGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1F1645" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="restBannerGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7C5CFF" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#7C5CFF" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="restMoonRail" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#C5B7FF"/>
+      <stop offset="100%" stop-color="#4B36B8"/>
+    </linearGradient>
+    <linearGradient id="dangerStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F85149"/>
+      <stop offset="100%" stop-color="#8B1A14"/>
+    </linearGradient>
+    <linearGradient id="warningStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D29922"/>
+      <stop offset="100%" stop-color="#9E6A03"/>
+    </linearGradient>
+    <linearGradient id="successStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3FB950"/>
+      <stop offset="100%" stop-color="#196C2E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo kiosk -->
+  <rect width="1080" height="1920" fill="#0D1117"/>
+
+  <!-- Estrellas decorativas sutiles (refuerzan visualmente "modo descanso" en el header) -->
+  <g fill="#7C5CFF" opacity="0.16">
+    <circle cx="180" cy="44" r="1"/>
+    <circle cx="320" cy="22" r="0.9"/>
+    <circle cx="540" cy="50" r="1.2"/>
+    <circle cx="720" cy="28" r="1"/>
+    <circle cx="880" cy="46" r="1.1"/>
+    <circle cx="1010" cy="20" r="0.8"/>
+  </g>
+
+  <!-- ============================================================
+       BRAND BAR superior (referencia visual del frame, NO scope de #3736)
+       Pertenece a #3725. Se renderiza atenuado para indicar boundary.
+       ============================================================ -->
+  <rect x="0" y="0" width="1080" height="68" fill="url(#restHeaderGrad)"/>
+  <rect x="0" y="67" width="1080" height="1" fill="#30363D"/>
+  <g opacity="0.55">
+    <circle cx="40" cy="34" r="14" fill="url(#brandGrad)"/>
+    <text x="68" y="40" font-size="18" font-weight="700" fill="#E6EDF3">INTRALE V3</text>
+    <text x="180" y="40" font-size="14" fill="#8B949E">/ Descanso</text>
+  </g>
+  <text x="1040" y="40" font-size="11" fill="#6E7681" text-anchor="end">[brand bar de #3725 — fuera de scope]</text>
+
+  <!-- ============================================================
+       CONTROL BAR (referencia, fuera de scope) — tab activa "Descanso"
+       ============================================================ -->
+  <rect x="0" y="68" width="1080" height="56" fill="#161B22"/>
+  <rect x="0" y="123" width="1080" height="1" fill="#21262D"/>
+  <g opacity="0.6">
+    <rect x="22" y="82" width="84" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="64" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Home</text>
+    <rect x="116" y="82" width="118" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="175" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Pipeline</text>
+    <rect x="244" y="82" width="98" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="293" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Ops</text>
+    <!-- Tab activa de Descanso (esta ventana) -->
+    <rect x="352" y="82" width="138" height="28" rx="14" fill="rgba(124,92,255,0.18)" stroke="#7C5CFF" stroke-width="1.5"/>
+    <g transform="translate(366,88)">
+      <path d="M11 2 a8 8 0 1 0 5.5 13.6 a6 6 0 0 1 -5.5 -13.6 Z"
+            fill="none" stroke="#C5B7FF" stroke-width="1.4"/>
+    </g>
+    <text x="421" y="100" font-size="12" font-weight="600" fill="#C5B7FF" text-anchor="middle">Descanso</text>
+    <rect x="500" y="82" width="86" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="543" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Costos</text>
+    <text x="1040" y="100" font-size="11" fill="#6E7681" text-anchor="end">view=descanso  ·  path-legacy=/modo-descanso</text>
+  </g>
+
+  <!-- ============================================================
+       MAIN VIEW BOUNDARY — <main id="view-content" data-slug="descanso">
+       Todo lo de abajo es scope de #3736.
+       ============================================================ -->
+  <rect x="20" y="142" width="1040" height="1538" rx="14"
+        fill="#161B22" stroke="#30363D" stroke-width="1"/>
+  <text x="40" y="170" font-size="11" fill="#6E7681" font-family="monospace">&lt;main id="view-content" data-slug="descanso"&gt;</text>
+
+  <!-- ============================================================
+       HEADER de la ventana — titulo + V3 badge
+       ============================================================ -->
+  <g transform="translate(40,188)">
+    <!-- Rail lateral del header — usa rest-mode gradient porque la ventana esta ACTIVA -->
+    <rect x="0" y="0" width="4" height="56" fill="url(#restMoonRail)" rx="2"/>
+
+    <!-- Icono ic-rest-mode (luna creciente con estrellas) -->
+    <g transform="translate(20,8)">
+      <circle cx="20" cy="20" r="20" fill="rgba(124,92,255,0.18)"/>
+      <path d="M22 8 a12 12 0 1 0 9 19 a9 9 0 0 1 -9 -19 Z"
+            fill="none" stroke="#C5B7FF" stroke-width="1.8"/>
+      <circle cx="30" cy="14" r="0.9" fill="#C5B7FF"/>
+      <circle cx="34" cy="20" r="0.7" fill="#C5B7FF"/>
+      <circle cx="32" cy="28" r="0.8" fill="#C5B7FF"/>
+    </g>
+
+    <!-- Titulo + V3 badge -->
+    <text x="72" y="28" font-size="22" font-weight="700" fill="#E6EDF3">Modo descanso · calendario semanal</text>
+    <rect x="72" y="38" width="38" height="18" rx="9" fill="rgba(45,212,191,0.18)" stroke="#2DD4BF"/>
+    <text x="91" y="51" font-size="10" font-weight="700" fill="#2DD4BF" text-anchor="middle">V3</text>
+    <text x="120" y="51" font-size="13" fill="#8B949E">gating de skills LLM · hot-reload sin reinicio</text>
+
+    <!-- Chevron colapsar + Popout (heredado del control bar #3725, decoracion de referencia) -->
+    <g transform="translate(940,16)" opacity="0.7">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <path d="M8 12 L14 18 L20 12" stroke="#B1BAC4" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g transform="translate(972,16)" opacity="0.7">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <path d="M10 18 L18 10 M12 10 L18 10 L18 16" stroke="#58A6FF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       HINT TEXT — explicacion corta de que hace la ventana
+       ============================================================ -->
+  <g transform="translate(40,266)">
+    <text x="0" y="0" font-size="12" fill="#8B949E">
+      Durante los periodos configurados, solo corren los <tspan fill="#E6EDF3" font-weight="600">skills determinis­ticos</tspan>
+    </text>
+    <text x="0" y="18" font-size="12" fill="#8B949E">
+      (delivery, builder, linter, tester). El resto se queda en cola y arranca al cerrar el periodo.
+    </text>
+    <text x="0" y="36" font-size="12" fill="#8B949E">
+      Los issues con label <tspan fill="#C5B7FF" font-family="monospace">priority:critical</tspan> hacen bypass del gate.
+    </text>
+  </g>
+
+  <!-- ============================================================
+       STATUS PILL — #rm-status (estado ACTIVO ilustrado)
+       Dual-encoding: color rest-mode + icono luna + texto explicativo.
+       ============================================================ -->
+  <g transform="translate(40,326)">
+    <rect x="0" y="0" width="1000" height="68" rx="8"
+          fill="url(#restBannerGrad)" stroke="#7C5CFF" stroke-width="1.5"/>
+    <text x="14" y="-8" font-size="10" fill="#6E7681" font-family="monospace">#rm-status .rm-status.rm-active</text>
+
+    <!-- Icono luna -->
+    <g transform="translate(20,18)">
+      <circle cx="16" cy="16" r="16" fill="rgba(124,92,255,0.22)"/>
+      <path d="M18 6 a10 10 0 1 0 8 16 a7.5 7.5 0 0 1 -8 -16 Z"
+            fill="none" stroke="#C5B7FF" stroke-width="1.6"/>
+    </g>
+
+    <!-- Texto status: title + sub -->
+    <text x="72" y="28" font-size="15" font-weight="700" fill="#C5B7FF">Activa · ahora 23:00–07:00</text>
+    <text x="72" y="48" font-size="12" fill="#B1BAC4">2 periodos hoy · proximo 13:00</text>
+
+    <!-- Countdown badge (info visual, no DOM nuevo — el dev lo deriva del slice currentPeriod.end) -->
+    <g transform="translate(760,16)">
+      <rect x="0" y="0" width="220" height="36" rx="6" fill="rgba(124,92,255,0.10)" stroke="#7C5CFF"/>
+      <text x="14" y="14" font-size="10" fill="#8B949E">Cierra en</text>
+      <text x="14" y="30" font-size="14" font-weight="700" fill="#C5B7FF" font-family="monospace">4h 46m</text>
+      <text x="92" y="14" font-size="10" fill="#8B949E">Periodos hoy</text>
+      <text x="92" y="30" font-size="14" font-weight="700" fill="#C5B7FF" font-family="monospace">2 / 24</text>
+      <text x="170" y="14" font-size="10" fill="#8B949E">Skills LLM</text>
+      <text x="170" y="30" font-size="14" font-weight="700" fill="#7C5CFF" font-family="monospace">en cola</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       FORM ROW 1 — Checkbox "Activar modo descanso" + tooltip CA-3736-C1
+       ============================================================ -->
+  <g transform="translate(40,422)">
+    <text x="0" y="-8" font-size="10" fill="#6E7681" font-family="monospace">#rm-form .rm-row</text>
+    <!-- Checkbox visual (tildado) -->
+    <rect x="0" y="0" width="20" height="20" rx="3" fill="rgba(124,92,255,0.22)" stroke="#7C5CFF"/>
+    <path d="M5 10 L9 14 L16 6" stroke="#C5B7FF" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Label -->
+    <text x="32" y="15" font-size="13" font-weight="700" fill="#E6EDF3">Activar modo descanso</text>
+    <text x="220" y="15" font-size="11" fill="#8B949E">Si destildas, el pipeline opera sin restricciones (CA-1.9).</text>
+
+    <!-- TOOLTIP CA-3736-C1 (bocadillo amarillo sobre el checkbox) -->
+    <g transform="translate(-12,28)">
+      <rect x="0" y="0" width="430" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+      <text x="215" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">
+        title=&quot;Si destildas, el pipeline opera sin restricciones (CA-1.9)&quot;
+      </text>
+      <path d="M14 0 L20 -6 L26 0" fill="#FFD166" stroke="#9E6A03"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       FORM ROW 2 — Zona horaria (input + datalist Intl)
+       ============================================================ -->
+  <g transform="translate(40,488)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#8B949E" letter-spacing="0.5">ZONA HORARIA</text>
+    <rect x="0" y="10" width="360" height="30" rx="4" fill="#0D1117" stroke="#30363D"/>
+    <text x="12" y="30" font-size="12" fill="#E6EDF3" font-family="monospace">America/Argentina/Buenos_Aires</text>
+    <!-- Caret de combobox -->
+    <path d="M338 22 L348 22 L343 28 Z" fill="#8B949E"/>
+    <text x="0" y="56" font-size="10" fill="#6E7681" font-family="monospace">#rm-timezone (datalist=Intl.supportedValuesOf('timeZone'))</text>
+  </g>
+
+  <!-- ============================================================
+       GRID SEMANAL — #rm-grid (7 columnas, max 24 periodos/dia)
+       Layout vertical: ilustramos 3 dias representativos lado a lado
+       (Lun-Mar-Mie) y debajo (Jue-Vie-Sab-Dom) para mostrar variantes
+       sin saturar el kiosk.
+       ============================================================ -->
+  <g transform="translate(40,572)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#8B949E" letter-spacing="0.5">CALENDARIO SEMANAL</text>
+    <text x="0" y="18" font-size="11" fill="#6E7681">7 columnas · max 24 periodos por dia · validacion cliente espejo backend (FE-SEC-1)</text>
+    <text x="990" y="0" font-size="10" fill="#6E7681" font-family="monospace" text-anchor="end">#rm-grid</text>
+  </g>
+
+  <!-- 7 columnas — fila superior Lun/Mar/Mie/Jue -->
+  <g transform="translate(40,608)">
+
+    <!-- Columna LUN — 2 periodos normales -->
+    <g transform="translate(0,0)">
+      <rect x="0" y="0" width="240" height="280" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="280" fill="#7C5CFF" rx="1.5"/>
+      <text x="14" y="20" font-size="12" font-weight="700" fill="#E6EDF3" letter-spacing="0.5">LUN</text>
+      <text x="226" y="20" font-size="11" fill="#8B949E" font-family="monospace" text-anchor="end">2/24</text>
+      <line x1="14" y1="28" x2="226" y2="28" stroke="#30363D" stroke-dasharray="3,3"/>
+
+      <!-- Periodo 1: 23:00 – 07:00 (cruza medianoche) -->
+      <g transform="translate(12,40)">
+        <rect x="0" y="0" width="216" height="68" rx="4" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+        <rect x="0" y="0" width="116" height="22" rx="3" fill="#0D1117" stroke="#30363D" transform="translate(8,8)"/>
+        <text x="14" y="24" font-size="11" fill="#E6EDF3" font-family="monospace">23:00 – 07:00</text>
+        <text x="142" y="24" font-size="11" fill="#8B949E">–</text>
+        <!-- Boton ✕ remove con tooltip CA-3736-C4 -->
+        <g transform="translate(180,8)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#484F58"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#8B949E" stroke-width="1.4"/>
+        </g>
+        <text x="8" y="56" font-size="10" fill="#C5B7FF">🌙 Cruza medianoche · +1 dia</text>
+      </g>
+
+      <!-- Periodo 2: 13:00 – 14:30 (siesta) -->
+      <g transform="translate(12,118)">
+        <rect x="0" y="0" width="216" height="48" rx="4" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="20" font-size="11" fill="#E6EDF3" font-family="monospace">13:00 – 14:30</text>
+        <text x="142" y="20" font-size="11" fill="#8B949E">–</text>
+        <g transform="translate(180,6)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#484F58"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#8B949E" stroke-width="1.4"/>
+        </g>
+      </g>
+
+      <!-- Boton + Periodo con tooltip CA-3736-C3 -->
+      <g transform="translate(12,232)">
+        <rect x="0" y="0" width="216" height="32" rx="4" fill="transparent" stroke="#484F58" stroke-dasharray="4,3"/>
+        <text x="108" y="20" font-size="11" fill="#8B949E" text-anchor="middle">+ Periodo</text>
+      </g>
+    </g>
+
+    <!-- Columna MAR — 1 periodo full-day -->
+    <g transform="translate(252,0)">
+      <rect x="0" y="0" width="240" height="280" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="280" fill="#7C5CFF" rx="1.5"/>
+      <text x="14" y="20" font-size="12" font-weight="700" fill="#E6EDF3" letter-spacing="0.5">MAR</text>
+      <text x="226" y="20" font-size="11" fill="#D29922" font-family="monospace" text-anchor="end">1/24</text>
+      <line x1="14" y1="28" x2="226" y2="28" stroke="#30363D" stroke-dasharray="3,3"/>
+
+      <!-- Periodo full-day 00:00 – 23:59 -->
+      <g transform="translate(12,40)">
+        <rect x="0" y="0" width="216" height="68" rx="4" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+        <text x="14" y="24" font-size="11" fill="#E6EDF3" font-family="monospace">00:00 – 23:59</text>
+        <text x="142" y="24" font-size="11" fill="#8B949E">–</text>
+        <g transform="translate(180,8)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#484F58"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#8B949E" stroke-width="1.4"/>
+        </g>
+        <text x="8" y="56" font-size="10" fill="#C5B7FF">☀ Dia completo</text>
+      </g>
+
+      <g transform="translate(12,118)">
+        <rect x="0" y="0" width="216" height="32" rx="4" fill="transparent" stroke="#484F58" stroke-dasharray="4,3"/>
+        <text x="108" y="20" font-size="11" fill="#8B949E" text-anchor="middle">+ Periodo</text>
+      </g>
+    </g>
+
+    <!-- Columna MIE — periodo con ERROR (overlap) -->
+    <g transform="translate(504,0)">
+      <rect x="0" y="0" width="240" height="280" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="280" fill="url(#dangerStripe)" rx="1.5"/>
+      <text x="14" y="20" font-size="12" font-weight="700" fill="#E6EDF3" letter-spacing="0.5">MIE</text>
+      <text x="226" y="20" font-size="11" fill="#F85149" font-family="monospace" text-anchor="end">2/24 ✕</text>
+      <line x1="14" y1="28" x2="226" y2="28" stroke="#30363D" stroke-dasharray="3,3"/>
+
+      <!-- Periodo 1: 22:00 – 23:30 -->
+      <g transform="translate(12,40)">
+        <rect x="0" y="0" width="216" height="48" rx="4" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="20" font-size="11" fill="#E6EDF3" font-family="monospace">22:00 – 23:30</text>
+        <g transform="translate(180,6)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#484F58"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#8B949E" stroke-width="1.4"/>
+        </g>
+      </g>
+
+      <!-- Periodo 2 con error visual (FE-SEC-1) -->
+      <g transform="translate(12,98)">
+        <rect x="0" y="0" width="216" height="68" rx="4" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+        <text x="14" y="20" font-size="11" fill="#E6EDF3" font-family="monospace">23:15 – 01:00</text>
+        <g transform="translate(180,6)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#F85149"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#F85149" stroke-width="1.4"/>
+        </g>
+        <text x="8" y="52" font-size="10" fill="#F85149">⚠ Overlap con periodo 1 (22:00–23:30)</text>
+      </g>
+
+      <g transform="translate(12,180)">
+        <rect x="0" y="0" width="216" height="32" rx="4" fill="transparent" stroke="#484F58" stroke-dasharray="4,3"/>
+        <text x="108" y="20" font-size="11" fill="#8B949E" text-anchor="middle">+ Periodo</text>
+      </g>
+    </g>
+
+    <!-- Columna JUE — vacia (empty state) -->
+    <g transform="translate(756,0)">
+      <rect x="0" y="0" width="240" height="280" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="280" fill="#30363D" rx="1.5"/>
+      <text x="14" y="20" font-size="12" font-weight="700" fill="#E6EDF3" letter-spacing="0.5">JUE</text>
+      <text x="226" y="20" font-size="11" fill="#8B949E" font-family="monospace" text-anchor="end">0/24</text>
+      <line x1="14" y1="28" x2="226" y2="28" stroke="#30363D" stroke-dasharray="3,3"/>
+
+      <text x="120" y="116" font-size="11" fill="#6E7681" font-style="italic" text-anchor="middle">sin periodos</text>
+
+      <!-- Boton + Periodo destacado con tooltip CA-3736-C3 -->
+      <g transform="translate(12,232)">
+        <rect x="0" y="0" width="216" height="32" rx="4" fill="rgba(124,92,255,0.10)" stroke="#7C5CFF" stroke-dasharray="4,3"/>
+        <text x="108" y="20" font-size="11" fill="#C5B7FF" text-anchor="middle">+ Periodo</text>
+      </g>
+
+      <!-- TOOLTIP CA-3736-C3 sobre el boton + Periodo -->
+      <g transform="translate(28,272)">
+        <rect x="0" y="0" width="200" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+        <text x="100" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">
+          title=&quot;Maximo 24 periodos por dia&quot;
+        </text>
+        <path d="M90 0 L96 -6 L102 0" fill="#FFD166" stroke="#9E6A03"/>
+      </g>
+    </g>
+
+  </g>
+
+  <!-- 3 columnas — fila inferior VIE/SAB/DOM (compactadas) -->
+  <g transform="translate(40,920)">
+
+    <!-- Columna VIE -->
+    <g transform="translate(0,0)">
+      <rect x="0" y="0" width="240" height="160" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="160" fill="#7C5CFF" rx="1.5"/>
+      <text x="14" y="20" font-size="12" font-weight="700" fill="#E6EDF3" letter-spacing="0.5">VIE</text>
+      <text x="226" y="20" font-size="11" fill="#8B949E" font-family="monospace" text-anchor="end">1/24</text>
+      <line x1="14" y1="28" x2="226" y2="28" stroke="#30363D" stroke-dasharray="3,3"/>
+      <g transform="translate(12,40)">
+        <rect x="0" y="0" width="216" height="48" rx="4" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+        <text x="14" y="20" font-size="11" fill="#E6EDF3" font-family="monospace">23:00 – 07:00</text>
+        <g transform="translate(180,6)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#484F58"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#8B949E" stroke-width="1.4"/>
+        </g>
+      </g>
+      <g transform="translate(12,112)">
+        <rect x="0" y="0" width="216" height="32" rx="4" fill="transparent" stroke="#484F58" stroke-dasharray="4,3"/>
+        <text x="108" y="20" font-size="11" fill="#8B949E" text-anchor="middle">+ Periodo</text>
+      </g>
+    </g>
+
+    <!-- Columna SAB -->
+    <g transform="translate(252,0)">
+      <rect x="0" y="0" width="240" height="160" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="160" fill="#7C5CFF" rx="1.5"/>
+      <text x="14" y="20" font-size="12" font-weight="700" fill="#E6EDF3" letter-spacing="0.5">SAB</text>
+      <text x="226" y="20" font-size="11" fill="#D29922" font-family="monospace" text-anchor="end">1/24</text>
+      <line x1="14" y1="28" x2="226" y2="28" stroke="#30363D" stroke-dasharray="3,3"/>
+      <g transform="translate(12,40)">
+        <rect x="0" y="0" width="216" height="64" rx="4" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+        <text x="14" y="22" font-size="11" fill="#E6EDF3" font-family="monospace">00:00 – 23:59</text>
+        <g transform="translate(180,6)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#484F58"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#8B949E" stroke-width="1.4"/>
+        </g>
+        <text x="8" y="52" font-size="10" fill="#C5B7FF">☀ Dia completo</text>
+      </g>
+      <g transform="translate(12,124)">
+        <rect x="0" y="0" width="216" height="24" rx="4" fill="transparent" stroke="#484F58" stroke-dasharray="4,3" opacity="0.5"/>
+        <text x="108" y="16" font-size="10" fill="#6E7681" text-anchor="middle">+ Periodo</text>
+      </g>
+    </g>
+
+    <!-- Columna DOM -->
+    <g transform="translate(504,0)">
+      <rect x="0" y="0" width="240" height="160" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="160" fill="#7C5CFF" rx="1.5"/>
+      <text x="14" y="20" font-size="12" font-weight="700" fill="#E6EDF3" letter-spacing="0.5">DOM</text>
+      <text x="226" y="20" font-size="11" fill="#D29922" font-family="monospace" text-anchor="end">1/24</text>
+      <line x1="14" y1="28" x2="226" y2="28" stroke="#30363D" stroke-dasharray="3,3"/>
+      <g transform="translate(12,40)">
+        <rect x="0" y="0" width="216" height="64" rx="4" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+        <text x="14" y="22" font-size="11" fill="#E6EDF3" font-family="monospace">00:00 – 23:59</text>
+        <g transform="translate(180,6)">
+          <rect x="0" y="0" width="22" height="22" rx="3" fill="transparent" stroke="#484F58"/>
+          <path d="M7 7 L15 15 M15 7 L7 15" stroke="#8B949E" stroke-width="1.4"/>
+        </g>
+        <text x="8" y="52" font-size="10" fill="#C5B7FF">☀ Dia completo</text>
+      </g>
+      <g transform="translate(12,124)">
+        <rect x="0" y="0" width="216" height="24" rx="4" fill="transparent" stroke="#484F58" stroke-dasharray="4,3" opacity="0.5"/>
+        <text x="108" y="16" font-size="10" fill="#6E7681" text-anchor="middle">+ Periodo</text>
+      </g>
+    </g>
+
+    <!-- TOOLTIP CA-3736-C4 sobre boton ✕ (apunta a SAB) -->
+    <g transform="translate(396,170)">
+      <rect x="0" y="0" width="172" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+      <text x="86" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">
+        title=&quot;Eliminar periodo&quot;
+      </text>
+      <path d="M40 0 L46 -6 L52 0" fill="#FFD166" stroke="#9E6A03"/>
+    </g>
+
+  </g>
+
+  <!-- ============================================================
+       ERRORS BOX — #rm-errors (visible cuando hay errores cliente)
+       ============================================================ -->
+  <g transform="translate(40,1118)">
+    <rect x="0" y="0" width="1000" height="62" rx="6" fill="rgba(248,81,73,0.08)" stroke="#F85149"/>
+    <text x="12" y="-6" font-size="10" fill="#6E7681" font-family="monospace">#rm-errors (hidden si no hay errores)</text>
+    <text x="16" y="22" font-size="12" fill="#F85149" font-weight="600">Errores de validacion de cliente (nota: el backend revalida igual):</text>
+    <text x="32" y="42" font-size="11" fill="#F85149">• Mie: periodo 23:15–01:00 solapa con 22:00–23:30 (overlap detectado por validateScheduleClient).</text>
+  </g>
+
+  <!-- ============================================================
+       ACTIONS ROW — Guardar + msg + tooltip CA-3736-C2
+       ============================================================ -->
+  <g transform="translate(40,1210)">
+    <!-- Boton Guardar -->
+    <rect x="0" y="0" width="234" height="40" rx="6"
+          fill="rgba(124,92,255,0.18)" stroke="#7C5CFF" stroke-width="1.5"/>
+    <text x="20" y="26" font-size="14" fill="#C5B7FF">💾</text>
+    <text x="44" y="26" font-size="13" font-weight="600" fill="#C5B7FF">Guardar configuracion</text>
+
+    <!-- Error count badge -->
+    <rect x="250" y="6" width="78" height="28" rx="4" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+    <text x="289" y="24" font-size="12" font-weight="700" fill="#F85149" text-anchor="middle">1 error</text>
+
+    <!-- Msg de status del submit (ejemplo ok) -->
+    <text x="346" y="26" font-size="12" fill="#3FB950">✓ Guardado · hot-reload sin reinicio del pipeline.</text>
+
+    <!-- TOOLTIP CA-3736-C2 sobre boton Guardar -->
+    <g transform="translate(0,52)">
+      <rect x="0" y="0" width="468" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+      <text x="234" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">
+        title=&quot;Hot-reload sin reinicio del pipeline. El backend revalida la grilla.&quot;
+      </text>
+      <path d="M40 0 L46 -6 L52 0" fill="#FFD166" stroke="#9E6A03"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       META FOOTER — #rm-bypass + #rm-updated
+       ============================================================ -->
+  <g transform="translate(40,1308)">
+    <line x1="0" y1="0" x2="1000" y2="0" stroke="#30363D"/>
+    <text x="0" y="22" font-size="12" font-weight="700" fill="#E6EDF3">Bypass labels</text>
+    <text x="98" y="22" font-size="11" fill="#8B949E">(read-only, viven en <tspan font-family="monospace" fill="#B1BAC4">config.yaml</tspan>):</text>
+
+    <!-- Chips bypass labels -->
+    <g transform="translate(0,32)">
+      <rect x="0" y="0" width="116" height="22" rx="11" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+      <text x="58" y="15" font-size="11" font-weight="600" fill="#F85149" text-anchor="middle" font-family="monospace">priority:critical</text>
+      <rect x="124" y="0" width="116" height="22" rx="11" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+      <text x="182" y="15" font-size="11" font-weight="600" fill="#F85149" text-anchor="middle" font-family="monospace">priority:bypass</text>
+      <rect x="248" y="0" width="138" height="22" rx="11" fill="rgba(124,92,255,0.14)" stroke="#7C5CFF"/>
+      <text x="317" y="15" font-size="11" font-weight="600" fill="#C5B7FF" text-anchor="middle" font-family="monospace">rest-mode:exclude</text>
+    </g>
+
+    <!-- Updated at -->
+    <text x="0" y="78" font-size="12" font-weight="700" fill="#E6EDF3">Ultima actualizacion:</text>
+    <text x="148" y="78" font-size="12" fill="#B1BAC4" font-family="monospace">31/5/2026, 18:24:11</text>
+
+    <text x="990" y="78" font-size="10" fill="#6E7681" font-family="monospace" text-anchor="end">#rm-updated</text>
+  </g>
+
+  <!-- ============================================================
+       LEYENDA — codigos visuales que el operador debe saber leer
+       ============================================================ -->
+  <g transform="translate(40,1418)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#8B949E" letter-spacing="0.5">LEYENDA VISUAL</text>
+
+    <!-- Item: periodo activo -->
+    <g transform="translate(0,16)">
+      <rect x="0" y="0" width="16" height="16" rx="3" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+      <text x="24" y="13" font-size="11" fill="#B1BAC4">Periodo activo (rest-mode)</text>
+    </g>
+
+    <!-- Item: periodo full-day -->
+    <g transform="translate(220,16)">
+      <text x="0" y="13" font-size="12" fill="#C5B7FF">☀</text>
+      <text x="16" y="13" font-size="11" fill="#B1BAC4">Dia completo (00:00–23:59)</text>
+    </g>
+
+    <!-- Item: cruza medianoche -->
+    <g transform="translate(440,16)">
+      <text x="0" y="13" font-size="12" fill="#C5B7FF">🌙</text>
+      <text x="16" y="13" font-size="11" fill="#B1BAC4">Cruza medianoche (+1 dia)</text>
+    </g>
+
+    <!-- Item: error overlap -->
+    <g transform="translate(680,16)">
+      <rect x="0" y="0" width="16" height="16" rx="3" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+      <text x="24" y="13" font-size="11" fill="#FFB3B3">Error (overlap / HH:MM invalido)</text>
+    </g>
+
+    <!-- Item: cap warning -->
+    <g transform="translate(0,40)">
+      <text x="0" y="13" font-size="11" font-family="monospace" fill="#D29922" font-weight="700">N/24</text>
+      <text x="38" y="13" font-size="11" fill="#B1BAC4">Conteo del dia (amarillo si ≥1 periodo)</text>
+    </g>
+
+    <!-- Item: skills deterministicos -->
+    <g transform="translate(440,40)">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="#B1BAC4" stroke-width="1.4"/>
+      <text x="24" y="13" font-size="11" fill="#B1BAC4">Skills determinis­ticos siguen corriendo</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       OUT-OF-SCOPE — explicito (CA-3736-I3, A4)
+       ============================================================ -->
+  <g transform="translate(40,1520)">
+    <rect x="0" y="0" width="1000" height="120" rx="8" fill="rgba(110,118,129,0.06)" stroke="#30363D" stroke-dasharray="6,4"/>
+    <text x="20" y="24" font-size="12" font-weight="700" fill="#8B949E" letter-spacing="0.5">FUERA DE SCOPE DE ESTE SPLIT (#3736)</text>
+    <text x="20" y="48" font-size="11" fill="#8B949E">• NO se introduce CSRF nuevo en POST /api/rest-mode (CA-3736-I3) — el endpoint ya esta hardened (SEC-A03 + audit rest-mode-audit.jsonl).</text>
+    <text x="20" y="68" font-size="11" fill="#8B949E">• NO se consolida la duplicacion cliente/backend de validacion (overlap/HH:MM/cap MAX_PERIODS_PER_DAY) — preservar tal cual con comentario FE-SEC-1 (CA-3736-A4).</text>
+    <text x="20" y="88" font-size="11" fill="#8B949E">• NO se migra al helper lib/escape-html.js compartido — es scope del split #2901 (CA-3736-E1).</text>
+    <text x="20" y="108" font-size="11" fill="#8B949E">• NO se introduce wizard de doble confirmacion ni preview live del countdown — fuera de scope del rediseño V3.</text>
+  </g>
+
+  <!-- ============================================================
+       CIERRE DEL MAIN BOUNDARY
+       ============================================================ -->
+  <text x="40" y="1668" font-size="11" fill="#6E7681" font-family="monospace">&lt;/main&gt;</text>
+
+  <!-- ============================================================
+       VARIANTE — FALLBACK INERTE (CA-A3 / CA-3736-A2)
+       Cuando require('./views/dashboard/descanso') falla, dashboard.js
+       loguea + renderiza este cartel.
+       ============================================================ -->
+  <g transform="translate(20,1700)">
+    <rect x="0" y="0" width="1040" height="200" rx="14" fill="#161B22" stroke="#D29922" stroke-width="1.5"/>
+    <text x="20" y="28" font-size="11" fill="#D29922" font-family="monospace">VARIANTE · fallback inerte cuando require('./views/dashboard/descanso') arroja</text>
+
+    <!-- Icono warning -->
+    <g transform="translate(40,52)">
+      <circle cx="22" cy="22" r="22" fill="rgba(210,153,34,0.18)"/>
+      <path d="M22 10 L36 34 L8 34 Z" fill="none" stroke="#D29922" stroke-width="2"/>
+      <text x="22" y="32" font-size="20" font-weight="700" fill="#D29922" text-anchor="middle">!</text>
+    </g>
+
+    <!-- Titulo y subtitulo -->
+    <text x="104" y="72" font-size="18" font-weight="700" fill="#E6EDF3">Ventana Descanso no disponible</text>
+    <text x="104" y="96" font-size="13" fill="#B1BAC4">El modulo views/dashboard/descanso.js fallo al cargar. Ver logs del dashboard para detalle.</text>
+    <text x="104" y="120" font-size="12" fill="#6E7681" font-family="monospace">log("descanso view unavailable: " + e.message) emitido por dashboard.js — el render no queda en blanco.</text>
+
+    <!-- Tip de recovery -->
+    <g transform="translate(104,140)">
+      <rect x="0" y="0" width="430" height="32" rx="6" fill="rgba(88,166,255,0.10)" stroke="#58A6FF"/>
+      <text x="14" y="20" font-size="11" fill="#58A6FF">Tip: el path legacy /modo-descanso sigue activo via guard en dashboard-routes.js (CA-3736-B1).</text>
+    </g>
+
+    <text x="1020" y="186" font-size="10" fill="#6E7681" text-anchor="end" font-family="monospace">CA-3736-A2 · A3</text>
+  </g>
+
+</svg>
