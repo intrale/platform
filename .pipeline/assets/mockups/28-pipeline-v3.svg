@@ -1,0 +1,687 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 28 — Ventana Pipeline V3 (split #3728 del epico #3715)
+  -----------------------------------------------------------------------------
+  Rediseno integral de la ventana Pipeline del dashboard del operador V3.
+  Esta vista muestra la JERARQUIA completa del modulo
+  .pipeline/views/dashboard/pipeline.js a producir, con todas sus secciones:
+
+    1. Header de ventana (badge V3 + titulo + sub-titulo)
+    2. Control Bar STICKY (status pill + Priority Windows + pausa/reanudar)
+    3. Banner Partial-Pause-Deps (visible solo si hay deps faltantes)
+    4. <details> "Allowlist & Candidatos" (allowlist activa + likeados + picker)
+    5. <details> "Audit Trail · Allowlist mutations" (banners + KPIs + tabla)
+    6. Card "Infra Health" (delegada a helper compartido del dashboard)
+
+  Decisiones UX de jerarquia V3 (refinan la receta tecnica del Architect):
+
+    - Control Bar STICKY arriba: las acciones criticas (pausa global, prioridades
+      QA/Build/Dev) son las mas frecuentes y deben quedar a mano sin scrollear.
+
+    - Allowlist & Candidatos se ABRE por defecto si el sistema esta en
+      "partial-pause" (es el caso donde el operador necesita ver/manipular
+      candidatos). En "running" puro queda cerrado para no saturar.
+
+    - Audit Trail CERRADO por defecto pero se ABRE automaticamente si
+      chain_broken === true o has_unauthorized_non_backfill === true. Los
+      banners criticos exigen atencion, no pueden quedar escondidos detras
+      de un summary colapsado.
+
+    - Banner Partial-Pause-Deps va FUERA del <details> (siempre visible
+      cuando aplica) porque exige accion inmediata (CTA includeMissingDeps).
+
+    - Infra Health al pie como "estado ambiente" — referencia rapida,
+      no accion. Helper compartido renderInfraHealth(state) inyectado.
+
+  Convenciones del sistema visual (V3):
+
+    - Paleta: design-tokens.css (var(--surface-*), var(--success), var(--warning),
+      var(--danger), var(--info), var(--teal), var(--purple), var(--brand-*)).
+    - Iconos: sprite.svg via <use href="#ic-*"/>. En este mockup standalone se
+      inlinen como <symbol id="m-*"/> para preview sin sprite cargado.
+    - Tipografia: var(--font-sans) — system stack; monospace en numeros/IDs.
+    - Tooltips: cada accion operativa con title="..." (CA-PL8). En SVG se
+      representan como etiquetas pequenas debajo de iconos clave.
+    - WCAG AA: todos los pares texto/fondo verificados (>= 4.5:1) contra
+      surface-0 y surface-1. Anti-info-solo-por-color: todo estado tiene
+      icono + texto, nunca solo color.
+
+  Tamano: 1440x1860 (vista completa con scroll virtual; secciones sticky
+  marcadas explicitamente).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1860"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- ====================================================================
+         Iconos inline (copia minimal del sprite para preview standalone)
+         ==================================================================== -->
+    <symbol id="m-pipeline" viewBox="0 0 24 24">
+      <path d="M3 7 H10 L12 9 L14 7 H21" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3 12 H21" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+      <path d="M3 17 H10 L12 15 L14 17 H21" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-play" viewBox="0 0 24 24">
+      <path d="M7 4 L20 12 L7 20 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-pause" viewBox="0 0 24 24">
+      <rect x="6" y="4" width="4.5" height="16" rx="0.8" fill="currentColor"/>
+      <rect x="13.5" y="4" width="4.5" height="16" rx="0.8" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-partial-pause" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M9 8 V16 M15 8 V16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M9 12 H15" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
+    </symbol>
+    <symbol id="m-heart-filled" viewBox="0 0 24 24">
+      <path d="M12 20.5 C 7.5 17 3 13.5 3 9.5 A 4.5 4.5 0 0 1 12 7 A 4.5 4.5 0 0 1 21 9.5 C 21 13.5 16.5 17 12 20.5 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-heart-outline" viewBox="0 0 24 24">
+      <path d="M12 20.5 C 7.5 17 3 13.5 3 9.5 A 4.5 4.5 0 0 1 12 7 A 4.5 4.5 0 0 1 21 9.5 C 21 13.5 16.5 17 12 20.5 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-promote" viewBox="0 0 24 24">
+      <path d="M12 4 V18" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M7 9 L12 4 L17 9" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="4" y="18" width="16" height="3" rx="0.8" fill="currentColor" opacity="0.55"/>
+    </symbol>
+    <symbol id="m-remove" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M7.5 12 H16.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-shield-check" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 20 12 21 C7.5 20 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8.5 12 L11 14.5 L15.5 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-shield-lock" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 20 12 21 C7.5 20 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <rect x="9.5" y="10.5" width="5" height="5" rx="0.7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M10.5 10.5 V9 A1.5 1.5 0 0 1 13.5 9 V10.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    </symbol>
+    <symbol id="m-shield-x" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 20 12 21 C7.5 20 4 16.5 4 12 V6 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M9 9 L15 15 M15 9 L9 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-warning" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 9.5 V14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-link-chain" viewBox="0 0 24 24">
+      <path d="M9 12 L11 10 A2.8 2.8 0 0 1 15 14 L13 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M15 12 L13 14 A2.8 2.8 0 0 1 9 10 L11 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-chain-broken" viewBox="0 0 24 24">
+      <path d="M9 13 L7 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M15 11 L17 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M9.5 10.5 L11.5 8.5 A2.8 2.8 0 0 1 15 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M14.5 13.5 L12.5 15.5 A2.8 2.8 0 0 1 9 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M3 21 L21 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.8"/>
+    </symbol>
+    <symbol id="m-kpi" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M7 16 V12 M11 16 V9 M15 16 V13 M19 16 V8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-search" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M15 15 L20 20" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M12 10 V16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="12" cy="7.5" r="1" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-health" viewBox="0 0 24 24">
+      <path d="M3 12 H7 L9 6 L13 18 L15 12 H21" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-tooltip" viewBox="0 0 24 24">
+      <path d="M4 5 H20 V15 H14 L12 18 L10 15 H4 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      <circle cx="9" cy="10" r="0.8" fill="currentColor"/>
+      <circle cx="12" cy="10" r="0.8" fill="currentColor"/>
+      <circle cx="15" cy="10" r="0.8" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-deps" viewBox="0 0 24 24">
+      <circle cx="6" cy="6" r="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <circle cx="18" cy="6" r="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <circle cx="12" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M8 7 L11 16 M16 7 L13 16" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-priority-windows" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="6" height="14" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <rect x="10" y="9" width="6" height="10" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <rect x="17" y="12" width="4" height="7" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    </symbol>
+    <symbol id="m-checkmark-circle" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8 12 L11 15 L16 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <!-- Estilos del mockup (no es CSS real del dashboard — sirve para preview) -->
+    <style><![CDATA[
+      .bg-0     { fill: #0D1117; }
+      .bg-1     { fill: #161B22; }
+      .bg-2     { fill: #1C2128; }
+      .bg-3     { fill: #252B33; }
+      .stroke-b { stroke: #30363D; stroke-width: 1; fill: none; }
+      .stroke-bs{ stroke: #21262D; stroke-width: 1; fill: none; }
+      .stroke-bf{ stroke: #484F58; stroke-width: 1; fill: none; }
+      .t-pri    { fill: #E6EDF3; font-size: 14px; }
+      .t-sec    { fill: #B1BAC4; font-size: 13px; }
+      .t-dim    { fill: #8B949E; font-size: 12px; }
+      .t-mono   { font-family: ui-monospace, 'JetBrains Mono', Consolas, monospace; }
+      .h-1      { fill: #E6EDF3; font-size: 22px; font-weight: 700; }
+      .h-2      { fill: #E6EDF3; font-size: 17px; font-weight: 600; }
+      .h-3      { fill: #E6EDF3; font-size: 15px; font-weight: 600; }
+      .kpi-num  { fill: #E6EDF3; font-size: 26px; font-weight: 700; font-family: ui-monospace, monospace; }
+      .kpi-lbl  { fill: #8B949E; font-size: 11px; letter-spacing: 0.4px; text-transform: uppercase; }
+      .chip-text{ fill: #E6EDF3; font-size: 12px; font-weight: 600; }
+      .focus-ring { stroke: #58A6FF; stroke-width: 2; fill: none; stroke-dasharray: 3 2; opacity: 0.85; }
+      .tooltip-bg { fill: #252B33; }
+      .tooltip-edge { stroke: #484F58; stroke-width: 1; fill: none; }
+      .tooltip-txt { fill: #E6EDF3; font-size: 11px; }
+    ]]></style>
+  </defs>
+
+  <!-- ============================================================
+       Fondo de canvas — body del dashboard (surface-0)
+       ============================================================ -->
+  <rect width="1440" height="1860" class="bg-0"/>
+
+  <!-- ============================================================
+       1. Header de la ventana
+       ============================================================ -->
+  <g transform="translate(40 32)">
+    <!-- Badge V3 -->
+    <rect x="0" y="0" width="44" height="22" rx="11" fill="#2DD4BF" opacity="0.18" stroke="#2DD4BF" stroke-width="1"/>
+    <text x="22" y="15" text-anchor="middle" class="chip-text" fill="#2DD4BF">V3</text>
+
+    <!-- Icono + titulo -->
+    <use href="#m-pipeline" x="56" y="-2" width="28" height="28" color="#58A6FF"/>
+    <text x="92" y="20" class="h-1">Ventana Pipeline</text>
+    <text x="282" y="20" class="t-dim">— estado, allowlist, audit trail e infra del operador V3</text>
+  </g>
+
+  <!-- ============================================================
+       2. Control Bar STICKY
+       ============================================================ -->
+  <g transform="translate(40 80)">
+    <!-- Sticky shadow hint -->
+    <rect x="0" y="64" width="1360" height="6" fill="#0D1117" opacity="0.0"/>
+    <text x="0" y="-10" class="t-dim">▼  STICKY  •  visible siempre al scrollear (pipeline-ctrl-bar)</text>
+
+    <!-- Card -->
+    <rect x="0" y="0" width="1360" height="64" rx="10" class="bg-1" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Status pill: running -->
+    <g transform="translate(16 16)">
+      <rect x="0" y="0" width="160" height="32" rx="16" fill="#3FB950" opacity="0.16" stroke="#3FB950" stroke-width="1"/>
+      <use href="#m-play" x="10" y="8" width="16" height="16" color="#3FB950"/>
+      <text x="32" y="21" class="chip-text" fill="#3FB950">Pipeline running</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="196" y1="16" x2="196" y2="48" class="stroke-bf"/>
+
+    <!-- Priority Windows -->
+    <g transform="translate(212 16)">
+      <use href="#m-priority-windows" x="0" y="8" width="18" height="18" color="#B1BAC4"/>
+      <text x="24" y="21" class="t-sec" font-weight="600">Priority Windows</text>
+
+      <!-- QA chip — activa -->
+      <g transform="translate(160 4)">
+        <rect width="98" height="24" rx="12" fill="#58A6FF" opacity="0.18" stroke="#58A6FF" stroke-width="1"/>
+        <text x="14" y="16" class="chip-text" fill="#58A6FF">QA · 75%</text>
+        <use href="#m-checkmark-circle" x="74" y="4" width="16" height="16" color="#58A6FF"/>
+      </g>
+      <!-- Build chip — inactiva -->
+      <g transform="translate(268 4)">
+        <rect width="108" height="24" rx="12" fill="none" stroke="#30363D" stroke-width="1"/>
+        <text x="14" y="16" class="chip-text" fill="#B1BAC4">Build · 50%</text>
+      </g>
+      <!-- Dev chip — inactiva -->
+      <g transform="translate(386 4)">
+        <rect width="98" height="24" rx="12" fill="none" stroke="#30363D" stroke-width="1"/>
+        <text x="14" y="16" class="chip-text" fill="#B1BAC4">Dev · 25%</text>
+      </g>
+    </g>
+
+    <!-- Divider -->
+    <line x1="730" y1="16" x2="730" y2="48" class="stroke-bf"/>
+
+    <!-- allowedIssues badge — escapado por escapeHtmlSsr (CA-PL7) -->
+    <g transform="translate(746 16)">
+      <use href="#m-partial-pause" x="0" y="8" width="18" height="18" color="#8B949E"/>
+      <text x="24" y="21" class="t-dim">Sin pausa parcial activa</text>
+    </g>
+
+    <!-- Boton Pausar global (derecha) -->
+    <g transform="translate(1186 16)">
+      <rect x="0" y="0" width="156" height="32" rx="6" fill="#D29922" opacity="0.16" stroke="#D29922" stroke-width="1"/>
+      <use href="#m-pause" x="10" y="8" width="16" height="16" color="#D29922"/>
+      <text x="32" y="21" class="chip-text" fill="#D29922">Pausar pipeline</text>
+    </g>
+
+    <!-- Tooltip de pausa global -->
+    <g transform="translate(1140 60)" opacity="0.95">
+      <path d="M0 0 H230 V40 L46 40 L38 46 L30 40 L0 40 Z" class="tooltip-bg" stroke="#484F58" stroke-width="1"/>
+      <text x="12" y="16" class="tooltip-txt">Detiene tomas de nuevos ciclos</text>
+      <text x="12" y="32" class="tooltip-txt">(in-flight termina). CA-PL8.</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       3. Banner Partial-Pause-Deps (condicional)
+       ============================================================ -->
+  <g transform="translate(40 196)">
+    <text x="0" y="-10" class="t-dim">▼  CONDICIONAL  •  visible solo si hay deps faltantes en allowlist</text>
+    <rect x="0" y="0" width="1360" height="80" rx="10" fill="#D29922" opacity="0.16" stroke="#D29922" stroke-width="1"/>
+
+    <use href="#m-deps" x="20" y="20" width="40" height="40" color="#D29922"/>
+    <text x="76" y="34" class="h-3" fill="#FFE5A8">Hay 3 dependencias del issue #3140 que no estan en la allowlist activa</text>
+    <text x="76" y="56" class="t-sec">Issues: #3138, #3142, #3147 — sin sumarlas la pausa parcial bloquea el grafo igual.</text>
+
+    <!-- CTA -->
+    <g transform="translate(1132 20)">
+      <rect x="0" y="0" width="208" height="40" rx="6" fill="#D29922" stroke="#B57700" stroke-width="1"/>
+      <use href="#m-promote" x="14" y="12" width="16" height="16" color="#0D1117"/>
+      <text x="36" y="25" class="chip-text" fill="#0D1117">Sumar deps faltantes</text>
+    </g>
+
+    <!-- Tooltip CTA -->
+    <g transform="translate(1090 84)" opacity="0.95">
+      <path d="M0 0 H250 V40 L172 40 L166 46 L160 40 L0 40 Z" class="tooltip-bg" stroke="#484F58" stroke-width="1"/>
+      <text x="12" y="16" class="tooltip-txt">Ejecuta includeMissingDeps()</text>
+      <text x="12" y="32" class="tooltip-txt">— suma las 3 deps a la allowlist activa</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       4. <details> Allowlist & Candidatos (abierto por defecto si partial-pause)
+       ============================================================ -->
+  <g transform="translate(40 326)">
+    <!-- Summary -->
+    <rect x="0" y="0" width="1360" height="48" rx="10" class="bg-1" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="30" class="h-2">▾ Allowlist activa & Candidatos likeados</text>
+    <text x="380" y="30" class="t-dim">— gestion de la allowlist de pausa parcial · 2 activos · 3 candidatos</text>
+
+    <!-- Cuerpo -->
+    <rect x="0" y="48" width="1360" height="394" class="bg-1" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Sub-titulo: Allowlist activa -->
+    <g transform="translate(20 72)">
+      <use href="#m-shield-check" x="0" y="0" width="20" height="20" color="#2DD4BF"/>
+      <text x="28" y="15" class="h-3">Allowlist activa</text>
+      <text x="160" y="15" class="t-dim">— .pipeline/.partial-pause.json · solo lectura desde aca</text>
+    </g>
+
+    <!-- Chip allowlist 1 -->
+    <g transform="translate(20 104)">
+      <rect x="0" y="0" width="240" height="56" rx="8" fill="#2DD4BF" opacity="0.12" stroke="#2DD4BF" stroke-width="1"/>
+      <text x="14" y="22" class="h-3" fill="#2DD4BF">#3140</text>
+      <text x="14" y="42" class="t-sec">Bug critico de billing</text>
+      <!-- Boton Quitar -->
+      <g transform="translate(184 14)">
+        <rect x="0" y="0" width="40" height="28" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+        <use href="#m-remove" x="12" y="6" width="16" height="16" color="#F85149"/>
+      </g>
+    </g>
+
+    <!-- Chip allowlist 2 -->
+    <g transform="translate(276 104)">
+      <rect x="0" y="0" width="240" height="56" rx="8" fill="#2DD4BF" opacity="0.12" stroke="#2DD4BF" stroke-width="1"/>
+      <text x="14" y="22" class="h-3" fill="#2DD4BF">#3215</text>
+      <text x="14" y="42" class="t-sec">Reset emergencia auth</text>
+      <g transform="translate(184 14)">
+        <rect x="0" y="0" width="40" height="28" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+        <use href="#m-remove" x="12" y="6" width="16" height="16" color="#F85149"/>
+      </g>
+    </g>
+
+    <!-- Sub-titulo: Candidatos -->
+    <g transform="translate(20 192)">
+      <use href="#m-heart-filled" x="0" y="0" width="20" height="20" color="#BC8CFF"/>
+      <text x="28" y="15" class="h-3">Candidatos likeados</text>
+      <text x="200" y="15" class="t-dim">— .pipeline/allowlist-candidatos.json · razon ≤500 chars, escapada</text>
+    </g>
+
+    <!-- Candidato 1 -->
+    <g transform="translate(20 224)">
+      <rect x="0" y="0" width="430" height="78" rx="8" fill="#BC8CFF" opacity="0.10" stroke="#BC8CFF" stroke-width="1"/>
+      <text x="14" y="22" class="h-3" fill="#BC8CFF">#3289</text>
+      <text x="74" y="22" class="t-dim">liked 2026-05-30 19:14 · leo</text>
+      <text x="14" y="44" class="t-sec">Razon: "&lt;svg&gt; XSS de prueba — escapado server-side"</text>
+      <text x="14" y="62" class="t-dim">3 deps detectadas — &quot;Sumar tambien deps&quot; disponible al promover.</text>
+
+      <g transform="translate(312 14)">
+        <rect x="0" y="0" width="48" height="28" rx="6" fill="#2DD4BF" opacity="0.18" stroke="#2DD4BF" stroke-width="1"/>
+        <use href="#m-promote" x="14" y="6" width="16" height="16" color="#2DD4BF"/>
+        <text x="34" y="20" class="chip-text" fill="#2DD4BF"></text>
+      </g>
+      <g transform="translate(366 14)">
+        <rect x="0" y="0" width="48" height="28" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+        <use href="#m-heart-outline" x="16" y="6" width="16" height="16" color="#F85149"/>
+      </g>
+
+      <!-- Tooltip Sumar -->
+      <g transform="translate(280 80)" opacity="0.95">
+        <path d="M0 0 H190 V40 L66 40 L60 46 L54 40 L0 40 Z" class="tooltip-bg" stroke="#484F58" stroke-width="1"/>
+        <text x="12" y="16" class="tooltip-txt">Promueve a allowlist activa</text>
+        <text x="12" y="32" class="tooltip-txt">+ comenta en GitHub. CA-PL8.</text>
+      </g>
+    </g>
+
+    <!-- Candidato 2 -->
+    <g transform="translate(464 224)">
+      <rect x="0" y="0" width="430" height="78" rx="8" fill="#BC8CFF" opacity="0.10" stroke="#BC8CFF" stroke-width="1"/>
+      <text x="14" y="22" class="h-3" fill="#BC8CFF">#3301</text>
+      <text x="74" y="22" class="t-dim">liked 2026-05-31 09:02 · leo</text>
+      <text x="14" y="44" class="t-sec">Razon: "Refactor de viewmodels pendiente del epico"</text>
+      <text x="14" y="62" class="t-dim">Sin label de admision — promover no surte efecto.</text>
+
+      <g transform="translate(312 14)">
+        <rect x="0" y="0" width="48" height="28" rx="6" fill="#D29922" opacity="0.18" stroke="#D29922" stroke-width="1"/>
+        <use href="#m-warning" x="14" y="6" width="16" height="16" color="#D29922"/>
+      </g>
+      <g transform="translate(366 14)">
+        <rect x="0" y="0" width="48" height="28" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+        <use href="#m-heart-outline" x="16" y="6" width="16" height="16" color="#F85149"/>
+      </g>
+    </g>
+
+    <!-- Candidato 3 -->
+    <g transform="translate(908 224)">
+      <rect x="0" y="0" width="430" height="78" rx="8" fill="#BC8CFF" opacity="0.10" stroke="#BC8CFF" stroke-width="1"/>
+      <text x="14" y="22" class="h-3" fill="#BC8CFF">#3327</text>
+      <text x="74" y="22" class="t-dim">liked 2026-05-31 11:48 · leo</text>
+      <text x="14" y="44" class="t-sec">Razon: "Mejora UX en boton de logout"</text>
+      <text x="14" y="62" class="t-dim">Sin deps colgantes — listo para promover.</text>
+
+      <g transform="translate(312 14)">
+        <rect x="0" y="0" width="48" height="28" rx="6" fill="#2DD4BF" opacity="0.18" stroke="#2DD4BF" stroke-width="1"/>
+        <use href="#m-promote" x="14" y="6" width="16" height="16" color="#2DD4BF"/>
+      </g>
+      <g transform="translate(366 14)">
+        <rect x="0" y="0" width="48" height="28" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+        <use href="#m-heart-outline" x="16" y="6" width="16" height="16" color="#F85149"/>
+      </g>
+    </g>
+
+    <!-- Picker global -->
+    <g transform="translate(20 322)">
+      <use href="#m-search" x="0" y="0" width="20" height="20" color="#8B949E"/>
+      <text x="28" y="15" class="h-3">Likear issue por numero</text>
+
+      <!-- Input numero -->
+      <g transform="translate(0 32)">
+        <rect x="0" y="0" width="140" height="40" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+        <text x="14" y="26" class="t-dim t-mono">#3140</text>
+      </g>
+      <!-- Input razon -->
+      <g transform="translate(156 32)">
+        <rect x="0" y="0" width="900" height="40" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+        <text x="14" y="26" class="t-dim">Razon (≤500 chars) — sera escapada en re-render</text>
+      </g>
+      <!-- Boton Like -->
+      <g transform="translate(1072 32)">
+        <rect x="0" y="0" width="248" height="40" rx="6" fill="#BC8CFF" opacity="0.20" stroke="#BC8CFF" stroke-width="1"/>
+        <use href="#m-heart-filled" x="20" y="12" width="16" height="16" color="#BC8CFF"/>
+        <text x="44" y="26" class="chip-text" fill="#BC8CFF">Sumar a candidatos</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       5. <details> Audit Trail · Allowlist mutations
+       ============================================================ -->
+  <g transform="translate(40 800)">
+    <!-- Summary -->
+    <rect x="0" y="0" width="1360" height="48" rx="10" class="bg-1" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="30" class="h-2">▾ Audit Trail · Allowlist mutations</text>
+    <text x="380" y="30" class="t-dim">— hash-chain de .partial-pause.json (#3625) · 142 entries auditadas</text>
+
+    <!-- Cuerpo -->
+    <rect x="0" y="48" width="1360" height="588" class="bg-1" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Banner critico: hash-chain rota -->
+    <g transform="translate(20 72)">
+      <rect x="0" y="0" width="1320" height="56" rx="8" fill="#F85149" opacity="0.16" stroke="#F85149" stroke-width="1"/>
+      <use href="#m-chain-broken" x="16" y="14" width="28" height="28" color="#F85149"/>
+      <text x="56" y="24" class="h-3" fill="#F85149">Hash-chain rota en entry #17</text>
+      <text x="56" y="44" class="t-sec">El audit log fue manipulado entre las entries 16 y 17. Revisar manualmente
+        .pipeline/logs/partial-pause-audit.jsonl antes de operar.</text>
+      <text x="1240" y="32" class="t-dim t-mono">2026-05-31 09:39 BA</text>
+    </g>
+
+    <!-- Banner warning: sin autoria -->
+    <g transform="translate(20 144)">
+      <rect x="0" y="0" width="1320" height="48" rx="8" fill="#D29922" opacity="0.16" stroke="#D29922" stroke-width="1"/>
+      <use href="#m-warning" x="16" y="12" width="24" height="24" color="#D29922"/>
+      <text x="52" y="20" class="h-3" fill="#FFE5A8">2 mutaciones sin autoria registrada (no son backfill)</text>
+      <text x="52" y="38" class="t-sec">Entries #12 y #14 — authorized_by:null y _backfill:false. Posible bug de regresion en el gate de autoria (#3192).</text>
+    </g>
+
+    <!-- KPIs: 5 cards -->
+    <g transform="translate(20 208)">
+      <use href="#m-kpi" x="0" y="0" width="18" height="18" color="#8B949E"/>
+      <text x="26" y="14" class="h-3">KPIs del audit trail</text>
+
+      <!-- KPI 1: Total -->
+      <g transform="translate(0 28)">
+        <rect x="0" y="0" width="252" height="80" rx="8" class="bg-2" stroke="#30363D" stroke-width="1"/>
+        <text x="14" y="24" class="kpi-lbl">Total mutaciones</text>
+        <text x="14" y="62" class="kpi-num">142</text>
+      </g>
+      <!-- KPI 2: Autorizadas -->
+      <g transform="translate(268 28)">
+        <rect x="0" y="0" width="252" height="80" rx="8" class="bg-2" stroke="#3FB950" stroke-width="1"/>
+        <text x="14" y="24" class="kpi-lbl" fill="#3FB950">Autorizadas</text>
+        <use href="#m-shield-check" x="220" y="14" width="20" height="20" color="#3FB950"/>
+        <text x="14" y="62" class="kpi-num" fill="#3FB950">138</text>
+      </g>
+      <!-- KPI 3: Rechazadas -->
+      <g transform="translate(536 28)">
+        <rect x="0" y="0" width="252" height="80" rx="8" class="bg-2" stroke="#F85149" stroke-width="1"/>
+        <text x="14" y="24" class="kpi-lbl" fill="#F85149">Rechazadas</text>
+        <use href="#m-shield-x" x="220" y="14" width="20" height="20" color="#F85149"/>
+        <text x="14" y="62" class="kpi-num" fill="#F85149">2</text>
+      </g>
+      <!-- KPI 4: Sin autoria -->
+      <g transform="translate(804 28)">
+        <rect x="0" y="0" width="252" height="80" rx="8" class="bg-2" stroke="#D29922" stroke-width="1"/>
+        <text x="14" y="24" class="kpi-lbl" fill="#D29922">Sin autoria</text>
+        <use href="#m-warning" x="220" y="14" width="20" height="20" color="#D29922"/>
+        <text x="14" y="62" class="kpi-num" fill="#D29922">2</text>
+      </g>
+      <!-- KPI 5: Hash-chain -->
+      <g transform="translate(1072 28)">
+        <rect x="0" y="0" width="248" height="80" rx="8" class="bg-2" stroke="#F85149" stroke-width="1"/>
+        <text x="14" y="24" class="kpi-lbl" fill="#F85149">Hash-chain</text>
+        <use href="#m-chain-broken" x="216" y="14" width="20" height="20" color="#F85149"/>
+        <text x="14" y="62" class="kpi-num" fill="#F85149">✗ 16/142</text>
+      </g>
+    </g>
+
+    <!-- Tabla -->
+    <g transform="translate(20 348)">
+      <use href="#m-link-chain" x="0" y="0" width="18" height="18" color="#8B949E"/>
+      <text x="26" y="14" class="h-3">Ultimas 6 mutaciones</text>
+
+      <!-- Header -->
+      <g transform="translate(0 28)">
+        <rect x="0" y="0" width="1320" height="32" rx="6" class="bg-3"/>
+        <text x="12" y="20" class="kpi-lbl">When · BA</text>
+        <text x="170" y="20" class="kpi-lbl">Issue</text>
+        <text x="240" y="20" class="kpi-lbl">Action</text>
+        <text x="340" y="20" class="kpi-lbl">Authorized by</text>
+        <text x="520" y="20" class="kpi-lbl">Justification (escapada)</text>
+        <text x="1180" y="20" class="kpi-lbl">Hash</text>
+      </g>
+
+      <!-- Row 1: OK humano -->
+      <g transform="translate(0 64)">
+        <rect x="0" y="0" width="1320" height="36" class="bg-1"/>
+        <text x="12" y="22" class="t-sec t-mono">14:02:11</text>
+        <text x="170" y="22" class="t-sec t-mono">#3289</text>
+        <text x="240" y="22" class="t-sec">promote</text>
+        <g transform="translate(340 8)">
+          <rect width="170" height="20" rx="10" fill="#3FB950" opacity="0.16" stroke="#3FB950" stroke-width="1"/>
+          <use href="#m-shield-check" x="6" y="2" width="16" height="16" color="#3FB950"/>
+          <text x="26" y="14" class="chip-text" fill="#3FB950">commander:leo</text>
+        </g>
+        <text x="520" y="22" class="t-sec">"Bug critico — habilitar via /commander allowlist promote"</text>
+        <text x="1180" y="22" class="t-dim t-mono">a3f2…</text>
+      </g>
+      <!-- Row 2: OK subsistema -->
+      <g transform="translate(0 100)">
+        <rect x="0" y="0" width="1320" height="36" class="bg-2"/>
+        <text x="12" y="22" class="t-sec t-mono">13:55:42</text>
+        <text x="170" y="22" class="t-sec t-mono">#3327</text>
+        <text x="240" y="22" class="t-sec">like</text>
+        <g transform="translate(340 8)">
+          <rect width="170" height="20" rx="10" fill="#58A6FF" opacity="0.16" stroke="#58A6FF" stroke-width="1"/>
+          <use href="#m-shield-lock" x="6" y="2" width="16" height="16" color="#58A6FF"/>
+          <text x="26" y="14" class="chip-text" fill="#58A6FF">wave-promote</text>
+        </g>
+        <text x="520" y="22" class="t-sec">"Promovido por planner-split:auto en ola N+12"</text>
+        <text x="1180" y="22" class="t-dim t-mono">b1d8…</text>
+      </g>
+      <!-- Row 3: REJECTED -->
+      <g transform="translate(0 136)">
+        <rect x="0" y="0" width="1320" height="36" fill="#F85149" opacity="0.10"/>
+        <text x="12" y="22" class="t-sec t-mono" fill="#F85149">13:42:08</text>
+        <text x="170" y="22" class="t-sec t-mono" fill="#F85149">#9999</text>
+        <text x="240" y="22" class="chip-text" fill="#F85149">REJECTED</text>
+        <g transform="translate(340 8)">
+          <rect width="170" height="20" rx="10" fill="#F85149" opacity="0.16" stroke="#F85149" stroke-width="1"/>
+          <use href="#m-shield-x" x="6" y="2" width="16" height="16" color="#F85149"/>
+          <text x="26" y="14" class="chip-text" fill="#F85149">authorizedBy invalido</text>
+        </g>
+        <text x="520" y="22" class="t-sec" fill="#F85149">"REJECTED: removal sin firma de operador"</text>
+        <text x="1180" y="22" class="t-dim t-mono">c0a4…</text>
+      </g>
+      <!-- Row 4: sin autoria -->
+      <g transform="translate(0 172)">
+        <rect x="0" y="0" width="1320" height="36" fill="#D29922" opacity="0.10"/>
+        <text x="12" y="22" class="t-sec t-mono" fill="#FFE5A8">12:18:01</text>
+        <text x="170" y="22" class="t-sec t-mono" fill="#FFE5A8">#3215</text>
+        <text x="240" y="22" class="t-sec">add</text>
+        <g transform="translate(340 8)">
+          <rect width="170" height="20" rx="10" fill="#D29922" opacity="0.16" stroke="#D29922" stroke-width="1"/>
+          <use href="#m-warning" x="6" y="2" width="16" height="16" color="#D29922"/>
+          <text x="26" y="14" class="chip-text" fill="#D29922">sin autoria</text>
+        </g>
+        <text x="520" y="22" class="t-sec">(sin justification — _backfill:false)</text>
+        <text x="1180" y="22" class="t-dim t-mono">d9e1…</text>
+      </g>
+      <!-- Row 5: backfill -->
+      <g transform="translate(0 208)">
+        <rect x="0" y="0" width="1320" height="36" class="bg-2"/>
+        <text x="12" y="22" class="t-sec t-mono">11:30:00</text>
+        <text x="170" y="22" class="t-sec t-mono">#3140</text>
+        <text x="240" y="22" class="t-sec">add</text>
+        <g transform="translate(340 8)">
+          <rect width="170" height="20" rx="10" fill="#8B949E" opacity="0.16" stroke="#8B949E" stroke-width="1"/>
+          <text x="14" y="14" class="chip-text" fill="#B1BAC4">BACKFILL · legacy</text>
+        </g>
+        <text x="520" y="22" class="t-sec">(authorized_by:null + _backfill:true)</text>
+        <text x="1180" y="22" class="t-dim t-mono">e7f2…</text>
+      </g>
+      <!-- Footer -->
+      <g transform="translate(0 252)">
+        <rect x="0" y="0" width="1320" height="32" rx="6" class="bg-3"/>
+        <text x="12" y="20" class="t-dim">Ver todas las entries en </text>
+        <text x="186" y="20" class="t-sec t-mono" fill="#58A6FF" text-decoration="underline">/api/dash/partial-pause-audit</text>
+        <text x="402" y="20" class="t-dim">— exporta JSONL con hash-chain.</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       6. Card Infra Health (delegada — helper compartido)
+       ============================================================ -->
+  <g transform="translate(40 1460)">
+    <text x="0" y="-10" class="t-dim">▼  DELEGADA  •  renderInfraHealth(state) inyectado por dashboard.js (decision #2 guru)</text>
+    <rect x="0" y="0" width="1360" height="280" rx="10" class="bg-1" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Header -->
+    <g transform="translate(20 20)">
+      <use href="#m-health" x="0" y="0" width="22" height="22" color="#3FB950"/>
+      <text x="32" y="17" class="h-2">Infra Health</text>
+      <text x="160" y="17" class="t-dim">— estado del ambiente del operador · refresco 30s</text>
+    </g>
+
+    <!-- Pills de salud -->
+    <g transform="translate(20 60)">
+      <!-- Pulpo -->
+      <g transform="translate(0 0)">
+        <rect width="220" height="60" rx="8" fill="#3FB950" opacity="0.12" stroke="#3FB950" stroke-width="1"/>
+        <use href="#m-checkmark-circle" x="14" y="20" width="20" height="20" color="#3FB950"/>
+        <text x="42" y="26" class="h-3" fill="#3FB950">Pulpo</text>
+        <text x="42" y="46" class="t-dim">pid 13884 · uptime 04:12</text>
+      </g>
+      <!-- Watchdog -->
+      <g transform="translate(236 0)">
+        <rect width="220" height="60" rx="8" fill="#3FB950" opacity="0.12" stroke="#3FB950" stroke-width="1"/>
+        <use href="#m-checkmark-circle" x="14" y="20" width="20" height="20" color="#3FB950"/>
+        <text x="42" y="26" class="h-3" fill="#3FB950">Watchdog</text>
+        <text x="42" y="46" class="t-dim">last tick hace 8s</text>
+      </g>
+      <!-- Dashboard -->
+      <g transform="translate(472 0)">
+        <rect width="220" height="60" rx="8" fill="#3FB950" opacity="0.12" stroke="#3FB950" stroke-width="1"/>
+        <use href="#m-checkmark-circle" x="14" y="20" width="20" height="20" color="#3FB950"/>
+        <text x="42" y="26" class="h-3" fill="#3FB950">Dashboard</text>
+        <text x="42" y="46" class="t-dim">:8086 · 2 ms p95</text>
+      </g>
+      <!-- Telegram bot -->
+      <g transform="translate(708 0)">
+        <rect width="220" height="60" rx="8" fill="#3FB950" opacity="0.12" stroke="#3FB950" stroke-width="1"/>
+        <use href="#m-checkmark-circle" x="14" y="20" width="20" height="20" color="#3FB950"/>
+        <text x="42" y="26" class="h-3" fill="#3FB950">Telegram bot</text>
+        <text x="42" y="46" class="t-dim">poll 1.2s · 0 errores</text>
+      </g>
+      <!-- Provider quota -->
+      <g transform="translate(944 0)">
+        <rect width="376" height="60" rx="8" fill="#D29922" opacity="0.12" stroke="#D29922" stroke-width="1"/>
+        <use href="#m-warning" x="14" y="20" width="20" height="20" color="#D29922"/>
+        <text x="42" y="26" class="h-3" fill="#FFE5A8">Anthropic quota</text>
+        <text x="42" y="46" class="t-dim">78% consumido · reset en 4h 22m</text>
+      </g>
+    </g>
+
+    <!-- Sub-card Worktrees -->
+    <g transform="translate(20 144)">
+      <rect width="660" height="116" rx="8" class="bg-2" stroke="#30363D" stroke-width="1"/>
+      <text x="14" y="22" class="kpi-lbl">Worktrees activos</text>
+      <text x="14" y="60" class="kpi-num">5</text>
+      <text x="14" y="84" class="t-dim">guru #3812 · po #3789 · android-dev #3702 · review #3690 · qa #3711</text>
+      <text x="14" y="104" class="t-dim">Sin worktrees fantasma — ghostbusters healthy.</text>
+    </g>
+
+    <!-- Sub-card Cuota total del operador -->
+    <g transform="translate(696 144)">
+      <rect width="624" height="116" rx="8" class="bg-2" stroke="#30363D" stroke-width="1"/>
+      <text x="14" y="22" class="kpi-lbl">Cuota del operador (5h rolling window)</text>
+      <!-- Barra -->
+      <g transform="translate(14 36)">
+        <rect width="596" height="14" rx="7" fill="#30363D"/>
+        <rect width="465" height="14" rx="7" fill="#3FB950" opacity="0.85"/>
+        <text x="0" y="34" class="t-dim">78% · 234k / 300k tokens · proximo reset 18:12 BA</text>
+      </g>
+      <text x="14" y="100" class="t-dim">Si supera 95% el pipeline degrada a modo deterministico (#2955).</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       Footer: legend de la jerarquia (CA-C3 leyendas)
+       ============================================================ -->
+  <g transform="translate(40 1764)">
+    <rect x="0" y="0" width="1360" height="68" rx="10" class="bg-1" stroke="#21262D" stroke-width="1"/>
+    <use href="#m-info" x="20" y="20" width="22" height="22" color="#58A6FF"/>
+    <text x="52" y="30" class="h-3">Leyenda de la ventana Pipeline V3</text>
+    <text x="52" y="52" class="t-dim">
+      Sticky · Control Bar siempre visible &#160;·&#160; Banner condicional · solo si hay deps faltantes &#160;·&#160;
+      Allowlist abierta por defecto si el sistema esta en partial-pause &#160;·&#160;
+      Audit Trail abierto si chain_broken o sin-autoria &#160;·&#160; Infra Health delegada (helper compartido).
+    </text>
+  </g>
+
+</svg>
