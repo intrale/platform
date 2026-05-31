@@ -1,0 +1,717 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 35 — Wizard "Pausar / despausar issues parciales" (#3741, split de #3715)
+  -----------------------------------------------------------------------------
+  Vista que documenta los 3 pasos del wizard registrado en la base de #3724:
+    /dashboard/wizard/pausa/step/1  — Acción (pausar | despausar) + scope.
+    /dashboard/wizard/pausa/step/2  — Preview de issues afectados + deps recursivas
+                                       resueltas vía partial-pause-deps.js + emisión
+                                       de confirm_token único.
+    /dashboard/wizard/pausa/step/3  — Drift-check + doble confirmación UI cuando la
+                                       acción es despausar (acción destructiva).
+
+  Resolucion: 1440x2240 (vertical stack de 3 pantallas + footer "audit trail")
+  Demuestra:
+    - CA-1  — chrome integrado (header + sidebar + stepper) con session firmada 15min.
+    - CA-2  — formulario del paso 1 con acción y scope (issue específico / allowlist / full).
+    - CA-3  — preview con deps recursivas resueltas (padre + 2 hijos + 1 nieto).
+    - CA-4  — emisión visible del confirm_token (UUID v4) one-shot.
+    - CA-5  — doble confirmación UI: checkbox "Entiendo..." + botón rojo "Confirmar despausa".
+    - CA-6  — drift-check (mensaje "Estado cambió, reiniciá el wizard" para 409 DRIFT).
+    - CA-9  — pill CSRF token visible en cada paso.
+    - CA-10 — preview muestra título XSS escapado: &lt;script&gt;alert(1)&lt;/script&gt;.
+    - CA-11 — recuadro "Audit trail" muestra entry con via: 'wizard-pausa' + actor server-side.
+    - CA-12 — al final del wizard, banner "Resultado: partial_pause" porque allowed_issues=[]
+              + allowed_skills no vacío != pausa total (memoria partial-pause-empty-not-block).
+    - CA-14 — preserve allowed_skills visible en el preview ("conserva: [backend-dev]").
+    - CA-15 — operable sin docs: cada paso tiene título, descripción y Cancelar siempre visible.
+    - CA-16 — botón Cancelar disponible en los 3 pasos.
+    - CA-17 — timeout 15min mostrado como pill "expira en 14:32".
+
+  Convención:
+    - Paleta: design-tokens.css (--surface-*, --danger, --warning, --info, --teal, --purple,
+              --brand-cyan, --brand-blue, --text-*, --border*).
+    - Iconografía: subset embebido del sprite.svg (24x24 outline, currentColor) — alineado
+                   con el patrón de los mockups 14, 22 y 28.
+    - Tipografía: SF / Segoe UI / system stack. Tamaños y pesos según escala Material 3
+                  (titleLarge 20, titleMedium 16, bodyMedium 14, labelMedium 12, code 12).
+    - WCAG AA: contrastes verificados contra surface-0 (#0D1117) y surface-1 (#161B22).
+      * text-primary    14.8:1 AAA
+      * text-secondary   9.7:1 AAA
+      * text-dim         5.3:1 AA Normal
+      * danger-fg sobre danger-bg     ~10.5:1 AAA
+      * warning-fg sobre warning-bg   ~ 8.4:1 AAA
+      * teal sobre surface-1           ~6.9:1 AAA Large
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 2240" width="1440" height="2240"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+
+  <defs>
+    <!-- Gradiente de marca del logo Intrale, alineado con tokens --brand-cyan + --brand-blue. -->
+    <linearGradient id="brandGrad35" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+
+    <!-- Panel del wizard: tarjeta elevada sobre surface-0. -->
+    <linearGradient id="wizardPanelGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1C2128"/>
+      <stop offset="100%" stop-color="#161B22"/>
+    </linearGradient>
+
+    <!-- ===== Iconografía (subset del sprite.svg para preview standalone) ===== -->
+    <symbol id="ic-pause" viewBox="0 0 24 24">
+      <rect x="6"  y="5" width="4" height="14" rx="1" fill="currentColor"/>
+      <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>
+    </symbol>
+    <symbol id="ic-play" viewBox="0 0 24 24">
+      <path d="M7 5 V19 L19 12 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="ic-check" viewBox="0 0 24 24">
+      <path d="M4 12 L10 18 L20 6" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="ic-cross" viewBox="0 0 24 24">
+      <path d="M6 6 L18 18 M18 6 L6 18" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-warning" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor" stroke-width="1.75"
+            stroke-linejoin="round"/>
+      <path d="M12 9.5 V14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="ic-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M12 7 V12 L15.5 14" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="ic-deps" viewBox="0 0 24 24">
+      <circle cx="7"  cy="7"  r="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="17" cy="7"  r="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="17" r="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8.5 8.7 L11 15 M15.5 8.7 L13 15" stroke="currentColor" stroke-width="1.4"
+            stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-shield" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M9 12 L11.2 14.2 L15.5 9.8" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="ic-key" viewBox="0 0 24 24">
+      <circle cx="8" cy="14" r="4" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M11 12.5 L21 12.5 L21 16 M17.5 12.5 L17.5 15" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="8" r="1" fill="currentColor"/>
+      <path d="M12 11 V17" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-arrow-right" viewBox="0 0 24 24">
+      <path d="M5 12 H19 M14 6 L20 12 L14 18" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="ic-spin" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-dasharray="4 3" opacity="0.7"/>
+    </symbol>
+    <symbol id="ic-list" viewBox="0 0 24 24">
+      <path d="M4 6 H20 M4 12 H20 M4 18 H14" stroke="currentColor" stroke-width="1.75"
+            stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-cancel" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M6.5 6.5 L17.5 17.5" stroke="currentColor" stroke-width="1.75"
+            stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-intrale-logo" viewBox="0 0 24 24">
+      <path d="M12 3 L3 19 L21 19 Z" fill="none" stroke="currentColor" stroke-width="1.75"
+            stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M12 10 L8.8 15.3 L15.2 15.3 Z" fill="currentColor"/>
+    </symbol>
+  </defs>
+
+  <!-- Fondo body -->
+  <rect width="1440" height="2240" fill="#0D1117"/>
+
+  <!-- =============== HEADER (compartido con el dashboard) =============== -->
+  <rect x="0" y="0" width="1440" height="64" fill="#161B22"/>
+  <rect x="0" y="63" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(24, 14)">
+    <rect width="36" height="36" rx="9" fill="#0D274D"/>
+    <use href="#ic-intrale-logo" x="6" y="6" width="24" height="24" color="url(#brandGrad35)"/>
+  </g>
+  <text x="72" y="32" fill="#E6EDF3" font-size="17" font-weight="700">Intrale Pipeline</text>
+  <text x="72" y="50" fill="#8B949E" font-size="10" font-weight="600" letter-spacing="1.4">
+    OPERACIÓN · WIZARD PAUSA PARCIAL · #3741
+  </text>
+
+  <!-- Pill timeout sesión wizard (CA-17 — heredado de #3724). -->
+  <g transform="translate(420, 18)">
+    <rect width="200" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <use href="#ic-clock" x="9" y="6" width="16" height="16" color="#8B949E"/>
+    <text x="32" y="19" fill="#B1BAC4" font-size="12" font-weight="600">
+      Sesión expira en 14:32
+    </text>
+  </g>
+
+  <!-- Pill CSRF + sesión (CA-9). -->
+  <g transform="translate(636, 18)">
+    <rect width="220" height="28" rx="14" fill="rgba(45, 212, 191, 0.14)" stroke="#0D9488"/>
+    <use href="#ic-shield" x="9" y="6" width="16" height="16" color="#2DD4BF"/>
+    <text x="32" y="19" fill="#2DD4BF" font-size="11" font-weight="700" letter-spacing="0.4"
+          font-family="'SF Mono', Consolas, monospace">
+      CSRF · sess:c0mm4nd3r-le0
+    </text>
+  </g>
+
+  <text x="1416" y="38" fill="#8B949E" font-size="11" text-anchor="end"
+        font-family="'SF Mono', Consolas, monospace">
+    localhost:3200/dashboard/wizard/pausa/step/1
+  </text>
+
+  <!-- =============== STEPPER (3 pasos) =============== -->
+  <g transform="translate(120, 96)">
+    <!-- Línea base entre los tres steps -->
+    <line x1="60" y1="22" x2="1140" y2="22" stroke="#30363D" stroke-width="2"/>
+    <line x1="60" y1="22" x2="600" y2="22" stroke="url(#brandGrad35)" stroke-width="2"/>
+
+    <!-- Step 1: actual / activo -->
+    <circle cx="60"   cy="22" r="22" fill="#1890FF"/>
+    <text x="60"   y="28" font-size="14" font-weight="700" text-anchor="middle" fill="#0D1117">1</text>
+    <text x="60"   y="68" font-size="12" font-weight="600" text-anchor="middle" fill="#E6EDF3">Acción + scope</text>
+    <text x="60"   y="84" font-size="11" text-anchor="middle" fill="#8B949E">elegir qué hacer</text>
+
+    <!-- Step 2: parcialmente completado / activo -->
+    <circle cx="600"  cy="22" r="22" fill="#161B22" stroke="#1890FF" stroke-width="2"/>
+    <text x="600"  y="28" font-size="14" font-weight="700" text-anchor="middle" fill="#58A6FF">2</text>
+    <text x="600"  y="68" font-size="12" font-weight="600" text-anchor="middle" fill="#E6EDF3">Preview + deps</text>
+    <text x="600"  y="84" font-size="11" text-anchor="middle" fill="#8B949E">ver impacto antes de aplicar</text>
+
+    <!-- Step 3: pendiente -->
+    <circle cx="1140" cy="22" r="22" fill="#161B22" stroke="#30363D" stroke-width="2"/>
+    <text x="1140" y="28" font-size="14" font-weight="700" text-anchor="middle" fill="#8B949E">3</text>
+    <text x="1140" y="68" font-size="12" font-weight="600" text-anchor="middle" fill="#E6EDF3">Confirmar</text>
+    <text x="1140" y="84" font-size="11" text-anchor="middle" fill="#8B949E">doble check para despausa</text>
+  </g>
+
+  <!-- =================================================================
+       PASO 1 — Acción + scope (CA-2)
+       ================================================================= -->
+  <g transform="translate(120, 230)">
+    <!-- Card panel -->
+    <rect width="1200" height="500" rx="12" fill="url(#wizardPanelGrad)" stroke="#30363D"/>
+
+    <!-- Header del paso -->
+    <g transform="translate(28, 28)">
+      <rect width="44" height="44" rx="10" fill="rgba(24, 144, 255, 0.18)"/>
+      <use href="#ic-pause" x="10" y="10" width="24" height="24" color="#58A6FF"/>
+      <text x="58" y="20" fill="#E6EDF3" font-size="20" font-weight="700">
+        Paso 1 · ¿Qué necesitás hacer?
+      </text>
+      <text x="58" y="40" fill="#B1BAC4" font-size="13">
+        Decidí la acción y el alcance. Después vas a ver el impacto antes de aplicar.
+      </text>
+    </g>
+
+    <!-- Bloque "Acción" -->
+    <g transform="translate(28, 110)">
+      <text x="0" y="14" fill="#8B949E" font-size="10" font-weight="700" letter-spacing="1.4">
+        ACCIÓN
+      </text>
+
+      <!-- Opción Pausar — seleccionada -->
+      <g transform="translate(0, 28)">
+        <rect width="560" height="84" rx="10" fill="rgba(248, 81, 73, 0.06)"
+              stroke="#F85149" stroke-width="2"/>
+        <g transform="translate(20, 20)">
+          <circle cx="0" cy="0" r="10" fill="none" stroke="#F85149" stroke-width="2"/>
+          <circle cx="0" cy="0" r="5" fill="#F85149"/>
+        </g>
+        <use href="#ic-pause" x="48" y="14" width="28" height="28" color="#F85149"/>
+        <text x="92" y="32" fill="#FFD2DC" font-size="15" font-weight="700">Pausar</text>
+        <text x="92" y="56" fill="#B1BAC4" font-size="12">
+          Bloquea nuevas tomas de los issues no listados. No mata in-flight.
+        </text>
+        <text x="92" y="72" fill="#8B949E" font-size="11">
+          Llama a setPartialPause(allowlist) del gate #3625.
+        </text>
+      </g>
+
+      <!-- Opción Despausar — no seleccionada (acción destructiva, badge "destructiva") -->
+      <g transform="translate(584, 28)">
+        <rect width="560" height="84" rx="10" fill="#161B22" stroke="#30363D"/>
+        <g transform="translate(20, 20)">
+          <circle cx="0" cy="0" r="10" fill="none" stroke="#484F58" stroke-width="2"/>
+        </g>
+        <use href="#ic-play" x="48" y="14" width="28" height="28" color="#3FB950"/>
+        <text x="92" y="32" fill="#E6EDF3" font-size="15" font-weight="700">Despausar</text>
+        <text x="92" y="56" fill="#B1BAC4" font-size="12">
+          Reanuda el pipeline completo. Requiere doble confirmación en el paso 3.
+        </text>
+        <g transform="translate(92, 64)">
+          <rect width="78" height="18" rx="9" fill="rgba(248, 81, 73, 0.16)" stroke="#8B1A14"/>
+          <text x="39" y="13" font-size="10" font-weight="700" text-anchor="middle" fill="#FFD2DC"
+                letter-spacing="0.8">DESTRUCTIVA</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Bloque "Scope" -->
+    <g transform="translate(28, 252)">
+      <text x="0" y="14" fill="#8B949E" font-size="10" font-weight="700" letter-spacing="1.4">
+        SCOPE
+      </text>
+
+      <!-- Scope: issue específico -->
+      <g transform="translate(0, 28)">
+        <rect width="370" height="200" rx="10" fill="#161B22" stroke="#30363D"/>
+        <g transform="translate(20, 20)">
+          <circle cx="0" cy="0" r="10" fill="none" stroke="#484F58" stroke-width="2"/>
+        </g>
+        <text x="48" y="26" fill="#E6EDF3" font-size="14" font-weight="700">Issue específico</text>
+        <text x="48" y="46" fill="#B1BAC4" font-size="12">
+          Agregar 1 issue a la allowlist
+        </text>
+        <text x="48" y="62" fill="#B1BAC4" font-size="12">
+          activa.
+        </text>
+
+        <!-- Input numérico -->
+        <g transform="translate(20, 96)">
+          <rect width="330" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+          <text x="14" y="26" fill="#6E7681" font-size="13" font-family="'SF Mono', Consolas, monospace">
+            #3140
+          </text>
+        </g>
+        <text x="20" y="158" fill="#8B949E" font-size="11">
+          ↳ se resolverán deps recursivas en el paso 2.
+        </text>
+      </g>
+
+      <!-- Scope: allowlist completa — seleccionada -->
+      <g transform="translate(394, 28)">
+        <rect width="370" height="200" rx="10" fill="rgba(24, 144, 255, 0.06)"
+              stroke="#1890FF" stroke-width="2"/>
+        <g transform="translate(20, 20)">
+          <circle cx="0" cy="0" r="10" fill="none" stroke="#1890FF" stroke-width="2"/>
+          <circle cx="0" cy="0" r="5" fill="#1890FF"/>
+        </g>
+        <text x="48" y="26" fill="#E6EDF3" font-size="14" font-weight="700">Allowlist completa</text>
+        <text x="48" y="46" fill="#B1BAC4" font-size="12">
+          Definir el set de issues que SÍ pueden
+        </text>
+        <text x="48" y="62" fill="#B1BAC4" font-size="12">
+          tomarse. Sustituye la lista actual.
+        </text>
+
+        <!-- Textarea con lista -->
+        <g transform="translate(20, 80)">
+          <rect width="330" height="80" rx="8" fill="#0D1117" stroke="#1F6FEB"/>
+          <text x="14" y="22" fill="#E6EDF3" font-size="12"
+                font-family="'SF Mono', Consolas, monospace">
+            3741, 3722, 3724, 3738
+          </text>
+          <text x="14" y="42" fill="#E6EDF3" font-size="12"
+                font-family="'SF Mono', Consolas, monospace">
+            3739, 3740, 3742
+          </text>
+          <text x="14" y="62" fill="#6E7681" font-size="11"
+                font-family="'SF Mono', Consolas, monospace">
+            (7 issues · deps se resolverán)
+          </text>
+        </g>
+        <text x="20" y="180" fill="#8B949E" font-size="11">
+          ↳ preserve allowed_skills: ['backend-dev'] (CA-14).
+        </text>
+      </g>
+
+      <!-- Scope: full pause -->
+      <g transform="translate(788, 28)">
+        <rect width="356" height="200" rx="10" fill="#161B22" stroke="#30363D"/>
+        <g transform="translate(20, 20)">
+          <circle cx="0" cy="0" r="10" fill="none" stroke="#484F58" stroke-width="2"/>
+        </g>
+        <text x="48" y="26" fill="#E6EDF3" font-size="14" font-weight="700">Pausa total</text>
+        <text x="48" y="46" fill="#B1BAC4" font-size="12">
+          Crea el marker .paused — frena
+        </text>
+        <text x="48" y="62" fill="#B1BAC4" font-size="12">
+          todo el pipeline sin allowlist.
+        </text>
+
+        <g transform="translate(20, 96)">
+          <rect width="316" height="60" rx="8" fill="rgba(245, 158, 11, 0.10)"
+                stroke="#B8730A"/>
+          <use href="#ic-warning" x="10" y="18" width="22" height="22" color="#F59E0B"/>
+          <text x="40" y="28" fill="#F59E0B" font-size="12" font-weight="700">Acción global</text>
+          <text x="40" y="46" fill="#B1BAC4" font-size="11">
+            requiere justificación obligatoria.
+          </text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Footer del paso 1: Cancelar + Siguiente -->
+    <line x1="0" y1="448" x2="1200" y2="448" stroke="#21262D"/>
+    <g transform="translate(28, 466)">
+      <rect width="120" height="36" rx="8" fill="transparent" stroke="#30363D"/>
+      <use href="#ic-cancel" x="14" y="10" width="16" height="16" color="#B1BAC4"/>
+      <text x="38" y="23" fill="#B1BAC4" font-size="13" font-weight="600">Cancelar</text>
+    </g>
+
+    <!-- Indicador "wizard_session_id" emitido -->
+    <g transform="translate(190, 466)">
+      <rect width="380" height="36" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <use href="#ic-key" x="10" y="10" width="16" height="16" color="#2DD4BF"/>
+      <text x="34" y="23" fill="#8B949E" font-size="11" font-family="'SF Mono', Consolas, monospace">
+        wizard_session_id: ws_8f3a…b91c · HMAC firmado
+      </text>
+    </g>
+
+    <!-- Siguiente -->
+    <g transform="translate(1052, 466)">
+      <rect width="120" height="36" rx="8" fill="#1890FF"/>
+      <text x="34" y="23" fill="#0D1117" font-size="13" font-weight="700">Siguiente</text>
+      <use href="#ic-arrow-right" x="90" y="10" width="16" height="16" color="#0D1117"/>
+    </g>
+  </g>
+
+  <!-- =================================================================
+       PASO 2 — Preview con deps recursivas + confirm_token (CA-3, CA-4, CA-10, CA-12)
+       ================================================================= -->
+  <g transform="translate(120, 760)">
+    <rect width="1200" height="720" rx="12" fill="url(#wizardPanelGrad)" stroke="#30363D"/>
+
+    <!-- Header del paso -->
+    <g transform="translate(28, 28)">
+      <rect width="44" height="44" rx="10" fill="rgba(45, 212, 191, 0.18)"/>
+      <use href="#ic-list" x="10" y="10" width="24" height="24" color="#2DD4BF"/>
+      <text x="58" y="20" fill="#E6EDF3" font-size="20" font-weight="700">
+        Paso 2 · ¿Qué va a pasar?
+      </text>
+      <text x="58" y="40" fill="#B1BAC4" font-size="13">
+        Estos issues quedarán habilitados. Las dependencias se resolvieron recursivamente
+        (memoria feedback_allowlist-recursive-deps).
+      </text>
+    </g>
+
+    <!-- Pill estado resultante (CA-12 — partial-pause-empty-not-block) -->
+    <g transform="translate(880, 28)">
+      <rect width="284" height="44" rx="22" fill="rgba(45, 212, 191, 0.14)"
+            stroke="#0D9488" stroke-width="1.5"/>
+      <use href="#ic-info" x="14" y="14" width="16" height="16" color="#2DD4BF"/>
+      <text x="38" y="20" fill="#2DD4BF" font-size="10" font-weight="700" letter-spacing="1.0">
+        ESTADO RESULTANTE
+      </text>
+      <text x="38" y="34" fill="#E6EDF3" font-size="13" font-weight="700">
+        partial_pause · 7 issues + skills:[backend-dev]
+      </text>
+    </g>
+
+    <!-- Tabla de preview: issues + deps -->
+    <g transform="translate(28, 104)">
+      <text x="0" y="14" fill="#8B949E" font-size="10" font-weight="700" letter-spacing="1.4">
+        ISSUES AFECTADOS · 4 directos + 3 por dependencia recursiva (MAX_DEPTH=3)
+      </text>
+
+      <!-- Encabezado de columnas -->
+      <g transform="translate(0, 28)">
+        <rect width="1144" height="32" rx="6" fill="#0D1117"/>
+        <text x="20"   y="20" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.4">#</text>
+        <text x="60"   y="20" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.4">Título</text>
+        <text x="660"  y="20" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.4">Label admisión</text>
+        <text x="830"  y="20" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.4">Origen</text>
+        <text x="1000" y="20" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.4">Estado pipeline</text>
+      </g>
+
+      <!-- Row 1: padre -->
+      <g transform="translate(0, 72)">
+        <rect width="1144" height="40" rx="6" fill="#161B22" stroke="#30363D"/>
+        <text x="20"  y="25" fill="#E6EDF3" font-size="13" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">#3741</text>
+        <text x="60"  y="25" fill="#E6EDF3" font-size="13">[Split de #3715] Wizard pausa parcial</text>
+        <g transform="translate(660, 12)">
+          <rect width="116" height="20" rx="10" fill="rgba(245, 158, 11, 0.16)" stroke="#B8730A"/>
+          <text x="58" y="14" font-size="10" font-weight="700" text-anchor="middle" fill="#F59E0B">needs-definition</text>
+        </g>
+        <text x="830"  y="25" fill="#B1BAC4" font-size="12">directo</text>
+        <text x="1000" y="25" fill="#3FB950" font-size="12" font-weight="600">criterios · UX</text>
+      </g>
+
+      <!-- Row 2: dependencia recursiva nivel 1 -->
+      <g transform="translate(0, 120)">
+        <rect width="1144" height="40" rx="6" fill="#161B22" stroke="#30363D"/>
+        <use href="#ic-deps" x="20" y="12" width="16" height="16" color="#BC8CFF"/>
+        <text x="44"  y="25" fill="#BC8CFF" font-size="13" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">#3722</text>
+        <text x="100" y="25" fill="#E6EDF3" font-size="13">[Split] lib/escape-html.js</text>
+        <g transform="translate(660, 12)">
+          <rect width="60" height="20" rx="10" fill="rgba(63, 185, 80, 0.16)" stroke="#196C2E"/>
+          <text x="30" y="14" font-size="10" font-weight="700" text-anchor="middle" fill="#3FB950">Ready</text>
+        </g>
+        <text x="830"  y="25" fill="#B1BAC4" font-size="12">↳ dep de #3741</text>
+        <text x="1000" y="25" fill="#F59E0B" font-size="12" font-weight="600">desarrollo · backend-dev</text>
+      </g>
+
+      <!-- Row 3: dependencia recursiva nivel 1 -->
+      <g transform="translate(0, 168)">
+        <rect width="1144" height="40" rx="6" fill="#161B22" stroke="#30363D"/>
+        <use href="#ic-deps" x="20" y="12" width="16" height="16" color="#BC8CFF"/>
+        <text x="44"  y="25" fill="#BC8CFF" font-size="13" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">#3724</text>
+        <text x="100" y="25" fill="#E6EDF3" font-size="13">[Split] wizards base (CSRF + 15min TTL)</text>
+        <g transform="translate(660, 12)">
+          <rect width="60" height="20" rx="10" fill="rgba(63, 185, 80, 0.16)" stroke="#196C2E"/>
+          <text x="30" y="14" font-size="10" font-weight="700" text-anchor="middle" fill="#3FB950">Ready</text>
+        </g>
+        <text x="830"  y="25" fill="#B1BAC4" font-size="12">↳ dep de #3741</text>
+        <text x="1000" y="25" fill="#F59E0B" font-size="12" font-weight="600">desarrollo · pipeline-dev</text>
+      </g>
+
+      <!-- Row 4: dependencia recursiva nivel 2 (XSS — CA-10) -->
+      <g transform="translate(0, 216)">
+        <rect width="1144" height="40" rx="6" fill="#161B22" stroke="#30363D"/>
+        <g transform="translate(20, 16)" fill="#8B949E">
+          <use href="#ic-deps" x="0" y="-4" width="16" height="16" color="#8B949E"/>
+        </g>
+        <text x="44"  y="25" fill="#8B949E" font-size="13" font-weight="700"
+              font-family="'SF Mono', Consolas, monospace">#2901</text>
+        <text x="100" y="25" fill="#E6EDF3" font-size="13" font-family="'SF Mono', Consolas, monospace">
+          &lt;script&gt;alert(1)&lt;/script&gt;
+        </text>
+        <g transform="translate(380, 12)">
+          <rect width="180" height="20" rx="10" fill="rgba(45, 212, 191, 0.16)" stroke="#0D9488"/>
+          <use href="#ic-shield" x="5" y="3" width="14" height="14" color="#2DD4BF"/>
+          <text x="24" y="14" font-size="10" font-weight="700" fill="#2DD4BF">XSS escapeHtml() OK</text>
+        </g>
+        <text x="660" y="25" fill="#8B949E" font-size="12">—</text>
+        <text x="830" y="25" fill="#B1BAC4" font-size="12">↳ dep recursiva (nivel 2)</text>
+        <text x="1000" y="25" fill="#3FB950" font-size="12" font-weight="600">cerrado</text>
+      </g>
+
+      <!-- Footer de la tabla con "truncated: false" -->
+      <g transform="translate(0, 270)">
+        <text x="0" y="14" fill="#8B949E" font-size="11">
+          Resueltas vía partial-pause-deps.resolveOpenDeps() · cache TTL 5min · truncated: false.
+        </text>
+      </g>
+    </g>
+
+    <!-- Panel inferior con confirm_token + drift snapshot -->
+    <g transform="translate(28, 420)">
+      <!-- Confirm token (CA-4) -->
+      <rect x="0" y="0" width="560" height="180" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <g transform="translate(20, 20)">
+        <rect width="40" height="40" rx="10" fill="rgba(45, 212, 191, 0.16)"/>
+        <use href="#ic-key" x="8" y="8" width="24" height="24" color="#2DD4BF"/>
+      </g>
+      <text x="76" y="35" fill="#E6EDF3" font-size="15" font-weight="700">
+        confirm_token emitido
+      </text>
+      <text x="76" y="54" fill="#B1BAC4" font-size="12">
+        UUID v4 firmado · one-shot · vinculado a wizard_session_id.
+      </text>
+      <g transform="translate(20, 84)">
+        <rect width="520" height="40" rx="8" fill="#161B22" stroke="#0D9488"/>
+        <text x="14" y="26" fill="#2DD4BF" font-size="13" font-weight="600"
+              font-family="'SF Mono', Consolas, monospace">
+          ct_7a9f4e21-b8c3-4d6e-9f02-b59c0e84a172
+        </text>
+      </g>
+      <text x="20" y="156" fill="#8B949E" font-size="11">
+        Segundo POST a /step/3 con el mismo token → 409 TOKEN_REUSED.
+      </text>
+
+      <!-- Drift snapshot (CA-6) -->
+      <rect x="584" y="0" width="560" height="180" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <g transform="translate(604, 20)">
+        <rect width="40" height="40" rx="10" fill="rgba(88, 166, 255, 0.16)"/>
+        <use href="#ic-spin" x="8" y="8" width="24" height="24" color="#58A6FF"/>
+      </g>
+      <text x="660" y="35" fill="#E6EDF3" font-size="15" font-weight="700">
+        Snapshot de estado actual
+      </text>
+      <text x="660" y="54" fill="#B1BAC4" font-size="12">
+        Drift-check vs getPipelineMode() en /step/3.
+      </text>
+      <g transform="translate(604, 84)">
+        <rect width="520" height="80" rx="8" fill="#161B22" stroke="#30363D"/>
+        <text x="14" y="22" fill="#B1BAC4" font-size="12"
+              font-family="'SF Mono', Consolas, monospace">
+          mode:           partial_pause
+        </text>
+        <text x="14" y="40" fill="#B1BAC4" font-size="12"
+              font-family="'SF Mono', Consolas, monospace">
+          allowed_issues: [3741, 3722, 3724, ...]
+        </text>
+        <text x="14" y="58" fill="#B1BAC4" font-size="12"
+              font-family="'SF Mono', Consolas, monospace">
+          allowed_skills: [backend-dev]  ← preservado
+        </text>
+      </g>
+    </g>
+
+    <!-- Footer paso 2: cancelar / atrás / siguiente -->
+    <line x1="0" y1="660" x2="1200" y2="660" stroke="#21262D"/>
+    <g transform="translate(28, 678)">
+      <rect width="120" height="36" rx="8" fill="transparent" stroke="#30363D"/>
+      <use href="#ic-cancel" x="14" y="10" width="16" height="16" color="#B1BAC4"/>
+      <text x="38" y="23" fill="#B1BAC4" font-size="13" font-weight="600">Cancelar</text>
+    </g>
+
+    <g transform="translate(900, 678)">
+      <rect width="140" height="36" rx="8" fill="transparent" stroke="#30363D"/>
+      <text x="70" y="23" font-size="13" font-weight="600" text-anchor="middle" fill="#B1BAC4">
+        ← Atrás
+      </text>
+    </g>
+
+    <g transform="translate(1052, 678)">
+      <rect width="120" height="36" rx="8" fill="#1890FF"/>
+      <text x="34" y="23" fill="#0D1117" font-size="13" font-weight="700">Siguiente</text>
+      <use href="#ic-arrow-right" x="90" y="10" width="16" height="16" color="#0D1117"/>
+    </g>
+  </g>
+
+  <!-- =================================================================
+       PASO 3 — Confirmación + doble check para despausa (CA-5, CA-6, CA-8, CA-11)
+       ================================================================= -->
+  <g transform="translate(120, 1510)">
+    <rect width="1200" height="540" rx="12" fill="url(#wizardPanelGrad)" stroke="#30363D"/>
+
+    <!-- Header del paso -->
+    <g transform="translate(28, 28)">
+      <rect width="44" height="44" rx="10" fill="rgba(248, 81, 73, 0.18)"/>
+      <use href="#ic-warning" x="10" y="10" width="24" height="24" color="#F85149"/>
+      <text x="58" y="20" fill="#E6EDF3" font-size="20" font-weight="700">
+        Paso 3 · Confirmar
+      </text>
+      <text x="58" y="40" fill="#B1BAC4" font-size="13">
+        Esta acción muta .partial-pause.json vía setPartialPause() y queda en el audit log.
+      </text>
+    </g>
+
+    <!-- Banner drift OK -->
+    <g transform="translate(28, 100)">
+      <rect width="1144" height="48" rx="8" fill="rgba(63, 185, 80, 0.10)" stroke="#196C2E"/>
+      <use href="#ic-check" x="16" y="14" width="20" height="20" color="#3FB950"/>
+      <text x="44" y="22" fill="#3FB950" font-size="13" font-weight="700">
+        Drift-check OK
+      </text>
+      <text x="44" y="38" fill="#B1BAC4" font-size="12">
+        Estado fresh coincide con el snapshot del paso 2. Nadie mutó la allowlist en el medio.
+      </text>
+    </g>
+
+    <!-- Doble confirmación (CA-5) — checkbox + botón -->
+    <g transform="translate(28, 168)">
+      <text x="0" y="14" fill="#8B949E" font-size="10" font-weight="700" letter-spacing="1.4">
+        DOBLE CONFIRMACIÓN
+      </text>
+
+      <!-- Checkbox 1 -->
+      <g transform="translate(0, 36)">
+        <rect width="1144" height="48" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <!-- checkbox marcado -->
+        <rect x="20" y="16" width="18" height="18" rx="4" fill="#1890FF"/>
+        <use href="#ic-check" x="20" y="16" width="18" height="18" color="#0D1117"/>
+        <text x="50" y="32" fill="#E6EDF3" font-size="13" font-weight="600">
+          Entiendo que esto reanuda el pipeline para los 7 issues listados, en partial_pause mode.
+        </text>
+      </g>
+
+      <!-- Checkbox 2 -->
+      <g transform="translate(0, 96)">
+        <rect width="1144" height="48" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <rect x="20" y="16" width="18" height="18" rx="4" fill="#1890FF"/>
+        <use href="#ic-check" x="20" y="16" width="18" height="18" color="#0D1117"/>
+        <text x="50" y="32" fill="#E6EDF3" font-size="13" font-weight="600">
+          Justificación (queda en audit log):
+          <tspan fill="#2DD4BF" font-style="italic">
+            "Wizard pausa parcial: pausar allowlist · ola Multi-Provider Ola N+2".
+          </tspan>
+        </text>
+      </g>
+    </g>
+
+    <!-- Audit log preview (CA-11) -->
+    <g transform="translate(28, 328)">
+      <text x="0" y="14" fill="#8B949E" font-size="10" font-weight="700" letter-spacing="1.4">
+        AUDIT LOG · partial-pause-mutations.jsonl · hash-chained
+      </text>
+      <g transform="translate(0, 26)">
+        <rect width="1144" height="76" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="22" fill="#B1BAC4" font-size="11"
+              font-family="'SF Mono', Consolas, monospace">
+          {"ts":"2026-05-31T19:42:14Z","actor":"commander:leo","authorized_by":"commander:leo",
+        </text>
+        <text x="14" y="38" fill="#B1BAC4" font-size="11"
+              font-family="'SF Mono', Consolas, monospace">
+          "action":"setPartialPause","previous":{"mode":"running"},"current":{"mode":"partial_pause",
+        </text>
+        <text x="14" y="54" fill="#B1BAC4" font-size="11"
+              font-family="'SF Mono', Consolas, monospace">
+          "allowed_issues":[3741,3722,3724,3738,3739,3740,3742],"allowed_skills":["backend-dev"]},
+        </text>
+        <text x="14" y="70" fill="#2DD4BF" font-size="11" font-weight="600"
+              font-family="'SF Mono', Consolas, monospace">
+          "via":"wizard-pausa","hash_self":"sha256:9f3a…","hash_prev":"sha256:b21c…"}
+        </text>
+      </g>
+    </g>
+
+    <!-- Footer paso 3: cancelar / atrás / aplicar -->
+    <line x1="0" y1="478" x2="1200" y2="478" stroke="#21262D"/>
+    <g transform="translate(28, 496)">
+      <rect width="120" height="36" rx="8" fill="transparent" stroke="#30363D"/>
+      <use href="#ic-cancel" x="14" y="10" width="16" height="16" color="#B1BAC4"/>
+      <text x="38" y="23" fill="#B1BAC4" font-size="13" font-weight="600">Cancelar</text>
+    </g>
+
+    <g transform="translate(900, 496)">
+      <rect width="140" height="36" rx="8" fill="transparent" stroke="#30363D"/>
+      <text x="70" y="23" font-size="13" font-weight="600" text-anchor="middle" fill="#B1BAC4">
+        ← Atrás
+      </text>
+    </g>
+
+    <!-- Botón aplicar — color del action: rojo si despausar, brand si pausar (aquí: pausar) -->
+    <g transform="translate(1024, 496)">
+      <rect width="148" height="36" rx="8" fill="#F85149"/>
+      <use href="#ic-shield" x="14" y="10" width="16" height="16" color="#0D1117"/>
+      <text x="38" y="23" fill="#0D1117" font-size="13" font-weight="700">Aplicar pausa</text>
+    </g>
+  </g>
+
+  <!-- =================================================================
+       FOOTER · banner de drift rechazado (estado 409) — caja de error para
+       documentar la UI del rechazo cuando otro operador mutó (CA-6).
+       ================================================================= -->
+  <g transform="translate(120, 2080)">
+    <rect width="1200" height="120" rx="12" fill="rgba(248, 81, 73, 0.08)"
+          stroke="#8B1A14" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <g transform="translate(28, 28)">
+      <rect width="44" height="44" rx="10" fill="rgba(248, 81, 73, 0.18)"/>
+      <use href="#ic-warning" x="10" y="10" width="24" height="24" color="#F85149"/>
+    </g>
+    <text x="92" y="50" fill="#FFD2DC" font-size="16" font-weight="700">
+      Variante visual · 409 DRIFT · "Estado cambió, reiniciá el wizard"
+    </text>
+    <text x="92" y="72" fill="#B1BAC4" font-size="12">
+      Si entre el paso 2 y el paso 3 otro operador muta .partial-pause.json (vía CLI, Telegram
+      o este mismo wizard), el server compara el snapshot guardado contra getPipelineMode()
+      fresh. Si difiere → no aplica, vuelve al paso 1 con el estado actualizado y notifica
+      al operador. NUNCA aplica sobre estado stale.
+    </text>
+    <g transform="translate(900, 60)">
+      <rect width="248" height="32" rx="8" fill="#F85149"/>
+      <text x="124" y="20" font-size="13" font-weight="700" text-anchor="middle" fill="#0D1117">
+        Reiniciar wizard
+      </text>
+    </g>
+  </g>
+
+</svg>
