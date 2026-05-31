@@ -121,14 +121,12 @@ const commanderMP = require('./commander/multi-provider');
 // Invariante CA-SEC-9 — hardcoded, NO depende de config.
 const HARDCODED_MAX_REELABORACIONES = 1;
 
-// #3501 CA-SEC-SWAP-3 — cap runtime de swaps intra-provider dentro de una
-// misma verificación. Defense in depth aunque el schema ya capea
-// `alternative_models` con `maxItems: 3`. Si alguien sube el cap del schema
-// más adelante, esta constante sigue protegiendo al runtime.
-//
-// El swap intra-provider NO consume budget de reelaboración (CA-9): es una
-// elección de modelo dentro de la misma verificación, no un nuevo turn.
-const HARDCODED_MAX_MODEL_SWAPS = 2;
+// #3766 — la constante `HARDCODED_MAX_MODEL_SWAPS` (#3501) se eliminó junto
+// con la policy de swap intra-provider. La contradicción adversarial de
+// Sherlock nace del rol, no del modelo: el resolver mantiene el modelo que
+// devuelve la chain `telegram-sherlock` sin reescribirlo. El catálogo
+// `alternative_models[]` en `agent-models.json` sigue válido como insumo de
+// la cascada multi-provider del Commander/devs/builder.
 
 // Cap defensivo de inconsistencias aceptadas en el output del Sherlock
 // (CA-SEC-6). Si el modelo dice "encontré 50 inconsistencias", recortamos
@@ -346,33 +344,13 @@ function parseAndValidateSherlockOutput(raw) {
 }
 
 // -----------------------------------------------------------------------------
-// readAlternativeModelsForProvider — lee `alternative_models[]` del provider
-// desde `agent-models.json`. Devuelve `[]` si el provider no lo declara o
-// si el archivo no se puede leer (default-safe: política inactiva).
-//
-// #3501 CA-4 — el comportamiento default cuando el provider no declara
-// alternative_models es "caer al siguiente provider" (no-op de la policy).
-//
-// Best-effort: cualquier error de lectura/parse devuelve `[]` para que el
-// resolver no rompa por config inválida (validador ya hace fail-fast al boot).
+// #3766 — `readAlternativeModelsForProvider` (#3501) se eliminó. La lectura del
+// catálogo `alternative_models[]` ya no es necesaria desde el verifier: la
+// cascada multi-provider del Commander/devs/builder la maneja
+// `lib/commander/multi-provider.js` y el cliente HTTP por provider vive en
+// `lib/multi-provider/completion-client.js`. Sherlock se apoya en esos módulos
+// para resiliencia, igual que el resto de la pipeline.
 // -----------------------------------------------------------------------------
-function readAlternativeModelsForProvider(provider, { pipelineDir, fsImpl }) {
-    if (!provider || !pipelineDir) return [];
-    const _fs = fsImpl || fs;
-    try {
-        const modelsPath = path.join(pipelineDir, 'agent-models.json');
-        if (!_fs.existsSync(modelsPath)) return [];
-        const raw = JSON.parse(_fs.readFileSync(modelsPath, 'utf8'));
-        const providerDef = raw && raw.providers && raw.providers[provider];
-        if (!providerDef || !Array.isArray(providerDef.alternative_models)) return [];
-        // Filtramos defensivamente: solo strings no vacíos.
-        return providerDef.alternative_models.filter(
-            (m) => typeof m === 'string' && m.length > 0
-        );
-    } catch {
-        return [];
-    }
-}
 
 // -----------------------------------------------------------------------------
 // resolveSherlockProvider — encuentra el primer provider de la chain
@@ -382,32 +360,32 @@ function readAlternativeModelsForProvider(provider, { pipelineDir, fsImpl }) {
 //
 // #3484: ya NO se excluye al commanderProvider. Sherlock puede usar el
 // mismo provider que el Commander — se acepta adversariality reducida y se
-// registra `same_provider` en el audit log (CA-AUDIT-1).
+// registra `same_provider` en el audit log (CA-AUDIT-1) para observabilidad.
 //
-// #3501 CA-3 — Si el resolved coincide en provider+model con el Commander
-// (same_provider && same_model), antes de excluir el provider entero se
-// intenta swap a un modelo declarado en `alternative_models[]` del mismo
-// provider (orden declarado). Solo si se agotan los alternativos sin éxito
-// se cae al siguiente provider de la chain (CA-4 default-safe).
+// #3766: la contradicción adversarial nace del **rol** (prompt fiscal del
+// Sherlock + criterios de evaluación) y NO de la diferencia de modelo.
+// Por eso se eliminó el bloque de swap intra-provider del #3501: el resolver
+// devuelve el modelo que la chain `telegram-sherlock` indica, sin reescribirlo.
+// Los parámetros `commanderModel` y `excludedProvider` permanecen en la
+// signature como back-compat (ignorados) — el patrón es el mismo que
+// `excludedProvider` (#3484): aceptar el arg para no romper callers viejos.
 //
-// CA-SEC-SWAP-3 — máximo HARDCODED_MAX_MODEL_SWAPS swaps intra-provider
-// dentro de una verificación (defense in depth aunque el schema capea
-// `alternative_models` con maxItems: 3).
+// La cascada multi-provider (timeout/error del primario → fallback a Codex,
+// Groq, etc.) sigue funcionando a través del resolver propio del Commander:
+// `commanderMP.resolveCommanderProviderExcluding`. El catálogo
+// `alternative_models[]` de `agent-models.json` sigue válido como insumo de
+// esa cascada (Commander/devs/builder).
 //
-// Devuelve `{provider, model, transport, originalModel?, swapped?, swapReason?}`
-// o `null` si no hay candidato implementado en toda la chain.
-//   - `originalModel`: si hubo swap, el modelo que el resolver hubiera elegido
-//     sin la policy (necesario para el footer Telegram CA-11 y el audit
-//     event CA-5).
-//   - `swapped`: true si se eligió un modelo de alternative_models[].
-//   - `swapReason`: 'same_model_avoidance' (único valor por ahora; futuro
-//     podría agregar 'user_preference' si se implementa #3501 deferred).
+// Devuelve `{provider, model, transport, ...}` o `null` si no hay candidato
+// implementado en toda la chain. Las claves `swapped`/`originalModel`/
+// `swapReason` se mantienen en el shape de retorno (siempre false/null
+// post-#3766) por back-compat con consumers downstream que las leen.
 // -----------------------------------------------------------------------------
 function resolveSherlockProvider({
-    excludedProvider,  // mantenido en signature por back-compat; ignorado (#3484)
-    commanderProvider,  // #3501 — para detectar same_provider+same_model
-    commanderModel,     // #3501 — para detectar same_provider+same_model
-    initialExcluded,    // #3558 — providers ya intentados por la cascada
+    excludedProvider,    // mantenido en signature por back-compat; ignorado (#3484)
+    commanderProvider,   // informativo: el caller lo usa para calcular sameProvider en audit
+    commanderModel,      // mantenido en signature por back-compat; ignorado (#3766)
+    initialExcluded,     // #3558 — providers ya intentados por la cascada
     pipelineDir,
     log,
     quotaModule,
@@ -474,61 +452,10 @@ function resolveSherlockProvider({
             continue;
         }
 
-        // #3501 CA-3 — policy de swap intra-provider. Solo dispara cuando
-        // coinciden provider Y model con el Commander. Si solo coincide el
-        // provider (distinto model — caso anthropic opus↔haiku via config
-        // #3221), NO disparamos swap: la diferenciación de modelo ya está
-        // resuelta declarativamente. El comportamiento es "respetar lo que
-        // el resolver de la chain devolvió".
-        const sameProvider = !!(commanderProvider && commanderProvider === res.provider);
-        const sameModel = !!(sameProvider && commanderModel && res.model && commanderModel === res.model);
-
-        if (sameProvider && sameModel) {
-            const alternatives = readAlternativeModelsForProvider(res.provider, { pipelineDir, fsImpl });
-            // Excluimos el modelo que ya tenemos (el del Commander) por si
-            // alguien lo declaró por error en alternative_models — defense in
-            // depth aunque el validator ya lo rechaza.
-            const candidates = alternatives.filter((m) => m !== res.model);
-            // CA-3 — si hay candidatos, swap al primero disponible (los
-            // restantes son tail-options para futuras razones de swap).
-            // CA-SEC-SWAP-3 — el loop iterativo está capado por
-            // HARDCODED_MAX_MODEL_SWAPS aunque por ahora el primer return
-            // siempre dispara con candidates[0].
-            for (let s = 0; s < Math.min(candidates.length, HARDCODED_MAX_MODEL_SWAPS); s++) {
-                const altModel = candidates[s];
-                if (typeof log === 'function') {
-                    log('sherlock', `🔄 swap intra-provider (${res.provider}): ${res.model} → ${altModel} (same_model_avoidance, #3501)`);
-                }
-                return {
-                    provider: res.provider,
-                    model: altModel,
-                    transport,
-                    source: res.source,
-                    fallbackUsed: res.fallbackUsed,
-                    chainTried: res.chainTried,
-                    swapped: true,
-                    originalModel: res.model,
-                    swapReason: 'same_model_avoidance',
-                };
-            }
-            // CA-4 default-safe: si el provider NO declara alternative_models
-            // (o la lista efectiva está vacía después de filtrar el mismo
-            // modelo), se mantiene el mismo provider — comportamiento idéntico
-            // al post-#3484 (Leo aceptó adversariality reducida 2026-05-22).
-            // NO se cae al siguiente provider de la chain: el opt-in puro
-            // significa que un provider sin alternativos sigue funcionando
-            // exactamente como antes del #3501.
-            //
-            // El audit log ya registra `same_provider:true, same_model:true`
-            // via el flujo principal de verify(); la observabilidad existe
-            // para que el operador pueda detectar gaps de cobertura.
-            if (typeof log === 'function') {
-                log('sherlock', `same_provider+same_model con ${res.provider}/${res.model} y sin alternative_models — manteniendo same_provider (default-safe post-#3484)`);
-            }
-            // Fall through al return base (sin swap).
-        }
-
-        // Resolved usable sin swap.
+        // #3766 — Respetamos lo que el resolver de la chain devuelve. La
+        // contradicción es por rol, no por modelo; sin policy de swap. Los
+        // campos `swapped/originalModel/swapReason` se conservan en el shape
+        // (siempre false/null) por back-compat con consumers downstream.
         return {
             provider: res.provider,
             model: res.model || null,
@@ -732,12 +659,11 @@ function emitAuditEvent({ pipelineDir, event, payload, fsImpl, auditLog, now }) 
             commanderModel: payload && payload.commanderModel || null,
             sherlockModel: payload && payload.sherlockModel || null,
             transport: payload && payload.transport || null,
-            // #3501 CA-5 — Campos del evento `sherlock_model_swap`. Cuando el
-            // evento NO es de swap, vienen null/undefined y el audit los
-            // registra como null sin afectar el shape canónico.
-            swapModelOrigen: payload && payload.swapModelOrigen || null,
-            swapModelDestino: payload && payload.swapModelDestino || null,
-            swapReason: payload && payload.swapReason || null,
+            // #3766 — los campos del extinto evento `sherlock_model_swap`
+            // (swapModelOrigen/Destino/Reason) se eliminaron: el verifier ya
+            // no emite ese evento porque la policy de swap intra-provider del
+            // #3501 desapareció. Si el audit-log canónico recibe un payload
+            // sin esas claves, simplemente persiste el resto del shape.
             fsImpl,
             auditLog,
             now,
@@ -887,10 +813,10 @@ async function verify(opts = {}) {
     // YA NO se excluye al commanderProvider; solo se saltan providers que
     // no tienen handler implementado en Sherlock.
     //
-    // #3501 CA-3 — Si el resolved coincide en provider+model con el
-    // Commander, el resolver intenta swap a un modelo de
-    // `alternative_models[]` del provider antes de saltar al siguiente.
-    // Para eso necesita commanderProvider+commanderModel.
+    // #3766 — el resolver YA NO hace swap intra-provider por igualdad de
+    // modelo. La adversariality nace del rol (prompt fiscal), no del modelo.
+    // `commanderModel` se sigue pasando solo para el cálculo de `sameModel`
+    // que se persiste al JSONL como forensics (sin influir en veredicto).
     const resolved = resolveSherlockProvider({
         excludedProvider: null,
         commanderProvider,
@@ -963,45 +889,22 @@ async function verify(opts = {}) {
         };
     }
 
+    // CA-AUDIT-1 (#3484) — `sameProvider`/`sameModel` se siguen calculando y
+    // emitiendo al JSONL como forensics (lo lee el monitor de drift y los
+    // análisis ex-post). #3766: NO se usan como input al veredicto ni al
+    // disclaimer — la adversariality nace del rol, no del modelo. `sameModel`
+    // queda en false cuando el caller no pasa `commanderModel` (caso típico
+    // post-#3766 en pulpo.js).
     const sameProvider = !!(commanderProvider && commanderProvider === resolved.provider);
     const sameModel = !!(sameProvider && commanderModel && resolved.model && commanderModel === resolved.model);
     if (sameProvider) {
-        _log('sherlock', `🔍 same_provider=true (commander=${commanderProvider}/${commanderModel || '?'}, sherlock=${resolved.provider}/${resolved.model || '?'}) — adversariality reducida (#3484 riesgo aceptado)`);
+        _log('sherlock', `🔍 same_provider=true (commander=${commanderProvider}/${commanderModel || '?'}, sherlock=${resolved.provider}/${resolved.model || '?'}) — adversariality reducida (#3484 riesgo aceptado, #3766 sin swap)`);
     }
 
-    // #3501 CA-5 — Evento de audit `sherlock_model_swap` cuando el resolver
-    // ejerció la policy de swap intra-provider. El payload lleva los campos
-    // diferenciados (provider, model_origen, model_destino, razon) que el
-    // operador puede filtrar con `jq` desde el JSONL sin parser ad-hoc.
-    //
-    // CA-10 — los hashes sensibles (analysisHash) se aplican via hashFor() en
-    // emitAuditEvent, igual que el resto de eventos sherlock_*. El swap no
-    // expone el contenido del análisis al log.
-    if (resolved.swapped) {
-        emitAuditEvent({
-            pipelineDir, fsImpl, auditLog, now: _now,
-            event: 'sherlock_model_swap',
-            payload: {
-                analysisHash: hashFor(analysis),
-                commanderProvider,
-                commanderModel,
-                sherlockProvider: resolved.provider,
-                durationMs: Date.now() - startedAt,
-                errorCode: null,
-                // CA-AUDIT-1 (#3484) — campos enriched. sameProvider sigue
-                // siendo true (no cambió el provider); sameModel ahora es
-                // false (porque el swap a otro modelo del provider lo evitó).
-                sameProvider: true,
-                sameModel: false,
-                sherlockModel: resolved.model,
-                transport: resolved.transport,
-                // #3501 CA-5 — campos diferenciados específicos del swap.
-                swapModelOrigen: resolved.originalModel,
-                swapModelDestino: resolved.model,
-                swapReason: resolved.swapReason || 'same_model_avoidance',
-            },
-        });
-    }
+    // #3766 — el evento `sherlock_model_swap` (#3501) se eliminó: ya no hay
+    // policy de swap intra-provider, por lo que no hay nada que emitir aparte
+    // de los eventos canónicos (sherlock_verification, sherlock_skipped_*,
+    // sherlock_aborted_residency, sherlock_schema_violation).
 
     // CA-SEC-3 — data-residency fail-closed ANTES del provider call.
     const drCheck = commanderMP.enforceDataResidency({
@@ -1051,11 +954,9 @@ async function verify(opts = {}) {
             outputTokens: 0,
             errorCode: 'residency_blocked',
             suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
-            // #3501 — el swap inicial (si lo hubo) sigue siendo informativo
-            // aunque la residency haya bloqueado antes de despachar.
-            modelSwap: resolved.swapped
-                ? { swapped: true, originalModel: resolved.originalModel, reason: resolved.swapReason || 'same_model_avoidance' }
-                : { swapped: false, originalModel: null, reason: null },
+            // #3766 — `modelSwap` se mantiene en el shape de retorno (siempre
+            // `swapped:false`) por back-compat con consumers downstream.
+            modelSwap: { swapped: false, originalModel: null, reason: null },
             // CA-9 (#3668) — shape stable post-single-provider:
             attemptCount: 0,
             fallbackUsed: false,
@@ -1127,12 +1028,12 @@ async function verify(opts = {}) {
 
     const totalMs = Date.now() - startedAt;
 
-    // #3501 — `modelSwap` describe el swap intra-provider del resolver inicial.
-    // Post-#3668 (single-provider) ya no hay rotación cascade, así que el swap
-    // inicial es siempre el "swap final" (no se recalibra contra la cascada).
-    const initialModelSwap = resolved.swapped
-        ? { swapped: true, originalModel: resolved.originalModel, reason: resolved.swapReason || 'same_model_avoidance' }
-        : { swapped: false, originalModel: null, reason: null };
+    // #3766 — `modelSwap` queda como shape estable (siempre `swapped:false`)
+    // por back-compat con consumers que lo leen (formatVerifiedFooter,
+    // dashboards históricos, JSONL viejo). El swap intra-provider del #3501
+    // se eliminó; el field se conserva para no obligar a un breaking change
+    // en downstream.
+    const initialModelSwap = { swapped: false, originalModel: null, reason: null };
 
     // -------------------------------------------------------------------------
     // ERROR PATH — provider falló (timeout, http_error, spawn_failed, etc.)
@@ -1289,8 +1190,8 @@ async function verify(opts = {}) {
         suggestedDisclaimer: DISCLAIMER_TYPES.NONE, // el caller decide F-5 vs nada
         claimHashes,
         contradictionHashes,
-        // #3501 — `initialModelSwap` post-#3668 es directamente el final
-        // (no hay rotación cascade que recalibrar).
+        // #3766 — `modelSwap` siempre `swapped:false` post-refactor (la
+        // policy #3501 se removió). Field mantenido por back-compat.
         modelSwap: initialModelSwap,
         // CA-9 (#3668) — shape stable post-single-provider:
         attemptCount: 1,
@@ -1320,13 +1221,16 @@ function applyDisclaimer(text, disclaimerType) {
 // Reglas UX (CA-UX-SWAP-1):
 //   - UNA línea, sin emojis, sin tono celebratorio.
 //   - Formato base: "Verificado por: <provider>/<model>"
-//   - Si hubo swap: " (swap desde <model-origen>)" al final
-//   - Si NO hubo swap: el footer se mantiene neutro (mismo formato sin sufijo)
+//   - El sufijo "(swap desde <model-origen>)" se mantiene en el código por
+//     back-compat: la rama solo dispara si el caller arma un `modelSwap`
+//     con `swapped:true`. Post-#3766 el verifier devuelve siempre
+//     `swapped:false` (la policy #3501 se removió), así que el sufijo no
+//     aparece en runtime; el branch queda como hook reservado para futuras
+//     razones de swap si las hubiera.
 //
-// Respeta `feedback_telegram-messages-natural.md`: la diferencia (swap vs
-// no-swap) es informativa, no celebratoria. El caller (pulpo.js) decide si
-// agregar el footer al mensaje según política (ej. solo cuando swap, o
-// siempre).
+// Respeta `feedback_telegram-messages-natural.md`: la línea es informativa,
+// no celebratoria. El caller (pulpo.js) decide si agregar el footer al
+// mensaje según política (ej. solo cuando swap, o siempre).
 //
 // Devuelve string vacío si faltan datos mínimos — el caller no agrega línea.
 // -----------------------------------------------------------------------------
@@ -1369,8 +1273,6 @@ module.exports = {
 
     // constantes
     HARDCODED_MAX_REELABORACIONES,
-    // #3501 CA-SEC-SWAP-3 — invariante runtime de swaps intra-provider.
-    HARDCODED_MAX_MODEL_SWAPS,
     DEFAULT_TIMEOUT_MS,
     MAX_INCONSISTENCIES,
     HTTP_COMPLETION_PROVIDERS,
@@ -1390,5 +1292,4 @@ module.exports = {
     _parseAndValidateSherlockOutput: parseAndValidateSherlockOutput,
     _resolveSherlockProvider: resolveSherlockProvider,
     _spawnAnthropicComplete: spawnAnthropicComplete,
-    _readAlternativeModelsForProvider: readAlternativeModelsForProvider,
 };
