@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1080, initial-scale=1" />
+<title>Mockup Matriz V3 — Necesitan intervención humana + Board Kanban</title>
+<!--
+  Mockup integral de la ventana "Matriz" del dashboard V3.
+  Issue: #3731 (split de #3715).
+  Convención:
+    - Decisión D3 del PO: UN solo HTML/CSS con ambos sub-paneles juntos.
+    - Tokens importados desde `../design-tokens.css` (V3 — fuente única de verdad).
+    - Iconografía referenciada via `../icons/sprite.svg#ic-*` (sin SVG inline).
+    - Self-contained: sin fetch externo, sin scripts. Renderiza con Puppeteer
+      directamente para la comparación visual del PR (CA-9).
+  Layout: kiosk vertical 1080×1920 — mismo formato que home.svg / 28-ops-v3.svg.
+  Estados representados:
+    - Sub-panel A: 2 filas en `bloqueados-humano` (1 fresh <4h, 1 stale ≥4h).
+    - Sub-panel B: Board Kanban con tab "En progreso" activa, 4 lanes y 1 done lane.
+  Invariantes preservados (CA-3):
+    #bloqueados-humano, #issue-tracker, #it-search-input, #dot-popup.
+-->
+<link rel="stylesheet" href="../design-tokens.css" />
+<style>
+  /* Mockup-only: estilos del HTML/CSS estático que reproducen el render SSR
+     del partial. NO codifica HEX libres — todo via tokens V3. */
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .kiosk-frame {
+    width: 1080px;
+    min-height: 1920px;
+    margin: 0 auto;
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .mockup-banner {
+    background: var(--purple-bg);
+    border: 1px dashed var(--purple-dim);
+    color: var(--purple);
+    padding: 8px 14px;
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+  .icon {
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.15em;
+    fill: currentColor;
+    stroke: currentColor;
+  }
+
+  /* =========================================================================
+     SUB-PANEL A — Necesitan intervención humana (#bloqueados-humano)
+     ========================================================================= */
+  .matrix-section {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg, 10px);
+    padding: 16px 18px 18px;
+    box-shadow: var(--shadow-elev-1, 0 1px 3px rgba(0,0,0,0.30));
+  }
+  .needs-human-panel {
+    border-color: var(--danger-dim);
+    background: linear-gradient(180deg, var(--danger-bg), var(--surface-1) 55%);
+    box-shadow: 0 0 18px rgba(248, 81, 73, 0.10), var(--shadow-elev-1, 0 1px 3px rgba(0,0,0,0.30));
+  }
+  .needs-human-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 10px 0;
+    font-size: 1.05em;
+    cursor: pointer;
+    user-select: none;
+  }
+  .needs-human-pulse {
+    color: var(--danger);
+    animation: nh-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes nh-pulse {
+    0%, 100% { opacity: 0.65; transform: scale(1); }
+    50%      { opacity: 1;    transform: scale(1.08); }
+  }
+  .needs-human-badge {
+    background: var(--danger);
+    color: var(--surface-0);
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.78em;
+    min-width: 22px;
+    text-align: center;
+  }
+  .needs-human-chevron {
+    color: var(--text-dim);
+    font-size: 0.7em;
+    margin-left: 4px;
+  }
+  .section-popout {
+    margin-left: auto;
+    color: var(--brand-cyan);
+    text-decoration: none;
+    font-size: 1em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+  .section-popout:hover { background: var(--brand-cyan-bg, rgba(0,214,255,0.08)); }
+
+  .needs-human-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 6px;
+  }
+  .needs-human-row {
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius-md, 6px);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .needs-human-row-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .needs-human-row-info { flex: 1 1 auto; min-width: 200px; }
+  .needs-human-row-info a {
+    color: var(--brand-cyan);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .needs-human-row-info a:hover { text-decoration: underline; }
+  .dim { color: var(--text-dim); }
+  .needs-human-age-fresh { color: var(--warning); }
+  .needs-human-age-old   { color: var(--danger); font-weight: 600; }
+  .needs-human-row-actions {
+    display: flex;
+    gap: 6px;
+    flex: 0 0 auto;
+  }
+  .nh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 5px 11px;
+    font-size: 0.85em;
+    border-radius: var(--radius-sm, 4px);
+    cursor: pointer;
+    min-height: 36px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .nh-btn-reactivate { border-color: var(--success); color: var(--success); }
+  .nh-btn-reactivate:hover { background: var(--success-bg); }
+  .nh-btn-dismiss { border-color: var(--danger); color: var(--danger); }
+  .nh-btn-dismiss:hover { background: var(--danger-bg); }
+  .nh-btn:focus-visible { outline: 2px solid var(--brand-cyan); outline-offset: 2px; }
+
+  .needs-human-summary {
+    background: var(--surface-3);
+    border-left: 2px solid var(--info);
+    color: var(--text-secondary);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+  .needs-human-reason {
+    background: var(--warning-bg);
+    border-left: 2px solid var(--warning);
+    color: var(--warning-fg, #FFE5A8);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+  .needs-human-events {
+    margin-top: 4px;
+    font-size: 0.82em;
+    color: var(--text-dim);
+  }
+  .needs-human-events-label {
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 3px;
+  }
+  .needs-human-events-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .nh-ev-when   { color: var(--text-dim); font-family: var(--font-mono, monospace); }
+  .nh-ev-author { color: var(--purple); }
+  .nh-ev-text   { color: var(--text-secondary); }
+
+  .needs-human-footer {
+    margin-top: 12px;
+    font-size: 0.82em;
+    color: var(--text-dim);
+  }
+  .needs-human-footer code {
+    background: var(--surface-3);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: var(--font-mono, monospace);
+    color: var(--text-secondary);
+  }
+
+  /* Tooltip-aware action button (CA-6 + dual-encoding) */
+  .nh-btn[title]:after {
+    content: '';
+    /* placeholder — el tooltip nativo del browser dispara con title="...".
+       Mantenido para que el screenshot Puppeteer no agregue UI custom. */
+  }
+
+  /* =========================================================================
+     LEYENDA UX (CA-C3) — bloque informativo que explica iconos/colores
+     ========================================================================= */
+  .matrix-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 10px 14px;
+    background: var(--surface-1);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md, 6px);
+    font-size: 0.82em;
+    color: var(--text-dim);
+  }
+  .matrix-legend strong { color: var(--text-secondary); }
+  .matrix-legend .lg-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.92em;
+  }
+  .lg-chip.lg-fresh  { background: var(--warning-bg); color: var(--warning); }
+  .lg-chip.lg-old    { background: var(--danger-bg);  color: var(--danger);  }
+  .lg-chip.lg-active { background: var(--info-bg);    color: var(--info);    }
+  .lg-chip.lg-done   { background: var(--success-bg); color: var(--success); }
+
+  /* =========================================================================
+     SUB-PANEL B — Board Kanban (#issue-tracker)
+     ========================================================================= */
+  .board-kanban-centerpiece {
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+  }
+  .matrix-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .matrix-header h2 {
+    margin: 0;
+    font-size: 1.05em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+  .section-chevron { color: var(--text-dim); font-size: 0.75em; }
+  .kanban-v3-badge {
+    background: var(--teal-bg);
+    color: var(--teal);
+    border: 1px solid var(--teal-dim);
+    font-size: 0.65em;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+  .it-search-box {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-right: auto;
+    margin-left: 14px;
+    flex: 1;
+    max-width: 320px;
+  }
+  .it-search {
+    width: 100%;
+    padding: 7px 28px 7px 32px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 6px);
+    font-size: 0.86em;
+    color: var(--text-primary);
+    outline: none;
+  }
+  .it-search::placeholder { color: var(--text-dim); }
+  .it-search-icon {
+    position: absolute;
+    left: 10px;
+    color: var(--text-dim);
+    pointer-events: none;
+    font-size: 0.95em;
+  }
+  .it-search-clear {
+    position: absolute;
+    right: 8px;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 1.1em;
+    padding: 0 4px;
+  }
+
+  .ic-tabs {
+    display: flex;
+    gap: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    border-radius: var(--radius-sm, 6px);
+    padding: 3px;
+  }
+  .ic-tab {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    padding: 6px 12px;
+    font-size: 0.82em;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+  }
+  .ic-tab:hover { background: var(--surface-3); color: var(--text-primary); }
+  .ic-tab-active {
+    background: var(--info-bg);
+    color: var(--info);
+    border-color: var(--info-dim);
+    font-weight: 600;
+  }
+  .ic-tab-count {
+    background: var(--surface-3);
+    color: var(--text-secondary);
+    font-size: 0.85em;
+    padding: 1px 7px;
+    border-radius: 999px;
+    min-width: 22px;
+    text-align: center;
+  }
+  .ic-tab-active .ic-tab-count { background: var(--info); color: var(--surface-0); }
+
+  .it-lanes {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .lane {
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 6px);
+    padding: 8px 10px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 240px;
+  }
+  .lane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .lane-title {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .lane-count {
+    background: var(--surface-3);
+    color: var(--text-dim);
+    font-size: 0.72em;
+    padding: 1px 6px;
+    border-radius: 999px;
+  }
+  .lane.lane-criterios .lane-title { color: var(--purple); }
+  .lane.lane-dev       .lane-title { color: var(--info); }
+  .lane.lane-build     .lane-title { color: var(--teal); }
+  .lane.lane-verif     .lane-title { color: var(--brand-cyan); }
+
+  .card {
+    background: var(--surface-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.82em;
+  }
+  .card-head { display: flex; justify-content: space-between; gap: 5px; align-items: center; }
+  .card-issue { color: var(--brand-cyan); font-weight: 600; text-decoration: none; }
+  .card-eta   { color: var(--text-dim); font-size: 0.88em; font-family: var(--font-mono, monospace); }
+  .card-title { color: var(--text-primary); font-size: 0.95em; line-height: 1.3; }
+  .card-meta  { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: var(--surface-1);
+    color: var(--text-dim);
+    border: 1px solid var(--border-subtle);
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.78em;
+  }
+  .chip.skill-dev    { color: var(--info);    border-color: var(--info-dim); }
+  .chip.skill-ux     { color: var(--purple);  border-color: var(--purple-dim); }
+  .chip.skill-po     { color: var(--teal);    border-color: var(--teal-dim); }
+  .chip.skill-arch   { color: var(--brand-cyan); border-color: var(--brand-cyan-dim); }
+  .chip.skill-build  { color: var(--success); border-color: var(--success-dim); }
+  .chip.skill-tester { color: var(--warning); border-color: var(--warning-dim); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .dot.dot-progress { background: var(--info); animation: dot-pulse 1.5s infinite; }
+  .dot.dot-ok       { background: var(--success); }
+  .dot.dot-warn     { background: var(--warning); }
+  @keyframes dot-pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+  .done-lane {
+    margin-top: 12px;
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 8px 12px;
+  }
+  .done-lane-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--success);
+    font-size: 0.85em;
+    margin-bottom: 6px;
+  }
+  .done-lane-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .done-pill {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid var(--success-dim);
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.78em;
+    text-decoration: none;
+  }
+
+  /* Popup (#dot-popup) — preservado oculto en estado inicial (CA-3 invariante) */
+  #dot-popup {
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<div class="kiosk-frame">
+
+  <div class="mockup-banner">
+    Mockup integral · Issue #3731 · ventana Matriz V3 · decision D3 (un solo archivo)
+  </div>
+
+  <!-- =====================================================================
+       SUB-PANEL A — Necesitan intervención humana
+       ===================================================================== -->
+  <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
+    <h2 class="needs-human-header" title="Click para colapsar/expandir">
+      <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-estado-needs-human"/></svg>
+      <span class="needs-human-pulse">●</span>
+      Necesitan intervención humana
+      <span class="needs-human-badge">2</span>
+      <span class="needs-human-chevron">▼</span>
+      <a class="section-popout" href="/?section=needs-human" target="_blank"
+         title="Abrir &quot;Necesitan intervención humana&quot; en ventana independiente"
+         aria-label="Abrir en ventana independiente">
+        <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-link-out"/></svg>
+      </a>
+    </h2>
+
+    <div class="needs-human-body">
+      <div class="needs-human-rows">
+
+        <!-- Fila A1: bloqueo fresh (<4h) — color warning -->
+        <div class="needs-human-row">
+          <div class="needs-human-row-head">
+            <div class="needs-human-row-info">
+              <a href="https://github.com/intrale/platform/issues/3712" target="_blank" rel="noopener noreferrer"><b>#3712</b></a>
+              — <span class="dim">[Ola N+5] Rebote crossphase desde verificación → dev por flake</span>
+              <span class="dim"> · architect en aprobacion</span>
+              <span class="needs-human-age-fresh"> · hace 47min</span>
+            </div>
+            <div class="needs-human-row-actions">
+              <button class="nh-btn nh-btn-reactivate"
+                      title="Quitar el label needs-human y devolver el issue a la cola del pipeline"
+                      aria-label="Reactivar issue 3712: quitar label needs-human">
+                ▶ Reactivar
+              </button>
+              <button class="nh-btn nh-btn-dismiss"
+                      title="Cerrar el issue como desestimado y limpiarlo del panel"
+                      aria-label="Desestimar issue 3712: cerrar como dismissed">
+                ✕ Desestimar
+              </button>
+            </div>
+          </div>
+          <div class="needs-human-summary">📄 Tercer rebote consecutivo: el flake de la suite ux-mockup-generator no es reproducible. Necesita decisión humana.</div>
+          <div class="needs-human-reason">❓ Architect rechazó por &quot;diff toca archivos fuera de la receta firmada&quot;, pero la receta listaba el mismo path. Discrepancia entre lo declarado y lo verificado.</div>
+          <div class="needs-human-events">
+            <div class="needs-human-events-label">📜 Actividad reciente</div>
+            <ul class="needs-human-events-list">
+              <li><span class="nh-ev-when">12min</span> <span class="nh-ev-author">architect</span>: <span class="nh-ev-text">rechazado en aprobacion: diff fuera de receta</span></li>
+              <li><span class="nh-ev-when">47min</span> <span class="nh-ev-author">review</span>: <span class="nh-ev-text">aprobado con observaciones menores</span></li>
+              <li><span class="nh-ev-when">2h</span> <span class="nh-ev-author">backend-dev</span>: <span class="nh-ev-text">PR #3855 abierto con commits squashed</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Fila A2: bloqueo stale (>=4h) — color danger -->
+        <div class="needs-human-row">
+          <div class="needs-human-row-head">
+            <div class="needs-human-row-info">
+              <a href="https://github.com/intrale/platform/issues/3618" target="_blank" rel="noopener noreferrer"><b>#3618</b></a>
+              — <span class="dim">[infra] Reconciler emite worktrees fantasma tras ventana QA</span>
+              <span class="dim"> · pipeline-dev en dev</span>
+              <span class="needs-human-age-old"> · hace 11h</span>
+            </div>
+            <div class="needs-human-row-actions">
+              <button class="nh-btn nh-btn-reactivate"
+                      title="Quitar el label needs-human y devolver el issue a la cola del pipeline"
+                      aria-label="Reactivar issue 3618">
+                ▶ Reactivar
+              </button>
+              <button class="nh-btn nh-btn-dismiss"
+                      title="Cerrar el issue como desestimado y limpiarlo del panel"
+                      aria-label="Desestimar issue 3618">
+                ✕ Desestimar
+              </button>
+            </div>
+          </div>
+          <div class="needs-human-summary">📄 El reconciler está marcando worktrees como ghost incluso cuando el proceso del builder está vivo. Pendiente ajuste de heurística.</div>
+          <div class="needs-human-reason">❓ Bloqueo: el dev no encuentra forma de reproducir sin ventana QA real. Pide guía para escribir test que simule el race con AVD apagado.</div>
+        </div>
+
+      </div>
+      <div class="needs-human-footer">
+        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub.
+      </div>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       LEYENDA (CA-C3)
+       ===================================================================== -->
+  <div class="matrix-legend" role="note" aria-label="Leyenda de la ventana Matriz">
+    <strong>Leyenda:</strong>
+    <span class="lg-chip lg-fresh">● fresh &lt; 4h</span>
+    <span class="lg-chip lg-old">● stale ≥ 4h</span>
+    <span class="lg-chip lg-active">● en progreso</span>
+    <span class="lg-chip lg-done">● completado</span>
+    <span class="dim">Las acciones &quot;Reactivar&quot; / &quot;Desestimar&quot; disparan endpoints state-changing — todas piden confirmación.</span>
+  </div>
+
+  <!-- =====================================================================
+       SUB-PANEL B — Board Kanban (#issue-tracker)
+       ===================================================================== -->
+  <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
+  <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
+
+    <div class="matrix-header">
+      <h2 title="Click para colapsar/expandir">
+        <span class="section-chevron">▼</span>
+        <svg class="icon" aria-hidden="true" style="color: var(--brand-cyan)">
+          <use href="../icons/sprite.svg#ic-issues-count"/>
+        </svg>
+        Board Kanban · Pipeline
+        <span class="kanban-v3-badge" aria-label="Versión 3">V3</span>
+      </h2>
+
+      <a class="section-popout" href="/?section=issue-tracker" target="_blank"
+         title="Abrir Board Kanban en ventana independiente"
+         aria-label="Abrir Board Kanban en ventana independiente">
+        <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-link-out"/></svg>
+      </a>
+
+      <div class="it-search-box">
+        <span class="it-search-icon" aria-hidden="true">🔍</span>
+        <input type="text" class="it-search" id="it-search-input"
+               placeholder="Buscar por # o título…"
+               aria-label="Buscar issues por número o título"
+               value="" />
+        <span class="it-search-clear" title="Limpiar búsqueda" aria-label="Limpiar búsqueda">×</span>
+      </div>
+
+      <div class="ic-tabs" role="tablist" aria-label="Filtro de issues">
+        <button class="ic-tab ic-tab-active" role="tab" aria-selected="true"
+                title="Mostrar issues que están avanzando ahora mismo en el pipeline"
+                aria-label="En progreso (12 issues)">
+          En progreso <span class="ic-tab-count">12</span>
+        </button>
+        <button class="ic-tab" role="tab" aria-selected="false"
+                title="Mostrar issues ya mergeados con qa:passed o qa:skipped"
+                aria-label="Completados (8 issues)">
+          Completados <span class="ic-tab-count">8</span>
+        </button>
+        <button class="ic-tab" role="tab" aria-selected="false"
+                title="Mostrar todos los issues activos del board sin filtro de estado"
+                aria-label="Todos (20 issues)">
+          Todos <span class="ic-tab-count">20</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="section-body">
+      <!-- 4 lanes representativas (criterios / dev / build / verificacion) -->
+      <div class="it-lanes">
+
+        <div class="lane lane-criterios">
+          <div class="lane-head">
+            <span class="lane-title">
+              <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-fase-criterios"/></svg>
+              Criterios
+            </span>
+            <span class="lane-count">3</span>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3731" target="_blank">#3731</a>
+              <span class="card-eta">~12min</span>
+            </div>
+            <div class="card-title">Ventana Matriz: extracción + rediseño V3</div>
+            <div class="card-meta">
+              <span class="chip skill-ux"><span class="dot dot-progress"></span>ux</span>
+              <span class="chip">criterios</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3729" target="_blank">#3729</a>
+              <span class="card-eta">~25min</span>
+            </div>
+            <div class="card-title">Ventana Bloqueados: extracción + rediseño V3</div>
+            <div class="card-meta">
+              <span class="chip skill-po"><span class="dot dot-ok"></span>po</span>
+              <span class="chip">criterios</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3736" target="_blank">#3736</a>
+              <span class="card-eta">~18min</span>
+            </div>
+            <div class="card-title">Ventana Modo descanso V3</div>
+            <div class="card-meta">
+              <span class="chip skill-arch"><span class="dot dot-progress"></span>architect</span>
+              <span class="chip">criterios</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane lane-dev">
+          <div class="lane-head">
+            <span class="lane-title">
+              <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-fase-dev"/></svg>
+              Desarrollo
+            </span>
+            <span class="lane-count">4</span>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3722" target="_blank">#3722</a>
+              <span class="card-eta">~38min</span>
+            </div>
+            <div class="card-title">Helper lib/escape-html.js compartido</div>
+            <div class="card-meta">
+              <span class="chip skill-dev"><span class="dot dot-progress"></span>pipeline-dev</span>
+              <span class="chip">dev</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3726" target="_blank">#3726</a>
+              <span class="card-eta">~1h 15min</span>
+            </div>
+            <div class="card-title">Ventana Home V3: KPIs principales</div>
+            <div class="card-meta">
+              <span class="chip skill-dev"><span class="dot dot-progress"></span>pipeline-dev</span>
+              <span class="chip">dev</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3728" target="_blank">#3728</a>
+              <span class="card-eta">~45min</span>
+            </div>
+            <div class="card-title">Ventana Pipeline (flujo agentes) V3</div>
+            <div class="card-meta">
+              <span class="chip skill-dev"><span class="dot dot-progress"></span>pipeline-dev</span>
+              <span class="chip">dev</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3724" target="_blank">#3724</a>
+              <span class="card-eta">~22min</span>
+            </div>
+            <div class="card-title">Wizards CSRF + audit log</div>
+            <div class="card-meta">
+              <span class="chip skill-dev"><span class="dot dot-warn"></span>backend-dev</span>
+              <span class="chip">dev</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane lane-build">
+          <div class="lane-head">
+            <span class="lane-title">
+              <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-fase-build"/></svg>
+              Build
+            </span>
+            <span class="lane-count">2</span>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3650" target="_blank">#3650</a>
+              <span class="card-eta">~3min</span>
+            </div>
+            <div class="card-title">Sprite icons: tooltip ic-deps-graph</div>
+            <div class="card-meta">
+              <span class="chip skill-build"><span class="dot dot-progress"></span>builder</span>
+              <span class="chip">build</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3711" target="_blank">#3711</a>
+              <span class="card-eta">~7min</span>
+            </div>
+            <div class="card-title">Refactor: docstring rejection-report.js</div>
+            <div class="card-meta">
+              <span class="chip skill-build"><span class="dot dot-ok"></span>builder</span>
+              <span class="chip">build</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane lane-verif">
+          <div class="lane-head">
+            <span class="lane-title">
+              <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-fase-verificacion"/></svg>
+              Verificación
+            </span>
+            <span class="lane-count">3</span>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3705" target="_blank">#3705</a>
+              <span class="card-eta">~5min</span>
+            </div>
+            <div class="card-title">Tester: cobertura kover paquete pipeline.brazo</div>
+            <div class="card-meta">
+              <span class="chip skill-tester"><span class="dot dot-progress"></span>tester</span>
+              <span class="chip">verificacion</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3699" target="_blank">#3699</a>
+              <span class="card-eta">~12min</span>
+            </div>
+            <div class="card-title">QA: smoke android client flavor</div>
+            <div class="card-meta">
+              <span class="chip skill-tester"><span class="dot dot-progress"></span>qa</span>
+              <span class="chip">verificacion</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <a class="card-issue" href="https://github.com/intrale/platform/issues/3700" target="_blank">#3700</a>
+              <span class="card-eta">~9min</span>
+            </div>
+            <div class="card-title">PO: validar criterios commander/router</div>
+            <div class="card-meta">
+              <span class="chip skill-po"><span class="dot dot-ok"></span>po</span>
+              <span class="chip">verificacion</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Done lane (separada visualmente) -->
+      <div class="done-lane">
+        <div class="done-lane-head">
+          <svg class="icon" aria-hidden="true"><use href="../icons/sprite.svg#ic-cell-pass"/></svg>
+          <strong>Terminados — últimos 24h</strong>
+          <span class="dim" style="margin-left: auto; font-size: 0.86em;">8 issues mergeados</span>
+        </div>
+        <div class="done-lane-list">
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3723" target="_blank">#3723 router cliente ?view=</a>
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3717" target="_blank">#3717 a11y CI gate</a>
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3710" target="_blank">#3710 ghost-artifact alert</a>
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3708" target="_blank">#3708 audit jsonl</a>
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3704" target="_blank">#3704 telegram ok</a>
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3702" target="_blank">#3702 reconciler stale</a>
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3701" target="_blank">#3701 modo descanso tg</a>
+          <a class="done-pill" href="https://github.com/intrale/platform/issues/3698" target="_blank">#3698 dashboard header</a>
+        </div>
+      </div>
+
+      <!-- popup invariante (#dot-popup), oculto por defecto -->
+      <div id="dot-popup" class="dot-popup" style="display:none">
+        <div class="dp-head"><span class="dp-title"></span><span class="dp-close">×</span></div>
+        <div class="dp-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup-banner" style="margin-top:auto">
+    Tokens: <code>assets/design-tokens.css</code> · Iconos: <code>assets/icons/sprite.svg</code> · WCAG AA verificado
+  </div>
+
+</div>
+
+</body>
+</html>
