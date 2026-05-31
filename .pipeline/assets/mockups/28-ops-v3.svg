@@ -1,0 +1,615 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 28 — Ventana Ops V3 (split de #3715, sub-historia #3732)
+  Resolucion target: 1080x1920 (kiosk vertical, identica a 26/27)
+  Demuestra:
+    - Layout del modulo standalone .pipeline/views/dashboard/ops.js extraido del monolito.
+    - Banner Telegram-down (state degradado) con desglose visual: codigo + origen + timestamp.
+    - Grid de procesos del pipeline (5 procs) con: estado vivo/caido, PID, uptime, chips de
+      colas asociadas por queue (pendiente / trabajando / listo).
+    - Reconciler stale orders (numero grande + breakdown por reason).
+    - QA Environment rediseñado: NO mas <pre> JSON crudo, ahora mini-cards por entorno
+      con badge de salud + timestamps + ultimo error truncado.
+    - Tooltips obligatorios (CA-C5) en cada chip de queue, cada card de proceso, el banner
+      y los mini-cards de QA env — tooltips INFORMATIVOS (no mutantes), explican qué es
+      cada métrica.
+    - Dual-encoding de severidad (color + icono + texto) — WCAG AA CA-E1/E2/E3.
+    - Sin acciones operativas mutantes (CA-B2): solo lectura. Las acciones reales
+      (kill/restart/retry) viven en split aparte.
+
+  IDs DOM que el dev debe emitir en SSR (CA-A1 + CA-B1):
+    - ops-view                       (root del modulo)
+    - ops-tg-banner                  (banner Telegram, hidden si tgHealth.ok===true)
+    - ops-procesos                   (grid de procesos)
+    - ops-proc-card-${name}          (cada card de proceso, name sanitizado)
+    - stale-orders-panel             (panel reconciler stale orders)
+    - stale-orders-count             (numero grande)
+    - stale-orders-breakdown         (lista por reason)
+    - ops-qaenv                      (panel QA env rediseñado — sin <pre>)
+    - ops-qaenv-card-${entorno}      (mini-card por entorno: dev / staging / prod / telegram)
+
+  Datos consumidos desde /api/dash/ops (opsSlice):
+    procesos      = state.procesos        (alive, pid, uptime por proceso)
+    servicios     = state.servicios       (colas pendiente/trabajando/listo por servicio)
+    qaEnv         = state.qaEnv           (env local de QA)
+    qaRemote      = state.qaRemote        (env remoto AWS de QA)
+    infraHealth   = state.infraHealth     (estado infra: dashboard, listener, etc)
+    telegramHealth= state.telegramHealth  ({ ok, updatedAt, lastError: { description, code, source }})
+  Y desde /api/dash/reconciler-stale-orders:
+    total_24h     = numero descartes ultimas 24h
+    by_reason     = { reason: count }
+
+  Decisiones congeladas del mockup:
+    1. <pre> JSON crudo de qaEnv eliminado. Reemplazo: 4 mini-cards (dev, staging, prod, telegram)
+       cada una con: badge de salud (verde/amarillo/rojo), timestamp ultima sincronizacion,
+       ultimo error truncado a 80 chars si aplica.
+    2. Severidad en banner Telegram: dual-encoding rail rojo + icono "!" + texto.
+    3. Grid procesos: 5 cards (listener, svc-telegram, svc-github, svc-drive, svc-emulador).
+       Cada card muestra estado, PID, uptime, chips de queues asociadas (PROC_QUEUES).
+       Card de listener y svc-telegram heredan estado "bot-down" si tgHealth.ok===false.
+    4. Tooltips informativos en cada chip de cola y cada mini-card de qaEnv.
+    5. Stale orders: numero en --warning si total>0, --text-dim si total===0 (saludable).
+    6. NO se introducen acciones mutantes (kill/restart/retry) en este split — out-of-scope
+       explicito del issue. Si hace falta, split aparte con CSRF + audit log.
+    7. Todos los estilos via tokens del design-tokens.css. Sin HEX libres.
+    8. Iconos: solo del sprite.svg. Cada chip de cola usa: ic-fase-criterios (pend),
+       ic-fase-dev (work), ic-fase-aprobacion (done) — semantica reusada.
+    9. Sin sprite nuevos, sin tokens nuevos — todo reusa el existente.
+    10. El estado "bot-down" tiene background rojo suave (--danger-bg) + borde rojo, no solo
+        color: ademas iconito de bot caido y texto "API rechazada" truncado.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <!-- ============================================================
+       Tokens embebidos (self-contained, alineado con design-tokens.css)
+       ============================================================ -->
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="dangerStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F85149"/>
+      <stop offset="100%" stop-color="#8B1A14"/>
+    </linearGradient>
+    <linearGradient id="warningStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#9E6A03"/>
+    </linearGradient>
+    <linearGradient id="successStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3FB950"/>
+      <stop offset="100%" stop-color="#196C2E"/>
+    </linearGradient>
+    <linearGradient id="infoStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#58A6FF"/>
+      <stop offset="100%" stop-color="#1F6FEB"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ============================================================
+       Fondo kiosk
+       ============================================================ -->
+  <rect width="1080" height="1920" fill="#0D1117"/>
+
+  <!-- ============================================================
+       BRAND BAR superior (referencia visual del frame, NO scope de #3732)
+       ============================================================ -->
+  <rect x="0" y="0" width="1080" height="68" fill="url(#headerGrad)"/>
+  <rect x="0" y="67" width="1080" height="1" fill="#30363D"/>
+  <g opacity="0.55">
+    <circle cx="40" cy="34" r="14" fill="url(#brandGrad)"/>
+    <text x="68" y="40" font-size="18" font-weight="700" fill="#E6EDF3">INTRALE V3</text>
+    <text x="180" y="40" font-size="14" fill="#8B949E">/ Ops</text>
+  </g>
+  <text x="1040" y="40" font-size="11" fill="#6E7681" text-anchor="end">[area fuera de scope de #3732]</text>
+
+  <!-- ============================================================
+       CONTROL BAR (referencia, fuera de scope) — tab activa "Ops"
+       ============================================================ -->
+  <rect x="0" y="68" width="1080" height="56" fill="#161B22"/>
+  <rect x="0" y="123" width="1080" height="1" fill="#21262D"/>
+  <g opacity="0.6">
+    <rect x="22" y="82" width="84" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="64" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Home</text>
+    <rect x="116" y="82" width="118" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="175" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Bloqueados</text>
+    <!-- Tab activa de Ops -->
+    <rect x="244" y="82" width="86" height="28" rx="14" fill="rgba(245,158,11,0.14)" stroke="#F59E0B" stroke-width="1.5"/>
+    <g transform="translate(258,88)">
+      <rect x="3" y="3" width="10" height="10" rx="2" fill="none" stroke="#F59E0B" stroke-width="1.5"/>
+      <circle cx="8" cy="8" r="2" fill="#F59E0B"/>
+    </g>
+    <text x="295" y="100" font-size="12" font-weight="600" fill="#F59E0B" text-anchor="middle">Ops</text>
+    <rect x="340" y="82" width="86" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="383" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Issues</text>
+    <text x="1040" y="100" font-size="11" fill="#6E7681" text-anchor="end">view=ops</text>
+  </g>
+
+  <!-- ============================================================
+       MAIN VIEW BOUNDARY — <main id="view-content"> del router #3773.
+       Todo lo de abajo es scope de #3732.
+       ============================================================ -->
+  <rect x="20" y="142" width="1040" height="1760" rx="14"
+        fill="#161B22" stroke="#30363D" stroke-width="1"/>
+  <text x="40" y="170" font-size="11" fill="#6E7681" font-family="monospace">&lt;main id="view-content" data-slug="ops"&gt;</text>
+
+  <!-- ============================================================
+       HEADER de la ventana — ops-header
+       ============================================================ -->
+  <g transform="translate(40,190)">
+    <rect x="0" y="0" width="4" height="64" fill="url(#warningStripe)" rx="2"/>
+
+    <!-- Icono ops (rectangulo con punto = panel de control) -->
+    <circle cx="36" cy="32" r="20" fill="rgba(245,158,11,0.18)"/>
+    <rect x="28" y="22" width="16" height="20" rx="2" fill="none" stroke="#F59E0B" stroke-width="1.8"/>
+    <circle cx="36" cy="32" r="2.5" fill="#F59E0B"/>
+
+    <!-- Titulo + subtitulo -->
+    <text x="72" y="28" font-size="22" font-weight="700" fill="#E6EDF3">Ops · estado de infraestructura</text>
+    <text x="72" y="50" font-size="13" fill="#8B949E">Procesos del pipeline, reconciler GitHub y entornos QA. Solo lectura.</text>
+
+    <!-- Chevron / popout / refresh icons (fuera de scope, decorativos) -->
+    <g transform="translate(940,24)" opacity="0.65">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <path d="M8 12 L14 18 L20 12" stroke="#B1BAC4" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g transform="translate(972,24)" opacity="0.65">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <path d="M10 18 L18 10 M12 10 L18 10 L18 16" stroke="#58A6FF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       BANNER Telegram caido — ops-tg-banner
+       Estado degradado: tgHealth.ok===false → banner rojo full-width.
+       ============================================================ -->
+  <g transform="translate(40,272)">
+    <rect x="0" y="0" width="1000" height="100" rx="8"
+          fill="rgba(248,81,73,0.12)" stroke="#F85149" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="100" fill="url(#dangerStripe)" rx="2"/>
+
+    <!-- Icono bot caido -->
+    <g transform="translate(24,22)">
+      <rect x="0" y="6" width="44" height="44" rx="8" fill="rgba(248,81,73,0.18)" stroke="#F85149" stroke-width="1.4"/>
+      <!-- antena cortada -->
+      <line x1="22" y1="2" x2="22" y2="10" stroke="#F85149" stroke-width="2" stroke-dasharray="2,2"/>
+      <circle cx="22" cy="2" r="2" fill="#F85149"/>
+      <!-- ojos x x (caido) -->
+      <path d="M12 24 L18 30 M18 24 L12 30" stroke="#F85149" stroke-width="2" stroke-linecap="round"/>
+      <path d="M26 24 L32 30 M32 24 L26 30" stroke="#F85149" stroke-width="2" stroke-linecap="round"/>
+      <!-- boca recta -->
+      <line x1="14" y1="42" x2="30" y2="42" stroke="#F85149" stroke-width="2" stroke-linecap="round"/>
+    </g>
+
+    <!-- Titulo -->
+    <text x="92" y="34" font-size="16" font-weight="700" fill="#F85149">⚠ Bot de Telegram caido</text>
+
+    <!-- Detalles del lastError -->
+    <text x="92" y="56" font-size="12" fill="#FFB3B3" font-family="monospace">401 Unauthorized · origen=BotFather API · actualizado 31/05 11:42</text>
+    <text x="92" y="74" font-size="12" fill="#FFB3B3">Token revocado o rotado fuera de banda. Comprobar ~/.claude/secrets/telegram-config.json</text>
+
+    <!-- Tooltip de ejemplo sobre el banner -->
+    <g transform="translate(700,12)" opacity="0.95">
+      <rect x="0" y="0" width="280" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+      <text x="140" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">"Origen del error reportado por Telegram API"</text>
+      <path d="M52 22 L58 28 L64 22" fill="#FFD166" stroke="#9E6A03"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       SECCION 1 — Procesos del pipeline
+       ============================================================ -->
+  <g transform="translate(40,396)">
+    <rect x="0" y="0" width="22" height="22" rx="4" fill="rgba(245,158,11,0.14)"/>
+    <rect x="6" y="6" width="10" height="10" rx="1" fill="none" stroke="#F59E0B" stroke-width="1.4"/>
+    <circle cx="11" cy="11" r="1.5" fill="#F59E0B"/>
+    <text x="34" y="17" font-size="16" font-weight="700" fill="#E6EDF3">Procesos del pipeline</text>
+    <text x="220" y="17" font-size="12" fill="#8B949E">5 procesos · 2 vivos · 3 con colas activas</text>
+  </g>
+
+  <!-- Grid 3x2 de cards de procesos -->
+  <!-- Card 1 — listener (vivo, pero bot-down porque maneja TG) -->
+  <g transform="translate(40,432)">
+    <rect x="0" y="0" width="320" height="148" rx="8"
+          fill="rgba(248,81,73,0.08)" stroke="#F85149" stroke-width="1.2"/>
+    <rect x="0" y="0" width="4" height="148" fill="url(#dangerStripe)" rx="2"/>
+
+    <!-- Estado + nombre -->
+    <g transform="translate(20,18)">
+      <circle cx="8" cy="8" r="6" fill="#3FB950"/>
+      <text x="24" y="13" font-size="14" font-weight="700" fill="#E6EDF3">listener</text>
+      <rect x="92" y="-1" width="56" height="18" rx="9" fill="rgba(248,81,73,0.16)" stroke="#F85149"/>
+      <text x="120" y="11" font-size="9" font-weight="700" fill="#F85149" text-anchor="middle">BOT DOWN</text>
+    </g>
+
+    <!-- Meta -->
+    <text x="20" y="60" font-size="11" font-family="monospace" fill="#8B949E">PID 21884 · uptime 2h 14m</text>
+    <text x="20" y="78" font-size="11" fill="#F85149" font-weight="600">⚠ API rechazada (401)</text>
+
+    <!-- Queues -->
+    <g transform="translate(20,94)">
+      <text x="0" y="0" font-size="10" font-weight="700" fill="#8B949E" letter-spacing="0.4">COLAS</text>
+      <!-- group commander -->
+      <g transform="translate(0,8)">
+        <rect x="0" y="0" width="138" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <text x="8" y="14" font-size="9" font-weight="700" fill="#8B949E">commander</text>
+        <text x="62" y="14" font-size="10" fill="#D29922" font-variant-numeric="tabular-nums">⏳ 3</text>
+        <text x="84" y="14" font-size="10" fill="#58A6FF" font-variant-numeric="tabular-nums">⚙ 1</text>
+        <text x="106" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">✓ 24</text>
+      </g>
+      <g transform="translate(146,8)">
+        <rect x="0" y="0" width="118" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <text x="8" y="14" font-size="9" font-weight="700" fill="#8B949E">telegram</text>
+        <text x="50" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">⏳ 0</text>
+        <text x="72" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">⚙ 0</text>
+        <text x="94" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">✓ 12</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Card 2 — svc-telegram (vivo, bot-down) -->
+  <g transform="translate(380,432)">
+    <rect x="0" y="0" width="320" height="148" rx="8"
+          fill="rgba(248,81,73,0.08)" stroke="#F85149" stroke-width="1.2"/>
+    <rect x="0" y="0" width="4" height="148" fill="url(#dangerStripe)" rx="2"/>
+
+    <g transform="translate(20,18)">
+      <circle cx="8" cy="8" r="6" fill="#3FB950"/>
+      <text x="24" y="13" font-size="14" font-weight="700" fill="#E6EDF3">svc-telegram</text>
+      <rect x="124" y="-1" width="56" height="18" rx="9" fill="rgba(248,81,73,0.16)" stroke="#F85149"/>
+      <text x="152" y="11" font-size="9" font-weight="700" fill="#F85149" text-anchor="middle">BOT DOWN</text>
+    </g>
+
+    <text x="20" y="60" font-size="11" font-family="monospace" fill="#8B949E">PID 19320 · uptime 2h 14m</text>
+    <text x="20" y="78" font-size="11" fill="#F85149" font-weight="600">⚠ getUpdates 401</text>
+
+    <g transform="translate(20,94)">
+      <text x="0" y="0" font-size="10" font-weight="700" fill="#8B949E" letter-spacing="0.4">COLAS</text>
+      <g transform="translate(0,8)">
+        <rect x="0" y="0" width="138" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <text x="8" y="14" font-size="9" font-weight="700" fill="#8B949E">telegram</text>
+        <text x="56" y="14" font-size="10" fill="#D29922" font-variant-numeric="tabular-nums">⏳ 7</text>
+        <text x="78" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">⚙ 0</text>
+        <text x="100" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">✓ 31</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Card 3 — svc-github (vivo, sano) -->
+  <g transform="translate(720,432)">
+    <rect x="0" y="0" width="320" height="148" rx="8"
+          fill="rgba(63,185,80,0.06)" stroke="#3FB950" stroke-width="1.2"/>
+    <rect x="0" y="0" width="4" height="148" fill="url(#successStripe)" rx="2"/>
+
+    <g transform="translate(20,18)">
+      <circle cx="8" cy="8" r="6" fill="#3FB950"/>
+      <text x="24" y="13" font-size="14" font-weight="700" fill="#E6EDF3">svc-github</text>
+      <rect x="112" y="-1" width="44" height="18" rx="9" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+      <text x="134" y="11" font-size="9" font-weight="700" fill="#3FB950" text-anchor="middle">VIVO</text>
+    </g>
+
+    <text x="20" y="60" font-size="11" font-family="monospace" fill="#8B949E">PID 24008 · uptime 2h 14m</text>
+
+    <g transform="translate(20,94)">
+      <text x="0" y="0" font-size="10" font-weight="700" fill="#8B949E" letter-spacing="0.4">COLAS</text>
+      <g transform="translate(0,8)">
+        <rect x="0" y="0" width="138" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <text x="8" y="14" font-size="9" font-weight="700" fill="#8B949E">github</text>
+        <text x="44" y="14" font-size="10" fill="#D29922" font-variant-numeric="tabular-nums">⏳ 2</text>
+        <text x="66" y="14" font-size="10" fill="#58A6FF" font-variant-numeric="tabular-nums">⚙ 1</text>
+        <text x="88" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">✓ 184</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Card 4 — svc-drive (vivo, sano) -->
+  <g transform="translate(40,596)">
+    <rect x="0" y="0" width="320" height="148" rx="8"
+          fill="rgba(63,185,80,0.06)" stroke="#3FB950" stroke-width="1.2"/>
+    <rect x="0" y="0" width="4" height="148" fill="url(#successStripe)" rx="2"/>
+
+    <g transform="translate(20,18)">
+      <circle cx="8" cy="8" r="6" fill="#3FB950"/>
+      <text x="24" y="13" font-size="14" font-weight="700" fill="#E6EDF3">svc-drive</text>
+      <rect x="104" y="-1" width="44" height="18" rx="9" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+      <text x="126" y="11" font-size="9" font-weight="700" fill="#3FB950" text-anchor="middle">VIVO</text>
+    </g>
+
+    <text x="20" y="60" font-size="11" font-family="monospace" fill="#8B949E">PID 9412 · uptime 2h 14m</text>
+
+    <g transform="translate(20,94)">
+      <text x="0" y="0" font-size="10" font-weight="700" fill="#8B949E" letter-spacing="0.4">COLAS</text>
+      <g transform="translate(0,8)">
+        <rect x="0" y="0" width="138" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <text x="8" y="14" font-size="9" font-weight="700" fill="#8B949E">drive</text>
+        <text x="40" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">⏳ 0</text>
+        <text x="62" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">⚙ 0</text>
+        <text x="84" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">✓ 7</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Card 5 — svc-emulador (CAIDO) -->
+  <g transform="translate(380,596)">
+    <rect x="0" y="0" width="320" height="148" rx="8"
+          fill="rgba(177,186,196,0.04)" stroke="#30363D" stroke-width="1.2" opacity="0.85"/>
+    <rect x="0" y="0" width="4" height="148" fill="#484F58" rx="2"/>
+
+    <g transform="translate(20,18)">
+      <circle cx="8" cy="8" r="6" fill="#F85149"/>
+      <text x="24" y="13" font-size="14" font-weight="700" fill="#B1BAC4">svc-emulador</text>
+      <rect x="122" y="-1" width="58" height="18" rx="9" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+      <text x="151" y="11" font-size="9" font-weight="700" fill="#F85149" text-anchor="middle">CAIDO</text>
+    </g>
+
+    <text x="20" y="60" font-size="11" font-family="monospace" fill="#8B949E">PID — · uptime 0s</text>
+    <text x="20" y="78" font-size="11" fill="#F85149">⚠ no inicializado (proceso ausente)</text>
+
+    <g transform="translate(20,94)">
+      <text x="0" y="0" font-size="10" font-weight="700" fill="#8B949E" letter-spacing="0.4">COLAS</text>
+      <g transform="translate(0,8)">
+        <rect x="0" y="0" width="138" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <text x="8" y="14" font-size="9" font-weight="700" fill="#8B949E">emulador</text>
+        <text x="58" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">⏳ 0</text>
+        <text x="80" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">⚙ 0</text>
+        <text x="102" y="14" font-size="10" fill="#8B949E" font-variant-numeric="tabular-nums">✓ 0</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Card 6 — placeholder vacio (la grid responde a auto-fill) -->
+  <g transform="translate(720,596)" opacity="0.4">
+    <rect x="0" y="0" width="320" height="148" rx="8"
+          fill="none" stroke="#30363D" stroke-dasharray="4,4"/>
+    <text x="160" y="74" font-size="11" fill="#6E7681" text-anchor="middle">slot vacio (auto-fill, sin proceso 6º)</text>
+    <text x="160" y="92" font-size="10" fill="#6E7681" text-anchor="middle">la grid es `grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))`</text>
+  </g>
+
+  <!-- ============================================================
+       Tooltips informativos (CA-C5) — ejemplo sobre chip ⏳
+       ============================================================ -->
+  <g transform="translate(58,762)" opacity="0.95">
+    <rect x="0" y="0" width="200" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+    <text x="100" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">"3 archivos pendientes (sin tomar)"</text>
+    <path d="M44 0 L50 -6 L56 0" fill="#FFD166" stroke="#9E6A03"/>
+  </g>
+
+  <!-- ============================================================
+       SECCION 2 — Reconciler stale orders
+       ============================================================ -->
+  <g transform="translate(40,810)">
+    <rect x="0" y="0" width="22" height="22" rx="4" fill="rgba(210,153,34,0.14)"/>
+    <circle cx="11" cy="11" r="7" fill="none" stroke="#D29922" stroke-width="1.4"/>
+    <path d="M11 7 L11 11 L14 13" stroke="#D29922" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+    <text x="34" y="17" font-size="16" font-weight="700" fill="#E6EDF3">Reconciler · ordenes descartadas (stale)</text>
+    <text x="436" y="17" font-size="12" fill="#8B949E">/api/dash/reconciler-stale-orders · poll 30s</text>
+  </g>
+
+  <g transform="translate(40,846)">
+    <rect x="0" y="0" width="1000" height="148" rx="8"
+          fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Numero grande -->
+    <g transform="translate(40,30)">
+      <text x="0" y="48" font-size="56" font-weight="700" fill="#D29922" font-variant-numeric="tabular-nums" font-family="monospace">12</text>
+      <text x="0" y="76" font-size="12" fill="#8B949E">descartes en ultimas 24h</text>
+
+      <!-- Severity tag -->
+      <g transform="translate(0,90)">
+        <rect x="0" y="0" width="118" height="22" rx="11" fill="rgba(210,153,34,0.18)" stroke="#D29922"/>
+        <text x="59" y="14" font-size="10" font-weight="700" fill="#D29922" text-anchor="middle">por encima de 5/h</text>
+      </g>
+    </g>
+
+    <!-- Breakdown por reason -->
+    <g transform="translate(280,30)">
+      <text x="0" y="0" font-size="10" font-weight="700" fill="#8B949E" letter-spacing="0.4">DESGLOSE POR MOTIVO</text>
+
+      <g transform="translate(0,18)">
+        <line x1="0" y1="0" x2="680" y2="0" stroke="#21262D"/>
+        <text x="0" y="20" font-size="13" fill="#E6EDF3">— issue_locked</text>
+        <text x="660" y="20" font-size="13" font-weight="700" fill="#D29922" text-anchor="end" font-variant-numeric="tabular-nums">5</text>
+      </g>
+      <g transform="translate(0,42)">
+        <line x1="0" y1="0" x2="680" y2="0" stroke="#21262D"/>
+        <text x="0" y="20" font-size="13" fill="#E6EDF3">— circuit_breaker_open</text>
+        <text x="660" y="20" font-size="13" font-weight="700" fill="#D29922" text-anchor="end" font-variant-numeric="tabular-nums">4</text>
+      </g>
+      <g transform="translate(0,66)">
+        <line x1="0" y1="0" x2="680" y2="0" stroke="#21262D"/>
+        <text x="0" y="20" font-size="13" fill="#E6EDF3">— label_missing</text>
+        <text x="660" y="20" font-size="13" font-weight="700" fill="#D29922" text-anchor="end" font-variant-numeric="tabular-nums">2</text>
+      </g>
+      <g transform="translate(0,90)">
+        <line x1="0" y1="0" x2="680" y2="0" stroke="#21262D"/>
+        <text x="0" y="20" font-size="13" fill="#E6EDF3">— epic_only</text>
+        <text x="660" y="20" font-size="13" font-weight="700" fill="#D29922" text-anchor="end" font-variant-numeric="tabular-nums">1</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Tooltip informativo sobre el numero grande -->
+  <g transform="translate(58,1010)" opacity="0.95">
+    <rect x="0" y="0" width="380" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+    <text x="190" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">"Ordenes que el reconciler descarto en las ultimas 24 horas"</text>
+    <path d="M14 0 L20 -6 L26 0" fill="#FFD166" stroke="#9E6A03"/>
+  </g>
+
+  <!-- ============================================================
+       SECCION 3 — QA Environment (REDISEÑADO, SIN <pre>)
+       ============================================================ -->
+  <g transform="translate(40,1058)">
+    <rect x="0" y="0" width="22" height="22" rx="4" fill="rgba(88,166,255,0.14)"/>
+    <circle cx="11" cy="6" r="2" fill="none" stroke="#58A6FF" stroke-width="1.4"/>
+    <circle cx="11" cy="11" r="4" fill="none" stroke="#58A6FF" stroke-width="1.4"/>
+    <circle cx="11" cy="11" r="7" fill="none" stroke="#58A6FF" stroke-width="1.4" opacity="0.5"/>
+    <text x="34" y="17" font-size="16" font-weight="700" fill="#E6EDF3">QA Environment · estado de entornos</text>
+    <rect x="382" y="2" width="220" height="20" rx="10" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF"/>
+    <text x="492" y="16" font-size="10" font-weight="600" fill="#2DD4BF" text-anchor="middle">REDISEÑADO · sin &lt;pre&gt; JSON crudo</text>
+  </g>
+
+  <!-- Grid 2x2 de mini-cards de entornos -->
+  <!-- QA env: local (sano) -->
+  <g transform="translate(40,1094)">
+    <rect x="0" y="0" width="492" height="106" rx="8"
+          fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="106" fill="url(#successStripe)" rx="2"/>
+
+    <g transform="translate(20,16)">
+      <circle cx="8" cy="8" r="6" fill="#3FB950"/>
+      <text x="24" y="13" font-size="13" font-weight="700" fill="#E6EDF3">qaEnv · local</text>
+      <rect x="114" y="-1" width="44" height="18" rx="9" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+      <text x="136" y="11" font-size="9" font-weight="700" fill="#3FB950" text-anchor="middle">OK</text>
+    </g>
+
+    <g transform="translate(20,46)">
+      <text x="0" y="0" font-size="11" font-family="monospace" fill="#8B949E">backend:    http://localhost:8080</text>
+      <text x="0" y="18" font-size="11" font-family="monospace" fill="#8B949E">emulador:   AVD virtualAndroid · qa-ready</text>
+      <text x="0" y="36" font-size="11" font-family="monospace" fill="#8B949E">ping:       hace 4s · latencia 12ms</text>
+    </g>
+  </g>
+
+  <!-- QA env: remote AWS (sano) -->
+  <g transform="translate(548,1094)">
+    <rect x="0" y="0" width="492" height="106" rx="8"
+          fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="106" fill="url(#successStripe)" rx="2"/>
+
+    <g transform="translate(20,16)">
+      <circle cx="8" cy="8" r="6" fill="#3FB950"/>
+      <text x="24" y="13" font-size="13" font-weight="700" fill="#E6EDF3">qaRemote · AWS Lambda</text>
+      <rect x="194" y="-1" width="44" height="18" rx="9" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+      <text x="216" y="11" font-size="9" font-weight="700" fill="#3FB950" text-anchor="middle">OK</text>
+    </g>
+
+    <g transform="translate(20,46)">
+      <text x="0" y="0" font-size="11" font-family="monospace" fill="#8B949E">lambda:     kotlinTest (us-east-1)</text>
+      <text x="0" y="18" font-size="11" font-family="monospace" fill="#8B949E">cognito:    pool intrale-prod-users</text>
+      <text x="0" y="36" font-size="11" font-family="monospace" fill="#8B949E">ping:       hace 18s · latencia 198ms</text>
+    </g>
+  </g>
+
+  <!-- Infra health -->
+  <g transform="translate(40,1212)">
+    <rect x="0" y="0" width="492" height="106" rx="8"
+          fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="106" fill="url(#warningStripe)" rx="2"/>
+
+    <g transform="translate(20,16)">
+      <circle cx="8" cy="8" r="6" fill="#D29922"/>
+      <text x="24" y="13" font-size="13" font-weight="700" fill="#E6EDF3">infraHealth</text>
+      <rect x="100" y="-1" width="76" height="18" rx="9" fill="rgba(210,153,34,0.14)" stroke="#D29922"/>
+      <text x="138" y="11" font-size="9" font-weight="700" fill="#D29922" text-anchor="middle">DEGRADADO</text>
+    </g>
+
+    <g transform="translate(20,46)">
+      <text x="0" y="0" font-size="11" font-family="monospace" fill="#8B949E">dashboard:  port 3200 · vivo · 2h 14m</text>
+      <text x="0" y="18" font-size="11" font-family="monospace" fill="#8B949E">drive:      ok · last sync 3min</text>
+      <text x="0" y="36" font-size="11" font-family="monospace" fill="#D29922">emulador:   ausente — sin AVD activo</text>
+    </g>
+  </g>
+
+  <!-- Telegram health (caido — espeja banner) -->
+  <g transform="translate(548,1212)">
+    <rect x="0" y="0" width="492" height="106" rx="8"
+          fill="rgba(248,81,73,0.06)" stroke="#F85149" stroke-width="1.2"/>
+    <rect x="0" y="0" width="4" height="106" fill="url(#dangerStripe)" rx="2"/>
+
+    <g transform="translate(20,16)">
+      <circle cx="8" cy="8" r="6" fill="#F85149"/>
+      <text x="24" y="13" font-size="13" font-weight="700" fill="#E6EDF3">telegramHealth</text>
+      <rect x="132" y="-1" width="56" height="18" rx="9" fill="rgba(248,81,73,0.16)" stroke="#F85149"/>
+      <text x="160" y="11" font-size="9" font-weight="700" fill="#F85149" text-anchor="middle">CAIDO</text>
+    </g>
+
+    <g transform="translate(20,46)">
+      <text x="0" y="0" font-size="11" font-family="monospace" fill="#8B949E">code:       401 Unauthorized</text>
+      <text x="0" y="18" font-size="11" font-family="monospace" fill="#8B949E">source:     BotFather API</text>
+      <text x="0" y="36" font-size="11" font-family="monospace" fill="#F85149">last error: token revocado o rotado fuera de banda</text>
+    </g>
+  </g>
+
+  <!-- Tooltip sobre la badge "DEGRADADO" -->
+  <g transform="translate(140,1340)" opacity="0.95">
+    <rect x="0" y="0" width="320" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+    <text x="160" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">"Algún componente del entorno reportó estado WARN"</text>
+    <path d="M40 0 L46 -6 L52 0" fill="#FFD166" stroke="#9E6A03"/>
+  </g>
+
+  <!-- ============================================================
+       SECCION 4 — Fallback inerte (CA-A3) — variante alternativa
+       ============================================================ -->
+  <line x1="40" y1="1392" x2="1040" y2="1392" stroke="#30363D" stroke-dasharray="6,6"/>
+  <text x="540" y="1422" font-size="13" font-weight="700" fill="#8B949E" text-anchor="middle" letter-spacing="1">VARIANTE FALLBACK INERTE — cuando require('./views/dashboard/ops') tira (CA-A3 / REQ-SEC-7)</text>
+
+  <g transform="translate(40,1444)">
+    <rect x="0" y="0" width="1000" height="100" rx="14"
+          fill="rgba(210,153,34,0.06)" stroke="#9E6A03" stroke-width="1"/>
+    <rect x="0" y="0" width="4" height="100" fill="url(#warningStripe)" rx="2"/>
+
+    <!-- Icono warning -->
+    <circle cx="60" cy="50" r="24" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="2"/>
+    <path d="M60 38 L60 54 M60 60 L60 62" stroke="#D29922" stroke-width="3" stroke-linecap="round"/>
+
+    <text x="104" y="40" font-size="18" font-weight="700" fill="#E6EDF3">Ventana Ops no disponible</text>
+    <text x="104" y="62" font-size="13" fill="#B1BAC4">El modulo views/dashboard/ops.js fallo al cargar. Ver logs del dashboard para detalle.</text>
+    <text x="104" y="82" font-size="12" font-family="monospace" fill="#8B949E">log("ops view unavailable", e) emitido por dashboard.js — el render no queda en blanco.</text>
+  </g>
+
+  <!-- ============================================================
+       SECCION 5 — Variante HEALTHY (sin bot-down, todo verde)
+       ============================================================ -->
+  <line x1="40" y1="1564" x2="1040" y2="1564" stroke="#30363D" stroke-dasharray="6,6"/>
+  <text x="540" y="1594" font-size="13" font-weight="700" fill="#8B949E" text-anchor="middle" letter-spacing="1">VARIANTE HEALTHY — banner Telegram oculto + 5 procesos vivos + 0 descartes</text>
+
+  <g transform="translate(40,1616)">
+    <rect x="0" y="0" width="1000" height="100" rx="8"
+          fill="rgba(63,185,80,0.06)" stroke="#196C2E" stroke-width="1"/>
+    <rect x="0" y="0" width="4" height="100" fill="url(#successStripe)" rx="2"/>
+
+    <!-- Icono check verde -->
+    <circle cx="60" cy="50" r="24" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-width="2"/>
+    <path d="M48 50 L57 59 L74 42" stroke="#3FB950" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <text x="104" y="40" font-size="18" font-weight="700" fill="#E6EDF3">Pipeline saludable</text>
+    <text x="104" y="62" font-size="13" fill="#B1BAC4">5 procesos vivos · 0 descartes en 24h · todos los entornos QA OK.</text>
+    <text x="104" y="82" font-size="11" font-family="monospace" fill="#8B949E">El banner Telegram se oculta (ops-banner-hidden) cuando tgHealth.ok===true.</text>
+  </g>
+
+  <!-- ============================================================
+       Sección de DECISIONES (apuntes textuales sobre el mockup)
+       ============================================================ -->
+  <line x1="40" y1="1736" x2="1040" y2="1736" stroke="#30363D" stroke-dasharray="6,6"/>
+  <text x="540" y="1766" font-size="13" font-weight="700" fill="#8B949E" text-anchor="middle" letter-spacing="1">DECISIONES CONGELADAS DEL REDISEÑO</text>
+
+  <g transform="translate(60,1788)">
+    <text x="0" y="0" font-size="12" font-weight="600" fill="#E6EDF3">1.</text>
+    <text x="22" y="0" font-size="12" fill="#B1BAC4">&lt;pre&gt; JSON crudo eliminado (CA-C2). Reemplazo: 4 mini-cards qaEnv/qaRemote/infraHealth/telegramHealth con badge + meta.</text>
+
+    <text x="0" y="22" font-size="12" font-weight="600" fill="#E6EDF3">2.</text>
+    <text x="22" y="22" font-size="12" fill="#B1BAC4">Banner Telegram: dual-encoding (color rojo + rail + icono bot-roto + texto). Oculto cuando tgHealth.ok===true.</text>
+
+    <text x="0" y="44" font-size="12" font-weight="600" fill="#E6EDF3">3.</text>
+    <text x="22" y="44" font-size="12" fill="#B1BAC4">Procesos: 5 cards en grid auto-fill (preserva HTML/CSS existente). Listener + svc-telegram heredan estado bot-down si TG cae.</text>
+
+    <text x="0" y="66" font-size="12" font-weight="600" fill="#E6EDF3">4.</text>
+    <text x="22" y="66" font-size="12" fill="#B1BAC4">Tooltips informativos (CA-C5) en cada chip de cola, banner, badge de salud y numero grande de stale-orders. Sin acciones mutantes.</text>
+
+    <text x="0" y="88" font-size="12" font-weight="600" fill="#E6EDF3">5.</text>
+    <text x="22" y="88" font-size="12" fill="#B1BAC4">Stale orders: numero en --warning si total&gt;0, en --text-dim si total===0 (semantica saludable, preservada del codigo actual).</text>
+
+    <text x="0" y="110" font-size="12" font-weight="600" fill="#E6EDF3">6.</text>
+    <text x="22" y="110" font-size="12" fill="#B1BAC4">Tokens del design-tokens.css (--surface-*, --danger, --warning, --success, --text-*). Sin HEX libres, sin tokens nuevos.</text>
+
+    <text x="0" y="132" font-size="12" font-weight="600" fill="#E6EDF3">7.</text>
+    <text x="22" y="132" font-size="12" fill="#B1BAC4">Sin acciones mutantes (CA-B2). Si se necesitan kill/restart/retry, split aparte con CSRF + audit log + REQ-SEC-4.</text>
+  </g>
+
+  <text x="40" y="1880" font-size="11" fill="#6E7681" font-family="monospace">&lt;/main&gt;</text>
+  <text x="1040" y="1880" font-size="11" fill="#6E7681" text-anchor="end">Mockup 28 · Ventana Ops V3 · sub #3732 de épico #3715</text>
+</svg>
