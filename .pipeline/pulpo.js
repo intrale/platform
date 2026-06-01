@@ -2895,9 +2895,22 @@ function brazoBarrido(config) {
           // humana cuando las deps cierren. Defense-in-depth: TODO el resto del
           // flujo de humanBlock queda intacto abajo (sigue siendo dueño cuando
           // el motivo no clasifica como dep).
+          //
+          // #3774 — El handler dep-block corre SIEMPRE (ya no gated por
+          // !esReboteDeInfra). El hint YAML estructurado del agente
+          // (`rebote_categoria: dependency_block`) gana sobre la heurística
+          // textual de `classifyError`, que podía falsamente clasificar como
+          // 'infra' un motivo que mencionaba palabras como "timeout"
+          // (ej: "timeout 15min" describiendo idempotencia del wizard, no un
+          // timeout de red). El loop infinito de #3741 (~$80–100/h) surgía de
+          // este falso positivo: cada ciclo veía `esReboteDeInfra=true`,
+          // salteaba el handler dep-block, y reencolaba con `rebote_numero_infra=1`
+          // (el contador no se persistía en `listo/` así que nunca acumulaba
+          // hacia el cap de 20). El handler ya filtra internamente por
+          // `result.category === 'dependency_block'`; si ningún motivo califica,
+          // `depBlockHandled` queda en false y el flow infra/humano normal sigue.
           let depBlockHandled = false;
-          if (!esReboteDeInfra) {
-            for (const m of motivosClasificados) {
+          for (const m of motivosClasificados) {
               const result = reboteClassifier.classifyRebote({
                 motivo: m.motivo,
                 classifyErrorResult: m.clasificacion,
@@ -3002,7 +3015,6 @@ function brazoBarrido(config) {
 
               depBlockHandled = true;
               break;
-            }
           }
           if (depBlockHandled) continue;
 
