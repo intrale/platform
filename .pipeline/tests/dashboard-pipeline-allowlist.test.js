@@ -219,44 +219,60 @@ test('onlyAllowlistFilter es booleano de módulo, no se persiste en localStorage
     assert.doesNotMatch(body, /sessionStorage\..*allowlist/i, 'NO debe persistir en sessionStorage');
 });
 
-// ───────────── Grid de áreas (CA-2) ─────────────
+// ───────────── Grid de la nav bar V3 (CA-2 — #3358 → #3726) ─────────────
 
-test('home.js usa repeat(${AREAS.length}, minmax(0, 1fr)) para .areas-bar (CA-2 #3358)', () => {
+test('theme.css declara .v3-nav con grid-template-columns: repeat(N, minmax(<px>px, 1fr)) (CA-2 — derivado del catálogo)', () => {
     // Historia: #3045 (9→10) pasó de repeat(9, 1fr) a auto-fit minmax(96px, 1fr).
-    // #3239 (10→11) sumó "Provider" — auto-fit dejó de alcanzar al ancho operativo
-    // del kiosk (1036px usables) y la 11ª pill rebotó a una segunda fila.
-    // #3358 — pasa a repeat(${AREAS.length}, minmax(0, 1fr)) interpolado para
-    // que las columnas se DERIVEN del array AREAS, así el patrón histórico
-    // 9 → 10 → 11 → … no vuelve a romper la fila por un literal estático.
+    // #3239 (10→11) sumó "Provider" — auto-fit dejó de alcanzar al ancho
+    // operativo del kiosk (1036px usables) y la 11ª pill rebotó a 2 filas.
+    // #3358 → repeat(${AREAS.length}, minmax(0, 1fr)) interpolado: columnas
+    // DERIVADAS del array AREAS, así el patrón 9→10→11→… no rompe el wrap.
+    // #3726 → la botonera vieja .areas-bar/.area-pill quedó retirada.
+    // La nav V3 unificada (.v3-nav) vive en theme.css con
+    // `repeat(12, minmax(44px, 1fr))` — 12 corresponde a NAV_TABS.length
+    // (catálogo fijo decidido por el architect). El test bloquea:
+    //   * regresiones a literales sin `1fr` (que perdían reflow elástico),
+    //   * regresiones a auto-fit con minmax fijo (que rebotaba a 2 filas).
+    const THEME_PATH = path.join(__dirname, '..', 'views', 'dashboard', 'theme.css');
+    const THEME_SRC = fs.readFileSync(THEME_PATH, 'utf8');
     assert.match(
-        HOME_SRC,
-        /\.areas-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(\$\{AREAS\.length\},\s*minmax\(0,\s*1fr\)\)/,
-        '.areas-bar debe usar repeat(${AREAS.length}, minmax(0, 1fr)) (CA-2: derivado, no literal)',
+        THEME_SRC,
+        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(\d+,\s*minmax\(\d+px,\s*1fr\)\)/,
+        '.v3-nav debe usar repeat(N, minmax(<px>px, 1fr)) en theme.css (CA-2: columnas elásticas)',
     );
     assert.doesNotMatch(
-        HOME_SRC,
-        /\.areas-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(9,\s*1fr\)/,
-        'no debe quedar el repeat(9, 1fr) viejo de #3045',
+        THEME_SRC,
+        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(\d+,\s*1fr\)\s*;/,
+        'no debe quedar un repeat(N, 1fr) sin minmax — perdería el touch target >=44px de CA-5',
     );
     assert.doesNotMatch(
-        HOME_SRC,
-        /\.areas-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(96px/,
-        'no debe quedar el auto-fit minmax(96px) viejo de #3045/#3239 (rebotaba a 2 filas con 11 ítems)',
+        THEME_SRC,
+        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit/,
+        'no debe quedar auto-fit (regresión #3358: rebote a 2 filas con > N tabs)',
     );
 });
 
-test('home.js sigue exportando 11 áreas (regression vs el conteo asumido por el grid)', () => {
-    // #3239 — sumamos la tarjeta Multi-Provider después de "modo-descanso".
-    // #3358 — el grid usa repeat(${AREAS.length}, minmax(0, 1fr)) (derivado),
-    // así que sumar/sacar una tarjeta no rompe el layout; el conteo se mantiene
-    // como assertion explícita para detectar cambios accidentales al array.
-    const start = HOME_SRC.indexOf('const AREAS = [');
-    assert.ok(start > 0, 'AREAS array debe existir');
-    const end = HOME_SRC.indexOf('];', start);
-    const body = HOME_SRC.slice(start, end);
-    // Contar entries con `key:`. Match laxo para no romper si cambia el orden.
-    const entries = body.match(/\{\s*key:/g) || [];
-    assert.equal(entries.length, 11, 'el array AREAS debe seguir teniendo 11 elementos (Equipo..Descanso..Multi-Provider)');
+test('nav-tabs.js sigue exportando 12 tabs (regression vs el conteo asumido por el grid V3)', () => {
+    // #3726 — el catálogo NAV_TABS reemplazó al array AREAS y quedó fijo en
+    // 12 entradas por decisión del architect (home, equipo, pipeline,
+    // bloqueados, issues, matriz, ops, kpis, historial, costos, descanso,
+    // providers). El grid .v3-nav usa `repeat(12, minmax(44px, 1fr))` —
+    // si alguien suma/saca una tab acá, también tiene que actualizar el
+    // literal en theme.css y los tests que dependen del conteo.
+    const { NAV_TABS } = require(path.join(__dirname, '..', 'views', 'dashboard', 'nav-tabs.js'));
+    assert.equal(
+        NAV_TABS.length,
+        12,
+        'NAV_TABS debe seguir teniendo 12 elementos (catálogo cerrado en #3726)',
+    );
+    // Sanity: el array AREAS viejo no debe reaparecer. Si vuelve, hay que
+    // refactorizar el call site para que use NAV_TABS y emitir nav SSR via
+    // renderNavTabsSsr — no introducir una segunda fuente de tabs.
+    assert.doesNotMatch(
+        HOME_SRC,
+        /const\s+AREAS\s*=\s*\[/,
+        'el array AREAS quedó retirado en #3726 — usar NAV_TABS de nav-tabs.js',
+    );
 });
 
 // ───────────── tickHeader actualiza el cache compartido ─────────────

@@ -205,6 +205,10 @@ a:hover { color: var(--in-accent); }
 .in-link:hover { text-decoration: underline; }
 
 /* ──────────────── Tab back link (en satélites) ──────────────── */
+/* #3726 — .in-back-link queda deprecada: la nav bar unificada .v3-nav
+   incluye una tab "Inicio" (slug=home, href=/) que cumple la misma
+   funcion de volver al dashboard principal. Los selectores siguen
+   para no romper estilos heredados si algun caller los reusa. */
 .in-back-link {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px;
@@ -212,6 +216,81 @@ a:hover { color: var(--in-accent); }
 }
 .in-back-link::before { content: "←"; }
 .in-back-link:hover { color: var(--in-accent); }
+
+/* ──────────────── Nav bar V3 (#3726) ────────────────
+   Barra de navegacion unificada entre home y satelites con 12 tabs.
+   Markup: <nav class="v3-nav"><a class="v3-tab[ v3-tab-active]"
+     aria-label="…" [aria-current="page"]>
+     [<span class="area-pill-badge">…</span>] <-- transicion CA-10
+     <svg class="v3-tab-icon"><use href="#ic-tab-*"/></svg>
+     <span class="v3-tab-label">Inicio</span>
+   </a></nav>
+
+   - grid de 12 columnas con minmax(44px, 1fr) → cada tab >=44px (CA-5).
+   - min-height 64px → touch target >=44px alto (CA-5).
+   - tokens V3 unicamente: --in-bg-2, --in-bg-3, --in-border, --in-brand,
+     --in-accent, --in-fg, --in-radius-sm. Sin colores hardcoded (CA-4).
+   - :focus-visible mantiene outline para teclado (CA-4 — WCAG AA).
+*/
+.v3-nav {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(44px, 1fr));
+  gap: 8px;
+  padding: 8px 28px;
+  background: var(--in-bg);
+  border-bottom: 1px solid var(--in-border);
+}
+.v3-tab {
+  position: relative;
+  min-height: 64px;
+  min-width: 44px;
+  background: var(--in-bg-2);
+  border: 1px solid var(--in-border);
+  border-radius: var(--in-radius-sm);
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-decoration: none;
+  color: var(--in-fg);
+  transition: transform 0.15s, border-color 0.15s, background 0.15s, color 0.15s;
+}
+.v3-tab:hover {
+  transform: translateY(-2px);
+  border-color: var(--in-accent);
+  background: var(--in-bg-3);
+  color: var(--in-accent);
+}
+.v3-tab:focus-visible {
+  outline: 2px solid var(--in-accent);
+  outline-offset: 2px;
+  border-color: var(--in-accent);
+}
+.v3-tab[aria-current="page"],
+.v3-tab.v3-tab-active {
+  border-color: var(--in-brand);
+  background: var(--in-bg-3);
+  color: var(--in-brand);
+}
+.v3-tab-icon {
+  width: 22px;
+  height: 22px;
+  color: currentColor;
+  flex-shrink: 0;
+}
+.v3-tab-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-align: center;
+  line-height: 1.1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ──────────────── Skill avatars ──────────────── */
 .in-skill {
