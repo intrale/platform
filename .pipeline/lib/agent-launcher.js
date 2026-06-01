@@ -50,6 +50,7 @@ const PROVIDERS = {
     anthropic: require('./agent-launcher/providers/anthropic'),
     deterministic: require('./agent-launcher/providers/deterministic'),
     'openai-codex': require('./agent-launcher/providers/openai-codex'),
+    'gemini-google': require('./agent-launcher/providers/gemini-google'),
 };
 
 // #3082 (CA-S3 / CA-8): cache liviano de required_permissions por skill,

@@ -277,6 +277,101 @@ test('launchAgent con provider openai-codex spawnea el codex CLI con args traduc
 });
 
 // -----------------------------------------------------------------------------
+// 6b. Provider 'gemini-google' real (post adapter): launchAgent dispara el
+//     spawn del gemini CLI traduciendo los args estilo Claude al shape Gemini
+//     (`--skip-trust -o json -m <model> -p <prompt>`).
+// -----------------------------------------------------------------------------
+test('launchAgent con provider gemini-google spawnea el gemini CLI con args traducidos', () => {
+    const modelsPath = path.join(PIPELINE, 'agent-models.json');
+    const fsi = fakeFs([modelsPath], {
+        [modelsPath]: JSON.stringify({
+            defaults: { model: 'claude-opus-4-7' },
+            skills: {
+                guru: { provider: 'gemini-google', model: 'gemini-3-flash-preview' },
+            },
+        }),
+    });
+    const spi = fakeSpawn();
+
+    // Forzamos un launcher determinístico (evita depender de fs real para
+    // detectar el bundle / shim de gemini).
+    PROVIDERS['gemini-google']._setLauncherForTesting({
+        kind: 'node-bundle-js',
+        cmd: '/fake/node',
+        prefixArgs: ['/fake/gemini.js'],
+        shell: false,
+    });
+    try {
+        launchAgent({
+            skill: 'guru',
+            issue: 1,
+            args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md'],
+            cwd: ROOT,
+            env: { GEMINI_MODEL: 'gemini-3-flash-preview' },
+            PIPELINE,
+            ROOT,
+            fsImpl: fsi,
+            spawnImpl: spi,
+        });
+    } finally {
+        PROVIDERS['gemini-google']._resetLauncherCacheForTesting();
+    }
+    assert.equal(spi.calls.length, 1);
+    const call = spi.calls[0];
+    assert.equal(call.cmd, '/fake/node');
+    // prefijo del launcher (bundle js) + args traducidos.
+    assert.equal(call.args[0], '/fake/gemini.js');
+    assert.ok(call.args.includes('--skip-trust'));
+    assert.deepEqual(call.args.slice(1, 4), ['--skip-trust', '-o', 'json']);
+    assert.ok(call.args.includes('-m'));
+    assert.ok(call.args.includes('gemini-3-flash-preview'));
+    assert.ok(call.args.includes('-p'));
+    assert.ok(call.args.includes('probe'));
+});
+
+// -----------------------------------------------------------------------------
+// 6c. parseTokensFromLog de gemini-google agrega tokens multi-modelo y el
+//     detector de cuota matchea por shape estructural.
+// -----------------------------------------------------------------------------
+test('gemini-google parseTokensFromLog agrega tokens de todos los modelos', () => {
+    const gemini = PROVIDERS['gemini-google'];
+    const logPath = '/tmp/gemini.json';
+    const payload = JSON.stringify({
+        session_id: 'abc',
+        response: 'OK',
+        stats: {
+            models: {
+                'gemini-3.1-flash-lite': { tokens: { input: 100, candidates: 5, cached: 10, thoughts: 2 } },
+                'gemini-3-flash-preview': { tokens: { input: 200, candidates: 8, cached: 0, thoughts: 0 } },
+            },
+        },
+    });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const tokens = gemini.parseTokensFromLog(logPath, fsi);
+    assert.equal(tokens.input, 300);            // 100 + 200
+    assert.equal(tokens.output, 15);            // (5+2) + (8+0)
+    assert.equal(tokens.cache_read, 10);        // 10 + 0
+});
+
+test('gemini-google detectQuotaExhausted matchea RESOURCE_EXHAUSTED por shape', () => {
+    const gemini = PROVIDERS['gemini-google'];
+    const QE = require('../lib/quota-exhausted');
+    const logPath = '/tmp/gemini-err.json';
+    const payload = JSON.stringify({
+        error: { status: 'RESOURCE_EXHAUSTED', code: 429, message: 'quota' },
+    });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const res = gemini.detectQuotaExhausted(logPath, null, QE, fsi);
+    assert.equal(res.matched, true);
+    assert.equal(res.errorType, 'resource_exhausted');
+
+    // Respuesta normal (sin error) → no matchea.
+    const okPayload = JSON.stringify({ response: 'OK', stats: { models: {} } });
+    const fsiOk = { readFileSync: () => okPayload };
+    assert.equal(gemini.detectQuotaExhausted(logPath, null, QE, fsiOk).matched, false);
+});
+
+// -----------------------------------------------------------------------------
 // 7. Provider desconocido en agent-models.json → error explícito.
 // -----------------------------------------------------------------------------
 test('launchAgent valida provider desconocido con mensaje accionable', () => {
