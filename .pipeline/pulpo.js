@@ -4712,6 +4712,30 @@ function brazoLanzamiento(config) {
             return; // No lanzar — el deadlock breaker no puede forzar sin infra
           }
         }
+        // #3790 — El deadlock breaker NO debe agotar Claude durante la ventana
+        // de descanso. Antes bypaseaba el gate del rest-mode (línea 4429) y
+        // forzaba lanzamientos aunque estuviéramos en ventana, lo que rompía
+        // la garantía de Leo de que rebotes/forzados también esperan a que la
+        // ventana cierre. Aplicamos el mismo `isSkillAllowedNow` que el loop
+        // regular — si no permite, no forzamos y el breaker espera al próximo
+        // ciclo (no se incrementa consecutiveAllBlockedCycles porque el "no
+        // lanzar" acá es decisión intencional, no un deadlock real).
+        try {
+          const restCfg = (loadConfig() || {}).rest_mode || {};
+          const issueLbls = getIssueLabels(issue);
+          const verdict = restModeWindow.isSkillAllowedNow(skill, Date.now(), {
+            cfg: restCfg,
+            bypassLabels: issueLbls,
+            pipelineDir: PIPELINE,
+          });
+          if (!verdict.allowed) {
+            log('deadlock', `#${issue}: forzado bloqueado por rest-mode (skill=${skill}, reason=${verdict.reason}) — espera fin de ventana`);
+            return;
+          }
+        } catch (e) {
+          // Fail-open: si el gate falla, no bloqueamos el deadlock breaker.
+          log('deadlock', `rest-mode gate error en deadlock breaker (fail-open): ${e.message}`);
+        }
         const trabajandoPath = moveFile(archivo.path, trabajandoDir);
         lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
       } catch (e) {
