@@ -6456,6 +6456,50 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         writeYaml(workingPath, data);
       }
 
+      // #3746 — Auto-promoción de hijas a allowlist en el camino autónomo del Planner.
+      // Hermano del camino Commander en L9462-9496 (firmado por security en #3625).
+      // Determinístico: el padre es el `issue` que activó la fase, NO se infiere
+      // de texto libre del LLM (cierra A03 Injection). Los IDs de las hijas vienen
+      // del JSON estructurado de `gh issue create --json number,url` que el
+      // Planner declara en su YAML resultado bajo `hijas_creadas`.
+      // El try/catch envolvente garantiza que un error en allowlist NO bloquee
+      // el `moveFile` del lifecycle (best-effort, idéntico patrón al Commander).
+      if (
+        skill === 'planner' &&
+        fase === 'sizing' &&
+        data.resultado === 'aprobado' &&
+        data.dividido === true &&
+        Array.isArray(data.hijas_creadas) &&
+        data.hijas_creadas.length > 0
+      ) {
+        try {
+          const recursivePromote = require('./lib/allowlist-recursive-promote');
+          const childrenIssues = data.hijas_creadas
+            .map(Number)
+            .filter(n => Number.isInteger(n) && n > 0);
+          const promoteResult = recursivePromote.autoPromoteSplitChildren({
+            parentIssue: Number(issue),
+            childrenIssues,
+          });
+          if (promoteResult.promoted && Array.isArray(promoteResult.added) && promoteResult.added.length > 0) {
+            log('lanzamiento',
+              `🧩 Auto-promote (planner-sizing): hijos de #${issue} agregados a allowlist (TTL 48h): ${promoteResult.added.join(',')}`);
+            try {
+              sendTelegram(
+                `🧩 Planner agregó ${promoteResult.added.length} hijas a la ola por split de #${issue} (TTL 48h):\n` +
+                promoteResult.added.map(n => `• #${n}`).join('\n')
+              );
+            } catch { /* best-effort */ }
+          } else if (promoteResult.gateRejected) {
+            log('lanzamiento',
+              `⚠️ Auto-promote (planner-sizing) bloqueado por gate. Promover manualmente.`);
+          }
+        } catch (autoPromoteErr) {
+          log('lanzamiento',
+            `Auto-promote (planner-sizing) falló (best-effort, no bloquea): ${autoPromoteErr.message}`);
+        }
+      }
+
       // --- STOP RECORDING + PULL VIDEO ---
       // Parar screenrecord del pipeline y bajar el video al evidence dir
       if (skill === 'qa' && fase === 'verificacion' && qaRecordingPath && qaSerial) {
