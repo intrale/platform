@@ -52,6 +52,7 @@ const PROVIDERS = {
     'openai-codex': require('./agent-launcher/providers/openai-codex'),
     'gemini-google': require('./agent-launcher/providers/gemini-google'),
     'nvidia-nim': require('./agent-launcher/providers/nvidia-nim'),
+    'cerebras': require('./agent-launcher/providers/cerebras'),
 };
 
 // #3082 (CA-S3 / CA-8): cache liviano de required_permissions por skill,
