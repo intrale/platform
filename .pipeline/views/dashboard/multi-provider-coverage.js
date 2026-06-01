@@ -38,6 +38,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// #3726 — Nav bar V3 unificada (vista satelite "Providers").
+// El widget de coverage es una sub-vista del satelite providers, asi que
+// pertenece a la tab "providers" en la barra unificada.
+const { renderNavTabsSsr } = require('./nav-tabs');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -158,7 +163,6 @@ function bodyHtml() {
 <div class="mpc-frame">
   <header class="in-header">
     <div class="in-header-brand">
-      <a class="in-back-link" href="/" target="_self">Operación</a>
       <div class="in-header-logo">i</div>
       <div>
         <div class="in-header-title">Multi-Provider Coverage</div>
@@ -169,6 +173,7 @@ function bodyHtml() {
       <span class="in-clock" id="mpc-hdr-clock"></span>
     </div>
   </header>
+  ${renderNavTabsSsr('providers')}
 
   <main class="mpc-body">
     <!-- Banner último run -->

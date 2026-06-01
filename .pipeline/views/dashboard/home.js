@@ -7,6 +7,12 @@
 const fs = require('fs');
 const path = require('path');
 
+// #3726 — Modulo compartido de la nav bar V3. Provee NAV_TABS,
+// renderNavTabsSsr (markup SSR) y loadIconSprite (cache compartido del SVG).
+// home.js consume todo desde aca para no duplicar el catalogo de tabs ni
+// abrir un segundo cache del sprite (mantiene paridad con satellites.js).
+const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 
 function loadTheme() {
@@ -550,56 +556,17 @@ function homeStyles() {
 }
 .line-btn:hover { background: var(--in-bg-3); border-color: var(--in-accent); color: var(--in-accent); }
 
-/* Áreas — botonera horizontal compacta con badges de conteo.
-   Historia del grid (no perder el contexto al próximo agente que toque acá):
-   - #3045 (9 → 10 ítems): se pasó de repeat(9, 1fr) a
-     auto-fit minmax(96px, 1fr) para tolerar el crecimiento del array AREAS.
-   - #3239 (10 → 11 ítems): se agregó la pill "Provider" y el ancho
-     operativo del kiosk (1080px frame − 22px×2 padding ≈ 1036px usables)
-     ya no alcanza para 11 × 96 + 10 × 8 = 1136px → la 11ª pill se
-     escapaba a una segunda fila y quebraba el layout.
-   - #3358: se pasa a repeat(${AREAS.length}, minmax(0, 1fr)) interpolado.
-     Las columnas se derivan del array AREAS, así que el patrón histórico
-     9 → 10 → 11 → … no vuelve a romper la fila por un literal estático.
-     minmax(0, 1fr) evita que min-content empuje la columna y permite
-     que las pills compacten al ancho disponible. Con 11 cols quedan
-     ≈ 86.9px por celda (956 ÷ 11) y ≈ 70.9px usables tras padding
-     10px 8px — suficiente para "Bloqueados" (10ch × 11px ≈ 62px).
-     Si el viewport baja por debajo del ancho operativo, las pills
-     siguen siendo clickeables aunque se vean más comprimidas (CA-7). */
-.areas-bar {
-    display: grid;
-    grid-template-columns: repeat(${AREAS.length}, minmax(0, 1fr));
-    gap: 8px;
-}
-.area-pill {
-    background: var(--in-bg-2);
-    border: 1px solid var(--in-border);
-    border-radius: var(--in-radius-sm);
-    padding: 10px 8px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    transition: transform 0.15s, border-color 0.15s, background 0.15s;
-    cursor: pointer;
-    position: relative;
-    text-decoration: none;
-    color: var(--in-fg);
-    min-height: 64px;
-}
-.area-pill:hover {
-    transform: translateY(-2px);
-    border-color: var(--in-accent);
-    background: var(--in-bg-3);
-}
-.area-pill-icon { font-size: 18px; line-height: 1; }
-.area-pill-name {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--in-fg);
-    letter-spacing: 0.2px;
-}
+/* #3726 — Badges para la barra de navegacion V3.
+   El render del .v3-nav (home + satelites) emite los <span id="badge-*">
+   con la clase .area-pill-badge. Los tickers existentes
+   (tickMultiProvider y la hidratacion de counts en el slice del header)
+   leen estos spans por id, asi no se rompen durante la transicion al
+   nuevo diseno (#3726, CA-10).
+   Historia: la botonera vieja .areas-bar / .area-pill quedo retirada en
+   #3726. Los selectores .area-pill* desaparecieron junto con el HTML
+   que los usaba; solo sobreviven los modificadores .area-pill-badge*,
+   absolutamente posicionados encima del nuevo .v3-tab para no romper
+   los semaforos (zero / warn / bad). */
 .area-pill-badge {
     position: absolute;
     top: 6px; right: 6px;
@@ -1279,23 +1246,13 @@ const SKILL_COLORS = {
     linter: '#8b949e', build: '#ffa657', delivery: '#2ee6c1', commander: '#f778ba',
 };
 
-const AREAS = [
-    { key: 'equipo', label: 'Equipo', icon: '👥', sub: 'Agentes y carga', href: '/equipo' },
-    { key: 'pipeline', label: 'Pipeline', icon: '🔄', sub: 'Issues por fase', href: '/pipeline' },
-    { key: 'bloqueados', label: 'Bloqueados', icon: '🚧', sub: 'Esperando humano', href: '/bloqueados' },
-    { key: 'issues', label: 'Issues', icon: '📋', sub: 'Backlog completo', href: '/issues' },
-    { key: 'matriz', label: 'Matriz', icon: '📈', sub: 'Skill × Fase', href: '/matriz' },
-    { key: 'ops', label: 'Ops', icon: '🛠', sub: 'Procesos e infra', href: '/ops' },
-    { key: 'kpis', label: 'KPIs', icon: '📊', sub: 'Métricas detalladas', href: '/kpis' },
-    { key: 'historial', label: 'Historial', icon: '📜', sub: 'Actividad reciente', href: '/historial' },
-    { key: 'costos', label: 'Costos', icon: '💰', sub: 'Tokens y consumo', href: '/costos' },
-    { key: 'modo-descanso', label: 'Descanso', icon: '🌙', sub: 'Ventana horaria', href: '/modo-descanso' },
-    // #3239 — Tarjeta de acceso al panel /multi-provider (entregado en #3177).
-    // Label corto "Provider" para no desbordar .area-pill-name (11px, minmax 96px).
-    // El badge se hidrata en tickMultiProvider() con cantidad de providers configurados
-    // y semáforo según el estado de las keys (CA-4/CA-5/CA-7).
-    { key: 'multi-provider', label: 'Provider', icon: '🤖', sub: 'Proveedores, modelos, fallbacks y overrides', href: '/multi-provider' },
-];
+// #3726 — El array AREAS quedo retirado en favor de NAV_TABS (en
+// views/dashboard/nav-tabs.js). El catalogo de tabs paso a vivir en el
+// modulo compartido para que home.js y satellites.js coman del mismo
+// inventario. Los antiguos slugs "modo-descanso" y "multi-provider" se
+// renombraron a "descanso" y "providers"; el mapeo slug -> areaKey
+// historico vive donde se renderea el nav (badgeForSlug en renderHomeHTML),
+// para mantener los tickers existentes (CA-10).
 
 function renderClientScript() {
     return `
@@ -3007,21 +2964,10 @@ function renderQuotaBannerSsr(quotaState) {
   </section>`;
 }
 
-// #3487 — Carga el sprite SVG del filesystem para inyectarlo inline en el
-// HTML del home V3. Permite usar `<use href="#ic-wave"/>` (referencia interna)
-// sin depender de un static asset handler para `/assets/icons/sprite.svg`.
-// Lazy + cache (un solo IO por proceso). Degrada silenciosamente a '' si el
-// archivo no está disponible — el dashboard sigue rendereando sin íconos.
-let _spriteCacheHome = null;
-function loadIconSpriteHome() {
-    if (_spriteCacheHome !== null) return _spriteCacheHome;
-    try {
-        _spriteCacheHome = fs.readFileSync(path.join(__dirname, '..', '..', 'assets', 'icons', 'sprite.svg'), 'utf8');
-    } catch {
-        _spriteCacheHome = '';
-    }
-    return _spriteCacheHome;
-}
+// #3487 + #3726 — La carga del sprite vive ahora en nav-tabs.js como
+// loadIconSprite() (cache compartido entre home y satellites). El nombre
+// loadIconSpriteHome quedo retirado para no duplicar el cache: la nav bar
+// unificada lo lee desde nav-tabs.js y home.js lo consume directo.
 
 function renderHomeHTML(opts) {
     // `opts.quotaState` permite al caller pasar el state precomputado (evita
@@ -3046,13 +2992,34 @@ function renderHomeHTML(opts) {
     const theme = loadTheme();
     const styles = homeStyles();
     const script = renderClientScript();
-    const spriteInline = loadIconSpriteHome();
-    const areasHtml = AREAS.map(a => `
-      <a class="area-pill" href="${a.href}" target="_blank" rel="noopener" title="${a.sub}">
-        <span class="area-pill-badge area-pill-badge-zero" id="badge-${a.key}">·</span>
-        <span class="area-pill-icon">${a.icon}</span>
-        <span class="area-pill-name">${a.label}</span>
-      </a>`).join('');
+    // #3726 — Sprite SVG inline compartido (cache unificado en nav-tabs.js).
+    const spriteInline = loadIconSprite();
+    // #3726 — Render de la nav bar V3 unificada (12 tabs con tokens V3).
+    // El callback `badgeForSlug` mantiene los <span id="badge-*"> usados por
+    // los tickers existentes (CA-10). El mapeo slug->areaKey traduce los
+    // nuevos slugs ("descanso"/"providers") al key historico que sirve el
+    // backend en `d.counts` ("modo-descanso"/"multi-provider"), asi
+    // `tickMultiProvider()` y la hidratacion de counts del slice siguen
+    // funcionando sin cambios server-side.
+    const SLUG_TO_BADGE_AREA = {
+        equipo: 'equipo',
+        pipeline: 'pipeline',
+        bloqueados: 'bloqueados',
+        issues: 'issues',
+        matriz: 'matriz',
+        ops: 'ops',
+        kpis: 'kpis',
+        historial: 'historial',
+        costos: 'costos',
+        descanso: 'modo-descanso',
+        providers: 'multi-provider',
+    };
+    const badgeForSlug = (slug) => {
+        const areaKey = SLUG_TO_BADGE_AREA[slug];
+        if (!areaKey) return ''; // slug "home" no lleva badge
+        return `<span class="area-pill-badge area-pill-badge-zero" id="badge-${areaKey}">·</span>`;
+    };
+    const navHtml = renderNavTabsSsr('home', { badgeForSlug });
 
     return `<!DOCTYPE html>
 <html lang="es">
@@ -3231,9 +3198,7 @@ function renderHomeHTML(opts) {
       </div>
     </section>
 
-    <nav class="areas-bar" aria-label="Áreas">
-      ${areasHtml}
-    </nav>
+    ${navHtml}
 
     <section class="active-section">
       <h2 class="in-section-title">

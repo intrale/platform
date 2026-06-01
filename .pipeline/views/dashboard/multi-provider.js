@@ -28,6 +28,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// #3726 — Nav bar V3 unificada (vista satelite "Providers").
+const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -1117,6 +1120,9 @@ setInterval(() => { if (!mpState.dirty) loadAll().catch(()=>{}); }, 30000);
 
 function renderMultiProvider() {
     const theme = loadTheme();
+    // #3726 — Nav bar V3 + sprite inline (tab activa = "providers").
+    const spriteInline = loadIconSprite();
+    const navHtml = renderNavTabsSsr('providers');
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1131,10 +1137,11 @@ ${PANEL_CSS}
 </style>
 </head>
 <body>
+<!-- #3726 — Sprite SVG inline para <use href="#ic-tab-*"> dentro del .v3-nav -->
+<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
     <div class="in-header-brand">
-      <a class="in-back-link" href="/" target="_self">Operación</a>
       <div class="in-header-logo">i</div>
       <div>
         <div class="in-header-title">Multi-Provider</div>
@@ -1145,6 +1152,7 @@ ${PANEL_CSS}
       <span class="in-clock" id="hdr-clock">${new Date().toLocaleTimeString('es-AR')}</span>
     </div>
   </header>
+  ${navHtml}
   <main class="satellite-body">${bodyHtml()}</main>
   <footer class="in-footer">
     <span>Edits viven en memoria del browser hasta Guardar</span>

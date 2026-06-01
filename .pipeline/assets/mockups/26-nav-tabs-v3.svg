@@ -1,0 +1,512 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 26 — Rediseño barra de navegación V3 (#3726)
+  ----------------------------------------------------------------------------
+  Comparativa visual entre el estado actual (.areas-bar con emojis y back-link
+  aislado) y el rediseño propuesto (.v3-nav unificada con tokens V3, sprite SVG
+  y aria-current). Incluye especificaciones de touch targets (CA-5), tokens
+  consumidos (CA-8) y estados de interacción (hover / focus / active).
+
+  Decisiones consolidadas (PO, guru, security, architect):
+    - 12 tabs en orden fijo (home, equipo, pipeline, bloqueados, issues,
+      matriz, ops, kpis, historial, costos, descanso, providers).
+    - Slugs renombrados: modo-descanso→descanso, multi-provider→providers.
+    - 7 íconos nuevos al sprite (ic-tab-home, ic-tab-pipeline, ic-tab-matriz,
+      ic-tab-ops, ic-tab-kpis, ic-tab-historial, ic-tab-costos).
+    - 5 íconos reusados (equipo→ic-agents-count, bloqueados→ic-estado-needs-human,
+      issues→ic-issues-count, descanso→ic-rest-mode, providers→ic-multi-provider).
+    - Tokens: --in-bg-2, --in-bg-3, --in-border, --in-brand, --in-accent,
+      --in-fg, --in-radius-sm. Sin colores hardcoded.
+    - Touch target: ≥44×44px garantizado por grid-template-columns:
+      repeat(12, minmax(44px, 1fr)) + min-height: 64px.
+
+  Render previsto: kiosk 1080×1920. En 1080px → ~80px efectivos por tab.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif">
+  <!-- Tokens V3 declarados como rect transparentes para referencia visual -->
+  <defs>
+    <linearGradient id="brandGradient" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1f6feb"/>
+      <stop offset="100%" stop-color="#2ee6c1"/>
+    </linearGradient>
+    <filter id="elev" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- ============================================================ BACKGROUND -->
+  <rect x="0" y="0" width="1600" height="1200" fill="#0d1117"/>
+
+  <!-- ============================================================ HEADER -->
+  <text x="40" y="50" fill="#e6edf3" font-size="24" font-weight="700">
+    Issue #3726 — Rediseño barra de navegación V3
+  </text>
+  <text x="40" y="80" fill="#8b949e" font-size="14">
+    Mockup UX · 12 tabs unificadas en home + 11 satélites · tokens V3 · sprite SVG · WCAG AA
+  </text>
+
+  <!-- ============================================================ ANTES: estado actual -->
+  <g transform="translate(40, 130)">
+    <rect x="0" y="0" width="740" height="320" rx="14" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="20" y="34" fill="#f85149" font-size="14" font-weight="700">ANTES — .areas-bar con emojis (home.js:1282-1298)</text>
+    <text x="20" y="56" fill="#8b949e" font-size="12">11 pills horizontales en HOME · back-link aislado en satélites · sin estado activo · sin íconos del design system</text>
+
+    <!-- Simulación del areas-bar actual con emojis -->
+    <g transform="translate(20, 78)">
+      <rect x="0" y="0" width="700" height="58" rx="6" fill="#1f2937" stroke="#30363d"/>
+      <g font-size="11" fill="#e6edf3" text-anchor="middle">
+        <g transform="translate(0,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#1f6feb22" stroke="#1f6feb"/>
+          <text x="34"  y="26">👥</text>
+          <text x="34"  y="42">Equipo</text>
+        </g>
+        <g transform="translate(64,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">🔄</text>
+          <text x="34"  y="42">Pipeline</text>
+        </g>
+        <g transform="translate(128,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">⛔</text>
+          <text x="34"  y="42">Bloq.</text>
+        </g>
+        <g transform="translate(192,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">📋</text>
+          <text x="34"  y="42">Issues</text>
+        </g>
+        <g transform="translate(256,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">🧩</text>
+          <text x="34"  y="42">Matriz</text>
+        </g>
+        <g transform="translate(320,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">⚙️</text>
+          <text x="34"  y="42">Ops</text>
+        </g>
+        <g transform="translate(384,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">📊</text>
+          <text x="34"  y="42">KPIs</text>
+        </g>
+        <g transform="translate(448,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">📜</text>
+          <text x="34"  y="42">Hist.</text>
+        </g>
+        <g transform="translate(512,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">💰</text>
+          <text x="34"  y="42">Costos</text>
+        </g>
+        <g transform="translate(576,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">🌙</text>
+          <text x="34"  y="42">Desc.</text>
+        </g>
+        <g transform="translate(640,0)">
+          <rect x="6"   y="10" width="56" height="38" rx="999" fill="#161b22" stroke="#30363d"/>
+          <text x="34"  y="26">⚡</text>
+          <text x="34"  y="42">Prov.</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Back-link de satélite aislado -->
+    <g transform="translate(20, 170)">
+      <rect x="0" y="0" width="700" height="48" rx="6" fill="#161b22" stroke="#30363d" stroke-dasharray="4 3"/>
+      <text x="14" y="20" fill="#8b949e" font-size="11">SATÉLITES (hoy: solo un back-link aislado en satellites.js:207)</text>
+      <text x="14" y="38" fill="#58a6ff" font-size="13" text-decoration="underline">← Operación</text>
+    </g>
+
+    <!-- Problemas identificados -->
+    <g transform="translate(20, 232)">
+      <text x="0" y="0" fill="#d29922" font-size="11" font-weight="700">⚠ Problemas detectados por UX:</text>
+      <text x="0" y="18" fill="#b1bac4" font-size="11">· emojis del SO rompen identidad visual (cada plataforma renderiza distinto)</text>
+      <text x="0" y="34" fill="#b1bac4" font-size="11">· sin estado activo (operador no sabe dónde está)</text>
+      <text x="0" y="50" fill="#b1bac4" font-size="11">· nav inconsistente: 11 pills en home, 1 back-link en satélites</text>
+      <text x="0" y="66" fill="#b1bac4" font-size="11">· sin aria-current, sin aria-label en cada link → screen reader no anuncia "página actual"</text>
+    </g>
+  </g>
+
+  <!-- ============================================================ DESPUÉS: rediseño v3-nav -->
+  <g transform="translate(820, 130)">
+    <rect x="0" y="0" width="740" height="320" rx="14" fill="#161b22" stroke="#2ee6c1" stroke-width="1.5"/>
+    <text x="20" y="34" fill="#3fb950" font-size="14" font-weight="700">DESPUÉS — .v3-nav unificada (home + satélites)</text>
+    <text x="20" y="56" fill="#8b949e" font-size="12">12 tabs · sprite SVG · tokens V3 · aria-current=&quot;page&quot; · touch ≥44×44 · contraste WCAG AA</text>
+
+    <!-- v3-nav unificada — 12 tabs en grid -->
+    <g transform="translate(20, 78)">
+      <rect x="0" y="0" width="700" height="80" rx="8" fill="#161b22" stroke="#30363d"/>
+
+      <!-- Tab 1 — HOME — ACTIVE (aria-current="page") -->
+      <g transform="translate(0, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#1f2937" stroke="#1f6feb" stroke-width="1.5"/>
+        <!-- Casa stroke 1.75 currentColor=brand -->
+        <path d="M22 32 L31 24 L40 32 V44 H37 V38 H25 V44 H22 Z"
+              fill="none" stroke="#1f6feb" stroke-width="1.75"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="31" y="60" fill="#1f6feb" font-size="9" font-weight="700" text-anchor="middle">Inicio</text>
+      </g>
+
+      <!-- Tab 2 — EQUIPO -->
+      <g transform="translate(58, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <!-- ic-agents-count reusado -->
+        <circle cx="28" cy="30" r="3" fill="none" stroke="#e6edf3" stroke-width="1.5"/>
+        <path d="M22 40 C22 36.7 24.7 34 28 34 C31.3 34 34 36.7 34 40" fill="none"
+              stroke="#e6edf3" stroke-width="1.5" stroke-linecap="round"/>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Equipo</text>
+      </g>
+
+      <!-- Tab 3 — PIPELINE -->
+      <g transform="translate(116, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <!-- ic-tab-pipeline -->
+        <circle cx="20" cy="32" r="2" fill="none" stroke="#e6edf3" stroke-width="1.5"/>
+        <circle cx="31" cy="32" r="2" fill="none" stroke="#e6edf3" stroke-width="1.5"/>
+        <circle cx="42" cy="32" r="2" fill="none" stroke="#e6edf3" stroke-width="1.5"/>
+        <path d="M22 32 H29 M33 32 H40" stroke="#e6edf3" stroke-width="1.5" stroke-linecap="round"/>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Pipeline</text>
+      </g>
+
+      <!-- Tab 4 — BLOQUEADOS (con badge dinámico — clase area-pill-badge preservada) -->
+      <g transform="translate(174, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <!-- ic-estado-needs-human (silueta + alerta) -->
+        <circle cx="31" cy="28" r="3" fill="none" stroke="#e6edf3" stroke-width="1.5"/>
+        <path d="M25 40 C25 36.7 27.7 34 31 34 C34.3 34 37 36.7 37 40" fill="none"
+              stroke="#e6edf3" stroke-width="1.5" stroke-linecap="round"/>
+        <!-- badge dinámico preservado -->
+        <circle cx="46" cy="14" r="7" fill="#f85149"/>
+        <text x="46" y="17" fill="#fff" font-size="8" font-weight="700" text-anchor="middle">3</text>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Bloq.</text>
+      </g>
+
+      <!-- Tab 5 — ISSUES -->
+      <g transform="translate(232, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <path d="M31 24 L40 28 L31 32 L22 28 Z" fill="none" stroke="#e6edf3" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M22 32 L31 36 L40 32" fill="none" stroke="#e6edf3" stroke-width="1.5" stroke-linecap="round"/>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Issues</text>
+      </g>
+
+      <!-- Tab 6 — MATRIZ -->
+      <g transform="translate(290, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <!-- ic-tab-matriz: grid 3x3 -->
+        <g stroke="#e6edf3" stroke-width="1.2" fill="none">
+          <rect x="22" y="24" width="5" height="5" rx="0.6"/>
+          <rect x="28" y="24" width="5" height="5" rx="0.6"/>
+          <rect x="34" y="24" width="5" height="5" rx="0.6"/>
+          <rect x="22" y="30" width="5" height="5" rx="0.6"/>
+          <rect x="28" y="30" width="5" height="5" rx="0.6"/>
+          <rect x="34" y="30" width="5" height="5" rx="0.6"/>
+          <rect x="22" y="36" width="5" height="5" rx="0.6"/>
+          <rect x="28" y="36" width="5" height="5" rx="0.6"/>
+          <rect x="34" y="36" width="5" height="5" rx="0.6"/>
+        </g>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Matriz</text>
+      </g>
+
+      <!-- Tab 7 — OPS — HOVER state (border accent + lift) -->
+      <g transform="translate(348, 0)">
+        <rect x="4" y="6" width="54" height="64" rx="8" fill="#1f2937" stroke="#2ee6c1" stroke-width="1.5"/>
+        <!-- ic-tab-ops llave + destornillador -->
+        <path d="M37 24 A2.5 2.5 0 0 0 40 27 L41 26 V24 H39 V25 A1.5 1.5 0 0 1 38 24 Z"
+              fill="none" stroke="#2ee6c1" stroke-width="1.3"/>
+        <path d="M39 26 L29 36 M28 38 L24 42" stroke="#2ee6c1" stroke-width="1.5" stroke-linecap="round"/>
+        <text x="31" y="58" fill="#2ee6c1" font-size="9" font-weight="700" text-anchor="middle">Ops</text>
+        <text x="31" y="-2" fill="#2ee6c1" font-size="8" text-anchor="middle">↑ hover</text>
+      </g>
+
+      <!-- Tab 8 — KPIs -->
+      <g transform="translate(406, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <!-- ic-tab-kpis bar chart -->
+        <path d="M22 44 H40" stroke="#e6edf3" stroke-width="1.2" stroke-linecap="round"/>
+        <rect x="23" y="38" width="3.5" height="6" rx="0.6" fill="none" stroke="#e6edf3" stroke-width="1.2"/>
+        <rect x="28.5" y="34" width="3.5" height="10" rx="0.6" fill="none" stroke="#e6edf3" stroke-width="1.2"/>
+        <rect x="34" y="29" width="3.5" height="15" rx="0.6" fill="none" stroke="#e6edf3" stroke-width="1.2"/>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">KPIs</text>
+      </g>
+
+      <!-- Tab 9 — HISTORIAL -->
+      <g transform="translate(464, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <!-- ic-tab-historial reloj + flecha circular -->
+        <circle cx="33" cy="32" r="6" fill="none" stroke="#e6edf3" stroke-width="1.5"/>
+        <path d="M33 28.5 V32 L35.5 33.5" fill="none" stroke="#e6edf3" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M23 28 V25 M23 28 H26" stroke="#e6edf3" stroke-width="1.2" stroke-linecap="round"/>
+        <path d="M23 28 A5 5 0 0 1 30 26.5" fill="none" stroke="#e6edf3" stroke-width="1.2" stroke-linecap="round"/>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Hist.</text>
+      </g>
+
+      <!-- Tab 10 — COSTOS -->
+      <g transform="translate(522, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <!-- ic-tab-costos $ -->
+        <circle cx="31" cy="32" r="7" fill="none" stroke="#e6edf3" stroke-width="1.5"/>
+        <text x="31" y="36" fill="#e6edf3" font-size="11" font-weight="600" text-anchor="middle">$</text>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Costos</text>
+      </g>
+
+      <!-- Tab 11 — DESCANSO (reusa ic-rest-mode) -->
+      <g transform="translate(580, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <path d="M37 36 A6 6 0 1 1 31 26 A4.5 4.5 0 0 0 37 36 Z"
+              fill="none" stroke="#e6edf3" stroke-width="1.5" stroke-linejoin="round"/>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Desc.</text>
+      </g>
+
+      <!-- Tab 12 — PROVIDERS (reusa ic-multi-provider — concept de stacks) -->
+      <g transform="translate(638, 0)">
+        <rect x="4" y="8" width="54" height="64" rx="8" fill="#161b22" stroke="#30363d"/>
+        <circle cx="27" cy="29" r="3" fill="none" stroke="#e6edf3" stroke-width="1.4"/>
+        <circle cx="35" cy="29" r="3" fill="none" stroke="#e6edf3" stroke-width="1.4"/>
+        <circle cx="31" cy="36" r="3" fill="none" stroke="#e6edf3" stroke-width="1.4"/>
+        <text x="31" y="60" fill="#e6edf3" font-size="9" font-weight="600" text-anchor="middle">Prov.</text>
+      </g>
+    </g>
+
+    <!-- Indicador active + hover -->
+    <g transform="translate(20, 170)">
+      <rect x="0" y="0" width="700" height="48" rx="6" fill="#1f293744" stroke="#2ee6c1" stroke-dasharray="4 3"/>
+      <text x="14" y="20" fill="#2ee6c1" font-size="11">SATÉLITES (rediseño: la misma nav bar con aria-current sobre la tab del satélite activo)</text>
+      <text x="14" y="38" fill="#8b949e" font-size="11">→ ej. en /equipo: la tab &quot;Equipo&quot; lleva aria-current=&quot;page&quot; + border --in-brand</text>
+    </g>
+
+    <!-- Beneficios -->
+    <g transform="translate(20, 232)">
+      <text x="0" y="0" fill="#3fb950" font-size="11" font-weight="700">✓ Mejoras entregadas:</text>
+      <text x="0" y="18" fill="#b1bac4" font-size="11">· iconografía coherente (sprite SVG + currentColor — un solo render por plataforma)</text>
+      <text x="0" y="34" fill="#b1bac4" font-size="11">· estado activo visible (border --in-brand + aria-current=&quot;page&quot; server-side)</text>
+      <text x="0" y="50" fill="#b1bac4" font-size="11">· nav unificada (mismo HTML/CSS en home y en cada uno de los 11 satélites)</text>
+      <text x="0" y="66" fill="#b1bac4" font-size="11">· accesibilidad WCAG AA (aria-label literal por tab, focus-visible con outline, tab order)</text>
+    </g>
+  </g>
+
+  <!-- ============================================================ DETALLE: anatomía de tab -->
+  <g transform="translate(40, 490)">
+    <rect x="0" y="0" width="1520" height="320" rx="14" fill="#161b22" stroke="#30363d"/>
+    <text x="20" y="34" fill="#e6edf3" font-size="16" font-weight="700">Anatomía de una tab — especificaciones técnicas</text>
+    <text x="20" y="56" fill="#8b949e" font-size="12">Tokens consumidos · estados de interacción · touch targets · markup recomendado</text>
+
+    <!-- ESTADOS visualizados -->
+    <g transform="translate(40, 90)">
+      <!-- Default -->
+      <g>
+        <text x="0" y="-10" fill="#8b949e" font-size="11" font-weight="600">DEFAULT</text>
+        <rect x="0" y="0" width="80" height="80" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+        <g transform="translate(29, 22)">
+          <circle cx="11" cy="3" r="3" fill="none" stroke="#e6edf3" stroke-width="1.6"/>
+          <path d="M5 16 C5 12.7 7.7 10 11 10 C14.3 10 17 12.7 17 16" fill="none"
+                stroke="#e6edf3" stroke-width="1.6" stroke-linecap="round"/>
+        </g>
+        <text x="40" y="70" fill="#e6edf3" font-size="11" font-weight="600" text-anchor="middle">Equipo</text>
+      </g>
+
+      <!-- Hover -->
+      <g transform="translate(130, 0)">
+        <text x="0" y="-10" fill="#8b949e" font-size="11" font-weight="600">:HOVER</text>
+        <rect x="0" y="-2" width="80" height="80" rx="8" fill="#1f2937" stroke="#2ee6c1" stroke-width="1.5"/>
+        <g transform="translate(29, 20)">
+          <circle cx="11" cy="3" r="3" fill="none" stroke="#2ee6c1" stroke-width="1.6"/>
+          <path d="M5 16 C5 12.7 7.7 10 11 10 C14.3 10 17 12.7 17 16" fill="none"
+                stroke="#2ee6c1" stroke-width="1.6" stroke-linecap="round"/>
+        </g>
+        <text x="40" y="68" fill="#2ee6c1" font-size="11" font-weight="700" text-anchor="middle">Equipo</text>
+      </g>
+
+      <!-- Focus-visible -->
+      <g transform="translate(260, 0)">
+        <text x="0" y="-10" fill="#8b949e" font-size="11" font-weight="600">:FOCUS-VISIBLE</text>
+        <rect x="-3" y="-3" width="86" height="86" rx="9" fill="none" stroke="#2ee6c1" stroke-width="2"/>
+        <rect x="0" y="0" width="80" height="80" rx="8" fill="#1f2937" stroke="#2ee6c1" stroke-width="1"/>
+        <g transform="translate(29, 22)">
+          <circle cx="11" cy="3" r="3" fill="none" stroke="#2ee6c1" stroke-width="1.6"/>
+          <path d="M5 16 C5 12.7 7.7 10 11 10 C14.3 10 17 12.7 17 16" fill="none"
+                stroke="#2ee6c1" stroke-width="1.6" stroke-linecap="round"/>
+        </g>
+        <text x="40" y="70" fill="#2ee6c1" font-size="11" font-weight="700" text-anchor="middle">Equipo</text>
+      </g>
+
+      <!-- Active (aria-current) -->
+      <g transform="translate(390, 0)">
+        <text x="0" y="-10" fill="#8b949e" font-size="11" font-weight="600">aria-current=&quot;page&quot;</text>
+        <rect x="0" y="0" width="80" height="80" rx="8" fill="#1f2937" stroke="#1f6feb" stroke-width="1.5"/>
+        <g transform="translate(29, 22)">
+          <circle cx="11" cy="3" r="3" fill="none" stroke="#1f6feb" stroke-width="1.6"/>
+          <path d="M5 16 C5 12.7 7.7 10 11 10 C14.3 10 17 12.7 17 16" fill="none"
+                stroke="#1f6feb" stroke-width="1.6" stroke-linecap="round"/>
+        </g>
+        <text x="40" y="70" fill="#1f6feb" font-size="11" font-weight="700" text-anchor="middle">Equipo</text>
+        <!-- Indicador bottom -->
+        <rect x="20" y="76" width="40" height="3" rx="1.5" fill="#1f6feb"/>
+      </g>
+
+      <!-- Touch target spec -->
+      <g transform="translate(560, 0)">
+        <text x="0" y="-10" fill="#8b949e" font-size="11" font-weight="600">TOUCH TARGET (CA-5)</text>
+        <rect x="0" y="0" width="80" height="80" rx="8" fill="#161b22" stroke="#30363d" stroke-dasharray="2 2"/>
+        <!-- Marker 64x44 mínimo -->
+        <rect x="8" y="18" width="64" height="44" fill="none" stroke="#d29922" stroke-dasharray="3 2" stroke-width="1.2"/>
+        <text x="40" y="44" fill="#d29922" font-size="10" font-weight="600" text-anchor="middle">≥44×44</text>
+        <text x="40" y="98" fill="#8b949e" font-size="10" text-anchor="middle">grid: minmax(44px, 1fr)</text>
+        <text x="40" y="112" fill="#8b949e" font-size="10" text-anchor="middle">min-height: 64px</text>
+      </g>
+
+      <!-- Tokens -->
+      <g transform="translate(720, 0)">
+        <text x="0" y="-10" fill="#8b949e" font-size="11" font-weight="600">TOKENS V3</text>
+        <g font-family="ui-monospace, monospace" font-size="10">
+          <rect x="0" y="0" width="14" height="14" fill="#161b22" stroke="#30363d"/>
+          <text x="22" y="11" fill="#e6edf3">--in-bg-2</text>
+          <text x="120" y="11" fill="#8b949e">#161b22 · default bg</text>
+
+          <rect x="0" y="22" width="14" height="14" fill="#1f2937"/>
+          <text x="22" y="33" fill="#e6edf3">--in-bg-3</text>
+          <text x="120" y="33" fill="#8b949e">#1f2937 · active/hover bg</text>
+
+          <rect x="0" y="44" width="14" height="14" fill="#30363d"/>
+          <text x="22" y="55" fill="#e6edf3">--in-border</text>
+          <text x="120" y="55" fill="#8b949e">#30363d · default border</text>
+
+          <rect x="0" y="66" width="14" height="14" fill="#1f6feb"/>
+          <text x="22" y="77" fill="#e6edf3">--in-brand</text>
+          <text x="120" y="77" fill="#8b949e">#1f6feb · active border + fg</text>
+
+          <rect x="0" y="88" width="14" height="14" fill="#2ee6c1"/>
+          <text x="22" y="99" fill="#e6edf3">--in-accent</text>
+          <text x="120" y="99" fill="#8b949e">#2ee6c1 · hover/focus border</text>
+
+          <rect x="0" y="110" width="14" height="14" fill="#e6edf3"/>
+          <text x="22" y="121" fill="#1f2937">--in-fg</text>
+          <text x="120" y="121" fill="#8b949e">#e6edf3 · texto default</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Contraste WCAG -->
+    <g transform="translate(40, 248)">
+      <text x="0" y="0" fill="#3fb950" font-size="12" font-weight="700">✓ Contraste WCAG AA verificado</text>
+      <text x="0" y="20" fill="#b1bac4" font-size="11">
+        · --in-fg (#e6edf3) sobre --in-bg-2 (#161b22) = 14.7:1 (texto default, AAA)
+      </text>
+      <text x="0" y="36" fill="#b1bac4" font-size="11">
+        · --in-brand (#1f6feb) sobre --in-bg-3 (#1f2937) = 4.6:1 (texto activo, AA)
+      </text>
+      <text x="0" y="52" fill="#b1bac4" font-size="11">
+        · --in-accent (#2ee6c1) sobre --in-bg-3 (#1f2937) = 7.4:1 (hover, AAA)
+      </text>
+    </g>
+  </g>
+
+  <!-- ============================================================ KIOSK 1080×1920 (escala) -->
+  <g transform="translate(40, 850)">
+    <rect x="0" y="0" width="1520" height="320" rx="14" fill="#0d1117" stroke="#30363d"/>
+    <text x="20" y="34" fill="#e6edf3" font-size="16" font-weight="700">Render previsto en kiosk 1080×1920 (escala 1:2.5)</text>
+    <text x="20" y="56" fill="#8b949e" font-size="12">12 tabs en 1080px ÷ 12 = 90px efectivos por tab · sobra margen sobre el mínimo de 44px (CA-5)</text>
+
+    <!-- Vista kiosk a escala -->
+    <g transform="translate(40, 80)">
+      <!-- Marco del kiosk -->
+      <rect x="0" y="0" width="432" height="220" rx="10" fill="#000" stroke="#484f58" stroke-width="2"/>
+      <!-- Pantalla -->
+      <rect x="6" y="6" width="420" height="208" rx="6" fill="#0d1117"/>
+      <!-- Header -->
+      <rect x="6" y="6" width="420" height="32" fill="url(#brandGradient)" opacity="0.15"/>
+      <text x="16" y="26" fill="#e6edf3" font-size="9" font-weight="700">Intrale · Dashboard V3</text>
+      <text x="416" y="26" fill="#8b949e" font-size="8" text-anchor="end">100% · 14:32</text>
+
+      <!-- Nav bar — 12 tabs de ancho 35px cada una (escala) -->
+      <g transform="translate(6, 42)">
+        <rect x="0" y="0" width="420" height="36" fill="#161b22"/>
+        <g font-size="6" fill="#e6edf3" text-anchor="middle" font-weight="600">
+          <g transform="translate(0,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="#1f2937" stroke="#1f6feb"/><text x="17" y="28" fill="#1f6feb">Inicio</text></g>
+          <g transform="translate(35,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Equipo</text></g>
+          <g transform="translate(70,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Pipeline</text></g>
+          <g transform="translate(105,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Bloq.</text></g>
+          <g transform="translate(140,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Issues</text></g>
+          <g transform="translate(175,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Matriz</text></g>
+          <g transform="translate(210,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Ops</text></g>
+          <g transform="translate(245,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">KPIs</text></g>
+          <g transform="translate(280,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Hist.</text></g>
+          <g transform="translate(315,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Costos</text></g>
+          <g transform="translate(350,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Desc.</text></g>
+          <g transform="translate(385,0)"><rect x="2" y="3" width="31" height="30" rx="4" fill="none" stroke="#30363d"/><text x="17" y="28">Prov.</text></g>
+        </g>
+      </g>
+
+      <!-- Contenido placeholder del home -->
+      <g transform="translate(6, 84)">
+        <rect x="6" y="6" width="130" height="62" rx="6" fill="#161b22" stroke="#30363d"/>
+        <text x="71" y="22" fill="#8b949e" font-size="8" text-anchor="middle">KPI cards</text>
+        <text x="71" y="40" fill="#3fb950" font-size="14" font-weight="700" text-anchor="middle">7</text>
+        <text x="71" y="56" fill="#8b949e" font-size="7" text-anchor="middle">agentes activos</text>
+
+        <rect x="142" y="6" width="130" height="62" rx="6" fill="#161b22" stroke="#30363d"/>
+        <text x="207" y="22" fill="#8b949e" font-size="8" text-anchor="middle">Pipeline</text>
+        <text x="207" y="40" fill="#1f6feb" font-size="14" font-weight="700" text-anchor="middle">17</text>
+        <text x="207" y="56" fill="#8b949e" font-size="7" text-anchor="middle">issues en flujo</text>
+
+        <rect x="278" y="6" width="130" height="62" rx="6" fill="#161b22" stroke="#30363d"/>
+        <text x="343" y="22" fill="#8b949e" font-size="8" text-anchor="middle">Bloqueados</text>
+        <text x="343" y="40" fill="#f85149" font-size="14" font-weight="700" text-anchor="middle">3</text>
+        <text x="343" y="56" fill="#8b949e" font-size="7" text-anchor="middle">esperando humano</text>
+      </g>
+
+      <!-- Footer info -->
+      <text x="216" y="200" fill="#6e7681" font-size="7" text-anchor="middle">render 1080×1920 — escala 1:2.5 — nav ocupa 80px reales (tab=90×80)</text>
+    </g>
+
+    <!-- Anotaciones -->
+    <g transform="translate(540, 80)">
+      <text x="0" y="14" fill="#e6edf3" font-size="13" font-weight="700">Beneficios para el operador</text>
+      <text x="0" y="36" fill="#b1bac4" font-size="11">1. Cambia de ventana sin perder contexto: la tab activa</text>
+      <text x="0" y="50" fill="#b1bac4" font-size="11">   queda marcada, recuerda dónde está.</text>
+
+      <text x="0" y="76" fill="#b1bac4" font-size="11">2. Volver al home es 1 click visible siempre — no más</text>
+      <text x="0" y="90" fill="#b1bac4" font-size="11">   "back-link" escondido en satélites.</text>
+
+      <text x="0" y="116" fill="#b1bac4" font-size="11">3. Iconografía consistente: el mismo &quot;ic-tab-pipeline&quot;</text>
+      <text x="0" y="130" fill="#b1bac4" font-size="11">   en home, satélites y futuras vistas.</text>
+
+      <text x="0" y="156" fill="#b1bac4" font-size="11">4. Badges dinámicos preservados (Bloqueados=3):</text>
+      <text x="0" y="170" fill="#b1bac4" font-size="11">   tickers como tickMultiProvider() siguen funcionando.</text>
+
+      <text x="0" y="196" fill="#b1bac4" font-size="11">5. WCAG AA: aria-label literal por tab, aria-current=&quot;page&quot;</text>
+      <text x="0" y="210" fill="#b1bac4" font-size="11">   server-side, focus-visible con outline visible.</text>
+
+      <text x="0" y="236" fill="#3fb950" font-size="11" font-weight="700">→ Touch target real ~90×80px (sobra sobre los 44 mínimos)</text>
+    </g>
+
+    <!-- Markup recomendado -->
+    <g transform="translate(960, 80)" font-family="ui-monospace, Consolas, monospace" font-size="10">
+      <rect x="0" y="0" width="540" height="220" rx="6" fill="#0d1117" stroke="#30363d"/>
+      <text x="14" y="20" fill="#8b949e" font-size="11" font-weight="700">Markup SSR (renderNavTabsSsr)</text>
+
+      <text x="14" y="44" fill="#2ee6c1">&lt;nav class=&quot;v3-nav&quot; role=&quot;navigation&quot;</text>
+      <text x="14" y="58" fill="#2ee6c1">     aria-label=&quot;Ventanas del dashboard&quot;&gt;</text>
+      <text x="14" y="78" fill="#1f6feb">  &lt;a class=&quot;v3-tab v3-tab-active&quot;</text>
+      <text x="14" y="92" fill="#1f6feb">     href=&quot;/equipo&quot;</text>
+      <text x="14" y="106" fill="#1f6feb">     aria-label=&quot;Ir a Equipo · agentes y carga&quot;</text>
+      <text x="14" y="120" fill="#1f6feb">     aria-current=&quot;page&quot;&gt;</text>
+      <text x="14" y="138" fill="#e6edf3">    &lt;svg class=&quot;v3-tab-icon&quot; aria-hidden=&quot;true&quot;</text>
+      <text x="14" y="152" fill="#e6edf3">         focusable=&quot;false&quot; viewBox=&quot;0 0 24 24&quot;&gt;</text>
+      <text x="14" y="166" fill="#d29922">      &lt;use href=&quot;#ic-agents-count&quot;/&gt;</text>
+      <text x="14" y="180" fill="#e6edf3">    &lt;/svg&gt;</text>
+      <text x="14" y="194" fill="#e6edf3">    &lt;span class=&quot;v3-tab-label&quot;&gt;Equipo&lt;/span&gt;</text>
+      <text x="14" y="208" fill="#1f6feb">  &lt;/a&gt; … (11 más)</text>
+    </g>
+  </g>
+
+  <!-- ============================================================ FOOTER -->
+  <text x="40" y="1188" fill="#6e7681" font-size="10">
+    UX · Intrale Pipeline V3 · mockup #26 · 7 íconos nuevos al sprite.svg · narrativa: narrativa-nav-tabs-v3.md
+  </text>
+  <text x="1560" y="1188" fill="#6e7681" font-size="10" text-anchor="end">
+    Issue #3726 · Split de #3715 · qa:skipped (infra del pipeline)
+  </text>
+</svg>

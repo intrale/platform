@@ -11,6 +11,11 @@
 const fs = require('fs');
 const path = require('path');
 
+// #3726 — Nav bar V3 unificada. renderNavTabsSsr inyecta el <nav class="v3-nav">
+// con los 12 tabs en TODOS los satelites y loadIconSprite() lee el cache
+// compartido del sprite.svg para que <use href="#ic-tab-*"> resuelva inline.
+const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -182,8 +187,14 @@ document.addEventListener('visibilitychange', () => { if(document.visibilityStat
 `;
 }
 
-function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '') {
+// #3726 — pageShell ahora recibe `activeSlug` para marcar la tab activa
+// dentro del <nav class="v3-nav"> que reemplaza al back-link "Operacion".
+// Si el caller no pasa activeSlug, ninguna tab queda activa pero la nav
+// igual se rendera completa (degradacion limpia).
+function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug = '') {
     const theme = loadTheme();
+    const spriteInline = loadIconSprite();
+    const navHtml = renderNavTabsSsr(activeSlug);
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -201,10 +212,13 @@ ${extraCss}
 </style>
 </head>
 <body>
+<!-- #3726 — Sprite SVG inline para resolver <use href="#ic-tab-*"> dentro
+     del <nav class="v3-nav">. Oculto con display:none; los simbolos
+     siguen siendo referenciables por id. -->
+<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
     <div class="in-header-brand">
-      <a class="in-back-link" href="/" target="_self">Operación</a>
       <div class="in-header-logo">i</div>
       <div>
         <div class="in-header-title">${title}</div>
@@ -216,6 +230,7 @@ ${extraCss}
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
+  ${navHtml}
   <main class="satellite-body">${bodyHtml}</main>
   <footer class="in-footer">
     <span>Refresh independiente · sin flicker</span>
@@ -297,7 +312,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickEquipo, ms: 5000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Equipo', 'Carga y disponibilidad por skill', body, script, css);
+    return pageShell('Equipo', 'Carga y disponibilidad por skill', body, script, css, 'equipo');
 }
 
 // ─────────────────── Pipeline ───────────────────
@@ -632,7 +647,7 @@ async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 wireAllowlistToggle();
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Pipeline', 'Issues distribuidos por fase', body, script, css);
+    return pageShell('Pipeline', 'Issues distribuidos por fase', body, script, css, 'pipeline');
 }
 
 // ─────────────────── Bloqueados ───────────────────
@@ -813,7 +828,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickBloqueados, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Bloqueados', 'Issues esperando intervención humana', body, script, css);
+    return pageShell('Bloqueados', 'Issues esperando intervención humana', body, script, css, 'bloqueados');
 }
 
 // ─────────────────── Issues ───────────────────
@@ -915,7 +930,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickIssues, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Issues', 'Backlog completo y filtros', body, script, css);
+    return pageShell('Issues', 'Backlog completo y filtros', body, script, css, 'issues');
 }
 
 // ─────────────────── Matriz ───────────────────
@@ -996,7 +1011,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickMatriz, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Matriz', 'Skill × Fase', body, script, css);
+    return pageShell('Matriz', 'Skill × Fase', body, script, css, 'matriz');
 }
 
 // ─────────────────── Ops ───────────────────
@@ -1164,7 +1179,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickOps, ms: 5000 }, { fn: ti
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Ops', 'Procesos, servicios e infraestructura', body, script, css);
+    return pageShell('Ops', 'Procesos, servicios e infraestructura', body, script, css, 'ops');
 }
 
 // ─────────────────── KPIs (detalle) ───────────────────
@@ -1221,7 +1236,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickKpis, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('KPIs', 'Métricas detalladas', body, script, css);
+    return pageShell('KPIs', 'Métricas detalladas', body, script, css, 'kpis');
 }
 
 // ─────────────────── Historial ───────────────────
@@ -1258,7 +1273,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickHist, ms: 10000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Historial', 'Eventos del pipeline', body, script, css);
+    return pageShell('Historial', 'Eventos del pipeline', body, script, css, 'historial');
 }
 
 // ─────────────────── Costos ───────────────────
@@ -1542,7 +1557,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn:
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Costos', 'Cuota Plan Max + tokens y consumo', body, script, css);
+    return pageShell('Costos', 'Cuota Plan Max + tokens y consumo', body, script, css, 'costos');
 }
 
 // ─────────────────── Modo descanso (#3230 / hija frontend #3242) ───────────────────
@@ -2102,7 +2117,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickRestMode, ms: 8000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Modo descanso', 'Calendario semanal · gating de skills LLM', body, script, css);
+    return pageShell('Modo descanso', 'Calendario semanal · gating de skills LLM', body, script, css, 'descanso');
 }
 
 module.exports = {
