@@ -1,51 +1,260 @@
 // =============================================================================
-// providers/openai-codex.js — Stub del provider OpenAI/Codex (issue #3076 / H3).
+// providers/openai-codex.js — Handler real del provider OpenAI/Codex
 //
-// Este archivo existe para cumplir CA-1 del issue #3074 (estructura completa
-// de providers) sin implementar todavía la lógica real, que la entrega H3
-// (issue #3076) cuando agreguemos el binario y los handlers de tokens.
+// Implementa el contrato del wrapper de agent-launcher para Codex CLI
+// (`codex exec --json ...`) usando OAuth via ChatGPT Plus. Reemplaza el stub
+// previo (#3074 / #3076) que tiraba _notImplemented.
 //
-// Cuando `agent-models.json` apunta un skill a este provider, `buildSpawn`
-// lanza un error accionable en español. NO crashea el pulpo, NO consume
-// tokens — el flujo upstream (resolve-provider o el wrapper de
-// agent-launcher) atrapa el throw y rebota el archivo a `pendiente/` con
-// motivo claro.
+// Wiring acá:
+//   1) detectLauncher — multi-tier detection (node wrapper / binario nativo /
+//      .cmd shim / PATH fallback). Mismo patrón defensivo que Anthropic (I6).
+//   2) buildSpawn — traduce los args legacy del pulpo (estilo Claude CLI:
+//      `-p`, `--system-prompt-file`, `--output-format stream-json`) al shape
+//      que entiende Codex (`exec --json --skip-git-repo-check -m <model>
+//      <prompt>` + opcional `--system <file>`).
+//   3) parseTokensFromLog — agrega `usage` de eventos `turn.completed` en JSONL.
+//      Codex usa `input_tokens / output_tokens / cached_input_tokens /
+//      reasoning_output_tokens`; mapeamos al shape canónico del pulpo.
+//   4) detectQuotaExhausted — barre el JSONL buscando eventos de error y
+//      matchea contra la allowlist canónica de codex en `quota-exhausted.js`
+//      (`KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['openai-codex']`).
+//
+// Auth: OAuth via `codex login` con ChatGPT Plus (no necesita API key paga).
+//
+// Seguridad:
+//  - Tabla hardcoded de paths del binario (sin require dinámico de provider).
+//  - Args como argv estricto (sin shell concat — el shell:true sólo se usa
+//    para el shim .cmd como con Anthropic).
+//  - Detección de cuota sólo por shape estructural (NO substring sobre canal
+//    de contenido del modelo).
 // =============================================================================
 'use strict';
 
-function _notImplemented(operation) {
-    throw new Error(
-        `[agent-launcher/openai-codex] Provider "openai-codex" no está implementado todavía (operación: ${operation}).\n` +
-        `Issue de entrega: #3076 (H3 multi-provider).\n` +
-        `Acción inmediata para destrabar: cambiar el provider del skill afectado en .pipeline/agent-models.json a "anthropic" (o al provider que corresponda)\n` +
-        `o esperar a que H3 entregue el handler real.`
-    );
-}
+const fs = require('node:fs');
+const path = require('node:path');
 
+// -----------------------------------------------------------------------------
+// detectLauncher — multi-tier (preservar precedencia I6 como en anthropic.js)
+//
+// Orden (más a menos preferida; todas evitan cmd.exe salvo el .cmd shim):
+//   1. Binario nativo @openai/codex-win32-x64/.../codex.exe (sin shell)
+//   2. Wrapper ESM bin/codex.js → node directo (sin shell)
+//   3. .cmd shim de npm → shell:true (último recurso por compat)
+//   4. PATH fallback → process.env.CODEX_BIN o 'codex' (último recurso)
+// -----------------------------------------------------------------------------
 function detectLauncher() {
-    _notImplemented('detectLauncher');
+    const pkgDir = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@openai', 'codex');
+    const wrapperJs = path.join(pkgDir, 'bin', 'codex.js');
+    // Binario nativo Windows x64 (ruta canónica del paquete platform-específico).
+    const nativeExeWin = path.join(
+        pkgDir, 'node_modules', '@openai', 'codex-win32-x64',
+        'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'
+    );
+    const cmdShim = path.join(process.env.APPDATA || '', 'npm', 'codex.cmd');
+
+    if (fs.existsSync(nativeExeWin)) {
+        return { kind: 'native-exe', cmd: nativeExeWin, prefixArgs: [], shell: false };
+    }
+    if (fs.existsSync(wrapperJs)) {
+        return { kind: 'node-wrapper-js', cmd: process.execPath, prefixArgs: [wrapperJs], shell: false };
+    }
+    if (fs.existsSync(cmdShim)) {
+        return { kind: 'cmd-shim', cmd: cmdShim, prefixArgs: [], shell: true };
+    }
+    return { kind: 'path-fallback', cmd: process.env.CODEX_BIN || 'codex', prefixArgs: [], shell: true };
 }
 
-function buildSpawn(/* { args, cwd, env } */) {
-    _notImplemented('buildSpawn');
+let cachedLauncher = null;
+function getLauncher() {
+    if (!cachedLauncher) cachedLauncher = detectLauncher();
+    return cachedLauncher;
+}
+function _setLauncherForTesting(launcher) { cachedLauncher = launcher; }
+function _resetLauncherCacheForTesting() { cachedLauncher = null; }
+
+// -----------------------------------------------------------------------------
+// translateClaudeArgsToCodex — extrae prompt y system file del args estilo
+// Claude CLI y arma el argv de Codex. Args desconocidos se descartan
+// silenciosamente (el shape de stream-json/--verbose/--permission-mode no
+// aplica a Codex).
+//
+// Contrato de entrada (lo que el pulpo construye en pulpo.js:5846):
+//   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
+//
+// Contrato de salida (lo que Codex CLI acepta):
+//   ['exec', '--json', '--skip-git-repo-check', '-C', cwd,
+//    '-m', model, '--system', systemFile?, userPrompt]
+// -----------------------------------------------------------------------------
+function translateClaudeArgsToCodex(args, env, cwd) {
+    let userPrompt = null;
+    let systemFile = null;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '-p') {
+            userPrompt = args[i + 1];
+            i++;
+        } else if (a === '--system-prompt-file') {
+            systemFile = args[i + 1];
+            i++;
+        }
+        // Otros flags (--output-format, --verbose, --permission-mode,
+        // --append-system-prompt, etc.) no tienen equivalente directo en
+        // codex exec; los descartamos.
+    }
+    // Modelo: env CODEX_MODEL si fue explicitado, sino dejamos al CLI elegir
+    // su default (varía según modo de auth: con OAuth ChatGPT Plus es `gpt-5`,
+    // con API key paga acepta `gpt-5-codex`). El pulpo inyecta CODEX_MODEL via
+    // env-isolation cuando el skill resuelve un modelo específico.
+    const model = env && env.CODEX_MODEL;
+    const out = ['exec', '--json', '--skip-git-repo-check', '-C', cwd];
+    if (model) out.push('-m', model);
+    if (systemFile && typeof systemFile === 'string') {
+        out.push('--system', systemFile);
+    }
+    // Codex toma el prompt como argumento posicional final. Si no vino prompt
+    // (caso patológico), pasamos string vacío para que el CLI tire error
+    // accionable en lugar de quedar colgado leyendo stdin.
+    out.push(typeof userPrompt === 'string' ? userPrompt : '');
+    return out;
 }
 
-// Retornamos zeros — si llegamos a parsear es porque hubo un spawn (que ya
-// debería haber tirado en buildSpawn). Defensivo: no rompemos el on-exit.
-function parseTokensFromLog(/* logPath */) {
-    return { input: 0, output: 0, cache_read: 0, cache_create: 0, tool_calls: 0 };
+// -----------------------------------------------------------------------------
+// buildSpawn — devuelve { cmd, args, spawnOpts } compatible con child_process.spawn
+//
+// `args` vienen en formato Claude (ver pulpo.js:5846); acá los traducimos al
+// shape Codex y prependemos el prefijo del launcher detectado.
+// -----------------------------------------------------------------------------
+function buildSpawn({ args, cwd, env, interactive_supported }) {
+    const launcher = getLauncher();
+    const codexArgs = translateClaudeArgsToCodex(args || [], env || {}, cwd || process.cwd());
+    const stdin = interactive_supported === true ? 'pipe' : 'ignore';
+    return {
+        cmd: launcher.cmd,
+        args: [...launcher.prefixArgs, ...codexArgs],
+        spawnOpts: {
+            cwd,
+            stdio: [stdin, 'pipe', 'pipe'],
+            detached: false,
+            shell: launcher.shell,
+            windowsHide: true,
+            env,
+        },
+    };
 }
 
-function detectQuotaExhausted() {
-    // El detector de cuota Anthropic no aplica a OpenAI/Codex. H3 traerá su
-    // propio detector si OpenAI usa un shape de error diferente.
+// -----------------------------------------------------------------------------
+// parseTokensFromLog — agrega `usage` de cada evento `turn.completed` del
+// JSONL de codex exec.
+//
+// Shape capturado en smoke test real (2026-06-01):
+//   {"type":"turn.completed","usage":{
+//      "input_tokens":11044,
+//      "cached_input_tokens":4480,
+//      "output_tokens":5,
+//      "reasoning_output_tokens":0
+//   }}
+//
+// Mapeo al shape canónico del pulpo:
+//   input_tokens         → input
+//   output_tokens        → output  (sumamos también reasoning_output_tokens
+//                                   porque son tokens de salida facturables)
+//   cached_input_tokens  → cache_read
+//   tool_calls           → contamos eventos item.completed con item.type
+//                          === 'tool_call' (best-effort; el shape exacto
+//                          de tool calls puede variar entre versiones de
+//                          codex-cli y se sumará 0 si no aparece)
+// -----------------------------------------------------------------------------
+function parseTokensFromLog(logPath, fsImpl) {
+    const _fs = fsImpl || fs;
+    const totals = { input: 0, output: 0, cache_read: 0, cache_create: 0, tool_calls: 0 };
+    let raw = '';
+    try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return totals; }
+    for (const line of raw.split('\n')) {
+        if (!line.startsWith('{')) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (obj.type === 'turn.completed' && obj.usage && typeof obj.usage === 'object') {
+            const u = obj.usage;
+            totals.input += Number(u.input_tokens || 0);
+            const out = Number(u.output_tokens || 0);
+            const reason = Number(u.reasoning_output_tokens || 0);
+            totals.output += out + reason;
+            totals.cache_read += Number(u.cached_input_tokens || 0);
+        } else if (obj.type === 'item.completed' && obj.item && obj.item.type === 'tool_call') {
+            totals.tool_calls += 1;
+        }
+    }
+    return totals;
+}
+
+// -----------------------------------------------------------------------------
+// detectQuotaExhausted — busca eventos de error en el JSONL de codex exec y
+// matchea contra la allowlist canónica del provider en `quota-exhausted.js`.
+//
+// Codex exec emite errores en formas conocidas; las soportadas hoy:
+//   1) {"type":"turn.failed","error":{"type":"insufficient_quota",...}}
+//   2) {"type":"error","error":{"type":"insufficient_quota",...}}
+//   3) {"type":"item.completed","item":{"type":"error","error":{...}}}
+//
+// SOLO matcheo estructural: nunca hago substring sobre canal de contenido.
+// Si el shape cambia en una versión futura de codex-cli, el detector
+// devuelve { matched:false } sin falsos positivos y el supervisor retrintenta.
+// -----------------------------------------------------------------------------
+function _extractErrorType(evt) {
+    if (!evt || typeof evt !== 'object') return null;
+    // Forma 1 / 2
+    if (evt.error && typeof evt.error === 'object' && typeof evt.error.type === 'string') {
+        return evt.error.type;
+    }
+    // Forma 3
+    if (evt.item && typeof evt.item === 'object'
+        && evt.item.type === 'error'
+        && evt.item.error && typeof evt.item.error.type === 'string') {
+        return evt.item.error.type;
+    }
+    return null;
+}
+
+function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
+    const _fs = fsImpl || fs;
+    if (!quotaExhaustedModule) return { matched: false };
+    const allowlist = (quotaExhaustedModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})['openai-codex']
+        || (cfg && cfg.error_types)
+        || [];
+    if (!allowlist || allowlist.length === 0) return { matched: false };
+
+    let raw = '';
+    try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return { matched: false }; }
+    if (!raw) return { matched: false };
+
+    for (const line of raw.split('\n')) {
+        if (!line.startsWith('{')) continue;
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        const errType = _extractErrorType(evt);
+        if (errType && allowlist.includes(errType)) {
+            return {
+                matched: true,
+                errorType: errType,
+                resetsAt: (evt.error && evt.error.resets_at) || null,
+                rawLine: line,
+                evt,
+            };
+        }
+    }
     return { matched: false };
 }
 
 module.exports = {
     name: 'openai-codex',
-    detectLauncher,
+    detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    // exports internos para tests
+    _detectLauncherFresh: detectLauncher,
+    _translateClaudeArgsToCodex: translateClaudeArgsToCodex,
+    _extractErrorType,
+    _setLauncherForTesting,
+    _resetLauncherCacheForTesting,
 };

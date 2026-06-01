@@ -229,9 +229,10 @@ test('launchAgent usa defaults.model cuando el skill no está listado en agent-m
 });
 
 // -----------------------------------------------------------------------------
-// 6. Provider 'openai-codex' (stub) tira error accionable en buildSpawn.
+// 6. Provider 'openai-codex' real (post #3791): launchAgent dispara el spawn
+//    del codex CLI traduciendo los args estilo Claude al shape Codex.
 // -----------------------------------------------------------------------------
-test('launchAgent con provider openai-codex tira error accionable (stub para H3)', () => {
+test('launchAgent con provider openai-codex spawnea el codex CLI con args traducidos', () => {
     const modelsPath = path.join(PIPELINE, 'agent-models.json');
     const fsi = fakeFs([modelsPath], {
         [modelsPath]: JSON.stringify({
@@ -243,23 +244,36 @@ test('launchAgent con provider openai-codex tira error accionable (stub para H3)
     });
     const spi = fakeSpawn();
 
-    assert.throws(
-        () =>
-            launchAgent({
-                skill: 'planner',
-                issue: 1,
-                args: [],
-                cwd: ROOT,
-                env: {},
-                PIPELINE,
-                ROOT,
-                fsImpl: fsi,
-                spawnImpl: spi,
-            }),
-        /openai-codex.*no está implementado/i
-    );
-    // El spawn no debe haberse llamado.
-    assert.equal(spi.calls.length, 0);
+    // Forzamos un launcher determinístico para el test (evita depender de fs
+    // real para detectar codex.exe / wrapper / shim).
+    PROVIDERS['openai-codex']._setLauncherForTesting({
+        kind: 'native-exe',
+        cmd: '/fake/codex.exe',
+        prefixArgs: [],
+        shell: false,
+    });
+    try {
+        launchAgent({
+            skill: 'planner',
+            issue: 1,
+            args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md'],
+            cwd: ROOT,
+            env: { CODEX_MODEL: 'gpt-5-codex' },
+            PIPELINE,
+            ROOT,
+            fsImpl: fsi,
+            spawnImpl: spi,
+        });
+    } finally {
+        PROVIDERS['openai-codex']._resetLauncherCacheForTesting();
+    }
+    assert.equal(spi.calls.length, 1);
+    const call = spi.calls[0];
+    assert.equal(call.cmd, '/fake/codex.exe');
+    assert.deepEqual(call.args.slice(0, 3), ['exec', '--json', '--skip-git-repo-check']);
+    assert.ok(call.args.includes('-m'));
+    assert.ok(call.args.includes('gpt-5-codex'));
+    assert.ok(call.args.includes('probe'));
 });
 
 // -----------------------------------------------------------------------------
