@@ -619,3 +619,156 @@ test('#3484: caller con timeoutMs negativo o inválido cae a DEFAULT_TIMEOUT_MS'
     // No tira, no rompe — el cliente usa DEFAULT_TIMEOUT_MS (90s) internamente.
     assert.equal(r.ok, true);
 });
+
+// ─── MP-04 (#3803) · allowlist config-aware ─────────────────────────────────
+// Un modelo declarado en agent-models.json pero ausente de la allowlist
+// hardcoded ANTES fallaba con invalid_model y mataba un eslabón sano de la
+// cascada (caso real: cerebras=gpt-oss-120b). Ahora se acepta.
+
+function writeAgentModels(pipelineDir, json) {
+    fs.writeFileSync(path.join(pipelineDir, 'agent-models.json'), JSON.stringify(json));
+}
+
+test('MP-04 · modelo configurado en agent-models.json pero NO en allowlist hardcoded → aceptado', async () => {
+    const pipelineDir = tmpDir();
+    writeAgentModels(pipelineDir, {
+        providers: { cerebras: { model: 'gpt-oss-120b' } },
+        skills: {},
+    });
+    const f = path.join(pipelineDir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'gpt-oss-120b', // NO está en PROVIDER_MODELS_ALLOWLIST
+        prompt: 'ping',
+        pipelineDir,
+        secretsPath: f,
+        httpImpl: fakeHttp({
+            status: 200,
+            body: JSON.stringify({ choices: [{ message: { content: 'pong oss' } }] }),
+        }),
+    });
+    assert.equal(r.ok, true, 'el modelo configurado debe pasar la allowlist config-aware');
+    assert.equal(r.content, 'pong oss');
+});
+
+test('MP-04 · modelo declarado como model_override de un fallback también se acepta', async () => {
+    const pipelineDir = tmpDir();
+    writeAgentModels(pipelineDir, {
+        providers: { cerebras: { model: 'llama-3.3-70b' } },
+        skills: { qa: { provider: 'anthropic', fallbacks: [{ provider: 'cerebras', model_override: 'gpt-oss-120b' }] } },
+    });
+    const f = path.join(pipelineDir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'gpt-oss-120b',
+        prompt: 'ping',
+        pipelineDir,
+        secretsPath: f,
+        httpImpl: fakeHttp({ status: 200, body: JSON.stringify({ choices: [{ message: { content: 'ok' } }] }) }),
+    });
+    assert.equal(r.ok, true, 'model_override declarado por humano debe aceptarse');
+});
+
+test('MP-04 · modelo NI en allowlist NI configurado sigue siendo invalid_model (defensa intacta)', async () => {
+    const pipelineDir = tmpDir();
+    writeAgentModels(pipelineDir, { providers: { cerebras: { model: 'llama-3.3-70b' } }, skills: {} });
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'modelo-arbitrario-no-declarado',
+        prompt: 'hi',
+        pipelineDir,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.error.type, 'invalid_model', 'la defensa anti-modelo-arbitrario sigue activa');
+});
+
+// ─── MP-12 (#3803) · retry único ante schema_drift en 2xx ────────────────────
+
+// fakeHttp con secuencia de respuestas: una por cada request (para ejercer el
+// retry). La N-ésima request usa responses[N-1] (la última se repite si faltan).
+function fakeHttpSequence(responses) {
+    let call = 0;
+    return {
+        request(opts, cb) {
+            const idx = Math.min(call, responses.length - 1);
+            call += 1;
+            const { status = 200, body = '' } = responses[idx] || {};
+            const req = {
+                on(ev, fn) { this[`_${ev}`] = fn; return this; },
+                write() {},
+                end() {
+                    process.nextTick(() => {
+                        const res = {
+                            statusCode: status,
+                            on(ev, fn) {
+                                if (ev === 'data') fn(Buffer.from(body, 'utf8'));
+                                if (ev === 'end') fn();
+                            },
+                        };
+                        cb(res);
+                    });
+                },
+                destroy() {},
+            };
+            return req;
+        },
+        _calls() { return call; },
+    };
+}
+
+test('MP-12 · 2xx con schema_drift en el 1er intento → reintenta y devuelve éxito en el 2do', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const http = fakeHttpSequence([
+        { status: 200, body: '<html>blip</html>' }, // malformado
+        { status: 200, body: JSON.stringify({ choices: [{ message: { content: 'recuperado' } }] }) },
+    ]);
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        prompt: 'ping',
+        secretsPath: f,
+        httpImpl: http,
+    });
+    assert.equal(r.ok, true, 'el retry debe recuperar el blip transitorio');
+    assert.equal(r.content, 'recuperado');
+    assert.equal(http._calls(), 2, 'debe haber reintentado exactamente una vez');
+});
+
+test('MP-12 · schema_drift persistente en ambos intentos → invalid_response (sin retry infinito)', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const http = fakeHttpSequence([{ status: 200, body: '<html>roto</html>' }]);
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        prompt: 'ping',
+        secretsPath: f,
+        httpImpl: http,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.error.type, 'invalid_response');
+    assert.equal(r.error.reason, 'schema_drift');
+    assert.equal(http._calls(), 2, 'tope de 2 intentos, no más');
+});
+
+test('MP-12 · error NO-2xx (5xx) NO consume retry — cascada inmediata', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const http = fakeHttpSequence([{ status: 503, body: 'down' }]);
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        prompt: 'ping',
+        secretsPath: f,
+        httpImpl: http,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.error.type, 'http_error');
+    assert.equal(http._calls(), 1, 'un 5xx no debe reintentar (solo schema_drift 2xx reintenta)');
+});

@@ -81,6 +81,8 @@
 
 const https = require('node:https');
 const { URL } = require('node:url');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const secretsRw = require('./secrets-rw');
 // #3486: clasificador HTTP universal. Delegamos la matriz statusCode→reason
@@ -169,14 +171,78 @@ const DEFAULT_TIMEOUT_MS = 0;
 
 const MAX_BODY_BYTES = 64 * 1024; // 64KB — cap defensivo contra DoS.
 
+// ---------------------------------------------------------------------------
+// MP-04 (#3803) — allowlist config-aware. La allowlist hardcoded de arriba es
+// la línea de base de defensa, pero quedaba ESTÁTICA: un modelo configurado en
+// `agent-models.json` (p.ej. cerebras=gpt-oss-120b) que no figurara como string
+// literal acá hacía fallar al provider con `invalid_model` ANTES del request
+// HTTP → cortaba la cascada en un eslabón sano. Ahora derivamos también los
+// modelos efectivamente declarados en la config (provider.model default +
+// todos los `model_override` por skill) y los unimos a la allowlist. Así un
+// modelo legítimamente configurado nunca se rechaza por drift de la lista, sin
+// abrir la puerta a `model` arbitrario (solo lo que un humano puso en config).
+//
+// Caché por mtime para no leer el JSON en cada `complete()`.
+let _configuredModelsCache = { mtimeMs: -1, pipelineDir: null, byProvider: null };
+
+function defaultPipelineDir() {
+    // completion-client.js vive en .pipeline/lib/multi-provider/
+    return path.join(__dirname, '..', '..');
+}
+
+function getConfiguredModels(pipelineDir, fsImpl) {
+    const _fs = fsImpl || fs;
+    const dir = pipelineDir || defaultPipelineDir();
+    const modelsPath = path.join(dir, 'agent-models.json');
+    let mtimeMs;
+    try {
+        mtimeMs = _fs.statSync(modelsPath).mtimeMs;
+    } catch {
+        return Object.create(null);
+    }
+    if (_configuredModelsCache.byProvider
+        && _configuredModelsCache.pipelineDir === dir
+        && _configuredModelsCache.mtimeMs === mtimeMs) {
+        return _configuredModelsCache.byProvider;
+    }
+    const byProvider = Object.create(null);
+    const add = (prov, model) => {
+        if (typeof prov !== 'string' || typeof model !== 'string' || !model) return;
+        (byProvider[prov] || (byProvider[prov] = new Set())).add(model);
+    };
+    try {
+        const models = JSON.parse(_fs.readFileSync(modelsPath, 'utf8'));
+        const providers = (models && models.providers) || {};
+        for (const [prov, def] of Object.entries(providers)) {
+            if (def && typeof def.model === 'string') add(prov, def.model);
+        }
+        const skills = (models && models.skills) || {};
+        for (const cfg of Object.values(skills)) {
+            const fbs = Array.isArray(cfg && cfg.fallbacks) ? cfg.fallbacks : [];
+            for (const fb of fbs) {
+                if (fb && typeof fb === 'object' && typeof fb.provider === 'string') {
+                    if (typeof fb.model_override === 'string') add(fb.provider, fb.model_override);
+                }
+            }
+        }
+    } catch {
+        return Object.create(null);
+    }
+    _configuredModelsCache = { mtimeMs, pipelineDir: dir, byProvider };
+    return byProvider;
+}
+
 function isAllowedProvider(provider) {
     return Object.prototype.hasOwnProperty.call(PROVIDER_COMPLETION_ENDPOINTS, provider);
 }
 
-function isAllowedModel(provider, model) {
+function isAllowedModel(provider, model, configuredByProvider) {
     const list = PROVIDER_MODELS_ALLOWLIST[provider];
-    if (!list) return false;
-    return list.indexOf(model) >= 0;
+    if (list && list.indexOf(model) >= 0) return true;
+    // Config-aware: aceptar modelos declarados por un humano en agent-models.json.
+    const cfgSet = configuredByProvider && configuredByProvider[provider];
+    if (cfgSet && cfgSet.has(model)) return true;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +287,7 @@ async function complete({
     temperature = 0,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     secretsPath,
+    pipelineDir,
     fsImpl,
     httpImpl,
 } = {}) {
@@ -251,10 +318,11 @@ async function complete({
             durationMs: Date.now() - startedAt,
         };
     }
-    if (!isAllowedModel(provider, model)) {
+    const configuredByProvider = getConfiguredModels(pipelineDir, fsImpl);
+    if (!isAllowedModel(provider, model, configuredByProvider)) {
         return {
             ok: false,
-            error: { type: 'invalid_model', detail: `model '${model}' no está en allowlist de '${provider}'` },
+            error: { type: 'invalid_model', detail: `model '${model}' no está en allowlist ni configurado para '${provider}'` },
             ...baseResult,
             durationMs: Date.now() - startedAt,
         };
@@ -294,6 +362,17 @@ async function complete({
         temperature,
     });
 
+    // MP-12 (#3803) — retry único ante schema_drift en respuestas 2xx. Un
+    // provider que responde 200 con un body malformado (JSON roto o
+    // `choices[0].message.content` ausente) mataba el intento sin reintentar,
+    // y combinado con la cascada degradaba un eslabón por un blip transitorio
+    // del shim OpenAI-compat. Ahora reintentamos UNA vez la misma request
+    // (misma key/body) antes de declarar `invalid_response`. Solo el 2xx
+    // malformado reintenta: errores de red, timeout, auth, cuota y 4xx/5xx NO
+    // (esos cascadean igual que antes, sin gastar un segundo intento).
+    const SCHEMA_DRIFT_MAX_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= SCHEMA_DRIFT_MAX_ATTEMPTS; attempt++) {
+    const retriesLeft = attempt < SCHEMA_DRIFT_MAX_ATTEMPTS;
     let httpResult;
     try {
         httpResult = await doRequest({ spec, key, body, timeoutMs: effectiveTimeoutMs, httpImpl });
@@ -366,6 +445,7 @@ async function complete({
     try {
         parsed = JSON.parse(bodyText);
     } catch (e) {
+        if (retriesLeft) continue; // MP-12: reintentar una vez antes de claudicar.
         return {
             ok: false,
             error: { type: 'invalid_response', reason: 'schema_drift', statusCode, detail: 'JSON parse error' },
@@ -383,6 +463,7 @@ async function complete({
         : null;
 
     if (content === null) {
+        if (retriesLeft) continue; // MP-12: reintentar una vez antes de claudicar.
         return {
             ok: false,
             error: { type: 'invalid_response', reason: 'schema_drift', statusCode, detail: 'choices[0].message.content faltante' },
@@ -398,6 +479,16 @@ async function complete({
         outputTokens: (parsed.usage && typeof parsed.usage.completion_tokens === 'number') ? parsed.usage.completion_tokens : 0,
         provider,
         model: (typeof parsed.model === 'string' && parsed.model) ? parsed.model : model,
+        durationMs: Date.now() - startedAt,
+    };
+    } // fin loop MP-12
+
+    // Inalcanzable en la práctica (el loop retorna en cada rama salvo el
+    // `continue` de schema_drift, que en la última vuelta cae a su return).
+    return {
+        ok: false,
+        error: { type: 'invalid_response', reason: 'schema_drift', detail: 'agotados reintentos de schema_drift' },
+        ...baseResult,
         durationMs: Date.now() - startedAt,
     };
 }
