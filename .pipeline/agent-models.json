@@ -1,6 +1,6 @@
 {
   "$schema": "./agent-models.schema.json",
-  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente) + #3258 (skill virtual `telegram-commander`). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free). El skill virtual `telegram-commander` (#3258) NO está en `skills_por_fase` — es consumido por pulpo.js (commander chat de Telegram) vía lib/commander/multi-provider.js para el dispatch con fallback chain.",
+  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente) + #3258 (skill virtual `telegram-commander`). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free). El skill virtual `telegram-commander` (#3258) NO está en `skills_por_fase` — es consumido por pulpo.js (commander chat de Telegram) vía lib/commander/multi-provider.js para el dispatch con fallback chain. Reorden 2026-06-02 (sign-off Leo por voz): (A) devs (backend/pipeline/android/web) + security sacan Cerebras del fallback y meten nvidia-nim — Cerebras no soporta tool_use y no puede editar archivos; NVIDIA es free + tool_use. (B) default global de chain = Claude → Codex → Gemini → Cerebras (Cerebras queda como tail solo en skills de chat/verificación que no requieren tool_use). Corrección de runtime: el modelo Cerebras pasa de `llama-3.3-70b` (muerto, no está en free tier) a `gpt-oss-120b` (verificado GET /v1/models + smoke #3794); alternative_models → `zai-glm-4.7`. telegram-commander suma nvidia-nim al final para alinear el JSON con el código de #3796.",
   "default_provider": "anthropic",
   "providers": {
     "anthropic": {
@@ -95,7 +95,7 @@
     },
     "cerebras": {
       "launcher": "cerebras",
-      "model": "llama-3.3-70b",
+      "model": "gpt-oss-120b",
       "spawn_args_template": [
         "--model",
         "{model}",
@@ -118,7 +118,7 @@
       ],
       "permissions_mode": "bypassPermissions",
       "alternative_models": [
-        "llama-3.1-70b"
+        "zai-glm-4.7"
       ]
     },
     "nvidia-nim": {
@@ -173,8 +173,8 @@
           "model_override": "gpt-5-codex"
         },
         {
-          "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },
@@ -187,8 +187,8 @@
           "model_override": "gpt-5-codex"
         },
         {
-          "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },
@@ -205,8 +205,8 @@
           "model_override": "gemini-2.0-flash"
         },
         {
-          "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },
@@ -223,8 +223,8 @@
           "model_override": "gemini-2.0-flash"
         },
         {
-          "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },
@@ -243,8 +243,8 @@
           "model_override": "gpt-5-codex"
         },
         {
-          "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },
@@ -262,7 +262,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -276,7 +276,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -294,7 +294,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -312,7 +312,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -326,7 +326,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -340,7 +340,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -354,7 +354,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         },
         {
           "provider": "nvidia-nim",
@@ -376,7 +376,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -390,7 +390,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -408,7 +408,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -422,7 +422,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         }
       ]
     },
@@ -449,7 +449,11 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },
@@ -467,7 +471,7 @@
         },
         {
           "provider": "cerebras",
-          "model_override": "llama-3.3-70b"
+          "model_override": "gpt-oss-120b"
         },
         {
           "provider": "nvidia-nim",
