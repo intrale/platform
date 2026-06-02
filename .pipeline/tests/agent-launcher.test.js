@@ -589,3 +589,113 @@ test('nvidia-nim detectQuotaExhausted matchea rate_limit/insufficient_quota por 
     const fsiOk = { readFileSync: () => okPayload };
     assert.equal(nvidia.detectQuotaExhausted(logPath, null, QE, fsiOk).matched, false);
 });
+
+// -----------------------------------------------------------------------------
+// 13a. Provider 'cerebras' real (#3791): launchAgent spawnea el runner Node
+//      (node <runner.js>) traduciendo los args estilo Claude al contrato del
+//      runner (`--model <id> --system-file <path> --prompt <text>`).
+// -----------------------------------------------------------------------------
+test('launchAgent con provider cerebras spawnea el runner Node con args traducidos', () => {
+    const modelsPath = path.join(PIPELINE, 'agent-models.json');
+    const fsi = fakeFs([modelsPath], {
+        [modelsPath]: JSON.stringify({
+            skills: {
+                guru: { provider: 'cerebras', model: 'llama-3.3-70b' },
+            },
+        }),
+    });
+    const spi = fakeSpawn();
+
+    PROVIDERS['cerebras']._setLauncherForTesting({
+        kind: 'node-runner',
+        cmd: '/fake/node',
+        prefixArgs: ['/fake/cerebras-runner.js'],
+        shell: false,
+    });
+    try {
+        launchAgent({
+            skill: 'guru',
+            issue: 1,
+            args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md', '--output-format', 'stream-json'],
+            cwd: ROOT,
+            env: { CEREBRAS_MODEL: 'llama-3.3-70b' },
+            PIPELINE,
+            ROOT,
+            fsImpl: fsi,
+            spawnImpl: spi,
+        });
+    } finally {
+        PROVIDERS['cerebras']._resetLauncherCacheForTesting();
+    }
+    assert.equal(spi.calls.length, 1);
+    const call = spi.calls[0];
+    assert.equal(call.cmd, '/fake/node');
+    assert.equal(call.args[0], '/fake/cerebras-runner.js');
+    assert.ok(call.args.includes('--model'));
+    assert.ok(call.args.includes('llama-3.3-70b'));
+    assert.ok(call.args.includes('--system-file'));
+    assert.ok(call.args.includes('/tmp/sys.md'));
+    assert.ok(call.args.includes('--prompt'));
+    assert.ok(call.args.includes('probe'));
+    // El flag --output-format (estilo Claude) se descarta en la traducción.
+    assert.ok(!call.args.includes('--output-format'));
+});
+
+// -----------------------------------------------------------------------------
+// 13b. parseTokensFromLog de cerebras mapea el `usage` OpenAI al shape canónico.
+// -----------------------------------------------------------------------------
+test('cerebras parseTokensFromLog mapea usage OpenAI (prompt/completion/cached/reasoning)', () => {
+    const cerebras = PROVIDERS['cerebras'];
+    const logPath = '/tmp/cerebras.json';
+    const payload = JSON.stringify({
+        id: 'cmpl-1',
+        model: 'llama-3.3-70b',
+        choices: [{ message: { role: 'assistant', content: 'OK' } }],
+        usage: {
+            prompt_tokens: 100,
+            completion_tokens: 8,
+            reasoning_tokens: 2,
+            total_tokens: 110,
+            prompt_tokens_details: { cached_tokens: 30 },
+        },
+    });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const tokens = cerebras.parseTokensFromLog(logPath, fsi);
+    assert.equal(tokens.input, 100);
+    assert.equal(tokens.output, 10);          // completion 8 + reasoning 2
+    assert.equal(tokens.cache_read, 30);
+
+    // prompt_tokens_details null (sin cache) no rompe.
+    const noCache = JSON.stringify({ usage: { prompt_tokens: 17, completion_tokens: 2, prompt_tokens_details: null } });
+    const fsi2 = { readFileSync: () => noCache };
+    const t2 = cerebras.parseTokensFromLog(logPath, fsi2);
+    assert.equal(t2.input, 17);
+    assert.equal(t2.output, 2);
+    assert.equal(t2.cache_read, 0);
+});
+
+// -----------------------------------------------------------------------------
+// 13c. detectQuotaExhausted de cerebras matchea por shape estructural.
+// -----------------------------------------------------------------------------
+test('cerebras detectQuotaExhausted matchea rate_limit/quota_exceeded por shape', () => {
+    const cerebras = PROVIDERS['cerebras'];
+    const QE = require('../lib/quota-exhausted');
+    const logPath = '/tmp/cerebras-err.json';
+
+    // 429 normalizado por el runner a code 'rate_limit_exceeded'.
+    const payload = JSON.stringify({ error: { status: 429, code: 'rate_limit_exceeded', message: 'too many requests' } });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const res = cerebras.detectQuotaExhausted(logPath, null, QE, fsi);
+    assert.equal(res.matched, true);
+    assert.equal(res.errorType, 'rate_limit_exceeded');
+
+    // quota_exceeded (type) también matchea.
+    const payload2 = JSON.stringify({ error: { type: 'quota_exceeded', message: 'no credits' } });
+    const fsi2 = { readFileSync: () => payload2 };
+    assert.equal(cerebras.detectQuotaExhausted(logPath, null, QE, fsi2).errorType, 'quota_exceeded');
+
+    // Respuesta normal (sin error) → no matchea.
+    const okPayload = JSON.stringify({ choices: [{ message: { content: 'OK' } }], usage: { prompt_tokens: 1 } });
+    const fsiOk = { readFileSync: () => okPayload };
+    assert.equal(cerebras.detectQuotaExhausted(logPath, null, QE, fsiOk).matched, false);
+});
