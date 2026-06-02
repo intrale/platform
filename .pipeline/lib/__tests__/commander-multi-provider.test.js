@@ -374,20 +374,27 @@ test('CA-6 — readCommanderStats agrega entradas por provider efectivo', () => 
 });
 
 // -----------------------------------------------------------------------------
-// SR-2 — safeBuildSpawn captura el throw de los stubs no implementados
+// SR-2 — safeBuildSpawn devuelve spawnDef OK para los adapters reales y captura
+// el throw solo si un handler futuro volviera a ser stub.
 // -----------------------------------------------------------------------------
 
-test('SR-2 — safeBuildSpawn captura _notImplemented del stub openai-codex', () => {
+test('SR-2 — safeBuildSpawn devuelve spawnDef OK con handler openai-codex (real desde PR #3792)', () => {
     const codexHandler = require('../agent-launcher/providers/openai-codex');
-    const r = cmp.safeBuildSpawn({
-        handler: codexHandler,
-        args: ['exec'],
-        cwd: '/tmp',
-        env: {},
-    });
-    assert.equal(r.ok, false);
-    assert.equal(r.reason, 'not_implemented');
-    assert.match(r.message, /openai-codex/);
+    // Forzamos un launcher fake para no depender del binario `codex` real.
+    codexHandler._setLauncherForTesting({ kind: 'test', cmd: '/bin/true', prefixArgs: [], shell: false });
+    try {
+        const r = cmp.safeBuildSpawn({
+            handler: codexHandler,
+            args: ['-p'],
+            cwd: '/tmp',
+            env: {},
+        });
+        assert.equal(r.ok, true);
+        assert.ok(r.spawnDef);
+        assert.equal(r.spawnDef.cmd, '/bin/true');
+    } finally {
+        codexHandler._resetLauncherCacheForTesting();
+    }
 });
 
 test('SR-2 — safeBuildSpawn devuelve spawnDef OK con handler anthropic', () => {
@@ -425,7 +432,9 @@ test('CA-1 / CA-2 — agent-models.json real tiene telegram-commander con orden 
     assert.equal(cmd.provider, 'anthropic');
     const chain = (cmd.fallbacks || []).map(f => f.provider);
     // #3353 — groq removido del orden de fallback del telegram-commander.
-    assert.deepEqual(chain, ['openai-codex', 'gemini-google', 'cerebras']);
+    // 2026-06-02 — nvidia-nim sumado al final de la cadena del Commander
+    // (adapter real, PR #3793) para cerrar el gap multi-provider.
+    assert.deepEqual(chain, ['openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
 });
 
 // -----------------------------------------------------------------------------

@@ -36,17 +36,17 @@
 // pre-spawn solamente el budget efectivo es el HARD_TIMEOUT_MS del spawn
 // único (10 min en pulpo.js). Reservamos la primitiva para que #3275 la use.
 //
-// STUBS DE PROVIDER
-// -----------------
-// Los providers no-Anthropic (`openai-codex`, `gemini-google`, `cerebras`,
-// `nvidia-nim`) hoy son **stubs** que tiran `_notImplemented` en `buildSpawn`
-// (lib/agent-launcher/providers/*.js). El runtime real llega con #3198.
+// ADAPTERS DE PROVIDER (estado 2026-06-02)
+// ----------------------------------------
+// Los 5 providers (`anthropic`, `openai-codex`, `gemini-google`, `cerebras`,
+// `nvidia-nim`) hoy tienen **adapter real** en lib/agent-launcher/providers/*.js
+// (PRs #3792/#3793/#3794 cerraron los últimos stubs del histórico #3198).
+// `buildSpawn` ya NO tira `_notImplemented` para ninguno de ellos.
 //
-// Mientras tanto, la cadena resuelve correctamente al provider (pre-spawn)
-// pero el caller debe `try/catch` el `buildSpawn` y caer al canned response
-// "no implementado todavía". Este módulo expone `safeBuildSpawn(resolution,
-// args, env)` que hace ese catch y devuelve `{ ok: false, reason }` en vez
-// de propagar el throw.
+// `safeBuildSpawn(...)` se mantiene como guardia defensiva: envuelve
+// `handler.buildSpawn` y devuelve `{ ok: false, reason }` en vez de propagar
+// un throw si un provider futuro volviera a ser stub o el handler fallara.
+// El caller decide el canned response sólo en ese caso de borde.
 //
 // COMPATIBILIDAD
 // --------------
@@ -860,7 +860,7 @@ function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
 
 // -----------------------------------------------------------------------------
 // safeBuildSpawn — wrapper defensivo para `handler.buildSpawn` que captura
-// el throw de los stubs no implementados (#3198 pendiente).
+// un eventual throw (guardia residual; hoy los 5 adapters son reales).
 //
 // Devuelve `{ ok: true, spawnDef }` o `{ ok: false, reason }`. El caller
 // (pulpo.js) decide si fallback canned, audit log + Telegram, etc.
@@ -878,15 +878,14 @@ function safeBuildSpawn({ handler, args, cwd, env }) {
 }
 
 // -----------------------------------------------------------------------------
-// cannedFallbackUnavailableResponse — Mensaje al usuario cuando el dispatcher
-// resolvió un fallback pero el `buildSpawn` del provider stub tira
-// `_notImplemented`. Mensaje no técnico, sin paths internos.
+// cannedFallbackUnavailableResponse — Mensaje al usuario para el caso de borde
+// en que el dispatcher resolvió un fallback pero su `buildSpawn` falla (handler
+// roto / binario ausente). Mensaje no técnico, sin paths internos.
 // -----------------------------------------------------------------------------
 function cannedFallbackUnavailableResponse({ provider }) {
     return (
-        `⚠️ Claude no responde y todavía no tengo el provider \`${provider}\` instalado para contestarte. ` +
-        `Lo destrabamos cuando se cierre #3198 (runtime de fallback). ` +
-        `Mientras tanto, podés usar los comandos directos (/status, /listado, /lanzar) que no dependen de LLM.`
+        `⚠️ Claude no responde y el provider de respaldo \`${provider}\` no arrancó (binario o credencial faltante). ` +
+        `Mientras lo reviso, podés usar los comandos directos (/status, /listado, /lanzar) que no dependen de LLM.`
     );
 }
 
