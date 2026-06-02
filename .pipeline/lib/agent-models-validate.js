@@ -142,14 +142,14 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     'gemini-2.0-flash',
     'gemini-1.5-flash',
   ]),
-  // #3501 — `llama-3.1-70b` se agrega como modelo alternativo del provider
-  // cerebras (mismo motivo que arriba). Cerebras Cloud lo expone como modelo
-  // de generación anterior, estable y con el mismo tokenizer base que el
-  // default `llama-3.3-70b` — apto para swap intra-provider sin cambios de
-  // prompt template.
+  // 2026-06-02 — Corrección free tier real: el free tier de Cerebras NO sirve
+  // modelos `llama-*` (verificado contra GET /v1/models). Los únicos servibles
+  // hoy son `gpt-oss-120b` (default, menor overhead de reasoning) y `zai-glm-4.7`
+  // (alternativo para adversariality #3501). El smoke test del adapter (PR #3794)
+  // confirmó `gpt-oss-120b` con la key free real (exit 0, "OK", 83 in / 102 out).
   cerebras: Object.freeze([
-    'llama-3.3-70b',
-    'llama-3.1-70b',
+    'gpt-oss-120b',
+    'zai-glm-4.7',
   ]),
   // #3243 — NVIDIA NIM expone modelos hosted con naming `vendor/model`. La
   // allowlist se inicializa con los 2 modelos sign-off del issue (DeepSeek
