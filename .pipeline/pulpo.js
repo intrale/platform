@@ -9413,6 +9413,11 @@ REGLAS:
    - PIDs: .pipeline/*.pid
    - Logs: .pipeline/logs/
    - Procesos: tasklist | grep node
+6. CIERRE OBLIGATORIO — al FINAL de CUALQUIER respuesta que envíes a Telegram, agregá SIEMPRE un resumen breve tipo conclusión de lo que está pasando, en formato sencillo. Reglas del cierre:
+   - Va separado del cuerpo con una línea \`---\` y arranca con el prefijo \`📌 En resumen:\`.
+   - 1 a 3 frases cortas, lenguaje llano (sin tecnicismos innecesarios), como para entender el panorama de un vistazo.
+   - NO repite literal el detalle de arriba: lo comprime en una conclusión.
+   - Aplica también a respuestas a preguntas, no sólo a acciones.
 ${issueCreationBlock}
 Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
 
