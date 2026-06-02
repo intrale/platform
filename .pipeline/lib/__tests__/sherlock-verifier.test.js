@@ -184,14 +184,14 @@ test('T-1: detecta inconsistencia entre claim del Commander y system_state', asy
 // T-2 — Escenario timeout → respuesta con disclaimer F-6.
 // CA-F-6 + CA-SEC-1 (resilencia ante fallos del provider).
 // =============================================================================
-test('T-2: timeout del completion-client devuelve aborted + disclaimer F-6 (#3668: single-provider)', async () => {
+test('T-2: cuando TODA la chain falla con timeout devuelve aborted + disclaimer F-6 (cascada restaurada 2026-06-02)', async () => {
     const dir = mkTmpPipelineDir();
     const completionTimeout = {
         ok: false,
-        error: { type: 'timeout', detail: 'request superó timeoutMs=10000' },
+        error: { type: 'timeout', detail: 'request sin respuesta del provider' },
         provider: 'cerebras',
         model: 'llama-3.3-70b',
-        durationMs: 10001,
+        durationMs: 1,
     };
     const result = await sherlock.verify({
         analysis: 'cualquier cosa',
@@ -206,14 +206,14 @@ test('T-2: timeout del completion-client devuelve aborted + disclaimer F-6 (#366
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'aborted');
-    // #3668 — single-provider: el errorCode canónico es el del error real
-    // (`timeout`), NO `exhausted_cascade` (la cascada fue removida).
+    // Cascada: el errorCode canónico es el del ÚLTIMO error real (`timeout`).
     assert.equal(result.errorCode, 'timeout');
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
-    // CA-9 shape stable post-#3668:
-    assert.equal(result.attemptCount, 1, 'attemptCount siempre 1 post-#3668');
-    assert.equal(result.fallbackUsed, false, 'fallbackUsed siempre false post-#3668');
-    assert.ok(Array.isArray(result.chainTried) && result.chainTried.length === 1);
+    // CA-9 shape con cascada: recorrió los 3 providers HTTP de la chain antes
+    // de abortar — fallbackUsed=true porque hubo más de 1 intento.
+    assert.equal(result.attemptCount, 3, 'cascada recorre los 3 providers de CHAIN_HTTP');
+    assert.equal(result.fallbackUsed, true, 'hubo fallback entre providers');
+    assert.ok(Array.isArray(result.chainTried) && result.chainTried.length === 3);
     const final = sherlock.applyDisclaimer('Texto base.', result.suggestedDisclaimer);
     // #3484 — phrasing actualizado por CA-UX-3.
     assert.match(final, /No pude verificar esta respuesta con el verificador adversarial/);
@@ -488,7 +488,7 @@ test('CA-SEC-6: cap inconsistencies <= 5 trunca y marca truncated', () => {
     assert.equal(r.data.inconsistenciesTruncated, true);
 });
 
-test('CA-SEC-6: schema_violation emite evento al audit log y devuelve aborted (#3668: single-provider)', async () => {
+test('CA-SEC-6: schema_violation en TODA la chain emite evento y devuelve aborted (cascada restaurada 2026-06-02)', async () => {
     const dir = mkTmpPipelineDir();
     const badOutput = {
         ok: true,
@@ -505,13 +505,14 @@ test('CA-SEC-6: schema_violation emite evento al audit log y devuelve aborted (#
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'aborted');
-    // #3668 — single-provider: el errorCode canónico es `schema_violation`,
-    // NO `exhausted_cascade`. La cascada fue removida.
+    // Cascada restaurada: cada provider devuelve schema inválido, se excluye y
+    // se salta al siguiente. El errorCode canónico es el del ÚLTIMO fallo
+    // (`schema_violation`) y la reason lo cita.
     assert.equal(result.errorCode, 'schema_violation');
     assert.match(result.reason, /schema_violation/);
-    // CA-9 shape stable post-#3668:
-    assert.equal(result.attemptCount, 1);
-    assert.equal(result.fallbackUsed, false);
+    // CA-9 shape con cascada: recorrió los 3 providers HTTP de CHAIN_HTTP.
+    assert.equal(result.attemptCount, 3, 'cascada recorre los 3 providers de CHAIN_HTTP');
+    assert.equal(result.fallbackUsed, true, 'hubo fallback entre providers');
 });
 
 // =============================================================================
@@ -610,12 +611,12 @@ test('CA-SEC-9: sherlock_max_reelaboraciones=99 se clampea a 1', () => {
     assert.equal(cfg.maxReelaboraciones, 1);
 });
 
-// #3484 — el clamp local de timeout fue removido. Sherlock ya NO impone
-// un cap de 30s; el cap defensivo vive en el completion-client (180s).
-// Este test reemplaza el legacy "cap 30s" por la verificación de back-compat:
-// aunque config diga `sherlock_timeout_ms: 999999`, el cargador devuelve
-// el DEFAULT_TIMEOUT_MS del módulo (90s) sin romper.
-test('CA-SEC-9 (#3484): sherlock_timeout_ms en config se ignora — back-compat', () => {
+// 2026-06-02 (Leo) — el timeout se eliminó por completo. Sherlock ya NO impone
+// ningún cap; la resiliencia ante un provider que no responde la da la cascada
+// multi-provider, no un timer. `sherlock_timeout_ms` queda como NO-OP: aunque
+// config diga `999999`, el cargador devuelve DEFAULT_TIMEOUT_MS (0 = sin
+// timeout) sin romper.
+test('CA-SEC-9: sherlock_timeout_ms en config se ignora — sin timeout (2026-06-02)', () => {
     const cfg = sherlock._loadSherlockConfig({
         configLoader: () => ({
             sherlock_enabled: true,
@@ -623,9 +624,9 @@ test('CA-SEC-9 (#3484): sherlock_timeout_ms en config se ignora — back-compat'
             sherlock_max_reelaboraciones: 1,
         }),
     });
-    // El cargador devuelve siempre DEFAULT_TIMEOUT_MS (90s post-#3484).
+    // El cargador devuelve siempre DEFAULT_TIMEOUT_MS (0 = sin timeout).
     assert.equal(cfg.timeoutMs, sherlock.DEFAULT_TIMEOUT_MS);
-    assert.equal(cfg.timeoutMs, 90000);
+    assert.equal(cfg.timeoutMs, 0);
 });
 
 test('CA-SEC-9 (#3484): sin sherlock_timeout_ms — también devuelve DEFAULT', () => {
@@ -988,14 +989,16 @@ test('#3484: spawn helper devuelve content cuando el child termina exitosamente'
     assert.equal(result.provider, 'anthropic');
 });
 
-test('#3484 CA-CLIENT-3: DEFAULT_TIMEOUT_MS del cliente = 90s', () => {
+test('CA-CLIENT-3: DEFAULT_TIMEOUT_MS del cliente = 0 (sin timeout, 2026-06-02)', () => {
     const client = require('../multi-provider/completion-client');
-    assert.equal(client.DEFAULT_TIMEOUT_MS, 90_000);
+    assert.equal(client.DEFAULT_TIMEOUT_MS, 0);
 });
 
-test('#3484 CA-CLIENT-4: ABSOLUTE_MAX_TIMEOUT_MS del cliente = 180s', () => {
+test('CA-CLIENT-4: el cliente ya no exporta cap absoluto de timeout (2026-06-02)', () => {
     const client = require('../multi-provider/completion-client');
-    assert.equal(client.ABSOLUTE_MAX_TIMEOUT_MS, 180_000);
+    // El cap absoluto (180s, #3484) se eliminó junto con el timeout. El cliente
+    // espera lo que tarde el provider; la resiliencia la da la cascada del verifier.
+    assert.equal(client.ABSOLUTE_MAX_TIMEOUT_MS, undefined);
 });
 
 // =============================================================================
@@ -1185,14 +1188,16 @@ test('#3484 CA-AUDIT-1: JSONL persiste campos enriched también en sherlock_abor
 // =============================================================================
 
 // =============================================================================
-// #3668 — Tests post-refactor single-provider. La cascada de #3558 fue removida
-// (lib/sherlock-retry-chain.js eliminado). Sherlock ahora invoca al provider
-// resuelto UNA sola vez; si falla, devuelve aborted + F-6 sin probar otro
-// provider. El shape del retorno preserva attemptCount/fallbackUsed/chainTried
-// (CA-9) para no romper consumers downstream.
+// Cascada restaurada (2026-06-02, Leo) — revierte el single-provider de #3668.
+// Sherlock vuelve a recorrer la chain telegram-sherlock: si un provider falla
+// (error de transporte o schema inválido) lo excluye y salta al siguiente, igual
+// que el probador de agentes. Solo cuando se agota TODA la chain devuelve
+// aborted + F-6. SIN timeout: cada provider corre hasta responder o errorar por
+// su cuenta. El shape del retorno preserva attemptCount/fallbackUsed/chainTried
+// (CA-9) y ahora reflejan el recorrido real de la cascada.
 // =============================================================================
 
-test('#3668: provider único falla → verdict=aborted con shape stable', async () => {
+test('cascada: TODA la chain falla → verdict=aborted con shape stable (cascada restaurada 2026-06-02)', async () => {
     const dir = mkTmpPipelineDir();
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
@@ -1201,8 +1206,8 @@ test('#3668: provider único falla → verdict=aborted con shape stable', async 
         configLoader: defaultConfigLoader(),
         completionClient: fakeCompletionClient({
             ok: false,
-            error: { type: 'timeout', detail: 'request superó timeoutMs' },
-            durationMs: 90_000,
+            error: { type: 'timeout', detail: 'request sin respuesta del provider' },
+            durationMs: 1,
         }),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
@@ -1211,11 +1216,11 @@ test('#3668: provider único falla → verdict=aborted con shape stable', async 
     assert.equal(result.verdict, 'aborted');
     assert.equal(result.errorCode, 'timeout');
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
-    // CA-9 — shape stable post-single-provider.
-    assert.equal(result.fallbackUsed, false, 'fallbackUsed siempre false post-#3668');
-    assert.equal(result.attemptCount, 1, 'attemptCount siempre 1 post-#3668');
+    // CA-9 — shape con cascada: recorre los 3 providers de CHAIN_HTTP antes de abortar.
+    assert.equal(result.fallbackUsed, true, 'hubo fallback entre providers');
+    assert.equal(result.attemptCount, 3, 'cascada recorre los 3 providers de CHAIN_HTTP');
     assert.ok(Array.isArray(result.chainTried));
-    assert.equal(result.chainTried.length, 1, 'chainTried siempre length 1 post-#3668');
+    assert.equal(result.chainTried.length, 3, 'chainTried refleja los 3 providers recorridos');
 });
 
 test('#3668 CA-7: provider no disponible → emite sherlock_skipped_provider_unavailable + F-6', async () => {
