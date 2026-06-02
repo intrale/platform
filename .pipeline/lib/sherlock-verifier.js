@@ -33,8 +33,10 @@
 //   1. Se removió el filtro `HTTP_COMPATIBLE_PROVIDERS` que saltaba providers
 //      no-HTTP. Sherlock ahora acepta cualquier provider de la chain
 //      telegram-sherlock. Para Anthropic usa spawn CLI (Opción B) reusando
-//      `agent-launcher/providers/anthropic.js`. Codex sigue siendo stub
-//      (#3076 H3 pendiente) y se salta con gracia hasta que H3 entregue.
+//      `agent-launcher/providers/anthropic.js`. Codex también vía spawn CLI
+//      (`agent-launcher/providers/openai-codex.js`, JSONL → agent_message) —
+//      wireado 2026-06-02 (PR #3792 dejó el adapter real; antes era stub
+//      #3076 H3 y se salteaba con gracia).
 //   2. Se removió el clamp local de timeout (`ABSOLUTE_MAX_TIMEOUT_MS=30s`).
 //      El presupuesto vive en el cliente HTTP (90s default, 180s cap).
 //   3. Se removió la exclusión cross-provider — Sherlock puede usar el mismo
@@ -147,11 +149,18 @@ const HTTP_COMPLETION_PROVIDERS = Object.freeze(new Set([
 ]));
 
 // Providers que Sherlock invoca vía spawn CLI (Opción B de #3484).
-// Anthropic es el único soportado hoy: reusa el launcher detection de
-// `agent-launcher/providers/anthropic.js` y manda el prompt por stdin con
-// `--output-format text`. Codex queda pendiente (#3076 H3).
+//   - anthropic:    reusa `agent-launcher/providers/anthropic.js`, manda el
+//                   prompt por stdin con `--output-format text` y lee el
+//                   stdout como texto plano.
+//   - openai-codex: reusa `agent-launcher/providers/openai-codex.js`, manda el
+//                   prompt como argumento posicional (`-p <prompt>`) con
+//                   `CODEX_MODEL` en el env y parsea el stdout JSONL de
+//                   `codex exec --json` para extraer el `agent_message`
+//                   (transporte agregado 2026-06-02 — antes era stub #3076 H3,
+//                   hoy el adapter es real, PR #3792).
 const SPAWN_COMPLETION_PROVIDERS = Object.freeze(new Set([
     'anthropic',
+    'openai-codex',
 ]));
 
 // Timeout default que Sherlock pasa al completion-client / spawn helper.
@@ -401,7 +410,10 @@ function resolveSherlockProvider({
 }) {
     // #3484: `excludedProvider` se ignora a propósito (back-compat). El
     // único motivo para excluir un provider acá es que NO tengamos handler
-    // implementado todavía (ej. openai-codex es stub).
+    // (HTTP o spawn) implementado en Sherlock para él. Hoy los 5 providers de
+    // la chain telegram-sherlock tienen handler (cerebras/gemini/nvidia HTTP +
+    // anthropic/codex spawn); la rama de exclusión queda como defensa para un
+    // provider futuro sin handler.
     // #3558: `initialExcluded` permite arrancar el resolver con un set
     // pre-poblado, usado por la cascada para saltar providers ya probados
     // sin tocar la semántica original (que sigue ignorando `excludedProvider`).
@@ -448,8 +460,9 @@ function resolveSherlockProvider({
                 : null;
 
         if (!transport) {
-            // Provider sin handler en Sherlock (ej. openai-codex stub #3076) —
-            // excluir y seguir con el próximo de la chain.
+            // Provider sin handler en Sherlock (HTTP ni spawn) — excluir y
+            // seguir con el próximo de la chain. Defensa para providers
+            // futuros; hoy los 5 de telegram-sherlock tienen handler.
             if (typeof log === 'function') {
                 log('sherlock', `provider ${res.provider} no tiene handler en Sherlock — fallback al siguiente`);
             }
@@ -634,6 +647,176 @@ function spawnAnthropicComplete({
 }
 
 // -----------------------------------------------------------------------------
+// spawnCodexComplete — invoca `codex exec --json` con el prompt como argumento
+// posicional y devuelve el shape canónico de completion-client
+// (`{ok, content, ...}`).
+//
+// Diferencias con `spawnAnthropicComplete` (por qué es una función aparte):
+//   - Codex NO acepta el prompt por stdin: el adapter lo manda como argumento
+//     posicional final (`-p <prompt>` → traducido a posicional en
+//     `openai-codex.js::translateClaudeArgsToCodex`). `interactive_supported`
+//     se deja en false → stdin = 'ignore'.
+//   - Codex emite JSONL (`codex exec --json`), NO texto plano. El texto de la
+//     respuesta vive en el evento `{type:'item.completed', item:{type:
+//     'agent_message', text:'...'}}` (shape confirmado por el smoke real
+//     2026-06-01 en tests/smoke/codex-adapter.smoke.js). Nos quedamos con el
+//     ÚLTIMO `agent_message` del stream.
+//   - El modelo se inyecta vía `env.CODEX_MODEL` (lo lee el adapter).
+//
+// Timeout: idéntica semántica a anthropic — `timeoutMs > 0` mata el child con
+// SIGTERM; `timeoutMs === 0` (default post-2026-06-02) corre sin timer.
+//
+// SECURITY:
+//   - El prompt va como argv (limitación del adapter Codex), igual que para
+//     todos los spawns de agentes del pulpo — consistente con el resto del
+//     pipeline. El env del child hereda del parent + CODEX_MODEL.
+//   - stdout truncado a 64KB (mismo cap que anthropic/completion-client).
+// -----------------------------------------------------------------------------
+function spawnCodexComplete({
+    prompt,
+    model,
+    timeoutMs,
+    spawnImpl,
+    codexHandler,
+    cwd,
+    env,
+}) {
+    return new Promise((resolve) => {
+        const startedAt = Date.now();
+        const _spawn = spawnImpl || require('node:child_process').spawn;
+        const handler = codexHandler || require('./agent-launcher/providers/openai-codex');
+        const _cwd = cwd || process.cwd();
+        const _env = Object.assign(
+            {},
+            env || process.env,
+            model ? { CODEX_MODEL: model } : {},
+            { CLAUDE_PROJECT_DIR: _cwd }
+        );
+
+        let spawnSpec;
+        try {
+            spawnSpec = handler.buildSpawn({
+                args: ['-p', String(prompt == null ? '' : prompt)],
+                cwd: _cwd,
+                env: _env,
+                interactive_supported: false,
+            });
+        } catch (e) {
+            return resolve({
+                ok: false,
+                error: { type: 'spawn_unavailable', detail: e && e.message ? e.message : String(e) },
+                provider: 'openai-codex',
+                durationMs: Date.now() - startedAt,
+            });
+        }
+
+        let child;
+        try {
+            child = _spawn(spawnSpec.cmd, spawnSpec.args, spawnSpec.spawnOpts);
+        } catch (e) {
+            return resolve({
+                ok: false,
+                error: { type: 'spawn_failed', detail: e && e.message ? e.message : String(e) },
+                provider: 'openai-codex',
+                durationMs: Date.now() - startedAt,
+            });
+        }
+
+        let stdoutBuf = Buffer.alloc(0);
+        let stderrBuf = Buffer.alloc(0);
+        let truncated = false;
+        let resolved = false;
+
+        const finish = (result) => {
+            if (resolved) return;
+            resolved = true;
+            try { if (timer) clearTimeout(timer); } catch {}
+            resolve(Object.assign({ provider: 'openai-codex', durationMs: Date.now() - startedAt }, result));
+        };
+
+        const timer = Number(timeoutMs) > 0
+            ? setTimeout(() => {
+                try { child.kill('SIGTERM'); } catch {}
+                finish({
+                    ok: false,
+                    error: { type: 'timeout', detail: `spawn codex superó timeoutMs=${timeoutMs}` },
+                });
+            }, Number(timeoutMs))
+            : null;
+
+        if (child.stdout) {
+            child.stdout.on('data', (chunk) => {
+                if (truncated) return;
+                if (stdoutBuf.length + chunk.length > SPAWN_MAX_STDOUT_BYTES) {
+                    truncated = true;
+                    try { child.kill('SIGTERM'); } catch {}
+                    return finish({
+                        ok: false,
+                        error: { type: 'invalid_response', reason: 'body_too_large', detail: `stdout > ${SPAWN_MAX_STDOUT_BYTES} bytes` },
+                    });
+                }
+                stdoutBuf = Buffer.concat([stdoutBuf, chunk]);
+            });
+        }
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                if (stderrBuf.length < 2048) {
+                    stderrBuf = Buffer.concat([stderrBuf, chunk.slice(0, 2048 - stderrBuf.length)]);
+                }
+            });
+        }
+
+        child.on('error', (e) => {
+            finish({
+                ok: false,
+                error: { type: 'spawn_error', detail: e && e.message ? e.message : String(e) },
+            });
+        });
+
+        child.on('exit', (code) => {
+            if (resolved) return;
+            const stderr = stderrBuf.toString('utf8').trim();
+            // Parse JSONL: nos quedamos con el último `agent_message`.
+            let agentMessage = null;
+            let inputTokens = 0;
+            let outputTokens = 0;
+            const raw = stdoutBuf.toString('utf8');
+            for (const line of raw.split('\n')) {
+                const t = line.trim();
+                if (!t.startsWith('{')) continue;
+                let obj;
+                try { obj = JSON.parse(t); } catch { continue; }
+                if (obj.type === 'item.completed' && obj.item
+                    && obj.item.type === 'agent_message'
+                    && typeof obj.item.text === 'string') {
+                    agentMessage = obj.item.text;
+                } else if (obj.type === 'turn.completed' && obj.usage && typeof obj.usage === 'object') {
+                    inputTokens += Number(obj.usage.input_tokens || 0);
+                    outputTokens += Number(obj.usage.output_tokens || 0) + Number(obj.usage.reasoning_output_tokens || 0);
+                }
+            }
+            if (code === 0 && agentMessage && agentMessage.trim()) {
+                return finish({
+                    ok: true,
+                    content: agentMessage,
+                    inputTokens,
+                    outputTokens,
+                });
+            }
+            return finish({
+                ok: false,
+                error: {
+                    type: 'spawn_exit',
+                    detail: agentMessage === null
+                        ? `exit=${code}; sin agent_message en el stream JSONL; stderr=${stderr.slice(0, 300)}`
+                        : `exit=${code}; stderr=${stderr.slice(0, 400)}`,
+                },
+            });
+        });
+    });
+}
+
+// -----------------------------------------------------------------------------
 // emitAuditEvent — wrapper sobre commanderMP.auditCommanderRequest para los
 // eventos específicos de Sherlock. Todos los payloads sensibles van como
 // HASH (CA-SEC-8). best-effort: nunca tira al caller.
@@ -746,7 +929,9 @@ async function verify(opts = {}) {
         // inyectables tests
         completionClient,
         spawnAnthropic,
+        spawnCodex,
         anthropicHandler,
+        codexHandler,
         spawnImpl,
         cwd,
         env,
@@ -767,6 +952,7 @@ async function verify(opts = {}) {
     const _now = Number.isFinite(now) ? now : Date.now();
     const _completion = completionClient || require('./multi-provider/completion-client');
     const _spawnAnthropic = typeof spawnAnthropic === 'function' ? spawnAnthropic : spawnAnthropicComplete;
+    const _spawnCodex = typeof spawnCodex === 'function' ? spawnCodex : spawnCodexComplete;
     const _residency = residencyModule || null; // commanderMP.enforceDataResidency lo carga solo
 
     const cfg = loadSherlockConfig({ configLoader });
@@ -832,8 +1018,9 @@ async function verify(opts = {}) {
     // provider corre hasta responder o errorar por su cuenta. La resiliencia
     // ante un provider colgado la da esta cascada, no un corte por reloj.
     //
-    // #3484: NO se excluye al commanderProvider; los providers sin handler
-    // (openai-codex stub) los saltea resolveSherlockProvider internamente.
+    // #3484: NO se excluye al commanderProvider; un provider sin handler en
+    // Sherlock lo saltea resolveSherlockProvider internamente (hoy los 5 de la
+    // chain tienen handler — codex incluido desde 2026-06-02).
     // #3766: sin swap intra-provider — la adversariality nace del rol (prompt
     // fiscal), no del modelo. `commanderModel` se usa solo para el cálculo de
     // `sameModel` que se persiste al JSONL como forensics (sin influir en el
@@ -868,6 +1055,19 @@ async function verify(opts = {}) {
                 timeoutMs: cfg.timeoutMs,
                 spawnImpl,
                 anthropicHandler,
+                cwd,
+                env,
+            });
+            if (r && typeof r === 'object') r.model = resolved.model;
+            return r;
+        }
+        if (resolved.transport === 'spawn' && resolved.provider === 'openai-codex') {
+            const r = await _spawnCodex({
+                prompt,
+                model: resolved.model,
+                timeoutMs: cfg.timeoutMs,
+                spawnImpl,
+                codexHandler,
                 cwd,
                 env,
             });
@@ -1316,4 +1516,5 @@ module.exports = {
     _parseAndValidateSherlockOutput: parseAndValidateSherlockOutput,
     _resolveSherlockProvider: resolveSherlockProvider,
     _spawnAnthropicComplete: spawnAnthropicComplete,
+    _spawnCodexComplete: spawnCodexComplete,
 };

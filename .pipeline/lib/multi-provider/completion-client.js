@@ -6,11 +6,11 @@
 //   - El spawn de CLI (`claude`/`codex`/etc.) agrega 2-5s de overhead de arranque.
 //   - El Sherlock verifier (#3331) requiere latencia <1s → necesita invocar el
 //     provider directamente vía API HTTP, sin pasar por CLI.
-//   - #3198 (adapters runtime) sigue pendiente, así que `safeBuildSpawn` tira
-//     `_notImplemented` para `openai-codex`, `gemini-google`, `cerebras`,
-//     `nvidia-nim`. Este módulo es el **habilitador genérico** para futuras
-//     integraciones in-process (dispatcher Commander cuando se valide latencia,
-//     etc.).
+//   - Los adapters de spawn (`openai-codex`, `gemini-google`, `cerebras`,
+//     `nvidia-nim`, `anthropic`) ya son reales (histórico #3198, cerrado por
+//     PRs #3792/#3793/#3794). Este módulo sigue siendo el camino HTTP
+//     in-process para los providers OpenAI-compat (sin overhead de spawn),
+//     usado por Sherlock; los providers OAuth (anthropic/codex) van por spawn.
 //
 // Providers cubiertos (alineados con FREE_PROVIDERS en health-alerts.js):
 //   - cerebras       (Llama 3.x / Llama 4 scout, OpenAI-compat)

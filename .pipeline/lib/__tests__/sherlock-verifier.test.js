@@ -141,6 +141,17 @@ function fakeSpawnAnthropic(responseOrFn) {
     };
 }
 
+// Codex es real desde 2026-06-02 (spawn CLI, PR #3792). Lo inyectamos en los
+// tests con el mismo shape que fakeSpawnAnthropic para evitar spawnear el
+// binario `codex` real en CI.
+function fakeSpawnCodex(responseOrFn) {
+    return async (opts) => {
+        const r = typeof responseOrFn === 'function' ? responseOrFn(opts) : responseOrFn;
+        if (r && typeof r.then === 'function') return await r;
+        return r;
+    };
+}
+
 // =============================================================================
 // T-1 — Escenario "issue bloqueado humano" → Sherlock detecta inconsistencia
 // y devuelve verdict=rechazado con la lista de inconsistencias.
@@ -640,11 +651,12 @@ test('CA-SEC-9 (#3484): sin sherlock_timeout_ms — también devuelve DEFAULT', 
 });
 
 // =============================================================================
-// Extra — resolveSherlockProvider salta providers sin handler implementado
-// (openai-codex sigue siendo stub). #3484: anthropic AHORA tiene handler
-// (spawn), así que no se salta.
+// Extra — resolveSherlockProvider con los 5 providers de la chain con handler.
+// #3484: anthropic tiene handler (spawn). 2026-06-02: openai-codex AHORA es
+// real (spawn CLI, PR #3792), así que tampoco se salta — el resolver devuelve
+// el primero de la chain con su transport.
 // =============================================================================
-test('resolveSherlockProvider salta openai-codex (stub) y devuelve cerebras (HTTP)', () => {
+test('resolveSherlockProvider devuelve openai-codex con transport=spawn (real desde 2026-06-02)', () => {
     const chain = [
         { provider: 'openai-codex', model: 'gpt-5' },
         { provider: 'cerebras', model: 'llama-3.3-70b' },
@@ -657,8 +669,8 @@ test('resolveSherlockProvider salta openai-codex (stub) y devuelve cerebras (HTT
         dispatchModule: fakeDispatcher({ providerChain: chain }),
     });
     assert.ok(r);
-    assert.equal(r.provider, 'cerebras');
-    assert.equal(r.transport, 'http');
+    assert.equal(r.provider, 'openai-codex');
+    assert.equal(r.transport, 'spawn');
 });
 
 test('resolveSherlockProvider devuelve anthropic con transport=spawn (#3484)', () => {
@@ -678,11 +690,13 @@ test('resolveSherlockProvider devuelve anthropic con transport=spawn (#3484)', (
     assert.equal(r.transport, 'spawn');
 });
 
-test('resolveSherlockProvider devuelve null si toda la chain es stub-only (no handler)', () => {
-    // Solo openai-codex en la chain (stub sin handler) — Sherlock no tiene
-    // a quién invocar y devuelve null.
+test('resolveSherlockProvider devuelve null si la chain no tiene provider con handler', () => {
+    // Solo `deterministic` en la chain — no es ni HTTP-completion ni spawn-CLI,
+    // así que Sherlock no tiene a quién invocar y devuelve null. (Antes este
+    // caso se cubría con openai-codex stub; desde 2026-06-02 codex es real, por
+    // eso usamos un provider que genuinamente no tiene handler en Sherlock.)
     const chain = [
-        { provider: 'openai-codex', model: 'gpt-5' },
+        { provider: 'deterministic', model: 'rules-engine' },
     ];
     const r = sherlock._resolveSherlockProvider({
         excludedProvider: null,
@@ -827,14 +841,16 @@ test('#3484 CA-SHERLOCK-5: si toda la chain falla, Sherlock devuelve aborted + F
         configLoader: defaultConfigLoader(),
         completionClient: fakeCompletionClient({ ok: false, error: { type: 'http_error' }, durationMs: 100 }),
         spawnAnthropic: fakeSpawnAnthropic({ ok: false, error: { type: 'spawn_failed' }, durationMs: 0 }),
-        // Solo openai-codex en la chain — stub, sin handler. Sherlock no
-        // tiene a quién invocar → aborted con errorCode=no_provider.
+        // Codex es real desde 2026-06-02: la cascada SÍ lo invoca (spawn). Con el
+        // fake fallando, agota la chain y aborta. El errorCode ahora refleja el
+        // último fallo real del provider (spawn_failed), ya no 'no_provider'.
+        spawnCodex: fakeSpawnCodex({ ok: false, error: { type: 'spawn_failed' }, durationMs: 0 }),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'openai-codex', model: 'gpt-5' }] }),
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'aborted');
-    assert.equal(result.errorCode, 'no_provider');
+    assert.equal(result.errorCode, 'spawn_failed');
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
 });
 
