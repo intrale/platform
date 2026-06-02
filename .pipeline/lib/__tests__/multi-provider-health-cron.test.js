@@ -119,6 +119,11 @@ test('runOnce: pingea sólo los providers presentes en secretos', async () => {
         auditDir,
         secretsPath,
         pingImpl: fakePing({ cerebras: { ok: true, reason: 'authenticated', statusCode: 200 } }),
+        // #3802 — probe CLI fijo + sender/dedup aislados: el test no debe
+        // depender del PATH real ni escribir en archivos reales del pipeline.
+        cliProbe: () => false,
+        telegramSender: () => true,
+        dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
     assert.ok(Array.isArray(result.snapshot.providers));
@@ -128,6 +133,89 @@ test('runOnce: pingea sólo los providers presentes en secretos', async () => {
     const gemini = result.snapshot.providers.find(p => p.provider === 'gemini-google');
     assert.equal(gemini.state, 'red');
     assert.equal(gemini.reason_code, 'no_key_configured');
+});
+
+// ─── #3802 — providers CLI-OAuth (Claude Code / Codex): validar CLI, no key.
+test('isBinaryOnPath: encuentra binario en un dir del PATH (fs inyectado)', () => {
+    const fakeFs = { existsSync: (p) => p.includes('claude') };
+    assert.equal(
+        healthCron.isBinaryOnPath('claude', { env: { PATH: '/usr/bin:/usr/local/bin' }, fsImpl: fakeFs }),
+        true,
+    );
+});
+
+test('isBinaryOnPath: false si el binario no está en ningún dir', () => {
+    const fakeFs = { existsSync: () => false };
+    assert.equal(
+        healthCron.isBinaryOnPath('codex', { env: { PATH: '/usr/bin' }, fsImpl: fakeFs }),
+        false,
+    );
+});
+
+test('probeCliProvider: CLI disponible → ok + cli_oauth_ok', () => {
+    const r = healthCron.probeCliProvider(
+        { provider: 'anthropic', cli_binary: 'claude' },
+        { cliProbe: () => true },
+    );
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, 'cli_oauth_ok');
+});
+
+test('probeCliProvider: CLI ausente → !ok + cli_unavailable', () => {
+    const r = healthCron.probeCliProvider(
+        { provider: 'openai', cli_binary: 'codex' },
+        { cliProbe: () => false },
+    );
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'cli_unavailable');
+});
+
+test('runOnce: provider OAuth con CLI disponible → green sin pinear la API key', async () => {
+    const dir = tmpDir();
+    const stateDir = path.join(dir, 'state');
+    const auditDir = path.join(dir, 'audit');
+    // Sin keys de anthropic/openai en secretos: igual deben quedar verdes
+    // porque corren por CLI OAuth, no por API key.
+    const secretsPath = makeSecretsFile(dir, {});
+    const result = await healthCron.runOnce({
+        stateDir,
+        auditDir,
+        secretsPath,
+        // pingImpl NO debe ser invocado para providers OAuth.
+        pingImpl: async () => { throw new Error('no debería pinear un provider OAuth'); },
+        cliProbe: () => true, // CLI disponible
+        telegramSender: () => true,
+        dedupFile: path.join(dir, 'dedup.json'),
+        skipAudit: true,
+    });
+    const anthropic = result.snapshot.providers.find(p => p.provider === 'anthropic');
+    assert.equal(anthropic.state, 'green');
+    assert.equal(anthropic.reason_code, 'cli_oauth_ok');
+    assert.equal(anthropic.auth_mode, 'oauth');
+    const openai = result.snapshot.providers.find(p => p.provider === 'openai');
+    assert.equal(openai.state, 'green');
+    assert.equal(openai.reason_code, 'cli_oauth_ok');
+});
+
+test('runOnce: provider OAuth con CLI ausente → red (cli_unavailable)', async () => {
+    const dir = tmpDir();
+    const stateDir = path.join(dir, 'state');
+    const auditDir = path.join(dir, 'audit');
+    const secretsPath = makeSecretsFile(dir, {});
+    const result = await healthCron.runOnce({
+        stateDir,
+        auditDir,
+        secretsPath,
+        pingImpl: fakePing({}),
+        cliProbe: () => false, // CLI no disponible
+        // Aislar efectos de archivo: el rojo de los OAuth dispara el sender.
+        telegramSender: () => true,
+        dedupFile: path.join(dir, 'dedup.json'),
+        skipAudit: true,
+    });
+    const anthropic = result.snapshot.providers.find(p => p.provider === 'anthropic');
+    assert.equal(anthropic.state, 'red');
+    assert.equal(anthropic.reason_code, 'cli_unavailable');
 });
 
 test('runOnce: CA-6 simulación — 2 free providers en rojo simultáneo (free counts)', async () => {
@@ -205,6 +293,11 @@ test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', asy
         auditDir,
         secretsPath,
         pingImpl: fakePing({ cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 } }),
+        // #3802 — probe CLI fijo + sender/dedup aislados (sino el rojo de
+        // cerebras dispararía el sender por defecto contra archivos reales).
+        cliProbe: () => false,
+        telegramSender: () => true,
+        dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
     const serialized = JSON.stringify(result.snapshot);
@@ -221,6 +314,13 @@ test('runOnce: persiste snapshot a state/multi-provider-health.json', async () =
         auditDir: path.join(dir, 'audit'),
         secretsPath,
         pingImpl: fakePing({ cerebras: { ok: true, reason: 'authenticated', statusCode: 200 } }),
+        // #3802 — fijar el probe de CLI para no depender del PATH real de la
+        // máquina (sino anthropic/codex darían verde y green_count != 1).
+        cliProbe: () => false,
+        // Aislar efectos: sender en memoria + dedup en tmp (sino escribe en
+        // servicios/telegram/pendiente/ y ~/.claude/secrets/…dedup.json reales).
+        telegramSender: () => true,
+        dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
     const snapshotFile = path.join(stateDir, healthCron.SNAPSHOT_FILENAME);
