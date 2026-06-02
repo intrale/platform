@@ -65,6 +65,10 @@ const MANAGED_KEYS = Object.freeze([
         reason: 'Claude Code usa OAuth / MAX login; rotar acá puede confundir el child env.',
         canonicalPath: 'providers.anthropic.api_key',
         legacyField: 'anthropic_api_key',
+        // El pipeline lo usa vía Claude Code CLI (OAuth/MAX), NO vía API key.
+        // El health-cron valida la CLI, no pinea la key (sería un falso rojo).
+        auth_mode: 'oauth',
+        cli_binary: 'claude',
     },
     {
         provider: 'openai',
@@ -72,6 +76,10 @@ const MANAGED_KEYS = Object.freeze([
         editable: true,
         canonicalPath: 'providers.openai.api_key',
         legacyField: 'openai_api_key',
+        // Codex CLI autentica vía `codex login` (ChatGPT Plus OAuth), NO por
+        // OPENAI_API_KEY. El health valida la CLI, no la key (falso rojo 403).
+        auth_mode: 'oauth',
+        cli_binary: 'codex',
     },
     {
         provider: 'elevenlabs',

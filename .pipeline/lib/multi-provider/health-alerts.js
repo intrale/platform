@@ -54,6 +54,10 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     'network_error',
     'no_key_configured',
     'unknown_provider',
+    // #3802 — providers CLI-OAuth (Claude Code / Codex): validados por CLI.
+    'cli_oauth_ok',
+    'cli_unavailable',
+    'cli_binary_undeclared',
 ]));
 
 // Estados válidos del provider (espejan los CA-3 / narrativa UX).

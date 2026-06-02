@@ -67,6 +67,64 @@ function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
     return Math.floor((rng() * 2 - 1) * rangeMs);
 }
 
+// -----------------------------------------------------------------------------
+// CLI-OAuth probe (#3802) — validar el camino que el pipeline realmente usa.
+//
+// Anthropic (Claude Code) y OpenAI/Codex NO se usan por API key: corren por la
+// CLI con OAuth (`claude` MAX login / `codex login`). Pinear su API key da un
+// falso ROJO (la key está ausente o devuelve 403) aunque la CLI funcione bien.
+// Para esos providers validamos que el binario de la CLI esté disponible en el
+// PATH — el camino real— en lugar de la key.
+//
+// Determinístico (scan de PATH, sin red, sin consumir cuota) e inyectable en
+// tests vía `opts.cliProbe`.
+// -----------------------------------------------------------------------------
+
+/**
+ * Resuelve si un binario es invocable buscándolo en el PATH. Windows-aware
+ * (respeta PATHEXT). No spawnea nada — sólo `fs.existsSync` sobre los candidatos.
+ *
+ * @returns {boolean}
+ */
+function isBinaryOnPath(binary, { env = process.env, fsImpl = fs } = {}) {
+    if (!binary || typeof binary !== 'string') return false;
+    const pathVar = env.PATH || env.Path || '';
+    const dirs = pathVar.split(path.delimiter).filter(Boolean);
+    const isWin = process.platform === 'win32';
+    const exts = isWin
+        ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map(e => e.toLowerCase())
+        : [''];
+    for (const dir of dirs) {
+        // Binario tal cual (sirve para *nix y para .exe ya con extensión en Win).
+        const direct = path.join(dir, binary);
+        try { if (fsImpl.existsSync(direct)) return true; } catch { /* ignore */ }
+        if (isWin) {
+            for (const ext of exts) {
+                try { if (fsImpl.existsSync(direct + ext)) return true; } catch { /* ignore */ }
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Probe de salud para un provider CLI-OAuth. Devuelve un objeto con la misma
+ * forma que `live-ping.ping` (`{ ok, reason, ... }`) para que `classifyState`
+ * lo trate igual.
+ */
+function probeCliProvider(spec, { env = process.env, fsImpl = fs, cliProbe } = {}) {
+    const binary = spec.cli_binary || null;
+    if (!binary) {
+        return { ok: false, reason: 'cli_binary_undeclared', provider: spec.provider, cli_oauth: true };
+    }
+    const available = typeof cliProbe === 'function'
+        ? !!cliProbe(binary)
+        : isBinaryOnPath(binary, { env, fsImpl });
+    return available
+        ? { ok: true, reason: 'cli_oauth_ok', provider: spec.provider, cli_oauth: true }
+        : { ok: false, reason: 'cli_unavailable', provider: spec.provider, cli_oauth: true };
+}
+
 function readJson(file, fsImpl = fs) {
     if (!fsImpl.existsSync(file)) return null;
     try { return JSON.parse(fsImpl.readFileSync(file, 'utf8')); }
@@ -205,7 +263,7 @@ function listManagedAndPingable() {
 // Snapshot build + alerts
 // -----------------------------------------------------------------------------
 
-async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl } = {}) {
+async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe } = {}) {
     const prevByProvider = {};
     if (prevSnapshot && Array.isArray(prevSnapshot.providers)) {
         for (const p of prevSnapshot.providers) prevByProvider[p.provider] = p;
@@ -216,7 +274,11 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
         const keyInfo = secretsRw.listKeys({ secretsPath, fsImpl }).find(k => k.provider === spec.provider);
         const prev = prevByProvider[spec.provider] || {};
         let pingResult = null;
-        if (keyInfo && keyInfo.status === 'present') {
+        // #3802 — Providers CLI-OAuth (Claude Code / Codex): validar la CLI, no
+        // la API key. Pinear la key da falso rojo porque el pipeline NO la usa.
+        if (spec.auth_mode === 'oauth') {
+            pingResult = probeCliProvider(spec, { fsImpl, cliProbe });
+        } else if (keyInfo && keyInfo.status === 'present') {
             const _ping = pingImpl || livePing.ping;
             try {
                 pingResult = await _ping({
@@ -252,6 +314,9 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             last_checked_at: new Date(Date.now()).toISOString(),
             key_status: keyInfo ? keyInfo.status : 'absent',
             free_tier_notes: spec.free_tier_notes || null,
+            // #3802 — el frontend usa esto para mostrar "CLI/OAuth" en vez de
+            // sugerir que falta una API key cuando el provider corre por CLI.
+            auth_mode: spec.auth_mode === 'oauth' ? 'oauth' : 'api_key',
         });
     }
     return results;
@@ -401,6 +466,7 @@ async function runOnce(opts = {}) {
         fsImpl,
         httpImpl: opts.httpImpl,
         pingImpl: opts.pingImpl,
+        cliProbe: opts.cliProbe,
     });
     const snapshot = buildSnapshot({ providers: providerResults, now });
 
@@ -516,6 +582,8 @@ module.exports = {
     classifyState,
     updateRateLimitCounter,
     pingAllProviders,
+    isBinaryOnPath,
+    probeCliProvider,
     buildSnapshot,
     emitAlerts,
     tryAcquireLock,
