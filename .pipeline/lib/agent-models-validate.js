@@ -132,6 +132,12 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   codex: Object.freeze([
     'gpt-5-codex',
     'gpt-5',
+    // 2026-06-02 (sign-off Leo por voz) — Sherlock baja su fallback Codex de
+    // gpt-5 → gpt-5-mini: el verificador no necesita el tope de calidad de gpt-5
+    // y el ahorro es real. El primario de Sherlock sigue siendo Claude Haiku 4.5
+    // (piso, no se baja). El Commander, en cambio, baja su primario a Sonnet y su
+    // Codex a gpt-5 (no a mini): es el cerebro y conserva más calidad.
+    'gpt-5-mini',
   ]),
   // #3501 — `gemini-1.5-flash` se agrega como modelo alternativo del provider
   // gemini-google para que Sherlock pueda preservar adversariality parcial
