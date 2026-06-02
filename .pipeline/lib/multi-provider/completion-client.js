@@ -44,13 +44,15 @@
 //     provider (sólo `content`/`inputTokens`/`outputTokens`).
 //
 // DoS / resource exhaustion:
-//   - Timeout configurable (default 90s, cap defensivo 180s) en `req.setTimeout`
-//     + handler que destruye con `code: 'ETIMEDOUT'`. El cap absoluto
-//     (`ABSOLUTE_MAX_TIMEOUT_MS`) NO puede ser removido por el caller — protege
-//     al cliente Telegram de quedar bloqueado por una respuesta colgada.
-//     Histórico: el default era 10s + Sherlock clampaba a 30s — insuficiente
-//     para razonamiento adversarial real (issue #3484). Subido a 90s con cap
-//     180s en mayo 2026.
+//   - SIN timeout (decisión Leo 2026-06-02 voz). El cliente espera la respuesta
+//     del provider el tiempo que haga falta — la verificación adversarial nunca
+//     se corta por reloj. Histórico: 10s (default original) → 90s+cap180s (#3484)
+//     → sin timeout (esta versión). La resiliencia ante un provider que no
+//     responde se delega a la **cascada multi-provider** del verifier (Sherlock):
+//     si un provider falla con error, se salta al siguiente de la chain en vez
+//     de cortar por tiempo. `timeoutMs` se mantiene en la signature por
+//     back-compat: si un caller pasa un valor > 0 se respeta (sin cap), pero el
+//     default (0 / inválido / ausente) significa "sin timeout".
 //   - Body cap 64KB (`MAX_BODY_BYTES`). Si el provider devuelve más, abortamos
 //     con `error: {type: 'invalid_response', reason: 'body_too_large'}`.
 //
@@ -157,16 +159,13 @@ const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
     ]),
 });
 
-// Timeout default — 90s. Cubre razonamiento adversarial real de Sherlock
-// (#3484) sin presión de reloj. Histórico: era 10s — insuficiente para
-// providers que tardan 20-40s en razonar sobre análisis largos.
-const DEFAULT_TIMEOUT_MS = 90_000;
-
-// Cap defensivo absoluto del timeout — el caller puede pedir hasta este valor.
-// Más allá de 3 minutos un turno de Telegram empieza a sentirse colgado y
-// arriesga a que el usuario mande mensajes adicionales pensando que el bot
-// murió. NO removible desde caller — protege al chat de bloqueos infinitos.
-const ABSOLUTE_MAX_TIMEOUT_MS = 180_000;
+// Timeout default — 0 = SIN timeout (decisión Leo 2026-06-02 voz). El cliente
+// espera lo que tarde el provider; la resiliencia ante un provider colgado la
+// da la cascada multi-provider del verifier, no un corte por reloj. Histórico:
+// 10s → 90s + cap 180s (#3484) → sin timeout (esta versión). Se mantiene
+// exportado por back-compat; un caller que pase un `timeoutMs > 0` lo conserva
+// (ya NO hay cap), pero el default es no cortar nunca.
+const DEFAULT_TIMEOUT_MS = 0;
 
 const MAX_BODY_BYTES = 64 * 1024; // 64KB — cap defensivo contra DoS.
 
@@ -228,12 +227,13 @@ async function complete({
     const startedAt = Date.now();
     const baseResult = { provider, model };
 
-    // Cap defensivo absoluto — defensa-en-profundidad contra callers que
-    // pasen timeouts excesivos (intencional o por bug). NO se removible.
+    // SIN timeout por default (Leo 2026-06-02). `effectiveTimeoutMs === 0`
+    // significa "no cortar nunca". Si el caller pasa un valor > 0 se respeta
+    // tal cual (ya no hay cap absoluto): es solo un opt-in explícito.
     const rawTimeout = Number(timeoutMs);
     const effectiveTimeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0
-        ? Math.min(rawTimeout, ABSOLUTE_MAX_TIMEOUT_MS)
-        : DEFAULT_TIMEOUT_MS;
+        ? rawTimeout
+        : 0;
 
     if (!isAllowedProvider(provider)) {
         return {
@@ -425,14 +425,18 @@ function doRequest({ spec, key, body, timeoutMs, httpImpl }) {
         }
 
         const lib = httpImpl || https;
-        const req = lib.request({
+        // timeoutMs === 0 → sin timeout (no seteamos la opción ni el handler).
+        const reqOpts = {
             method: spec.method,
             hostname: url.hostname,
             port: url.port || 443,
             path: url.pathname + url.search,
             headers,
-            timeout: timeoutMs,
-        }, (res) => {
+        };
+        if (Number(timeoutMs) > 0) {
+            reqOpts.timeout = timeoutMs;
+        }
+        const req = lib.request(reqOpts, (res) => {
             const chunks = [];
             let received = 0;
             let truncated = false;
@@ -453,9 +457,12 @@ function doRequest({ spec, key, body, timeoutMs, httpImpl }) {
             });
         });
         req.on('error', reject);
-        req.on('timeout', () => {
-            req.destroy(Object.assign(new Error('Timeout'), { code: 'ETIMEDOUT' }));
-        });
+        // Solo registramos el handler de timeout si hay timeout configurado.
+        if (Number(timeoutMs) > 0) {
+            req.on('timeout', () => {
+                req.destroy(Object.assign(new Error('Timeout'), { code: 'ETIMEDOUT' }));
+            });
+        }
         req.write(body);
         req.end();
     });
@@ -468,6 +475,5 @@ module.exports = {
     PROVIDER_COMPLETION_ENDPOINTS,
     PROVIDER_MODELS_ALLOWLIST,
     DEFAULT_TIMEOUT_MS,
-    ABSOLUTE_MAX_TIMEOUT_MS,
     MAX_BODY_BYTES,
 };

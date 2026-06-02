@@ -560,21 +560,23 @@ test('PROVIDER_MODELS_ALLOWLIST incluye los modelos que usa producción (snapsho
 });
 
 // =============================================================================
-// #3484 — Tests del cap defensivo del timeout.
+// 2026-06-02 (Leo) — el timeout se eliminó. El cliente espera lo que tarde el
+// provider; la resiliencia la da la cascada multi-provider del verifier.
 // =============================================================================
 
-test('#3484 CA-CLIENT-3: DEFAULT_TIMEOUT_MS = 90s', () => {
-    assert.equal(completion.DEFAULT_TIMEOUT_MS, 90_000);
+test('CA-CLIENT-3: DEFAULT_TIMEOUT_MS = 0 (sin timeout, 2026-06-02)', () => {
+    assert.equal(completion.DEFAULT_TIMEOUT_MS, 0);
 });
 
-test('#3484 CA-CLIENT-4: ABSOLUTE_MAX_TIMEOUT_MS = 180s exportado', () => {
-    assert.equal(completion.ABSOLUTE_MAX_TIMEOUT_MS, 180_000);
+test('CA-CLIENT-4: el cliente ya no exporta cap absoluto de timeout (2026-06-02)', () => {
+    // El cap absoluto (180s, #3484) se eliminó junto con el timeout.
+    assert.equal(completion.ABSOLUTE_MAX_TIMEOUT_MS, undefined);
 });
 
-test('#3484 CA-CLIENT-4: caller pidiendo timeout > ABSOLUTE_MAX_TIMEOUT_MS se clampea', async () => {
+test('CA-CLIENT-4: caller pidiendo timeout > 0 se respeta sin cap (2026-06-02)', async () => {
     // Estrategia: el fake http NO simula timeout, sino que responde rápido.
-    // Para validar el clamp inspeccionamos que el cliente NO tira aunque le
-    // pasemos 999_999 (lo clampearia a 180_000 internamente).
+    // Validamos que el cliente NO tira aunque le pasemos 999_999 — ya no hay
+    // cap absoluto, el valor se respeta tal cual (opt-in explícito del caller).
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
@@ -582,7 +584,7 @@ test('#3484 CA-CLIENT-4: caller pidiendo timeout > ABSOLUTE_MAX_TIMEOUT_MS se cl
         provider: 'cerebras',
         model: 'llama-3.3-70b',
         prompt: 'ping',
-        timeoutMs: 999_999, // se clampea a 180_000 internamente
+        timeoutMs: 999_999, // se respeta sin cap (ya no hay ABSOLUTE_MAX)
         secretsPath: f,
         httpImpl: fakeHttp({
             status: 200,

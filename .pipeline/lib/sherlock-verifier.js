@@ -9,8 +9,11 @@
 // el estado actual del sistema. Sherlock institucionaliza la contraposición:
 //   - prompt invariante ("fiscal")
 //   - el provider de mejor calidad disponible (orden compartido con Commander)
-//   - timeout delegado al completion-client (90s default, 180s cap)
-//   - disclaimer si falla la verificación
+//   - SIN timeout (Leo 2026-06-02): nunca corta por reloj; la resiliencia la
+//     da la cascada multi-provider, no un timer
+//   - cascada multi-provider: si un provider falla, salta al siguiente de la
+//     chain en vez de abortar (restaurada 2026-06-02, revierte #3668)
+//   - disclaimer F-6 sólo si se agota toda la chain
 //   - cap reelaboración hardcoded = 1
 //
 // Sherlock NO es un skill de agente — corre IN-PROCESS dentro del flujo
@@ -151,11 +154,13 @@ const SPAWN_COMPLETION_PROVIDERS = Object.freeze(new Set([
     'anthropic',
 ]));
 
-// Timeout default que Sherlock pasa al completion-client / spawn helper si
-// no recibe override por config. El cliente HTTP tiene su propio cap absoluto
-// (180s) que es la defensa real; este número es solo conveniencia + back-compat
-// con tests/callers viejos. Histórico: era 10s (clampado a 30s) — insuficiente.
-const DEFAULT_TIMEOUT_MS = 90_000;
+// Timeout default que Sherlock pasa al completion-client / spawn helper.
+// 0 = SIN timeout (decisión Leo 2026-06-02 voz): la verificación adversarial
+// nunca se corta por reloj. La resiliencia ante un provider que no responde la
+// da la cascada multi-provider de `verify()` (si un provider falla con error,
+// salta al siguiente de la chain), no un timeout. Histórico: 10s → 90s (#3484)
+// → sin timeout (esta versión). Se mantiene exportado por back-compat.
+const DEFAULT_TIMEOUT_MS = 0;
 
 // -----------------------------------------------------------------------------
 // Disclaimers (CA-F-5/F-6) — constantes string en español, voseo argentino.
@@ -480,9 +485,10 @@ function resolveSherlockProvider({
 // cli.js legacy, cmd shim, etc.). Pasa `--permission-mode bypassPermissions`
 // + `--output-format text` para obtener la respuesta cruda directamente.
 //
-// Timeout: respeta el `timeoutMs` recibido (clampado por el caller al
-// ABSOLUTE_MAX_TIMEOUT_MS del cliente HTTP). Si no hay respuesta antes,
-// mata el child con SIGTERM y devuelve `error.type === 'timeout'`.
+// Timeout: si `timeoutMs > 0` mata el child con SIGTERM al vencer y devuelve
+// `error.type === 'timeout'`. Con `timeoutMs === 0` (default post-2026-06-02)
+// NO hay timer: el child corre hasta terminar por su cuenta. La cascada de
+// `verify()` cubre el caso de error real del provider.
 //
 // SECURITY:
 //   - El prompt va por stdin (no como arg) → no aparece en `ps aux` ni en
@@ -549,17 +555,21 @@ function spawnAnthropicComplete({
         const finish = (result) => {
             if (resolved) return;
             resolved = true;
-            try { clearTimeout(timer); } catch {}
+            try { if (timer) clearTimeout(timer); } catch {}
             resolve(Object.assign({ provider: 'anthropic', durationMs: Date.now() - startedAt }, result));
         };
 
-        const timer = setTimeout(() => {
-            try { child.kill('SIGTERM'); } catch {}
-            finish({
-                ok: false,
-                error: { type: 'timeout', detail: `spawn anthropic superó timeoutMs=${timeoutMs}` },
-            });
-        }, Math.max(1_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+        // timeoutMs === 0 → sin timeout: no armamos timer, el child corre hasta
+        // terminar. Solo si el caller pide un timeout > 0 lo respetamos.
+        const timer = Number(timeoutMs) > 0
+            ? setTimeout(() => {
+                try { child.kill('SIGTERM'); } catch {}
+                finish({
+                    ok: false,
+                    error: { type: 'timeout', detail: `spawn anthropic superó timeoutMs=${timeoutMs}` },
+                });
+            }, Number(timeoutMs))
+            : null;
 
         try {
             if (child.stdin && typeof child.stdin.write === 'function') {
@@ -809,162 +819,33 @@ async function verify(opts = {}) {
         _log('sherlock', `🛡️ CA-SEC-1: analysis recortado (injection patterns=${san.hits.join('|')})`);
     }
 
-    // Resolución de provider — itera la chain telegram-sherlock. #3484:
-    // YA NO se excluye al commanderProvider; solo se saltan providers que
-    // no tienen handler implementado en Sherlock.
+    // -------------------------------------------------------------------------
+    // CASCADA MULTI-PROVIDER (restaurada 2026-06-02, revierte #3668).
     //
-    // #3766 — el resolver YA NO hace swap intra-provider por igualdad de
-    // modelo. La adversariality nace del rol (prompt fiscal), no del modelo.
-    // `commanderModel` se sigue pasando solo para el cálculo de `sameModel`
-    // que se persiste al JSONL como forensics (sin influir en veredicto).
-    const resolved = resolveSherlockProvider({
-        excludedProvider: null,
-        commanderProvider,
-        commanderModel,
-        pipelineDir,
-        log: _log,
-        quotaModule,
-        dispatchModule,
-        fsImpl,
-        now: _now,
-    });
+    // Sherlock prueba el primer provider de la chain telegram-sherlock. Si ese
+    // provider falla (error de transporte, timeout explícito que pidiera algún
+    // caller, o output que no respeta el schema), lo excluye y salta al
+    // siguiente de la chain en vez de abortar. Solo cuando se agota TODA la
+    // chain devuelve `verdict: 'aborted'` + disclaimer F-6.
+    //
+    // NO hay timeout (Leo 2026-06-02 voz): `cfg.timeoutMs === 0`, así que cada
+    // provider corre hasta responder o errorar por su cuenta. La resiliencia
+    // ante un provider colgado la da esta cascada, no un corte por reloj.
+    //
+    // #3484: NO se excluye al commanderProvider; los providers sin handler
+    // (openai-codex stub) los saltea resolveSherlockProvider internamente.
+    // #3766: sin swap intra-provider — la adversariality nace del rol (prompt
+    // fiscal), no del modelo. `commanderModel` se usa solo para el cálculo de
+    // `sameModel` que se persiste al JSONL como forensics (sin influir en el
+    // veredicto).
+    //
+    // Shape de retorno (CA-9): `attemptCount` = providers efectivamente
+    // invocados, `fallbackUsed` = true si hubo más de 1 intento, `chainTried`
+    // = lista de providers recorridos (incluye los bloqueados por residency).
+    // -------------------------------------------------------------------------
 
-    if (!resolved) {
-        // CA-7 (#3668) — emitimos DOS eventos: el legacy `sherlock_verification`
-        // (consumido por dashboards históricos) y el nuevo
-        // `sherlock_skipped_provider_unavailable` (PO S-6 / CA-7). El segundo
-        // es la señal canónica de "Sherlock no pudo verificar por falta de
-        // provider" que el monitor de drift de calidad consume.
-        emitAuditEvent({
-            pipelineDir, fsImpl, auditLog, now: _now,
-            event: 'sherlock_verification',
-            payload: {
-                analysisHash: hashFor(analysis),
-                commanderProvider,
-                commanderModel,
-                durationMs: Date.now() - startedAt,
-                errorCode: 'no_provider',
-                sameProvider: false,
-                sameModel: false,
-                sherlockModel: null,
-                transport: null,
-            },
-        });
-        emitAuditEvent({
-            pipelineDir, fsImpl, auditLog, now: _now,
-            event: 'sherlock_skipped_provider_unavailable',
-            payload: {
-                analysisHash: hashFor(analysis),
-                commanderProvider,
-                commanderModel,
-                durationMs: Date.now() - startedAt,
-                errorCode: 'no_provider',
-                sameProvider: false,
-                sameModel: false,
-                sherlockModel: null,
-                transport: null,
-            },
-        });
-        return {
-            verdict: 'aborted',
-            reason: 'no_provider_available',
-            inconsistencies: [],
-            inconsistenciesTruncated: false,
-            sherlockProvider: null,
-            sherlockModel: null,
-            transport: null,
-            sameProvider: false,
-            sameModel: false,
-            commanderProvider,
-            commanderModel,
-            durationMs: Date.now() - startedAt,
-            inputTokens: 0,
-            outputTokens: 0,
-            errorCode: 'no_provider',
-            suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
-            // CA-9 (#3668) — shape stable post-single-provider:
-            attemptCount: 0,
-            fallbackUsed: false,
-            chainTried: [],
-        };
-    }
-
-    // CA-AUDIT-1 (#3484) — `sameProvider`/`sameModel` se siguen calculando y
-    // emitiendo al JSONL como forensics (lo lee el monitor de drift y los
-    // análisis ex-post). #3766: NO se usan como input al veredicto ni al
-    // disclaimer — la adversariality nace del rol, no del modelo. `sameModel`
-    // queda en false cuando el caller no pasa `commanderModel` (caso típico
-    // post-#3766 en pulpo.js).
-    const sameProvider = !!(commanderProvider && commanderProvider === resolved.provider);
-    const sameModel = !!(sameProvider && commanderModel && resolved.model && commanderModel === resolved.model);
-    if (sameProvider) {
-        _log('sherlock', `🔍 same_provider=true (commander=${commanderProvider}/${commanderModel || '?'}, sherlock=${resolved.provider}/${resolved.model || '?'}) — adversariality reducida (#3484 riesgo aceptado, #3766 sin swap)`);
-    }
-
-    // #3766 — el evento `sherlock_model_swap` (#3501) se eliminó: ya no hay
-    // policy de swap intra-provider, por lo que no hay nada que emitir aparte
-    // de los eventos canónicos (sherlock_verification, sherlock_skipped_*,
-    // sherlock_aborted_residency, sherlock_schema_violation).
-
-    // CA-SEC-3 — data-residency fail-closed ANTES del provider call.
-    const drCheck = commanderMP.enforceDataResidency({
-        pipelineDir,
-        provider: resolved.provider,
-        paths: [],
-        log: _log,
-        chatId: null,
-        prompt: safeAnalysis,
-        drfModule: _residency,
-        auditLog,
-        fsImpl,
-        now: _now,
-    });
-    if (!drCheck.ok) {
-        emitAuditEvent({
-            pipelineDir, fsImpl, auditLog, now: _now,
-            event: 'sherlock_aborted_residency',
-            payload: {
-                analysisHash: hashFor(analysis),
-                commanderProvider,
-                commanderModel,
-                sherlockProvider: resolved.provider,
-                durationMs: Date.now() - startedAt,
-                errorCode: drCheck.reason,
-                // CA-AUDIT-1 (#3484) — campos enriched a partir del resolved.
-                sameProvider,
-                sameModel,
-                sherlockModel: resolved.model,
-                transport: resolved.transport,
-            },
-        });
-        return {
-            verdict: 'aborted',
-            reason: `residency_${drCheck.reason}`,
-            inconsistencies: [],
-            inconsistenciesTruncated: false,
-            sherlockProvider: resolved.provider,
-            sherlockModel: resolved.model,
-            transport: resolved.transport,
-            sameProvider,
-            sameModel,
-            commanderProvider,
-            commanderModel,
-            durationMs: Date.now() - startedAt,
-            inputTokens: 0,
-            outputTokens: 0,
-            errorCode: 'residency_blocked',
-            suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
-            // #3766 — `modelSwap` se mantiene en el shape de retorno (siempre
-            // `swapped:false`) por back-compat con consumers downstream.
-            modelSwap: { swapped: false, originalModel: null, reason: null },
-            // CA-9 (#3668) — shape stable post-single-provider:
-            attemptCount: 0,
-            fallbackUsed: false,
-            chainTried: [resolved.provider],
-        };
-    }
-
-    // CA-SEC-2 — prompt con delimitadores XML.
+    // CA-SEC-2 — prompt con delimitadores XML. Es provider-independiente, así
+    // que se arma una sola vez antes de la cascada.
     const prompt = buildFiscalPrompt({
         analysis: safeAnalysis,
         originalRequest,
@@ -972,24 +853,15 @@ async function verify(opts = {}) {
         lastHourLogs,
     });
 
-    // -------------------------------------------------------------------------
-    // #3668 — Invocación single-provider (sin cascada).
-    //
-    // Reemplaza la cascada de #3558 (lib/sherlock-retry-chain.js, eliminado).
-    // Sherlock invoca 1 sola vez al provider resuelto; si falla, devuelve
-    // `verdict: 'aborted'` + disclaimer F-6 y el caller (pulpo.js) sigue al
-    // contrato `recogerTextoLibre` con el disclaimer aplicado.
-    //
-    // El shape de retorno preserva `attemptCount`/`fallbackUsed`/`chainTried`
-    // (CA-9) para no romper consumers downstream del audit JSONL — colapsan
-    // a `1`/`false`/`[provider]` siempre, pero las keys existen.
-    // -------------------------------------------------------------------------
+    // #3766 — `modelSwap` queda como shape estable (siempre `swapped:false`)
+    // por back-compat con consumers que lo leen (formatVerifiedFooter,
+    // dashboards históricos, JSONL viejo). La policy de swap del #3501 se
+    // eliminó; el field se conserva para no obligar a un breaking change.
+    const modelSwap = { swapped: false, originalModel: null, reason: null };
 
-    // `singleProviderComplete` encapsula la decisión HTTP vs spawn según el
-    // transport del resolved. Lo mantenemos como función local para que el
-    // shape del retorno sea uniforme con lo que esperaban los consumers de la
-    // cascada removida.
-    async function singleProviderComplete() {
+    // `completeWith` encapsula la decisión HTTP vs spawn según el transport del
+    // provider resuelto. Devuelve el shape canónico `{ok, content, ...}`.
+    async function completeWith(resolved) {
         if (resolved.transport === 'spawn' && resolved.provider === 'anthropic') {
             const r = await _spawnAnthropic({
                 prompt,
@@ -1012,97 +884,195 @@ async function verify(opts = {}) {
         });
     }
 
-    let httpResult;
-    try {
-        httpResult = await singleProviderComplete();
-    } catch (e) {
-        // Defensive: el completion-client / spawn helper deberían devolver
-        // siempre `{ok:false, error:{...}}` en lugar de tirar — si tiran,
-        // normalizamos al mismo shape para no romper el flow.
-        httpResult = {
-            ok: false,
-            error: { type: 'provider_exception', detail: e && e.message ? e.message : String(e) },
-            durationMs: 0,
-        };
-    }
+    const excludedProviders = new Set(); // providers ya intentados que fallaron
+    const chainTried = [];               // providers recorridos, en orden
+    let attemptCount = 0;                // providers efectivamente invocados
+    let lastResolved = null;            // último provider resuelto (para shape)
+    let lastSameProvider = false;
+    let lastSameModel = false;
+    let lastErrorCode = 'no_provider';
+    let lastErrorIsTimeout = false;
+    let lastErrorIsResidency = false;
 
-    const totalMs = Date.now() - startedAt;
+    // Cap defensivo del outer loop — la chain telegram-sherlock es chica; este
+    // número solo evita un loop infinito si el resolver devolviera siempre el
+    // mismo provider (no debería: excluimos cada provider tras fallar).
+    const MAX_CASCADE_ITERATIONS = 10;
 
-    // #3766 — `modelSwap` queda como shape estable (siempre `swapped:false`)
-    // por back-compat con consumers que lo leen (formatVerifiedFooter,
-    // dashboards históricos, JSONL viejo). El swap intra-provider del #3501
-    // se eliminó; el field se conserva para no obligar a un breaking change
-    // en downstream.
-    const initialModelSwap = { swapped: false, originalModel: null, reason: null };
-
-    // -------------------------------------------------------------------------
-    // ERROR PATH — provider falló (timeout, http_error, spawn_failed, etc.)
-    // -------------------------------------------------------------------------
-    if (!httpResult || !httpResult.ok) {
-        const lastErr = (httpResult && httpResult.error) || { type: 'unknown' };
-        const errorCode = lastErr.reason || lastErr.type || 'unknown';
-        emitAuditEvent({
-            pipelineDir, fsImpl, auditLog, now: _now,
-            event: 'sherlock_verification',
-            payload: {
-                analysisHash: hashFor(analysis),
-                commanderProvider,
-                commanderModel,
-                sherlockProvider: resolved.provider,
-                durationMs: totalMs,
-                errorCode,
-                sameProvider,
-                sameModel,
-                sherlockModel: resolved.model,
-                transport: resolved.transport,
-            },
-        });
-        return {
-            verdict: 'aborted',
-            reason: lastErr.type === 'timeout' ? 'timeout' : `provider_error:${errorCode}`,
-            inconsistencies: [],
-            inconsistenciesTruncated: false,
-            sherlockProvider: resolved.provider,
-            sherlockModel: resolved.model,
-            transport: resolved.transport,
-            sameProvider,
-            sameModel,
+    for (let iter = 0; iter < MAX_CASCADE_ITERATIONS; iter++) {
+        // Resolución de provider — itera la chain telegram-sherlock arrancando
+        // con los providers ya intentados en `excludedProviders`. #3484: NO se
+        // excluye al commanderProvider; solo se saltan providers sin handler.
+        const resolved = resolveSherlockProvider({
+            excludedProvider: null,
             commanderProvider,
             commanderModel,
-            durationMs: totalMs,
-            inputTokens: 0,
-            outputTokens: 0,
-            errorCode,
-            suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
-            modelSwap: initialModelSwap,
-            // CA-9 (#3668) — shape stable post-single-provider:
-            attemptCount: 1,
-            fallbackUsed: false,
-            chainTried: [resolved.provider],
-        };
-    }
-
-    // -------------------------------------------------------------------------
-    // SCHEMA VALIDATION — parsear + validar el output del Sherlock (CA-SEC-6).
-    // -------------------------------------------------------------------------
-    const parsed = parseAndValidateSherlockOutput(httpResult.content);
-    if (!parsed.ok) {
-        emitAuditEvent({
-            pipelineDir, fsImpl, auditLog, now: _now,
-            event: 'sherlock_schema_violation',
-            payload: {
-                analysisHash: hashFor(analysis),
-                commanderProvider,
-                commanderModel,
-                sherlockProvider: resolved.provider,
-                durationMs: totalMs,
-                errorCode: parsed.reason,
-                sameProvider,
-                sameModel,
-                sherlockModel: resolved.model,
-                transport: resolved.transport,
-            },
+            initialExcluded: excludedProviders,
+            pipelineDir,
+            log: _log,
+            quotaModule,
+            dispatchModule,
+            fsImpl,
+            now: _now,
         });
+
+        if (!resolved) break; // chain agotada (o ningún provider disponible)
+
+        lastResolved = resolved;
+
+        // CA-AUDIT-1 (#3484) — `sameProvider`/`sameModel` se calculan por intento
+        // y se persisten al JSONL como forensics (los lee el monitor de drift).
+        // #3766: NO influyen en el veredicto ni en el disclaimer.
+        const sameProvider = !!(commanderProvider && commanderProvider === resolved.provider);
+        const sameModel = !!(sameProvider && commanderModel && resolved.model && commanderModel === resolved.model);
+        lastSameProvider = sameProvider;
+        lastSameModel = sameModel;
+        if (sameProvider) {
+            _log('sherlock', `🔍 same_provider=true (commander=${commanderProvider}/${commanderModel || '?'}, sherlock=${resolved.provider}/${resolved.model || '?'}) — adversariality reducida (#3484 riesgo aceptado, #3766 sin swap)`);
+        }
+
+        // CA-SEC-3 — data-residency fail-closed ANTES del provider call. Si este
+        // provider está bloqueado por residency lo excluimos y la cascada sigue
+        // con el siguiente (otro provider podría estar permitido para este dato).
+        const drCheck = commanderMP.enforceDataResidency({
+            pipelineDir,
+            provider: resolved.provider,
+            paths: [],
+            log: _log,
+            chatId: null,
+            prompt: safeAnalysis,
+            drfModule: _residency,
+            auditLog,
+            fsImpl,
+            now: _now,
+        });
+        if (!drCheck.ok) {
+            emitAuditEvent({
+                pipelineDir, fsImpl, auditLog, now: _now,
+                event: 'sherlock_aborted_residency',
+                payload: {
+                    analysisHash: hashFor(analysis),
+                    commanderProvider,
+                    commanderModel,
+                    sherlockProvider: resolved.provider,
+                    durationMs: Date.now() - startedAt,
+                    errorCode: drCheck.reason,
+                    sameProvider,
+                    sameModel,
+                    sherlockModel: resolved.model,
+                    transport: resolved.transport,
+                },
+            });
+            lastErrorCode = 'residency_blocked';
+            lastErrorIsTimeout = false;
+            lastErrorIsResidency = true;
+            chainTried.push(resolved.provider);
+            excludedProviders.add(resolved.provider);
+            continue;
+        }
+
+        attemptCount++;
+        chainTried.push(resolved.provider);
+
+        let httpResult;
+        try {
+            httpResult = await completeWith(resolved);
+        } catch (e) {
+            // Defensive: el completion-client / spawn helper deberían devolver
+            // siempre `{ok:false, error:{...}}` en lugar de tirar — si tiran,
+            // normalizamos al mismo shape para no romper la cascada.
+            httpResult = {
+                ok: false,
+                error: { type: 'provider_exception', detail: e && e.message ? e.message : String(e) },
+                durationMs: 0,
+            };
+        }
+
+        // ---------------------------------------------------------------------
+        // ERROR PATH — provider falló (timeout, http_error, spawn_failed, etc.)
+        // → excluir y saltar al siguiente de la chain.
+        // ---------------------------------------------------------------------
+        if (!httpResult || !httpResult.ok) {
+            const lastErr = (httpResult && httpResult.error) || { type: 'unknown' };
+            const errorCode = lastErr.reason || lastErr.type || 'unknown';
+            emitAuditEvent({
+                pipelineDir, fsImpl, auditLog, now: _now,
+                event: 'sherlock_verification',
+                payload: {
+                    analysisHash: hashFor(analysis),
+                    commanderProvider,
+                    commanderModel,
+                    sherlockProvider: resolved.provider,
+                    durationMs: Date.now() - startedAt,
+                    errorCode,
+                    sameProvider,
+                    sameModel,
+                    sherlockModel: resolved.model,
+                    transport: resolved.transport,
+                },
+            });
+            lastErrorCode = errorCode;
+            lastErrorIsTimeout = lastErr.type === 'timeout';
+            lastErrorIsResidency = false;
+            _log('sherlock', `provider ${resolved.provider} falló (${errorCode}) — cascada al siguiente`);
+            excludedProviders.add(resolved.provider);
+            continue;
+        }
+
+        // ---------------------------------------------------------------------
+        // SCHEMA VALIDATION — parsear + validar (CA-SEC-6). Si el output no
+        // respeta el schema tratamos al provider como fallido y cascadeamos.
+        // ---------------------------------------------------------------------
+        const parsed = parseAndValidateSherlockOutput(httpResult.content);
+        if (!parsed.ok) {
+            emitAuditEvent({
+                pipelineDir, fsImpl, auditLog, now: _now,
+                event: 'sherlock_schema_violation',
+                payload: {
+                    analysisHash: hashFor(analysis),
+                    commanderProvider,
+                    commanderModel,
+                    sherlockProvider: resolved.provider,
+                    durationMs: Date.now() - startedAt,
+                    errorCode: parsed.reason,
+                    sameProvider,
+                    sameModel,
+                    sherlockModel: resolved.model,
+                    transport: resolved.transport,
+                },
+            });
+            emitAuditEvent({
+                pipelineDir, fsImpl, auditLog, now: _now,
+                event: 'sherlock_verification',
+                payload: {
+                    analysisHash: hashFor(analysis),
+                    commanderProvider,
+                    commanderModel,
+                    sherlockProvider: resolved.provider,
+                    durationMs: Date.now() - startedAt,
+                    errorCode: 'schema_violation',
+                    sameProvider,
+                    sameModel,
+                    sherlockModel: resolved.model,
+                    transport: resolved.transport,
+                },
+            });
+            lastErrorCode = 'schema_violation';
+            lastErrorIsTimeout = false;
+            lastErrorIsResidency = false;
+            _log('sherlock', `provider ${resolved.provider} devolvió schema inválido (${parsed.reason}) — cascada al siguiente`);
+            excludedProviders.add(resolved.provider);
+            continue;
+        }
+
+        // ---------------------------------------------------------------------
+        // SUCCESS PATH — verdict ok o rechazado con schema válido.
+        // ---------------------------------------------------------------------
+        const totalMs = Date.now() - startedAt;
+        // CA-SEC-8 — solo hashes en el audit log (claim/contradiction nunca crudos).
+        const claimHashes = parsed.data.inconsistencies.map(it => hashFor(it.claim));
+        const contradictionHashes = parsed.data.inconsistencies.map(it => hashFor(it.contradiction));
+
         emitAuditEvent({
             pipelineDir, fsImpl, auditLog, now: _now,
             event: 'sherlock_verification',
@@ -1112,18 +1082,21 @@ async function verify(opts = {}) {
                 commanderModel,
                 sherlockProvider: resolved.provider,
                 durationMs: totalMs,
-                errorCode: 'schema_violation',
+                inputTokens: httpResult.inputTokens,
+                outputTokens: httpResult.outputTokens,
+                errorCode: null,
                 sameProvider,
                 sameModel,
                 sherlockModel: resolved.model,
                 transport: resolved.transport,
             },
         });
+
         return {
-            verdict: 'aborted',
-            reason: `schema_violation:${parsed.reason}`,
-            inconsistencies: [],
-            inconsistenciesTruncated: false,
+            verdict: parsed.data.verdict,
+            reason: parsed.data.reason,
+            inconsistencies: parsed.data.inconsistencies,
+            inconsistenciesTruncated: parsed.data.inconsistenciesTruncated,
             sherlockProvider: resolved.provider,
             sherlockModel: resolved.model,
             transport: resolved.transport,
@@ -1134,69 +1107,120 @@ async function verify(opts = {}) {
             durationMs: totalMs,
             inputTokens: httpResult.inputTokens || 0,
             outputTokens: httpResult.outputTokens || 0,
-            errorCode: 'schema_violation',
-            suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
-            modelSwap: initialModelSwap,
-            // CA-9 (#3668) — shape stable post-single-provider:
-            attemptCount: 1,
-            fallbackUsed: false,
-            chainTried: [resolved.provider],
+            errorCode: null,
+            suggestedDisclaimer: DISCLAIMER_TYPES.NONE, // el caller decide F-5 vs nada
+            claimHashes,
+            contradictionHashes,
+            modelSwap,
+            // CA-9 — shape stable; con cascada reflejan el recorrido real.
+            attemptCount,
+            fallbackUsed: attemptCount > 1,
+            chainTried: chainTried.slice(),
         };
     }
 
     // -------------------------------------------------------------------------
-    // SUCCESS PATH — verdict ok o rechazado con schema válido.
+    // CHAIN AGOTADA — ningún provider de la chain pudo verificar.
     // -------------------------------------------------------------------------
+    const totalMs = Date.now() - startedAt;
 
-    // CA-SEC-8 — solo hashes en el audit log (claim/contradiction nunca crudos).
-    const claimHashes = parsed.data.inconsistencies.map(it => hashFor(it.claim));
-    const contradictionHashes = parsed.data.inconsistencies.map(it => hashFor(it.contradiction));
-
-    emitAuditEvent({
-        pipelineDir, fsImpl, auditLog, now: _now,
-        event: 'sherlock_verification',
-        payload: {
-            analysisHash: hashFor(analysis),
+    if (!lastResolved) {
+        // No se pudo resolver NINGÚN provider (todos gated / sin handler).
+        // CA-7 (#3668) — emitimos DOS eventos: el legacy `sherlock_verification`
+        // (consumido por dashboards históricos) y el canónico
+        // `sherlock_skipped_provider_unavailable` (PO S-6 / CA-7), que es la
+        // señal de "Sherlock no pudo verificar por falta de provider".
+        emitAuditEvent({
+            pipelineDir, fsImpl, auditLog, now: _now,
+            event: 'sherlock_verification',
+            payload: {
+                analysisHash: hashFor(analysis),
+                commanderProvider,
+                commanderModel,
+                durationMs: totalMs,
+                errorCode: 'no_provider',
+                sameProvider: false,
+                sameModel: false,
+                sherlockModel: null,
+                transport: null,
+            },
+        });
+        emitAuditEvent({
+            pipelineDir, fsImpl, auditLog, now: _now,
+            event: 'sherlock_skipped_provider_unavailable',
+            payload: {
+                analysisHash: hashFor(analysis),
+                commanderProvider,
+                commanderModel,
+                durationMs: totalMs,
+                errorCode: 'no_provider',
+                sameProvider: false,
+                sameModel: false,
+                sherlockModel: null,
+                transport: null,
+            },
+        });
+        return {
+            verdict: 'aborted',
+            reason: 'no_provider_available',
+            inconsistencies: [],
+            inconsistenciesTruncated: false,
+            sherlockProvider: null,
+            sherlockModel: null,
+            transport: null,
+            sameProvider: false,
+            sameModel: false,
             commanderProvider,
             commanderModel,
-            sherlockProvider: resolved.provider,
             durationMs: totalMs,
-            inputTokens: httpResult.inputTokens,
-            outputTokens: httpResult.outputTokens,
-            errorCode: null,
-            sameProvider,
-            sameModel,
-            sherlockModel: resolved.model,
-            transport: resolved.transport,
-        },
-    });
+            inputTokens: 0,
+            outputTokens: 0,
+            errorCode: 'no_provider',
+            suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
+            modelSwap,
+            attemptCount: 0,
+            fallbackUsed: false,
+            chainTried: chainTried.slice(),
+        };
+    }
+
+    // Resolvimos uno o más providers pero TODA la chain falló (error, schema o
+    // residency). El errorCode/reason refleja el ÚLTIMO fallo de la cascada.
+    let abortedReason;
+    let abortedErrorCode;
+    if (lastErrorIsResidency) {
+        abortedReason = 'residency_blocked';
+        abortedErrorCode = 'residency_blocked';
+    } else if (lastErrorIsTimeout) {
+        abortedReason = 'timeout';
+        abortedErrorCode = lastErrorCode;
+    } else {
+        abortedReason = `provider_error:${lastErrorCode}`;
+        abortedErrorCode = lastErrorCode;
+    }
 
     return {
-        verdict: parsed.data.verdict,
-        reason: parsed.data.reason,
-        inconsistencies: parsed.data.inconsistencies,
-        inconsistenciesTruncated: parsed.data.inconsistenciesTruncated,
-        sherlockProvider: resolved.provider,
-        sherlockModel: resolved.model,
-        transport: resolved.transport,
-        sameProvider,
-        sameModel,
+        verdict: 'aborted',
+        reason: abortedReason,
+        inconsistencies: [],
+        inconsistenciesTruncated: false,
+        sherlockProvider: lastResolved.provider,
+        sherlockModel: lastResolved.model,
+        transport: lastResolved.transport,
+        sameProvider: lastSameProvider,
+        sameModel: lastSameModel,
         commanderProvider,
         commanderModel,
         durationMs: totalMs,
-        inputTokens: httpResult.inputTokens || 0,
-        outputTokens: httpResult.outputTokens || 0,
-        errorCode: null,
-        suggestedDisclaimer: DISCLAIMER_TYPES.NONE, // el caller decide F-5 vs nada
-        claimHashes,
-        contradictionHashes,
-        // #3766 — `modelSwap` siempre `swapped:false` post-refactor (la
-        // policy #3501 se removió). Field mantenido por back-compat.
-        modelSwap: initialModelSwap,
-        // CA-9 (#3668) — shape stable post-single-provider:
-        attemptCount: 1,
-        fallbackUsed: false,
-        chainTried: [resolved.provider],
+        inputTokens: 0,
+        outputTokens: 0,
+        errorCode: abortedErrorCode,
+        suggestedDisclaimer: DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER,
+        modelSwap,
+        // CA-9 — shape stable; reflejan el recorrido real de la cascada.
+        attemptCount,
+        fallbackUsed: attemptCount > 1,
+        chainTried: chainTried.slice(),
     };
 }
 
