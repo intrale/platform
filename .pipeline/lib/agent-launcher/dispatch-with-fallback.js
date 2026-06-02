@@ -77,6 +77,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { resolveProviderForSkill, getProviderHandler } = require('./resolve-provider');
+// MP-05 (#3803) — reutilizamos la validación de credenciales del precheck del
+// Commander para hacer pre-check de credenciales también en los skills antes de
+// elegir un fallback (no solo el Commander la tenía).
+const { _validateProviderCredentials: validateProviderCredentials } = require('../commander/credentials-precheck');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -537,9 +541,11 @@ function resolveSpawnWithFallback(opts = {}) {
         notify,
         onLog,
         now,
+        processEnv,
     } = opts;
 
     const log = typeof onLog === 'function' ? onLog : () => {};
+    const _env = processEnv || process.env;
     const _resolveProvider = primaryResolver || resolveProviderForSkill;
     const _resolveHandler = providerHandlerResolver || getProviderHandler;
     const _notify = notify || enqueueTelegramNotice;
@@ -874,6 +880,30 @@ function resolveSpawnWithFallback(opts = {}) {
                     raw_excerpt: `fallback_${fbName}_gated_too`,
                 },
             });
+            continue;
+        }
+
+        // 3.d.bis — MP-05: pre-check de credenciales del fallback. Antes solo el
+        // Commander validaba credenciales pre-spawn; en los skills, un fallback
+        // sin key se intentaba igual y fallaba recién en runtime como
+        // `no_key_configured` (indistinguible de un error de red). Acá lo
+        // detectamos antes y saltamos limpio al siguiente candidato.
+        const fbDefForCreds = (models && models.providers && models.providers[fbName]) || null;
+        const credCheck = validateProviderCredentials(fbName, fbDefForCreds, _env);
+        if (!credCheck.ok) {
+            auditAppend({
+                pipelineDir, fsImpl, sanitize, auditLog, now: _now,
+                entry: {
+                    event: 'fallback_no_credentials',
+                    skill,
+                    issue: issue || null,
+                    fallback_index: i,
+                    fallback_provider: fbName,
+                    primary_provider: primaryProvider,
+                    raw_excerpt: `fallback_${fbName}_${credCheck.reason || 'no_credentials'}`,
+                },
+            });
+            log('lanzamiento', `↪️ ${skill}:#${issue || '?'} fallback="${fbName}" sin credencial (${credCheck.reason || 'no_credentials'}) — salto al siguiente.`);
             continue;
         }
 
