@@ -449,7 +449,11 @@ function status() {
 // --- MAIN ---
 
 const action = process.argv[2] || 'restart';
-const flagPaused = process.argv.includes('--paused');
+// Estado de pausa PREVIO al restart: si el pipeline estaba en pausa total
+// (.paused presente) antes de reiniciar, el restart debe CONSERVAR esa pausa
+// en lugar de soltarla. Un /restart no es un "destrabe" implícito.
+const wasPausedBefore = fs.existsSync(path.join(PIPELINE, '.paused'));
+const flagPaused = process.argv.includes('--paused') || wasPausedBefore;
 const flagNoSmokeTest = process.argv.includes('--no-smoke-test');
 const flagNoRollback = process.argv.includes('--no-rollback');
 const flagNoSync = process.argv.includes('--no-sync');
