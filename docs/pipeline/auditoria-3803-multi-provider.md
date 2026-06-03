@@ -157,3 +157,102 @@ providers están realmente caídos a la vez — y ahí el F-6 es legítimo.
 > órdenes". Se atacan después.
 
 > Cada MP-NN se convertirá en su propio fix/issue cuando arranquemos a corregir de a poco.
+
+---
+
+## 🔗 Cadenas de fallback por agente (estado 2026-06-02, sign-off Leo por voz)
+
+Fuente de verdad: `.pipeline/agent-models.json`. **Claude (Anthropic) es el primario en
+TODOS los agentes que usan modelo** — ninguna cadena LLM arranca sin Claude. Los únicos
+agentes sin Claude son los **deterministas** (Node puro, no llaman a ningún modelo): `build`,
+`tester`, `linter`, `delivery`. No hay fallback que poner ahí porque no hay LLM.
+
+Criterio transversal: **Gemini queda EXCLUIDO de las cadenas que procesan código fuente
+sensible o secretos** (TOS de AI Studio entrena con prompts del free tier). Por eso los DEVs
+de backend/pipeline/security y `review`/`refinar` no lo tienen, pero sí los de UI (android/web)
+y los evaluadores (qa/po/ux).
+
+### Grupo A — DEVs + Security (output va a `main`, MANTIENEN Opus)
+*Cerebras EXCLUIDO: no soporta `tool_use`, no puede editar archivos. La cola es NVIDIA (free + tool_use).*
+
+| Agente | Cadena |
+|--------|--------|
+| `backend-dev` | Opus → Codex `gpt-5-codex` → NVIDIA `deepseek-v4-pro` |
+| `pipeline-dev` | Opus → Codex `gpt-5-codex` → NVIDIA |
+| `security` | Opus → Codex `gpt-5-codex` → NVIDIA |
+| `android-dev` | Opus → Codex `gpt-5-codex` → Gemini `2.0-flash` → NVIDIA |
+| `web-dev` | Opus → Codex `gpt-5-codex` → Gemini → NVIDIA |
+
+### Grupo B — Evaluadores (Sonnet, no escriben código de producción)
+*qa/po/ux validan video por frames+capturas y redactan criterios; la visión de Sonnet iguala a Opus.*
+
+| Agente | Cadena |
+|--------|--------|
+| `qa` | Sonnet → Codex `gpt-5` → Gemini → Cerebras `gpt-oss-120b` |
+| `po` | Sonnet → Codex `gpt-5` → Gemini → Cerebras |
+| `ux` | Sonnet → Codex `gpt-5` → Gemini → Cerebras |
+| `architect` | Sonnet → Codex `gpt-5-codex` → Gemini → Cerebras |
+| `perf` | Sonnet → Codex `gpt-5-codex` → Gemini → Cerebras |
+| `review` | Sonnet → Codex `gpt-5-codex` → Cerebras *(sin Gemini: ve código)* |
+| `refinar` | Sonnet → Codex `gpt-5` → Cerebras *(sin Gemini)* |
+
+### Grupo C — Backlog / soporte (Sonnet)
+
+| Agente | Cadena |
+|--------|--------|
+| `doc` | Sonnet → Codex `gpt-5-codex` → Cerebras |
+| `planner` | Sonnet → Codex `gpt-5-codex` → Cerebras |
+| `ops` | Sonnet → Codex `gpt-5-codex` → Cerebras |
+| `auth` | Sonnet → Codex `gpt-5-codex` → Cerebras |
+| `guru` | Sonnet → Codex `gpt-5-codex` → Cerebras → NVIDIA |
+
+### Grupo D — Telegram (chat + verificación)
+
+| Agente | Cadena |
+|--------|--------|
+| `telegram-commander` | Sonnet → Codex `gpt-5` → Gemini → Cerebras → NVIDIA |
+| `telegram-sherlock` | **Haiku** → Codex `gpt-5-mini` → Gemini → Cerebras → NVIDIA |
+
+> `telegram-sherlock` MANTIENE Haiku como primario a propósito: es el **piso de calidad del
+> verificador**. Un verificador flojo aprueba cualquier cosa, así que no se baja.
+
+### Grupo E — Deterministas (sin modelo)
+`build` · `tester` · `linter` · `delivery` — código Node puro, sin cadena LLM.
+
+### Nota de paridad — Cerebras `gpt-oss-120b` (duda de Leo, 2026-06-02)
+`gpt-oss-120b` **NO tiene paridad** con Opus/Sonnet/gpt-5. Decisión asumida: es **cola**
+(último o penúltimo eslabón) y solo en skills que **no requieren `tool_use`** (chat/evaluación/
+verificación). En esas cadenas, abajo suyo todavía queda NVIDIA como red final real. El rol de
+la cola no es "igualar al primario" sino **dar una respuesta degradada antes que un fallo total**
+cuando todo lo de arriba se agotó. Queda como deuda abierta evaluar reemplazos con más paridad
+si aparece un free tier mejor.
+
+---
+
+## 📌 Pendientes — lo que va a faltar (no bloqueante)
+
+Los **5 indispensables ya están cerrados** (MP-01/02 en #3806, MP-04/12/05 en #3804): el
+multi-provider degrada con gracia y el F-6 espurio desapareció. Lo que queda son **mejoras de
+semáforo, pruebas y deuda de consistencia** — importantes para pulir la operación, pero NO
+condicionan la afirmación "funciona en todos los órdenes". Se atacan de a poco:
+
+| ID | Pendiente | Severidad |
+|----|-----------|-----------|
+| MP-06 | ElevenLabs (TTS de pago) contamina el semáforo LLM con un falso rojo | Media |
+| MP-07 | Dos fuentes de verdad para el listado de providers en health | Media |
+| MP-08 | `openai-codex` desalineado en `agent-models.json` (sin `auth_mode`/`cli_binary`) | Media |
+| MP-09 | Health-cron observa pero no influye en la decisión de spawn | Media |
+| MP-10 | `MAX_FALLBACK_DEPTH = 5` corta cadenas más largas en silencio | Media |
+| MP-11 | Smoke-test corre en dry-run: no ejercita cascada real ni tokens | Media |
+| MP-13 | Cadenas heterogéneas entre skills (criterio Gemini sí/no) | Baja |
+| MP-14 | Naming inconsistente de modelos Codex (`gpt-5` vs `gpt-5-codex`) | Baja |
+| MP-15 | Gemini CLI se cuelga en OAuth headless (timeouts ~120s) | Baja |
+| MP-16 | Spike de Groq sin marca de descontinuado | Baja |
+| MP-17 | Audit log de dispatch demasiado granular | Baja |
+
+### Deuda obsoleta de modelos en config base (validar contra catálogo real del provider)
+- **Cerebras** — runtime ya corregido a `gpt-oss-120b` (`llama-3.3-70b` estaba muerto: 404, fuera
+  del free tier). Pueden quedar referencias obsoletas en configs/docs base sin tocar; limpiar al pasar.
+- **NVIDIA NIM** — el string `deepseek-ai/deepseek-v4-pro` configurado debería validarse contra el
+  catálogo free real de NVIDIA NIM (análogo al caso Cerebras). **Leo lo marcó como no urgente** —
+  se documenta para que quede registrado, no bloquea.
