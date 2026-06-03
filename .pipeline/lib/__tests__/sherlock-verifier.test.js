@@ -521,9 +521,62 @@ test('CA-SEC-6: schema_violation en TODA la chain emite evento y devuelve aborte
     // (`schema_violation`) y la reason lo cita.
     assert.equal(result.errorCode, 'schema_violation');
     assert.match(result.reason, /schema_violation/);
-    // CA-9 shape con cascada: recorrió los 3 providers HTTP de CHAIN_HTTP.
-    assert.equal(result.attemptCount, 3, 'cascada recorre los 3 providers de CHAIN_HTTP');
+    // #3809 MP-12: ante schema_violation cada provider se reintenta UNA vez antes
+    // de excluirlo. Con 3 providers HTTP en CHAIN_HTTP → 3×2 = 6 intentos totales.
+    assert.equal(result.attemptCount, 6, 'MP-12: cada uno de los 3 providers se reintenta 1× (3×2=6)');
     assert.equal(result.fallbackUsed, true, 'hubo fallback entre providers');
+});
+
+test('#3809 MP-12: schema_violation transitoria → retry 1× del MISMO provider y luego éxito', async () => {
+    const dir = mkTmpPipelineDir();
+    let calls = 0;
+    // 1er intento (cerebras): schema inválido. 2do intento (mismo cerebras tras
+    // retry MP-12): JSON válido → verdict ok. No debe degradar al 2do provider.
+    const flaky = (_opts) => {
+        calls++;
+        if (calls === 1) {
+            return { ok: true, content: 'no es json', inputTokens: 1, outputTokens: 1, durationMs: 5 };
+        }
+        return {
+            ok: true,
+            content: JSON.stringify({ verdict: 'ok', reason: 'todo coherente', inconsistencies: [] }),
+            inputTokens: 10, outputTokens: 5, durationMs: 10,
+        };
+    };
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        excludedProvider: 'anthropic', pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient(flaky),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.verdict, 'ok', 'el retry del mismo provider produjo un verdict válido');
+    assert.equal(calls, 2, 'exactamente 1 retry: 2 llamadas al mismo provider');
+    assert.equal(result.attemptCount, 2, 'no se cascadeó a un 2do provider');
+});
+
+test('#3809 MP-12: retry acotado a 1× — no hay loop infinito ante schema_violation persistente', async () => {
+    const dir = mkTmpPipelineDir();
+    let calls = 0;
+    const alwaysBad = () => {
+        calls++;
+        return { ok: true, content: 'siempre mal', inputTokens: 1, outputTokens: 1, durationMs: 1 };
+    };
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        excludedProvider: 'anthropic', pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionClient(alwaysBad),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.verdict, 'aborted');
+    // 3 providers × (1 intento + 1 retry) = 6, acotado por el cap de retry. NUNCA
+    // supera MAX_CASCADE_ITERATIONS (10) → no hay loop infinito.
+    assert.equal(calls, 6, 'cap de 1 retry por provider respetado (3×2=6)');
 });
 
 // =============================================================================

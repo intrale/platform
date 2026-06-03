@@ -1099,6 +1099,15 @@ async function verify(opts = {}) {
     // mismo provider (no debería: excluimos cada provider tras fallar).
     const MAX_CASCADE_ITERATIONS = 10;
 
+    // MP-12 (#3809) — retry acotado ante schema_violation. Un provider que
+    // responde 2xx pero con un payload que no respeta el schema esperado puede
+    // estar teniendo un hipo transitorio (truncado, primer token raro). Antes de
+    // #3809 eso mataba el intento sin retry y degradaba al siguiente eslabón,
+    // acelerando la cascada. Ahora reintentamos el MISMO provider UNA sola vez
+    // antes de excluirlo. El cap (1 retry por provider) evita inflar latencia y
+    // tokens y descarta cualquier loop infinito.
+    const schemaRetried = new Set();
+
     for (let iter = 0; iter < MAX_CASCADE_ITERATIONS; iter++) {
         // Resolución de provider — itera la chain telegram-sherlock arrancando
         // con los providers ya intentados en `excludedProviders`. #3484: NO se
@@ -1260,7 +1269,35 @@ async function verify(opts = {}) {
             lastErrorCode = 'schema_violation';
             lastErrorIsTimeout = false;
             lastErrorIsResidency = false;
-            _log('sherlock', `provider ${resolved.provider} devolvió schema inválido (${parsed.reason}) — cascada al siguiente`);
+
+            // MP-12 (#3809) — retry acotado: si es la PRIMERA schema_violation de
+            // este provider, lo reintentamos UNA vez (no lo excluimos → el
+            // resolver lo vuelve a elegir en la próxima iteración). Si ya
+            // reintentamos, lo excluimos y cascadeamos al siguiente eslabón.
+            if (!schemaRetried.has(resolved.provider)) {
+                schemaRetried.add(resolved.provider);
+                emitAuditEvent({
+                    pipelineDir, fsImpl, auditLog, now: _now,
+                    event: 'sherlock_schema_retry',
+                    payload: {
+                        analysisHash: hashFor(analysis),
+                        commanderProvider,
+                        commanderModel,
+                        sherlockProvider: resolved.provider,
+                        durationMs: Date.now() - startedAt,
+                        errorCode: 'schema_violation',
+                        attempt: 1,
+                        sameProvider,
+                        sameModel,
+                        sherlockModel: resolved.model,
+                        transport: resolved.transport,
+                    },
+                });
+                _log('sherlock', `provider ${resolved.provider} schema inválido (${parsed.reason}) — reintento 1× mismo provider (MP-12)`);
+                continue; // NO excluir → reintenta el mismo provider.
+            }
+
+            _log('sherlock', `provider ${resolved.provider} devolvió schema inválido (${parsed.reason}) tras retry — cascada al siguiente`);
             excludedProviders.add(resolved.provider);
             continue;
         }

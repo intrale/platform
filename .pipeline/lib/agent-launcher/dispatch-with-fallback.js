@@ -414,6 +414,87 @@ function readAgentModelsRaw(pipelineDir, fsImpl) {
 }
 
 // -----------------------------------------------------------------------------
+// MP-09 (#3809) — Health-gate FAIL-OPEN sobre la cascada de fallbacks.
+//
+// El health-cron pinguea providers cada ~15min y persiste su estado en
+// `.pipeline/state/multi-provider-health.json`. Hasta #3809 ese estado se
+// observaba pero NO influía en la decisión de spawn: un provider conocido-rojo
+// igual se intentaba como fallback, gastando un eslabón de la cascada en un
+// spawn condenado.
+//
+// POLÍTICA — FAIL-OPEN ante incertidumbre (OPUESTA, a propósito, al fail-closed
+// de la validación de modelos at-boot en completion-client.js, REQ-SEC-4):
+//   - Solo gateamos un provider si tiene una señal de rojo **fresca y confiable**
+//     (`state === "red"` + `last_checked_at` dentro de la ventana de frescura).
+//   - Ante CUALQUIER duda — sin entrada en el snapshot, sin timestamp parseable,
+//     rojo viejo, snapshot ilegible o reloj desfasado — NO gateamos. Preservar
+//     la cobertura de la cascada vale más que ahorrar un spawn: un rojo
+//     transitorio no debe sacar a un provider sano de la cadena (riesgo inverso
+//     al deseado, ver doc auditoria-3809).
+//
+// Se aplica SOLO a los **candidatos de fallback**, nunca al provider primario:
+// gatear el primario cambiaría el happy path (Anthropic es primario en todos
+// los skills LLM) y un falso rojo dejaría al pipeline sin arranque. El primario
+// degrada por su propio camino (retry MP-12 + cuota), no por health-gate.
+// -----------------------------------------------------------------------------
+
+// Ventana de frescura: el cron corre ~15min, dejamos 20min de margen. Un rojo
+// más viejo que esto se considera no-confiable → fail-open (no gatea).
+const HEALTH_FRESHNESS_MS = 20 * 60 * 1000;
+
+// El health-cron nombra a OpenAI/Codex como 'openai', pero la config de skills
+// (agent-models.json) usa la key 'openai-codex'. Mapeamos provider-key → nombre
+// en el snapshot de health. Si no hay alias, se busca por la key tal cual.
+const HEALTH_PROVIDER_ALIAS = Object.freeze({
+    'openai-codex': 'openai',
+});
+
+// Lee el snapshot de health. Best-effort: cualquier error → null (fail-open).
+function readProviderHealth(pipelineDir, fsImpl) {
+    const _fs = fsImpl || fs;
+    if (!pipelineDir) return null;
+    const healthPath = path.join(pipelineDir, 'state', 'multi-provider-health.json');
+    try {
+        if (!_fs.existsSync(healthPath)) return null;
+        const parsed = JSON.parse(_fs.readFileSync(healthPath, 'utf8'));
+        if (!parsed || !Array.isArray(parsed.providers)) return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+// Evalúa el health-gate para un provider-key concreto.
+// Devuelve { gated:boolean, reason:string|null, state:string|null, ageMs:number|null }.
+// gated === true SOLO con rojo fresco y confiable; en todo otro caso fail-open.
+function evaluateHealthGate(providerKey, healthSnapshot, now) {
+    const result = { gated: false, reason: null, state: null, ageMs: null };
+    if (!healthSnapshot || !Array.isArray(healthSnapshot.providers)) return result;
+    const healthName = HEALTH_PROVIDER_ALIAS[providerKey] || providerKey;
+    const entry = healthSnapshot.providers.find(
+        (p) => p && (p.provider === healthName || p.provider === providerKey),
+    );
+    if (!entry) return result;                  // sin señal → fail-open
+    result.state = entry.state || null;
+    if (entry.state !== 'red') return result;   // verde/amarillo/desconocido → no gatear
+    // state === 'red' → exigir frescura confiable para gatear.
+    const checkedAt = entry.last_checked_at ? Date.parse(entry.last_checked_at) : NaN;
+    if (!Number.isFinite(checkedAt)) {
+        result.reason = 'red_no_timestamp';     // rojo sin timestamp confiable → fail-open
+        return result;
+    }
+    const ageMs = now - checkedAt;
+    result.ageMs = ageMs;
+    if (ageMs < 0 || ageMs > HEALTH_FRESHNESS_MS) {
+        result.reason = 'red_stale';            // rojo viejo o reloj desfasado → fail-open
+        return result;
+    }
+    result.gated = true;                        // rojo fresco y confiable → gatear
+    result.reason = entry.reason_code || 'red_fresh';
+    return result;
+}
+
+// -----------------------------------------------------------------------------
 // enqueueTelegramNotice — encola un mensaje en la queue de archivos del
 // servicio Telegram (S-9). NUNCA hace fetch/curl directo: el drainer fuera
 // del path crítico lo procesa.
@@ -763,6 +844,13 @@ function resolveSpawnWithFallback(opts = {}) {
     const skillCfg = (models && models.skills && models.skills[skill]) || null;
     const fallbacks = skillCfg && Array.isArray(skillCfg.fallbacks) ? skillCfg.fallbacks : [];
 
+    // MP-09 (#3809) — snapshot de health para el gate fail-open de fallbacks.
+    // Se lee una sola vez por resolución (no por candidato). Inyectable en tests
+    // vía opts.healthReader; default lee state/multi-provider-health.json.
+    const _readHealth = (typeof opts.healthReader === 'function') ? opts.healthReader : readProviderHealth;
+    let healthSnapshot = null;
+    try { healthSnapshot = _readHealth(pipelineDir, fsImpl); } catch { healthSnapshot = null; }
+
     const chainTried = [primaryProvider];
     const sanitize = quotaModule.sanitizeRawExcerpt || ((s) => String(s || ''));
 
@@ -969,6 +1057,33 @@ function resolveSpawnWithFallback(opts = {}) {
             continue;
         }
 
+        // 3.d.ter — MP-09 (#3809): health-gate FAIL-OPEN. Si el provider del
+        // fallback tiene un rojo FRESCO y confiable en multi-provider-health.json
+        // lo salteamos (spawn condenado: ya sabemos que está caído). Ante
+        // incertidumbre (sin dato, rojo viejo, sin timestamp) NO gateamos —
+        // preservamos la cobertura de la cascada. Solo aplica a fallbacks, nunca
+        // al primario (ver nota de política arriba).
+        const fbHealth = evaluateHealthGate(fbName, healthSnapshot, _now);
+        if (fbHealth.gated) {
+            auditAppend({
+                pipelineDir, fsImpl, sanitize, auditLog, now: _now,
+                entry: {
+                    event: 'fallback_health_gated',
+                    skill,
+                    issue: issue || null,
+                    fallback_index: i,
+                    fallback_provider: fbName,
+                    primary_provider: primaryProvider,
+                    health_state: fbHealth.state,
+                    health_reason: fbHealth.reason,
+                    health_age_ms: fbHealth.ageMs,
+                    raw_excerpt: `fallback_${fbName}_red_fresh_${fbHealth.reason}`,
+                },
+            });
+            log('lanzamiento', `🩺 ${skill}:#${issue || '?'} fallback="${fbName}" salteado: health=red fresco (${fbHealth.reason}).`);
+            continue;
+        }
+
         // 3.e — candidato libre. Resolver model para el fallback.
         // #3221 — orden de precedencia para `fbModel`:
         //   1. `fbModelOverride` del entry de fallback (string|{provider,model_override}).
@@ -1084,6 +1199,12 @@ module.exports = {
     // #3680 CA-A10 — allowlist hardcoded de skills que pueden activar
     // FORCE_PROVIDER_OVERRIDE. Exportada para inspección/tests.
     FORCED_OVERRIDE_ALLOWED_SKILLS,
+
+    // #3809 MP-09 — health-gate fail-open. Exportados para tests/inspección.
+    readProviderHealth,
+    evaluateHealthGate,
+    HEALTH_FRESHNESS_MS,
+    HEALTH_PROVIDER_ALIAS,
 
     // #3576 — Hook generalizado post-spawn cross-skill.
     onSpawnExit,
