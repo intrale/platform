@@ -120,6 +120,19 @@ const PANEL_CSS = `
 .mp-override-table tr { border-left: 3px solid transparent; }
 .mp-override-table tr.has-provider-accent td:first-child { border-left: 3px solid var(--row-accent, var(--in-warn)); padding-left: 12px; }
 .mp-ttl-countdown { font-variant-numeric: tabular-nums; color: var(--in-warn); font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+/* #3811 — toggle del kill-switch por provider */
+.mp-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex: none; }
+.mp-switch input { opacity: 0; width: 0; height: 0; }
+.mp-switch .mp-slider { position: absolute; cursor: pointer; inset: 0; background: var(--in-ok, #2ea043); border-radius: 24px; transition: background .15s; }
+.mp-switch .mp-slider::before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
+/* checked == provider APAGADO → rojo + knob a la izquierda */
+.mp-switch input:checked + .mp-slider { background: var(--in-bad, #d1242f); }
+.mp-switch input:checked + .mp-slider::before { transform: translateX(20px); }
+.mp-switch input:disabled + .mp-slider { opacity: .5; cursor: not-allowed; }
+.mp-ks-state { font-size: 11px; font-weight: 600; letter-spacing: .03em; }
+.mp-ks-state.on { color: var(--in-ok); }
+.mp-ks-state.off { color: var(--in-bad); }
+.mp-ks-ttl { font-variant-numeric: tabular-nums; color: var(--in-fg-dim); font-size: 11px; }
 .mp-ttl-countdown .mp-icon { color: currentColor; }
 .mp-ttl-countdown.expiring { color: var(--in-bad); }
 
@@ -192,6 +205,22 @@ function bodyHtml() {
         <span>🟡 amarillo · quota_exhausted</span>
         <span>🟠 naranja · forbidden</span>
       </div>
+    </div>
+
+    <!--
+      #3811 — Kill-switch operacional por provider. Toggle on/off por provider
+      que escribe/borra .pipeline/provider-disabled.json (misma fuente de verdad
+      que la CLI manage-providers.sh). Apagar dispara el salto a fallback en
+      runtime, igual que una caída del provider.
+    -->
+    <div class="mp-card" id="mp-card-killswitch">
+      <div class="mp-card-head">
+        <div>
+          <div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-provider-health"></use></svg> Apagar / encender providers</div>
+          <div class="mp-card-sub">Kill-switch operacional. Apagar un provider hace que el pipeline salte al siguiente eslabón de la cadena del skill, como si el provider estuviera caído. Default 20 min (auto-restaurado por TTL).</div>
+        </div>
+      </div>
+      <div id="mp-killswitch-list"></div>
     </div>
 
     <div class="mp-card">
@@ -332,6 +361,8 @@ let mpState = {
     overrides: { active: [], history: [] }, csrfToken: null, dirty: false,
     // #3361 — snapshot del último GET /api/pulpo/provider-health (live).
     liveProviders: null,
+    // #3811 — estado del kill-switch por provider (GET providers-disabled).
+    killSwitch: null,
 };
 
 function showToast(msg, ok) {
@@ -456,12 +487,13 @@ function connIcon(status) {
 async function loadAll() {
     setMsg('Cargando configuración…');
     await fetchCsrf();
-    const [cfg, cat, sk, ovs, health] = await Promise.all([
+    const [cfg, cat, sk, ovs, health, ks] = await Promise.all([
         fetchJson('/api/multi-provider/config'),
         fetchJson('/api/multi-provider/catalog'),
         fetchJson('/api/multi-provider/skills'),
         fetchJson('/api/multi-provider/overrides'),
         fetchJson('/api/multi-provider/health'),
+        fetchJson('/api/multi-provider/providers-disabled'),
     ]);
     if (!cfg || !cfg.config) { setMsg('Error cargando config'); return; }
     mpState.config = cfg.config;
@@ -471,6 +503,7 @@ async function loadAll() {
     mpState.skills = sk || null;
     mpState.overrides = ovs || { active: [], history: [] };
     mpState.health = health || null;
+    mpState.killSwitch = (ks && ks.ok) ? ks.providers : [];
     mpState.dirty = false;
     renderAll();
     setMsg('OK');
@@ -478,6 +511,7 @@ async function loadAll() {
 
 function renderAll() {
     renderProviders();
+    renderKillSwitch();
     renderDefaultProvider();
     renderSkillsGrid();
     renderCatalog();
@@ -680,6 +714,86 @@ function renderProviders() {
             if (btn.dataset.act === 'rotate') return startRotate(provider);
         });
     });
+}
+
+// =====================================================================
+// #3811 — Kill-switch operacional por provider.
+//
+// Toggle on/off por provider. ENCENDIDO (verde) = provider activo;
+// APAGADO (rojo, checkbox checked) = el pipeline lo trata como caído y
+// salta al siguiente eslabón de la cadena del skill. Escribe vía
+// POST /api/multi-provider/providers/:p/disable|enable (con CSRF),
+// reutilizando lib/provider-disabled.js (misma fuente de verdad que la CLI).
+//
+// Defensa XSS (A03): todo nombre/valor interpolado pasa por escapeHtml().
+// =====================================================================
+function ksTtlText(p) {
+    if (!p.disabled) return '';
+    if (p.ttl_remaining_ms == null) return 'apagado · permanente';
+    const mins = Math.max(0, Math.ceil(p.ttl_remaining_ms / 60000));
+    return 'apagado · ' + mins + ' min restantes';
+}
+
+function renderKillSwitch() {
+    const c = document.getElementById('mp-killswitch-list');
+    if (!c) return;
+    const providers = mpState.killSwitch || [];
+    if (providers.length === 0) {
+        c.innerHTML = '<div style="color:var(--in-fg-dim);font-size:12px;padding:14px 0">No hay providers disponibles para el kill-switch.</div>';
+        return;
+    }
+    c.innerHTML = '';
+    for (const p of providers) {
+        const row = document.createElement('div');
+        row.className = 'mp-row has-provider-accent';
+        row.style.setProperty('--row-accent', 'var(' + providerToken(p.name) + ')');
+        const stateCls = p.disabled ? 'off' : 'on';
+        const stateTxt = p.disabled ? 'APAGADO' : 'ENCENDIDO';
+        // checkbox.checked == provider APAGADO (el switch rojo significa "caído").
+        row.innerHTML = \`
+            <div class="mp-row-label" title="Provider \${escapeHtml(p.name)}">
+                \${providerIcon(p.name, 'lg')}
+                <span>\${escapeHtml(p.name)}</span>
+            </div>
+            <div class="mp-row-input">
+                <span class="mp-ks-state \${stateCls}">\${stateTxt}</span>
+                <span class="mp-ks-ttl" style="margin-left:10px">\${escapeHtml(ksTtlText(p))}</span>
+            </div>
+            <div class="mp-row-actions">
+                <label class="mp-switch" title="\${p.disabled ? 'Encender' : 'Apagar'} \${escapeHtml(p.name)}">
+                    <input type="checkbox" data-ks-provider="\${escapeHtml(p.name)}" \${p.disabled ? 'checked' : ''}>
+                    <span class="mp-slider"></span>
+                </label>
+            </div>\`;
+        c.appendChild(row);
+    }
+    c.querySelectorAll('input[data-ks-provider]').forEach(input => {
+        input.addEventListener('change', () => toggleProvider(input.dataset.ksProvider, input.checked, input));
+    });
+}
+
+async function toggleProvider(provider, disable, inputEl) {
+    if (inputEl) inputEl.disabled = true;
+    setMsg((disable ? 'Apagando ' : 'Encendiendo ') + provider + '…');
+    const action = disable ? 'disable' : 'enable';
+    const r = await authedPost('/api/multi-provider/providers/' + provider + '/' + action, {});
+    if (r && r.ok) {
+        showToast(provider + (disable ? ' APAGADO' : ' ENCENDIDO'), true);
+    } else {
+        showToast(provider + ': ' + ((r && (r.message || r.error)) || 'falla'), false);
+        // Revertir el toggle visual si falló.
+        if (inputEl) inputEl.checked = !disable;
+    }
+    if (inputEl) inputEl.disabled = false;
+    // Refrescar el estado real desde el server (TTL, etc).
+    await refreshKillSwitch();
+    setMsg('OK');
+}
+
+async function refreshKillSwitch() {
+    const ks = await fetchJson('/api/multi-provider/providers-disabled');
+    mpState.killSwitch = (ks && ks.ok) ? ks.providers : (mpState.killSwitch || []);
+    renderKillSwitch();
 }
 
 async function pingProvider(provider) {

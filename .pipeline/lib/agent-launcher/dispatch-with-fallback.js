@@ -82,6 +82,12 @@ const { resolveProviderForSkill, getProviderHandler } = require('./resolve-provi
 // elegir un fallback (no solo el Commander la tenía).
 const { _validateProviderCredentials: validateProviderCredentials } = require('../commander/credentials-precheck');
 
+// #3811 — Kill-switch operacional por provider. Apagar un provider acá ordena
+// el salto a fallback (semántica de "caída en runtime"), distinto del gate de
+// cuota (semántica de "esperar reset"). Carga perezosa vía default param para
+// poder inyectar un fake en los tests sin require cruzado.
+const providerDisabledModule = require('../provider-disabled');
+
 // -----------------------------------------------------------------------------
 // Constantes
 // -----------------------------------------------------------------------------
@@ -550,6 +556,16 @@ function resolveSpawnWithFallback(opts = {}) {
     const _resolveHandler = providerHandlerResolver || getProviderHandler;
     const _notify = notify || enqueueTelegramNotice;
     const _now = Number.isFinite(now) ? now : Date.now();
+    // #3811 — módulo del kill-switch. Inyectable para tests (opts.disabledModule).
+    const _disabled = opts.disabledModule || providerDisabledModule;
+    const _isProviderDisabled = (p) => {
+        try {
+            return typeof _disabled.isProviderDisabled === 'function'
+                && _disabled.isProviderDisabled(p, { now: _now });
+        } catch {
+            return false; // fail-open: el kill-switch nunca bloquea por bug propio.
+        }
+    };
 
     // -------------------------------------------------------------------------
     // #3680 CA-A8 — FORCE_PROVIDER_OVERRIDE branch.
@@ -695,10 +711,36 @@ function resolveSpawnWithFallback(opts = {}) {
         };
     }
 
-    const primaryGated = quotaModule.shouldGateSpawn(skill, {
+    // #3811 — el primario salta a fallback por dos causas independientes:
+    //   (a) gate de cuota (shouldGateSpawn) — "esperar reset".
+    //   (b) kill-switch operacional (isProviderDisabled) — "caída en runtime".
+    // Ambas se OR-ean: cualquiera fuerza la cascada a fallbacks. El audit
+    // distingue la causa con el evento `provider_disabled`.
+    const primaryQuotaGated = quotaModule.shouldGateSpawn(skill, {
         provider: primaryProvider,
         now: _now,
     });
+    const primaryDisabled = _isProviderDisabled(primaryProvider);
+    const primaryGated = primaryQuotaGated || primaryDisabled;
+
+    if (primaryDisabled) {
+        // Audit dedicado del salto por deshabilitación (CA: audit log registra
+        // saltos por deshabilitación con event 'provider_disabled').
+        auditAppend({
+            pipelineDir, fsImpl, sanitize: (s) => String(s || ''),
+            auditLog, now: _now,
+            entry: {
+                event: 'provider_disabled',
+                skill,
+                issue: issue || null,
+                primary_provider: primaryProvider,
+                primary_model: primary.model || null,
+                quota_gated: primaryQuotaGated,
+                raw_excerpt: `primary=${primaryProvider} disabled_by_killswitch -> salto a fallbacks`,
+            },
+        });
+        log('lanzamiento', `🔌 ${skill}:#${issue || '?'} provider primario "${primaryProvider}" APAGADO (kill-switch) — saltando a fallbacks.`);
+    }
 
     if (!primaryGated) {
         // Happy path: primary disponible.
@@ -880,6 +922,26 @@ function resolveSpawnWithFallback(opts = {}) {
                     raw_excerpt: `fallback_${fbName}_gated_too`,
                 },
             });
+            continue;
+        }
+
+        // 3.d.killswitch (#3811) — el fallback también puede estar APAGADO por
+        // el kill-switch operacional. Lo saltamos igual que un fallback gateado
+        // por cuota, con audit dedicado para distinguir la causa.
+        if (_isProviderDisabled(fbName)) {
+            auditAppend({
+                pipelineDir, fsImpl, sanitize, auditLog, now: _now,
+                entry: {
+                    event: 'fallback_provider_disabled',
+                    skill,
+                    issue: issue || null,
+                    fallback_index: i,
+                    fallback_provider: fbName,
+                    primary_provider: primaryProvider,
+                    raw_excerpt: `fallback_${fbName}_disabled_by_killswitch`,
+                },
+            });
+            log('lanzamiento', `🔌 ${skill}:#${issue || '?'} fallback "${fbName}" APAGADO (kill-switch) — salto al siguiente.`);
             continue;
         }
 

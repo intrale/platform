@@ -40,6 +40,10 @@ const validator = require('../agent-models-validate');
 const permValidator = require('../permission-validator');
 const auditLog = require('../audit-log');
 
+// #3811 — kill-switch operacional por provider (misma fuente de verdad que la
+// CLI manage-providers.sh y que dispatch-with-fallback).
+const providerDisabled = require('../provider-disabled');
+
 // Health snapshot (#3260) — endpoint read-only que el panel "Health" consume.
 // El cron de healthcheck es disparado por el pulpo (o el dashboard, si está
 // solo activo) cada ~15min; este módulo SOLO lee el snapshot persistido. No
@@ -513,8 +517,95 @@ async function handleCommanderDistribution(req, res, _params, query) {
     }
 }
 
+// =============================================================================
+// #3811 — Kill-switch operacional por provider (perilla del dashboard).
+//
+// GET  /api/multi-provider/providers-disabled            estado de apagados
+// POST /api/multi-provider/providers/:provider/disable   apaga (opc. ttl_ms)
+// POST /api/multi-provider/providers/:provider/enable    enciende
+//
+// Reutiliza lib/provider-disabled.js (misma fuente de verdad que la CLI). El
+// efecto es idéntico al switch por terminal: dispatch-with-fallback salta al
+// siguiente eslabón de la cadena del skill cuando el provider está apagado.
+// =============================================================================
+
+async function handleProvidersDisabledGet(req, res) {
+    if (req.method !== 'GET') return sendError(res, 405, 'method_not_allowed', 'GET only');
+    try {
+        const list = providerDisabled.listDisabledProviders();
+        const disabledSet = new Set(list.disabled.map((e) => e.name));
+        // Proyectamos TODOS los providers válidos con su estado on/off para que
+        // la UI pueda renderizar un toggle por provider sin asumir el catálogo.
+        const providers = providerDisabled.VALID_PROVIDERS.map((name) => {
+            const entry = list.disabled.find((e) => e.name === name) || null;
+            return {
+                name,
+                disabled: disabledSet.has(name),
+                disabled_at: entry ? entry.disabled_at : null,
+                ttl_expires_at: entry ? entry.ttl_expires_at : null,
+                ttl_remaining_ms: entry ? entry.ttl_remaining_ms : null,
+            };
+        });
+        sendJson(res, { ok: true, providers });
+    } catch (e) {
+        sendError(res, 500, 'read_failed', e.message);
+    }
+}
+
+async function handleProviderDisable(req, res, params) {
+    if (!csrf.requireCSRF(req, res)) return;
+    const provider = params && params.provider;
+    if (!providerDisabled.isValidProvider(provider)) {
+        return sendError(res, 400, 'invalid_provider',
+            `provider inválido: "${provider}". Válidos: ${providerDisabled.VALID_PROVIDERS.join(', ')}`);
+    }
+    let body = {};
+    try { body = await readBody(req); }
+    catch (e) { return sendError(res, 400, e.code || 'bad_request', e.message); }
+    // ttl_ms opcional: undefined → default 20min; null → permanente; número → acotado.
+    let ttlMs;
+    if (Object.prototype.hasOwnProperty.call(body, 'ttl_ms')) {
+        ttlMs = body.ttl_ms; // el módulo valida null / número / rechaza inválidos.
+    }
+    const author = resolveAuthor();
+    const r = providerDisabled.setProviderDisabled(provider, {
+        ...(ttlMs !== undefined ? { ttlMs } : {}),
+        source: `dashboard:${author || 'unknown'}`,
+    });
+    if (!r.ok) return sendError(res, 422, 'disable_failed', r.error);
+    const list = providerDisabled.listDisabledProviders();
+    const entry = list.disabled.find((e) => e.name === provider) || null;
+    sendJson(res, {
+        ok: true,
+        provider,
+        disabled: true,
+        ttl_ms: r.ttl_ms,
+        ttl_expires_at: entry ? entry.ttl_expires_at : null,
+        ttl_remaining_ms: entry ? entry.ttl_remaining_ms : null,
+        author,
+    });
+}
+
+async function handleProviderEnable(req, res, params) {
+    if (!csrf.requireCSRF(req, res)) return;
+    const provider = params && params.provider;
+    if (!providerDisabled.isValidProvider(provider)) {
+        return sendError(res, 400, 'invalid_provider',
+            `provider inválido: "${provider}". Válidos: ${providerDisabled.VALID_PROVIDERS.join(', ')}`);
+    }
+    const author = resolveAuthor();
+    const changed = providerDisabled.clearProviderDisabled(provider, {
+        source: `dashboard:${author || 'unknown'}`,
+    });
+    sendJson(res, { ok: true, provider, disabled: false, changed, author });
+}
+
 const ROUTES = [
     { method: 'GET',  pattern: /^\/api\/multi-provider\/csrf-token$/,            handler: handleCsrfToken },
+    // #3811 — kill-switch por provider.
+    { method: 'GET',  pattern: /^\/api\/multi-provider\/providers-disabled$/,    handler: handleProvidersDisabledGet },
+    { method: 'POST', pattern: /^\/api\/multi-provider\/providers\/([a-z0-9-]+)\/disable$/, handler: handleProviderDisable, params: ['provider'] },
+    { method: 'POST', pattern: /^\/api\/multi-provider\/providers\/([a-z0-9-]+)\/enable$/,  handler: handleProviderEnable, params: ['provider'] },
     { method: 'GET',  pattern: /^\/api\/multi-provider\/commander-distribution(\?.*)?$/, handler: handleCommanderDistribution },
     { method: 'GET',  pattern: /^\/api\/multi-provider\/config$/,                handler: handleConfigGet },
     { method: 'POST', pattern: /^\/api\/multi-provider\/config\/diff$/,          handler: handleConfigDiff },
@@ -577,6 +668,9 @@ module.exports = {
     handleReload,
     handleHealthGet,
     handleHealthRun,
+    handleProvidersDisabledGet,
+    handleProviderDisable,
+    handleProviderEnable,
     readBody,
     RELOAD_SIGNAL_PATH,
 };
