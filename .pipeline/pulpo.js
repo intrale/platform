@@ -847,6 +847,16 @@ function loadConfig() {
   return yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8'));
 }
 
+// MP-01/MP-02 (#3803): decisión PURA del disclaimer por soft-timeout del
+// orquestador. El F-6 UX-2 solo se emite cuando el reloj de release ganó la
+// carrera SIN que el bloque Sherlock alcanzara un verdict (cuelgue genuino).
+// Si Sherlock ya resolvió (ok/rechazado/aborted), se honra ese resultado real
+// y NUNCA se pisa un OK con un F-6 espurio — la causa raíz del "no pude
+// verificar" recurrente.
+function shouldEmitSoftTimeoutDisclaimer(softTimedOut, resolved) {
+  return Boolean(softTimedOut) && !resolved;
+}
+
 function readYaml(filepath) {
   try {
     return yaml.load(fs.readFileSync(filepath, 'utf8')) || {};
@@ -9654,6 +9664,12 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
       let sherlockInvoked = false;
       let sherlockDisclaimerType = null;
       let sherlockSoftTimedOut = false;
+      // MP-01/MP-02 (#3803): flag que marca que el bloque Sherlock alcanzó un
+      // verdict real (ok/rechazado/aborted). Sin esto, una carrera microscópica
+      // entre el soft-timeout y la finalización del bloque podía pisar un OK
+      // legítimo con un F-6 espurio. El disclaimer SIEMPRE lo manda el verdict,
+      // no el reloj.
+      let sherlockResolved = false;
 
       // CA-UX-1: typing refresh loop. Se arranca antes y se limpia en finally.
       let typingTimer = null;
@@ -9667,10 +9683,27 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         if (typingTimer) { try { clearInterval(typingTimer); } catch {} typingTimer = null; }
       };
 
-      // CA-UX-2: soft-timeout 120s. Promise.race contra el bloque completo de
-      // verificación. Si gana el timeout, marcamos sherlockSoftTimedOut y
-      // forzamos disclaimer F-6 + mensaje específico al usuario.
-      const SHERLOCK_SOFT_TIMEOUT_MS = 120_000;
+      // CA-UX-2 + MP-01/MP-02 (#3803): soft-timeout del turn handler. Promise.race
+      // contra el bloque completo de verificación; si gana el timeout, libera el
+      // chat con un mensaje honesto (evita el chat colgado indefinidamente — UX-2).
+      //
+      // MP-01/MP-02: el valor anterior (120s) era MENOR que el presupuesto que el
+      // propio cliente le concede a Sherlock — `completion-client` permite hasta
+      // 180s por request (ABSOLUTE_MAX_TIMEOUT_MS). Con reelaboración el bloque
+      // hace hasta 2 verify (≤180s c/u) + 1 reelaboración Claude. El reloj de 120s
+      // mataba a Sherlock ANTES de que terminara y disparaba un F-6 espurio aunque
+      // el verdict real fuese OK — la causa raíz del "no pude verificar" recurrente.
+      // Reconciliamos: el cutoff de release ahora es generoso (cubre el worst-case
+      // de la cascada) y configurable. El disclaimer lo decide el verdict, nunca
+      // el reloj (ver `sherlockResolved` abajo).
+      const SHERLOCK_SOFT_TIMEOUT_MS = (() => {
+        try {
+          const cfg = loadConfig();
+          const v = cfg && cfg.sherlock_soft_timeout_ms;
+          if (Number.isFinite(v) && v >= 60_000) return v;
+        } catch { /* fallback al default */ }
+        return 420_000; // 7 min — supera 2×180s (verify) + reelaboración Claude.
+      })();
 
       const sherlockBlock = (async () => {
         // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
@@ -9766,6 +9799,9 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           // CA-F-7 — silencio total cuando todo concuerda.
           log('commander', `🔍 Sherlock OK (provider=${verdict.sherlockProvider}, transport=${verdict.transport}, same_provider=${verdict.sameProvider}, ${verdict.durationMs}ms)`);
         }
+        // MP-01/MP-02: el bloque alcanzó un verdict conclusivo. A partir de acá
+        // el disclaimer (o su ausencia) refleja la decisión REAL de Sherlock.
+        sherlockResolved = true;
       })();
 
       try {
@@ -9786,12 +9822,12 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         stopTypingLoop();
       }
 
-      if (sherlockSoftTimedOut) {
-        // CA-UX-2 — soft-timeout del turn handler. Avisamos al usuario sin
-        // jerga técnica y degradamos a F-6. La respuesta original (sin
-        // reelaboración garantizada) se envía igual debajo. El audit
-        // post-turn registra el outcome para telemetría.
-        log('commander', `⏱️ Sherlock soft-timeout ${SHERLOCK_SOFT_TIMEOUT_MS}ms disparó — liberando chat con mensaje UX-2`);
+      if (shouldEmitSoftTimeoutDisclaimer(sherlockSoftTimedOut, sherlockResolved)) {
+        // CA-UX-2 — soft-timeout del turn handler, SOLO cuando Sherlock no
+        // alcanzó un verdict (cuelgue genuino). Avisamos al usuario sin jerga
+        // técnica y degradamos a F-6. La respuesta original se envía igual
+        // debajo. El audit post-turn registra el outcome para telemetría.
+        log('commander', `⏱️ Sherlock soft-timeout ${SHERLOCK_SOFT_TIMEOUT_MS}ms disparó SIN verdict — liberando chat con mensaje UX-2`);
         try {
           sendTelegramPlain(
             'Esta respuesta me está tomando más tiempo de lo normal. ' +
@@ -9800,6 +9836,11 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           );
         } catch { /* best-effort */ }
         sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+      } else if (sherlockSoftTimedOut && sherlockResolved) {
+        // MP-01: el reloj ganó la carrera por microsegundos pero el bloque YA
+        // había resuelto. Honramos el verdict real (que ya seteó o no el
+        // disclaimer correspondiente). NUNCA pisamos un OK con un F-6 espurio.
+        log('commander', `⏱️ soft-timeout disparó pero Sherlock ya tenía verdict — se honra el resultado real (sin F-6 espurio)`);
       }
 
       if (sherlockDisclaimerType && respuesta) {
@@ -11651,6 +11692,8 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // MP-01/MP-02 (#3803) — decisión pura del disclaimer por soft-timeout.
+    shouldEmitSoftTimeoutDisclaimer,
     predictResourceImpact,
     getEstimatedImpact,
     measureEmulatorMemPercent,
