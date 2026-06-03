@@ -19,18 +19,18 @@
 
 ## 🔴 Severidad ALTA
 
-### MP-01 · F-6 recurrente: `verdict: 'aborted'` cuando la cadena entera de providers degrada
-- **Estado:** CONFIRMADO
-- **Archivo:** `.pipeline/pulpo.js:9761-9764` (F-6 por `aborted`, camino independiente), `:9789-9803` (soft-timeout, hoy inerte). Evidencia: memoria `project_sherlock-f6-chain-degraded` (2026-06-02) contra `commander-dispatch` log
-- **Qué pasa:** El F-6 "no pude verificar con el verificador adversarial" se dispara cuando Sherlock devuelve `verdict: 'aborted'` porque **la cadena completa de providers cayó en el mismo turno**: schema_violation en Opus + spawn_exit en codex + cuota en gemini + invalid_model en cerebras. Sherlock recorre toda la cascada (ver MP-03, refutado) y aun así se queda sin ningún eslabón sano → aborta → F-6 legítimo pero molesto.
-- **NO es el soft-timeout.** El reloj de 120s ya quedó inerte (`DEFAULT_TIMEOUT_MS = 0` en Sherlock y completion-client, ver MP-02): el camino del `aborted` es independiente del camino del timeout. La causa vieja del timeout ya está corregida.
-- **Por qué importa:** Mientras los eslabones individuales no degraden con gracia (ver MP-04, MP-05, MP-12), cualquier turno con Anthropic en cuota arrastra a toda la cadena a fallar de golpe → F-6. La cura del F-6 recurrente NO es tocar el orquestador: es hacer que cada provider degrade limpio al siguiente en vez de matar el intento.
+### MP-01 · F-6 espurio: el soft-timeout del orquestador (120s) era MENOR que el presupuesto del cliente (180s) — ✅ CORREGIDO (#3803, 2026-06-02)
+- **Estado:** CORREGIDO
+- **Archivo:** `.pipeline/pulpo.js` soft-timeout del turn handler (`SHERLOCK_SOFT_TIMEOUT_MS`) + guard `sherlockResolved`
+- **Qué pasaba:** El orquestador envolvía TODO el bloque Sherlock en un `Promise.race` contra un reloj hardcoded de **120s**. Pero el `completion-client` le concede a cada request de Sherlock hasta **180s** (`ABSOLUTE_MAX_TIMEOUT_MS`), y el bloque puede hacer 2 verify + 1 reelaboración. Resultado: en cualquier verificación legítimamente lenta (cascada cruzando providers), el reloj de 120s ganaba la carrera y disparaba el F-6 "no pude verificar" **aunque el verdict real fuese OK**. Era la causa raíz del F-6 recurrente que reaparecía turno a turno.
+- **Corrección rumbo doble:** (1) el soft-timeout pasó a **420s** (cubre 2×180s + reelaboración) y es **configurable** vía `sherlock_soft_timeout_ms`; (2) se agregó el flag `sherlockResolved`: el disclaimer F-6 lo decide **el verdict real de Sherlock, nunca el reloj** — si el bloque resolvió, jamás se pisa un OK con un F-6 espurio.
+- **Nota de auditoría (qué falló en el barrido inicial):** la versión previa de este doc afirmaba que "el reloj de 120s ya quedó inerte". Eso era **incorrecto**: el código tenía el `Promise.race` de 120s plenamente activo. Ese error de lectura es la razón por la que MP-01/MP-02 no entró en el PR #3803 (commit `57ee9593`, que sí entregó MP-04/MP-12/MP-05): se trató el F-6 como puro camino de cascada-degradada. El path de cascada-degradada sigue vivo y se trackea aparte (ver nota MP-03/MP-03b abajo).
 
-### MP-02 · Sin presupuesto total de tiempo en la cascada (Sherlock sin timeout interno + orquestador con 120s)
-- **Estado:** CONFIRMADO (relacionado con MP-01)
-- **Archivo:** `.pipeline/lib/sherlock-verifier.js:167-172` (`DEFAULT_TIMEOUT_MS = 0`), `.pipeline/lib/multi-provider/completion-client.js:47-55` (`DEFAULT_TIMEOUT_MS = 0`)
-- **Qué pasa:** Tanto Sherlock como el completion-client corren sin timeout (decisión deliberada). Si un provider remoto se cuelga, el thread espera indefinidamente; el único corte es el soft-timeout de 120s del orquestador (MP-01), que arriba degrada a F-6 espurio. No hay un budget de tiempo que acote la cascada completa sin romper el contrato "sin reloj".
-- **Por qué importa:** Tensión de diseño: "sin timeout para que aguante la cascada" choca con "el usuario no puede esperar para siempre". Hay que reconciliar MP-01 y MP-02 juntos (p.ej. timeout solo si NO hubo veredicto, o cancelar Sherlock al timeout en vez de ignorar su resultado).
+### MP-02 · Reconciliar el presupuesto de tiempo de la cascada con el cutoff del orquestador — ✅ CORREGIDO (junto a MP-01)
+- **Estado:** CORREGIDO (junto a MP-01)
+- **Archivo:** `.pipeline/lib/sherlock-verifier.js` + `.pipeline/lib/multi-provider/completion-client.js` (presupuesto per-request) + `.pipeline/pulpo.js` (cutoff del orquestador)
+- **Qué pasaba:** Sherlock y el cliente corren sin timeout local (decisión deliberada); el presupuesto se delega al cliente (180s per-request). El único corte de release era el soft-timeout del orquestador, que estaba por DEBAJO de ese presupuesto → mataba la cascada antes de tiempo (MP-01).
+- **Cómo se reconcilió:** el cutoff del orquestador ahora es ≥ al worst-case del cliente (420s > 2×180s) y solo libera el chat (mensaje UX-2) cuando **NO hubo veredicto**. Se preserva el contrato "sin reloj que mate la cascada" + la garantía UX "el chat no queda colgado para siempre".
 
 ### MP-03 · ¿Sherlock perdió la cascada multi-provider en `verify()`? — REFUTADO
 - **Estado:** REFUTADO
