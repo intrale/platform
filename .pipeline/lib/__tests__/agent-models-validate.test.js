@@ -1031,7 +1031,7 @@ function providerGeminiGoogle() {
 function providerCerebras() {
   return {
     launcher: 'cerebras',
-    model: 'llama-3.3-70b',
+    model: 'gpt-oss-120b',
     spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
     output_parser: 'openai-sse',
     quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
@@ -1065,12 +1065,16 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   assert.ok(models, 'ALLOWED_MODELS_BY_LAUNCHER debe exportarse');
   assert.ok(Object.isFrozen(models), 'top-level debe estar congelado');
   assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-7']);
-  assert.deepEqual([...models.codex].sort(), ['gpt-5', 'gpt-5-codex']);
-  // #3501 — gemini-1.5-flash y llama-3.1-70b agregados como modelos alternativos
-  // para preservar adversariality intra-provider en Sherlock (ver
+  // #3799 — Sherlock baja su fallback Codex de gpt-5 → gpt-5-mini (sign-off Leo
+  // 2026-06-02), por lo que gpt-5-mini se suma a la allowlist del launcher codex.
+  assert.deepEqual([...models.codex].sort(), ['gpt-5', 'gpt-5-codex', 'gpt-5-mini']);
+  // #3501 — gemini-1.5-flash agregado como modelo alternativo para preservar
+  // adversariality intra-provider en Sherlock (ver
   // sherlock-verifier.js::resolveSherlockProvider).
   assert.deepEqual([...models['gemini-google']].sort(), ['gemini-1.5-flash', 'gemini-2.0-flash']);
-  assert.deepEqual([...models.cerebras].sort(), ['llama-3.1-70b', 'llama-3.3-70b']);
+  // #3797 — Corrección free tier real de Cerebras: NO sirve modelos llama-*. Los
+  // únicos servibles son gpt-oss-120b (default) y zai-glm-4.7 (alternativo #3501).
+  assert.deepEqual([...models.cerebras].sort(), ['gpt-oss-120b', 'zai-glm-4.7']);
   // #3353 — `groq` no debe estar en la allowlist de modelos.
   assert.equal(models.groq, undefined, 'groq debería estar removido tras #3353');
 });
@@ -1262,7 +1266,7 @@ function providerOpenAICodex() {
 function providerCerebrasEntry() {
   return {
     launcher: 'cerebras',
-    model: 'llama-3.3-70b',
+    model: 'gpt-oss-120b',
     spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
     output_parser: 'openai-sse',
     quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
@@ -1327,7 +1331,7 @@ test('#3221 happy path · skill con fallbacks objects {provider, model_override}
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5-codex' },
       { provider: 'gemini-google', model_override: 'gemini-2.0-flash' },
-      { provider: 'cerebras', model_override: 'llama-3.3-70b' },
+      { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ],
   };
   const file = tmpFile(cfg);
@@ -1361,7 +1365,7 @@ test('#3221 mixto · skill puede mezclar strings y objects en fallbacks', () => 
     provider: 'anthropic',
     fallbacks: [
       'openai-codex',
-      { provider: 'cerebras', model_override: 'llama-3.3-70b' },
+      { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ],
   };
   const file = tmpFile(cfg);
@@ -1495,14 +1499,14 @@ test('#3221 · resolveSkillChain devuelve primary primero, después fallbacks en
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5-codex' },
-      { provider: 'cerebras', model_override: 'llama-3.3-70b' },
+      { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ],
   };
   const chain = validateMod.resolveSkillChain(cfg, 'backend-dev');
   assert.equal(chain.length, 3);
   assert.deepEqual(chain[0], { provider: 'anthropic', model: 'claude-opus-4-7', source: 'primary' });
   assert.deepEqual(chain[1], { provider: 'openai-codex', model: 'gpt-5-codex', source: 'fallback' });
-  assert.deepEqual(chain[2], { provider: 'cerebras', model: 'llama-3.3-70b', source: 'fallback' });
+  assert.deepEqual(chain[2], { provider: 'cerebras', model: 'gpt-oss-120b', source: 'fallback' });
 });
 
 test('#3221 · resolveSkillChain con fallback string usa provider.model default', () => {

@@ -934,3 +934,117 @@ test('#3680 · FORCE_PROVIDER_OVERRIDE shape del audit entry estable (CA-A11)', 
     assert.equal(entry.entry.source, 'smoke-test');
     assert.ok('primary_provider_bypassed' in entry.entry);
 });
+
+// -----------------------------------------------------------------------------
+// #3811 — Kill-switch operacional por provider (provider-disabled)
+// -----------------------------------------------------------------------------
+
+// Fake del módulo provider-disabled. Inyectable vía opts.disabledModule.
+function fakeDisabledModule(disabledProviders = []) {
+    const set = new Set(disabledProviders);
+    return {
+        isProviderDisabled: (provider) => set.has(provider),
+    };
+}
+
+test('#3811 · primario APAGADO (kill-switch) salta a fallback aunque no haya cuota agotada', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+    const notify = fakeNotify();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        // Cuota NO agotada: el salto se debe exclusivamente al kill-switch.
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        disabledModule: fakeDisabledModule(['anthropic']),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify,
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'openai-codex', 'salta al fallback');
+    assert.equal(r.source, 'fallback');
+    assert.equal(r.crossProvider, true);
+    // Audit registra el salto por deshabilitación.
+    const disabledEvent = audit.entries.find(e => e.entry.event === 'provider_disabled');
+    assert.ok(disabledEvent, 'audit provider_disabled emitido');
+    assert.equal(disabledEvent.entry.primary_provider, 'anthropic');
+    assert.equal(disabledEvent.entry.quota_gated, false);
+});
+
+test('#3811 · primario apagado SIN fallbacks → all-gated (no spawnea)', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'lone-wolf',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        disabledModule: fakeDisabledModule(['anthropic']),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, true);
+    assert.equal(r.source, 'all-gated');
+    // El salto por kill-switch quedó registrado antes del gated_no_fallbacks.
+    assert.ok(audit.entries.some(e => e.entry.event === 'provider_disabled'));
+    assert.ok(audit.entries.some(e => e.entry.event === 'gated_no_fallbacks'));
+});
+
+test('#3811 · fallback también apagado → salta al siguiente eslabón', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'chain-skill', // anthropic → [openai-codex, gemini]
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        // anthropic (primario) y openai-codex (1er fallback) apagados → debe ir a gemini.
+        disabledModule: fakeDisabledModule(['anthropic', 'openai-codex']),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'gemini']),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'gemini', 'salta al 2do fallback');
+    const fbDisabled = audit.entries.find(e => e.entry.event === 'fallback_provider_disabled');
+    assert.ok(fbDisabled, 'audit fallback_provider_disabled emitido');
+    assert.equal(fbDisabled.entry.fallback_provider, 'openai-codex');
+});
+
+test('#3811 · sin disabledModule inyectado, el flow legacy no cambia (default módulo real, archivo ausente)', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    // No pasamos disabledModule → usa el real, que sin archivo devuelve false.
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'anthropic', 'happy path intacto');
+    assert.ok(!audit.entries.some(e => e.entry.event === 'provider_disabled'));
+});
