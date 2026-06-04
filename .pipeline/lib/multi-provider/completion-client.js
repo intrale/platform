@@ -149,6 +149,11 @@ const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
         'gemini-1.5-pro',
         'gemini-2.0-flash',
         'gemini-2.0-flash-exp',
+        // 2026-06-04 — `gemini-1.5-flash` fue retirado del catálogo de Google;
+        // el modelo alternativo de Sherlock pasa a `gemini-2.5-flash` (free tier
+        // vigente). Se suma a la allowlist para que el config nuevo pase el filtro.
+        'gemini-2.5-flash',
+        'gemini-2.5-pro',
     ]),
     'nvidia-nim': Object.freeze([
         'deepseek-ai/deepseek-v4-pro',

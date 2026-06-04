@@ -1,6 +1,6 @@
 {
   "$schema": "./agent-models.schema.json",
-  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente) + #3258 (skill virtual `telegram-commander`). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free). El skill virtual `telegram-commander` (#3258) NO está en `skills_por_fase` — es consumido por pulpo.js (commander chat de Telegram) vía lib/commander/multi-provider.js para el dispatch con fallback chain. Reorden 2026-06-02 (sign-off Leo por voz): (A) devs (backend/pipeline/android/web) + security sacan Cerebras del fallback y meten nvidia-nim — Cerebras no soporta tool_use y no puede editar archivos; NVIDIA es free + tool_use. (B) default global de chain = Claude → Codex → Gemini → Cerebras (Cerebras queda como tail solo en skills de chat/verificación que no requieren tool_use). Corrección de runtime: el modelo Cerebras pasa de `llama-3.3-70b` (muerto, no está en free tier) a `gpt-oss-120b` (verificado GET /v1/models + smoke #3794); alternative_models → `zai-glm-4.7`. telegram-commander suma nvidia-nim al final para alinear el JSON con el código de #3796. Reorden de modelos 2026-06-02 (sign-off Leo por voz): telegram-commander baja su primario de claude-opus-4-7 → claude-sonnet-4-7 y su fallback Codex de gpt-5-codex → gpt-5 (es el cerebro, conserva calidad pero ahorra ~5x vs Opus sin pérdida relevante en chat/operación). telegram-sherlock MANTIENE claude-haiku-4-5 como primario (es el piso de calidad del verificador y NO se baja — un verificador flojo aprueba cualquier cosa) y baja solo su fallback Codex de gpt-5 → gpt-5-mini (verificación no necesita el tope). gpt-5-mini se agregó a ALLOWED_MODELS_BY_LAUNCHER.codex en lib/agent-models-validate.js. Reorden Grupo B 2026-06-02 (sign-off Leo por voz): qa/po/ux bajan de claude-opus-4-7 → claude-sonnet-4-7 (no escriben código de producción — evalúan, validan video por frames+capturas y redactan criterios; la capacidad de visión de Sonnet es la misma que Opus, ahorro ~5x sin pérdida relevante). refinar tenía un bug de config: solo declaraba `provider:anthropic` sin model_override → heredaba el default claude-opus-4-7 y SIN fallbacks; ahora explicita claude-sonnet-4-7 + fallbacks [codex gpt-5, cerebras gpt-oss-120b]. Grupo A (backend/pipeline/android/web-dev + security) MANTIENE claude-opus-4-7 — su output va a main y un dev flojo genera rebotes que cuestan más que el ahorro.",
+  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente) + #3258 (skill virtual `telegram-commander`). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free). El skill virtual `telegram-commander` (#3258) NO está en `skills_por_fase` — es consumido por pulpo.js (commander chat de Telegram) vía lib/commander/multi-provider.js para el dispatch con fallback chain. Reorden 2026-06-02 (sign-off Leo por voz): (A) devs (backend/pipeline/android/web) + security sacan Cerebras del fallback y meten nvidia-nim — Cerebras no soporta tool_use y no puede editar archivos; NVIDIA es free + tool_use. (B) default global de chain = Claude → Codex → Gemini → Cerebras (Cerebras queda como tail solo en skills de chat/verificación que no requieren tool_use). Corrección de runtime: el modelo Cerebras pasa de `llama-3.3-70b` (muerto, no está en free tier) a `gpt-oss-120b` (verificado GET /v1/models + smoke #3794); alternative_models → `zai-glm-4.7`. telegram-commander suma nvidia-nim al final para alinear el JSON con el código de #3796. Reorden de modelos 2026-06-02 (sign-off Leo por voz): telegram-commander baja su primario de claude-opus-4-7 → claude-sonnet-4-7 y su fallback Codex de gpt-5-codex → gpt-5 (es el cerebro, conserva calidad pero ahorra ~5x vs Opus sin pérdida relevante en chat/operación). telegram-sherlock MANTIENE claude-haiku-4-5 como primario (es el piso de calidad del verificador y NO se baja — un verificador flojo aprueba cualquier cosa) y baja solo su fallback Codex de gpt-5 → gpt-5-mini (verificación no necesita el tope). gpt-5-mini se agregó a ALLOWED_MODELS_BY_LAUNCHER.codex en lib/agent-models-validate.js. Reorden Grupo B 2026-06-02 (sign-off Leo por voz): qa/po/ux bajan de claude-opus-4-7 → claude-sonnet-4-7 (no escriben código de producción — evalúan, validan video por frames+capturas y redactan criterios; la capacidad de visión de Sonnet es la misma que Opus, ahorro ~5x sin pérdida relevante). refinar tenía un bug de config: solo declaraba `provider:anthropic` sin model_override → heredaba el default claude-opus-4-7 y SIN fallbacks; ahora explicita claude-sonnet-4-7 + fallbacks [codex gpt-5, cerebras gpt-oss-120b]. Grupo A (backend/pipeline/android/web-dev + security) MANTIENE claude-opus-4-7 — su output va a main y un dev flojo genera rebotes que cuestan más que el ahorro. CORRECCIÓN DE NOMBRES DE MODELOS 2026-06-04 (sign-off Leo por voz, verificado en vivo contra cada CLI/API): los nombres configurados arriba estaban desactualizados y rotos. (1) `claude-sonnet-4-7` NO existe en el catálogo Anthropic → reemplazado por `claude-sonnet-4-6` (13 refs). (2) Codex con cuenta ChatGPT rechaza `gpt-5-codex`/`gpt-5`/`gpt-5-mini` con 400 ('not supported when using Codex with a ChatGPT account'); catálogo real = gpt-5.5 (frontier, strongest agentic coding), gpt-5.4, gpt-5.4-mini → mapeo preservando tiering: skills de código (gpt-5-codex) → gpt-5.5, eval/chat (gpt-5) → gpt-5.4, verificador Sherlock (gpt-5-mini) → gpt-5.4-mini; el `model` default del provider openai-codex pasa a gpt-5.5. (3) `gemini-1.5-flash` (alternative_models) fue retirado de Google → `gemini-2.5-flash`. Cerebras (gpt-oss-120b, zai-glm-4.7) y NVIDIA (deepseek-v4-pro) verificados vigentes, sin cambios. La allowlist ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js se actualizó en sincronía. claude-opus-4-7 se mantiene (vigente y funcional; existe claude-opus-4-8 más nuevo pero el cambio queda fuera de alcance por ser decisión de costo/calidad, no un fix).",
   "default_provider": "anthropic",
   "providers": {
     "anthropic": {
@@ -39,7 +39,7 @@
     },
     "openai-codex": {
       "launcher": "codex",
-      "model": "gpt-5-codex",
+      "model": "gpt-5.5",
       "spawn_args_template": [
         "exec",
         "--full-auto",
@@ -90,7 +90,7 @@
       ],
       "permissions_mode": "bypassPermissions",
       "alternative_models": [
-        "gemini-1.5-flash"
+        "gemini-2.5-flash"
       ]
     },
     "cerebras": {
@@ -170,7 +170,7 @@
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "nvidia-nim",
@@ -184,7 +184,7 @@
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "nvidia-nim",
@@ -198,7 +198,7 @@
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "gemini-google",
@@ -216,7 +216,7 @@
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "gemini-google",
@@ -240,7 +240,7 @@
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "nvidia-nim",
@@ -250,11 +250,11 @@
     },
     "qa": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5"
+          "model_override": "gpt-5.4"
         },
         {
           "provider": "gemini-google",
@@ -268,11 +268,11 @@
     },
     "review": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "cerebras",
@@ -282,11 +282,11 @@
     },
     "po": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5"
+          "model_override": "gpt-5.4"
         },
         {
           "provider": "gemini-google",
@@ -300,11 +300,11 @@
     },
     "ux": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5"
+          "model_override": "gpt-5.4"
         },
         {
           "provider": "gemini-google",
@@ -318,11 +318,11 @@
     },
     "doc": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "cerebras",
@@ -332,11 +332,11 @@
     },
     "planner": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "cerebras",
@@ -346,11 +346,11 @@
     },
     "guru": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "cerebras",
@@ -364,11 +364,11 @@
     },
     "architect": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "gemini-google",
@@ -382,11 +382,11 @@
     },
     "ops": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "cerebras",
@@ -396,11 +396,11 @@
     },
     "perf": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "gemini-google",
@@ -414,11 +414,11 @@
     },
     "auth": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-codex"
+          "model_override": "gpt-5.5"
         },
         {
           "provider": "cerebras",
@@ -428,11 +428,11 @@
     },
     "refinar": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5"
+          "model_override": "gpt-5.4"
         },
         {
           "provider": "cerebras",
@@ -448,11 +448,11 @@
     },
     "telegram-commander": {
       "provider": "anthropic",
-      "model_override": "claude-sonnet-4-7",
+      "model_override": "claude-sonnet-4-6",
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5"
+          "model_override": "gpt-5.4"
         },
         {
           "provider": "gemini-google",
@@ -474,7 +474,7 @@
       "fallbacks": [
         {
           "provider": "openai-codex",
-          "model_override": "gpt-5-mini"
+          "model_override": "gpt-5.4-mini"
         },
         {
           "provider": "gemini-google",

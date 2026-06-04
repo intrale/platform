@@ -56,7 +56,7 @@ function baseValid() {
     },
     skills: {
       'backend-dev': { provider: 'anthropic' },
-      'qa': { provider: 'anthropic', model_override: 'claude-sonnet-4-7' },
+      'qa': { provider: 'anthropic', model_override: 'claude-sonnet-4-6' },
       'builder': { provider: 'deterministic' },
     },
   };
@@ -721,7 +721,7 @@ function baseValidWithCodex() {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = {
     launcher: 'codex',
-    model: 'gpt-5-codex',
+    model: 'gpt-5.5',
     spawn_args_template: ['-p', '{user_prompt}', '--model', '{model}'],
     output_parser: 'openai-sse',
     quota_error_types: [],
@@ -802,7 +802,7 @@ test('CA-2 #3080 · provider declarado pero sin skill referenciado → no exige 
   const cfg = baseValid();
   cfg.providers['openai-codex'] = {
     launcher: 'codex',
-    model: 'gpt-5-codex',
+    model: 'gpt-5.5',
     spawn_args_template: ['-p', '{user_prompt}'],
     output_parser: 'openai-sse',
     quota_error_types: [],
@@ -824,7 +824,7 @@ test('CA-2 #3080 · provider con skill asignado → exige todas sus credentials_
   const cfg = baseValid();
   cfg.providers['openai-codex'] = {
     launcher: 'codex',
-    model: 'gpt-5-codex',
+    model: 'gpt-5.5',
     spawn_args_template: ['-p', '{user_prompt}'],
     output_parser: 'openai-sse',
     quota_error_types: [],
@@ -1064,14 +1064,14 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   const models = validateMod.ALLOWED_MODELS_BY_LAUNCHER;
   assert.ok(models, 'ALLOWED_MODELS_BY_LAUNCHER debe exportarse');
   assert.ok(Object.isFrozen(models), 'top-level debe estar congelado');
-  assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-7']);
-  // #3799 — Sherlock baja su fallback Codex de gpt-5 → gpt-5-mini (sign-off Leo
-  // 2026-06-02), por lo que gpt-5-mini se suma a la allowlist del launcher codex.
-  assert.deepEqual([...models.codex].sort(), ['gpt-5', 'gpt-5-codex', 'gpt-5-mini']);
-  // #3501 — gemini-1.5-flash agregado como modelo alternativo para preservar
+  assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-6']);
+  // #3799 — Sherlock baja su fallback Codex de gpt-5.4 → gpt-5.4-mini (sign-off Leo
+  // 2026-06-02), por lo que gpt-5.4-mini se suma a la allowlist del launcher codex.
+  assert.deepEqual([...models.codex].sort(), ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5']);
+  // #3501 — gemini-2.5-flash agregado como modelo alternativo para preservar
   // adversariality intra-provider en Sherlock (ver
   // sherlock-verifier.js::resolveSherlockProvider).
-  assert.deepEqual([...models['gemini-google']].sort(), ['gemini-1.5-flash', 'gemini-2.0-flash']);
+  assert.deepEqual([...models['gemini-google']].sort(), ['gemini-2.0-flash', 'gemini-2.5-flash']);
   // #3797 — Corrección free tier real de Cerebras: NO sirve modelos llama-*. Los
   // únicos servibles son gpt-oss-120b (default) y zai-glm-4.7 (alternativo #3501).
   assert.deepEqual([...models.cerebras].sort(), ['gpt-oss-120b', 'zai-glm-4.7']);
@@ -1249,7 +1249,7 @@ test('#3220 · agent-models.json canónico declara los 5 providers LLM + determi
 function providerOpenAICodex() {
   return {
     launcher: 'codex',
-    model: 'gpt-5-codex',
+    model: 'gpt-5.5',
     spawn_args_template: ['exec', '--full-auto', '--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
     output_parser: 'openai-sse',
     quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached'],
@@ -1329,7 +1329,7 @@ test('#3221 happy path · skill con fallbacks objects {provider, model_override}
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
-      { provider: 'openai-codex', model_override: 'gpt-5-codex' },
+      { provider: 'openai-codex', model_override: 'gpt-5.5' },
       { provider: 'gemini-google', model_override: 'gemini-2.0-flash' },
       { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ],
@@ -1415,7 +1415,7 @@ test('#3221 · fallback que duplica el provider primario → error', () => {
   const cfg = baseValid();
   cfg.skills['tester'] = {
     provider: 'anthropic',
-    fallbacks: [{ provider: 'anthropic', model_override: 'claude-sonnet-4-7' }],
+    fallbacks: [{ provider: 'anthropic', model_override: 'claude-sonnet-4-6' }],
   };
   const file = tmpFile(cfg);
   try {
@@ -1450,7 +1450,7 @@ test('#3221 · fallback object sin provider (objeto vacío) → error', () => {
   const cfg = baseValid();
   cfg.skills['doc'] = {
     provider: 'anthropic',
-    fallbacks: [{ model_override: 'gpt-5' }],
+    fallbacks: [{ model_override: 'gpt-5.4' }],
   };
   const file = tmpFile(cfg);
   try {
@@ -1469,8 +1469,8 @@ test('#3221 · resolveFallbackEntry(string) devuelve {provider, model_override:n
 });
 
 test('#3221 · resolveFallbackEntry(object con model_override) devuelve {provider, model_override}', () => {
-  const r = validateMod.resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5' });
-  assert.deepEqual(r, { provider: 'openai-codex', model_override: 'gpt-5' });
+  const r = validateMod.resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5.4' });
+  assert.deepEqual(r, { provider: 'openai-codex', model_override: 'gpt-5.4' });
 });
 
 test('#3221 · resolveFallbackEntry(object sin model_override) devuelve {provider, model_override:null}', () => {
@@ -1498,20 +1498,20 @@ test('#3221 · resolveSkillChain devuelve primary primero, después fallbacks en
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
-      { provider: 'openai-codex', model_override: 'gpt-5-codex' },
+      { provider: 'openai-codex', model_override: 'gpt-5.5' },
       { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ],
   };
   const chain = validateMod.resolveSkillChain(cfg, 'backend-dev');
   assert.equal(chain.length, 3);
   assert.deepEqual(chain[0], { provider: 'anthropic', model: 'claude-opus-4-7', source: 'primary' });
-  assert.deepEqual(chain[1], { provider: 'openai-codex', model: 'gpt-5-codex', source: 'fallback' });
+  assert.deepEqual(chain[1], { provider: 'openai-codex', model: 'gpt-5.5', source: 'fallback' });
   assert.deepEqual(chain[2], { provider: 'cerebras', model: 'gpt-oss-120b', source: 'fallback' });
 });
 
 test('#3221 · resolveSkillChain con fallback string usa provider.model default', () => {
   const cfg = baseValid();
-  cfg.providers['openai-codex'] = providerOpenAICodex(); // model default = 'gpt-5-codex'
+  cfg.providers['openai-codex'] = providerOpenAICodex(); // model default = 'gpt-5.5'
   cfg.skills['security'] = {
     provider: 'anthropic',
     fallbacks: ['openai-codex'],
@@ -1519,7 +1519,7 @@ test('#3221 · resolveSkillChain con fallback string usa provider.model default'
   const chain = validateMod.resolveSkillChain(cfg, 'security');
   assert.equal(chain.length, 2);
   assert.equal(chain[1].provider, 'openai-codex');
-  assert.equal(chain[1].model, 'gpt-5-codex'); // default del provider
+  assert.equal(chain[1].model, 'gpt-5.5'); // default del provider
   assert.equal(chain[1].source, 'fallback');
 });
 
@@ -1538,7 +1538,7 @@ test('#3221 · resolveSkillChain salta fallbacks con referencias rotas (sin cras
   cfg.skills['tester'] = {
     provider: 'anthropic',
     fallbacks: [
-      { provider: 'openai-codex', model_override: 'gpt-5-codex' },
+      { provider: 'openai-codex', model_override: 'gpt-5.5' },
       { provider: 'provider-fantasma', model_override: 'foo' },
     ],
   };
