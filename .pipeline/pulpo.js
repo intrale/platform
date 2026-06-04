@@ -158,7 +158,7 @@ const commanderDet = require('./lib/commander-deterministic');
 // queda gateado por cuota, el dispatcher itera el array y devuelve la primera
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
 // hash-chain SHA-256 en logs/cross-provider-dispatch-*.jsonl + notify Telegram.
-const { resolveSpawnWithFallback } = require('./lib/agent-launcher/dispatch-with-fallback');
+const { resolveSpawnWithFallback, formatProviderResolutionLog } = require('./lib/agent-launcher/dispatch-with-fallback');
 // #3259 — provider-exhaustion-pause: cuando primary + todos los fallbacks
 // de un skill quedan gated, este módulo aplica label, encola Telegram,
 // persiste marker (dedupe 2h) y auditea con hash-chain. El brazo de retry
@@ -5447,6 +5447,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // a pendiente/. Cuando `gated === true` (primary + todos los fallbacks
   // gated), el comportamiento es idéntico al gate clásico (#3077).
   let dispatchResolution = null;
+  // #3823 — trazabilidad observable de la resolución de provider. Se computa una
+  // vez tras la resolución y se reusa para (a) el log multilinea del Pulpo y
+  // (b) la env var PROVIDER_RESOLUTION_LOG del child (visible desde el agente).
+  let providerResolutionLog = null;
   try {
     dispatchResolution = resolveSpawnWithFallback({
       skill,
@@ -5456,8 +5460,24 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       onLog: log,
     });
 
+    // #3823 — armar el bloque legible de la decisión (razones por proveedor +
+    // provider elegido + cadena evaluada). Best-effort: el formateador nunca tira.
+    try {
+      providerResolutionLog = formatProviderResolutionLog(dispatchResolution, { skill, issue });
+    } catch (fmtErr) {
+      providerResolutionLog = null;
+      log('lanzamiento', `⚠️ no se pudo formatear la resolución de provider para ${skill}:#${issue}: ${fmtErr.message}`);
+    }
+
     if (dispatchResolution.gated) {
-      log('lanzamiento', `🚫 ${skill}:#${issue} bloqueado por quota-exhausted (LLM, primary=${dispatchResolution.primaryProvider || 'unknown'} y ${(dispatchResolution.chainTried || []).length - 1} fallback(s) gated) — devuelvo a pendiente/`);
+      // #3823 — log detallado de la cadena exhausted (razones por proveedor).
+      // Reemplaza el log simple previo; incluye `devuelvo a pendiente/` en el
+      // bloque del formateador.
+      if (providerResolutionLog) {
+        log('lanzamiento', providerResolutionLog);
+      } else {
+        log('lanzamiento', `🚫 ${skill}:#${issue} bloqueado por quota-exhausted (LLM, primary=${dispatchResolution.primaryProvider || 'unknown'} y ${(dispatchResolution.chainTried || []).length - 1} fallback(s) gated) — devuelvo a pendiente/`);
+      }
       try {
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         moveFile(trabajandoPath, pendienteDir);
@@ -5499,7 +5519,13 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       return;
     }
 
-    if (dispatchResolution.source === 'fallback' && dispatchResolution.fallbackUsed) {
+    // #3823 — para el spawn efectivo (no-gated) logueamos el bloque detallado:
+    //   - source='fallback': cadena evaluada + provider elegido + razones de skip.
+    //   - source='primary'/happy-path: una sola línea "✓ ... sin fallback necesario".
+    // Da trazabilidad en tiempo real de qué provider arrancó y por qué.
+    if (providerResolutionLog) {
+      log('lanzamiento', providerResolutionLog);
+    } else if (dispatchResolution.source === 'fallback' && dispatchResolution.fallbackUsed) {
       log('lanzamiento', `↪️ ${skill}:#${issue} primary=${dispatchResolution.primaryProvider} gated, spawn con fallback="${dispatchResolution.fallbackUsed.provider}" (índice ${dispatchResolution.fallbackUsed.index}).`);
     }
   } catch (gateErr) {
@@ -5940,6 +5966,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         return cfg.enabled ? '1' : '0';
       } catch { return '0'; }
     })(),
+    // #3823 — decisión de resolución de provider (texto legible: razones por
+    // proveedor + provider elegido + cadena evaluada). El agente puede leerla
+    // desde su env para incluirla en telemetría/debugging. Best-effort: si no
+    // se pudo formatear, queda string vacío (nunca rompe el spawn).
+    PROVIDER_RESOLUTION_LOG: providerResolutionLog || '',
     ...extraEnv,
   };
 
