@@ -226,8 +226,8 @@ test('T-2: cuando TODA la chain falla con timeout devuelve aborted + disclaimer 
     assert.equal(result.fallbackUsed, true, 'hubo fallback entre providers');
     assert.ok(Array.isArray(result.chainTried) && result.chainTried.length === 3);
     const final = sherlock.applyDisclaimer('Texto base.', result.suggestedDisclaimer);
-    // #3484 — phrasing actualizado por CA-UX-3.
-    assert.match(final, /No pude verificar esta respuesta con el verificador adversarial/);
+    // #3808 — disclaimer F-6 acortado.
+    assert.match(final, /No pude verificar esta respuesta; te muestro la original/);
 });
 
 // =============================================================================
@@ -306,7 +306,7 @@ test('T-4: dos llamadas con rechazado devuelven rechazado dos veces (caller apli
     // El caller aplica el disclaimer F-5 si la 2da pasada también rechaza.
     // #3484 — phrasing actualizado por CA-UX-4.
     const final = sherlock.applyDisclaimer('Reelaboración.', sherlock.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY);
-    assert.match(final, /Detecté una inconsistencia en mi primera respuesta y la ajusté/);
+    assert.match(final, /Ajusté la respuesta con el verificador/);
 });
 
 // =============================================================================
@@ -782,16 +782,17 @@ test('#3484 CA-SHERLOCK-3: Sherlock no excluye al commanderProvider (mismo provi
 // =============================================================================
 // applyDisclaimer — #3484 actualizó el phrasing (CA-UX-3, CA-UX-4).
 // =============================================================================
-test('applyDisclaimer agrega F-5 con phrasing UX-4 (#3484)', () => {
+test('applyDisclaimer agrega F-5 con phrasing acortado (#3808)', () => {
     const t = sherlock.applyDisclaimer('Mi respuesta.', sherlock.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY);
-    assert.match(t, /Detecté una inconsistencia en mi primera respuesta/);
-    assert.match(t, /decime y la reviso/);
+    assert.match(t, /Ajusté la respuesta con el verificador/);
+    assert.doesNotMatch(t, /decime y la reviso/);
 });
 
-test('applyDisclaimer agrega F-6 con phrasing UX-3 (#3484)', () => {
+test('applyDisclaimer agrega F-6 con phrasing acortado (#3808)', () => {
     const t = sherlock.applyDisclaimer('Mi respuesta.', sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
-    assert.match(t, /No pude verificar esta respuesta con el verificador adversarial/);
-    assert.match(t, /revisamos juntos/);
+    assert.match(t, /No pude verificar esta respuesta; te muestro la original/);
+    assert.doesNotMatch(t, /verificador adversarial/);
+    assert.doesNotMatch(t, /revisamos juntos/);
 });
 
 test('applyDisclaimer con null devuelve el texto sin cambios', () => {

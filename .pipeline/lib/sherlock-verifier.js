@@ -183,15 +183,12 @@ const DEFAULT_TIMEOUT_MS = 0;
 // -----------------------------------------------------------------------------
 const DISCLAIMER_F5_PERSISTENT_INCONSISTENCY = (
     '\n\n' +
-    '🔍 Detecté una inconsistencia en mi primera respuesta y la ajusté. ' +
-    'Si la versión anterior te parecía mejor, decime y la reviso.'
+    '🔍 Ajusté la respuesta con el verificador.'
 );
 
 const DISCLAIMER_F6_VERIFICATION_FAILED = (
     '\n\n' +
-    'ℹ️ No pude verificar esta respuesta con el verificador adversarial — ' +
-    'te muestro la versión original. Si notás algo raro, decímelo y la ' +
-    'revisamos juntos.'
+    'ℹ️ No pude verificar esta respuesta; te muestro la original.'
 );
 
 const DISCLAIMER_TYPES = Object.freeze({
