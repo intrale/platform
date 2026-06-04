@@ -65,9 +65,11 @@ test('todos los skills reales del repo pasan validateSpawn contra su provider co
     }
 });
 
-test('NON_DEGRADABLE skills reales del repo declaran al menos UNA capability que codex/full-auto no concede', () => {
-    // Garantiza CA-11: si alguien apunta uno de estos skills a codex,
-    // validateSpawn DEBE rechazar fail-CLOSED sin posibilidad de override.
+test('NON_DEGRADABLE skills SÍ corren en codex/full-auto cuando concede todas sus capabilities (cadena del operador #3820)', () => {
+    // Corrección 2026-06-04: se eliminó el portón FULL_TRUST_PROVIDERS. codex/full-auto
+    // concede el set autónomo completo (incl. tool_use_gated/long_running_watcher), así
+    // que estos skills NO deben fallar sólo por ser un provider != anthropic. El portero
+    // confía en la cadena que configuró el operador y valida sólo capacidad técnica.
     const { registry } = skillsMetadata.loadAllSkillsMetadata({ skillsRoot: SKILLS_ROOT });
     const failures = [];
     for (const skill of permissionValidator.NON_DEGRADABLE_SKILLS) {
@@ -80,10 +82,8 @@ test('NON_DEGRADABLE skills reales del repo declaran al menos UNA capability que
             mode: 'full-auto',
             requiredCapabilities: required,
         });
-        if (r.ok) {
-            failures.push({ skill, reason: 'NON_DEGRADABLE skill DEBE fail-CLOSED en codex/full-auto pero pasó' });
-        } else if (r.reason !== 'non_degradable') {
-            failures.push({ skill, reason: `esperaba reason=non_degradable, fue ${r.reason}` });
+        if (!r.ok) {
+            failures.push({ skill, reason: `esperaba ok=true en codex/full-auto pero fue ${r.reason} (missing: ${(r.missing || []).join(',')})` });
         }
     }
     if (failures.length > 0) {

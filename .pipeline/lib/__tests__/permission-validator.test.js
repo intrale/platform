@@ -51,12 +51,29 @@ test('anthropic/plan tiene capability set restringido — NO tiene bash ni file_
     assert.equal(plan.has('tool_use_gated'), false);
 });
 
-test('openai-codex/full-auto NO incluye tool_use_gated (conservador hasta CA-19)', () => {
+test('openai-codex/full-auto concede el set autónomo completo incluyendo tool_use_gated (CA-19 resuelto #3820)', () => {
     const codex = permissionValidator.grantedCapabilities('openai-codex', 'full-auto');
     assert.ok(codex.has('file_read'));
     assert.ok(codex.has('bash'));
-    assert.equal(codex.has('tool_use_gated'), false);
-    assert.equal(codex.has('long_running_watcher'), false);
+    assert.ok(codex.has('child_spawn'));
+    assert.ok(codex.has('tool_use_gated'));
+    assert.ok(codex.has('long_running_watcher'));
+    // Sigue SIN conceder lo que ningún provider del pipeline concede al spawn.
+    assert.equal(codex.has('file_write_outside_repo'), false);
+    assert.equal(codex.has('bash_elevated'), false);
+    assert.equal(codex.has('network_in'), false);
+});
+
+test('free providers (gemini/cerebras/nvidia-nim) en bypassPermissions tienen celda con set autónomo (#3820 defecto #2)', () => {
+    for (const p of ['gemini-google', 'cerebras', 'nvidia-nim']) {
+        const granted = permissionValidator.grantedCapabilities(p, 'bypassPermissions');
+        assert.ok(granted instanceof Set, `${p} debe tener celda bypassPermissions`);
+        assert.ok(granted.has('file_read'), `${p} concede file_read`);
+        assert.ok(granted.has('file_write_repo'), `${p} concede file_write_repo`);
+        assert.ok(granted.has('bash'), `${p} concede bash`);
+        assert.ok(granted.has('tool_use_gated'), `${p} concede tool_use_gated`);
+        assert.equal(granted.has('file_write_outside_repo'), false, `${p} NO concede escritura fuera del repo`);
+    }
 });
 
 // ============================================================================
@@ -131,10 +148,14 @@ test('validateSpawn rechaza con mode desconocido para el provider (CA-9 — mode
 });
 
 test('validateSpawn rechaza skill non-degradable cuando faltan capabilities — NO admite override (CA-11/CA-12)', () => {
+    // codex/default es read-only (file_read + network_out): NO concede bash ni
+    // tool_use_gated. security es NON_DEGRADABLE → fail-CLOSED por capacidad real
+    // faltante, sin posibilidad de override. (El rechazo es capability-based, no
+    // por jerarquía de confianza del provider.)
     const r = permissionValidator.validateSpawn({
         skill: 'security', // NON_DEGRADABLE
         provider: 'openai-codex',
-        mode: 'full-auto',
+        mode: 'default',
         requiredCapabilities: ['file_read', 'bash', 'tool_use_gated'],
     });
     assert.equal(r.ok, false);
@@ -158,11 +179,13 @@ test('validateSpawn aprueba skill non-degradable cuando todas las capabilities e
 // ============================================================================
 
 test('formato mensaje fail-CLOSED cumple CA-10 (3 acciones, capability faltante, anchor doc) — skill normal', () => {
+    // anthropic/plan es read-only: concede file_read + network_out, NO tool_use_gated.
+    // Caso fail-CLOSED genuino y permanente para un skill normal (no non-degradable).
     const r = permissionValidator.validateSpawn({
         skill: 'qa',
-        provider: 'openai-codex',
-        mode: 'full-auto',
-        requiredCapabilities: ['file_read', 'bash', 'tool_use_gated'],
+        provider: 'anthropic',
+        mode: 'plan',
+        requiredCapabilities: ['file_read', 'tool_use_gated'],
     });
     assert.equal(r.ok, false);
     const m = r.message;
@@ -177,10 +200,11 @@ test('formato mensaje fail-CLOSED cumple CA-10 (3 acciones, capability faltante,
 });
 
 test('formato mensaje fail-CLOSED para NON_DEGRADABLE omite acción de override (CA-12)', () => {
+    // tester es NON_DEGRADABLE; en anthropic/plan le faltan capabilities (bash).
     const r = permissionValidator.validateSpawn({
         skill: 'tester',
-        provider: 'openai-codex',
-        mode: 'full-auto',
+        provider: 'anthropic',
+        mode: 'plan',
         requiredCapabilities: ['file_read', 'bash', 'tool_use_gated', 'long_running_watcher'],
     });
     assert.equal(r.ok, false);
@@ -190,11 +214,26 @@ test('formato mensaje fail-CLOSED para NON_DEGRADABLE omite acción de override 
     assert.equal(/Crear override temporal/.test(m), false);
 });
 
+test('NON_DEGRADABLE en provider != anthropic SÍ corre si concede todas las capabilities (cadena del operador #3820)', () => {
+    // Corrección 2026-06-04: se eliminó el portón FULL_TRUST_PROVIDERS. codex/full-auto
+    // concede el set autónomo completo incl. tool_use_gated; security es NON_DEGRADABLE
+    // pero el portero confía en la cadena que configuró el operador y valida sólo
+    // capacidad técnica → autoriza.
+    const r = permissionValidator.validateSpawn({
+        skill: 'security',
+        provider: 'openai-codex',
+        mode: 'full-auto',
+        requiredCapabilities: ['file_read', 'bash', 'tool_use_gated'],
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.source, 'matrix');
+});
+
 test('mensaje fail-CLOSED es greppable por skill y por capability (G6)', () => {
     const r = permissionValidator.validateSpawn({
         skill: 'qa',
-        provider: 'openai-codex',
-        mode: 'full-auto',
+        provider: 'anthropic',
+        mode: 'plan',
         requiredCapabilities: ['tool_use_gated'],
     });
     assert.match(r.message, /Skill 'qa'/);
@@ -381,21 +420,23 @@ test('revokeOverride marca un override como revocado — findActiveOverride lo d
 
 test('validateSpawn con override activo aprueba (source = override) y registra el hash', () => {
     const file = makeTmpOverridesFile();
+    // anthropic/plan es read-only (no concede bash); qa no es non-degradable, así
+    // que un override por (qa, anthropic) puede autorizar el spawn igualmente.
     permissionValidator.recordOverride({
         skill: 'qa',
-        provider: 'openai-codex',
-        mode_otorgado: 'full-auto',
-        capabilities_diff: ['tool_use_gated'],
-        justificacion: 'Override de prueba para autorizar tool_use_gated en codex.',
+        provider: 'anthropic',
+        mode_otorgado: 'plan',
+        capabilities_diff: ['bash'],
+        justificacion: 'Override de prueba para autorizar bash en anthropic/plan.',
         autor: 'test@intrale.com.ar',
         ttl_horas: 24,
         overridesPath: file,
     });
     const r = permissionValidator.validateSpawn({
         skill: 'qa',
-        provider: 'openai-codex',
-        mode: 'full-auto',
-        requiredCapabilities: ['file_read', 'bash', 'tool_use_gated'],
+        provider: 'anthropic',
+        mode: 'plan',
+        requiredCapabilities: ['file_read', 'bash'],
         overridesPath: file,
     });
     assert.equal(r.ok, true);
@@ -413,10 +454,15 @@ const PARITY_CASES = [
     ['qa', ['anthropic', 'plan'], ['file_read', 'bash'], false, 'capability_missing'],
     ['guru', ['anthropic', 'bypassPermissions'], ['file_read', 'bash', 'network_out'], true, null],
     ['guru', ['openai-codex', 'full-auto'], ['file_read', 'bash', 'network_out'], true, null],
-    ['security', ['openai-codex', 'full-auto'], ['file_read', 'bash', 'tool_use_gated'], false, 'non_degradable'],
-    ['review', ['openai-codex', 'full-auto'], ['file_read', 'bash', 'tool_use_gated'], false, 'non_degradable'],
-    ['builder', ['openai-codex', 'full-auto'], ['file_read', 'bash', 'tool_use_gated', 'long_running_watcher'], false, 'non_degradable'],
-    ['tester', ['openai-codex', 'full-auto'], ['file_read', 'tool_use_gated', 'long_running_watcher'], false, 'non_degradable'],
+    // #3820 / corrección 2026-06-04: sin portón de confianza plena, estos NON_DEGRADABLE
+    // corren en codex/full-auto porque concede todas sus capabilities (cadena del operador).
+    ['security', ['openai-codex', 'full-auto'], ['file_read', 'bash', 'tool_use_gated'], true, null],
+    ['review', ['openai-codex', 'full-auto'], ['file_read', 'bash', 'tool_use_gated'], true, null],
+    ['builder', ['openai-codex', 'full-auto'], ['file_read', 'bash', 'tool_use_gated', 'long_running_watcher'], true, null],
+    ['tester', ['openai-codex', 'full-auto'], ['file_read', 'tool_use_gated', 'long_running_watcher'], true, null],
+    // Pero si el provider de la cadena NO concede algo (codex/default es read-only),
+    // el NON_DEGRADABLE sigue fail-CLOSED por capacidad real faltante.
+    ['security', ['openai-codex', 'default'], ['file_read', 'bash', 'tool_use_gated'], false, 'non_degradable'],
     ['ux', ['anthropic', 'plan'], ['file_read'], true, null],
     ['ux', ['anthropic', 'plan'], ['file_read', 'file_write_repo'], false, 'capability_missing'],
 ];

@@ -63,7 +63,7 @@
       "credentials_env": [
         "OPENAI_API_KEY"
       ],
-      "permissions_mode": "bypassPermissions"
+      "permissions_mode": "full-auto"
     },
     "gemini-google": {
       "launcher": "gemini-google",
