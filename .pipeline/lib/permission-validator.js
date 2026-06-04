@@ -101,29 +101,95 @@ const CAPABILITY_MATRIX = Object.freeze({
 
     'openai-codex': Object.freeze({
         // `--full-auto` (equivalente conceptual al bypass de Anthropic).
-        // CONSERVADOR: Codex CLI documenta auto-edit y auto-run sin confirm.
-        // long_running_watcher y tool_use_gated quedan FUERA hasta verificar
-        // empíricamente con H3 mergeado (CA-19).
+        // Codex CLI en full-auto corre auto-edit y auto-run sin confirmación,
+        // usa herramientas gated del harness (Task/MCP) y sostiene procesos de
+        // larga duración igual que Claude Code en bypass.
+        //
+        // CA-19 RESUELTO (2026-06-04): la verificación empírica pendiente de H3
+        // se cerró en la prueba real Fase 2 del multi-provider. El launcher real
+        // saltó a Codex y el ÚNICO bloqueante fue esta misma celda excluyendo
+        // `tool_use_gated`/`long_running_watcher` por conservadurismo — no una
+        // limitación real del provider. Se concede el set completo de agente
+        // autónomo (idéntico a anthropic/bypassPermissions). file_write_outside_repo,
+        // bash_elevated y network_in siguen FUERA (Codex respeta el cwd y no abre
+        // servidor entrante), igual que Claude Code.
         'full-auto': immutableSet([
             'file_read',
             'file_write_repo',
             'bash',
             'network_out',
             'child_spawn',
+            'long_running_watcher',
+            'tool_use_gated',
         ]),
         // `--no-confirm` (sinónimo en versiones viejas de codex).
-        // Mismo set conservador que full-auto hasta CA-19.
+        // Mismo set autónomo que full-auto tras CA-19.
         'no-confirm': immutableSet([
             'file_read',
             'file_write_repo',
             'bash',
             'network_out',
             'child_spawn',
+            'long_running_watcher',
+            'tool_use_gated',
         ]),
         // Modo default sin flags: read-only seguro.
         'default': immutableSet([
             'file_read',
             'network_out',
+        ]),
+    }),
+
+    // -------------------------------------------------------------------------
+    // FREE PROVIDERS (#3220 / #3243) — gemini-google, cerebras, nvidia-nim.
+    //
+    // Defecto #2 del portero (#3820): estos tres providers figuran en las
+    // cadenas de fallback de agent-models.json (resuelven a mode
+    // `bypassPermissions` vía resolvePermissionMode) pero NO tenían celda en la
+    // matriz → todo salto hacia ellos fallaba `mode_unknown` (fail-CLOSED).
+    //
+    // Corren como agentes autónomos del pipeline (CLIs propios) haciendo el
+    // mismo trabajo de dev/qa/análisis que Claude/Codex en modo autónomo. Por
+    // diseño conceden el set autónomo completo (idéntico a anthropic/bypass),
+    // SALVO file_write_outside_repo / bash_elevated / network_in que ningún
+    // provider del pipeline concede al spawn.
+    //
+    // PROVISIONAL hasta #3198 (runtime real de wrappers): los handlers hoy son
+    // stubs. Cuando #3198 ejecute el binario real y un provider concreto
+    // demuestre conceder MENOS, esta celda se recorta (mismo flujo que CA-19
+    // para Codex: doc + parity test + CODEOWNERS).
+    // -------------------------------------------------------------------------
+    'gemini-google': Object.freeze({
+        bypassPermissions: immutableSet([
+            'file_read',
+            'file_write_repo',
+            'bash',
+            'network_out',
+            'child_spawn',
+            'long_running_watcher',
+            'tool_use_gated',
+        ]),
+    }),
+    cerebras: Object.freeze({
+        bypassPermissions: immutableSet([
+            'file_read',
+            'file_write_repo',
+            'bash',
+            'network_out',
+            'child_spawn',
+            'long_running_watcher',
+            'tool_use_gated',
+        ]),
+    }),
+    'nvidia-nim': Object.freeze({
+        bypassPermissions: immutableSet([
+            'file_read',
+            'file_write_repo',
+            'bash',
+            'network_out',
+            'child_spawn',
+            'long_running_watcher',
+            'tool_use_gated',
         ]),
     }),
 
@@ -169,6 +235,28 @@ const NON_DEGRADABLE_SKILLS = immutableSet([
     'tester',
     'backend-dev',
 ]);
+
+// -----------------------------------------------------------------------------
+// Política de confianza en la cadena del operador (#3820 / corrección 2026-06-04).
+//
+// HISTORIA: #3820 introdujo `FULL_TRUST_PROVIDERS = {anthropic}` para impedir que
+// los skills NON_DEGRADABLE corrieran en Codex/free aun cuando esas celdas (tras
+// corregir los defectos #2 y #3) ya concedían el set autónomo completo. Era un
+// portón a nivel provider que bloqueaba un provider TÉCNICAMENTE CAPAZ sólo por
+// no ser "de confianza plena".
+//
+// DECISIÓN (Leo, operador): esa regla está mal. El orden de la cadena de fallback
+// lo configura el operador en `agent-models.json`; si pone un provider en la lista,
+// es una decisión deliberada y el portero debe CONFIAR en ella. El validador valida
+// **capacidades técnicas** (¿el provider concede los tools que el skill necesita?),
+// NO calidad ni jerarquía de confianza del provider. Por eso se elimina el portón
+// `FULL_TRUST_PROVIDERS`: un skill NON_DEGRADABLE corre en cualquier provider de la
+// cadena que conceda todas sus capabilities.
+//
+// Qué SIGUE protegiendo NON_DEGRADABLE_SKILLS (sigue siendo capability-based, no de
+// confianza): estos skills críticos no se ejecutan con capabilities faltantes y NO
+// admiten override que los degrade (ver bloque 3b en validateSpawn y findActiveOverride).
+// -----------------------------------------------------------------------------
 
 // Path canónico del audit log de overrides. Se puede overridear en tests.
 const DEFAULT_OVERRIDES_PATH = path.join(
@@ -348,11 +436,19 @@ function validateSpawn({ skill, provider, mode, requiredCapabilities, now, overr
     // 2. Calcular missing contra la matriz canónica.
     const { missing, modeUnknown, granted } = missingCapabilities(requiredCapabilities, provider, mode);
 
+    // 3. Cadena del operador respetada (#3820 / corrección 2026-06-04): si el
+    //    provider concede TODAS las capabilities requeridas, se autoriza —
+    //    incluso para skills NON_DEGRADABLE en Codex/free. El portero confía en
+    //    el orden de la cadena que configuró el operador; sólo valida capacidad
+    //    técnica, no jerarquía de confianza del provider.
     if (missing.length === 0 && !modeUnknown) {
         return { ok: true, source: 'matrix', granted };
     }
 
-    // 3. NON_DEGRADABLE: rechazo inmediato sin override.
+    // 3b. NON_DEGRADABLE con capabilities faltantes: rechazo sin override (estos
+    //     skills críticos no se degradan ni con override). Es un chequeo de
+    //     CAPACIDAD, no de confianza — sólo dispara si el provider de la cadena
+    //     NO concede algo que el skill necesita.
     if (NON_DEGRADABLE_SKILLS.has(skill)) {
         return {
             ok: false,

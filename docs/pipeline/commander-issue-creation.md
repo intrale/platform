@@ -109,6 +109,111 @@ Es importante no confundirlas — apuntan a bugs distintos:
   para confirmar que enfatiza la instrucción "INVOCÁ Skill(skill='doc', ...)"
   vs "anunciá que vas a invocar".
 
+## #3819 — Camino determinístico (Opción B): cero cuelgues
+
+> **Origen**: incidente 2026-06-04 — pedido de "eliminar referencias a
+> ElevenLabs" por Telegram → `/doc` quedó colgado ("analizando y procesando…"
+> y nunca volvió) → hubo que crear el issue a mano con `gh`, violando el flujo
+> determinístico. Reincidente: la creación de issues por Telegram no era
+> confiable.
+
+### Diagnóstico de la causa raíz (CA-1)
+
+El cuelgue encaja con el estado **`launching_no_complete`**: el LLM (Claude) del
+Commander **anuncia** que va a invocar `/doc` pero **nunca emite el evento
+estructurado `tool_use`**. El watchdog de 60 s descrito arriba sólo arma el
+reloj cuando aparece `tool_use:Skill` con `skill ∈ {doc, planner}`
+(`pulpo.js`, `pendingSkillCalls.set(...)`). En el estado anunciado-pero-no-
+invocado, `pendingSkillCalls` queda vacío → **el watchdog nunca se arma** y sólo
+corta el `HARD_TIMEOUT` de 10 min, percibido como cuelgue silencioso.
+
+La causa raíz, entonces, **no está en el skill `/doc`** sino en la dependencia
+de un LLM anidado en runtime que puede quedarse a mitad de camino sin disparar
+ninguna red de seguridad.
+
+### Solución: módulo `doc-create.js` sin LLM en runtime
+
+Para el intent **SIMPLE** (`INTENT_CREATE_SIMPLE`), el Commander ya **no**
+invoca el skill `/doc` por LLM: arma la ficha del issue de forma 100 %
+determinística con el módulo `.pipeline/lib/commander/doc-create.js`. Sin LLM
+anidado **no hay nada que se pueda colgar**. Cada subproceso `gh`/Node corre con
+timeout duro (`COMMANDER_DOC_GH_TIMEOUT_MS`, default 30 s), así que el camino
+completo nunca supera ~3× ese valor.
+
+El intent **SPLIT** (épicos) sigue por el path LLM/`planner` con el watchdog de
+60 s — los épicos requieren razonamiento real, y ese path tiene su red de
+seguridad.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ pulpo.js :: procesarTextoLibre  (post SEC-2/B/5/3)                       │
+│                                                                         │
+│  if intent == CREATE_SIMPLE:                                            │
+│    1. ACK a Telegram (generarAck)                                       │
+│    2. commanderDocCreate.createIssue({ description, from, pipelineDir })│
+│       ├─ sanitize (SEC-3 defensivo)                                     │
+│       ├─ deriveTitle  (1ª oración, capa 80 chars, strip preámbulo)     │
+│       ├─ inferLabels  (area:* + app:* + bug|enhancement +              │
+│       │                priority:* + size:* + needs-definition|Ready)   │
+│       ├─ buildBody    (Objetivo/Contexto/Cambios/Criterios/Notas)      │
+│       ├─ duplicate-detector.findSimilar (Jaccard 0.7, no bloqueante)   │
+│       ├─ gh issue create  (execFileSync, argv array, timeout duro)     │
+│       ├─ add-to-project-status.js  (Project V2, best-effort)           │
+│       └─ logSkillInvocation (audit JSONL, skill_invoked='doc')         │
+│    3. sendTelegram(formatResultMessage(result))   ← SIEMPRE            │
+│       ├─ created   → ✅ #N + labels + backlog + url                    │
+│       ├─ duplicate → ⚠️ existe parecido (#M, score)                   │
+│       └─ error     → ❌ falló: <motivo>, no se creó nada              │
+│    4. return  (no toca el LLM)                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Garantía de los dos estados explícitos
+
+`createIssue` es **fail-safe**: nunca lanza (todo `try/catch` interno) y siempre
+devuelve un `status ∈ {created, duplicate, error}` + **exactamente una** línea de
+audit log. El caller en `pulpo.js` envuelve la llamada en otro `try/catch` y
+siempre llama `sendTelegram(formatResultMessage(...))`. Resultado: crear un issue
+por Telegram **siempre** termina en issue creado **o** error reportado — nunca
+un cuelgue silencioso (CA del issue #3819).
+
+### Inferencia determinística de labels
+
+`inferLabels(text)` garantiza los 5 grupos base requeridos por el CA:
+
+| Grupo | Cómo se infiere | Default |
+|---|---|---|
+| `area:*` | mapa keyword→area (pipeline, infra, pagos, productos, …) | `area:infra` |
+| `app:*` | keyword (cliente/negocio/repartidor) | _ninguno_ (sólo si matchea) |
+| `bug` \| `enhancement` | keyword de bug (error, falla, crash, arreglar…) | `enhancement` |
+| `priority:*` | keyword (urgente/crítico → high; cuando puedas → low) | `priority:medium` |
+| `size:*` | keyword (simple → small; épico/grande → large) | `size:medium` |
+| `needs-definition` \| `Ready` | "ya está listo / ready" → Ready | `needs-definition` |
+
+El default `needs-definition` hace que la fase de definición del pipeline
+enriquezca el issue (codebase analysis, criterios PO/UX/QA, Gherkin) — el body
+determinístico deja esas secciones marcadas como "pendiente de definición".
+
+### Señal de "forzar" duplicado
+
+Si el operador escribe "forzá" / "es distinto" / "creálo igual", el gate de
+duplicados se saltea (`force: true`). Sin esa señal, un match Jaccard ≥ 0.7
+devuelve `status: 'duplicate'` y **no** crea el issue.
+
+### Audit log
+
+Misma función (`logSkillInvocation`) y mismo archivo
+(`commander-skill-audit.jsonl`) que el path LLM, preservando el enum cerrado
+`skill_result`. El camino determinístico escribe `skill_invoked: 'doc'` con
+`skill_result ∈ {success, blocked (duplicate), error, invalid_args, skill_failed}`.
+
+### Tests
+
+`.pipeline/lib/commander/__tests__/doc-create.test.js` (25 casos):
+inferencia de labels, derivación de título, body estandarizado, dup-detect,
+fail-safe (gh falla / dup-check falla / Project falla → nunca cuelga, siempre
+1 línea de audit), y `formatResultMessage`.
+
 ## Patterns continuativos (CA-1) con contexto reforzador (SEC-B)
 
 El detector original requería verbos explícitos (`creá`, `levantá`). Frases
@@ -221,8 +326,12 @@ console.table(last10.map(l=>({ts:l.timestamp,result:l.skill_result,skill:l.skill
 - `.pipeline/lib/__tests__/commander-skill-watchdog.test.js` — CA-4
   (regresión simple), CA-5 (4 paralelas), CA-3 (timeout y
   launching_no_complete), SEC-F (rate-limiter).
+- `.pipeline/lib/commander/__tests__/doc-create.test.js` — #3819: camino
+  determinístico (inferencia de labels, título, body, dup-detect, fail-safe,
+  audit log único, `formatResultMessage`).
 
-Ejecutar: `node --test .pipeline/lib/__tests__/commander-*.test.js`.
+Ejecutar: `node --test .pipeline/lib/__tests__/commander-*.test.js` y
+`node --test .pipeline/lib/commander/__tests__/doc-create.test.js`.
 
 ## Follow-ups conocidos (no bloquean #3418)
 
