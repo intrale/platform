@@ -84,6 +84,12 @@ const crypto = require('node:crypto');
 // Claude del Commander (`ejecutarClaude`); este módulo cierra el cinturón
 // pre/post LLM para que el resultado sea indistinguible de un /doc por consola.
 const commanderIssueCreation = require('./lib/commander/issue-creation');
+// #3819 — Camino determinístico de creación de issues (Opción B). Reemplaza la
+// invocación del skill `/doc` vía LLM para el intent SIMPLE, eliminando de raíz
+// el cuelgue `launching_no_complete` (el LLM anuncia el Skill pero nunca emite
+// el tool_use, dejando el watchdog de 60s sin armar). Sin LLM en runtime no hay
+// nada que se pueda colgar.
+const commanderDocCreate = require('./lib/commander/doc-create');
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
@@ -9359,6 +9365,42 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         log('commander', `🛡️ SEC-3: input sanitizado (truncated=${san.truncated}, stripped=${san.strippedControls}) para issue-creation`);
       }
       mensajeConsolidado = inputSanitized;
+    }
+
+    // --- #3819 — Camino determinístico para creación de issue SIMPLE (Opción B).
+    // Antes de tocar el LLM: si la heurística detectó intent SIMPLE de creación,
+    // armamos la ficha del issue de forma 100% determinística (sin spawnear el
+    // skill /doc por LLM). Esto elimina el cuelgue `launching_no_complete`.
+    // El intent SPLIT (épicos) sigue por el path LLM/planner más abajo, que sí
+    // necesita razonamiento y cuenta con el watchdog reforzado.
+    if (wantsIssueCreation && issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SIMPLE) {
+      // ACK contextual antes de crear (UX: el operador ve que arrancó).
+      sendTelegram(generarAck(mensajeConsolidado, esAudio));
+      // Señal explícita de "forzar" para saltear el gate de duplicados.
+      const forceDuplicate = /\b(forz[aá]r?|es distinto|igual cre[aá]lo|cre[aá]lo igual)\b/i.test(mensajeConsolidado);
+      let docResult;
+      try {
+        docResult = commanderDocCreate.createIssue({
+          description: mensajeConsolidado,
+          from: textoLibre[0].from || undefined,
+          pipelineDir: PIPELINE,
+          force: forceDuplicate,
+          ghPath: process.env.GH_PATH || 'gh',
+          log: (l, m) => log(l || 'commander', m),
+        });
+      } catch (detErr) {
+        // createIssue es fail-safe (no lanza), pero blindamos igual: NUNCA un
+        // cuelgue ni una excepción sin reportar.
+        log('commander', `🚨 #3819: doc-create lanzó excepción inesperada: ${detErr.message}`);
+        docResult = { status: 'error', error: `unexpected:${detErr.message}` };
+      }
+      const reply = commanderDocCreate.formatResultMessage(docResult);
+      sendTelegram(reply);
+      appendCommanderHistory(historyFile, { direction: 'out', text: reply, reason: `issue_creation_deterministic:${docResult.status}` });
+      log('commander', `#3819: creación determinística → ${docResult.status}${docResult.issueNumber ? ' #' + docResult.issueNumber : ''}`);
+      for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+      saveSession(session);
+      return;
     }
 
     // Protección anti-restart encadenado: si el mensaje pide restart y ya hubo
