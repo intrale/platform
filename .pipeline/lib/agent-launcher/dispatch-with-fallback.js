@@ -615,6 +615,103 @@ function auditAppend({ pipelineDir, fsImpl, entry, sanitize, auditLog, now }) {
 // -----------------------------------------------------------------------------
 const FORCED_OVERRIDE_ALLOWED_SKILLS = Object.freeze(['multi-provider-smoke-test']);
 
+// =============================================================================
+// #3823 — Trazabilidad observable de la resolución de provider.
+//
+// Hasta este issue, las razones por las que se descartaba cada candidato de la
+// cadena de fallback vivían SOLO en el audit log JSONL (hash-chain). El operador
+// no veía en tiempo real qué provider se eligió ni por qué fallaron los
+// anteriores. Este bloque expone esa trazabilidad como `skipReasons[]` en el
+// retorno de `resolveSpawnWithFallback` + un formateador de log multilinea.
+//
+// CONTRATO 100% backward-compatible: la lógica de DECISIÓN no cambia. Sólo se
+// acumula trazabilidad (un array de `{ provider, reason, details }`) en paralelo
+// a los `auditAppend` ya existentes y se agrega el campo a cada return path.
+// -----------------------------------------------------------------------------
+
+// Catálogo cerrado de códigos de razón de descarte (#3823). Cada código mapea a
+// un gate/skip YA implementado en el dispatcher. Se documentan acá como SoT.
+const SKIP_REASON_CODES = Object.freeze({
+    PROVIDER_DISABLED: 'provider_disabled',   // kill-switch operacional (#3811)
+    QUOTA_EXHAUSTED: 'quota_exhausted',       // flag de cuota activo (#3077/#3576)
+    HEALTH_GATE: 'health_gate',               // health rojo fresco (#3809 MP-09)
+    PERMISSION_MATRIX: 'permission_matrix',   // credencial/permiso incompatible (MP-05)
+    DUPLICATE_IN_CHAIN: 'duplicate_in_chain', // cycle detection (#3198 S-5)
+    INVALID_HANDLER: 'invalid_handler',       // provider no registrado / shape inválido
+    SAME_AS_PRIMARY: 'same_as_primary',       // defensa in-depth (fallback == primary)
+});
+
+// Etiquetas legibles (español) para el log textual. NO se escriben en el JSON
+// del audit log — sólo en los logs de `log('lanzamiento', ...)` y en la env var
+// PROVIDER_RESOLUTION_LOG (UX, no consumido por parsers).
+const SKIP_REASON_LABELS = Object.freeze({
+    provider_disabled: 'kill-switch operativo',
+    quota_exhausted: 'sin cuota',
+    health_gate: 'health rojo reciente',
+    permission_matrix: 'credenciales/permisos incompatibles',
+    duplicate_in_chain: 'duplicado en la cadena',
+    invalid_handler: 'provider no registrado',
+    same_as_primary: 'igual al primario',
+});
+
+// -----------------------------------------------------------------------------
+// formatProviderResolutionLog — arma el bloque de log legible (#3823 CA-2).
+//
+// Recibe el resultado de `resolveSpawnWithFallback` + contexto {skill, issue}.
+// Devuelve un string multilinea apto para `log('lanzamiento', ...)` y para la
+// env var PROVIDER_RESOLUTION_LOG del child. NUNCA tira (best-effort): ante un
+// input mal formado devuelve un string mínimo en vez de romper el spawn.
+// -----------------------------------------------------------------------------
+function formatProviderResolutionLog(resolution = {}, ctx = {}) {
+    try {
+        const skill = ctx.skill != null ? String(ctx.skill) : '?';
+        const issue = ctx.issue != null ? String(ctx.issue) : '?';
+        const r = resolution || {};
+        const skips = Array.isArray(r.skipReasons) ? r.skipReasons : [];
+        const chain = Array.isArray(r.chainTried) ? r.chainTried : [];
+
+        // Happy path: primary elegido sin descartes → una sola línea.
+        if (!r.gated && skips.length === 0) {
+            return `✓ ${skill}:#${issue} provider=${r.provider} (${r.source || 'primary'}, sin fallback necesario)`;
+        }
+
+        const lines = [];
+        lines.push(r.gated
+            ? `🚫 ${skill}:#${issue} — Cadena completa exhausted:`
+            : `🔄 ${skill}:#${issue} — Resolución de provider:`);
+
+        for (const s of skips) {
+            const provider = s && s.provider ? s.provider : '(desconocido)';
+            const reason = s && s.reason ? s.reason : 'desconocido';
+            const label = SKIP_REASON_LABELS[reason] || reason;
+            const details = s && s.details ? ` — ${s.details}` : '';
+            lines.push(`  → ${provider} (DESCARTADO: ${reason} (${label})${details})`);
+        }
+
+        if (!r.gated && r.provider) {
+            const pos = r.fallbackUsed
+                ? `fallback[${r.fallbackUsed.index}]`
+                : 'primary';
+            const model = r.model ? `, model=${r.model}` : '';
+            lines.push(`  ✓ ${r.provider} (ELEGIDO — ${pos}${model})`);
+        } else {
+            lines.push(`  RESULTADO: all-gated, devuelvo a pendiente/ para retry`);
+        }
+
+        if (chain.length) {
+            const total = chain.length;
+            lines.push(`  Chain evaluada: ${chain.join(' → ')} (${total} eslabón${total === 1 ? '' : 'es'} evaluado${total === 1 ? '' : 's'})`);
+        }
+
+        return lines.join('\n');
+    } catch {
+        // Defense in depth: nunca romper el caller por un error de formateo.
+        const skill = ctx && ctx.skill != null ? String(ctx.skill) : '?';
+        const issue = ctx && ctx.issue != null ? String(ctx.issue) : '?';
+        return `🔄 ${skill}:#${issue} — Resolución de provider (log no disponible)`;
+    }
+}
+
 function resolveSpawnWithFallback(opts = {}) {
     const {
         skill,
@@ -646,6 +743,18 @@ function resolveSpawnWithFallback(opts = {}) {
         } catch {
             return false; // fail-open: el kill-switch nunca bloquea por bug propio.
         }
+    };
+
+    // #3823 — acumulador de trazabilidad observable. Se llena en paralelo a los
+    // auditAppend ya existentes (sin tocar la lógica de decisión) y se adjunta a
+    // cada return path. Helper local para empujar de forma consistente.
+    const skipReasons = [];
+    const pushSkip = (provider, reason, details) => {
+        skipReasons.push({
+            provider: provider || null,
+            reason,
+            details: details == null ? null : String(details),
+        });
     };
 
     // -------------------------------------------------------------------------
@@ -753,6 +862,7 @@ function resolveSpawnWithFallback(opts = {}) {
                     chainTried: [forcedProvider],
                     crossProvider: false,
                     depthExceeded: false,
+                    skipReasons,
                 };
             }
         }
@@ -775,6 +885,7 @@ function resolveSpawnWithFallback(opts = {}) {
             chainTried: [primaryProvider],
             crossProvider: false,
             depthExceeded: false,
+            skipReasons,
         };
     }
 
@@ -789,6 +900,7 @@ function resolveSpawnWithFallback(opts = {}) {
             chainTried: [primaryProvider],
             crossProvider: false,
             depthExceeded: false,
+            skipReasons,
         };
     }
 
@@ -823,6 +935,17 @@ function resolveSpawnWithFallback(opts = {}) {
         log('lanzamiento', `🔌 ${skill}:#${issue || '?'} provider primario "${primaryProvider}" APAGADO (kill-switch) — saltando a fallbacks.`);
     }
 
+    // #3823 — registrar la razón por la que se descarta el primario. El
+    // kill-switch tiene precedencia semántica sobre la cuota: si el provider está
+    // apagado, esa es la causa raíz del salto (la cuota es secundaria).
+    if (primaryGated) {
+        pushSkip(
+            primaryProvider,
+            primaryDisabled ? SKIP_REASON_CODES.PROVIDER_DISABLED : SKIP_REASON_CODES.QUOTA_EXHAUSTED,
+            primaryDisabled ? 'kill-switch operativo activo' : 'flag de cuota activo',
+        );
+    }
+
     if (!primaryGated) {
         // Happy path: primary disponible.
         return {
@@ -834,6 +957,7 @@ function resolveSpawnWithFallback(opts = {}) {
             chainTried: [primaryProvider],
             crossProvider: false,
             depthExceeded: false,
+            skipReasons,
         };
     }
 
@@ -877,6 +1001,7 @@ function resolveSpawnWithFallback(opts = {}) {
             chainTried,
             crossProvider: false,
             depthExceeded: false,
+            skipReasons,
         };
     }
 
@@ -932,6 +1057,7 @@ function resolveSpawnWithFallback(opts = {}) {
                     raw_excerpt: `entry_type=${typeof fbEntry}`,
                 },
             });
+            pushSkip(null, SKIP_REASON_CODES.INVALID_HANDLER, `shape inválido (entry_type=${typeof fbEntry}) en índice ${i}`);
             continue;
         }
 
@@ -948,6 +1074,7 @@ function resolveSpawnWithFallback(opts = {}) {
                     raw_excerpt: `already_tried=${Array.from(tried).join(',')}`,
                 },
             });
+            pushSkip(fbName, SKIP_REASON_CODES.DUPLICATE_IN_CHAIN, `ya evaluado en la cadena (índice ${i})`);
             continue;
         }
         tried.add(fbName);
@@ -972,6 +1099,7 @@ function resolveSpawnWithFallback(opts = {}) {
                 },
             });
             log('lanzamiento', `⚠️ ${skill}:#${issue} fallback "${fbName}" desconocido (índice ${i}), salto.`);
+            pushSkip(fbName, SKIP_REASON_CODES.INVALID_HANDLER, `provider no registrado en la tabla de handlers`);
             continue;
         }
 
@@ -989,6 +1117,7 @@ function resolveSpawnWithFallback(opts = {}) {
                     raw_excerpt: 'duplicate_primary',
                 },
             });
+            pushSkip(fbName, SKIP_REASON_CODES.SAME_AS_PRIMARY, `coincide con el provider primario`);
             continue;
         }
 
@@ -1010,6 +1139,7 @@ function resolveSpawnWithFallback(opts = {}) {
                     raw_excerpt: `fallback_${fbName}_gated_too`,
                 },
             });
+            pushSkip(fbName, SKIP_REASON_CODES.QUOTA_EXHAUSTED, `flag de cuota activo`);
             continue;
         }
 
@@ -1030,6 +1160,7 @@ function resolveSpawnWithFallback(opts = {}) {
                 },
             });
             log('lanzamiento', `🔌 ${skill}:#${issue || '?'} fallback "${fbName}" APAGADO (kill-switch) — salto al siguiente.`);
+            pushSkip(fbName, SKIP_REASON_CODES.PROVIDER_DISABLED, `kill-switch operativo activo`);
             continue;
         }
 
@@ -1054,6 +1185,7 @@ function resolveSpawnWithFallback(opts = {}) {
                 },
             });
             log('lanzamiento', `↪️ ${skill}:#${issue || '?'} fallback="${fbName}" sin credencial (${credCheck.reason || 'no_credentials'}) — salto al siguiente.`);
+            pushSkip(fbName, SKIP_REASON_CODES.PERMISSION_MATRIX, `credencial/permiso incompatible (${credCheck.reason || 'no_credentials'})`);
             continue;
         }
 
@@ -1081,6 +1213,7 @@ function resolveSpawnWithFallback(opts = {}) {
                 },
             });
             log('lanzamiento', `🩺 ${skill}:#${issue || '?'} fallback="${fbName}" salteado: health=red fresco (${fbHealth.reason}).`);
+            pushSkip(fbName, SKIP_REASON_CODES.HEALTH_GATE, `health=red fresco (${fbHealth.reason})`);
             continue;
         }
 
@@ -1158,6 +1291,7 @@ function resolveSpawnWithFallback(opts = {}) {
             chainTried,
             crossProvider: true,
             depthExceeded: false,
+            skipReasons,
         };
     }
 
@@ -1187,6 +1321,7 @@ function resolveSpawnWithFallback(opts = {}) {
         chainTried,
         crossProvider: false,
         depthExceeded,
+        skipReasons,
     };
 }
 
@@ -1212,6 +1347,11 @@ module.exports = {
     spawnExitAuditFile,
     FEATURE_FLAG_NAME,
     CODEPATH_EMOJI,
+
+    // #3823 — Trazabilidad observable de la resolución de provider.
+    formatProviderResolutionLog,
+    SKIP_REASON_CODES,
+    SKIP_REASON_LABELS,
 
     // exposed for tests
     _readAgentModelsRaw: readAgentModelsRaw,
