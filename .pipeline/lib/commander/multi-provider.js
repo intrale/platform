@@ -888,22 +888,34 @@ function safeBuildSpawn({ handler, args, cwd, env }) {
 // eventos en una lluvia de audios cortos y técnicos, totalmente heterogéneo con
 // la voz del Commander cuando corre sobre Claude.
 //
-// Codex marca el mensaje final del asistente con un evento
-// `item.completed` cuyo `item.type === 'agent_message'` y el texto en
-// `item.text`. Concatenamos todos los `agent_message` en orden (por si el
-// provider parte la respuesta en varios) y devolvemos sólo eso.
+// Hay DOS formatos de salida según el provider:
+//
+//   A) JSONL streaming (Codex `exec --json`): un evento por línea. El mensaje
+//      final del asistente es un `item.completed` con `item.type ===
+//      'agent_message'` y el texto en `item.text`. Concatenamos todos los
+//      `agent_message` en orden (por si el provider parte la respuesta).
+//
+//   B) Objeto JSON único (Gemini `-o json`: `{ session_id, response, stats }`).
+//      NO es JSONL — es un solo objeto, frecuentemente pretty-printed en varias
+//      líneas. El texto conversacional vive en `response`; `session_id` y
+//      `stats` (tokens, latencia) son metadata técnica que NO debe llegar a
+//      Telegram. Antes de este fix (#gemini-clean), al no matchear el path A,
+//      el caller dumpeaba el JSON crudo entero — session_id arriba, el mensaje
+//      sepultado en el medio y un bloque de stats al final, totalmente
+//      heterogéneo con la voz del Commander sobre Claude.
 //
 // Contrato de salida: { text, parsed }
-//   - parsed=true  → extrajimos al menos un agent_message (homogéneo).
-//   - parsed=false + text==''  → era JSONL pero sin agent_message: el caller
-//     responde canned en lugar de dumpear el stream crudo.
-//   - parsed=false + text!=''  → no era JSONL (provider de texto plano):
+//   - parsed=true  → extrajimos el mensaje conversacional (homogéneo).
+//   - parsed=false + text==''  → era JSON estructurado pero sin mensaje útil:
+//     el caller responde canned en lugar de dumpear el stream crudo.
+//   - parsed=false + text!=''  → no era JSON (provider de texto plano):
 //     devolvemos el texto tal cual (best-effort, back-compat).
 // -----------------------------------------------------------------------------
 function extractFallbackReply(stdout) {
     const raw = typeof stdout === 'string' ? stdout : '';
     if (!raw.trim()) return { text: '', parsed: false };
 
+    // --- Path A: JSONL streaming (Codex) — agent_message por línea ---
     const messages = [];
     let sawJson = false;
     for (const line of raw.split('\n')) {
@@ -922,10 +934,76 @@ function extractFallbackReply(stdout) {
     if (messages.length > 0) {
         return { text: messages.join('\n\n').trim(), parsed: true };
     }
+
+    // --- Path B: objeto JSON único (Gemini y similares HTTP) ---
+    // Un JSONL multi-evento NO parsea como objeto único (el recovery de
+    // primer-{ a último-} produce JSON inválido), así que este path sólo
+    // dispara para una respuesta de objeto genuino y no pisa el path A.
+    const single = _parseSingleJsonObject(raw);
+    if (single) {
+        const reply = _extractReplyFromObject(single);
+        if (reply && reply.trim()) {
+            return { text: reply.trim(), parsed: true };
+        }
+        // Objeto JSON conocido pero sin texto conversacional (ej: payload de
+        // error) → vacío: el caller cae al canned / siguiente provider en vez
+        // de dumpear el JSON crudo.
+        return { text: '', parsed: false };
+    }
+
     // JSONL sin agent_message → vacío: el caller cae al canned y NO dumpea el
     // stream crudo. Texto plano → lo devolvemos tal cual (comportamiento previo).
     if (sawJson) return { text: '', parsed: false };
     return { text: raw.trim(), parsed: false };
+}
+
+// -----------------------------------------------------------------------------
+// _parseSingleJsonObject — parsea el stdout como UN objeto JSON. Tolera prefijo
+// o sufijo de ruido (warnings de stderr mezclados, líneas parciales) recortando
+// del primer `{` al último `}`. Devuelve el objeto o null. Mismo criterio
+// robusto que `providers/gemini-google.js#_parseGeminiJson`, replicado acá para
+// no acoplar el commander a un provider puntual.
+// -----------------------------------------------------------------------------
+function _parseSingleJsonObject(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    try {
+        const o = JSON.parse(trimmed);
+        return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+    } catch { /* sigue */ }
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+        try {
+            const o = JSON.parse(trimmed.slice(first, last + 1));
+            return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+        } catch { /* nada */ }
+    }
+    return null;
+}
+
+// -----------------------------------------------------------------------------
+// _extractReplyFromObject — saca SÓLO el texto conversacional de un objeto JSON
+// de respuesta, descartando metadata técnica (session_id, stats, usage, etc.).
+//
+// Conservador a propósito: matchea los campos de contenido conocidos. Si el
+// objeto es un payload de error (sin campo de contenido) devuelve '' para que
+// el caller caiga al canned en vez de filtrar el mensaje de error crudo.
+// -----------------------------------------------------------------------------
+function _extractReplyFromObject(obj) {
+    if (!obj || typeof obj !== 'object') return '';
+    // Gemini `-o json`: { session_id, response, stats }
+    if (typeof obj.response === 'string') return obj.response;
+    // Variantes genéricas de providers HTTP que devuelven un objeto plano.
+    if (typeof obj.text === 'string') return obj.text;
+    if (typeof obj.content === 'string') return obj.content;
+    // Shape estilo OpenAI: { choices: [ { message: { content } } | { text } ] }
+    if (Array.isArray(obj.choices) && obj.choices[0] && typeof obj.choices[0] === 'object') {
+        const c = obj.choices[0];
+        if (c.message && typeof c.message.content === 'string') return c.message.content;
+        if (typeof c.text === 'string') return c.text;
+    }
+    return '';
 }
 
 // -----------------------------------------------------------------------------
@@ -1007,4 +1085,6 @@ module.exports = {
     _dedupStatePath: dedupStatePath,
     _loadDedupState: loadDedupState,
     _selectErrorTypeForFlag,
+    _parseSingleJsonObject,
+    _extractReplyFromObject,
 };
