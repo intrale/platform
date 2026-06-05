@@ -206,6 +206,84 @@ test('CA-7 — Claude libre → resuelve primary (anthropic), sin fallback', () 
 });
 
 // -----------------------------------------------------------------------------
+// Fix 2 — reintento de cadena ante respuesta vacía / spawn fallido
+// (incidente Cerebras empty_output 2026-06-05).
+//
+// Antes, si el provider EFECTIVO devolvía vacío o no se podía spawnear, el
+// Commander cortaba seco con un canned y NO probaba el siguiente eslabón de la
+// cascada. Ahora `ejecutarClaude` re-resuelve la cadena excluyendo TODOS los
+// providers ya intentados (`resolveCommanderProviderExcluding(triedArray)`) y
+// reintenta con el siguiente; sólo cuando no queda ninguno responde limpio
+// (`cannedAllGatedResponse`). Estos tests cubren ese seam de re-resolución.
+// -----------------------------------------------------------------------------
+
+test('Fix2 — provider efectivo falla (empty_output) → re-resuelve y avanza al siguiente non-anthropic', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // Sólo anthropic gated → el efectivo del turno es codex. codex devuelve
+        // vacío: re-resolvemos excluyendo codex, anthropic sigue gated por cuota.
+        const fakeQuota = makeFakeQuotaModule(['anthropic']);
+        const next = cmp.resolveCommanderProviderExcluding(['openai-codex'], {
+            pipelineDir: dir,
+            skill: 'telegram-commander',
+            quotaModule: fakeQuota,
+            log: () => {},
+            issue: 'commander-chat',
+        });
+        assert.equal(next.gated, false, 'aún queda cerebras libre en la cadena');
+        assert.equal(next.provider, 'cerebras');
+        assert.notEqual(next.provider, 'anthropic');
+        assert.notEqual(next.provider, 'openai-codex');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('Fix2 — todos los non-anthropic ya intentados → cadena agotada → canned all-gated', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // Caso real del incidente: anthropic + codex apagados, efectivo cerebras,
+        // cerebras devuelve vacío. Re-resolver excluyendo cerebras (los tried) y
+        // con anthropic+codex gated por cuota → no queda ningún provider.
+        const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex']);
+        const next = cmp.resolveCommanderProviderExcluding(['cerebras'], {
+            pipelineDir: dir,
+            skill: 'telegram-commander',
+            quotaModule: fakeQuota,
+            log: () => {},
+            issue: 'commander-chat',
+        });
+        assert.equal(next.gated, true, 'cadena entera agotada → gated');
+        assert.equal(next.source, 'all-gated');
+        // Mensaje limpio al usuario (no el "no pude completar" seco de antes).
+        const canned = cmp.cannedAllGatedResponse();
+        assert.match(canned, /sin cuota disponible/);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('Fix2 — exclusión por ARRAY descarta varios providers de una (tried acumulado)', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // Sin cuotas gateadas, pero ya intentamos codex Y cerebras (ambos
+        // fallaron). Excluyendo el array completo no queda non-anthropic libre.
+        const fakeQuota = makeFakeQuotaModule(['anthropic']);
+        const next = cmp.resolveCommanderProviderExcluding(['openai-codex', 'cerebras'], {
+            pipelineDir: dir,
+            skill: 'telegram-commander',
+            quotaModule: fakeQuota,
+            log: () => {},
+            issue: 'commander-chat',
+        });
+        assert.equal(next.gated, true, 'array de exclusión saca a codex y cerebras');
+        assert.equal(next.source, 'all-gated');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+// -----------------------------------------------------------------------------
 // CA-5 — formatFallbackNotice (UX-G1)
 // -----------------------------------------------------------------------------
 

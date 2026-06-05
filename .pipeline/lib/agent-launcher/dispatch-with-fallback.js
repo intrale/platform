@@ -442,6 +442,28 @@ function readAgentModelsRaw(pipelineDir, fsImpl) {
 // más viejo que esto se considera no-confiable → fail-open (no gatea).
 const HEALTH_FRESHNESS_MS = 20 * 60 * 1000;
 
+// Refinamiento del fail-open (incidente Gemini timeout 2026-06-05): un rojo
+// FRESCO sólo debe gatear si su causa es DURABLE — el provider seguirá caído
+// hasta intervención (credencial inválida, sin key, binario CLI ausente,
+// provider mal declarado). Un rojo TRANSITORIO (timeout, network blip, 5xx,
+// rate-limit puntual) es exactamente la incertidumbre que la política fail-open
+// quiere preservar: el provider pudo recuperarse entre el ping del cron y este
+// spawn. Gatearlo por un timeout lo saca de la cascada hasta 20min aunque ya
+// esté sano (Gemini quedó rojo por un timeout y la cascada saltó a Cerebras
+// aunque Gemini ya respondía 200). Ante causa NO-durable → fail-open.
+//
+// Los reason_code provienen de `health-alerts.sanitizeReasonCode` (allowlist
+// cerrada en live-ping/health-alerts). Sólo estos justifican gatear:
+const DURABLE_RED_REASONS = Object.freeze(new Set([
+    'invalid_credentials',     // key incorrecta — no se arregla sola
+    'forbidden',               // 403 persistente
+    'no_key_configured',       // sin credencial declarada
+    'unknown_provider',        // misconfig
+    'cli_unavailable',         // binario CLI ausente del PATH
+    'cli_binary_undeclared',   // provider CLI sin binario declarado
+    'quota_exhausted',         // sin cuota — el flag de cuota ya lo cubre, doble defensa
+]));
+
 // El health-cron nombra a OpenAI/Codex como 'openai', pero la config de skills
 // (agent-models.json) usa la key 'openai-codex'. Mapeamos provider-key → nombre
 // en el snapshot de health. Si no hay alias, se busca por la key tal cual.
@@ -489,8 +511,16 @@ function evaluateHealthGate(providerKey, healthSnapshot, now) {
         result.reason = 'red_stale';            // rojo viejo o reloj desfasado → fail-open
         return result;
     }
-    result.gated = true;                        // rojo fresco y confiable → gatear
-    result.reason = entry.reason_code || 'red_fresh';
+    // Rojo fresco PERO la causa decide: sólo gateamos si es durable. Un rojo
+    // transitorio (timeout/network/5xx) no debe sacar a un provider que pudo
+    // recuperarse de la cascada — fail-open preservando cobertura.
+    const reasonCode = entry.reason_code || null;
+    if (!DURABLE_RED_REASONS.has(reasonCode)) {
+        result.reason = 'red_transient';        // rojo fresco pero causa no-durable → fail-open
+        return result;
+    }
+    result.gated = true;                        // rojo fresco, confiable y durable → gatear
+    result.reason = reasonCode || 'red_fresh';
     return result;
 }
 
@@ -1340,6 +1370,7 @@ module.exports = {
     evaluateHealthGate,
     HEALTH_FRESHNESS_MS,
     HEALTH_PROVIDER_ALIAS,
+    DURABLE_RED_REASONS,
 
     // #3576 — Hook generalizado post-spawn cross-skill.
     onSpawnExit,
