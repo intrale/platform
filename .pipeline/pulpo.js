@@ -11347,7 +11347,7 @@ async function mainLoop() {
       const TWO_MINUTES = 2 * 60 * 1000;
       if (data.source === 'telegram' && !data.notified && ageMs < TWO_MINUTES) {
         const mode = data.mode || (data.paused ? 'pausado' : 'completo');
-        sendTelegram(`✅ *Pipeline reiniciado* (modo ${mode})\n_Listo para recibir comandos._`);
+        sendTelegram(`🚀 *Pipeline reiniciado y listo* (modo ${mode})\n_Todo en marcha para nuevas pruebas._`);
         fs.writeFileSync(lastRestartPath, JSON.stringify({ ...data, notified: true }, null, 2));
         log('pulpo', `Restart ${mode} confirmado via Telegram (solicitado hace ${Math.round(ageMs / 1000)}s)`);
       }
