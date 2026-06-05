@@ -61,6 +61,11 @@ const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
 // log con hash-chain (CA-4 / SR-3) y formatea las notificaciones a Leo según
 // UX-G1 (lenguaje natural, no log operativo).
 const commanderMP = require('./lib/commander/multi-provider');
+// Inyección de contexto del proyecto + guardrail anti-alucinación para providers
+// integrados como API REST pelada (cerebras, nvidia-nim). Sin esto, ante una
+// pregunta de estado en vivo inventan una explicación plausible pero falsa
+// (incidente Cerebras/Whisper 2026-06-05). No-op para providers agénticos.
+const commanderApiContext = require('./lib/commander/api-context-pack');
 // #3577 — Detectores in-stream del Commander en modo SHADOW (parte 1/2 del
 // split de #3472). Observan first-byte/stream-gap/eof-premature/transient-5xx
 // y los emiten al audit log SIN matar el primario ni spawnear secundario.
@@ -8138,7 +8143,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         return e;
       };
 
-      const buildFallbackArgs = () => {
+      const buildFallbackArgs = (provider) => {
         if (fallbackParts && typeof fallbackParts.systemPrompt === 'string'
             && typeof fallbackParts.userMessage === 'string'
             && fallbackParts.systemPrompt && fallbackParts.userMessage) {
@@ -8146,7 +8151,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           let sysFile = null;
           try {
             sysFile = path.join(PIPELINE, 'commander-system-prompt.md');
-            fs.writeFileSync(sysFile, fallbackParts.systemPrompt, 'utf8');
+            // Para providers API-pelados (cerebras, nvidia-nim) aumentamos el
+            // system prompt con contexto del proyecto + guardrail anti-alucinación.
+            // No-op para providers agénticos: devuelve la persona tal cual.
+            const systemForProvider = commanderApiContext.augmentSystemPromptForProvider(
+              fallbackParts.systemPrompt, provider, { root: ROOT });
+            fs.writeFileSync(sysFile, systemForProvider, 'utf8');
           } catch { sysFile = null; }
           return sysFile
             ? ['-p', userMsgForLLM, '--system-prompt-file', sysFile]
@@ -8221,7 +8231,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
 
         const safe = commanderMP.safeBuildSpawn({
           handler: res.handler,
-          args: buildFallbackArgs(),
+          args: buildFallbackArgs(res.provider),
           cwd: ROOT,
           env: attemptEnv,
         });
