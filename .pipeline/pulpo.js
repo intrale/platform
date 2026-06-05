@@ -5576,7 +5576,28 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   // Escribir system prompt (rol) a archivo y user prompt corto como argumento
   const systemFile = path.join(LOG_DIR, `agent-${issue}-${skill}-system.txt`);
-  fs.writeFileSync(systemFile, `${base}\n\n${rol}`);
+  // Paridad con el Commander (incidente Cerebras/Whisper 2026-06-05): si el
+  // spawn de este agente cae a un provider integrado como API REST pelada
+  // (cerebras, nvidia-nim), el agente TAMPOCO ve el filesystem, los logs ni el
+  // runtime — sólo recibe el texto del system + user prompt. Igual que el
+  // Commander, ante preguntas/decisiones de estado en vivo tiende a alucinar.
+  // Le aumentamos el system prompt con el MISMO guardrail anti-alucinación +
+  // extracto de CLAUDE.md. Es no-op para los providers agénticos (anthropic,
+  // openai-codex, gemini-google), que ya investigan el repo de verdad.
+  let systemContent = `${base}\n\n${rol}`;
+  try {
+    const effectiveProvider = (dispatchResolution && dispatchResolution.provider) || null;
+    systemContent = commanderApiContext.augmentSystemPromptForProvider(
+      systemContent, effectiveProvider, { root: ROOT });
+    if (commanderApiContext.isApiPeladaProvider(effectiveProvider)) {
+      log('lanzamiento', `🧱 ${skill}:#${issue} provider API-pelado "${effectiveProvider}": inyecto guardrail anti-alucinación + contexto del proyecto al system prompt.`);
+    }
+  } catch (augErr) {
+    // Best-effort: nunca bloquear el spawn por el augment. Cae al system base.
+    log('lanzamiento', `⚠️ ${skill}:#${issue} no se pudo aumentar el system prompt para provider API-pelado (best-effort): ${augErr.message}`);
+    systemContent = `${base}\n\n${rol}`;
+  }
+  fs.writeFileSync(systemFile, systemContent);
 
   // Construir user prompt — enriquecer si es un rebote con contexto del rechazo
   let userPrompt = `Archivo de trabajo: ${path.basename(trabajandoPath)}\nPath: ${trabajandoPath}\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;
