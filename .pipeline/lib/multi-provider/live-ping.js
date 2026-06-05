@@ -48,8 +48,8 @@ const httpClassifier = require('../http-error-classifier');
 //   unknown/unclassified       → { ok: false, reason: 'unknown' }
 //
 // Overrides documentados:
-//   - openai, elevenlabs: 429 SIN body matchable se reportaba históricamente
-//     como 'quota_exhausted' (sus interpret() no recibían bodyExcerpt). Lo
+//   - openai: 429 SIN body matchable se reportaba históricamente
+//     como 'quota_exhausted' (su interpret() no recibía bodyExcerpt). Lo
 //     mantenemos para no romper consumers del dashboard / health alerts.
 //   - openai: no tenía branch 403 — mapeamos 403 a 'invalid_credentials' (más
 //     suave que 'forbidden' para preservar el comportamiento previo que caía
@@ -83,8 +83,8 @@ function classifyForLivePing(provider, status, bodyExcerpt) {
             reason = 'unknown';
     }
     // Overrides por provider que preservan semántica legacy.
-    if ((provider === 'openai' || provider === 'elevenlabs') && reason === 'rate_limited') {
-        // El interpret legacy de openai/elevenlabs tratada 429 como quota
+    if (provider === 'openai' && reason === 'rate_limited') {
+        // El interpret legacy de openai trataba 429 como quota
         // siempre (sin discriminar por body). Preservar comportamiento.
         reason = 'quota_exhausted';
     }
@@ -117,14 +117,6 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
         }),
         interpret: (status, bodyExcerpt) =>
             classifyForLivePing('openai', status, bodyExcerpt),
-    },
-    elevenlabs: {
-        url: 'https://api.elevenlabs.io/v1/voices',
-        method: 'GET',
-        body: () => null,
-        headers: (key) => ({ 'xi-api-key': key }),
-        interpret: (status, bodyExcerpt) =>
-            classifyForLivePing('elevenlabs', status, bodyExcerpt),
     },
     // ─── Free providers — red de salvataje del pipeline (#3260 SR-2 / SR-7).
     //

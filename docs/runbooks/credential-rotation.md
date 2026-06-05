@@ -26,10 +26,6 @@ Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
     "groq":     { "api_key": "..." },
     "cerebras": { "api_key": "..." },
     "nvidia":   { "api_key": "..." }
-  },
-  "multimedia": {
-    "elevenlabs_api_key":  "...",
-    "elevenlabs_voice_id": "..."
   }
 }
 ```

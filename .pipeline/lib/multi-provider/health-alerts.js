@@ -240,7 +240,7 @@ function record({ provider, state, sent, now = Date.now(), dedupFile = HOME_DEDU
  * fue hace más de DEDUP_WINDOW_MS.
  *
  * Los providers free se identifican por estar en el set conocido (no incluye
- * anthropic / openai / elevenlabs, que no son free tier).
+ * anthropic / openai, que no son free tier).
  *
  * Groq fue descontinuado en #3353 (mayo 2026) por política inestable de
  * restricciones del proveedor.

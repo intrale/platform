@@ -34,8 +34,6 @@ const { loadApiKeys } = require('./telegram-secrets');
 // puede pasarla explícitamente si la necesita seteando la env var del SO.
 const ENV_MAPPING = Object.freeze({
     openai_api_key: 'OPENAI_API_KEY',
-    elevenlabs_api_key: 'ELEVENLABS_API_KEY',
-    elevenlabs_voice_id: 'ELEVENLABS_VOICE_ID',
 });
 
 function hydrateProviderEnv({ legacyConfigPath, log, loadKeysFn } = {}) {

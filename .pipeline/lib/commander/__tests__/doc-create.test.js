@@ -77,8 +77,8 @@ test('inferLabels: labels sin duplicados', () => {
 // -----------------------------------------------------------------------------
 
 test('deriveTitle: strip del preámbulo de pedido', () => {
-    const t = dc.deriveTitle('creá un issue para eliminar referencias a ElevenLabs');
-    assert.ok(/eliminar referencias a ElevenLabs/i.test(t));
+    const t = dc.deriveTitle('creá un issue para eliminar referencias a un proveedor legacy');
+    assert.ok(/eliminar referencias a un proveedor legacy/i.test(t));
     assert.ok(!/^cre[aá]/i.test(t));
 });
 

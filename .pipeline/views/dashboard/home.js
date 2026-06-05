@@ -1504,7 +1504,7 @@ async function tickMultiProvider(){
     badge.textContent = count > 0 ? String(count) : '·';
     badge.classList.remove('area-pill-badge-warn','area-pill-badge-bad','area-pill-badge-zero');
 
-    // Estado de keys gestionables vía UI (anthropic/openai/elevenlabs) — el array
+    // Estado de keys gestionables vía UI (anthropic/openai) — el array
     // 'keys' viene tanto en /config como en /keys; preferimos /keys porque es la
     // fuente autoritativa del panel. Si /keys falla, caemos a las del /config.
     const keys = (ksRes && ksRes.ok && Array.isArray(ksRes.keys))

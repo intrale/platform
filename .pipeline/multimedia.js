@@ -22,7 +22,7 @@ const LOCAL_FALLBACK_KINDS = new Set(['quota', 'auth', 'rate_limit', 'network', 
 // del archivo committed a placeholders:
 //   - base = archivo committed (configs no-secretas: voice_id, retries, etc.)
 //   - bot_token + chat_id desde el helper de secrets criticos (home preferido)
-//   - api keys (OpenAI/Anthropic/ElevenLabs) desde loadApiKeys (ENV → home → legacy)
+//   - api keys (OpenAI/Anthropic) desde loadApiKeys (ENV → home → legacy)
 // Cualquier valor del home pisa el placeholder vacio del archivo committed.
 function loadConfig() {
   let base = {};
@@ -35,8 +35,6 @@ function loadConfig() {
   const keys = loadApiKeys({ legacyConfigPath: TG_CONFIG_PATH });
   if (keys.openai_api_key) base.openai_api_key = keys.openai_api_key;
   if (keys.anthropic_api_key) base.anthropic_api_key = keys.anthropic_api_key;
-  if (keys.elevenlabs_api_key) base.elevenlabs_api_key = keys.elevenlabs_api_key;
-  if (keys.elevenlabs_voice_id) base.elevenlabs_voice_id = keys.elevenlabs_voice_id;
   return base;
 }
 

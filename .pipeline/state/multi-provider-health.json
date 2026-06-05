@@ -26,18 +26,6 @@
       "free_tier_notes": null
     },
     {
-      "provider": "elevenlabs",
-      "label": "ElevenLabs",
-      "state": "red",
-      "reason_code": "no_key_configured",
-      "status_code": null,
-      "latency_ms": null,
-      "rate_limit_hit_24h": 0,
-      "last_checked_at": "2026-05-26T23:16:42.108Z",
-      "key_status": "absent",
-      "free_tier_notes": null
-    },
-    {
       "provider": "gemini-google",
       "label": "Gemini (Google AI Studio)",
       "state": "green",
@@ -76,5 +64,5 @@
   ],
   "green_count": 3,
   "yellow_count": 0,
-  "red_count": 3
+  "red_count": 2
 }

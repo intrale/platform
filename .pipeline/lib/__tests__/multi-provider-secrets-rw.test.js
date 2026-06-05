@@ -93,7 +93,6 @@ test('listKeys lee del formato CANONICAL nested', () => {
             google:   { api_key: 'AIza_real_key_1234567890abc' },
             cerebras: { api_key: 'csk_real_key_1234567890abcdef' },
         },
-        multimedia: { elevenlabs_api_key: '' },
     }));
     const out = secrets.listKeys({ secretsPath: file });
     const byProvider = Object.fromEntries(out.map(k => [k.provider, k]));
@@ -105,9 +104,6 @@ test('listKeys lee del formato CANONICAL nested', () => {
 
     assert.equal(byProvider.anthropic.status, 'placeholder');
     assert.equal(byProvider.anthropic.editable, false);
-
-    assert.equal(byProvider.elevenlabs.status, 'absent');
-    assert.equal(byProvider.elevenlabs.masked, null);
 
     // Los free providers vivos DEBEN aparecer como present con la estructura
     // nested — éste es exactamente el caso que rompía el dashboard antes de
@@ -123,14 +119,12 @@ test('listKeys lee del formato LEGACY flat (fallback)', () => {
     fs.writeFileSync(file, JSON.stringify({
         openai_api_key: 'sk-legacy-1234567890abcdef',
         anthropic_api_key: 'PLACEHOLDER',
-        elevenlabs_api_key: '',
     }));
     const out = secrets.listKeys({ secretsPath: file });
     const byProvider = Object.fromEntries(out.map(k => [k.provider, k]));
 
     assert.equal(byProvider.openai.status, 'present');
     assert.equal(byProvider.anthropic.status, 'placeholder');
-    assert.equal(byProvider.elevenlabs.status, 'absent');
     // El legacy no incluye cerebras ni gemini-google → absent.
     assert.equal(byProvider.cerebras.status, 'absent');
     assert.equal(byProvider['gemini-google'].status, 'absent');
@@ -173,7 +167,7 @@ test('rotateKey escribe atómicamente sobre formato CANONICAL preservando estruc
     fs.writeFileSync(file, JSON.stringify({
         telegram: { bot_token: 'preserved' },
         providers: { openai: { api_key: 'sk-old-12345678901234567890' } },
-        multimedia: { elevenlabs_voice_id: 'preserved-voice' },
+        multimedia: { tts_voice: 'preserved-voice' },
     }));
     const result = secrets.rotateKey({
         provider: 'openai',
@@ -193,7 +187,7 @@ test('rotateKey escribe atómicamente sobre formato CANONICAL preservando estruc
     const updated = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.equal(updated.providers.openai.api_key, 'sk-new-aaaaaaaaaaaaaaaaaaaa');
     assert.equal(updated.telegram.bot_token, 'preserved', 'top-level no tocado debe preservarse');
-    assert.equal(updated.multimedia.elevenlabs_voice_id, 'preserved-voice', 'siblings preservados');
+    assert.equal(updated.multimedia.tts_voice, 'preserved-voice', 'siblings preservados');
 });
 
 test('rotateKey crea archivo CANONICAL si no existe (estructura nested)', () => {
@@ -278,15 +272,14 @@ test('getRawKey lee la key real del CANONICAL nested', () => {
             openai:   { api_key: 'sk-real-1234567890abcdef0000' },
             google:   { api_key: 'AIza-real-1234567890abcdef' },
             cerebras: { api_key: 'csk-real-1234567890abcdef' },
+            anthropic: { api_key: 'PLACEHOLDER' },
         },
-        multimedia: { elevenlabs_api_key: 'PLACEHOLDER' },
     }));
     assert.equal(secrets.getRawKey({ provider: 'openai', secretsPath: file }), 'sk-real-1234567890abcdef0000');
     // 'gemini-google' (UI) mapea a 'providers.google.api_key' en canonical.
     assert.equal(secrets.getRawKey({ provider: 'gemini-google', secretsPath: file }), 'AIza-real-1234567890abcdef');
     assert.equal(secrets.getRawKey({ provider: 'cerebras', secretsPath: file }), 'csk-real-1234567890abcdef');
-    assert.equal(secrets.getRawKey({ provider: 'elevenlabs', secretsPath: file }), null, 'PLACEHOLDER → null');
-    assert.equal(secrets.getRawKey({ provider: 'anthropic', secretsPath: file }), null, 'absent → null');
+    assert.equal(secrets.getRawKey({ provider: 'anthropic', secretsPath: file }), null, 'PLACEHOLDER → null');
 });
 
 test('getRawKey lee del LEGACY flat cuando el canonical no existe', () => {

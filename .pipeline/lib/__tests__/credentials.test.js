@@ -60,10 +60,6 @@ test('loadIntoEnv hidrata todas las vars desde credentials.json canonical', () =
           cerebras: { api_key: 'csk-cerebras-test' },
           nvidia:   { api_key: 'nvapi-nvidia-test' },
         },
-        multimedia: {
-          elevenlabs_api_key:  'eleven-key-test',
-          elevenlabs_voice_id: 'voice-id-test',
-        },
       });
 
       const env = {};
@@ -76,8 +72,6 @@ test('loadIntoEnv hidrata todas las vars desde credentials.json canonical', () =
       assert.equal(env.GEMINI_API_KEY, 'AIza-gemini-test');
       assert.equal(env.CEREBRAS_API_KEY, 'csk-cerebras-test');
       assert.equal(env.NVIDIA_NIM_API_KEY, 'nvapi-nvidia-test');
-      assert.equal(env.ELEVENLABS_API_KEY, 'eleven-key-test');
-      assert.equal(env.ELEVENLABS_VOICE_ID, 'voice-id-test');
       // #3353 — GROQ_API_KEY removida tras descontinuación; ya no se hidrata.
       assert.equal(env.GROQ_API_KEY, undefined);
       assert.ok(result.hydrated.includes('CEREBRAS_API_KEY'));
@@ -266,8 +260,6 @@ test('ENV_MAPPING cubre los providers IA vivos + telegram + multimedia', () => {
   assert.ok(values.has('GEMINI_API_KEY'));
   assert.ok(values.has('CEREBRAS_API_KEY'));
   assert.ok(values.has('NVIDIA_NIM_API_KEY'));
-  assert.ok(values.has('ELEVENLABS_API_KEY'));
-  assert.ok(values.has('ELEVENLABS_VOICE_ID'));
   // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
   assert.ok(!values.has('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
 });
