@@ -3,7 +3,9 @@
 //
 // Cubre:
 //   A. MP-09 health-gate FAIL-OPEN (unit sobre evaluateHealthGate):
-//      - rojo fresco y confiable → gateado.
+//      - rojo fresco y DURABLE (credenciales/config) → gateado.
+//      - rojo fresco pero TRANSITORIO (timeout/network/unknown) → NO gateado
+//        (fail-open — incidente Gemini timeout 2026-06-05).
 //      - rojo viejo (fuera de la ventana) → NO gateado (fail-open).
 //      - rojo sin timestamp → NO gateado.
 //      - verde → NO gateado.
@@ -47,7 +49,12 @@ function healthEntry(provider, state, ageMs, extra = {}) {
     return {
         provider,
         state,
-        reason_code: extra.reason_code || (state === 'red' ? 'live_ping_failed' : 'authenticated'),
+        // Default DURABLE para reds: estos tests asumen un rojo que debe gatear.
+        // El refinamiento del fail-open (incidente Gemini timeout) sólo gatea
+        // reds con causa durable (credenciales/config); los transitorios hacen
+        // fail-open. Para no reescribir cada caso, el default es durable y los
+        // tests de transitorio pasan reason_code explícito (timeout/unknown).
+        reason_code: extra.reason_code || (state === 'red' ? 'invalid_credentials' : 'authenticated'),
         last_checked_at: ('last_checked_at' in extra) ? extra.last_checked_at : checkedAt,
         ...extra,
     };
@@ -192,6 +199,35 @@ test('A8 · snapshot null/ilegible → NO gateado (fail-open)', () => {
     assert.equal(evaluateHealthGate('cerebras', { providers: 'x' }, NOW).gated, false);
 });
 
+test('A9 · rojo FRESCO pero TRANSITORIO (timeout) → NO gateado (fail-open, caso Gemini)', () => {
+    // Gemini quedó rojo por un timeout puntual y se recuperó minutos después,
+    // pero el rojo cacheado lo sacaba de la cascada hasta 20min. Un timeout es
+    // incertidumbre, no una falla durable → fail-open.
+    const snap = healthSnapshot([healthEntry('gemini-google', 'red', 60 * 1000, { reason_code: 'timeout' })]);
+    const r = evaluateHealthGate('gemini-google', snap, NOW);
+    assert.equal(r.gated, false, 'timeout es transitorio → no gatea');
+    assert.equal(r.reason, 'red_transient');
+    assert.equal(r.state, 'red');
+});
+
+test('A9b · rojo FRESCO transitorio (network_error/unknown) → NO gateado (fail-open)', () => {
+    for (const reason of ['network_error', 'unknown', 'rate_limited']) {
+        const snap = healthSnapshot([healthEntry('cerebras', 'red', 60 * 1000, { reason_code: reason })]);
+        const r = evaluateHealthGate('cerebras', snap, NOW);
+        assert.equal(r.gated, false, `${reason} es transitorio → no gatea`);
+        assert.equal(r.reason, 'red_transient');
+    }
+});
+
+test('A10 · rojo FRESCO y DURABLE (no_key_configured/forbidden) → gateado', () => {
+    for (const reason of ['no_key_configured', 'forbidden', 'invalid_credentials', 'unknown_provider']) {
+        const snap = healthSnapshot([healthEntry('cerebras', 'red', 60 * 1000, { reason_code: reason })]);
+        const r = evaluateHealthGate('cerebras', snap, NOW);
+        assert.equal(r.gated, true, `${reason} es durable → gatea`);
+        assert.equal(r.reason, reason);
+    }
+});
+
 // =============================================================================
 // B. Integración con resolveSpawnWithFallback
 // =============================================================================
@@ -277,6 +313,35 @@ test('B3 · el primario NUNCA se health-gatea (aunque esté rojo-fresco)', () =>
     assert.notEqual(r.source, 'fallback', 'no degradó a un fallback por health del primario');
     assert.equal(r.gated, false);
     assert.equal(r.crossProvider, false);
+});
+
+test('B5 · fallback rojo-fresco TRANSITORIO (timeout) se USA igual (caso Gemini en la cascada)', () => {
+    const models = modelsWithChain('anthropic', [
+        { provider: 'gemini-google', model_override: 'gemini-2.0-flash' },
+        { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+    ]);
+    const audit = fakeAuditLog();
+    const snap = healthSnapshot([
+        healthEntry('gemini-google', 'red', 60 * 1000, { reason_code: 'timeout' }), // rojo fresco PERO transitorio
+        healthEntry('cerebras', 'green', 60 * 1000),
+    ]);
+    const r = resolveSpawnWithFallback({
+        skill: 'test-skill',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl: fakeFsWithModels(models),
+        quotaModule: fakeQuotaGatePrimary('anthropic'),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(),
+        auditLog: audit,
+        notify: fakeNotify(),
+        healthReader: () => snap,
+        now: NOW,
+    });
+    assert.equal(r.provider, 'gemini-google', 'rojo por timeout NO saca a Gemini de la cascada (fail-open)');
+    assert.equal(r.source, 'fallback');
+    assert.ok(!audit.entries.find(e => e.event === 'fallback_health_gated'),
+        'no se emitió health-gate para un rojo transitorio');
 });
 
 test('B4 · healthReader que tira → fail-open (no rompe la resolución)', () => {

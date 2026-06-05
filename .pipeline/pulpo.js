@@ -8102,115 +8102,215 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // hasta #3198 — `buildSpawn` tira `_notImplemented`. En ese caso, audit
     // log + respondemos canned al usuario sin matar el flow.
     if (resolution.provider !== 'anthropic') {
-      // Los adapters no-Anthropic (codex, gemini, cerebras, nvidia) toman el
-      // prompt del VALOR de `-p` en los args (`userPrompt = args[i+1]`) y abren
-      // stdin como 'ignore'. El `args` legacy de arriba trae `-p` PELADO porque
-      // el path Anthropic manda el prompt por stdin — así el adapter levantaba
-      // `--output-format` como prompt basura y el pedido real se perdía en un
-      // stdin que el provider nunca lee. Armamos un argv propio con el prompt
-      // sanitizado como valor de `-p` para que cada handler lo reciba completo.
+      // ---------------------------------------------------------------------
+      // Reintento de cadena ante respuesta vacía / spawn fallido (incidente
+      // Cerebras empty_output 2026-06-05). Antes, si el provider efectivo
+      // devolvía vacío o no se podía spawnear, cortábamos seco con un mensaje
+      // canned y NO probábamos el siguiente eslabón de la cascada (ej. tras
+      // cerebras quedaba nvidia-nim sin usar). Ahora, ante empty_output /
+      // spawn-error / no_implemented / data-residency, re-resolvemos la cadena
+      // excluyendo el provider que falló y reintentamos con el siguiente, hasta
+      // agotar la cascada. Sólo cuando NO queda ningún provider damos el
+      // mensaje limpio.
       //
-      // Personalidad consistente en el fallback: cuando el caller separa la
-      // persona del Commander (`fallbackParts.systemPrompt`) del mensaje del
-      // usuario (`fallbackParts.userMessage`), persistimos la persona a un
-      // archivo y la pasamos como `--system-prompt-file`. Los adapters la
-      // foldean al inicio del prompt (codex) o la mandan como system real
-      // (gemini/cerebras/nvidia), así la identidad/estilo del Commander NO
-      // cambia por usar un provider de respaldo. Si el caller no separa partes,
-      // mantenemos el comportamiento previo (prompt completo en `-p`).
-      let fallbackArgs;
-      if (fallbackParts && typeof fallbackParts.systemPrompt === 'string'
-          && typeof fallbackParts.userMessage === 'string'
-          && fallbackParts.systemPrompt && fallbackParts.userMessage) {
-        const userMsgForLLM = commanderMP.sanitizeUserPrompt(fallbackParts.userMessage).sanitized;
-        let sysFile = null;
+      // Los adapters no-Anthropic toman el prompt del VALOR de `-p` y abren
+      // stdin como 'ignore'. Persona consistente: si el caller separó
+      // `fallbackParts.systemPrompt`/`userMessage`, la persona va por
+      // `--system-prompt-file` (codex la foldea, el resto la manda como system
+      // real) para que la identidad del Commander NO cambie por usar respaldo.
+      // ---------------------------------------------------------------------
+      const triedNonAnthropic = new Set();
+
+      const buildEnvFor = (prov) => {
+        let e;
+        if (commanderEnvIsolation) {
+          e = buildChildEnvLib.buildChildEnv({
+            skill: commanderMP.COMMANDER_SKILL,
+            pipelineDir: PIPELINE,
+            processEnv: process.env,
+            pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
+            skillConfigOverride: { provider: prov },
+          });
+        } else {
+          e = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+        }
+        delete e.CLAUDECODE;
+        return e;
+      };
+
+      const buildFallbackArgs = () => {
+        if (fallbackParts && typeof fallbackParts.systemPrompt === 'string'
+            && typeof fallbackParts.userMessage === 'string'
+            && fallbackParts.systemPrompt && fallbackParts.userMessage) {
+          const userMsgForLLM = commanderMP.sanitizeUserPrompt(fallbackParts.userMessage).sanitized;
+          let sysFile = null;
+          try {
+            sysFile = path.join(PIPELINE, 'commander-system-prompt.md');
+            fs.writeFileSync(sysFile, fallbackParts.systemPrompt, 'utf8');
+          } catch { sysFile = null; }
+          return sysFile
+            ? ['-p', userMsgForLLM, '--system-prompt-file', sysFile]
+            : ['-p', promptForLLM];
+        }
+        return ['-p', promptForLLM];
+      };
+
+      // Re-resuelve la cadena excluyendo todos los providers ya intentados y
+      // reintenta con el siguiente; si no queda ninguno, responde limpio.
+      const advanceOrGiveUp = (failedProvider, reason) => {
+        let next = null;
         try {
-          sysFile = path.join(PIPELINE, 'commander-system-prompt.md');
-          fs.writeFileSync(sysFile, fallbackParts.systemPrompt, 'utf8');
-        } catch { sysFile = null; }
-        fallbackArgs = sysFile
-          ? ['-p', userMsgForLLM, '--system-prompt-file', sysFile]
-          : ['-p', promptForLLM];
-      } else {
-        fallbackArgs = ['-p', promptForLLM];
-      }
-      const safe = commanderMP.safeBuildSpawn({
-        handler: resolution.handler,
-        args: fallbackArgs,
-        cwd: ROOT,
-        env: cleanEnv,
-      });
-      try {
-        commanderMP.auditCommanderRequest({
-          pipelineDir: PIPELINE,
-          event: safe.ok ? 'fallback_used' : 'fallback_unavailable',
-          providerIntended: resolution.primaryProvider || 'anthropic',
-          providerEffective: resolution.provider,
-          chainTried: resolution.chainTried,
-          chatId: getTelegramChatId(),
-          prompt: prompt,
-          latencyMs: Date.now() - startTimeForAudit,
-          errorCode: safe.ok ? null : 'not_implemented',
-          injectionHits: sanRes.hits,
-          requestId: turnRequestId, // #3577 CA-S6
-        });
-      } catch { /* best-effort */ }
-      if (!safe.ok) {
-        log('commander', `⚠️ Fallback provider "${resolution.provider}" no implementado (${safe.reason}). Respondiendo canned.`);
-        return resolve(commanderMP.cannedFallbackUnavailableResponse({ provider: resolution.provider }));
-      }
-      // Si #3198 está deployed y el handler real funciona, llegamos acá. La
-      // parsing de output stream-json de Anthropic NO aplica directamente a
-      // otros providers (cada uno tiene su `output_parser`). Esta es la
-      // observación G1/G2 que dejamos para una iteración futura — por ahora
-      // si el handler responde con buildSpawn pero el output no es
-      // stream-json, capturamos stdout crudo y lo devolvemos al usuario.
-      const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
-      // El prompt ya viaja como valor de `-p` en los args del handler; estos
-      // providers abren stdin como 'ignore', así que no escribimos por ahí.
-      // Cerramos stdin sólo si el handler lo dejó abierto (interactive).
-      proc.stdin && proc.stdin.end && proc.stdin.end();
-      let stdout = '';
-      let stderr = '';
-      const startNon = Date.now();
-      const HARD_NON_ANTH_MS = 90 * 1000; // SR-5 — budget 90s para providers no-stream-json
-      const timer = setTimeout(() => {
-        try { proc.kill('SIGTERM'); } catch {}
-        log('commander', `Provider ${resolution.provider} timeout 90s — abortando`);
-      }, HARD_NON_ANTH_MS);
-      proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); });
-      proc.stderr && proc.stderr.on('data', (d) => { stderr += d.toString(); });
-      proc.on('close', () => {
-        clearTimeout(timer);
-        const elapsed = Date.now() - startNon;
-        // Los providers no-Anthropic emiten JSONL (un evento por línea), no
-        // texto plano. Extraemos SÓLO el/los `agent_message` finales para que a
-        // Telegram llegue un único mensaje conversacional — y no el stream de
-        // eventos crudo, que el TTS partía en una lluvia de audios técnicos.
-        const extracted = commanderMP.extractFallbackReply(stdout);
-        log('commander', `Provider ${resolution.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, reply=${extracted.text.length}c, parsed=${extracted.parsed}, stderr=${stderr.length}c)`);
+          next = commanderMP.resolveCommanderProviderExcluding(Array.from(triedNonAnthropic), {
+            skill: commanderMP.COMMANDER_SKILL,
+            pipelineDir: PIPELINE,
+            log: (l, m) => log(l || 'commander', m),
+            issue: 'commander-chat',
+          });
+        } catch (e) {
+          log('commander', `⚠️ re-resolución de cadena tras "${failedProvider}" falló: ${e.message}`);
+        }
+        if (next && !next.gated && next.provider
+            && next.provider !== 'anthropic'
+            && !triedNonAnthropic.has(next.provider)) {
+          log('commander', `↪️ fallback "${failedProvider}" ${reason} — reintento con "${next.provider}"`);
+          return runNonAnthropic(next, null);
+        }
+        log('commander', `🚫 Cadena de respaldo agotada tras "${failedProvider}" (${reason}); sin más providers disponibles.`);
         try {
           commanderMP.auditCommanderRequest({
             pipelineDir: PIPELINE,
-            event: 'fallback_used',
+            event: 'fallback_chain_exhausted',
             providerIntended: resolution.primaryProvider || 'anthropic',
-            providerEffective: resolution.provider,
-            chainTried: resolution.chainTried,
+            providerEffective: failedProvider,
+            chainTried: Array.from(triedNonAnthropic),
             chatId: getTelegramChatId(),
             prompt: prompt,
-            latencyMs: elapsed,
-            errorCode: extracted.text ? null : 'empty_output',
+            latencyMs: Date.now() - startTimeForAudit,
+            errorCode: reason,
             requestId: turnRequestId, // #3577 CA-S6
           });
         } catch { /* best-effort */ }
-        resolve(extracted.text || `No pude completar tu pedido vía ${resolution.provider}. Intentá de nuevo.`);
-      });
-      proc.on('error', (e) => {
-        clearTimeout(timer);
-        log('commander', `Error spawning ${resolution.provider}: ${e.message}`);
-        resolve(commanderMP.cannedFallbackUnavailableResponse({ provider: resolution.provider }));
-      });
-      return;
+        return resolve(commanderMP.cannedAllGatedResponse());
+      };
+
+      const runNonAnthropic = (res, preEnv) => {
+        triedNonAnthropic.add(res.provider);
+
+        let attemptEnv;
+        try {
+          attemptEnv = preEnv || buildEnvFor(res.provider);
+        } catch (e) {
+          log('commander', `❌ env-isolation rechazó spawn (provider=${res.provider}): ${e.message}`);
+          return advanceOrGiveUp(res.provider, 'env_isolation_error');
+        }
+
+        // Data-residency por provider: los retries no pasaron por el check
+        // del provider inicial, así que re-chequeamos para cada candidato.
+        const drCheck2 = commanderMP.enforceDataResidency({
+          pipelineDir: PIPELINE,
+          provider: res.provider,
+          paths: [],
+          chatId: getTelegramChatId(),
+          prompt: prompt,
+          log: (l, m) => log(l || 'commander', m),
+        });
+        if (!drCheck2.ok) {
+          log('commander', `🚫 data-residency bloqueó "${res.provider}" (${drCheck2.reason}) — intento siguiente provider.`);
+          return advanceOrGiveUp(res.provider, 'data_residency_blocked');
+        }
+
+        const safe = commanderMP.safeBuildSpawn({
+          handler: res.handler,
+          args: buildFallbackArgs(),
+          cwd: ROOT,
+          env: attemptEnv,
+        });
+        if (!safe.ok) {
+          try {
+            commanderMP.auditCommanderRequest({
+              pipelineDir: PIPELINE,
+              event: 'fallback_unavailable',
+              providerIntended: resolution.primaryProvider || 'anthropic',
+              providerEffective: res.provider,
+              chainTried: Array.from(triedNonAnthropic),
+              chatId: getTelegramChatId(),
+              prompt: prompt,
+              latencyMs: Date.now() - startTimeForAudit,
+              errorCode: 'not_implemented',
+              injectionHits: sanRes.hits,
+              requestId: turnRequestId, // #3577 CA-S6
+            });
+          } catch { /* best-effort */ }
+          log('commander', `⚠️ Fallback provider "${res.provider}" no implementado (${safe.reason}) — intento siguiente.`);
+          return advanceOrGiveUp(res.provider, 'not_implemented');
+        }
+
+        // Si #3198 está deployed y el handler real funciona, llegamos acá. Los
+        // providers no-Anthropic emiten JSONL (un evento por línea), no texto
+        // plano; `extractFallbackReply` saca SÓLO el/los `agent_message`
+        // finales para que a Telegram llegue un único mensaje conversacional.
+        const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
+        proc.stdin && proc.stdin.end && proc.stdin.end();
+        let stdout = '';
+        let stderr = '';
+        const startNon = Date.now();
+        const HARD_NON_ANTH_MS = 90 * 1000; // SR-5 — budget 90s para providers no-stream-json
+        const timer = setTimeout(() => {
+          try { proc.kill('SIGTERM'); } catch {}
+          log('commander', `Provider ${res.provider} timeout 90s — abortando`);
+        }, HARD_NON_ANTH_MS);
+        proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); });
+        proc.stderr && proc.stderr.on('data', (d) => { stderr += d.toString(); });
+        proc.on('close', () => {
+          clearTimeout(timer);
+          const elapsed = Date.now() - startNon;
+          const extracted = commanderMP.extractFallbackReply(stdout);
+          log('commander', `Provider ${res.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, reply=${extracted.text.length}c, parsed=${extracted.parsed}, stderr=${stderr.length}c)`);
+          if (extracted.text) {
+            try {
+              commanderMP.auditCommanderRequest({
+                pipelineDir: PIPELINE,
+                event: 'fallback_used',
+                providerIntended: resolution.primaryProvider || 'anthropic',
+                providerEffective: res.provider,
+                chainTried: Array.from(triedNonAnthropic),
+                chatId: getTelegramChatId(),
+                prompt: prompt,
+                latencyMs: elapsed,
+                errorCode: null,
+                requestId: turnRequestId, // #3577 CA-S6
+              });
+            } catch { /* best-effort */ }
+            return resolve(extracted.text);
+          }
+          // Respuesta vacía → audit + intentar el siguiente provider de la
+          // cadena en vez de cortar seco.
+          try {
+            commanderMP.auditCommanderRequest({
+              pipelineDir: PIPELINE,
+              event: 'fallback_used',
+              providerIntended: resolution.primaryProvider || 'anthropic',
+              providerEffective: res.provider,
+              chainTried: Array.from(triedNonAnthropic),
+              chatId: getTelegramChatId(),
+              prompt: prompt,
+              latencyMs: elapsed,
+              errorCode: 'empty_output',
+              requestId: turnRequestId, // #3577 CA-S6
+            });
+          } catch { /* best-effort */ }
+          log('commander', `Provider ${res.provider} devolvió vacío (empty_output) — intento siguiente provider.`);
+          return advanceOrGiveUp(res.provider, 'empty_output');
+        });
+        proc.on('error', (e) => {
+          clearTimeout(timer);
+          log('commander', `Error spawning ${res.provider}: ${e.message} — intento siguiente provider.`);
+          return advanceOrGiveUp(res.provider, 'spawn_error');
+        });
+      };
+
+      // Primer intento: reusamos el env ya construido para el provider inicial.
+      return runNonAnthropic(resolution, cleanEnv);
     }
 
     // Path por default: Anthropic. Comportamiento byte-equivalente al previo.
