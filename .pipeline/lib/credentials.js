@@ -10,8 +10,7 @@
 // Estructura esperada del JSON:
 //   {
 //     "telegram":   { "bot_token": "...", "chat_id": "..." },
-//     "providers":  { "google": {"api_key": "..."}, "cerebras": {...}, ... },
-//     "multimedia": { "elevenlabs_api_key": "...", "elevenlabs_voice_id": "..." }
+//     "providers":  { "google": {"api_key": "..."}, "cerebras": {...}, ... }
 //   }
 //
 // #3353 (mayo 2026): Groq fue descontinuado. Si el credentials.json todavía
@@ -49,9 +48,6 @@ const ENV_MAPPING = Object.freeze({
   // providers.groq.api_key se removió en #3353 — Groq descontinuado.
   'providers.cerebras.api_key':    'CEREBRAS_API_KEY',
   'providers.nvidia.api_key':      'NVIDIA_NIM_API_KEY',
-  // Multimedia (TTS/STT/Vision)
-  'multimedia.elevenlabs_api_key':  'ELEVENLABS_API_KEY',
-  'multimedia.elevenlabs_voice_id': 'ELEVENLABS_VOICE_ID',
 });
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las
@@ -65,8 +61,6 @@ const LEGACY_MAPPING = Object.freeze({
   'chat_id':             'TELEGRAM_CHAT_ID',
   'openai_api_key':      'OPENAI_API_KEY',
   'anthropic_api_key':   'ANTHROPIC_API_KEY',
-  'elevenlabs_api_key':  'ELEVENLABS_API_KEY',
-  'elevenlabs_voice_id': 'ELEVENLABS_VOICE_ID',
 });
 
 const PLACEHOLDER_RE = /(REVOKED|PLACEHOLDER|MOVED|EXAMPLE|REPLACE|CHANGE_ME)/i;

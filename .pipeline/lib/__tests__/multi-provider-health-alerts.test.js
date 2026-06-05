@@ -164,7 +164,6 @@ test('decideMultiDown ignora providers paid en el conteo', () => {
         providers: [
             { provider: 'anthropic', state: 'red' },
             { provider: 'openai', state: 'red' },
-            { provider: 'elevenlabs', state: 'red' },
         ],
     };
     const r = alerts.decideMultiDown({ snapshot, dedupFile: f });

@@ -39,9 +39,9 @@ de capabilities que protege a los skills criticos."
 
 ### Seccion 1 — Proveedores (0:25–1:10)
 
-"El primer bloque lista los proveedores soportados. Hoy son cuatro:
-Anthropic en cobre, OpenAI en esmeralda claro, OpenAI Codex en esmeralda
-profundo y ElevenLabs para narrativa. Cada card muestra el estado de
+"El primer bloque lista los proveedores soportados. Hoy son tres:
+Anthropic en cobre, OpenAI en esmeralda claro y OpenAI Codex en esmeralda
+profundo. Cada card muestra el estado de
 conexion en vivo: un anillo concentrico verde si el ping es valido, un
 triangulo amarillo si la cuota esta baja, una cruz roja si la key no
 sirve. La key se muestra siempre enmascarada con los primeros seis y los

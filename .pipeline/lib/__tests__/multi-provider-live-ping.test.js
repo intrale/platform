@@ -44,7 +44,7 @@ function fakeHttp({ status = 200, body = '' } = {}) {
 test('isAllowedProvider acepta solo los providers conocidos', () => {
     assert.equal(livePing.isAllowedProvider('anthropic'), true);
     assert.equal(livePing.isAllowedProvider('openai'), true);
-    assert.equal(livePing.isAllowedProvider('elevenlabs'), true);
+    assert.equal(livePing.isAllowedProvider('cerebras'), true);
     assert.equal(livePing.isAllowedProvider('attacker.com'), false);
     assert.equal(livePing.isAllowedProvider('file://etc/passwd'), false);
     assert.equal(livePing.isAllowedProvider(''), false);

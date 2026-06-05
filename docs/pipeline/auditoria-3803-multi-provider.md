@@ -55,10 +55,10 @@
 ## 🟡 Severidad MEDIA
 
 ### MP-06 · ElevenLabs contamina el semáforo de conectores LLM
-- **Estado:** CONFIRMADO
-- **Archivo:** `.pipeline/lib/multi-provider/secrets-rw.js:85-90` (en `MANAGED_KEYS`), `.pipeline/lib/multi-provider/live-ping.js:121-128`, `.pipeline/state/multi-provider-health.json` (snapshot: `red_count: 1` = ElevenLabs `no_key_configured`)
-- **Qué pasa:** ElevenLabs (TTS/STT de pago) está en `MANAGED_KEYS` y se pinguea como un provider más. El health-cron lo incluye y aparece rojo, mostrando "1 proveedor en rojo" cuando el pipeline LLM está 100% verde. No participa de la cascada multi-provider (no está en ningún skill de `agent-models.json`).
-- **Por qué importa:** Falso rojo recurrente que confunde el panorama. Hay que separarlo en una lista `MULTIMEDIA_KEYS` o excluirlo del health-cron de LLM.
+- **Estado:** ✅ RESUELTO ([#3818](https://github.com/intrale/platform/issues/3818)) — ElevenLabs fue eliminado por completo del pipeline (config, código, UI del dashboard, health-ping, credenciales, tests y docs). Ya no está en `MANAGED_KEYS` ni en `PROVIDER_PING_ENDPOINTS`, por lo que no se pinguea ni aparece en el semáforo. El falso "1 proveedor en rojo" desapareció.
+- **Archivo (histórico):** `.pipeline/lib/multi-provider/secrets-rw.js` (entrada en `MANAGED_KEYS` removida), `.pipeline/lib/multi-provider/live-ping.js` (entrada en `PROVIDER_PING_ENDPOINTS` y override 429 removidos), `.pipeline/state/multi-provider-health.json` (snapshot sin el provider).
+- **Qué pasaba:** ElevenLabs (TTS/STT de pago) estaba en `MANAGED_KEYS` y se pingueaba como un provider más. El health-cron lo incluía y aparecía rojo, mostrando "1 proveedor en rojo" cuando el pipeline LLM estaba 100% verde. No participaba de la cascada multi-provider (no estaba en ningún skill de `agent-models.json`).
+- **Resolución:** En lugar de separarlo en una lista `MULTIMEDIA_KEYS`, se eliminó ElevenLabs como código muerto (la cadena TTS vigente es edge-tts → OpenAI). El semáforo ahora refleja sólo providers LLM reales.
 
 ### MP-07 · Dos fuentes de verdad para el listado de providers en health
 - **Estado:** CONFIRMADO
@@ -238,7 +238,7 @@ condicionan la afirmación "funciona en todos los órdenes". Se atacan de a poco
 
 | ID | Pendiente | Severidad |
 |----|-----------|-----------|
-| MP-06 | ElevenLabs (TTS de pago) contamina el semáforo LLM con un falso rojo | Media |
+| ~~MP-06~~ | ~~ElevenLabs (TTS de pago) contamina el semáforo LLM con un falso rojo~~ → ✅ RESUELTO (#3818) | Media |
 | MP-07 | Dos fuentes de verdad para el listado de providers en health | Media |
 | MP-08 | `openai-codex` desalineado en `agent-models.json` (sin `auth_mode`/`cli_binary`) | Media |
 | MP-09 | Health-cron observa pero no influye en la decisión de spawn | Media |

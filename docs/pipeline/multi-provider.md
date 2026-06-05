@@ -101,8 +101,7 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
   "bot_token": "<TELEGRAM_BOT_TOKEN>",
   "chat_id": "<TELEGRAM_CHAT_ID>",
   "anthropic_api_key": "<ANTHROPIC_API_KEY o vacío si usás OAuth/MAX>",
-  "openai_api_key": "<OPENAI_API_KEY>",
-  "elevenlabs_api_key": "<ELEVENLABS_API_KEY>"
+  "openai_api_key": "<OPENAI_API_KEY>"
 }
 ```
 
@@ -413,7 +412,7 @@ classifyHttpError(statusCode, responseBody, provider) → {
 | Consumer | Cómo lo usa | Shape externo que mantiene |
 |---|---|---|
 | `completion-client.js` | Llama `classifyHttpError(statusCode, bodyText, provider)`. Mapea `category=auth` → `type: 'auth_error'`, resto → `type: 'http_error'`. | `{type, reason, statusCode, detail?}` (contrato Sherlock) |
-| `live-ping.js` | Vía helper `_classifyForLivePing(provider, status, bodyExcerpt)`. Aplica overrides legacy (openai/elevenlabs: 429 plain → `quota_exhausted`). | `{ok, reason, provider, statusCode, latency_ms}` |
+| `live-ping.js` | Vía helper `_classifyForLivePing(provider, status, bodyExcerpt)`. Aplica overrides legacy (openai: 429 plain → `quota_exhausted`). | `{ok, reason, provider, statusCode, latency_ms}` |
 | `provider-error-parser.js` | Solo en `transport: 'api'`, como **última red de salvataje** cuando el parser estructural (canal JSON) no matcheó pero hay `status` extraído del body. Mapeo `category → errorClass` en `_mapClassifierToErrorClass`. | `{errorClass, retriable, shouldFallback, raw, evidence}` |
 
 #### Tests

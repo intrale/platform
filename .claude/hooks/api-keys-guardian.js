@@ -20,7 +20,7 @@ const os = require("os");
 const CONFIG_FILE = path.join(__dirname, "telegram-config.json");
 const BACKUP_FILE = path.join(os.homedir(), ".intrale-api-keys.json");
 
-const KEY_FIELDS = ["openai_api_key", "anthropic_api_key", "elevenlabs_api_key"];
+const KEY_FIELDS = ["openai_api_key", "anthropic_api_key"];
 
 function loadJSON(file) {
   try {

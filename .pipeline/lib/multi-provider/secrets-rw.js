@@ -25,8 +25,7 @@
 //       "google":    { "api_key": "..." },        // mapea al provider 'gemini-google'
 //       "cerebras":  { "api_key": "..." },
 //       "nvidia":    { "api_key": "..." }
-//     },
-//     "multimedia": { "elevenlabs_api_key": "..." }
+//     }
 //   }
 //
 // Estructura legacy (solo lectura, deprecada):
@@ -80,13 +79,6 @@ const MANAGED_KEYS = Object.freeze([
         // OPENAI_API_KEY. El health valida la CLI, no la key (falso rojo 403).
         auth_mode: 'oauth',
         cli_binary: 'codex',
-    },
-    {
-        provider: 'elevenlabs',
-        label: 'ElevenLabs',
-        editable: true,
-        canonicalPath: 'multimedia.elevenlabs_api_key',
-        legacyField: 'elevenlabs_api_key',
     },
     {
         provider: 'gemini-google',

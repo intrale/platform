@@ -1,6 +1,6 @@
 // =============================================================================
 // telegram-secrets.js — fuente unica de credenciales del bot Telegram + claves
-// API (OpenAI, Anthropic, ElevenLabs) usadas por TTS/STT/Vision en multimedia.
+// API (OpenAI, Anthropic) usadas por TTS/STT/Vision en multimedia.
 //
 // Prioridad de carga (#3311 - credentials unificadas):
 //   1) ENV: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID  (+ OPENAI_API_KEY etc.)
@@ -114,7 +114,6 @@ function loadApiKeys({ legacyConfigPath } = {}) {
 
     // Helpers para acceso seguro a la estructura nested del canonical.
     const canonProv = (canonical.providers && typeof canonical.providers === 'object') ? canonical.providers : {};
-    const canonMM = (canonical.multimedia && typeof canonical.multimedia === 'object') ? canonical.multimedia : {};
 
     return {
         openai_api_key:
@@ -127,16 +126,6 @@ function loadApiKeys({ legacyConfigPath } = {}) {
             pickKey(canonProv.anthropic && canonProv.anthropic.api_key) ||
             pickKey(home.anthropic_api_key) ||
             pickKey(legacy.anthropic_api_key),
-        elevenlabs_api_key:
-            pickKey(process.env.ELEVENLABS_API_KEY) ||
-            pickKey(canonMM.elevenlabs_api_key) ||
-            pickKey(home.elevenlabs_api_key) ||
-            pickKey(legacy.elevenlabs_api_key),
-        elevenlabs_voice_id:
-            pickKey(process.env.ELEVENLABS_VOICE_ID) ||
-            pickKey(canonMM.elevenlabs_voice_id) ||
-            pickKey(home.elevenlabs_voice_id) ||
-            pickKey(legacy.elevenlabs_voice_id),
     };
 }
 

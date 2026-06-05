@@ -9,8 +9,6 @@ const https = require("https");
 let _config = {
     anthropicApiKey: null,
     openaiApiKey: null,
-    elevenlabsApiKey: null,
-    elevenlabsVoiceId: "pNInz6obpgDQGcFmaJgB",
     visionModel: "claude-haiku-4-5-20251001",
     transcriptionModel: "gpt-4o-mini-transcribe",
     ttsModel: "gpt-4o-mini-tts",
@@ -214,58 +212,11 @@ function callOpenAITTS(text) {
     });
 }
 
-// ─── ElevenLabs TTS API ──────────────────────────────────────────────────────
-
-function callElevenLabsTTS(text) {
-    return new Promise((resolve, reject) => {
-        // ElevenLabs soporta textos largos — NO truncar
-        const body = JSON.stringify({
-            text: text,
-            model_id: "eleven_multilingual_v2",
-            output_format: "opus_48000_32"
-        });
-
-        const req = https.request({
-            hostname: "api.elevenlabs.io",
-            path: "/v1/text-to-speech/" + _config.elevenlabsVoiceId,
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "xi-api-key": _config.elevenlabsApiKey,
-                "Content-Length": Buffer.byteLength(body)
-            },
-            timeout: 60000
-        }, (res) => {
-            if (res.statusCode !== 200) {
-                let d = "";
-                res.on("data", (c) => d += c);
-                res.on("end", () => reject(new Error("ElevenLabs TTS HTTP " + res.statusCode + ": " + d.substring(0, 200))));
-                return;
-            }
-            const chunks = [];
-            res.on("data", (c) => chunks.push(c));
-            res.on("end", () => resolve(Buffer.concat(chunks)));
-            res.on("error", reject);
-        });
-        req.on("timeout", () => { req.destroy(); reject(new Error("ElevenLabs TTS timeout")); });
-        req.on("error", reject);
-        req.write(body);
-        req.end();
-    });
-}
-
-// ─── TTS con fallback ────────────────────────────────────────────────────────
+// ─── TTS ─────────────────────────────────────────────────────────────────────
 
 async function callTTS(text) {
-    if (_config.elevenlabsApiKey) {
-        try {
-            _log("TTS: usando ElevenLabs (voice_id=" + _config.elevenlabsVoiceId + ")");
-            return await callElevenLabsTTS(text);
-        } catch (e) {
-            _log("ElevenLabs TTS falló (" + e.message + ") — fallback a OpenAI");
-            if (!_config.openaiApiKey) throw e;
-        }
-    }
+    // Cadena vigente: edge-tts es el default (resuelto fuera de este handler, en
+    // .pipeline/multimedia.js); OpenAI es el fallback usado por este flujo.
     _log("TTS: usando OpenAI");
     return await callOpenAITTS(text);
 }
@@ -397,7 +348,7 @@ async function handleVoiceOrAudio(msg) {
 
         // Si es voice y TTS disponible: responder SOLO con audio (sin eco, sin texto, sin imagen)
         // Asumimos que si el usuario envía audio es porque no puede mirar texto.
-        if (isVoice && result.code === 0 && claudeResponse && (_config.elevenlabsApiKey || _config.openaiApiKey)) {
+        if (isVoice && result.code === 0 && claudeResponse && _config.openaiApiKey) {
             try {
                 const TTS_CHUNK_SIZE = 3800; // Margen bajo el límite de 4096 de OpenAI
                 const chunks = splitTextForTTS(claudeResponse, TTS_CHUNK_SIZE);
@@ -431,7 +382,6 @@ module.exports = {
     callAnthropicVision,
     callOpenAITranscription,
     callOpenAITTS,
-    callElevenLabsTTS,
     callTTS,
     splitTextForTTS,
     extractClaudeResponse,

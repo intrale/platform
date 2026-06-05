@@ -12,8 +12,6 @@ function fakeLoaderFor(jsonBody) {
     return () => ({
         openai_api_key: pick(process.env.OPENAI_API_KEY) || pick(jsonBody.openai_api_key),
         anthropic_api_key: pick(process.env.ANTHROPIC_API_KEY) || pick(jsonBody.anthropic_api_key),
-        elevenlabs_api_key: pick(process.env.ELEVENLABS_API_KEY) || pick(jsonBody.elevenlabs_api_key),
-        elevenlabs_voice_id: pick(process.env.ELEVENLABS_VOICE_ID) || pick(jsonBody.elevenlabs_voice_id),
     });
 }
 
@@ -67,21 +65,6 @@ test('reporta como missing cuando ni env ni JSON traen la key', () => {
         const result = hydrateProviderEnv({ loadKeysFn: fakeLoaderFor({}) });
         assert.ok(result.missing.includes('OPENAI_API_KEY'));
         assert.equal(process.env.OPENAI_API_KEY, undefined);
-    });
-});
-
-test('hidrata también ELEVENLABS_API_KEY y ELEVENLABS_VOICE_ID', () => {
-    withCleanEnv(() => {
-        const result = hydrateProviderEnv({
-            loadKeysFn: fakeLoaderFor({
-                elevenlabs_api_key: 'eleven-key',
-                elevenlabs_voice_id: 'voice-id-abc',
-            }),
-        });
-        assert.equal(process.env.ELEVENLABS_API_KEY, 'eleven-key');
-        assert.equal(process.env.ELEVENLABS_VOICE_ID, 'voice-id-abc');
-        assert.ok(result.hydrated.includes('ELEVENLABS_API_KEY'));
-        assert.ok(result.hydrated.includes('ELEVENLABS_VOICE_ID'));
     });
 });
 

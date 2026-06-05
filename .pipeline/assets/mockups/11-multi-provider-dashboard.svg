@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+  NOTA HISTORICA (#3818): este mockup precede a la remocion de ElevenLabs.
+  La "Card ElevenLabs (TTS)" que figura mas abajo ya NO existe en el dashboard
+  real: ElevenLabs fue eliminado del semaforo multi-provider (MP-06 resuelto).
+  Se conserva como registro de diseno de la epoca; no refleja el estado actual.
+  -----------------------------------------------------------------------------
   Mockup 11 — Tab "Multi-Provider" del dashboard interno (#3177)
   -----------------------------------------------------------------------------
   Vista principal del nuevo tab del dashboard (puerto 3200) que centraliza la
