@@ -8159,7 +8159,12 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
       proc.on('close', () => {
         clearTimeout(timer);
         const elapsed = Date.now() - startNon;
-        log('commander', `Provider ${resolution.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, stderr=${stderr.length}c)`);
+        // Los providers no-Anthropic emiten JSONL (un evento por línea), no
+        // texto plano. Extraemos SÓLO el/los `agent_message` finales para que a
+        // Telegram llegue un único mensaje conversacional — y no el stream de
+        // eventos crudo, que el TTS partía en una lluvia de audios técnicos.
+        const extracted = commanderMP.extractFallbackReply(stdout);
+        log('commander', `Provider ${resolution.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, reply=${extracted.text.length}c, parsed=${extracted.parsed}, stderr=${stderr.length}c)`);
         try {
           commanderMP.auditCommanderRequest({
             pipelineDir: PIPELINE,
@@ -8170,11 +8175,11 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
             chatId: getTelegramChatId(),
             prompt: prompt,
             latencyMs: elapsed,
-            errorCode: stdout ? null : 'empty_output',
+            errorCode: extracted.text ? null : 'empty_output',
             requestId: turnRequestId, // #3577 CA-S6
           });
         } catch { /* best-effort */ }
-        resolve(stdout || `No pude completar tu pedido vía ${resolution.provider}. Intentá de nuevo.`);
+        resolve(extracted.text || `No pude completar tu pedido vía ${resolution.provider}. Intentá de nuevo.`);
       });
       proc.on('error', (e) => {
         clearTimeout(timer);

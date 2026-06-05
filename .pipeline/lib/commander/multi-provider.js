@@ -878,6 +878,57 @@ function safeBuildSpawn({ handler, args, cwd, env }) {
 }
 
 // -----------------------------------------------------------------------------
+// extractFallbackReply — normaliza el stdout de un provider de respaldo a un
+// único mensaje conversacional listo para Telegram.
+//
+// Problema que resuelve: los providers no-Anthropic (codex `exec --json`,
+// gemini, cerebras, nvidia) emiten su salida como **JSONL** (un evento por
+// línea), NO como texto plano. El path de fallback del commander capturaba el
+// `stdout` crudo y lo mandaba tal cual a Telegram — el TTS partía ese stream de
+// eventos en una lluvia de audios cortos y técnicos, totalmente heterogéneo con
+// la voz del Commander cuando corre sobre Claude.
+//
+// Codex marca el mensaje final del asistente con un evento
+// `item.completed` cuyo `item.type === 'agent_message'` y el texto en
+// `item.text`. Concatenamos todos los `agent_message` en orden (por si el
+// provider parte la respuesta en varios) y devolvemos sólo eso.
+//
+// Contrato de salida: { text, parsed }
+//   - parsed=true  → extrajimos al menos un agent_message (homogéneo).
+//   - parsed=false + text==''  → era JSONL pero sin agent_message: el caller
+//     responde canned en lugar de dumpear el stream crudo.
+//   - parsed=false + text!=''  → no era JSONL (provider de texto plano):
+//     devolvemos el texto tal cual (best-effort, back-compat).
+// -----------------------------------------------------------------------------
+function extractFallbackReply(stdout) {
+    const raw = typeof stdout === 'string' ? stdout : '';
+    if (!raw.trim()) return { text: '', parsed: false };
+
+    const messages = [];
+    let sawJson = false;
+    for (const line of raw.split('\n')) {
+        const t = line.trim();
+        if (!t.startsWith('{')) continue;
+        let obj;
+        try { obj = JSON.parse(t); } catch { continue; }
+        sawJson = true;
+        if (obj && obj.type === 'item.completed' && obj.item
+            && obj.item.type === 'agent_message'
+            && typeof obj.item.text === 'string') {
+            messages.push(obj.item.text);
+        }
+    }
+
+    if (messages.length > 0) {
+        return { text: messages.join('\n\n').trim(), parsed: true };
+    }
+    // JSONL sin agent_message → vacío: el caller cae al canned y NO dumpea el
+    // stream crudo. Texto plano → lo devolvemos tal cual (comportamiento previo).
+    if (sawJson) return { text: '', parsed: false };
+    return { text: raw.trim(), parsed: false };
+}
+
+// -----------------------------------------------------------------------------
 // cannedFallbackUnavailableResponse — Mensaje al usuario para el caso de borde
 // en que el dispatcher resolvió un fallback pero su `buildSpawn` falla (handler
 // roto / binario ausente). Mensaje no técnico, sin paths internos.
@@ -923,6 +974,7 @@ module.exports = {
     auditCommanderRequest,
     readCommanderStats,
     safeBuildSpawn,
+    extractFallbackReply,
     enforceDataResidency,
     runCommanderSpawn,
 
