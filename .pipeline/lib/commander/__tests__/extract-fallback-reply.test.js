@@ -78,3 +78,67 @@ test('agent_message sin campo text se ignora (no rompe)', () => {
     assert.equal(r.parsed, false);
     assert.equal(r.text, '');
 });
+
+// =============================================================================
+// Gemini `-o json` → objeto JSON único { session_id, response, stats }.
+// Antes del fix, al no matchear el path JSONL de Codex, se dumpeaba el JSON
+// crudo a Telegram (session_id arriba, stats al final). Ahora extraemos sólo
+// el campo `response`.
+// =============================================================================
+test('extrae solo response de un objeto JSON de gemini (pretty-printed)', () => {
+    const stdout = JSON.stringify({
+        session_id: '5e5318cd-8c81-4279-803c-afb4d25c4903',
+        response: '¡Excelente, Leo! Analicé el estado del repo.',
+        stats: { models: { 'gemini-3-flash-preview': { tokens: { total: 2973 } } } },
+    }, null, 2);
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, true);
+    assert.equal(r.text, '¡Excelente, Leo! Analicé el estado del repo.');
+    assert.ok(!r.text.includes('session_id'));
+    assert.ok(!r.text.includes('stats'));
+});
+
+test('objeto JSON de gemini con ruido de stderr alrededor se recupera', () => {
+    const stdout = [
+        'warning: deprecated flag ignored',
+        JSON.stringify({ session_id: 'abc', response: 'Listo, todo verde.', stats: {} }),
+        '',
+    ].join('\n');
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, true);
+    assert.equal(r.text, 'Listo, todo verde.');
+});
+
+test('objeto JSON de error de gemini (sin response) → vacío para canned', () => {
+    const stdout = JSON.stringify({
+        session_id: 'abc',
+        error: { status: 'RESOURCE_EXHAUSTED', code: 429 },
+        stats: {},
+    });
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, false);
+    assert.equal(r.text, '');
+});
+
+test('shape estilo OpenAI choices[].message.content se extrae', () => {
+    const stdout = JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: 'Respuesta del modelo.' } }],
+        usage: { total_tokens: 100 },
+    });
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, true);
+    assert.equal(r.text, 'Respuesta del modelo.');
+});
+
+test('el path JSONL de codex NO se rompe por el path de objeto único', () => {
+    // Un stream JSONL multi-evento sin agent_message no debe extraerse como
+    // objeto (el recovery primer-{ a último-} da JSON inválido) → vacío.
+    const stdout = [
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"type":"tool_call","name":"Bash"}}',
+        '{"type":"turn.completed"}',
+    ].join('\n');
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, false);
+    assert.equal(r.text, '');
+});
