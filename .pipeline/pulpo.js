@@ -8102,9 +8102,17 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
     // hasta #3198 — `buildSpawn` tira `_notImplemented`. En ese caso, audit
     // log + respondemos canned al usuario sin matar el flow.
     if (resolution.provider !== 'anthropic') {
+      // Los adapters no-Anthropic (codex, gemini, cerebras, nvidia) toman el
+      // prompt del VALOR de `-p` en los args (`userPrompt = args[i+1]`) y abren
+      // stdin como 'ignore'. El `args` legacy de arriba trae `-p` PELADO porque
+      // el path Anthropic manda el prompt por stdin — así el adapter levantaba
+      // `--output-format` como prompt basura y el pedido real se perdía en un
+      // stdin que el provider nunca lee. Armamos un argv propio con el prompt
+      // sanitizado como valor de `-p` para que cada handler lo reciba completo.
+      const fallbackArgs = ['-p', promptForLLM];
       const safe = commanderMP.safeBuildSpawn({
         handler: resolution.handler,
-        args,
+        args: fallbackArgs,
         cwd: ROOT,
         env: cleanEnv,
       });
@@ -8134,7 +8142,9 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
       // si el handler responde con buildSpawn pero el output no es
       // stream-json, capturamos stdout crudo y lo devolvemos al usuario.
       const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
-      proc.stdin && proc.stdin.write && proc.stdin.write(promptForLLM);
+      // El prompt ya viaja como valor de `-p` en los args del handler; estos
+      // providers abren stdin como 'ignore', así que no escribimos por ahí.
+      // Cerramos stdin sólo si el handler lo dejó abierto (interactive).
       proc.stdin && proc.stdin.end && proc.stdin.end();
       let stdout = '';
       let stderr = '';
