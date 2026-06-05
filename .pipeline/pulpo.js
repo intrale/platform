@@ -7896,7 +7896,7 @@ function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOrigina
 // responsabilidad la toma `logSkillInvocation` (`_sanitize*` helpers en
 // `issue-creation.js`). Centralizar la redacción evita duplicarla en cada
 // callsite y mantiene el `trace` útil también para debugging local.
-function ejecutarClaude(prompt, textoOriginal, trace) {
+function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
     const startTimeForAudit = Date.now();
@@ -8109,7 +8109,31 @@ function ejecutarClaude(prompt, textoOriginal, trace) {
       // `--output-format` como prompt basura y el pedido real se perdía en un
       // stdin que el provider nunca lee. Armamos un argv propio con el prompt
       // sanitizado como valor de `-p` para que cada handler lo reciba completo.
-      const fallbackArgs = ['-p', promptForLLM];
+      //
+      // Personalidad consistente en el fallback: cuando el caller separa la
+      // persona del Commander (`fallbackParts.systemPrompt`) del mensaje del
+      // usuario (`fallbackParts.userMessage`), persistimos la persona a un
+      // archivo y la pasamos como `--system-prompt-file`. Los adapters la
+      // foldean al inicio del prompt (codex) o la mandan como system real
+      // (gemini/cerebras/nvidia), así la identidad/estilo del Commander NO
+      // cambia por usar un provider de respaldo. Si el caller no separa partes,
+      // mantenemos el comportamiento previo (prompt completo en `-p`).
+      let fallbackArgs;
+      if (fallbackParts && typeof fallbackParts.systemPrompt === 'string'
+          && typeof fallbackParts.userMessage === 'string'
+          && fallbackParts.systemPrompt && fallbackParts.userMessage) {
+        const userMsgForLLM = commanderMP.sanitizeUserPrompt(fallbackParts.userMessage).sanitized;
+        let sysFile = null;
+        try {
+          sysFile = path.join(PIPELINE, 'commander-system-prompt.md');
+          fs.writeFileSync(sysFile, fallbackParts.systemPrompt, 'utf8');
+        } catch { sysFile = null; }
+        fallbackArgs = sysFile
+          ? ['-p', userMsgForLLM, '--system-prompt-file', sysFile]
+          : ['-p', promptForLLM];
+      } else {
+        fallbackArgs = ['-p', promptForLLM];
+      }
       const safe = commanderMP.safeBuildSpawn({
         handler: resolution.handler,
         args: fallbackArgs,
@@ -9498,7 +9522,12 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       // para que no dispare invocaciones espurias cuando el usuario no pide
       // crear nada.
       const issueCreationBlock = commanderIssueCreation.buildIssueCreationPromptBlock();
-      const userPrompt = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
+      // Separamos la PERSONA (identidad + reglas) de la CONVERSACIÓN (mensaje +
+      // contexto + historial). El path Anthropic usa `userPrompt` completo (sin
+      // cambios). El path de fallback no-Anthropic pasa `commanderPersona` como
+      // system prompt y `commanderConversation` como mensaje del usuario, para
+      // que el provider de respaldo mantenga la misma personalidad del Commander.
+      const commanderPersona = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
 
 REGLAS:
 1. Si el usuario pide una ACCIÓN (revisar, arreglar, validar, verificar, levantar, etc): EJECUTALA primero con las herramientas que tengas, y después reportá qué hiciste y el resultado.
@@ -9516,8 +9545,10 @@ REGLAS:
    - 1 a 3 frases cortas, lenguaje llano (sin tecnicismos innecesarios), como para entender el panorama de un vistazo.
    - NO repite literal el detalle de arriba: lo comprime en una conclusión.
    - Aplica también a respuestas a preguntas, no sólo a acciones.
-${issueCreationBlock}
-Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
+${issueCreationBlock}`;
+      const commanderConversation = `Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
+      const userPrompt = `${commanderPersona}
+${commanderConversation}`;
 
       // #3250 — SEC-4: audit log. Pre-LLM marcamos el start time; post-LLM
       // escribimos una línea por intento de creación de issue con el resultado
@@ -9530,7 +9561,10 @@ Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
       // `wantsIssueCreation` (no inflamos audit para texto libre genérico).
       const claudeTrace = wantsIssueCreation ? {} : undefined;
       skillInvocationStartedAt = Date.now();
-      let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado, claudeTrace);
+      let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado, claudeTrace, {
+        systemPrompt: commanderPersona,
+        userMessage: commanderConversation,
+      });
       log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
       if (wantsIssueCreation) {

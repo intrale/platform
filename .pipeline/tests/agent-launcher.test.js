@@ -274,6 +274,41 @@ test('launchAgent con provider openai-codex spawnea el codex CLI con args traduc
     assert.ok(call.args.includes('-m'));
     assert.ok(call.args.includes('gpt-5-codex'));
     assert.ok(call.args.includes('probe'));
+    // Paridad de permisos con Claude (`bypassPermissions`): codex debe correr
+    // sin sandbox ni aprobaciones para no chocar con "no tengo permisos".
+    assert.ok(call.args.includes('--dangerously-bypass-approvals-and-sandbox'));
+    // `--system` NO existe en codex exec: el system prompt se foldea al prompt,
+    // nunca se pasa como flag.
+    assert.ok(!call.args.includes('--system'));
+});
+
+// -----------------------------------------------------------------------------
+// 6a-bis. translateClaudeArgsToCodex: el contenido del system file se foldea
+//         al INICIO del prompt (codex no tiene `--system`), y el bypass de
+//         sandbox/aprobaciones está siempre presente (paridad con Claude).
+// -----------------------------------------------------------------------------
+test('codex foldea el system prompt al inicio del prompt y bypassa el sandbox', () => {
+    const realFs = require('node:fs');
+    const os = require('node:os');
+    const sysFile = path.join(os.tmpdir(), `codex-sys-${process.pid}.md`);
+    realFs.writeFileSync(sysFile, 'Sos el Commander. Hablá natural.', 'utf8');
+    try {
+        const out = PROVIDERS['openai-codex']._translateClaudeArgsToCodex(
+            ['-p', 'Hola, cómo estamos?', '--system-prompt-file', sysFile],
+            { CODEX_MODEL: 'gpt-5-codex' },
+            '/repo/platform',
+        );
+        // Permisos: bypass siempre presente.
+        assert.ok(out.includes('--dangerously-bypass-approvals-and-sandbox'));
+        // `--system` jamás se pasa como flag.
+        assert.ok(!out.includes('--system'));
+        // El prompt posicional final foldea persona + mensaje.
+        const prompt = out[out.length - 1];
+        assert.ok(prompt.startsWith('Sos el Commander. Hablá natural.'));
+        assert.ok(prompt.includes('Hola, cómo estamos?'));
+    } finally {
+        try { realFs.unlinkSync(sysFile); } catch {}
+    }
 });
 
 // -----------------------------------------------------------------------------
