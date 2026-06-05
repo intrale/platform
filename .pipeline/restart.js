@@ -481,7 +481,7 @@ switch (action) {
     }
     launchAll();
     const ok = status();
-    log(ok ? '=== Pipeline V2 operativo ===' : '=== Revisar componentes ===');
+    log(ok ? '=== Pipeline operativo ===' : '=== Revisar componentes ===');
 
     // Smoke test + tag pipeline-stable + auto-rollback
     // Se omite si --no-smoke-test (caso típico: rollback.sh relanza restart.js).
