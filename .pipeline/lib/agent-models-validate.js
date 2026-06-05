@@ -126,18 +126,23 @@ const ALLOWED_OUTPUT_PARSERS = Object.freeze([
 const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   claude: Object.freeze([
     'claude-opus-4-7',
-    'claude-sonnet-4-7',
+    // 2026-06-04 (sign-off Leo por voz) — `claude-sonnet-4-7` NO existe en el
+    // catálogo de Anthropic (verificado en vivo: el CLI lo rechaza con "may not
+    // exist"). Reemplazado por `claude-sonnet-4-6`, el Sonnet real disponible.
+    // Era el primario de ~12 skills + el Commander → causa raíz de fragilidad.
+    'claude-sonnet-4-6',
     'claude-haiku-4-5',
   ]),
   codex: Object.freeze([
-    'gpt-5-codex',
-    'gpt-5',
-    // 2026-06-02 (sign-off Leo por voz) — Sherlock baja su fallback Codex de
-    // gpt-5 → gpt-5-mini: el verificador no necesita el tope de calidad de gpt-5
-    // y el ahorro es real. El primario de Sherlock sigue siendo Claude Haiku 4.5
-    // (piso, no se baja). El Commander, en cambio, baja su primario a Sonnet y su
-    // Codex a gpt-5 (no a mini): es el cerebro y conserva más calidad.
-    'gpt-5-mini',
+    // 2026-06-04 (sign-off Leo por voz) — Codex con cuenta ChatGPT (OAuth) solo
+    // sirve sus propios modelos. Los nombres viejos `gpt-5-codex` / `gpt-5` /
+    // `gpt-5-mini` los rechaza con 400 ("not supported when using Codex with a
+    // ChatGPT account"). Catálogo real verificado en vivo (models_cache.json):
+    // gpt-5.5 (frontier, strongest agentic coding), gpt-5.4, gpt-5.4-mini.
+    // Mapeo preservando el tiering: código→5.5, eval/chat→5.4, verificador→5.4-mini.
+    'gpt-5.5',
+    'gpt-5.4',
+    'gpt-5.4-mini',
   ]),
   // #3501 — `gemini-1.5-flash` se agrega como modelo alternativo del provider
   // gemini-google para que Sherlock pueda preservar adversariality parcial
@@ -146,7 +151,10 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   // declaración del modelo como alternative_models vive en agent-models.json.
   'gemini-google': Object.freeze([
     'gemini-2.0-flash',
-    'gemini-1.5-flash',
+    // 2026-06-04 — `gemini-1.5-flash` fue retirado del catálogo de Google
+    // (verificado en vivo: ya no aparece en GET /v1beta/models). Reemplazado por
+    // `gemini-2.5-flash`, free tier vigente, como modelo alternativo de Sherlock.
+    'gemini-2.5-flash',
   ]),
   // 2026-06-02 — Corrección free tier real: el free tier de Cerebras NO sirve
   // modelos `llama-*` (verificado contra GET /v1/models). Los únicos servibles

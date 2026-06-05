@@ -19,7 +19,7 @@
 // =============================================================================
 'use strict';
 
-const CATALOG_VERSION = '2026-05-14.1';
+const CATALOG_VERSION = '2026-06-04.1';
 
 const CATALOG = Object.freeze({
     anthropic: Object.freeze([
@@ -52,23 +52,36 @@ const CATALOG = Object.freeze({
         },
     ]),
     'openai-codex': Object.freeze([
+        // 2026-06-04 — Codex con cuenta ChatGPT (OAuth) solo sirve sus propios
+        // modelos. Catálogo real verificado en vivo: gpt-5.5 (frontier, strongest
+        // agentic coding), gpt-5.4 (general/eval), gpt-5.4-mini (verificación).
+        // Reemplaza los nombres viejos gpt-5-codex / gpt-5 (rechazados con 400).
         {
-            id: 'gpt-5-codex',
-            label: 'GPT-5 Codex',
+            id: 'gpt-5.5',
+            label: 'GPT-5.5 (agentic coding)',
             capabilities: ['chat', 'tools', 'cache'],
             cost_per_1m: { input: 2.50, output: 10.00 },
             context_window: 256_000,
-            release_date: '2026-03',
+            release_date: '2026-06',
             recommended_for: ['backend-dev', 'pipeline-dev'],
         },
         {
-            id: 'gpt-5',
-            label: 'GPT-5 (general)',
+            id: 'gpt-5.4',
+            label: 'GPT-5.4 (general)',
             capabilities: ['chat', 'tools', 'vision', 'cache'],
             cost_per_1m: { input: 5.00, output: 20.00 },
             context_window: 256_000,
-            release_date: '2026-03',
+            release_date: '2026-06',
             recommended_for: ['guru', 'qa'],
+        },
+        {
+            id: 'gpt-5.4-mini',
+            label: 'GPT-5.4 mini (verificación)',
+            capabilities: ['chat', 'tools', 'cache'],
+            cost_per_1m: { input: 0.50, output: 2.00 },
+            context_window: 256_000,
+            release_date: '2026-06',
+            recommended_for: ['telegram-sherlock'],
         },
     ]),
     deterministic: Object.freeze([
