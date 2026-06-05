@@ -10,8 +10,11 @@
 //      .cmd shim / PATH fallback). Mismo patrón defensivo que Anthropic (I6).
 //   2) buildSpawn — traduce los args legacy del pulpo (estilo Claude CLI:
 //      `-p`, `--system-prompt-file`, `--output-format stream-json`) al shape
-//      que entiende Codex (`exec --json --skip-git-repo-check -m <model>
-//      <prompt>` + opcional `--system <file>`).
+//      que entiende Codex (`exec --json --skip-git-repo-check
+//      --dangerously-bypass-approvals-and-sandbox -m <model> <prompt>`). El
+//      system prompt se foldea al inicio del prompt (codex no tiene flag
+//      `--system`) y el bypass de sandbox da paridad de permisos con el
+//      `--permission-mode bypassPermissions` de Claude.
 //   3) parseTokensFromLog — agrega `usage` de eventos `turn.completed` en JSONL.
 //      Codex usa `input_tokens / output_tokens / cached_input_tokens /
 //      reasoning_output_tokens`; mapeamos al shape canónico del pulpo.
@@ -107,14 +110,34 @@ function translateClaudeArgsToCodex(args, env, cwd) {
     // env-isolation cuando el skill resuelve un modelo específico.
     const model = env && env.CODEX_MODEL;
     const out = ['exec', '--json', '--skip-git-repo-check', '-C', cwd];
+    // Paridad de permisos con `--permission-mode bypassPermissions` de Claude.
+    // `codex exec` corre por DEFAULT en sandbox `read-only` con aprobaciones,
+    // así que el agente choca con "no tengo permisos" / "no está instalado" al
+    // intentar escribir archivos, correr comandos o instalar dependencias —
+    // limitaciones que Claude no tiene. El pipeline ya corre en un entorno
+    // externo de confianza (la máquina de Leo), por lo que le damos a codex el
+    // mismo acceso pleno: sin sandbox y sin aprobaciones interactivas. Sin esto
+    // el fallback degrada por proveedor, que es justo lo que NO queremos.
+    out.push('--dangerously-bypass-approvals-and-sandbox');
     if (model) out.push('-m', model);
+    // codex exec NO tiene flag de system prompt — `--system` no existe en el CLI
+    // (antes lo pasábamos y codex lo descartaba/erroraba, perdiendo la persona
+    // del Commander y dejando su propia identidad de "agente de código" seca y
+    // técnica). Para que la persona/identidad tenga efecto, foldeamos el
+    // contenido del system file al INICIO del prompt, igual que el adapter de
+    // gemini. Así la personalidad del Commander no cambia por usar codex.
+    let systemText = '';
     if (systemFile && typeof systemFile === 'string') {
-        out.push('--system', systemFile);
+        try { systemText = fs.readFileSync(systemFile, 'utf8'); } catch { systemText = ''; }
     }
+    const promptText = typeof userPrompt === 'string' ? userPrompt : '';
+    const folded = systemText.trim()
+        ? `${systemText.trim()}\n\n---\n\n${promptText}`
+        : promptText;
     // Codex toma el prompt como argumento posicional final. Si no vino prompt
     // (caso patológico), pasamos string vacío para que el CLI tire error
     // accionable en lugar de quedar colgado leyendo stdin.
-    out.push(typeof userPrompt === 'string' ? userPrompt : '');
+    out.push(folded);
     return out;
 }
 
