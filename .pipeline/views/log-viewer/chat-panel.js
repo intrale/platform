@@ -127,10 +127,23 @@ const PANEL_CSS = `
 .chat-counter.is-warning{color:var(--chat-status-pending,#D29922)}
 .chat-counter.is-danger{color:var(--chat-status-failed,#F85149);font-weight:600}
 
-/* Estado: agente muerto — el cartel cubre toda la zona del input */
-.chat-dead-cover{position:absolute;inset:0;background:var(--chat-disabled-bg,rgba(248,81,73,.10));border:1px solid var(--chat-disabled,#F85149);display:none;align-items:center;justify-content:center;color:var(--chat-disabled-fg,#E6EDF3);font-size:13px;text-align:center;padding:12px;border-radius:0}
+/* Estado: agente muerto (410) o no disponible temporalmente (412 post-restart).
+   El cartel cubre toda la zona del input. Layout en columna para alojar el
+   mensaje de operador + las acciones de recuperación (#3718). */
+.chat-dead-cover{position:absolute;inset:0;background:var(--chat-disabled-bg,rgba(248,81,73,.10));border:1px solid var(--chat-disabled,#F85149);display:none;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--chat-disabled-fg,#E6EDF3);font-size:13px;text-align:center;padding:12px;border-radius:0}
+.chat-cover-icon{font-size:16px;line-height:1}
+.chat-cover-msg{max-width:520px;line-height:1.4}
+.chat-cover-actions{display:none;gap:8px;margin-top:2px}
+.chat-cover-btn{background:transparent;border:1px solid var(--chat-operator,#00D6FF);color:var(--chat-operator,#00D6FF);border-radius:6px;padding:5px 12px;font-family:var(--in-font,sans-serif);font-size:12px;font-weight:600;cursor:pointer;line-height:1.2}
+.chat-cover-btn:hover{filter:brightness(1.2)}
+/* 410 — agente terminado de verdad: cartel rojo, sin acciones de reconexión. */
 .chat-panel.is-agent-dead .chat-dead-cover{display:flex}
 .chat-panel.is-agent-dead .chat-input,.chat-panel.is-agent-dead .chat-send-btn{visibility:hidden}
+/* 412 — agente vivo pero canal IPC no disponible (pulpo reiniciado): cartel de
+   advertencia (no error) con acciones Reintentar / Ver logs (#3718 G-1/G-2). */
+.chat-panel.is-agent-unavailable .chat-dead-cover{display:flex;background:var(--chat-operator-bg,rgba(0,214,255,.10));border-color:var(--chat-status-pending,#D29922)}
+.chat-panel.is-agent-unavailable .chat-dead-cover .chat-cover-actions{display:flex}
+.chat-panel.is-agent-unavailable .chat-input,.chat-panel.is-agent-unavailable .chat-send-btn{visibility:hidden}
 
 /* Pantallas chicas: panel ocupa más alto pero el toggle sigue accesible */
 @media (max-width:1280px){.chat-panel.is-expanded{height:40vh}}
@@ -170,8 +183,15 @@ function buildPanelHtml({ logFile, issue, skill, fase }) {
               aria-label="Enviar mensaje al agente" disabled>
         <svg aria-hidden="true"><use href="#ic-chat-send"></use></svg>
       </button>
-      <div class="chat-dead-cover" id="chat-dead-cover" role="status">
-        Sin agente activo — esta ejecución ya terminó.
+      <div class="chat-dead-cover" id="chat-dead-cover" role="status" aria-live="polite">
+        <span class="chat-cover-icon" id="chat-cover-icon" aria-hidden="true">⚠️</span>
+        <span class="chat-cover-msg" id="chat-cover-msg">Sin agente activo — esta ejecución ya terminó.</span>
+        <div class="chat-cover-actions" id="chat-cover-actions">
+          <button class="chat-cover-btn" id="chat-retry-btn" type="button"
+                  aria-label="Reintentar conexión con el agente">🔄 Reintentar conexión</button>
+          <button class="chat-cover-btn" id="chat-viewlogs-btn" type="button"
+                  aria-label="Ver logs del agente">📋 Ver logs</button>
+        </div>
       </div>
     </div>
   </div>
@@ -203,6 +223,10 @@ const PANEL_JS = `
   var sendBtn = document.getElementById('chat-send');
   var counterEl = document.getElementById('chat-counter');
   var badgeEl = document.getElementById('chat-badge');
+  var coverMsgEl = document.getElementById('chat-cover-msg');
+  var coverIconEl = document.getElementById('chat-cover-icon');
+  var retryBtn = document.getElementById('chat-retry-btn');
+  var viewLogsBtn = document.getElementById('chat-viewlogs-btn');
 
   var logFile = panel.dataset.logfile || '';
   var issue = panel.dataset.issue || '';
@@ -236,6 +260,25 @@ const PANEL_JS = `
     if (state === 'sent') return '#ic-chat-sent';
     if (state === 'failed') return '#ic-chat-bubble'; // sin ícono dedicado, fallback
     return '#ic-chat-pending';
+  }
+
+  // Traduce el \`reason\` técnico del backend (#3721) a lenguaje de operador.
+  // RS-2: NUNCA mostramos el string crudo (puede filtrar detalle interno); el
+  // operador ve una explicación accionable. Ver getAgentAliveDetails() en
+  // agent-ipc.js para el catálogo de reasons.
+  function reasonToCopy(reason){
+    switch (reason) {
+      case 'agent_alive_pulpo_restarted_or_no_interactive':
+        return 'El pipeline se reinició hace poco. El agente sigue ejecutándose pero el chat no puede conectarse aún.';
+      case 'orphan_heartbeat':
+        return 'El agente sigue activo pero el canal de comunicación no está disponible por ahora.';
+      case 'heartbeat_expired':
+        return 'El agente no respondió a tiempo. Esta ejecución probablemente terminó.';
+      case 'invalid_params':
+        return 'No se pudo identificar al agente de este log.';
+      default:
+        return 'Esta ejecución ya terminó.';
+    }
   }
 
   function renderBubble(entry){
@@ -362,6 +405,9 @@ const PANEL_JS = `
   });
   sendBtn.addEventListener('click', doSend);
 
+  // Último mensaje que falló al enviarse — lo reusa "Reintentar conexión".
+  var lastFailedMessage = null;
+
   function doSend(){
     var raw = (inputEl.value || '').trim();
     if (!raw) return;
@@ -374,7 +420,29 @@ const PANEL_JS = `
       return;
     }
     sentTimestamps.push(now);
+    // Limpieza optimista del input. Si el envío falla, restoreInput() devuelve
+    // el texto para que el operador no lo pierda (#3718 G-3 / TC-4).
+    inputEl.value = '';
+    updateCounter();
+    sendMessage(raw);
+  }
 
+  // Restaura el texto en el input tras un fallo, SOLO si el operador no empezó
+  // a escribir algo nuevo (no pisamos su escritura en curso). #3718 G-3.
+  function restoreInput(raw){
+    if (!(inputEl.value || '').trim()){
+      inputEl.value = raw;
+      updateCounter();
+    }
+  }
+
+  function onSendFailed(bubble, raw){
+    updateBubbleStatus(bubble, 'failed');
+    lastFailedMessage = raw;
+    restoreInput(raw);
+  }
+
+  function sendMessage(raw){
     var localId = 'tmp-' + Math.random().toString(36).slice(2);
     var optimistic = {
       type: 'operator_message',
@@ -385,8 +453,6 @@ const PANEL_JS = `
     };
     var bubble = appendBubble(optimistic);
     pending[localId] = bubble;
-    inputEl.value = '';
-    updateCounter();
 
     var abortCtrl = new AbortController();
     var timeoutId = setTimeout(function(){ abortCtrl.abort(); }, SEND_TIMEOUT_MS);
@@ -401,25 +467,35 @@ const PANEL_JS = `
       .then(function(res){
         clearTimeout(timeoutId);
         delete pending[localId];
+        var reason = res.body && res.body.reason;
         if (res.status === 200 && res.body && res.body.ok){
           // Update messageId al server-derived (para reconciliar con historial)
           bubble.dataset.messageId = res.body.message_id || localId;
           updateBubbleStatus(bubble, 'sent');
-        } else if (res.status === 410){
-          updateBubbleStatus(bubble, 'failed');
-          markAgentDead(res.body && res.body.reason);
-        } else if (res.status === 429){
-          updateBubbleStatus(bubble, 'failed');
+          // Envío OK → el agente volvió a estar comunicable: limpiamos cualquier
+          // cartel de no-disponible que hubiera quedado de un intento anterior.
+          clearAgentState();
+          lastFailedMessage = null;
         } else if (res.status === 412){
-          updateBubbleStatus(bubble, 'failed');
+          // Agente VIVO pero canal IPC no disponible (pulpo reiniciado). Caso
+          // recuperable: cartel de advertencia + acción de reintento (G-1/G-2).
+          onSendFailed(bubble, raw);
+          markAgentUnavailable(reason);
+        } else if (res.status === 410){
+          // Agente terminado de verdad: cartel permanente, sin reintento.
+          onSendFailed(bubble, raw);
+          markAgentDead(reason);
+        } else if (res.status === 429){
+          // Rate limit del server: transitorio, preservamos el texto.
+          onSendFailed(bubble, raw);
         } else {
-          updateBubbleStatus(bubble, 'failed');
+          onSendFailed(bubble, raw);
         }
       })
       .catch(function(err){
         clearTimeout(timeoutId);
         delete pending[localId];
-        updateBubbleStatus(bubble, 'failed');
+        onSendFailed(bubble, raw);
         if (err.name === 'AbortError'){
           // Mostrar feedback inline de timeout
           var meta = bubble.querySelector('.chat-bubble-meta');
@@ -428,13 +504,62 @@ const PANEL_JS = `
       });
   }
 
+  // ---- estados de disponibilidad del agente ----
+  function setCoverMessage(reason){
+    if (coverMsgEl) coverMsgEl.textContent = reasonToCopy(reason);
+  }
+
+  // 410 — agente terminado: deshabilita el chat de forma permanente.
   function markAgentDead(reason){
+    panel.classList.remove('is-agent-unavailable');
     panel.classList.add('is-agent-dead');
-    var cover = document.getElementById('chat-dead-cover');
-    if (cover && reason) cover.textContent = 'Sin agente activo — ' + reason;
+    if (coverIconEl) coverIconEl.textContent = '⛔';
+    setCoverMessage(reason);
     sendBtn.disabled = true;
     inputEl.disabled = true;
   }
+
+  // 412 — agente vivo pero sin canal IPC (post-restart): recuperable. Muestra
+  // motivo + acciones Reintentar / Ver logs (#3718 G-1/G-2).
+  function markAgentUnavailable(reason){
+    panel.classList.remove('is-agent-dead');
+    panel.classList.add('is-agent-unavailable');
+    if (coverIconEl) coverIconEl.textContent = '⚠️';
+    setCoverMessage(reason);
+    // No deshabilitamos el input de forma permanente: el cover lo tapa, pero
+    // tras un reintento exitoso el chat vuelve a estar operativo.
+    inputEl.disabled = false;
+  }
+
+  // Limpia ambos estados (vuelve a chat operativo).
+  function clearAgentState(){
+    panel.classList.remove('is-agent-dead');
+    panel.classList.remove('is-agent-unavailable');
+    inputEl.disabled = false;
+    updateCounter();
+  }
+
+  // "Reintentar conexión" (412): limpia el cartel y reenvía el último mensaje
+  // que falló. Si no hay, sólo devuelve el foco al input.
+  function retryConnection(){
+    var msg = lastFailedMessage;
+    clearAgentState();
+    if (msg){
+      lastFailedMessage = null;
+      sendMessage(msg);
+    } else {
+      try { inputEl.focus(); } catch(_){}
+    }
+  }
+
+  // "Ver logs": colapsa el chat para revelar el log viewer (esta misma pantalla)
+  // sin perder el contexto del cartel.
+  function viewLogs(){
+    setCollapsed(true);
+  }
+
+  if (retryBtn) retryBtn.addEventListener('click', retryConnection);
+  if (viewLogsBtn) viewLogsBtn.addEventListener('click', viewLogs);
 
   // ---- reconstruir historial al abrir ----
   function loadHistory(){
