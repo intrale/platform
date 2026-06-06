@@ -9038,7 +9038,15 @@ let multiProviderCoverageView = null;
 try { multiProviderCoverageApi = require('./lib/multi-provider-coverage/api'); } catch (e) { log(`multi-provider-coverage api unavailable: ${e.message}`); }
 try { multiProviderCoverageView = require('./views/dashboard/multi-provider-coverage'); } catch (e) { log(`multi-provider-coverage view unavailable: ${e.message}`); }
 
+// #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
+// Lazy require — si el módulo falla, el dashboard arranca sin wizards.
+let wizardSession = null;
+try { wizardSession = require('./lib/wizard-session'); } catch (e) { log(`wizard-session unavailable: ${e.message}`); }
+
 const server = http.createServer((req, res) => {
+  // #3724 — Wizards: endpoint POST mount-first (antes del catch-all GET-only).
+  if (wizardSession && wizardSession.route(req, res)) return;
+
   // #3177 — Multi-Provider: HTML del panel y API REST asociada.
   // Mounted antes que el catch-all para que `/multi-provider` no caiga al legacy.
   if (multiProviderApi && multiProviderApi.route(req, res)) {
