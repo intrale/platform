@@ -111,3 +111,74 @@ test('PANEL_JS aplica rate limit cliente (10 msg/s)', () => {
 test('PANEL_JS aplica timeout 5s del envío', () => {
     assert.match(chatPanel.PANEL_JS, /SEND_TIMEOUT_MS = 5000/);
 });
+
+// ---------------------------------------------------------------------------
+// #3718 — desincronía agent-registry: 412 (post-restart) vs 410 (terminado),
+// preservación del input al fallar, y traducción del reason a copy de operador.
+// ---------------------------------------------------------------------------
+
+test('PANEL_JS discrimina 412 (recuperable) de 410 (terminado)', () => {
+    // 412 → estado recuperable con reconexión
+    assert.match(chatPanel.PANEL_JS, /res\.status === 412/);
+    assert.match(chatPanel.PANEL_JS, /markAgentUnavailable/);
+    // 410 → estado terminal
+    assert.match(chatPanel.PANEL_JS, /res\.status === 410/);
+    assert.match(chatPanel.PANEL_JS, /markAgentDead/);
+    // Son dos ramas distintas, no el mismo tratamiento genérico
+    assert.notEqual(
+        chatPanel.PANEL_JS.indexOf('markAgentUnavailable'),
+        chatPanel.PANEL_JS.indexOf('markAgentDead'),
+    );
+});
+
+test('PANEL_JS preserva el input al fallar el envío (G-3 / TC-4)', () => {
+    // Existe la función de restauración y se invoca en el path de fallo
+    assert.match(chatPanel.PANEL_JS, /function restoreInput/);
+    assert.match(chatPanel.PANEL_JS, /function onSendFailed/);
+    assert.match(chatPanel.PANEL_JS, /restoreInput\(raw\)/);
+    // Sólo restaura si el input quedó vacío (no pisa escritura nueva del operador)
+    assert.match(chatPanel.PANEL_JS, /if \(!\(inputEl\.value \|\| ''\)\.trim\(\)\)\{\s*inputEl\.value = raw;/);
+});
+
+test('PANEL_JS traduce el reason técnico a copy de operador (RS-2: no expone reason crudo)', () => {
+    assert.match(chatPanel.PANEL_JS, /function reasonToCopy/);
+    // Copy específico para el caso post-restart (causa raíz del issue)
+    assert.match(chatPanel.PANEL_JS, /agent_alive_pulpo_restarted_or_no_interactive/);
+    assert.match(chatPanel.PANEL_JS, /El pipeline se reinició hace poco/);
+    assert.match(chatPanel.PANEL_JS, /orphan_heartbeat/);
+    assert.match(chatPanel.PANEL_JS, /heartbeat_expired/);
+    // RS-2: markAgentDead ya NO concatena el reason crudo al cartel
+    assert.doesNotMatch(chatPanel.PANEL_JS, /'Sin agente activo — ' \+ reason/);
+});
+
+test('PANEL_JS expone acciones de recuperación Reintentar / Ver logs (G-2)', () => {
+    assert.match(chatPanel.PANEL_JS, /function retryConnection/);
+    assert.match(chatPanel.PANEL_JS, /function viewLogs/);
+    assert.match(chatPanel.PANEL_JS, /function clearAgentState/);
+    // Reintentar reenvía el último mensaje fallido
+    assert.match(chatPanel.PANEL_JS, /lastFailedMessage/);
+    assert.match(chatPanel.PANEL_JS, /retryBtn\.addEventListener\('click', retryConnection\)/);
+    assert.match(chatPanel.PANEL_JS, /viewLogsBtn\.addEventListener\('click', viewLogs\)/);
+});
+
+test('PANEL_JS limpia el estado de no-disponible tras un envío exitoso', () => {
+    // En el path 200 OK se invoca clearAgentState() (reconexión transparente)
+    assert.match(chatPanel.PANEL_JS, /updateBubbleStatus\(bubble, 'sent'\);[\s\S]*?clearAgentState\(\);/);
+});
+
+test('PANEL_CSS define el estado recuperable y los botones del cover (#3718)', () => {
+    assert.match(chatPanel.PANEL_CSS, /\.chat-panel\.is-agent-unavailable/);
+    assert.match(chatPanel.PANEL_CSS, /\.chat-cover-actions/);
+    assert.match(chatPanel.PANEL_CSS, /\.chat-cover-btn/);
+    // El estado recuperable usa color de advertencia, no el rojo de error
+    assert.match(chatPanel.PANEL_CSS, /is-agent-unavailable[\s\S]*?--chat-status-pending/);
+});
+
+test('buildPanelHtml renderiza el cover con mensaje + botones de recuperación', () => {
+    const html = chatPanel._buildPanelHtml({ logFile: '1.x.log', issue: '1', skill: 'x', fase: 'dev' });
+    assert.match(html, /id="chat-cover-msg"/);
+    assert.match(html, /id="chat-retry-btn"/);
+    assert.match(html, /id="chat-viewlogs-btn"/);
+    assert.match(html, /aria-label="Reintentar conexión con el agente"/);
+    assert.match(html, /aria-label="Ver logs del agente"/);
+});

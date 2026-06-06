@@ -319,7 +319,15 @@ test('#3823 · fallback sin credencial → skipReason permission_matrix', () => 
 });
 
 // -----------------------------------------------------------------------------
-// 9. health_gate (fallback rojo fresco)
+// 9. health_gate (fallback rojo fresco con causa DURABLE)
+//
+// #3834 (incidente Gemini timeout 2026-06-05) refinó el health-gate: un rojo
+// FRESCO sólo gatea si su causa es DURABLE (ver DURABLE_RED_REASONS en
+// dispatch-with-fallback.js). Un rojo transitorio (timeout, 5xx, network blip)
+// es fail-open a propósito — el provider pudo recuperarse entre el ping del cron
+// y este spawn. Por eso este test usa `invalid_credentials` (causa durable: no
+// se arregla sola) en vez de un 5xx transitorio, que es exactamente el caso que
+// SÍ debe sacar al provider de la cascada.
 // -----------------------------------------------------------------------------
 test('#3823 · fallback con health rojo fresco → skipReason health_gate', () => {
     const models = baseModels();
@@ -329,7 +337,7 @@ test('#3823 · fallback con health rojo fresco → skipReason health_gate', () =
         const now = 1_700_000_000_000;
         const healthReader = () => ({
             providers: [
-                { provider: 'cerebras', state: 'red', last_checked_at: new Date(now - 60_000).toISOString(), reason_code: 'http_503' },
+                { provider: 'cerebras', state: 'red', last_checked_at: new Date(now - 60_000).toISOString(), reason_code: 'invalid_credentials' },
             ],
         });
         const r = resolveSpawnWithFallback({
