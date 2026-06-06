@@ -130,25 +130,58 @@ function parseWorktreeList(porcelain) {
 }
 
 /**
+ * Cuenta los commits que `<worktreePath>` tiene por delante de `base`
+ * (default `origin/main`). Sirve para distinguir un worktree con trabajo real
+ * de uno vacío/hermano. Best-effort: si git falla (ref inexistente, worktree
+ * roto, etc.) devuelve 0 — un worktree que no podemos medir se trata como "sin
+ * commits" y nunca le gana a uno que sí los tiene.
+ *
+ * Usa `git -C <worktreePath>` (en vez de `cwd`) para que el comando sea
+ * autocontenido y distinguible por worktree (importa para tests con spawn fake
+ * que matchea por la línea de comando, no por el cwd).
+ */
+function countCommitsAhead(worktreePath, { spawnImpl = spawnSync, base = 'origin/main', cwd } = {}) {
+    try {
+        const out = gitSpawn(['-C', worktreePath, 'rev-list', '--count', `${base}..HEAD`], {
+            cwd: cwd || worktreePath, spawnImpl, timeout: 10000,
+        });
+        const n = parseInt(String(out).trim(), 10);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch {
+        return 0;
+    }
+}
+
+/**
  * Busca el worktree del issue por patrón `platform.agent-<issue>-*` (case
  * sensitive, igual que git).
  *
- * Cuando se pasa `skill`, PREFIERE el worktree cuyo basename matchea exacto
- * `platform.agent-<issue>-<skill>`. Solo si no existe un match exacto del skill
- * cae al primer worktree del issue (backward-compat con callers sin skill).
+ * Estrategia de desambiguación cuando hay >1 worktree para el issue (routing
+ * dual, ej. `backend-dev` + `pipeline-dev`):
+ *   1. Si hay un solo candidato → ese.
+ *   2. Si varios → PREFIERE el/los que tienen commits por delante de `base`
+ *      (`origin/main`). Entre los que tienen commits, si alguno matchea exacto
+ *      `platform.agent-<issue>-<skill>` se elige ese; sino el primero con commits.
+ *   3. Si NINGUNO tiene commits medibles → cae al skill-match exacto si existe,
+ *      sino al primer candidato (backward-compat).
  *
- * **Causa raíz** (#3724): cuando un issue fue ruteado a >1 skill (ej. routing
- * dual `backend-dev` + `pipeline-dev`), git lista varios `platform.agent-<n>-*`.
- * El match por sólo-prefijo devolvía el PRIMERO arbitrario (orden de creación),
- * que podía ser una rama ajena/vacía. Las fases que leen el worktree (linteo,
- * build, aprobacion, entrega) corrían entonces contra la rama equivocada y
- * reportaban `pr:no-commits` aunque el worktree del skill correcto tenía los
- * commits legítimos. Preferir el match exacto del skill cierra ese gap.
+ * **Causa raíz** (#3724):
+ *   - rev-1: cuando un issue fue ruteado a >1 skill, git lista varios
+ *     `platform.agent-<n>-*` y el match por sólo-prefijo devolvía el PRIMERO
+ *     arbitrario (alfabético), que podía ser una rama hermana vacía.
+ *   - rev-2 (este fix): el match-por-skill de rev-1 NO alcanza para las fases
+ *     que LEEN el worktree (linteo/build/aprobacion/entrega) porque esas corren
+ *     con `skill` = la fase (`linter`/`builder`/`delivery`), que jamás matchea
+ *     el basename del worktree (construido con el skill DEV, ej. `pipeline-dev`).
+ *     Resultado: el resolver caía igual al primer worktree (backend-dev vacío) y
+ *     el linter reportaba `pr:no-commits` aunque pipeline-dev tenía los commits.
+ *     Preferir el worktree que de hecho TIENE commits cierra el gap sin depender
+ *     de que el skill de la fase coincida con el del worktree.
  *
  * Excluye explícitamente entradas cuyo directorio físico ya no existe — git
  * a veces retiene entries muertas en `.git/worktrees/` hasta el próximo prune.
  */
-function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs, skill = null } = {}) {
+function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs, skill = null, base = 'origin/main' } = {}) {
     const stdout = gitSpawn(['worktree', 'list', '--porcelain'], {
         cwd: ROOT, spawnImpl,
     });
@@ -157,8 +190,8 @@ function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs, sk
     const candidates = [];
     for (const e of entries) {
         if (!e.worktree) continue;
-        const base = path.basename(e.worktree);
-        if (!base.startsWith(needle)) continue;
+        const baseName = path.basename(e.worktree);
+        if (!baseName.startsWith(needle)) continue;
         // git puede mantener entradas obsoletas — verificamos que el path real exista.
         try {
             if (!fsImpl.existsSync(e.worktree)) continue;
@@ -166,15 +199,28 @@ function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs, sk
         candidates.push(e);
     }
     if (!candidates.length) return null;
+    if (candidates.length === 1) return candidates[0];
 
-    // (#3724) Preferir el worktree del skill exacto si hay ambigüedad.
-    if (skill) {
-        const exactBase = `platform.agent-${issue}-${skill}`;
-        const skillMatch = candidates.find((e) => path.basename(e.worktree) === exactBase);
-        if (skillMatch) return skillMatch;
+    // (#3724 rev-2) Hay ambigüedad: >1 worktree para el mismo issue. Anotamos
+    // cada candidato con sus commits ahead de `base` y preferimos los que tienen
+    // trabajo real sobre los hermanos vacíos.
+    const exactBase = skill ? `platform.agent-${issue}-${skill}` : null;
+    const annotated = candidates.map((e) => ({
+        entry: e,
+        base: path.basename(e.worktree),
+        commitsAhead: countCommitsAhead(e.worktree, { spawnImpl, base, cwd: ROOT }),
+    }));
+    const withCommits = annotated.filter((a) => a.commitsAhead > 0);
+
+    if (withCommits.length) {
+        const skillMatch = exactBase ? withCommits.find((a) => a.base === exactBase) : null;
+        return (skillMatch || withCommits[0]).entry;
     }
 
-    return candidates[0];
+    // Ningún worktree tiene commits medibles → skill-match exacto si existe,
+    // sino el primer candidato (degradación segura, igual que rev-1).
+    const skillMatch = exactBase ? annotated.find((a) => a.base === exactBase) : null;
+    return (skillMatch || annotated[0]).entry;
 }
 
 /**
@@ -409,6 +455,7 @@ function resolveExistingWorktree({
 module.exports = {
     resolveExistingWorktree,
     findIssueWorktree,
+    countCommitsAhead,
     parseWorktreeList,
     remoteBranchExists,
     verifyRemoteBranchOrigin,

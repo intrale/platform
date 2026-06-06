@@ -21,6 +21,7 @@ const path = require('node:path');
 const {
     resolveExistingWorktree,
     findIssueWorktree,
+    countCommitsAhead,
     parseWorktreeList,
     remoteBranchExists,
     verifyRemoteBranchOrigin,
@@ -153,44 +154,120 @@ const MULTI_SKILL_PORCELAIN = [
     '',
 ].join('\n');
 
-test('findIssueWorktree — con skill prefiere el worktree del skill exacto (no el primer match)', () => {
+// rev-list handlers para el escenario #3724: backend-dev vacío, pipeline-dev
+// con 2 commits ahead de origin/main. countCommitsAhead usa `git -C <path>`
+// → el fake puede distinguir por worktree.
+const REVLIST_BACKEND_EMPTY = {
+    match: 'git -C /tmp/platform.agent-3724-backend-dev rev-list --count', stdout: '0\n',
+};
+const REVLIST_PIPELINE_2 = {
+    match: 'git -C /tmp/platform.agent-3724-pipeline-dev rev-list --count', stdout: '2\n',
+};
+
+test('findIssueWorktree — con skill prefiere el worktree del skill exacto (que tiene commits)', () => {
     const spawnImpl = makeFakeSpawn([
         { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+        REVLIST_BACKEND_EMPTY, REVLIST_PIPELINE_2,
     ]);
     const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true), skill: 'pipeline-dev' });
     assert.ok(result);
     assert.equal(result.worktree, '/tmp/platform.agent-3724-pipeline-dev');
 });
 
-test('findIssueWorktree — sin skill cae al primer worktree del issue (backward-compat)', () => {
+test('findIssueWorktree — sin skill prefiere el worktree con commits (no el primero alfabético)', () => {
     const spawnImpl = makeFakeSpawn([
         { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+        REVLIST_BACKEND_EMPTY, REVLIST_PIPELINE_2,
+    ]);
+    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3724-pipeline-dev');
+});
+
+// (#3724 rev-2) REGRESIÓN CLAVE: las fases que LEEN el worktree (linteo/build/
+// aprobacion/entrega) corren con `skill` = la fase (`linter`, no `pipeline-dev`),
+// que NUNCA matchea el basename del worktree. El resolver debe igualmente elegir
+// el worktree con commits, no el hermano vacío (backend-dev) que ganaba antes.
+test('findIssueWorktree — fase downstream (skill=linter) elige el worktree con commits, no el hermano vacío', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+        REVLIST_BACKEND_EMPTY, REVLIST_PIPELINE_2,
+    ]);
+    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true), skill: 'linter' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3724-pipeline-dev');
+});
+
+test('findIssueWorktree — entre worktrees ambos vacíos cae al skill-match exacto', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+        REVLIST_BACKEND_EMPTY,
+        { match: 'git -C /tmp/platform.agent-3724-pipeline-dev rev-list --count', stdout: '0\n' },
+    ]);
+    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true), skill: 'pipeline-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3724-pipeline-dev');
+});
+
+test('findIssueWorktree — entre worktrees ambos vacíos sin skill cae al primero (degradación segura)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+        REVLIST_BACKEND_EMPTY,
+        { match: 'git -C /tmp/platform.agent-3724-pipeline-dev rev-list --count', stdout: '0\n' },
     ]);
     const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true) });
     assert.ok(result);
     assert.equal(result.worktree, '/tmp/platform.agent-3724-backend-dev');
 });
 
-test('findIssueWorktree — skill sin match exacto cae al primer worktree del issue', () => {
+test('findIssueWorktree — un solo worktree no consulta rev-list (early return)', () => {
+    // Sin handler de rev-list: si lo consultara, el fake tiraría loud.
     const spawnImpl = makeFakeSpawn([
-        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+        {
+            match: 'git worktree list --porcelain',
+            stdout: 'worktree /repo\nHEAD a\nbranch refs/heads/main\n\nworktree /tmp/platform.agent-3724-pipeline-dev\nHEAD c\nbranch refs/heads/agent/3724-pipeline-dev\n\n',
+        },
     ]);
-    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true), skill: 'android-dev' });
+    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true), skill: 'linter' });
     assert.ok(result);
-    assert.equal(result.worktree, '/tmp/platform.agent-3724-backend-dev');
+    assert.equal(result.worktree, '/tmp/platform.agent-3724-pipeline-dev');
 });
 
-test('resolveExistingWorktree — desambigua por skill cuando hay worktrees de varios skills (#3724)', () => {
+test('resolveExistingWorktree — desambigua eligiendo el worktree con commits (#3724)', () => {
     const spawnImpl = makeFakeSpawn([
         { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+        REVLIST_BACKEND_EMPTY, REVLIST_PIPELINE_2,
     ]);
     const result = resolveExistingWorktree({
-        ROOT: '/repo', issue: 3724, skill: 'pipeline-dev',
+        ROOT: '/repo', issue: 3724, skill: 'linter',
         spawnImpl, fsImpl: fakeFs(true),
     });
     assert.equal(result.found, true);
     assert.equal(result.recovered, false);
     assert.equal(result.worktreePath, '/tmp/platform.agent-3724-pipeline-dev');
+});
+
+// ---- countCommitsAhead -------------------------------------------------------
+
+test('countCommitsAhead — parsea el conteo de rev-list', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git -C /tmp/wt rev-list --count origin/main..HEAD', stdout: '5\n' },
+    ]);
+    assert.equal(countCommitsAhead('/tmp/wt', { spawnImpl }), 5);
+});
+
+test('countCommitsAhead — devuelve 0 si git falla (ref inexistente)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git -C /tmp/wt rev-list --count', status: 128, stderr: "fatal: bad revision 'origin/main'" },
+    ]);
+    assert.equal(countCommitsAhead('/tmp/wt', { spawnImpl }), 0);
+});
+
+test('countCommitsAhead — devuelve 0 si el output no es numérico', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git -C /tmp/wt rev-list --count', stdout: '\n' },
+    ]);
+    assert.equal(countCommitsAhead('/tmp/wt', { spawnImpl }), 0);
 });
 
 // ---- remoteBranchExists ------------------------------------------------------
