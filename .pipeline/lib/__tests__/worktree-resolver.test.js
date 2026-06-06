@@ -137,6 +137,62 @@ test('findIssueWorktree — null si ningún worktree matchea', () => {
     assert.equal(result, null);
 });
 
+// (#3724) Desambiguación por skill cuando el issue tiene >1 worktree.
+const MULTI_SKILL_PORCELAIN = [
+    'worktree /repo',
+    'HEAD a',
+    'branch refs/heads/main',
+    '',
+    'worktree /tmp/platform.agent-3724-backend-dev',
+    'HEAD b',
+    'branch refs/heads/agent/3724-backend-dev',
+    '',
+    'worktree /tmp/platform.agent-3724-pipeline-dev',
+    'HEAD c',
+    'branch refs/heads/agent/3724-pipeline-dev',
+    '',
+].join('\n');
+
+test('findIssueWorktree — con skill prefiere el worktree del skill exacto (no el primer match)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+    ]);
+    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true), skill: 'pipeline-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3724-pipeline-dev');
+});
+
+test('findIssueWorktree — sin skill cae al primer worktree del issue (backward-compat)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+    ]);
+    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3724-backend-dev');
+});
+
+test('findIssueWorktree — skill sin match exacto cae al primer worktree del issue', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+    ]);
+    const result = findIssueWorktree('/repo', 3724, { spawnImpl, fsImpl: fakeFs(true), skill: 'android-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3724-backend-dev');
+});
+
+test('resolveExistingWorktree — desambigua por skill cuando hay worktrees de varios skills (#3724)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_SKILL_PORCELAIN },
+    ]);
+    const result = resolveExistingWorktree({
+        ROOT: '/repo', issue: 3724, skill: 'pipeline-dev',
+        spawnImpl, fsImpl: fakeFs(true),
+    });
+    assert.equal(result.found, true);
+    assert.equal(result.recovered, false);
+    assert.equal(result.worktreePath, '/tmp/platform.agent-3724-pipeline-dev');
+});
+
 // ---- remoteBranchExists ------------------------------------------------------
 
 test('remoteBranchExists — true si ls-remote devuelve refs', () => {

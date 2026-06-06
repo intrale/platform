@@ -131,17 +131,30 @@ function parseWorktreeList(porcelain) {
 
 /**
  * Busca el worktree del issue por patrón `platform.agent-<issue>-*` (case
- * sensitive, igual que git). Retorna el primero que matchea o null.
+ * sensitive, igual que git).
+ *
+ * Cuando se pasa `skill`, PREFIERE el worktree cuyo basename matchea exacto
+ * `platform.agent-<issue>-<skill>`. Solo si no existe un match exacto del skill
+ * cae al primer worktree del issue (backward-compat con callers sin skill).
+ *
+ * **Causa raíz** (#3724): cuando un issue fue ruteado a >1 skill (ej. routing
+ * dual `backend-dev` + `pipeline-dev`), git lista varios `platform.agent-<n>-*`.
+ * El match por sólo-prefijo devolvía el PRIMERO arbitrario (orden de creación),
+ * que podía ser una rama ajena/vacía. Las fases que leen el worktree (linteo,
+ * build, aprobacion, entrega) corrían entonces contra la rama equivocada y
+ * reportaban `pr:no-commits` aunque el worktree del skill correcto tenía los
+ * commits legítimos. Preferir el match exacto del skill cierra ese gap.
  *
  * Excluye explícitamente entradas cuyo directorio físico ya no existe — git
  * a veces retiene entries muertas en `.git/worktrees/` hasta el próximo prune.
  */
-function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs } = {}) {
+function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs, skill = null } = {}) {
     const stdout = gitSpawn(['worktree', 'list', '--porcelain'], {
         cwd: ROOT, spawnImpl,
     });
     const entries = parseWorktreeList(stdout);
     const needle = `platform.agent-${issue}-`;
+    const candidates = [];
     for (const e of entries) {
         if (!e.worktree) continue;
         const base = path.basename(e.worktree);
@@ -150,9 +163,18 @@ function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs } =
         try {
             if (!fsImpl.existsSync(e.worktree)) continue;
         } catch { continue; }
-        return e;
+        candidates.push(e);
     }
-    return null;
+    if (!candidates.length) return null;
+
+    // (#3724) Preferir el worktree del skill exacto si hay ambigüedad.
+    if (skill) {
+        const exactBase = `platform.agent-${issue}-${skill}`;
+        const skillMatch = candidates.find((e) => path.basename(e.worktree) === exactBase);
+        if (skillMatch) return skillMatch;
+    }
+
+    return candidates[0];
 }
 
 /**
@@ -343,10 +365,11 @@ function resolveExistingWorktree({
     // de verdad. Si rompe acá, NO seguimos al spawn.
     validateInputs(issue, skill);
 
-    // (2) Búsqueda directa del worktree por patrón.
+    // (2) Búsqueda directa del worktree por patrón, preferiendo el skill exacto
+    //     (#3724 — desambigua cuando un issue tiene worktrees de varios skills).
     let existing = null;
     try {
-        existing = findIssueWorktree(ROOT, issue, { spawnImpl, fsImpl });
+        existing = findIssueWorktree(ROOT, issue, { spawnImpl, fsImpl, skill });
     } catch (e) {
         log?.(`⚠️ git worktree list falló (continúo con auto-recovery si aplica): ${e.message.slice(0, 120)}`);
     }
