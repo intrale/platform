@@ -105,6 +105,38 @@ test('isStale: PID vivo + lock reciente → NO stale (conservador)', () => {
     } finally { rmrf(target); }
 });
 
+// #3735 (regresión CA-8 #3518): un lock vacío (corrupt) de creación en curso
+// NO debe robarse aunque tenga más de 1s. Antes el umbral era 1s y, bajo
+// fork-storm, un holder descheduleado >1s entre openSync y writeSync perdía su
+// lock → dual-hold → lost-update (`issues=2, exitosos=7`).
+test('isStale: lock corrupto fresco (< 60s, > umbral viejo de 1s) → NO stale (creación en curso)', () => {
+    const target = mkTmpFile();
+    try {
+        // Lock vacío: openSync('wx') creó el archivo pero el holder aún no
+        // escribió la meta (descheduleado). Simulamos mtime de ~3s atrás.
+        fs.writeFileSync(target + '.lock', '');
+        const threeSecAgo = (Date.now() - 3000) / 1000;
+        fs.utimesSync(target + '.lock', threeSecAgo, threeSecAgo);
+        const meta = lock._internal.readLockMeta(target + '.lock');
+        assert.ok(meta && meta._corrupt, 'lock vacío debe leerse como corrupt');
+        const stale = lock._internal.isStale(meta, target + '.lock');
+        assert.equal(stale, false, 'lock corrupto < 60s no debe declararse stale');
+    } finally { rmrf(target); }
+});
+
+test('isStale: lock corrupto viejo (> 60s) → stale (recuperación de huérfano preservada)', () => {
+    const target = mkTmpFile();
+    try {
+        fs.writeFileSync(target + '.lock', '');
+        const old = (Date.now() - 90 * 1000) / 1000; // 90s atrás
+        fs.utimesSync(target + '.lock', old, old);
+        const meta = lock._internal.readLockMeta(target + '.lock');
+        assert.ok(meta && meta._corrupt, 'lock vacío debe leerse como corrupt');
+        const stale = lock._internal.isStale(meta, target + '.lock');
+        assert.equal(stale, true, 'lock corrupto > 60s debe declararse stale y recuperarse');
+    } finally { rmrf(target); }
+});
+
 test('acquireLockSync: stale lock se reemplaza automáticamente', () => {
     const target = mkTmpFile();
     try {

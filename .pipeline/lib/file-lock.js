@@ -236,12 +236,26 @@ function isStale(meta, lockPath) {
         // tratamos como stale + unlink, robamos un lock que está siendo
         // adquirido legítimamente por otro proceso → ambos pasan, corrupción.
         //
-        // Heurística: si el lock fue modificado hace < 1s, probablemente es
-        // un race durante la creación → NO stale (esperar y reintentar).
+        // #3735 (regresión CA-8 #3518): el umbral original de 1s era demasiado
+        // agresivo. Bajo fork-storm extremo (la suite completa forkea 252 files
+        // y satura la CPU), el holder puede quedar descheduleado MÁS de 1s entre
+        // el `openSync('wx')` y el `writeSync(meta)`. Otro acquirer veía el lock
+        // vacío con mtime > 1s, lo declaraba stale, lo borraba y entraba en
+        // paralelo → dual-hold → lost-update silencioso (síntoma observado:
+        // `issues=2, exitosos=7` — 7 workers exit 0 pero 5 writes clobbered).
+        //
+        // Fix: usar el MISMO umbral conservador (STALE_AGE_MS = 60s) que para un
+        // PID vivo. Un lock vacío más joven que 60s se trata como creación en
+        // curso → el acquirer espera/reintenta. Si el holder estaba simplemente
+        // descheduleado, termina su write en ms y el acquirer entra normal; si
+        // el holder crasheó EXACTO en esa ventana (probabilidad ínfima), el
+        // acquirer falla fuerte con ELOCK_TIMEOUT (exit 1, contado como NO
+        // exitoso) en vez de clobberear en silencio, y el próximo intento lo
+        // recupera por antigüedad > 60s. Nunca más lost-update silencioso.
         let lockMtimeMs;
         try { lockMtimeMs = fs.statSync(lockPath).mtimeMs; } catch { return true; }
         const lockAgeMs = Date.now() - lockMtimeMs;
-        if (lockAgeMs < 1000) return false; // race transitoria, no stale
+        if (lockAgeMs < STALE_AGE_MS) return false; // creación en curso, NO stale
         return true;
     }
     if (!isPidAlive(meta.pid)) return true;
