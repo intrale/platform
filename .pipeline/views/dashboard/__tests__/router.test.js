@@ -221,6 +221,30 @@ test('smoke E2E: GET /kpis (legacy) converge con la ventana KPIs V3 (#3733, CA-A
     }
 });
 
+test('smoke E2E: GET /dashboard?view=costos → 200 con <title> de Costos (#3735, CA-1.2/CA-G2)', async () => {
+    // #3735 — slug `costos` registrado en VIEW_SLUGS. Verifica que el deep-link
+    // del router cliente resuelve la ventana Costos sin romper el router.
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/dashboard?view=costos');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · Costos</title>'), 'el router ?view=costos debe rendir la ventana Costos');
+    } finally {
+        await closeServer(server);
+    }
+});
+
+test('smoke E2E: GET /costos (legacy) converge con la ventana Costos V3 (#3735, CA-A2)', async () => {
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/costos');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · Costos</title>'), '/costos legacy debe rendir la misma ventana Costos');
+    } finally {
+        await closeServer(server);
+    }
+});
+
 test('smoke E2E: GET / (legacy raíz) sigue rindiendo home (no-regresión)', async () => {
     const { server, port } = await startEphemeralServer();
     try {

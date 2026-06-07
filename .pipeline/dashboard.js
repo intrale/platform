@@ -5016,10 +5016,14 @@ body.standalone .section-collapsed .section-body{display:block !important}
         </button>
         ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:var(--warning-bg,rgba(240,165,0,0.15));color:var(--warning,#f0a500);border-color:rgba(240,165,0,0.4);" aria-label="Issues permitidos: ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}">${ic('estado-partial-pause')} ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
         ${(() => {
-          // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%"
-          // visible cuando hay alerta activa NO snoozed. Si está snoozed, la
-          // pill desaparece pero el alert sigue activo bajo el capó (vuelve
-          // a aparecer cuando expire el snooze o el operador haga ack manual).
+          // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%".
+          // #3735 — render delegado al módulo costos.js (pill + banner). Si el
+          // módulo no cargó, fallback inline inerte (CA-A3) que conserva el
+          // comportamiento histórico.
+          if (costosView && typeof costosView.renderCostosPill === 'function') {
+            try { return costosView.renderCostosPill(state, { ic }); }
+            catch (e) { log(`costos pill render fail: ${e.message}`); return ''; }
+          }
           const ca = state.costAnomaly || {};
           if (!ca.visible) return '';
           const a = ca.alert || {};
@@ -5057,9 +5061,16 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </div>
   ${(() => {
     // (#2892 PR-C / CA-2.7, CA-3.4) Banner persistente de alerta de consumo
-    // anómalo. Se muestra cuando hay alerta activa Y NO está snoozed. Se
-    // cierra por: (a) acuse manual ("Ya lo vi"), (b) expira el snooze, o
-    // (c) auto-clear cuando vuelve a baseline 2 chequeos consecutivos.
+    // anómalo. #3735 — render delegado al módulo costos.js. Si el módulo no
+    // cargó, fallback inline inerte (CA-A3) que conserva el comportamiento
+    // histórico (solo se muestra cuando hay alerta visible).
+    if (costosView && typeof costosView.renderCostosBanner === 'function') {
+      try { return costosView.renderCostosBanner(state, { ic }); }
+      catch (e) {
+        log(`costos banner render fail: ${e.message}`);
+        return costosView.renderInert ? costosView.renderInert() : '';
+      }
+    }
     const ca = state.costAnomaly || {};
     if (!ca.visible) return '';
     const a = ca.alert || {};
@@ -5097,6 +5108,9 @@ body.standalone .section-collapsed .section-body{display:block !important}
     </div>
   </section>`;
   })()}
+  ${(costosView && typeof costosView.renderCostosClientScript === 'function')
+    ? costosView.renderCostosClientScript()
+    : ''}
   <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin:8px 0 4px" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">${ic('fase-build')} Consumo V3</a>
   <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
   <!-- #2893 — Banner de deps faltantes en pausa parcial -->
@@ -8928,6 +8942,12 @@ let multiProviderView = null;
 try { multiProviderApi = require('./lib/multi-provider/api'); } catch (e) { log(`multi-provider api unavailable: ${e.message}`); }
 try { multiProviderView = require('./views/dashboard/multi-provider'); } catch (e) { log(`multi-provider view unavailable: ${e.message}`); }
 
+// #3735 — API del banner de consumo anómalo migrada al módulo
+// lib/cost-anomaly/api.js (split de la ventana Costos). Lazy require: si falla,
+// el dashboard arranca sin los endpoints POST de ack/snooze.
+let costAnomalyApi = null;
+try { costAnomalyApi = require('./lib/cost-anomaly/api'); } catch (e) { log(`cost-anomaly api unavailable: ${e.message}`); }
+
 // #3681 (hijo B del épico #3669) — Widget Multi-Provider Coverage.
 // - El POST de disparo del harness vive en un módulo aparte porque
 //   `dashboard-routes.js::handle()` filtra `req.method !== 'GET'` y no puede
@@ -8946,6 +8966,14 @@ try { multiProviderCoverageView = require('./views/dashboard/multi-provider-cove
 // dashboard-routes.js, que también carga este módulo con su propio guard.
 let descansoView = null;
 try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`descanso view unavailable: ${e.message}`); }
+
+// #3735 — Ventana Costos: pill + banner de consumo anómalo extraídos del shell
+// del monolito a su propio módulo (split de #3715). Require defensivo: si falla,
+// el render del header degrada a un fallback inerte (CA-A3) sin tirar el
+// dashboard. La página standalone /consumo queda intacta (consolidación en
+// #3779).
+let costosView = null;
+try { costosView = require('./views/dashboard/costos'); } catch (e) { log(`costos view unavailable: ${e.message}`); }
 
 // #3733 — Ventana KPIs extraída del monolito (split de #3715). `kpisData`
 // provee el slice data-only (getMetricsData portado con ctx inyectado) y
@@ -9004,6 +9032,12 @@ const server = http.createServer((req, res) => {
   // #3177 — Multi-Provider: HTML del panel y API REST asociada.
   // Mounted antes que el catch-all para que `/multi-provider` no caiga al legacy.
   if (multiProviderApi && multiProviderApi.route(req, res)) {
+    return;
+  }
+
+  // #3735 — Banner de consumo anómalo: GET /state + POST /ack + /snooze con
+  // defensas CSRF D1/D2/D3. Mounted antes del catch-all GET-only.
+  if (costAnomalyApi && costAnomalyApi.route(req, res, { pipelineDir: PIPELINE, log })) {
     return;
   }
   if (multiProviderView && (req.url === '/multi-provider' || req.url === '/multi-provider/')) {
@@ -9961,94 +9995,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // =========================================================================
-  // #2892 PR-C — Banner de alerta de consumo anómalo (CA-2.7, CA-2.8, CA-3.4).
-  // GET  /api/cost-anomaly/state    → estado actual { active, raised_at,
-  //                                    actual_usd, baseline_usd, ratio,
-  //                                    top_skills, snoozed_until, ... }
-  // POST /api/cost-anomaly/ack      → "Ya lo vi" → limpia el banner
-  // POST /api/cost-anomaly/snooze   → body { hours: 1|4|24 }, cap 24h
-  // =========================================================================
-  if (req.url === '/api/cost-anomaly/state' && req.method === 'GET') {
-    if (!restModeState) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
-      return;
-    }
-    try {
-      const state = restModeState.getAlertState({ pipelineDir: PIPELINE });
-      const visible = restModeState.shouldShowBanner(state);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        ok: true,
-        state,
-        visible,
-        max_snooze_hours: restModeState.MAX_SNOOZE_HOURS,
-      }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: e.message }));
-    }
-    return;
-  }
-
-  if (req.url === '/api/cost-anomaly/ack' && req.method === 'POST') {
-    if (!restModeState) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
-      return;
-    }
-    // No body necesario — el ack es siempre el mismo gesto idempotente.
-    try {
-      const result = restModeState.ackAlert({ pipelineDir: PIPELINE });
-      log(`Cost-anomaly ack desde dashboard (acked=${result.acked})`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, acked: result.acked, state: result.state }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: e.message }));
-    }
-    return;
-  }
-
-  if (req.url === '/api/cost-anomaly/snooze' && req.method === 'POST') {
-    if (!restModeState) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
-      return;
-    }
-    let body = '';
-    req.on('data', c => { body += c; if (body.length > 4 * 1024) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const payload = body ? JSON.parse(body) : {};
-        const hours = Number(payload.hours);
-        // CA-Sec-A04b — el backend RECHAZA snooze > MAX_SNOOZE_HOURS aun
-        // cuando la UI debiera filtrarlos. snoozeAlert() devuelve ok:false
-        // con reason 'exceeds_cap' para esos casos.
-        const result = restModeState.snoozeAlert(hours, { pipelineDir: PIPELINE });
-        if (!result.ok) {
-          // 422 si el payload viene roto (cap superado, alert no activa,
-          // hours inválido). El frontend muestra un toast.
-          res.writeHead(422, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            ok: false,
-            reason: result.reason,
-            cap_hours: result.cap_hours || restModeState.MAX_SNOOZE_HOURS,
-            state: result.state,
-          }));
-          return;
-        }
-        log(`Cost-anomaly snooze desde dashboard (hours=${hours}, until=${result.state.snoozed_until})`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, state: result.state }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, msg: e.message }));
-      }
-    });
-    return;
-  }
+  // #3735 — Los endpoints del banner de consumo anómalo (GET /state,
+  // POST /ack, POST /snooze) se migraron a `lib/cost-anomaly/api.js` con las
+  // defensas CSRF D1/D2/D3 (CA-3.4) y se montean arriba vía
+  // `costAnomalyApi.route(...)` antes del catch-all. Ya no viven inline acá.
 
   const recoMatch = req.url && req.url.match(/^\/api\/recommendations\/(\d+)\/(approve|reject)$/);
   if (recoMatch && req.method === 'POST') {

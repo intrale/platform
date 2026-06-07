@@ -451,6 +451,15 @@ const VIEW_SLUGS = Object.freeze({
         title: 'Matriz',
         render: () => renderMatrizView(),
     },
+    // #3735 — Ventana Costos (split de #3715). Resuelve al MISMO renderer que
+    // el path legacy `/costos` (HTML_ROUTES → sat.renderCostos) para que
+    // `?view=costos` y `/costos` no diverjan (CA-A2). El banner/pill embebido en
+    // home se extrajo a views/dashboard/costos.js; esta entry habilita el
+    // deep-link `/dashboard?view=costos` (CA-1.2).
+    costos: {
+        title: 'Costos',
+        render: (opts) => sat.renderCostos(opts),
+    },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
     // 'multi-provider-coverage': { title: 'Multi-provider Coverage', render: () => mpc.renderMultiProviderCoverage() },
