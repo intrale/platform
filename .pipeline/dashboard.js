@@ -1400,13 +1400,13 @@ function renderRecommendationsSection() {
   return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
 }
 
+const { escapeHtmlAttr: __escapeHtmlAttrShared } = require('./lib/escape-html');
+// #3722 (cierra #2901) — la implementación local delega al helper compartido.
+// Los 60+ call sites de escapeHtml(...) en este archivo se mantienen sin cambio;
+// las hijas de #3715 que extraigan ventanas a views/dashboard/<slug>.js van a
+// importar escapeHtmlText/escapeHtmlAttr directo desde el helper.
 function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return __escapeHtmlAttrShared(s);
 }
 
 // #3638 CA-F-12 / CA-SEC-9 — Widget de estado del ghost-artifact-cleaner.
