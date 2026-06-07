@@ -39,6 +39,7 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | Grid de procesos del pipeline | `satellites.js` `renderOps` | ventana `ops` (`#ops-procesos`) | migrado | #3732 — 5 cards (listener/svc-telegram/svc-github/svc-drive/svc-emulador) con estado alive/dead, PID, uptime, chips de cola (`PROC_QUEUES`). listener+svc-telegram heredan `bot-down` con TG caído. |
 | Reconciler · stale orders 24h | `satellites.js` `renderOps` | ventana `ops` (`#stale-orders-count`) | migrado | #3732 — número grande + breakdown por motivo. Datos client-fill desde `/api/dash/reconciler-stale-orders` (sin cambio de endpoint). |
 | QA Environment (dump JSON `<pre>`) | `satellites.js` `renderOps` (`#ops-qaenv`) | ventana `ops` (`#ops-qaenv`) | migrado | #3732 — **rediseñado (CA-C2)**: el `<pre>` con JSON crudo se reemplaza por 4 mini-cards (`qaEnv`/`qaRemote`/`infraHealth`/`telegramHealth`) con badge de salud + meta key:value + último error truncado a 80 chars. |
+| Modo descanso (calendario semanal) | `views/dashboard/satellites.js` `renderModoDescanso` (legacy 1576-2121) | ventana `descanso` (`views/dashboard/descanso.js`) | migrado | #3736 — extraído a módulo propio + slug `descanso`. Path legacy `/modo-descanso` sigue vivo (delegante de 1 línea en satellites.js). Tooltips CA-C1. Ver sección dedicada. |
 
 ## Decisiones de diseño (#3732 — ventana Ops)
 
@@ -91,3 +92,69 @@ El dashboard asume **binding loopback (localhost) sin autenticación ni CSRF**. 
 - A09 Logging Failures: falta audit log de acciones del control bar (recomendación no bloqueante).
 
 Las piezas nuevas (infra health, system card) aplican **whitelist estricta de campos**: nunca emiten token de Telegram, `chat_id`, `os.hostname()`, `process.cwd()`, `os.userInfo()`, paths absolutos ni `process.env.*` (validado por tests en `home.test.js`).
+
+## Ventana Descanso — split #3736
+
+> Extracción de la ventana **Modo descanso** del monolito a su propio módulo
+> (`views/dashboard/descanso.js`), siguiendo el patrón de `home.js` /
+> `multi-provider.js`. Padre: épico #3715.
+
+### Identidad
+
+| Atributo | Valor |
+|----------|-------|
+| Slug nuevo (router cliente) | `descanso` (`?view=descanso`) — registrado en `lib/dashboard-routes.js::VIEW_SLUGS` |
+| Path legacy (deep-link directo) | `/modo-descanso` — registrado en `HTML_ROUTES`, **se mantiene sin redirect** |
+| Módulo | `views/dashboard/descanso.js` |
+| Origen legacy | `views/dashboard/satellites.js::renderModoDescanso` (líneas 1576-2121 antes del split) |
+| Exports | `{ renderDescanso, renderDescansoInner, slug: 'descanso' }` |
+| Endpoint REST que la hidrata | `GET /api/rest-mode` (lectura, polling 8s) + `POST /api/rest-mode` (guardar) |
+
+Discrepancia de slug deliberada (`/modo-descanso` legacy vs `?view=descanso`
+nuevo): ambos orígenes operativos conviven sin redirect — deep-link directo vs
+router cliente, mismo patrón que `ops` en #3732.
+
+### Piezas estructurales (4)
+
+1. **`#rm-status`** — banner de estado actual (activo/inactivo + sub-texto).
+2. **`#rm-form` / `#rm-grid`** — formulario + grid semanal de 7 columnas con N
+   periodos por día (editor in-memory, no sincroniza mientras se edita; debounce 3s).
+3. **`#rm-bypass`** — labels de bypass (read-only, viven en `config.yaml`).
+4. **`#rm-updated`** — timestamp de última actualización.
+
+### Acciones operativas + tooltips (CA-C1)
+
+| Acción | Selector | Tooltip (`title` + `aria-label`) |
+|--------|----------|----------------------------------|
+| Activar/desactivar modo descanso | checkbox `#rm-active` | "Si destildás, el pipeline opera sin restricciones (CA-1.9)" |
+| Guardar configuración | `#rm-save` | "Hot-reload sin reinicio del pipeline. El backend revalida la grilla." |
+| Agregar periodo | `.rm-col-add` (client-side) | "Máximo 24 periodos por día" / aria "Agregar periodo (máximo 24 por día)" |
+| Eliminar periodo | `.rm-period-remove` (client-side) | "Eliminar periodo" |
+
+Las 3 acciones mutantes pasan por `POST /api/rest-mode`, que ya tiene audit
+(`rest-mode-audit.jsonl`, SEC-A03) + hot-reload. NO se introdujo CSRF nuevo en
+este split (modelo kiosk loopback — ver disclaimer OWASP A01 más arriba).
+
+### Duplicación deliberada cliente/backend
+
+El JS embebido replica la validación de overlap/HH:MM/cap (`MAX_PERIODS_PER_DAY`)
+de `lib/rest-mode-schedule.js`. **Se preserva tal cual** (FE-SEC-1 / SEC-9): el
+cliente NUNCA confía en su validación, siempre hace round-trip a `POST
+/api/rest-mode` (source of truth). NO se consolida en un módulo client-side
+compartido en este split — es decisión arquitectónica del #2890 PR-A.
+
+### Escape SSR
+
+Usa `lib/escape-html.js` (#3722, CA-B3) en vez de un `escapeHtmlSsr` inline.
+El SSR sólo interpola `opts.tz` opcional (prefill del input de zona horaria),
+escapado en contexto atributo (`escapeHtmlAttr`). Toda la demás hidratación es
+client-side via `fetch('/api/rest-mode')`, con `createElement` + `textContent`
+(sin `innerHTML` sobre datos del servidor — cubierto por test XSS guard).
+
+### Tests
+
+`views/dashboard/__tests__/descanso.test.js` (`node --test`): exports canónicos,
+estructura SSR (5 selectores), fragmento inner sin shell, XSS guard sobre el JS
+embebido, escape OWASP del payload por `opts.tz`, y presencia de tooltips. Smoke:
+`/modo-descanso` y `/dashboard?view=descanso` devuelven 200 con los 4 selectores
+estructurales (verificado vía `handle()`).

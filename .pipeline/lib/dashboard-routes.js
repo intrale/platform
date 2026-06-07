@@ -74,6 +74,12 @@ function _opsInertFallback(reason) {
         '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3 / REQ-SEC-7).</p></main></body></html>';
 }
 
+// #3736 — Ventana Descanso extraída a su propio módulo (padre #3715). Require
+// defensivo: si el módulo aún no aterrizó, HTML_ROUTES/VIEW_SLUGS caen al
+// renderer legacy de satellites.js (delegante de una línea).
+let descansoView = null;
+try { descansoView = require('../views/dashboard/descanso'); } catch { /* fallback a sat.renderModoDescanso */ }
+
 // #2976 — Lectura defensiva del flag de cuota Anthropic agotada.
 // El módulo `./quota-exhausted-state` envuelve a `./quota-exhausted` (#2974,
 // PR #2990 ya en main). El try/catch es defensa de cinturón en caso de que
@@ -247,7 +253,10 @@ const HTML_ROUTES = {
     '/kpis': sat.renderKpisDetail,
     '/historial': sat.renderHistorial,
     '/costos': sat.renderCostos,
-    '/modo-descanso': sat.renderModoDescanso,
+    // #3736 — guard: usa el módulo extraído si está disponible, si no el legacy.
+    '/modo-descanso': () => (descansoView && descansoView.renderDescanso)
+        ? descansoView.renderDescanso()
+        : sat.renderModoDescanso(),
 };
 
 // #3723 — Router cliente `?view=<slug>` + endpoint `/dashboard/partial`.
@@ -287,6 +296,15 @@ const VIEW_SLUGS = Object.freeze({
     ops: {
         title: 'Ops',
         render: (opts, ctx) => renderOpsView(ctx, opts),
+    },
+    // #3736 — Ventana Descanso (slug nuevo `descanso`; el path legacy
+    // `/modo-descanso` sigue vivo en HTML_ROUTES sin redirect — orígenes
+    // operativos distintos: deep-link directo vs router cliente).
+    descanso: {
+        title: 'Descanso',
+        render: (opts) => (descansoView && descansoView.renderDescanso)
+            ? descansoView.renderDescanso(opts)
+            : sat.renderModoDescanso(),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
