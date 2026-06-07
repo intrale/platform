@@ -3037,9 +3037,15 @@ function renderQuotaBannerSsr(quotaState) {
     </div>
   </section>`;
     }
-    const errorType = escapeHtmlText(quotaState.error_type || 'usage_limit_error');
-    const detectedAt = escapeHtmlText(quotaState.detected_at || '');
-    const resetsAt = escapeHtmlText(quotaState.resets_at || '');
+    // Datos provistos por el slice (error_type/detected_at/resets_at) usan
+    // escapeHtmlAttr — superset de escapeHtmlText que además neutraliza comillas
+    // (`"` → &quot;, `'` → &#39;). Defensa en profundidad contra timestamps/tipos
+    // manipulados con caracteres HTML, contrato fijado por el test CA-10
+    // (dashboard-quota-exhausted.test.js). Restaura el comportamiento del antiguo
+    // escapeHtmlSsr inline tras la migración a lib/escape-html.js (#3722).
+    const errorType = escapeHtmlAttr(quotaState.error_type || 'usage_limit_error');
+    const detectedAt = escapeHtmlAttr(quotaState.detected_at || '');
+    const resetsAt = escapeHtmlAttr(quotaState.resets_at || '');
     const hhmm = escapeHtmlText(fmtHHMMLocalSsr(quotaState.resets_at));
     const remainingMs = Math.max(0, (quotaState.resets_at_ms || 0) - Date.now());
     const inText = escapeHtmlText(fmtCountdownSsr(remainingMs));
