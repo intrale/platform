@@ -132,6 +132,34 @@ test('GET /dashboard?view=home → Content-Type text/html; charset=utf-8', () =>
 });
 
 // -----------------------------------------------------------------------------
+// #3731 — Ventana Matriz: smoke de routing por slug nuevo + path legacy (CA-G2).
+// El slug `matriz` pertenece a la allowlist VIEW_SLUGS y resuelve al módulo
+// extraído views/dashboard/matriz.js (no al monolito satellites.js).
+// -----------------------------------------------------------------------------
+
+test('GET /dashboard?view=matriz → 200 con la ventana Matriz extraída (CA-G2)', () => {
+    const { handle } = fresh();
+    const req = fakeReq({ url: '/dashboard?view=matriz' });
+    const res = fakeRes();
+    const handled = handle(req, res, fakeCtx);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.body.includes('id="matriz-table"'), 'falta el contenedor de la grilla Matriz');
+    assert.ok(res.body.includes('<title>Intrale · Matriz</title>'), 'falta el título de la ventana');
+    assert.ok(res.body.includes('mtx-legend'), 'falta la leyenda del heat-map (CA-C3)');
+});
+
+test('GET /matriz (path legacy) → 200 con la ventana Matriz extraída (CA-A2)', () => {
+    const { handle } = fresh();
+    const req = fakeReq({ url: '/matriz' });
+    const res = fakeRes();
+    const handled = handle(req, res, fakeCtx);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.body.includes('id="matriz-table"'), 'legacy /matriz debe servir la misma ventana');
+});
+
+// -----------------------------------------------------------------------------
 // CA-S2 — loopback gate del partial endpoint.
 // -----------------------------------------------------------------------------
 
