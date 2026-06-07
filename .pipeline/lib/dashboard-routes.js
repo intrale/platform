@@ -80,6 +80,98 @@ function _opsInertFallback(reason) {
 let descansoView = null;
 try { descansoView = require('../views/dashboard/descanso'); } catch { /* fallback a sat.renderModoDescanso */ }
 
+// #3733 — Vista KPIs extraída (split de #3715). Require defensivo: si el
+// módulo (o sus deps, ej. lib/escape-html.js) no carga, la entry `kpis` del
+// router degrada a un panel inerte visible (CA-A3) en vez de tirar 500.
+let kpisView = null;
+try { kpisView = require('../views/dashboard/kpis'); } catch { /* opcional */ }
+
+// Render de la ventana KPIs con el state en vivo + fallback inerte. Consumido
+// por el path legacy `/kpis` (HTML_ROUTES) y por `?view=kpis` (VIEW_SLUGS),
+// ambos al MISMO thunk para que no diverjan (CA-A2). Compone:
+//   - kpisSlice (DORA-like: PRs/tokens24h/duración/cycle/rebote) — slice existente.
+//   - matrixDerived (Definidos/Pendientes/Trabajando/Bloqueados/Necesitan humano).
+//   - sysMini (CPU/RAM/salud) desde state.resources.
+//   - routingMetrics (Commander determinístico vs LLM, 7d).
+//   - metricsSlice (agentPerf + sesiones) vía ctx.getMetricsData (DI desde dashboard.js).
+function renderKpisView(ctx, opts) {
+    if (!kpisView || typeof kpisView.renderKpis !== 'function') {
+        return _kpisInertFallback('módulo views/dashboard/kpis no disponible (require falló)');
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        const kSlice = slices.kpisSlice(state || {}, ctx || {});
+        const metricsSlice = (ctx && typeof ctx.getMetricsData === 'function') ? ctx.getMetricsData() : null;
+        return kpisView.renderKpis(Object.assign({}, opts || {}, {
+            kpisSlice: kSlice,
+            metricsSlice,
+            matrixDerived: _deriveKpiCounts(state || {}, ctx),
+            sysMini: _deriveSysMini(state || {}),
+            routingMetrics: _computeRoutingMetricsSafe(),
+        }));
+    } catch (e) {
+        if (typeof kpisView.renderInert === 'function') return kpisView.renderInert((e && e.message) || 'error de render');
+        return _kpisInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo kpis NO cargó.
+function _kpisInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · KPIs</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana KPIs no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
+// Conteos del KPI row, replicando la lógica del home (dashboard.js:1577-1689).
+// Consumidor de state (R2): no recomputa el matrix, lo lee.
+function _deriveKpiCounts(state, ctx) {
+    const entries = Object.entries(state.issueMatrix || {});
+    const trabajando = entries.filter(([, d]) => d && d.estadoActual === 'trabajando').length;
+    const pendientes = entries.filter(([, d]) => d && d.estadoActual === 'pendiente').length;
+    const blockedBy = (state.blockedIssues && state.blockedIssues.blockedBy) || {};
+    const blockedCount = entries.filter(([num, d]) => blockedBy[num] != null && d && d.estadoActual).length;
+    const needsHuman = Array.isArray(state.bloqueados) ? state.bloqueados.length : 0;
+    let definidos = 0;
+    try {
+        const config = (ctx && typeof ctx.loadConfig === 'function') ? ctx.loadConfig() : null;
+        const defFases = (config && config.pipelines && config.pipelines.definicion && config.pipelines.definicion.fases) || [];
+        const lastDef = defFases[defFases.length - 1];
+        if (lastDef) {
+            definidos = entries.filter(([, d]) => {
+                const e = (d && d.fases && d.fases['definicion/' + lastDef]) || [];
+                return e.some(x => x && x.estado === 'procesado');
+            }).length;
+        }
+    } catch { /* sin config → definidos = 0 */ }
+    return { definidos, pendientes, trabajando, blockedCount, needsHuman };
+}
+
+// Mini-card de salud del sistema (CPU/RAM + score), espejo de dashboard.js:2745-2765.
+function _deriveSysMini(state) {
+    const r = state.resources || {};
+    const cpu = (r.cpuPercent == null) ? null : r.cpuPercent;
+    const mem = (r.memPercent == null) ? null : r.memPercent;
+    const maxCpu = r.maxCpu || 70;
+    const maxMem = r.maxMem || 70;
+    const worstUtil = Math.min(1, Math.max((cpu || 0) / Math.max(1, maxCpu), (mem || 0) / Math.max(1, maxMem)));
+    const healthScore = Math.max(0, Math.round((1 - worstUtil) * 100));
+    const health = healthScore > 60 ? 'Óptimo' : healthScore > 30 ? 'Presionado' : healthScore > 10 ? 'Crítico' : 'Saturado';
+    return { cpu, mem, health, healthScore };
+}
+
+// Commander routing (determinístico vs LLM, 7d). Lectura defensiva: si el módulo
+// o los logs faltan, devuelve {} y la vista degrada a "—".
+function _computeRoutingMetricsSafe() {
+    try {
+        const commanderDet = require('./commander-deterministic');
+        const LOG_DIR = path.join(__dirname, '..', 'logs');
+        const routing = commanderDet.computeRoutingMetrics(LOG_DIR, { days: 7 });
+        const today = (routing.buckets && routing.buckets[routing.buckets.length - 1]) || {};
+        return { today };
+    } catch { return {}; }
+}
+
 // #2976 — Lectura defensiva del flag de cuota Anthropic agotada.
 // El módulo `./quota-exhausted-state` envuelve a `./quota-exhausted` (#2974,
 // PR #2990 ya en main). El try/catch es defensa de cinturón en caso de que
@@ -250,7 +342,9 @@ const HTML_ROUTES = {
     // #3732 — /ops ahora resuelve al módulo extraído views/dashboard/ops.js
     // con el state en vivo (opsSlice). Recibe ctx desde handle().
     '/ops': (ctx) => renderOpsView(ctx),
-    '/kpis': sat.renderKpisDetail,
+    // #3733 — /kpis resuelve al módulo extraído views/dashboard/kpis.js con el
+    // state en vivo. Mismo thunk que `?view=kpis` (VIEW_SLUGS) para no divergir.
+    '/kpis': (ctx) => renderKpisView(ctx),
     '/historial': sat.renderHistorial,
     '/costos': sat.renderCostos,
     // #3736 — guard: usa el módulo extraído si está disponible, si no el legacy.
@@ -305,6 +399,15 @@ const VIEW_SLUGS = Object.freeze({
         render: (opts) => (descansoView && descansoView.renderDescanso)
             ? descansoView.renderDescanso(opts)
             : sat.renderModoDescanso(),
+    },
+    // #3733 — Ventana KPIs extraída (split de #3715). El render recibe
+    // (opts, ctx) desde handle() para inyectar el state en vivo (slice KPIs)
+    // y resolver al MISMO thunk que el path legacy `/kpis` (HTML_ROUTES), para
+    // que ambos no diverjan (CA-A2). Degrada a panel inerte visible (CA-A3) si
+    // el módulo no cargó.
+    kpis: {
+        title: 'KPIs',
+        render: (opts, ctx) => renderKpisView(ctx, opts),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
