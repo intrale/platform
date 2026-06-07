@@ -80,6 +80,38 @@ function _opsInertFallback(reason) {
 let descansoView = null;
 try { descansoView = require('../views/dashboard/descanso'); } catch { /* fallback a sat.renderModoDescanso */ }
 
+// #3731 — Ventana Matriz extraída del monolito `satellites.js` a su propio
+// módulo (split del épico #3715). Require defensivo (patrón CA-A2): si el
+// módulo falla al cargar, `renderMatrizView` cae a un fallback inerte VISIBLE
+// (CA-A3) en lugar de dejar la ventana en blanco o tirar 500. Ventana
+// READ-ONLY: hidrata client-side desde `/api/dash/pipeline`.
+let matrizView = null;
+try { matrizView = require('../views/dashboard/matriz'); } catch { /* opcional */ }
+
+// Render de la ventana Matriz con fallback inerte. Consumido por el path
+// legacy `/matriz` (HTML_ROUTES) y por `?view=matriz` (VIEW_SLUGS), ambos al
+// MISMO thunk para que no diverjan (CA-A2). No requiere state inyectado: la
+// grilla se hidrata 100% client-side.
+function renderMatrizView() {
+    if (!matrizView || typeof matrizView.renderMatriz !== 'function') {
+        return _matrizInertFallback('módulo views/dashboard/matriz no disponible (require falló)');
+    }
+    try {
+        return matrizView.renderMatriz();
+    } catch (e) {
+        return _matrizInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo matriz NO cargó. Escapa el
+// motivo para no abrir reflexión cruda (CA-A3).
+function _matrizInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Matriz</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Matriz no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
 // #3733 — Vista KPIs extraída (split de #3715). Require defensivo: si el
 // módulo (o sus deps, ej. lib/escape-html.js) no carga, la entry `kpis` del
 // router degrada a un panel inerte visible (CA-A3) en vez de tirar 500.
@@ -338,7 +370,9 @@ const HTML_ROUTES = {
     '/pipeline': sat.renderPipeline,
     '/bloqueados': sat.renderBloqueados,
     '/issues': sat.renderIssues,
-    '/matriz': sat.renderMatriz,
+    // #3731 — `/matriz` resuelve al módulo extraído (mismo thunk que
+    // `?view=matriz`). Si el módulo no cargó, degrada a fallback inerte (CA-A3).
+    '/matriz': () => renderMatrizView(),
     // #3732 — /ops ahora resuelve al módulo extraído views/dashboard/ops.js
     // con el state en vivo (opsSlice). Recibe ctx desde handle().
     '/ops': (ctx) => renderOpsView(ctx),
@@ -408,6 +442,14 @@ const VIEW_SLUGS = Object.freeze({
     kpis: {
         title: 'KPIs',
         render: (opts, ctx) => renderKpisView(ctx, opts),
+    },
+    // #3731 — Ventana Matriz (slug `matriz`). Resuelve al MISMO thunk que el
+    // path legacy `/matriz` (HTML_ROUTES) para que ambos no diverjan (CA-A2).
+    // Degrada a panel inerte visible (CA-A3) si el módulo no cargó. READ-ONLY:
+    // no requiere ctx/state, hidrata client-side desde `/api/dash/pipeline`.
+    matriz: {
+        title: 'Matriz',
+        render: () => renderMatrizView(),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },

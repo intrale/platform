@@ -40,6 +40,7 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | Reconciler · stale orders 24h | `satellites.js` `renderOps` | ventana `ops` (`#stale-orders-count`) | migrado | #3732 — número grande + breakdown por motivo. Datos client-fill desde `/api/dash/reconciler-stale-orders` (sin cambio de endpoint). |
 | QA Environment (dump JSON `<pre>`) | `satellites.js` `renderOps` (`#ops-qaenv`) | ventana `ops` (`#ops-qaenv`) | migrado | #3732 — **rediseñado (CA-C2)**: el `<pre>` con JSON crudo se reemplaza por 4 mini-cards (`qaEnv`/`qaRemote`/`infraHealth`/`telegramHealth`) con badge de salud + meta key:value + último error truncado a 80 chars. |
 | Modo descanso (calendario semanal) | `views/dashboard/satellites.js` `renderModoDescanso` (legacy 1576-2121) | ventana `descanso` (`views/dashboard/descanso.js`) | migrado | #3736 — extraído a módulo propio + slug `descanso`. Path legacy `/modo-descanso` sigue vivo (delegante de 1 línea en satellites.js). Tooltips CA-C1. Ver sección dedicada. |
+| Matriz (skill × fase, carga actual) | `views/dashboard/satellites.js` `renderMatriz` (legacy 937-1015) | ventana `matriz` (`views/dashboard/matriz.js`) | migrado | #3731 — extraído a módulo propio + slug `matriz`. Path legacy `/matriz` resuelve al MISMO thunk (`renderMatrizView`), `renderMatriz` eliminado de satellites.js + de su `module.exports`. Leyenda heat-map (CA-C3) + tooltips en headers/celdas (CA-C1). Ver sección dedicada. |
 
 ## Decisiones de diseño (#3732 — ventana Ops)
 
@@ -327,3 +328,68 @@ curl -s 'http://127.0.0.1:3200/' | grep -c 'id="costos-window"\|data-section="co
 # Debe devolver 4
 ```
 
+
+## Ventana Matriz — split #3731
+
+Extracción de la ventana **Matriz** (carga actual del pipeline: skill × fase)
+del monolito `satellites.js` a su propio módulo, siguiendo el patrón de las
+hermanas ya migradas (`descanso.js`, `ops.js`, `kpis.js`).
+
+### Identidad
+
+| Atributo | Valor |
+|----------|-------|
+| Slug nuevo (router cliente) | `matriz` (`?view=matriz`) — registrado en `lib/dashboard-routes.js::VIEW_SLUGS` |
+| Path legacy (deep-link directo) | `/matriz` — registrado en `HTML_ROUTES`, resuelve al MISMO thunk (`renderMatrizView`) |
+| Módulo | `views/dashboard/matriz.js` |
+| Origen legacy | `views/dashboard/satellites.js::renderMatriz` (líneas 937-1015 antes del split) |
+| Exports | `{ renderMatriz, renderMatrizInner, slug: 'matriz', escapeHtmlSsr, MATRIZ_CSS }` |
+| Endpoint REST que la hidrata | `GET /api/dash/pipeline` (lectura, polling 30s · `fases` + `matrixCounts`) |
+| Tipo de ventana | **READ-ONLY** — sin `<form>`, sin POST, sin acciones mutantes |
+
+### Piezas estructurales
+
+- `#matriz-table` — contenedor de la grilla, hidratado client-side por `tickMatriz`
+  (DOM morphing: sólo reescribe `innerHTML` si el HTML cambió → anti-flicker).
+- `.mtx-legend` — leyenda del heat-map (CA-C3): explica los tres estados de celda
+  (sin carga `·`, 1–4 carga normal, 5+ cuello de botella).
+- Header satélite (`#hdr-mode` / `#hdr-clock`) + nav V3 (`renderNavTabsSsr('matriz')`).
+
+### Rediseño V3 (vs legacy)
+
+- **Leyenda heat-map nueva** (CA-C3): el legacy mostraba colores de celda sin
+  explicación. Ahora hay tres swatches con `title` describiendo cada umbral.
+- **Tooltips** (CA-C1): encabezados de columna (`P:fase` → `pipeline/fase`
+  completo), celdas con carga (`N issues de <skill> en <pipeline/fase>`) y fila
+  de totales. Construidos con `title=""` sobre valores escapados.
+- **Subtítulo de lectura**: una línea explicando cómo interpretar la grilla
+  (celda alta = cuello de botella del skill en esa fase).
+- **Accesibilidad**: contenedor con `role="region"` + `aria-live="polite"`.
+
+### Seguridad — escape (CA-B3 / CA-D1)
+
+- El SSR de Matriz **no interpola datos del servidor**: la grilla se construye
+  100% client-side desde el JSON del endpoint. `escapeHtmlSsr` (delegando en
+  `lib/escape-html.js`, #3722) queda como punto único de paso para cualquier
+  interpolación futura.
+- El `<script>` embebido escapa **todo** valor del servidor (nombres de skill,
+  claves `pipeline/fase`) con `escapeHtml()` antes de tocar `innerHTML` — única
+  asignación, sin concatenación cruda. Test XSS canónico cubre ≥4 payloads.
+
+### Tests (CA-G1 / CA-G2)
+
+- `views/dashboard/__tests__/matriz.test.js` — exports, estructura SSR completa,
+  fragmento inner sin shell, leyenda+tooltips, XSS guards (payload canónico),
+  hidratación read-only desde `/api/dash/pipeline`.
+- `lib/__tests__/dashboard-router-view.test.js` — smoke de routing por slug nuevo
+  (`?view=matriz`) y path legacy (`/matriz`) a través de `handle()` (CA-G2/CA-A2).
+
+### Smoke curl (CA-G2)
+
+```bash
+# Slug nuevo del router cliente
+curl -s 'http://127.0.0.1:3200/dashboard?view=matriz' | grep -q 'id="matriz-table"'
+
+# Path legacy (deep-link directo) — misma ventana
+curl -s 'http://127.0.0.1:3200/matriz' | grep -q 'id="matriz-table"'
+```
