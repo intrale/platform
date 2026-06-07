@@ -39,6 +39,41 @@ const slices = require('./dashboard-slices');
 const home = require('../views/dashboard/home');
 const sat = require('../views/dashboard/satellites');
 
+// #3732 — Vista Ops extraída del monolito `satellites.js` a su propio módulo
+// (split del épico #3715). Require defensivo (patrón CA-A2): si el módulo falla
+// al cargar, `renderOpsView` cae a un fallback inerte VISIBLE (CA-A3 / REQ-SEC-7)
+// en lugar de dejar la ventana en blanco o tirar 500.
+let opsView = null;
+try { opsView = require('../views/dashboard/ops'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] ops view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+// Render de la ventana Ops con el state en vivo (opsSlice) + fallback inerte.
+// Consumido por el path legacy `/ops` (HTML_ROUTES) y por `?view=ops` (VIEW_SLUGS).
+// Ambos resuelven al MISMO thunk para que no diverjan (riesgo declarado en #3732).
+function renderOpsView(ctx, opts) {
+    if (!opsView || typeof opsView.renderOps !== 'function') {
+        return _opsInertFallback('módulo views/dashboard/ops no disponible (require falló)');
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : null;
+        return opsView.renderOps(slices.opsSlice(state || {}), opts);
+    } catch (e) {
+        if (typeof opsView.renderInert === 'function') return opsView.renderInert((e && e.message) || 'error de render');
+        return _opsInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo ops NO cargó (no podemos
+// usar opsView.renderInert porque opsView es null). Escapa el motivo.
+function _opsInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Ops</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Ops no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3 / REQ-SEC-7).</p></main></body></html>';
+}
+
 // #2976 — Lectura defensiva del flag de cuota Anthropic agotada.
 // El módulo `./quota-exhausted-state` envuelve a `./quota-exhausted` (#2974,
 // PR #2990 ya en main). El try/catch es defensa de cinturón en caso de que
@@ -206,7 +241,9 @@ const HTML_ROUTES = {
     '/bloqueados': sat.renderBloqueados,
     '/issues': sat.renderIssues,
     '/matriz': sat.renderMatriz,
-    '/ops': sat.renderOps,
+    // #3732 — /ops ahora resuelve al módulo extraído views/dashboard/ops.js
+    // con el state en vivo (opsSlice). Recibe ctx desde handle().
+    '/ops': (ctx) => renderOpsView(ctx),
     '/kpis': sat.renderKpisDetail,
     '/historial': sat.renderHistorial,
     '/costos': sat.renderCostos,
@@ -242,6 +279,14 @@ const VIEW_SLUGS = Object.freeze({
             opts || {},
             { quotaState: _getQuotaStateSafe() }
         )),
+    },
+    // #3732 — Ventana Ops extraída (split del épico #3715). El render recibe
+    // (opts, ctx) desde handle() para inyectar el state en vivo (opsSlice).
+    // Resuelve al MISMO thunk que el path legacy `/ops` (HTML_ROUTES) para que
+    // ambos no diverjan (CA-A2 + smoke CA-G2).
+    ops: {
+        title: 'Ops',
+        render: (opts, ctx) => renderOpsView(ctx, opts),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
@@ -525,7 +570,9 @@ function handle(req, res, ctx) {
             unknownViewRequested: !valid,
         };
         try {
-            sendHtml(res, VIEW_SLUGS[slug].render(opts));
+            // #3732 — `ctx` como 2º arg: las vistas con state en vivo (ops)
+            // lo consumen; las que no (home) lo ignoran (firma retrocompatible).
+            sendHtml(res, VIEW_SLUGS[slug].render(opts, ctx));
         } catch (e) {
             try { console.error(JSON.stringify({ event: 'dashboard_render_error', slug, msg: e.message, ts: new Date().toISOString() })); } catch {}
             res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -575,7 +622,7 @@ function handle(req, res, ctx) {
             return true;
         }
         try {
-            sendPartialHtml(res, VIEW_SLUGS[reqSlug].render({ currentView: reqSlug }));
+            sendPartialHtml(res, VIEW_SLUGS[reqSlug].render({ currentView: reqSlug }, ctx));
         } catch (e) {
             try { console.error(JSON.stringify({ event: 'partial_render_error', slug: reqSlug, msg: e.message, ts: new Date().toISOString() })); } catch {}
             res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -637,7 +684,9 @@ function handle(req, res, ctx) {
     }
 
     if (HTML_ROUTES[apiPath]) {
-        try { sendHtml(res, HTML_ROUTES[apiPath]()); }
+        // #3732 — `ctx` pasado a los renderers HTML: ops lo usa para el state
+        // en vivo; el resto (sat.*) lo ignora (firma sin args, retrocompatible).
+        try { sendHtml(res, HTML_ROUTES[apiPath](ctx)); }
         catch (e) {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
             res.end('error rendering page: ' + (e.message || e));
