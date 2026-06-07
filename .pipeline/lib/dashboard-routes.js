@@ -86,6 +86,39 @@ try { descansoView = require('../views/dashboard/descanso'); } catch { /* fallba
 let kpisView = null;
 try { kpisView = require('../views/dashboard/kpis'); } catch { /* opcional */ }
 
+// #3731 — Vista Matriz extraída (split de #3715). Require defensivo. El partial
+// endpoint sólo dispone de `ctx.getState()` (→ state.bloqueados): los builders
+// del Board Kanban (lanesHTML/doneLaneHTML/activeIssues/...) viven en el monolito
+// `dashboard.js` y NO se reconstruyen acá (decisión D1 / riesgo R1 del análisis).
+// Por eso el partial degrada a un esqueleto: panel "Necesitan intervención
+// humana" hidratado desde state + Board Kanban con lanes vacías ("Cargando…").
+// La primera carga rica del board sigue viniendo por `/` (SSR completo) + DOM
+// morphing client-side. Documentado en docs/pipeline/dashboard-v3-inventory.md.
+let matrizView = null;
+try { matrizView = require('../views/dashboard/matriz'); } catch { /* opcional */ }
+
+// Render de la ventana Matriz para el router (`?view=matriz`). Inyecta el state
+// en vivo (bloqueados) y degrada a home si el módulo no cargó (CA-A3).
+function renderMatrizView(ctx, opts) {
+    if (!matrizView || typeof matrizView.renderMatrizSsr !== 'function') {
+        return VIEW_SLUGS.home.render(opts);
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        const inner = matrizView.renderMatrizSsr(Object.assign({}, opts || {}, { state: state || {} }));
+        // CA-1 (PO) — el partial responde con `<title>` + shell mínimo. El board
+        // rico se hidrata por DOM morphing desde `/`; acá basta el esqueleto con
+        // los IDs invariantes (CA-3) ya presentes en `inner`.
+        const theme = (typeof matrizView.loadTheme === 'function') ? matrizView.loadTheme() : '';
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+            + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            + '<title>Intrale · Matriz</title><style>' + theme + '</style></head>'
+            + '<body><main class="dashboard-main matriz-partial">' + inner + '</main></body></html>';
+    } catch {
+        return VIEW_SLUGS.home.render(opts);
+    }
+}
+
 // Render de la ventana KPIs con el state en vivo + fallback inerte. Consumido
 // por el path legacy `/kpis` (HTML_ROUTES) y por `?view=kpis` (VIEW_SLUGS),
 // ambos al MISMO thunk para que no diverjan (CA-A2). Compone:
@@ -408,6 +441,15 @@ const VIEW_SLUGS = Object.freeze({
     kpis: {
         title: 'KPIs',
         render: (opts, ctx) => renderKpisView(ctx, opts),
+    },
+    // #3731 — Ventana Matriz (panel "Necesitan intervención humana" + Board
+    // Kanban). El render recibe (opts, ctx) para inyectar el state en vivo
+    // (state.bloqueados). El Board Kanban degrada a esqueleto (lanes vacías):
+    // los builders viven en dashboard.js (decisión D1). Degrada a home si el
+    // módulo no cargó (CA-A3).
+    matriz: {
+        title: 'Matriz',
+        render: (opts, ctx) => renderMatrizView(ctx, opts),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },

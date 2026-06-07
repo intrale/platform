@@ -2370,102 +2370,17 @@ function generateHTML(state) {
 
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
-  // #2523 CA-10: usar el `esc()` server-side global (antes habia 5 escapadores duplicados).
-  const bloqueadosHTML = bloqueados.length === 0 ? '' : `
-    <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
-      <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
-        <span class="needs-human-pulse">🚨</span>
-        Necesitan intervención humana
-        <span class="needs-human-badge">${bloqueados.length}</span>
-        <span class="needs-human-chevron">▼</span>
-        <a class="section-popout" href="/?section=needs-human" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-      </h2>
-      <div class="needs-human-body">
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
-        ${bloqueados.map(b => {
-          const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
-          const ageCls = b.age_hours >= 4 ? 'needs-human-age-old' : 'needs-human-age-fresh';
-          // #2523 CA-10: usar `esc()` server-side global (antes habia 5 escapadores duplicados).
-          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${esc(b.title)}</span>` : '';
-          const reasonTxt = (b.question || b.reason || '').toString();
-          const summaryTxt = (b.summary || '').toString();
-          const events = Array.isArray(b.recent_events) ? b.recent_events : [];
-          // Tiempo relativo compacto para los eventos: "12h", "3d", "ahora"
-          const relTime = (whenIso) => {
-            if (!whenIso) return '';
-            const t = Date.parse(whenIso);
-            if (!t) return '';
-            const diffMs = Date.now() - t;
-            const min = Math.round(diffMs / 60000);
-            if (min < 1) return 'ahora';
-            if (min < 60) return `${min}min`;
-            const hr = Math.round(min / 60);
-            if (hr < 24) return `${hr}h`;
-            const d = Math.round(hr / 24);
-            return `${d}d`;
-          };
-          const eventsHtml = events.length === 0 ? '' : `
-            <div class="needs-human-events">
-              <div class="needs-human-events-label">📜 Actividad reciente</div>
-              <ul class="needs-human-events-list">
-                ${events.map(ev => `<li><span class="nh-ev-when">${esc(relTime(ev.when))}</span> <span class="nh-ev-author">${esc(ev.author || '?')}</span>: <span class="nh-ev-text">${esc(ev.preview || '')}</span></li>`).join('')}
-              </ul>
-            </div>`;
-          const summaryHtml = summaryTxt
-            ? `<div class="needs-human-summary">📄 ${esc(summaryTxt)}</div>`
-            : (b.summary_stale ? `<div class="needs-human-summary needs-human-summary-loading">📄 <em>Cargando resumen funcional…</em></div>` : '');
-          return `<div class="needs-human-row">
-            <div class="needs-human-row-head">
-              <div class="needs-human-row-info">
-                <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener noreferrer"><b>#${b.issue}</b></a>${titleHtml}
-                <span style="color:var(--dim)"> · ${esc(b.skill)} en ${esc(b.phase)}</span>
-                <span class="${ageCls}"> · hace ${ageStr}</span>
-              </div>
-              <div class="needs-human-row-actions">
-                <button class="nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${b.issue})" title="Quitar el label needs-human y devolver el issue a la cola del pipeline">▶ Reactivar</button>
-                <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
-              </div>
-            </div>
-            ${summaryHtml}
-            ${reasonTxt ? `<div class="needs-human-reason">❓ ${esc(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
-            ${eventsHtml}
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
-        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
-      </div>
-      </div>
-    </div>`;
-
-  const matrixHTML = `
-    ${bloqueadosHTML}
-    <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
-    <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
-      <div class="matrix-header">
-        <h2 class="section-title-clickable" onclick="toggleSection('issue-tracker')" title="Click para colapsar/expandir">
-          <span class="section-chevron">▼</span> 🎯 Board Kanban · Pipeline <span class="kanban-v3-badge" aria-label="Versión 3">V3</span>
-        </h2>
-        <a class="section-popout" href="/?section=issue-tracker" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-        <div class="it-search-box">
-          <input type="text" class="it-search" id="it-search-input" placeholder="🔍 Buscar por # o título…" oninput="filterIssuesBySearch(this.value)" />
-          <span class="it-search-clear" onclick="clearIssueSearch()" title="Limpiar">×</span>
-        </div>
-        <div class="ic-tabs" role="tablist" aria-label="Issue filter">
-          <button class="ic-tab ic-tab-active" role="tab" aria-selected="true" data-filter="active" onclick="filterIssueTab(this,'active')">En progreso <span class="ic-tab-count">${activeIssues.length}</span></button>
-          <button class="ic-tab" role="tab" aria-selected="false" data-filter="completed" onclick="filterIssueTab(this,'completed')">Completados <span class="ic-tab-count">${completedIssues.length}</span></button>
-          <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
-        </div>
-      </div>
-      <div class="section-body">
-      <div class="it-lanes">${lanesHTML}</div>
-      ${doneLaneHTML}
-      <div id="dot-popup" class="dot-popup" style="display:none">
-        <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
-        <div class="dp-body"></div>
-      </div>
-      </div>
-    </div>`;
+  // #3731 — Ventana Matriz extraída a views/dashboard/matriz.js (padre #3715).
+  // Decisión D1 (Opción B — handoff por params): dashboard.js sigue siendo el
+  // dueño de los builders del Board Kanban (lanesHTML/doneLaneHTML/activeIssues/
+  // completedIssues/sorted, construidos arriba) y se los pasa por argumento al
+  // partial, que arma el HTML de ambos sub-paneles ("Necesitan intervención
+  // humana" + Board Kanban) con escape unificado (lib/escape-html.js, #3722) y
+  // safeIssueId (CA-4). Si el require defensivo de la vista falló, degrada a ''
+  // para no tirar el dashboard (el resto del SSR sigue vivo, CA-A3).
+  const matrixHTML = matrizView
+    ? matrizView.renderMatrizSsr({ state, bloqueados, lanesHTML, doneLaneHTML, activeIssues, completedIssues, sorted })
+    : '';
 
   // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
   // Calcular frecuencia de uso y últimos issues por skill
@@ -8946,6 +8861,13 @@ try { multiProviderCoverageView = require('./views/dashboard/multi-provider-cove
 // dashboard-routes.js, que también carga este módulo con su propio guard.
 let descansoView = null;
 try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`descanso view unavailable: ${e.message}`); }
+
+// #3731 — Ventana Matriz extraída del monolito (split de #3715). Provee el SSR
+// del panel "Necesitan intervención humana" + Board Kanban. Require defensivo:
+// si falla, el render del template degrada matrixHTML a '' (CA-A3) y el resto
+// del dashboard sigue vivo.
+let matrizView = null;
+try { matrizView = require('./views/dashboard/matriz'); } catch (e) { log(`matriz view unavailable: ${e.message}`); }
 
 // #3733 — Ventana KPIs extraída del monolito (split de #3715). `kpisData`
 // provee el slice data-only (getMetricsData portado con ctx inyectado) y

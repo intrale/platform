@@ -210,6 +210,35 @@ test('smoke E2E: GET /dashboard?view=kpis → 200 con <title> de KPIs (#3733, CA
     }
 });
 
+test('smoke E2E: GET /dashboard?view=matriz → 200 con <title> + IDs DOM canónicos (#3731, CA-2/CA-8)', async () => {
+    // #3731 — tercera ventana extraída registrada en VIEW_SLUGS. El partial
+    // degrada el Board Kanban a esqueleto (state vacío → sin lanes ricas), pero
+    // el ID #issue-tracker debe estar presente (CA-3). Con bloqueados vacíos el
+    // panel #bloqueados-humano no se renderiza (comportamiento esperado).
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/dashboard?view=matriz');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · Matriz</title>'), 'el router ?view=matriz debe rendir la ventana Matriz');
+        assert.ok(r.body.includes('id="issue-tracker"'), 'debe contener el ID DOM canónico del Board Kanban');
+        assert.ok(r.body.includes('id="it-search-input"'), 'debe contener el search box del board');
+        assert.ok(r.body.includes('id="dot-popup"'), 'debe contener el popup de detalle');
+    } finally {
+        await closeServer(server);
+    }
+});
+
+test('smoke E2E: GET /dashboard/partial?view=matriz desde loopback → 200 con IDs DOM (#3731, CA-8)', async () => {
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/dashboard/partial?view=matriz', { 'Sec-Fetch-Site': 'same-origin' });
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('id="issue-tracker"'), 'partial debe contener #issue-tracker');
+    } finally {
+        await closeServer(server);
+    }
+});
+
 test('smoke E2E: GET /kpis (legacy) converge con la ventana KPIs V3 (#3733, CA-A2)', async () => {
     const { server, port } = await startEphemeralServer();
     try {

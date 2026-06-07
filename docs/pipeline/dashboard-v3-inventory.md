@@ -40,6 +40,8 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | Reconciler · stale orders 24h | `satellites.js` `renderOps` | ventana `ops` (`#stale-orders-count`) | migrado | #3732 — número grande + breakdown por motivo. Datos client-fill desde `/api/dash/reconciler-stale-orders` (sin cambio de endpoint). |
 | QA Environment (dump JSON `<pre>`) | `satellites.js` `renderOps` (`#ops-qaenv`) | ventana `ops` (`#ops-qaenv`) | migrado | #3732 — **rediseñado (CA-C2)**: el `<pre>` con JSON crudo se reemplaza por 4 mini-cards (`qaEnv`/`qaRemote`/`infraHealth`/`telegramHealth`) con badge de salud + meta key:value + último error truncado a 80 chars. |
 | Modo descanso (calendario semanal) | `views/dashboard/satellites.js` `renderModoDescanso` (legacy 1576-2121) | ventana `descanso` (`views/dashboard/descanso.js`) | migrado | #3736 — extraído a módulo propio + slug `descanso`. Path legacy `/modo-descanso` sigue vivo (delegante de 1 línea en satellites.js). Tooltips CA-C1. Ver sección dedicada. |
+| Panel "Necesitan intervención humana" | `dashboard.js` `bloqueadosHTML` (ex 2374-2439) | ventana `matriz` (`views/dashboard/matriz.js` `renderBloqueadosHTML`) | migrado | #3731 — extraído. Itera `state.bloqueados`. Escape `lib/escape-html.js`, `safeIssueId` (CA-4). Dispara `POST /api/needs-human/<n>/{reactivate,dismiss}`. Ver sección dedicada. |
+| Board Kanban del Issue Tracker | `dashboard.js` `matrixHTML` (ex 2441-2468) | ventana `matriz` (`views/dashboard/matriz.js` `renderMatrixHTML`) | migrado | #3731 — extraído. `lanesHTML`/`doneLaneHTML`/`activeIssues`/`completedIssues`/`sorted` siguen construyéndose en `dashboard.js` y se pasan por params (decisión D1 / Opción B). IDs invariantes `#issue-tracker`/`#it-search-input`/`#dot-popup`. |
 
 ## Decisiones de diseño (#3732 — ventana Ops)
 
@@ -158,6 +160,126 @@ estructura SSR (5 selectores), fragmento inner sin shell, XSS guard sobre el JS
 embebido, escape OWASP del payload por `opts.tz`, y presencia de tooltips. Smoke:
 `/modo-descanso` y `/dashboard?view=descanso` devuelven 200 con los 4 selectores
 estructurales (verificado vía `handle()`).
+
+## Ventana Matriz — split #3731
+
+> Extracción del centro neurálgico del dashboard: el panel **"Necesitan
+> intervención humana"** + el **Board Kanban del Issue Tracker**, del monolito
+> `dashboard.js` a su propio módulo (`views/dashboard/matriz.js`). Padre: épico
+> #3715.
+
+### Identidad
+
+| Atributo | Valor |
+|----------|-------|
+| Slug nuevo (router cliente) | `matriz` (`?view=matriz` + `/dashboard/partial?view=matriz`) — registrado en `lib/dashboard-routes.js::VIEW_SLUGS` |
+| Módulo | `views/dashboard/matriz.js` |
+| Origen legacy | `dashboard.js` `bloqueadosHTML` (ex 2374-2439) + `matrixHTML` (ex 2441-2468) |
+| Exports | `{ renderMatrizSsr, renderMatrizClientScript, renderBloqueadosHTML, renderMatrixHTML, safeIssueId, loadTheme, slug: 'matriz' }` |
+| Consumo en `dashboard.js` | `matrizView.renderMatrizSsr({ state, bloqueados, lanesHTML, doneLaneHTML, activeIssues, completedIssues, sorted })` → `matrixHTML` (lazy require defensivo) |
+
+### Decisión D1 (Opción B — handoff por params)
+
+`dashboard.js` **sigue siendo el dueño** de los builders del Board Kanban
+(`lanesHTML`/`doneLaneHTML`/`activeIssues`/`completedIssues`/`sorted`), que
+dependen de helpers locales del monolito (`fmtDuration`, `etaLib`,
+`AGENT_PERSONA`, `skillIcon`, `skillColor`, `manualOrderState`). Esos builders
+NO se migraron a `matriz.js` — se le pasan por argumento. Se eligió B para
+minimizar regresión en el Board Kanban (riesgo R1 del análisis técnico). La
+consolidación interna (mover los builders a la vista) queda como sub-historia
+futura.
+
+**Implicancia en el partial endpoint**: `lib/dashboard-routes.js` sólo dispone de
+`ctx.getState()` (→ `state.bloqueados`). NO tiene los builders del board. Por eso
+`?view=matriz` / `/dashboard/partial?view=matriz` degradan a un **esqueleto**:
+panel "Necesitan intervención humana" hidratado desde `state.bloqueados` + Board
+Kanban con lanes vacías (placeholder "Cargando lanes…"). La primera carga rica del
+board sigue viniendo por `/` (SSR completo desde el monolito) + DOM morphing
+client-side cada 30s. Si el módulo no cargó, el router degrada a `home` (CA-A3).
+
+### Piezas estructurales
+
+1. **`#bloqueados-humano`** — panel "Necesitan intervención humana". Sólo se
+   renderiza si `state.bloqueados.length > 0`. Cada fila: link al issue de GitHub,
+   título, skill/fase, antigüedad, resumen funcional, razón, actividad reciente,
+   y los botones de acción.
+2. **`#issue-tracker`** — Board Kanban centerpiece. Contiene `#it-search-input`
+   (search box), tabs `active`/`completed`/`all`, las 3 lanes (def/dev/qa),
+   sección de completados, y `#dot-popup` (detalle de agente).
+
+IDs DOM invariantes (CA-3, riesgo R2/R3 — el cliente muta refs por ID textual):
+`#bloqueados-humano`, `#issue-tracker`, `#it-search-input`, `#dot-popup`. Renombrarlos
+deja la ventana muerta sin error visible. Cubierto por test SSR + smoke.
+
+### Datos personales/sensibles renderizados
+
+**Ninguno.** Son metadata de issues públicos de GitHub (título, número, skill,
+fase, comentarios) + nombres de archivos del filesystem del pipeline. Todos los
+campos son influenciables por terceros (autor de issue/comentario/rechazo) ⇒
+todos pasan por escape.
+
+### Endpoints state-changing que dispara
+
+| Endpoint | Handler (bundle `/js/dashboard.js`) | Acción |
+|----------|-------------------------------------|--------|
+| `POST /api/needs-human/<n>/reactivate` | `needsHumanReactivate(issue)` | Quita label `needs-human`, devuelve el issue a la cola |
+| `POST /api/needs-human/<n>/dismiss` (body `{reason}`) | `needsHumanDismiss(issue)` | Cierra el issue como desestimado |
+| `POST /api/needs-human/<n>/dismiss-worktree` | (handler asociado en el bundle) | Desestima + limpia worktree |
+
+El SSR de `matriz.js` renderiza los botones **Reactivar** y **Desestimar** (los
+2 onclick inline). `confirm()`/`prompt()` como circuit-breaker UX viven en el
+bundle cliente y se preservan (decisión D4).
+
+### Acciones operativas + tooltips (CA-6)
+
+| Acción | Selector | Tooltip |
+|--------|----------|---------|
+| Reactivar issue | `.nh-btn-reactivate` | "Quitar el label needs-human y devolver el issue a la cola del pipeline" |
+| Desestimar issue | `.nh-btn-dismiss` | "Cerrar el issue como desestimado y limpiarlo del panel" |
+| Buscar issues | `#it-search-input` | `aria-label` "Buscar issues por número o título" |
+| Filtrar tabs | `.ic-tab` | `aria-label` "Mostrar issues en progreso/completados/todos" |
+
+Leyenda del board (CA-C3): "Cada card es un issue; el color del lane indica la
+fase (📐 Definición · 🔧 Desarrollo · ✅ QA) y los dots marcan los agentes activos."
+
+### Escape SSR + validación de tipos
+
+Usa `lib/escape-html.js` (#3722, CA-4): `escapeHtmlText` para contenido de
+elemento (`b.title`, `b.skill`, `b.phase`, `b.question`/`b.reason`, `b.summary`,
+`ev.author`, `ev.preview`) y `escapeHtmlAttr` para los `title="..."`. **Cero**
+template literals crudos con datos dinámicos. `b.issue` se coerce con
+`safeIssueId()` a entero positivo antes de interpolar en el `href` de GitHub y en
+los `onclick` — si no es entero positivo, la fila se **omite** (cierra el vector
+de inyección en URL/handler señalado por security). `activeIssues.length` /
+`completedIssues.length` / `sorted.length` son longitudes de arrays controlados
+por el monolito (enteros, seguros).
+
+### Inline handlers que sobreviven (decisión D4)
+
+Los `onclick="needsHumanReactivate(<int>)"` / `onclick="needsHumanDismiss(<int>)"`
++ `confirm()`/`prompt()` se preservan **1:1**. La migración a `addEventListener` +
+`data-attributes` es trabajo de **#3758** (fuera de scope). Cuando aterrice CSP
+`script-src 'self'` (**#3688**) estos onclick dejarán de ejecutarse — dependencia
+documentada acá y en el header de `matriz.js`.
+
+### Dependencias de seguridad pendientes que la afectan
+
+- **#3688** (+ #2532 / #2745) — CSP del dashboard. Romperá los inline handlers (D4).
+- **#2901** — escape HTML unificado en title attributes (cerrado por #3722, ya en uso acá).
+- **#3624** — audit log de needs-human reactivate/dismiss (la acción state-changing que esta ventana dispara).
+- **#3192** — autor del audit log desde fuente confiable.
+- **#3758** — migración onclick → data-attributes (preparación para CSP).
+
+### Tests
+
+`views/dashboard/__tests__/matriz.test.js` (`node --test`): render degenerado
+(state vacío), Board Kanban con counts enteros, IDs DOM invariantes (CA-3),
+payload XSS canónico (`<script>`, `"><img onerror>`, `javascript:`) por CADA campo
+escapable de ambos sub-paneles (CA-7), `safeIssueId` + omisión de fila con
+`b.issue` no numérico (CA-4), handlers `needsHumanReactivate/Dismiss` con entero
+(CA-5), y tooltips `title=`/`aria-label` (CA-6). Smoke (router.test.js):
+`/dashboard?view=matriz` y `/dashboard/partial?view=matriz` devuelven 200 con
+`#issue-tracker` (CA-8).
 
 ## Ventana **KPIs** — split #3733
 
