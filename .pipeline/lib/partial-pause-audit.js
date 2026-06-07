@@ -67,6 +67,15 @@ const AUTHORIZED_BY_STATIC = Object.freeze([
 // `recursive-deps:from-<N>` donde N es el número del issue padre (>0).
 const RECURSIVE_DEPS_RE = /^recursive-deps:from-(\d+)$/;
 
+// #3742 — Allowlist de `source` conocidos. SEPARADO del enum de `authorizedBy`
+// a propósito: un `source` identifica QUIÉN originó la mutación (trazabilidad),
+// NO autoriza removals. Mantenerlo aparte evita que registrar un source nuevo
+// ensanche el gate de autorización. `normalizeSource` lo consulta para no
+// prefijar `unknown:` a sources legítimos.
+const KNOWN_SOURCES = Object.freeze([
+    'dashboard:wizard:allowlist',   // wizard de triaje de allowlist (#3742)
+]);
+
 const AUTHORIZED_BY_ENUM = Object.freeze([
     ...AUTHORIZED_BY_STATIC,
     'recursive-deps:from-N', // forma documental (valor real lleva el N concreto)
@@ -180,6 +189,8 @@ function sanitizeJustification(text) {
 function normalizeSource(value) {
     const v = validateAuthorizedBy(value);
     if (v.valid) return v.normalized;
+    // #3742 — sources legítimos (no del enum de autorización) se registran tal cual.
+    if (typeof value === 'string' && KNOWN_SOURCES.includes(value)) return value;
     if (typeof value === 'string' && value.length > 0 && value.length <= 100) {
         // Permite valor descriptivo pero lo marca explícitamente.
         return `unknown:${value.slice(0, 80)}`;
@@ -388,6 +399,7 @@ module.exports = {
     // Constantes
     AUTHORIZED_BY_ENUM,
     AUTHORIZED_BY_STATIC,
+    KNOWN_SOURCES,
     RECURSIVE_DEPS_RE,
     MAX_JUSTIFICATION_LEN,
     REDACTION_MARKER,

@@ -29,6 +29,10 @@ const MAX_DEPTH = 3;
 // Cap absoluto de profundidad (defensa contra opts.maxDepth descontrolado).
 // Cualquier override debe quedar dentro de [1, ABSOLUTE_MAX_DEPTH].
 const ABSOLUTE_MAX_DEPTH = 10;
+// #3742 — Cap absoluto de nodos visitados (defensa DoS local contra grafos
+// gigantes o malformados en el wizard de allowlist). Cualquier override de
+// opts.maxNodes se clampea dentro de [1, ABSOLUTE_MAX_NODES].
+const ABSOLUTE_MAX_NODES = 200;
 
 // Regex para detectar referencias a issues en body/comments.
 // Convenciones soportadas:
@@ -173,10 +177,17 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
  * Resuelve recursivamente las dependencias abiertas de un issue.
  * Recursión limitada a MAX_DEPTH (3) — si se llega al límite emite warning.
  *
+ * #3742 — Agregado `opts.maxNodes` (cap de nodos visitados, default y máximo
+ * ABSOLUTE_MAX_NODES=200) y detección explícita de ciclos. El resultado expone
+ * `nodesVisited` y `reason` para que el wizard de allowlist muestre "truncado"
+ * (por profundidad, nodos o ciclo) sin colgarse.
+ *
  * @returns {{
  *   openDeps: number[],
  *   chains: {[issueNum]: {title, deps}},
- *   truncated: boolean
+ *   truncated: boolean,
+ *   reason: 'max_depth'|'max_nodes'|'cycle'|null,
+ *   nodesVisited: number
  * }}
  */
 function resolveOpenDeps(issueNum, opts = {}) {
@@ -187,22 +198,45 @@ function resolveOpenDeps(issueNum, opts = {}) {
     let maxDepth = Number.isFinite(opts.maxDepth) ? Math.floor(opts.maxDepth) : MAX_DEPTH;
     if (maxDepth < 1) maxDepth = 1;
     if (maxDepth > ABSOLUTE_MAX_DEPTH) maxDepth = ABSOLUTE_MAX_DEPTH;
+    // #3742 — maxNodes override. Default = cap absoluto. Se clampea a [1, 200].
+    let maxNodes = Number.isFinite(opts.maxNodes) ? Math.floor(opts.maxNodes) : ABSOLUTE_MAX_NODES;
+    if (maxNodes < 1) maxNodes = 1;
+    if (maxNodes > ABSOLUTE_MAX_NODES) maxNodes = ABSOLUTE_MAX_NODES;
     const cache = readCache(cacheFile);
     const visited = new Set();
     const openDeps = new Set();
     const chains = {};
     let truncated = false;
+    let reason = null;
+    let nodesVisited = 0;
+    let cycleDetected = false;
 
-    function walk(num, depth) {
+    // `ancestors` es el conjunto de nodos en el camino activo (recursion stack).
+    // Una back-edge hacia un ancestro = ciclo. Un revisit que NO es ancestro
+    // (diamante de dependencias) NO es ciclo: ya fue explorado, se omite.
+    function walk(num, depth, ancestors) {
         const key = String(num);
+        if (ancestors.has(key)) {
+            cycleDetected = true;
+            return;
+        }
         if (visited.has(key)) return;
+        if (nodesVisited >= maxNodes) {
+            truncated = true;
+            if (!reason) reason = 'max_nodes';
+            return;
+        }
         visited.add(key);
+        nodesVisited += 1;
         if (depth > maxDepth) {
             truncated = true;
+            if (!reason) reason = 'max_depth';
             return;
         }
         const info = fetchIssueInfo(num, { ghRunner, repo, cache, cacheFile, now });
         chains[key] = { title: info.title, deps: info.deps, state: info.state };
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(key);
         for (const dep of info.deps) {
             // Para decidir si lo incluimos, necesitamos su estado.
             const subInfo = fetchIssueInfo(dep, { ghRunner, repo, cache, cacheFile, now });
@@ -211,16 +245,25 @@ function resolveOpenDeps(issueNum, opts = {}) {
             // Recursión: profundizar incluso si el dep está cerrado podría revelar deps
             // abiertas anidadas — mejor cortar al primer nivel cerrado para evitar ruido.
             if (subInfo.state === 'open') {
-                walk(dep, depth + 1);
+                walk(dep, depth + 1, nextAncestors);
             }
         }
     }
 
-    walk(Number(issueNum), 0);
+    walk(Number(issueNum), 0, new Set());
+    // Un ciclo también es una forma de truncado (el wizard lo muestra como
+    // warning, no como hang). La razón de ciclo no pisa max_depth/max_nodes si
+    // ya se reportó una causa anterior.
+    if (cycleDetected) {
+        truncated = true;
+        if (!reason) reason = 'cycle';
+    }
     return {
         openDeps: [...openDeps].sort((a, b) => a - b),
         chains,
         truncated,
+        reason,
+        nodesVisited,
     };
 }
 
@@ -279,6 +322,7 @@ module.exports = {
     CACHE_TTL_MS,
     MAX_DEPTH,
     ABSOLUTE_MAX_DEPTH,
+    ABSOLUTE_MAX_NODES,
     DEP_PATTERNS,
     parseDepsFromText,
     fetchIssueInfo,

@@ -8989,6 +8989,10 @@ try { kpisViewMod = require('./views/dashboard/kpis'); } catch (e) { log(`kpis v
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.
 let wizardSession = null;
 try { wizardSession = require('./lib/wizard-session'); } catch (e) { log(`wizard-session unavailable: ${e.message}`); }
+// #3742 — Registrar el flow "allowlist" en la infra de wizards. El require
+// dispara el auto-registro vía registerFlow('allowlist', ...). Best-effort:
+// si falla, el dashboard arranca sin ese wizard.
+try { require('./lib/wizards/allowlist'); } catch (e) { log(`wizard allowlist unavailable: ${e.message}`); }
 
 // #3739 — Wizard "Configurar período de descanso": registra el flow `descanso`
 // sobre la infra compartida y carga la vista SSR. Si algo falla, el dashboard
