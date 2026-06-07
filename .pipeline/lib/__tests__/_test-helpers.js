@@ -102,4 +102,56 @@ function ensureGitOnPath() {
     return _cached !== null;
 }
 
-module.exports = { ensureGitOnPath, locateGitDir, gitIsInvokable };
+// =============================================================================
+// Mocks de http.IncomingMessage / http.ServerResponse para tests de routers
+// del pipeline. @since #3724 (wizard-session).
+//
+// `fakeHttpReq` emite el body async vía `req.on('data')/('end')` SOLO cuando
+// se llama `_emitBody()`, replicando que el router se suscribe en una
+// microtarea (igual que multi-provider-api.test.js).
+// =============================================================================
+
+/**
+ * @param {{url?:string, method?:string, headers?:object, body?:string}} opts
+ */
+function fakeHttpReq({ url = '/', method = 'GET', headers = {}, body = '' } = {}) {
+    const handlers = {};
+    const req = {
+        url,
+        method,
+        headers,
+        on(ev, fn) { handlers[ev] = fn; return this; },
+        _emitBody() {
+            setImmediate(() => {
+                if (handlers.data && body) handlers.data(Buffer.from(body, 'utf8'));
+                if (handlers.end) handlers.end();
+            });
+        },
+        destroy() { this._destroyed = true; },
+    };
+    return req;
+}
+
+function fakeHttpRes() {
+    let resolved;
+    const done = new Promise((r) => { resolved = r; });
+    const res = {
+        _status: null,
+        _headers: {},
+        _body: '',
+        writeHead(status, headers) {
+            this._status = status;
+            this._headers = { ...this._headers, ...(headers || {}) };
+            return this;
+        },
+        setHeader(k, v) { this._headers[k] = v; },
+        end(body) {
+            this._body = body == null ? '' : String(body);
+            resolved(this);
+        },
+    };
+    res.done = done;
+    return res;
+}
+
+module.exports = { ensureGitOnPath, locateGitDir, gitIsInvokable, fakeHttpReq, fakeHttpRes };

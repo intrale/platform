@@ -255,6 +255,131 @@ function redactSensitive(input, opts) {
     return redactValue(input);
 }
 
+// =============================================================================
+// #3724 — Patrones de VALOR de secretos (no de clave) + heurística de entropía.
+//
+// `SENSITIVE_JSON_KEYS` (arriba) redacta por NOMBRE de clave. El audit log de
+// los wizards (#3715) puede recibir params con secretos embebidos en valores
+// bajo claves NO sensibles (ej. un texto libre que contiene una API key). Para
+// cerrar A09 del análisis de `/security` agregamos un escaneo por VALOR:
+//   - Tabla de regex específicas por proveedor (Object.freeze, exportada para
+//     reuso de tests — NO se mezcla con SENSITIVE_JSON_KEYS).
+//   - Heurística Shannon ≥ 4.5 sobre tokens >40 chars sin espacios → cubre
+//     secretos opacos sin formato conocido.
+//
+// Cero-regresión sobre #2307: estas funciones son NUEVAS, no tocan
+// `redactValue`/`redactSensitive`. El walk vive en `redactObject`, que es el
+// único punto de entrada que aplica el escaneo por valor.
+// =============================================================================
+
+const HIGH_ENTROPY_MARKER = '[REDACTED:high-entropy]';
+const HIGH_ENTROPY_MIN_LEN = 40;
+const HIGH_ENTROPY_THRESHOLD = 4.5;
+
+// Cada patrón matchea el VALOR de un secreto conocido. El orden importa:
+// `sk-ant-` antes que el genérico `sk-` (aunque no se solapan porque el
+// genérico exige 20+ alfanuméricos pegados y `sk-ant-` corta con guiones).
+const SECRET_VALUE_PATTERNS = Object.freeze([
+    { name: 'anthropic', re: /sk-ant-[A-Za-z0-9_-]+/g },
+    { name: 'openai', re: /sk-[A-Za-z0-9]{20,}/g },
+    { name: 'groq', re: /gsk_[A-Za-z0-9]+/g },
+    { name: 'aws_access_key', re: /AKIA[0-9A-Z]{16}/g },
+    { name: 'jwt', re: /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+]);
+
+/**
+ * Entropía de Shannon (bits por carácter) de un string.
+ * @param {string} str
+ * @returns {number}
+ */
+function shannonEntropy(str) {
+    if (typeof str !== 'string' || str.length === 0) return 0;
+    const freq = new Map();
+    for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+    let entropy = 0;
+    const len = str.length;
+    for (const count of freq.values()) {
+        const p = count / len;
+        entropy -= p * Math.log2(p);
+    }
+    return entropy;
+}
+
+/**
+ * Redacta secretos embebidos en un string-valor:
+ *   1. Aplica cada patrón de SECRET_VALUE_PATTERNS.
+ *   2. Si NINGÚN patrón matcheó y el string es un token opaco (>40 chars, sin
+ *      espacios) con entropía ≥ 4.5 → `[REDACTED:high-entropy]`.
+ *
+ * No toca emails/URLs (eso lo hace el walk con las funciones existentes).
+ * @param {string} str
+ * @returns {string}
+ */
+function redactSecretValue(str) {
+    if (typeof str !== 'string' || str.length === 0) return str;
+    let out = str;
+    for (const { re } of SECRET_VALUE_PATTERNS) {
+        out = out.replace(re, REDACTION_MARKER);
+    }
+    if (out === str) {
+        const trimmed = str.trim();
+        if (
+            trimmed.length > HIGH_ENTROPY_MIN_LEN &&
+            !/\s/.test(trimmed) &&
+            shannonEntropy(trimmed) >= HIGH_ENTROPY_THRESHOLD
+        ) {
+            return HIGH_ENTROPY_MARKER;
+        }
+    }
+    return out;
+}
+
+/**
+ * Walk recursivo para AUDIT LOG (#3724). Combina:
+ *   - Redacción por clave sensible (igual que `redactValue`).
+ *   - Redacción de headers.
+ *   - Escaneo por VALOR (`redactSecretValue`) + emails/URLs sobre cada string.
+ *
+ * Detecta ciclos con WeakSet. Devuelve copia, no muta.
+ * @param {any} value
+ * @param {WeakSet} [seen]
+ * @returns {any}
+ */
+function redactObject(value, seen) {
+    if (value == null) return value;
+    if (typeof value === 'string') {
+        let out = value;
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(out) || /\?[^=]+=/.test(out)) {
+            out = redactUrlLike(out);
+        }
+        out = redactEmailsInText(out);
+        out = redactSecretValue(out);
+        return out;
+    }
+    if (typeof value !== 'object') return value;
+
+    seen = seen || new WeakSet();
+    if (seen.has(value)) return '[CIRCULAR]';
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+        return value.map((v) => redactObject(v, seen));
+    }
+    if (Buffer.isBuffer(value) || value instanceof Date) return value;
+
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+        if (NORMALIZED_JSON_KEYS.has(normalizeKey(k))) {
+            out[k] = REDACTION_MARKER;
+        } else if (k.toLowerCase() === 'headers' && v && typeof v === 'object') {
+            out[k] = redactHeaders(v);
+        } else {
+            out[k] = redactObject(v, seen);
+        }
+    }
+    return out;
+}
+
 module.exports = {
     redactSensitive,
     redactHeaders,
@@ -266,4 +391,11 @@ module.exports = {
     redactError,
     isSensitiveHeader,
     REDACTION_MARKER,
+    // #3724 — escaneo por valor para audit log de wizards.
+    redactObject,
+    redactSecretValue,
+    shannonEntropy,
+    SECRET_VALUE_PATTERNS,
+    HIGH_ENTROPY_MARKER,
+    HIGH_ENTROPY_THRESHOLD,
 };
