@@ -207,6 +207,38 @@ Mapeo "**qué está hoy → dónde queda en V3**" (CA-6):
 **Contrato:** `renderCostosSsr(state)` + `renderCostosBanner(state)` exportado para que `home.js` lo embeba sin duplicar request (Opcion A del R3 del architect). `renderCostosClientScript()` para los handlers `addEventListener`. **Endpoints POST migran al mismo split** a `.pipeline/lib/cost-anomaly/api.js` (patron `multi-provider/api.js`).
 **Out of scope:** pagina `/consumo` standalone (recomendacion abierta #3779); export CSV (historia futura con threat model anti CSV-injection); CSRF/CSP estricta de `POST /api/cost-anomaly/*` (#3688 / #2532 / #2745); migracion `onclick` -> `data-attributes` global (#3758); snapshot test cross-window (#3755); enforcement axe-core CI (#3717).
 
+### Estado de entrega (#3735 — lo realmente shippeado en este split)
+
+> El plan de arriba describe el end-state completo de la ventana Costos. Este
+> split aterriza la **extracción del bloque embebido en la home shell** (pill +
+> banner de consumo anómalo), que es el alcance explícito acordado por UX en
+> `narrativa-costos-v3.md` ("extraemos el primer bloque, el banner mas el pill
+> mas las piezas embebidas en home"). La página `/consumo` standalone (KPIs,
+> tablas por skill/fase/issue, proyecciones, LLM-vs-det, TTS) **queda intacta**;
+> su consolidación con `costos.js` es la recomendación abierta **#3779**.
+
+- **Módulo:** `.pipeline/views/dashboard/costos.js` (fragmentos SSR, hereda el CSS
+  del shell — `.anomaly-pill` / `.cost-anomaly-banner` ya viven en el `<style>`
+  de `dashboard.js`; el módulo NO carga theme propio porque no es una página).
+- **Exports entregados:** `renderCostosPill(state, {ic})`,
+  `renderCostosBanner(state, {ic})`, `renderInert(msg)`. El `renderCostosBanner`
+  es reusable desde `home.js` sin doble fetch (Opción A del R3 del architect).
+  Los nombres `renderCostosSsr` / `renderCostosClientScript` del plan quedan para
+  cuando se consolide la página `/consumo` (#3779).
+- **Registro:** `dashboard.js` hace `require('./views/dashboard/costos')` con
+  guard try/catch (patrón consolidado). Los bloques inline del header (pill y
+  banner) delegan al módulo con fallback inerte inline si el require falla (CA-A3).
+- **Escape:** todo dato dinámico pasa por `lib/escape-html.js` (#3722).
+- **Tooltips (CA-C1):** `title=` server-side en pill + ack + 3 snooze, con el copy
+  acordado con PO (`TOOLTIPS` exportado para test).
+- **Endpoints POST `ack`/`snooze`:** se mantienen en `dashboard.js`; la validación
+  de whitelist/cap ya vive en `rest-mode-state.snoozeAlert()` (lib testeable), así
+  que NO se migran a `lib/cost-anomaly/api.js` en este split (se difiere junto con
+  la consolidación de #3779 para no tocar endpoints vivos en una extracción de UI).
+- **Tests:** `.pipeline/views/dashboard/__tests__/costos.test.js` (11 casos:
+  vacío, anomalía activa, tooltips PO, XSS canónico en body y atributo, ratio
+  inválido, inert fallback, reuso puro).
+
 ### Piezas que se preservan (CA-1.3 / CA-A1, CA-A2, CA-B1)
 
 | Pieza | Estado actual | Fuente de datos | Destino V3 | Token / icono | Tooltip CA-4.1 / CA-C5 |

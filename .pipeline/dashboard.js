@@ -5016,10 +5016,14 @@ body.standalone .section-collapsed .section-body{display:block !important}
         </button>
         ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:var(--warning-bg,rgba(240,165,0,0.15));color:var(--warning,#f0a500);border-color:rgba(240,165,0,0.4);" aria-label="Issues permitidos: ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}">${ic('estado-partial-pause')} ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
         ${(() => {
-          // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%"
-          // visible cuando hay alerta activa NO snoozed. Si está snoozed, la
-          // pill desaparece pero el alert sigue activo bajo el capó (vuelve
-          // a aparecer cuando expire el snooze o el operador haga ack manual).
+          // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%".
+          // #3735 — render delegado al módulo costos.js (pill + banner). Si el
+          // módulo no cargó, fallback inline inerte (CA-A3) que conserva el
+          // comportamiento histórico.
+          if (costosView && typeof costosView.renderCostosPill === 'function') {
+            try { return costosView.renderCostosPill(state, { ic }); }
+            catch (e) { log(`costos pill render fail: ${e.message}`); return ''; }
+          }
           const ca = state.costAnomaly || {};
           if (!ca.visible) return '';
           const a = ca.alert || {};
@@ -5057,9 +5061,16 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </div>
   ${(() => {
     // (#2892 PR-C / CA-2.7, CA-3.4) Banner persistente de alerta de consumo
-    // anómalo. Se muestra cuando hay alerta activa Y NO está snoozed. Se
-    // cierra por: (a) acuse manual ("Ya lo vi"), (b) expira el snooze, o
-    // (c) auto-clear cuando vuelve a baseline 2 chequeos consecutivos.
+    // anómalo. #3735 — render delegado al módulo costos.js. Si el módulo no
+    // cargó, fallback inline inerte (CA-A3) que conserva el comportamiento
+    // histórico (solo se muestra cuando hay alerta visible).
+    if (costosView && typeof costosView.renderCostosBanner === 'function') {
+      try { return costosView.renderCostosBanner(state, { ic }); }
+      catch (e) {
+        log(`costos banner render fail: ${e.message}`);
+        return costosView.renderInert ? costosView.renderInert() : '';
+      }
+    }
     const ca = state.costAnomaly || {};
     if (!ca.visible) return '';
     const a = ca.alert || {};
@@ -8946,6 +8957,14 @@ try { multiProviderCoverageView = require('./views/dashboard/multi-provider-cove
 // dashboard-routes.js, que también carga este módulo con su propio guard.
 let descansoView = null;
 try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`descanso view unavailable: ${e.message}`); }
+
+// #3735 — Ventana Costos: pill + banner de consumo anómalo extraídos del shell
+// del monolito a su propio módulo (split de #3715). Require defensivo: si falla,
+// el render del header degrada a un fallback inerte (CA-A3) sin tirar el
+// dashboard. La página standalone /consumo queda intacta (consolidación en
+// #3779).
+let costosView = null;
+try { costosView = require('./views/dashboard/costos'); } catch (e) { log(`costos view unavailable: ${e.message}`); }
 
 // #3733 — Ventana KPIs extraída del monolito (split de #3715). `kpisData`
 // provee el slice data-only (getMetricsData portado con ctx inyectado) y
