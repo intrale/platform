@@ -2535,94 +2535,12 @@ function generateHTML(state) {
     const cat = SKILL_CATEGORY[skill] || 'ops';
     skillsByCategory[cat].push([skill, load]);
   }
-  // Mini strip histórico (últimos 5 issues con color)
-  function skillHistoryStrip(skill) {
-    const recents = (recentBySkill[skill] || []).slice(0, 5);
-    if (recents.length === 0) {
-      return '<div class="persona-strip persona-strip-empty" title="Sin historial">—</div>';
-    }
-    const dots = recents.map(r => {
-      const cls = r.resultado === 'aprobado' ? 'ok' : r.resultado === 'rechazado' ? 'bad' : 'live';
-      const icon = r.resultado === 'aprobado' ? '\u2713' : r.resultado === 'rechazado' ? '\u2717' : '\u25CF';
-      const label = (r.resultado || 'en curso') + ' #' + r.issue;
-      const href = r.hasLog ? '/logs/view/' + r.logFile + (r.resultado && r.resultado !== 'en curso' ? '' : '?live=1') : null;
-      const content = `<span class="persona-dot persona-dot-${cls}" title="${label}">${icon}</span>`;
-      return href ? `<a href="${href}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${content}</a>` : content;
-    }).join('');
-    return `<div class="persona-strip">${dots}</div>`;
-  }
-  // Render una tarjeta-persona por skill
-  function personaCard(skill, load) {
-    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, tagline: '', color: 'var(--dim2)' };
-    const pct = load.max > 0 ? load.running / load.max : 0;
-    const state = pct >= 1 ? 'full' : pct > 0 ? 'partial' : 'idle';
-    const statusLabel = pct >= 1 ? `${load.running}/${load.max} ocupado` : pct > 0 ? `${load.running}/${load.max} en trabajo` : `${load.max} libre${load.max === 1 ? '' : 's'}`;
-    const stats = skillStats[skill] || { ok: 0, bad: 0, total: 0 };
-    const successRate = stats.total > 0 ? Math.round((stats.ok / stats.total) * 100) : null;
-    const usage = skillUsageCount[skill] || 0;
-    return `<div class="persona-card persona-${state}" style="--agent-color:${p.color}" title="${skill} — ${p.tagline || ''}">
-      <div class="persona-head">
-        <span class="persona-avatar">${p.icon}</span>
-        <div class="persona-id">
-          <div class="persona-name">${p.name || skill}</div>
-          <div class="persona-tagline">${(p.tagline || '').split(' · ').slice(0, 2).join(' · ') || '\u00A0'}</div>
-        </div>
-        <span class="persona-pill persona-pill-${state}">${statusLabel}</span>
-      </div>
-      <div class="persona-body">
-        ${skillHistoryStrip(skill)}
-        <div class="persona-meta">
-          ${successRate !== null ? `<span class="persona-meta-item" title="Tasa de aprobación histórica">\u2713 ${successRate}%</span>` : ''}
-          <span class="persona-meta-item persona-meta-usage" title="Issues trabajados">\u{1F4C8} ${usage}</span>
-        </div>
-      </div>
-    </div>`;
-  }
-  // Heatmap legacy mantenido para compatibilidad (puede eliminarse luego)
-  let heatmapHTML = '';
-  const catOrder = ['product', 'dev', 'quality', 'ops'];
-
-  // ── Option B: Areas grid 2x2 con chips compactos ──
-  let eqAreaGridHTML = '';
-  let eqTotalSkills = 0, eqTotalBusy = 0;
-  for (const cat of catOrder) {
-    const list = skillsByCategory[cat];
-    if (!list || list.length === 0) continue;
-    const m = CATEGORY_META[cat];
-    list.sort((a, b) => b[1].running - a[1].running || (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0));
-    // Contar skills (no slots): busy = skills con al menos 1 running
-    const busySkills = list.filter(([_, l]) => (l.running || 0) > 0).length;
-    const totalSkills = list.length;
-    eqTotalBusy += busySkills; eqTotalSkills += totalSkills;
-    const freeSkills = totalSkills - busySkills;
-    const chips = list.map(([s, l]) => {
-      const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
-      const running = l.running || 0;
-      const stateCls = running > 0 ? 'eq-chip-busy' : '';
-      const countBadge = running > 1 ? `<span class="eq-chip-badge">\u00D7${running}</span>` : '';
-      const usage = skillUsageCount[s] || 0;
-      const tip = running > 0
-        ? `${p.name} \u2014 ${running} issue${running > 1 ? 's' : ''} en ejecución (${usage} runs)`
-        : `${p.name} \u2014 libre (${usage} runs)`;
-      return `<span class="eq-chip ${stateCls}" title="${tip.replace(/"/g, '&quot;')}">
-        <span class="eq-chip-avatar" style="background:${p.color}">${p.icon}</span>
-        <span class="eq-chip-name">${p.name}</span>
-        ${countBadge}
-        <span class="eq-chip-dot"></span>
-      </span>`;
-    }).join('');
-    const subTxt = busySkills > 0
-      ? `<b>${freeSkills}</b>/${totalSkills} libres \u00B7 <span class="eq-area-card-active">${busySkills} activo${busySkills > 1 ? 's' : ''}</span>`
-      : `<b>${freeSkills}</b> libres`;
-    eqAreaGridHTML += `<div class="eq-area-card">
-      <div class="eq-area-card-head">
-        <span class="eq-area-card-name"><span class="eq-area-card-dot" style="background:${m.color}"></span>${m.label}</span>
-        <span class="eq-area-card-sub">${subTxt}</span>
-      </div>
-      <div class="eq-area-card-chips">${chips}</div>
-    </div>`;
-  }
-  if (eqAreaGridHTML) eqAreaGridHTML = '<div class="eq-areas-grid">' + eqAreaGridHTML + '</div>';
+  // #3727 — La logica de render de la ventana Equipo (skillHistoryStrip,
+  // personaCard, el grid de areas con chips y el calculo de eqTotalBusy/
+  // eqTotalSkills) se extrajo a views/dashboard/equipo.js. Aca solo se calculan
+  // los derivados (skillStats, skillsByCategory) que se pasan como input a
+  // equipoView.renderEquipoSsr() en el template de abajo. El heatmap legacy
+  // (heatmapHTML, nunca renderizado) se elimino como dead code en la extraccion.
 
   // ── Servicios agrupados por capa (Intake/Processing/Output) ──
   const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
@@ -5475,26 +5393,11 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </section>`;
   })()}
 
-  <div class="bar-section panel-equipo panel-equipo-full section-collapsible" id="equipo" data-section="equipo">
-    <div class="eq-head">
-      <h2 class="eq-title section-title-clickable" onclick="toggleSection('equipo')" title="Click para colapsar/expandir">
-        <span class="section-chevron">▼</span> 🧠 Equipo
-      </h2>
-      <a class="section-popout" href="/?section=equipo" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-      <div class="eq-summary">
-        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSkills}</span>
-        <span>\u00B7</span>
-        <span>Utilización <b>${eqTotalSkills > 0 ? Math.round(eqTotalBusy / eqTotalSkills * 100) : 0}%</b></span>
-        <span>\u00B7</span>
-        <span>Cola <b>${pendientes}</b></span>
-      </div>
-    </div>
-    <div class="section-body">
-    ${activeStripHTML}
-    ${eqAreaGridHTML || '<span class="empty-label">Sin skills configurados</span>'}
-    ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
-    </div>
-  </div>
+  ${equipoView ? equipoView.renderEquipoSsr({
+    skillsByCategory, recentBySkill, skillUsageCount, skillStats,
+    agentPersona: AGENT_PERSONA, categoryMeta: CATEGORY_META,
+    pendientes, activeStripHTML, svcCardsHTML,
+  }) : `<div class="bar-section panel-equipo panel-equipo-full" id="equipo"><span class="empty-label">Equipo no disponible</span></div>`}
 
   <!-- #2800 — matrixHTML antes vivía aquí (post Equipo/Servicios). Migrado al
        centerpiece debajo del header de infra para el rediseño V3. -->
@@ -9037,6 +8940,13 @@ let multiProviderCoverageApi = null;
 let multiProviderCoverageView = null;
 try { multiProviderCoverageApi = require('./lib/multi-provider-coverage/api'); } catch (e) { log(`multi-provider-coverage api unavailable: ${e.message}`); }
 try { multiProviderCoverageView = require('./views/dashboard/multi-provider-coverage'); } catch (e) { log(`multi-provider-coverage view unavailable: ${e.message}`); }
+
+// #3727 (split de #3715) — Vista Equipo extraída a su propio módulo SSR.
+// Patrón espejo de las vistas de arriba: si el require falla (typo, dep faltante),
+// generateHTML cae al fallback visible (<span class="empty-label">Equipo no
+// disponible</span>) en lugar de romper todo el dashboard.
+let equipoView = null;
+try { equipoView = require('./views/dashboard/equipo'); } catch (e) { log(`equipo view unavailable: ${e.message}`); }
 
 // #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.
