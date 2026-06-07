@@ -158,3 +158,42 @@ estructura SSR (5 selectores), fragmento inner sin shell, XSS guard sobre el JS
 embebido, escape OWASP del payload por `opts.tz`, y presencia de tooltips. Smoke:
 `/modo-descanso` y `/dashboard?view=descanso` devuelven 200 con los 4 selectores
 estructurales (verificado vía `handle()`).
+
+## Ventana **KPIs** — split #3733
+
+Extracción de la ventana KPIs del monolito `dashboard.js` a `views/dashboard/kpis.js`
+(presentación SSR) + `lib/kpis-data.js` (slice de datos `getMetricsSlice`, data-only,
+testeable en aislamiento). El endpoint `/metrics` se **mantiene** (decisión cerrada #3
+del issue): no se deprecó ni se hace redirect 301; lo que se recupera es el **link visual**
+desde la ventana V3 (CA-9), cerrando la memoria `project_metrics-endpoint-lost`.
+
+Mapeo "**qué está hoy → dónde queda en V3**" (CA-6):
+
+| Componente actual | Archivo origen | Ventana V3 destino | Estado | Notas |
+|-------------------|----------------|--------------------|--------|-------|
+| Cálculo matrixEntries + counts (definidos/pendientes/trabajando/blocked/needs-human) | `dashboard.js:1577–1689` | `view=kpis` (compuesto en `dashboard-routes.js::_deriveKpiCounts`) | migrado | #3733 — el home sigue siendo el productor; la ventana `kpis` es consumidor puro (R2). |
+| Helpers `buildTtData` / `activeSkills` / `ttLabel` | `dashboard.js:1627–1640` | (home only) | sin-mover | #3733 — tooltips del home; la ventana `kpis` usa tooltips propios `kpi-tooltip` (texto estático). |
+| DORA mini HTML (Lead Time / Throughput / Failure Rate / Entregas 7d) | `dashboard.js:3003–3055` | `kpis.js::renderDoraAndCommanderHTML` (`view=kpis`) | migrado | #3733 — reusa `kpisSlice`. El home conserva su `doraMinHTML`. |
+| Commander Routing card (det. vs LLM) | `dashboard.js:3057–3105` | `kpis.js::renderDoraAndCommanderHTML` (`view=kpis`) | migrado | #3733 — `routingMetrics` vía `commander-deterministic.computeRoutingMetrics` (7d). |
+| `kpis-row` cards (6) + sys-mini (CPU/RAM/Salud) | `dashboard.js:5343–5399` | `kpis.js::renderKpiCardsHTML` (`view=kpis`) | migrado | #3733 — el home mantiene su `kpis-row`; la ventana `kpis` renderiza su propia fila (misma semántica). |
+| `getMetricsData()` (snapshots/entregas/agentPerf/tokenEstimates) | `dashboard.js:7428–7551` | `lib/kpis-data.js::getMetricsSlice(ctx)` (consumido por `view=kpis` y `/metrics`) | migrado | #3733 — DI por `ctx` (sin closures sobre globals, R4) + cache 30s por mtime del JSONL (R7). Contrato de retorno idéntico. |
+| `generateMetricsHTML()` (página /metrics) | `dashboard.js:7554–7900` | `kpis.js::renderMetricsPage({data})` | migrado | #3733 — body portado con XSS hardening (skill names + session IDs escapados). `dashboard.js` delega con fallback inerte (CA-A3). |
+| Handlers `/metrics` y `/api/metrics` | `dashboard.js:10433–10470` | (mismo path, indirección vía `kpisView`/`kpisData`) | migrado | #3733 — `/metrics` se mantiene (decisión #3). Headers CA-15 (`no-store`, `nosniff`, `no-referrer`, sin ACAO) + same-origin en `/api/metrics` (CA-18). |
+| KPIs de proveedor (tokens 24h by_provider) | `dashboard.js` (kpisSlice) | `kpis.js::renderProvidersHTML` (`view=kpis`) | migrado | #3733 (D-UX-1) — quedan en `kpis` con TODO de migración a `view=providers` (#3737). SOLO metadata operativa, jamás API keys (CA-19). |
+| Rendimiento por agente + top sesiones | `dashboard.js` (getMetricsData.agentPerf) | `kpis.js::renderAgentPerfHTML` (`view=kpis`) | migrado | #3733 — session IDs por `safeSessionId` (CA-17), skill names escapados (R8/CA-14.b). |
+| Link visual a `/metrics` desde la home V3 | (perdido — memoria `project_metrics-endpoint-lost`) | `kpis.js::renderMetricsCta` (`view=kpis`) | recuperado | #3733 (CA-9/R10) — CTA `href="/metrics"` con touch target ≥44px (CA-23). |
+
+### Decisiones de la ventana KPIs (#3733)
+
+- **read-only** (D-UX-1): sin acciones state-changing. Sin `<form>`, sin `method=POST`,
+  sin `<button onclick>` que dispare backend. Los KPIs "clickeables" (`Bloqueados`,
+  `Necesitan humano`) son **links de navegación** a `/bloqueados` (filtros visuales
+  locales), no mutaciones. Cierra CA-20 por construcción.
+- **Doble slice (no merge)**: `kpisSlice` (`lib/dashboard-slices.js`) queda intacto; el
+  nuevo `lib/kpis-data.js::getMetricsSlice` aporta snapshots/agentPerf/tokenEstimates.
+  La vista compone ambos.
+- **`/metrics` HTML se mantiene** (no 301): scripts/bookmarks externos dependen del path.
+  La memoria `project_metrics-endpoint-lost` se cierra recuperando el link, no migrando
+  el endpoint. (Guru propuso 301 → KPIs como recomendación futura no bloqueante.)
+- **Escape unificado**: usa `lib/escape-html.js` (#3722, ya en main) — sin fallback local
+  (CA-4 satisfecho porque el helper existe).

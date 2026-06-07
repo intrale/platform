@@ -194,6 +194,33 @@ test('smoke E2E: GET /dashboard?view=ops → 200 con <title> de Ops (#3732, CA-G
     }
 });
 
+test('smoke E2E: GET /dashboard?view=kpis → 200 con <title> de KPIs (#3733, CA-29/CA-G2)', async () => {
+    // #3733 — segunda ventana extraída registrada en VIEW_SLUGS. Verifica que
+    // el slug nuevo no rompe el router y que renderiza la vista con state vacío
+    // (los slices toleran ctx mínimo sin tirar → render completo, no inerte).
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/dashboard?view=kpis');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · KPIs</title>'), 'el router ?view=kpis debe rendir la ventana KPIs');
+        assert.ok(r.body.includes('class="kpis-row"'), 'debe contener la fila de KPIs (CA-30)');
+        assert.ok(r.body.includes('href="/metrics"'), 'debe contener el CTA a /metrics (CA-9)');
+    } finally {
+        await closeServer(server);
+    }
+});
+
+test('smoke E2E: GET /kpis (legacy) converge con la ventana KPIs V3 (#3733, CA-A2)', async () => {
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/kpis');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · KPIs</title>'), '/kpis legacy debe rendir la misma ventana KPIs');
+    } finally {
+        await closeServer(server);
+    }
+});
+
 test('smoke E2E: GET / (legacy raíz) sigue rindiendo home (no-regresión)', async () => {
     const { server, port } = await startEphemeralServer();
     try {
