@@ -221,23 +221,37 @@ Mapeo "**qué está hoy → dónde queda en V3**" (CA-6):
   del shell — `.anomaly-pill` / `.cost-anomaly-banner` ya viven en el `<style>`
   de `dashboard.js`; el módulo NO carga theme propio porque no es una página).
 - **Exports entregados:** `renderCostosPill(state, {ic})`,
-  `renderCostosBanner(state, {ic})`, `renderInert(msg)`. El `renderCostosBanner`
-  es reusable desde `home.js` sin doble fetch (Opción A del R3 del architect).
-  Los nombres `renderCostosSsr` / `renderCostosClientScript` del plan quedan para
-  cuando se consolide la página `/consumo` (#3779).
+  `renderCostosBanner(state, {ic})`, `renderInert(msg)`,
+  `renderCostosClientScript()`. El `renderCostosBanner` es reusable desde
+  `home.js` sin doble fetch (Opción A del R3 del architect).
 - **Registro:** `dashboard.js` hace `require('./views/dashboard/costos')` con
   guard try/catch (patrón consolidado). Los bloques inline del header (pill y
   banner) delegan al módulo con fallback inerte inline si el require falla (CA-A3).
 - **Escape:** todo dato dinámico pasa por `lib/escape-html.js` (#3722).
 - **Tooltips (CA-C1):** `title=` server-side en pill + ack + 3 snooze, con el copy
   acordado con PO (`TOOLTIPS` exportado para test).
-- **Endpoints POST `ack`/`snooze`:** se mantienen en `dashboard.js`; la validación
-  de whitelist/cap ya vive en `rest-mode-state.snoozeAlert()` (lib testeable), así
-  que NO se migran a `lib/cost-anomaly/api.js` en este split (se difiere junto con
-  la consolidación de #3779 para no tocar endpoints vivos en una extracción de UI).
-- **Tests:** `.pipeline/views/dashboard/__tests__/costos.test.js` (11 casos:
-  vacío, anomalía activa, tooltips PO, XSS canónico en body y atributo, ratio
-  inválido, inert fallback, reuso puro).
+- **CSP / `onclick` (CA-3.3 / R2):** la pill y el banner ya NO emiten `onclick`
+  inline (verificación `grep -c onclick costos.js = 0`). Los handlers se cablean
+  por delegación de eventos (`renderCostosClientScript()` → `addEventListener`
+  sobre `[data-ca-action]`), prerrequisito de la CSP estricta #3688. El script se
+  inyecta una sola vez en el shell de home (guard `__costosWired`).
+- **Router (CA-1.2):** se sumó el slug `costos` a `VIEW_SLUGS` en
+  `lib/dashboard-routes.js`, resolviendo al MISMO renderer que el path legacy
+  `/costos` (`sat.renderCostos`) para que `?view=costos` y `/costos` no diverjan.
+- **Endpoints POST `ack`/`snooze` + GET `state` (CA-3.4 / R4):** **migrados** del
+  monolito a `.pipeline/lib/cost-anomaly/api.js` (patrón `multi-provider/api.js`,
+  `route()` montado antes del catch-all). Aplican defensa en profundidad:
+  - **D1** `Sec-Fetch-Site` ≠ `same-origin`/`none` → **403**.
+  - **D2** `Content-Type` presente y ≠ `application/json` → **415**.
+  - **D3** `hours ∉ {1, 4, 24}` → **400** (whitelist server-side; el cap 24h de
+    `rest-mode-state.snoozeAlert()` queda como segunda barrera).
+- **Tests:**
+  - `.pipeline/views/dashboard/__tests__/costos.test.js` (15 casos: vacío,
+    anomalía activa, tooltips PO, XSS canónico en body y atributo, ratio inválido,
+    inert fallback, reuso puro, 0 onclick en pill/banner, data-ca-action,
+    client-script CSP-safe).
+  - `.pipeline/lib/cost-anomaly/__tests__/api.test.js` (15 casos: D1 cross-site →
+    403, D2 form-urlencoded → 415, D3 hours:999 → 400 + bordes y happy-path).
 
 ### Piezas que se preservan (CA-1.3 / CA-A1, CA-A2, CA-B1)
 

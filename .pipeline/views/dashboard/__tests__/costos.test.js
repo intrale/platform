@@ -123,3 +123,37 @@ test('las funciones son reusables (puras, sin estado): doble invocación idénti
     const b = costos.renderCostosBanner(anomalyState());
     assert.equal(a, b);
 });
+
+// --- CA-3.3 / R2 — sin handlers onclick inline (prerrequisito CSP #3688) ----
+
+test('renderCostosBanner NO emite ningún onclick inline (CA-3.3)', () => {
+    const html = costos.renderCostosBanner(anomalyState());
+    assert.ok(!/onclick=/i.test(html), 'el banner no debe contener onclick inline');
+});
+
+test('renderCostosPill NO emite ningún onclick inline (CA-3.3)', () => {
+    const html = costos.renderCostosPill(anomalyState());
+    assert.ok(!/onclick=/i.test(html), 'la pill no debe contener onclick inline');
+});
+
+test('los botones usan data-ca-action en vez de onclick', () => {
+    const banner = costos.renderCostosBanner(anomalyState());
+    const pill = costos.renderCostosPill(anomalyState());
+    assert.match(pill, /data-ca-action="scroll-banner"/);
+    assert.match(banner, /data-ca-action="ack"/);
+    assert.match(banner, /data-ca-action="snooze" data-ca-hours="1"/);
+    assert.match(banner, /data-ca-action="snooze" data-ca-hours="4"/);
+    assert.match(banner, /data-ca-action="snooze" data-ca-hours="24"/);
+});
+
+test('renderCostosClientScript cablea la delegación CSP-safe (addEventListener)', () => {
+    const script = costos.renderCostosClientScript();
+    assert.match(script, /<script>/);
+    assert.match(script, /addEventListener\('click'/);
+    assert.match(script, /data-ca-action/);
+    // No reintroduce onclick ni inline handlers.
+    assert.ok(!/onclick=/i.test(script), 'el client script no debe emitir onclick');
+    // Llama a las funciones globales del shell sin redefinirlas.
+    assert.match(script, /costAnomalyAck/);
+    assert.match(script, /costAnomalySnooze/);
+});

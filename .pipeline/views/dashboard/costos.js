@@ -92,8 +92,11 @@ function renderCostosPill(state, opts) {
         const a = readAnomaly(state);
         if (!a) return '';
         const ic = (opts && typeof opts.ic === 'function') ? opts.ic : defaultIc;
+        // CA-3.3 / R2 — sin handlers `onclick` inline (prerrequisito CSP #3688).
+        // El comportamiento se cablea por delegación de eventos sobre el atributo
+        // `data-ca-action` (ver renderCostosClientScript()).
         return `<button class="anomaly-pill" `
-            + `onclick="document.getElementById('cost-anomaly-banner')?.scrollIntoView({behavior:'smooth',block:'start'})" `
+            + `data-ca-action="scroll-banner" `
             + `title="${escapeHtmlAttr(TOOLTIPS.pill)}" `
             + `aria-label="Consumo anómalo detectado, click para ver detalle">`
             + `${ic('cost-anomaly')}<span>CONSUMO ANÓMALO · ${escapeHtmlText(a.pctStr)}</span></button>`;
@@ -129,13 +132,13 @@ function renderCostosBanner(state, opts) {
     </div>
     <div class="ca-actions">
       <span class="ca-actions-label">ACCIONES</span>
-      <button class="ca-btn-ack" onclick="costAnomalyAck()" title="${escapeHtmlAttr(TOOLTIPS.ack)}">${ic('health-ok', 'check')}<span>Ya lo vi</span></button>
+      <button class="ca-btn-ack" data-ca-action="ack" title="${escapeHtmlAttr(TOOLTIPS.ack)}">${ic('health-ok', 'check')}<span>Ya lo vi</span></button>
       <div class="ca-snooze">
         <span class="ca-snooze-icon" aria-hidden="true">${ic('snooze')}</span>
         <span class="ca-snooze-label">Silenciar</span>
-        <button class="ca-snooze-btn" onclick="costAnomalySnooze(1)" title="${escapeHtmlAttr(TOOLTIPS.snooze1)}">1h</button>
-        <button class="ca-snooze-btn" onclick="costAnomalySnooze(4)" title="${escapeHtmlAttr(TOOLTIPS.snooze4)}">4h</button>
-        <button class="ca-snooze-btn ca-snooze-max" onclick="costAnomalySnooze(24)" title="${escapeHtmlAttr(TOOLTIPS.snooze24)}">24h</button>
+        <button class="ca-snooze-btn" data-ca-action="snooze" data-ca-hours="1" title="${escapeHtmlAttr(TOOLTIPS.snooze1)}">1h</button>
+        <button class="ca-snooze-btn" data-ca-action="snooze" data-ca-hours="4" title="${escapeHtmlAttr(TOOLTIPS.snooze4)}">4h</button>
+        <button class="ca-snooze-btn ca-snooze-max" data-ca-action="snooze" data-ca-hours="24" title="${escapeHtmlAttr(TOOLTIPS.snooze24)}">24h</button>
       </div>
     </div>
   </section>`;
@@ -161,4 +164,35 @@ function renderInert(msg) {
   </section>`;
 }
 
-module.exports = { renderCostosPill, renderCostosBanner, renderInert, TOOLTIPS };
+// --- Client script: delegación de eventos (CA-3.3 / R2) --------------------
+// Reemplaza los `onclick` inline por un único listener delegado a nivel
+// documento, CSP-safe (sin `'unsafe-inline'`). Escucha clicks sobre cualquier
+// elemento con `data-ca-action` y dispara la acción correspondiente:
+//   - scroll-banner → scrollIntoView al banner (antes onclick de la pill).
+//   - ack           → costAnomalyAck()    (función global del shell).
+//   - snooze        → costAnomalySnooze(data-ca-hours).
+//
+// Las funciones globales `costAnomalyAck`/`costAnomalySnooze` siguen viviendo en
+// el client script del shell (dashboard.js) — acá solo se cablea el binding sin
+// duplicar la lógica de fetch. Idempotente vía guard `__costosWired`.
+function renderCostosClientScript() {
+    return `<script>(function(){
+  if (window.__costosWired) return; window.__costosWired = true;
+  document.addEventListener('click', function(ev){
+    var el = ev.target && ev.target.closest ? ev.target.closest('[data-ca-action]') : null;
+    if (!el) return;
+    var action = el.getAttribute('data-ca-action');
+    if (action === 'scroll-banner') {
+      var b = document.getElementById('cost-anomaly-banner');
+      if (b && b.scrollIntoView) b.scrollIntoView({behavior:'smooth',block:'start'});
+    } else if (action === 'ack') {
+      if (typeof costAnomalyAck === 'function') costAnomalyAck();
+    } else if (action === 'snooze') {
+      var h = Number(el.getAttribute('data-ca-hours'));
+      if (typeof costAnomalySnooze === 'function') costAnomalySnooze(h);
+    }
+  });
+})();</script>`;
+}
+
+module.exports = { renderCostosPill, renderCostosBanner, renderInert, renderCostosClientScript, TOOLTIPS };
