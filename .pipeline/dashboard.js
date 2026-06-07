@@ -7425,133 +7425,35 @@ function inferHistoricalActivity() {
   return snapshots;
 }
 
+// #3733 — El cuerpo de getMetricsData() se extrajo a `lib/kpis-data.js`
+// (getMetricsSlice) para testearlo en aislamiento y reusarlo desde la ventana
+// KPIs V3. Esta función mantiene el contrato histórico (mismo shape de retorno)
+// y delega vía ctx inyectado. Fallback inerte (CA-A3) si el módulo no cargó.
 function getMetricsData() {
-  const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
-  let snapshots = [];
-  try {
-    const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
-    for (const l of lines) {
-      try { snapshots.push(JSON.parse(l)); } catch {}
-    }
-  } catch {}
-
-  // El archivo `metrics-history.jsonl` mezcla dos shapes:
-  //   - pulse del Pulpo: { ts: number, cpu, mem, agents, level, ... }
-  //   - anomaly del detector (#2891): { type: 'anomaly', ts: ISO, hour, baseline_usd, ... }
-  // El dashboard solo consume las pulse → filtramos por shape.
-  snapshots = snapshots.filter(s => typeof s.cpu === 'number' && typeof s.mem === 'number' && typeof s.ts === 'number');
-
-  // Si no hay snapshots del Pulpo, inferir actividad histórica desde archivos procesados
-  // Esto da una timeline de cuándo hubo trabajo en cada fase
-  if (snapshots.length < 10) {
-    const inferred = inferHistoricalActivity();
-    if (inferred.length > snapshots.length) snapshots = inferred;
+  if (!kpisData) {
+    log('kpis-data unavailable — getMetricsData devuelve slice vacío');
+    return { snapshots: [], etaAverages: {}, entregas: [], tokenEstimates: { totalSessions: 0, totalTools: 0, totalEstimatedTokens: 0, bySession: [] }, totalProcessed: 0, totalRejected: 0, agentPerf: {} };
   }
-
-  // Promedios de duración por fase/skill (reusar lógica de ETA)
-  const state = getPipelineState();
-  const etaAverages = state.etaAverages || {};
-
-  // Throughput: issues completados por período (de archivos en entrega/procesado)
-  const entregas = [];
-  try {
-    const dir = path.join(PIPELINE, 'desarrollo', 'entrega', 'procesado');
-    for (const f of listWorkFiles(dir)) {
-      const st = fileStat(path.join(dir, f));
-      if (st) entregas.push({ issue: f.split('.')[0], ts: st.ctimeMs });
-    }
-  } catch {}
-  entregas.sort((a, b) => a.ts - b.ts);
-
-  // Cuota Anthropic estimada (del activity log)
-  const tokenEstimates = { totalSessions: 0, totalTools: 0, totalEstimatedTokens: 0, bySession: [] };
-  try {
-    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
-    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
-    const sessions = {};
-    for (const l of lines) {
-      try {
-        const d = JSON.parse(l);
-        if (!d.session) continue;
-        if (!sessions[d.session]) sessions[d.session] = { tools: 0, firstTs: d.ts, lastTs: d.ts };
-        sessions[d.session].tools++;
-        sessions[d.session].lastTs = d.ts;
-      } catch {}
-    }
-    for (const [id, s] of Object.entries(sessions)) {
-      const durSeg = typeof s.firstTs === 'string' && typeof s.lastTs === 'string'
-        ? (new Date(s.lastTs) - new Date(s.firstTs)) / 1000
-        : typeof s.firstTs === 'number' ? (s.lastTs - s.firstTs) / 1000 : 0;
-      const estimated = Math.round((durSeg * 15) + (s.tools * 500));
-      tokenEstimates.totalSessions++;
-      tokenEstimates.totalTools += s.tools;
-      tokenEstimates.totalEstimatedTokens += estimated;
-      tokenEstimates.bySession.push({ id: id.slice(0, 8), tools: s.tools, durMin: Math.round(durSeg / 60), tokens: estimated });
-    }
-  } catch {}
-
-  // Tasa de rebotes (rechazos / total)
-  let totalProcessed = 0, totalRejected = 0;
-  const config = loadConfig();
-  const allFases = [];
-  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
-    for (const fase of pConfig.fases) allFases.push({ pipeline: pName, fase });
-  }
-  for (const { pipeline: pName, fase } of allFases) {
-    for (const estado of ['procesado', 'listo']) {
-      const dir = path.join(PIPELINE, pName, fase, estado);
-      for (const f of listWorkFiles(dir)) {
-        totalProcessed++;
-        const data = readYamlSafe(path.join(dir, f));
-        if (data.resultado === 'rechazado') totalRejected++;
-      }
-    }
-  }
-
-  // Agent performance: issues procesados por skill, duración promedio, rechazos
-  const agentPerf = {};
-  for (const { pipeline: pName, fase } of allFases) {
-    for (const estado of ['procesado', 'listo']) {
-      const dir = path.join(PIPELINE, pName, fase, estado);
-      for (const f of listWorkFiles(dir)) {
-        const skill = f.split('.').slice(1).join('.');
-        if (!skill) continue;
-        if (!agentPerf[skill]) agentPerf[skill] = { issues: 0, rejected: 0, totalDurMs: 0, durCount: 0, toolCalls: 0 };
-        agentPerf[skill].issues++;
-        const data = readYamlSafe(path.join(dir, f));
-        if (data.resultado === 'rechazado') agentPerf[skill].rejected++;
-        const st = fileStat(path.join(dir, f));
-        if (st) {
-          const dur = st.ctimeMs - st.birthtimeMs;
-          if (dur > 5000 && dur < 4 * 3600000) {
-            agentPerf[skill].totalDurMs += dur;
-            agentPerf[skill].durCount++;
-          }
-        }
-      }
-    }
-  }
-  // Enriquecer con tool calls del activity log
-  try {
-    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
-    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
-    const sessionSkill = {};
-    for (const l of lines) {
-      try {
-        const d = JSON.parse(l);
-        if (d.session && d.skill) sessionSkill[d.session] = d.skill;
-        if (d.session && d.tool) {
-          const sk = sessionSkill[d.session] || d.session;
-          if (agentPerf[sk]) agentPerf[sk].toolCalls++;
-        }
-      } catch {}
-    }
-  } catch {}
-
-  return { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf };
+  return kpisData.getMetricsSlice({
+    ROOT: path.dirname(PIPELINE),
+    PIPELINE,
+    getPipelineState,
+    loadConfig,
+    listWorkFiles,
+    fileStat,
+    readYamlSafe,
+    inferHistoricalActivity,
+  });
 }
 
 function generateMetricsHTML() {
+  // #3733 — Render de /metrics delegado a la vista extraída (XSS hardening:
+  // skill names + session IDs escapados). El endpoint NUNCA se borra
+  // (decisión cerrada #3). Si la vista no cargó, cae al body legacy de abajo
+  // como fallback inerte (CA-A3).
+  if (kpisViewMod && typeof kpisViewMod.renderMetricsPage === 'function') {
+    return kpisViewMod.renderMetricsPage({ data: getMetricsData() });
+  }
   const data = getMetricsData();
   const { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf } = data;
 
@@ -9038,6 +8940,23 @@ let multiProviderCoverageView = null;
 try { multiProviderCoverageApi = require('./lib/multi-provider-coverage/api'); } catch (e) { log(`multi-provider-coverage api unavailable: ${e.message}`); }
 try { multiProviderCoverageView = require('./views/dashboard/multi-provider-coverage'); } catch (e) { log(`multi-provider-coverage view unavailable: ${e.message}`); }
 
+// #3736 — Ventana Descanso extraída a su propio módulo (padre #3715). Require
+// defensivo (mismo patrón que las vistas multi-provider). El routing legacy
+// `/modo-descanso` y el slug nuevo `?view=descanso` los resuelve
+// dashboard-routes.js, que también carga este módulo con su propio guard.
+let descansoView = null;
+try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`descanso view unavailable: ${e.message}`); }
+
+// #3733 — Ventana KPIs extraída del monolito (split de #3715). `kpisData`
+// provee el slice data-only (getMetricsData portado con ctx inyectado) y
+// `kpisView` la presentación SSR (renderKpis + renderMetricsPage). Require
+// defensivo: si fallan, getMetricsData()/generateMetricsHTML() degradan a un
+// fallback inerte (CA-A3) — el endpoint /metrics nunca se cae.
+let kpisData = null;
+let kpisViewMod = null;
+try { kpisData = require('./lib/kpis-data'); } catch (e) { log(`kpis-data unavailable: ${e.message}`); }
+try { kpisViewMod = require('./views/dashboard/kpis'); } catch (e) { log(`kpis view unavailable: ${e.message}`); }
+
 // #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.
 let wizardSession = null;
@@ -10514,16 +10433,43 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // /metrics — Métricas históricas para decisiones de hardware/servicio
+  // /metrics — Métricas históricas para decisiones de hardware/servicio.
+  // #3733 (CA-15) — headers de seguridad: no-store (respuesta mutable con
+  // data de cuota), nosniff (no reinterpretación MIME), no-referrer (no leak
+  // a terceros). NO se setea Access-Control-Allow-Origin: endpoint local-only.
   if (req.url === '/metrics') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    });
     res.end(generateMetricsHTML());
     return;
   }
 
-  // /api/metrics — Raw metrics data
+  // /api/metrics — Raw metrics data (mismos headers CA-15).
   if (req.url === '/api/metrics') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    // #3733 (CA-18) — same-origin enforcement (defense in depth). Scripts/CLI/
+    // Telegram no envían `Origin` → pasan. Un fetch cross-site desde el browser
+    // manda `Origin` distinto al host → 403. El bind ya es loopback; esto evita
+    // que una pestaña maliciosa lea el JSON via CORS si algún día se relajara.
+    const origin = req.headers['origin'];
+    if (origin) {
+      let originHost = '';
+      try { originHost = new URL(origin).host; } catch { originHost = ' '; }
+      if (originHost !== req.headers['host']) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'cross-origin denegado' }));
+        return;
+      }
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    });
     res.end(JSON.stringify(getMetricsData()));
     return;
   }
@@ -10653,7 +10599,7 @@ const server = http.createServer((req, res) => {
     const dashRoutes = require('./lib/dashboard-routes');
     const url = req.url || '';
     const isLegacy = (url === '/legacy' || url === '/legacy/');
-    if (!isLegacy && dashRoutes.handle(req, res, { getState: getCachedPipelineState, PIPELINE, ROOT, GH_BIN })) {
+    if (!isLegacy && dashRoutes.handle(req, res, { getState: getCachedPipelineState, PIPELINE, ROOT, GH_BIN, getMetricsData, loadConfig })) {
       return;
     }
   } catch (e) {

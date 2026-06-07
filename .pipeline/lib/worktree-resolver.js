@@ -130,18 +130,67 @@ function parseWorktreeList(porcelain) {
 }
 
 /**
+ * Cuenta los commits de `branchRef` que NO están en `origin/main`. Best-effort:
+ * cualquier fallo (ref inexistente, sin red para el cálculo local, etc.) cuenta
+ * como 0 — preferimos no romper la resolución por un conteo que no se pudo hacer.
+ *
+ * @param {string}   ROOT       Checkout principal donde corre el rev-list.
+ * @param {string}   branchRef  Ref del worktree (ej. `refs/heads/agent/3733-pipeline-dev`).
+ */
+function countCommitsAhead(ROOT, branchRef, { spawnImpl = spawnSync } = {}) {
+    if (!branchRef) return 0;
+    try {
+        const out = gitSpawn(['rev-list', '--count', `origin/main..${branchRef}`], {
+            cwd: ROOT, spawnImpl, timeout: 10000,
+        });
+        const n = parseInt(String(out).trim(), 10);
+        return Number.isFinite(n) ? n : 0;
+    } catch {
+        return 0;
+    }
+}
+
+/**
  * Busca el worktree del issue por patrón `platform.agent-<issue>-*` (case
- * sensitive, igual que git). Retorna el primero que matchea o null.
+ * sensitive, igual que git). Retorna el worktree elegido o null.
  *
  * Excluye explícitamente entradas cuyo directorio físico ya no existe — git
  * a veces retiene entries muertas en `.git/worktrees/` hasta el próximo prune.
+ *
+ * **Desambiguación con múltiples worktrees del mismo issue** (issues #3733/#3736):
+ *   Un issue puede tener más de un worktree `platform.agent-<issue>-*` cuando
+ *   fue ruteado a más de un skill, o cuando quedó un worktree huérfano de un
+ *   misroute previo. El match por prefijo a secas devolvía el PRIMERO según el
+ *   orden de `git worktree list` — que podía ser un worktree vacío (0 commits)
+ *   en vez del worktree del dev que efectivamente trabajó. Eso producía
+ *   `pr:no-commits` en linteo/build aunque el worktree correcto tenía el commit.
+ *   (Incidente real #3733 rev-1: linteo resolvió `platform.agent-3733-backend-dev`
+ *   con 0 commits en lugar de `platform.agent-3733-pipeline-dev` con el trabajo.
+ *   Mismo patrón en #3736 rev-1 con `agent/3736-backend-dev` vacío.)
+ *
+ *   Cuando hay varios candidatos desempatamos:
+ *     1. Match EXACTO por skill (`platform.agent-<issue>-<skill>`) si `skill` viene.
+ *        Útil para fases que conocen el skill del dev (no para `linter`, cuyo
+ *        skill no nombra ningún worktree).
+ *     2. El worktree con MÁS commits sobre `origin/main` (el que trabajó). Esto
+ *        cubre el caso del linter, que corre como skill="linter" y no puede
+ *        matchear por nombre.
+ *   Con un único candidato el comportamiento es idéntico al previo (sin git
+ *   calls extra) — la desambiguación solo paga su costo cuando hay colisión.
+ *
+ * @param {string|number} issue
+ * @param {object}  [opts]
+ * @param {string}  [opts.skill]  Skill para preferir match exacto ante colisión.
  */
-function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs } = {}) {
+function findIssueWorktree(ROOT, issue, { skill = null, spawnImpl = spawnSync, fsImpl = fs } = {}) {
     const stdout = gitSpawn(['worktree', 'list', '--porcelain'], {
         cwd: ROOT, spawnImpl,
     });
     const entries = parseWorktreeList(stdout);
     const needle = `platform.agent-${issue}-`;
+
+    // Candidatos del issue con path físico existente, preservando el orden de git.
+    const candidates = [];
     for (const e of entries) {
         if (!e.worktree) continue;
         const base = path.basename(e.worktree);
@@ -150,9 +199,30 @@ function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs } =
         try {
             if (!fsImpl.existsSync(e.worktree)) continue;
         } catch { continue; }
-        return e;
+        candidates.push(e);
     }
-    return null;
+
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    // (1) Match exacto por skill.
+    if (skill) {
+        const exactBase = `platform.agent-${issue}-${skill}`;
+        const exact = candidates.find((c) => path.basename(c.worktree) === exactBase);
+        if (exact) return exact;
+    }
+
+    // (2) Preferir el worktree con más commits sobre origin/main.
+    let best = candidates[0];
+    let bestAhead = countCommitsAhead(ROOT, best.branch, { spawnImpl });
+    for (let i = 1; i < candidates.length; i++) {
+        const ahead = countCommitsAhead(ROOT, candidates[i].branch, { spawnImpl });
+        if (ahead > bestAhead) {
+            best = candidates[i];
+            bestAhead = ahead;
+        }
+    }
+    return best;
 }
 
 /**
@@ -343,10 +413,12 @@ function resolveExistingWorktree({
     // de verdad. Si rompe acá, NO seguimos al spawn.
     validateInputs(issue, skill);
 
-    // (2) Búsqueda directa del worktree por patrón.
+    // (2) Búsqueda directa del worktree por patrón. Pasamos `skill` para que,
+    // ante múltiples worktrees del mismo issue, se prefiera el match exacto
+    // (o el worktree con commits) en vez del primero arbitrario (#3733).
     let existing = null;
     try {
-        existing = findIssueWorktree(ROOT, issue, { spawnImpl, fsImpl });
+        existing = findIssueWorktree(ROOT, issue, { skill, spawnImpl, fsImpl });
     } catch (e) {
         log?.(`⚠️ git worktree list falló (continúo con auto-recovery si aplica): ${e.message.slice(0, 120)}`);
     }
@@ -386,6 +458,7 @@ function resolveExistingWorktree({
 module.exports = {
     resolveExistingWorktree,
     findIssueWorktree,
+    countCommitsAhead,
     parseWorktreeList,
     remoteBranchExists,
     verifyRemoteBranchOrigin,

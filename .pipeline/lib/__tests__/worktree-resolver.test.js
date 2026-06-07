@@ -21,6 +21,7 @@ const path = require('node:path');
 const {
     resolveExistingWorktree,
     findIssueWorktree,
+    countCommitsAhead,
     parseWorktreeList,
     remoteBranchExists,
     verifyRemoteBranchOrigin,
@@ -126,6 +127,94 @@ test('findIssueWorktree — null si el path no existe físicamente', () => {
     assert.equal(result, null);
 });
 
+test('findIssueWorktree — desambigua por skill exacto cuando hay varios worktrees (#3736)', () => {
+    // El issue 3736 tiene DOS worktrees: backend-dev (vacío, primero alfabético)
+    // y pipeline-dev (con el trabajo). Con skill=pipeline-dev debe elegir ese,
+    // no el primer match alfabético.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /repo',
+                'branch refs/heads/main',
+                '',
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const fsImpl = fakeFs(true);
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl, skill: 'pipeline-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-pipeline-dev');
+});
+
+test('findIssueWorktree — sin match exacto de skill cae al primer candidato (legacy)', () => {
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const fsImpl = fakeFs(true);
+    // skill que no matchea ninguno → primer candidato.
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl, skill: 'android-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-backend-dev');
+});
+
+test('findIssueWorktree — sin skill mantiene comportamiento legacy (primer match)', () => {
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-backend-dev');
+});
+
+test('findIssueWorktree — skill exacto ignora candidato cuyo path no existe', () => {
+    // El worktree del skill exacto existe en git pero NO en disco → debe caer
+    // al otro candidato válido en vez de devolver uno fantasma.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const fsImpl = fakeFs((p) => p !== '/tmp/platform.agent-3736-pipeline-dev');
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl, skill: 'pipeline-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-backend-dev');
+});
+
 test('findIssueWorktree — null si ningún worktree matchea', () => {
     const spawnImpl = makeFakeSpawn([
         {
@@ -135,6 +224,100 @@ test('findIssueWorktree — null si ningún worktree matchea', () => {
     ]);
     const result = findIssueWorktree('/repo', 9999, { spawnImpl, fsImpl: fakeFs(true) });
     assert.equal(result, null);
+});
+
+// ---- findIssueWorktree: colisión de múltiples worktrees por issue (#3733) ----
+
+// Salida de `git worktree list` con DOS worktrees para el mismo issue 3733:
+//   - backend-dev: 0 commits sobre origin/main (huérfano de un misroute).
+//   - pipeline-dev: 1 commit (el trabajo real).
+// El backend-dev aparece PRIMERO en el listado (orden de creación), que era
+// justo lo que el resolver elegía mal antes del fix.
+const MULTI_WORKTREE_3733 = [
+    'worktree /repo',
+    'HEAD a',
+    'branch refs/heads/main',
+    '',
+    'worktree /tmp/platform.agent-3733-backend-dev',
+    'HEAD bbb',
+    'branch refs/heads/agent/3733-backend-dev',
+    '',
+    'worktree /tmp/platform.agent-3733-pipeline-dev',
+    'HEAD ccc',
+    'branch refs/heads/agent/3733-pipeline-dev',
+    '',
+].join('\n');
+
+test('findIssueWorktree — colisión: elige el worktree con commits, no el primero', () => {
+    // Reproduce el incidente #3733 rev-1: el linter corre como skill="linter"
+    // (no nombra ningún worktree) → desempata por commits sobre origin/main.
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_WORKTREE_3733 },
+        { match: 'git rev-list --count origin/main..refs/heads/agent/3733-backend-dev', stdout: '0\n' },
+        { match: 'git rev-list --count origin/main..refs/heads/agent/3733-pipeline-dev', stdout: '1\n' },
+    ]);
+    const result = findIssueWorktree('/repo', 3733, { skill: 'linter', spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3733-pipeline-dev');
+});
+
+test('findIssueWorktree — colisión: match exacto por skill tiene prioridad', () => {
+    // Cuando la fase conoce el skill del dev, el match exacto gana sin necesidad
+    // de contar commits (no se espera ninguna llamada a rev-list).
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_WORKTREE_3733 },
+    ]);
+    const result = findIssueWorktree('/repo', 3733, { skill: 'backend-dev', spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3733-backend-dev');
+});
+
+test('findIssueWorktree — colisión sin skill: desempata por más commits', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_WORKTREE_3733 },
+        { match: 'git rev-list --count origin/main..refs/heads/agent/3733-backend-dev', stdout: '0\n' },
+        { match: 'git rev-list --count origin/main..refs/heads/agent/3733-pipeline-dev', stdout: '3\n' },
+    ]);
+    const result = findIssueWorktree('/repo', 3733, { spawnImpl, fsImpl: fakeFs(true) });
+    assert.equal(result.worktree, '/tmp/platform.agent-3733-pipeline-dev');
+});
+
+test('findIssueWorktree — un solo candidato NO dispara rev-list (sin costo extra)', () => {
+    // Garantiza que el path feliz (un worktree por issue) no agrega git calls:
+    // si se invocara rev-list, fakeSpawn lanzaría por falta de handler.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /repo', 'HEAD a', 'branch refs/heads/main', '',
+                'worktree /tmp/platform.agent-2505-delivery', 'HEAD b',
+                'branch refs/heads/agent/2505-delivery', '',
+            ].join('\n'),
+        },
+    ]);
+    const result = findIssueWorktree('/repo', 2505, { skill: 'linter', spawnImpl, fsImpl: fakeFs(true) });
+    assert.equal(result.worktree, '/tmp/platform.agent-2505-delivery');
+});
+
+// ---- countCommitsAhead -------------------------------------------------------
+
+test('countCommitsAhead — parsea el conteo de rev-list', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git rev-list --count origin/main..refs/heads/agent/3733-pipeline-dev', stdout: '4\n' },
+    ]);
+    assert.equal(countCommitsAhead('/repo', 'refs/heads/agent/3733-pipeline-dev', { spawnImpl }), 4);
+});
+
+test('countCommitsAhead — 0 ante fallo de git (best-effort)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git rev-list --count', status: 128, stderr: 'fatal: bad revision' },
+    ]);
+    assert.equal(countCommitsAhead('/repo', 'refs/heads/x', { spawnImpl }), 0);
+});
+
+test('countCommitsAhead — 0 si branchRef es null', () => {
+    const spawnImpl = makeFakeSpawn([]); // No debería invocarse
+    assert.equal(countCommitsAhead('/repo', null, { spawnImpl }), 0);
 });
 
 // ---- remoteBranchExists ------------------------------------------------------

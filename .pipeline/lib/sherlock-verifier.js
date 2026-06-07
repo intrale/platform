@@ -122,6 +122,9 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const commanderMP = require('./commander/multi-provider');
+// #3846 — recolección de evidencia independiente (filesystem/git/github-api/
+// heartbeat) para no heredar las asunciones del systemState del Commander.
+const independentVerifierModule = require('./sherlock-independent-verifier');
 
 // Invariante CA-SEC-9 — hardcoded, NO depende de config.
 const HARDCODED_MAX_REELABORACIONES = 1;
@@ -247,17 +250,56 @@ function loadSherlockConfig({ configLoader } = {}) {
 // schema de salida estricto.
 //
 // Los delimitadores XML (<analysis>, <system_state>, <original_request>,
-// <last_hour_logs>) separan contexto-vs-input para resistir prompt-injection
-// (CA-SEC-2). El prompt cierra con un schema JSON literal así el modelo no
-// puede inventarse keys nuevas.
+// <last_hour_logs>, <independent_evidence>) separan contexto-vs-input para
+// resistir prompt-injection (CA-SEC-2). El prompt cierra con un schema JSON
+// literal así el modelo no puede inventarse keys nuevas.
+//
+// #3846 — `independentEvidence` (string opcional) es evidencia recolectada por
+// Sherlock CONTRA fuentes de verdad reales (filesystem, git origin/main,
+// GitHub API, heartbeats), independiente del `systemState` que inyectó el
+// Commander. Si está presente, se agrega la sección `<independent_evidence>` y
+// un bloque de instrucciones que ordena detectar las ASUNCIONES IMPLÍCITAS del
+// análisis y contravenirlas contra esa evidencia. Si está ausente o vacío, el
+// prompt es idéntico al de antes del #3846 (back-compat).
 // -----------------------------------------------------------------------------
-function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLogs }) {
-    return (
+function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLogs, independentEvidence }) {
+    const evidence = String(independentEvidence || '').trim();
+    const hasEvidence = evidence.length > 0;
+
+    const baseInstructions = (
         'Sos Sherlock, un verificador adversarial. Tu único trabajo es REFUTAR ' +
         'el análisis que te paso a continuación contrastándolo con el estado ' +
         'real del sistema. No sos asistente; sos fiscal. Si el análisis es ' +
         'consistente con la evidencia, decilo. Si encontrás contradicciones, ' +
-        'enumerarlas con la cita textual del claim y la evidencia que lo refuta.\n\n' +
+        'enumerarlas con la cita textual del claim y la evidencia que lo refuta.\n\n'
+    );
+
+    // #3846 — refuerzo fiscal cuando hay evidencia independiente. Le pedimos al
+    // modelo que NO trate al systemState como verdad absoluta, sino que explicite
+    // qué asume y lo contraste contra la evidencia real.
+    const evidenceInstructions = hasEvidence ? (
+        'IMPORTANTE — tenés DOS fuentes de contraste, con prioridades distintas:\n' +
+        '  1. <system_state>: snapshot que observó el Commander ANTES del análisis. ' +
+        'Puede heredar las mismas asunciones que el análisis intenta defender. NO ' +
+        'lo trates como verdad absoluta.\n' +
+        '  2. <independent_evidence>: hechos ground-truth recolectados por VOS contra ' +
+        'fuentes reales (filesystem en disco, git origin/main, GitHub API, heartbeats). ' +
+        'Esta evidencia PESA MÁS que el system_state cuando se contradicen.\n\n' +
+        'Procedimiento obligatorio:\n' +
+        '  a) Identificá qué ASUME el análisis del system_state (ej: si dice ' +
+        '"#X está procesado", asume procesado=verdadero=entregable real en main).\n' +
+        '  b) Contravení cada asunción contra <independent_evidence>: ¿hay un PR ' +
+        'mergeado? ¿el archivo existe en disco? ¿el PID del heartbeat está vivo?\n' +
+        '  c) Si una asunción del análisis CONTRADICE la evidencia independiente, ' +
+        'eso es una inconsistencia grave: reportala con el claim textual y la ' +
+        'contradicción citando la evidencia real.\n' +
+        '  Ejemplo: si el análisis dice "el helper escape-html.js está listo para ' +
+        'merge" pero <independent_evidence> muestra "la rama NO está en origin/main ' +
+        'y no hay PR mergeado", reportá claim: "...listo para merge", contradiction: ' +
+        '"evidencia real: el entregable no existe en origin/main".\n\n'
+    ) : '';
+
+    const outputRules = (
         'REGLAS DE SALIDA — devolvé EXACTAMENTE este JSON, nada más:\n' +
         '{\n' +
         '  "verdict": "ok" | "rechazado",\n' +
@@ -265,7 +307,19 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
         '  "inconsistencies": [ {"claim": "<texto del claim>", "contradiction": "<por qué lo refuta el estado>"} ]\n' +
         '}\n' +
         'Cap máximo 5 inconsistencias. Si no hay inconsistencias, devolvé ' +
-        '"verdict": "ok" y "inconsistencies": [].\n\n' +
+        '"verdict": "ok" y "inconsistencies": [].\n\n'
+    );
+
+    const evidenceSection = hasEvidence ? (
+        '<independent_evidence>\n' +
+        evidence.slice(0, 8000) +
+        '\n</independent_evidence>\n\n'
+    ) : '';
+
+    return (
+        baseInstructions +
+        evidenceInstructions +
+        outputRules +
         '<original_request>\n' +
         String(originalRequest || '').slice(0, 4000) +
         '\n</original_request>\n\n' +
@@ -275,6 +329,7 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
         '<system_state>\n' +
         String(systemState || '').slice(0, 8000) +
         '\n</system_state>\n\n' +
+        evidenceSection +
         '<last_hour_logs>\n' +
         String(lastHourLogs || '').slice(0, 4000) +
         '\n</last_hour_logs>\n\n' +
@@ -849,6 +904,9 @@ function emitAuditEvent({ pipelineDir, event, payload, fsImpl, auditLog, now }) 
             commanderModel: payload && payload.commanderModel || null,
             sherlockModel: payload && payload.sherlockModel || null,
             transport: payload && payload.transport || null,
+            // #3846 — evidencia independiente (eventos sherlock_independent_evidence_*).
+            sourcesChecked: payload && Array.isArray(payload.sourcesChecked) ? payload.sourcesChecked : undefined,
+            findingsCount: payload && Number.isFinite(payload.findingsCount) ? payload.findingsCount : undefined,
             // #3766 — los campos del extinto evento `sherlock_model_swap`
             // (swapModelOrigen/Destino/Reason) se eliminaron: el verifier ya
             // no emite ese evento porque la policy de swap intra-provider del
@@ -915,6 +973,15 @@ async function verify(opts = {}) {
         systemState,
         lastHourLogs,
         pipelineDir,
+
+        // #3846 — evidencia independiente. `issueNumber` habilita el collector;
+        // si no se pasa, Sherlock corre igual que antes (sin sección).
+        issueNumber,
+        independentVerifier,   // inyectable tests (default: módulo real)
+        gitImpl,               // inyectable para collectIndependentEvidence
+        ghApi,                 // inyectable para collectIndependentEvidence
+        processCheck,          // inyectable para collectIndependentEvidence
+        repoRoot,              // override raíz git (default: padre de pipelineDir)
 
         // back-compat: si el caller pasa `excludedProvider`, lo tratamos como
         // `commanderProvider` (mismo string). #3484: ya NO se excluye, solo
@@ -1028,6 +1095,81 @@ async function verify(opts = {}) {
     // = lista de providers recorridos (incluye los bloqueados por residency).
     // -------------------------------------------------------------------------
 
+    // -------------------------------------------------------------------------
+    // #3846 — RECOLECCIÓN DE EVIDENCIA INDEPENDIENTE (antes de resolver provider).
+    //
+    // Sherlock arma evidencia ground-truth contra fuentes reales (filesystem,
+    // git origin/main, GitHub API, heartbeat) en lugar de confiar solo en el
+    // `systemState` que le pasó el Commander. Fail-open total: si el collector
+    // falla o tarda, Sherlock sigue exactamente como antes (sin la sección).
+    //
+    // Solo corre si el caller pasó `issueNumber` (el collector necesita un
+    // identificador numérico válido — CA-SEC-10).
+    // -------------------------------------------------------------------------
+    const _independentVerifier = independentVerifier || independentVerifierModule;
+    let safeIndependentEvidence = '';
+    if (issueNumber != null) {
+        try {
+            const evidence = await _independentVerifier.collectIndependentEvidence({
+                issueNumber,
+                pipelineDir,
+                repoRoot,
+                fsImpl,
+                gitImpl,
+                ghApi,
+                processCheck,
+                log: _log,
+            });
+            const rendered = _independentVerifier.formatIndependentEvidence(evidence);
+            if (rendered) {
+                // CA-SEC-1 — la evidencia (outputs de git/gh/FS) se sanitiza igual
+                // que el analysis antes de tocar el prompt del provider.
+                const sanEv = commanderMP.sanitizeUserPrompt(rendered);
+                safeIndependentEvidence = sanEv.sanitized;
+                if (sanEv.truncated) {
+                    _log('sherlock', `🛡️ CA-SEC-1: independentEvidence recortado (injection patterns=${sanEv.hits.join('|')})`);
+                }
+            }
+            // Auditoría — evento con sources/findingsCount/durationMs (sin payloads
+            // crudos: solo hash del análisis, CA-SEC-8).
+            emitAuditEvent({
+                pipelineDir, fsImpl, auditLog, now: _now,
+                event: evidence && evidence.ok
+                    ? 'sherlock_independent_evidence_collected'
+                    : 'sherlock_independent_evidence_failed',
+                payload: {
+                    analysisHash: hashFor(analysis),
+                    commanderProvider,
+                    commanderModel,
+                    durationMs: evidence ? evidence.durationMs : 0,
+                    errorCode: evidence && evidence.ok ? null : (evidence && evidence.error) || 'collector_error',
+                    sourcesChecked: evidence ? (evidence.sourcesChecked || []) : [],
+                    findingsCount: evidence ? (evidence.findings || []).length : 0,
+                    sherlockModel: null,
+                    transport: null,
+                    sameProvider: false,
+                    sameModel: false,
+                },
+            });
+        } catch (e) {
+            // FAIL-OPEN — el collector nunca bloquea la verificación.
+            _log('sherlock', `independentEvidence collector falló (fail-open): ${e && e.message}`);
+            emitAuditEvent({
+                pipelineDir, fsImpl, auditLog, now: _now,
+                event: 'sherlock_independent_evidence_failed',
+                payload: {
+                    analysisHash: hashFor(analysis),
+                    commanderProvider,
+                    commanderModel,
+                    durationMs: 0,
+                    errorCode: 'collector_exception',
+                    sourcesChecked: [],
+                    findingsCount: 0,
+                },
+            });
+        }
+    }
+
     // CA-SEC-2 — prompt con delimitadores XML. Es provider-independiente, así
     // que se arma una sola vez antes de la cascada.
     const prompt = buildFiscalPrompt({
@@ -1035,6 +1177,7 @@ async function verify(opts = {}) {
         originalRequest,
         systemState,
         lastHourLogs,
+        independentEvidence: safeIndependentEvidence,
     });
 
     // #3766 — `modelSwap` queda como shape estable (siempre `swapped:false`)

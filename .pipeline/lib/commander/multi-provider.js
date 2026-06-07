@@ -405,6 +405,11 @@ function auditCommanderRequest(opts = {}) {
         swapModelOrigen,
         swapModelDestino,
         swapReason,
+        // #3846 — campos del evento `sherlock_independent_evidence_collected`.
+        // Solo presentes cuando el collector de evidencia independiente corrió;
+        // para el resto de eventos quedan en null y no afectan el shape canónico.
+        sourcesChecked,
+        findingsCount,
         // inyectables tests
         fsImpl,
         auditLog,
@@ -445,6 +450,9 @@ function auditCommanderRequest(opts = {}) {
         swap_model_origen: swapModelOrigen || null,
         swap_model_destino: swapModelDestino || null,
         swap_reason: swapReason || null,
+        // #3846 — evidencia independiente. Null para eventos que no la usan.
+        sources_checked: Array.isArray(sourcesChecked) ? sourcesChecked : null,
+        findings_count: Number.isFinite(findingsCount) ? findingsCount : null,
     };
 
     try {
