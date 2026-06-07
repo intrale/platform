@@ -36,7 +36,10 @@ const DASHBOARD_BASE_URL = 'http://localhost:3200';
 // Allowlist de paths del dashboard que pueden capturarse. Limita SSRF a paths
 // conocidos del propio dashboard, no a `/ops` o paneles internos con secrets
 // (CA-19).
-const ALLOWED_PATHS = Object.freeze(['/', '/v3', '/dashboard']);
+// #3742 — `/dashboard/wizard/allowlist` habilitado para evidencia visual del
+// wizard de triaje de allowlist (mockup/QA). No-op si #3751 (viewSlug) lo
+// agrega antes por otra vía.
+const ALLOWED_PATHS = Object.freeze(['/', '/v3', '/dashboard', '/dashboard/wizard/allowlist']);
 
 // Default viewport del dashboard (CA-UX-7: 1 estado solo, no exigir múltiples).
 const DEFAULT_VIEWPORT = Object.freeze({ width: 1440, height: 900 });

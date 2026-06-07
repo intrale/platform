@@ -29,6 +29,10 @@ const MAX_DEPTH = 3;
 // Cap absoluto de profundidad (defensa contra opts.maxDepth descontrolado).
 // Cualquier override debe quedar dentro de [1, ABSOLUTE_MAX_DEPTH].
 const ABSOLUTE_MAX_DEPTH = 10;
+// #3742 — Cap absoluto de nodos visitados (defensa DoS local contra grafos
+// gigantes o malformados en el wizard de allowlist). Cualquier override de
+// opts.maxNodes se clampea dentro de [1, ABSOLUTE_MAX_NODES].
+const ABSOLUTE_MAX_NODES = 200;
 
 // Regex para detectar referencias a issues en body/comments.
 // Convenciones soportadas:
@@ -108,6 +112,39 @@ function parseDepsFromText(text) {
     return [...found].sort((a, b) => a - b);
 }
 
+// #3742 — Referencias de PROCEDENCIA (upward): el issue actual es HIJO del
+// referenciado. "Split de #N" y "Tracked by #N" indican que N es el padre/épico,
+// NO una dependencia forward que bloquee al issue actual. Recorrerlas como deps
+// es incorrecto: sube al padre y baja a hermanos no relacionados, y además
+// genera back-edges padre↔hijo que la detección de ciclos (#3742) marcaría como
+// truncado en el caso normal de un split (regresión del incidente CA-1
+// 2026-04-30). Por eso se excluyen del grafo de traversal en `resolveOpenDeps`.
+// `parseDepsFromText` las sigue reconociendo (otros consumidores las usan).
+const PROVENANCE_PATTERNS = [
+    /\bsplit\s+(?:de|of)\s+#(\d+)/gi,
+    /\btracked\s+by\s+#(\d+)/gi,
+];
+
+/**
+ * Extrae las referencias de procedencia (upward) de un texto. Devuelve un Set
+ * de números de issue padre/épico declarados con "Split de #N" / "Tracked by #N".
+ * @param {string} text
+ * @returns {Set<number>}
+ */
+function parseProvenanceRefs(text) {
+    const found = new Set();
+    if (!text || typeof text !== 'string') return found;
+    for (const pattern of PROVENANCE_PATTERNS) {
+        pattern.lastIndex = 0;
+        let m;
+        while ((m = pattern.exec(text)) !== null) {
+            const n = parseInt(m[1], 10);
+            if (Number.isInteger(n) && n > 0) found.add(n);
+        }
+    }
+    return found;
+}
+
 /**
  * Consulta un issue vía gh y devuelve {state, deps[]}.
  * Usa cache TTL 5 min.
@@ -117,7 +154,9 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
     const c = cache || readCache(cacheFile);
     const key = String(issueNum);
     const existing = c.issues[key];
-    if (existing && isFresh(existing, now)) {
+    // #3742 — los entries de formato viejo (sin `forwardDeps`) se tratan como
+    // cache miss para garantizar que el campo siempre esté presente en el walk.
+    if (existing && isFresh(existing, now) && Array.isArray(existing.forwardDeps)) {
         return existing;
     }
 
@@ -131,6 +170,7 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
         const errEntry = {
             state: 'unknown',
             deps: [],
+            forwardDeps: [],
             title: '',
             fetchedAt: now,
             error: r.stderr ? r.stderr.split('\n')[0].trim() : `gh exit ${r.status}`,
@@ -145,7 +185,7 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
     try {
         parsed = JSON.parse(r.stdout);
     } catch {
-        const errEntry = { state: 'unknown', deps: [], title: '', fetchedAt: now, error: 'json-parse' };
+        const errEntry = { state: 'unknown', deps: [], forwardDeps: [], title: '', fetchedAt: now, error: 'json-parse' };
         c.issues[key] = errEntry;
         c.updatedAt = now;
         writeCache(c, cacheFile);
@@ -154,12 +194,18 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
 
     const body = parsed.body || '';
     const comments = (parsed.comments || []).map(co => co.body || '').join('\n');
-    const deps = parseDepsFromText(body + '\n' + comments)
+    const text = body + '\n' + comments;
+    const deps = parseDepsFromText(text)
         .filter(n => n !== Number(issueNum)); // no auto-referencias
+    // #3742 — `forwardDeps` excluye referencias de procedencia (Split de / Tracked by).
+    // Es el conjunto que `resolveOpenDeps` recorre como dependencias reales.
+    const provenance = parseProvenanceRefs(text);
+    const forwardDeps = deps.filter(n => !provenance.has(n));
 
     const entry = {
         state: parsed.state ? parsed.state.toLowerCase() : 'unknown',
         deps,
+        forwardDeps,
         title: parsed.title || '',
         fetchedAt: now,
     };
@@ -173,10 +219,17 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
  * Resuelve recursivamente las dependencias abiertas de un issue.
  * Recursión limitada a MAX_DEPTH (3) — si se llega al límite emite warning.
  *
+ * #3742 — Agregado `opts.maxNodes` (cap de nodos visitados, default y máximo
+ * ABSOLUTE_MAX_NODES=200) y detección explícita de ciclos. El resultado expone
+ * `nodesVisited` y `reason` para que el wizard de allowlist muestre "truncado"
+ * (por profundidad, nodos o ciclo) sin colgarse.
+ *
  * @returns {{
  *   openDeps: number[],
  *   chains: {[issueNum]: {title, deps}},
- *   truncated: boolean
+ *   truncated: boolean,
+ *   reason: 'max_depth'|'max_nodes'|'cycle'|null,
+ *   nodesVisited: number
  * }}
  */
 function resolveOpenDeps(issueNum, opts = {}) {
@@ -187,23 +240,49 @@ function resolveOpenDeps(issueNum, opts = {}) {
     let maxDepth = Number.isFinite(opts.maxDepth) ? Math.floor(opts.maxDepth) : MAX_DEPTH;
     if (maxDepth < 1) maxDepth = 1;
     if (maxDepth > ABSOLUTE_MAX_DEPTH) maxDepth = ABSOLUTE_MAX_DEPTH;
+    // #3742 — maxNodes override. Default = cap absoluto. Se clampea a [1, 200].
+    let maxNodes = Number.isFinite(opts.maxNodes) ? Math.floor(opts.maxNodes) : ABSOLUTE_MAX_NODES;
+    if (maxNodes < 1) maxNodes = 1;
+    if (maxNodes > ABSOLUTE_MAX_NODES) maxNodes = ABSOLUTE_MAX_NODES;
     const cache = readCache(cacheFile);
     const visited = new Set();
     const openDeps = new Set();
     const chains = {};
     let truncated = false;
+    let reason = null;
+    let nodesVisited = 0;
+    let cycleDetected = false;
 
-    function walk(num, depth) {
+    // `ancestors` es el conjunto de nodos en el camino activo (recursion stack).
+    // Una back-edge hacia un ancestro = ciclo. Un revisit que NO es ancestro
+    // (diamante de dependencias) NO es ciclo: ya fue explorado, se omite.
+    function walk(num, depth, ancestors) {
         const key = String(num);
+        if (ancestors.has(key)) {
+            cycleDetected = true;
+            return;
+        }
         if (visited.has(key)) return;
+        if (nodesVisited >= maxNodes) {
+            truncated = true;
+            if (!reason) reason = 'max_nodes';
+            return;
+        }
         visited.add(key);
+        nodesVisited += 1;
         if (depth > maxDepth) {
             truncated = true;
+            if (!reason) reason = 'max_depth';
             return;
         }
         const info = fetchIssueInfo(num, { ghRunner, repo, cache, cacheFile, now });
         chains[key] = { title: info.title, deps: info.deps, state: info.state };
-        for (const dep of info.deps) {
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(key);
+        // #3742 — recorremos sólo dependencias forward; las referencias de
+        // procedencia (Split de / Tracked by) apuntan al padre/épico y no son
+        // dependencias bloqueantes (evita falsos ciclos en splits — CA-1).
+        for (const dep of (info.forwardDeps || info.deps)) {
             // Para decidir si lo incluimos, necesitamos su estado.
             const subInfo = fetchIssueInfo(dep, { ghRunner, repo, cache, cacheFile, now });
             chains[String(dep)] = { title: subInfo.title, deps: subInfo.deps, state: subInfo.state };
@@ -211,16 +290,25 @@ function resolveOpenDeps(issueNum, opts = {}) {
             // Recursión: profundizar incluso si el dep está cerrado podría revelar deps
             // abiertas anidadas — mejor cortar al primer nivel cerrado para evitar ruido.
             if (subInfo.state === 'open') {
-                walk(dep, depth + 1);
+                walk(dep, depth + 1, nextAncestors);
             }
         }
     }
 
-    walk(Number(issueNum), 0);
+    walk(Number(issueNum), 0, new Set());
+    // Un ciclo también es una forma de truncado (el wizard lo muestra como
+    // warning, no como hang). La razón de ciclo no pisa max_depth/max_nodes si
+    // ya se reportó una causa anterior.
+    if (cycleDetected) {
+        truncated = true;
+        if (!reason) reason = 'cycle';
+    }
     return {
         openDeps: [...openDeps].sort((a, b) => a - b),
         chains,
         truncated,
+        reason,
+        nodesVisited,
     };
 }
 
@@ -279,8 +367,10 @@ module.exports = {
     CACHE_TTL_MS,
     MAX_DEPTH,
     ABSOLUTE_MAX_DEPTH,
+    ABSOLUTE_MAX_NODES,
     DEP_PATTERNS,
     parseDepsFromText,
+    parseProvenanceRefs,
     fetchIssueInfo,
     resolveOpenDeps,
     findMissingDeps,

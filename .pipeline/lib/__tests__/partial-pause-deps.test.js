@@ -140,3 +140,67 @@ test('resolveOpenDeps detecta ciclos sin colgar', () => {
     assert.ok(openDeps.includes(201), 'esperamos 201, got=' + JSON.stringify(openDeps));
     assert.ok(openDeps.length <= 2, 'ciclo no debería generar > 2 deps únicas, got=' + openDeps.length);
 });
+
+// =============================================================================
+// #3742 — maxNodes (cap de nodos) + reporte de razón de truncado.
+// =============================================================================
+
+test('resolveOpenDeps con maxNodes corta en N nodos y reporta truncated:true reason=max_nodes', () => {
+    resetCache();
+    // Grafo lineal largo (100..130). Con maxNodes=5 y maxDepth alto, debe cortar
+    // por nodos antes que por profundidad.
+    const linearGh = (args) => {
+        const num = parseInt(args[2], 10);
+        const next = num + 1;
+        const body = (num < 130) ? 'Depends on #' + next : 'nothing';
+        return { ok: true, stdout: JSON.stringify({ number: num, title: 'I' + num, state: 'OPEN', body, comments: [] }), stderr: '', status: 0 };
+    };
+    const { truncated, reason, nodesVisited } = ppd.resolveOpenDeps(100, {
+        ghRunner: linearGh,
+        cacheFile: TMP_CACHE,
+        maxDepth: 10,
+        maxNodes: 5,
+    });
+    assert.equal(truncated, true, 'debe truncar por nodos');
+    assert.equal(reason, 'max_nodes', 'reason debe ser max_nodes, got=' + reason);
+    assert.ok(nodesVisited <= 5, 'nodesVisited debe respetar el cap, got=' + nodesVisited);
+});
+
+test('resolveOpenDeps clampea maxNodes al ABSOLUTE_MAX_NODES (200)', () => {
+    resetCache();
+    const linearGh = (args) => {
+        const num = parseInt(args[2], 10);
+        const next = num + 1;
+        const body = (num < 130) ? 'Depends on #' + next : 'nothing';
+        return { ok: true, stdout: JSON.stringify({ number: num, title: 'I' + num, state: 'OPEN', body, comments: [] }), stderr: '', status: 0 };
+    };
+    const r = ppd.resolveOpenDeps(100, { ghRunner: linearGh, cacheFile: TMP_CACHE, maxNodes: 99999 });
+    assert.ok(r.nodesVisited <= ppd.ABSOLUTE_MAX_NODES, 'nodesVisited <= 200, got=' + r.nodesVisited);
+});
+
+test('resolveOpenDeps con ciclo A→B→A reporta truncated/reason=cycle sin colgar', () => {
+    resetCache();
+    const cyclicGh = (args) => {
+        const num = parseInt(args[2], 10);
+        const other = num === 200 ? 201 : 200;
+        return { ok: true, stdout: JSON.stringify({ number: num, title: 'C' + num, state: 'OPEN', body: 'Depends on #' + other, comments: [] }), stderr: '', status: 0 };
+    };
+    const before = Date.now();
+    const { truncated, reason } = ppd.resolveOpenDeps(200, { ghRunner: cyclicGh, cacheFile: TMP_CACHE, maxDepth: 10 });
+    assert.ok(Date.now() - before < 2000, 'no debe colgar');
+    assert.equal(truncated, true, 'ciclo marca truncated');
+    assert.equal(reason, 'cycle', 'reason debe ser cycle, got=' + reason);
+});
+
+test('resolveOpenDeps sin truncado reporta reason=null', () => {
+    resetCache();
+    const shortGh = (args) => {
+        const num = parseInt(args[2], 10);
+        const body = num === 100 ? 'Depends on #101' : 'nothing';
+        return { ok: true, stdout: JSON.stringify({ number: num, title: 'S' + num, state: 'OPEN', body, comments: [] }), stderr: '', status: 0 };
+    };
+    const { truncated, reason, openDeps } = ppd.resolveOpenDeps(100, { ghRunner: shortGh, cacheFile: TMP_CACHE, maxDepth: 10 });
+    assert.equal(truncated, false);
+    assert.equal(reason, null);
+    assert.deepEqual(openDeps, [101]);
+});

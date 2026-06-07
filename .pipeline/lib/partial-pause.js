@@ -356,6 +356,7 @@ function setPartialPause(issues, opts = {}) {
             source: opts.source,
             authorizedBy: opts.authorizedBy,
             justification: opts.justification || 'setPartialPause con lista vacía',
+            extra: opts.extra,   // #3742 — preservar contexto del wizard.
         });
         // Normalizar shape al de setPartialPause para compat con callers.
         if (r.rejected) {
@@ -372,6 +373,9 @@ function setPartialPause(issues, opts = {}) {
     const previous = readPreviousAllowlist();
 
     // #3625 — Gate + audit ANTES del write (invariante de orden).
+    // #3742 — opts.extra viaja al audit entry (recursividad_aplicada,
+    // wizard_session_id, etc.) para que el wizard de allowlist produzca una
+    // única entry autoritativa con su contexto, sin doble-auditar.
     const gateResult = evaluateAndAudit({
         previous,
         current: unique,
@@ -379,6 +383,7 @@ function setPartialPause(issues, opts = {}) {
         authorizedBy: opts.authorizedBy,
         justification: opts.justification,
         intendedAction: 'write',
+        extra: opts.extra,
     });
 
     if (gateResult.rejected) {
@@ -620,6 +625,7 @@ function clearPartialPause(opts = {}) {
         authorizedBy: opts.authorizedBy,
         justification: opts.justification || 'clearPartialPause',
         intendedAction: 'clear',
+        extra: opts.extra,   // #3742 — contexto del wizard en la entry de clear.
     });
 
     if (gateResult.rejected) {
