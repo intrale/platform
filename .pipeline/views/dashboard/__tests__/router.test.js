@@ -178,6 +178,22 @@ test('smoke E2E: GET /dashboard/partial con Sec-Fetch-Site: cross-site → 403 (
     }
 });
 
+test('smoke E2E: GET /dashboard?view=ops → 200 con <title> de Ops (#3732, CA-G2)', async () => {
+    // #3732 — la ventana Ops fue la primera extracción registrada en VIEW_SLUGS.
+    // Verifica que el slug nuevo no rompe el router y que renderiza la vista
+    // (fakeCtx.getState devuelve {} → opsSlice tolera estado vacío sin tirar).
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/dashboard?view=ops');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · Ops</title>'), 'el router ?view=ops debe rendir la ventana Ops');
+        assert.ok(r.body.includes('id="ops-procesos"'), 'debe contener un ID DOM canónico de Ops');
+        assert.ok(r.body.includes('id="ops-qaenv"'), 'debe contener la sección QA env rediseñada');
+    } finally {
+        await closeServer(server);
+    }
+});
+
 test('smoke E2E: GET / (legacy raíz) sigue rindiendo home (no-regresión)', async () => {
     const { server, port } = await startEphemeralServer();
     try {
