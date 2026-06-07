@@ -131,17 +131,33 @@ function parseWorktreeList(porcelain) {
 
 /**
  * Busca el worktree del issue por patrón `platform.agent-<issue>-*` (case
- * sensitive, igual que git). Retorna el primero que matchea o null.
+ * sensitive, igual que git). Retorna el worktree o null.
  *
  * Excluye explícitamente entradas cuyo directorio físico ya no existe — git
  * a veces retiene entries muertas en `.git/worktrees/` hasta el próximo prune.
+ *
+ * **Desambiguación por skill (#3736)**: un mismo issue puede tener MÁS de un
+ * worktree cuando hubo mis-routing o re-asignación de skill (ej. el intake
+ * creó `platform.agent-<n>-backend-dev` vacío y luego el dev real corrió en
+ * `platform.agent-<n>-pipeline-dev` con commits). El match por prefijo a secas
+ * devolvía el PRIMER candidato (orden de `git worktree list`, típicamente
+ * alfabético), que podía ser el worktree vacío → el linteo leía 0 commits y
+ * reportaba `pr:no-commits` aunque el worktree correcto tenía el trabajo
+ * (incidente #3736 rev-1: linteo de #3736 corrió en `agent/3736-backend-dev`
+ * vacío en vez de `agent/3736-pipeline-dev` con el commit `Closes #3736`).
+ * Por eso, cuando se conoce el `skill` de la fase actual, preferimos el match
+ * EXACTO `platform.agent-<issue>-<skill>`. Sin skill o sin match exacto caemos
+ * al primer candidato (comportamiento legacy, retrocompatible).
  */
-function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs } = {}) {
+function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs, skill = null } = {}) {
     const stdout = gitSpawn(['worktree', 'list', '--porcelain'], {
         cwd: ROOT, spawnImpl,
     });
     const entries = parseWorktreeList(stdout);
     const needle = `platform.agent-${issue}-`;
+
+    // Candidatos del issue con path físico existente, preservando el orden de git.
+    const candidates = [];
     for (const e of entries) {
         if (!e.worktree) continue;
         const base = path.basename(e.worktree);
@@ -150,9 +166,19 @@ function findIssueWorktree(ROOT, issue, { spawnImpl = spawnSync, fsImpl = fs } =
         try {
             if (!fsImpl.existsSync(e.worktree)) continue;
         } catch { continue; }
-        return e;
+        candidates.push({ entry: e, base });
     }
-    return null;
+    if (candidates.length === 0) return null;
+
+    // Preferencia por skill exacto cuando hay ambigüedad (#3736).
+    if (skill) {
+        const exactBase = `platform.agent-${issue}-${skill}`;
+        const exact = candidates.find((c) => c.base === exactBase);
+        if (exact) return exact.entry;
+    }
+
+    // Fallback legacy: primer candidato en el orden de `git worktree list`.
+    return candidates[0].entry;
 }
 
 /**
@@ -346,7 +372,7 @@ function resolveExistingWorktree({
     // (2) Búsqueda directa del worktree por patrón.
     let existing = null;
     try {
-        existing = findIssueWorktree(ROOT, issue, { spawnImpl, fsImpl });
+        existing = findIssueWorktree(ROOT, issue, { spawnImpl, fsImpl, skill });
     } catch (e) {
         log?.(`⚠️ git worktree list falló (continúo con auto-recovery si aplica): ${e.message.slice(0, 120)}`);
     }

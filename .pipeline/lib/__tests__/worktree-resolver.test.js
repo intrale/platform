@@ -126,6 +126,94 @@ test('findIssueWorktree — null si el path no existe físicamente', () => {
     assert.equal(result, null);
 });
 
+test('findIssueWorktree — desambigua por skill exacto cuando hay varios worktrees (#3736)', () => {
+    // El issue 3736 tiene DOS worktrees: backend-dev (vacío, primero alfabético)
+    // y pipeline-dev (con el trabajo). Con skill=pipeline-dev debe elegir ese,
+    // no el primer match alfabético.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /repo',
+                'branch refs/heads/main',
+                '',
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const fsImpl = fakeFs(true);
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl, skill: 'pipeline-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-pipeline-dev');
+});
+
+test('findIssueWorktree — sin match exacto de skill cae al primer candidato (legacy)', () => {
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const fsImpl = fakeFs(true);
+    // skill que no matchea ninguno → primer candidato.
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl, skill: 'android-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-backend-dev');
+});
+
+test('findIssueWorktree — sin skill mantiene comportamiento legacy (primer match)', () => {
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-backend-dev');
+});
+
+test('findIssueWorktree — skill exacto ignora candidato cuyo path no existe', () => {
+    // El worktree del skill exacto existe en git pero NO en disco → debe caer
+    // al otro candidato válido en vez de devolver uno fantasma.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /tmp/platform.agent-3736-backend-dev',
+                'branch refs/heads/agent/3736-backend-dev',
+                '',
+                'worktree /tmp/platform.agent-3736-pipeline-dev',
+                'branch refs/heads/agent/3736-pipeline-dev',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const fsImpl = fakeFs((p) => p !== '/tmp/platform.agent-3736-pipeline-dev');
+    const result = findIssueWorktree('/repo', 3736, { spawnImpl, fsImpl, skill: 'pipeline-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-3736-backend-dev');
+});
+
 test('findIssueWorktree — null si ningún worktree matchea', () => {
     const spawnImpl = makeFakeSpawn([
         {
