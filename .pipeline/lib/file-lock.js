@@ -64,6 +64,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 // Versión interna del schema del lock. Si se rompe el contrato a futuro,
 // procesos con versión vieja deben tratarlo como stale (defensivo).
@@ -91,6 +92,74 @@ function lockPathOf(filePath) {
 
 function jitter(min, max) {
     return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+// Contador por proceso para nombres de tmp únicos (JS es single-thread, así
+// que un counter + pid + random alcanza para no colisionar entre procesos).
+let lockTmpSeq = 0;
+
+/**
+ * Construye el meta del lock para el proceso actual.
+ */
+function buildLockMeta() {
+    return {
+        pid: process.pid,
+        startTime: PROCESS_START_ISO,
+        hostname: os.hostname(),
+        version: LOCK_SCHEMA_VERSION,
+        acquired_at: new Date().toISOString(),
+    };
+}
+
+/**
+ * Crea el lock de forma ATÓMICA con su contenido ya escrito — sin ventana de
+ * archivo vacío.
+ *
+ * Causa raíz que esto elimina (rebote #3731 / regresión #3518 CA-8)
+ * ---------------------------------------------------------------------
+ * El patrón previo `openSync(lockPath,'wx')` + `writeSync(meta)` deja el
+ * archivo de lock VACÍO entre la creación y la escritura del meta. Bajo
+ * saturación de CPU (N workers en busy-wait), el holder puede tardar > 1s en
+ * escribir el meta; durante esa ventana otro contendiente lee el archivo como
+ * `_corrupt` (sin pid), lo considera stale por antigüedad y lo UNLINKEA —
+ * robándole el lock a un holder vivo. Resultado: dos procesos creen tener el
+ * lock → lost-update (workers salen 0 pero su write se pisa).
+ *
+ * Estrategia: escribir el meta completo a un tmp único y luego `linkSync` el
+ * tmp al lockPath. `linkSync` (hard link) es atómico y tira EEXIST si el
+ * destino ya existe — misma garantía de exclusión mutua que `openSync('wx')`,
+ * pero el archivo de lock SIEMPRE aparece con contenido completo. Nunca hay
+ * estado `_corrupt` para un lock vivo.
+ *
+ * @returns {boolean} true si creamos el lock, false si ya existía (EEXIST).
+ */
+function atomicCreateLock(lockPath, meta) {
+    const tmp = `${lockPath}.tmp-${process.pid}-${++lockTmpSeq}-${crypto.randomBytes(4).toString('hex')}`;
+    let fd;
+    try {
+        fd = fs.openSync(tmp, 'wx', POSIX_LOCK_MODE);
+        try {
+            fs.writeSync(fd, JSON.stringify(meta));
+            fs.fsyncSync(fd);
+        } finally {
+            fs.closeSync(fd);
+        }
+    } catch (err) {
+        // El tmp lleva pid+seq+random; una colisión es esencialmente imposible.
+        try { fs.unlinkSync(tmp); } catch {}
+        throw err;
+    }
+    try {
+        fs.linkSync(tmp, lockPath); // atómico; EEXIST si el lock ya está tomado
+        return true;
+    } catch (err) {
+        if (err && err.code === 'EEXIST') return false;
+        throw err;
+    } finally {
+        // El lock vive bajo lockPath (hard link al mismo inode); el tmp ya no
+        // hace falta. Si falla el unlink, queda un huérfano inofensivo.
+        try { fs.unlinkSync(tmp); } catch {}
+    }
 }
 
 /**
@@ -234,41 +303,29 @@ function acquireLockSync(filePath, opts) {
 
     while (Date.now() - startedAt <= timeoutMs) {
         try {
-            const fd = fs.openSync(lockPath, 'wx', POSIX_LOCK_MODE);
-            const meta = {
-                pid: process.pid,
-                startTime: PROCESS_START_ISO,
-                hostname: os.hostname(),
-                version: LOCK_SCHEMA_VERSION,
-                acquired_at: new Date().toISOString(),
-            };
-            try {
-                fs.writeSync(fd, JSON.stringify(meta));
-                fs.fsyncSync(fd);
-            } finally {
-                fs.closeSync(fd);
+            if (atomicCreateLock(lockPath, buildLockMeta())) {
+                return { acquired: true, reentrant: false, lockPath };
             }
-            return { acquired: true, reentrant: false, lockPath };
-        } catch (err) {
-            lastErr = err;
-            if (err && err.code === 'EEXIST') {
-                const holder = readLockMeta(lockPath);
-                if (holder && holder.pid === process.pid && holder.startTime === PROCESS_START_ISO) {
-                    return { acquired: true, reentrant: true, lockPath };
-                }
-                if (isStale(holder, lockPath)) {
-                    try { fs.unlinkSync(lockPath); } catch {}
-                    continue;
-                }
-                attempts++;
-                // Bound el wait por lo que reste del timeout para no excederlo.
-                const remaining = timeoutMs - (Date.now() - startedAt);
-                if (remaining <= 0) break;
-                const wait = Math.min(jitter(50, 200), remaining);
-                const deadline = Date.now() + wait;
-                while (Date.now() < deadline) { /* busy wait */ }
+            // EEXIST: el lock ya está tomado. Decidir reentrancia / stale / espera.
+            lastErr = Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+            const holder = readLockMeta(lockPath);
+            if (holder && holder.pid === process.pid && holder.startTime === PROCESS_START_ISO) {
+                return { acquired: true, reentrant: true, lockPath };
+            }
+            if (isStale(holder, lockPath)) {
+                try { fs.unlinkSync(lockPath); } catch {}
                 continue;
             }
+            attempts++;
+            // Bound el wait por lo que reste del timeout para no excederlo.
+            const remaining = timeoutMs - (Date.now() - startedAt);
+            if (remaining <= 0) break;
+            const wait = Math.min(jitter(50, 200), remaining);
+            const deadline = Date.now() + wait;
+            while (Date.now() < deadline) { /* busy wait */ }
+            continue;
+        } catch (err) {
+            lastErr = err;
             throw err;
         }
     }
@@ -338,43 +395,31 @@ async function acquireLock(filePath, opts) {
 
     while (Date.now() - startedAt <= timeoutMs) {
         try {
-            const fd = fs.openSync(lockPath, 'wx', POSIX_LOCK_MODE);
-            const meta = {
-                pid: process.pid,
-                startTime: PROCESS_START_ISO,
-                hostname: os.hostname(),
-                version: LOCK_SCHEMA_VERSION,
-                acquired_at: new Date().toISOString(),
-            };
-            try {
-                fs.writeSync(fd, JSON.stringify(meta));
-                fs.fsyncSync(fd);
-            } finally {
-                fs.closeSync(fd);
+            if (atomicCreateLock(lockPath, buildLockMeta())) {
+                return { acquired: true, reentrant: false, lockPath };
             }
-            return { acquired: true, reentrant: false, lockPath };
+            // EEXIST: el lock ya está tomado.
+            lastErr = Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+            const holder = readLockMeta(lockPath);
+            if (holder && holder.pid === process.pid && holder.startTime === PROCESS_START_ISO) {
+                // Reentrancia: ya teníamos el lock. No volvemos a tocarlo.
+                return { acquired: true, reentrant: true, lockPath };
+            }
+            if (isStale(holder, lockPath)) {
+                logWarn(`Lock stale detectado en ${lockPath} (holder pid=${holder && holder.pid}). Removiendo.`);
+                try { fs.unlinkSync(lockPath); } catch {}
+                continue; // retry inmediato
+            }
+            // Holder vivo — esperar con jitter y reintentar.
+            attempts++;
+            const remaining = timeoutMs - (Date.now() - startedAt);
+            if (remaining <= 0) break;
+            const wait = Math.min(jitter(50, 200), remaining);
+            await new Promise((r) => setTimeout(r, wait));
+            continue;
         } catch (err) {
-            lastErr = err;
-            if (err && err.code === 'EEXIST') {
-                const holder = readLockMeta(lockPath);
-                if (holder && holder.pid === process.pid && holder.startTime === PROCESS_START_ISO) {
-                    // Reentrancia: ya teníamos el lock. No volvemos a tocarlo.
-                    return { acquired: true, reentrant: true, lockPath };
-                }
-                if (isStale(holder, lockPath)) {
-                    logWarn(`Lock stale detectado en ${lockPath} (holder pid=${holder && holder.pid}). Removiendo.`);
-                    try { fs.unlinkSync(lockPath); } catch {}
-                    continue; // retry inmediato
-                }
-                // Holder vivo — esperar con jitter y reintentar.
-                attempts++;
-                const remaining = timeoutMs - (Date.now() - startedAt);
-                if (remaining <= 0) break;
-                const wait = Math.min(jitter(50, 200), remaining);
-                await new Promise((r) => setTimeout(r, wait));
-                continue;
-            }
             // Errores no-EEXIST (EPERM, EACCES, ENOSPC, etc.) — abortar.
+            lastErr = err;
             throw err;
         }
     }
