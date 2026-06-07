@@ -8962,9 +8962,44 @@ try { kpisViewMod = require('./views/dashboard/kpis'); } catch (e) { log(`kpis v
 let wizardSession = null;
 try { wizardSession = require('./lib/wizard-session'); } catch (e) { log(`wizard-session unavailable: ${e.message}`); }
 
+// #3739 — Wizard "Configurar período de descanso": registra el flow `descanso`
+// sobre la infra compartida y carga la vista SSR. Si algo falla, el dashboard
+// arranca igual (sin el wizard de descanso) — degradación silenciosa.
+let wizardDescansoView = null;
+try {
+  if (wizardSession) {
+    const descansoFlow = require('./lib/wizard-descanso-flow');
+    wizardSession.registerFlow('descanso', descansoFlow.createFlow({
+      pipelineDir: PIPELINE,
+      loadConfig,
+    }));
+    wizardDescansoView = require('./views/dashboard/wizard-descanso');
+  }
+} catch (e) { log(`wizard-descanso unavailable: ${e.message}`); }
+
 const server = http.createServer((req, res) => {
   // #3724 — Wizards: endpoint POST mount-first (antes del catch-all GET-only).
   if (wizardSession && wizardSession.route(req, res)) return;
+
+  // #3739 — Página GET del wizard de descanso. Emite la cookie CSRF HttpOnly
+  // y embebe el token derivado en <meta name="csrf-token">. El step API
+  // (POST /dashboard/wizard/descanso/step) lo maneja wizardSession.route().
+  if (wizardDescansoView && wizardSession && req.method === 'GET'
+      && (req.url || '').split('?')[0] === '/dashboard/wizard/descanso') {
+    const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
+    const token = wizardSession._csrf.deriveCsrfToken(raw);
+    const html = wizardDescansoView.renderWizardDescanso({ csrfToken: token });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin',
+      'Set-Cookie': setCookie,
+      'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+    return;
+  }
 
   // #3177 — Multi-Provider: HTML del panel y API REST asociada.
   // Mounted antes que el catch-all para que `/multi-provider` no caiga al legacy.

@@ -91,6 +91,12 @@ const INT_TO_DAY = Object.freeze([
 // "un periodo por hora del día" sin abrir DoS.
 const MAX_PERIODS_PER_DAY = 24;
 
+// Cap CA-D2 (#3739) — ningún día puede acumular más de 24h continuas de
+// descanso. Defensa en profundidad server-side: el wizard de descanso lo
+// valida en backend, no solo en la UI (bypass cap 24h client-side, R-5 /
+// OWASP A04). 24*60 = 1440 minutos.
+const MAX_CONTINUOUS_MINUTES_PER_DAY = 24 * 60;
+
 // Nombre del archivo de audit. Vive al lado de rest-mode.json y crece append-only.
 const AUDIT_FILENAME = 'rest-mode-audit.jsonl';
 
@@ -503,6 +509,20 @@ function validateSchedule(schedule) {
             }
         }
         if (dayHadError) continue;
+        // Cap CA-D2 (#3739) — ningún día puede acumular > 24h continuas de
+        // descanso. Se evalúa ANTES de la detección de solapamientos para que
+        // el mensaje CA-D2 sea el rechazo primario cuando la suma de minutos
+        // excede el cap (un POST manual con schedule "de 48h" cae acá, no en
+        // el overlap genérico). Cross-midnight cuenta al día de inicio.
+        const dayMinutes = cleanPeriods.reduce((acc, p) => {
+            let dur = hhmmToMinutes(p.end) - hhmmToMinutes(p.start);
+            if (dur <= 0) dur += 24 * 60;
+            return acc + dur;
+        }, 0);
+        if (dayMinutes > MAX_CONTINUOUS_MINUTES_PER_DAY) {
+            errors.push(`schedule.${dayName} excede el cap CA-D2 (24h continuas, actual=${dayMinutes}min)`);
+            continue;
+        }
         const overlapErr = detectOverlapsInDay(cleanPeriods, dayName);
         if (overlapErr) {
             errors.push(overlapErr);
@@ -940,6 +960,104 @@ function describeRestModeNow(window, nowMs) {
     };
 }
 
+/**
+ * Suma los minutos de descanso continuos por día de un schedule (#3739).
+ * Operación pura, sin side effects. Cross-midnight (`end <= start`) cuenta
+ * al día de inicio (`+24h`). Periodos con HH:MM inválido se ignoran (la
+ * validación dura vive en `validateSchedule`).
+ *
+ * @param {object} schedule — `{monday:[{start,end}], ...}`
+ * @returns {Object<string,number>} minutos por día (todos los VALID_DAYS).
+ */
+function totalContinuousMinutesPerDay(schedule) {
+    const out = {};
+    for (const dayName of VALID_DAYS) {
+        let total = 0;
+        for (const p of periodsForDayName(schedule, dayName)) {
+            if (!p || typeof p.start !== 'string' || typeof p.end !== 'string'
+                || !HHMM_RE.test(p.start) || !HHMM_RE.test(p.end)) {
+                continue;
+            }
+            let dur = hhmmToMinutes(p.end) - hhmmToMinutes(p.start);
+            if (dur <= 0) dur += 24 * 60; // cross-midnight: cuenta al día de inicio
+            total += dur;
+        }
+        out[dayName] = total;
+    }
+    return out;
+}
+
+/**
+ * Calcula la próxima transición de estado del modo descanso (#3739, CA-PO-4).
+ * Operación pura sobre el `window` (sin side effects, ≤ ~50 líneas). Compone
+ * sobre `describeRestModeNow` para reutilizar el cálculo de current/next period.
+ *
+ * Devuelve `null` si la ventana no está activa o no tiene schedule. Si no, un
+ * objeto:
+ *   - `kind`: 'exit' si ahora estamos DENTRO de un periodo (la próxima
+ *     transición es salir), 'enter' si estamos fuera (la próxima es entrar).
+ *   - `when`: 'today' | 'tomorrow' | '<weekday>' (mismo vocabulario que
+ *     `describeRestModeNow().nextPeriod.when`).
+ *   - `atHHMM`: 'HH:MM' del borde (end del periodo actual / start del próximo).
+ *   - `minutesFromNow`: minutos enteros hasta la transición.
+ *
+ * @param {object} window — shape de `getWindow()`.
+ * @param {number} nowMs
+ * @returns {{kind:string, when:string, atHHMM:string, minutesFromNow:number}|null}
+ */
+function nextWindowTransition(window, nowMs) {
+    const w = window || {};
+    if (!w.active || !isPlainObject(w.schedule)) return null;
+
+    const tz = w.timezone || DEFAULT_TIMEZONE;
+    const parts = partsInTz(tz, nowMs);
+    const nowMin = parts.hour * 60 + parts.minute;
+    const desc = describeRestModeNow(w, nowMs);
+
+    if (desc.isWithinNow && desc.currentPeriod) {
+        // Próxima transición = salir al `end` del periodo activo.
+        const startMin = hhmmToMinutes(desc.currentPeriod.start);
+        const endMin = hhmmToMinutes(desc.currentPeriod.end);
+        let minutesFromNow;
+        let when;
+        if (endMin > startMin) {
+            // Intra-día: termina hoy.
+            minutesFromNow = endMin - nowMin;
+            when = 'today';
+        } else if (nowMin >= startMin) {
+            // Cross-midnight, estamos en la parte de hoy → termina mañana.
+            minutesFromNow = (24 * 60 - nowMin) + endMin;
+            when = 'tomorrow';
+        } else {
+            // Cross-midnight, estamos en el residual de la madrugada → termina hoy.
+            minutesFromNow = endMin - nowMin;
+            when = 'today';
+        }
+        if (minutesFromNow < 0) minutesFromNow += 24 * 60;
+        return { kind: 'exit', when, atHHMM: desc.currentPeriod.end, minutesFromNow };
+    }
+
+    if (desc.nextPeriod) {
+        const np = desc.nextPeriod;
+        const startMin = hhmmToMinutes(np.start);
+        let minutesFromNow;
+        if (np.when === 'today') {
+            minutesFromNow = startMin - nowMin;
+        } else if (np.when === 'tomorrow') {
+            minutesFromNow = (24 * 60 - nowMin) + startMin;
+        } else {
+            // `np.when` es un nombre de día (≥ 2 días adelante).
+            const targetInt = DAY_TO_INT[np.when];
+            let d = typeof targetInt === 'number' ? (targetInt - parts.weekday + 7) % 7 : 0;
+            if (d === 0) d = 7;
+            minutesFromNow = (d * 24 * 60 - nowMin) + startMin;
+        }
+        if (minutesFromNow < 0) minutesFromNow += 24 * 60;
+        return { kind: 'enter', when: np.when, atHHMM: np.start, minutesFromNow };
+    }
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 // Gate principal (API estable consumida por pulpo.js:4019)
 // ---------------------------------------------------------------------------
@@ -1024,6 +1142,7 @@ module.exports = {
     DAY_TO_INT,
     INT_TO_DAY,
     MAX_PERIODS_PER_DAY,
+    MAX_CONTINUOUS_MINUTES_PER_DAY,
     statePath,
     auditPath,
     getWindow,
@@ -1038,6 +1157,8 @@ module.exports = {
     isWithinWindow,
     isSkillAllowedNow,
     describeRestModeNow,
+    totalContinuousMinutesPerDay,
+    nextWindowTransition,
     partsInTz,
     // Solo para tests:
     __forTestsOnly__: {
