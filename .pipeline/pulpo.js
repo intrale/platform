@@ -9987,12 +9987,23 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // parámetro en su signature por back-compat (ignorado).
         const commanderProvider = 'anthropic';
 
+        // #3846 — si el pedido del usuario referencia un issue concreto (#NNNN),
+        // habilitamos la recolección de evidencia INDEPENDIENTE (filesystem,
+        // git origin/main, GitHub API, heartbeat) para que Sherlock no herede
+        // las asunciones del systemState. Tomamos el primer #NNNN del pedido
+        // (la intención del usuario es la fuente más confiable). Si no hay
+        // ninguno, `sherlockIssueNumber` queda null y el collector no corre
+        // (comportamiento pre-#3846 puro).
+        const issueMatch = String(mensajeConsolidado || '').match(/#(\d{2,})\b/);
+        const sherlockIssueNumber = issueMatch ? Number(issueMatch[1]) : null;
+
         const verdict = await sherlockVerifier.verify({
           analysis: respuesta || '',
           originalRequest: mensajeConsolidado,
           systemState: systemStateSnapshot,
           lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
           commanderProvider,
+          issueNumber: sherlockIssueNumber,
           pipelineDir: PIPELINE,
           configLoader: loadConfig,
           log,
@@ -10027,6 +10038,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 systemState: systemStateSnapshot,
                 lastHourLogs: '',
                 commanderProvider,
+                issueNumber: sherlockIssueNumber,
                 pipelineDir: PIPELINE,
                 configLoader: loadConfig,
                 log,
