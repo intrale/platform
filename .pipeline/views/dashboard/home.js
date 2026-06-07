@@ -5,7 +5,14 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+
+// #3725 — Escape unificado server-side (#3722, lib/escape-html.js). Reemplaza
+// la función inline `escapeHtmlSsr` que vivía duplicada acá (deuda heredada).
+//   escapeHtmlText → contexto body  (<span>${...}</span>)
+//   escapeHtmlAttr → contexto atributo (title="${...}", aria-label="${...}")
+const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 
 // #3726 — Modulo compartido de la nav bar V3. Provee NAV_TABS,
 // renderNavTabsSsr (markup SSR) y loadIconSprite (cache compartido del SVG).
@@ -34,17 +41,10 @@ function getInitialQuotaState() {
 }
 
 // HTML escape para el SSR. El cliente tiene su propio escapeHtml() embebido
-// en el script (ver renderClientScript), pero al renderizar SSR necesitamos
-// uno acá también — defensa en profundidad CA-10. Idéntica semántica.
-function escapeHtmlSsr(s) {
-    if (s == null) return '';
-    return String(s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
+// en el script (ver renderClientScript), pero al renderizar SSR usamos el
+// helper compartido `escapeHtmlText`/`escapeHtmlAttr` de lib/escape-html.js
+// (#3722). Antes vivía acá un `escapeHtmlSsr` inline duplicado — eliminado
+// como cleanup de deuda heredada (CA-3725.9).
 
 // Format HH:MM en hora local (igual semántica que el cliente). Si el ISO
 // no parsea, devuelve "—" para que el render no rompa.
@@ -1230,6 +1230,91 @@ function homeStyles() {
     color: var(--in-fg);
     border-color: var(--in-fg-dim);
 }
+
+/* #3725 — Build status pill en la brand bar. Reusa la familia .in-pill y los
+   estados in-pill-ok/warn/bad/info ya definidos en el tema. */
+.in-build-status {
+    margin-left: 12px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+.in-build-detail {
+    opacity: 0.75;
+    font-variant-numeric: tabular-nums;
+}
+
+/* #3725 — Salud de infra (pulpo / dashboard / telegram bot). */
+.infra-health {
+    margin-bottom: 18px;
+}
+.infra-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-top: 8px;
+}
+.infra-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--in-border, #30363d);
+    border-left-width: 3px;
+    border-radius: 8px;
+    background: var(--in-card, #161b22);
+}
+.infra-row.infra-up      { border-left-color: var(--success, #3fb950); }
+.infra-row.infra-down    { border-left-color: var(--danger, #f85149); }
+.infra-row.infra-unknown { border-left-color: var(--in-fg-dim, #8b949e); }
+.infra-dot { font-size: 12px; }
+.infra-name { font-weight: 600; font-size: 13px; }
+.infra-status {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+.infra-row.infra-up    .infra-status { color: var(--success, #3fb950); }
+.infra-row.infra-down  .infra-status { color: var(--danger, #f85149); }
+.infra-ping {
+    font-size: 11px;
+    color: var(--in-fg-dim, #8b949e);
+    font-variant-numeric: tabular-nums;
+}
+
+/* #3725 — System card (CPU / RAM / disco / uptime del host). */
+.system-card {
+    margin-top: 18px;
+    margin-bottom: 8px;
+}
+.sys-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: 8px;
+}
+.sys-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    border: 1px solid var(--in-border, #30363d);
+    border-left: 3px solid var(--teal, #2dd4bf);
+    border-radius: 8px;
+    background: var(--in-card, #161b22);
+}
+.sys-cell-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--in-fg-dim, #8b949e);
+}
+.sys-cell-value {
+    font-size: 22px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--in-fg, #e6edf3);
+}
 `;
 }
 
@@ -1470,6 +1555,32 @@ async function tickHeader(){
         else if(worst > 50) resPill.classList.add('in-pill-warn');
         else resPill.classList.add('in-pill-ok');
         resPill.title = 'CPU '+cpu+'% (cap '+maxCpu+'%) · RAM '+mem+'% ('+(res.memUsedGB||'?')+'GB / '+(res.memTotalGB||'?')+'GB · cap '+maxMem+'%) · '+(res.cpuCores||'?')+' cores';
+    }
+    // #3725 — System card: hidrata CPU/RAM desde el MISMO slice de resources
+    // (un solo endpoint /api/dash/header, dos consumidores — R-G3). Disco y
+    // uptime quedan en su valor SSR hasta que el slice los exponga.
+    if(res){
+        const scCpu = res.cpuPercent != null ? Math.round(res.cpuPercent)+'%' : '—';
+        const scMem = res.memPercent != null ? Math.round(res.memPercent)+'%' : '—';
+        setText('sys-cpu-value', scCpu);
+        setText('sys-mem-value', scMem);
+    }
+    // #3725 — Salud de infra: pulpo UP/DOWN + last_ping desde el header slice.
+    // textContent siempre (anti-XSS). Sin exponer secretos (CA-3725.3).
+    const infraPulpo = document.getElementById('infra-pulpo');
+    if(infraPulpo){
+        const up = !!d.pulpoAlive;
+        infraPulpo.classList.remove('infra-up','infra-down','infra-unknown');
+        infraPulpo.classList.add(up ? 'infra-up' : 'infra-down');
+        const st = infraPulpo.querySelector('[data-infra-status]');
+        if(st) st.textContent = up ? 'UP' : 'DOWN';
+        const dot = infraPulpo.querySelector('.infra-dot');
+        if(dot) dot.textContent = up ? '🟢' : '🔴';
+        const pg = infraPulpo.querySelector('[data-infra-ping]');
+        if(pg){
+            const t = new Date().toLocaleTimeString('es-AR', {hour:'2-digit', minute:'2-digit'});
+            if(pg.textContent !== t) pg.textContent = t;
+        }
     }
 }
 
@@ -2885,7 +2996,7 @@ if(__VIEW_BOOT.unknownViewRequested === true && typeof showToast === 'function')
 // función decide qué emitir en el render inicial:
 //
 //  - Activo: banner pleno con texto, paneles, countdown — todos los strings
-//    del flag pasan por escapeHtmlSsr() defensa anti-XSS (CA-10).
+//    del flag pasan por escapeHtmlText() defensa anti-XSS (CA-10).
 //  - Inactivo: placeholder vacío (un comentario HTML) — sin "cuota
 //    Anthropic" en el source, así `curl | grep` no matchea.
 //
@@ -2926,12 +3037,12 @@ function renderQuotaBannerSsr(quotaState) {
     </div>
   </section>`;
     }
-    const errorType = escapeHtmlSsr(quotaState.error_type || 'usage_limit_error');
-    const detectedAt = escapeHtmlSsr(quotaState.detected_at || '');
-    const resetsAt = escapeHtmlSsr(quotaState.resets_at || '');
-    const hhmm = escapeHtmlSsr(fmtHHMMLocalSsr(quotaState.resets_at));
+    const errorType = escapeHtmlText(quotaState.error_type || 'usage_limit_error');
+    const detectedAt = escapeHtmlText(quotaState.detected_at || '');
+    const resetsAt = escapeHtmlText(quotaState.resets_at || '');
+    const hhmm = escapeHtmlText(fmtHHMMLocalSsr(quotaState.resets_at));
     const remainingMs = Math.max(0, (quotaState.resets_at_ms || 0) - Date.now());
-    const inText = escapeHtmlSsr(fmtCountdownSsr(remainingMs));
+    const inText = escapeHtmlText(fmtCountdownSsr(remainingMs));
     return `
   <section class="quota-exhausted-banner" id="quota-exhausted-banner" role="status" aria-live="polite" aria-hidden="false" data-active="true">
     <div class="quota-exhausted-icon" aria-hidden="true">
@@ -2969,83 +3080,131 @@ function renderQuotaBannerSsr(quotaState) {
 // loadIconSpriteHome quedo retirado para no duplicar el cache: la nav bar
 // unificada lo lee desde nav-tabs.js y home.js lo consume directo.
 
-function renderHomeHTML(opts) {
-    // `opts.quotaState` permite al caller pasar el state precomputado (evita
-    // doble lectura del flag si el dashboard ya lo tiene en mano). Sin opts,
-    // leemos defensivamente — caso que vale para tests y para el route handler
-    // simple del kiosk.
-    //
-    // #3723 — `opts.unknownViewRequested` (bool): si true, el SSR de
-    // `/dashboard?view=<slug-desconocido>` cayó al fallback `home` y debe
-    // mostrarse un toast informativo `CA-U5`. El slug NUNCA se refleja en
-    // el body (CA-S4); sólo viaja la bandera booleana.
-    //
-    // `opts.currentView` (string): slug activo, usado por el script cliente
-    // para sincronizar `document.title` y `history` en navegación. Siempre
-    // pertenece a la allowlist `VIEW_SLUGS` por construcción.
+// =============================================================================
+// #3725 — Composer de estado + sub-funciones puras de render del home.
+//
+// Patrón (receta /architect, extender NO reescribir): `renderHomeHTML` se
+// descompone en 6 sub-funciones puras (`renderBrandBar`, `renderControlBar`,
+// `renderInfraHealth`, `renderKpiGrid`, `renderQueueDetailed`,
+// `renderSystemCard`). Cada una recibe `state` (objeto plano YA saneado) y
+// devuelve un string HTML — NINGUNA lee fs/red. Todo el I/O y el saneo viven
+// en `collectHomeState()` (el composer). Habilita test unitario aislado por
+// pieza (CA-3725.7) y deja un único punto donde se resuelven los markers.
+//
+// Escape (#3722): `escapeHtmlText` para body, `escapeHtmlAttr` para atributos
+// (title=/aria-label=). Strings atacante-controlables (branch/commit de git,
+// títulos de issue) SIEMPRE pasan por el escape del contexto correcto.
+// =============================================================================
+
+function _safeReadJsonHome(file) {
+    try {
+        if (!fs.existsSync(file)) return null;
+        return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch { return null; }
+}
+
+function _fmtUptimeSsr(seconds) {
+    if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—';
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (d >= 1) return d + 'd ' + h + 'h';
+    if (h >= 1) return h + 'h ' + m + 'm';
+    return m + 'm';
+}
+
+// Marker local de build status (R-G4). NUNCA invoca `gh api` desde el dashboard
+// (latencia de red inaceptable para el kiosk). Lo escribe /builder (futuro
+// #3756). Si no existe → status 'unknown' sin romper la página (CA-3725.1).
+function _readBuildStatus(pipelineDir) {
+    const raw = _safeReadJsonHome(path.join(pipelineDir, 'build-status.json'));
+    if (!raw || typeof raw !== 'object') return { status: 'unknown', branch: '', commit: '' };
+    const allowed = { passing: 1, failing: 1, running: 1, unknown: 1 };
+    return {
+        status: allowed[raw.status] ? raw.status : 'unknown',
+        branch: typeof raw.branch === 'string' ? raw.branch.slice(0, 80) : '',
+        commit: typeof raw.commit === 'string' ? raw.commit.slice(0, 12) : '',
+    };
+}
+
+// Salud de infra: estado binario UP/DOWN + last_ping por servicio. Whitelist
+// estricta de campos (CA-3725.3): jamás se emite token, chat_id, paths ni el
+// objeto de config crudo del bot. El dashboard se sirve a sí mismo → UP.
+// Pulpo arranca 'checking' en SSR y se hidrata client-side desde
+// /api/dash/header (pulpoAlive). Telegram lee telegram-health.json (solo
+// `ok` + `updatedAt`; el resto del archivo se ignora).
+function _collectInfraHealth(pipelineDir, nowIso) {
+    const tg = _safeReadJsonHome(path.join(pipelineDir, 'telegram-health.json'));
+    const tgUp = !!(tg && tg.ok === true);
+    const tgPing = tg && typeof tg.updatedAt === 'string' ? tg.updatedAt : null;
+    return {
+        pulpo: { status: 'checking', lastPing: null },
+        dashboard: { status: 'UP', lastPing: nowIso },
+        telegram: { status: tgUp ? 'UP' : 'DOWN', lastPing: tgPing },
+    };
+}
+
+// Composer: resuelve TODO el I/O (markers, os.uptime) y arma el `state` plano
+// que consumen las sub-funciones puras. Es el único lugar con efectos.
+function collectHomeState(opts) {
     const _opts = opts || {};
-    const quotaState = _opts.quotaState || getInitialQuotaState();
-    const quotaBannerHtml = renderQuotaBannerSsr(quotaState);
-    const currentView = typeof _opts.currentView === 'string' ? _opts.currentView : 'home';
-    const unknownViewRequested = _opts.unknownViewRequested === true;
-
-    const theme = loadTheme();
-    const styles = homeStyles();
-    const script = renderClientScript();
-    // #3726 — Sprite SVG inline compartido (cache unificado en nav-tabs.js).
-    const spriteInline = loadIconSprite();
-    // #3726 — Render de la nav bar V3 unificada (12 tabs con tokens V3).
-    // El callback `badgeForSlug` mantiene los <span id="badge-*"> usados por
-    // los tickers existentes (CA-10). El mapeo slug->areaKey traduce los
-    // nuevos slugs ("descanso"/"providers") al key historico que sirve el
-    // backend en `d.counts` ("modo-descanso"/"multi-provider"), asi
-    // `tickMultiProvider()` y la hidratacion de counts del slice siguen
-    // funcionando sin cambios server-side.
-    const SLUG_TO_BADGE_AREA = {
-        equipo: 'equipo',
-        pipeline: 'pipeline',
-        bloqueados: 'bloqueados',
-        issues: 'issues',
-        matriz: 'matriz',
-        ops: 'ops',
-        kpis: 'kpis',
-        historial: 'historial',
-        costos: 'costos',
-        descanso: 'modo-descanso',
-        providers: 'multi-provider',
+    const pipelineDir = path.join(__dirname, '..', '..'); // .pipeline/
+    const nowIso = new Date().toISOString();
+    return {
+        quotaState: _opts.quotaState || getInitialQuotaState(),
+        currentView: typeof _opts.currentView === 'string' ? _opts.currentView : 'home',
+        unknownViewRequested: _opts.unknownViewRequested === true,
+        build: _readBuildStatus(pipelineDir),
+        infra: _collectInfraHealth(pipelineDir, nowIso),
+        // System card: whitelist cpu/mem/disk/uptime. cpu/mem se hidratan
+        // client-side desde /api/dash/header; uptime_s del host se resuelve en
+        // SSR (os.uptime()). disk_pct queda en SSR como '—' hasta que el slice
+        // exponga disco (fuera del scope de archivos de este split, ver R-G3 en
+        // el inventario). PROHIBIDO os.hostname()/process.cwd()/os.userInfo()/
+        // process.env (CA-3725.6).
+        system: {
+            cpuPct: null, memPct: null, diskPct: null,
+            uptimeS: Math.floor(os.uptime()),
+        },
     };
-    const badgeForSlug = (slug) => {
-        const areaKey = SLUG_TO_BADGE_AREA[slug];
-        if (!areaKey) return ''; // slug "home" no lleva badge
-        return `<span class="area-pill-badge area-pill-badge-zero" id="badge-${areaKey}">·</span>`;
-    };
-    const navHtml = renderNavTabsSsr('home', { badgeForSlug });
+}
 
-    return `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=1080">
-<title>Intrale · Operación</title>
-<style>${theme}</style>
-<style>${styles}</style>
-</head>
-<body>
-<!-- #3487 — Sprite SVG inline para resolver use href=#ic-* sin
-     depender de un static asset handler. Oculto con display:none, los
-     símbolos siguen siendo referenciables por id. -->
-<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
-<div class="kiosk-frame">
-  <header class="in-header">
+// --- Sub-función pura: brand bar V3 (logo + ambiente + build status) --------
+function renderBrandBar(state) {
+    const b = (state && state.build) || { status: 'unknown', branch: '', commit: '' };
+    const STATUS_META = {
+        passing: { cls: 'in-pill-ok', icon: '🟢', label: 'Build OK' },
+        failing: { cls: 'in-pill-bad', icon: '🔴', label: 'Build roto' },
+        running: { cls: 'in-pill-warn', icon: '🟡', label: 'Build corriendo' },
+        unknown: { cls: 'in-pill-info', icon: '○', label: 'Build ?' },
+    };
+    const meta = STATUS_META[b.status] || STATUS_META.unknown;
+    const detail = [b.branch, b.commit].filter(Boolean).join(' · ');
+    const tip = 'Estado del último build (marker local .pipeline/build-status.json, sin gh api). '
+        + meta.label + (detail ? ' · ' + detail : '');
+    const detailHtml = detail ? ' · <span class="in-build-detail">' + escapeHtmlText(detail) + '</span>' : '';
+    return `
     <div class="in-header-brand">
       <div class="in-header-logo">i</div>
       <div>
         <div class="in-header-title">Intrale · Operación</div>
         <div class="in-header-subtitle">Pipeline V3 · estado en vivo</div>
       </div>
-    </div>
+      <span class="in-pill in-build-status ${meta.cls}" id="bld-status"
+            title="${escapeHtmlAttr(tip)}"
+            aria-label="${escapeHtmlAttr(meta.label + (detail ? ' ' + detail : ''))}">${meta.icon} ${escapeHtmlText(meta.label)}${detailHtml}</span>
+    </div>`;
+}
+
+// --- Sub-función pura: control bar (toggles/pills operativas + reloj) -------
+// Tooltips en `title=`/`aria-label=` con escapeHtmlAttr (CA-3725.2/10). El
+// menú inline de pausa parcial se preserva (R-G5) con hook a futuro wizard
+// (`data-view-link="wizard/partial-pause"`). Todos los IDs se mantienen para
+// no romper la hidratación client-side (tickHeader, R-G1).
+function renderControlBar(state) {
+    return `
     <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode" data-mode-toggle title="Click para cambiar el estado del pipeline">…
+      <span class="in-pill" id="hdr-mode" data-mode-toggle title="Click para cambiar el estado del pipeline (running / pausa total / pausa parcial)" aria-label="Estado del pipeline">…
         <div class="in-mode-menu" id="hdr-mode-menu" role="menu" aria-hidden="true">
           <button class="in-mode-menu-item" data-mode-action="resume" type="button">
             <span class="in-mode-menu-item-icon">🟢</span>Running (sin pausa)
@@ -3054,54 +3213,58 @@ function renderHomeHTML(opts) {
             <span class="in-mode-menu-item-icon">⏸</span>Pausa total (todo en hold)
           </button>
           <div class="in-mode-menu-divider"></div>
-          <div class="in-mode-menu-input" data-mode-action-block="partial">
+          <div class="in-mode-menu-input" data-mode-action-block="partial" data-view-link="wizard/partial-pause">
             <label>Pausa parcial · solo procesar issues:</label>
             <input type="text" id="hdr-mode-partial-input" placeholder="ej: 2505, 2519, 2520" inputmode="numeric">
             <button data-mode-action="partial" type="button">⏸ Aplicar pausa parcial</button>
           </div>
         </div>
       </span>
-      <span class="in-pill" id="hdr-window-qa" title="Click para activar/desactivar la QA Priority Window">…</span>
-      <span class="in-pill" id="hdr-window-build" title="Click para activar/desactivar la Build Priority Window">…</span>
-      <a class="in-pill" id="hdr-rest-mode" href="/modo-descanso" target="_blank" rel="noopener" style="display:none;text-decoration:none" title="Modo descanso activo. Click para configurar.">…</a>
-      <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema">…</span>
-      <span class="in-pill" id="hdr-pulpo">…</span>
-      <span class="in-clock" id="hdr-clock">…</span>
-    </div>
-  </header>
+      <span class="in-pill" id="hdr-window-qa" title="Click para activar/desactivar la QA Priority Window" aria-label="Ventana de prioridad QA">…</span>
+      <span class="in-pill" id="hdr-window-build" title="Click para activar/desactivar la Build Priority Window" aria-label="Ventana de prioridad Build">…</span>
+      <a class="in-pill" id="hdr-rest-mode" href="/modo-descanso" target="_blank" rel="noopener" style="display:none;text-decoration:none" title="Modo descanso activo. Click para configurar." aria-label="Modo descanso">…</a>
+      <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">…</span>
+      <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
+      <span class="in-clock" id="hdr-clock" aria-label="Hora local">…</span>
+    </div>`;
+}
 
-  ${quotaBannerHtml}
+// --- Sub-función pura: salud de infra (pulpo / dashboard / telegram) --------
+function renderInfraHealth(state) {
+    const infra = (state && state.infra) || {};
+    const SERVICES = [
+        { key: 'pulpo', id: 'infra-pulpo', label: 'Pulpo', tip: 'Orquestador del pipeline. Lanza y supervisa agentes.' },
+        { key: 'dashboard', id: 'infra-dashboard', label: 'Dashboard', tip: 'Servidor del kiosk operativo (este proceso).' },
+        { key: 'telegram', id: 'infra-telegram', label: 'Telegram bot', tip: 'Bot de comando/control. Estado binario, sin exponer token ni chat_id.' },
+    ];
+    const rows = SERVICES.map(s => {
+        const svc = infra[s.key] || { status: 'checking', lastPing: null };
+        const up = svc.status === 'UP';
+        const down = svc.status === 'DOWN';
+        const cls = up ? 'infra-up' : (down ? 'infra-down' : 'infra-unknown');
+        const dot = up ? '🟢' : (down ? '🔴' : '○');
+        const statusText = up ? 'UP' : (down ? 'DOWN' : '—');
+        const ping = svc.lastPing ? fmtHHMMLocalSsr(svc.lastPing) : '—';
+        return `
+        <div class="infra-row ${cls}" id="${s.id}" title="${escapeHtmlAttr(s.tip)}">
+          <span class="infra-dot" aria-hidden="true">${dot}</span>
+          <span class="infra-name">${escapeHtmlText(s.label)}</span>
+          <span class="infra-status" data-infra-status>${escapeHtmlText(statusText)}</span>
+          <span class="infra-ping" data-infra-ping aria-label="Último ping">${escapeHtmlText(ping)}</span>
+        </div>`;
+    }).join('');
+    return `
+    <section class="infra-health" aria-label="Salud de infraestructura">
+      <h2 class="in-section-title"><span class="in-section-title-icon">🩺</span> Salud de infra</h2>
+      <div class="infra-grid">${rows}</div>
+    </section>`;
+}
 
-  <!--
-    #3013 — Banner real-snapshot (4 estados: fresh, stale, missing,
-    parser-offline). Vive debajo del banner exhausted (narrativa §6). Cuando
-    data-state="missing" ocupa 0px (display:none) y el dashboard se ve idéntico
-    al pre-feature (CA-15). Polling cada 60s desde tickQuotaSnapshot. Cada
-    estado distingue por borde + pill + microcopy + ícono — cero reliance
-    en color solo (CA-UX-9, WCAG AA).
-  -->
-  <section class="quota-snapshot-banner" id="quota-snapshot-banner"
-           role="status" aria-live="polite" aria-hidden="true" data-state="missing">
-    <div class="quota-snapshot-pill" id="quota-snapshot-pill">
-      <span class="quota-snapshot-pill-icon" id="quota-snapshot-pill-icon" aria-hidden="true"></span>
-      <span class="quota-snapshot-pill-text" id="quota-snapshot-pill-text">ESTIMADO</span>
-    </div>
-    <div class="quota-snapshot-buckets" id="quota-snapshot-buckets"></div>
-  </section>
-
-  <!--
-    #3361 — La card de salud de providers se movió a la ventana Providers
-    (multi-provider.js). El home queda libre del duplicado y los semáforos
-    se gestionan en su lugar canónico.
-  -->
-
-  <!-- #3723 - anti-flicker boundary del router cliente (CA-T1 + R2 guru).
-       El interceptor loadView() SOLO reemplaza el innerHTML de #view-content;
-       sub-containers internos (kpi-cards, queue-list, etc.) siguen usando JSON
-       polling + DOM morphing manual por id (#2801). NO meter event handlers
-       inline aca (CA-S8) - todos los listeners se enganchan en JS post-render. -->
-  <main class="kiosk-body" id="view-content" data-current-view="${currentView}">
-
+// --- Sub-función pura: grid de KPIs principales (R-G2) ----------------------
+// 5 KPIs en main: PRs·7d, Tokens·24h, Duración por agente, %Rebote·7d, Cuota.
+// Costo USD y Coverage multi-provider viven SOLO en la ventana `kpis`.
+function renderKpiGrid(state) {
+    return `
     <section class="kpi-grid" aria-label="KPIs">
       <div class="kpi-card" id="kpi-prs" title="PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.">
         <span class="kpi-icon">✅</span>
@@ -3141,8 +3304,16 @@ function renderHomeHTML(opts) {
           <span class="kpi-quota-row-eta" id="kpi-quota-week-eta">·</span>
         </div>
       </div>
-    </section>
+    </section>`;
+}
 
+// --- Sub-función pura: cola detallada (ETA ola + ejecutando + cola + olas) --
+// Reusa los esqueletos existentes con DOM morphing anti-flicker (renderLineRow
+// / renderWaveRowSkeleton se invocan client-side; acá se emiten los containers
+// con sus IDs intactos). Títulos de issue (atacante-controlables) se escapan en
+// el cliente vía textContent / escapeHtml (R-G1, CA-3725.5).
+function renderQueueDetailed(state) {
+    return `
     <!--
       #3492 — Panel "Ola actual · ETA" (probabilístico p50/p75/p90).
       Render placeholder en SSR; tickOlaETA() hidrata los valores reales desde
@@ -3197,8 +3368,6 @@ function renderHomeHTML(opts) {
         Sin issues activos. La ETA aparece cuando el pipeline está trabajando.
       </div>
     </section>
-
-    ${navHtml}
 
     <section class="active-section">
       <h2 class="in-section-title">
@@ -3275,7 +3444,151 @@ function renderHomeHTML(opts) {
         <div class="wave-panel-empty-msg" id="wave-panel-empty-msg">Planificación no disponible — esperando próxima ola</div>
         <button type="button" class="wave-panel-empty-retry" id="wave-panel-retry" title="Forzar refresh fuera del polling de 30s">Reintentar ahora</button>
       </div>
-    </section>
+    </section>`;
+}
+
+// --- Sub-función pura: system card (CPU / RAM / disco / uptime) -------------
+// Whitelist estricta (CA-3725.6): SOLO cpu_pct, mem_pct, disk_pct, uptime_s.
+// PROHIBIDO os.hostname()/process.cwd()/os.userInfo()/paths/process.env. cpu y
+// mem se hidratan client-side desde /api/dash/header (un solo endpoint, R-G3).
+function renderSystemCard(state) {
+    const sys = (state && state.system) || {};
+    const pct = (v) => (v == null || isNaN(v)) ? '—' : (Math.round(v) + '%');
+    const cells = [
+        { id: 'sys-cpu-value', label: 'CPU', val: pct(sys.cpuPct), tip: 'Uso de CPU del host (%). Fuente: /api/dash/header.' },
+        { id: 'sys-mem-value', label: 'RAM', val: pct(sys.memPct), tip: 'Uso de memoria del host (%). Fuente: /api/dash/header.' },
+        { id: 'sys-disk-value', label: 'Disco', val: pct(sys.diskPct), tip: 'Uso de disco del host (%).' },
+        { id: 'sys-uptime-value', label: 'Uptime', val: _fmtUptimeSsr(sys.uptimeS), tip: 'Tiempo encendido del host.' },
+    ];
+    const cellHtml = cells.map(c => `
+        <div class="sys-cell" title="${escapeHtmlAttr(c.tip)}">
+          <span class="sys-cell-label">${escapeHtmlText(c.label)}</span>
+          <span class="sys-cell-value" id="${c.id}">${escapeHtmlText(c.val)}</span>
+        </div>`).join('');
+    return `
+    <section class="system-card" aria-label="Recursos del sistema">
+      <h2 class="in-section-title"><span class="in-section-title-icon">🖥</span> Recursos del host</h2>
+      <div class="sys-grid">${cellHtml}</div>
+    </section>`;
+}
+
+function renderHomeHTML(opts) {
+    // `opts.quotaState` permite al caller pasar el state precomputado (evita
+    // doble lectura del flag si el dashboard ya lo tiene en mano). Sin opts,
+    // leemos defensivamente — caso que vale para tests y para el route handler
+    // simple del kiosk.
+    //
+    // #3723 — `opts.unknownViewRequested` (bool): si true, el SSR de
+    // `/dashboard?view=<slug-desconocido>` cayó al fallback `home` y debe
+    // mostrarse un toast informativo `CA-U5`. El slug NUNCA se refleja en
+    // el body (CA-S4); sólo viaja la bandera booleana.
+    //
+    // `opts.currentView` (string): slug activo, usado por el script cliente
+    // para sincronizar `document.title` y `history` en navegación. Siempre
+    // pertenece a la allowlist `VIEW_SLUGS` por construcción.
+    //
+    // #3725 — `collectHomeState()` resuelve todo el I/O (markers, os.uptime) y
+    // arma el `state` plano que consumen las 6 sub-funciones puras.
+    const _opts = opts || {};
+    const state = collectHomeState(_opts);
+    const quotaState = state.quotaState;
+    const quotaBannerHtml = renderQuotaBannerSsr(quotaState);
+    const currentView = state.currentView;
+    const unknownViewRequested = state.unknownViewRequested;
+
+    const theme = loadTheme();
+    const styles = homeStyles();
+    const script = renderClientScript();
+    // #3726 — Sprite SVG inline compartido (cache unificado en nav-tabs.js).
+    const spriteInline = loadIconSprite();
+    // #3726 — Render de la nav bar V3 unificada (12 tabs con tokens V3).
+    // El callback `badgeForSlug` mantiene los <span id="badge-*"> usados por
+    // los tickers existentes (CA-10). El mapeo slug->areaKey traduce los
+    // nuevos slugs ("descanso"/"providers") al key historico que sirve el
+    // backend en `d.counts` ("modo-descanso"/"multi-provider"), asi
+    // `tickMultiProvider()` y la hidratacion de counts del slice siguen
+    // funcionando sin cambios server-side.
+    const SLUG_TO_BADGE_AREA = {
+        equipo: 'equipo',
+        pipeline: 'pipeline',
+        bloqueados: 'bloqueados',
+        issues: 'issues',
+        matriz: 'matriz',
+        ops: 'ops',
+        kpis: 'kpis',
+        historial: 'historial',
+        costos: 'costos',
+        descanso: 'modo-descanso',
+        providers: 'multi-provider',
+    };
+    const badgeForSlug = (slug) => {
+        const areaKey = SLUG_TO_BADGE_AREA[slug];
+        if (!areaKey) return ''; // slug "home" no lleva badge
+        return `<span class="area-pill-badge area-pill-badge-zero" id="badge-${areaKey}">·</span>`;
+    };
+    const navHtml = renderNavTabsSsr('home', { badgeForSlug });
+
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080">
+<title>Intrale · Operación</title>
+<style>${theme}</style>
+<style>${styles}</style>
+</head>
+<body>
+<!-- #3487 — Sprite SVG inline para resolver use href=#ic-* sin
+     depender de un static asset handler. Oculto con display:none, los
+     símbolos siguen siendo referenciables por id. -->
+<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
+<div class="kiosk-frame">
+  <header class="in-header">
+    ${renderBrandBar(state)}
+    ${renderControlBar(state)}
+  </header>
+
+  ${quotaBannerHtml}
+
+  <!--
+    #3013 — Banner real-snapshot (4 estados: fresh, stale, missing,
+    parser-offline). Vive debajo del banner exhausted (narrativa §6). Cuando
+    data-state="missing" ocupa 0px (display:none) y el dashboard se ve idéntico
+    al pre-feature (CA-15). Polling cada 60s desde tickQuotaSnapshot. Cada
+    estado distingue por borde + pill + microcopy + ícono — cero reliance
+    en color solo (CA-UX-9, WCAG AA).
+  -->
+  <section class="quota-snapshot-banner" id="quota-snapshot-banner"
+           role="status" aria-live="polite" aria-hidden="true" data-state="missing">
+    <div class="quota-snapshot-pill" id="quota-snapshot-pill">
+      <span class="quota-snapshot-pill-icon" id="quota-snapshot-pill-icon" aria-hidden="true"></span>
+      <span class="quota-snapshot-pill-text" id="quota-snapshot-pill-text">ESTIMADO</span>
+    </div>
+    <div class="quota-snapshot-buckets" id="quota-snapshot-buckets"></div>
+  </section>
+
+  <!--
+    #3361 — La card de salud de providers se movió a la ventana Providers
+    (multi-provider.js). El home queda libre del duplicado y los semáforos
+    se gestionan en su lugar canónico.
+  -->
+
+  <!-- #3723 - anti-flicker boundary del router cliente (CA-T1 + R2 guru).
+       El interceptor loadView() SOLO reemplaza el innerHTML de #view-content;
+       sub-containers internos (kpi-cards, queue-list, etc.) siguen usando JSON
+       polling + DOM morphing manual por id (#2801). NO meter event handlers
+       inline aca (CA-S8) - todos los listeners se enganchan en JS post-render. -->
+  <main class="kiosk-body" id="view-content" data-current-view="${currentView}">
+
+    ${renderInfraHealth(state)}
+
+    ${renderKpiGrid(state)}
+
+    ${navHtml}
+
+    ${renderQueueDetailed(state)}
+
+    ${renderSystemCard(state)}
 
   </main>
 
@@ -3302,4 +3615,16 @@ window.__VIEW_BOOT__ = ${JSON.stringify({
 </html>`;
 }
 
-module.exports = { renderHomeHTML };
+module.exports = {
+    renderHomeHTML,
+    // #3725 — Composer + sub-funciones puras exportadas para test aislado por
+    // pieza (CA-3725.7). Las sub-funciones son puras (reciben state, devuelven
+    // string); `collectHomeState` es el único punto con I/O.
+    collectHomeState,
+    renderBrandBar,
+    renderControlBar,
+    renderInfraHealth,
+    renderKpiGrid,
+    renderQueueDetailed,
+    renderSystemCard,
+};
