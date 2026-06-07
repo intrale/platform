@@ -109,6 +109,7 @@ admission_gate:
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
   "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)
+  "area:dashboard": "pipeline-dev" # Ventanas del dashboard V3 (Node.js, .pipeline/dashboard.js + views/)
   "area:infra": "backend-dev"    # Infra kotlin/gradle/ci-cd (NO pipeline — eso es area:pipeline)
   "area:backend": "backend-dev"
   "app:client": "android-dev"
@@ -123,6 +124,7 @@ dev_skill_mapping:
 # no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
 dev_routing_priority:
   - "area:pipeline"
+  - "area:dashboard"
   - "area:infra"
   - "area:backend"
   - "area:web"
