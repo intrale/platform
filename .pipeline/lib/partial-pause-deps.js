@@ -112,6 +112,39 @@ function parseDepsFromText(text) {
     return [...found].sort((a, b) => a - b);
 }
 
+// #3742 — Referencias de PROCEDENCIA (upward): el issue actual es HIJO del
+// referenciado. "Split de #N" y "Tracked by #N" indican que N es el padre/épico,
+// NO una dependencia forward que bloquee al issue actual. Recorrerlas como deps
+// es incorrecto: sube al padre y baja a hermanos no relacionados, y además
+// genera back-edges padre↔hijo que la detección de ciclos (#3742) marcaría como
+// truncado en el caso normal de un split (regresión del incidente CA-1
+// 2026-04-30). Por eso se excluyen del grafo de traversal en `resolveOpenDeps`.
+// `parseDepsFromText` las sigue reconociendo (otros consumidores las usan).
+const PROVENANCE_PATTERNS = [
+    /\bsplit\s+(?:de|of)\s+#(\d+)/gi,
+    /\btracked\s+by\s+#(\d+)/gi,
+];
+
+/**
+ * Extrae las referencias de procedencia (upward) de un texto. Devuelve un Set
+ * de números de issue padre/épico declarados con "Split de #N" / "Tracked by #N".
+ * @param {string} text
+ * @returns {Set<number>}
+ */
+function parseProvenanceRefs(text) {
+    const found = new Set();
+    if (!text || typeof text !== 'string') return found;
+    for (const pattern of PROVENANCE_PATTERNS) {
+        pattern.lastIndex = 0;
+        let m;
+        while ((m = pattern.exec(text)) !== null) {
+            const n = parseInt(m[1], 10);
+            if (Number.isInteger(n) && n > 0) found.add(n);
+        }
+    }
+    return found;
+}
+
 /**
  * Consulta un issue vía gh y devuelve {state, deps[]}.
  * Usa cache TTL 5 min.
@@ -121,7 +154,9 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
     const c = cache || readCache(cacheFile);
     const key = String(issueNum);
     const existing = c.issues[key];
-    if (existing && isFresh(existing, now)) {
+    // #3742 — los entries de formato viejo (sin `forwardDeps`) se tratan como
+    // cache miss para garantizar que el campo siempre esté presente en el walk.
+    if (existing && isFresh(existing, now) && Array.isArray(existing.forwardDeps)) {
         return existing;
     }
 
@@ -135,6 +170,7 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
         const errEntry = {
             state: 'unknown',
             deps: [],
+            forwardDeps: [],
             title: '',
             fetchedAt: now,
             error: r.stderr ? r.stderr.split('\n')[0].trim() : `gh exit ${r.status}`,
@@ -149,7 +185,7 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
     try {
         parsed = JSON.parse(r.stdout);
     } catch {
-        const errEntry = { state: 'unknown', deps: [], title: '', fetchedAt: now, error: 'json-parse' };
+        const errEntry = { state: 'unknown', deps: [], forwardDeps: [], title: '', fetchedAt: now, error: 'json-parse' };
         c.issues[key] = errEntry;
         c.updatedAt = now;
         writeCache(c, cacheFile);
@@ -158,12 +194,18 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
 
     const body = parsed.body || '';
     const comments = (parsed.comments || []).map(co => co.body || '').join('\n');
-    const deps = parseDepsFromText(body + '\n' + comments)
+    const text = body + '\n' + comments;
+    const deps = parseDepsFromText(text)
         .filter(n => n !== Number(issueNum)); // no auto-referencias
+    // #3742 — `forwardDeps` excluye referencias de procedencia (Split de / Tracked by).
+    // Es el conjunto que `resolveOpenDeps` recorre como dependencias reales.
+    const provenance = parseProvenanceRefs(text);
+    const forwardDeps = deps.filter(n => !provenance.has(n));
 
     const entry = {
         state: parsed.state ? parsed.state.toLowerCase() : 'unknown',
         deps,
+        forwardDeps,
         title: parsed.title || '',
         fetchedAt: now,
     };
@@ -237,7 +279,10 @@ function resolveOpenDeps(issueNum, opts = {}) {
         chains[key] = { title: info.title, deps: info.deps, state: info.state };
         const nextAncestors = new Set(ancestors);
         nextAncestors.add(key);
-        for (const dep of info.deps) {
+        // #3742 — recorremos sólo dependencias forward; las referencias de
+        // procedencia (Split de / Tracked by) apuntan al padre/épico y no son
+        // dependencias bloqueantes (evita falsos ciclos en splits — CA-1).
+        for (const dep of (info.forwardDeps || info.deps)) {
             // Para decidir si lo incluimos, necesitamos su estado.
             const subInfo = fetchIssueInfo(dep, { ghRunner, repo, cache, cacheFile, now });
             chains[String(dep)] = { title: subInfo.title, deps: subInfo.deps, state: subInfo.state };
@@ -325,6 +370,7 @@ module.exports = {
     ABSOLUTE_MAX_NODES,
     DEP_PATTERNS,
     parseDepsFromText,
+    parseProvenanceRefs,
     fetchIssueInfo,
     resolveOpenDeps,
     findMissingDeps,
