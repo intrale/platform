@@ -9038,6 +9038,13 @@ let multiProviderCoverageView = null;
 try { multiProviderCoverageApi = require('./lib/multi-provider-coverage/api'); } catch (e) { log(`multi-provider-coverage api unavailable: ${e.message}`); }
 try { multiProviderCoverageView = require('./views/dashboard/multi-provider-coverage'); } catch (e) { log(`multi-provider-coverage view unavailable: ${e.message}`); }
 
+// #3736 — Ventana Descanso extraída a su propio módulo (padre #3715). Require
+// defensivo (mismo patrón que las vistas multi-provider). El routing legacy
+// `/modo-descanso` y el slug nuevo `?view=descanso` los resuelve
+// dashboard-routes.js, que también carga este módulo con su propio guard.
+let descansoView = null;
+try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`descanso view unavailable: ${e.message}`); }
+
 // #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.
 let wizardSession = null;
