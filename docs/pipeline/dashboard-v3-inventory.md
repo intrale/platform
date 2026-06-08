@@ -41,6 +41,36 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | QA Environment (dump JSON `<pre>`) | `satellites.js` `renderOps` (`#ops-qaenv`) | ventana `ops` (`#ops-qaenv`) | migrado | #3732 — **rediseñado (CA-C2)**: el `<pre>` con JSON crudo se reemplaza por 4 mini-cards (`qaEnv`/`qaRemote`/`infraHealth`/`telegramHealth`) con badge de salud + meta key:value + último error truncado a 80 chars. |
 | Modo descanso (calendario semanal) | `views/dashboard/satellites.js` `renderModoDescanso` (legacy 1576-2121) | ventana `descanso` (`views/dashboard/descanso.js`) | migrado | #3736 — extraído a módulo propio + slug `descanso`. Path legacy `/modo-descanso` sigue vivo (delegante de 1 línea en satellites.js). Tooltips CA-C1. Ver sección dedicada. |
 | Matriz (skill × fase, carga actual) | `views/dashboard/satellites.js` `renderMatriz` (legacy 937-1015) | ventana `matriz` (`views/dashboard/matriz.js`) | migrado | #3731 — extraído a módulo propio + slug `matriz`. Path legacy `/matriz` resuelve al MISMO thunk (`renderMatrizView`), `renderMatriz` eliminado de satellites.js + de su `module.exports`. Leyenda heat-map (CA-C3) + tooltips en headers/celdas (CA-C1). Ver sección dedicada. |
+| Bloqueados (necesitan intervención humana) | `dashboard.js::generateHTML` panel inline `bloqueadosHTML` (~2371-2439) | ventana `bloqueados` (`views/dashboard/bloqueados.js`) | migrado | #3729 — extraído a módulo propio + slug `bloqueados`. Binding del render legacy reemplazado por `bloqueadosView.renderBloqueadosSsr(state)` (fallback inerte CA-A3). Handlers `toggleNeedsHumanPanel`/`needsHumanReactivate`/`needsHumanDismiss` movidos a `renderBloqueadosClientScript()` (window.*); `needsHumanBlock` queda en el monolito (issue-tracker). Severidad 3-umbral dual-encoded + empty-state celebratorio. CSS `.v3-bloqueados-*` en `theme.css`; `.needs-human-*` legacy queda como compat en el `<style>` inline del render legacy (retiro = sub posterior). Ver sección dedicada. |
+
+## Decisiones de diseño (#3729 — ventana Bloqueados)
+
+### Mapa campo → contexto HTML → origen → helper de escape (CA-A1 / CA-B3)
+
+| Campo renderizado | Origen | Controlable por | Contexto HTML | Helper |
+|---|---|---|---|---|
+| `b.issue` | Filesystem marker (`needs-human`) | Pipeline-internal | **attr** (`href`/`onclick`) + text (`#N`) | `safeIssueNumber()` (coerción a entero positivo; fila descartada si falla — CA-D2) |
+| `b.title` | GitHub Issue API | Externo (cualquiera con permiso de editar el issue) | text (link) + **attr** (`title="…"`) | `escapeHtmlText` (texto) + `escapeHtmlAttr` (tooltip) |
+| `b.skill`, `b.phase` | Filesystem markers | Pipeline-internal | text | `escapeHtmlText` |
+| `b.question` / `b.reason` | Motivo del agente al pausar | Externo (puede citar texto del issue) | text (truncado a 280) | `escapeHtmlText` |
+| `b.summary` | `issueSummary` (LLM) | Externo (LLM sobre issue body) | text | `escapeHtmlText` |
+| `b.recent_events[].author` | `gh issue comments` | Externo | text | `escapeHtmlText` |
+| `b.recent_events[].preview` | `gh issue comments` | Externo | text | `escapeHtmlText` |
+| `b.age_hours` | Filesystem marker | Pipeline-internal | text (numérico) | coerción numérica (`fmtAge`/`severityOf`) |
+| `b.summary_stale` | Pipeline-internal | Pipeline-internal | branch (estado loading) | — |
+| `state.bloqueadosStats.*` | Pipeline-internal (mini-stats, opcional) | Pipeline-internal | text | `escapeHtmlText`; `—` si ausente |
+
+### Decisiones congeladas
+
+- **Escape (CA-B3)**: usa `lib/escape-html.js` (`escapeHtmlText` texto / `escapeHtmlAttr` atributo, #3722). NO reusa el `esc()` global del monolito. Fallback inline defensivo si el require falla (CA-A3). En contexto texto, `"`/`'` no se escapan (innecesario y seguro); en contexto atributo (`title=`/`aria-label=`) sí (`escapeHtmlAttr`).
+- **Coerción `b.issue` (CA-D2)**: `safeIssueNumber()` (`Number.isInteger(n) && n > 0`). Fila descartada si falla, antes de interpolar en `href`/`onclick`.
+- **Severidad dual-encoded (CA-E1)**: rail vertical 4px + pill (ícono emoji + texto numérico de edad). Nunca solo color. 3 umbrales: `info` < 4h, `warning` 4–24h, `danger` ≥ 24h (reusan `--in-info`/`--in-warn`/`--in-bad`, sin tokens nuevos).
+- **Empty-state (UX #3729)**: celebratorio (`#bloqueados-empty`) + mini-stats (SLA promedio · Resueltos hoy). El monolito retornaba `''`; ahora SIEMPRE renderiza el wrapper `<section data-slug="bloqueados">`. Mini-stats leen `state.bloqueadosStats` defensivo → `—` si no existe (no se inventan métricas).
+- **Iconografía**: emoji ASCII-friendly (precedente ops.js #3732 — el sprite no tiene símbolos de severidad). Sin `<svg>` nuevos.
+- **Handlers cliente (R3)**: `toggleNeedsHumanPanel` / `needsHumanReactivate` / `needsHumanDismiss` + restore del estado colapsado portados a `renderBloqueadosClientScript()` como `window.*` (idempotente `__bloqueadosWired`). El KPI rojo (`dashboard.js:744/5385`, scope #3733) sigue llamando `window.toggleNeedsHumanPanel`. `needsHumanBlock` (pausar card del issue-tracker) NO se movió.
+- **Routing / compat retro (R5)**: el panel vive en el render legacy `generateHTML` (fallback que sirve `/?view=bloqueados` y `/?section=needs-human`). El popout queda en `?section=needs-human` (mecanismo standalone client-side existente, sin regresión). La migración a un standalone `?view=bloqueados` server-side espera el router #3773; cuando aterrice se agrega la entry en `VIEW_SLUGS`. NO se tocó `dashboard-routes.js` en esta sub.
+- **CSS**: diseño `.v3-bloqueados-*` en `theme.css` (consumido por el view standalone futuro). Las clases legacy `.needs-human-*` quedan en el `<style>` inline del render legacy como compat (mis elementos llevan ambas clases; ninguna página carga ambas hojas, así que no compiten). Retiro de `.needs-human-*` = sub posterior.
+- **No tocado**: `dashboard.js:744` (tooltip KPI rojo, #3733) ni otros `views/dashboard/*.js`.
 
 ## Decisiones de diseño (#3732 — ventana Ops)
 

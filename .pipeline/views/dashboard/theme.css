@@ -323,3 +323,242 @@ a:hover { color: var(--in-accent); }
 .in-skill-build { --c: #ffa657; }
 .in-skill-delivery { --c: #2ee6c1; }
 .in-skill-commander { --c: #f778ba; }
+
+/* ========================================================================== */
+/* #3729 — Ventana Bloqueados V3 (necesitan intervención humana).             */
+/* Extraída del monolito `dashboard.js` (panel inline `bloqueadosHTML`) a su   */
+/* módulo `views/dashboard/bloqueados.js`. Diseño congelado por UX            */
+/* (27-bloqueados-v3.svg + narrativa-bloqueados-v3.md):                        */
+/*   - Severidad dual-encoded: rail vertical 4px + pill (ícono + edad).        */
+/*   - 3 umbrales: info <4h / warning 4-24h / danger >=24h. Nunca solo color.  */
+/*   - Empty-state celebratorio + mini-stats. WCAG AA (touch >=44px, focus).   */
+/* Reusa tokens del épico (--in-info/--in-warn/--in-bad), sin tokens nuevos.   */
+/* Las clases legacy `.needs-human-*` siguen vivas en el <style> inline del    */
+/* render legacy (`dashboard.js::generateHTML`) como compat (retiro = sub      */
+/* posterior). Ninguna página carga ambas hojas, así que no compiten.          */
+/* ========================================================================== */
+
+.v3-bloqueados-view {
+  background: linear-gradient(135deg, var(--in-bad-soft), rgba(248,81,73,0.04));
+  border: 1px solid var(--in-bad);
+  border-radius: var(--in-radius-sm);
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+.v3-bloqueados-view-empty {
+  background: linear-gradient(135deg, var(--in-ok-soft), rgba(63,185,80,0.04));
+  border-color: var(--in-ok);
+}
+
+.v3-bloqueados-header {
+  margin: 0 0 10px 0;
+  color: var(--in-fg);
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.05rem;
+}
+.v3-bloqueados-header:hover { opacity: 0.88; }
+.v3-bloqueados-header:focus-visible {
+  outline: 2px solid var(--in-info);
+  outline-offset: 3px;
+}
+.v3-bloqueados-pulse {
+  display: inline-block;
+  animation: v3-bloqueados-pulse 1.6s ease-in-out infinite;
+}
+@keyframes v3-bloqueados-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.7; }
+}
+.v3-bloqueados-badge {
+  display: inline-block;
+  background: var(--in-bad);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.62em;
+  padding: 2px 10px;
+  border-radius: 14px;
+  letter-spacing: 0.4px;
+}
+.v3-bloqueados-chevron {
+  margin-left: auto;
+  font-size: 0.7em;
+  color: var(--in-fg-dim);
+  transition: transform 0.18s ease;
+}
+.v3-bloqueados-view.nh-collapsed .v3-bloqueados-chevron { transform: rotate(-90deg); }
+.v3-bloqueados-view.nh-collapsed .v3-bloqueados-body { display: none; }
+.v3-bloqueados-popout {
+  font-size: 0.85em;
+  color: var(--in-fg-dim);
+  text-decoration: none;
+  border: 1px solid var(--in-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  line-height: 1;
+}
+.v3-bloqueados-popout:hover {
+  color: var(--in-info);
+  border-color: var(--in-info);
+  background: var(--in-info-soft);
+}
+
+/* Leyenda de severidad (CA-C3). */
+.v3-bloqueados-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 0.78em;
+  color: var(--in-fg-dim);
+  margin-bottom: 10px;
+}
+.v3-bloqueados-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.v3-bloqueados-legend-dot {
+  width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+}
+.v3-bloqueados-legend-dot.v3-bloqueados-severity-info { background: var(--in-info); }
+.v3-bloqueados-legend-dot.v3-bloqueados-severity-warning { background: var(--in-warn); }
+.v3-bloqueados-legend-dot.v3-bloqueados-severity-danger { background: var(--in-bad); }
+
+.v3-bloqueados-list { display: flex; flex-direction: column; gap: 10px; }
+
+/* Fila: rail de severidad (4px) + contenido. */
+.v3-bloqueados-row {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  background: var(--in-bg-3);
+  border-radius: var(--in-radius-sm);
+  padding: 12px 14px 12px 16px;
+  overflow: hidden;
+}
+.v3-bloqueados-rail {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+}
+.v3-bloqueados-severity-info .v3-bloqueados-rail { background: var(--in-info); }
+.v3-bloqueados-severity-warning .v3-bloqueados-rail { background: var(--in-warn); }
+.v3-bloqueados-severity-danger .v3-bloqueados-rail { background: var(--in-bad); }
+.v3-bloqueados-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.v3-bloqueados-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Pill de severidad: icono + texto de edad (dual-encoding, nunca solo color). */
+.v3-bloqueados-severity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78em;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.v3-bloqueados-severity-pill-info { color: var(--in-info); border-color: var(--in-info); background: var(--in-info-soft); }
+.v3-bloqueados-severity-pill-warning { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
+.v3-bloqueados-severity-pill-danger { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
+.v3-bloqueados-sev-icon { font-size: 0.95em; line-height: 1; }
+
+.v3-bloqueados-row-info { flex: 1 1 auto; min-width: 200px; font-size: 0.92em; }
+.v3-bloqueados-issue-link { color: var(--in-info); text-decoration: none; }
+.v3-bloqueados-issue-link:hover { text-decoration: underline; }
+.v3-bloqueados-issue-title { color: var(--in-fg-dim); font-weight: 400; }
+.v3-bloqueados-ctx { color: var(--in-fg-dim); }
+
+.v3-bloqueados-row-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.v3-bloqueados-btn {
+  background: var(--in-bg-2);
+  color: var(--in-fg);
+  border: 1px solid var(--in-border);
+  padding: 8px 12px;
+  min-height: 44px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8em;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.v3-bloqueados-btn:hover { background: rgba(255,255,255,0.06); }
+.v3-bloqueados-btn:focus-visible { outline: 2px solid var(--in-info); outline-offset: 2px; }
+.v3-bloqueados-btn:disabled { opacity: 0.5; cursor: wait; }
+.v3-bloqueados-btn-reactivate { border-color: var(--in-ok); color: var(--in-ok); }
+.v3-bloqueados-btn-reactivate:hover { background: var(--in-ok-soft); }
+.v3-bloqueados-btn-dismiss { border-color: var(--in-bad); color: var(--in-bad); }
+.v3-bloqueados-btn-dismiss:hover { background: var(--in-bad-soft); }
+
+.v3-bloqueados-summary { color: var(--in-fg); font-size: 0.9em; line-height: 1.4; opacity: 0.92; }
+.v3-bloqueados-summary-loading { opacity: 0.55; font-style: italic; }
+.v3-bloqueados-reason { color: #ffb3b3; font-size: 0.9em; line-height: 1.35; }
+
+.v3-bloqueados-events {
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.04);
+  border-left: 2px solid var(--in-border-soft);
+  border-radius: 0 4px 4px 0;
+}
+.v3-bloqueados-events-label {
+  font-size: 0.76em;
+  color: var(--in-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 3px;
+  font-weight: 600;
+}
+.v3-bloqueados-events-list { margin: 0; padding: 0; list-style: none; font-size: 0.84em; line-height: 1.45; }
+.v3-bloqueados-events-list li {
+  padding: 2px 0;
+  color: var(--in-fg);
+  border-top: 1px dashed var(--in-border-soft);
+}
+.v3-bloqueados-events-list li:first-child { border-top: none; }
+.v3-bloqueados-ev-when {
+  display: inline-block; min-width: 42px;
+  color: var(--in-fg-dim); font-size: 0.92em; font-variant-numeric: tabular-nums;
+}
+.v3-bloqueados-ev-author { color: var(--in-info); font-weight: 600; margin-right: 4px; }
+.v3-bloqueados-ev-text { color: var(--in-fg-dim); }
+
+.v3-bloqueados-foot { margin-top: 10px; font-size: 0.82em; color: var(--in-fg-dim); }
+
+/* Empty-state celebratorio + mini-stats. */
+.v3-bloqueados-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 28px 16px;
+}
+.v3-bloqueados-empty-check {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  background: var(--in-ok-soft);
+  color: var(--in-ok);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; font-weight: 700;
+  border: 2px solid var(--in-ok);
+}
+.v3-bloqueados-empty-headline { font-size: 1.05rem; font-weight: 600; color: var(--in-fg); }
+.v3-bloqueados-empty-sub { font-size: 0.9em; color: var(--in-fg-dim); }
+.v3-bloqueados-empty-stats { display: flex; gap: 28px; margin-top: 12px; }
+.v3-bloqueados-stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.v3-bloqueados-stat-value { font-size: 1.4rem; font-weight: 700; color: var(--in-fg); font-variant-numeric: tabular-nums; }
+.v3-bloqueados-stat-label { font-size: 0.74em; color: var(--in-fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+
+.v3-bloqueados-inert { padding: 18px 16px; text-align: center; }
+
+/* Respeta prefers-reduced-motion (CA-E). */
+@media (prefers-reduced-motion: reduce) {
+  .v3-bloqueados-pulse { animation: none; }
+  .v3-bloqueados-chevron { transition: none; }
+}

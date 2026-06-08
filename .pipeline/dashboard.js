@@ -2370,73 +2370,13 @@ function generateHTML(state) {
 
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
-  // #2523 CA-10: usar el `esc()` server-side global (antes habia 5 escapadores duplicados).
-  const bloqueadosHTML = bloqueados.length === 0 ? '' : `
-    <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
-      <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
-        <span class="needs-human-pulse">🚨</span>
-        Necesitan intervención humana
-        <span class="needs-human-badge">${bloqueados.length}</span>
-        <span class="needs-human-chevron">▼</span>
-        <a class="section-popout" href="/?section=needs-human" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-      </h2>
-      <div class="needs-human-body">
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
-        ${bloqueados.map(b => {
-          const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
-          const ageCls = b.age_hours >= 4 ? 'needs-human-age-old' : 'needs-human-age-fresh';
-          // #2523 CA-10: usar `esc()` server-side global (antes habia 5 escapadores duplicados).
-          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${esc(b.title)}</span>` : '';
-          const reasonTxt = (b.question || b.reason || '').toString();
-          const summaryTxt = (b.summary || '').toString();
-          const events = Array.isArray(b.recent_events) ? b.recent_events : [];
-          // Tiempo relativo compacto para los eventos: "12h", "3d", "ahora"
-          const relTime = (whenIso) => {
-            if (!whenIso) return '';
-            const t = Date.parse(whenIso);
-            if (!t) return '';
-            const diffMs = Date.now() - t;
-            const min = Math.round(diffMs / 60000);
-            if (min < 1) return 'ahora';
-            if (min < 60) return `${min}min`;
-            const hr = Math.round(min / 60);
-            if (hr < 24) return `${hr}h`;
-            const d = Math.round(hr / 24);
-            return `${d}d`;
-          };
-          const eventsHtml = events.length === 0 ? '' : `
-            <div class="needs-human-events">
-              <div class="needs-human-events-label">📜 Actividad reciente</div>
-              <ul class="needs-human-events-list">
-                ${events.map(ev => `<li><span class="nh-ev-when">${esc(relTime(ev.when))}</span> <span class="nh-ev-author">${esc(ev.author || '?')}</span>: <span class="nh-ev-text">${esc(ev.preview || '')}</span></li>`).join('')}
-              </ul>
-            </div>`;
-          const summaryHtml = summaryTxt
-            ? `<div class="needs-human-summary">📄 ${esc(summaryTxt)}</div>`
-            : (b.summary_stale ? `<div class="needs-human-summary needs-human-summary-loading">📄 <em>Cargando resumen funcional…</em></div>` : '');
-          return `<div class="needs-human-row">
-            <div class="needs-human-row-head">
-              <div class="needs-human-row-info">
-                <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener noreferrer"><b>#${b.issue}</b></a>${titleHtml}
-                <span style="color:var(--dim)"> · ${esc(b.skill)} en ${esc(b.phase)}</span>
-                <span class="${ageCls}"> · hace ${ageStr}</span>
-              </div>
-              <div class="needs-human-row-actions">
-                <button class="nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${b.issue})" title="Quitar el label needs-human y devolver el issue a la cola del pipeline">▶ Reactivar</button>
-                <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
-              </div>
-            </div>
-            ${summaryHtml}
-            ${reasonTxt ? `<div class="needs-human-reason">❓ ${esc(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
-            ${eventsHtml}
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
-        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
-      </div>
-      </div>
-    </div>`;
+  // #3729 — Panel extraído al módulo `views/dashboard/bloqueados.js` (split de
+  // #3715). El render (incluido el empty-state celebratorio que UX redefinió)
+  // vive ahí; acá sólo se invoca. Si el require del módulo falló, degrada a un
+  // fallback inerte visible (CA-A3) en vez de romper el render del dashboard.
+  const bloqueadosHTML = (bloqueadosView && typeof bloqueadosView.renderBloqueadosSsr === 'function')
+    ? bloqueadosView.renderBloqueadosSsr(state)
+    : '<section class="matrix-section needs-human-panel v3-bloqueados-view v3-bloqueados-view-empty" id="bloqueados-humano" data-section="needs-human" data-slug="bloqueados"><div class="v3-bloqueados-inert"><div class="v3-bloqueados-empty-headline">Ventana Bloqueados no disponible</div><div class="v3-bloqueados-empty-sub">módulo views/dashboard/bloqueados no cargó.</div></div></section>';
 
   const matrixHTML = `
     ${bloqueadosHTML}
@@ -7271,29 +7211,11 @@ function toggleInfraHealth() {
 })();
 
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
-function toggleNeedsHumanPanel(scrollOnExpand) {
-  const panel = document.getElementById('bloqueados-humano');
-  if (!panel) return;
-  const willCollapse = !panel.classList.contains('nh-collapsed');
-  panel.classList.toggle('nh-collapsed');
-  try { localStorage.setItem('nh-panel-collapsed', willCollapse ? '1' : '0'); } catch (e) {}
-  if (!willCollapse && scrollOnExpand) {
-    panel.scrollIntoView({behavior:'smooth', block:'start'});
-  }
-}
-(function restoreNeedsHumanPanelState(){
-  try {
-    if (localStorage.getItem('nh-panel-collapsed') === '1') {
-      const panel = document.getElementById('bloqueados-humano');
-      if (panel) panel.classList.add('nh-collapsed');
-    }
-  } catch (e) {}
-})();
-
-// Quick actions sobre issues con label needs-human (panel "Necesitan intervención humana")
-function nhDisableButtons(issueNum) {
-  document.querySelectorAll('.needs-human-row button[onclick*="(' + issueNum + ')"]').forEach(b => { b.disabled = true; });
-}
+// #3729 — toggleNeedsHumanPanel / nhDisableButtons / needsHumanReactivate /
+// needsHumanDismiss + el restore del estado colapsado se movieron al módulo
+// views/dashboard/bloqueados.js (renderBloqueadosClientScript, exportados como
+// window.*). Acá queda needsHumanBlock, que pertenece al issue-tracker (pausar
+// una card desde el board), NO al panel de bloqueados.
 async function needsHumanBlock(issueNum) {
   const reason = prompt('Pausar #' + issueNum + ' — motivo (opcional, Enter para omitir):', '');
   if (reason === null) return;
@@ -7319,45 +7241,8 @@ async function needsHumanBlock(issueNum) {
     cards.forEach(c => { c.style.opacity = ''; c.style.pointerEvents = ''; });
   }
 }
-async function needsHumanReactivate(issueNum) {
-  if (!confirm('Reactivar #' + issueNum + '? Volverá a la cola del pipeline sin orientación adicional.')) return;
-  nhDisableButtons(issueNum);
-  try {
-    const r = await fetch('/api/needs-human/' + issueNum + '/reactivate', { method: 'POST' });
-    const j = await r.json();
-    if (j.ok) location.reload();
-    else { alert('Error reactivando: ' + (j.msg || 'desconocido')); location.reload(); }
-  } catch (e) { alert('Error reactivando: ' + e.message); location.reload(); }
-}
-async function needsHumanDismiss(issueNum) {
-  const reason = prompt('Motivo para desestimar #' + issueNum + ' (opcional):', '');
-  if (reason === null) return;
-  if (!confirm('Cerrar #' + issueNum + ' como desestimado? Se quitará del panel y quedará cerrado en GitHub.')) return;
-  nhDisableButtons(issueNum);
-  try {
-    const r = await fetch('/api/needs-human/' + issueNum + '/dismiss', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: reason || '' })
-    });
-    const j = await r.json();
-    if (j.ok) {
-      if (j.worktree && j.worktree_warning) {
-        const cleanWt = confirm('Issue #' + issueNum + ' desestimado.\\n\\nEl worktree tiene trabajo en disco:\\n  ' + j.worktree + '\\n\\n¿Limpiar el worktree ahora? (Cancelar = conservar)');
-        if (cleanWt) {
-          try {
-            const rw = await fetch('/api/needs-human/' + issueNum + '/dismiss-worktree', { method: 'POST' });
-            const jw = await rw.json();
-            if (!jw.ok) alert('No pude limpiar el worktree: ' + (jw.msg || 'desconocido'));
-          } catch (e) { alert('Error limpiando worktree: ' + e.message); }
-        }
-      }
-      location.reload();
-    }
-    else { alert('Error desestimando: ' + (j.msg || 'desconocido')); location.reload(); }
-  } catch (e) { alert('Error desestimando: ' + e.message); location.reload(); }
-}
 </script>
+${(bloqueadosView && typeof bloqueadosView.renderBloqueadosClientScript === 'function') ? bloqueadosView.renderBloqueadosClientScript() : ''}
 </body></html>`;
 }
 
@@ -8974,6 +8859,13 @@ try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`d
 // #3779).
 let costosView = null;
 try { costosView = require('./views/dashboard/costos'); } catch (e) { log(`costos view unavailable: ${e.message}`); }
+
+// #3729 — Ventana Bloqueados (necesitan intervención humana) extraída del
+// render monolítico `generateHTML` a su propio módulo (split de #3715). Require
+// defensivo: si falla, el binding `bloqueadosHTML` cae al fallback inerte (CA-A3)
+// sin tirar el dashboard. Provee renderBloqueadosSsr + renderBloqueadosClientScript.
+let bloqueadosView = null;
+try { bloqueadosView = require('./views/dashboard/bloqueados'); } catch (e) { log(`bloqueados view unavailable: ${e.message}`); }
 
 // #3733 — Ventana KPIs extraída del monolito (split de #3715). `kpisData`
 // provee el slice data-only (getMetricsData portado con ctx inyectado) y
