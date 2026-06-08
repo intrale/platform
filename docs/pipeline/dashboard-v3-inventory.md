@@ -43,6 +43,7 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | Matriz (skill × fase, carga actual) | `views/dashboard/satellites.js` `renderMatriz` (legacy 937-1015) | ventana `matriz` (`views/dashboard/matriz.js`) | migrado | #3731 — extraído a módulo propio + slug `matriz`. Path legacy `/matriz` resuelve al MISMO thunk (`renderMatrizView`), `renderMatriz` eliminado de satellites.js + de su `module.exports`. Leyenda heat-map (CA-C3) + tooltips en headers/celdas (CA-C1). Ver sección dedicada. |
 | Issues (backlog operacional, vista cards) | `views/dashboard/satellites.js` `renderIssues` (líneas 835-934) | ventana `issues` (`views/dashboard/issues.js`) | migrado | #3730 — **Interpretación B**: reescrito de tabla legacy a **grilla de cards operacional** (estado + fase + rebotes + acciones + drilldown `<dialog>`). Path legacy `/issues` + slug `?view=issues` resuelven al MISMO thunk (`renderIssuesView`). `sat.renderIssues` se **conserva** como fallback de runtime (R-4, regla "pipeline no puede morir"), NO se elimina. Ver sección dedicada. |
 | Tabla telemétrica por issue (sesiones/tokens/costo/timeline) | `dashboard.js` `renderIssues` cliente (8324-8334) bajo `panel-issues` (`/consumo`) | ventana `costos` (#3735) | sin-mover | #3730 — **NO se toca** en este split (R-1). Es telemetría de `/consumo`, distinta de la vista operacional. Migra a Costos en #3735. `dashboard.js:8116-8483` intacto. |
+| Ventana Pipeline (control bar + allowlist + audit + infra) | `views/dashboard/pipeline.js` `renderPipelineHTML` (ex `dashboard.js:5116-5347`) | main (home) | migrado | #3728 — extraída del monolito (~210 LOC → módulo SSR de ~370 LOC). Owner: pipeline-dev. Deps: #3722 (`lib/escape-html.js`), #3726 (sprite). SSR puro: state inyectado, sin `fetch`/`require` circular. **Referencia (NO extrae)** los 6 handlers state-changing del `<script>` global: `pauseAction`, `allowlistLike`, `allowlistUnlike`, `allowlistRemove`, `allowlistPromote`, `includeMissingDeps` (+ `pwAction`). `renderInfraHealth` y `renderPartialPauseAuditRows` quedan en `dashboard.js` e inyectados. Bug latente `allowedIssues` (ex línea 5290, `'#'+i` sin escape) corregido vía `escapeHtmlText` (CA-PL7). Jerarquía V3: control bar sticky → banner deps → details Allowlist (open si partial-pause) → details Audit (open si chain_broken/sin-autoría) → infra. Tests: `__tests__/pipeline.test.js` (10, incl. 3 payloads XSS). Ver sección dedicada. |
 | Bloqueados (necesitan intervención humana) | `dashboard.js::generateHTML` panel inline `bloqueadosHTML` (~2371-2439) | ventana `bloqueados` (`views/dashboard/bloqueados.js`) | migrado | #3729 — extraído a módulo propio + slug `bloqueados`. Binding del render legacy reemplazado por `bloqueadosView.renderBloqueadosSsr(state)` (fallback inerte CA-A3). Handlers `toggleNeedsHumanPanel`/`needsHumanReactivate`/`needsHumanDismiss` movidos a `renderBloqueadosClientScript()` (window.*); `needsHumanBlock` queda en el monolito (issue-tracker). Severidad 3-umbral dual-encoded + empty-state celebratorio. CSS `.v3-bloqueados-*` en `theme.css`; `.needs-human-*` legacy queda como compat en el `<style>` inline del render legacy (retiro = sub posterior). Ver sección dedicada. |
 
 ## Decisiones de diseño (#3729 — ventana Bloqueados)
@@ -73,6 +74,12 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 - **Routing / compat retro (R5)**: el panel vive en el render legacy `generateHTML` (fallback que sirve `/?view=bloqueados` y `/?section=needs-human`). El popout queda en `?section=needs-human` (mecanismo standalone client-side existente, sin regresión). La migración a un standalone `?view=bloqueados` server-side espera el router #3773; cuando aterrice se agrega la entry en `VIEW_SLUGS`. NO se tocó `dashboard-routes.js` en esta sub.
 - **CSS**: diseño `.v3-bloqueados-*` en `theme.css` (consumido por el view standalone futuro). Las clases legacy `.needs-human-*` quedan en el `<style>` inline del render legacy como compat (mis elementos llevan ambas clases; ninguna página carga ambas hojas, así que no compiten). Retiro de `.needs-human-*` = sub posterior.
 - **No tocado**: `dashboard.js:744` (tooltip KPI rojo, #3733) ni otros `views/dashboard/*.js`.
+## Decisiones de diseño (#3728 — ventana Pipeline)
+
+- **SSR puro + inyección de dependencias**: `renderPipelineHTML(params)` recibe el state ya computado (`partialPauseState`, `allowlistCandidatesList`, `partialPauseAuditData`, `state`, flags) y los helpers compartidos `ic`, `renderInfraHealth`, `renderPartialPauseAuditRows` por argumento. El módulo NO lee filesystem ni requiere el dashboard (sin ciclo). `pwThreshold` lo calcula el caller (lee `config.yaml` una vez) y lo pasa por argumento.
+- **Handlers state-changing intactos (CSRF)**: los 6 handlers + `pwAction` siguen en el `<script>` inline de `dashboard.js`. El módulo SOLO emite HTML con `onclick="..."` que los referencia — preserva la cadena same-origin + token (#3688/#2532/#2745). El test CA-PL3 asegura que el fuente del módulo no contiene `fetch(`/`addEventListener`/`XMLHttpRequest`.
+- **Escape XSS unificado (CA-B3/CA-D1)**: todo dato dinámico pasa por `escapeHtmlText`/`escapeHtmlAttr` de `lib/escape-html.js` (con fallback inline si el lib no carga). Bug latente de `allowedIssues` corregido (CA-PL7). `onclick` de items usa coerción numérica (`Number(i)`) para evitar inyección JS aunque el input venga corrupto.
+- **Aperturas inteligentes (decisión UX #2)**: `<details>` Allowlist abre si partial-pause activo; `<details>` Audit abre si `chain_broken` o `has_unauthorized_non_backfill` — un banner crítico no puede quedar oculto tras un `<summary>` cerrado.
 
 ## Decisiones de diseño (#3732 — ventana Ops)
 
@@ -607,4 +614,40 @@ curl -sf 'http://127.0.0.1:8721/issues' | grep -q 'id="issues-grid"'
 
 # NO regresión de la tabla telemétrica de /consumo (sigue viva hasta #3735)
 curl -sf 'http://127.0.0.1:8721/consumo' | grep -q 'tbody-issues'
+```
+
+## Ventana **Historial** — split #3734
+
+**Módulo destino:** `.pipeline/views/dashboard/historial.js`
+**Slug del router:** `?view=historial` (pendiente del router #3723; mientras tanto la ventana se embebe en `/` vía `historyHTML` y el popout legacy `/?section=historial`).
+**Contrato:** `renderHistorialSsr(state, opts)` puro, donde `state = { agentHistory: [...] }` (array **ya armado y ordenado por el padre** — el módulo NO toca `matrixEntries`) y `opts = { agentPersona, manualOrderIndex, fmtDuration, ghBaseUrl }`. Exporta además `renderHistCard`, `isSafeFilename`, `loadTheme`, `HIST_VISIBLE`, `HIST_CAP`.
+**Estado:** **migrado**.
+**Escape:** todo dato dinámico (GitHub `titulo`; filesystem `skill`, `fase`, `resultado`, `logFile`, `rejectionPdf`) pasa por `lib/escape-html.js` (#3722) — `escapeHtmlText` en contexto body, `escapeHtmlAttr` en `href=`/`title=`.
+**Out of scope:** filtros + búsqueda + paginación (#3778); CSRF/CSP estricta de `issueMoveTo*` (#3688 / #2532 / #2745); migración `onclick` → `data-attributes` (#3758); snapshot test cross-window de DOM IDs (#3755); enforcement axe-core CI (#3717); migración glyphs Unicode → sprite SVG (opcional CA-22, no realizada en este split).
+
+### Estado de entrega (#3734 — lo realmente shippeado)
+
+- **Módulo:** `.pipeline/views/dashboard/historial.js` (render SSR puro, sin globals del padre).
+- **Registro:** `dashboard.js` hace `require('./views/dashboard/historial')` con guard try/catch (junto a las demás vistas, tras el require de `kpis`). El bloque de armado HTML del monolito (antes `dashboard.js:2894-3001`) quedó reemplazado por una sola llamada `historialView.renderHistorialSsr({ agentHistory }, { ... })`, **conservando** el armado/orden de `agentHistory[]` en el padre. Fallback a string vacío si el require falla (no rompe el dashboard).
+- **Seguridad:**
+  - **CA-5 path traversal:** `logFile` y `rejectionPdf` se validan con `isSafeFilename(s) = /^[A-Za-z0-9._-]+$/` antes de inyectarse en `href`. Si fallan → log omite link y cae al fallback de GitHub; PDF omite el `<a class="ah-pdf">`.
+  - **CA-6 anti-tabnabbing:** todo `<a target="_blank">` lleva `rel="noopener noreferrer"` (#2523).
+  - **Coerción numérica:** `Number(h.issue)` antes de inyectar en los `onclick` de `prioActions`; si da `NaN`, `prioActions` se omite (defensa adicional al escape).
+- **CSS:** las clases `.ah-*` se agregaron a `views/dashboard/theme.css` (sección Historial) resolviendo colores SOLO via tokens `--in-*` (CA-21 sin hex hardcoded; CA-9 contraste por token + `focus-visible`). La página principal del dashboard NO carga `theme.css`, por eso **conserva su copia inline** de las mismas reglas para el render embebido; la copia en `theme.css` es la fuente canónica para el render standalone del router #3723.
+- **Tooltips (CA-7):** `title=` en cada acción (subir/bajar/tope/fondo, ver log, ver PDF, link GitHub, popout, colapsar sección) — texto estático en castellano; los datos dinámicos del `title=` pasan por `escapeHtmlAttr`.
+- **Leyenda (CA-8):** `.ah-legend` con los 4 estados (`●` en ejecución / `✓` aprobado / `✗` rechazado / `—` finalizado).
+- **DOM preservado (R6):** se mantienen IDs/clases `#agent-history`, `data-section="historial"`, `.ah-list`, `.ah-more`, `.ah-card`, `.ah-avatar`, `.ah-skill`, `.ah-fase`, `.ah-status`, `.ah-dur`, `.ah-time`, `.ah-count` para no romper el DOM morphing client-side.
+- **Tests:** `.pipeline/views/dashboard/__tests__/historial.test.js` (14 casos: render vacío, render básico, XSS en `titulo`/`logFile`/`resultado`/`skill`/`fase`, path traversal en `logFile`/`rejectionPdf`, anti-tabnabbing, orden trabajando-first, coerción de `issue` no numérico, whitelist `isSafeFilename`, cap de 50 + toggle). Cobertura de líneas **98.41%** (objetivo 85%).
+
+### Smoke (CA-18)
+
+```bash
+# El render del módulo incluye el ID canónico que espera el smoke curl.
+node -e "const {renderHistorialSsr}=require('./.pipeline/views/dashboard/historial'); \
+  process.exit(renderHistorialSsr({agentHistory:[{issue:1,skill:'x',fase:'dev',estado:'procesado',resultado:'aprobado'}]},{}).includes('id=\"agent-history\"')?0:1)"
+
+# Cuando el router #3723 exponga el slug:
+curl -s 'http://127.0.0.1:3200/dashboard?view=historial' | grep -q 'id="agent-history"'
+# Mientras tanto (embebido en el render completo):
+curl -s 'http://127.0.0.1:3200/' | grep -q 'id="agent-history"'
 ```
