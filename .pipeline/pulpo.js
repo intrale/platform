@@ -9987,15 +9987,25 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // parámetro en su signature por back-compat (ignorado).
         const commanderProvider = 'anthropic';
 
-        // #3846 — si el pedido del usuario referencia un issue concreto (#NNNN),
-        // habilitamos la recolección de evidencia INDEPENDIENTE (filesystem,
-        // git origin/main, GitHub API, heartbeat) para que Sherlock no herede
-        // las asunciones del systemState. Tomamos el primer #NNNN del pedido
-        // (la intención del usuario es la fuente más confiable). Si no hay
-        // ninguno, `sherlockIssueNumber` queda null y el collector no corre
-        // (comportamiento pre-#3846 puro).
-        const issueMatch = String(mensajeConsolidado || '').match(/#(\d{2,})\b/);
-        const sherlockIssueNumber = issueMatch ? Number(issueMatch[1]) : null;
+        // #3868 — el scope de fiscalización de Sherlock se deriva de la
+        // RESPUESTA del Commander (`respuesta`), NO del pedido del usuario
+        // (`mensajeConsolidado`). Razón: el Commander puede afirmar cosas sobre
+        // issues que Leo nunca mencionó con `#`; si Sherlock solo investigara el
+        // input, heredaría esas asunciones sin contrastarlas. Extraemos TODOS los
+        // #NNNN de la respuesta (matchAll global), deduplicados con `new Set()`.
+        // Si la respuesta no menciona ningún issue → `issueNumbers=[]` → el
+        // collector no corre y Sherlock se comporta igual que antes (back-compat).
+        //
+        // SEC-A — cap anti-DoS/anti-quota: una respuesta que liste 20 issues
+        // dispararía 20×(filesystem+heartbeat+2 git+2 gh) subprocesos y quemaría
+        // quota de GitHub API. Capeamos a SHERLOCK_MAX_ISSUES tras el dedup. El
+        // truncado se loguea explícitamente (nunca silencioso).
+        const SHERLOCK_MAX_ISSUES = 8;
+        const { issueNumbers: sherlockIssueNumbers, allRefs: allIssueRefs, truncated: sherlockTruncated } =
+          sherlockVerifier.extractIssueRefsFromResponse(respuesta, SHERLOCK_MAX_ISSUES);
+        if (sherlockTruncated) {
+          log('commander', `SEC-A: Sherlock capeó issues ${allIssueRefs.length}->${SHERLOCK_MAX_ISSUES} (descartados: ${allIssueRefs.slice(SHERLOCK_MAX_ISSUES).join(',')})`);
+        }
 
         const verdict = await sherlockVerifier.verify({
           analysis: respuesta || '',
@@ -10003,7 +10013,7 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           systemState: systemStateSnapshot,
           lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
           commanderProvider,
-          issueNumber: sherlockIssueNumber,
+          issueNumbers: sherlockIssueNumbers,
           pipelineDir: PIPELINE,
           configLoader: loadConfig,
           log,
@@ -10038,7 +10048,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 systemState: systemStateSnapshot,
                 lastHourLogs: '',
                 commanderProvider,
-                issueNumber: sherlockIssueNumber,
+                issueNumbers: sherlockIssueNumbers,
                 pipelineDir: PIPELINE,
                 configLoader: loadConfig,
                 log,

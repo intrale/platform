@@ -267,11 +267,15 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
     const hasEvidence = evidence.length > 0;
 
     const baseInstructions = (
-        'Sos Sherlock, un verificador adversarial. Tu único trabajo es REFUTAR ' +
-        'el análisis que te paso a continuación contrastándolo con el estado ' +
-        'real del sistema. No sos asistente; sos fiscal. Si el análisis es ' +
-        'consistente con la evidencia, decilo. Si encontrás contradicciones, ' +
-        'enumerarlas con la cita textual del claim y la evidencia que lo refuta.\n\n'
+        'Sos Sherlock, un verificador adversarial. No sos asistente; sos fiscal. ' +
+        'Asumí de entrada que CADA afirmación del análisis está MAL. Tu tarea es ' +
+        'intentar contradecir cada una contrastándola con el estado real del ' +
+        'sistema y la evidencia. NUNCA des por verdadera una asunción del análisis ' +
+        'solo porque el análisis la afirma: tenés que poder refutarla y, si no lo ' +
+        'logras, recién ahí queda validada. Una afirmación SOLO queda validada si ' +
+        'no conseguís refutarla con evidencia. Si la refutás, enumerala con la cita ' +
+        'textual del claim en `claim` y la corrección explícita (el dato real que ' +
+        'la contradice) en `contradiction`.\n\n'
     );
 
     // #3846 — refuerzo fiscal cuando hay evidencia independiente. Le pedimos al
@@ -976,7 +980,11 @@ async function verify(opts = {}) {
 
         // #3846 — evidencia independiente. `issueNumber` habilita el collector;
         // si no se pasa, Sherlock corre igual que antes (sin sección).
+        // #3868 — `issueNumbers` (array) es el nuevo contrato multi-issue. Se
+        // mantiene `issueNumber` (escalar) por back-compat: si llega el escalar y
+        // no el array, se normaliza a `[issueNumber]`.
         issueNumber,
+        issueNumbers,
         independentVerifier,   // inyectable tests (default: módulo real)
         gitImpl,               // inyectable para collectIndependentEvidence
         ghApi,                 // inyectable para collectIndependentEvidence
@@ -1107,66 +1115,109 @@ async function verify(opts = {}) {
     // identificador numérico válido — CA-SEC-10).
     // -------------------------------------------------------------------------
     const _independentVerifier = independentVerifier || independentVerifierModule;
+    // SEC-C — la normalización (entero positivo) es un invariante de seguridad,
+    // no parte del contrato de testeo: usamos siempre la del módulo real para que
+    // un fake inyectado de `independentVerifier` no pueda saltearla.
+    const _normalize = independentVerifierModule._normalizeIssueNumber;
+
+    // #3868 — back-compat de signature: aceptar `issueNumbers` (array, nuevo) o
+    // `issueNumber` (escalar, viejo). Cada elemento pasa por `normalizeIssueNumber`
+    // por separado (SEC-C: nunca concatenamos varios issues en un mismo arg de
+    // execFile). Inválidos se descartan sin abortar (fail-open). Dedup defensivo.
+    const _issueList = Array.isArray(issueNumbers)
+        ? issueNumbers
+        : (issueNumber != null ? [issueNumber] : []);
+    const _normalizedIssues = [...new Set(
+        _issueList.map(n => _normalize(n)).filter(n => n != null)
+    )];
+
     let safeIndependentEvidence = '';
-    if (issueNumber != null) {
-        try {
-            const evidence = await _independentVerifier.collectIndependentEvidence({
-                issueNumber,
-                pipelineDir,
-                repoRoot,
-                fsImpl,
-                gitImpl,
-                ghApi,
-                processCheck,
-                log: _log,
-            });
-            const rendered = _independentVerifier.formatIndependentEvidence(evidence);
-            if (rendered) {
-                // CA-SEC-1 — la evidencia (outputs de git/gh/FS) se sanitiza igual
-                // que el analysis antes de tocar el prompt del provider.
-                const sanEv = commanderMP.sanitizeUserPrompt(rendered);
-                safeIndependentEvidence = sanEv.sanitized;
-                if (sanEv.truncated) {
-                    _log('sherlock', `🛡️ CA-SEC-1: independentEvidence recortado (injection patterns=${sanEv.hits.join('|')})`);
+    if (_normalizedIssues.length > 0) {
+        // SEC-B — presupuesto de evidencia por-issue. Repartimos el cap total
+        // entre las N secciones para que la evidencia de los últimos issues no se
+        // trunque en silencio por un slice único. La sanitización CA-SEC-1 corre
+        // sobre la evidencia CONCATENADA final (no solo por-issue).
+        const TOTAL_EVIDENCE_CAP = 8000;
+        const perIssueCap = Math.floor(TOTAL_EVIDENCE_CAP / Math.max(1, _normalizedIssues.length));
+
+        // SEC-D — concurrencia acotada (pool de 3). NO `Promise.all` ilimitado
+        // sobre N: cada collector abre subprocesos git/gh, así que limitamos los
+        // que corren en paralelo para no saturar.
+        const CONCURRENCY = 3;
+        const rawSections = [];
+        for (let i = 0; i < _normalizedIssues.length; i += CONCURRENCY) {
+            const batch = _normalizedIssues.slice(i, i + CONCURRENCY);
+            const results = await Promise.all(batch.map(async (num) => {
+                try {
+                    const evidence = await _independentVerifier.collectIndependentEvidence({
+                        issueNumber: num,
+                        pipelineDir,
+                        repoRoot,
+                        fsImpl,
+                        gitImpl,
+                        ghApi,
+                        processCheck,
+                        log: _log,
+                    });
+                    // Auditoría por-issue — evento con sources/findingsCount/durationMs
+                    // (sin payloads crudos: solo hash del análisis, CA-SEC-8).
+                    emitAuditEvent({
+                        pipelineDir, fsImpl, auditLog, now: _now,
+                        event: evidence && evidence.ok
+                            ? 'sherlock_independent_evidence_collected'
+                            : 'sherlock_independent_evidence_failed',
+                        payload: {
+                            analysisHash: hashFor(analysis),
+                            issueNumber: num,
+                            commanderProvider,
+                            commanderModel,
+                            durationMs: evidence ? evidence.durationMs : 0,
+                            errorCode: evidence && evidence.ok ? null : (evidence && evidence.error) || 'collector_error',
+                            sourcesChecked: evidence ? (evidence.sourcesChecked || []) : [],
+                            findingsCount: evidence ? (evidence.findings || []).length : 0,
+                            sherlockModel: null,
+                            transport: null,
+                            sameProvider: false,
+                            sameModel: false,
+                        },
+                    });
+                    const rendered = _independentVerifier.formatIndependentEvidence(evidence);
+                    // SEC-B — cada sección recortada al presupuesto por-issue.
+                    return rendered ? String(rendered).slice(0, perIssueCap) : '';
+                } catch (e) {
+                    // FAIL-OPEN por-issue — un collector que tira no bloquea ni al
+                    // resto de los issues ni a la verificación.
+                    _log('sherlock', `independentEvidence collector falló para #${num} (fail-open): ${e && e.message}`);
+                    emitAuditEvent({
+                        pipelineDir, fsImpl, auditLog, now: _now,
+                        event: 'sherlock_independent_evidence_failed',
+                        payload: {
+                            analysisHash: hashFor(analysis),
+                            issueNumber: num,
+                            commanderProvider,
+                            commanderModel,
+                            durationMs: 0,
+                            errorCode: 'collector_exception',
+                            sourcesChecked: [],
+                            findingsCount: 0,
+                        },
+                    });
+                    return '';
                 }
+            }));
+            rawSections.push(...results.filter(Boolean));
+        }
+
+        if (rawSections.length) {
+            // CA-SEC-1 — la evidencia (outputs de git/gh/FS, incluye títulos de
+            // issue atacante-controlables) se sanitiza sobre el JOIN final antes
+            // de tocar el prompt del provider.
+            const concatenated = rawSections.join('\n\n');
+            const sanEv = commanderMP.sanitizeUserPrompt(concatenated);
+            safeIndependentEvidence = sanEv.sanitized;
+            if (sanEv.truncated) {
+                _log('sherlock', `🛡️ CA-SEC-1: independentEvidence recortado (injection patterns=${sanEv.hits.join('|')})`);
             }
-            // Auditoría — evento con sources/findingsCount/durationMs (sin payloads
-            // crudos: solo hash del análisis, CA-SEC-8).
-            emitAuditEvent({
-                pipelineDir, fsImpl, auditLog, now: _now,
-                event: evidence && evidence.ok
-                    ? 'sherlock_independent_evidence_collected'
-                    : 'sherlock_independent_evidence_failed',
-                payload: {
-                    analysisHash: hashFor(analysis),
-                    commanderProvider,
-                    commanderModel,
-                    durationMs: evidence ? evidence.durationMs : 0,
-                    errorCode: evidence && evidence.ok ? null : (evidence && evidence.error) || 'collector_error',
-                    sourcesChecked: evidence ? (evidence.sourcesChecked || []) : [],
-                    findingsCount: evidence ? (evidence.findings || []).length : 0,
-                    sherlockModel: null,
-                    transport: null,
-                    sameProvider: false,
-                    sameModel: false,
-                },
-            });
-        } catch (e) {
-            // FAIL-OPEN — el collector nunca bloquea la verificación.
-            _log('sherlock', `independentEvidence collector falló (fail-open): ${e && e.message}`);
-            emitAuditEvent({
-                pipelineDir, fsImpl, auditLog, now: _now,
-                event: 'sherlock_independent_evidence_failed',
-                payload: {
-                    analysisHash: hashFor(analysis),
-                    commanderProvider,
-                    commanderModel,
-                    durationMs: 0,
-                    errorCode: 'collector_exception',
-                    sourcesChecked: [],
-                    findingsCount: 0,
-                },
-            });
         }
     }
 
@@ -1664,11 +1715,34 @@ function recordToggleAttempt({ pipelineDir, sourceText, fsImpl, auditLog, now })
     });
 }
 
+// -----------------------------------------------------------------------------
+// extractIssueRefsFromResponse — #3868 / CA-1 + SEC-A. Extrae los issues (#NNNN)
+// que el Commander mencionó en SU respuesta (no en el pedido del usuario), para
+// que Sherlock fiscalice lo que el Commander efectivamente afirmó. Dedup con
+// `new Set()` y cap (SEC-A: anti-DoS / anti-quota de GitHub API). Devuelve la
+// lista capeada (`issueNumbers`), la lista completa pre-cap (`allRefs`) y
+// `truncated` para que el caller logue el descarte (nunca silencioso).
+//
+// Pura y sin side-effects: el logging del truncado lo hace el caller (pulpo.js)
+// porque tiene el contexto de canal. Si la respuesta no menciona issues →
+// `issueNumbers: []` → Sherlock corre igual que antes (back-compat, riesgo nulo).
+// -----------------------------------------------------------------------------
+function extractIssueRefsFromResponse(respuesta, maxIssues = 8) {
+    const cap = Number.isInteger(maxIssues) && maxIssues > 0 ? maxIssues : 8;
+    const allRefs = [...new Set(
+        [...String(respuesta || '').matchAll(/#(\d{2,})\b/g)].map(m => Number(m[1]))
+    )];
+    const issueNumbers = allRefs.slice(0, cap);
+    return { issueNumbers, allRefs, truncated: allRefs.length > issueNumbers.length };
+}
+
 module.exports = {
     // API principal
     verify,
     applyDisclaimer,
     recordToggleAttempt,
+    // #3868 — extracción de issues desde la respuesta del Commander (CA-1/SEC-A).
+    extractIssueRefsFromResponse,
     // #3501 CA-11 — helper para footer Telegram informativo.
     formatVerifiedFooter,
 
