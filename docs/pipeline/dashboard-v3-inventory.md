@@ -586,3 +586,39 @@ curl -sf 'http://127.0.0.1:8721/issues' | grep -q 'id="issues-grid"'
 # NO regresión de la tabla telemétrica de /consumo (sigue viva hasta #3735)
 curl -sf 'http://127.0.0.1:8721/consumo' | grep -q 'tbody-issues'
 ```
+
+## Ventana **Historial** — split #3734
+
+**Módulo destino:** `.pipeline/views/dashboard/historial.js`
+**Slug del router:** `?view=historial` (pendiente del router #3723; mientras tanto la ventana se embebe en `/` vía `historyHTML` y el popout legacy `/?section=historial`).
+**Contrato:** `renderHistorialSsr(state, opts)` puro, donde `state = { agentHistory: [...] }` (array **ya armado y ordenado por el padre** — el módulo NO toca `matrixEntries`) y `opts = { agentPersona, manualOrderIndex, fmtDuration, ghBaseUrl }`. Exporta además `renderHistCard`, `isSafeFilename`, `loadTheme`, `HIST_VISIBLE`, `HIST_CAP`.
+**Estado:** **migrado**.
+**Escape:** todo dato dinámico (GitHub `titulo`; filesystem `skill`, `fase`, `resultado`, `logFile`, `rejectionPdf`) pasa por `lib/escape-html.js` (#3722) — `escapeHtmlText` en contexto body, `escapeHtmlAttr` en `href=`/`title=`.
+**Out of scope:** filtros + búsqueda + paginación (#3778); CSRF/CSP estricta de `issueMoveTo*` (#3688 / #2532 / #2745); migración `onclick` → `data-attributes` (#3758); snapshot test cross-window de DOM IDs (#3755); enforcement axe-core CI (#3717); migración glyphs Unicode → sprite SVG (opcional CA-22, no realizada en este split).
+
+### Estado de entrega (#3734 — lo realmente shippeado)
+
+- **Módulo:** `.pipeline/views/dashboard/historial.js` (render SSR puro, sin globals del padre).
+- **Registro:** `dashboard.js` hace `require('./views/dashboard/historial')` con guard try/catch (junto a las demás vistas, tras el require de `kpis`). El bloque de armado HTML del monolito (antes `dashboard.js:2894-3001`) quedó reemplazado por una sola llamada `historialView.renderHistorialSsr({ agentHistory }, { ... })`, **conservando** el armado/orden de `agentHistory[]` en el padre. Fallback a string vacío si el require falla (no rompe el dashboard).
+- **Seguridad:**
+  - **CA-5 path traversal:** `logFile` y `rejectionPdf` se validan con `isSafeFilename(s) = /^[A-Za-z0-9._-]+$/` antes de inyectarse en `href`. Si fallan → log omite link y cae al fallback de GitHub; PDF omite el `<a class="ah-pdf">`.
+  - **CA-6 anti-tabnabbing:** todo `<a target="_blank">` lleva `rel="noopener noreferrer"` (#2523).
+  - **Coerción numérica:** `Number(h.issue)` antes de inyectar en los `onclick` de `prioActions`; si da `NaN`, `prioActions` se omite (defensa adicional al escape).
+- **CSS:** las clases `.ah-*` se agregaron a `views/dashboard/theme.css` (sección Historial) resolviendo colores SOLO via tokens `--in-*` (CA-21 sin hex hardcoded; CA-9 contraste por token + `focus-visible`). La página principal del dashboard NO carga `theme.css`, por eso **conserva su copia inline** de las mismas reglas para el render embebido; la copia en `theme.css` es la fuente canónica para el render standalone del router #3723.
+- **Tooltips (CA-7):** `title=` en cada acción (subir/bajar/tope/fondo, ver log, ver PDF, link GitHub, popout, colapsar sección) — texto estático en castellano; los datos dinámicos del `title=` pasan por `escapeHtmlAttr`.
+- **Leyenda (CA-8):** `.ah-legend` con los 4 estados (`●` en ejecución / `✓` aprobado / `✗` rechazado / `—` finalizado).
+- **DOM preservado (R6):** se mantienen IDs/clases `#agent-history`, `data-section="historial"`, `.ah-list`, `.ah-more`, `.ah-card`, `.ah-avatar`, `.ah-skill`, `.ah-fase`, `.ah-status`, `.ah-dur`, `.ah-time`, `.ah-count` para no romper el DOM morphing client-side.
+- **Tests:** `.pipeline/views/dashboard/__tests__/historial.test.js` (14 casos: render vacío, render básico, XSS en `titulo`/`logFile`/`resultado`/`skill`/`fase`, path traversal en `logFile`/`rejectionPdf`, anti-tabnabbing, orden trabajando-first, coerción de `issue` no numérico, whitelist `isSafeFilename`, cap de 50 + toggle). Cobertura de líneas **98.41%** (objetivo 85%).
+
+### Smoke (CA-18)
+
+```bash
+# El render del módulo incluye el ID canónico que espera el smoke curl.
+node -e "const {renderHistorialSsr}=require('./.pipeline/views/dashboard/historial'); \
+  process.exit(renderHistorialSsr({agentHistory:[{issue:1,skill:'x',fase:'dev',estado:'procesado',resultado:'aprobado'}]},{}).includes('id=\"agent-history\"')?0:1)"
+
+# Cuando el router #3723 exponga el slug:
+curl -s 'http://127.0.0.1:3200/dashboard?view=historial' | grep -q 'id="agent-history"'
+# Mientras tanto (embebido en el render completo):
+curl -s 'http://127.0.0.1:3200/' | grep -q 'id="agent-history"'
+```
