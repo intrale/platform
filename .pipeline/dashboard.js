@@ -5113,238 +5113,33 @@ body.standalone .section-collapsed .section-body{display:block !important}
     : ''}
   <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin:8px 0 4px" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">${ic('fase-build')} Consumo V3</a>
   <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
-  <!-- #2893 — Banner de deps faltantes en pausa parcial -->
-  <div id="partial-pause-deps-banner" role="alert" style="display:none;margin:8px 0 4px;padding:10px 14px;border-radius:8px;background:rgba(240,165,0,0.12);border:1px solid rgba(240,165,0,0.45);color:#f0a500;font-size:var(--fs-sm,0.85rem);">
-    <span style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">${ic('estado-partial-pause')} Pausa parcial trabada</span>
-    <span id="partial-pause-deps-msg" style="margin-left:10px;color:var(--text,#c9d1d9);"></span>
-    <button onclick="includeMissingDeps()" style="margin-left:12px;padding:4px 10px;background:#f0a500;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-weight:600;" title="Agregar todas las deps abiertas al allowlist">Agregar dependencias al allowlist</button>
-    <button onclick="dismissDepsBanner()" style="margin-left:6px;padding:4px 10px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;" title="Ocultar (volverá a aparecer en el próximo ciclo si persiste)">Ocultar</button>
-  </div>
-
-  <!-- #3142 — Allowlist & Candidatos (sub-sección del tab Pipeline) -->
-  <details id="allowlist-candidates-section" class="section" style="margin:8px 0;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.02);">
-    <summary style="cursor:pointer;padding:10px 14px;font-weight:600;display:flex;align-items:center;gap:8px;">
-      <span style="color:var(--purple,#bc8cff)">❤️</span>
-      Allowlist &amp; Candidatos
-      <span class="dim" style="font-weight:normal;font-size:0.85em">
-        — activa: ${partialPauseState.allowedIssues.length}, candidatos: ${allowlistCandidatesList.length}
-      </span>
-    </summary>
-    <div style="padding:8px 14px 14px">
-      <!-- Allowlist activa -->
-      <div style="margin-bottom:14px">
-        <div style="font-weight:600;margin-bottom:6px;color:var(--teal,#39c5cf)">
-          \u{1F4CC} Allowlist activa <span class="dim" style="font-weight:normal">(${partialPauseState.allowedIssues.length})</span>
-        </div>
-        ${partialPauseState.allowedIssues.length === 0
-          ? '<div class="dim" style="font-size:0.85em;font-style:italic">Pipeline corriendo sin allowlist activa (modo Kanban abierto).</div>'
-          : '<ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px">' +
-            partialPauseState.allowedIssues.map(function(i) {
-              return '<li style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(57,197,207,0.06);border:1px solid rgba(57,197,207,0.2);border-radius:6px;font-size:0.85em">' +
-                '<a href="https://github.com/intrale/platform/issues/' + i + '" target="_blank" style="font-family:\'SF Mono\',Consolas,monospace;color:#58a6ff;text-decoration:none">#' + i + '</a>' +
-                '<span class="dim" style="flex:1"></span>' +
-                '<button onclick="allowlistRemove(' + i + ')" title="Quitar este issue de la allowlist activa" style="padding:3px 9px;background:transparent;color:#f85149;border:1px solid rgba(248,81,73,0.4);border-radius:4px;cursor:pointer;font-size:0.85em">➖ quitar</button>' +
-                '</li>';
-            }).join('') + '</ul>'
-        }
-      </div>
-
-      <!-- Candidatos likeados -->
-      <div style="margin-bottom:10px">
-        <div style="font-weight:600;margin-bottom:6px;color:var(--purple,#bc8cff)">
-          ❤️ Candidatos likeados <span class="dim" style="font-weight:normal">(${allowlistCandidatesList.length})</span>
-        </div>
-        ${allowlistCandidatesList.length === 0
-          ? '<div class="dim" style="font-size:0.85em;font-style:italic">No hay candidatos likeados. Bus' + 'cá un issue más abajo para empezar.</div>'
-          : '<ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px" id="allowlist-candidates-list">' +
-            allowlistCandidatesList.map(function(c) {
-              var dateLabel = (c.likedAt || '').slice(0, 10) || '—';
-              var safeReason = escapeHtml(c.reason || '');
-              var reasonHtml = safeReason ? '<div class="dim" style="font-size:0.78em;margin-top:2px">' + safeReason + '</div>' : '';
-              return '<li style="display:flex;flex-direction:column;gap:2px;padding:8px 10px;background:rgba(188,140,255,0.05);border:1px solid rgba(188,140,255,0.18);border-radius:6px;font-size:0.85em">' +
-                '<div style="display:flex;align-items:center;gap:8px">' +
-                  '<a href="https://github.com/intrale/platform/issues/' + c.issue + '" target="_blank" style="font-family:\'SF Mono\',Consolas,monospace;color:#58a6ff;text-decoration:none">#' + c.issue + '</a>' +
-                  '<span class="dim" style="font-size:0.78em">Liked ' + escapeHtml(dateLabel) + '</span>' +
-                  '<span style="flex:1"></span>' +
-                  '<button onclick="allowlistPromote(' + c.issue + ')" title="Promover candidato a allowlist activa (preview deps + confirmar)" style="padding:3px 9px;background:#3fb950;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-size:0.85em;font-weight:600">➕ sumar</button>' +
-                  '<button onclick="allowlistUnlike(' + c.issue + ')" title="Quitar este like" style="padding:3px 9px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;font-size:0.85em">❤️ unlike</button>' +
-                '</div>' +
-                reasonHtml +
-              '</li>';
-            }).join('') + '</ul>'
-        }
-      </div>
-
-      <!-- Picker: nuevo like -->
-      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.12);border-radius:6px">
-        <input id="allowlist-like-input" type="text" placeholder="Número de issue (ej: 3140)" inputmode="numeric" pattern="\\d+" style="flex:0 0 200px;padding:6px 8px;background:#0d1117;color:#c9d1d9;border:1px solid rgba(255,255,255,0.15);border-radius:4px;font-size:0.85em;font-family:'SF Mono',Consolas,monospace">
-        <input id="allowlist-like-reason" type="text" placeholder="Razón (opcional, max 500)" maxlength="500" style="flex:1;padding:6px 8px;background:#0d1117;color:#c9d1d9;border:1px solid rgba(255,255,255,0.15);border-radius:4px;font-size:0.85em">
-        <button onclick="allowlistLike()" style="padding:6px 12px;background:var(--purple,#bc8cff);color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-size:0.85em;font-weight:600">❤️ likear</button>
-      </div>
-    </div>
-  </details>
-  <!-- ============================================================
-       #3625 CA-5 · Audit trail de mutaciones de .partial-pause.json
-       Endpoint: /api/dash/partial-pause-audit (alias /api/partial-pause-audit)
-       Slice: dashboard-slices.js · partialPauseAuditSlice
-       Polling: 30s (ver refreshAuditTrail() abajo).
-       Mockup: .pipeline/assets/mockups/22-allowlist-audit-trail.svg
-       Narrativa: .pipeline/assets/mockups/narrativa-allowlist-audit-trail.md
-       ============================================================ -->
-  <details open id="panel-allowlist-audit" class="section ppa-section" data-test-id="panel-allowlist-audit">
-    <summary>
-      ${ic('fallback-chain', 'audit log')}
-      <span>Audit trail &middot; Allowlist mutations</span>
-      <span class="dim" style="font-weight:normal;font-size:0.85em">— últimas 24h · hash-chain auditable</span>
-    </summary>
-    <div class="ppa-section-body">
-      <!-- Banner crítico: hash-chain roto (display dinámico) -->
-      <div id="ppa-banner-chain" class="ppa-banner ppa-banner-critical" role="alert" aria-live="assertive" style="display:${partialPauseAuditData.chain_broken ? 'flex' : 'none'};">
-        <span aria-hidden="true">⛓</span>
-        <span>
-          <strong>Hash-chain del audit log roto en entry #<span id="ppa-broken-at">${esc(String(partialPauseAuditData.chain_broken_at || '?'))}</span>.</strong>
-          Escrituras nuevas bloqueadas hasta intervención humana. Ver <code>docs/pipeline/audit-recovery.md</code> para procedimiento de recovery.
-        </span>
-      </div>
-      <!-- Banner condicional: mutaciones sin autoría (no backfill) -->
-      <div id="ppa-banner-unauth" class="ppa-banner ppa-banner-warning" role="alert" aria-live="polite" style="display:${partialPauseAuditData.has_unauthorized_non_backfill ? 'flex' : 'none'};">
-        <span aria-hidden="true">⚠</span>
-        <span>
-          <strong><span id="ppa-unauth-count">${(partialPauseAuditData.entries || []).filter(e => e.visual === 'unauthorized' && !e.backfill).length}</span> mutación(es) sin autoría detectada(s)</strong> — alerta enviada al Commander. Revisalo antes del próximo restart del pipeline.
-        </span>
-      </div>
-
-      <!-- 5 KPI cards (24h metrics + hash-chain status) -->
-      <div class="ppa-kpis" data-test-id="ppa-kpis">
-        <div class="ppa-kpi">
-          <div class="ppa-kpi-label">Mutaciones 24h</div>
-          <div class="ppa-kpi-value" id="ppa-kpi-total" aria-label="Mutaciones últimas 24h">${Number(partialPauseAuditData.stats.total || 0)}</div>
-          <div class="ppa-kpi-sub">total append-only</div>
-        </div>
-        <div class="ppa-kpi ppa-kpi-auth">
-          <div class="ppa-kpi-label">${ic('architect-approved', 'autorizadas')}<span>Autorizadas</span></div>
-          <div class="ppa-kpi-value ppa-value-success" id="ppa-kpi-auth" aria-label="Mutaciones autorizadas">${Number(partialPauseAuditData.stats.authorized || 0)}</div>
-          <div class="ppa-kpi-sub">por enum cerrado</div>
-        </div>
-        <div class="ppa-kpi ppa-kpi-rejected">
-          <div class="ppa-kpi-label">${ic('architect-rejected', 'rechazadas')}<span>Rejected</span></div>
-          <div class="ppa-kpi-value ${Number(partialPauseAuditData.stats.rejected || 0) > 0 ? 'ppa-value-danger' : 'ppa-value-dim'}" id="ppa-kpi-rejected" aria-label="Mutaciones rechazadas por el gate">${Number(partialPauseAuditData.stats.rejected || 0)}</div>
-          <div class="ppa-kpi-sub">por gate (CA-2)</div>
-        </div>
-        <div class="ppa-kpi ppa-kpi-unknown">
-          <div class="ppa-kpi-label">${ic('health-warn', 'sin autoria')}<span>Sin autoría</span></div>
-          <div class="ppa-kpi-value ${Number(partialPauseAuditData.stats.unknown || 0) > 0 ? 'ppa-value-warning' : 'ppa-value-dim'}" id="ppa-kpi-unknown" aria-label="Mutaciones sin autoría registrada">${Number(partialPauseAuditData.stats.unknown || 0)}</div>
-          <div class="ppa-kpi-sub">authorized_by=null</div>
-        </div>
-        <div class="ppa-kpi ppa-kpi-chain">
-          <div class="ppa-kpi-label">${ic('estado-partial-pause', 'hash chain')}<span>Hash-chain</span></div>
-          <div class="ppa-kpi-value ${partialPauseAuditData.chain_broken ? 'ppa-value-danger' : 'ppa-value-success'}" id="ppa-kpi-chain" aria-label="Estado del hash-chain del audit log">${partialPauseAuditData.chain_broken ? '✗ ROTO' : '✓ ' + Number(partialPauseAuditData.chain_entries_checked || 0)}</div>
-          <div class="ppa-kpi-sub" id="ppa-kpi-chain-sub">${partialPauseAuditData.chain_broken ? 'entry #' + esc(String(partialPauseAuditData.chain_broken_at || '?')) : 'entries verificadas'}</div>
-        </div>
-      </div>
-
-      <!-- Tabla últimas mutaciones -->
-      <div class="ppa-table-wrap">
-        <table class="ppa-table" data-test-id="ppa-table">
-          <thead><tr>
-            <th>Cuándo</th>
-            <th>Source</th>
-            <th>Acción</th>
-            <th>Diff</th>
-            <th>Autorizado por</th>
-            <th>Justificación</th>
-          </tr></thead>
-          <tbody id="ppa-tbody" aria-live="polite">
-            ${renderPartialPauseAuditRows(partialPauseAuditData.entries)}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="ppa-footer">
-        <span id="ppa-updated-at">Server-side render · refresh polling 30s</span> ·
-        Endpoint: <a href="/api/dash/partial-pause-audit">/api/dash/partial-pause-audit</a> ·
-        Spec: <code>narrativa-allowlist-audit-trail.md</code> · CA-5 de
-        <a href="https://github.com/intrale/platform/issues/3625" target="_blank" rel="noopener noreferrer">#3625</a>
-      </div>
-    </div>
-  </details>
-  ${(() => {
-    const pw = state.priorityWindows || {};
-    const qaActive = pw.qa && pw.qa.active;
-    const buildActive = pw.build && pw.build.active;
-    const blockedNow = (typeof blocked !== 'undefined') && blocked;
-    let barCls = 'ctrl-ok';
-    if (blockedNow) barCls = 'ctrl-blocked';
-    else if (isPaused) barCls = 'ctrl-paused';
-    else if (qaActive) barCls = 'ctrl-priority-qa';
-    else if (buildActive) barCls = 'ctrl-priority-build';
-    else if (stale > 0) barCls = 'ctrl-stale';
-
-    let statusHtml;
-    if (blockedNow) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>Recursos al l\u00EDmite \u2014 nuevos lanzamientos en espera</span>';
-    } else if (isPaused) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Pipeline en pausa</span>'
-        + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
-    } else if (isPartialPause) {
-      const allowedList = partialPauseState.allowedIssues.map(i => '#' + i).join(', ');
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F3AF}</span>Pausa parcial \u00B7 allowed: ' + allowedList + '</span>'
-        + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Desactivar pausa parcial y reanudar todo">\u25B6 Reanudar</button>';
-    } else if (qaActive) {
-      const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F50D}</span>Ventana QA activa \u00B7 ' + elapsed + ' min</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar ventana QA">\u2715 Cerrar</button>';
-    } else if (buildActive) {
-      const elapsed = pw.build.activatedAt ? Math.round((Date.now() - pw.build.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F528}</span>Ventana Build activa \u00B7 ' + elapsed + ' min</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar ventana Build">\u2715 Cerrar</button>';
-    } else if (stale > 0) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' sin avance (+30 min)</span>';
-    } else {
-      const msg = trabajando > 0 ? trabajando + ' agente' + (trabajando > 1 ? 's' : '') + ' trabajando' : 'Sin actividad';
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>' + msg + '</span>';
-    }
-
-    // Toggles de Priority Windows (siempre visibles a la derecha, salvo si ya hay una activa en el status)
-    let pwThreshold = 3;
-    try {
-      const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
-      pwThreshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
-    } catch {}
-    const items = [
-      { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
-      { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
-    ];
-    const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
-    const togglesHtml = items.map(i => {
-      const s = pw[i.key];
-      const active = s && s.active;
-      const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
-      const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
-      let tip = active
-        ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
-        : 'Activar ' + i.label + ' Priority (umbral auto: ' + pwThreshold + ' issues)';
-      if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
-      const action = active ? 'off' : 'on';
-      const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
-      return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
-    }).join('');
-
-    // Toggle de pausa (solo cuando no está pausado ni bloqueado — si está pausado, ya hay botón Reanudar en el status)
-    const pauseBtnHtml = (!isPaused && !blockedNow)
-      ? '<button class="ctrl-bar-btn" onclick="pauseAction(\'pause\')" title="Pausar todos los lanzamientos">\u23F8 Pausar</button>'
-      : '';
-
-    return '<div class="pipeline-ctrl-bar ' + barCls + '">'
-      + statusHtml
-      + '<span class="ctrl-bar-spacer"></span>'
-      + '<span class="ctrl-bar-label">Priority</span>'
-      + '<span class="pw-toggles">' + togglesHtml + '</span>'
-      + (pauseBtnHtml ? '<span class="ctrl-bar-sep"></span>' + pauseBtnHtml : '')
-      + '</div>';
-  })()}
-
-  ${renderInfraHealth(state)}
+  <!-- #3728 - Ventana Pipeline extraida al modulo views/dashboard/pipeline.js
+       (split de #3715). Antes inline aca: banner deps + allowlist + audit +
+       control bar + infra-health. El modulo es SSR puro: recibe el state ya
+       computado + helpers compartidos inyectados. Los 6 handlers state-changing
+       (pauseAction, allowlist*, includeMissingDeps) + pwAction siguen en el
+       <script> global de este archivo - la cadena CSRF same-origin se preserva. -->
+  ${pipelineView ? pipelineView.renderPipelineHTML({
+    partialPauseState,
+    allowlistCandidatesList,
+    partialPauseAuditData,
+    state,
+    stale,
+    blocked: (typeof blocked !== 'undefined') && blocked,
+    isPaused,
+    isPartialPause,
+    trabajando,
+    pwThreshold: (() => {
+      try {
+        const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
+        return (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+      } catch { return 3; }
+    })(),
+    now: Date.now(),
+    ic,
+    renderInfraHealth,
+    renderPartialPauseAuditRows,
+  }) : '<!-- pipeline view unavailable -->'}
 
   <!-- #2800 — Board Kanban centerpiece: protagonista visual del dashboard V3.
        Antes vivía al final del template, después de KPIs/Cola/Equipo/Servicios y
@@ -8974,6 +8769,13 @@ try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`d
 // #3779).
 let costosView = null;
 try { costosView = require('./views/dashboard/costos'); } catch (e) { log(`costos view unavailable: ${e.message}`); }
+
+// #3728 — Ventana Pipeline extraída del monolito (split de #3715). SSR puro:
+// recibe el state ya computado + helpers compartidos (renderInfraHealth,
+// renderPartialPauseAuditRows, ic) inyectados. Require defensivo: si falla, el
+// bloque degrada a un comentario inerte y el dashboard sigue rindiendo.
+let pipelineView = null;
+try { pipelineView = require('./views/dashboard/pipeline'); } catch (e) { log(`pipeline view unavailable: ${e.message}`); }
 
 // #3733 — Ventana KPIs extraída del monolito (split de #3715). `kpisData`
 // provee el slice data-only (getMetricsData portado con ctx inyectado) y
