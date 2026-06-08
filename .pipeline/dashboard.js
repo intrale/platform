@@ -2928,77 +2928,17 @@ function generateHTML(state) {
     return tsB - tsA;
   });
 
-  // Generar HTML del historial (máximo 30 entradas visibles, el resto en toggle)
-  const HIST_VISIBLE = 15;
-  let historyHTML = '';
-  if (agentHistory.length > 0) {
-    const renderHistCard = (h, idx) => {
-      const p = AGENT_PERSONA[h.skill] || { icon: '\u2699', name: h.skill, color: 'var(--dim)' };
-      const isRunning = h.estado === 'trabajando';
-      const isOk = h.resultado === 'aprobado';
-      const isFail = h.resultado === 'rechazado';
-      const statusCls = isRunning ? 'ah-running' : isOk ? 'ah-ok' : isFail ? 'ah-fail' : 'ah-neutral';
-      const statusIcon = isRunning ? '\u25CF' : isOk ? '\u2713' : isFail ? '\u2717' : '\u2014';
-      const statusLabel = isRunning ? 'En ejecución' : (h.resultado || 'finalizado');
-      const ts = isRunning ? h.startedAt : h.finishedAt;
-      const timeStr = ts ? new Date(ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-      const durStr = fmtDuration(h.duration);
-      const href = h.hasLog ? `/logs/view/${h.logFile}${isRunning ? '?live=1' : ''}` : GH(h.issue);
-      const tip = h.hasLog ? `Ver log · ${h.skill} · #${h.issue}` : `Ver #${h.issue} en GitHub`;
-      const title = h.titulo ? ` · ${h.titulo.slice(0, 40)}` : '';
-      const pdfLink = h.hasRejectionPdf
-        ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" rel="noopener noreferrer" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
-        : '';
-      const prioActions = isRunning
-        ? `<span class="ah-prio-actions">
-            <button class="lc-prio-btn lc-prio-top" onclick="event.preventDefault();event.stopPropagation();issueMoveToTop(${h.issue})" title="Mover al tope de la columna">⏫</button>
-            <button class="lc-prio-btn lc-prio-up" onclick="event.preventDefault();event.stopPropagation();issueMoveUp(${h.issue})" title="Subir una posición">▲</button>
-            <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueMoveDown(${h.issue})" title="Bajar una posición">▼</button>
-            <button class="lc-prio-btn lc-prio-bottom" onclick="event.preventDefault();event.stopPropagation();issueMoveToBottom(${h.issue})" title="Mover al fondo de la columna">⏬</button>
-          </span>`
-        : '';
-      const ahPos = manualOrderIndex.has(String(h.issue)) ? manualOrderIndex.get(String(h.issue)) : null;
-      const ahPosLabel = ahPos !== null ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${ahPos + 1}</span>` : '';
-      // #2523 CA-12: rel="noopener noreferrer" anti-tabnabbing en links externos.
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="ah-card ${statusCls}" title="${tip}">
-        <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
-        <span class="ah-skill">${p.name}</span>
-        ${ahPosLabel}
-        <span class="ah-issue">#${h.issue}${title}</span>
-        <span class="ah-fase">${h.fase}</span>
-        <span class="ah-status">${statusIcon} ${statusLabel}</span>
-        <span class="ah-dur">${durStr}</span>
-        <span class="ah-time">${timeStr}</span>
-        ${prioActions}
-        ${pdfLink}
-      </a>`;
-    };
-
-    const visible = agentHistory.slice(0, HIST_VISIBLE).map(renderHistCard).join('');
-    const hidden = agentHistory.length > HIST_VISIBLE
-      ? agentHistory.slice(HIST_VISIBLE, 50).map(renderHistCard).join('')
-      : '';
-    const moreToggle = hidden
-      ? `<details class="ah-more"><summary class="ah-more-btn">Ver ${Math.min(agentHistory.length - HIST_VISIBLE, 35)} más…</summary><div class="ah-more-list">${hidden}</div></details>`
-      : '';
-
-    historyHTML = `
-    <div class="matrix-section section-collapsible section-collapsed" id="agent-history" data-section="historial">
-      <div class="matrix-header">
-        <h2 class="section-title-clickable" onclick="toggleSection('historial')" title="Click para colapsar/expandir">
-          <span class="section-chevron">▼</span> \u{1F4DC} Historial de Ejecuciones
-        </h2>
-        <a class="section-popout" href="/?section=historial" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-        <span class="ah-count">${agentHistory.length} ejecuciones</span>
-      </div>
-      <div class="section-body">
-      <div class="ah-list">
-        ${visible}
-        ${moreToggle}
-      </div>
-      </div>
-    </div>`;
-  }
+  // #3734 — El render SSR del historial se delega a views/dashboard/historial.js
+  // (split #3715 del rediseño V3). El armado/orden de `agentHistory[]` queda
+  // arriba en el padre (decisión de contrato: el módulo recibe el array ya
+  // armado, no toca matrixEntries). Fallback: si el require del módulo falló,
+  // string vacío (no rompe el render del dashboard).
+  const historyHTML = historialView
+    ? historialView.renderHistorialSsr(
+        { agentHistory },
+        { agentPersona: AGENT_PERSONA, manualOrderIndex, fmtDuration, ghBaseUrl: GITHUB_BASE }
+      )
+    : '';
 
   // --- Mini DORA metrics on main dashboard ---
   let doraMinHTML = '';
@@ -4870,6 +4810,13 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .ah-more-btn{font-size:0.78em;color:var(--ac);cursor:pointer;padding:6px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15);list-style:none}
 .ah-more-btn:hover{background:rgba(88,166,255,0.12)}
 .ah-more-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.ah-legend{display:inline-flex;gap:10px;flex-wrap:wrap;font-size:0.7em;color:var(--dim);margin-left:auto}
+.ah-leg-item{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+.ah-leg-glyph{font-weight:700}
+.ah-leg-glyph.ah-running{color:var(--teal,#2dd4bf)}
+.ah-leg-glyph.ah-ok{color:var(--gn,#3fb950)}
+.ah-leg-glyph.ah-fail{color:var(--rd,#f85149)}
+.ah-leg-glyph.ah-neutral{color:var(--dim)}
 @media(max-width:900px){.ah-card{grid-template-columns:24px 60px 1fr 70px 50px 70px auto;font-size:0.72em}}
 @media(max-width:600px){.ah-card{grid-template-columns:24px 1fr 80px auto;}.ah-fase,.ah-dur,.ah-time{display:none}}
 
@@ -8786,6 +8733,10 @@ let kpisData = null;
 let kpisViewMod = null;
 try { kpisData = require('./lib/kpis-data'); } catch (e) { log(`kpis-data unavailable: ${e.message}`); }
 try { kpisViewMod = require('./views/dashboard/kpis'); } catch (e) { log(`kpis view unavailable: ${e.message}`); }
+
+// #3734 — Vista Historial (split #3715 del rediseño V3 dashboard).
+let historialView = null;
+try { historialView = require('./views/dashboard/historial'); } catch (e) { log(`historial view unavailable: ${e.message}`); }
 
 // #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.
