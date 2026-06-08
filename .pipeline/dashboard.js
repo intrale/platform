@@ -8994,6 +8994,11 @@ try { wizardSession = require('./lib/wizard-session'); } catch (e) { log(`wizard
 // si falla, el dashboard arranca sin ese wizard.
 try { require('./lib/wizards/allowlist'); } catch (e) { log(`wizard allowlist unavailable: ${e.message}`); }
 
+// #3741 — Registrar el flow "pausa" (pausar / despausar issues parciales) en la
+// infra de wizards. El require dispara el auto-registro vía registerFlow('pausa',
+// ...). Best-effort: si falla, el dashboard arranca sin ese wizard.
+try { require('./lib/wizards/pausa'); } catch (e) { log(`wizard pausa unavailable: ${e.message}`); }
+
 // #3739 — Wizard "Configurar período de descanso": registra el flow `descanso`
 // sobre la infra compartida y carga la vista SSR. Si algo falla, el dashboard
 // arranca igual (sin el wizard de descanso) — degradación silenciosa.

@@ -688,6 +688,77 @@ function resumeAll(opts = {}) {
     return { removedFull, removedPartial };
 }
 
+/**
+ * Activa la pausa TOTAL del pipeline (marker `.paused`). Hermana de
+ * `setPartialPause` pero para el halt total — el wizard de pausa (#3741) lo
+ * usa para el scope `full`, en vez de escribir `.paused` por su cuenta
+ * (prohibido por security A08: el wizard sólo orquesta, la mutación vive en
+ * este módulo, dueño del estado de pausa).
+ *
+ * Invariante de orden (igual que el resto del módulo): audita ANTES de escribir.
+ * La pausa total no cambia el allowlist, así que la entry registra
+ * `previous == current` con `extra.full_pause: true` para trazabilidad. Write
+ * atómico bajo lock del marker `.paused`.
+ *
+ * @param {{ source?: string, authorizedBy?: string, justification?: string, extra?: Object }} [opts]
+ * @returns {{ ok: boolean, existedBefore: boolean }}
+ */
+function setFullPause(opts = {}) {
+    const previous = readPreviousAllowlist();
+    audit.appendMutation({
+        source: opts.source || 'unknown',
+        action: 'write',
+        previous,
+        current: previous,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification || 'setFullPause',
+        extra: { ...(opts.extra || {}), full_pause: true },
+    });
+    return withLockSync(pauseFile(), () => {
+        const existedBefore = fs.existsSync(pauseFile());
+        atomicWriteFile(pauseFile(), new Date().toISOString());
+        return { ok: true, existedBefore };
+    }, {
+        component: 'full-pause-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+/**
+ * Desactiva la pausa TOTAL (elimina `.paused`). NO toca la pausa parcial
+ * (`.partial-pause.json`): el wizard de despausa con scope `full` levanta sólo
+ * el halt total. Hermana de `clearPartialPause` para el marker total.
+ *
+ * @param {{ source?: string, authorizedBy?: string, justification?: string, extra?: Object }} [opts]
+ * @returns {{ ok: boolean, existed: boolean }}
+ */
+function clearFullPause(opts = {}) {
+    const previous = readPreviousAllowlist();
+    audit.appendMutation({
+        source: opts.source || 'unknown',
+        action: 'clear',
+        previous,
+        current: previous,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification || 'clearFullPause',
+        extra: { ...(opts.extra || {}), full_pause: true },
+    });
+    return withLockSync(pauseFile(), () => {
+        const existed = fs.existsSync(pauseFile());
+        if (existed) {
+            try { fs.unlinkSync(pauseFile()); } catch {}
+        }
+        return { ok: true, existed };
+    }, {
+        component: 'full-pause-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
 module.exports = {
     getPipelineMode,
     isIssueAllowed,
@@ -699,6 +770,9 @@ module.exports = {
     setPartialPauseAtomic, // #3520
     clearPartialPause,
     resumeAll,
+    // #3741 — pausa total gateada (wizard de pausa, scope full).
+    setFullPause,
+    clearFullPause,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
     evaluateAndAudit,
