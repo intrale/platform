@@ -74,6 +74,7 @@ const RECURSIVE_DEPS_RE = /^recursive-deps:from-(\d+)$/;
 // prefijar `unknown:` a sources legítimos.
 const KNOWN_SOURCES = Object.freeze([
     'dashboard:wizard:allowlist',   // wizard de triaje de allowlist (#3742)
+    'dashboard:wizard:pausa',       // wizard de pausar / despausar (#3741)
 ]);
 
 const AUTHORIZED_BY_ENUM = Object.freeze([
