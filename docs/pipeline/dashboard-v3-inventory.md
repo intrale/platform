@@ -43,6 +43,7 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | Matriz (skill × fase, carga actual) | `views/dashboard/satellites.js` `renderMatriz` (legacy 937-1015) | ventana `matriz` (`views/dashboard/matriz.js`) | migrado | #3731 — extraído a módulo propio + slug `matriz`. Path legacy `/matriz` resuelve al MISMO thunk (`renderMatrizView`), `renderMatriz` eliminado de satellites.js + de su `module.exports`. Leyenda heat-map (CA-C3) + tooltips en headers/celdas (CA-C1). Ver sección dedicada. |
 | Issues (backlog operacional, vista cards) | `views/dashboard/satellites.js` `renderIssues` (líneas 835-934) | ventana `issues` (`views/dashboard/issues.js`) | migrado | #3730 — **Interpretación B**: reescrito de tabla legacy a **grilla de cards operacional** (estado + fase + rebotes + acciones + drilldown `<dialog>`). Path legacy `/issues` + slug `?view=issues` resuelven al MISMO thunk (`renderIssuesView`). `sat.renderIssues` se **conserva** como fallback de runtime (R-4, regla "pipeline no puede morir"), NO se elimina. Ver sección dedicada. |
 | Tabla telemétrica por issue (sesiones/tokens/costo/timeline) | `dashboard.js` `renderIssues` cliente (8324-8334) bajo `panel-issues` (`/consumo`) | ventana `costos` (#3735) | sin-mover | #3730 — **NO se toca** en este split (R-1). Es telemetría de `/consumo`, distinta de la vista operacional. Migra a Costos en #3735. `dashboard.js:8116-8483` intacto. |
+| Ventana Bloqueados ("Necesitan intervención humana") | `dashboard.js` `bloqueadosHTML` (ex `dashboard.js:2371-2439`) | ventana `bloqueados` (`views/dashboard/bloqueados.js`) | migrado | #3729 — extraída a módulo propio + slug `?view=bloqueados`. Panel embebido en la home legacy `generateHTML` delega a `renderBloqueadosSsr(state)` (call site `${bloqueadosHTML}` intacto). Path legacy `/bloqueados` + slug resuelven al MISMO thunk `renderBloqueadosView`. CSS `.needs-human-*` migrado a `theme.css` con prefijo `.v3-bloqueados-*` (alias legacy mantenido — su retiro es scope de una sub posterior). Severidad 3 umbrales dual-encoded. Tooltips CA-C1. Coerción de `b.issue`. Handlers `needsHuman*` portados a `renderBloqueadosClientScript()`. Ver sección dedicada. |
 | Ventana Pipeline (control bar + allowlist + audit + infra) | `views/dashboard/pipeline.js` `renderPipelineHTML` (ex `dashboard.js:5116-5347`) | main (home) | migrado | #3728 — extraída del monolito (~210 LOC → módulo SSR de ~370 LOC). Owner: pipeline-dev. Deps: #3722 (`lib/escape-html.js`), #3726 (sprite). SSR puro: state inyectado, sin `fetch`/`require` circular. **Referencia (NO extrae)** los 6 handlers state-changing del `<script>` global: `pauseAction`, `allowlistLike`, `allowlistUnlike`, `allowlistRemove`, `allowlistPromote`, `includeMissingDeps` (+ `pwAction`). `renderInfraHealth` y `renderPartialPauseAuditRows` quedan en `dashboard.js` e inyectados. Bug latente `allowedIssues` (ex línea 5290, `'#'+i` sin escape) corregido vía `escapeHtmlText` (CA-PL7). Jerarquía V3: control bar sticky → banner deps → details Allowlist (open si partial-pause) → details Audit (open si chain_broken/sin-autoría) → infra. Tests: `__tests__/pipeline.test.js` (10, incl. 3 payloads XSS). Ver sección dedicada. |
 
 ## Decisiones de diseño (#3728 — ventana Pipeline)
@@ -448,6 +449,101 @@ curl -s 'http://127.0.0.1:3200/dashboard?view=matriz' | grep -q 'id="matriz-tabl
 
 # Path legacy (deep-link directo) — misma ventana
 curl -s 'http://127.0.0.1:3200/matriz' | grep -q 'id="matriz-table"'
+```
+
+
+## Ventana **Bloqueados** — split #3729
+
+Extracción de la ventana **Bloqueados** ("Necesitan intervención humana") del
+monolito `dashboard.js` a su propio módulo (`views/dashboard/bloqueados.js`),
+**rediseñada** con severidad dual-encoded por antigüedad. Padre: épico #3715.
+
+### Identidad
+
+| Atributo | Valor |
+|----------|-------|
+| Slug nuevo (router cliente) | `bloqueados` (`?view=bloqueados`) — registrado en `lib/dashboard-routes.js::VIEW_SLUGS` |
+| Path legacy (deep-link directo) | `/bloqueados` — registrado en `HTML_ROUTES`, resuelve al MISMO thunk (`renderBloqueadosView`) |
+| Compat retro | `/?section=needs-human` (popout legacy) → **redirect 302** server-side a `/dashboard?view=bloqueados` (R5) |
+| Módulo | `views/dashboard/bloqueados.js` |
+| Origen legacy | `dashboard.js::generateHTML` bloque `bloqueadosHTML` (líneas 2371-2439 antes del split) |
+| Exports | `{ slug, renderBloqueadosSsr, renderBloqueadosInner, renderBloqueados, renderBloqueadosClientScript, renderEmptyStateSsr, renderSeverityLegendSsr, loadTheme, escapeHtmlSsr, safeIssueNumber, severity, fmtAge, relTimeSsr }` |
+| Endpoint REST que la hidrata | `GET /api/dash/bloqueados` (badge count, polling 30s). Acciones: `POST /api/needs-human/:issue/{reactivate,dismiss,dismiss-worktree}` |
+| Tipo de ventana | Operacional — acciones `Reactivar`/`Desestimar` (POST directo al endpoint legacy) |
+
+### Doble uso del render
+
+- **Embebido en la home legacy** `generateHTML`: el binding `bloqueadosHTML` ahora
+  llama `bloqueadosView.renderBloqueadosSsr(state)` (call site `${bloqueadosHTML}`
+  intacto, CA-B1). Degrada a string vacío si el módulo no cargó (CA-A3). Los
+  handlers `needsHuman*` globales del monolito (`dashboard.js:7016-7101`) **se
+  conservan** — sirven el panel embebido sin doble definición.
+- **Ventana standalone** `?view=bloqueados` / `/bloqueados`: `renderBloqueados()`
+  emite el documento completo (shell satélite + nav V3) con
+  `renderBloqueadosInner()` adentro, que incluye `renderBloqueadosClientScript()`
+  (handlers `window.needsHuman*` portados, R3).
+
+### Rediseño V3 (vs legacy, decisiones UX cerradas en comentario /ux de #3729)
+
+- **Severidad dual-encoded** (CA-3729.E): rail vertical de color + pill con ícono
+  + texto numérico de edad. Nunca sólo color (WCAG AA).
+- **3 umbrales de edad** (el monolito usaba 2): fresh `< 4h` (`--in-info`),
+  warning `4-24h` (`--in-warn`), danger `≥ 24h` (`--in-bad`). Sin tokens nuevos.
+- **Empty-state celebratorio** (`#bloqueados-empty`) + mini-stats (SLA promedio,
+  Resueltos hoy) — el monolito retornaba string vacío; UX cambió la decisión.
+- **Leyenda de severidad** embebida (CA-3729.C3).
+- **Tooltips** (CA-3729.C1) en cada acción (link GitHub, popout, Reactivar,
+  Desestimar, pill de edad) con `escapeHtmlAttr` (attr-context).
+
+### Tabla campo → contexto HTML → origen → helper de escape (CA-3729.A)
+
+| Campo | Origen | Controlable por | Contexto HTML | Helper |
+|-------|--------|-----------------|---------------|--------|
+| `b.issue` | Filesystem marker | Pipeline-internal | **attr** (href + onclick) → crítico | `safeIssueNumber()` (coerción a entero positivo; fila descartada si falla) |
+| `b.title` | GitHub Issue API | external | text + attr (no usado en attr dinámico aquí) | `escapeHtmlText` |
+| `b.skill`, `b.phase` | Filesystem markers | pipeline-internal | text | `escapeHtmlText` |
+| `b.question` / `b.reason` | Motivo del agente al pausar | external (cita texto del issue) | text (truncado 280) | `escapeHtmlText` |
+| `b.summary` | `issueSummary` (LLM output) | external | text | `escapeHtmlText` |
+| `b.recent_events[].author` | `gh issue comments` | external | text | `escapeHtmlText` |
+| `b.recent_events[].preview` | `gh issue comments` | external | text | `escapeHtmlText` |
+| `b.age_hours` | Filesystem marker | pipeline-internal (numérico) | text | `Number()` + `fmtAge()` |
+| Tooltips `title="..."` (link, popout, botones, pill) | derivados de `b.issue`/literales | mixto | **attr** | `escapeHtmlAttr` |
+
+Escape unificado vía `lib/escape-html.js` (#3722), con fallback SSR-only inline
+(defensa en profundidad) si el require fallara. **NO** se reusa el `esc()` global
+del monolito (CA-B3).
+
+### Seguridad — gaps pre-existentes (no scope de #3729)
+
+Las acciones `Reactivar`/`Desestimar` (`POST /api/needs-human/:issue/:action`) NO
+tienen CSRF token ni audit log NDJSON hoy. **No es scope de esta sub** (es UI, no
+endpoint). El `fetch(...)` del cliente queda **preparado** para inyectar
+`X-CSRF-Token` (lee `<meta name="csrf-token">` si existe, lo omite si no — no
+hardcodea ausencia). Gaps cubiertos por issues abiertos: **#3191** / **#3612**
+(CSRF endpoint) + **#3238** (audit log NDJSON brazoDesbloqueo). Modelo kiosk
+loopback (ver disclaimer OWASP A01 más arriba).
+
+### Tests (CA-3729.D / CA-G1)
+
+`views/dashboard/__tests__/bloqueados.test.js` (`node --test`, 48 casos, 98% líneas):
+exports, render vacío (empty-state + mini-stats), render con fila, severidad 3
+umbrales, **matriz XSS canónica 4×6** (payloads × superficies `title` /
+`question` / `reason` / `summary` / `event.author` / `event.preview`), integridad
+de `title="..."`, coerción de `b.issue` (inválidos descartados / válidos exactos),
+`recent_events` ausente/vacío, `summary_stale` loading, truncation a 280 chars,
+full doc + inner + client script (handlers globales + hook CSRF).
+
+### Smoke curl (CA-G2)
+
+```bash
+# Slug nuevo del router cliente (V3 full doc)
+curl -s 'http://127.0.0.1:3200/dashboard?view=bloqueados' | grep -q 'data-slug="bloqueados"'
+
+# Path legacy (deep-link directo) — misma ventana
+curl -s 'http://127.0.0.1:3200/bloqueados' | grep -q 'data-slug="bloqueados"'
+
+# Fallback embebido en home legacy (panel "Necesitan intervención humana")
+curl -s 'http://127.0.0.1:3200/?view=bloqueados' | grep -q 'data-slug="bloqueados"'
 ```
 
 

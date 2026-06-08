@@ -194,6 +194,35 @@ function renderIssuesView(ctx, opts) {
     }
 }
 
+// #3729 — Vista Bloqueados extraída (split de #3715, "Necesitan intervención
+// humana"). Require defensivo: si el módulo (o sus deps, ej. lib/escape-html.js)
+// no carga, la ruta degrada al renderer legacy `sat.renderBloqueados` (cinturón
+// de runtime, R-4) en vez de tirar 500.
+let bloqueadosView = null;
+try { bloqueadosView = require('../views/dashboard/bloqueados'); } catch { /* fallback a sat.renderBloqueados */ }
+
+// Render de la ventana Bloqueados con el snapshot del pipeline para SSR. El
+// state se enriquece con `bloqueadosSlice` (priorityIndex). Consumido por el
+// path legacy `/bloqueados` (HTML_ROUTES) y por `?view=bloqueados` (VIEW_SLUGS),
+// ambos al MISMO thunk para que no diverjan (CA-A2). Si el módulo nuevo no cargó
+// o su render tira, degrada a `sat.renderBloqueados` (defensa en profundidad).
+function renderBloqueadosView(ctx, opts) {
+    if (!bloqueadosView || typeof bloqueadosView.renderBloqueados !== 'function') {
+        return sat.renderBloqueados();
+    }
+    let bSlice = null;
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        bSlice = slices.bloqueadosSlice(state || {});
+    } catch { bSlice = null; }
+    try {
+        return bloqueadosView.renderBloqueados(bSlice || { bloqueados: [] }, opts);
+    } catch (e) {
+        try { console.error(JSON.stringify({ event: 'bloqueados_render_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+        return sat.renderBloqueados();
+    }
+}
+
 // Conteos del KPI row, replicando la lógica del home (dashboard.js:1577-1689).
 // Consumidor de state (R2): no recomputa el matrix, lo lee.
 function _deriveKpiCounts(state, ctx) {
@@ -407,7 +436,9 @@ function buildWavesPayload() {
 const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
     '/pipeline': sat.renderPipeline,
-    '/bloqueados': sat.renderBloqueados,
+    // #3729 — `/bloqueados` resuelve al módulo extraído (mismo thunk que
+    // `?view=bloqueados`). Si el módulo no cargó, degrada a sat.renderBloqueados.
+    '/bloqueados': (ctx) => renderBloqueadosView(ctx),
     // #3730 — `/issues` resuelve al módulo extraído (vista operacional cards)
     // con el snapshot del pipeline para SSR. Indirección por arrow: HTML_ROUTES
     // se evalúa una sola vez en module-load; sin la arrow agarraríamos `null`
@@ -510,6 +541,14 @@ const VIEW_SLUGS = Object.freeze({
     costos: {
         title: 'Costos',
         render: (opts) => sat.renderCostos(opts),
+    },
+    // #3729 — Ventana Bloqueados (slug `bloqueados`). Resuelve al MISMO thunk que
+    // el path legacy `/bloqueados` (HTML_ROUTES) para que ambos no diverjan
+    // (CA-A2). Recibe (opts, ctx) desde handle() para inyectar el state en vivo
+    // (bloqueadosSlice). Degrada a sat.renderBloqueados si el módulo no cargó.
+    bloqueados: {
+        title: 'Bloqueados',
+        render: (opts, ctx) => renderBloqueadosView(ctx, opts),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
@@ -750,6 +789,24 @@ function sendHtml(res, html) {
 function handle(req, res, ctx) {
     const url = req.url;
     if (req.method !== 'GET') return false;
+
+    // #3729 (R5) — compat retro del popout legacy: `/?section=needs-human`
+    // (link viejo del panel embebido) redirige 302 server-side al slug V3
+    // `/dashboard?view=bloqueados`. Evita dos sistemas de query coexistiendo y
+    // preserva bookmarks de operadores. Sólo el pathname `/` con ese section
+    // exacto — no interferimos con otros `?section=`.
+    {
+        const _pathname = url.split('?')[0];
+        if (_pathname === '/' || _pathname === '') {
+            let _q;
+            try { _q = new URL(url, 'http://x').searchParams; } catch { _q = new URLSearchParams(); }
+            if (_q.get('section') === 'needs-human') {
+                res.writeHead(302, { Location: '/dashboard?view=bloqueados', 'Cache-Control': 'no-store' });
+                res.end();
+                return true;
+            }
+        }
+    }
 
     // `/` y `/v3` (alias retrocompat) sirven la nueva home kiosk vertical.
     // El render legacy se preserva en `/legacy` (servido por el catch-all

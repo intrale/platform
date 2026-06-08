@@ -2368,75 +2368,16 @@ function generateHTML(state) {
     <div class="it-done-grid">${laneCards.done}</div>
   </details>` : '';
 
-  // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
+  // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549).
+  // #3729 — extraído a views/dashboard/bloqueados.js (split de #3715). El render
+  // del panel vive ahora en el módulo (SSR + escape unificado + coerción de
+  // b.issue + severidad 3 umbrales). Acá sólo se invoca con el state ya
+  // computado; degrada a string vacío si el módulo no cargó (CA-A3). El call
+  // site `${bloqueadosHTML}` (más abajo) NO cambia.
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
-  // #2523 CA-10: usar el `esc()` server-side global (antes habia 5 escapadores duplicados).
-  const bloqueadosHTML = bloqueados.length === 0 ? '' : `
-    <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
-      <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
-        <span class="needs-human-pulse">🚨</span>
-        Necesitan intervención humana
-        <span class="needs-human-badge">${bloqueados.length}</span>
-        <span class="needs-human-chevron">▼</span>
-        <a class="section-popout" href="/?section=needs-human" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-      </h2>
-      <div class="needs-human-body">
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
-        ${bloqueados.map(b => {
-          const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
-          const ageCls = b.age_hours >= 4 ? 'needs-human-age-old' : 'needs-human-age-fresh';
-          // #2523 CA-10: usar `esc()` server-side global (antes habia 5 escapadores duplicados).
-          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${esc(b.title)}</span>` : '';
-          const reasonTxt = (b.question || b.reason || '').toString();
-          const summaryTxt = (b.summary || '').toString();
-          const events = Array.isArray(b.recent_events) ? b.recent_events : [];
-          // Tiempo relativo compacto para los eventos: "12h", "3d", "ahora"
-          const relTime = (whenIso) => {
-            if (!whenIso) return '';
-            const t = Date.parse(whenIso);
-            if (!t) return '';
-            const diffMs = Date.now() - t;
-            const min = Math.round(diffMs / 60000);
-            if (min < 1) return 'ahora';
-            if (min < 60) return `${min}min`;
-            const hr = Math.round(min / 60);
-            if (hr < 24) return `${hr}h`;
-            const d = Math.round(hr / 24);
-            return `${d}d`;
-          };
-          const eventsHtml = events.length === 0 ? '' : `
-            <div class="needs-human-events">
-              <div class="needs-human-events-label">📜 Actividad reciente</div>
-              <ul class="needs-human-events-list">
-                ${events.map(ev => `<li><span class="nh-ev-when">${esc(relTime(ev.when))}</span> <span class="nh-ev-author">${esc(ev.author || '?')}</span>: <span class="nh-ev-text">${esc(ev.preview || '')}</span></li>`).join('')}
-              </ul>
-            </div>`;
-          const summaryHtml = summaryTxt
-            ? `<div class="needs-human-summary">📄 ${esc(summaryTxt)}</div>`
-            : (b.summary_stale ? `<div class="needs-human-summary needs-human-summary-loading">📄 <em>Cargando resumen funcional…</em></div>` : '');
-          return `<div class="needs-human-row">
-            <div class="needs-human-row-head">
-              <div class="needs-human-row-info">
-                <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener noreferrer"><b>#${b.issue}</b></a>${titleHtml}
-                <span style="color:var(--dim)"> · ${esc(b.skill)} en ${esc(b.phase)}</span>
-                <span class="${ageCls}"> · hace ${ageStr}</span>
-              </div>
-              <div class="needs-human-row-actions">
-                <button class="nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${b.issue})" title="Quitar el label needs-human y devolver el issue a la cola del pipeline">▶ Reactivar</button>
-                <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
-              </div>
-            </div>
-            ${summaryHtml}
-            ${reasonTxt ? `<div class="needs-human-reason">❓ ${esc(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
-            ${eventsHtml}
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
-        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
-      </div>
-      </div>
-    </div>`;
+  const bloqueadosHTML = (bloqueadosView && typeof bloqueadosView.renderBloqueadosSsr === 'function')
+    ? bloqueadosView.renderBloqueadosSsr(state)
+    : '';
 
   const matrixHTML = `
     ${bloqueadosHTML}
@@ -8737,6 +8678,15 @@ try { kpisViewMod = require('./views/dashboard/kpis'); } catch (e) { log(`kpis v
 // #3734 — Vista Historial (split #3715 del rediseño V3 dashboard).
 let historialView = null;
 try { historialView = require('./views/dashboard/historial'); } catch (e) { log(`historial view unavailable: ${e.message}`); }
+
+// #3729 — Ventana Bloqueados ("Necesitan intervención humana") extraída del
+// monolito (split de #3715). Require defensivo (mismo patrón que las hermanas):
+// si falla, el panel embebido en la home legacy degrada a string vacío (CA-A3) y
+// el dashboard sigue rindiendo. El slug `?view=bloqueados` + el path legacy
+// `/bloqueados` los resuelve dashboard-routes.js, que carga el módulo con su
+// propio guard.
+let bloqueadosView = null;
+try { bloqueadosView = require('./views/dashboard/bloqueados'); } catch (e) { log(`bloqueados view unavailable: ${e.message}`); }
 
 // #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.

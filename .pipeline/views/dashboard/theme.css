@@ -398,3 +398,139 @@ a:hover { color: var(--in-accent); }
   .ah-card { grid-template-columns: 24px 1fr 80px auto; }
   .ah-fase, .ah-dur, .ah-time { display: none; }
 }
+
+/* =========================================================================
+ * #3729 — Ventana Bloqueados ("Necesitan intervención humana"). Migración del
+ * CSS `.needs-human-*` del monolito (dashboard.js:3510-3593) al theme.css con
+ * prefijo `.v3-bloqueados-*`. El alias selector mantiene compat con las clases
+ * legacy `.needs-human-*` durante este PR (su retiro es scope de una sub
+ * posterior). Reusa los tokens de severidad existentes del épico
+ * (--in-info / --in-warn / --in-bad) — sin tokens nuevos.
+ *
+ * Severidad dual-encoded (WCAG AA · CA-3729.E): rail vertical de color + pill
+ * con ícono + texto numérico de edad. Nunca sólo color.
+ * ========================================================================= */
+.v3-bloqueados-view.matrix-section,
+.matrix-section.needs-human-panel {
+  background: linear-gradient(135deg, var(--in-bad-soft), transparent 80%), var(--in-bg-2);
+  border: 1px solid var(--in-bad);
+  border-left: 4px solid var(--in-bad);
+  border-radius: var(--in-radius);
+  box-shadow: var(--in-shadow);
+  padding: 16px 20px;
+  margin-bottom: 18px;
+}
+.v3-bloqueados-pulse { display: inline-block; margin-right: 6px; animation: v3-bloqueados-pulse 1.6s ease-in-out infinite; }
+@keyframes v3-bloqueados-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.7; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v3-bloqueados-pulse { animation: none; }
+}
+.v3-bloqueados-header,
+.v3-bloqueados-view .needs-human-header {
+  margin: 0 0 10px 0; color: var(--in-fg); cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700;
+}
+.v3-bloqueados-header:hover { opacity: 0.85; }
+.v3-bloqueados-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--in-bad); color: #fff; font-weight: 700;
+  font-size: 12px; padding: 2px 10px; border-radius: 12px;
+  margin-left: 4px; min-width: 22px; letter-spacing: 0.4px;
+}
+.v3-bloqueados-chevron { margin-left: auto; font-size: 11px; color: var(--in-fg-dim); transition: transform 0.18s ease; display: inline-block; }
+.v3-bloqueados-popout { color: var(--in-info); text-decoration: none; font-size: 14px; padding: 2px 6px; }
+.v3-bloqueados-popout:hover { color: var(--in-fg); }
+.v3-bloqueados-view.nh-collapsed .v3-bloqueados-chevron,
+.needs-human-panel.nh-collapsed .needs-human-chevron { transform: rotate(-90deg); }
+.v3-bloqueados-view.nh-collapsed .v3-bloqueados-body,
+.needs-human-panel.nh-collapsed .needs-human-body { display: none; }
+
+/* Leyenda de severidad (CA-3729.C3). */
+.v3-bloqueados-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; font-size: 11px; color: var(--in-fg-dim); margin-bottom: 12px; }
+.v3-bloqueados-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.v3-bloqueados-legend-rail { width: 4px; height: 14px; border-radius: 2px; display: inline-block; }
+
+/* Lista + filas. El rail vertical + el pill codifican la severidad por edad. */
+.v3-bloqueados-list { display: flex; flex-direction: column; gap: 8px; }
+.v3-bloqueados-row {
+  position: relative;
+  background: var(--in-bg-3);
+  border: 1px solid var(--in-border);
+  border-radius: var(--in-radius-sm);
+  padding: 10px 12px 10px 16px;
+  font-size: 13px;
+}
+.v3-bloqueados-row-rail {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+  border-radius: var(--in-radius-sm) 0 0 var(--in-radius-sm);
+}
+/* Dual-encoding por severidad: rail (row) + borde+texto del pill + swatch leyenda. */
+.v3-bloqueados-severity-info  .v3-bloqueados-row-rail,
+.v3-bloqueados-row.v3-bloqueados-severity-info  .v3-bloqueados-row-rail,
+.v3-bloqueados-legend-rail.v3-bloqueados-severity-info  { background: var(--in-info); }
+.v3-bloqueados-severity-warning .v3-bloqueados-row-rail,
+.v3-bloqueados-row.v3-bloqueados-severity-warning .v3-bloqueados-row-rail,
+.v3-bloqueados-legend-rail.v3-bloqueados-severity-warning { background: var(--in-warn); }
+.v3-bloqueados-severity-danger .v3-bloqueados-row-rail,
+.v3-bloqueados-row.v3-bloqueados-severity-danger .v3-bloqueados-row-rail,
+.v3-bloqueados-legend-rail.v3-bloqueados-severity-danger { background: var(--in-bad); }
+
+.v3-bloqueados-row-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.v3-bloqueados-row-info { flex: 1 1 auto; min-width: 200px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.v3-bloqueados-row-link { color: var(--in-info); text-decoration: none; }
+.v3-bloqueados-row-link:hover { text-decoration: underline; }
+.v3-bloqueados-row-title { color: var(--in-fg-dim); }
+.v3-bloqueados-row-meta { color: var(--in-fg-soft); font-size: 12px; }
+
+/* Pill de severidad: ícono + texto de edad (nunca sólo color — CA-3729.E). */
+.v3-bloqueados-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 12px;
+  border: 1px solid var(--in-border); font-variant-numeric: tabular-nums;
+}
+.v3-bloqueados-pill.v3-bloqueados-severity-info  { color: var(--in-info); background: var(--in-info-soft); border-color: var(--in-info); }
+.v3-bloqueados-pill.v3-bloqueados-severity-warning { color: var(--in-warn); background: var(--in-warn-soft); border-color: var(--in-warn); }
+.v3-bloqueados-pill.v3-bloqueados-severity-danger { color: var(--in-bad); background: var(--in-bad-soft); border-color: var(--in-bad); }
+.v3-bloqueados-pill-icon { font-size: 10px; }
+
+.v3-bloqueados-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.v3-bloqueados-btn {
+  background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim);
+  padding: 6px 11px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  font-family: inherit; white-space: nowrap; min-height: 32px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.v3-bloqueados-btn:hover { background: var(--in-bg-2); }
+.v3-bloqueados-btn:disabled { opacity: 0.5; cursor: wait; }
+.v3-bloqueados-btn:focus-visible { outline: 2px solid var(--in-info); outline-offset: 2px; }
+.v3-bloqueados-btn-reactivate { border-color: var(--in-ok); color: var(--in-ok); }
+.v3-bloqueados-btn-reactivate:hover { background: var(--in-ok-soft); }
+.v3-bloqueados-btn-dismiss { border-color: var(--in-bad); color: var(--in-bad); }
+.v3-bloqueados-btn-dismiss:hover { background: var(--in-bad-soft); }
+
+.v3-bloqueados-summary { margin: 6px 0 0 14px; color: var(--in-fg); font-size: 12px; line-height: 1.4; opacity: 0.92; }
+.v3-bloqueados-summary-loading { opacity: 0.55; font-style: italic; }
+.v3-bloqueados-reason { margin: 4px 0 0 14px; color: var(--in-fg-dim); font-size: 12px; line-height: 1.35; }
+.v3-bloqueados-events { margin: 8px 0 0 14px; padding: 6px 10px; background: var(--in-border-soft); border-left: 2px solid var(--in-border); border-radius: 0 4px 4px 0; }
+.v3-bloqueados-events-label { font-size: 10px; color: var(--in-fg-dim); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 3px; font-weight: 600; }
+.v3-bloqueados-events-list { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.45; }
+.v3-bloqueados-events-list li { padding: 2px 0; color: var(--in-fg-dim); border-top: 1px dashed var(--in-border-soft); }
+.v3-bloqueados-events-list li:first-child { border-top: none; }
+.v3-bloqueados-ev-when { display: inline-block; min-width: 42px; color: var(--in-fg-soft); font-variant-numeric: tabular-nums; }
+.v3-bloqueados-ev-author { color: var(--in-info); font-weight: 600; margin-right: 4px; }
+.v3-bloqueados-ev-text { color: var(--in-fg-dim); }
+.v3-bloqueados-help { margin-top: 10px; font-size: 11px; color: var(--in-fg-dim); }
+.v3-bloqueados-help code { background: var(--in-bg-3); padding: 1px 5px; border-radius: 4px; font-family: var(--in-mono); }
+
+/* Empty-state celebratorio (#bloqueados-empty) + mini-stats. */
+.v3-bloqueados-empty { text-align: center; padding: 48px 20px; color: var(--in-fg-dim); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.v3-bloqueados-empty-icon { font-size: 40px; }
+.v3-bloqueados-empty-title { font-size: 16px; font-weight: 700; color: var(--in-fg); }
+.v3-bloqueados-empty-sub { font-size: 13px; color: var(--in-fg-dim); }
+.v3-bloqueados-empty-stats { display: flex; gap: 28px; margin-top: 14px; }
+.v3-bloqueados-stat { display: flex; flex-direction: column; gap: 2px; }
+.v3-bloqueados-stat-value { font-size: 24px; font-weight: 700; color: var(--in-ok); font-variant-numeric: tabular-nums; }
+.v3-bloqueados-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-soft); }
