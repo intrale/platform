@@ -165,3 +165,80 @@ test('deriveState prioriza rebote > needs-human > bloqueado > estado', () => {
     assert.strictEqual(issues.deriveState({ estadoActual: 'listo' }), 'listo');
     assert.strictEqual(issues.deriveState({}), 'pendiente');
 });
+
+// #3730 rebote — los botones de las cards no deben ser controles muertos.
+// El script cliente DEBE definir moveIssue/pauseIssue propios (no depender de
+// window.moveIssue/window.pauseIssue, que no se cargan en /issues ni ?view=issues).
+test('el script cliente define moveIssue/pauseIssue propios (no gatea en window.*)', () => {
+    const script = issues.renderIssuesClientScript();
+    assert.match(script, /async function moveIssue\s*\(/, 'debe definir moveIssue local');
+    assert.match(script, /async function pauseIssue\s*\(/, 'debe definir pauseIssue local');
+    assert.ok(!/typeof window\.moveIssue === 'function'/.test(script), 'no debe gatear en window.moveIssue');
+    assert.ok(!/typeof window\.pauseIssue === 'function'/.test(script), 'no debe gatear en window.pauseIssue');
+});
+
+// Ejecuta el IIFE del script cliente en un DOM falso y verifica que un click en
+// los botones de acción dispara POST al endpoint correcto (cableado real, no no-op).
+test('click en acciones de card hace POST /api/issue/<id>/<action> (CA-PO1)', () => {
+    const script = issues.renderIssuesClientScript();
+    const calls = [];
+
+    // Captura los handlers que el script registra sobre #issues-grid.
+    const handlers = {};
+    const grid = {
+        addEventListener: (type, fn) => { handlers[type] = fn; },
+    };
+    const fakeEl = () => ({
+        addEventListener: () => {},
+        setAttribute: () => {},
+        appendChild: () => {},
+        style: {},
+        textContent: '',
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+    });
+    const document = {
+        readyState: 'complete',
+        getElementById: (id) => (id === 'issues-grid' ? grid : null),
+        querySelectorAll: () => [],
+        createElement: () => fakeEl(),
+        addEventListener: () => {},
+        body: { appendChild: () => {} },
+    };
+    const window = { showToast: () => {} };
+    const fetch = (url, opts) => {
+        calls.push({ url, method: opts && opts.method });
+        // /api/dash/pipeline (tickIssues inicial) → ok:false corta temprano.
+        return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    };
+
+    const run = new Function(
+        'document', 'window', 'fetch', 'setInterval', 'setTimeout', 'confirm',
+        script,
+    );
+    run(document, window, fetch, () => 0, () => 0, () => true);
+
+    assert.strictEqual(typeof handlers.click, 'function', 'el grid debe tener handler de click');
+
+    const evFor = (action, issue) => ({
+        stopPropagation: () => {},
+        target: {
+            closest: (sel) => {
+                if (sel === 'button[data-action]') {
+                    return { getAttribute: (k) => (k === 'data-action' ? action : issue) };
+                }
+                return null;
+            },
+        },
+    });
+
+    handlers.click(evFor('move-up', '123'));
+    handlers.click(evFor('move-top', '456'));
+    handlers.click(evFor('pause', '789'));
+
+    const urls = calls.map((c) => c.url);
+    assert.ok(urls.includes('/api/issue/123/move-up'), 'move-up debe pegarle al endpoint');
+    assert.ok(urls.includes('/api/issue/456/move-top'), 'move-top debe pegarle al endpoint');
+    assert.ok(urls.includes('/api/issue/789/pause'), 'pause debe pegarle al endpoint');
+    assert.ok(calls.every((c) => c.method === undefined || c.method === 'POST'),
+        'las acciones usan POST');
+});

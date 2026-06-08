@@ -486,6 +486,23 @@ const ISSUES_CSS = `
     color: var(--text-primary, var(--in-fg));
 }
 .iss-dialog-actions a:hover, .iss-dialog-actions button:hover { border-color: var(--info, var(--in-accent)); }
+
+/* Toast de feedback para acciones de card (#3730). Tokens, sin HEX. */
+.iss-toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    z-index: 9999; padding: 10px 18px; border-radius: var(--in-radius-sm, 8px);
+    font-size: 13px; font-weight: 600; line-height: 1.4; max-width: 80vw;
+    text-align: center; pointer-events: none; opacity: 0;
+    transition: opacity 0.2s ease; box-shadow: var(--in-shadow, none);
+    color: var(--text-primary, var(--in-fg));
+    background: var(--success-bg, var(--in-ok-soft));
+    border: 1px solid var(--success, var(--in-ok));
+}
+.iss-toast.is-show { opacity: 1; }
+.iss-toast.is-err {
+    background: var(--danger-bg, var(--in-bad-soft));
+    border-color: var(--danger, var(--in-bad));
+}
 `;
 
 // =============================================================================
@@ -680,6 +697,60 @@ function renderIssuesClientScript() {
     else dlg.setAttribute('open', '');
   }
 
+  // Feedback transitorio autocontenido. Reusa window.showToast si la página
+  // anfitriona lo provee (parity con home.js); si no, fabrica un toast inline
+  // con estilos propios para no depender de scripts externos no cargados en
+  // /issues ni ?view=issues (#3730 — fix controles muertos).
+  function issToast(msg, ok) {
+    if (typeof window.showToast === 'function') {
+      try { window.showToast(msg, ok); return; } catch (e) { /* fallback abajo */ }
+    }
+    var t = document.getElementById('iss-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'iss-toast';
+      t.className = 'iss-toast';
+      t.setAttribute('role', 'status');
+      t.setAttribute('aria-live', 'polite');
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.toggle('is-err', !ok);
+    t.classList.add('is-show');
+    clearTimeout(t._hide);
+    t._hide = setTimeout(function () { t.classList.remove('is-show'); }, 3200);
+  }
+
+  // moveIssue(issue, action) — POST /api/issue/<id>/<action> para reordenar el
+  // backlog (action ∈ move-top|move-up|move-down|move-bottom). Espeja home.js:2346.
+  async function moveIssue(issue, action) {
+    try {
+      var res = await fetch('/api/issue/' + encodeURIComponent(issue) + '/' + encodeURIComponent(action), { method: 'POST' });
+      var j = {};
+      try { j = await res.json(); } catch (e) { /* respuesta sin JSON */ }
+      issToast(j.msg || (res.ok ? 'Movido' : 'No se pudo mover'), res.ok && j.ok !== false);
+      setTimeout(function () { tickIssues(); }, 400);
+    } catch (e) { issToast('Error: ' + e.message, false); }
+  }
+
+  // pauseIssue(issue, isResume) — POST /api/issue/<id>/<pause|resume>. Toggle del
+  // label blocked:dependencies (el pulpo saltea el issue mientras esté puesto).
+  // Espeja home.js:2411 (pauseIssueHome) + el resume del header.
+  async function pauseIssue(issue, isResume) {
+    var action = isResume ? 'resume' : 'pause';
+    if (!isResume && typeof confirm === 'function'
+        && !confirm('¿Pausar #' + issue + '? Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes.')) {
+      return;
+    }
+    try {
+      var res = await fetch('/api/issue/' + encodeURIComponent(issue) + '/' + action, { method: 'POST' });
+      var j = {};
+      try { j = await res.json(); } catch (e) { /* respuesta sin JSON */ }
+      issToast(j.msg || (res.ok ? (isResume ? 'Reanudado' : 'Pausado') : 'No se pudo'), res.ok && j.ok !== false);
+      setTimeout(function () { tickIssues(); }, 600);
+    } catch (e) { issToast('Error: ' + e.message, false); }
+  }
+
   function bindGridDelegation() {
     var grid = document.getElementById('issues-grid');
     if (!grid) return;
@@ -690,9 +761,10 @@ function renderIssuesClientScript() {
         var action = btn.getAttribute('data-action');
         var issue = btn.getAttribute('data-issue');
         if (action === 'pause' || action === 'resume') {
-          if (typeof window.pauseIssue === 'function') window.pauseIssue(issue, action === 'resume');
-        } else if (typeof window.moveIssue === 'function') {
-          window.moveIssue(issue, action);
+          pauseIssue(issue, action === 'resume');
+        } else if (action === 'move-top' || action === 'move-up'
+                   || action === 'move-down' || action === 'move-bottom') {
+          moveIssue(issue, action);
         }
         return;
       }
