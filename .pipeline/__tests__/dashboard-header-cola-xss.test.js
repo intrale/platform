@@ -30,6 +30,17 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const DASHBOARD_PATH = path.join(REPO_ROOT, '.pipeline', 'dashboard.js');
 const DASHBOARD_SRC = fs.readFileSync(DASHBOARD_PATH, 'utf8');
 
+// #3728 — la ventana Pipeline (incluido el bloque pipeline-ctrl-bar con los
+// toggles de Priority Windows) fue extraída de `dashboard.js` a su propio módulo
+// SSR `.pipeline/views/dashboard/pipeline.js`. dashboard.js sigue rindiendo esos
+// toggles en el output via `pipelineView.renderPipelineHTML(...)`, pero la cadena
+// HTML `class="pw-toggle "` ahora vive en el módulo extraído. La regresión CA-3
+// busca el ancla en ambos fuentes para no romper con la extracción.
+const PIPELINE_VIEW_PATH = path.join(REPO_ROOT, '.pipeline', 'views', 'dashboard', 'pipeline.js');
+const PIPELINE_VIEW_SRC = fs.existsSync(PIPELINE_VIEW_PATH)
+    ? fs.readFileSync(PIPELINE_VIEW_PATH, 'utf8')
+    : '';
+
 // ---------------------------------------------------------------------------
 // CA-1, CA-2: estructura visible en el source
 // ---------------------------------------------------------------------------
@@ -84,8 +95,9 @@ test('CA-2 · existen las 4 clases de chip por lane (definicion/desarrollo/qa/en
 test('CA-3 · los anclajes previos del header (hdr-clock, pw-toggle, kpis-row, sys-mini-card) siguen vivos', () => {
     assert.ok(DASHBOARD_SRC.includes('id="hdr-clock"'),
         '#hdr-clock removido — perdimos el reloj del header');
-    assert.ok(DASHBOARD_SRC.includes('class="pw-toggle '),
-        '.pw-toggle removido — perdimos los toggles de Priority Windows');
+    assert.ok(
+        DASHBOARD_SRC.includes('class="pw-toggle ') || PIPELINE_VIEW_SRC.includes('class="pw-toggle '),
+        '.pw-toggle removido — perdimos los toggles de Priority Windows (ni en dashboard.js ni en views/dashboard/pipeline.js #3728)');
     assert.ok(DASHBOARD_SRC.includes('class="kpis-row"'),
         '.kpis-row removido — perdimos el grid de KPIs');
     assert.ok(DASHBOARD_SRC.includes('class="sys-mini-card'),
