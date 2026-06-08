@@ -8999,6 +8999,17 @@ try { require('./lib/wizards/allowlist'); } catch (e) { log(`wizard allowlist un
 // ...). Best-effort: si falla, el dashboard arranca sin ese wizard.
 try { require('./lib/wizards/pausa'); } catch (e) { log(`wizard pausa unavailable: ${e.message}`); }
 
+// #3738 — Registrar el flow "ola" (crear nueva ola de trabajo) en la infra de
+// wizards. El require dispara el auto-registro vía registerFlow('ola', ...).
+// Best-effort: si falla, el dashboard arranca sin ese wizard.
+let wizardOlaView = null;
+try {
+  if (wizardSession) {
+    require('./lib/wizards/ola');
+    wizardOlaView = require('./views/dashboard/wizard-ola');
+  }
+} catch (e) { log(`wizard ola unavailable: ${e.message}`); }
+
 // #3739 — Wizard "Configurar período de descanso": registra el flow `descanso`
 // sobre la infra compartida y carga la vista SSR. Si algo falla, el dashboard
 // arranca igual (sin el wizard de descanso) — degradación silenciosa.
@@ -9026,6 +9037,27 @@ const server = http.createServer((req, res) => {
     const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
     const token = wizardSession._csrf.deriveCsrfToken(raw);
     const html = wizardDescansoView.renderWizardDescanso({ csrfToken: token });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin',
+      'Set-Cookie': setCookie,
+      'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+    return;
+  }
+
+  // #3738 — Página GET del wizard "Crear nueva ola". Emite la cookie CSRF
+  // HttpOnly y embebe el token derivado en <meta name="csrf-token">. El step API
+  // (POST /dashboard/wizard/ola/step) lo maneja wizardSession.route().
+  // TODO #3723: migrar a ?view=wizard-ola cuando el router cliente esté en HEAD.
+  if (wizardOlaView && wizardSession && req.method === 'GET'
+      && (req.url || '').split('?')[0] === '/dashboard/wizard/ola') {
+    const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
+    const token = wizardSession._csrf.deriveCsrfToken(raw);
+    const html = wizardOlaView.renderWizardOla({ csrfToken: token });
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
