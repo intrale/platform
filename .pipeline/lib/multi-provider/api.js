@@ -44,6 +44,11 @@ const auditLog = require('../audit-log');
 // CLI manage-providers.sh y que dispatch-with-fallback).
 const providerDisabled = require('../provider-disabled');
 
+// #3871 — horarios de actividad por provider (misma fuente de verdad que
+// dispatch-with-fallback). El endpoint reusa VALID_PROVIDERS/isValidProvider de
+// provider-disabled (allowlist única, anti path-traversal en :name).
+const providerSchedule = require('../provider-schedule');
+
 // Health snapshot (#3260) — endpoint read-only que el panel "Health" consume.
 // El cron de healthcheck es disparado por el pulpo (o el dashboard, si está
 // solo activo) cada ~15min; este módulo SOLO lee el snapshot persistido. No
@@ -600,12 +605,93 @@ async function handleProviderEnable(req, res, params) {
     sendJson(res, { ok: true, provider, disabled: false, changed, author });
 }
 
+// =============================================================================
+// #3871 — Horarios de actividad por provider.
+//
+// GET  /api/multi-provider/providers-schedule              estado + próxima transición
+// POST /api/multi-provider/providers/:provider/schedule    set {active, schedule, timezone}
+//
+// Reutiliza lib/provider-schedule.js (misma fuente de verdad que dispatch). El
+// gating por horario es independiente del kill-switch: un provider puede estar
+// "activo por horario" pero "apagado por kill-switch" o viceversa.
+// =============================================================================
+
+async function handleProvidersScheduleGet(req, res) {
+    if (req.method !== 'GET') return sendError(res, 405, 'method_not_allowed', 'GET only');
+    try {
+        const schedules = providerSchedule.listProviderSchedules();
+        const providers = providerSchedule.VALID_PROVIDERS.map((name) => {
+            const s = schedules[name] || {};
+            return {
+                name,
+                active: !!s.active,
+                isActiveNow: s.isActiveNow !== false, // fail-open
+                schedule: s.schedule || {},
+                timezone: s.timezone || providerSchedule.DEFAULT_TIMEZONE,
+                nextTransition: s.nextTransition || null,
+                updated_at: s.updated_at || null,
+            };
+        });
+        sendJson(res, { ok: true, providers });
+    } catch (e) {
+        sendError(res, 500, 'read_failed', e.message);
+    }
+}
+
+async function handleProviderSchedule(req, res, params) {
+    // SEC #2 — mutación protegida por CSRF.
+    if (!csrf.requireCSRF(req, res)) return;
+    // SEC #1 — allowlist ANTES de tocar cualquier path (anti path-traversal).
+    const provider = params && params.provider;
+    if (!providerSchedule.isValidProvider(provider)) {
+        return sendError(res, 400, 'invalid_provider',
+            `provider inválido: "${provider}". Válidos: ${providerSchedule.VALID_PROVIDERS.join(', ')}`);
+    }
+    let body = {};
+    try { body = await readBody(req); }
+    catch (e) { return sendError(res, 400, e.code || 'bad_request', e.message); }
+
+    // SEC #3 — validación estricta del payload. `active` debe ser boolean estricto.
+    if (typeof body.active !== 'boolean') {
+        return sendError(res, 422, 'invalid_payload', 'campo "active" debe ser boolean');
+    }
+    // SEC #2 — autor derivado server-side (NO del body) → audit. Sin autor: 403.
+    const author = resolveAuthor();
+    if (!author) {
+        return sendError(res, 403, 'author_unresolved', 'no se pudo determinar el autor (git config user.email)');
+    }
+
+    const r = providerSchedule.setProviderSchedule(provider, {
+        active: body.active,
+        schedule: body.schedule,
+        timezone: body.timezone,
+    }, { source: `dashboard:${author}` });
+
+    if (!r.ok) {
+        return sendError(res, 422, 'schedule_failed', r.error, r.errors ? { errors: r.errors } : undefined);
+    }
+    const resolved = providerSchedule.getProviderSchedule(provider);
+    sendJson(res, {
+        ok: true,
+        provider,
+        active: resolved.active,
+        schedule: resolved.schedule,
+        timezone: resolved.timezone,
+        nextTransition: r.nextTransition || null,
+        updated_at: resolved.updated_at,
+        author,
+    });
+}
+
 const ROUTES = [
     { method: 'GET',  pattern: /^\/api\/multi-provider\/csrf-token$/,            handler: handleCsrfToken },
     // #3811 — kill-switch por provider.
     { method: 'GET',  pattern: /^\/api\/multi-provider\/providers-disabled$/,    handler: handleProvidersDisabledGet },
     { method: 'POST', pattern: /^\/api\/multi-provider\/providers\/([a-z0-9-]+)\/disable$/, handler: handleProviderDisable, params: ['provider'] },
     { method: 'POST', pattern: /^\/api\/multi-provider\/providers\/([a-z0-9-]+)\/enable$/,  handler: handleProviderEnable, params: ['provider'] },
+    // #3871 — horarios de actividad por provider.
+    { method: 'GET',  pattern: /^\/api\/multi-provider\/providers-schedule$/,    handler: handleProvidersScheduleGet },
+    { method: 'POST', pattern: /^\/api\/multi-provider\/providers\/([a-z0-9-]+)\/schedule$/, handler: handleProviderSchedule, params: ['provider'] },
     { method: 'GET',  pattern: /^\/api\/multi-provider\/commander-distribution(\?.*)?$/, handler: handleCommanderDistribution },
     { method: 'GET',  pattern: /^\/api\/multi-provider\/config$/,                handler: handleConfigGet },
     { method: 'POST', pattern: /^\/api\/multi-provider\/config\/diff$/,          handler: handleConfigDiff },
@@ -671,6 +757,8 @@ module.exports = {
     handleProvidersDisabledGet,
     handleProviderDisable,
     handleProviderEnable,
+    handleProvidersScheduleGet,
+    handleProviderSchedule,
     readBody,
     RELOAD_SIGNAL_PATH,
 };

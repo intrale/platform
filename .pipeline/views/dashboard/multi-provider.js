@@ -223,6 +223,23 @@ function bodyHtml() {
       <div id="mp-killswitch-list"></div>
     </div>
 
+    <!--
+      #3871 — Horarios de actividad por provider. Define ventanas en las que el
+      provider está APAGADO por horario (espejo del modo descanso, pero granular
+      por provider). Fuera de esas ventanas el provider está activo. Escribe vía
+      POST /api/multi-provider/providers/:p/schedule, reutilizando
+      lib/provider-schedule.js (misma fuente de verdad que dispatch-with-fallback).
+    -->
+    <div class="mp-card" id="mp-card-schedule">
+      <div class="mp-card-head">
+        <div>
+          <div class="mp-card-title"><svg class="mp-icon lg" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-fallback-chain"></use></svg> Horarios por proveedor</div>
+          <div class="mp-card-sub">Ventanas horarias en las que cada provider está apagado (ej. pagos de noche). Fuera de la ventana el provider está activo. Si todos quedan fuera de horario, el spawn se pausa y se avisa por Telegram.</div>
+        </div>
+      </div>
+      <div id="mp-schedule-list"></div>
+    </div>
+
     <div class="mp-card">
       <div class="mp-card-head"><div><div class="mp-card-title">Default provider</div><div class="mp-card-sub">Provider usado cuando un skill no tiene override.</div></div></div>
       <div class="mp-row">
@@ -363,7 +380,16 @@ let mpState = {
     liveProviders: null,
     // #3811 — estado del kill-switch por provider (GET providers-disabled).
     killSwitch: null,
+    // #3871 — horarios de actividad por provider (GET providers-schedule).
+    schedules: null,
+    scheduleEditing: null, // provider en edición inline, o null.
 };
+
+// #3871 — días de la semana (key del schedule → label corto).
+const SCHEDULE_DAYS = [
+    ['monday', 'Lun'], ['tuesday', 'Mar'], ['wednesday', 'Mié'], ['thursday', 'Jue'],
+    ['friday', 'Vie'], ['saturday', 'Sáb'], ['sunday', 'Dom'],
+];
 
 function showToast(msg, ok) {
     let t = document.getElementById('in-toast');
@@ -487,13 +513,14 @@ function connIcon(status) {
 async function loadAll() {
     setMsg('Cargando configuración…');
     await fetchCsrf();
-    const [cfg, cat, sk, ovs, health, ks] = await Promise.all([
+    const [cfg, cat, sk, ovs, health, ks, sch] = await Promise.all([
         fetchJson('/api/multi-provider/config'),
         fetchJson('/api/multi-provider/catalog'),
         fetchJson('/api/multi-provider/skills'),
         fetchJson('/api/multi-provider/overrides'),
         fetchJson('/api/multi-provider/health'),
         fetchJson('/api/multi-provider/providers-disabled'),
+        fetchJson('/api/multi-provider/providers-schedule'),
     ]);
     if (!cfg || !cfg.config) { setMsg('Error cargando config'); return; }
     mpState.config = cfg.config;
@@ -504,6 +531,7 @@ async function loadAll() {
     mpState.overrides = ovs || { active: [], history: [] };
     mpState.health = health || null;
     mpState.killSwitch = (ks && ks.ok) ? ks.providers : [];
+    mpState.schedules = (sch && sch.ok) ? sch.providers : [];
     mpState.dirty = false;
     renderAll();
     setMsg('OK');
@@ -512,6 +540,7 @@ async function loadAll() {
 function renderAll() {
     renderProviders();
     renderKillSwitch();
+    renderSchedules();
     renderDefaultProvider();
     renderSkillsGrid();
     renderCatalog();
@@ -794,6 +823,141 @@ async function refreshKillSwitch() {
     const ks = await fetchJson('/api/multi-provider/providers-disabled');
     mpState.killSwitch = (ks && ks.ok) ? ks.providers : (mpState.killSwitch || []);
     renderKillSwitch();
+}
+
+// =====================================================================
+// #3871 — Horarios de actividad por provider.
+//
+// Cada provider muestra: estado actual (activo/inactivo por horario) +
+// próxima transición + botón "Editar". El editor inline permite togglear
+// el gating, fijar timezone y definir una ventana OFF (inicio/fin) por día.
+// Guarda vía POST /api/multi-provider/providers/:p/schedule (con CSRF).
+//
+// Defensa XSS (A03): todo valor interpolado pasa por escapeHtml().
+// =====================================================================
+function nextTransitionText(s) {
+    const nt = s && s.nextTransition;
+    if (!nt) return s && s.active ? 'sin transiciones futuras' : 'sin horario (24/7)';
+    const mins = Math.max(0, Math.round((nt.minutesFromNow || 0)));
+    const verb = nt.kind === 'enter' ? 'se apaga' : 'se enciende';
+    const h = Math.floor(mins / 60), m = mins % 60;
+    const inTxt = h > 0 ? (h + 'h ' + m + 'm') : (m + 'm');
+    return verb + ' ' + escapeHtml(nt.atHHMM || '') + ' (en ' + inTxt + ')';
+}
+
+function renderSchedules() {
+    const c = document.getElementById('mp-schedule-list');
+    if (!c) return;
+    const providers = mpState.schedules || [];
+    if (providers.length === 0) {
+        c.innerHTML = '<div style="color:var(--in-fg-dim);font-size:12px;padding:14px 0">No hay providers disponibles para configurar horarios.</div>';
+        return;
+    }
+    c.innerHTML = '';
+    for (const s of providers) {
+        const row = document.createElement('div');
+        row.className = 'mp-row has-provider-accent';
+        row.style.setProperty('--row-accent', 'var(' + providerToken(s.name) + ')');
+        const activeNow = s.isActiveNow !== false;
+        const stateCls = activeNow ? 'on' : 'off';
+        const stateTxt = activeNow ? 'ACTIVO' : 'FUERA DE HORARIO';
+        const gatingTxt = s.active ? 'horario activo' : 'sin horario (24/7)';
+        row.innerHTML = \`
+            <div class="mp-row-label" title="Provider \${escapeHtml(s.name)}">
+                \${providerIcon(s.name, 'lg')}
+                <span>\${escapeHtml(s.name)}</span>
+            </div>
+            <div class="mp-row-input">
+                <span class="mp-ks-state \${stateCls}">\${stateTxt}</span>
+                <span class="mp-ks-ttl" style="margin-left:10px">\${escapeHtml(gatingTxt)} · \${nextTransitionText(s)}</span>
+            </div>
+            <div class="mp-row-actions">
+                <button class="mp-btn small ghost" data-sch-edit="\${escapeHtml(s.name)}">Editar horarios</button>
+            </div>\`;
+        c.appendChild(row);
+        if (mpState.scheduleEditing === s.name) {
+            c.appendChild(buildScheduleEditor(s));
+        }
+    }
+    c.querySelectorAll('button[data-sch-edit]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const name = btn.dataset.schEdit;
+            mpState.scheduleEditing = (mpState.scheduleEditing === name) ? null : name;
+            renderSchedules();
+        });
+    });
+}
+
+function buildScheduleEditor(s) {
+    const box = document.createElement('div');
+    box.className = 'mp-sch-editor';
+    box.style.cssText = 'padding:12px 14px;margin:0 0 8px 0;border:1px solid var(--in-border,#333);border-radius:8px;background:var(--in-bg-elev,rgba(255,255,255,.03))';
+    const sched = (s.schedule && typeof s.schedule === 'object') ? s.schedule : {};
+    const tz = s.timezone || 'America/Argentina/Buenos_Aires';
+    let daysHtml = '';
+    for (const [key, label] of SCHEDULE_DAYS) {
+        const period = Array.isArray(sched[key]) && sched[key][0] ? sched[key][0] : { start: '', end: '' };
+        daysHtml += \`
+            <div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+                <span style="width:42px;font-size:12px;color:var(--in-fg-dim)">\${label}</span>
+                <input type="time" data-sch-day="\${key}" data-sch-field="start" value="\${escapeHtml(period.start || '')}" class="mp-input" style="width:110px">
+                <span style="color:var(--in-fg-dim)">→</span>
+                <input type="time" data-sch-day="\${key}" data-sch-field="end" value="\${escapeHtml(period.end || '')}" class="mp-input" style="width:110px">
+            </div>\`;
+    }
+    box.innerHTML = \`
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <label class="mp-switch" title="Activar gating por horario">
+                <input type="checkbox" data-sch-active \${s.active ? 'checked' : ''}>
+                <span class="mp-slider"></span>
+            </label>
+            <span style="font-size:12px">Gating por horario activado</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-size:12px;color:var(--in-fg-dim)">Timezone</span>
+            <input type="text" data-sch-tz value="\${escapeHtml(tz)}" class="mp-input" style="width:240px">
+        </div>
+        <div style="font-size:11px;color:var(--in-fg-dim);margin-bottom:6px">Ventana APAGADO por día (inicio → fin). Dejar vacío = sin apagón ese día. Fin &lt; inicio cruza medianoche.</div>
+        \${daysHtml}
+        <div style="display:flex;gap:8px;margin-top:10px">
+            <button class="mp-btn small" data-sch-save="\${escapeHtml(s.name)}">Guardar horarios</button>
+            <button class="mp-btn small ghost" data-sch-cancel>Cancelar</button>
+        </div>\`;
+    box.querySelector('[data-sch-save]').addEventListener('click', () => saveSchedule(s.name, box));
+    box.querySelector('[data-sch-cancel]').addEventListener('click', () => {
+        mpState.scheduleEditing = null;
+        renderSchedules();
+    });
+    return box;
+}
+
+async function saveSchedule(provider, box) {
+    const active = !!box.querySelector('[data-sch-active]').checked;
+    const timezone = box.querySelector('[data-sch-tz]').value.trim();
+    const schedule = {};
+    for (const [key] of SCHEDULE_DAYS) {
+        const start = box.querySelector('[data-sch-day="' + key + '"][data-sch-field="start"]').value.trim();
+        const end = box.querySelector('[data-sch-day="' + key + '"][data-sch-field="end"]').value.trim();
+        if (start && end) schedule[key] = [{ start: start, end: end }];
+    }
+    setMsg('Guardando horarios de ' + provider + '…');
+    const r = await authedPost('/api/multi-provider/providers/' + provider + '/schedule', { active, schedule, timezone });
+    if (r && r.ok) {
+        showToast('Horarios de ' + provider + ' guardados', true);
+        mpState.scheduleEditing = null;
+        await refreshSchedules();
+    } else {
+        const detail = r && (r.message || r.error) || 'falla';
+        const errs = r && Array.isArray(r.errors) ? (' — ' + r.errors.join('; ')) : '';
+        showToast(provider + ': ' + detail + errs, false);
+    }
+    setMsg('OK');
+}
+
+async function refreshSchedules() {
+    const sch = await fetchJson('/api/multi-provider/providers-schedule');
+    mpState.schedules = (sch && sch.ok) ? sch.providers : (mpState.schedules || []);
+    renderSchedules();
 }
 
 async function pingProvider(provider) {

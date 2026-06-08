@@ -453,6 +453,79 @@ test('#3823 · formatProviderResolutionLog — nunca tira ante input mal formado
     assert.doesNotThrow(() => formatProviderResolutionLog({ skipReasons: 'no-array' }, { skill: 'x', issue: 1 }));
 });
 
+// -----------------------------------------------------------------------------
+// #3871 · provider_inactive_by_schedule (primario + fallback fuera de horario)
+// -----------------------------------------------------------------------------
+function makeScheduleModule(inactiveProviders = []) {
+    const set = new Set(inactiveProviders);
+    // isProviderActiveNow es fail-open (true) salvo para los providers marcados.
+    return { isProviderActiveNow: (provider) => !set.has(provider) };
+}
+
+test('#3871 · primario fuera de horario → skipReason provider_inactive_by_schedule + fallback elegido', () => {
+    const models = baseModels();
+    models.skills.guru = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'guru', issue: 3871, pipelineDir: dir,
+            quotaModule: makeQuotaModule([]),
+            scheduleModule: makeScheduleModule(['anthropic']),
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.source, 'fallback');
+        assert.equal(r.provider, 'openai-codex');
+        const skip = r.skipReasons.find(s => s.reason === SKIP_REASON_CODES.PROVIDER_INACTIVE_BY_SCHEDULE);
+        assert.ok(skip, 'debe registrar provider_inactive_by_schedule');
+        assert.equal(skip.provider, 'anthropic');
+        recordReasons(r.skipReasons);
+    } finally { cleanup(dir); }
+});
+
+test('#3871 · primario + fallback fuera de horario → todos_inactivos_por_horario', () => {
+    const models = baseModels();
+    models.skills['chain-skill'] = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    let notified = null;
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'chain-skill', issue: 3871, pipelineDir: dir,
+            quotaModule: makeQuotaModule([]),
+            scheduleModule: makeScheduleModule(['anthropic', 'openai-codex']),
+            primaryResolver, providerHandlerResolver,
+            notify: (payload) => { notified = payload; },
+            processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.gated, true);
+        assert.equal(r.reason, 'todos_inactivos_por_horario');
+        assert.equal(r.allInactiveBySchedule, true);
+        // Alerta obligatoria (SEC #4): no congelar en silencio.
+        assert.ok(notified && notified.meta && notified.meta.event === 'todos_inactivos_por_horario',
+            'debe emitir alerta todos_inactivos_por_horario');
+        recordReasons(r.skipReasons);
+    } finally { cleanup(dir); }
+});
+
+test('#3871 · mix horario + cuota NO es todos_inactivos_por_horario', () => {
+    const models = baseModels();
+    models.skills['chain-skill'] = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'chain-skill', issue: 3871, pipelineDir: dir,
+            quotaModule: makeQuotaModule(['openai-codex']),     // fallback gateado por cuota
+            scheduleModule: makeScheduleModule(['anthropic']),  // primario fuera de horario
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.gated, true);
+        assert.notEqual(r.reason, 'todos_inactivos_por_horario');
+        assert.equal(r.allInactiveBySchedule, false);
+        recordReasons(r.skipReasons);
+    } finally { cleanup(dir); }
+});
+
 // =============================================================================
 // Meta-cobertura: TODOS los códigos de razón documentados deben haberse
 // ejercitado por la suite (CA: "cada código de razón figura en al menos un
