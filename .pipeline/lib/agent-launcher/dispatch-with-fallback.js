@@ -88,6 +88,12 @@ const { _validateProviderCredentials: validateProviderCredentials } = require('.
 // poder inyectar un fake en los tests sin require cruzado.
 const providerDisabledModule = require('../provider-disabled');
 
+// #3871 — Horarios de actividad por provider. Si "ahora" cae en una ventana OFF
+// del provider, se salta al siguiente eslabón igual que el kill-switch, pero con
+// semántica de "fuera de horario" (no es una caída ni una cuota agotada).
+// Inyectable en tests vía opts.scheduleModule.
+const providerScheduleModule = require('../provider-schedule');
+
 // -----------------------------------------------------------------------------
 // Constantes
 // -----------------------------------------------------------------------------
@@ -663,6 +669,7 @@ const FORCED_OVERRIDE_ALLOWED_SKILLS = Object.freeze(['multi-provider-smoke-test
 // un gate/skip YA implementado en el dispatcher. Se documentan acá como SoT.
 const SKIP_REASON_CODES = Object.freeze({
     PROVIDER_DISABLED: 'provider_disabled',   // kill-switch operacional (#3811)
+    PROVIDER_INACTIVE_BY_SCHEDULE: 'provider_inactive_by_schedule', // fuera de horario (#3871)
     QUOTA_EXHAUSTED: 'quota_exhausted',       // flag de cuota activo (#3077/#3576)
     HEALTH_GATE: 'health_gate',               // health rojo fresco (#3809 MP-09)
     PERMISSION_MATRIX: 'permission_matrix',   // credencial/permiso incompatible (MP-05)
@@ -676,6 +683,7 @@ const SKIP_REASON_CODES = Object.freeze({
 // PROVIDER_RESOLUTION_LOG (UX, no consumido por parsers).
 const SKIP_REASON_LABELS = Object.freeze({
     provider_disabled: 'kill-switch operativo',
+    provider_inactive_by_schedule: 'fuera de horario',
     quota_exhausted: 'sin cuota',
     health_gate: 'health rojo reciente',
     permission_matrix: 'credenciales/permisos incompatibles',
@@ -774,6 +782,18 @@ function resolveSpawnWithFallback(opts = {}) {
             return false; // fail-open: el kill-switch nunca bloquea por bug propio.
         }
     };
+    // #3871 — módulo del scheduler horario. Inyectable para tests (opts.scheduleModule).
+    const _schedule = opts.scheduleModule || providerScheduleModule;
+    const _isProviderInactive = (p) => {
+        try {
+            // isProviderActiveNow es fail-open (true ante cualquier error). El gate
+            // se activa solo cuando el provider está EXPLÍCITAMENTE fuera de horario.
+            return typeof _schedule.isProviderActiveNow === 'function'
+                && _schedule.isProviderActiveNow(p, _now) === false;
+        } catch {
+            return false; // fail-open: el scheduler nunca bloquea por bug propio.
+        }
+    };
 
     // #3823 — acumulador de trazabilidad observable. Se llena en paralelo a los
     // auditAppend ya existentes (sin tocar la lógica de decisión) y se adjunta a
@@ -786,6 +806,14 @@ function resolveSpawnWithFallback(opts = {}) {
             details: details == null ? null : String(details),
         });
     };
+
+    // #3871 — trazas para distinguir "chain agotada por horario" del resto.
+    //   scheduleGatedCount: cuántos providers se saltaron por estar fuera de horario.
+    //   nonScheduleAvailabilityGate: ¿algún provider se saltó por una causa de
+    //     disponibilidad distinta del horario (cuota, kill-switch, health, creds)?
+    //   Si scheduleGatedCount>0 y NO hubo gate no-horario ⇒ todos_inactivos_por_horario.
+    let scheduleGatedCount = 0;
+    let nonScheduleAvailabilityGate = false;
 
     // -------------------------------------------------------------------------
     // #3680 CA-A8 — FORCE_PROVIDER_OVERRIDE branch.
@@ -944,7 +972,26 @@ function resolveSpawnWithFallback(opts = {}) {
         now: _now,
     });
     const primaryDisabled = _isProviderDisabled(primaryProvider);
-    const primaryGated = primaryQuotaGated || primaryDisabled;
+    // #3871 — el primario también salta si está fuera de su horario de actividad.
+    const primaryInactiveBySchedule = _isProviderInactive(primaryProvider);
+    const primaryGated = primaryQuotaGated || primaryDisabled || primaryInactiveBySchedule;
+
+    if (primaryInactiveBySchedule) {
+        // Audit dedicado del salto por horario (distinto del kill-switch).
+        auditAppend({
+            pipelineDir, fsImpl, sanitize: (s) => String(s || ''),
+            auditLog, now: _now,
+            entry: {
+                event: 'primary_inactive_by_schedule',
+                skill,
+                issue: issue || null,
+                primary_provider: primaryProvider,
+                primary_model: primary.model || null,
+                raw_excerpt: `primary=${primaryProvider} inactive_by_schedule -> salto a fallbacks`,
+            },
+        });
+        log('lanzamiento', `🕒 ${skill}:#${issue || '?'} provider primario "${primaryProvider}" FUERA DE HORARIO — saltando a fallbacks.`);
+    }
 
     if (primaryDisabled) {
         // Audit dedicado del salto por deshabilitación (CA: audit log registra
@@ -969,11 +1016,23 @@ function resolveSpawnWithFallback(opts = {}) {
     // kill-switch tiene precedencia semántica sobre la cuota: si el provider está
     // apagado, esa es la causa raíz del salto (la cuota es secundaria).
     if (primaryGated) {
-        pushSkip(
-            primaryProvider,
-            primaryDisabled ? SKIP_REASON_CODES.PROVIDER_DISABLED : SKIP_REASON_CODES.QUOTA_EXHAUSTED,
-            primaryDisabled ? 'kill-switch operativo activo' : 'flag de cuota activo',
-        );
+        // Precedencia de atribución: kill-switch > horario > cuota.
+        let reasonCode;
+        let reasonDetail;
+        if (primaryDisabled) {
+            reasonCode = SKIP_REASON_CODES.PROVIDER_DISABLED;
+            reasonDetail = 'kill-switch operativo activo';
+            nonScheduleAvailabilityGate = true;
+        } else if (primaryInactiveBySchedule) {
+            reasonCode = SKIP_REASON_CODES.PROVIDER_INACTIVE_BY_SCHEDULE;
+            reasonDetail = 'fuera de horario de actividad';
+        } else {
+            reasonCode = SKIP_REASON_CODES.QUOTA_EXHAUSTED;
+            reasonDetail = 'flag de cuota activo';
+            nonScheduleAvailabilityGate = true;
+        }
+        if (primaryInactiveBySchedule) scheduleGatedCount++;
+        pushSkip(primaryProvider, reasonCode, reasonDetail);
     }
 
     if (!primaryGated) {
@@ -1019,13 +1078,32 @@ function resolveSpawnWithFallback(opts = {}) {
                 primary_provider: primaryProvider,
                 primary_model: primary.model || null,
                 fallbacks_declared: 0,
+                reason: (scheduleGatedCount > 0 && !nonScheduleAvailabilityGate)
+                    ? 'todos_inactivos_por_horario' : 'all_gated',
                 raw_excerpt: `skill=${skill} provider=${primaryProvider} no_fallbacks`,
             },
         });
+        const noFbAllSchedule = scheduleGatedCount > 0 && !nonScheduleAvailabilityGate;
+        if (noFbAllSchedule) {
+            log('lanzamiento', `🕒🚫 ${skill}:#${issue || '?'} provider primario fuera de horario y sin fallbacks — spawn en pausa (todos_inactivos_por_horario).`);
+            try {
+                _notify({
+                    pipelineDir,
+                    fsImpl,
+                    text:
+                        `🕒 *Pipeline en pausa por horario*\n` +
+                        `Skill \`${skill}\` (issue #${issue || '?'}): el provider primario \`${primaryProvider}\` ` +
+                        `está fuera de horario y no hay fallbacks declarados. El spawn queda en pausa hasta entrar en horario.`,
+                    meta: { skill, issue: issue || null, event: 'todos_inactivos_por_horario', chain_tried: chainTried },
+                });
+            } catch { /* best-effort */ }
+        }
         return {
             ...primary,
             source: 'all-gated',
             gated: true,
+            reason: noFbAllSchedule ? 'todos_inactivos_por_horario' : 'all_gated',
+            allInactiveBySchedule: noFbAllSchedule,
             fallbackUsed: null,
             primaryProvider,
             chainTried,
@@ -1169,6 +1247,7 @@ function resolveSpawnWithFallback(opts = {}) {
                     raw_excerpt: `fallback_${fbName}_gated_too`,
                 },
             });
+            nonScheduleAvailabilityGate = true;
             pushSkip(fbName, SKIP_REASON_CODES.QUOTA_EXHAUSTED, `flag de cuota activo`);
             continue;
         }
@@ -1190,7 +1269,30 @@ function resolveSpawnWithFallback(opts = {}) {
                 },
             });
             log('lanzamiento', `🔌 ${skill}:#${issue || '?'} fallback "${fbName}" APAGADO (kill-switch) — salto al siguiente.`);
+            nonScheduleAvailabilityGate = true;
             pushSkip(fbName, SKIP_REASON_CODES.PROVIDER_DISABLED, `kill-switch operativo activo`);
+            continue;
+        }
+
+        // 3.d.schedule (#3871) — el fallback también puede estar FUERA DE HORARIO.
+        // Lo saltamos igual que un fallback apagado, con audit dedicado para
+        // distinguir la causa (fuera de horario ≠ kill-switch ≠ cuota).
+        if (_isProviderInactive(fbName)) {
+            auditAppend({
+                pipelineDir, fsImpl, sanitize, auditLog, now: _now,
+                entry: {
+                    event: 'fallback_provider_inactive_by_schedule',
+                    skill,
+                    issue: issue || null,
+                    fallback_index: i,
+                    fallback_provider: fbName,
+                    primary_provider: primaryProvider,
+                    raw_excerpt: `fallback_${fbName}_inactive_by_schedule`,
+                },
+            });
+            log('lanzamiento', `🕒 ${skill}:#${issue || '?'} fallback "${fbName}" FUERA DE HORARIO — salto al siguiente.`);
+            scheduleGatedCount++;
+            pushSkip(fbName, SKIP_REASON_CODES.PROVIDER_INACTIVE_BY_SCHEDULE, `fuera de horario de actividad`);
             continue;
         }
 
@@ -1215,6 +1317,7 @@ function resolveSpawnWithFallback(opts = {}) {
                 },
             });
             log('lanzamiento', `↪️ ${skill}:#${issue || '?'} fallback="${fbName}" sin credencial (${credCheck.reason || 'no_credentials'}) — salto al siguiente.`);
+            nonScheduleAvailabilityGate = true;
             pushSkip(fbName, SKIP_REASON_CODES.PERMISSION_MATRIX, `credencial/permiso incompatible (${credCheck.reason || 'no_credentials'})`);
             continue;
         }
@@ -1243,6 +1346,7 @@ function resolveSpawnWithFallback(opts = {}) {
                 },
             });
             log('lanzamiento', `🩺 ${skill}:#${issue || '?'} fallback="${fbName}" salteado: health=red fresco (${fbHealth.reason}).`);
+            nonScheduleAvailabilityGate = true;
             pushSkip(fbName, SKIP_REASON_CODES.HEALTH_GATE, `health=red fresco (${fbHealth.reason})`);
             continue;
         }
@@ -1328,6 +1432,13 @@ function resolveSpawnWithFallback(opts = {}) {
     // -------------------------------------------------------------------------
     // 4. Chain agotada sin candidato libre.
     // -------------------------------------------------------------------------
+    // #3871 — ¿toda la cadena quedó gateada EXCLUSIVAMENTE por horario? Ese caso
+    // tiene semántica propia (`todos_inactivos_por_horario`): el issue vuelve a
+    // `pendiente/` esperando que algún provider entre en horario, y se emite una
+    // alerta OBLIGATORIA (riesgo de DoS lógico: pipeline congelado en silencio).
+    const allInactiveBySchedule = scheduleGatedCount > 0 && !nonScheduleAvailabilityGate;
+    const exhaustReason = allInactiveBySchedule ? 'todos_inactivos_por_horario' : 'all_gated';
+
     auditAppend({
         pipelineDir, fsImpl, sanitize, auditLog, now: _now,
         entry: {
@@ -1337,15 +1448,37 @@ function resolveSpawnWithFallback(opts = {}) {
             primary_provider: primaryProvider,
             chain_tried: chainTried,
             depth_exceeded: depthExceeded,
-            raw_excerpt: `all_gated chain=${chainTried.join('->')}`,
+            reason: exhaustReason,
+            schedule_gated_count: scheduleGatedCount,
+            raw_excerpt: `${exhaustReason} chain=${chainTried.join('->')}`,
         },
     });
-    log('lanzamiento', `🚫 ${skill}:#${issue} chain de fallbacks agotada (primario + ${fallbacks.length} fallbacks gated o inválidos).`);
+
+    if (allInactiveBySchedule) {
+        // Alerta obligatoria (SEC #4): nunca congelar el pipeline en silencio.
+        log('lanzamiento', `🕒🚫 ${skill}:#${issue} TODOS los providers fuera de horario — spawn en pausa (todos_inactivos_por_horario).`);
+        try {
+            _notify({
+                pipelineDir,
+                fsImpl,
+                text:
+                    `🕒 *Pipeline en pausa por horario*\n` +
+                    `Skill \`${skill}\` (issue #${issue || '?'}): el provider primario y todos los fallbacks ` +
+                    `están fuera de su ventana de actividad. El spawn queda en pausa hasta que alguno entre en horario.\n` +
+                    `Cadena evaluada: ${chainTried.join(' → ')}`,
+                meta: { skill, issue: issue || null, event: 'todos_inactivos_por_horario', chain_tried: chainTried },
+            });
+        } catch { /* best-effort: la alerta nunca debe romper el dispatch */ }
+    } else {
+        log('lanzamiento', `🚫 ${skill}:#${issue} chain de fallbacks agotada (primario + ${fallbacks.length} fallbacks gated o inválidos).`);
+    }
 
     return {
         ...primary,
         source: 'all-gated',
         gated: true,
+        reason: exhaustReason,
+        allInactiveBySchedule,
         fallbackUsed: null,
         primaryProvider,
         chainTried,

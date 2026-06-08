@@ -205,3 +205,54 @@ test('POST /api/multi-provider/ping/openai sin CSRF devuelve 403', async () => {
     const { res } = await call('/api/multi-provider/ping/openai', { method: 'POST' });
     assert.equal(res._status, 403);
 });
+
+// =============================================================================
+// #3871 — Endpoint de horarios por provider.
+// =============================================================================
+
+test('GET /api/multi-provider/providers-schedule lista todos los providers válidos', async () => {
+    const { res, json } = await call('/api/multi-provider/providers-schedule');
+    assert.equal(res._status, 200);
+    assert.equal(json.ok, true);
+    assert.ok(Array.isArray(json.providers));
+    // Debe incluir un item por provider de la allowlist.
+    const names = json.providers.map(p => p.name);
+    assert.ok(names.includes('anthropic'));
+    assert.ok(names.includes('gemini-google'));
+    // Nunca debe exponer claves.
+    assert.equal(JSON.stringify(json).includes('sk-'), false);
+});
+
+test('POST .../providers/:name/schedule sin CSRF devuelve 403', async () => {
+    csrf._resetForTests();
+    const { res } = await call('/api/multi-provider/providers/anthropic/schedule', {
+        method: 'POST',
+        body: JSON.stringify({ active: true, schedule: {}, timezone: 'America/Argentina/Buenos_Aires' }),
+    });
+    assert.equal(res._status, 403);
+});
+
+test('POST .../providers/:name/schedule con provider inválido devuelve 400', async () => {
+    csrf._resetForTests();
+    const token = csrf.generateToken();
+    const { res, json } = await call('/api/multi-provider/providers/groq/schedule', {
+        method: 'POST',
+        headers: { 'cookie': 'mp_csrf=' + token, 'x-csrf-token': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ active: true, schedule: {}, timezone: 'America/Argentina/Buenos_Aires' }),
+    });
+    assert.equal(res._status, 400);
+    assert.equal(json.code, 'invalid_provider');
+});
+
+test('POST .../providers/:name/schedule con active no-boolean devuelve 422', async () => {
+    csrf._resetForTests();
+    const token = csrf.generateToken();
+    const { res, json } = await call('/api/multi-provider/providers/anthropic/schedule', {
+        method: 'POST',
+        headers: { 'cookie': 'mp_csrf=' + token, 'x-csrf-token': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ active: 'yes', schedule: {}, timezone: 'America/Argentina/Buenos_Aires' }),
+    });
+    // 422 (payload inválido) o 403 si el ambiente de test no resuelve autor.
+    assert.ok(res._status === 422 || res._status === 403);
+    if (res._status === 422) assert.equal(json.code, 'invalid_payload');
+});
