@@ -471,6 +471,194 @@ function promoteWaveToActiveLocked(waveNumber, metadata) {
     });
 }
 
+// ─── #3738 — Creación atómica de ola planificada ────────────────────────────
+//
+// `createPlannedWave` es el único punto de entrada para crear una ola
+// planificada con N issues de una sola vez (lo consume el wizard "Crear nueva
+// ola" del Dashboard V3). A diferencia de `addIssueToWave` (agrega a ola
+// existente) y `promoteWaveAtomic` (planificada → activa), acá se materializa
+// una `planned_waves[]` nueva con validación estricta de shape, bounds y
+// duplicados, bajo el mismo `withLockSync(wavesFile())` que el resto de las
+// mutaciones — la serialización con `/wave promote` y `addIssueToWave` ya queda
+// garantizada (R4 del análisis de seguridad de #3738).
+//
+// Bounds de `concurrency_max` se leen de `config.yaml` (`waves.max_concurrency`),
+// NUNCA del body del request (req 6/security). `window_minutes ∈ [5, 1440]` y
+// `name` NFC ≤ 80 chars. La persistencia usa `saveState` → tmp+fsync+rename
+// atómico + backup en `archived/` + validación schema strict pre-write.
+
+// Defaults de los bounds (el techo de concurrencia se sobreescribe con
+// `config.yaml` → `waves.max_concurrency` si está presente).
+const WAVE_MAX_CONCURRENCY_DEFAULT = 10;
+const WAVE_WINDOW_MIN_MINUTES = 5;
+const WAVE_WINDOW_MAX_MINUTES = 1440;
+const WAVE_NAME_MAX_LEN = 80;
+
+function mkWavesError(message, code) {
+    const e = new Error(message);
+    e.code = code;
+    return e;
+}
+
+/**
+ * Lee el techo de concurrencia admisible desde `config.yaml`
+ * (`waves.max_concurrency`). Defensa en profundidad: este valor SIEMPRE viene
+ * del config server-side, jamás del request. Si el config no existe o no trae
+ * la clave, cae al default seguro. Lazy-require de js-yaml con fallback para no
+ * romper waves.js si la dependencia no estuviera disponible.
+ *
+ * @returns {number} techo de concurrencia (>=1)
+ */
+function readWaveMaxConcurrency() {
+    try {
+        // eslint-disable-next-line global-require
+        const yaml = require('js-yaml');
+        const cfgPath = path.join(pipelineDir(), 'config.yaml');
+        const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
+        const m = cfg.waves && cfg.waves.max_concurrency;
+        if (Number.isInteger(m) && m >= 1) return m;
+    } catch {
+        // config ausente / yaml no disponible → default seguro.
+    }
+    return WAVE_MAX_CONCURRENCY_DEFAULT;
+}
+
+/**
+ * Crea una ola planificada nueva con N issues de forma atómica.
+ *
+ * Contrato de validación (puede throw con `err.code`):
+ *   - `name`: string NFC, 1..80 chars tras trim. Único en planned/active/archived
+ *     (case-insensitive NFC) → si no, `EWAVES_DUPLICATE_NAME`.
+ *   - `issues`: array no vacío de int>0 (o `{number}`), únicos dentro del array.
+ *     Shape inválido → `EWAVES_SHAPE`. Algún issue ya en active/planned →
+ *     `EWAVES_DUPLICATE_ISSUE`.
+ *   - `concurrency_max`: int en [1, MAX_CONFIGURED] (de config.yaml) → si no,
+ *     `EWAVES_BOUNDS`.
+ *   - `window_minutes`: int en [5, 1440] → si no, `EWAVES_BOUNDS`.
+ *
+ * @example
+ *   createPlannedWave(
+ *     { name: 'Ola N+9', issues: [3801, 3802], concurrency_max: 3, window_minutes: 60 },
+ *     { updated_by: 'operator-local', source: 'dashboard:wizard:ola' });
+ *
+ * @param {Object} spec — { name, goal?, issues, concurrency_max, window_minutes }
+ * @param {Object} [meta] — { updated_by?, source?, note? }
+ * @returns {{ waveNumber:number, wave:Object }}
+ * @throws Error con `code` EWAVES_SHAPE | EWAVES_BOUNDS | EWAVES_DUPLICATE_NAME | EWAVES_DUPLICATE_ISSUE
+ */
+function createPlannedWave(spec, meta = {}) {
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+        throw mkWavesError('createPlannedWave: spec debe ser objeto { name, issues, concurrency_max, window_minutes }', 'EWAVES_SHAPE');
+    }
+
+    // --- name ---
+    const name = String(spec.name == null ? '' : spec.name).normalize('NFC').trim();
+    if (name.length === 0 || name.length > WAVE_NAME_MAX_LEN) {
+        throw mkWavesError(`createPlannedWave: name inválido (1..${WAVE_NAME_MAX_LEN} chars NFC)`, 'EWAVES_SHAPE');
+    }
+    if (name.indexOf('\x00') >= 0) {
+        throw mkWavesError('createPlannedWave: name contiene byte NUL', 'EWAVES_SHAPE');
+    }
+
+    // --- issues: normalizar a int>0 únicos ---
+    const rawIssues = Array.isArray(spec.issues) ? spec.issues : null;
+    if (!rawIssues || rawIssues.length === 0) {
+        throw mkWavesError('createPlannedWave: issues debe ser array no vacío', 'EWAVES_SHAPE');
+    }
+    const nums = [];
+    for (const it of rawIssues) {
+        const candidate = (it && typeof it === 'object') ? it.number : it;
+        const n = normalizeIssue(candidate);
+        if (!n) {
+            throw mkWavesError(`createPlannedWave: issue inválido (${JSON.stringify(it)})`, 'EWAVES_SHAPE');
+        }
+        if (nums.includes(n)) {
+            throw mkWavesError(`createPlannedWave: issue #${n} duplicado en el array`, 'EWAVES_SHAPE');
+        }
+        nums.push(n);
+    }
+
+    // --- bounds (techo desde config.yaml, NUNCA del body) ---
+    const maxConcurrency = readWaveMaxConcurrency();
+    const conc = spec.concurrency_max;
+    if (!Number.isInteger(conc) || conc < 1 || conc > maxConcurrency) {
+        throw mkWavesError(`createPlannedWave: concurrency_max fuera de rango [1, ${maxConcurrency}]`, 'EWAVES_BOUNDS');
+    }
+    const win = spec.window_minutes;
+    if (!Number.isInteger(win) || win < WAVE_WINDOW_MIN_MINUTES || win > WAVE_WINDOW_MAX_MINUTES) {
+        throw mkWavesError(`createPlannedWave: window_minutes fuera de rango [${WAVE_WINDOW_MIN_MINUTES}, ${WAVE_WINDOW_MAX_MINUTES}]`, 'EWAVES_BOUNDS');
+    }
+
+    const goal = typeof spec.goal === 'string' && spec.goal.trim().length > 0
+        ? spec.goal.normalize('NFC').trim()
+        : null;
+
+    return withLockSync(
+        wavesFile(),
+        () => createPlannedWaveLocked({ name, nums, conc, win, goal }, meta),
+        {
+            component: 'waves-lock',
+            timeoutMs: LOCK_TIMEOUT_MS,
+            maxRetries: LOCK_MAX_RETRIES,
+            notify: notifyTelegram,
+        },
+    );
+}
+
+function createPlannedWaveLocked({ name, nums, conc, win, goal }, meta) {
+    // CA-4 (mismo patrón que addIssueToWave/promoteWaveToActive): invalidar cache
+    // ANTES de leer para ver el último commit en disco (anti-TOCTOU contra
+    // mutaciones concurrentes de otra ruta sobre waves.json).
+    invalidateCache();
+    const state = loadWaves();
+
+    // Nombre único en planned/active/archived (NFC, case-insensitive).
+    const nameKey = name.normalize('NFC').toLowerCase();
+    const named = [state.active_wave, ...state.planned_waves, ...state.archived_waves].filter(Boolean);
+    for (const w of named) {
+        if (w.name && String(w.name).normalize('NFC').toLowerCase() === nameKey) {
+            throw mkWavesError(`createPlannedWave: ya existe una ola con nombre "${name}" (ola ${w.number})`, 'EWAVES_DUPLICATE_NAME');
+        }
+    }
+
+    // Ningún issue puede estar ya en active_wave ni en otra planned_waves[*].
+    const activeAndPlanned = [state.active_wave, ...state.planned_waves].filter(Boolean);
+    for (const w of activeAndPlanned) {
+        if (!Array.isArray(w.issues)) continue;
+        for (const i of w.issues) {
+            const existing = normalizeIssue(i.number);
+            if (existing && nums.includes(existing)) {
+                throw mkWavesError(`createPlannedWave: issue #${existing} ya está en ola ${w.number} (${w.name || ''})`, 'EWAVES_DUPLICATE_ISSUE');
+            }
+        }
+    }
+
+    // Siguiente número de ola: max(todos) + 1.
+    const allNumbers = named
+        .map((w) => Number(w.number))
+        .filter((x) => Number.isFinite(x));
+    const nextNumber = (allNumbers.length ? Math.max(...allNumbers) : 0) + 1;
+
+    const wave = {
+        number: nextNumber,
+        name,
+        goal,
+        concurrency_max: conc,
+        window_minutes: win,
+        issues: nums.map((n) => ({ number: n, status: 'pending' })),
+    };
+    state.planned_waves.push(wave);
+
+    logInfo(`Ola planificada ${nextNumber} ("${name}") creada con ${nums.length} issue(s).`);
+    saveState(state, {
+        updated_by: meta.updated_by || 'System',
+        source: meta.source || 'manual',
+        note: meta.note || `create planned wave ${nextNumber} (${name})`,
+    });
+
+    return { waveNumber: nextNumber, wave: deepClone(wave) };
+}
+
 // #3616 — Dedupe del aviso "allowlist vacío" por boot del proceso. El módulo
 // se carga una sola vez por pulpo, así que un flag in-memory alcanza para
 // evitar spam Telegram cuando varios callers llaman a getAllowlist() en el
@@ -1449,6 +1637,7 @@ module.exports = {
     getPlannedWave,
     addIssueToWave,
     promoteWaveToActive,
+    createPlannedWave,
     getAllowlist,
     getBlockingIssues,
     getHorizon,
@@ -1464,6 +1653,12 @@ module.exports = {
     validateStateStrict,
     // CA-1: helper de write atómico reusable por partial-pause.js.
     atomicWriteFile,
+    // #3738 — bounds de creación de olas planificadas.
+    readWaveMaxConcurrency,
+    WAVE_WINDOW_MIN_MINUTES,
+    WAVE_WINDOW_MAX_MINUTES,
+    WAVE_NAME_MAX_LEN,
+    WAVE_MAX_CONCURRENCY_DEFAULT,
     // Constantes públicas
     SCHEMA_VERSION,
     CACHE_TTL_MS,
