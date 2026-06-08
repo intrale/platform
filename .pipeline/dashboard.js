@@ -9009,6 +9009,17 @@ try {
   }
 } catch (e) { log(`wizard-descanso unavailable: ${e.message}`); }
 
+// #3741 — Wizard "Pausar / despausar issues parciales": el require dispara el
+// auto-registro vía registerFlow('pausa', ...). La vista SSR se sirve en
+// GET /dashboard/wizard/pausa. Degradación silenciosa si algo falla.
+let wizardPausaView = null;
+try {
+  if (wizardSession) {
+    require('./lib/wizards/pausa');
+    wizardPausaView = require('./views/dashboard/wizard-pausa');
+  }
+} catch (e) { log(`wizard-pausa unavailable: ${e.message}`); }
+
 const server = http.createServer((req, res) => {
   // #3724 — Wizards: endpoint POST mount-first (antes del catch-all GET-only).
   if (wizardSession && wizardSession.route(req, res)) return;
@@ -9021,6 +9032,26 @@ const server = http.createServer((req, res) => {
     const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
     const token = wizardSession._csrf.deriveCsrfToken(raw);
     const html = wizardDescansoView.renderWizardDescanso({ csrfToken: token });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin',
+      'Set-Cookie': setCookie,
+      'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+    return;
+  }
+
+  // #3741 — Página GET del wizard de pausa parcial. Emite la cookie CSRF
+  // HttpOnly y embebe el token derivado en <meta name="csrf-token">. El step
+  // API (POST /dashboard/wizard/pausa/step) lo maneja wizardSession.route().
+  if (wizardPausaView && wizardSession && req.method === 'GET'
+      && (req.url || '').split('?')[0] === '/dashboard/wizard/pausa') {
+    const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
+    const token = wizardSession._csrf.deriveCsrfToken(raw);
+    const html = wizardPausaView.renderWizardPausa({ csrfToken: token });
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',

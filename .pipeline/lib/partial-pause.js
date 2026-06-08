@@ -651,6 +651,55 @@ function clearPartialPause(opts = {}) {
 }
 
 /**
+ * Activa la pausa TOTAL del pipeline (marker `.paused`). Halt completo.
+ *
+ * #3741 — Punto de mutación GATED para el scope "full pause" del wizard de
+ * pausa parcial. El `/api/pause` legacy escribe `.paused` con un `writeFileSync`
+ * directo (sin gate ni audit); esta función exige `authorizedBy` válido +
+ * `justification` y audita ANTES del write, para que el wizard cumpla CA-7
+ * (mutación exclusiva vía gate) sin tocar el filesystem por su cuenta.
+ *
+ * Como `.paused` no lleva allowlist, el gate evalúa con `previous === current`
+ * (no hay removals de issues) — la entry de audit registra la acción
+ * `full_pause` con el `extra` del caller (p.ej. `via: 'wizard-pausa'`).
+ *
+ * Cambio aditivo y no-breaking: ningún caller existente la usa; el shape del
+ * marker `.paused` (timestamp ISO) es idéntico al que ya escribe `/api/pause`.
+ *
+ * @param {{ source?: string, authorizedBy?: string, justification?: string, extra?: object }} [opts]
+ * @returns {{ok: boolean, rejected?: boolean, alreadyPaused: boolean}}
+ */
+function setFullPause(opts = {}) {
+    const previous = readPreviousAllowlist();
+
+    // Gate + audit antes del write (invariante de orden, igual que el resto del módulo).
+    const gateResult = evaluateAndAudit({
+        previous,
+        current: previous,            // full pause no muta la allowlist de issues.
+        source: opts.source,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification || 'setFullPause',
+        intendedAction: 'full_pause',
+        extra: opts.extra,
+    });
+
+    if (gateResult.rejected) {
+        return { ok: false, rejected: true, alreadyPaused: fs.existsSync(pauseFile()) };
+    }
+
+    return withLockSync(pauseFile(), () => {
+        const alreadyPaused = fs.existsSync(pauseFile());
+        writeAtomic(pauseFile(), new Date().toISOString());
+        return { ok: true, alreadyPaused };
+    }, {
+        component: 'partial-pause-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+/**
  * Desactiva TODO modo de pausa (full + partial). Usado por /resume.
  *
  * #3625 — Requiere `authorizedBy: 'resume:operator'` por defecto. Sin él,
@@ -697,6 +746,7 @@ module.exports = {
     isSkillAllowedInState,
     setPartialPause,
     setPartialPauseAtomic, // #3520
+    setFullPause,          // #3741 — pausa total gated para el wizard de pausa.
     clearPartialPause,
     resumeAll,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
