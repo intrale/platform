@@ -4810,6 +4810,13 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .ah-more-btn{font-size:0.78em;color:var(--ac);cursor:pointer;padding:6px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15);list-style:none}
 .ah-more-btn:hover{background:rgba(88,166,255,0.12)}
 .ah-more-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.ah-legend{display:inline-flex;gap:10px;flex-wrap:wrap;font-size:0.7em;color:var(--dim);margin-left:auto}
+.ah-leg-item{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+.ah-leg-glyph{font-weight:700}
+.ah-leg-glyph.ah-running{color:var(--teal,#2dd4bf)}
+.ah-leg-glyph.ah-ok{color:var(--gn,#3fb950)}
+.ah-leg-glyph.ah-fail{color:var(--rd,#f85149)}
+.ah-leg-glyph.ah-neutral{color:var(--dim)}
 @media(max-width:900px){.ah-card{grid-template-columns:24px 60px 1fr 70px 50px 70px auto;font-size:0.72em}}
 @media(max-width:600px){.ah-card{grid-template-columns:24px 1fr 80px auto;}.ah-fase,.ah-dur,.ah-time{display:none}}
 
