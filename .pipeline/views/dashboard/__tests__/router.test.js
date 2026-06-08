@@ -245,6 +245,33 @@ test('smoke E2E: GET /costos (legacy) converge con la ventana Costos V3 (#3735, 
     }
 });
 
+test('smoke E2E: GET /dashboard?view=issues → 200 con <title> de Issues (#3730, CA-G2)', async () => {
+    // #3730 — slug `issues` registrado en VIEW_SLUGS (vista operacional cards).
+    // Verifica que el deep-link del router resuelve la ventana Issues con state
+    // vacío (SSR del chrome; el cliente hidrata vía /api/dash/pipeline).
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/dashboard?view=issues');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · Issues</title>'), 'el router ?view=issues debe rendir la ventana Issues');
+        assert.ok(r.body.includes('id="issues-grid"'), 'debe contener el grid de cards (CA-G2)');
+        assert.ok(r.body.includes('<dialog id="issues-dialog"'), 'debe contener el drilldown <dialog> (CA-UX-7)');
+    } finally {
+        await closeServer(server);
+    }
+});
+
+test('smoke E2E: GET /issues (legacy) converge con la ventana Issues V3 (#3730, CA-A2)', async () => {
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/issues');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('id="issues-grid"'), '/issues legacy debe rendir el grid de la ventana Issues');
+    } finally {
+        await closeServer(server);
+    }
+});
+
 test('smoke E2E: GET / (legacy raíz) sigue rindiendo home (no-regresión)', async () => {
     const { server, port } = await startEphemeralServer();
     try {

@@ -41,6 +41,8 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | QA Environment (dump JSON `<pre>`) | `satellites.js` `renderOps` (`#ops-qaenv`) | ventana `ops` (`#ops-qaenv`) | migrado | #3732 — **rediseñado (CA-C2)**: el `<pre>` con JSON crudo se reemplaza por 4 mini-cards (`qaEnv`/`qaRemote`/`infraHealth`/`telegramHealth`) con badge de salud + meta key:value + último error truncado a 80 chars. |
 | Modo descanso (calendario semanal) | `views/dashboard/satellites.js` `renderModoDescanso` (legacy 1576-2121) | ventana `descanso` (`views/dashboard/descanso.js`) | migrado | #3736 — extraído a módulo propio + slug `descanso`. Path legacy `/modo-descanso` sigue vivo (delegante de 1 línea en satellites.js). Tooltips CA-C1. Ver sección dedicada. |
 | Matriz (skill × fase, carga actual) | `views/dashboard/satellites.js` `renderMatriz` (legacy 937-1015) | ventana `matriz` (`views/dashboard/matriz.js`) | migrado | #3731 — extraído a módulo propio + slug `matriz`. Path legacy `/matriz` resuelve al MISMO thunk (`renderMatrizView`), `renderMatriz` eliminado de satellites.js + de su `module.exports`. Leyenda heat-map (CA-C3) + tooltips en headers/celdas (CA-C1). Ver sección dedicada. |
+| Issues (backlog operacional, vista cards) | `views/dashboard/satellites.js` `renderIssues` (líneas 835-934) | ventana `issues` (`views/dashboard/issues.js`) | migrado | #3730 — **Interpretación B**: reescrito de tabla legacy a **grilla de cards operacional** (estado + fase + rebotes + acciones + drilldown `<dialog>`). Path legacy `/issues` + slug `?view=issues` resuelven al MISMO thunk (`renderIssuesView`). `sat.renderIssues` se **conserva** como fallback de runtime (R-4, regla "pipeline no puede morir"), NO se elimina. Ver sección dedicada. |
+| Tabla telemétrica por issue (sesiones/tokens/costo/timeline) | `dashboard.js` `renderIssues` cliente (8324-8334) bajo `panel-issues` (`/consumo`) | ventana `costos` (#3735) | sin-mover | #3730 — **NO se toca** en este split (R-1). Es telemetría de `/consumo`, distinta de la vista operacional. Migra a Costos en #3735. `dashboard.js:8116-8483` intacto. |
 
 ## Decisiones de diseño (#3732 — ventana Ops)
 
@@ -438,4 +440,141 @@ curl -s 'http://127.0.0.1:3200/dashboard?view=matriz' | grep -q 'id="matriz-tabl
 
 # Path legacy (deep-link directo) — misma ventana
 curl -s 'http://127.0.0.1:3200/matriz' | grep -q 'id="matriz-table"'
+```
+
+
+## Ventana **Issues** — split #3730
+
+Extracción de la ventana **Issues** del monolito `satellites.js` a su propio
+módulo (`views/dashboard/issues.js`), **rediseñada** de tabla densa a **vista
+operacional de cards** según el mockup `28-issues-panel-v3.svg` + la narrativa
+`narrativa-issues-panel-v3.md` (UX). Padre: épico #3715.
+
+### Decisión arquitectónica — Interpretación B (vista operacional)
+
+UX cerró por **Interpretación B**
+([comment](https://github.com/intrale/platform/issues/3730#issuecomment-4584963619),
+aceptada por architect + po): la ventana Issues responde *"¿qué se está
+procesando y qué está trabado ahora?"* — NO *"¿cuánto costó cada issue?"*. La
+**tabla telemétrica** (sesiones/tokens/costo/timeline) de `/consumo`
+(`dashboard.js:8116-8483`) **se preserva intacta** hasta que **#3735 (Costos)**
+la absorba. El módulo nuevo reemplaza a `satellites.renderIssues`, **no** al
+`renderIssues()` cliente de `/consumo`.
+
+### Identidad
+
+| Atributo | Valor |
+|----------|-------|
+| Slug nuevo (router cliente) | `issues` (`?view=issues`) — registrado en `lib/dashboard-routes.js::VIEW_SLUGS` |
+| Path legacy (deep-link directo / ruta canónica) | `/issues` — registrado en `HTML_ROUTES`, resuelve al MISMO thunk (`renderIssuesView`) |
+| Módulo | `views/dashboard/issues.js` |
+| Origen legacy | `views/dashboard/satellites.js::renderIssues` (líneas 835-934) — **conservado** como fallback de runtime |
+| Exports | `{ renderIssuesHTML, renderIssueCard, renderIssuesClientScript, renderIssuesFilterBar, renderIssuesDialog, buildInitialIssues, normalizeIssue, deriveState, renderInert, ISSUES_CSS, escapeHtmlSsr, escapeHtmlAttr }` |
+| Endpoint REST que la hidrata | `GET /api/dash/pipeline` (lectura, polling 60s · `matrix` + `priorityOrder`) |
+| Tipo de ventana | Operacional — acciones de prioridad/pausa por **delegación** (`data-action`), drilldown read-only |
+
+### Piezas estructurales
+
+- `#issues-grid` — grilla `auto-fill minmax(320px,1fr)` de cards (`aria-live="polite"`).
+  SSR de cards iniciales desde el snapshot del pipeline; el cliente re-hidrata.
+- `.iss-filter-bar` (`role="toolbar"`) — chips de estado (`data-filter`,
+  `aria-pressed`) + search (`#issues-search`).
+- `.iss-card` — `tabindex="0"`, `role="article"`, `aria-label` descriptivo.
+  Anatomía: prioridad + `#número` (link GitHub) + chip de estado → título (2
+  líneas, prefijo `⏸` si pausado) → fase + bounces + chip rebote → acciones.
+- `#issues-dialog` — drilldown `<dialog>` nativo (`showModal()` → focus trap del
+  browser, cierra con `Esc`). Contenido por `textContent` (sin `innerHTML` de
+  datos del usuario). Timeline de fases + bloque motivo de rechazo + link GitHub.
+- `.iss-rail` — firma visual (gradient `--brand-cyan → --brand-blue`).
+- Header satélite + nav V3 (`renderNavTabsSsr('issues')`).
+
+### Datos que viven en la ventana ahora vs lo que migró
+
+| Dato | Ventana Issues V3 (operacional) | Costos #3735 (telemetría) |
+|------|---------------------------------|---------------------------|
+| Estado operacional (trabajando/listo/pendiente/bloqueado/rebote/needs-human) | ✅ chip color+texto+ícono | — |
+| Fase actual + skill | ✅ | — |
+| Bounces + motivo de rechazo | ✅ badge + chip rebote con tooltip | — |
+| Prioridad manual (orden) + acciones (subir/bajar/pausar) | ✅ | — |
+| Drilldown timeline de fases | ✅ `<dialog>` | — |
+| Sesiones / tokens / costo USD por issue | ❌ | ✅ (sigue en `/consumo` hasta #3735) |
+
+### Acciones operativas + tooltips (CA-C1)
+
+Cada acción usa `title=""` HTML nativo (escapado con `escapeHtmlAttr`) +
+`aria-label`. Cero tooltip custom con `innerHTML`. Cero `onclick` inline —
+delegación de eventos sobre `[data-action]` (preparación CSP, #3758).
+
+| Acción | Ícono / glyph | `data-action` | Tooltip |
+|--------|---------------|---------------|---------|
+| Máxima prioridad | `#ic-promote` | `move-top` | "Mover a máxima prioridad" |
+| Subir un puesto | ▲ (glyph) | `move-up` | "Subir un puesto" |
+| Bajar un puesto | ▼ (glyph) | `move-down` | "Bajar un puesto" |
+| Mínima prioridad | ▼▼ (glyph) | `move-bottom` | "Mover a mínima prioridad" |
+| Pausar / Reanudar | `#ic-pause-lock` / `#ic-play` | `pause` / `resume` | "Pausar issue" / "Reanudar issue" |
+| Abrir en GitHub | `#ic-link-out` | (link `<a>`) | "Abrir en GitHub" |
+| Chip de filtro (×5) | — | `data-filter` | "Mostrar todos…" / "Sólo issues trabajando…" / etc. |
+
+### Seguridad — escape (CA-B3 / CA-D1)
+
+- Todo dato dinámico (título, fase, motivo de rechazo) pasa por
+  `lib/escape-html.js` (#3722): `escapeHtmlText` (cuerpo) / `escapeHtmlAttr`
+  (`title=`/`aria-label=`/`data-*=`). Require **defensivo** con helpers locales
+  de la misma semántica como fallback (R-3).
+- `renderIssueCard` valida `Number.isFinite(num) && num > 0` ANTES de interpolar
+  `issue.number`; retorna `''` si falla (R-6).
+- El `<script>` cliente escapa **todo** valor del servidor con un `escapeHtml()`
+  embebido (escapa `& < > " ' /`) antes de componer markup; el drilldown se
+  llena con `textContent` + `createElement` (sin `innerHTML` de datos).
+- Test XSS canónico (`<img src=x onerror=alert(1)>` + `"><svg onload=alert(1)>`)
+  sobre `title` + `motivo_rechazo` (CA-D1).
+
+### Iconografía
+
+Iconos exclusivamente vía `<use href="#ic-…">` del sprite global (CA-UX-3):
+`ic-promote`, `ic-pause-lock`, `ic-play`, `ic-link-out`, `ic-fase-*`,
+`ic-issues-count`. Las flechas de prioridad (▲ ▼ ▼▼) son **glyphs unicode de
+texto** (no SVG), por lo que no violan la regla de "cero SVG inline". El sprite
+ya contiene todos los iconos necesarios — no se agregó ninguno.
+
+### Paleta (CA-UX-2)
+
+Cero HEX literal en `color:`/`background:` del módulo. La paleta semántica de
+estados usa tokens de `design-tokens.css` (`--info`, `--success`, `--warning`,
+`--danger`, `--purple`, `--surface-*`, `--text-*`), que el módulo **inyecta
+explícitamente** (`loadDesignTokens()`) porque `theme.css` sólo define `--in-*`.
+Cada token tiene fallback a su equivalente `--in-*` (`var(--info, var(--in-info))`)
+para degradar limpio si `design-tokens.css` no cargara — nunca a HEX.
+
+### Fallback de runtime (R-4 / regla "el pipeline no puede morir")
+
+`renderIssuesView` (en `dashboard-routes.js`) **conserva** `sat.renderIssues`
+como cinturón: si el require de `issues.js` falla, o si su render tira, la ruta
+degrada a la tabla legacy en vez de un 500. La indirección por arrow en
+`HTML_ROUTES['/issues']` evita capturar `null` en module-load. **Decisión
+explícita**: NO se eliminó `satellites.renderIssues` (a diferencia de #3731/#3732
+que sí borraron su legacy) — el fallback es activo, no código muerto, y la regla
+de oro del dominio pipeline es que el dashboard nunca quede fuera de servicio.
+
+### Tests (CA-G1 / CA-G2 / CA-D1)
+
+- `views/dashboard/__tests__/issues.test.js` (15 casos `node:test`): render SSR
+  estructural (DOCTYPE + `#issues-grid` + `<dialog>`), cards SSR desde `matrix`,
+  XSS canónico (img/svg/motivo), `number` inválido → `''`, ARIA en cards, chips
+  con `aria-pressed`, cero HEX en CSS+markup, iconos sólo vía `<use>`, exports
+  puros, `deriveState`.
+- `views/dashboard/__tests__/router.test.js` (smoke E2E añadido): `?view=issues`
+  y `/issues` → 200 con `id="issues-grid"` + `<dialog id="issues-dialog">` (CA-G2/CA-A2).
+
+### Smoke curl (CA-G2)
+
+```bash
+# Slug nuevo del router cliente
+curl -sf 'http://127.0.0.1:8721/dashboard?view=issues' | grep -q 'id="issues-grid"'
+
+# Path legacy (ruta canónica) — misma ventana
+curl -sf 'http://127.0.0.1:8721/issues' | grep -q 'id="issues-grid"'
+
+# NO regresión de la tabla telemétrica de /consumo (sigue viva hasta #3735)
+curl -sf 'http://127.0.0.1:8721/consumo' | grep -q 'tbody-issues'
 ```

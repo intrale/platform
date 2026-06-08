@@ -155,6 +155,45 @@ function _kpisInertFallback(reason) {
         '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
 }
 
+// #3730 — Vista Issues extraída (split de #3715, Interpretación B: vista
+// operacional cards). Require defensivo: si el módulo (o sus deps, ej.
+// lib/escape-html.js) no carga, la ruta degrada al renderer legacy
+// `sat.renderIssues` (fallback conservado en el MISMO commit como cinturón de
+// runtime, R-4) en vez de tirar 500.
+let issuesView = null;
+try { issuesView = require('../views/dashboard/issues'); } catch { /* fallback a sat.renderIssues */ }
+
+// Render de la ventana Issues con el snapshot del pipeline para SSR de cards.
+// Consumido por el path legacy `/issues` (HTML_ROUTES) y por `?view=issues`
+// (VIEW_SLUGS), ambos al MISMO thunk para que no diverjan (CA-A2). El cliente
+// re-hidrata vía /api/dash/pipeline. Si el módulo nuevo no cargó o su render
+// tira, degrada a `sat.renderIssues` (defensa en profundidad, R-4).
+function renderIssuesView(ctx, opts) {
+    if (!issuesView || typeof issuesView.renderIssuesHTML !== 'function') {
+        return sat.renderIssues();
+    }
+    // El snapshot para el SSR de cards es best-effort: si pipelineSlice tira
+    // (state parcial, dep faltante), el módulo nuevo igual renderiza su chrome
+    // y el cliente hidrata vía /api/dash/pipeline. NO degradamos a la tabla
+    // legacy sólo por falta de datos iniciales.
+    let pSlice = null;
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        pSlice = slices.pipelineSlice(state || {}, ctx || {});
+    } catch { pSlice = null; }
+    try {
+        return issuesView.renderIssuesHTML(Object.assign({}, opts || {}, {
+            matrix: pSlice ? pSlice.matrix : null,
+            priorityOrder: pSlice ? pSlice.priorityOrder : [],
+        }));
+    } catch (e) {
+        if (typeof issuesView.renderInert === 'function') {
+            return issuesView.renderInert((e && e.message) || 'error de render');
+        }
+        return sat.renderIssues();
+    }
+}
+
 // Conteos del KPI row, replicando la lógica del home (dashboard.js:1577-1689).
 // Consumidor de state (R2): no recomputa el matrix, lo lee.
 function _deriveKpiCounts(state, ctx) {
@@ -369,7 +408,11 @@ const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
     '/pipeline': sat.renderPipeline,
     '/bloqueados': sat.renderBloqueados,
-    '/issues': sat.renderIssues,
+    // #3730 — `/issues` resuelve al módulo extraído (vista operacional cards)
+    // con el snapshot del pipeline para SSR. Indirección por arrow: HTML_ROUTES
+    // se evalúa una sola vez en module-load; sin la arrow agarraríamos `null`
+    // si el require de issues.js fallara (R-4). Degrada a sat.renderIssues.
+    '/issues': (ctx) => renderIssuesView(ctx),
     // #3731 — `/matriz` resuelve al módulo extraído (mismo thunk que
     // `?view=matriz`). Si el módulo no cargó, degrada a fallback inerte (CA-A3).
     '/matriz': () => renderMatrizView(),
@@ -450,6 +493,14 @@ const VIEW_SLUGS = Object.freeze({
     matriz: {
         title: 'Matriz',
         render: () => renderMatrizView(),
+    },
+    // #3730 — Ventana Issues (slug `issues`). Resuelve al MISMO thunk que el
+    // path legacy `/issues` (HTML_ROUTES) para que ambos no diverjan (CA-A2).
+    // Recibe (opts, ctx) desde handle() para inyectar el snapshot del pipeline
+    // (SSR de cards). Degrada a sat.renderIssues si el módulo no cargó (R-4).
+    issues: {
+        title: 'Issues',
+        render: (opts, ctx) => renderIssuesView(ctx, opts),
     },
     // #3735 — Ventana Costos (split de #3715). Resuelve al MISMO renderer que
     // el path legacy `/costos` (HTML_ROUTES → sat.renderCostos) para que
