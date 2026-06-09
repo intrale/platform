@@ -112,6 +112,41 @@ function _matrizInertFallback(reason) {
         '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
 }
 
+// #3729 — Vista Bloqueados extraída (split de #3715). Require defensivo: si el
+// módulo (o sus deps, ej. lib/escape-html.js) no carga, `renderBloqueadosView`
+// degrada a un panel inerte visible (CA-A3) en vez de tirar 500.
+let bloqueadosView = null;
+try { bloqueadosView = require('../views/dashboard/bloqueados'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] bloqueados view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+// Render de la ventana Bloqueados con el state en vivo (bloqueadosSlice) +
+// fallback inerte. Consumido por el path legacy `/bloqueados` (HTML_ROUTES) y por
+// `?view=bloqueados` (VIEW_SLUGS), ambos al MISMO thunk para que no diverjan
+// (CA-A2). El slice ordena por prioridad manual y enriquece `priorityIndex`.
+function renderBloqueadosView(ctx, opts) {
+    if (!bloqueadosView || typeof bloqueadosView.renderBloqueados !== 'function') {
+        return _bloqueadosInertFallback('módulo views/dashboard/bloqueados no disponible (require falló)');
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        const sliceState = Object.assign({}, state || {}, slices.bloqueadosSlice(state || {}));
+        return bloqueadosView.renderBloqueados(sliceState, opts);
+    } catch (e) {
+        return _bloqueadosInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo bloqueados NO cargó. Escapa el
+// motivo para no abrir reflexión cruda (CA-A3).
+function _bloqueadosInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Bloqueados</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Bloqueados no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
 // #3733 — Vista KPIs extraída (split de #3715). Require defensivo: si el
 // módulo (o sus deps, ej. lib/escape-html.js) no carga, la entry `kpis` del
 // router degrada a un panel inerte visible (CA-A3) en vez de tirar 500.
@@ -407,7 +442,9 @@ function buildWavesPayload() {
 const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
     '/pipeline': sat.renderPipeline,
-    '/bloqueados': sat.renderBloqueados,
+    // #3729 — `/bloqueados` resuelve al módulo extraído (mismo thunk que
+    // `?view=bloqueados`). Si el módulo no cargó, degrada a fallback inerte (CA-A3).
+    '/bloqueados': (ctx) => renderBloqueadosView(ctx),
     // #3730 — `/issues` resuelve al módulo extraído (vista operacional cards)
     // con el snapshot del pipeline para SSR. Indirección por arrow: HTML_ROUTES
     // se evalúa una sola vez en module-load; sin la arrow agarraríamos `null`
@@ -485,6 +522,15 @@ const VIEW_SLUGS = Object.freeze({
     kpis: {
         title: 'KPIs',
         render: (opts, ctx) => renderKpisView(ctx, opts),
+    },
+    // #3729 — Ventana Bloqueados (slug `bloqueados`). Resuelve al MISMO thunk
+    // que el path legacy `/bloqueados` (HTML_ROUTES) para que ambos no diverjan
+    // (CA-A2). Recibe (opts, ctx) desde handle() para inyectar el state en vivo
+    // (bloqueadosSlice). Degrada a panel inerte visible (CA-A3) si el módulo no
+    // cargó. La compat retro `?section=needs-human` redirige acá (D9 narrativa UX).
+    bloqueados: {
+        title: 'Bloqueados',
+        render: (opts, ctx) => renderBloqueadosView(ctx, opts),
     },
     // #3731 — Ventana Matriz (slug `matriz`). Resuelve al MISMO thunk que el
     // path legacy `/matriz` (HTML_ROUTES) para que ambos no diverjan (CA-A2).
@@ -750,6 +796,23 @@ function sendHtml(res, html) {
 function handle(req, res, ctx) {
     const url = req.url;
     if (req.method !== 'GET') return false;
+
+    // #3729 (D9 narrativa UX) — compat retro del popout legacy. El link viejo
+    // `/?section=needs-human` (y `/legacy?section=...`) redirige server-side a
+    // `/dashboard?view=bloqueados` para no romper marcadores guardados por el
+    // operador. 302 (temporal) — el slug nuevo es el canónico.
+    {
+        const qIdx = url.indexOf('?');
+        if (qIdx !== -1) {
+            let sp;
+            try { sp = new URL(url, 'http://x').searchParams; } catch { sp = new URLSearchParams(); }
+            if (sp.get('section') === 'needs-human') {
+                res.writeHead(302, { 'Location': '/dashboard?view=bloqueados', 'Cache-Control': 'no-store' });
+                res.end();
+                return true;
+            }
+        }
+    }
 
     // `/` y `/v3` (alias retrocompat) sirven la nueva home kiosk vertical.
     // El render legacy se preserva en `/legacy` (servido por el catch-all
