@@ -2370,73 +2370,14 @@ function generateHTML(state) {
 
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
-  // #2523 CA-10: usar el `esc()` server-side global (antes habia 5 escapadores duplicados).
-  const bloqueadosHTML = bloqueados.length === 0 ? '' : `
-    <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
-      <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
-        <span class="needs-human-pulse">🚨</span>
-        Necesitan intervención humana
-        <span class="needs-human-badge">${bloqueados.length}</span>
-        <span class="needs-human-chevron">▼</span>
-        <a class="section-popout" href="/?section=needs-human" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-      </h2>
-      <div class="needs-human-body">
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
-        ${bloqueados.map(b => {
-          const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
-          const ageCls = b.age_hours >= 4 ? 'needs-human-age-old' : 'needs-human-age-fresh';
-          // #2523 CA-10: usar `esc()` server-side global (antes habia 5 escapadores duplicados).
-          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${esc(b.title)}</span>` : '';
-          const reasonTxt = (b.question || b.reason || '').toString();
-          const summaryTxt = (b.summary || '').toString();
-          const events = Array.isArray(b.recent_events) ? b.recent_events : [];
-          // Tiempo relativo compacto para los eventos: "12h", "3d", "ahora"
-          const relTime = (whenIso) => {
-            if (!whenIso) return '';
-            const t = Date.parse(whenIso);
-            if (!t) return '';
-            const diffMs = Date.now() - t;
-            const min = Math.round(diffMs / 60000);
-            if (min < 1) return 'ahora';
-            if (min < 60) return `${min}min`;
-            const hr = Math.round(min / 60);
-            if (hr < 24) return `${hr}h`;
-            const d = Math.round(hr / 24);
-            return `${d}d`;
-          };
-          const eventsHtml = events.length === 0 ? '' : `
-            <div class="needs-human-events">
-              <div class="needs-human-events-label">📜 Actividad reciente</div>
-              <ul class="needs-human-events-list">
-                ${events.map(ev => `<li><span class="nh-ev-when">${esc(relTime(ev.when))}</span> <span class="nh-ev-author">${esc(ev.author || '?')}</span>: <span class="nh-ev-text">${esc(ev.preview || '')}</span></li>`).join('')}
-              </ul>
-            </div>`;
-          const summaryHtml = summaryTxt
-            ? `<div class="needs-human-summary">📄 ${esc(summaryTxt)}</div>`
-            : (b.summary_stale ? `<div class="needs-human-summary needs-human-summary-loading">📄 <em>Cargando resumen funcional…</em></div>` : '');
-          return `<div class="needs-human-row">
-            <div class="needs-human-row-head">
-              <div class="needs-human-row-info">
-                <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener noreferrer"><b>#${b.issue}</b></a>${titleHtml}
-                <span style="color:var(--dim)"> · ${esc(b.skill)} en ${esc(b.phase)}</span>
-                <span class="${ageCls}"> · hace ${ageStr}</span>
-              </div>
-              <div class="needs-human-row-actions">
-                <button class="nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${b.issue})" title="Quitar el label needs-human y devolver el issue a la cola del pipeline">▶ Reactivar</button>
-                <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
-              </div>
-            </div>
-            ${summaryHtml}
-            ${reasonTxt ? `<div class="needs-human-reason">❓ ${esc(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
-            ${eventsHtml}
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
-        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
-      </div>
-      </div>
-    </div>`;
+  // #3729 — el panel se extrajo a views/dashboard/bloqueados.js (split de #3715).
+  // El dashboard legacy delega el render al módulo (renderBloqueadosSsr); si el
+  // require falló, degrada a string vacío (CA-A3) sin romper la página. Los
+  // handlers cliente needsHuman*/toggleNeedsHumanPanel siguen definidos en el
+  // <script> de generateHTML (más abajo) — el SSR del módulo los referencia.
+  const bloqueadosHTML = (bloqueadosView && typeof bloqueadosView.renderBloqueadosSsr === 'function')
+    ? bloqueadosView.renderBloqueadosSsr(state)
+    : '';
 
   const matrixHTML = `
     ${bloqueadosHTML}
@@ -8737,6 +8678,14 @@ try { kpisViewMod = require('./views/dashboard/kpis'); } catch (e) { log(`kpis v
 // #3734 — Vista Historial (split #3715 del rediseño V3 dashboard).
 let historialView = null;
 try { historialView = require('./views/dashboard/historial'); } catch (e) { log(`historial view unavailable: ${e.message}`); }
+
+// #3729 — Ventana Bloqueados extraída del monolito (split de #3715). El bloque
+// `bloqueadosHTML` del dashboard legacy (generateHTML) delega al módulo nuevo.
+// Require defensivo: si falla, el bloque degrada a string vacío (CA-A3) sin
+// tirar el dashboard. El router (`/bloqueados` y `?view=bloqueados`) carga su
+// propia copia del módulo en lib/dashboard-routes.js con su guard.
+let bloqueadosView = null;
+try { bloqueadosView = require('./views/dashboard/bloqueados'); } catch (e) { log(`bloqueados view unavailable: ${e.message}`); }
 
 // #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.
