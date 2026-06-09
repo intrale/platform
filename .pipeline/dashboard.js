@@ -8778,6 +8778,18 @@ try {
   }
 } catch (e) { log(`wizard-descanso unavailable: ${e.message}`); }
 
+// #3740 — Wizard "Configurar / rotar provider": registra el flow `providers`
+// sobre la infra compartida y carga la vista SSR. Degradación silenciosa si algo
+// falla (el dashboard arranca sin este wizard).
+let wizardProvidersView = null;
+try {
+  if (wizardSession) {
+    const providersFlow = require('./lib/wizards/providers');
+    wizardSession.registerFlow('providers', providersFlow.createFlow({}));
+    wizardProvidersView = require('./views/dashboard/wizard-providers');
+  }
+} catch (e) { log(`wizard-providers unavailable: ${e.message}`); }
+
 const server = http.createServer((req, res) => {
   // #3724 — Wizards: endpoint POST mount-first (antes del catch-all GET-only).
   if (wizardSession && wizardSession.route(req, res)) return;
@@ -8811,6 +8823,26 @@ const server = http.createServer((req, res) => {
     const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
     const token = wizardSession._csrf.deriveCsrfToken(raw);
     const html = wizardOlaView.renderWizardOla({ csrfToken: token });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin',
+      'Set-Cookie': setCookie,
+      'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+    return;
+  }
+
+  // #3740 — Página GET del wizard de providers. Emite la cookie CSRF HttpOnly
+  // y embebe el token derivado en <meta name="csrf-token">. El step API
+  // (POST /dashboard/wizard/providers/step) lo maneja wizardSession.route().
+  if (wizardProvidersView && wizardSession && req.method === 'GET'
+      && (req.url || '').split('?')[0] === '/dashboard/wizard/providers') {
+    const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
+    const token = wizardSession._csrf.deriveCsrfToken(raw);
+    const html = wizardProvidersView.renderWizardProviders({ csrfToken: token });
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
