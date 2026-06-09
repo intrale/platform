@@ -195,3 +195,4 @@ scripts/planner-plan.json
 !.pipeline/metrics/__tests__/
 !.pipeline/metrics/__tests__/**
 !.pipeline/**/.gitkeep
+.pipeline/agent-models-last-notified.json
