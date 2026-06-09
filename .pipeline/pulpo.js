@@ -8221,7 +8221,14 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             requestId: turnRequestId, // #3577 CA-S6
           });
         } catch { /* best-effort */ }
-        return resolve(commanderMP.cannedAllGatedResponse());
+        // #3887 — ÚLTIMA OPCIÓN: se intentó spawnear y fallaron TODOS los
+        // providers y modelos de fallback. En vez del canned de "sin cuota"
+        // (que es el caso pre-spawn gateado), avisamos explícitamente que no
+        // hay con qué responder — para que el usuario NUNCA quede mudo sin
+        // saber qué pasó.
+        return resolve(commanderMP.cannedAllProvidersFailedResponse({
+          chainTried: Array.from(triedNonAnthropic),
+        }));
       };
 
       const runNonAnthropic = (res, preEnv) => {
@@ -10214,7 +10221,18 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           }, { log });
         } catch { /* best-effort */ }
       } else {
-        sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
+        // #3887 — ÚLTIMA OPCIÓN para texto libre: si ejecutarClaude rechazó por
+        // un fallo total de providers (spawn ENAMETOOLONG, env-isolation,
+        // sin LLM, timeout de red), avisamos explícitamente que fallaron todos
+        // los providers y modelos de fallback en vez del genérico vago — así el
+        // usuario se entera de qué pasó y no queda mudo.
+        const errMsg = (e && e.message) || '';
+        const totalProviderFailure = /ENAMETOOLONG|spawn|env-isolation|env_isolation|provider|quota|rate.?limit|usage_limit|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|all.?gated/i.test(errMsg);
+        if (totalProviderFailure) {
+          try { sendTelegram(commanderMP.cannedAllProvidersFailedResponse({})); } catch { /* best-effort */ }
+        } else {
+          sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
+        }
       }
     }
 
