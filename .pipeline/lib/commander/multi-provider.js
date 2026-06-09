@@ -1039,6 +1039,33 @@ function cannedAllGatedResponse() {
 }
 
 // -----------------------------------------------------------------------------
+// #3887 — cannedAllProvidersFailedResponse — ÚLTIMA OPCIÓN.
+//
+// A diferencia de `cannedAllGatedResponse` (que habla de "sin cuota", el caso
+// pre-spawn donde la cadena entera está gateada por cuota), este mensaje cubre
+// el caso en que se INTENTÓ spawnear y TODOS los providers Y todos los modelos
+// de fallback FALLARON en runtime (spawn error, ENAMETOOLONG, env-isolation,
+// timeout, empty_output, etc.). Es el último eslabón: cuando no queda ningún
+// LLM con el que generar la respuesta, al menos le avisamos a Leo que no se le
+// puede contestar y por qué — para que NUNCA quede mudo sin saber qué pasó.
+//
+// `chainTried` (opcional) lista los providers que se intentaron, para dar
+// contexto sin jerga técnica de stack traces.
+// -----------------------------------------------------------------------------
+function cannedAllProvidersFailedResponse({ chainTried } = {}) {
+    const chain = Array.isArray(chainTried) && chainTried.length
+        ? ` Intenté con: ${chainTried.join(', ')}.`
+        : '';
+    return (
+        `⚠️ No te puedo responder en este momento: fallaron TODOS los providers y ` +
+        `todos los modelos de fallback.${chain} No hay ningún modelo LLM disponible ` +
+        `para generar una respuesta ahora mismo. ` +
+        `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — ` +
+        `probá de nuevo en un rato.`
+    );
+}
+
+// -----------------------------------------------------------------------------
 // #3275 — Re-export del módulo de fallback in-flight para tener una sola
 // superficie pública en `require('./multi-provider')`. El módulo dedicado
 // vive en `./inflight-fallback.js` y tiene su propia suite de tests.
@@ -1066,6 +1093,7 @@ module.exports = {
 
     cannedFallbackUnavailableResponse,
     cannedAllGatedResponse,
+    cannedAllProvidersFailedResponse,
     cannedDataResidencyResponse,
 
     // #3275 — in-flight fallback (re-export del módulo dedicado)
