@@ -213,6 +213,12 @@ async function collectIndependentEvidence(opts = {}) {
         perSourceBudgetMs,
         totalBudgetMs,
         enabledSources,
+        // #3895 — params opcionales para los claims canónicos nuevos. Si no se
+        // pasan, el claim se omite (NO se fabrica evidencia). `prNumber` también
+        // se descubre desde la github-api source si el caller no lo provee.
+        prNumber,
+        runId,
+        sha,
     } = opts;
 
     const _fs = fsImpl || fs;
@@ -228,6 +234,9 @@ async function collectIndependentEvidence(opts = {}) {
     const findings = [];
     const sources = [];
     const sourcesChecked = [];
+    // #3895 — PRs descubiertos por la github-api source; alimentan el claim
+    // canónico `pr_mergeado` sin pedir el número al caller.
+    const discoveredPrNumbers = [];
 
     const issueNum = normalizeIssueNumber(issueNumber);
     if (issueNum == null) {
@@ -425,6 +434,12 @@ async function collectIndependentEvidence(opts = {}) {
                     let prs = null;
                     try { prs = JSON.parse(prRes.stdout); } catch { /* ignore */ }
                     if (Array.isArray(prs) && prs.length) {
+                        // #3895 — capturar números de PR (entero validado) para el
+                        // claim canónico pr_mergeado más abajo.
+                        for (const p of prs) {
+                            const pn = normalizeIssueNumber(p && p.number);
+                            if (pn != null) discoveredPrNumbers.push(pn);
+                        }
                         const summary = prs.map(p =>
                             `PR #${p.number} [${p.state}${p.mergedAt ? ', merged' : ''}] ${p.headRefName || ''}`.trim()
                         ).join('; ');
@@ -443,6 +458,80 @@ async function collectIndependentEvidence(opts = {}) {
             sources.push('github-api');
         } catch (e) {
             _log('sherlock-ie', `github-api source falló (fail-open): ${e && e.message}`);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // SOURCE 5 — claims canónicos nuevos (#3895): pr_mergeado, rama_contiene_commits,
+    // workflow_paso. Se resuelven contra el diccionario determinístico
+    // `canonical-facts.js` (NO se reimplementa la lógica acá). resolveClaim es
+    // fail-open (status 'not_verifiable' si no puede ejecutar) y respeta el
+    // timeout por-source vía `sourceBudget()`. Reusa las impls inyectadas (_git/
+    // _gh/_proc) para que los tests sigan controlando el shell-out.
+    // -------------------------------------------------------------------------
+    const canonical = require('./canonical-facts');
+    const canonicalImpls = () => ({
+        gitImpl: _git, ghApi: _gh, processCheck: _proc, fsImpl: _fs,
+        cwd: repoRoot, timeoutMs: sourceBudget(),
+    });
+    const statusSummary = (claim, r) => {
+        if (r.status === 'consistent') return `Canonical (${claim}): COINCIDE con el claim (valor=${r.value}).`;
+        return `Canonical (${claim}): DISCREPA del claim (valor real=${r.value}).`;
+    };
+    // SEC-5 / fail-open: un canónico `not_verifiable` (no se pudo ejecutar la
+    // fuente) NO genera finding — ni evidencia ni contradicción. Solo se empuja
+    // un hecho cuando es DEFINITIVO (consistent|inconsistent).
+    const pushCanonical = (source, claim, r) => {
+        if (r.status !== 'consistent' && r.status !== 'inconsistent') return;
+        pushFinding(findings, {
+            source,
+            kind: `canonical_${claim}_${r.status}`,
+            summary: statusSummary(claim, r),
+            detail: `Árbitro determinístico canonical-facts. status=${r.status}.`,
+        });
+    };
+
+    // rama_contiene_commits — siempre derivable del issue.
+    if (wantSource('git') && budgetLeft() > 0) {
+        try {
+            const r = await canonical.resolveClaim('rama_contiene_commits', { issue: issueNum }, canonicalImpls());
+            pushCanonical('git', 'rama_contiene_commits', r);
+        } catch (e) {
+            _log('sherlock-ie', `canonical rama_contiene_commits falló (fail-open): ${e && e.message}`);
+        }
+    }
+
+    // pr_mergeado — sobre el PR explícito (opts.prNumber) o los descubiertos.
+    const prCandidates = [];
+    const prExplicit = normalizeIssueNumber(prNumber);
+    if (prExplicit != null) prCandidates.push(prExplicit);
+    for (const pn of discoveredPrNumbers) {
+        if (!prCandidates.includes(pn)) prCandidates.push(pn);
+    }
+    for (const pn of prCandidates) {
+        if (!(wantSource('github-api') && budgetLeft() > 0)) break;
+        try {
+            const r = await canonical.resolveClaim('pr_mergeado', { pr: pn }, canonicalImpls());
+            if (r.status === 'consistent' || r.status === 'inconsistent') {
+                pushFinding(findings, {
+                    source: 'github-api',
+                    kind: `canonical_pr_mergeado_${r.status}`,
+                    summary: `PR #${pn} — ${statusSummary('pr_mergeado', r)}`,
+                    detail: `Árbitro determinístico canonical-facts. status=${r.status}.`,
+                });
+            }
+        } catch (e) {
+            _log('sherlock-ie', `canonical pr_mergeado #${pn} falló (fail-open): ${e && e.message}`);
+        }
+    }
+
+    // workflow_paso — solo si el caller provee runId (sha opcional, validado).
+    if (runId != null && wantSource('github-api') && budgetLeft() > 0) {
+        try {
+            const r = await canonical.resolveClaim('workflow_paso', { runId, sha }, canonicalImpls());
+            pushCanonical('github-api', 'workflow_paso', r);
+        } catch (e) {
+            _log('sherlock-ie', `canonical workflow_paso falló (fail-open): ${e && e.message}`);
         }
     }
 
@@ -552,6 +641,9 @@ module.exports = {
     _readHeartbeat: readHeartbeat,
     _parsePid: parsePid,
     _defaultProcessCheck: defaultProcessCheck,
+    // #3895 — reusados por canonical-facts.js como impls por defecto de resolveClaim.
+    _defaultGitImpl: defaultGitImpl,
+    _defaultGhApi: defaultGhApi,
     _capDetail: capDetail,
     MAX_FINDINGS,
     MAX_FINDING_DETAIL_CHARS,
