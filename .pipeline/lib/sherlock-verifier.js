@@ -127,6 +127,9 @@ const commanderMP = require('./commander/multi-provider');
 const independentVerifierModule = require('./sherlock-independent-verifier');
 // #3895 — diccionario determinístico claim→fuente canónica (árbitro CA-3).
 const canonicalFactsModule = require('./canonical-facts');
+// #3896 — writer del audit JSONL trazable (CA-6). Envuelve appendChained con
+// redacción SEC-2 + validación de path SEC-4.
+const sherlockAuditJsonl = require('./sherlock-audit-jsonl');
 
 // Invariante CA-SEC-9 — hardcoded, NO depende de config.
 const HARDCODED_MAX_REELABORACIONES = 1;
@@ -1007,6 +1010,76 @@ function emitAuditEvent({ pipelineDir, event, payload, fsImpl, auditLog, now }) 
 }
 
 // -----------------------------------------------------------------------------
+// #3896 CA-6 — Audit JSONL trazable de cada validación canónica de Sherlock.
+//
+// Reconstruye el comando canónico (sólo para trazabilidad legible — NO se
+// re-ejecuta) a partir del diccionario `CANONICAL_FACTS`, reusando el mismo
+// `argsBuilder` que `resolveClaim`. Devuelve null ante cualquier falla (la
+// trazabilidad del comando es best-effort; el resto del registro igual se
+// escribe).
+// -----------------------------------------------------------------------------
+function buildCanonicalCommand(claimKey, params) {
+    try {
+        const fact = canonicalFactsModule.CANONICAL_FACTS[claimKey];
+        if (!fact || typeof fact.argsBuilder !== 'function') return null;
+        const args = fact.argsBuilder(params || {});
+        if (!Array.isArray(args)) return null;
+        const bin = fact.source === 'git' ? 'git'
+            : fact.source === 'github-api' ? 'gh'
+            : fact.source === 'heartbeat' ? 'process-check'
+            : fact.source === 'filesystem' ? 'fs-exists'
+            : String(fact.source || 'canonical');
+        return `${bin} ${args.join(' ')}`.trim();
+    } catch {
+        return null;
+    }
+}
+
+// Mapea el tri-estado canónico (`consistent|inconsistent|not_verifiable`) a los
+// enums de CA-1: `resultado` ∈ {true,false,not_verifiable} y `resolucion` ∈
+// {accepted,rejected,escalated}. `commander_vs_sherlock` conserva el tri-estado
+// crudo (es exactamente la comparación commander-vs-árbitro por claim).
+function mapCanonicalStatus(status) {
+    if (status === 'consistent') return { resultado: 'true', resolucion: 'accepted' };
+    if (status === 'inconsistent') return { resultado: 'false', resolucion: 'rejected' };
+    return { resultado: 'not_verifiable', resolucion: 'escalated' };
+}
+
+// Enruta el evento `sherlock_canonical_validation` hacia el writer del audit
+// JSONL (#3896). Best-effort: un fallo del writer NUNCA aborta `verify()`.
+// Reusa el pattern de hashes/no-prompt-crudo de `emitAuditEvent`: sólo persiste
+// claim derivado + comando reconstruido + valor canónico, nunca el prompt.
+function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, timestamp, fsImpl, log }) {
+    const _log = typeof log === 'function' ? log : () => {};
+    if (!pipelineDir || !Array.isArray(canonicalResults) || canonicalResults.length === 0) return;
+    for (const c of canonicalResults) {
+        try {
+            const { resultado, resolucion } = mapCanonicalStatus(c.status);
+            sherlockAuditJsonl.appendSherlockAudit({
+                session,
+                pipelineDir,
+                fsImpl,
+                record: {
+                    timestamp,
+                    claim: `#${c.issue}/${c.claim}`,
+                    canonical_command: buildCanonicalCommand(c.claim, { issue: c.issue }),
+                    // `value` canónico = stdout interpretado (true/false/null). El
+                    // stdout/stderr crudos no se propagan (resolveClaim los descarta
+                    // por fail-open); el valor resuelto basta para la trazabilidad.
+                    stdout: c.value != null ? String(c.value) : null,
+                    stderr: null,
+                    resultado,
+                    commander_vs_sherlock: c.status,
+                    resolucion,
+                },
+            });
+        } catch (e) {
+            _log('sherlock', `[CA-6] audit canónico #${c && c.issue}/${c && c.claim} falló (best-effort): ${e && e.message}`);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // verify — la API principal del módulo. Llamada desde pulpo.js post-`ejecutarClaude`.
 //
 // Args (obligatorios):
@@ -1348,6 +1421,26 @@ async function verify(opts = {}) {
     const notVerifiable = canonicalResults
         .filter(c => c.status === 'not_verifiable')
         .map(c => ({ issue: c.issue, claim: c.claim }));
+
+    // #3896 CA-6 — audit JSONL trazable de cada validación canónica. Best-effort
+    // (no aborta verify()). Session derivada de los issues normalizados; si no
+    // pasa la allowlist SEC-4, el writer la rechaza y el helper loguea y sigue.
+    if (canonicalResults.length > 0) {
+        const _auditSession = (() => {
+            const joined = _normalizedIssues.join('-');
+            return sherlockAuditJsonl.SESSION_RE.test(joined)
+                ? joined
+                : String(_normalizedIssues[0] || '');
+        })();
+        emitCanonicalValidationAudit({
+            pipelineDir,
+            session: _auditSession,
+            canonicalResults,
+            timestamp: new Date(_now).toISOString(),
+            fsImpl,
+            log: _log,
+        });
+    }
 
     // Render para el prompt fiscal — texto plano, una línea por hecho resuelto.
     const canonicalFactsText = canonicalResults.length
