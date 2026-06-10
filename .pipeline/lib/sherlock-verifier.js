@@ -125,6 +125,8 @@ const commanderMP = require('./commander/multi-provider');
 // #3846 — recolección de evidencia independiente (filesystem/git/github-api/
 // heartbeat) para no heredar las asunciones del systemState del Commander.
 const independentVerifierModule = require('./sherlock-independent-verifier');
+// #3895 — diccionario determinístico claim→fuente canónica (árbitro CA-3).
+const canonicalFactsModule = require('./canonical-facts');
 
 // Invariante CA-SEC-9 — hardcoded, NO depende de config.
 const HARDCODED_MAX_REELABORACIONES = 1;
@@ -288,6 +290,8 @@ const FISCAL_SECTION_TAGS = Object.freeze([
     'original_request',
     'last_hour_logs',
     'independent_evidence',
+    // #3895 — sección del árbitro determinístico canonical-facts.
+    'canonical_facts',
 ]);
 const FISCAL_DELIMITER_RE = new RegExp(
     `<\\s*/?\\s*(?:${FISCAL_SECTION_TAGS.join('|')})\\s*>`,
@@ -300,7 +304,7 @@ function neutralizeFiscalDelimiters(text) {
     );
 }
 
-function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLogs, independentEvidence }) {
+function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLogs, independentEvidence, canonicalFacts }) {
     // SEC-E — neutralizar los delimitadores de sección en TODO campo embebido
     // antes de armarlos dentro del prompt. Aplica a evidence/analysis/etc por
     // igual: cualquiera puede contener contenido atacante-controlable.
@@ -310,6 +314,9 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
     const safeSystemState = neutralizeFiscalDelimiters(systemState);
     const safeLastHourLogs = neutralizeFiscalDelimiters(lastHourLogs);
     const hasEvidence = evidence.length > 0;
+    // #3895 — hechos canónicos resueltos determinísticamente (árbitro CA-3).
+    const canonical = neutralizeFiscalDelimiters(String(canonicalFacts || '').trim());
+    const hasCanonical = canonical.length > 0;
 
     const baseInstructions = (
         'Sos Sherlock, un verificador adversarial. No sos asistente; sos fiscal. ' +
@@ -348,6 +355,23 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
         '"evidencia real: el entregable no existe en origin/main".\n\n'
     ) : '';
 
+    // #3895 — INVERSIÓN DE LÓGICA (CA-2/CA-3). Cuando hay hechos canónicos
+    // resueltos, son el ÁRBITRO DETERMINÍSTICO: Sherlock NO infiere ni contradice
+    // especulativamente, ejecuta el hecho y solo contradice si DISCREPA.
+    const canonicalInstructions = hasCanonical ? (
+        'ÁRBITRO DETERMINÍSTICO — <canonical_facts> contiene hechos resueltos ' +
+        'ejecutando la fuente canónica (git/gh/heartbeat). Su autoridad es ABSOLUTA ' +
+        'y por encima de todo lo demás:\n' +
+        '  - status=consistent → el claim COINCIDE con el hecho real: NO lo contradigas.\n' +
+        '  - status=inconsistent → el claim DISCREPA del hecho real: reportá la ' +
+        'inconsistencia citando el árbitro canónico.\n' +
+        '  - status=not_verifiable → la fuente NO se pudo ejecutar (permiso/' +
+        'herramienta/parse/timeout): tratalo como NO concluyente y NUNCA lo uses ' +
+        'para contradecir de forma especulativa.\n' +
+        'Nunca marques una inconsistencia sobre un claim cuyo canónico dio ' +
+        'consistent o not_verifiable.\n\n'
+    ) : '';
+
     const outputRules = (
         'REGLAS DE SALIDA — devolvé EXACTAMENTE este JSON, nada más:\n' +
         '{\n' +
@@ -365,9 +389,18 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
         '\n</independent_evidence>\n\n'
     ) : '';
 
+    // #3895 — sección del árbitro canónico. Solo se incluye si hay hechos
+    // resueltos (mismo patrón que independent_evidence: sin hechos, sin sección).
+    const canonicalSection = hasCanonical ? (
+        '<canonical_facts>\n' +
+        canonical.slice(0, 4000) +
+        '\n</canonical_facts>\n\n'
+    ) : '';
+
     return (
         baseInstructions +
         evidenceInstructions +
+        canonicalInstructions +
         outputRules +
         '<original_request>\n' +
         safeOriginalRequest.slice(0, 4000) +
@@ -379,6 +412,7 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
         safeSystemState.slice(0, 8000) +
         '\n</system_state>\n\n' +
         evidenceSection +
+        canonicalSection +
         '<last_hour_logs>\n' +
         safeLastHourLogs.slice(0, 4000) +
         '\n</last_hour_logs>\n\n' +
@@ -1109,6 +1143,9 @@ async function verify(opts = {}) {
             outputTokens: 0,
             errorCode: 'disabled',
             suggestedDisclaimer: DISCLAIMER_TYPES.NONE,
+            // #3895 — shape stable: sin verificación no hay hechos canónicos.
+            canonicalFacts: [],
+            notVerifiable: [],
         };
     }
 
@@ -1266,6 +1303,61 @@ async function verify(opts = {}) {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // #3895 — ÁRBITRO DETERMINÍSTICO canonical-facts.
+    //
+    // Para cada issue resolvemos los claims canónicos derivables del propio
+    // issue (sin necesidad de PR/run-id): `entregable_en_main`,
+    // `rama_contiene_commits`, `issue_cerrado`. resolveClaim ejecuta la fuente
+    // canónica (git/gh) y devuelve tri-estado {consistent|inconsistent|
+    // not_verifiable}. Fail-open total (SEC-5): un error nunca contradice ni
+    // aborta — el claim queda `not_verifiable`. El resultado alimenta el prompt
+    // fiscal (sección <canonical_facts>) y se expone en el shape de retorno SIN
+    // tocar el schema del LLM (`validateFiscalResponse` intacto).
+    // -------------------------------------------------------------------------
+    const _canonical = canonicalFactsModule;
+    const ISSUE_DERIVED_CLAIMS = ['entregable_en_main', 'rama_contiene_commits', 'issue_cerrado'];
+    const canonicalResults = [];
+    if (_normalizedIssues.length > 0) {
+        for (const num of _normalizedIssues) {
+            for (const claimKey of ISSUE_DERIVED_CLAIMS) {
+                try {
+                    const params = claimKey === 'issue_cerrado'
+                        ? { issue: num }
+                        : { issue: num };
+                    const r = await _canonical.resolveClaim(claimKey, params, {
+                        gitImpl, ghApi, processCheck,
+                        cwd: repoRoot, timeoutMs: independentVerifierModule.DEFAULT_PER_SOURCE_BUDGET_MS,
+                    });
+                    canonicalResults.push({
+                        issue: num, claim: claimKey,
+                        status: r.status, value: r.value, source: r.source,
+                    });
+                } catch (e) {
+                    // FAIL-OPEN — un canónico que tira nunca bloquea la verificación.
+                    _log('sherlock', `canonical ${claimKey}#${num} falló (fail-open): ${e && e.message}`);
+                    canonicalResults.push({
+                        issue: num, claim: claimKey,
+                        status: 'not_verifiable', value: null, source: null,
+                    });
+                }
+            }
+        }
+    }
+    // Claims que NO se pudieron verificar (tri-estado expuesto aparte, CA-2).
+    const notVerifiable = canonicalResults
+        .filter(c => c.status === 'not_verifiable')
+        .map(c => ({ issue: c.issue, claim: c.claim }));
+
+    // Render para el prompt fiscal — texto plano, una línea por hecho resuelto.
+    const canonicalFactsText = canonicalResults.length
+        ? canonicalResults.map(c =>
+            `- [#${c.issue}/${c.claim}] status=${c.status}` +
+            (c.value != null ? ` valor_real=${c.value}` : '') +
+            (c.source ? ` (fuente: ${c.source})` : '')
+          ).join('\n')
+        : '';
+
     // CA-SEC-2 — prompt con delimitadores XML. Es provider-independiente, así
     // que se arma una sola vez antes de la cascada.
     const prompt = buildFiscalPrompt({
@@ -1274,6 +1366,7 @@ async function verify(opts = {}) {
         systemState,
         lastHourLogs,
         independentEvidence: safeIndependentEvidence,
+        canonicalFacts: canonicalFactsText,
     });
 
     // #3766 — `modelSwap` queda como shape estable (siempre `swapped:false`)
@@ -1589,6 +1682,11 @@ async function verify(opts = {}) {
             attemptCount,
             fallbackUsed: attemptCount > 1,
             chainTried: chainTried.slice(),
+            // #3895 — árbitro determinístico (tri-estado en campo SEPARADO, sin
+            // tocar el schema del LLM). `canonicalFacts` = resoluciones; los
+            // not_verifiable se listan aparte (CA-2).
+            canonicalFacts: canonicalResults.slice(),
+            notVerifiable,
         };
     }
 
@@ -1654,6 +1752,10 @@ async function verify(opts = {}) {
             attemptCount: 0,
             fallbackUsed: false,
             chainTried: chainTried.slice(),
+            // #3895 — el árbitro canónico es independiente del provider del LLM;
+            // se expone aunque la chain de Sherlock se agote.
+            canonicalFacts: canonicalResults.slice(),
+            notVerifiable,
         };
     }
 
@@ -1694,6 +1796,9 @@ async function verify(opts = {}) {
         attemptCount,
         fallbackUsed: attemptCount > 1,
         chainTried: chainTried.slice(),
+        // #3895 — árbitro canónico expuesto aunque la cascada del LLM aborte.
+        canonicalFacts: canonicalResults.slice(),
+        notVerifiable,
     };
 }
 

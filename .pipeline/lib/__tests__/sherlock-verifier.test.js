@@ -2159,3 +2159,128 @@ test('#3868 SEC-E: analysis atacante-controlable tampoco rompe los delimitadores
     const cierresAnalysis = (prompt.match(/<\/analysis>/g) || []).length;
     assert.equal(cierresAnalysis, 1, 'el analysis atacante NO debe inyectar un cierre </analysis> extra');
 });
+
+// =============================================================================
+// #3895 — Inversión de lógica: árbitro determinístico canonical-facts.
+// verify() resuelve los claims canónicos derivados del issue (entregable_en_main,
+// rama_contiene_commits, issue_cerrado) y expone tri-estado SIN tocar el schema
+// del LLM. Inyectamos gitImpl/ghApi/processCheck para controlar el canónico.
+// =============================================================================
+
+// Cliente que devuelve siempre un verdict ok mínimo (el LLM no es el foco acá).
+function fakeOkClient(capture) {
+    return {
+        complete: async (opts) => {
+            if (capture) capture.prompt = opts.prompt;
+            return {
+                ok: true,
+                content: JSON.stringify({ verdict: 'ok', reason: 'sin refutación', inconsistencies: [] }),
+                inputTokens: 5, outputTokens: 2, durationMs: 5,
+            };
+        },
+    };
+}
+
+test('#3895 CA-3: claim COINCIDE con el canónico → status consistent, NO va a notVerifiable', async () => {
+    const dir = mkTmpPipelineDir();
+    const cap = {};
+    const result = await sherlock.verify({
+        analysis: 'El entregable de #3737 está en main',
+        originalRequest: '?',
+        systemState: 'snapshot',
+        issueNumbers: [3737],
+        commanderProvider: 'cerebras',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeOkClient(cap),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+        independentVerifier: fakeIndependentVerifier({}),
+        // canónico resoluble: git devuelve rama presente, gh devuelve issue cerrado.
+        gitImpl: async () => ({ ok: true, stdout: 'remotes/origin/agent/3737-x\n', code: 0 }),
+        ghApi: async () => ({ ok: true, stdout: '{"state":"CLOSED","closed":true}', code: 0 }),
+    });
+    assert.ok(Array.isArray(result.canonicalFacts), 'canonicalFacts expuesto en el shape');
+    assert.ok(result.canonicalFacts.length >= 3, 'resuelve los 3 claims derivados del issue');
+    for (const c of result.canonicalFacts) {
+        assert.equal(c.status, 'consistent', `${c.claim} debería ser consistent`);
+    }
+    assert.deepEqual(result.notVerifiable, [], 'nada queda not_verifiable cuando el canónico resuelve');
+    assert.match(cap.prompt, /<canonical_facts>/, 'el prompt incluye la sección del árbitro canónico');
+    assert.match(cap.prompt, /status=consistent/, 'el prompt cita el status canónico');
+});
+
+test('#3895 CA-3: claim DISCREPA del canónico → status inconsistent (árbitro determinístico)', async () => {
+    const dir = mkTmpPipelineDir();
+    const result = await sherlock.verify({
+        analysis: 'El entregable de #3737 ya está en main',
+        originalRequest: '?',
+        systemState: 'snapshot',
+        issueNumbers: [3737],
+        commanderProvider: 'cerebras',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeOkClient(),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+        independentVerifier: fakeIndependentVerifier({}),
+        // git devuelve VACÍO (rama no existe / no mergeada) → claim positivo discrepa.
+        gitImpl: async () => ({ ok: true, stdout: '\n', code: 0 }),
+        ghApi: async () => ({ ok: true, stdout: '{"state":"OPEN","closed":false}', code: 0 }),
+    });
+    const byClaim = Object.fromEntries(result.canonicalFacts.map(c => [c.claim, c.status]));
+    assert.equal(byClaim.entregable_en_main, 'inconsistent', 'el canónico arbitra: NO está en main');
+    assert.equal(byClaim.rama_contiene_commits, 'inconsistent');
+    assert.equal(byClaim.issue_cerrado, 'inconsistent', 'issue OPEN discrepa del claim de cerrado');
+});
+
+test('#3895 CA-2/SEC-5: canónico no ejecutable → not_verifiable, NUNCA contradicción especulativa', async () => {
+    const dir = mkTmpPipelineDir();
+    const result = await sherlock.verify({
+        analysis: 'El entregable de #3737 está en main',
+        originalRequest: '?',
+        systemState: 'snapshot',
+        issueNumbers: [3737],
+        commanderProvider: 'cerebras',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeOkClient(),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+        independentVerifier: fakeIndependentVerifier({}),
+        // git/gh NO ejecutables (herramienta ausente / permiso) → fail-open.
+        gitImpl: async () => ({ ok: false, stdout: '', code: 127 }),
+        ghApi: async () => ({ ok: false, stdout: '', code: 127 }),
+    });
+    for (const c of result.canonicalFacts) {
+        assert.equal(c.status, 'not_verifiable', `${c.claim} no se pudo ejecutar → not_verifiable`);
+    }
+    assert.equal(result.notVerifiable.length, result.canonicalFacts.length,
+        'todos los claims no ejecutables se listan en notVerifiable');
+    // CA-2: el verdict NO se vuelve rechazado por el canónico no ejecutable.
+    assert.notEqual(result.verdict, 'rechazado', 'un canónico not_verifiable NO debe forzar rechazo');
+});
+
+test('#3895: sin issueNumbers → canonicalFacts vacío y prompt sin sección <canonical_facts>', async () => {
+    const dir = mkTmpPipelineDir();
+    const cap = {};
+    const result = await sherlock.verify({
+        analysis: 'respuesta sin issues',
+        originalRequest: '?',
+        systemState: 'snapshot',
+        commanderProvider: 'cerebras',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeOkClient(cap),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        residencyModule: fakeResidencyOk(),
+        independentVerifier: fakeIndependentVerifier({}),
+    });
+    assert.deepEqual(result.canonicalFacts, []);
+    assert.deepEqual(result.notVerifiable, []);
+    assert.doesNotMatch(cap.prompt, /<canonical_facts>/, 'sin claims no se inyecta la sección');
+});
