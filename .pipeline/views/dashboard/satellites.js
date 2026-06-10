@@ -334,6 +334,11 @@ function renderPipeline() {
     </div>
   </div>
   <div id="pipeline-board" class="pl-board"></div>
+  <!-- #3905 — Franja terminal "Ola — fuera de flujo": cards de issues de la
+       allowlist sin fase actual (no-ingreso) o cerrados (finalizado). Vive
+       FUERA del board flex para quedar debajo de las columnas, no como una
+       columna más (decisión de producto: franja, no pseudo-columnas). -->
+  <div id="pipeline-wave-band"></div>
 </section>`;
     const css = `
 /* #3045 — Header de la sección con título a la izquierda y toggle a la derecha. */
@@ -441,7 +446,23 @@ function renderPipeline() {
 .pl-card-agent.state-fallido .pl-card-agent-state { color: var(--in-bad); }
 .pl-card-agent.is-blocker { box-shadow: 0 0 0 1px var(--in-warn); }
 @keyframes pl-agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-.pl-card-stale-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 600; color: var(--in-warn); border: 1px solid var(--in-warn); background: var(--in-warn-soft); border-radius: 3px; padding: 1px 5px; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; width: fit-content; }`;
+.pl-card-stale-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 600; color: var(--in-warn); border: 1px solid var(--in-warn); background: var(--in-warn-soft); border-radius: 3px; padding: 1px 5px; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; width: fit-content; }
+/* #3905 — Franja terminal "Ola — fuera de flujo" (estados no-ingreso /
+   finalizado). Separada del board por border-top + margin para que NO se lea
+   como una columna del kanban. */
+.pl-wave-band { margin-top: 16px; border-top: 1px solid var(--in-border); padding-top: 10px; }
+.pl-wave-band-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-dim); margin-bottom: 8px; }
+.pl-wave-band-cards { display: flex; flex-wrap: wrap; gap: 6px; }
+.pl-wave-band-cards .pl-card { min-width: 200px; flex: 0 0 auto; margin-bottom: 0; }
+.pl-card-wave-state { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--in-fg-dim); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.pl-wave-ic { width: 12px; height: 12px; fill: currentColor; flex: 0 0 12px; }
+/* Diferenciación por borde + icono + microcopy (anti-info-solo-por-color).
+   El texto se mantiene a opacidad/contraste plenos (WCAG AA): NO se aplica
+   opacity al contenedor de la card para no degradar el ratio del título. */
+.pl-card-state-no-ingreso { border-color: var(--in-fg-soft); border-style: dashed; }
+.pl-card-state-no-ingreso .pl-card-wave-state { color: var(--in-fg-dim); }
+.pl-card-state-finalizado { border-color: var(--in-ok-soft); background: var(--in-ok-soft); }
+.pl-card-state-finalizado .pl-card-wave-state { color: var(--in-ok); }`;
     const script = `
 function compareByPriority(orderMap){
     return (a, b) => {
@@ -456,11 +477,20 @@ function compareByPriority(orderMap){
     };
 }
 
-// #3045 — Estado del filtro de allowlist. NO se persiste en localStorage:
-// el modo del pipeline cambia entre sesiones y un valor stale ahí confunde
-// al operador. Booleano en memoria de módulo, REQ-SEC-3 enforced
-// (no se interpola crudo a HTML; se escribe vía aria-checked + classList).
-let onlyAllowlistFilter = false;
+// #3045/#3905 — Estado del filtro de allowlist. Persistido en sessionStorage
+// (no localStorage: el modo del pipeline cambia entre sesiones y un valor
+// stale ahí confunde al operador; sessionStorage acota la preferencia a la
+// pestaña/sesión activa). REQ-SEC-3 enforced (no se interpola crudo a HTML;
+// se escribe vía aria-checked + classList).
+// #3905 — default ON: nace ACTIVO en sesión nueva (sessionStorage limpio) para
+// dar al operador la vista 1:1 con la allowlist de la ola; respeta la
+// preferencia del usuario si ya lo toggleó en esta sesión.
+let onlyAllowlistFilter = (function(){
+    try {
+        var v = sessionStorage.getItem('pl-only-allowlist');
+        return v === null ? true : v === '1';
+    } catch(e) { return true; }
+})();
 
 // #3045 — Issue está en la allowlist activa? Coerción estricta a integer > 0
 // (REQ-SEC-2). Sin partial_pause, NO matchea: el badge sigue oculto en running.
@@ -495,10 +525,16 @@ function wireAllowlistToggle(){
     const toggle = document.getElementById('pl-allowlist-toggle');
     if(!toggle || toggle.dataset.wired === '1') return;
     toggle.dataset.wired = '1';
+    // #3905 — reflejar el valor inicial (default ON / sessionStorage) en el
+    // atributo aria-checked: el markup nace con aria-checked="false" pero el
+    // estado real lo decide onlyAllowlistFilter.
+    toggle.setAttribute('aria-checked', onlyAllowlistFilter ? 'true' : 'false');
     function flip(){
         if(toggle.style.display === 'none') return; // oculto = no operable
         onlyAllowlistFilter = !onlyAllowlistFilter;
         toggle.setAttribute('aria-checked', onlyAllowlistFilter ? 'true' : 'false');
+        // #3905 — persistir la preferencia del operador en la sesión.
+        try { sessionStorage.setItem('pl-only-allowlist', onlyAllowlistFilter ? '1' : '0'); } catch(e) {}
         if(typeof tickPipeline === 'function') tickPipeline().catch(()=>{});
     }
     toggle.addEventListener('click', (ev) => { ev.preventDefault(); flip(); });
@@ -616,6 +652,36 @@ async function tickPipeline(){
             : String(col.items.length);
         html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+countLabel+'</span></div>'+(cards || '<div class="in-empty" style="padding:14px 4px;font-size:11px">vacío</div>')+'</div>';
     }
+    // #3905 — Franja terminal "Ola — fuera de flujo". Solo con el filtro
+    // "solo habilitados" ACTIVO (CA-4: sin filtro = comportamiento previo, sin
+    // franja). Los estados no-ingreso/finalizado los deriva el server en
+    // d.waveIssues (cruce allowlist − matrix). Orden UX: no-ingreso primero
+    // (lo que falta arriba), finalizado después (lo cerrado abajo). SEC-1:
+    // todo (issue/título/estado) pasa por escapeHtml; el ícono va por <use>
+    // sobre el sprite controlado (no interpolado).
+    let waveBand = '';
+    if(onlyAllowlistFilter && Array.isArray(d.waveIssues) && d.waveIssues.length){
+        const orderW = { 'no-ingreso': 0, 'finalizado': 1 };
+        const sortedW = d.waveIssues.slice().sort((a, b) =>
+            ((orderW[a.estado] != null ? orderW[a.estado] : 9) - (orderW[b.estado] != null ? orderW[b.estado] : 9))
+            || (Number(a.issue) - Number(b.issue)));
+        const waveCards = sortedW.map(w => {
+            const isDone = w.estado === 'finalizado';
+            const icon = isDone ? 'ic-allowlist-check' : 'ic-llm-queued';
+            const label = isDone ? 'Finalizado' : 'Sin ingresar';
+            return '<div class="pl-card pl-card-state-'+escapeHtml(w.estado||'')+'" data-issue="'+escapeHtml(w.issue)+'">'
+              + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(w.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(w.issue)+'</a></span></div>'
+              + '<div class="pl-card-title" title="'+escapeHtml(w.title||'')+'">'+escapeHtml((w.title||'').slice(0,60))+'</div>'
+              + '<div class="pl-card-wave-state"><svg class="pl-wave-ic" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#'+icon+'"></use></svg>'+label+'</div>'
+              + '</div>';
+        }).join('');
+        waveBand = '<div class="pl-wave-band">'
+          + '<div class="pl-wave-band-title">Ola — fuera de flujo</div>'
+          + '<div class="pl-wave-band-cards">'+waveCards+'</div>'
+          + '</div>';
+    }
+    const waveBandEl = document.getElementById('pipeline-wave-band');
+    if(waveBandEl && waveBandEl.innerHTML !== waveBand) waveBandEl.innerHTML = waveBand;
     if(board.innerHTML !== html){
         board.innerHTML = html;
         board.querySelectorAll('.pl-card-btn').forEach(b => {
