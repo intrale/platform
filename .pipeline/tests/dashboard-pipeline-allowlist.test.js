@@ -209,14 +209,37 @@ test('escapeHtml replicado neutraliza el payload XSS clásico (sanity check)', (
 
 // ───────────── Toggle: estado nunca interpolado a HTML (REQ-SEC-3) ─────────────
 
-test('onlyAllowlistFilter es booleano de módulo, no se persiste en localStorage', () => {
+test('onlyAllowlistFilter es booleano de módulo con default ON desde sessionStorage (REQ-SEC-3 / #3905)', () => {
     const start = SAT_SRC.indexOf('function renderPipeline()');
     const end = SAT_SRC.indexOf('\nfunction renderBloqueados', start);
     const body = SAT_SRC.slice(start, end);
 
-    assert.match(body, /let\s+onlyAllowlistFilter\s*=\s*false/, 'toggle state es boolean local');
-    assert.doesNotMatch(body, /localStorage\..*allowlist/i, 'NO debe persistir en localStorage (REQ-SEC-3)');
-    assert.doesNotMatch(body, /sessionStorage\..*allowlist/i, 'NO debe persistir en sessionStorage');
+    // #3905 supera el diseño efímero de #3045: el filtro ahora nace ACTIVO en
+    // sesión nueva y persiste la preferencia del operador (CA: "El filtro
+    // persiste como ACTIVO por defecto en nuevas sesiones (sessionStorage o
+    // cookie)" + Escenario Gherkin 3). REQ-SEC-3 sigue vigente en su intención
+    // real: el estado nunca se interpola crudo a HTML y nunca fluye sin sanear.
+    assert.match(body, /let\s+onlyAllowlistFilter\s*=/, 'toggle state es un binding de módulo');
+    assert.match(
+        body,
+        /sessionStorage\.getItem\('pl-only-allowlist'\)/,
+        'inicializa la preferencia desde sessionStorage (#3905)',
+    );
+    assert.match(
+        body,
+        /v\s*===\s*null\s*\?\s*true\s*:\s*v\s*===\s*'1'/,
+        'default ON + coerción estricta a boolean al leer (REQ-SEC-3: no interpola string crudo)',
+    );
+    // REQ-SEC-3 — sigue prohibido localStorage: la preferencia se acota a la
+    // sesión, evitando estado stale del modo del pipeline entre sesiones.
+    assert.doesNotMatch(body, /localStorage\.[gs]etItem/i, 'NO debe persistir en localStorage (REQ-SEC-3)');
+    // #3905 — sólo se persiste el flag sanitizado '1'/'0', nunca un valor
+    // arbitrario que pudiera reintroducir un vector de interpolación.
+    assert.match(
+        body,
+        /sessionStorage\.setItem\('pl-only-allowlist',\s*onlyAllowlistFilter\s*\?\s*'1'\s*:\s*'0'\)/,
+        'persiste sólo el flag sanitizado 1/0 (REQ-SEC-3)',
+    );
 });
 
 // ───────────── Grid de la nav bar V3 (CA-2 — #3358 → #3726) ─────────────

@@ -184,7 +184,10 @@ function fetchIssueTitles(issueIds, cache) {
   for (const batch of batches) {
     const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
     try {
-      const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title labels(first:10) { nodes { name } } }`).join(' ');
+      // #3905 — `state` (OPEN/CLOSED) necesario para distinguir en la franja
+      // "fuera de flujo" del board un issue de la allowlist sin ingresar (open)
+      // de uno finalizado (closed).
+      const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title state labels(first:10) { nodes { name } } }`).join(' ');
       const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
       // Write query to temp file to avoid shell escaping issues on Windows
       fs.writeFileSync(tmpQuery, query);
@@ -198,6 +201,7 @@ function fetchIssueTitles(issueIds, cache) {
         if (val?.number) {
           cache[String(val.number)] = {
             title: val.title,
+            state: val.state, // #3905 — OPEN | CLOSED
             labels: (val.labels?.nodes || []).map(l => l.name),
             fetchedAt: Date.now()
           };
@@ -209,10 +213,10 @@ function fetchIssueTitles(issueIds, cache) {
       // Fallback: fetch one by one
       for (const id of batch) {
         try {
-          const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels`;
+          const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
           const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
           const iss = JSON.parse(out2);
-          cache[id] = { title: iss.title, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
+          cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
         } catch {
           // Issue no resoluble: cachear como notFound para evitar re-consulta en cada refresh
           cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
@@ -610,7 +614,26 @@ function getPipelineState() {
   // Convert Sets to arrays for JSON + enriquecer con títulos/labels
   const issueIds = Object.keys(state.issueMatrix);
   const titleCache = loadIssueTitleCache();
-  const missing = issueIds.filter(id => !titleCache[id]);
+  // #3905 — incluir la allowlist de la ola (pausa parcial) en el set a
+  // resolver: los issues que NUNCA ingresaron al pipeline no están en el
+  // matrix, pero la franja "fuera de flujo" del board necesita su title +
+  // state (open/closed) para clasificarlos. SEC-2: la lista sale de
+  // .partial-pause.json (editable a mano) → se filtra a enteros vía
+  // readPreviousAllowlist (normalizeIssue interno).
+  let allowlistIds = [];
+  try {
+    const pp = require('./lib/partial-pause');
+    allowlistIds = (pp.readPreviousAllowlist() || []).map(String);
+  } catch { /* módulo opcional: degradamos sin allowlist */ }
+  const wantedIds = [...new Set([...issueIds, ...allowlistIds])];
+  // missing = sin cache, O cacheado sin `state` (entradas previas a #3905).
+  // Los notFound quedan excluidos (negative cache) para no re-consultar gh
+  // cada tick (SEC-3 resource exhaustion). Converge: tras el fetch, las
+  // entradas tienen `state` → dejan de re-pedirse.
+  const missing = wantedIds.filter(id => {
+    const e = titleCache[id];
+    return !e || (!e.notFound && e.state === undefined);
+  });
   if (missing.length > 0) fetchIssueTitles(missing, titleCache);
   state.issueTitles = titleCache;
 

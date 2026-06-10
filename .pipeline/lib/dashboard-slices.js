@@ -824,12 +824,57 @@ function pipelineSlice(state, ctx) {
         const data = issueOrder.load();
         priorityOrder = (data && Array.isArray(data.order)) ? data.order.map(String) : [];
     } catch { /* lib no disponible */ }
+
+    // #3905 — waveIssues: cruce de la allowlist (ola actual) con el matrix.
+    // Los issues de la allowlist que NO tienen work-file en ninguna fase
+    // (faltantes = allowlist − matrix) se representan en la franja terminal
+    // "Ola — fuera de flujo" del board: estado `no-ingreso` (open en GitHub) o
+    // `finalizado` (closed). Reutiliza classifyStatus de wave-snapshot (#3262)
+    // en vez de duplicar la lógica de derivación.
+    //
+    // Nota (staleness): un issue recién cerrado puede tardar en reflejar
+    // `finalizado` hasta que expire el TTL del title-cache. Aceptable para un
+    // dashboard de operador (el dato no es de seguridad).
+    const waveIssues = [];
+    try {
+        const { _internal } = require('./wave-snapshot');
+        let allowlist = [];
+        if (ctx && Array.isArray(ctx.allowlist)) {
+            // Override inyectable (tests / callers que ya leyeron la allowlist).
+            allowlist = ctx.allowlist;
+        } else if (partialPause && typeof partialPause.readPreviousAllowlist === 'function') {
+            allowlist = partialPause.readPreviousAllowlist() || [];
+        }
+        // SEC-2: .partial-pause.json es editable a mano → validar enteros
+        // antes de usarlos. (readPreviousAllowlist ya normaliza, pero el filtro
+        // explícito documenta el requisito de seguridad y es defensivo ante
+        // cambios futuros del módulo.)
+        allowlist = allowlist.filter((n) => Number.isInteger(n));
+        const titles = state.issueTitles || {};
+        for (const n of allowlist) {
+            // Anti-duplicado (CA-6): si ya está en el matrix tiene fase actual y
+            // se dibuja en su columna — no va a la franja terminal.
+            if (matrix[String(n)]) continue;
+            const meta = titles[String(n)] || {};
+            const isClosed = String(meta.state).toUpperCase() === 'CLOSED';
+            const cls = _internal.classifyStatus({
+                isClosed, isBlocked: false, isPaused: false, faseActual: null, pct: 0,
+            });
+            waveIssues.push({
+                issue: String(n),
+                title: meta.title || '',
+                estado: cls === 'closed' ? 'finalizado' : 'no-ingreso',
+            });
+        }
+    } catch { /* wave-snapshot opcional: degradamos a franja vacía */ }
+
     return {
         matrix,
         fases: state.allFases,
         priorityOrder,
         matrixCounts,
         staleThresholdMin: STALE_THRESHOLD_MIN,
+        waveIssues,
     };
 }
 
