@@ -700,6 +700,15 @@ const API_ROUTES = {
     // de 24h y estado del hash-chain. Refresh natural 30s desde el cliente.
     '/api/dash/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
     '/api/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
+    // #3897 CA-4 — métrica de precisión de Sherlock (épico #3894). SEC-6: el
+    // slice devuelve SOLO agregados numéricos/booleanos (ratio, contadores,
+    // not_verifiable count) — nunca claims/comandos/stdout del audit JSONL.
+    // Registrado DENTRO de API_ROUTES (no handler propio) para heredar el
+    // gate loopback CA-S2 + Sec-Fetch-Site CA-S3 + no-store/nosniff CA-S5
+    // del endpoint partial (A01). Alias humano para curl/debug, mismo patrón
+    // que `/api/handoff-metrics`.
+    '/api/dash/sherlock-precision': (state, ctx) => slices.sherlockPrecisionSlice(state, ctx),
+    '/api/sherlock-precision': (state, ctx) => slices.sherlockPrecisionSlice(state, ctx),
     // #3492 — ETA agregada por ola (probabilística p50/p75/p90). El cálculo
     // vive en `lib/eta-wave.js`; dashboard.js lo refresca fire-and-forget en
     // un cache TTL 30s y lo publica en `state.olaETA`. Si el módulo no cargó
