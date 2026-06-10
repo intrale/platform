@@ -541,11 +541,27 @@ function runNodeTests(repoRoot, env, opts = {}) {
         // Borrar reporte previo para evitar parsear cache de runs anteriores
         try { fs.unlinkSync(reportFile); } catch {}
 
+        // #3897 rev-2 — endurecimiento anti-cuelgue (exit 124 sin JUnit):
+        //
+        //   a) `--test-force-exit`: el runner sale al terminar los tests aunque
+        //      algún .test.js haya dejado un handle vivo (timer/socket/watcher
+        //      sin clausurar). Era la clase de cuelgue más probable del run
+        //      real: 2/2 runs del tester colgaron 12 min con JUnit de 52 bytes
+        //      (solo header) mientras la misma batería pasaba en ~79s corrida
+        //      a mano. El reporter flushea antes del exit (diseño de la flag).
+        //      Soportado por Node >= 22; el pipeline corre Node 24.
+        //   b) Reporter dual: `junit` al archivo (lo parsea el tester) + `spec`
+        //      a stdout. Antes junit era el ÚNICO reporter → stdout vacío →
+        //      `lastProgressLine` siempre "" y el heartbeat no podía decir qué
+        //      archivo estaba corriendo al momento del wall-timeout.
         const args = [
             '--test',
             `--test-timeout=${NODE_TEST_PER_TEST_TIMEOUT_MS}`,
+            '--test-force-exit',
             '--test-reporter=junit',
             `--test-reporter-destination=${reportFile}`,
+            '--test-reporter=spec',
+            '--test-reporter-destination=stdout',
             ...files,
         ];
         // Strip NODE_TEST_CONTEXT del env del child: si tester.js corre dentro
@@ -622,8 +638,14 @@ function runNodeTests(repoRoot, env, opts = {}) {
             resolved = true;
             resolve(result);
         };
+        // #3897 rev-2 — `stdin: 'ignore'`: el default (pipe) deja un stdin
+        // abierto que el tester jamás cierra; cualquier lectura accidental de
+        // stdin en un test/módulo esperaría EOF para siempre. Con 'ignore' el
+        // child ve stdin cerrado desde el arranque (mismo comportamiento que
+        // la batería corrida a mano, que nunca colgó).
         const child = spawn(process.execPath, args, {
             cwd: repoRoot, env: childEnv, shell: false, windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
         });
         const trackProgress = (chunk) => {
             lastOutputAt = Date.now();
@@ -1044,7 +1066,11 @@ async function main() {
             // *.test.js de main no tienen los cambios del issue. Correr desde
             // el worktree del agente cuando esté disponible.
             const nodeTestRoot = issueWorktree || REPO_ROOT;
-            const nodeRes = await runNodeTests(nodeTestRoot, env);
+            // #3897 rev-2 — conectar onLog: sin esto el heartbeat de 30s y el
+            // aviso de WALL-TIMEOUT con last_progress_line iban a un no-op y
+            // el post-mortem del exit 124 quedaba ciego (JUnit de 52 bytes y
+            // ninguna pista de qué archivo colgó).
+            const nodeRes = await runNodeTests(nodeTestRoot, env, { onLog: logAppend });
             gradleResult = {
                 exit_code: nodeRes.exit_code, wall_ms: nodeRes.wall_ms,
                 stdout: nodeRes.stdout, stderr: nodeRes.stderr,
