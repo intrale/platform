@@ -1025,6 +1025,69 @@ test('ok', () => { assert.equal(2, 2); });
     assert.equal(typeof r.last_progress_line, 'string');
 });
 
+// #3897 rev-2 — endurecimiento anti-cuelgue del runner.
+//
+// Contexto del rebote: 2/2 runs reales del tester sobre #3897 colgaron 12 min
+// (exit 124) con JUnit de 52 bytes (solo header `<testsuites>`) y stdout
+// vacío, mientras la MISMA batería de 279 archivos pasaba en ~79s corrida a
+// mano. La clase de cuelgue: un .test.js cuyos tests PASAN pero cuyo proceso
+// queda vivo por un handle no clausurado (timer/socket/watcher) — el runner
+// top-level espera a ese worker para siempre y el reporter junit nunca
+// flushea las suites. `--test-timeout` no cubre este caso (corta tests, no
+// handles post-test). El fix: `--test-force-exit` (Node >= 22).
+test('#3897 rev-2 — handle vivo post-test NO cuelga el run (--test-force-exit)', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3897-handle-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    // Test que pasa pero deja un setInterval SIN unref: sin --test-force-exit
+    // el proceso del test queda vivo y runNodeTests solo terminaría por
+    // wall-timeout de 12 min (exit 124, JUnit vacío — el síntoma del rebote).
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'leaky.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('pasa pero deja un timer vivo', () => {
+    setInterval(() => {}, 60 * 1000); // handle vivo a propósito (sin unref)
+    assert.equal(1, 1);
+});
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.timed_out, false, 'el run NO debe llegar al wall-timeout');
+    assert.equal(r.exit_code, 0, 'los tests pasan y el runner sale igual');
+    assert.equal(r.summary.valid, true, 'el JUnit debe quedar parseable (flusheado antes del force-exit)');
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.summary.failures, 0);
+});
+
+test('#3897 rev-2 — reporter dual: stdout trae progreso spec además del JUnit a archivo', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3897-spec-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'visible.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('progreso visible en stdout', () => { assert.equal(1, 1); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.exit_code, 0);
+    // Antes del fix junit era el ÚNICO reporter → stdout vacío →
+    // last_progress_line "" y el heartbeat no identificaba el archivo colgado.
+    assert.ok(r.stdout.includes('progreso visible en stdout'),
+        'el reporter spec debe volcar el progreso a stdout');
+    assert.ok(r.last_progress_line.length > 0,
+        'last_progress_line debe quedar poblada para el post-mortem del wall-timeout');
+    // Y el JUnit del archivo sigue siendo la fuente parseable.
+    assert.equal(r.summary.valid, true);
+    assert.equal(r.summary.tests, 1);
+});
+
+// NOTA #3897 rev-2: el spawn de runNodeTests pasa `stdio: ['ignore', 'pipe',
+// 'pipe']` como defensa adicional (stdin pipe nunca cerrado por el tester era
+// un EOF que jamás llegaba). No hay test dedicado: el runner de node --test
+// reconecta el stdin de sus workers a discreción, así que un test que lea
+// stdin cuelga hasta el per-test timeout (120s) sin importar el stdio del
+// runner — verificado empíricamente. La clase de cuelgue queda cubierta por
+// `--test-force-exit` + `--test-timeout` (tests de arriba).
+
 // #2895 (rebote rev-1): regresión empírica del rebote del 2026-04-30.
 // Los tests del pipeline fallaban en producción cuando el pulpo arrancaba
 // como servicio sin git en el PATH heredado. Este test simula ese caso

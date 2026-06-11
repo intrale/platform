@@ -632,6 +632,93 @@ function kpisSlice(state, ctx) {
     };
 }
 
+// -----------------------------------------------------------------------------
+// #3897 CA-4 — Métrica de precisión de Sherlock (épico #3894, hija 3/3).
+//
+// Lee los audit logs canónicos `sherlock-*.jsonl` (writer de #3896,
+// `lib/sherlock-audit-jsonl.js`) y computa SOLO agregados numéricos/booleanos.
+//
+// SEC-6 (NO NEGOCIABLE): el payload NUNCA incluye claims, comandos crudos,
+// stdout/stderr, session-ids ni ningún string derivado del contenido del
+// audit. NO replicar `partialPauseAuditSlice` (expone texto por-entry) —
+// SEC-6 es estrictamente más restrictivo. La capa de color/semáforo (UX-1)
+// vive en el front (`views/dashboard/*.js`), no acá.
+//
+// Definición de "contradicción/validación correcta": la resolución registrada
+// es COHERENTE con el tri-estado del árbitro canónico —
+//   - commander_vs_sherlock 'consistent'   + resolucion 'accepted' → correcta
+//   - commander_vs_sherlock 'inconsistent' + resolucion 'rejected' → correcta
+//     (contradicción respaldada por hecho canónico)
+//   - cualquier otra combinación → incorrecta (ej. contradicción emitida sin
+//     respaldo del árbitro = falso positivo estilo #3729).
+// `resultado === 'not_verifiable'` cuenta aparte (no entra al denominador).
+// -----------------------------------------------------------------------------
+const SHERLOCK_PRECISION_TARGET = 0.90;          // UX-1: verde ≥ 90%
+const SHERLOCK_PRECISION_ALERT_BELOW = 0.80;     // CA-4: alerta visible < 80%
+const SHERLOCK_PRECISION_MIN_SAMPLE = 5;         // UX-1: n<5 → muestra insuficiente
+
+function _sherlockRecordCorrecto(rec) {
+    const cmp = rec && rec.commander_vs_sherlock;
+    const res = rec && rec.resolucion;
+    return (cmp === 'consistent' && res === 'accepted')
+        || (cmp === 'inconsistent' && res === 'rejected');
+}
+
+function sherlockPrecisionSlice(state, ctx) {
+    try {
+        const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+        const auditDir = path.join(PIPELINE, 'audit');
+        let files = [];
+        try {
+            files = fs.readdirSync(auditDir)
+                .filter((f) => f.startsWith('sherlock-') && f.endsWith('.jsonl'));
+        } catch { files = []; /* dir ausente → estado vacío, no error */ }
+
+        let correctas = 0;
+        let totales = 0;
+        let notVerifiable = 0;
+        for (const f of files) {
+            let raw = '';
+            try { raw = fs.readFileSync(path.join(auditDir, f), 'utf8'); }
+            catch { continue; }
+            for (const line of raw.split('\n')) {
+                if (!line.trim()) continue;
+                let rec = null;
+                try { rec = JSON.parse(line); } catch { continue; }
+                const resultado = rec && rec.resultado;
+                if (resultado === 'not_verifiable') { notVerifiable += 1; continue; }
+                if (resultado !== 'true' && resultado !== 'false') continue;
+                totales += 1;
+                if (_sherlockRecordCorrecto(rec)) correctas += 1;
+            }
+        }
+
+        const ratio = totales > 0 ? correctas / totales : null; // null => muestra vacía
+        return {
+            correctas,
+            totales,
+            not_verifiable: notVerifiable,
+            ratio,                                              // number|null, sin string
+            insufficient_sample: totales < SHERLOCK_PRECISION_MIN_SAMPLE,
+            target: SHERLOCK_PRECISION_TARGET,
+            alert: ratio !== null && ratio < SHERLOCK_PRECISION_ALERT_BELOW,
+        };
+    } catch {
+        // Degrade limpio: mismo shape numérico/booleano + código de error de
+        // allowlist (literal constante, NO derivado del contenido del audit).
+        return {
+            correctas: 0,
+            totales: 0,
+            not_verifiable: 0,
+            ratio: null,
+            insufficient_sample: true,
+            target: SHERLOCK_PRECISION_TARGET,
+            alert: false,
+            error: 'sherlock_precision_unavailable',
+        };
+    }
+}
+
 function equipoSlice(state) {
     const skillLoad = state.skillLoad || {};
     const skills = Object.entries(skillLoad).map(([skill, load]) => ({
@@ -1488,6 +1575,9 @@ module.exports = {
     handoffMetricsSlice,
     // #3625 — widget de audit trail de allowlist
     partialPauseAuditSlice,
+    // #3897 CA-4 — métrica de precisión de Sherlock (solo agregados, SEC-6)
+    sherlockPrecisionSlice,
+    _sherlockRecordCorrecto,
     // #3642 — widget architect 4 estados
     architectStateSlice,
     architectBadgeHTML,

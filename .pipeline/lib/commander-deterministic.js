@@ -97,6 +97,11 @@ const DETERMINISTIC_SLASH = new Set([
     'rechazar',
     'reject',
     'rebobinar',
+    // Issue #3897 (épico #3894) — `/verificar`: validación de claims contra
+    // hechos canónicos (`lib/canonical-facts.js`). CA-5: la respuesta cita el
+    // comando canónico ejecutado en forma hecho+fuente legible.
+    'verificar',
+    'verify',
 ]);
 
 // Slash-commands que SE clasifican como `llm` (creación/análisis con razonamiento).
@@ -145,6 +150,10 @@ const NLP_PATTERNS = [
     // típicos: rechazá/rechazar, rebobiná/rebobinar, reject. El parser del
     // handler tolera espacios y comas en el residual.
     { regex: /^(?:rech[áa]z[áa]?|rech[áa]ce|rebobin[áa]?|reject)\s+/i, command: 'rechazar' },
+    // Issue #3897 — NLP para `/verificar` (texto natural corto). El residual
+    // del replace queda como args ("pr 3890", "issue #3897"). Solo verbos al
+    // inicio del mensaje para no colisionar con conversación libre.
+    { regex: /^(?:verific[áa](?:r|me)?|verify)\s+/i, command: 'verificar' },
 ];
 
 const MAX_SHORT_LENGTH = 80;     // Texto > 80 chars es conversación libre (CA-18)
@@ -286,6 +295,117 @@ function parseWaveArgs(rawArgs) {
     return null;
 }
 
+// -----------------------------------------------------------------------------
+// Issue #3897 (épico #3894) — `/verificar <tipo> <numero>`: validación de un
+// claim contra su hecho canónico (`lib/canonical-facts.js`, #3895).
+//
+// CA-5: la respuesta a Telegram cita el comando canónico ejecutado en forma
+// `<hecho> (<fuente legible>)` — verificable, no proxy ambiguo (UX-2).
+// A09/CWE-200: NUNCA el argv crudo con flags/paths/tokens; toda la cita pasa
+// por `redactReadOutput` + `redactSecretValue` antes de salir al chat.
+// -----------------------------------------------------------------------------
+
+// Mapeo `<tipo>` del comando → claim canónico + nombre del param. SEC-1 vive
+// en `canonical-facts.js` (argsBuilder valida y lanza); acá solo gateamos la
+// sintaxis con una allowlist cerrada de tipos + entero decimal puro.
+const VERIFICAR_CLAIM_TYPES = {
+    pr: { claimKey: 'pr_mergeado', param: 'pr' },
+    issue: { claimKey: 'issue_cerrado', param: 'issue' },
+    rama: { claimKey: 'rama_contiene_commits', param: 'issue' },
+    main: { claimKey: 'entregable_en_main', param: 'issue' },
+    entregable: { claimKey: 'entregable_en_main', param: 'issue' },
+};
+
+/**
+ * Parsea `args` de `/verificar` → `{ tipo, claimKey, param, numero }` o `null`.
+ * Schema estricto: exactamente 2 tokens (`<tipo>`, `<numero>`), tipo en la
+ * allowlist, numero entero positivo decimal puro (con `#` opcional).
+ */
+function parseVerificarArgs(rawArgs) {
+    const tokens = String(rawArgs || '').trim().split(/\s+/).filter(Boolean);
+    if (tokens.length !== 2) return null;
+    const tipo = tokens[0].toLowerCase();
+    const meta = VERIFICAR_CLAIM_TYPES[tipo];
+    if (!meta) return null;
+    const numToken = tokens[1].startsWith('#') ? tokens[1].slice(1) : tokens[1];
+    if (!/^\d+$/.test(numToken)) return null;
+    const numero = parseInt(numToken, 10);
+    if (!Number.isInteger(numero) || numero < 1) return null;
+    return { tipo, claimKey: meta.claimKey, param: meta.param, numero };
+}
+
+// UX-2 — lenguaje claro y honesto cuando no hay hecho canónico verificable.
+// Nunca inventar una fuente ni volcar el error crudo del comando.
+const VERIFICAR_NOT_VERIFIABLE_MSG =
+    'No pude verificar esto contra un hecho canónico. ' +
+    'Lo dejo como no verificable en lugar de inventar una fuente.';
+
+// Cadena de redacción: reusar `redactAll` del audit writer de #3896
+// (`sherlock-audit-jsonl.js`), que encadena el patrón `github_pat_*` (gap no
+// cubierto por los redactores oficiales) + `redactReadOutput` +
+// `redactSecretValue`. Require defensivo con fallback a la cadena local de
+// dos pasos por si el módulo no está (checkout parcial).
+let _sherlockRedactAll = null;
+try { _sherlockRedactAll = require('./sherlock-audit-jsonl').redactAll; } catch { /* opcional */ }
+
+/**
+ * Arma la cita `<hecho> (<fuente legible>)` y la redacta SIEMPRE (A09/UX-2).
+ *
+ * @param {{hecho: string, fuente: string}} parts
+ * @returns {string} cita redactada, lista para interpolar con escape MarkdownV2.
+ */
+function renderCanonicalCitation({ hecho, fuente } = {}) {
+    const s = `${String(hecho || '').trim()} (${String(fuente || '').trim()})`;
+    if (typeof _sherlockRedactAll === 'function') {
+        return _sherlockRedactAll(s);
+    }
+    const read = redactReadOutput(s);
+    const txt = (read && typeof read === 'object' && typeof read.text === 'string')
+        ? read.text
+        : (typeof read === 'string' ? read : s);
+    return baseRedact.redactSecretValue(txt);
+}
+
+// Hecho + fuente legible por claim (UX-2: ej. `#3890 mergeado (gh pr view →
+// state: MERGED)`). La "fuente" cita el comando canónico SIN flags ruidosos,
+// paths ni tokens — es la forma lógica verificable, no el argv crudo.
+const VERIFICAR_CITATION_BUILDERS = {
+    pr_mergeado: (n, v) => ({
+        hecho: v ? `PR #${n} mergeado` : `PR #${n} NO mergeado`,
+        fuente: `gh pr view ${n} → state: ${v ? 'MERGED' : 'sin merge'}`,
+    }),
+    issue_cerrado: (n, v) => ({
+        hecho: v ? `#${n} cerrado` : `#${n} abierto`,
+        fuente: `gh issue view ${n} → state: ${v ? 'CLOSED' : 'OPEN'}`,
+    }),
+    rama_contiene_commits: (n, v) => ({
+        hecho: v ? `#${n} tiene rama de trabajo` : `#${n} sin rama de trabajo`,
+        fuente: `git branch --list agent/${n}-* → ${v ? 'presente' : 'ausente'}`,
+    }),
+    entregable_en_main: (n, v) => ({
+        hecho: v ? `#${n} entregado en main` : `#${n} NO entregado en main`,
+        fuente: `git branch --merged origin/main → rama agent/${n}-* ${v ? 'mergeada' : 'sin mergear'}`,
+    }),
+};
+
+/**
+ * Cita canónica para un resultado de `resolveClaim` (#3895).
+ * `not_verifiable` → mensaje claro y honesto (UX-2), sin fuente inventada.
+ *
+ * @param {string} claimKey
+ * @param {number} numero — identificador validado (issue/pr).
+ * @param {{value: *, status: string}} result — retorno de resolveClaim.
+ * @returns {string}
+ */
+function canonicalCitationFor(claimKey, numero, result) {
+    if (!result || result.status === 'not_verifiable') {
+        return VERIFICAR_NOT_VERIFIABLE_MSG;
+    }
+    const builder = VERIFICAR_CITATION_BUILDERS[claimKey];
+    if (!builder) return VERIFICAR_NOT_VERIFIABLE_MSG;
+    return renderCanonicalCitation(builder(numero, result.value === true));
+}
+
 const ARG_SCHEMAS = {
     status: { allow: () => true },
     snapshot: { allow: () => true },
@@ -349,6 +469,21 @@ const ARG_SCHEMAS = {
     rechazar: { allow: () => true },
     reject: { allow: () => true },
     rebobinar: { allow: () => true },
+    // Issue #3897 — `/verificar <tipo> <numero>`. Sintaxis estricta (allowlist
+    // de tipos + entero decimal puro). SEC-1 profundo (anti-inyección) vive en
+    // el argsBuilder de canonical-facts, que re-valida y lanza.
+    verificar: {
+        allow(args) { return parseVerificarArgs(args) !== null; },
+        usage: 'verificar <pr|issue|rama|main> <numero>',
+        allowedValues: ['pr <numero>', 'issue <numero>', 'rama <numero>', 'main <numero>'],
+        hint: 'Ej: `verificar pr 3890` (¿está mergeado?), `verificar issue 3897` (¿está cerrado?), `verificar main 3897` (¿el entregable está en main?).',
+    },
+    verify: {
+        allow(args) { return parseVerificarArgs(args) !== null; },
+        usage: 'verify <pr|issue|rama|main> <numero>',
+        allowedValues: ['pr <numero>', 'issue <numero>', 'rama <numero>', 'main <numero>'],
+        hint: 'Alias de `verificar`.',
+    },
 };
 
 function validateArgs(command, args) {
@@ -522,6 +657,11 @@ function createDispatcher(opts) {
         // (pulpo.js o tests) puede inyectar `whisperLocal`/`githubClient`/etc.
         // Si no se inyectan, se usan los defaults reales (whisper-local.js + gh CLI).
         rechazarDeps: options.rechazarDeps || null,
+        // Issue #3897 — impls inyectables para `/verificar` (gitImpl/ghApi/
+        // processCheck/timeoutMs). Tests usan fakes; producción usa los
+        // defaults reales de canonical-facts (#3895).
+        canonicalImpls: options.canonicalImpls || null,
+        canonicalFacts: options.canonicalFacts || null,
     });
     const handlers = { ...defaultHandlers, ...customHandlers };
 
@@ -871,11 +1011,52 @@ function buildDefaultHandlers(ctx) {
             : [],
     });
 
+    // Issue #3897 CA-5 — handler de `/verificar`: resuelve el claim contra su
+    // fuente canónica (#3895) y responde citando el comando canónico ejecutado
+    // en forma hecho+fuente legible (UX-2). Fail-open: cualquier falla del
+    // canonical (gh/git ausente, timeout, parse) → not_verifiable comunicado
+    // con lenguaje claro — NUNCA una afirmación especulativa.
+    const VERIFICAR_TIMEOUT_MS = 8000; // interactivo (gh tarda ~1s); el batch usa 200ms.
+    const verificarHandler = async ({ args }) => {
+        const parsed = parseVerificarArgs(args);
+        if (!parsed) {
+            // Defensa redundante: ARG_SCHEMAS ya rechazó esta forma.
+            throw new Error('verificar: args inválidos');
+        }
+        let result = null;
+        try {
+            const canonical = ctx.canonicalFacts || require('./canonical-facts');
+            result = await canonical.resolveClaim(
+                parsed.claimKey,
+                { [parsed.param]: parsed.numero },
+                {
+                    cwd: path.dirname(PIPELINE),
+                    timeoutMs: VERIFICAR_TIMEOUT_MS,
+                    ...(ctx.canonicalImpls || {}),
+                }
+            );
+        } catch {
+            result = null; // fail-open → not_verifiable (UX-2)
+        }
+        const verifiable = !!(result && result.status && result.status !== 'not_verifiable');
+        return fillTemplate('verificar', {
+            'claim-tipo': parsed.tipo,
+            numero: parsed.numero,
+            verifiable,
+            'claim-true': !!(result && result.value === true),
+            citation: canonicalCitationFor(parsed.claimKey, parsed.numero, result),
+        });
+    };
+
     return {
         // Issue #3415 — aliases todos mapean al mismo handler.
         rechazar: rechazarHandler.handle,
         reject: rechazarHandler.handle,
         rebobinar: rechazarHandler.handle,
+
+        // Issue #3897 — `/verificar` + alias inglés.
+        verificar: verificarHandler,
+        verify: verificarHandler,
 
         // Issue #3253 — CA-1: `/quota` read-only. Lee
         // `.pipeline/quota-exhausted.json` con whitelist estricta de campos
@@ -2120,6 +2301,12 @@ module.exports = {
     ARG_SCHEMAS,
     // #3493 — exports para tests de subcomandos `/wave`.
     parseWaveArgs,
+    // #3897 — exports para tests de `/verificar` (CA-5: cita canónica + UX-2).
+    parseVerificarArgs,
+    renderCanonicalCitation,
+    canonicalCitationFor,
+    VERIFICAR_NOT_VERIFIABLE_MSG,
+    VERIFICAR_CLAIM_TYPES,
     _waveInternal: {
         handleWaveStatus,
         handleWaveNext,
