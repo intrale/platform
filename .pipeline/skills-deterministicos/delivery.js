@@ -361,6 +361,57 @@ async function main() {
             logAppend(`[delivery] git fetch warning: ${fetchRes.stderr.slice(0, 200)}`);
         }
 
+        // ── (#3819) Entrega previa: rama sin commits, trabajo ya en main ──
+        // Si la rama no tiene commits propios sobre origin/main pero main YA
+        // contiene commits que referencian el issue (entregable arrastrado por
+        // el PR de otro issue — caso real: #3819 entró a main vía el PR de
+        // #3821), un PR acá sería vacío y `gh pr create` fallaría con
+        // "No commits between main and <branch>". En vez de fallar: cerrar el
+        // issue citando la entrega previa y terminar OK.
+        // Importante: este check corre DESPUÉS de Fase 1 (stage+commit) — si
+        // había trabajo real sin commitear, Fase 1 ya lo commiteó y acá
+        // rev-list da > 0, así que el early-exit no se dispara.
+        const aheadRes = git.runGit(['rev-list', '--count', 'origin/main..HEAD'], { cwd: WORK_DIR });
+        const aheadCount = aheadRes.exit_code === 0 ? parseInt((aheadRes.stdout || '').trim(), 10) : NaN;
+        if (aheadCount === 0) {
+            const priorRefs = git.getPriorDeliveryRefs(WORK_DIR, issue, 'origin/main');
+            if (!priorRefs.length) {
+                throw new Error(
+                    `Rama ${branch} sin commits sobre origin/main y sin entrega previa de #${issue} en main — nada que entregar (corregir en dev).`,
+                );
+            }
+            logAppend(`[delivery] entrega previa detectada en main: ${priorRefs.join(' · ')}`);
+            const commentBody = [
+                '🔁 **Entrega sin PR — entregable ya mergeado en `main`**',
+                '',
+                `El pipeline detectó que la rama \`${branch}\` no tiene commits propios y que el entregable de este issue ya está en \`main\`:`,
+                '',
+                ...priorRefs.map((r) => `- \`${r}\``),
+                '',
+                'Se cierra el issue sin crear PR (un PR vacío fallaría). Delivery determinístico V3.',
+            ].join('\n');
+            const commentFile = tmpFile('prior-delivery-comment', commentBody);
+            const commentRes = git.runGh(
+                ['issue', 'comment', String(issue), '--body-file', commentFile],
+                { cwd: WORK_DIR, timeoutMs: 60 * 1000 },
+            );
+            try { fs.unlinkSync(commentFile); } catch {}
+            if (commentRes.exit_code !== 0) {
+                logAppend(`[delivery] aviso: comentario de entrega previa falló: ${(commentRes.stderr || '').slice(0, 200)}`);
+            }
+            const closeRes = git.runGh(
+                ['issue', 'close', String(issue)],
+                { cwd: WORK_DIR, timeoutMs: 60 * 1000 },
+            );
+            if (closeRes.exit_code !== 0) {
+                throw new Error(`gh issue close falló: ${(closeRes.stderr || closeRes.stdout || '').slice(0, 300)}`);
+            }
+            phaseEnd('prior_delivery', t);
+            motivo = `Entregable de #${issue} ya mergeado en main (${priorRefs[0]}) — issue cerrado sin PR (entrega previa).`;
+            logAppend(`[delivery] ${motivo}`);
+            return; // finally: marker aprobado + trace + heartbeat stop + exit 0
+        }
+
         // (a) Cleanup defensivo: drop de stashes huérfanos de runs anteriores
         //     que crashearon entre stash y pop (PIDs muertos con prefijo
         //     `delivery-<issue>-`). No bloquea si nadie quedó huérfano.
@@ -616,7 +667,11 @@ async function main() {
         }
         reportLines.push('### Veredicto');
         reportLines.push(exitCode === 0
-            ? (mergeSha ? 'Entrega completada y mergeada a main.' : 'PR creado, esperando gate QA antes del merge.')
+            ? (mergeSha
+                ? 'Entrega completada y mergeada a main.'
+                : (prNumber
+                    ? 'PR creado, esperando gate QA antes del merge.'
+                    : 'Entrega cerrada sin PR — entregable ya estaba en main (ver motivo).'))
             : 'Delivery rechazado — ver motivo y rebote.');
         const report = reportLines.join('\n');
         logAppend('[delivery] --- REPORTE ---');
@@ -645,9 +700,13 @@ async function main() {
         });
 
         hb.stop();
-    }
 
-    process.exit(exitCode);
+        // (#3819) El exit vive en el finally para soportar el early-return de
+        // "entrega previa" (un `return` dentro del try ejecuta este finally y
+        // sale acá con exitCode=0). Para los flujos normales el comportamiento
+        // es idéntico al process.exit que antes vivía después del try/finally.
+        process.exit(exitCode);
+    }
 }
 
 if (require.main === module) {

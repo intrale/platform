@@ -207,6 +207,28 @@ test('checkClosesIssue — sin commits emite error', () => {
     assert.equal(f[0].severity, 'error');
 });
 
+// (#3819) Entrega previa: rama vacía pero el trabajo ya está mergeado en main.
+test('checkClosesIssue — sin commits pero con entrega previa emite warn already-delivered', () => {
+    const f = c.checkClosesIssue([], 3819, {
+        priorDeliveryRefs: ['a6c107c fix: corregir 3 defectos del validador (#3820) (#3821)'],
+    });
+    assert.equal(f.length, 1);
+    assert.equal(f[0].rule, 'pr:already-delivered');
+    assert.equal(f[0].severity, 'warn');
+    assert.ok(f[0].message.includes('a6c107c'));
+});
+
+test('checkClosesIssue — sin commits y sin entrega previa sigue bloqueando con error', () => {
+    const f = c.checkClosesIssue([], 42, { priorDeliveryRefs: [] });
+    assert.equal(f[0].rule, 'pr:no-commits');
+    assert.equal(f[0].severity, 'error');
+});
+
+test('checkClosesIssue — already-delivered NO bloquea el aggregate', () => {
+    const f = c.checkClosesIssue([], 3819, { priorDeliveryRefs: ['abc1234 feat: x (#3819)'] });
+    assert.equal(c.aggregate(f).passed, true);
+});
+
 // ── checkCommitSubjects ──────────────────────────────────────────────
 test('checkCommitSubjects — subject corto y sin puntuación final pasa', () => {
     assert.equal(c.checkCommitSubjects(['feat(x): cambio chico']).length, 0);

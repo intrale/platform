@@ -465,6 +465,45 @@ function fetchOrigin(cwd) {
     return runGit(['fetch', 'origin', 'main'], { cwd, timeoutMs: 60 * 1000 });
 }
 
+/**
+ * (#3819) Busca commits YA mergeados en la base que referencien al issue.
+ *
+ * Caso real que motiva esto: el entregable de #3819 llegó a main arrastrado
+ * por el PR de OTRO issue (#3821, cuya rama compartía los commits). La rama
+ * del ciclo quedó sin commits propios y el gate `pr:no-commits` rebotaba el
+ * issue para siempre, aunque el trabajo ya estaba entregado.
+ *
+ * Implementación: `git log <base> --grep=#<issue>` (string fija — sin
+ * metacaracteres, porque runCmd usa shell:true en Windows y cmd.exe rompería
+ * con `|`/`(`/`)`) y luego filtro en JS con regex `#<issue>(?!\d)` sobre el
+ * mensaje completo para descartar falsos positivos tipo #38190.
+ *
+ * @returns {string[]} líneas "<sha7> <subject>" (máx 5), [] si no hay match.
+ */
+function getPriorDeliveryRefs(cwd, issue, base = 'origin/main') {
+    if (!issue) return [];
+    const r = runGit([
+        'log', base, `--grep=#${issue}`,
+        '--pretty=format:%H%n%B%n---END-COMMIT---',
+        '-n', '20',
+    ], { cwd, timeoutMs: 60 * 1000 });
+    if (r.exit_code !== 0) return [];
+    const rx = new RegExp(`#${issue}(?!\\d)`);
+    const refs = [];
+    for (const chunk of (r.stdout || '').split('---END-COMMIT---')) {
+        const lines = chunk.trim().split(/\r?\n/);
+        if (lines.length < 1 || !lines[0]) continue;
+        const sha = lines[0].trim();
+        const body = lines.slice(1).join('\n');
+        if (!/^[0-9a-f]{40}$/i.test(sha)) continue;
+        if (!rx.test(body)) continue;
+        const subject = (lines[1] || '').trim();
+        refs.push(`${sha.slice(0, 7)} ${subject}`.trim());
+        if (refs.length >= 5) break;
+    }
+    return refs;
+}
+
 function rebaseOnto(cwd, base = 'origin/main', { autostash = true } = {}) {
     // #2519 (rev-2): --autostash es defensa en profundidad para el caso en que
     // el árbol de trabajo tenga archivos tracked modificados que SAFE_IGNORE
@@ -656,6 +695,7 @@ module.exports = {
     parseGitStatusOutput,
     getDiffStats,
     fetchOrigin,
+    getPriorDeliveryRefs,
     rebaseOnto,
     rebaseAbort,
     pushBranch,
