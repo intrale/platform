@@ -8648,6 +8648,14 @@ let multiProviderView = null;
 try { multiProviderApi = require('./lib/multi-provider/api'); } catch (e) { log(`multi-provider api unavailable: ${e.message}`); }
 try { multiProviderView = require('./views/dashboard/multi-provider'); } catch (e) { log(`multi-provider view unavailable: ${e.message}`); }
 
+// #3737 — Panel UI Providers (NUEVO, split del épico #3715). Read-only: lista
+// credenciales gestionadas (masked + fingerprint). Lazy require defensivo
+// (patrón #3177): si el módulo falla, el dashboard arranca igual y `/providers`
+// queda servido por el fallback inerte de dashboard-routes.js. Coexiste con
+// /multi-provider (decisión D0 del PO).
+let providersView = null;
+try { providersView = require('./views/dashboard/providers'); } catch (e) { log(`providers view unavailable: ${e.message}`); }
+
 // #3735 — API del banner de consumo anómalo migrada al módulo
 // lib/cost-anomaly/api.js (split de la ventana Costos). Lazy require: si falla,
 // el dashboard arranca sin los endpoints POST de ack/snooze.
@@ -8841,6 +8849,14 @@ const server = http.createServer((req, res) => {
   if (multiProviderView && (req.url === '/multi-provider' || req.url === '/multi-provider/')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(multiProviderView.renderMultiProvider());
+    return;
+  }
+
+  // #3737 — Providers: HTML del panel read-only. Mounted antes que el catch-all
+  // para que `/providers` no caiga al legacy. Coexiste con /multi-provider.
+  if (providersView && (req.url === '/providers' || req.url === '/providers/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(providersView.renderProviders());
     return;
   }
 

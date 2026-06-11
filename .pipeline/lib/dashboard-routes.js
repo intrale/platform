@@ -74,6 +74,42 @@ function _opsInertFallback(reason) {
         '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3 / REQ-SEC-7).</p></main></body></html>';
 }
 
+// #3737 — Vista Providers (NUEVA, split del épico #3715). Lista las
+// credenciales gestionadas (masked + fingerprint desde secrets-rw.listKeys()),
+// READ-ONLY. Require defensivo (patrón CA-A2): si el módulo falla al cargar,
+// `renderProvidersView` cae a un fallback inerte VISIBLE (CA-A3 / SEC-7) en
+// lugar de dejar la ventana en blanco o tirar 500. Coexiste con /multi-provider.
+let providersView = null;
+try { providersView = require('../views/dashboard/providers'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] providers view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+// Render de la ventana Providers + fallback inerte. La vista NO necesita el
+// state en vivo (lee `secrets.listKeys()` por sí misma), por eso el thunk no
+// consume ctx. Consumido por el path legacy `/providers` (HTML_ROUTES) y por
+// `?view=providers` (VIEW_SLUGS) — ambos resuelven al MISMO thunk para que no
+// diverjan (CA-PRV-3).
+function renderProvidersView() {
+    if (!providersView || typeof providersView.renderProviders !== 'function') {
+        return _providersInertFallback('módulo views/dashboard/providers no disponible (require falló)');
+    }
+    try {
+        return providersView.renderProviders();
+    } catch (e) {
+        if (typeof providersView.renderInert === 'function') return providersView.renderInert((e && e.message) || 'error de render');
+        return _providersInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo providers NO cargó.
+function _providersInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Providers</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Providers no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3 / SEC-7).</p></main></body></html>';
+}
+
 // #3736 — Ventana Descanso extraída a su propio módulo (padre #3715). Require
 // defensivo: si el módulo aún no aterrizó, HTML_ROUTES/VIEW_SLUGS caen al
 // renderer legacy de satellites.js (delegante de una línea).
@@ -456,6 +492,9 @@ const HTML_ROUTES = {
     // #3732 — /ops ahora resuelve al módulo extraído views/dashboard/ops.js
     // con el state en vivo (opsSlice). Recibe ctx desde handle().
     '/ops': (ctx) => renderOpsView(ctx),
+    // #3737 — /providers resuelve al módulo NUEVO views/dashboard/providers.js
+    // (read-only, lee secrets.listKeys() por sí mismo; ignora ctx).
+    '/providers': () => renderProvidersView(),
     // #3733 — /kpis resuelve al módulo extraído views/dashboard/kpis.js con el
     // state en vivo. Mismo thunk que `?view=kpis` (VIEW_SLUGS) para no divergir.
     '/kpis': (ctx) => renderKpisView(ctx),
@@ -504,6 +543,14 @@ const VIEW_SLUGS = Object.freeze({
     ops: {
         title: 'Ops',
         render: (opts, ctx) => renderOpsView(ctx, opts),
+    },
+    // #3737 — Ventana Providers extraída (split del épico #3715). NUEVA, no
+    // existía en el monolito. Read-only: el render no consume ctx (la vista lee
+    // `secrets.listKeys()`). Resuelve al MISMO thunk que el path legacy
+    // `/providers` (HTML_ROUTES) para no diverger (CA-PRV-3 + smoke CA-G2).
+    providers: {
+        title: 'Providers',
+        render: () => renderProvidersView(),
     },
     // #3736 — Ventana Descanso (slug nuevo `descanso`; el path legacy
     // `/modo-descanso` sigue vivo en HTML_ROUTES sin redirect — orígenes

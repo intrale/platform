@@ -1025,6 +1025,39 @@ test('ok', () => { assert.equal(2, 2); });
     assert.equal(typeof r.last_progress_line, 'string');
 });
 
+// #3737 (rebote rev-2) — Regresión del exit 124 "sin reporte JUnit parseable".
+// Un *.test.js cuyos tests PASAN pero deja un handle activo (setInterval,
+// socket, server sin cerrar) mantenía vivo su child process; el runner
+// top-level esperaba indefinidamente, el wall-timeout de 12min mataba el
+// árbol, y como el reporter junit bufferea todo el documento hasta el final
+// del run, el XML quedaba en 52 bytes (solo el header <testsuites>) →
+// tests=0 → rebote. El fix `--test-force-exit` fuerza la salida del child
+// al completar sus tests. Sin el flag, este test colgaría hasta el
+// --test-timeout del runner padre; con el flag termina en segundos.
+test('#3737 rev-2 — runNodeTests termina y flushea JUnit aunque un test deje un handle abierto', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3737-handle-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'leaky.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('pasa pero deja un interval vivo', () => { assert.equal(1, 1); });
+// Handle residual post-éxito: sin --test-force-exit este child nunca sale.
+setInterval(() => {}, 1000);
+`);
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'normal.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('normal ok', () => { assert.equal(2, 2); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.timed_out, false, 'el run NO debe llegar al wall-timeout');
+    assert.equal(r.exit_code, 0, 'ambos files pasan → exit 0');
+    assert.equal(r.summary.valid, true, 'el JUnit debe flushearse completo (no 52 bytes)');
+    assert.equal(r.summary.tests, 2, 'los 2 tests deben quedar reportados');
+    assert.equal(r.summary.failures, 0);
+});
+
 // #3897 rev-2 — endurecimiento anti-cuelgue del runner.
 //
 // Contexto del rebote: 2/2 runs reales del tester sobre #3897 colgaron 12 min
