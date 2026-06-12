@@ -264,6 +264,43 @@ const PIPELINE_ONLY_PATTERNS = [
     /^scripts\/diff-parser-codepaths\.sh$/, // log-analyzer pipeline (rebote #3576) — NO toca Gradle
 ];
 
+// ── Inputs de Gradle: su ELIMINACIÓN puede alterar compilación/cobertura ──
+// Contexto (rebote #3943): los issues de limpieza (épica EP-6) BORRAN basura
+// de la raíz del repo — `delivery-all.sh`, `bash.exe.stackdump`,
+// `UsersAdministratoragent-teams-report.html`, `.js` con nombres "mangled",
+// un `.jsonl` de auditoría, etc. Esos paths root NO matchean ningún
+// PIPELINE_ONLY_PATTERN, así que rompían el `every` de isPipelineOnlyChange
+// → ruta gradle → 0 reportes JUnit → rebote "[tester] No se encontraron
+// reportes JUnit". Verificación empírica en `.pipeline/logs/3943-tester.log`:
+//   [tester] git diff vs main: 15 archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 wall_ms=55313 (0 tests, sin JUnit)
+//
+// Principio del fix: una ELIMINACIÓN solo puede afectar el build/cobertura de
+// Gradle si el archivo borrado era un *input* de Gradle (código Kotlin/Java,
+// scripts de build, properties, o recursos bajo `src/.../res|resources/`).
+// Borrar un `.html`/`.sh`/`.stackdump`/`.jsonl` de la raíz no cambia nada que
+// Gradle compile o mida → es neutro para la decisión gradle-vs-node y NO debe
+// forzar la ruta gradle. Las MODIFICACIONES y ADICIONES conservan la frontera
+// estricta clásica (solo PIPELINE_ONLY_PATTERNS las hace neutras).
+//
+// Deliberadamente conservador: cualquier borrado que matchee un input de
+// Gradle (ej. borrar un `.kt` de producción, que SÍ baja cobertura) sigue
+// forzando la ruta gradle. El test `#3943` documenta y protege esta frontera.
+const GRADLE_INPUT_PATTERNS = [
+    /\.(kt|kts|java|gradle|properties|pro)$/i, // fuentes/build/proguard
+    /(^|\/)src\/.*\/(res|resources)\//,        // recursos Android/JVM
+];
+
+/**
+ * `true` si la eliminación del path puede alterar lo que Gradle compila o la
+ * cobertura que mide. Solo se consulta para archivos BORRADOS (ver
+ * isPipelineOnlyChange). Para no-borrados la frontera sigue siendo
+ * PIPELINE_ONLY_PATTERNS.
+ */
+function isGradleInput(file) {
+    return GRADLE_INPUT_PATTERNS.some((re) => re.test(file));
+}
+
 /**
  * Resuelve el directorio que contiene `git.exe`/`git` para asegurarse de que
  * los procesos hijos puedan ejecutar git aunque el PATH heredado del pulpo
@@ -354,7 +391,31 @@ function getChangedFilesVsMain(repoRoot) {
     });
 }
 
-function isPipelineOnlyChange(files) {
+/**
+ * Devuelve un Set con los archivos ELIMINADOS respecto a `origin/main`
+ * (`git diff --diff-filter=D`) o un Set vacío si git falla. Se usa para que
+ * isPipelineOnlyChange pueda tratar como neutros los borrados de basura que no
+ * son inputs de Gradle (rebote #3943). Probamos las mismas bases que
+ * getChangedFilesVsMain para cubrir worktrees sin `origin/main` local.
+ */
+function getDeletedFilesVsMain(repoRoot) {
+    return new Promise((resolve) => {
+        const bases = ['origin/main', 'main', 'origin/HEAD'];
+        const tryNext = (idx) => {
+            if (idx >= bases.length) return resolve(new Set());
+            execFile('git', ['diff', '--name-only', '--diff-filter=D', `${bases[idx]}...HEAD`], {
+                cwd: repoRoot, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+            }, (err, stdout) => {
+                if (err) return tryNext(idx + 1);
+                const files = String(stdout).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+                resolve(new Set(files));
+            });
+        };
+        tryNext(0);
+    });
+}
+
+function isPipelineOnlyChange(files, deletedPaths) {
     // Distinguimos tres casos:
     //   1) files no es array (null/undefined): no se pudo determinar el diff
     //      (git falló o no hay base). Conservar comportamiento legacy: caer
@@ -375,10 +436,24 @@ function isPipelineOnlyChange(files) {
     //      gradle exit_code=0 wall_ms=68724 BUILD SUCCESSFUL con todas las
     //      tasks UP-TO-DATE y minMtimeMs filtrando todos los XMLs viejos
     //      → `tests.valid=false`).
-    //   3) files con cambios: comportamiento clásico, every match patterns.
+    //   3) files con cambios: comportamiento clásico, every match patterns —
+    //      excepto que una ELIMINACIÓN de un archivo que NO es input de Gradle
+    //      se considera neutra (rebote #3943, ver GRADLE_INPUT_PATTERNS). Esto
+    //      cubre los issues de limpieza (EP-6) que borran basura de la raíz sin
+    //      tocar nada que Gradle compile o mida.
+    //
+    // `deletedPaths` es un Set opcional con los paths borrados (diff-filter=D).
+    // Si no se provee (llamadas legacy/tests de un solo argumento), se asume
+    // vacío y el comportamiento es idéntico al clásico.
     if (!Array.isArray(files)) return false;
     if (files.length === 0) return true; // rebote #3342: vacuously pipeline-only
-    return files.every((f) => PIPELINE_ONLY_PATTERNS.some((re) => re.test(f)));
+    const deleted = deletedPaths instanceof Set ? deletedPaths : new Set();
+    return files.every((f) => {
+        if (PIPELINE_ONLY_PATTERNS.some((re) => re.test(f))) return true;
+        // Borrado de un no-input de Gradle → neutro (rebote #3943).
+        if (deleted.has(f) && !isGradleInput(f)) return true;
+        return false;
+    });
 }
 
 /**
@@ -1021,7 +1096,10 @@ async function main() {
         logAppend(`[tester] worktree del agente detectado: ${issueWorktree}`);
     }
     const changedFiles = await getChangedFilesVsMain(diffCwd);
-    const pipelineOnly = isPipelineOnlyChange(changedFiles);
+    // Rebote #3943: los borrados de basura (no-inputs de Gradle) no deben forzar
+    // la ruta gradle. Pasamos el set de eliminaciones para tratarlos como neutros.
+    const deletedFiles = await getDeletedFilesVsMain(diffCwd);
+    const pipelineOnly = isPipelineOnlyChange(changedFiles, deletedFiles);
     if (changedFiles) {
         logAppend(`[tester] git diff vs main: ${changedFiles.length} archivos · pipeline_only=${pipelineOnly}`);
         if (pipelineOnly) {
@@ -1353,8 +1431,11 @@ module.exports = {
     runNodeTests,
     ensureGitInPath,
     getChangedFilesVsMain,
+    getDeletedFilesVsMain,
+    isGradleInput,
     resolveGitDir,
     PIPELINE_ONLY_PATTERNS,
+    GRADLE_INPUT_PATTERNS,
     GIT_FALLBACK_DIRS_WIN32,
     MODULE_DIRS,
     DEFAULT_COVERAGE_THRESHOLD,

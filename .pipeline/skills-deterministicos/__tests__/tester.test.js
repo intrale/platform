@@ -340,6 +340,74 @@ test('isPipelineOnlyChange — false si hay archivos Kotlin/Compose', () => {
     ]), false);
 });
 
+test('#3943 — isPipelineOnlyChange ignora borrados de basura root (no-inputs de Gradle)', () => {
+    // Reproduce el rebote real de #3943: un issue de limpieza (EP-6) que toca
+    // solo `.pipeline/`, `.gitignore`, `.claude/` y BORRA basura de la raíz.
+    // Los paths root borrados no matchean ningún PIPELINE_ONLY_PATTERN, pero al
+    // ser eliminaciones de no-inputs de Gradle son neutros → pipeline-only.
+    const changed = [
+        '.claude/skills/delivery/SKILL.md',
+        '.gitignore',
+        '.pipeline/cleanup-root-oneshot.js',
+        '.pipeline/config.yaml',
+        '.pipeline/ghostbusters.js',
+        '.pipeline/lib/__tests__/ghostbusters-worktrees.test.js',
+        '.pipeline/lib/ghostbusters-worktrees.js',
+        '.pipeline/pulpo.js',
+        'UsersAdministratoragent-teams-report.html',
+        'WorkspacesIntraleplatform.claudehooksagent-doctor.js',
+        'WorkspacesIntraleplatform/.pipeline/audit/architect-tokens.jsonl',
+        'bash.exe.stackdump',
+        'delivery-all.sh',
+    ];
+    const deleted = new Set([
+        'UsersAdministratoragent-teams-report.html',
+        'WorkspacesIntraleplatform.claudehooksagent-doctor.js',
+        'WorkspacesIntraleplatform/.pipeline/audit/architect-tokens.jsonl',
+        'bash.exe.stackdump',
+        'delivery-all.sh',
+    ]);
+    assert.equal(tester.isPipelineOnlyChange(changed, deleted), true);
+});
+
+test('#3943 — un borrado de basura root NO modificada como cambio (sin set) sigue rompiendo el match', () => {
+    // Sin el set de borrados (llamada legacy de un solo argumento) el path root
+    // no matchea ningún patrón → frontera estricta clásica conservada.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/ghostbusters.js',
+        'bash.exe.stackdump',
+    ]), false);
+});
+
+test('#3943 — borrar un input de Gradle (.kt) SÍ fuerza la ruta gradle aunque sea eliminación', () => {
+    // Borrar código de producción Kotlin puede bajar la cobertura medida por
+    // Kover → debe seguir forzando gradle aunque el archivo esté en el set de
+    // borrados. Frontera de seguridad del fix.
+    const deleted = new Set(['app/composeApp/src/commonMain/kotlin/asdo/Old.kt']);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/ghostbusters.js',
+        'app/composeApp/src/commonMain/kotlin/asdo/Old.kt',
+    ], deleted), false);
+});
+
+test('#3943 — borrar un recurso bajo src/.../res/ SÍ fuerza gradle', () => {
+    const deleted = new Set(['app/composeApp/src/androidMain/res/values/strings.xml']);
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/composeApp/src/androidMain/res/values/strings.xml',
+    ], deleted), false);
+});
+
+test('#3943 — isGradleInput clasifica inputs vs basura', () => {
+    assert.equal(tester.isGradleInput('app/src/main/kotlin/X.kt'), true);
+    assert.equal(tester.isGradleInput('build.gradle.kts'), true);
+    assert.equal(tester.isGradleInput('gradle.properties'), true);
+    assert.equal(tester.isGradleInput('app/src/main/res/values/x.xml'), true);
+    assert.equal(tester.isGradleInput('bash.exe.stackdump'), false);
+    assert.equal(tester.isGradleInput('delivery-all.sh'), false);
+    assert.equal(tester.isGradleInput('UsersAdministratoragent-teams-report.html'), false);
+    assert.equal(tester.isGradleInput('WorkspacesIntraleplatform/.pipeline/audit/x.jsonl'), false);
+});
+
 test('isPipelineOnlyChange — false con null/undefined (diff no determinable)', () => {
     // null/undefined significan "no se pudo calcular el diff" (git falló, base
     // ausente, etc.). Conservamos el fallback a gradle por seguridad.

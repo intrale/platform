@@ -6814,6 +6814,78 @@ function brazoHuerfanos(config) {
 }
 
 // =============================================================================
+// BRAZO: GHOSTBUSTERS CRON (#3943, EP6-H1)
+// =============================================================================
+//
+// Cron interno que dispara periódicamente `ghostbusters.js --worktrees` como
+// proceso hijo para retirar worktrees muertos (rama inexistente en remoto o
+// antigüedad > umbral, siempre que el gate de seguridad lo permita).
+//
+// Diseño:
+//   - Child process (NO require + run() inline): el sweep usa powershell para
+//     medir tamaños y puede tardar minutos — bloquearía el event loop.
+//   - Guard de re-entrada: si la corrida anterior sigue viva, se saltea.
+//   - dry_run=true por default (RS-4): la primera ejecución real exige que un
+//     humano revise el output del dry-run y habilite `dry_run: false`.
+//   - Output a `.pipeline/logs/ghostbusters-cron.log` (resumen legible) y
+//     audit JSONL en `.pipeline/audit/ghostbusters-worktrees.jsonl`.
+// =============================================================================
+
+let ghostbustersCronRunning = false;
+
+function brazoGhostbusters(config) {
+  const cfg = (config && config.ghostbusters_cron) || {};
+  if (cfg.enabled === false) {
+    log('ghostbusters', 'Cron deshabilitado por config (ghostbusters_cron.enabled: false)');
+    return;
+  }
+  const intervalMin = Math.min(Math.max(parseInt(cfg.intervalMin, 10) || 60, 5), 24 * 60);
+  const cap = Math.max(parseInt(cfg.cap, 10) || 5, 1);
+  const dryRun = cfg.dry_run !== false; // default true (RS-4)
+  const ageDays = Math.max(parseInt(cfg.age_threshold_days, 10) || 30, 1);
+  const logFile = path.join(PIPELINE, 'logs', 'ghostbusters-cron.log');
+
+  const tick = () => {
+    if (ghostbustersCronRunning) {
+      log('ghostbusters', 'Tick salteado: corrida anterior sigue en vuelo');
+      return;
+    }
+    ghostbustersCronRunning = true;
+    try {
+      const args = [
+        path.join(PIPELINE, 'ghostbusters.js'),
+        '--worktrees',
+        `--cap=${cap}`,
+        `--age-days=${ageDays}`,
+      ];
+      if (!dryRun) args.push('--run');
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+      const out = fs.openSync(logFile, 'a');
+      fs.writeSync(out, `\n===== ghostbusters-cron ${new Date().toISOString()} (dry_run=${dryRun}, cap=${cap}, age>${ageDays}d) =====\n`);
+      const child = spawn(process.execPath, args, {
+        cwd: ROOT, windowsHide: true, stdio: ['ignore', out, out],
+      });
+      child.on('exit', (code) => {
+        ghostbustersCronRunning = false;
+        try { fs.closeSync(out); } catch {}
+        log('ghostbusters', `Corrida terminada (exit ${code}, dry_run=${dryRun}). Detalle en logs/ghostbusters-cron.log`);
+      });
+      child.on('error', (e) => {
+        ghostbustersCronRunning = false;
+        try { fs.closeSync(out); } catch {}
+        log('ghostbusters', `Error spawneando corrida: ${e.message}`);
+      });
+    } catch (e) {
+      ghostbustersCronRunning = false;
+      log('ghostbusters', `Tick excepción: ${e.message}`);
+    }
+  };
+
+  setInterval(tick, intervalMin * 60 * 1000);
+  log('ghostbusters', `Cron iniciado: cada ${intervalMin}min, cap=${cap}, dry_run=${dryRun}, age>${ageDays}d`);
+}
+
+// =============================================================================
 // BRAZO 4.5: REWIND — Procesa eventos `pipeline.rejection` del Commander (#3416)
 // =============================================================================
 //
@@ -11682,6 +11754,21 @@ async function mainLoop() {
     log('credential-rotation', `Cron iniciado: tick cada ${Math.round(tickMs / 60000)}min`);
   } catch (e) {
     log('credential-rotation', `No se pudo iniciar el cron: ${e.message}`);
+  }
+
+  // #3943 — Brazo cron de ghostbusters --worktrees (EP6-H1).
+  // Retira worktrees muertos: criterio compuesto seguridad AND abandono,
+  // guard anti-suicidio, cap por corrida y audit JSONL (RS-1..RS-4).
+  // Corre como CHILD PROCESS (spawn de ghostbusters.js) para no bloquear el
+  // event loop del pulpo: el sweep mide tamaños de disco vía powershell y
+  // puede tardar minutos con muchos worktrees. Accesorio: si falla, el pulpo
+  // sigue corriendo. Config en `ghostbusters_cron` de config.yaml; default
+  // dry_run=true — la primera corrida real requiere revisión humana del
+  // output (pre-checklist del issue).
+  try {
+    brazoGhostbusters(loadConfig() || {});
+  } catch (e) {
+    log('ghostbusters', `No se pudo iniciar el cron: ${e.message}`);
   }
 
   // #3087 — Cron interno autoritativo para alertas de cambios en agent-models.json.

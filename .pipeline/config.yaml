@@ -303,6 +303,22 @@ cost_anomaly_alert:
     telegram: true            # Encolar en .pipeline/servicios/telegram/pendiente/
     dashboard_banner: true    # Renderizar banner + pill en /
 
+# (#3943, EP6-H1) Cron de ghostbusters --worktrees: retira worktrees muertos.
+# Criterio compuesto (RS-3): seguridad (sin uncommitted + sin unpushed + sin
+# proceso vivo) AND abandono (rama inexistente en remoto O antigüedad > umbral).
+# Guard anti-suicidio (RS-1) y git sin shell (RS-2) en lib/ghostbusters-worktrees.js.
+# Audit JSONL append-only en .pipeline/audit/ghostbusters-worktrees.jsonl (RS-4).
+#
+# ⚠️ dry_run: true es el default OBLIGATORIO de la primera ejecución (RS-4).
+# Habilitar borrado real (dry_run: false) SOLO después de revisar el output
+# del dry-run en .pipeline/logs/ghostbusters-cron.log.
+ghostbusters_cron:
+  enabled: true
+  intervalMin: 60            # Cadencia del cron interno (clamp 5-1440)
+  cap: 5                     # Máximo de worktrees borrados por corrida (RS-4)
+  dry_run: true              # Default seguro: reportar sin borrar
+  age_threshold_days: 30     # Umbral de antigüedad para criterio de abandono
+
 # Modo descanso (#2890 PR-A, parte del épico #2882) — gating horario.
 # Durante la ventana configurada, sólo corren los skills determinísticos
 # (delivery, builder, linter, tester). El resto queda en `pendiente/` sin

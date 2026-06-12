@@ -54,6 +54,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 const staleBranchesLib = require('./lib/stale-branches');
+const gbWorktrees = require('./lib/ghostbusters-worktrees');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -170,6 +171,13 @@ function parseCliArgs(argv) {
   for (const c of knownCats) if (flags.has(`--${c}`)) opts.categories.add(c);
   if (opts.categories.size === 0) for (const c of knownCats) opts.categories.add(c);
   opts.dryRun = opts.explicitDryRun || !opts.explicitRun;
+  // #3943 — knobs del sweep de worktrees: --cap=N y --age-days=N
+  for (const a of argv) {
+    let m = a.match(/^--cap=(\d+)$/);
+    if (m) opts.worktreeCap = parseInt(m[1], 10);
+    m = a.match(/^--age-days=(\d+)$/);
+    if (m) opts.ageThresholdDays = parseInt(m[1], 10);
+  }
   return opts;
 }
 
@@ -277,39 +285,10 @@ function listWorktrees() {
   }
 }
 
+// #3943 — Migrado a lib/ghostbusters-worktrees.js: spawnSync con array de
+// argumentos (RS-2, sin shell interpolado) + testeable con spawnImpl.
 function isWorktreeSafeToDelete(wtPath, branch) {
-  try {
-    const status = execSync('git status --porcelain', {
-      cwd: wtPath, encoding: 'utf8', timeout: 10000, windowsHide: true,
-    }).trim();
-    const relevantChanges = status.split('\n').filter(l => {
-      if (!l.trim()) return false;
-      const filepath = l.substring(3).trim();
-      return !filepath.startsWith('.claude/') && !filepath.startsWith('.claude\\');
-    });
-    if (relevantChanges.length > 0) return { safe: false, reason: `${relevantChanges.length} archivo(s) sin commitear` };
-
-    if (branch) {
-      try {
-        const ahead = execSync(`git rev-list --count origin/${branch}..HEAD`, {
-          cwd: wtPath, encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim();
-        const n = parseInt(ahead, 10) || 0;
-        if (n > 0) return { safe: false, reason: `${n} commit(s) ahead de origin/${branch}` };
-      } catch {
-        try {
-          const fromMain = execSync(`git rev-list --count origin/main..HEAD`, {
-            cwd: wtPath, encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-          }).trim();
-          const n = parseInt(fromMain, 10) || 0;
-          if (n > 0) return { safe: false, reason: `rama no pusheada con ${n} commit(s) sobre main` };
-        } catch {}
-      }
-    }
-    return { safe: true };
-  } catch (e) {
-    return { safe: false, reason: `no pude inspeccionar: ${e.message.slice(0, 60)}` };
-  }
+  return gbWorktrees.isWorktreeSafeToDelete(wtPath, branch);
 }
 
 function issueIsOpen(issueNum) {
@@ -350,27 +329,11 @@ function dirSizeBytes(dir) {
   }
 }
 
+// #3943 — Migrado a lib/ghostbusters-worktrees.js: guard anti-suicidio (RS-1)
+// como primera línea, cubriendo TANTO `git worktree remove` como el fallback
+// fs.rmSync recursivo. Git via spawnSync con array de args (RS-2).
 function removeWorktree(wtPath) {
-  try {
-    const claudeLink = path.join(wtPath, '.claude');
-    if (fs.existsSync(claudeLink)) {
-      try {
-        spawnSync('cmd', ['/c', 'rmdir', claudeLink.replace(/\//g, '\\')], {
-          timeout: 5000, windowsHide: true, stdio: 'ignore',
-        });
-      } catch {}
-    }
-    execSync(`git worktree remove "${wtPath}" --force`, {
-      cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore',
-    });
-    if (fs.existsSync(wtPath)) {
-      try { fs.rmSync(wtPath, { recursive: true, force: true }); } catch {}
-    }
-    return true;
-  } catch (e) {
-    log(`⚠️ no pude remover ${wtPath}: ${e.message.slice(0, 120)}`);
-    return false;
-  }
+  return gbWorktrees.removeWorktree(wtPath, { mainRepo: ROOT, logger: log });
 }
 
 // -----------------------------------------------------------------------------
@@ -406,7 +369,8 @@ function pipelineHasActiveWork(issueNum) {
   return false;
 }
 
-function findAbandonedWorktrees(procs) {
+function findAbandonedWorktrees(procs, opts = {}) {
+  const ageThresholdDays = opts.ageThresholdDays || gbWorktrees.DEFAULT_AGE_THRESHOLD_DAYS;
   const worktrees = listWorktrees();
   const abandoned = [];
   const myCwd = isPathMe();
@@ -449,12 +413,20 @@ function findAbandonedWorktrees(procs) {
       if (!pr) reason = `rama sin PR abierto`;
     }
     if (reason) {
+      // #3943 RS-3 — criterio compuesto: seguridad (todas) AND abandono (al
+      // menos una: rama inexistente en remoto O antigüedad > umbral). Un solo
+      // criterio NO alcanza para habilitar el borrado.
       const safety = isWorktreeSafeToDelete(wt.path, branch);
       if (!safety.safe) {
         abandoned.push({ path: wt.path, branch, issue: issueNum, reason, skip: true, skipReason: safety.reason });
-      } else {
-        abandoned.push({ path: wt.path, branch, issue: issueNum, reason });
+        continue;
       }
+      const abandonment = gbWorktrees.checkAbandonment(wt.path, branch, { mainRepo: ROOT, ageThresholdDays });
+      if (!abandonment.abandoned) {
+        abandoned.push({ path: wt.path, branch, issue: issueNum, reason, skip: true, skipReason: abandonment.reason });
+        continue;
+      }
+      abandoned.push({ path: wt.path, branch, issue: issueNum, reason: `${reason}; ${abandonment.reason}` });
     }
   }
   return abandoned;
@@ -918,20 +890,24 @@ function run(opts = {}) {
   }
 
   if (cats.has('worktrees')) {
-    const abandoned = findAbandonedWorktrees(procs);
-    for (const w of abandoned) {
-      const size = dirSizeBytes(w.path);
-      const entry = { path: w.path, branch: w.branch, issue: w.issue, reason: w.reason, diskBytes: size };
-      if (w.skip) {
-        entry.skipped = true;
-        entry.skipReason = w.skipReason;
-        entry.removed = false;
-      } else {
-        const ok = dryRun ? false : removeWorktree(w.path);
-        entry.removed = ok;
-        if (ok) report.diskFreedBytes += size;
-      }
-      report.worktrees.push(entry);
+    // #3943 RS-4 — cap por corrida (default 5) + audit log JSONL append-only
+    // en .pipeline/audit/ghostbusters-worktrees.jsonl. El sweep ejecuta el
+    // borrado solo fuera de dry-run; el audit registra ambos modos.
+    const abandoned = findAbandonedWorktrees(procs, { ageThresholdDays: opts.ageThresholdDays });
+    const candidates = abandoned.map(w => ({
+      path: w.path, branch: w.branch, issue: w.issue, reason: w.reason,
+      skip: w.skip, skipReason: w.skipReason,
+      diskBytes: dirSizeBytes(w.path),
+    }));
+    const entries = gbWorktrees.sweepWorktrees(candidates, {
+      cap: opts.worktreeCap || gbWorktrees.DEFAULT_CAP,
+      dryRun,
+      removeImpl: (p) => removeWorktree(p),
+      logger: log,
+    });
+    for (const e of entries) {
+      report.worktrees.push(e);
+      if (e.removed) report.diskFreedBytes += e.diskBytes || 0;
     }
   }
 
@@ -1202,6 +1178,8 @@ if (require.main === module) {
     dryRun: opts.dryRun,
     categories: opts.categories,
     deep: opts.deep,
+    worktreeCap: opts.worktreeCap,
+    ageThresholdDays: opts.ageThresholdDays,
   });
   if (opts.json) {
     process.stdout.write(JSON.stringify(report, null, 2));
@@ -1210,4 +1188,8 @@ if (require.main === module) {
   }
 }
 
-module.exports = { run, fmtReport, parseCliArgs, isWhitelisted, WHITELIST, TH };
+module.exports = {
+  run, fmtReport, parseCliArgs, isWhitelisted, WHITELIST, TH,
+  // #3943 — lógica de worktrees extraída (testeable con spawnImpl/fsImpl)
+  removeWorktree, isWorktreeSafeToDelete, findAbandonedWorktrees,
+};
