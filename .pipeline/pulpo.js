@@ -99,6 +99,10 @@ const commanderIssueCreation = require('./lib/commander/issue-creation');
 // el tool_use, dejando el watchdog de 60s sin armar). Sin LLM en runtime no hay
 // nada que se pueda colgar.
 const commanderDocCreate = require('./lib/commander/doc-create');
+// #3918 (EP1-H3) — Eco de transcripción STT + gate de confirmación por baja
+// confianza. El eco es la única defensa real contra errores de STT.
+const transcriptEcho = require('./lib/commander/transcript-echo');
+const sttConfidence = require('./lib/commander/stt-confidence');
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
@@ -7270,6 +7274,33 @@ function readPrevIssueCreationContext(historyFile, opts = {}) {
   return null;
 }
 
+// #3918 (CA-2) — Lee la última confirmación pendiente del historial. Análogo a
+// `readPrevIssueCreationContext`: sólo mira las últimas `lookback` entradas y
+// respeta la ventana de validez de 5 min (vía `isPendingConfirmationFresh`). Si
+// el último `direction: 'in_pending_confirmation'` está vencido o no existe,
+// retorna `null` → la confirmación expira y la acción NO se ejecuta (RS-4).
+//
+// Devuelve `{ action, description, ts }`. `description` viene del campo `text`
+// (la descripción original, ya sanitizada al persistirse).
+function readPendingConfirmation(historyFile, opts = {}) {
+  const lookback = Number.isFinite(opts.lookback) ? opts.lookback : 5;
+  try {
+    if (!fs.existsSync(historyFile)) return null;
+    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n').slice(-lookback);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i]);
+        if (entry && entry.direction === 'in_pending_confirmation' && typeof entry.text === 'string') {
+          const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+          if (!sttConfidence.isPendingConfirmationFresh(ts)) return null;
+          return { action: entry.action || 'unknown', description: entry.text, ts };
+        }
+      } catch { /* línea inválida, seguir */ }
+    }
+  } catch { /* best-effort */ }
+  return null;
+}
+
 // --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
 
 async function cmdStatus(config) {
@@ -7697,22 +7728,38 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
  * Genera un acknowledgment contextual basado en lo que el usuario pidió.
  * @param {string} texto - El mensaje del usuario
  * @param {boolean} esAudio - Si el mensaje vino de un audio
+ * @param {string[]} [transcripts] - #3918: transcripciones a ecoar cuando el
+ *        mensaje vino por audio. El default `[]` mantiene compat con las
+ *        llamadas existentes (extensión aditiva, CA-4).
  * @returns {string}
  */
-function generarAck(texto, esAudio = false) {
+function generarAck(texto, esAudio = false, transcripts = []) {
   const t = (texto || '').toLowerCase();
   const icon = esAudio ? '🎙️' : '💬';
 
+  // #3918 (CA-1) — Prefijo de eco: "🎤 Entendí: «…»". Sólo para audio y sólo si
+  // hay transcripciones. El eco va en el mensaje de TEXTO del ACK; nunca en el
+  // payload TTS (el ACK no se sintetiza a voz). El helper redacta secretos
+  // (RS-2), escapa Markdown (RS-1) y trunca al cap total (RS-5).
+  let echoPrefix = '';
+  if (esAudio && Array.isArray(transcripts) && transcripts.length > 0) {
+    try {
+      const eco = transcriptEcho.formatTranscriptEcho(transcripts);
+      if (eco) echoPrefix = eco + '\n\n';
+    } catch { /* fail-open: si el eco falla, el ACK sale igual sin eco */ }
+  }
+  const withEcho = (msg) => echoPrefix + msg;
+
   // Detectar intención específica
-  if (/reinici|restart|levant|arranc/.test(t)) return `${icon} Dale, arranco con el reinicio...`;
-  if (/status|estado|tablero|dashboard/.test(t)) return `${icon} Revisando el tablero...`;
-  if (/recurs|cpu|ram|memoria|saturad/.test(t)) return `${icon} Mirando los recursos del sistema...`;
-  if (/error|fall[oó]|roto|crash|bug/.test(t)) return `${icon} Voy a investigar qué pasó...`;
-  if (/test|prueba|verificar|check/.test(t)) return `${icon} Verificando, dame un momento...`;
-  if (/deploy|entreg|merge|push|pr\b/.test(t)) return `${icon} Revisando el delivery...`;
-  if (/propuesta|propon|diseñ|implement|rediseñ/.test(t)) return `${icon} Lo estoy pensando, ya te cuento...`;
-  if (/limpi|clean|kill|mat[aá]/.test(t)) return `${icon} Encargándome de la limpieza...`;
-  if (/\?|terminaste|pudiste|hiciste|cómo|cuánto|qué pas/.test(t)) return `${icon} Buena pregunta, ya te respondo...`;
+  if (/reinici|restart|levant|arranc/.test(t)) return withEcho(`${icon} Dale, arranco con el reinicio...`);
+  if (/status|estado|tablero|dashboard/.test(t)) return withEcho(`${icon} Revisando el tablero...`);
+  if (/recurs|cpu|ram|memoria|saturad/.test(t)) return withEcho(`${icon} Mirando los recursos del sistema...`);
+  if (/error|fall[oó]|roto|crash|bug/.test(t)) return withEcho(`${icon} Voy a investigar qué pasó...`);
+  if (/test|prueba|verificar|check/.test(t)) return withEcho(`${icon} Verificando, dame un momento...`);
+  if (/deploy|entreg|merge|push|pr\b/.test(t)) return withEcho(`${icon} Revisando el delivery...`);
+  if (/propuesta|propon|diseñ|implement|rediseñ/.test(t)) return withEcho(`${icon} Lo estoy pensando, ya te cuento...`);
+  if (/limpi|clean|kill|mat[aá]/.test(t)) return withEcho(`${icon} Encargándome de la limpieza...`);
+  if (/\?|terminaste|pudiste|hiciste|cómo|cuánto|qué pas/.test(t)) return withEcho(`${icon} Buena pregunta, ya te respondo...`);
 
   // Variantes genéricas (no repetir)
   const genericas = [
@@ -7722,7 +7769,7 @@ function generarAck(texto, esAudio = false) {
     `${icon} Un toque que lo proceso...`,
     `${icon} Enterado, ya laburo en eso...`,
   ];
-  return genericas[Math.floor(Math.random() * genericas.length)];
+  return withEcho(genericas[Math.floor(Math.random() * genericas.length)]);
 }
 
 /**
@@ -9498,7 +9545,15 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     log('commander', `Preprocesado: "${m._textoFinal.slice(0, 80)}"${m._audioFailed ? ' [audio fallido: ' + processed.audio.errorKind + ']' : ''}`);
 
     // Registrar entrada en historial (sanitizado por appendCommanderHistory).
-    appendCommanderHistory(historyFile, { direction: 'in', from: m.from, text: m._textoFinal });
+    // #3918 (CA-3 / RS-3): para audios transcriptos OK agregamos campos
+    // aditivos `transcript_echo`/`stt_confidence`/`stt_source`. Todo derivado
+    // pasa por la sanitización de appendCommanderHistory. Consumidores que no
+    // los entienden los descartan en lectura (backward-compatible).
+    const inEntry = { direction: 'in', from: m.from, text: m._textoFinal };
+    if (m._esAudio && m._audio && m._audio.ok) {
+      Object.assign(inEntry, transcriptEcho.buildEchoHistoryFields(m._audio));
+    }
+    appendCommanderHistory(historyFile, inEntry);
   }
 
   // --- CLASIFICAR cada mensaje con el router determinístico (#3257 CA-1) ---
@@ -9576,6 +9631,15 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       });
       if (result && result.reply !== null) {
         respuesta = result.reply;
+        // #3918 (CA-1): comando determinístico originado en audio → prependemos
+        // el eco de la transcripción al reply. Fail-open: si el eco falla, el
+        // reply sale igual.
+        if (m._esAudio && m._audio && m._audio.ok && m._audio.transcript) {
+          try {
+            const eco = transcriptEcho.formatTranscriptEcho([m._audio.transcript]);
+            if (eco) respuesta = eco + '\n\n' + respuesta;
+          } catch { /* fail-open */ }
+        }
       }
     } catch (e) {
       log('commander', `[dispatcher] error: ${e.message}`);
@@ -9738,6 +9802,30 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       log('commander', `Mensajes consolidados: ${textoLibre.length} → 1 prompt`);
     }
 
+    // --- #3918 (CA-1) — Transcripciones a ecoar (TODAS las del conjunto cuando
+    // hay N audios consolidados). Sólo audios transcriptos OK; los fallidos ya
+    // tienen su propio mensaje (no se ecoa nada para ellos).
+    const transcriptsEco = textoLibre
+      .filter(m => m._esAudio && m._audio && m._audio.ok && m._audio.transcript)
+      .map(m => m._audio.transcript);
+
+    // --- #3918 (CA-2) — Replay de confirmación por baja confianza. Si en un
+    // turno previo (< 5 min) quedó una acción pendiente y ESTE mensaje es una
+    // confirmación afirmativa, recuperamos la descripción original y seguimos el
+    // flujo normal con ella (el "sí" no es la acción; la acción es la pendiente).
+    // Fail-open: si algo rompe, seguimos sin replay (comportamiento previo).
+    let sttConfirmedPending = false;
+    try {
+      const pending = readPendingConfirmation(historyFile);
+      if (pending && sttConfidence.isConfirmationText(mensajeConsolidado)) {
+        log('commander', `CA-2: confirmación recibida para acción pendiente (${pending.action}) — replay`);
+        mensajeConsolidado = pending.description;
+        sttConfirmedPending = true;
+      }
+    } catch (e) {
+      log('commander', `CA-2 replay error (fail-open): ${e.message}`);
+    }
+
     // --- #3250 — SEC-2: validación de sender Telegram contra allowlist hardcoded.
     // Defensa en profundidad ante leak de bot token. Por default permite todo
     // (allowlist vacía); si está configurada via `TELEGRAM_ALLOWED_USER_IDS`,
@@ -9787,6 +9875,51 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         matched: issueIntent.matched,
         continuation: !!issueIntent.continuation,
       });
+    }
+
+    // --- #3918 (CA-2 / RS-4) — GATE DE CONFIRMACIÓN POR BAJA CONFIANZA STT.
+    // Aplica SOLO a acciones con efectos (creación de issue) originadas en audio
+    // de baja confianza, y SOLO si no viene ya confirmada (sttConfirmedPending).
+    // Es ADITIVO al cooldown destructivo #3253 (que se sigue evaluando en el
+    // camino determinístico): este gate jamás lo sustituye.
+    //
+    // Confianza 'unknown' (camino API sin logprobs, o anomalía de parseo del
+    // JSON de whisper) → eco sí, confirmación no (coherente con #3917). 'ok' →
+    // ejecuta directo. 'low' → pide confirmación citando la acción textual y
+    // persiste el pendiente. Fail-open: cualquier excepción ejecuta normal.
+    if (wantsIssueCreation && esAudio && !sttConfirmedPending) {
+      try {
+        const confidences = textoLibre
+          .filter(m => m._esAudio && m._audio && m._audio.ok)
+          .map(m => m._audio.confidence);
+        const verdict = sttConfidence.assessConsolidatedConfidence(confidences);
+        if (verdict === sttConfidence.CONFIDENCE.LOW) {
+          const eco = transcriptsEco.length ? transcriptEcho.formatTranscriptEcho(transcriptsEco) : '';
+          const accionTextual = transcriptsEco.join(' / ').slice(0, 200);
+          const confirmMsg =
+            `${eco ? eco + '\n\n' : ''}⚠️ No estoy seguro de haber entendido bien el audio. ` +
+            `Antes de crear el issue confirmame: ¿querés que cree «${accionTextual}»?\n\n` +
+            `Respondé *sí* para confirmar (vence en 5 min).`;
+          sendTelegram(confirmMsg);
+          // Persistimos el pendiente: la descripción ORIGINAL va en `text`
+          // (sanitizada por appendCommanderHistory, RS-3) para poder hacer
+          // replay en el próximo turno si el operador confirma.
+          appendCommanderHistory(historyFile, {
+            direction: 'in_pending_confirmation',
+            action: 'issue_creation',
+            text: mensajeConsolidado,
+          });
+          appendCommanderHistory(historyFile, {
+            direction: 'out', text: confirmMsg.slice(0, 1000), reason: 'stt_low_confidence_confirm',
+          });
+          log('commander', 'CA-2: baja confianza STT en creación de issue — pido confirmación');
+          for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+          saveSession(session);
+          return;
+        }
+      } catch (e) {
+        log('commander', `CA-2 gate error (fail-open): ${e.message}`);
+      }
     }
 
     // --- #3250 — SEC-5: bloqueo cuando el provider efectivo NO es Anthropic.
@@ -9853,7 +9986,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // necesita razonamiento y cuenta con el watchdog reforzado.
     if (wantsIssueCreation && issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SIMPLE) {
       // ACK contextual antes de crear (UX: el operador ve que arrancó).
-      sendTelegram(generarAck(mensajeConsolidado, esAudio));
+      sendTelegram(generarAck(mensajeConsolidado, esAudio, transcriptsEco));
       // Señal explícita de "forzar" para saltear el gate de duplicados.
       const forceDuplicate = /\b(forz[aá]r?|es distinto|igual cre[aá]lo|cre[aá]lo igual)\b/i.test(mensajeConsolidado);
       let docResult;
@@ -9898,7 +10031,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     }
 
     // ACK contextual
-    sendTelegram(generarAck(mensajeConsolidado, esAudio));
+    sendTelegram(generarAck(mensajeConsolidado, esAudio, transcriptsEco));
 
     // #3250 — declarado fuera del try para que el catch pueda calcular
     // durationMs en caso de error (timeout/quota/etc.).
@@ -10425,6 +10558,11 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // Si hubo audio → intentar TTS
         if (esAudio) {
           try {
+            // #3918 (CA-1): el eco "🎤 Entendí: «…»" vive en el ACK (mensaje de
+            // texto enviado antes vía generarAck), NUNCA en `respuesta`. Por eso
+            // los chunks TTS derivados de `respuesta` no lo contienen: escuchar
+            // la propia frase repetida es redundante y consume el cap de 1500
+            // chars de Edge TTS. INVARIANTE: no inyectar el eco en `respuesta`.
             // Cap a 1500 chars para evitar truncado interno de Edge TTS en español (#3485).
             const chatChunks = splitTextForTTSChunks(respuesta, 1500);
             log('commander', `[chat] TTS chunks generados: total_parts=${chatChunks.length} (texto=${respuesta.length} chars, cap=1500)`);

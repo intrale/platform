@@ -97,7 +97,12 @@ async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) { /
 
   const localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
   if (localResult.ok) {
-    return { ok: true, text: localResult.text, source: 'local' };
+    // #3918: propagamos `confidence` cuando el motor local la expone (whisper
+    // local deriva la métrica de los logprobs del JSON). Extensión aditiva: si
+    // el motor no la trae, queda undefined → "confianza desconocida".
+    const out = { ok: true, text: localResult.text, source: 'local' };
+    if (localResult.confidence) out.confidence = localResult.confidence;
+    return out;
   }
   return { ...localResult, source: 'local' };
 }
@@ -203,7 +208,16 @@ async function preprocessMessage(msg, botToken) {
         log(`Transcripcion [whisper local]: "${tx.text.slice(0, 100)}"`);
         result.text = tx.text;
         result.extras.push('(mensaje de voz transcripto · whisper local)');
-        result.audio = { ok: true, source: tx.source };
+        // #3918 (CA-1/CA-2/CA-3): además de ok/source, propagamos la
+        // transcripción cruda (para el eco, sin el sufijo de `extras`) y la
+        // confianza (para el gate de confirmación). `confidence` es null cuando
+        // el parseo del JSON local no derivó métricas.
+        result.audio = {
+          ok: true,
+          source: tx.source,
+          transcript: tx.text,
+          confidence: tx.confidence || null,
+        };
       } else {
         log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}${tx.localErrorKind ? ` | local=${tx.localErrorKind}: ${tx.localRaw}` : ''}`);
         // No metemos el error como texto del mensaje — el caller decide qué hacer.
