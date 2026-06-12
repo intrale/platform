@@ -98,6 +98,10 @@ gh.zip
 Workspacesgh-cli/
 Workspacesgh.zip
 
+# (#3943) Volcados de crash — pueden contener tokens/credenciales en claro (RS-5)
+*.stackdump
+hs_err_pid*.log
+
 # Archivos generados desde los packs base64 del branding
 app/composeApp/src/androidMain/res/mipmap-*/ic_launcher*.png
 app/composeApp/src/wasmJsMain/resources/*.png

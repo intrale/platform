@@ -26,8 +26,8 @@
     },
     {
       "file": "ghostbusters.js",
-      "line": 401,
-      "reason": "Check `hasIssueActive`: solo determina si HAY archivos del issue (any prefix match), no levanta markers. Si hay .comment.md huérfano, sigue siendo señal válida de actividad del issue (cuestionable, pero no rompe invariantes). Trabajo del ghost-artifact-cleaner gestionar esos archivos huérfanos."
+      "line": 364,
+      "reason": "Check `hasIssueActive`: solo determina si HAY archivos del issue (any prefix match), no levanta markers. Si hay .comment.md huérfano, sigue siendo señal válida de actividad del issue (cuestionable, pero no rompe invariantes). Trabajo del ghost-artifact-cleaner gestionar esos archivos huérfanos. (línea recalculada por #3943: extracción de lógica de worktrees a lib/ghostbusters-worktrees.js)"
     },
     {
       "file": "smoke-test.js",
