@@ -46,6 +46,11 @@ Cada sub-historia hija que extrae una ventana o mueve un componente:
 | Tabla telemétrica por issue (sesiones/tokens/costo/timeline) | `dashboard.js` `renderIssues` cliente (8324-8334) bajo `panel-issues` (`/consumo`) | ventana `costos` (#3735) | sin-mover | #3730 — **NO se toca** en este split (R-1). Es telemetría de `/consumo`, distinta de la vista operacional. Migra a Costos en #3735. `dashboard.js:8116-8483` intacto. |
 | Ventana Bloqueados (panel "Necesitan intervención humana") | `dashboard.js:2371-2439` (panel) + `dashboard.js:3511-3700` (`.needs-human-*` CSS) + handlers `needsHuman*`/`toggleNeedsHumanPanel` | ventana `bloqueados` (`views/dashboard/bloqueados.js`) | migrado | #3729 — extraída a módulo propio (`renderBloqueadosSsr` SSR data-driven). Path legacy `/bloqueados` + slug `?view=bloqueados` resuelven al MISMO thunk (`renderBloqueadosView`). Severidad dual-encoded 3 umbrales (info<4h / warning 4-24h / danger≥24h). CSS migrado a `theme.css` con prefijo `.v3-bloqueados-*` (alias `.needs-human-*` preservado, D8). Empty-state celebratorio. Compat retro `?section=needs-human → ?view=bloqueados` (302). Tooltip KPI `dashboard.js:744` NO tocado (scope #3733). Ver sección dedicada. |
 | Ventana Pipeline (control bar + allowlist + audit + infra) | `views/dashboard/pipeline.js` `renderPipelineHTML` (ex `dashboard.js:5116-5347`) | main (home) | migrado | #3728 — extraída del monolito (~210 LOC → módulo SSR de ~370 LOC). Owner: pipeline-dev. Deps: #3722 (`lib/escape-html.js`), #3726 (sprite). SSR puro: state inyectado, sin `fetch`/`require` circular. **Referencia (NO extrae)** los 6 handlers state-changing del `<script>` global: `pauseAction`, `allowlistLike`, `allowlistUnlike`, `allowlistRemove`, `allowlistPromote`, `includeMissingDeps` (+ `pwAction`). `renderInfraHealth` y `renderPartialPauseAuditRows` quedan en `dashboard.js` e inyectados. Bug latente `allowedIssues` (ex línea 5290, `'#'+i` sin escape) corregido vía `escapeHtmlText` (CA-PL7). Jerarquía V3: control bar sticky → banner deps → details Allowlist (open si partial-pause) → details Audit (open si chain_broken/sin-autoría) → infra. Tests: `__tests__/pipeline.test.js` (10, incl. 3 payloads XSS). Ver sección dedicada. |
+| Ventana Equipo (header + grid de áreas + chips) | `dashboard.js` (bloque de render extraído) | Equipo (`views/dashboard/equipo.js`) | migrado | `#3727`. `renderEquipoSsr` es el entry point SSR puro. Los derivados `skillStats`/`skillsByCategory` se siguen calculando en `dashboard.js` y se pasan como input. Escape XSS vía `lib/escape-html` (CA-B3) + `safeColor`/`safeLogHref`. Ver sección dedicada. |
+| `personaCard` / `skillHistoryStrip` | `dashboard.js` | Equipo (`views/dashboard/equipo.js`) | migrado | #3727 — Helpers movidos al módulo (exportados y testeados). `personaCard` no se invoca desde el grid actual (usa chips), se preserva por CA-A1 (no perder funcionalidad). |
+| Heatmap legacy (`heatmapHTML`) | `dashboard.js` | — | eliminado | #3727 — Dead code: `let heatmapHTML = ''` nunca se renderizaba. Removido en la extracción. |
+| Servicios (`SERVICE_GROUPS` + `STANDALONE_PROCESSES` + `serviceRow` + grid) | `dashboard.js` | Equipo (transitorio) → Ops (pendiente) | en-progreso | #3727 — **Opción A** (default conservador): `svcCardsHTML` se sigue computando en `dashboard.js` y se pasa pre-renderizado a `renderEquipoSsr` para no perder funcionalidad. Migración a la ventana **Ops** queda pendiente para el split #3732. Acciones operativas heredadas: `ctlAction('<proc>','start'\|'stop')` y `qaComponentAction(...)` (dependen del binding loopback del dashboard). |
+| CSS `.eq-*` / `.persona-*` | `dashboard.js` (`<style>` inline de la página principal) | Equipo | pendiente | #3727 — **Desviación documentada**: el CSS NO se movió a `theme.css`. Verificación empírica: la página principal del dashboard (DOCTYPE en `dashboard.js`) usa un `<style>` inline y NO carga `theme.css` (sólo el log-viewer lo carga). Mover el CSS rompería el estilo (CA-A1). La migración del CSS se difiere a cuando la página principal adopte `theme.css`. |
 
 ## Decisiones de diseño (#3728 — ventana Pipeline)
 
@@ -748,3 +753,16 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' 'http://127.0.0.1:3200/
 - Wizard de doble confirmación para "Desestimar" → recomendación UX (post #3724).
 - Persistir colapsado/expandido por operador (localStorage extendido) → recomendación UX.
 - Retiro de las clases legacy `.needs-human-*` del monolito → sub posterior del épico.
+
+## Ventana **Equipo** — split #3727
+
+### Datos del state consumidos por `equipo.js` (#3727)
+
+`renderEquipoSsr(state)` consume: `skillsByCategory`, `recentBySkill`, `skillUsageCount`,
+`skillStats`, `agentPersona` (= `AGENT_PERSONA`), `categoryMeta` (= `CATEGORY_META`),
+`pendientes`, `activeStripHTML` (pre-renderizado), `svcCardsHTML` (pre-renderizado).
+
+**Acciones operativas de la ventana**: la ventana Equipo es read-only salvo por las
+acciones heredadas de Servicios (Opción A). Todas tienen tooltip (`title=`): chips,
+popout, colapsar/expandir y resumen del header.
+
