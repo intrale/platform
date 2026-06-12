@@ -526,6 +526,75 @@ function precheckOk() {
 }
 
 /**
+ * #3940 / SEC-R1 — sanitiza `circuit_breaker.auto_resume_ok_threshold`.
+ * Debe ser entero ≥ 1. Cualquier valor inválido (0, negativo, no numérico,
+ * ausente) cae al default 3 con warning — un N=0 aceptado silenciosamente
+ * equivaldría a deshabilitar el fail-closed del CB (#2305).
+ *
+ * @param {*} raw — valor leído de config.
+ * @param {number} fallback — default seguro (3).
+ * @returns {number} entero ≥ 1.
+ */
+function sanitizeAutoResumeThreshold(raw, fallback = 3) {
+  const { value, fellBack } = cbInfra.sanitizeAutoResumeThreshold(raw, fallback);
+  if (fellBack && raw !== undefined) {
+    log('cb-infra', `⚠️ auto_resume_ok_threshold inválido (${JSON.stringify(raw)}) → usando default ${fallback}`);
+  }
+  return value;
+}
+
+/**
+ * #3940 — auto-resume del CB de infra tras N prechecks OK consecutivos.
+ * Corre en el mainLoop inmediatamente después del precheck, ANTES de que
+ * `brazoLanzamiento()` haga early-return por `cbInfra.isOpen()`. Es el único
+ * punto donde el precheck corre incondicionalmente con el CB abierto.
+ *
+ * Consume el streak in-memory `lastPrecheckOkStreak` (alimentado SOLO por
+ * probes reales, no por hits del cache de 30s — anti-spoofing #2335). El cierre
+ * reusa `cbInfra.resume('auto')` (idempotente). No reencola issues: eso lo hace
+ * el camino independiente `connectivity_restored` / `reencolarInfraBloqueados`.
+ */
+function intentarAutoResumeCB(config) {
+  try {
+    const cbOpen = cbInfra.isOpen();
+    if (!cbOpen) return; // idempotencia: nada que cerrar
+
+    const threshold = sanitizeAutoResumeThreshold(
+      config && config.circuit_breaker && config.circuit_breaker.auto_resume_ok_threshold,
+      3,
+    );
+
+    const st = cbInfra.readState();
+    if (st.auto_resume_suspended && precheckOk() && lastPrecheckOkStreak >= threshold) {
+      // SEC-R3 — flapping previo: ya se escaló a humano al reabrir. Sólo un
+      // resume manual rehabilita el auto-cierre.
+      log('cb-infra', `auto-resume suspendido por flapping previo — esperando override manual (node .pipeline/resume.js)`);
+      return;
+    }
+
+    const should = cbInfra.shouldAutoResume({
+      precheckOk: precheckOk(),
+      cbOpen,
+      streak: lastPrecheckOkStreak,
+      threshold,
+      suspended: st.auto_resume_suspended,
+    });
+    if (!should) return;
+
+    const { changed } = cbInfra.resume('auto');
+    if (changed) {
+      log('cb-infra', `🟢 auto-resume tras ${lastPrecheckOkStreak} prechecks OK consecutivos (umbral ${threshold})`);
+      try {
+        sendTelegram(`🟢 Pipeline auto-reanudado (CB infra) tras ${threshold} prechecks OK consecutivos.\nReanudando el lanzamiento de agentes.`);
+      } catch {}
+    }
+  } catch (e) {
+    // Nunca propagar: el pipeline debe seguir vivo aunque el auto-resume falle.
+    log('cb-infra', `error en auto-resume: ${redact(e.message || String(e))}`);
+  }
+}
+
+/**
  * #2335 — mapea un resultado de precheck fallido a una categoria del enum
  * `REASON_CATEGORIES` de connectivity-state. La clasificacion se hace aqui
  * (pulpo), sobre señales internas verificables, NUNCA confiando en el campo
@@ -5021,11 +5090,21 @@ function notifyInfraCircuitBreakerOpen(issue, errorCode, hostname) {
 function registerInfraFailureAndMaybeAlert(issue, errorCode, hostname = null) {
   try {
     const code = errorCode || 'ETIMEDOUT';
-    const { opened, state } = cbInfra.registerInfraFailure(issue, code);
+    const { opened, flapping, state } = cbInfra.registerInfraFailure(issue, code);
     log('circuit-breaker-infra',
-      `fallo de red #${issue} ${code}${hostname ? ` (${hostname})` : ''} — contador ${state.consecutive_failures}/${cbInfra.CONSECUTIVE_THRESHOLD}${opened ? ' → CB OPEN' : ''}`);
+      `fallo de red #${issue} ${code}${hostname ? ` (${hostname})` : ''} — contador ${state.consecutive_failures}/${cbInfra.CONSECUTIVE_THRESHOLD}${opened ? ' → CB OPEN' : ''}${flapping ? ' (FLAPPING — auto-resume suspendido)' : ''}`);
     if (opened && !state.alert_sent) {
-      notifyInfraCircuitBreakerOpen(issue, code, hostname);
+      // #3940 / SEC-R3 — si reabrió dentro de la ventana post-auto-resume, la red
+      // está flapeando: escalada a humano con mensaje diferenciado (⚠️) en vez de
+      // la notificación estándar de bloqueo. El auto-cierre queda suspendido hasta
+      // un resume manual.
+      if (flapping) {
+        try {
+          sendTelegram(`⚠️ CB infra reabrió a los pocos minutos de un auto-resume — auto-cierre suspendido por flapping. La red está inestable; se requiere intervención manual:\n\`node .pipeline/resume.js\``);
+        } catch {}
+      } else {
+        notifyInfraCircuitBreakerOpen(issue, code, hostname);
+      }
       cbInfra.markAlertSent();
     }
   } catch (e) {
@@ -12012,6 +12091,11 @@ async function mainLoop() {
         if (wasFailing && precheckOk()) {
           reencolarInfraBloqueados(config);
         }
+        // #3940 — auto-resume del CB de infra tras N prechecks OK consecutivos.
+        // Cierra el CB solo (sin esperar `node .pipeline/resume.js`) cuando la
+        // red demuestra estabilidad sostenida. Sólo cierra el breaker; el
+        // reencolado ya lo cubre `reencolarInfraBloqueados` arriba.
+        intentarAutoResumeCB(config);
 
         brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
         // #2801 — desbloqueo en background (fire-and-forget). Antes era síncrono
