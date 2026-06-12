@@ -421,3 +421,195 @@ test('SEC-5 sanitizeHitLog descarta campos no autorizados (prompt, headers, toke
     assert.deepEqual(Object.keys(log).sort(), ['errorClass', 'evidence', 'provider', 'timestamp']);
     assert.equal(log.errorClass, 'cli_1m_context_glitch');
 });
+
+// =============================================================================
+// #3987 — KILL SWITCH DE ESCALACIÓN A FALLBACK
+//
+// Tras N glitches 1M consecutivos (sin un spawn exitoso de por medio), el
+// `recordHit` debe devolver `escalate: true` para que el caller (pulpo) gatee
+// Anthropic y rote al fallback. Cubre: umbral configurable, conteo consecutivo,
+// reset por éxito, reset por staleness, y validación de campos corruptos.
+// =============================================================================
+const ESC_ENV = mod.ESCALATION_THRESHOLD_ENV;
+
+function withEscEnv(value, fn) {
+    const prev = process.env[ESC_ENV];
+    if (value === undefined) delete process.env[ESC_ENV];
+    else process.env[ESC_ENV] = String(value);
+    try { return fn(); }
+    finally {
+        if (prev === undefined) delete process.env[ESC_ENV];
+        else process.env[ESC_ENV] = prev;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// #3987 T-1 — getEscalationThreshold(): whitelist y default protector.
+// -----------------------------------------------------------------------------
+
+test('#3987 getEscalationThreshold: ausente → default 3', () => {
+    withEscEnv(undefined, () => {
+        assert.equal(mod.getEscalationThreshold(), mod.DEFAULT_ESCALATION_THRESHOLD);
+        assert.equal(mod.getEscalationThreshold(), 3);
+    });
+});
+
+test('#3987 getEscalationThreshold: "0" → 0 (kill switch deshabilitado)', () => {
+    withEscEnv('0', () => assert.equal(mod.getEscalationThreshold(), 0));
+});
+
+test('#3987 getEscalationThreshold: entero válido → ese valor', () => {
+    withEscEnv('2', () => assert.equal(mod.getEscalationThreshold(), 2));
+    withEscEnv('  5  ', () => assert.equal(mod.getEscalationThreshold(), 5));
+});
+
+test('#3987 getEscalationThreshold: valores inválidos → default 3 (fail-safe)', () => {
+    for (const v of ['-1', '3.5', 'abc', '1e2', '999', '', '  ', 'NaN', '0x3']) {
+        withEscEnv(v, () => {
+            assert.equal(mod.getEscalationThreshold(), 3, `valor "${v}" debería caer a default 3`);
+        });
+    }
+});
+
+test('#3987 getEscalationThreshold: envOverride no muta process.env', () => {
+    withEscEnv('3', () => {
+        assert.equal(mod.getEscalationThreshold({ [ESC_ENV]: '7' }), 7);
+        assert.equal(process.env[ESC_ENV], '3');
+    });
+});
+
+// -----------------------------------------------------------------------------
+// #3987 T-2 — recordHit cuenta consecutivos y escala al cruzar el umbral.
+// -----------------------------------------------------------------------------
+
+test('#3987 recordHit: escala recién al alcanzar el umbral (3 por default)', () => {
+    withEscEnv(undefined, () => {
+        const f = makeTmpSession();
+        const t0 = 1781300000000;
+        const h1 = mod.recordHit({ sessionFile: f, now: t0 });
+        assert.equal(h1.consecutive, 1);
+        assert.equal(h1.escalate, false);
+        const h2 = mod.recordHit({ sessionFile: f, now: t0 + 60000 });
+        assert.equal(h2.consecutive, 2);
+        assert.equal(h2.escalate, false);
+        const h3 = mod.recordHit({ sessionFile: f, now: t0 + 120000 });
+        assert.equal(h3.consecutive, 3);
+        assert.equal(h3.escalate, true, 'al 3er hit consecutivo debe escalar');
+        // Sigue escalando mientras no haya éxito de por medio.
+        const h4 = mod.recordHit({ sessionFile: f, now: t0 + 180000 });
+        assert.equal(h4.consecutive, 4);
+        assert.equal(h4.escalate, true);
+    });
+});
+
+test('#3987 recordHit: umbral configurable por env (2)', () => {
+    withEscEnv('2', () => {
+        const f = makeTmpSession();
+        const t0 = 1781300000000;
+        assert.equal(mod.recordHit({ sessionFile: f, now: t0 }).escalate, false);
+        assert.equal(mod.recordHit({ sessionFile: f, now: t0 + 1000 }).escalate, true);
+    });
+});
+
+test('#3987 recordHit: umbral 0 nunca escala (kill switch off)', () => {
+    withEscEnv('0', () => {
+        const f = makeTmpSession();
+        const t0 = 1781300000000;
+        for (let i = 0; i < 6; i++) {
+            const h = mod.recordHit({ sessionFile: f, now: t0 + i * 1000 });
+            assert.equal(h.escalate, false, `hit ${i + 1} no debe escalar con umbral 0`);
+        }
+    });
+});
+
+test('#3987 recordHit: hits_total sigue acumulando aparte del consecutivo', () => {
+    withEscEnv(undefined, () => {
+        const f = makeTmpSession();
+        const t0 = 1781300000000;
+        mod.recordHit({ sessionFile: f, now: t0 });
+        const h2 = mod.recordHit({ sessionFile: f, now: t0 + 1000 });
+        assert.equal(h2.state.hits_total, 2);
+        assert.equal(h2.state.consecutive_hits, 2);
+    });
+});
+
+// -----------------------------------------------------------------------------
+// #3987 T-3 — staleness: gap > 6h reinicia el episodio.
+// -----------------------------------------------------------------------------
+
+test('#3987 recordHit: gap > CONSECUTIVE_STALE_MS reinicia el contador a 1', () => {
+    withEscEnv(undefined, () => {
+        const f = makeTmpSession();
+        const t0 = 1781300000000;
+        mod.recordHit({ sessionFile: f, now: t0 });
+        const last = t0 + 1000;
+        mod.recordHit({ sessionFile: f, now: last });
+        // El gap se mide desde el ÚLTIMO hit consecutivo. Pasaron >6h desde él
+        // → episodio viejo, arranca de nuevo en 1.
+        const stale = mod.recordHit({ sessionFile: f, now: last + mod.CONSECUTIVE_STALE_MS + 1 });
+        assert.equal(stale.consecutive, 1, 'gap > 6h reinicia a 1');
+        assert.equal(stale.escalate, false);
+    });
+});
+
+// -----------------------------------------------------------------------------
+// #3987 T-4 — resetConsecutive (éxito) limpia el contador, no hits_total.
+// -----------------------------------------------------------------------------
+
+test('#3987 resetConsecutive: pone consecutive en 0 sin tocar hits_total', () => {
+    withEscEnv('2', () => {
+        const f = makeTmpSession();
+        const t0 = 1781300000000;
+        mod.recordHit({ sessionFile: f, now: t0 });
+        mod.recordHit({ sessionFile: f, now: t0 + 1000 }); // escaló
+        const r = mod.resetConsecutive({ sessionFile: f });
+        assert.equal(r.changed, true);
+        assert.equal(r.state.consecutive_hits, 0);
+        assert.equal(r.state.consecutive_last_at, null);
+        assert.equal(r.state.hits_total, 2, 'hits_total histórico no se toca');
+        // Tras el reset, el contador arranca de cero → no escala al 1er hit.
+        const next = mod.recordHit({ sessionFile: f, now: t0 + 2000 });
+        assert.equal(next.consecutive, 1);
+        assert.equal(next.escalate, false);
+    });
+});
+
+test('#3987 resetConsecutive: idempotente cuando ya está en cero', () => {
+    const f = makeTmpSession();
+    const r = mod.resetConsecutive({ sessionFile: f });
+    assert.equal(r.changed, false, 'sin nada que resetear no reescribe');
+});
+
+// -----------------------------------------------------------------------------
+// #3987 T-5 — SEC-4: campos consecutivos corruptos → reset a 0, sin crash.
+// -----------------------------------------------------------------------------
+
+test('#3987 readState: consecutive_hits corrupto → 0 + reportado en corrupt', () => {
+    const f = makeTmpSession();
+    fs.writeFileSync(f, JSON.stringify({
+        anthropic_1m_workaround: {
+            hits_total: 5,
+            consecutive_hits: -3,            // inválido
+            consecutive_last_at: 'no-es-fecha', // inválido
+        },
+    }));
+    const { state, corrupt } = mod._readState(f);
+    assert.equal(state.consecutive_hits, 0, 'corrupto → fail-safe 0 (no escalar por basura)');
+    assert.equal(state.consecutive_last_at, null);
+    const fields = corrupt.map(c => c.field).sort();
+    assert.deepEqual(fields, ['consecutive_hits', 'consecutive_last_at']);
+});
+
+test('#3987 writeState persiste consecutive_hits + _human legible', () => {
+    withEscEnv('3', () => {
+        const f = makeTmpSession();
+        const t0 = 1781300000000;
+        mod.recordHit({ sessionFile: f, now: t0 });
+        const session = JSON.parse(fs.readFileSync(f, 'utf8'));
+        const sec = session.anthropic_1m_workaround;
+        assert.equal(sec.consecutive_hits, 1);
+        assert.equal(typeof sec.consecutive_last_at, 'string');
+        assert.equal(typeof sec.consecutive_last_at_human, 'string');
+        assert.equal(sec.escalation_threshold, 3);
+    });
+});
