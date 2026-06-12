@@ -246,6 +246,12 @@ build:
 # (cap duro antisabotaje, default 20) — este es el threshold "escalar a humano".
 circuit_breaker:
   infra_escalate_threshold: 5
+  # #3940 — auto-resume del CB de infra. Tras N prechecks OK consecutivos reales
+  # (no hits del cache de 30s), el Pulpo cierra el CB solo y notifica por Telegram.
+  # El cierre manual (node .pipeline/resume.js) sigue disponible como override.
+  # SEC-R1: debe ser entero ≥ 1; un valor inválido (0, negativo, no numérico)
+  # cae al default 3 con warning — nunca deshabilita el fail-closed de #2305.
+  auto_resume_ok_threshold: 3
 
 # GitHub
 github:
