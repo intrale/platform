@@ -2,7 +2,7 @@
 // Tests SSR de la ventana Providers (#3737, split del épico #3715).
 //
 // Cubre el set CA-PRV + SEC del análisis de #3737:
-//   1. renderProviders con 6 entries mixtas → 6 cards con data-provider.
+//   1. renderProviders con 5 entries mixtas → 5 cards con data-provider.
 //   2. Estado vacío ([]) → #providers-list sin crash + leyenda visible.
 //   3. listKeys() lanza → bloque data-load-error + role="alert" (CA-A3 / SEC-7).
 //   4. Payload XSS canónico en label + reason NO ejecutable (CA-D1 / SEC-1).
@@ -63,28 +63,29 @@ function fakeEntry(provider, label, status, opts) {
     };
 }
 
-function sixMixedEntries() {
+// EP1-H2 (#3917): se retiró el fixture 'elevenlabs' (provider pago deprecado).
+// El set refleja los 5 providers LLM reales del ranking multi-provider.
+function mixedEntries() {
     return [
         fakeEntry('anthropic', 'Anthropic', 'present', { editable: false, reason: 'OAuth/MAX' }),
         fakeEntry('openai', 'OpenAI / Codex', 'present'),
         fakeEntry('gemini-google', 'Gemini (Google AI Studio)', 'placeholder'),
         fakeEntry('cerebras', 'Cerebras', 'placeholder'),
         fakeEntry('nvidia-nim', 'NVIDIA NIM', 'absent'),
-        fakeEntry('elevenlabs', 'ElevenLabs', 'absent'),
     ];
 }
 
 // ─────────────────────────── Unit (render directo) ───────────────────────────
 
-test('CA-PRV-1 · 6 entries mixtas → 6 cards con data-provider', () => {
-    setListKeys(() => sixMixedEntries());
+test('CA-PRV-1 · 5 entries mixtas → 5 cards con data-provider', () => {
+    setListKeys(() => mixedEntries());
     try {
         const html = providers.renderProviders();
         assert.ok(html.startsWith('<!DOCTYPE html>'), 'debe ser documento HTML completo');
         assert.ok(html.includes('<title>Intrale · Providers</title>'), 'falta el title de la ventana');
         const cards = html.match(/<article class="provider-card"/g) || [];
-        assert.equal(cards.length, 6, 'deben renderizarse exactamente 6 cards');
-        for (const p of ['anthropic', 'openai', 'gemini-google', 'cerebras', 'nvidia-nim', 'elevenlabs']) {
+        assert.equal(cards.length, 5, 'deben renderizarse exactamente 5 cards');
+        for (const p of ['anthropic', 'openai', 'gemini-google', 'cerebras', 'nvidia-nim']) {
             assert.ok(html.includes('data-provider="' + p + '"'), 'falta data-provider para ' + p);
         }
         // Badges de estado presentes (los 3 labels).
@@ -160,7 +161,7 @@ test('R7 · anthropic (editable:false) → provider-locked, sin rotate btn', () 
 });
 
 test('CA-PRV · IDs DOM invariantes: #providers-list y #providers-legend 1 vez', () => {
-    setListKeys(() => sixMixedEntries());
+    setListKeys(() => mixedEntries());
     try {
         const html = providers.renderProviders();
         const list = html.match(/id="providers-list"/g) || [];
@@ -171,7 +172,7 @@ test('CA-PRV · IDs DOM invariantes: #providers-list y #providers-legend 1 vez',
 });
 
 test('CA-PRV-12 · cada <button> tiene title + aria-label no vacíos', () => {
-    setListKeys(() => sixMixedEntries());
+    setListKeys(() => mixedEntries());
     try {
         const html = providers.renderProviders();
         const buttons = html.match(/<button[^>]*>/g) || [];
@@ -204,7 +205,7 @@ test('UX-3737 · tokens --provider-* DEFINIDOS en el documento (no solo referenc
     // var(--provider-anthropic) sin inyectar design-tokens.css → --row-accent
     // guaranteed-invalid → todas las cards caían al gris var(--in-border).
     // Acá se exige la DEFINICIÓN del token (con ":") en el HTML servido.
-    setListKeys(() => sixMixedEntries());
+    setListKeys(() => mixedEntries());
     try {
         const html = providers.renderProviders();
         for (const token of ['--provider-anthropic:', '--provider-gemini:', '--provider-cerebras:', '--provider-nvidia-nim:', '--provider-unknown:']) {
@@ -276,7 +277,7 @@ function closeServer(server) {
 }
 
 test('CA-PRV-3 · GET /dashboard?view=providers → 200 con #providers-list', async () => {
-    setListKeys(() => sixMixedEntries());
+    setListKeys(() => mixedEntries());
     const { server, port } = await startEphemeralServer();
     try {
         const r = await get(port, '/dashboard?view=providers');
@@ -290,7 +291,7 @@ test('CA-PRV-3 · GET /dashboard?view=providers → 200 con #providers-list', as
 });
 
 test('CA-PRV-3 · GET /dashboard/partial?view=providers (loopback) → 200', async () => {
-    setListKeys(() => sixMixedEntries());
+    setListKeys(() => mixedEntries());
     const { server, port } = await startEphemeralServer();
     try {
         const r = await get(port, '/dashboard/partial?view=providers');
