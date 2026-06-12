@@ -74,6 +74,40 @@ const TTL_DAYS_THRESHOLD = 14;
 const COOLDOWN_DAYS = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+// -----------------------------------------------------------------------------
+// #3987 — KILL SWITCH DE ESCALACIÓN A FALLBACK.
+//
+// PROBLEMA: el texto "Usage credits required for 1M context" tiene DOS causas
+// que se escriben idéntico:
+//   (a) El glitch transitorio del CLI (Anthropic SANO, hay cuota) → la política
+//       #3506 es "no rotes, reintentá en el mismo Anthropic".
+//   (b) La cuota Anthropic AGOTADA de verdad → el CLI escupe ese MISMO texto.
+//       Acá "reintentá en el mismo" es un loop muerto: el Commander queda mudo
+//       y el multi-provider nunca rota a OpenAI/Gemini (incidente 2026-06-12).
+//
+// El clasificador no puede distinguir (a) de (b) por el texto. La señal que SÍ
+// los separa es la PERSISTENCIA: el glitch transitorio se resuelve en 1-2
+// reintentos; la cuota agotada falla indefinidamente. Por eso contamos hits
+// CONSECUTIVOS (sin un spawn exitoso de por medio) y, al cruzar el umbral,
+// escalamos: tratamos el caso como cuota real → el caller setea el flag de
+// quota con TTL corto → el siguiente dispatch rota al fallback. Anthropic se
+// reintenta al expirar el gate (mínimo 5 min); si seguía agotado, re-escala.
+//
+// El contador se resetea con `resetConsecutive()` en cada spawn exitoso del
+// Commander (Anthropic volvió → el episodio terminó) y por staleness (>6h sin
+// hits → episodio viejo, no acumular).
+//
+// Umbral configurable por env `ANTHROPIC_1M_ESCALATION_THRESHOLD` (default 3).
+// `0` = kill switch deshabilitado (comportamiento pre-#3987: nunca escala).
+// -----------------------------------------------------------------------------
+const ESCALATION_THRESHOLD_ENV = 'ANTHROPIC_1M_ESCALATION_THRESHOLD';
+const DEFAULT_ESCALATION_THRESHOLD = 3;
+const MAX_ESCALATION_THRESHOLD = 50; // sanity cap contra valores absurdos
+// Si pasaron más de 6h desde el último hit consecutivo, el episodio se
+// considera viejo y el contador reinicia (no acumulamos glitches de días
+// distintos como si fueran la misma caída).
+const CONSECUTIVE_STALE_MS = 6 * 60 * 60 * 1000;
+
 // Default session path — el caller (pulpo.js) ya conoce su `SESSION_FILE`,
 // pero exponemos el default para tests y para reutilización fuera de Pulpo.
 const DEFAULT_SESSION_FILE = path.join(__dirname, '..', '..', 'commander-session.json');
@@ -99,6 +133,32 @@ function isWorkaroundEnabled(envOverride) {
     // Valores raros (`'2'`, `'on'`, `'YES'`, `''`, `' 0 '` con espacios YA
     // strippeados → si el trim falla por unicode raro, fail-safe enabled).
     return true; // fail-safe: enabled (default protector).
+}
+
+// -----------------------------------------------------------------------------
+// #3987 — getEscalationThreshold()
+//
+// Lee `ANTHROPIC_1M_ESCALATION_THRESHOLD` con parseo estricto (mismo criterio
+// defensivo que el feature flag — sin eval, sin coerción implícita peligrosa).
+// Acepta enteros en `[0, MAX_ESCALATION_THRESHOLD]`. `0` deshabilita el kill
+// switch. Cualquier valor inválido (no-numérico, negativo, fuera de rango,
+// fraccionario) → default 3 (fail-safe protector: el kill switch ACTIVO es lo
+// seguro porque evita la mudez total).
+// -----------------------------------------------------------------------------
+function getEscalationThreshold(envOverride) {
+    const src = envOverride && typeof envOverride === 'object' ? envOverride : process.env;
+    const raw = src[ESCALATION_THRESHOLD_ENV];
+    if (raw === undefined || raw === null || String(raw).trim() === '') {
+        return DEFAULT_ESCALATION_THRESHOLD;
+    }
+    const s = String(raw).trim();
+    // Solo dígitos puros (sin signos, sin decimales, sin notación científica).
+    if (!/^\d+$/.test(s)) return DEFAULT_ESCALATION_THRESHOLD;
+    const n = Number(s);
+    if (!Number.isInteger(n) || n < 0 || n > MAX_ESCALATION_THRESHOLD) {
+        return DEFAULT_ESCALATION_THRESHOLD;
+    }
+    return n;
 }
 
 // -----------------------------------------------------------------------------
@@ -157,6 +217,9 @@ function readState(sessionFile) {
         hits_total: 0,
         last_hit_at: null,
         last_alert_sent_at: null,
+        // #3987 — kill switch: hits consecutivos del episodio actual.
+        consecutive_hits: 0,
+        consecutive_last_at: null,
     };
 
     let session;
@@ -203,6 +266,25 @@ function readState(sessionFile) {
             validated.last_alert_sent_at = null;
         }
     }
+    // #3987 — campos del kill switch (SEC-4: misma validación estricta).
+    if ('consecutive_hits' in section) {
+        if (isValidHitCount(section.consecutive_hits)) {
+            validated.consecutive_hits = section.consecutive_hits;
+        } else {
+            corrupt.push({ field: 'consecutive_hits', value: section.consecutive_hits });
+            // Corrupto → 0 (fail-safe: no escalar por basura en el JSON).
+            validated.consecutive_hits = 0;
+        }
+    }
+    if ('consecutive_last_at' in section) {
+        const ms = normalizeTimestamp(section.consecutive_last_at);
+        if (isValidTimestampMs(ms)) {
+            validated.consecutive_last_at = ms;
+        } else {
+            corrupt.push({ field: 'consecutive_last_at', value: section.consecutive_last_at });
+            validated.consecutive_last_at = null;
+        }
+    }
 
     return { state: validated, corrupt };
 }
@@ -242,6 +324,7 @@ function writeState(state, sessionFile) {
     const enabled = isWorkaroundEnabled();
     const lastHitAt = state.last_hit_at;
     const lastAlertAt = state.last_alert_sent_at;
+    const consecutiveLastAt = state.consecutive_last_at;
 
     session.anthropic_1m_workaround = {
         enabled,
@@ -252,6 +335,13 @@ function writeState(state, sessionFile) {
         last_alert_sent_at_human: formatHumanTimestamp(lastAlertAt),
         ttl_days_threshold: TTL_DAYS_THRESHOLD,
         cooldown_days: COOLDOWN_DAYS,
+        // #3987 — estado del kill switch de escalación a fallback.
+        consecutive_hits: state.consecutive_hits || 0,
+        consecutive_last_at: consecutiveLastAt === null || consecutiveLastAt === undefined
+            ? null : new Date(consecutiveLastAt).toISOString(),
+        consecutive_last_at_human: formatHumanTimestamp(
+            consecutiveLastAt === undefined ? null : consecutiveLastAt),
+        escalation_threshold: getEscalationThreshold(),
     };
 
     fs.writeFileSync(file, JSON.stringify(session, null, 2));
@@ -275,9 +365,47 @@ function recordHit(opts) {
     state.hits_total = state.hits_total + 1;
     state.last_hit_at = now;
 
+    // #3987 — contador de hits CONSECUTIVOS del episodio actual. Si el último
+    // hit consecutivo fue reciente (< CONSECUTIVE_STALE_MS) acumulamos; si pasó
+    // mucho tiempo (o nunca hubo), arrancamos un episodio nuevo en 1.
+    const prevAt = state.consecutive_last_at;
+    const fresh = prevAt !== null && Number.isFinite(prevAt) && (now - prevAt) <= CONSECUTIVE_STALE_MS;
+    state.consecutive_hits = fresh ? (state.consecutive_hits || 0) + 1 : 1;
+    state.consecutive_last_at = now;
+
     writeState(state, sessionFile);
 
-    return { state, corrupt };
+    // Decisión de escalación: umbral > 0 y alcanzamos/superamos el umbral.
+    const threshold = getEscalationThreshold(o.envOverride);
+    const escalate = threshold > 0 && state.consecutive_hits >= threshold;
+
+    return { state, corrupt, escalate, consecutive: state.consecutive_hits, threshold };
+}
+
+// -----------------------------------------------------------------------------
+// #3987 — resetConsecutive()
+//
+// Resetea el contador de hits consecutivos. El caller lo invoca cuando el
+// Commander tuvo un spawn EXITOSO sobre Anthropic (la cuota volvió → el
+// episodio de glitch/agotamiento terminó) para que un futuro glitch arranque
+// un episodio nuevo desde cero. NO toca `hits_total` (contador histórico de
+// por vida) ni `last_alert_sent_at`.
+//
+// Idempotente y best-effort: si no hay nada que resetear, no reescribe.
+// -----------------------------------------------------------------------------
+function resetConsecutive(opts) {
+    const o = opts || {};
+    const sessionFile = o.sessionFile;
+
+    const { state, corrupt } = readState(sessionFile);
+    if ((state.consecutive_hits || 0) === 0 && state.consecutive_last_at === null) {
+        // Nada que resetear — evitamos reescritura innecesaria del JSON.
+        return { state, corrupt, changed: false };
+    }
+    state.consecutive_hits = 0;
+    state.consecutive_last_at = null;
+    writeState(state, sessionFile);
+    return { state, corrupt, changed: true };
 }
 
 // -----------------------------------------------------------------------------
@@ -428,7 +556,9 @@ function sanitizeHitLog(input) {
 module.exports = {
     // API pública
     isWorkaroundEnabled,
+    getEscalationThreshold,
     recordHit,
+    resetConsecutive,
     checkTtlAlert,
     recordAlertSent,
     formatStartupLogLine,
@@ -450,4 +580,9 @@ module.exports = {
     COOLDOWN_DAYS,
     MS_PER_DAY,
     DEFAULT_SESSION_FILE,
+    // #3987 — kill switch de escalación.
+    ESCALATION_THRESHOLD_ENV,
+    DEFAULT_ESCALATION_THRESHOLD,
+    MAX_ESCALATION_THRESHOLD,
+    CONSECUTIVE_STALE_MS,
 };
