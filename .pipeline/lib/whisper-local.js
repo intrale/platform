@@ -3,8 +3,16 @@
 // con el binario `whisper.exe` instalado vía pip. Cero dependencia de cuota.
 //
 // Devuelve siempre la misma forma que el wrapper de la API:
-//   { ok: true,  text: string }
+//   { ok: true,  text: string, confidence?: {avgLogprob, noSpeechProb} }
 //   { ok: false, text: '', errorKind: string, raw: string }
+//
+// #3918 (EP1-H3, CA-2): cambiamos `--output_format txt` → `json` para exponer
+// `segments[].avg_logprob` y `no_speech_prob`, que alimentan el gate de
+// confirmación por baja confianza. La extensión es ADITIVA: `confidence` sólo
+// aparece cuando el parseo defensivo (RS-6) pudo derivar métricas finitas; si el
+// JSON viene malformado o sin métricas, se omite `confidence` (→ "confianza
+// desconocida" aguas abajo) y el `text` sigue saliendo igual. La interfaz no
+// cambia para los consumidores existentes (compat con #3916/H1).
 
 const fs = require('fs');
 const os = require('os');
@@ -45,6 +53,64 @@ function isAvailable() {
   } catch { return false; }
 }
 
+// #3918 (RS-6) — Parseo DEFENSIVO del JSON que produce el CLI de whisper con
+// `--output_format json`. La forma esperada es:
+//   { "text": "…", "segments": [{ "avg_logprob": -0.3, "no_speech_prob": 0.1, … }], … }
+// Nada de esto está garantizado: el proceso es externo, puede cambiar de versión
+// o emitir output corrupto. Reglas:
+//   - `JSON.parse` dentro de try/catch; cualquier excepción → texto null.
+//   - El texto sale aunque la confianza falle (degradación independiente).
+//   - La confianza sólo se devuelve si pudimos derivar al menos UNA métrica
+//     finita; si todos los segmentos traen basura → confidence omitida
+//     ("confianza desconocida"). NUNCA NaN/Infinity hacia afuera.
+//
+// @param {string} raw - contenido del .json del CLI.
+// @returns {{text: string|null, confidence: {avgLogprob: number, noSpeechProb: number}|null}}
+function parseWhisperJson(raw) {
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { text: null, confidence: null };
+  }
+  if (!data || typeof data !== 'object') return { text: null, confidence: null };
+
+  const text = typeof data.text === 'string' ? data.text.trim() : null;
+
+  let confidence = null;
+  try {
+    const segments = Array.isArray(data.segments) ? data.segments : [];
+    const logprobs = [];
+    const noSpeechProbs = [];
+    for (const seg of segments) {
+      if (!seg || typeof seg !== 'object') continue;
+      const lp = seg.avg_logprob;
+      const ns = seg.no_speech_prob;
+      if (typeof lp === 'number' && Number.isFinite(lp)) logprobs.push(lp);
+      if (typeof ns === 'number' && Number.isFinite(ns)) noSpeechProbs.push(ns);
+    }
+    // avgLogprob: promedio de los segmentos válidos (señal global de confianza).
+    // noSpeechProb: máximo (el segmento más "silencioso" es el más sospechoso).
+    const partial = {};
+    if (logprobs.length > 0) {
+      partial.avgLogprob = logprobs.reduce((a, b) => a + b, 0) / logprobs.length;
+    }
+    if (noSpeechProbs.length > 0) {
+      partial.noSpeechProb = Math.max(...noSpeechProbs);
+    }
+    if (
+      (typeof partial.avgLogprob === 'number' && Number.isFinite(partial.avgLogprob)) ||
+      (typeof partial.noSpeechProb === 'number' && Number.isFinite(partial.noSpeechProb))
+    ) {
+      confidence = partial;
+    }
+  } catch {
+    confidence = null; // RS-6: jamás romper por el parseo de confianza.
+  }
+
+  return { text, confidence };
+}
+
 // Transcribe un audio offline. Acepta tanto un path en disco como un buffer.
 // Si recibe buffer, lo escribe a un .ogg temporal antes de invocar el CLI.
 async function transcribeLocal({ audioPath, audioBuffer, model, language, threads, timeoutMs, logger } = {}) {
@@ -75,7 +141,7 @@ async function transcribeLocal({ audioPath, audioBuffer, model, language, thread
     '--model', model || DEFAULT_MODEL,
     '--language', language || DEFAULT_LANGUAGE,
     '--output_dir', outDir,
-    '--output_format', 'txt',
+    '--output_format', 'json',
     '--fp16', 'False',
     '--threads', String(threads || DEFAULT_THREADS),
     '--verbose', 'False',
@@ -114,16 +180,25 @@ async function transcribeLocal({ audioPath, audioBuffer, model, language, thread
         resolve({ ok: false, text: '', errorKind: 'cli_error', raw: `exit ${code}: ${tail}` });
         return;
       }
-      // El CLI escribe <basename(input, no ext)>.txt en outDir.
+      // El CLI escribe <basename(input, no ext)>.json en outDir.
       const base = path.basename(inputPath).replace(/\.[^.]+$/, '');
-      const txtPath = path.join(outDir, `${base}.txt`);
+      const jsonPath = path.join(outDir, `${base}.json`);
       try {
-        if (!fs.existsSync(txtPath)) {
-          resolve({ ok: false, text: '', errorKind: 'no_output', raw: `no se generó ${path.basename(txtPath)}` });
+        if (!fs.existsSync(jsonPath)) {
+          resolve({ ok: false, text: '', errorKind: 'no_output', raw: `no se generó ${path.basename(jsonPath)}` });
           return;
         }
-        const text = fs.readFileSync(txtPath, 'utf8').trim();
-        resolve({ ok: true, text });
+        const raw = fs.readFileSync(jsonPath, 'utf8');
+        const parsed = parseWhisperJson(raw);
+        if (parsed.text === null) {
+          // No pudimos siquiera extraer texto → tratamos como salida vacía. No
+          // inventamos confianza (RS-6).
+          resolve({ ok: false, text: '', errorKind: 'no_output', raw: 'JSON de whisper sin campo `text` utilizable' });
+          return;
+        }
+        const out = { ok: true, text: parsed.text };
+        if (parsed.confidence) out.confidence = parsed.confidence; // aditivo
+        resolve(out);
       } catch (e) {
         resolve({ ok: false, text: '', errorKind: 'read_error', raw: e.message });
       }
@@ -147,5 +222,6 @@ module.exports = {
   transcribeLocal,
   isAvailable,
   resolveBinary,
+  parseWhisperJson,
   DEFAULT_MODEL,
 };
