@@ -18,6 +18,7 @@ const assert = require('node:assert/strict');
 
 const stt = require('../lib/commander/stt-confidence');
 const { CONFIDENCE } = stt;
+const transcriptEcho = require('../lib/commander/transcript-echo');
 
 // --- assessSttConfidence ---
 
@@ -122,6 +123,49 @@ test('ts inválido → no fresca', () => {
     assert.equal(stt.isPendingConfirmationFresh(0), false);
     assert.equal(stt.isPendingConfirmationFresh(NaN), false);
     assert.equal(stt.isPendingConfirmationFresh(-5), false);
+});
+
+// --- RS-1/RS-2 (rebote rev-1): la acción citada en el confirmMsg del gate ---
+// El gate de baja confianza cita la acción dictada DENTRO del confirmMsg que se
+// envía en vivo a Telegram con parse_mode 'Markdown'. Esa cita (`accionTextual`)
+// se construye con `formatActionLabel`, que debe aplicar las mismas defensas que
+// el eco: escapar Markdown (RS-1) y redactar secretos (RS-2) ANTES de enviar.
+
+test('RS-1: metacaracteres Markdown en la transcripción quedan escapados (no rompen el parseo)', () => {
+    const label = transcriptEcho.formatActionLabel(['creá un issue *urgente* con `código` y _énfasis_ [link]']);
+    // Cada metacaracter legacy de Telegram queda precedido por backslash.
+    assert.match(label, /\\\*urgente\\\*/);
+    assert.match(label, /\\`código\\`/);
+    assert.match(label, /\\_énfasis\\_/);
+    assert.match(label, /\\\[link\]/);
+    // No queda ningún metacaracter sin escapar (sin backslash previo).
+    assert.ok(!/(^|[^\\])[_*`\[]/.test(label), `quedaron metacaracteres sin escapar: ${label}`);
+});
+
+test('RS-2: un secreto dictado se redacta en la acción citada (no se ecoa en plano)', () => {
+    const awsKey = 'AKIAIOSFODNN7EXAMPLE';
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dumm_sig';
+    const label = transcriptEcho.formatActionLabel([`la clave es ${awsKey} y el token ${jwt}`]);
+    assert.ok(!label.includes(awsKey), `la AWS key quedó en plano: ${label}`);
+    assert.ok(!label.includes('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'), `el JWT quedó en plano: ${label}`);
+});
+
+test('RS-1+RS-2 combinados: secreto rodeado de metacaracteres → redactado Y escapado', () => {
+    const label = transcriptEcho.formatActionLabel(['*AKIAIOSFODNN7EXAMPLE*']);
+    assert.ok(!label.includes('AKIAIOSFODNN7EXAMPLE'), `secreto en plano: ${label}`);
+    assert.ok(!/(^|[^\\])\*/.test(label), `asterisco sin escapar: ${label}`);
+});
+
+test('formatActionLabel: entradas vacías / no-array → string vacío (sin throw)', () => {
+    assert.equal(transcriptEcho.formatActionLabel([]), '');
+    assert.equal(transcriptEcho.formatActionLabel(null), '');
+    assert.equal(transcriptEcho.formatActionLabel(['', '   ']), '');
+});
+
+test('RS-5: la acción citada respeta el cap total con elipsis', () => {
+    const label = transcriptEcho.formatActionLabel(['a'.repeat(500)], { maxLen: 50 });
+    assert.ok(label.length <= 51, `excede el cap: ${label.length}`);
+    assert.ok(label.endsWith('…'), `falta elipsis: ${label}`);
 });
 
 // --- RS-4: aditividad — el evaluador es puro y no acopla con el cooldown ---

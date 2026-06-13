@@ -9895,7 +9895,14 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         const verdict = sttConfidence.assessConsolidatedConfidence(confidences);
         if (verdict === sttConfidence.CONFIDENCE.LOW) {
           const eco = transcriptsEco.length ? transcriptEcho.formatTranscriptEcho(transcriptsEco) : '';
-          const accionTextual = transcriptsEco.join(' / ').slice(0, 200);
+          // RS-1/RS-2 (#3918 rebote rev-1): `accionTextual` se interpola en el
+          // confirmMsg que va EN VIVO a Telegram con parse_mode 'Markdown'. Es
+          // input no confiable (transcripción cruda), así que pasa por las MISMAS
+          // defensas que formatTranscriptEcho (redactar RS-2 → truncar RS-5 →
+          // escapar Markdown RS-1) vía el helper formatActionLabel. Sin esto un
+          // `*_`[ backtick rompe el parseo (Telegram 400 → DoS del gate) y un
+          // secreto dictado se ecoa en plano.
+          const accionTextual = transcriptEcho.formatActionLabel(transcriptsEco);
           const confirmMsg =
             `${eco ? eco + '\n\n' : ''}⚠️ No estoy seguro de haber entendido bien el audio. ` +
             `Antes de crear el issue confirmame: ¿querés que cree «${accionTextual}»?\n\n` +

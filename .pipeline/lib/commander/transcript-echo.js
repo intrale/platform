@@ -86,6 +86,40 @@ function formatTranscriptEcho(transcripts, opts = {}) {
 }
 
 /**
+ * Construye la etiqueta de acción segura para interpolar en un mensaje en vivo
+ * a Telegram (#3918 rebote rev-1 — RS-1/RS-2).
+ *
+ * El gate de confirmación por baja confianza cita la acción dictada dentro del
+ * `confirmMsg` que se envía con parse_mode 'Markdown'. Esa cita es una SEGUNDA
+ * interpolación del mismo input no confiable (la transcripción cruda) y debe
+ * pasar por las MISMAS defensas que `formatTranscriptEcho`, en el mismo orden:
+ *   1. Redactar secretos (RS-2) sobre el texto crudo.
+ *   2. Truncar sobre el texto redactado SIN escapar (RS-5) — así no cortamos una
+ *      secuencia de escape `\*` por la mitad.
+ *   3. Escapar Markdown (RS-1) como último paso.
+ *
+ * Sin esto, un `*_`[ backtick sin cerrar rompe el parseo (Telegram 400 → DoS
+ * silencioso del gate) y un secreto dictado se ecoa en plano en el chat.
+ *
+ * @param {string[]} transcripts - transcripciones a citar.
+ * @param {{maxLen?: number}} [opts]
+ * @returns {string} etiqueta segura (puede ser '' si no hay nada que citar).
+ */
+function formatActionLabel(transcripts, opts = {}) {
+    const maxLen = Number.isFinite(opts.maxLen) && opts.maxLen > 0 ? opts.maxLen : DEFAULT_MAX_LEN;
+    if (!Array.isArray(transcripts) || transcripts.length === 0) return '';
+    const cleaned = transcripts
+        .map((t) => (typeof t === 'string' ? t.trim() : ''))
+        .filter((t) => t.length > 0);
+    if (cleaned.length === 0) return '';
+    const redacted = redactEcho(cleaned.join(' / '));
+    const truncated = redacted.length > maxLen
+        ? redacted.slice(0, maxLen).trimEnd() + '…'
+        : redacted;
+    return escapeMarkdown(truncated);
+}
+
+/**
  * Construye los campos aditivos del entry `in` de audio del commander-history
  * (CA-3 / RS-3). Backward-compatible: consumidores que no los entienden los
  * descartan en lectura.
@@ -117,6 +151,7 @@ function buildEchoHistoryFields(audio) {
 
 module.exports = {
     formatTranscriptEcho,
+    formatActionLabel,
     buildEchoHistoryFields,
     escapeMarkdown,
     redactEcho,
