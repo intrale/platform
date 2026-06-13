@@ -200,3 +200,7 @@ scripts/planner-plan.json
 !.pipeline/metrics/__tests__/**
 !.pipeline/**/.gitkeep
 .pipeline/agent-models-last-notified.json
+
+# Python bytecode cache (whisper_fw.py / STT local, #3916)
+__pycache__/
+*.pyc
