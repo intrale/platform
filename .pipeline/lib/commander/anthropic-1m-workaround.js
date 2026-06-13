@@ -547,6 +547,11 @@ function sanitizeHitLog(input) {
         provider: typeof i.provider === 'string' ? i.provider : 'anthropic',
         errorClass: 'cli_1m_context_glitch',
         evidence: typeof i.evidence === 'string' ? i.evidence.slice(0, 200) : '',
+        // #3950 — número de intento del retry loop (1-based). Distingue el hit
+        // original de los re-spawns. Validación de tipo explícita (SR-D.1): solo
+        // enteros >= 1; objeto/negativo/float/ausente → default 1. NUNCA
+        // pass-through del valor crudo.
+        attempt: Number.isInteger(i.attempt) && i.attempt >= 1 ? i.attempt : 1,
     };
 }
 

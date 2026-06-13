@@ -55,6 +55,10 @@ const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
 // formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
 const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
+// #3950 (EP7-H3) — política PURA de auto-retry del glitch 1M del CLI Anthropic.
+// Decide retry_same | retry_standard | give_up, backoff acotado, validación del
+// modelo (whitelist SR-A) y formato del log por intento. Sin side effects.
+const glitchRetry = require('./lib/commander/glitch-retry');
 // #3258 — Multi-provider fallback chain para el Commander de Telegram. Reusa
 // el runtime de dispatch-with-fallback (#3198) con `skill: 'telegram-commander'`.
 // Sanitiza input del usuario, deduplica avisos de fallback (SR-6), emite audit
@@ -8502,9 +8506,51 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       return runNonAnthropic(resolution, cleanEnv);
     }
 
-    // Path por default: Anthropic. Comportamiento byte-equivalente al previo.
+    // =========================================================================
+    // #3950 (EP7-H3) — Path por default: Anthropic con AUTO-RETRY del glitch 1M.
+    //
+    // El spawn Anthropic se encapsula en `attemptAnthropicSpawn`, reintentable.
+    // Cada intento tiene su PROPIO proceso, flag `resolved`, timers y cleanup
+    // (SR-C.4: ningún timer ni proceso vivo tras agotar el intento). El intento
+    // resuelve con un outcome `{ kind: 'glitch' | 'final', text }`; un loop
+    // externo consulta la política pura `glitchRetry` y decide retry/give_up.
+    // El pulpo solo orquesta (CA-7).
+    // =========================================================================
+    function attemptAnthropicSpawn(attemptOpts) {
+      const attempt = (attemptOpts && Number.isInteger(attemptOpts.attempt) && attemptOpts.attempt >= 1)
+        ? attemptOpts.attempt : 1;
+      const forceStandardContext = !!(attemptOpts && attemptOpts.forceStandardContext);
+
+      return new Promise((resolveAttempt) => {
+    // CA-2 / SR-A — en el intento estándar inyectamos `--model` SIN el sufijo
+    // [1m], leído defensivamente del settings.json y validado por whitelist
+    // ANTES de entrar a cmdArgs (el spawn puede correr con shell:true). En los
+    // intentos same-context NO pasamos --model (herencia actual del settings).
+    const attemptArgs = [...args];
+    let contextLabel = '1m';
+    let effectiveModel = null;
+    if (forceStandardContext) {
+      contextLabel = 'standard';
+      try {
+        const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+        const read = glitchRetry.readConfiguredModel({ settingsPath });
+        const resolvedModel = glitchRetry.resolveStandardModel({ rawModel: read.rawModel });
+        if (resolvedModel.model) {
+          attemptArgs.push('--model', resolvedModel.model);
+          effectiveModel = resolvedModel.model;
+        } else {
+          // SR-A.2 fail-safe: valor inválido/ausente → omitir --model (mantener
+          // herencia) + warning. NUNCA spawnear un valor sospechoso "saneado".
+          log('commander', `[anthropic-1m] --model omitido en intento estándar (read=${read.reason}, model=${resolvedModel.reason}) — se mantiene herencia del settings`);
+        }
+      } catch (e) {
+        log('commander', `[anthropic-1m] resolución de --model falló (best-effort): ${e.message} — omitiendo --model`);
+      }
+    }
+    log('commander', glitchRetry.formatAttemptLog({ attempt, context: contextLabel, model: effectiveModel, backoffMs: 0 }));
+
     const cmdSpawn = CLAUDE_LAUNCHER.cmd;
-    const cmdArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...args];
+    const cmdArgs = [...CLAUDE_LAUNCHER.prefixArgs, ...attemptArgs];
 
     const proc = spawn(cmdSpawn, cmdArgs, {
       cwd: ROOT,
@@ -8530,6 +8576,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     let lastToolDesc = '';
     let progressCount = 0;
     let resolved = false;
+    // #3950 — flag por intento: se enciende si el `result` event de ESTE spawn
+    // se clasificó como cli_1m_context_glitch. `finish()` lo usa para devolverle
+    // al orquestador `kind: 'glitch'` (vs 'final') sin re-inspeccionar nada.
+    let attemptGlitch = false;
     const startTime = Date.now();
 
     // Límite absoluto: 10 minutos — si Claude no terminó, matar y resolver
@@ -8655,14 +8705,19 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           requestId: turnRequestId, // #3577 CA-S6
         });
       } catch { /* best-effort */ }
+      // #3950 — resolvemos el INTENTO (no el Promise externo). El orquestador
+      // decide retry/give_up según `kind`. `attemptGlitch` distingue el glitch
+      // 1M de un resultado normal.
+      let resolvedText;
       if (finalResult?.result) {
-        resolve(finalResult.result);
+        resolvedText = finalResult.result;
       } else if (lastText) {
-        resolve(lastText);
+        resolvedText = lastText;
       } else {
         log('commander', `stderr: ${stderr.slice(0, 300)}`);
-        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
+        resolvedText = `No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`;
       }
+      resolveAttempt({ kind: attemptGlitch ? 'glitch' : 'final', text: resolvedText });
     }
 
     function killProc() {
@@ -8845,10 +8900,15 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               // for 1M context" pese a que el plan Claude Max 20x SÍ incluye 1M
               // para Opus 4.7. NO seteamos flag de quota (Anthropic está sano)
               // ni saltamos provider. Avisamos al usuario para que reintente.
-              log('commander', `🐞 cli_1m_context_glitch detectado (provider=${cmdProvider}, glitchType="${det.glitchType}") — Anthropic sano, bug upstream del CLI con Opus 4.7 1M. NO seteando flag de quota.`);
-              // #3508 CA-3 / SEC-5: registrar hit en commander-session.json
-              // (contador + last_hit_at) y loggear con shape sanitizado (sin
-              // prompt del usuario, sin context del agente).
+              log('commander', `🐞 cli_1m_context_glitch detectado (provider=${cmdProvider}, glitchType="${det.glitchType}", attempt=${attempt}) — Anthropic sano, bug upstream del CLI con Opus 4.7 1M. NO seteando flag de quota.`);
+              // #3950 — marcamos el intento como glitch para que el orquestador
+              // decida retry/give_up. El mensaje al usuario YA NO se envía acá
+              // (CA-3): se difiere al agotamiento de todos los reintentos.
+              attemptGlitch = true;
+              // #3508 CA-3 / SEC-5 + #3950 CA-4: registrar hit en
+              // commander-session.json (contador + last_hit_at) en CADA
+              // ocurrencia, incluidos los retries, para mantener fresco el TTL.
+              // El shape sanitizado lleva el campo `attempt` (SR-D.1).
               let hitState = null;
               try {
                 const hit = oneMWorkaround.recordHit({ sessionFile: SESSION_FILE });
@@ -8861,21 +8921,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   timestamp: new Date().toISOString(),
                   provider: cmdProvider,
                   evidence: quotaExhausted.sanitizeRawExcerpt ? quotaExhausted.sanitizeRawExcerpt(line) : '',
+                  attempt,
                 });
                 log('commander', `[anthropic-1m] hit registrado: ${JSON.stringify(hitLog)} (total=${hitState.hits_total})`);
               } catch (e) { log('commander', `[anthropic-1m] recordHit falló (best-effort): ${e.message}`); }
-              try {
-                // #3508 UX-1 / CA-5: extender el mensaje con el estado actual del
-                // workaround (hits y último hit) y la sugerencia operativa.
-                const baseMsg =
-                  `🐞 Bug intermitente del CLI de Anthropic Claude Code: pidió 1M context y devolvió ` +
-                  `"Usage credits required" aunque el plan Claude Max 20x sí lo cubra. ` +
-                  `Estoy preservando Anthropic como activo (no salto a otro proveedor). ` +
-                  `Reintentá tu pedido en unos segundos.`;
-                let extension = '';
-                try { extension = oneMWorkaround.formatHitExtension({ sessionFile: SESSION_FILE }); } catch {}
-                sendTelegramPlain(baseMsg + extension);
-              } catch { /* best-effort */ }
             } else if (det.matched) {
               // #3576 CA-3: en modo generalizado el hook ya invocó setFlag
               // (con audit log unificado + hash-chain). En legacy seguimos
@@ -9013,6 +9062,76 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       if (resolved) return;
       log('commander', `Error spawning Claude: ${e.message}`);
       finish(null, 'error');
+    });
+      }); // fin new Promise del intento
+    } // fin attemptAnthropicSpawn
+
+    // -------------------------------------------------------------------------
+    // #3950 — Orquestador del auto-retry. Consulta la política pura y decide.
+    //
+    // Gating SR-F / CA-6: el retry solo aplica con el workaround habilitado.
+    // Con ANTHROPIC_1M_WORKAROUND_ENABLED=0 el error ni siquiera se clasifica
+    // como cliGlitch (cae a quota_exhausted en quota-exhausted.js), así que
+    // este check es una defensa explícita adicional. El retry corre igual en
+    // ambos modos del flag PIPELINE_GENERALIZED_PARSER_ENABLED porque se
+    // engancha al punto común `det.cliGlitch` (sin lógica duplicada).
+    // -------------------------------------------------------------------------
+    let retryEnabled = false;
+    try { retryEnabled = oneMWorkaround.isWorkaroundEnabled(); } catch { retryEnabled = false; }
+
+    const sleepBackoff = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    const enviarMensajeAgotamiento = () => {
+      // CA-3 / UX G-1 — recién al agotar TODOS los intentos avisamos al usuario.
+      // Copy honesto: el sistema YA reintentó varias veces (incluido contexto
+      // estándar); sugerir esperar minutos (no segundos), sin jerga técnica
+      // (sin errorClass/spawn/stderr — SR-D.3). Conserva formatHitExtension().
+      try {
+        const baseMsg =
+          `Probé varias veces seguidas pero el CLI de Anthropic sigue rechazando el pedido por el ` +
+          `bug intermitente del contexto 1M ("Usage credits required" aunque el plan Claude Max 20x lo cubra). ` +
+          `Reintenté solo, incluso con contexto reducido, y aún así no salió. ` +
+          `Dejalo descansar unos minutos y volvé a intentarlo.`;
+        let extension = '';
+        try { extension = oneMWorkaround.formatHitExtension({ sessionFile: SESSION_FILE }); } catch {}
+        sendTelegramPlain(baseMsg + extension);
+      } catch { /* best-effort */ }
+    };
+
+    (async () => {
+      let attempt = 1;
+      let forceStandardContext = false;
+      // Cap duro de seguridad: 2 same-context + 1 standard + guard. Evita un
+      // loop infinito si la política dejara de devolver give_up (SR-C.1).
+      const MAX_ATTEMPTS = glitchRetry.MAX_SAME_CONTEXT_RETRIES + 2;
+      while (attempt <= MAX_ATTEMPTS) {
+        const outcome = await attemptAnthropicSpawn({ attempt, forceStandardContext });
+        if (!outcome || outcome.kind !== 'glitch') {
+          // Éxito (o resultado no-glitch): el usuario recibe su respuesta normal
+          // sin ninguna mención del glitch ni del retry (CA-3 / UX G-2).
+          return resolve(outcome ? outcome.text : '');
+        }
+        // Glitch en este intento.
+        if (!retryEnabled) {
+          enviarMensajeAgotamiento();
+          return resolve(outcome.text);
+        }
+        const decision = glitchRetry.decide({ attempt, errorClass: glitchRetry.GLITCH_ERROR_CLASS });
+        log('commander', `[anthropic-1m] glitch en attempt=${attempt} → decision=${decision.action} backoff=${decision.backoffMs}ms`);
+        if (decision.action === 'give_up') {
+          enviarMensajeAgotamiento();
+          return resolve(outcome.text);
+        }
+        if (decision.backoffMs > 0) await sleepBackoff(decision.backoffMs);
+        attempt += 1;
+        forceStandardContext = (decision.action === 'retry_standard');
+      }
+      // Salvaguarda: agotamos el cap duro sin un give_up explícito de la política.
+      enviarMensajeAgotamiento();
+      return resolve('');
+    })().catch((e) => {
+      log('commander', `[anthropic-1m] orquestador de retry falló: ${e && e.message}`);
+      reject(e);
     });
   });
 }

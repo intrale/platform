@@ -418,8 +418,32 @@ test('SEC-5 sanitizeHitLog descarta campos no autorizados (prompt, headers, toke
         token: 'sk-ant-yyy',
         contexto_agente: 'PII',
     });
-    assert.deepEqual(Object.keys(log).sort(), ['errorClass', 'evidence', 'provider', 'timestamp']);
+    assert.deepEqual(Object.keys(log).sort(), ['attempt', 'errorClass', 'evidence', 'provider', 'timestamp']);
     assert.equal(log.errorClass, 'cli_1m_context_glitch');
+    // Sin `attempt` provisto → default 1.
+    assert.equal(log.attempt, 1);
+});
+
+// -----------------------------------------------------------------------------
+// #3950 SR-D.1 — sanitizeHitLog incorpora `attempt` con validación de tipo.
+// -----------------------------------------------------------------------------
+
+test('#3950 sanitizeHitLog: attempt entero válido se preserva', () => {
+    assert.equal(mod.sanitizeHitLog({ attempt: 3 }).attempt, 3);
+    assert.equal(mod.sanitizeHitLog({ attempt: 1 }).attempt, 1);
+});
+
+test('#3950 sanitizeHitLog: attempt inválido (objeto/negativo/float/0/string) → default 1', () => {
+    assert.equal(mod.sanitizeHitLog({ attempt: { x: 1 } }).attempt, 1);
+    assert.equal(mod.sanitizeHitLog({ attempt: -2 }).attempt, 1);
+    assert.equal(mod.sanitizeHitLog({ attempt: 1.7 }).attempt, 1);
+    assert.equal(mod.sanitizeHitLog({ attempt: 0 }).attempt, 1);
+    assert.equal(mod.sanitizeHitLog({ attempt: '5' }).attempt, 1);
+});
+
+test('#3950 sanitizeHitLog: attempt ausente → default 1', () => {
+    assert.equal(mod.sanitizeHitLog({ provider: 'anthropic' }).attempt, 1);
+    assert.equal(mod.sanitizeHitLog({}).attempt, 1);
 });
 
 // =============================================================================
