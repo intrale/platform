@@ -21,9 +21,13 @@ function tmpDir() {
 }
 
 function seedCredentials(dir, overrides = {}) {
+    // EP1-H2 (#3917): el bloque `multimedia.elevenlabs_*` quedó deprecado. El
+    // fixture de preservación de campos no-provider usa ahora `_version` (campo
+    // real top-level de credentials.json) para seguir cubriendo CA-6 sin
+    // arrastrar referencias a un provider pago retirado.
     const data = {
+        _version: 'KEEP-ME',
         telegram: { bot_token: 'TG-KEEP-ME', chat_id: '12345' },
-        multimedia: { elevenlabs_voice_id: 'VOICE-KEEP' },
         providers: {
             openai: { api_key: 'sk-' + 'O'.repeat(48) },
             anthropic: { api_key: 'sk-ant-' + 'A'.repeat(48) },
@@ -93,7 +97,7 @@ test('rotate end-to-end: persiste la nueva key y audita last4 old/new', async ()
     assert.equal(data.providers.openai.api_key, newKey);
     assert.equal(data.providers.anthropic.api_key, 'sk-ant-' + 'A'.repeat(48));
     assert.equal(data.telegram.bot_token, 'TG-KEEP-ME');
-    assert.equal(data.multimedia.elevenlabs_voice_id, 'VOICE-KEEP');
+    assert.equal(data._version, 'KEEP-ME');
 });
 
 test('deactivate setea null y NO requiere key', async () => {

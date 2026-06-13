@@ -1,6 +1,10 @@
 // multimedia.js — Preprocesamiento de multimedia para el Commander V2
-// Transcribe audio (OpenAI) y describe imágenes (Anthropic Vision)
+// Transcribe audio (whisper local, motor gratuito) y describe imágenes (Anthropic Vision)
 // Se ejecuta ANTES de pasar el mensaje a Claude
+//
+// EP1-H2 (#3917): el STT corre 100% en whisper local — sin llamadas a APIs pagas.
+// La cadena de fallback se conserva como arquitectura para futuros motores
+// gratuitos, hoy con un solo motor (local).
 
 const https = require('https');
 const fs = require('fs');
@@ -13,17 +17,13 @@ const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json
 const { loadTelegramSecrets, loadApiKeys } = require('./lib/telegram-secrets');
 const { transcribeLocal: whisperLocal, isAvailable: whisperLocalAvailable } = require('./lib/whisper-local');
 
-// errorKinds de la API que ameritan probar el fallback local (cuota, auth,
-// rate limit, network, timeout). 'parse'/'no_key' tampoco deberían volar la
-// transcripción si tenemos whisper local disponible.
-const LOCAL_FALLBACK_KINDS = new Set(['quota', 'auth', 'rate_limit', 'network', 'timeout', 'no_key']);
-
 // Merge en 3 capas para que TTS/STT/Vision nunca se rompa por la migracion
 // del archivo committed a placeholders:
 //   - base = archivo committed (configs no-secretas: voice_id, retries, etc.)
 //   - bot_token + chat_id desde el helper de secrets criticos (home preferido)
-//   - api keys (OpenAI/Anthropic) desde loadApiKeys (ENV → home → legacy)
+//   - api keys (Anthropic, sólo para Vision) desde loadApiKeys (ENV → home → legacy)
 // Cualquier valor del home pisa el placeholder vacio del archivo committed.
+// EP1-H2 (#3917): la openai_api_key dejó de leerse — STT/TTS son 100% gratuitos.
 function loadConfig() {
   let base = {};
   try { base = JSON.parse(fs.readFileSync(TG_CONFIG_PATH, 'utf8')); } catch {}
@@ -33,7 +33,6 @@ function loadConfig() {
     base.chat_id = sec.chat_id;
   } catch {}
   const keys = loadApiKeys({ legacyConfigPath: TG_CONFIG_PATH });
-  if (keys.openai_api_key) base.openai_api_key = keys.openai_api_key;
   if (keys.anthropic_api_key) base.anthropic_api_key = keys.anthropic_api_key;
   return base;
 }
@@ -76,130 +75,50 @@ function downloadTelegramFile(fileId, botToken) {
   });
 }
 
-// --- OpenAI Whisper transcription ---
-// Devuelve siempre {ok, text, errorKind, raw} para que el caller decida si
-// degrada con gracia. errorKind ∈ {'no_key','quota','auth','rate_limit',
-// 'network','timeout','parse','api','unknown'}.
-
-function classifyOpenAIError(errObj) {
-  if (!errObj) return 'unknown';
-  const code = (errObj.code || '').toLowerCase();
-  const type = (errObj.type || '').toLowerCase();
-  const msg  = (errObj.message || '').toLowerCase();
-  if (code === 'insufficient_quota' || type === 'insufficient_quota' || msg.includes('exceeded your current quota')) return 'quota';
-  if (code === 'invalid_api_key' || type === 'invalid_request_error' && msg.includes('api key')) return 'auth';
-  if (code === 'rate_limit_exceeded' || type === 'rate_limit_error') return 'rate_limit';
-  return 'api';
-}
-
-function transcribeAudio(audioBuffer, filename) {
-  const config = loadConfig();
-  const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
-  if (!apiKey) return Promise.resolve({ ok: false, text: '', errorKind: 'no_key', raw: 'falta openai_api_key' });
-
-  return new Promise((resolve) => {
-    const boundary = 'boundary' + Date.now();
-    const parts = [];
-    parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-4o-mini-transcribe\r\n`);
-    parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename || 'audio.ogg'}"\r\nContent-Type: audio/ogg\r\n\r\n`);
-
-    const header = Buffer.from(parts.join(''));
-    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([header, audioBuffer, footer]);
-
-    const req = https.request({
-      hostname: 'api.openai.com',
-      path: '/v1/audio/transcriptions',
-      method: 'POST',
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': body.length
-      },
-      timeout: 60000
-    }, (res) => {
-      let d = '';
-      res.on('data', c => d += c);
-      res.on('end', () => {
-        try {
-          const r = JSON.parse(d);
-          if (r.error) {
-            resolve({ ok: false, text: '', errorKind: classifyOpenAIError(r.error), raw: r.error.message || JSON.stringify(r.error) });
-            return;
-          }
-          if (r.text) { resolve({ ok: true, text: r.text }); return; }
-          resolve({ ok: false, text: '', errorKind: 'parse', raw: 'respuesta sin campo text' });
-        } catch (e) {
-          resolve({ ok: false, text: '', errorKind: 'parse', raw: e.message });
-        }
-      });
-    });
-    req.on('error', (e) => resolve({ ok: false, text: '', errorKind: 'network', raw: e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, text: '', errorKind: 'timeout', raw: 'timeout' }); });
-    req.write(body);
-    req.end();
-  });
-}
-
-// Orquesta API + fallback local. Devuelve la misma forma {ok,text,errorKind,raw}
-// más un campo `source` ∈ {'openai','local'} para que se pueda auditar/loguear
-// cuál motor terminó respondiendo.
-async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) {
-  const apiResult = await transcribeAudio(audioBuffer, filename);
-  if (apiResult.ok) return { ...apiResult, source: 'openai' };
-
-  // Sólo intentamos local cuando el motivo de falla es uno que el local puede
-  // resolver (cuota agotada, key inválida, network). Errores de parseo o de
-  // formato de respuesta no se arreglan re-corriendo en local.
-  if (!LOCAL_FALLBACK_KINDS.has(apiResult.errorKind)) {
-    return { ...apiResult, source: 'openai' };
-  }
+// --- Whisper local transcription (motor primario, gratuito) ---
+// EP1-H2 (#3917): el STT corre 100% en whisper local (`lib/whisper-local.js`).
+// Ya no hay llamada a APIs pagas: cada audio se transcribe offline sin pagar la
+// latencia muerta de un primario caído.
+//
+// Devuelve siempre {ok, text, source, errorKind, raw} para que el caller degrade
+// con gracia. errorKind (cuando ok=false) ∈ los del motor local:
+// {'no_binary','no_input','missing_file','spawn_error','timeout','cli_error',
+//  'no_output','read_error','unavailable'}.
+//
+// La firma conserva el shape histórico (audioBuffer, audioPath, filename) y el
+// campo `source` para que el resto del pipeline (logs, extras) siga auditando
+// qué motor respondió. La arquitectura de fallback se mantiene: si mañana se
+// suma otro motor gratuito, este orquestador es el punto de extensión.
+async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) { // eslint-disable-line no-unused-vars
   if (!whisperLocalAvailable()) {
-    log(`API falló (${apiResult.errorKind}) y whisper local no está disponible`);
-    return { ...apiResult, source: 'openai' };
+    log('whisper local no está disponible (binario ausente)');
+    return { ok: false, text: '', source: 'local', errorKind: 'unavailable', raw: 'whisper CLI no encontrado' };
   }
 
-  log(`API falló (${apiResult.errorKind}) — fallback a whisper local`);
   const localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
   if (localResult.ok) {
-    return { ok: true, text: localResult.text, source: 'local', apiErrorKind: apiResult.errorKind };
+    return { ok: true, text: localResult.text, source: 'local' };
   }
-  // Si el local también falló, devolvemos el error original de la API (es el
-  // que tiene contexto más útil para el operador). Anotamos el fallo del local.
-  return {
-    ...apiResult,
-    source: 'openai',
-    localErrorKind: localResult.errorKind,
-    localRaw: localResult.raw,
-  };
+  return { ...localResult, source: 'local' };
 }
 
-// Mensaje human-friendly que va a Telegram cuando whisper no pudo transcribir.
-// Es lo que va a leer Leo, así que tiene que ser breve y accionable.
-// Cuando ambos engines (API + local) fallan, el mensaje refleja eso —
-// no podemos echarle la culpa solo a la cuota de OpenAI si el local crasheó.
-function transcriptionFailureMessage(errorKind, localErrorKind = null) {
-  if (localErrorKind) {
-    const apiPart = errorKind === 'quota' ? 'cuota OpenAI agotada'
-                  : errorKind === 'auth'  ? 'key OpenAI inválida'
-                  : errorKind === 'rate_limit' ? 'rate-limit OpenAI'
-                  : errorKind === 'network' ? 'no llegué a OpenAI'
-                  : errorKind === 'timeout' ? 'timeout OpenAI'
-                  : `OpenAI ${errorKind}`;
-    const localHint = localErrorKind === 'cli_error' ? 'crasheó (probable OOM con audio largo)'
-                    : localErrorKind === 'timeout'  ? 'tardó demasiado'
-                    : localErrorKind === 'no_binary' ? 'no está instalado'
-                    : `falló (${localErrorKind})`;
-    return `🎤 Audio recibido. Falló API (${apiPart}) y también whisper local — ${localHint}. Repetímelo por texto cuando puedas. Si el local sigue crasheando: bajar \`WHISPER_LOCAL_MODEL\` a \`small\` o reiniciar la máquina.`;
-  }
+// Mensaje human-friendly que va a Telegram cuando whisper local no pudo
+// transcribir. Es lo que va a leer Leo, así que tiene que ser breve y accionable.
+// El segundo parámetro se mantiene por compat de firma (callers históricos que
+// pasaban localErrorKind); hoy el único motor es el local, así que el errorKind
+// ya describe el fallo real.
+function transcriptionFailureMessage(errorKind, _localErrorKind = null) {
   switch (errorKind) {
-    case 'no_key':     return '🎤 Audio recibido. No tengo `openai_api_key` cargada — repetímelo por texto cuando puedas.';
-    case 'quota':      return '🎤 Audio recibido. La cuota de OpenAI está agotada (Whisper no responde) — repetímelo por texto cuando puedas. Para volver a habilitar la transcripción: subir cuota o rotar la key en `~/.claude/secrets/telegram-config.json`.';
-    case 'auth':       return '🎤 Audio recibido. La `openai_api_key` está inválida — repetímelo por texto y revisá la key en `~/.claude/secrets/telegram-config.json`.';
-    case 'rate_limit': return '🎤 Audio recibido. Whisper está rate-limited ahora mismo — esperá unos segundos y reenviá, o repetímelo por texto.';
-    case 'timeout':    return '🎤 Audio recibido. La transcripción se colgó (timeout) — repetímelo por texto, o reenvialo más cortito.';
-    case 'network':    return '🎤 Audio recibido. No pude llegar a la API de OpenAI (network) — repetímelo por texto.';
-    default:           return '🎤 Audio recibido pero no pude transcribirlo — repetímelo por texto cuando puedas.';
+    case 'unavailable':
+    case 'no_binary':   return '🎤 Audio recibido. El motor de transcripción local (whisper) no está instalado en la máquina — repetímelo por texto cuando puedas. Para habilitarlo: `pip install -U openai-whisper`.';
+    case 'cli_error':   return '🎤 Audio recibido. Whisper local crasheó (probable falta de memoria con audio largo) — repetímelo por texto, o reenvialo más cortito. Si persiste: bajar `WHISPER_LOCAL_MODEL` a `small` o reiniciar la máquina.';
+    case 'timeout':     return '🎤 Audio recibido. La transcripción local se colgó (timeout) — repetímelo por texto, o reenvialo más cortito.';
+    case 'no_output':
+    case 'read_error':  return '🎤 Audio recibido pero whisper local no devolvió texto — repetímelo por texto cuando puedas.';
+    case 'no_input':
+    case 'missing_file':return '🎤 Audio recibido pero no encontré el archivo para transcribir — reintentá o repetímelo por texto.';
+    case 'spawn_error': return '🎤 Audio recibido. No pude lanzar whisper local — repetímelo por texto. Revisá que `WHISPER_LOCAL_BIN`/PATH apunten al binario.';
+    default:            return '🎤 Audio recibido pero no pude transcribirlo — repetímelo por texto cuando puedas.';
   }
 }
 
@@ -281,13 +200,9 @@ async function preprocessMessage(msg, botToken) {
       log(`Transcribiendo audio (${audioBuffer.length} bytes)...`);
       const tx = await transcribeAudioWithFallback(audioBuffer, msg.voice_path || null, 'audio.ogg');
       if (tx.ok) {
-        const sourceTag = tx.source === 'local' ? ' [whisper local]' : '';
-        log(`Transcripcion${sourceTag}: "${tx.text.slice(0, 100)}"`);
+        log(`Transcripcion [whisper local]: "${tx.text.slice(0, 100)}"`);
         result.text = tx.text;
-        const extra = tx.source === 'local'
-          ? '(mensaje de voz transcripto · whisper local · API en fallback)'
-          : '(mensaje de voz transcripto)';
-        result.extras.push(extra);
+        result.extras.push('(mensaje de voz transcripto · whisper local)');
         result.audio = { ok: true, source: tx.source };
       } else {
         log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}${tx.localErrorKind ? ` | local=${tx.localErrorKind}: ${tx.localRaw}` : ''}`);
@@ -349,35 +264,29 @@ const TTS_CONFIG_PATH = path.join(ROOT, '.pipeline', 'tts-config.json');
 // tiene schema inválido, o se pide un perfil inexistente (queremos audio
 // genérico antes que no audio). Cualquier agente del pipeline puede declarar
 // su propio perfil en tts-config.json → profiles.<nombre>.
+//
+// EP1-H2 (#3917): Edge TTS es el motor oficial y único. La arquitectura de
+// fallback se conserva (`fallback` puede apuntar a un futuro motor gratuito),
+// hoy con `fallback: null` porque sólo existe un motor.
 const DEFAULT_PROFILE = {
-  primary: 'openai',
-  fallback: 'edge',
-  openai: {
-    model: 'gpt-4o-mini-tts',
-    voice: 'ash',
-    instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
-    response_format: 'opus',
-    character_name: 'Claudito'
-  },
+  primary: 'edge',
+  fallback: null,
   edge: {
     voice: 'es-AR-TomasNeural',
     rate: '+8%',
     pitch: '+4Hz',
     character_name: 'Tommy',
     personality: 'Sos Tommy, un pibe joven que recién arranca en el equipo. Tenés la frescura de la juventud, hablas con energía, onda y entusiasmo. Usas vos, che, dale, mira. Sos piola, curioso, con ganas de aprender. Nunca sos engreído — tenés el respeto del que recién se inicia pero la garra de querer comerse la cancha.'
-  },
-  intros: {
-    openai_from_edge: 'Hola Leo, volvió Claudito. Gracias Tommy por cubrirme, te saliste, pibe.',
-    edge_from_openai: 'Eeeeh Leo, todo bien. Soy Tommy, recién me sumo al equipo. Claudito se tomó una licencia y me dejó la posta mientras vuelve. La rompo yo hasta que regrese.'
   }
 };
 
 /**
  * Carga un perfil TTS por nombre. Soporta dos shapes de tts-config.json:
  *   - Nuevo: { profiles: { default: {...}, qa: {...}, ... } }
- *   - Viejo: { primary, fallback, providers: { openai, edge }, intros } → interpretado como profiles.default
+ *   - Viejo: { primary, fallback, providers: { edge }, ... } → interpretado como profiles.default
  * Si el perfil pedido no existe, cae a `default`. Si tampoco hay default, usa DEFAULT_PROFILE hardcoded.
- * Retorna objeto con { primary, fallback, openai, edge, intros, profileName, profileFound }.
+ * Retorna objeto con { primary, fallback, edge, profileName, profileFound }.
+ * EP1-H2 (#3917): motor único Edge — ya no se exponen `openai` ni `intros`.
  */
 function loadTtsConfig(profileName = 'default') {
   let raw = null;
@@ -398,9 +307,7 @@ function loadTtsConfig(profileName = 'default') {
     profileRaw = {
       primary: raw.primary,
       fallback: raw.fallback,
-      openai: raw.providers?.openai,
       edge: raw.providers?.edge,
-      intros: raw.intros,
     };
   }
 
@@ -408,12 +315,12 @@ function loadTtsConfig(profileName = 'default') {
     return { ...DEFAULT_PROFILE, profileName: 'default', profileFound: false };
   }
 
+  // Motor único Edge: aunque un perfil legacy declare primary='openai', lo
+  // normalizamos a 'edge' para no intentar un motor pago que ya no existe.
   return {
-    primary: profileRaw.primary || DEFAULT_PROFILE.primary,
-    fallback: profileRaw.fallback === null ? null : (profileRaw.fallback || DEFAULT_PROFILE.fallback),
-    openai: { ...DEFAULT_PROFILE.openai, ...(profileRaw.openai || {}) },
+    primary: 'edge',
+    fallback: null,
     edge: { ...DEFAULT_PROFILE.edge, ...(profileRaw.edge || {}) },
-    intros: { ...DEFAULT_PROFILE.intros, ...(profileRaw.intros || {}) },
     profileName,
     profileFound: true,
   };
@@ -432,66 +339,17 @@ function saveTtsState(state) {
   catch (e) { log(`TTS state save error: ${e.message}`); }
 }
 
-function getTransitionIntro(newProvider, prevProvider, profileName = 'default') {
-  if (!prevProvider || prevProvider === newProvider) return null;
-  const cfg = loadTtsConfig(profileName);
-  if (newProvider === 'openai' && prevProvider === 'edge') return cfg.intros?.openai_from_edge || null;
-  if (newProvider === 'edge' && prevProvider === 'openai') return cfg.intros?.edge_from_openai || null;
+// EP1-H2 (#3917): con un único motor TTS (Edge) ya no hay transiciones de
+// personaje (Claudito↔Tommy). Se conserva la firma porque pulpo.js la invoca,
+// pero retorna siempre null — no hay intro de cambio de motor que narrar.
+function getTransitionIntro(_newProvider, _prevProvider, _profileName = 'default') { // eslint-disable-line no-unused-vars
   return null;
 }
 
-// --- OpenAI TTS ---
-
-function textToSpeechOpenAI(text, profileName = 'default', chunkInfo = null) {
-  const config = loadConfig();
-  const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
-  if (!apiKey) { log('TTS[openai]: falta openai_api_key'); return Promise.resolve(null); }
-
-  const ttsCfg = loadTtsConfig(profileName).openai;
-  const inputText = text.substring(0, 4096);
-  const estimatedSec = estimateTtsDurationSec(inputText.length);
-  const chunkTag = formatChunkInfo(chunkInfo);
-
-  return new Promise((resolve) => {
-    // OpenAI TTS soporta hasta 4096 chars — NO truncar, los callers manejan chunking
-    const body = JSON.stringify({
-      model: ttsCfg.model,
-      input: inputText,
-      voice: ttsCfg.voice,
-      instructions: ttsCfg.instructions,
-      response_format: ttsCfg.response_format || 'opus'
-    });
-
-    const req = https.request({
-      hostname: 'api.openai.com',
-      path: '/v1/audio/speech',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(body)
-      },
-      timeout: 60000
-    }, (res) => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const buffer = Buffer.concat(chunks);
-        if (res.statusCode === 200 && buffer.length > 100) {
-          log(`TTS[openai] generado: ${buffer.length} bytes chars=${inputText.length} duracion_est=${estimatedSec}s${chunkTag}`);
-          resolve(buffer);
-        } else {
-          log(`TTS[openai] error: status=${res.statusCode}, size=${buffer.length}`);
-          resolve(null);
-        }
-      });
-    });
-    req.on('error', (e) => { log(`TTS[openai] error: ${e.message}`); resolve(null); });
-    req.on('timeout', () => { req.destroy(); log('TTS[openai] timeout'); resolve(null); });
-    req.write(body);
-    req.end();
-  });
-}
+// --- (legacy) OpenAI TTS removido en EP1-H2 (#3917) ---
+// La función `textToSpeechOpenAI` y su llamada al endpoint pago de OpenAI fueron retiradas:
+// Edge es el motor oficial y único. La arquitectura de fallback (textToSpeechWithMeta)
+// se conserva para sumar futuros motores gratuitos sin reescribir el orquestador.
 
 // --- Edge TTS (Microsoft, gratis) ---
 
@@ -629,10 +487,11 @@ function sanitizeForTts(text) {
 
 async function textToSpeechByProvider(provider, text, profileName = 'default', chunkInfo = null) {
   const cleaned = sanitizeForTts(text);
-  if (provider === 'openai') return textToSpeechOpenAI(cleaned, profileName, chunkInfo);
   if (provider === 'edge') return textToSpeechEdge(cleaned, profileName, chunkInfo);
-  log(`TTS: provider desconocido '${provider}'`);
-  return null;
+  // EP1-H2 (#3917): Edge es el único motor. Cualquier otro provider (incluido el
+  // legacy 'openai') se trata como edge para no fallar audios por config vieja.
+  log(`TTS: provider '${provider}' no soportado — usando edge (motor único)`);
+  return textToSpeechEdge(cleaned, profileName, chunkInfo);
 }
 
 /**
@@ -655,7 +514,7 @@ async function textToSpeechWithMeta(text, opts = {}) {
     return buf ? { buffer: buf, provider: forced, profile: profileName } : null;
   }
 
-  const primary = cfg.primary || 'openai';
+  const primary = cfg.primary || 'edge';
   log(`TTS[${profileName}]: intentando primary=${primary}`);
   const bufPrimary = await textToSpeechByProvider(primary, text, profileName, chunkInfo);
   if (bufPrimary) return { buffer: bufPrimary, provider: primary, profile: profileName };
@@ -756,14 +615,12 @@ function splitTextForTTSChunks(text, maxChars = 1500) {
 
 module.exports = {
   preprocessMessage,
-  transcribeAudio,
   transcribeAudioWithFallback,
   transcriptionFailureMessage,
   describeImage,
   downloadTelegramFile,
   textToSpeech,
   textToSpeechWithMeta,
-  textToSpeechOpenAI,
   textToSpeechEdge,
   loadTtsConfig,
   loadTtsState,
