@@ -111,6 +111,40 @@ test('CA-1: timestamp ausente se completa con un default (no rompe el shape)', (
 });
 
 // -----------------------------------------------------------------------------
+// #3921 CA-3 / SEC-3 — el record canónico persiste `same_provider`
+// -----------------------------------------------------------------------------
+
+test('#3921 CA-3: el record canónico persiste same_provider:true cuando el veredicto fue same-provider (incl. último recurso)', () => {
+    const dir = freshPipelineDir();
+    const session = 'sp-true';
+    writer.appendSherlockAudit({
+        session, pipelineDir: dir,
+        record: baseRecord({ same_provider: true }),
+    });
+    const [entry] = readAll(auditFile(dir, session));
+    assert.equal(entry.same_provider, true, 'same_provider=true persistido en el record canónico');
+});
+
+test('#3921 CA-3: same_provider:false persistido cuando la verificación fue cross-provider', () => {
+    const dir = freshPipelineDir();
+    const session = 'sp-false';
+    writer.appendSherlockAudit({
+        session, pipelineDir: dir,
+        record: baseRecord({ same_provider: false }),
+    });
+    const [entry] = readAll(auditFile(dir, session));
+    assert.equal(entry.same_provider, false, 'same_provider=false persistido (cuenta en el denominador del %)');
+});
+
+test('#3921 CA-3: callers viejos sin same_provider NO contaminan el record con un false espurio', () => {
+    const dir = freshPipelineDir();
+    const session = 'sp-absent';
+    writer.appendSherlockAudit({ session, pipelineDir: dir, record: baseRecord() });
+    const [entry] = readAll(auditFile(dir, session));
+    assert.ok(!('same_provider' in entry), 'sin el campo, no se agrega un false espurio que falsearía el %');
+});
+
+// -----------------------------------------------------------------------------
 // CA-3 / SEC-2 — no-fuga de secrets
 // -----------------------------------------------------------------------------
 
