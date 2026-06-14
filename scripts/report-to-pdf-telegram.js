@@ -15,7 +15,6 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { execSync } = require('child_process');
 
 const DOCS_QA_DIR = path.join(__dirname, '..', 'docs', 'qa');
 const TELEGRAM_CONFIG = path.join(__dirname, '..', '.claude', 'hooks', 'telegram-config.json');
@@ -32,27 +31,13 @@ const caption = filteredArgs[1] || filteredArgs[0] || 'Reporte Intrale';
 const { sanitize: sanitizeUtf8 } = require(path.join(__dirname, '..', '.claude', 'hooks', 'telegram-sanitizer'));
 
 // CA-7 (#3929) — política de seguridad para sub-recursos durante el render.
-// Pura y testeable sin lanzar el browser: permite SOLO la navegación al
-// documento principal (`mainUrl`); aborta cualquier otro `file://` (LFI) y
-// todo acceso de red `http(s)`/`ftp`/`ws` (SSRF). `data:`/`about:` se permiten
-// por ser inocuos (imágenes embebidas, blank).
-function isRequestAllowed({ url, isNavigation, mainUrl }) {
-  if (typeof url !== 'string') return false;
-  // El documento principal: única navegación file:// permitida.
-  if (isNavigation && url === mainUrl) return true;
-  const lower = url.toLowerCase();
-  if (lower.startsWith('file:')) return false;          // LFI: archivos locales adicionales
-  if (
-    lower.startsWith('http:') ||
-    lower.startsWith('https:') ||
-    lower.startsWith('ftp:') ||
-    lower.startsWith('ws:') ||
-    lower.startsWith('wss:')
-  ) {
-    return false;                                        // SSRF / exfiltración de red
-  }
-  return true;                                           // data:, about:blank, etc.
-}
+// Fuente única en .pipeline/lib/render-sandbox.js (compartida con
+// docs/qa/generate-pdf.js). Este entrypoint renderiza contenido derivado de
+// LLM / input del issue, así que usa SIEMPRE el modo 'strict' (sin red, sin
+// file:// extra) y NO delega en generate-pdf.js (que corre JS para Mermaid).
+const { isRequestAllowed, makeRequestHandler } = require(
+  path.join(__dirname, '..', '.pipeline', 'lib', 'render-sandbox')
+);
 
 async function readStdin() {
   return new Promise((resolve) => {
@@ -130,33 +115,15 @@ async function generatePdf(htmlPath) {
   const pdfPath = htmlPath.replace(/\.html$/, '.pdf');
   const reportName = path.basename(htmlPath, '.html');
 
-  // Usar generate-pdf.js existente si está disponible
-  const generatePdfScript = path.join(DOCS_QA_DIR, 'generate-pdf.js');
-  if (fs.existsSync(generatePdfScript)) {
-    console.log('Generando PDF con generate-pdf.js...');
-    // Copiar HTML a docs/qa si no está ahí
-    let targetHtml = htmlPath;
-    if (!htmlPath.startsWith(DOCS_QA_DIR)) {
-      targetHtml = path.join(DOCS_QA_DIR, path.basename(htmlPath));
-      fs.copyFileSync(htmlPath, targetHtml);
-    }
-    execSync(`node "${generatePdfScript}" "${path.basename(targetHtml, '.html')}"`, {
-      cwd: DOCS_QA_DIR,
-      stdio: 'inherit',
-      timeout: 120000
-    });
-    return path.join(DOCS_QA_DIR, path.basename(targetHtml, '.html') + '.pdf');
-  }
-
-  // Fallback: puppeteer directo.
-  //
   // CA-7 (#3929) — endurecimiento del render HTML→PDF. El HTML puede contener
   // contenido generado por LLM o input del issue, así que el sandbox bloquea
-  // SSRF/LFI/XSS:
-  //   - JavaScript deshabilitado (los reportes son estáticos; no se necesita JS).
+  // SSRF/LFI/XSS. IMPORTANTE: NO se delega en docs/qa/generate-pdf.js (que corre
+  // JS para Mermaid), porque eso reabriría los vectores de CA-7 sobre contenido
+  // no confiable. El render se hace siempre acá, en modo 'strict':
+  //   - JavaScript deshabilitado (los reportes/entregables son estáticos).
   //   - Interceptación de requests: sólo se permite la navegación al documento
   //     principal; se aborta todo `file://` adicional (LFI) y toda la red
-  //     `http(s)/ftp` (SSRF).
+  //     `http(s)/ftp/ws` (SSRF) — sin allowlist de CDN.
   //   - NO se pasa `--no-sandbox` (sólo aceptable en contenedor aislado).
   const puppeteer = require(path.join(DOCS_QA_DIR, 'node_modules', 'puppeteer'));
   const browser = await puppeteer.launch({ headless: 'new' });
@@ -164,15 +131,7 @@ async function generatePdf(htmlPath) {
   await page.setJavaScriptEnabled(false);
   const mainUrl = 'file:///' + htmlPath.replace(/\\/g, '/');
   await page.setRequestInterception(true);
-  page.on('request', (req) => {
-    const allowed = isRequestAllowed({
-      url: req.url(),
-      isNavigation: typeof req.isNavigationRequest === 'function' ? req.isNavigationRequest() : false,
-      mainUrl,
-    });
-    if (allowed) req.continue();
-    else req.abort();
-  });
+  page.on('request', makeRequestHandler(mainUrl, 'strict'));
   await page.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 60000 });
   await page.pdf({
     path: pdfPath,
