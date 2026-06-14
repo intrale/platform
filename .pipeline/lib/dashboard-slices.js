@@ -42,6 +42,20 @@ try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 // (#3638 CA-F-1).
 const { isMarkerArtifact } = require('./marker-artifact');
 
+// #3948 (EP-7) — Presencia observacional del Commander. Canal separado del
+// filesystem de fases: el archivo vive en la raíz de runtime del pipeline
+// (`commander-presence.json`), NO bajo `<pipeline>/<fase>/trabajando/`, así los
+// contadores de concurrencia (`countRunningBySkill`/`countRunningDevs`) nunca lo
+// ven (CA-2). Importación defensiva del enum/path; si el módulo no carga, el
+// merge se degrada a no-op y `/api/dash/active` sigue funcionando.
+let commanderPresence = null;
+try { commanderPresence = require('./commander-presence'); } catch { /* opcional */ }
+
+// TTL para considerar la presencia stale (CA-8 / SEC-4). Alineado con el default
+// del helper; si el Commander crashea a mitad de petición, la card no queda
+// colgada más de ~5 min.
+const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
+
 function isDeterministicSkill(skill) {
     return DETERMINISTIC_SKILLS.has(String(skill || '').trim().toLowerCase());
 }
@@ -74,6 +88,41 @@ function activeAgents(state) {
         }
     }
     out.sort((a, b) => b.durationMs - a.durationMs);
+
+    // #3948 (EP-7) — Mergear la presencia del Commander como agente SINTÉTICO
+    // observacional, leído del canal separado (NO del issueMatrix de fases). Va
+    // al frente (`unshift`) para que aparezca primero en la banda "Ejecutando
+    // ahora". Lectura defensiva (`safeReadJson` ya tolera corrupción) + TTL por
+    // `startedAt` (SEC-4 / CA-8) + validación de fase contra el enum cerrado
+    // (SEC-2). NO afecta `totalRunning` como slot real: es presencia, los
+    // contadores de concurrencia del pulpo viven en otro lado y no lo cuentan
+    // (CA-2). El archivo NO contiene PII (CA-6, garantizado por el writer).
+    if (commanderPresence) {
+        const pres = safeReadJson(commanderPresence.presencePath(), null);
+        if (pres && typeof pres === 'object' &&
+            commanderPresence.isValidPhase(pres.fase) &&
+            typeof pres.petitionId === 'string' && pres.petitionId &&
+            typeof pres.startedAt === 'number') {
+            const ageMs = Date.now() - pres.startedAt;
+            if (ageMs >= 0 && ageMs < COMMANDER_PRESENCE_TTL_MS) {
+                out.unshift({
+                    issue: null,
+                    title: 'Commander',
+                    skill: 'commander',
+                    pipeline: null,
+                    fase: pres.fase,
+                    petitionId: pres.petitionId, // id opaco (SEC-1)
+                    durationMs: ageMs,
+                    ageMin: Math.floor(ageMs / 60000),
+                    observational: true,         // CA-3 / CA-4
+                    cancelable: false,           // CA-3 / CA-4
+                    hasLog: false,               // SEC-3: sin link a log crudo en esta iteración
+                    etaMs: null,                 // presencia sin ETA (barra indeterminada en UI)
+                });
+            }
+        }
+    }
+
     return out;
 }
 
