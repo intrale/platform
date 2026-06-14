@@ -261,6 +261,7 @@ const PIPELINE_ONLY_PATTERNS = [
     /^package-lock\.json$/,                // npm lockfile — usado solo por `.pipeline/` Node.js
     /^qa\/evidence\//,                     // QA artifacts (video/screenshots/reports) — fuera de Gradle
     /^qa\/scripts\/.*\.(js|mjs|cjs)$/,     // Node.js scripts/hooks QA — fuera de Gradle (rebote #3409)
+    /^scripts\/.*\.(js|mjs|cjs)$/,         // Node.js scripts operativos del pipeline — fuera de Gradle (rebote #3929)
     /^scripts\/diff-parser-codepaths\.sh$/, // log-analyzer pipeline (rebote #3576) — NO toca Gradle
 ];
 
@@ -475,6 +476,13 @@ function findNodeTestFiles(repoRoot) {
     const roots = [
         path.join(repoRoot, '.pipeline'),
         path.join(repoRoot, 'qa', 'scripts', '__tests__'),
+        // Tests Node de scripts operativos del pipeline (rebote #3929): el
+        // `report-to-pdf-telegram.test.js` (y futuros tests de `scripts/*.js`)
+        // viven acá. Sin escanear este root, un cambio pipeline-only que solo
+        // toca `scripts/*.js` no corría ningún test propio del archivo
+        // modificado. `scripts/` solo contiene Node/shell/ps1 (cero inputs de
+        // Gradle), así que es seguro escanearlo por `.test.js`.
+        path.join(repoRoot, 'scripts'),
     ];
     for (const root of roots) {
         if (!fs.existsSync(root)) continue;
@@ -1404,6 +1412,30 @@ if (require.main === module) {
                     'qa/scripts/qa-android.sh',
                 ]);
                 if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con qa/scripts/qa-android.sh');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta scripts/*.js + scripts/*.test.js (rebote #3929)', fn: () => {
+                // El diff real de #3929: doctrina + helper + hardening CA-7 en
+                // scripts/report-to-pdf-telegram.js. Antes del fix estos dos
+                // archivos no matcheaban → ruta gradle → 0 JUnit → rebote
+                // "[tester] No se encontraron reportes JUnit".
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.claude/skills/tester/SKILL.md',
+                    '.pipeline/lib/write-deliverable.js',
+                    'docs/qa/generate-pdf.js',
+                    'scripts/report-to-pdf-telegram.js',
+                    'scripts/report-to-pdf-telegram.test.js',
+                ]);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con scripts/*.js (#3929)');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS sigue rechazando scripts/*.sh genérico (frontera Kotlin/infra)', fn: () => {
+                // scripts/*.sh (salvo el allowlist explícito) sigue forzando la
+                // ruta gradle: son wrappers de build/local que pueden tocar el
+                // entorno de compilación.
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.pipeline/config.yaml',
+                    'scripts/local-up.sh',
+                ]);
+                if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con scripts/local-up.sh');
             }},
         ]);
         return;
