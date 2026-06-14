@@ -155,6 +155,17 @@ function appendSherlockAudit({ session, record, pipelineDir, fsImpl } = {}) {
         resolucion: record.resolucion,                 // 'accepted' | 'rejected' | 'escalated'
     };
 
+    // CA-3/SEC-3 (#3921) — `same_provider` del intento que produjo el veredicto.
+    // Boolean, NO se redacta (no transporta texto sensible). Solo se persiste
+    // cuando el caller lo provee: los records que no lo traen (callers viejos)
+    // NO quedan con un `false` espurio que contaminaría el % del dashboard. El
+    // verifier lo pasa SIEMPRE en la verificación canónica → el slice cuenta
+    // todas las same-provider, incluido el fallback de último recurso (no
+    // manipulable).
+    if (record.same_provider !== undefined && record.same_provider !== null) {
+        entry.same_provider = !!record.same_provider;
+    }
+
     // appendChained agrega created_at + hash_prev/hash_self y escribe
     // exactamente UNA línea (`JSON.stringify(entry)+'\n'`) con O_APPEND + lock.
     // Resuelve SEC-3 por construcción.

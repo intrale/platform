@@ -820,7 +820,7 @@ test('config con configLoader que tira devuelve defaults seguros', () => {
 // #3484 — Tests nuevos para Opción B (spawn-CLI Anthropic) + audit enriquecido.
 // =============================================================================
 
-test('#3484 CA-SHERLOCK-2: Sherlock usa Anthropic vía spawn cuando es el primero de la chain', async () => {
+test('#3484 CA-SHERLOCK-2 (rev #3921): Sherlock usa Anthropic vía spawn cuando es el primero de la chain y NO es el commander', async () => {
     const dir = mkTmpPipelineDir();
     let spawnCalled = false;
     const fakeSpawn = fakeSpawnAnthropic((opts) => {
@@ -840,12 +840,16 @@ test('#3484 CA-SHERLOCK-2: Sherlock usa Anthropic vía spawn cuando es el primer
             return { ok: true, content: '{}', inputTokens: 0, outputTokens: 0, durationMs: 1 };
         },
     };
+    // #3921 — cross-provider por defecto: el commander es `cerebras` (queda
+    // excluido de la cascada), así que anthropic (primero de la chain y distinto
+    // del commander) se usa vía spawn. Antes de #3921 el commander era anthropic
+    // y se verificaba con el mismo provider; ese default fue revertido.
     const result = await sherlock.verify({
         analysis: 'respuesta del commander',
         originalRequest: '?',
         systemState: 'estado',
-        commanderProvider: 'anthropic',
-        commanderModel: 'claude-opus-4-7',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
         completionClient: trackingHttp,
@@ -857,6 +861,7 @@ test('#3484 CA-SHERLOCK-2: Sherlock usa Anthropic vía spawn cuando es el primer
     assert.equal(result.verdict, 'ok');
     assert.equal(result.sherlockProvider, 'anthropic');
     assert.equal(result.transport, 'spawn');
+    assert.equal(result.sameProvider, false, '#3921: cross-provider — commander=cerebras vs sherlock=anthropic');
     assert.equal(spawnCalled, true, 'spawn helper debió ser invocado para anthropic');
     assert.equal(httpCalled, false, 'completion-client NO debe ser llamado para anthropic');
 });
@@ -908,13 +913,16 @@ test('#3484 CA-SHERLOCK-5: si toda la chain falla, Sherlock devuelve aborted + F
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
 });
 
-test('#3484 CA-AUDIT-1: audit devuelve sameProvider=true cuando coinciden', async () => {
+test('#3484 CA-AUDIT-1 (rev #3921): audit devuelve sameProvider=true en el fallback de último recurso (chain alternativa agotada)', async () => {
     const dir = mkTmpPipelineDir();
     const okResp = {
         ok: true,
         content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
         inputTokens: 0, outputTokens: 0, durationMs: 100,
     };
+    // #3921 — la chain SOLO tiene al commander (cerebras). Cross-provider por
+    // defecto lo excluye → no hay alternativa → se re-admite como último recurso
+    // → sameProvider=true. Es el único camino que produce same-provider ahora.
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
         commanderProvider: 'cerebras',
@@ -923,7 +931,7 @@ test('#3484 CA-AUDIT-1: audit devuelve sameProvider=true cuando coinciden', asyn
         configLoader: defaultConfigLoader(),
         completionClient: fakeCompletionClient(okResp),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'cerebras', model: 'llama-3.3-70b' }] }),
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.sherlockProvider, 'cerebras');
@@ -933,13 +941,16 @@ test('#3484 CA-AUDIT-1: audit devuelve sameProvider=true cuando coinciden', asyn
     assert.equal(result.commanderModel, 'llama-3.3-70b');
 });
 
-test('#3484 CA-AUDIT-1: sameProvider=true pero sameModel=false con distinto modelo', async () => {
+test('#3484 CA-AUDIT-1 (rev #3921): sameProvider=true pero sameModel=false con distinto modelo (fallback último recurso)', async () => {
     const dir = mkTmpPipelineDir();
     const okResp = {
         ok: true,
         content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
         inputTokens: 0, outputTokens: 0, durationMs: 50,
     };
+    // #3921 — chain con SOLO anthropic (= commander). Excluido por cross-provider,
+    // re-admitido como último recurso → sameProvider=true. El modelo de la chain
+    // (haiku) difiere del commander (opus) → sameModel=false.
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
         commanderProvider: 'anthropic',
@@ -953,7 +964,7 @@ test('#3484 CA-AUDIT-1: sameProvider=true pero sameModel=false con distinto mode
             inputTokens: 0, outputTokens: 0, durationMs: 500,
         }),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_ANTH_FIRST }),
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'anthropic', model: 'claude-haiku-4-5' }] }),
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.sherlockProvider, 'anthropic');
@@ -981,7 +992,12 @@ test('#3484 back-compat: aceptamos excludedProvider como alias de commanderProvi
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.commanderProvider, 'cerebras');
-    assert.equal(result.sameProvider, true, 'sherlock ahora puede compartir provider con commander (cerebras→cerebras)');
+    // #3921 — el alias `excludedProvider` sigue trackeando como `commanderProvider`
+    // (cerebras), pero con cross-provider por defecto el commander queda EXCLUIDO de
+    // la cascada: con CHAIN_HTTP (cerebras + gemini + nvidia) Sherlock enruta a otro
+    // provider → sameProvider=false. La prueba del aliasing es que cerebras fue
+    // tratado como commander (y por eso excluido), no que comparta provider.
+    assert.equal(result.sameProvider, false, '#3921: el commander aliaseado (cerebras) se excluye por defecto → cross-provider');
 });
 
 test('#3484: spawn helper de Anthropic respeta timeout y devuelve error tipado', async () => {
@@ -1115,7 +1131,10 @@ test('#3484 CA-AUDIT-1: JSONL persiste los 5 campos enriched (verdict ok, samePr
         configLoader: defaultConfigLoader(),
         completionClient: fakeCompletionClient(okResp),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        // #3921 — chain con SOLO el commander (cerebras). Cross-provider por defecto
+        // lo excluye → no hay alternativa → se re-admite como último recurso →
+        // sameProvider=true. Es el único camino que persiste same_provider=true ahora.
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'cerebras', model: 'llama-3.3-70b' }] }),
         residencyModule: fakeResidencyOk(),
     });
     const entries = readAuditEntries(dir);
@@ -1123,7 +1142,7 @@ test('#3484 CA-AUDIT-1: JSONL persiste los 5 campos enriched (verdict ok, samePr
     const verification = entries.find(e => e.event === 'sherlock_verification');
     assert.ok(verification, 'debe existir un evento sherlock_verification persistido');
     // Los 5 campos enriched deben estar presentes y con los valores esperados.
-    assert.equal(verification.same_provider, true, 'same_provider=true persistido');
+    assert.equal(verification.same_provider, true, 'same_provider=true persistido (fallback último recurso)');
     assert.equal(verification.same_model, true, 'same_model=true persistido');
     assert.equal(verification.commander_model, 'llama-3.3-70b', 'commander_model persistido');
     assert.equal(verification.sherlock_model, 'llama-3.3-70b', 'sherlock_model persistido');
@@ -1175,14 +1194,17 @@ test('#3484 CA-AUDIT-1: JSONL persiste transport=spawn cuando Sherlock usa Anthr
         completionClient: fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } }),
         spawnAnthropic: fakeSpawnAnthropic(spawnResp),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_ANTH_FIRST }),
+        // #3921 — chain con SOLO el commander (anthropic). Cross-provider lo excluye →
+        // sin alternativa → re-admisión de último recurso → mismo provider vía spawn,
+        // con same_provider=true. Cubre el path spawn + same-provider.
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'anthropic', model: 'claude-haiku-4-5' }] }),
         residencyModule: fakeResidencyOk(),
     });
     const entries = readAuditEntries(dir);
     const verification = entries.find(e => e.event === 'sherlock_verification');
     assert.ok(verification, 'sherlock_verification debe estar persistido');
     assert.equal(verification.transport, 'spawn', 'CLI Anthropic → transport=spawn persistido');
-    assert.equal(verification.same_provider, true, 'commander=anthropic, sherlock=anthropic → true');
+    assert.equal(verification.same_provider, true, 'commander=anthropic, sherlock=anthropic (último recurso) → true');
     assert.equal(verification.same_model, false, 'commander=opus vs sherlock=haiku → false');
     assert.equal(verification.commander_model, 'claude-opus-4-7');
     assert.equal(verification.sherlock_model, 'claude-haiku-4-5');
@@ -1203,7 +1225,10 @@ test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_ve
         configLoader: defaultConfigLoader(),
         completionClient: fakeCompletionClient(badResp),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        // #3921 — chain con SOLO el commander (cerebras): cross-provider lo excluye,
+        // sin alternativa → re-admisión último recurso → mismo provider con
+        // schema_violation y same_provider=true persistido.
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'cerebras', model: 'llama-3.3-70b' }] }),
         residencyModule: fakeResidencyOk(),
     });
     const entries = readAuditEntries(dir);
@@ -1234,7 +1259,11 @@ test('#3484 CA-AUDIT-1: JSONL persiste campos enriched también en sherlock_abor
         configLoader: defaultConfigLoader(),
         completionClient: fakeCompletionClient({ ok: true, content: '{}', inputTokens: 0, outputTokens: 0, durationMs: 0 }),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
+        // #3921 — chain con SOLO el commander (cerebras): cross-provider lo excluye,
+        // sin alternativa → re-admisión último recurso → el provider re-admitido se
+        // valida por residency (SEC-1) y se bloquea, con same_provider=true en el
+        // evento sherlock_aborted_residency.
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'cerebras', model: 'llama-3.3-70b' }] }),
         residencyModule: fakeResidencyBlock(),
     });
     const entries = readAuditEntries(dir);
@@ -1502,7 +1531,13 @@ test('#3766 CA-1: mismo provider+modelo entre Commander y Sherlock → veredicto
     });
     // Veredicto legítimo: ok, sin F-6 por "same model".
     assert.equal(result.verdict, 'ok', 'mismo provider+modelo → veredicto válido');
-    assert.equal(result.suggestedDisclaimer, null, 'sin F-6 por adversariality reducida');
+    // #3921 — con chain de un solo provider (= commander), cross-provider lo excluye
+    // y solo queda el re-admit de último recurso → same-provider. El success-path ya
+    // NO emite NONE: emite SAME_PROVIDER (CA-2, fail-loud). Sigue sin ser F-6
+    // (TIMEOUT_OR_NO_PROVIDER): la verificación corrió, solo se avisa que fue con el
+    // mismo motor.
+    assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.SAME_PROVIDER, '#3921: same-provider de último recurso → disclaimer SAME_PROVIDER (no F-6)');
+    assert.notEqual(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER, 'sigue sin ser F-6 por adversariality reducida');
     // Provider+model conservados (no hubo swap).
     assert.equal(result.sherlockProvider, 'gemini-google');
     assert.equal(result.sherlockModel, 'gemini-2.0-flash', 'el resolver respeta el modelo de la chain, no lo reescribe');
@@ -1615,13 +1650,15 @@ test('#3766 CA-17: invariante reelaboración=1 intacto, HARDCODED_MAX_MODEL_SWAP
 });
 
 // =============================================================================
-// CA-18 — Default-safe: provider SIN alternative_models declarado en
-// agent-models.json → comportamiento idéntico al actual post-#3484 (no swap,
-// se mantiene mismo provider/model — Leo aceptó adversariality reducida
-// 2026-05-22). Garantía de que el cambio es opt-in puro y NO regresiona el
-// flow de #3484 cuando no hay alternativos configurados.
+// CA-18 (rev #3921) — provider SIN alternative_models declarado en
+// agent-models.json → NO hay swap intra-provider (la policy de swap opt-in sigue
+// inactiva). PERO #3921 revierte el default same-provider de #3484/#3766: aunque
+// no haya alternative_models, el cross-provider por defecto EXCLUYE al commander
+// y la cascada enruta al siguiente provider de la chain. El remanente verificable
+// de CA-18 es: sin alternative_models NO hay swap de modelo intra-provider (la
+// diferencia de provider la produce la exclusión cross-provider, no un swap).
 // =============================================================================
-test('#3501 CA-18: provider sin alternative_models → comportamiento idéntico al post-#3484 (default-safe, opt-in puro)', async () => {
+test('#3501 CA-18 (rev #3921): sin alternative_models NO hay swap intra-provider; el cross-provider por defecto enruta al siguiente provider', async () => {
     const dir = mkTmpPipelineDir();
     // Fixture override: cerebras SIN alternative_models.
     writeAgentModelsFixture(dir, {
@@ -1643,9 +1680,10 @@ test('#3501 CA-18: provider sin alternative_models → comportamiento idéntico 
         content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
         inputTokens: 10, outputTokens: 5, durationMs: 30,
     };
-    // Chain devuelve cerebras (mismo que commander). Sin alternative_models,
-    // el resolver acepta same_provider tal cual post-#3484 (NO fallback al
-    // siguiente provider — eso sería breaking change del flujo aceptado).
+    // Chain: cerebras (= commander) + nvidia-nim. #3921 — cross-provider por defecto
+    // excluye al commander (cerebras) → la cascada enruta a nvidia-nim. Sin
+    // alternative_models NO hay swap intra-provider; el provider distinto lo produce
+    // la exclusión cross-provider, no un swap de modelo.
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
         commanderProvider: 'cerebras',
@@ -1660,24 +1698,24 @@ test('#3501 CA-18: provider sin alternative_models → comportamiento idéntico 
         ]}),
         residencyModule: fakeResidencyOk(),
     });
-    // Sin alternative_models → NO swap, NO fallback al siguiente provider.
-    // El resolver mantiene cerebras+llama-3.3-70b (comportamiento post-#3484).
+    // Sin alternative_models → NO swap intra-provider. #3921 → cross-provider enruta
+    // a nvidia-nim (el commander cerebras queda excluido por defecto).
     assert.equal(result.modelSwap.swapped, false, 'sin alternative_models → NO swap intra-provider');
-    assert.equal(result.sherlockProvider, 'cerebras', 'default-safe: NO fallback al siguiente provider (post-#3484)');
-    assert.equal(result.sherlockModel, 'llama-3.3-70b');
-    assert.equal(result.sameProvider, true, 'mismo provider preservado');
-    assert.equal(result.sameModel, true, 'mismo modelo preservado (adversariality reducida aceptada)');
+    assert.equal(result.sherlockProvider, 'nvidia-nim', '#3921: cross-provider por defecto enruta al siguiente provider, no al commander');
+    assert.equal(result.sherlockModel, 'deepseek-ai/deepseek-v4-pro');
+    assert.equal(result.sameProvider, false, '#3921: commander excluido por defecto → cross-provider');
+    assert.equal(result.sameModel, false);
     // Evento sherlock_model_swap NO debe aparecer en este caso.
     const entries = readAuditEntries(dir);
     const swapEvt = entries.find(e => e.event === 'sherlock_model_swap');
     assert.equal(swapEvt, undefined);
-    // CA-11: footer sin sufijo "swap desde".
+    // CA-11: footer sin sufijo "swap desde" (no hubo swap intra-provider).
     const footer = sherlock.formatVerifiedFooter({
         sherlockProvider: result.sherlockProvider,
         sherlockModel: result.sherlockModel,
         modelSwap: result.modelSwap,
     });
-    assert.equal(footer, 'Verificado por: cerebras/llama-3.3-70b');
+    assert.equal(footer, 'Verificado por: nvidia-nim/deepseek-ai/deepseek-v4-pro');
     assert.ok(!/swap desde/.test(footer));
 });
 
@@ -2283,4 +2321,181 @@ test('#3895: sin issueNumbers → canonicalFacts vacío y prompt sin sección <c
     assert.deepEqual(result.canonicalFacts, []);
     assert.deepEqual(result.notVerifiable, []);
     assert.doesNotMatch(cap.prompt, /<canonical_facts>/, 'sin claims no se inyecta la sección');
+});
+
+// =============================================================================
+// #3921 (EP2-H1) — Cross-provider por defecto + disclaimer + métrica same-provider.
+//
+// Revierte el default same-provider de #3484/#3766: la cascada de Sherlock
+// EXCLUYE por defecto al provider del Commander (cross-provider por defecto) y
+// solo lo re-admite como ÚLTIMO RECURSO cuando la chain alternativa se agota.
+// Cubre CA-1..CA-5 y SEC-1..SEC-6.
+// =============================================================================
+
+// Completion client provider-aware: respuesta por provider (ok/fail) y registro
+// de los providers efectivamente invocados (para asserts de "no se invocó").
+function fakeCompletionByProvider(byProvider, calledOut) {
+    return {
+        complete: async (opts) => {
+            if (calledOut) calledOut.push(opts.provider);
+            const r = byProvider[opts.provider];
+            if (!r) return { ok: false, error: { type: 'no_stub' }, durationMs: 1 };
+            return typeof r === 'function' ? r(opts) : r;
+        },
+    };
+}
+
+// Residency module que bloquea SOLO providers específicos (per-provider), a
+// diferencia de fakeResidencyBlock() que bloquea todo.
+function fakeResidencyBlockFor(blockedProviders) {
+    const setB = new Set(blockedProviders);
+    return {
+        loadExclusionsOrThrow: () => ({ exclusions: [], default_policy: 'allow' }),
+        filterPathsForProvider: ({ provider }) => (setB.has(provider)
+            ? { blocked: [{ path: 'x', pattern: '*' }], allowed: [], policy: 'deny' }
+            : { blocked: [], allowed: [], policy: 'allow' }),
+    };
+}
+
+const OK_VERDICT = {
+    ok: true,
+    content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
+    inputTokens: 0, outputTokens: 0, durationMs: 5,
+};
+const FAIL_TIMEOUT = { ok: false, error: { type: 'timeout', detail: 'sin respuesta' }, durationMs: 1 };
+
+test('#3921 CA-1: cross-provider por defecto — con >=1 alternativo sano el intento ganador es sameProvider=false', async () => {
+    const dir = mkTmpPipelineDir();
+    const called = [];
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionByProvider({ 'gemini-google': OK_VERDICT, cerebras: OK_VERDICT }, called),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'cerebras', model: 'llama-3.3-70b' },
+            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.verdict, 'ok');
+    assert.equal(result.sherlockProvider, 'gemini-google', 'cross-provider: el commander queda excluido por defecto');
+    assert.equal(result.sameProvider, false, 'intento ganador NO same-provider');
+    assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.NONE, 'cross-provider NO emite disclaimer same-provider');
+    assert.ok(!called.includes('cerebras'), 'el commander NO debio invocarse (excluido por defecto)');
+});
+
+test('#3921 CA-1/SEC-6: chain alternativa agotada -> fallback same-provider de ultimo recurso (sameProvider=true)', async () => {
+    const dir = mkTmpPipelineDir();
+    const called = [];
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionByProvider({ 'gemini-google': FAIL_TIMEOUT, cerebras: OK_VERDICT }, called),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'cerebras', model: 'llama-3.3-70b' },
+            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.verdict, 'ok');
+    assert.equal(result.sherlockProvider, 'cerebras', 'ultimo recurso: re-admite al commander');
+    assert.equal(result.sameProvider, true, 'fallback same-provider');
+    assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.SAME_PROVIDER, 'success-path same-provider -> disclaimer SAME_PROVIDER (CA-2)');
+    assert.ok(called.includes('gemini-google'), 'el alternativo fue intentado antes del fallback');
+    assert.ok(called.includes('cerebras'), 'el commander se invoco como ultimo recurso');
+});
+
+test('#3921 SEC-6: que falle el PRIMER alternativo NO alcanza para caer a same-provider', async () => {
+    const dir = mkTmpPipelineDir();
+    const called = [];
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'anthropic',
+        commanderModel: 'claude-opus-4-7',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionByProvider({ 'gemini-google': FAIL_TIMEOUT, 'nvidia-nim': OK_VERDICT }, called),
+        spawnAnthropic: fakeSpawnAnthropic(OK_VERDICT),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'anthropic', model: 'claude-opus-4-7' },
+            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.verdict, 'ok');
+    assert.equal(result.sherlockProvider, 'nvidia-nim', 'al caer el primer alternativo se cascadea al SEGUNDO alternativo, no al commander');
+    assert.equal(result.sameProvider, false, 'NO se cae a same-provider mientras queden alternativos');
+});
+
+test('#3921 CA-2: disclaimer same-provider compone ADITIVAMENTE con el primario (F-5/F-6) sin pisarlo', () => {
+    const base = 'Respuesta del commander.';
+    const f5 = sherlock.applyDisclaimer(base, sherlock.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY);
+    const composed = sherlock.applyDisclaimer(f5, sherlock.DISCLAIMER_TYPES.SAME_PROVIDER);
+    assert.ok(composed.startsWith(base), 'conserva la respuesta original');
+    assert.ok(composed.length > f5.length, 'el disclaimer same-provider se agrego');
+    assert.ok(/mismo motor/.test(composed), 'incluye el aviso same-provider');
+    assert.ok(composed.indexOf(f5) === 0, 'el primario (F-5) queda intacto, el same-provider va debajo');
+    const f6 = sherlock.applyDisclaimer(base, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
+    const composed2 = sherlock.applyDisclaimer(f6, sherlock.DISCLAIMER_TYPES.SAME_PROVIDER);
+    assert.ok(composed2.startsWith(f6), 'F-6 intacto, same-provider aditivo debajo');
+    assert.ok(/mismo motor/.test(composed2), 'coexiste con timeout');
+});
+
+test('#3921 CA-4/SEC-1: alternativo residency-blocked recien priorizado se descarta sin invocarse y la cascada continua', async () => {
+    const dir = mkTmpPipelineDir();
+    const called = [];
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionByProvider({ 'gemini-google': OK_VERDICT, 'nvidia-nim': OK_VERDICT }, called),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'cerebras', model: 'llama-3.3-70b' },
+            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+        ]}),
+        residencyModule: fakeResidencyBlockFor(['gemini-google']),
+    });
+    assert.equal(result.verdict, 'ok');
+    assert.equal(result.sherlockProvider, 'nvidia-nim', 'cascada continua tras el residency-blocked');
+    assert.ok(!called.includes('gemini-google'), 'el provider residency-blocked NO se invoco (SEC-1, check intra-loop antes de completeWith)');
+});
+
+test('#3921 CA-5/SEC-5: cascada + fallback same-provider terminan dentro del cap (re-admision unica, sin loop infinito)', async () => {
+    const dir = mkTmpPipelineDir();
+    const called = [];
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        commanderModel: 'llama-3.3-70b',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader(),
+        completionClient: fakeCompletionByProvider({
+            cerebras: FAIL_TIMEOUT, 'gemini-google': FAIL_TIMEOUT, 'nvidia-nim': FAIL_TIMEOUT,
+        }, called),
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: [
+            { provider: 'cerebras', model: 'llama-3.3-70b' },
+            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+        ]}),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.verdict, 'aborted', 'toda la chain (incl. ultimo recurso) fallo');
+    const cerebrasCalls = called.filter(p => p === 'cerebras').length;
+    assert.equal(cerebrasCalls, 1, 'el commander se re-admite EXACTAMENTE una vez (cap=10 no se sube, sin loop infinito)');
+    assert.ok(called.length <= 10, 'attempts dentro del cap MAX_CASCADE_ITERATIONS=10');
 });

@@ -199,10 +199,23 @@ const DISCLAIMER_F6_VERIFICATION_FAILED = (
     'ℹ️ No pude verificar esta respuesta; te muestro la original.'
 );
 
+// CA-2 (#3921) — disclaimer same-provider. Aviso fail-loud al operador cuando la
+// verificación se hizo con el MISMO motor que generó la respuesta (adversariality
+// degradada; solo ocurre en el último recurso, con la chain alternativa agotada).
+// Guidelines UX (#3921, skill ux): español natural, sin jerga (NUNCA "provider",
+// "same-provider", "Sherlock", "Commander" ni nombres de modelos), fail-loud pero
+// no alarmista, primera persona, arranca con `\n\n` para componer ADITIVAMENTE
+// debajo de otro disclaimer sin pisarlo (coexiste con OK/F-5/F-6).
+const DISCLAIMER_SAME_PROVIDER = (
+    '\n\n' +
+    '⚠️ Esta respuesta la revisé con el mismo motor que la generó, así que tomala con un poco más de reserva.'
+);
+
 const DISCLAIMER_TYPES = Object.freeze({
     NONE:                   null,
     TIMEOUT_OR_NO_PROVIDER: 'timeout',
     PERSISTENT_INCONSISTENCY: 'rechazado-persistente',
+    SAME_PROVIDER:          'same-provider',
 });
 
 // -----------------------------------------------------------------------------
@@ -1049,7 +1062,7 @@ function mapCanonicalStatus(status) {
 // JSONL (#3896). Best-effort: un fallo del writer NUNCA aborta `verify()`.
 // Reusa el pattern de hashes/no-prompt-crudo de `emitAuditEvent`: sólo persiste
 // claim derivado + comando reconstruido + valor canónico, nunca el prompt.
-function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, timestamp, fsImpl, log }) {
+function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, sameProvider, timestamp, fsImpl, log }) {
     const _log = typeof log === 'function' ? log : () => {};
     if (!pipelineDir || !Array.isArray(canonicalResults) || canonicalResults.length === 0) return;
     for (const c of canonicalResults) {
@@ -1071,6 +1084,10 @@ function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, 
                     resultado,
                     commander_vs_sherlock: c.status,
                     resolucion,
+                    // CA-3/SEC-3 (#3921) — same_provider del intento que produjo el
+                    // veredicto. Booleano explícito (incl. false) para que el % del
+                    // dashboard cuente la verificación en el denominador.
+                    same_provider: !!sameProvider,
                 },
             });
         } catch (e) {
@@ -1425,22 +1442,33 @@ async function verify(opts = {}) {
     // #3896 CA-6 — audit JSONL trazable de cada validación canónica. Best-effort
     // (no aborta verify()). Session derivada de los issues normalizados; si no
     // pasa la allowlist SEC-4, el writer la rechaza y el helper loguea y sigue.
-    if (canonicalResults.length > 0) {
-        const _auditSession = (() => {
-            const joined = _normalizedIssues.join('-');
-            return sherlockAuditJsonl.SESSION_RE.test(joined)
-                ? joined
-                : String(_normalizedIssues[0] || '');
-        })();
+    //
+    // #3921 CA-3 — la emisión se DIFIERE hasta el return (no acá) para adjuntar el
+    // `same_provider` del intento que efectivamente produjo el veredicto (SEC-3:
+    // medido sobre el intento ganador, no antes de correr la cascada). El helper
+    // es idempotente: se invoca en cada punto de salida con el sameProvider real
+    // y solo escribe una vez.
+    const _auditSession = (() => {
+        const joined = _normalizedIssues.join('-');
+        return sherlockAuditJsonl.SESSION_RE.test(joined)
+            ? joined
+            : String(_normalizedIssues[0] || '');
+    })();
+    let _canonicalAuditEmitted = false;
+    const emitCanonicalAuditOnce = (winningSameProvider) => {
+        if (_canonicalAuditEmitted) return;
+        _canonicalAuditEmitted = true;
+        if (canonicalResults.length === 0) return;
         emitCanonicalValidationAudit({
             pipelineDir,
             session: _auditSession,
             canonicalResults,
+            sameProvider: !!winningSameProvider,
             timestamp: new Date(_now).toISOString(),
             fsImpl,
             log: _log,
         });
-    }
+    };
 
     // Render para el prompt fiscal — texto plano, una línea por hecho resuelto.
     const canonicalFactsText = canonicalResults.length
@@ -1507,6 +1535,14 @@ async function verify(opts = {}) {
     }
 
     const excludedProviders = new Set(); // providers ya intentados que fallaron
+    // CA-1 (#3921) — cross-provider por DEFECTO. Revierte el default que #3484/
+    // #3766 negociaron a la baja (Sherlock podía verificar con el mismo provider
+    // del Commander). Seedeamos `excludedProviders` con `commanderProvider` para
+    // forzar que la cascada arranque enrutada a un verificador INDEPENDIENTE vía
+    // `initialExcluded`. El commander se re-admite SOLO como último recurso si
+    // toda la chain alternativa se agota (ver bloque last-resort abajo, SEC-6).
+    if (commanderProvider) excludedProviders.add(commanderProvider);
+    let commanderReadmitted = false;     // true tras re-admitir al commander (last-resort)
     const chainTried = [];               // providers recorridos, en orden
     let attemptCount = 0;                // providers efectivamente invocados
     let lastResolved = null;            // último provider resuelto (para shape)
@@ -1532,8 +1568,11 @@ async function verify(opts = {}) {
 
     for (let iter = 0; iter < MAX_CASCADE_ITERATIONS; iter++) {
         // Resolución de provider — itera la chain telegram-sherlock arrancando
-        // con los providers ya intentados en `excludedProviders`. #3484: NO se
-        // excluye al commanderProvider; solo se saltan providers sin handler.
+        // con los providers ya intentados en `excludedProviders`. #3921: el set
+        // arranca pre-poblado con el `commanderProvider` (cross-provider por
+        // defecto); el resolver lo trata como gateado vía `initialExcluded` y
+        // enruta a un provider distinto. El commander solo vuelve a la cascada
+        // tras el re-admit del último recurso (chain alternativa agotada, SEC-6).
         const resolved = resolveSherlockProvider({
             excludedProvider: null,
             commanderProvider,
@@ -1547,13 +1586,33 @@ async function verify(opts = {}) {
             now: _now,
         });
 
-        if (!resolved) break; // chain agotada (o ningún provider disponible)
+        if (!resolved) {
+            // CA-1/SEC-6 (#3921) — la chain ALTERNATIVA se agotó: todos los
+            // providers con handler y no residency-blocked, distintos del
+            // commander, ya fueron intentados (el loop los fue sumando a
+            // `excludedProviders` en las ramas de error/residency/schema). Recién
+            // ACÁ re-admitimos al commanderProvider para UN único intento
+            // same-provider de último recurso. Que falle el primer alternativo NO
+            // alcanza para llegar acá: el resolver sigue devolviendo otros
+            // alternativos mientras queden. La re-admisión ocurre dentro del cap
+            // MAX_CASCADE_ITERATIONS (SEC-5, no se sube el cap).
+            if (commanderProvider && !commanderReadmitted && excludedProviders.has(commanderProvider)) {
+                excludedProviders.delete(commanderProvider);
+                commanderReadmitted = true;
+                _log('sherlock', `chain alternativa agotada — re-admitiendo commanderProvider=${commanderProvider} para intento same-provider de último recurso (CA-1/SEC-6)`);
+                continue;
+            }
+            break; // chain realmente agotada (o ningún provider disponible)
+        }
 
         lastResolved = resolved;
 
         // CA-AUDIT-1 (#3484) — `sameProvider`/`sameModel` se calculan por intento
         // y se persisten al JSONL como forensics (los lee el monitor de drift).
-        // #3766: NO influyen en el veredicto ni en el disclaimer.
+        // #3921: con cross-provider por defecto, `sameProvider=true` solo puede
+        // darse en el intento same-provider de último recurso (commander re-admitido).
+        // Ese flag SÍ influye ahora en el disclaimer del success-path (CA-2) — no
+        // se limita a loguearse como en #3766.
         const sameProvider = !!(commanderProvider && commanderProvider === resolved.provider);
         const sameModel = !!(sameProvider && commanderModel && resolved.model && commanderModel === resolved.model);
         lastSameProvider = sameProvider;
@@ -1751,6 +1810,9 @@ async function verify(opts = {}) {
             },
         });
 
+        // CA-3 (#3921) — audit canónico con el sameProvider del intento GANADOR.
+        emitCanonicalAuditOnce(sameProvider);
+
         return {
             verdict: parsed.data.verdict,
             reason: parsed.data.reason,
@@ -1767,7 +1829,11 @@ async function verify(opts = {}) {
             inputTokens: httpResult.inputTokens || 0,
             outputTokens: httpResult.outputTokens || 0,
             errorCode: null,
-            suggestedDisclaimer: DISCLAIMER_TYPES.NONE, // el caller decide F-5 vs nada
+            // CA-2 (#3921) — el success-path emite SAME_PROVIDER condicionado al
+            // `sameProvider` del intento GANADOR (no se limita a loguearlo como
+            // #3766). El caller (pulpo.js) lo compone aditivamente sobre el
+            // disclaimer primario (F-5 / nada). Cross-provider → NONE.
+            suggestedDisclaimer: sameProvider ? DISCLAIMER_TYPES.SAME_PROVIDER : DISCLAIMER_TYPES.NONE,
             claimHashes,
             contradictionHashes,
             modelSwap,
@@ -1824,6 +1890,8 @@ async function verify(opts = {}) {
                 transport: null,
             },
         });
+        // CA-3 (#3921) — sin provider resuelto NO hubo intento same-provider.
+        emitCanonicalAuditOnce(false);
         return {
             verdict: 'aborted',
             reason: 'no_provider_available',
@@ -1867,6 +1935,11 @@ async function verify(opts = {}) {
         abortedErrorCode = lastErrorCode;
     }
 
+    // CA-3/SEC-3 (#3921) — la cascada abortó; el sameProvider del ÚLTIMO intento
+    // (que puede haber sido el same-provider de último recurso) se persiste para
+    // que el % del dashboard cuente también los fallbacks same-provider fallidos.
+    emitCanonicalAuditOnce(lastSameProvider);
+
     return {
         verdict: 'aborted',
         reason: abortedReason,
@@ -1905,6 +1978,12 @@ function applyDisclaimer(text, disclaimerType) {
     }
     if (disclaimerType === DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER) {
         return String(text || '') + DISCLAIMER_F6_VERIFICATION_FAILED;
+    }
+    // CA-2 (#3921) — same-provider es ADITIVO: el caller lo aplica encadenado
+    // sobre el primario (ej. applyDisclaimer(applyDisclaimer(t, F5), SAME_PROVIDER))
+    // y el texto arranca con `\n\n`, así que queda debajo sin pisar el primario.
+    if (disclaimerType === DISCLAIMER_TYPES.SAME_PROVIDER) {
+        return String(text || '') + DISCLAIMER_SAME_PROVIDER;
     }
     return String(text || '');
 }

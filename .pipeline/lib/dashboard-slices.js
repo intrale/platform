@@ -657,6 +657,12 @@ const SHERLOCK_PRECISION_TARGET = 0.90;          // UX-1: verde ≥ 90%
 const SHERLOCK_PRECISION_ALERT_BELOW = 0.80;     // CA-4: alerta visible < 80%
 const SHERLOCK_PRECISION_MIN_SAMPLE = 5;         // UX-1: n<5 → muestra insuficiente
 
+// CA-3 (#3921) — meta de verificaciones same-provider: < 10%. Con cross-provider
+// por defecto, una verificación same-provider solo debería ocurrir en el fallback
+// de último recurso (chain alternativa agotada). Si el % sube de la meta, la
+// adversariality cross-provider se está degradando seguido → alerta visible.
+const SHERLOCK_SAME_PROVIDER_TARGET = 0.10;      // meta visible: < 10%
+
 function _sherlockRecordCorrecto(rec) {
     const cmp = rec && rec.commander_vs_sherlock;
     const res = rec && rec.resolucion;
@@ -677,6 +683,13 @@ function sherlockPrecisionSlice(state, ctx) {
         let correctas = 0;
         let totales = 0;
         let notVerifiable = 0;
+        // CA-3 (#3921) — agregado de same-provider sobre el total de records que
+        // declaran el campo `same_provider` (booleano). SEC-3: cuenta TODAS las
+        // same-provider, incluido el fallback de último recurso (el verifier
+        // persiste el flag en cada validación canónica del veredicto). SEC-4: solo
+        // booleans/contadores, sin claims/comandos/PII.
+        let sameProviderTotal = 0;
+        let sameProviderCount = 0;
         for (const f of files) {
             let raw = '';
             try { raw = fs.readFileSync(path.join(auditDir, f), 'utf8'); }
@@ -685,6 +698,10 @@ function sherlockPrecisionSlice(state, ctx) {
                 if (!line.trim()) continue;
                 let rec = null;
                 try { rec = JSON.parse(line); } catch { continue; }
+                if (typeof (rec && rec.same_provider) === 'boolean') {
+                    sameProviderTotal += 1;
+                    if (rec.same_provider === true) sameProviderCount += 1;
+                }
                 const resultado = rec && rec.resultado;
                 if (resultado === 'not_verifiable') { notVerifiable += 1; continue; }
                 if (resultado !== 'true' && resultado !== 'false') continue;
@@ -694,6 +711,9 @@ function sherlockPrecisionSlice(state, ctx) {
         }
 
         const ratio = totales > 0 ? correctas / totales : null; // null => muestra vacía
+        const sameProviderRatio = sameProviderTotal > 0
+            ? sameProviderCount / sameProviderTotal
+            : null;                                             // null => muestra vacía
         return {
             correctas,
             totales,
@@ -702,6 +722,12 @@ function sherlockPrecisionSlice(state, ctx) {
             insufficient_sample: totales < SHERLOCK_PRECISION_MIN_SAMPLE,
             target: SHERLOCK_PRECISION_TARGET,
             alert: ratio !== null && ratio < SHERLOCK_PRECISION_ALERT_BELOW,
+            // CA-3 (#3921) — % verificaciones same-provider (meta < 10%).
+            same_provider_count: sameProviderCount,
+            same_provider_total: sameProviderTotal,
+            same_provider_ratio: sameProviderRatio,             // number|null
+            same_provider_target: SHERLOCK_SAME_PROVIDER_TARGET,
+            same_provider_alert: sameProviderRatio !== null && sameProviderRatio >= SHERLOCK_SAME_PROVIDER_TARGET,
         };
     } catch {
         // Degrade limpio: mismo shape numérico/booleano + código de error de
@@ -714,6 +740,11 @@ function sherlockPrecisionSlice(state, ctx) {
             insufficient_sample: true,
             target: SHERLOCK_PRECISION_TARGET,
             alert: false,
+            same_provider_count: 0,
+            same_provider_total: 0,
+            same_provider_ratio: null,
+            same_provider_target: SHERLOCK_SAME_PROVIDER_TARGET,
+            same_provider_alert: false,
             error: 'sherlock_precision_unavailable',
         };
     }

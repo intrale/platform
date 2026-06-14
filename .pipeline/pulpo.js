@@ -10362,6 +10362,11 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
       const turnId = crypto.randomBytes(8).toString('hex');
       let sherlockInvoked = false;
       let sherlockDisclaimerType = null;
+      // CA-2 (#3921) — flag separado del `sherlockDisclaimerType` primario: el
+      // disclaimer same-provider es ADITIVO y coexiste con OK / F-5 / F-6 sin
+      // pisarlos. Se setea según el `sameProvider` del veredicto que verificó la
+      // respuesta FINAL mostrada (el último verify ganador).
+      let sherlockSameProvider = false;
       let sherlockSoftTimedOut = false;
       // MP-01/MP-02 (#3803): flag que marca que el bloque Sherlock alcanzó un
       // verdict real (ok/rechazado/aborted). Sin esto, una carrera microscópica
@@ -10507,6 +10512,13 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
                 log('commander', `🔍 Sherlock aborted en 2da pasada (${verdict2.errorCode}) — disclaimer F-6 aplicado`);
               }
+              // CA-2 (#3921) — la respuesta final mostrada es la reelaborada, que
+              // verificó `verdict2`. El disclaimer same-provider (aditivo) sigue
+              // al sameProvider de ESE intento ganador. En 'aborted' no aplica
+              // (no hubo verificación efectiva → ya va F-6).
+              if (verdict2.verdict === 'ok' || verdict2.verdict === 'rechazado') {
+                sherlockSameProvider = verdict2.sameProvider === true;
+              }
             }
           } catch (re) {
             log('commander', `⚠️ Reelaboración Sherlock falló: ${re.message}. Manteniendo respuesta original.`);
@@ -10519,6 +10531,9 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         } else if (verdict.verdict === 'ok') {
           // CA-F-7 — silencio total cuando todo concuerda.
           log('commander', `🔍 Sherlock OK (provider=${verdict.sherlockProvider}, transport=${verdict.transport}, same_provider=${verdict.sameProvider}, ${verdict.durationMs}ms)`);
+          // CA-2 (#3921) — si el veredicto OK vino de un intento same-provider
+          // (último recurso, chain alternativa agotada), avisamos al operador.
+          sherlockSameProvider = verdict.sameProvider === true;
         }
         // MP-01/MP-02: el bloque alcanzó un verdict conclusivo. A partir de acá
         // el disclaimer (o su ausencia) refleja la decisión REAL de Sherlock.
@@ -10566,6 +10581,14 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
 
       if (sherlockDisclaimerType && respuesta) {
         respuesta = sherlockVerifier.applyDisclaimer(respuesta, sherlockDisclaimerType);
+      }
+      // CA-2 (#3921) — disclaimer same-provider ADITIVO: se concatena DEBAJO del
+      // primario (OK/F-5/F-6) sin pisarlo (su texto arranca con \n\n). Solo se
+      // aplica cuando el veredicto ganador fue same-provider (fallback de último
+      // recurso). Si hubo soft-timeout/excepción sin verdict, el flag quedó en
+      // false → no se agrega un aviso contradictorio con el F-6.
+      if (sherlockSameProvider && respuesta) {
+        respuesta = sherlockVerifier.applyDisclaimer(respuesta, sherlockVerifier.DISCLAIMER_TYPES.SAME_PROVIDER);
       }
 
       // Audit de correlación turn-level (CA-A-3).

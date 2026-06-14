@@ -118,6 +118,76 @@ test('CA-4: agrega registros de MÚLTIPLES sesiones sherlock-*.jsonl', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #3921 CA-3 — agregado de % same-provider (meta < 10%).
+// -----------------------------------------------------------------------------
+// Record con el flag `same_provider` (boolean) tal como lo persiste el writer
+// canónico tras #3921.
+function recordSameProvider(sameProvider) {
+    return {
+        ...record({ correcta: true }),
+        same_provider: sameProvider,
+    };
+}
+
+test('#3921 CA-3: sherlockPrecisionSlice agrega % same_provider sobre el total de records que declaran el flag', () => {
+    const dir = mkPipelineDir();
+    // 1 same-provider + 9 cross-provider → 10% (>= meta → alerta visible).
+    const records = [
+        recordSameProvider(true),
+        ...Array.from({ length: 9 }, () => recordSameProvider(false)),
+    ];
+    writeAudit(dir, 'sesion-sp', records);
+
+    const out = sliceFor(dir);
+    assert.equal(out.same_provider_total, 10, 'denominador = records con el flag');
+    assert.equal(out.same_provider_count, 1, 'numerador = same_provider===true');
+    assert.equal(out.same_provider_ratio, 0.1);
+    assert.equal(out.same_provider_target, 0.10, 'meta visible < 10%');
+    assert.equal(out.same_provider_alert, true, 'ratio 0.10 >= meta 0.10 → alerta (umbral inclusivo)');
+});
+
+test('#3921 CA-3: % same_provider por debajo de la meta NO alerta', () => {
+    const dir = mkPipelineDir();
+    // 1 same-provider + 19 cross-provider → 5% < 10%.
+    const records = [
+        recordSameProvider(true),
+        ...Array.from({ length: 19 }, () => recordSameProvider(false)),
+    ];
+    writeAudit(dir, 'sesion-sp-ok', records);
+    const out = sliceFor(dir);
+    assert.equal(out.same_provider_total, 20);
+    assert.equal(out.same_provider_count, 1);
+    assert.equal(out.same_provider_ratio, 0.05);
+    assert.equal(out.same_provider_alert, false, '5% < 10% → sin alerta');
+});
+
+test('#3921 CA-3/SEC-3: records SIN el flag same_provider no entran al denominador (no manipulable por omisión)', () => {
+    const dir = mkPipelineDir();
+    // Mezcla: 1 con flag true, 1 con flag false, 3 legacy sin flag.
+    const records = [
+        recordSameProvider(true),
+        recordSameProvider(false),
+        record({ correcta: true }),
+        record({ correcta: true }),
+        record({ correcta: false }),
+    ];
+    writeAudit(dir, 'sesion-sp-mixed', records);
+    const out = sliceFor(dir);
+    assert.equal(out.same_provider_total, 2, 'solo los records con el flag cuentan en el denominador');
+    assert.equal(out.same_provider_count, 1);
+    assert.equal(out.same_provider_ratio, 0.5);
+});
+
+test('#3921 CA-3: sin records con flag same_provider → ratio null (muestra vacía, no 0%)', () => {
+    const dir = mkPipelineDir();
+    writeAudit(dir, 'sesion-sp-empty', [record({ correcta: true }), record({ correcta: false })]);
+    const out = sliceFor(dir);
+    assert.equal(out.same_provider_total, 0);
+    assert.equal(out.same_provider_ratio, null);
+    assert.equal(out.same_provider_alert, false);
+});
+
+// -----------------------------------------------------------------------------
 // CA-4 — alerta < 80%.
 // -----------------------------------------------------------------------------
 test('CA-4: ratio < 0.80 → alert: true', () => {
@@ -176,6 +246,10 @@ test('UX-1: audit vacío → ratio null + insufficient_sample true (muestra vac�
 const ALLOWED_KEYS = new Set([
     'correctas', 'totales', 'not_verifiable', 'ratio',
     'insufficient_sample', 'target', 'alert',
+    // CA-3/SEC-4 (#3921) — agregado same-provider: solo contadores/ratio/boolean,
+    // sin PII ni texto del audit.
+    'same_provider_count', 'same_provider_total', 'same_provider_ratio',
+    'same_provider_target', 'same_provider_alert',
 ]);
 
 test('SEC-6: el payload contiene SOLO campos numéricos/booleanos/null de agregado', () => {
