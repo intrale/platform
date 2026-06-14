@@ -1,7 +1,10 @@
 {
   "name": "pulpo",
-  "pid": 16972,
-  "startedAt": "2026-04-24T21:04:40.762Z",
-  "readyAt": "2026-04-24T21:04:40.763Z",
-  "meta": {}
+  "pid": 24272,
+  "startedAt": "20260614092805.647498-180",
+  "readyAt": "2026-06-14T15:01:09.689Z",
+  "meta": {
+    "refreshedBy": "singleton-abort",
+    "abortedPid": 16072
+  }
 }
