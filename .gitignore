@@ -163,6 +163,8 @@ scripts/planner-plan.json
 .pipeline/retrying-state.json
 # Estado TTS (último provider usado) — efímero por sesión
 .pipeline/.tts-state.json
+# EP1-H4 (#3919) — estado de dedup de avisos de degradación multimedia — efímero
+.pipeline/.degradation-notify-state.json
 # #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
 .pipeline/recommendations-cache.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero

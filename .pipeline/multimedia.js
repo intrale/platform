@@ -127,6 +127,93 @@ function transcriptionFailureMessage(errorKind, _localErrorKind = null) {
   }
 }
 
+// EP1-H4 (#3919): aviso de degradación de TTS. Cuando el motor de voz falla y la
+// respuesta sale solo por texto, el usuario que esperaba audio se entera del modo
+// degradado y del motivo.
+//
+// SEC-1/SEC-2: enum CERRADO de motivos. Prohibido interpolar `e.message`, `raw`,
+// paths o nombres de temp en el mensaje — solo strings curados. `errorKind` debe
+// ser una de estas claves; cualquier otra cae en 'unknown'.
+const TTS_DEGRADED_REASONS = {
+  no_binary:   'El motor de voz (edge-tts) no está instalado en la máquina.',
+  spawn_error: 'No pude lanzar el motor de voz.',
+  cli_error:   'El motor de voz crasheó al generar el audio.',
+  timeout:     'El motor de voz se colgó (timeout).',
+  no_output:   'El motor de voz no devolvió audio.',
+  ffmpeg:      'No pude convertir el audio a formato de voz.',
+  unknown:     'El motor de voz no está disponible.',
+};
+
+function ttsDegradedMessage(errorKind) {
+  const reason = TTS_DEGRADED_REASONS[errorKind] || TTS_DEGRADED_REASONS.unknown;
+  // canned, sin interpolar el objeto de error crudo (SEC-1/SEC-2)
+  return `🔇 ${reason} Te respondo solo por texto.`;
+}
+
+// EP1-H4 (#3919): dedup de avisos de degradación por ventana de tiempo.
+//
+// Dimensión del dedup = (chatId, tipo) con tipo ∈ {'stt','tts'} — NO global, para
+// no acallar avisos de un chat por culpa de otro. Modelo espejo del debounce de
+// quotaNotifier (DEBOUNCE_CANNED_MS = 2 min).
+//
+// SEC-4: el estado guarda SOLO timestamps (jamás contenido/transcripción) y purga
+// entradas vencidas en cada llamada (cota de crecimiento frente a chat_id externo).
+// Es función pura sobre `stateObj`: devuelve `{ notify, nextState }` sin tocar I/O.
+const DEGRADATION_NOTIFY_WINDOW_MS = 2 * 60 * 1000;
+
+function shouldNotifyDegradation(stateObj, chatId, tipo, nowMs, windowMs = DEGRADATION_NOTIFY_WINDOW_MS) {
+  // Tolerante a corrupción: si el estado no es un objeto usable, arrancamos limpio.
+  const base = (stateObj && typeof stateObj === 'object' && stateObj.entries && typeof stateObj.entries === 'object')
+    ? stateObj.entries
+    : {};
+  const nextEntries = {};
+  // Purga de entradas vencidas (SEC-4: cota de crecimiento).
+  for (const [k, ts] of Object.entries(base)) {
+    if (typeof ts === 'number' && Number.isFinite(ts) && (nowMs - ts) < windowMs) {
+      nextEntries[k] = ts;
+    }
+  }
+  const key = `${chatId}::${tipo}`;
+  const last = nextEntries[key];
+  const notify = !(typeof last === 'number' && (nowMs - last) < windowMs);
+  if (notify) nextEntries[key] = nowMs;
+  return { notify, nextState: { entries: nextEntries } };
+}
+
+// Estado persistente dedicado para los avisos de degradación (SEC-4: escritura
+// atómica write-tmp + rename porque el pipeline es event-driven con escrituras
+// concurrentes; load tolerante a corrupción).
+const DEGRADATION_NOTIFY_STATE_PATH = path.join(ROOT, '.pipeline', '.degradation-notify-state.json');
+
+function loadDegradationNotifyState() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DEGRADATION_NOTIFY_STATE_PATH, 'utf8'));
+    if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
+      return parsed;
+    }
+  } catch { /* archivo ausente o corrupto → estado limpio */ }
+  return { entries: {} };
+}
+
+function saveDegradationNotifyState(state) {
+  try {
+    const tmp = `${DEGRADATION_NOTIFY_STATE_PATH}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, DEGRADATION_NOTIFY_STATE_PATH); // rename atómico
+  } catch (e) {
+    log(`Degradation notify state save error: ${e.message}`);
+  }
+}
+
+// Helper de conveniencia: combina load + dedup + save. Devuelve true si hay que
+// avisar (y ya persistió el timestamp), false si está dentro de la ventana.
+function noteDegradationAndShouldNotify(chatId, tipo, nowMs) {
+  const state = loadDegradationNotifyState();
+  const { notify, nextState } = shouldNotifyDegradation(state, chatId, tipo, nowMs);
+  if (notify) saveDegradationNotifyState(nextState);
+  return notify;
+}
+
 // --- Anthropic Vision ---
 
 function describeImage(imageBuffer, mediaType) {
@@ -631,6 +718,11 @@ module.exports = {
   preprocessMessage,
   transcribeAudioWithFallback,
   transcriptionFailureMessage,
+  ttsDegradedMessage,
+  shouldNotifyDegradation,
+  loadDegradationNotifyState,
+  saveDegradationNotifyState,
+  noteDegradationAndShouldNotify,
   describeImage,
   downloadTelegramFile,
   textToSpeech,

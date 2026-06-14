@@ -7445,7 +7445,7 @@ async function cmdStatus(config) {
 
   // Audio TTS de la narración
   try {
-    const { textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, splitTextForTTSChunks } = require('./multimedia');
+    const { textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, ttsDegradedMessage, noteDegradationAndShouldNotify, splitTextForTTSChunks } = require('./multimedia');
     const botToken = getTelegramToken();
     const chatId = getTelegramChatId();
     if (botToken && chatId) {
@@ -7493,12 +7493,17 @@ async function cmdStatus(config) {
       const statusChunks = splitTextForTTSChunks(narration, 1500);
       log('commander', `[status] TTS chunks generados: total_parts=${statusChunks.length} (texto=${narration.length} chars, cap=1500)`);
       let prevProviderStatus = loadTtsState().lastProvider;
+      // EP1-H4 (#3919, CA-2): trackeamos fallo de TTS para no dejar el bug latente
+      // en /status. El `if (meta && meta.buffer)` no tenía `else`: si fallaba, el
+      // audio moría en silencio. Acumulamos y avisamos una sola vez tras el loop.
+      let statusTtsDegraded = false;
       for (let i = 0; i < statusChunks.length; i++) {
         let chunkText = statusChunks.length > 1
           ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
           : statusChunks[i];
         const ttsOpts = { chunkInfo: { index: i, total: statusChunks.length } };
         const meta = await textToSpeechWithMeta(chunkText, ttsOpts);
+        if (!meta || !meta.buffer) { statusTtsDegraded = true; continue; }
         if (meta && meta.buffer) {
           const intro = i === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
           if (intro) {
@@ -7517,6 +7522,13 @@ async function cmdStatus(config) {
           saveTtsState({ lastProvider: meta.provider });
           prevProviderStatus = meta.provider;
         }
+      }
+      // EP1-H4 (#3919, CA-2): aviso consolidado al chat de deliverables si el TTS
+      // del /status quedó degradado. Dedup por (chatId, 'tts') + literal plano
+      // (SEC-3) reusando la ruta de envío ya autorizada (SEC-5).
+      if (statusTtsDegraded && chatId && noteDegradationAndShouldNotify(String(chatId), 'tts', Date.now())) {
+        try { sendTelegramPlain(ttsDegradedMessage('unknown')); } catch { /* best-effort */ }
+        log('commander', '[status] aviso de degradación TTS enviado (estado solo por texto)');
       }
     }
   } catch (audioErr) {
@@ -9531,7 +9543,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, transcriptionFailureMessage, splitTextForTTSChunks } = require('./multimedia');
+  const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, transcriptionFailureMessage, ttsDegradedMessage, noteDegradationAndShouldNotify, splitTextForTTSChunks } = require('./multimedia');
   const session = loadSession();
 
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
@@ -9789,6 +9801,22 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   // --- PROCESAR TEXTO LIBRE CONSOLIDADO (una sola llamada a Claude) ---
   if (textoLibre.length > 0) {
     const esAudio = textoLibre.some(m => m._esAudio);
+
+    // --- EP1-H4 (#3919, CA-1) — Caso STT mixto: al menos un audio falló pero hay
+    // texto/otro audio OK, así que NO entramos al fallback all-failed (L9762) y el
+    // mensaje sigue a Claude. Sin este aviso, el usuario solo ve un críptico
+    // "(audio sin transcribir: <kind>)" embebido. Emitimos un aviso explícito y
+    // accionable, una sola vez (dedup por (chatId,'stt')), en literal plano (SEC-3)
+    // por la ruta autorizada (SEC-5). Best-effort: jamás bloquea el flujo de Claude.
+    if (esAudio) {
+      const failedAudio = textoLibre.find(m => m._audioFailed && m._audio);
+      if (failedAudio && chatId && noteDegradationAndShouldNotify(String(chatId), 'stt', Date.now())) {
+        try {
+          sendTelegramPlain(transcriptionFailureMessage(failedAudio._audio.errorKind));
+          log('commander', `[stt-mixto] aviso de transcripción fallida enviado (kind=${failedAudio._audio.errorKind})`);
+        } catch { /* best-effort */ }
+      }
+    }
 
     // Consolidar mensajes en un solo texto para Claude
     let mensajeConsolidado;
@@ -10574,6 +10602,10 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             const chatChunks = splitTextForTTSChunks(respuesta, 1500);
             log('commander', `[chat] TTS chunks generados: total_parts=${chatChunks.length} (texto=${respuesta.length} chars, cap=1500)`);
             let prevProvider = loadTtsState().lastProvider;
+            // EP1-H4 (#3919, CA-2/CA-3): si algún chunk falla TTS (meta===null) la
+            // respuesta sale solo por texto. Acumulamos el fallo y avisamos UNA
+            // sola vez tras el loop (aviso consolidado), nunca por chunk.
+            let ttsDegraded = false;
             for (let i = 0; i < chatChunks.length; i++) {
               const baseChunk = chatChunks.length > 1
                 ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
@@ -10581,7 +10613,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
               const ttsOpts = { chunkInfo: { index: i, total: chatChunks.length } };
               // Primero probamos a ver qué provider gana para este chunk
               const meta = await textToSpeechWithMeta(baseChunk, ttsOpts);
-              if (!meta || !meta.buffer) continue;
+              if (!meta || !meta.buffer) { ttsDegraded = true; continue; }
 
               const intro = i === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
               let finalBuffer = meta.buffer;
@@ -10600,6 +10632,14 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
               if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${finalBuffer.length} bytes, provider=${finalProvider}${intro ? ', con intro' : ''})`);
               saveTtsState({ lastProvider: finalProvider });
               prevProvider = finalProvider;
+            }
+            // EP1-H4 (#3919, CA-2): aviso consolidado de degradación TTS. Solo si
+            // se esperaba voz (esAudio) y hubo al menos un chunk fallido. Pasa por
+            // el dedup (chatId, 'tts') y se envía como literal plano (SEC-3) para
+            // que un 400 de Markdown no acalle el propio aviso.
+            if (ttsDegraded && chatId && noteDegradationAndShouldNotify(String(chatId), 'tts', Date.now())) {
+              try { sendTelegramPlain(ttsDegradedMessage('unknown')); } catch { /* best-effort */ }
+              log('commander', '[chat] aviso de degradación TTS enviado (respuesta solo por texto)');
             }
           } catch (e) {
             log('commander', `TTS error: ${e.message}`);
