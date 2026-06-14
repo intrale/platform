@@ -1511,6 +1511,50 @@ function renderGhostArtifactsWidget(ghost) {
   </details>`;
 }
 
+// #3949 EP7-H2 — Render de los logs recientes del Commander (un log por
+// petición atendida) dentro de la card de Commander Routing. Reutiliza el
+// patrón `<a class="log-link">` (G1) y un label legible HH:MM:SS + chat (G3),
+// con estado vacío explícito (G4). El `<id>` es `<chat_id>-<epochms>`; el
+// epochms es el último segmento `-` del id.
+function renderCommanderRequestLogs(logDir, limit) {
+  const MAX = limit || 8;
+  let files = [];
+  try {
+    files = fs.readdirSync(logDir)
+      .filter(f => /^commander-.+\.log$/.test(f))
+      .map(f => {
+        // id = nombre sin prefijo `commander-` ni sufijo `.log`.
+        const id = f.replace(/^commander-/, '').replace(/\.log$/, '');
+        const parts = id.split('-');
+        const epochms = Number(parts[parts.length - 1]);
+        const chat = parts.slice(0, -1).join('-') || '?';
+        return { f, id, epochms: Number.isFinite(epochms) ? epochms : 0, chat };
+      })
+      .sort((a, b) => b.epochms - a.epochms)
+      .slice(0, MAX);
+  } catch { /* dir inexistente → estado vacío */ }
+
+  if (files.length === 0) {
+    return `
+      <div class="commander-reqlogs">
+        <div class="dora-mini-label" style="margin:10px 0 4px">📄 Logs recientes</div>
+        <div class="dim" style="font-size:0.8em">sin peticiones registradas</div>
+      </div>`;
+  }
+
+  const items = files.map(it => {
+    const hora = it.epochms ? new Date(it.epochms).toTimeString().slice(0, 8) : '??:??:??';
+    const label = `${hora} · chat ${escapeHtml(it.chat)}`;
+    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.f)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}</a>`;
+  }).join('');
+
+  return `
+      <div class="commander-reqlogs">
+        <div class="dora-mini-label" style="margin:10px 0 4px">📄 Logs recientes (${files.length})</div>
+        ${items}
+      </div>`;
+}
+
 // --- HTML generation ---
 
 function generateHTML(state) {
@@ -2945,7 +2989,7 @@ function generateHTML(state) {
           <div class="dora-mini-label">% Determinístico 7d</div>
           <div class="dora-mini-target">${totalDet}/${totalAll} cmd</div>
         </div>
-      </div>
+      </div>${renderCommanderRequestLogs(LOG_DIR)}
     </div>`;
     } catch (e) {
       log('[commander-routing] card error: ' + e.message);
