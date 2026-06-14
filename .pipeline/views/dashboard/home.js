@@ -1350,6 +1350,33 @@ function homeStyles() {
     font-variant-numeric: tabular-nums;
     color: var(--in-fg, #e6edf3);
 }
+/* #3949 EP7-H2 — Card de logs del Commander por petición. */
+.cmd-reqlog-card {
+    margin-top: 18px;
+    margin-bottom: 8px;
+}
+.cmd-reqlog-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+    padding: 12px;
+    border: 1px solid var(--in-border, #30363d);
+    border-left: 3px solid var(--in-info, #58a6ff);
+    border-radius: 8px;
+    background: var(--in-card, #161b22);
+}
+.cmd-reqlog-link {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    padding: 2px 0;
+    text-decoration: none;
+}
+.cmd-reqlog-link:hover { text-decoration: underline; }
+.cmd-reqlog-empty {
+    font-size: 13px;
+    color: var(--in-fg-dim, #8b949e);
+}
 `;
 }
 
@@ -3541,6 +3568,51 @@ function renderSystemCard(state) {
     </section>`;
 }
 
+// --- Sub-función pura: card de logs del Commander por petición (#3949 EP7-H2) -
+// CA-5 — "Accesible desde la card del dashboard y el viewer de logs". Escanea
+// logs/commander-*.log y expone un link `/logs/view/commander-<id>.log` por
+// petición reciente (el viewer ya sirve el archivo sanitizado, ver
+// dashboard.js whitelist anti-traversal). Render SSR vivo dentro de
+// `renderHomeHTML` — `generateHTML` (legacy) quedó muerto tras el split V3.
+// SEC: el nombre de archivo viaja por escapeHtmlAttr en el href y por
+// escapeHtmlText en el label; el id ya es filename-safe ([a-zA-Z0-9-]) por
+// `buildRequestId`. Estado vacío explícito (no rompe layout).
+function renderCommanderRequestLogs(logDir, limit) {
+    const MAX = limit || 8;
+    let files = [];
+    try {
+        files = fs.readdirSync(logDir)
+            .filter(f => /^commander-.+\.log$/.test(f))
+            .map(f => {
+                // id = nombre sin prefijo `commander-` ni sufijo `.log`.
+                const id = f.replace(/^commander-/, '').replace(/\.log$/, '');
+                const parts = id.split('-');
+                const epochms = Number(parts[parts.length - 1]);
+                const chat = parts.slice(0, -1).join('-') || '?';
+                return { f, id, epochms: Number.isFinite(epochms) ? epochms : 0, chat };
+            })
+            .sort((a, b) => b.epochms - a.epochms)
+            .slice(0, MAX);
+    } catch { /* dir inexistente → estado vacío */ }
+
+    let body;
+    if (files.length === 0) {
+        body = `<div class="cmd-reqlog-empty">Sin peticiones registradas todavía.</div>`;
+    } else {
+        body = files.map(it => {
+            const hora = it.epochms ? new Date(it.epochms).toTimeString().slice(0, 8) : '??:??:??';
+            const label = `${hora} · chat ${it.chat}`;
+            return `<a class="in-link cmd-reqlog-link" href="/logs/view/${escapeHtmlAttr(it.f)}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr(it.id)}">📄 ${escapeHtmlText(label)}</a>`;
+        }).join('');
+    }
+
+    return `
+    <section class="cmd-reqlog-card" aria-label="Logs del Commander por petición">
+      <h2 class="in-section-title"><span class="in-section-title-icon">🎖</span> Commander · Logs recientes</h2>
+      <div class="cmd-reqlog-list">${body}</div>
+    </section>`;
+}
+
 function renderHomeHTML(opts) {
     // `opts.quotaState` permite al caller pasar el state precomputado (evita
     // doble lectura del flag si el dashboard ya lo tiene en mano). Sin opts,
@@ -3657,6 +3729,8 @@ function renderHomeHTML(opts) {
 
     ${renderQueueDetailed(state)}
 
+    ${renderCommanderRequestLogs(path.join(__dirname, '..', '..', 'logs'))}
+
     ${renderSystemCard(state)}
 
   </main>
@@ -3696,4 +3770,5 @@ module.exports = {
     renderKpiGrid,
     renderQueueDetailed,
     renderSystemCard,
+    renderCommanderRequestLogs,
 };

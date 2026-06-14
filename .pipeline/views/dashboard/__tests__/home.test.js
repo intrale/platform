@@ -200,6 +200,63 @@ test('renderHomeHTML respeta currentView y flag unknownView (sin reflejar slug)'
 });
 
 // ---------------------------------------------------------------------------
+// #3949 EP7-H2 (CA-5) — Card de logs del Commander por petición. El link debe
+// renderizarse de verdad en el SSR vivo (`renderHomeHTML`), no en código muerto
+// (`generateHTML` quedó huérfano tras el split V3). Regresión que motivó el
+// rebote: la card colgaba de `doraMinHTML`, nunca interpolado.
+// ---------------------------------------------------------------------------
+const { renderCommanderRequestLogs } = home;
+
+function mkLogDir() {
+    const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cmd-reqlog-'));
+    return dir;
+}
+
+test('renderCommanderRequestLogs: estado vacío sin romper layout', () => {
+    const dir = mkLogDir();
+    try {
+        const html = renderCommanderRequestLogs(dir);
+        assert.match(html, /Commander · Logs recientes/);
+        assert.match(html, /Sin peticiones registradas/);
+        assert.doesNotMatch(html, /href="\/logs\/view\/commander-/);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('renderCommanderRequestLogs: lista links a /logs/view/commander-<id>.log (CA-5)', () => {
+    const dir = mkLogDir();
+    try {
+        fs.writeFileSync(path.join(dir, 'commander-12345-1718000000000.log'), 'x');
+        fs.writeFileSync(path.join(dir, 'commander--999-1718000099999.log'), 'x'); // chat negativo
+        fs.writeFileSync(path.join(dir, 'no-commander.log'), 'x');                  // ignorado
+        const html = renderCommanderRequestLogs(dir);
+        // Al menos un link real al viewer (lo que el rebote exigía con curl+grep).
+        assert.match(html, /href="\/logs\/view\/commander-12345-1718000000000\.log"/);
+        assert.match(html, /href="\/logs\/view\/commander--999-1718000099999\.log"/);
+        // No incluye archivos que no son del Commander.
+        assert.doesNotMatch(html, /no-commander\.log/);
+        // Orden: el más reciente (epochms mayor) primero.
+        const iA = html.indexOf('commander--999-1718000099999');
+        const iB = html.indexOf('commander-12345-1718000000000');
+        assert.ok(iA < iB, 'el log más reciente debe listarse primero');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('renderCommanderRequestLogs: se inyecta en el SSR de renderHomeHTML (no código muerto)', () => {
+    const html = renderHomeHTML({});
+    // La card debe estar presente en el HTML servido por `/` (home vivo).
+    assert.match(html, /Commander · Logs recientes/);
+});
+
+test('renderCommanderRequestLogs: dir inexistente cae a estado vacío sin throw', () => {
+    const html = renderCommanderRequestLogs(path.join(__dirname, 'no-existe-jamas-xyz'));
+    assert.match(html, /Sin peticiones registradas/);
+});
+
+// ---------------------------------------------------------------------------
 // CA-3725.13 (R-G1) — Snapshot de acoplamiento: todo ID referenciado por el
 // script cliente (getElementById/setText/setClass con literal completo) debe
 // existir como id="..." en el HTML SSR. Si no, el refresh queda muerto en
