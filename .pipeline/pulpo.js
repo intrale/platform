@@ -45,6 +45,10 @@ const visualGate = require('./lib/visual-gate');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
+// #3939 — Primitivas atómicas anti-TOCTOU: claim-by-rename + reserva de slot +
+// sweep de claims huérfanos (épica EP-5 #3937).
+const slotClaim = require('./lib/slot-claim');
+const fileLock = require('./lib/file-lock');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
@@ -773,18 +777,38 @@ function reencolarInfraBloqueados(config) {
   }
 
   // ── Fase 3 — YAML: limpiar markers de infra en cada archivo ───────────
+  //
+  // #3939 (CA-1) — CLAIM-BY-RENAME: entre el scan (Fase 1, sin lock) y este
+  // write hay una ventana TOCTOU donde otro tick/proceso podría mover o
+  // reclamar el mismo archivo → doble reencolado. `slotClaim.claimByRename`
+  // reclama propiedad exclusiva renombrando a `*.claimed-<pid>` DENTRO de una
+  // sección crítica de `file-lock` (la exclusividad real la da el lock: en
+  // Windows el retorno de `fs.renameSync` no es confiable bajo concurrencia,
+  // ver slot-claim.js). Si otro proceso ganó (`ENOENT`/`EEXIST`) salteamos el
+  // candidato (no es error). Operamos sobre el `claimPath` y restauramos el
+  // nombre canónico al final.
   const reencolados = [];
   for (const c of candidatos) {
+    const claim = slotClaim.claimByRename(c.path, process.pid);
+    if (!claim.claimed) {
+      // Otro proceso/tick lo reclamó primero — saltar, no contar como error.
+      log('precheck', `#${c.issue} ya reclamado por otro proceso (${claim.reason}), salteando reencolado`);
+      continue;
+    }
     try {
       // Anotar la ventana `reintentando` en el propio work file para que otros
       // consumidores (dashboard, diagnosticos) puedan leerlo sin consultar el
       // state global. Campo no obligatorio, solo metadata.
       c.cleaned.retrying_until_ms = retryingUntil;
       c.cleaned.retrying_since_ms = tickStartMs;
-      writeYaml(c.path, c.cleaned);
+      writeYaml(claim.claimPath, c.cleaned);
+      fs.renameSync(claim.claimPath, c.path); // devolver al nombre canónico
       reencolados.push(c.issue);
     } catch (e) {
       log('precheck', `Error reencolando #${c.issue}: ${e.message}`);
+      // Best-effort: si quedó el claim sin restaurar, devolver el nombre
+      // canónico para que el archivo no quede invisible al scan.
+      slotClaim.restoreClaim(claim.claimPath, c.path);
     }
   }
 
@@ -4412,6 +4436,34 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
   }
 }
 
+/**
+ * #3939 (CA-4) — Barrido de claims huérfanos (`*.claimed-<pid>`) en todos los
+ * `pendiente/`. Un proceso que muere entre el `renameSync(c.path, claimPath)` y
+ * el restore en `reencolarInfraBloqueados` deja el archivo invisible al scan
+ * (issue trabado). Reusa la heurística PID+startTime de `file-lock` (NO un
+ * simple "¿el PID existe?": un PID reciclado por el SO revive un huérfano,
+ * CWE-367). Best-effort: nunca rompe el tick.
+ */
+function sweepClaimsHuerfanos(config) {
+  const dirs = [];
+  for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines || {})) {
+    for (const fase of pipelineConfig.fases || []) {
+      dirs.push(path.join(fasePath(pipelineName, fase), 'pendiente'));
+    }
+  }
+  try {
+    const res = slotClaim.sweepOrphanClaims(dirs, {
+      fl: fileLock,
+      log: (msg) => log('huerfanos', msg),
+    });
+    if (res.restored > 0 || res.discarded > 0) {
+      log('huerfanos', `🧹 claims huérfanos: ${res.restored} restaurados, ${res.discarded} descartados (skipped=${res.skipped})`);
+    }
+  } catch (e) {
+    log('huerfanos', `Error en sweep de claims huérfanos: ${e.message}`);
+  }
+}
+
 function brazoLanzamiento(config) {
   // Circuit breaker de infra (#2305): si está abierto, no tomar nuevos issues.
   // Se reabre manualmente con `node .pipeline/resume.js` una vez validada la red.
@@ -4737,44 +4789,75 @@ function brazoLanzamiento(config) {
       continue;
     }
 
-    // Mover a trabajando/ (atómico)
+    // Mover a trabajando/ + spawn dentro de una SECCIÓN CRÍTICA por skill
+    // (#3939, CA-2/CA-3). El check de concurrencia de arriba (`running >=
+    // maxConcurrencia`) es un fast-path: evita pagar el preflight cuando el
+    // slot ya está obviamente lleno. Pero entre ese conteo y este move hay una
+    // ventana TOCTOU: dos ticks/procesos podrían ver el mismo `running` y ambos
+    // lanzar, superando `maxConcurrencia`. El lock `.slots.<skill>` re-verifica
+    // `countRunningBySkill` DENTRO de la sección crítica y serializa el move,
+    // de modo que a lo sumo `maxConcurrencia` archivos terminan en trabajando/.
+    //
+    // El lock SOLO cubre la admisión (conteo + move + spawn), no la vida del
+    // agente: la fuente de verdad durable sigue siendo `trabajando/`. La muerte
+    // prematura del agente ya está cubierta por el on-exit del Pulpo. CA-3:
+    // `withLockSync` libera el lock SIEMPRE (finally interno), con timeout
+    // acotado para no frenar el tick (anti self-DoS).
+    const slotLockFile = path.join(PIPELINE, `.slots.${skill}`);
+    let launched = false;
+    let slotErrored = false;
     try {
-      const trabajandoPath = moveFile(archivo.path, trabajandoDir);
+      launched = slotClaim.reserveSlot(slotLockFile, {
+        max: maxConcurrencia,
+        countFn: () => countRunningBySkill(skill),
+        timeoutMs: 2000,
+        notify: ({ message, detail }) => log('lanzamiento', `⚠️ slot-lock ${skill}: ${message} — ${detail || ''}`),
+        onAcquired: () => {
+          const trabajandoPath = moveFile(archivo.path, trabajandoDir);
 
-      // Lanzar agente (todas las fases, incluyendo build)
-      // Capa 3: pasar qaMode al agente QA via extraEnv
-      const extraEnv = {};
-      if (preflightResult && preflightResult.qaMode) {
-        extraEnv.QA_MODE = preflightResult.qaMode;
-        extraEnv.QA_ISSUE = String(issue);
-        extraEnv.QA_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev';
-        if (preflightResult.flavors && preflightResult.flavors.length > 0) {
-          extraEnv.QA_FLAVOR = preflightResult.flavors[0];
-        }
-        if (preflightResult.emulatorSerial) {
-          extraEnv.QA_EMULATOR_SERIAL = preflightResult.emulatorSerial;
-        }
+          // Lanzar agente (todas las fases, incluyendo build)
+          // Capa 3: pasar qaMode al agente QA via extraEnv
+          const extraEnv = {};
+          if (preflightResult && preflightResult.qaMode) {
+            extraEnv.QA_MODE = preflightResult.qaMode;
+            extraEnv.QA_ISSUE = String(issue);
+            extraEnv.QA_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev';
+            if (preflightResult.flavors && preflightResult.flavors.length > 0) {
+              extraEnv.QA_FLAVOR = preflightResult.flavors[0];
+            }
+            if (preflightResult.emulatorSerial) {
+              extraEnv.QA_EMULATOR_SERIAL = preflightResult.emulatorSerial;
+            }
 
-        // Inyectar `modo` al archivo YAML para que gate-evidencia-on-exit lo
-        // respete sin depender de que el agente lo escriba. El preflight ya
-        // sabe el qaMode correcto — esa es la fuente de verdad. Si el agente
-        // QA aprueba pero omite el campo (ocurrió con #2159 structural y
-        // disparó falso rechazo aunque el fix #2345 estuviera activo), el
-        // gate igual lee `modo: structural` desde acá.
-        if (skill === 'qa') {
-          try {
-            const data = readYaml(trabajandoPath) || {};
-            data.modo = preflightResult.qaMode;
-            writeYaml(trabajandoPath, data);
-          } catch (e) {
-            log('lanzamiento', `⚠️ No pude inyectar modo al YAML de ${archivo.name}: ${e.message.slice(0, 80)}`);
+            // Inyectar `modo` al archivo YAML para que gate-evidencia-on-exit lo
+            // respete sin depender de que el agente lo escriba. El preflight ya
+            // sabe el qaMode correcto — esa es la fuente de verdad. Si el agente
+            // QA aprueba pero omite el campo (ocurrió con #2159 structural y
+            // disparó falso rechazo aunque el fix #2345 estuviera activo), el
+            // gate igual lee `modo: structural` desde acá.
+            if (skill === 'qa') {
+              try {
+                const data = readYaml(trabajandoPath) || {};
+                data.modo = preflightResult.qaMode;
+                writeYaml(trabajandoPath, data);
+              } catch (e) {
+                log('lanzamiento', `⚠️ No pude inyectar modo al YAML de ${archivo.name}: ${e.message.slice(0, 80)}`);
+              }
+            }
           }
-        }
-      }
-      lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
-      anyLaunched = true;
+          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
+        },
+      });
     } catch (e) {
-      log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
+      slotErrored = true;
+      log('lanzamiento', `Error moviendo/lanzando ${archivo.name} (slot ${skill}): ${e.message}`);
+    }
+    if (launched) {
+      anyLaunched = true;
+    } else if (!slotErrored) {
+      // El slot se llenó dentro de la sección crítica (otro proceso ganó la
+      // admisión) — reintentar en el próximo ciclo. CA observabilidad (UX).
+      log('lanzamiento', `slot lleno para ${skill} (#${issue}) al re-verificar bajo lock — reintenta próximo ciclo`);
     }
   }
 
@@ -12431,6 +12514,7 @@ async function mainLoop() {
         // barrido ni lanzamiento; el guard interno previene re-entrada.
         brazoDesbloqueo(config).catch(e => log('desbloqueo', `error en brazo async: ${e.message}`));
         brazoBarrido(config);     // Cuarto: promover entre fases
+        sweepClaimsHuerfanos(config); // #3939 — restaurar claims huérfanos antes de lanzar
         brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
         brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
         // #3416 — rewind del operador (fire-and-forget). Procesa eventos en
