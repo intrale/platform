@@ -53,22 +53,41 @@ function loadPipelineConfig() {
 }
 const { loadTelegramSecrets } = require('./lib/telegram-secrets');
 const health = require('./lib/telegram-health');
+// CA-3 / RS-3 (#3927): "fallo de envío de CUALQUIER adjunto SIEMPRE notifica".
+// Antes el catch del envío individual sólo logueaba y devolvía el archivo a
+// pendiente/ → reintento infinito y silencioso. Ahora acotamos los reintentos,
+// movemos a fallido/ y emitimos una alerta a Telegram con el error redactado
+// (espeja `notifyDriveFailure` de servicio-drive.js).
+const { notifyTelegram } = require('./lib/notify-telegram');
+const { redactSensitive, redactSecretValue } = require('./lib/redact');
+
+const FALLIDO = path.join(QUEUE_DIR, 'fallido');
+// Máximo de intentos de envío antes de mover un dropfile a fallido/. El contador
+// se persiste en el propio archivo (`_telegramAttempts`) porque cada fallo lo
+// devuelve a pendiente/ y se reprocesa en un ciclo de poll posterior. Margen para
+// tolerar fallos transitorios (red/rate-limit) sin loopear para siempre.
+const MAX_SEND_RETRIES = 5;
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [svc-telegram] ${msg}`);
 }
 
+// #3927: la carga de secrets se hace al arrancar el servicio (no al requerir el
+// módulo) para que los tests `node --test` puedan importar las funciones puras
+// sin necesitar credenciales ni disparar `process.exit(1)`.
 let BOT_TOKEN, CHAT_ID;
-try {
-  const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log });
-  BOT_TOKEN = sec.bot_token;
-  CHAT_ID = sec.chat_id;
-  log(`Secrets cargados desde: ${sec.source}`);
-} catch (e) {
-  console.error('FATAL: ' + e.message);
-  health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
-  process.exit(1);
+function loadSecretsOrExit() {
+  try {
+    const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log });
+    BOT_TOKEN = sec.bot_token;
+    CHAT_ID = sec.chat_id;
+    log(`Secrets cargados desde: ${sec.source}`);
+  } catch (e) {
+    console.error('FATAL: ' + e.message);
+    health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
+    process.exit(1);
+  }
 }
 
 // Tag fijo para logs del http-client — permite filtrar denials del servicio.
@@ -181,6 +200,95 @@ function listWorkFiles(dir) {
       .filter(f => !f.startsWith('.') && f.endsWith('.json'))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
+}
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+// CA-3 / RS-3 (#3927): "fallo de envío de CUALQUIER adjunto SIEMPRE notifica
+// (nunca más silencio)". Emite una alerta a Telegram cuando un dropfile no se
+// pudo enviar de forma terminal. El texto pasa SIEMPRE por `redactSensitive`
+// + `redactSecretValue` (RS-3) — nunca volcamos `err.message`/`err.stack` crudo
+// al usuario. Espeja `notifyDriveFailure` de servicio-drive.js.
+function notifyTelegramFailure(fileName, reason) {
+  // Guard anti-recursión: el propio `notifyTelegram` escribe un dropfile de texto
+  // en esta MISMA cola (`alert-svc-telegram-*.json`). Si esa alerta fallara de
+  // forma terminal (p.ej. outage del API de Telegram), notificar de nuevo crearía
+  // una cadena infinita de archivos de alerta. Por eso NO re-notificamos el fallo
+  // de una alerta generada por nosotros mismos.
+  if (typeof fileName === 'string' && fileName.startsWith('alert-svc-telegram')) {
+    log(`Fallo terminal de alerta propia ${fileName}; no se re-notifica (anti-recursión)`);
+    return false;
+  }
+  try {
+    const safeReason = redactSecretValue(
+      redactSensitive(String(reason == null ? 'error desconocido' : reason)),
+    );
+    notifyTelegram({
+      level: 'error',
+      component: 'svc-telegram',
+      message: `Fallo terminal al enviar un adjunto/mensaje (${fileName}) tras ${MAX_SEND_RETRIES} intentos: ${safeReason}`,
+      context: { archivo: fileName },
+    });
+    return true;
+  } catch (e) {
+    log(`No se pudo notificar fallo a Telegram: ${e.message}`);
+    return false;
+  }
+}
+
+// CA-3 (#3927): maneja el fallo de envío de un dropfile individual. Acota los
+// reintentos (contador persistido en `_telegramAttempts` dentro del propio
+// archivo, porque cada fallo lo devuelve a pendiente/ y se reprocesa en un poll
+// posterior) y, al agotarlos —o si el archivo es ilegible/malformado y nunca
+// podrá enviarse—, lo mueve a fallido/ y notifica. Retorna 'failed' | 'retry'.
+function handleSendFailure(file, trabajandoPath, err) {
+  let attempts = 0;
+  let cur = null;
+  let parsedOk = false;
+  try {
+    cur = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+    attempts = Number(cur._telegramAttempts) || 0;
+    parsedOk = true;
+  } catch { /* archivo ilegible o JSON malformado → fallo terminal */ }
+  attempts += 1;
+
+  const errMsg = err && err.message ? err.message : String(err);
+  // Terminal si agotó los reintentos o si el archivo no se puede ni parsear
+  // (reintentarlo infinitamente nunca lo haría enviable).
+  const terminal = !parsedOk || attempts >= MAX_SEND_RETRIES;
+
+  if (terminal) {
+    log(`Fallo terminal enviando ${file.name} (intento ${attempts}/${MAX_SEND_RETRIES}): ${errMsg}`);
+    if (parsedOk && cur) {
+      try {
+        cur._error = errMsg;
+        cur._failedAt = new Date().toISOString();
+        cur._telegramAttempts = attempts;
+        fs.writeFileSync(trabajandoPath, JSON.stringify(cur, null, 2));
+      } catch {}
+    }
+    ensureDir(FALLIDO);
+    try {
+      fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+    } catch {
+      // No se pudo mover a fallido/ — devolver a pendiente para no perder el archivo.
+      try { fs.renameSync(trabajandoPath, file.path); } catch {}
+    }
+    // CA-3: fallo de envío de CUALQUIER adjunto SIEMPRE notifica.
+    notifyTelegramFailure(file.name, errMsg);
+    return 'failed';
+  }
+
+  // Reintento acotado: persistir el contador y devolver a pendiente/.
+  log(`Error procesando ${file.name} (intento ${attempts}/${MAX_SEND_RETRIES}), reencolando: ${errMsg}`);
+  try {
+    cur._telegramAttempts = attempts;
+    fs.writeFileSync(trabajandoPath, JSON.stringify(cur, null, 2));
+  } catch {}
+  try { fs.renameSync(trabajandoPath, file.path); } catch {}
+  return 'retry';
 }
 
 // Recovery al arrancar: los archivos en trabajando/ son huérfanos de un proceso
@@ -362,9 +470,9 @@ async function processQueue() {
       fs.renameSync(trabajandoPath, listoPath);
       log(`Enviado: ${file.name}`);
     } catch (e) {
-      log(`Error procesando ${file.name}: ${e.message}`);
-      // Devolver a pendiente para reintento
-      try { fs.renameSync(trabajandoPath, file.path); } catch {}
+      // CA-3 (#3927): reintento acotado; al agotarlo el adjunto/mensaje se mueve
+      // a fallido/ y se notifica (nunca más silencio ni loop infinito).
+      handleSendFailure(file, trabajandoPath, e);
     }
   }
 }
@@ -380,22 +488,38 @@ async function main() {
   }
 }
 
-// Crash handlers — loguear antes de morir para diagnóstico
-const LOG_DIR = path.join(PIPELINE, 'logs');
-process.on('uncaughtException', (err) => {
-  // #2334: sanitizar antes de persistir el stack a disco (CA6/CA7).
-  const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH uncaughtException: ${err.stack || err.message}\n`);
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
-  console.error(msg);
-  process.exit(1);
-});
-process.on('unhandledRejection', (reason) => {
-  const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
-  console.error(msg);
-  process.exit(1);
-});
+// #3927: exportamos las funciones puras del path de fallo para el test
+// `node --test`. Sin esto, requerir el módulo arrancaría el servicio (carga de
+// secrets con `process.exit` si faltan, singleton + loop infinito), colgando o
+// matando el runner. Espeja el patrón ya aplicado a servicio-drive.js.
+module.exports = {
+  handleSendFailure,
+  notifyTelegramFailure,
+  MAX_SEND_RETRIES,
+};
 
-// --- SINGLETON ---
-require('./singleton')('svc-telegram');
-main();
+// Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-telegram.js`),
+// nunca al ser requerido como módulo desde un test.
+if (require.main === module) {
+  loadSecretsOrExit();
+
+  // Crash handlers — loguear antes de morir para diagnóstico
+  const LOG_DIR = path.join(PIPELINE, 'logs');
+  process.on('uncaughtException', (err) => {
+    // #2334: sanitizar antes de persistir el stack a disco (CA6/CA7).
+    const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH uncaughtException: ${err.stack || err.message}\n`);
+    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+    console.error(msg);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
+    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+    console.error(msg);
+    process.exit(1);
+  });
+
+  // --- SINGLETON ---
+  require('./singleton')('svc-telegram');
+  main();
+}
