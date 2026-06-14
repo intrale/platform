@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 28 — Card observacional del Commander en "Ejecutando ahora" (#3948, EP-7 / #3947)
+  ============================================================================
+  Spec de diseño VINCULANTE para la fase de desarrollo de la historia
+  "EP7-H1 – Commander como agente en ejecución en el dashboard".
+
+  Render previsto: kiosk dashboard del operador (localhost, dark-first),
+  banda "Ejecutando ahora" en Home y vista "Equipo" (.pipeline/views/dashboard/home.js
+  + equipo.js). Reutiliza el componente existente .active-card (home.js L294).
+
+  Decisión de diseño central (gap de UX que resuelve este mockup):
+    La card del Commander debe leerse como PRESENCIA OBSERVACIONAL, NO como
+    un agente que ocupa uno de los 3 slots. El operador no debe confundirla
+    con un agente real cancelable. Diferenciación por TRES señales redundantes
+    (nunca sólo color, WCAG AA):
+      1. Borde IZQUIERDO punteado (dashed) + opacidad de superficie levemente
+         menor → "presencia, no asignación de slot".
+      2. Pill "👁 observa" en el lugar donde el agente real muestra el botón
+         ✕ Cancelar → ausencia de acción destructiva + etiqueta explícita.
+      3. Identificador "Commander" (no "#NNNN") + petitionId opaco corto.
+
+  Tokens: 100% desde .pipeline/views/dashboard/theme.css — CERO colores nuevos.
+    --in-bg-3 #1f2937 · --in-border #30363d · --in-border-soft rgba(255,255,255,.06)
+    --in-fg #e6edf3 · --in-fg-dim #8b949e · --in-accent #2ee6c1
+    --in-info #58a6ff · --in-info-soft rgba(88,166,255,.18) · --in-bad #f85149
+    commander badge: #f778ba (SKILL_COLORS.commander, home.js L1331) · 🎖 (L1325)
+
+  Enum de fase (SEC-1, CA-5): transcribiendo | pensando | verificando | enviando
+  Sin link a log (CA-10, hasLog:false). Sin botón ✕ (CA-3/CA-4).
+  Barra de progreso INDETERMINADA (pulse), no porcentaje fijo: la presencia
+  no tiene ETA, mostrar 4% fijo daría falsa señal de avance.
+
+  WCAG AA: texto sobre bg-3 ≥ 4.5:1; estado por icono + texto + borde, no color solo.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 560" font-family="-apple-system, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <linearGradient id="railBrand" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f6feb"/>
+      <stop offset="0.5" stop-color="#a371f7"/>
+      <stop offset="1" stop-color="#3fb950"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2ee6c1" stop-opacity="0.15"/>
+      <stop offset="0.5" stop-color="#2ee6c1" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#2ee6c1" stop-opacity="0.15"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo del panel (var --in-bg #0d1117) -->
+  <rect x="0" y="0" width="920" height="560" fill="#0d1117"/>
+
+  <!-- Encabezado de la banda -->
+  <rect x="28" y="28" width="4" height="26" rx="2" fill="url(#railBrand)"/>
+  <text x="46" y="48" fill="#e6edf3" font-size="20" font-weight="700">⚡ Ejecutando ahora</text>
+  <text x="858" y="48" fill="#8b949e" font-size="14" text-anchor="end">3 activos</text>
+
+  <!-- ============================================================ -->
+  <!-- CARD 1 — Agente REAL (referencia, ocupa slot, cancelable)     -->
+  <!-- ============================================================ -->
+  <g>
+    <rect x="28" y="78" width="864" height="92" rx="8" fill="#1f2937" stroke="#30363d" stroke-width="1"/>
+    <!-- badge skill android-dev -->
+    <rect x="44" y="94" width="38" height="38" rx="10" fill="#3fb950"/>
+    <text x="63" y="120" fill="#fff" font-size="18" text-anchor="middle">🤖</text>
+    <!-- meta -->
+    <text x="98" y="108" fill="#e6edf3" font-size="14" font-weight="600">#3812 · android-dev</text>
+    <text x="262" y="108" fill="#8b949e" font-size="11" letter-spacing="0.6">DESARROLLO</text>
+    <text x="98" y="130" fill="#8b949e" font-size="12">Implementar selector de flavors en onboarding</text>
+    <!-- tiempo -->
+    <text x="876" y="108" fill="#2ee6c1" font-size="13" text-anchor="end" font-family="monospace">04:21</text>
+    <!-- botón cancelar (real) -->
+    <rect x="812" y="120" width="64" height="22" rx="6" fill="none" stroke="#f85149" stroke-width="1"/>
+    <text x="844" y="135" fill="#f85149" font-size="11" text-anchor="middle">✕ cancelar</text>
+    <!-- progreso real (pct) -->
+    <rect x="44" y="152" width="832" height="4" rx="2" fill="#30363d"/>
+    <rect x="44" y="152" width="430" height="4" rx="2" fill="#2ee6c1"/>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- CARD 2 — Commander OBSERVACIONAL (no slot, no cancelable)      -->
+  <!-- ============================================================ -->
+  <g>
+    <!-- superficie levemente atenuada + borde izquierdo dashed -->
+    <rect x="28" y="190" width="864" height="92" rx="8" fill="#1b2230" stroke="#30363d" stroke-width="1"/>
+    <rect x="28.5" y="190.5" width="3" height="91" rx="1.5" fill="none" stroke="#58a6ff" stroke-width="2" stroke-dasharray="5 4"/>
+    <!-- badge skill commander -->
+    <rect x="44" y="206" width="38" height="38" rx="10" fill="#f778ba"/>
+    <text x="63" y="232" fill="#fff" font-size="18" text-anchor="middle">🎖</text>
+    <!-- meta: "Commander" en vez de #NNNN -->
+    <text x="98" y="220" fill="#e6edf3" font-size="14" font-weight="600">Commander</text>
+    <text x="190" y="220" fill="#8b949e" font-size="11" letter-spacing="0.6">PENSANDO</text>
+    <text x="98" y="242" fill="#8b949e" font-size="12">Atendiendo petición de Telegram · pet_7f3a9c</text>
+    <!-- tiempo -->
+    <text x="876" y="220" fill="#2ee6c1" font-size="13" text-anchor="end" font-family="monospace">00:12</text>
+    <!-- pill "observa" en lugar del botón cancelar -->
+    <rect x="800" y="232" width="76" height="22" rx="11" fill="rgba(88,166,255,0.18)"/>
+    <text x="838" y="247" fill="#58a6ff" font-size="11" text-anchor="middle">👁 observa</text>
+    <!-- progreso INDETERMINADO (pulse), no porcentaje -->
+    <rect x="44" y="264" width="832" height="4" rx="2" fill="#30363d"/>
+    <rect x="300" y="264" width="320" height="4" rx="2" fill="url(#pulse)">
+      <animate attributeName="x" values="44;532;44" dur="2.4s" repeatCount="indefinite"/>
+    </rect>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- Leyenda de fases (enum cerrado) -->
+  <!-- ============================================================ -->
+  <text x="28" y="332" fill="#8b949e" font-size="13" font-weight="600">Fases del Commander (enum cerrado · CA-5)</text>
+  <g font-size="12">
+    <rect x="28" y="346" width="150" height="30" rx="6" fill="#161b22" stroke="#30363d"/>
+    <text x="44" y="365" fill="#e6edf3">🎙 transcribiendo</text>
+    <rect x="190" y="346" width="120" height="30" rx="6" fill="#161b22" stroke="#30363d"/>
+    <text x="206" y="365" fill="#e6edf3">🧠 pensando</text>
+    <rect x="322" y="346" width="140" height="30" rx="6" fill="#161b22" stroke="#30363d"/>
+    <text x="338" y="365" fill="#e6edf3">🔍 verificando</text>
+    <rect x="474" y="346" width="120" height="30" rx="6" fill="#161b22" stroke="#30363d"/>
+    <text x="490" y="365" fill="#e6edf3">📤 enviando</text>
+  </g>
+  <text x="28" y="396" fill="#6e7681" font-size="11">verificando = sólo en camino LLM (Sherlock); el camino determinístico no pasa por esa fase.</text>
+
+  <!-- ============================================================ -->
+  <!-- Anotaciones de diferenciación -->
+  <!-- ============================================================ -->
+  <text x="28" y="438" fill="#8b949e" font-size="13" font-weight="600">3 señales que distinguen presencia observacional de agente real</text>
+  <g font-size="12" fill="#c9d1d9">
+    <circle cx="40" cy="462" r="3" fill="#58a6ff"/>
+    <text x="54" y="466">Borde izquierdo punteado azul (info) + superficie atenuada → presencia, no asignación de slot.</text>
+    <circle cx="40" cy="486" r="3" fill="#58a6ff"/>
+    <text x="54" y="490">Pill "👁 observa" en lugar del botón "✕ cancelar" → sin acción destructiva, etiqueta explícita.</text>
+    <circle cx="40" cy="510" r="3" fill="#58a6ff"/>
+    <text x="54" y="514">Identificador "Commander" (no #issue) + petitionId opaco; sin link a log (CA-10, hasLog:false).</text>
+  </g>
+  <text x="28" y="544" fill="#6e7681" font-size="11">Diferenciación redundante (borde + pill + texto), nunca sólo color — WCAG AA. Tokens: theme.css, cero colores nuevos.</text>
+</svg>
