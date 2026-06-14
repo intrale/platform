@@ -322,3 +322,48 @@ test('record ausente o no-objeto → throw sin crear archivo', () => {
     assert.throws(() => writer.appendSherlockAudit({ session: 'ok', pipelineDir: dir, record: [] }), /record/);
     assert.equal(fs.existsSync(path.join(dir, 'audit')), false);
 });
+
+// -----------------------------------------------------------------------------
+// #3923 EP2-H3 / CA-9 — `source` como enum cerrado, persistido desde el
+// diccionario (no del claim). Patrón idéntico a `same_provider`.
+// -----------------------------------------------------------------------------
+test('CA-9: source dentro de AUDIT_SOURCE_ENUM se persiste en el entry; chain intacto', () => {
+    const dir = freshPipelineDir();
+    const session = 'src-enum';
+    const file = auditFile(dir, session);
+    const sources = ['git', 'github-api', 'heartbeat', 'filesystem', 'pipeline-state', 'waves'];
+    sources.forEach((source, i) => {
+        writer.appendSherlockAudit({ session, pipelineDir: dir, record: baseRecord({ claim: `#1/c${i}`, source }) });
+    });
+    const entries = readAll(file);
+    assert.equal(entries.length, sources.length);
+    entries.forEach((e, i) => assert.equal(e.source, sources[i], `entry ${i} persiste source`));
+    const chain = verifyChain(file);
+    assert.equal(chain.ok, true, 'hash chain íntegra con source');
+});
+
+test('CA-9: source fuera del enum NO se persiste (anti log-injection)', () => {
+    const dir = freshPipelineDir();
+    const session = 'src-bad';
+    writer.appendSherlockAudit({
+        session, pipelineDir: dir,
+        record: baseRecord({ source: 'inyeccion\nmaliciosa' }),
+    });
+    const [entry] = readAll(auditFile(dir, session));
+    assert.equal('source' in entry, false, 'source fuera de enum se descarta');
+});
+
+test('CA-9: record SIN source → entry sin la clave (back-compat callers viejos)', () => {
+    const dir = freshPipelineDir();
+    const session = 'src-absent';
+    writer.appendSherlockAudit({ session, pipelineDir: dir, record: baseRecord() });
+    const [entry] = readAll(auditFile(dir, session));
+    assert.equal('source' in entry, false, 'sin source provisto, no se inventa la clave');
+});
+
+test('CA-9: AUDIT_SOURCE_ENUM expone exactamente las 6 fuentes cerradas', () => {
+    assert.deepEqual(
+        [...writer.AUDIT_SOURCE_ENUM].sort(),
+        ['filesystem', 'git', 'github-api', 'heartbeat', 'pipeline-state', 'waves'],
+    );
+});

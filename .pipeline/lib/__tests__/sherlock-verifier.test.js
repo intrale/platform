@@ -2240,11 +2240,23 @@ test('#3895 CA-3: claim COINCIDE con el canónico → status consistent, NO va a
         ghApi: async () => ({ ok: true, stdout: '{"state":"CLOSED","closed":true}', code: 0 }),
     });
     assert.ok(Array.isArray(result.canonicalFacts), 'canonicalFacts expuesto en el shape');
-    assert.ok(result.canonicalFacts.length >= 3, 'resuelve los 3 claims derivados del issue');
-    for (const c of result.canonicalFacts) {
-        assert.equal(c.status, 'consistent', `${c.claim} debería ser consistent`);
-    }
-    assert.deepEqual(result.notVerifiable, [], 'nada queda not_verifiable cuando el canónico resuelve');
+    // #3923 — ahora se cablean 6 claims derivados del issue. Los 3 BOOLEANOS
+    // (entregable_en_main, rama_contiene_commits, issue_cerrado) resuelven a
+    // consistent cuando el canónico coincide. Los 3 CATEGÓRICOS nuevos
+    // (estado_fase_issue, agentes_activos, ola_activa) NO traen `expected` en la
+    // wiring genérica → not_verifiable por diseño (SEC-5: sin aserción que
+    // refutar, nunca contradicción especulativa).
+    const byClaim = Object.fromEntries(result.canonicalFacts.map(c => [c.claim, c.status]));
+    assert.equal(byClaim.entregable_en_main, 'consistent');
+    assert.equal(byClaim.rama_contiene_commits, 'consistent');
+    assert.equal(byClaim.issue_cerrado, 'consistent');
+    assert.equal(byClaim.estado_fase_issue, 'not_verifiable', 'categórico sin params/expected → not_verifiable');
+    assert.equal(byClaim.agentes_activos, 'not_verifiable', 'numérico sin expected → not_verifiable');
+    assert.equal(byClaim.ola_activa, 'not_verifiable', 'categórico sin expected → not_verifiable');
+    // #3923 CA-2 — labels_qa_pr NO se cablea en la wiring por-issue (requiere `pr`).
+    assert.equal(Object.prototype.hasOwnProperty.call(byClaim, 'labels_qa_pr'), false,
+        'labels_qa_pr no se deriva del issue (necesita pr)');
+    assert.equal(result.canonicalFacts.length, 6, 'se cablean 6 claims derivados del issue');
     assert.match(cap.prompt, /<canonical_facts>/, 'el prompt incluye la sección del árbitro canónico');
     assert.match(cap.prompt, /status=consistent/, 'el prompt cita el status canónico');
 });

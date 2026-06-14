@@ -663,6 +663,16 @@ const SHERLOCK_PRECISION_MIN_SAMPLE = 5;         // UX-1: n<5 → muestra insufi
 // adversariality cross-provider se está degradando seguido → alerta visible.
 const SHERLOCK_SAME_PROVIDER_TARGET = 0.10;      // meta visible: < 10%
 
+// #3923 EP2-H3 — ENUM CERRADO de fuentes (LOCKSTEP con AUDIT_SOURCE_ENUM de
+// sherlock-audit-jsonl.js y el enum `source` de canonical-facts.js). El objeto
+// not_verifiable_by_source SIEMPRE emite estas claves (default 0).
+const SHERLOCK_NV_SOURCES = ['git', 'github-api', 'heartbeat', 'filesystem', 'pipeline-state', 'waves'];
+function _emptyNvBySource() {
+    const o = {};
+    for (const s of SHERLOCK_NV_SOURCES) o[s] = 0;
+    return o;
+}
+
 function _sherlockRecordCorrecto(rec) {
     const cmp = rec && rec.commander_vs_sherlock;
     const res = rec && rec.resolucion;
@@ -690,6 +700,9 @@ function sherlockPrecisionSlice(state, ctx) {
         // booleans/contadores, sin claims/comandos/PII.
         let sameProviderTotal = 0;
         let sameProviderCount = 0;
+        // #3923 EP2-H3 — tasa de not_verifiable POR FUENTE (insumo EP8-H8). SEC-6:
+        // solo contadores por enum cerrado, nunca claims/comandos/stdout.
+        const notVerifiableBySource = _emptyNvBySource();
         for (const f of files) {
             let raw = '';
             try { raw = fs.readFileSync(path.join(auditDir, f), 'utf8'); }
@@ -703,7 +716,17 @@ function sherlockPrecisionSlice(state, ctx) {
                     if (rec.same_provider === true) sameProviderCount += 1;
                 }
                 const resultado = rec && rec.resultado;
-                if (resultado === 'not_verifiable') { notVerifiable += 1; continue; }
+                if (resultado === 'not_verifiable') {
+                    notVerifiable += 1;
+                    // Acumula por fuente SOLO si pertenece al enum cerrado (records
+                    // viejos sin `source` no rompen el shape).
+                    const src = rec && rec.source;
+                    if (typeof src === 'string'
+                        && Object.prototype.hasOwnProperty.call(notVerifiableBySource, src)) {
+                        notVerifiableBySource[src] += 1;
+                    }
+                    continue;
+                }
                 if (resultado !== 'true' && resultado !== 'false') continue;
                 totales += 1;
                 if (_sherlockRecordCorrecto(rec)) correctas += 1;
@@ -718,6 +741,8 @@ function sherlockPrecisionSlice(state, ctx) {
             correctas,
             totales,
             not_verifiable: notVerifiable,
+            // #3923 EP2-H3 — contadores por fuente (insumo EP8-H8). SEC-6: solo numbers.
+            not_verifiable_by_source: notVerifiableBySource,
             ratio,                                              // number|null, sin string
             insufficient_sample: totales < SHERLOCK_PRECISION_MIN_SAMPLE,
             target: SHERLOCK_PRECISION_TARGET,
@@ -736,6 +761,8 @@ function sherlockPrecisionSlice(state, ctx) {
             correctas: 0,
             totales: 0,
             not_verifiable: 0,
+            // #3923 EP2-H3 — mismo shape con ceros en el degrade (insumo EP8-H8).
+            not_verifiable_by_source: _emptyNvBySource(),
             ratio: null,
             insufficient_sample: true,
             target: SHERLOCK_PRECISION_TARGET,
