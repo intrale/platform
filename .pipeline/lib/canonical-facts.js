@@ -18,8 +18,17 @@
 // ------------------------
 //   CANONICAL_FACTS = {
 //     [claimKey]: {
-//       source: 'filesystem' | 'heartbeat' | 'git' | 'github-api',
+//       // ENUM CERRADO de fuentes (#3923 EP2-H3). Cualquier source nuevo se
+//       // agrega aquí Y en LOCKSTEP a AUDIT_SOURCE_ENUM (sherlock-audit-jsonl.js)
+//       // y al objeto not_verifiable_by_source (dashboard-slices.js).
+//       source: 'filesystem' | 'heartbeat' | 'git' | 'github-api'
+//             | 'pipeline-state'   // lectura+parse del YAML del work-file (hook read())
+//             | 'waves',           // ola activa (lib/waves.getActiveWave)
 //       argsBuilder(validatedParams) -> string[]   // SEC-1: valida adentro, LANZA si falla
+//       read?(args, impls) -> string                // hook OPCIONAL (filesystem/pipeline-state):
+//                                                   //   devuelve contenido para parse() (fail-open)
+//       scan?(args, impls) -> value                 // hook OPCIONAL (heartbeat agregado):
+//                                                   //   readdir acotado + processCheck → valor
 //       parse(stdout) -> { value, status }          // SEC-5: try/catch, NUNCA throw
 //     }
 //   }
@@ -46,6 +55,8 @@
 // =============================================================================
 'use strict';
 
+const path = require('node:path');
+
 // Presupuesto por defecto de un canonical individual. Coherente con
 // DEFAULT_PER_SOURCE_BUDGET_MS del verificador independiente.
 // #3924 (EP2-H4) — subido en LOCKSTEP con DEFAULT_PER_SOURCE_BUDGET_MS (800ms):
@@ -60,6 +71,69 @@ const DEFAULT_CLAIM_TIMEOUT_MS = (() => {
 
 // SEC-1 — allowlist de SHA git: hex de 7 a 40 chars, nada más.
 const SHA_RE = /^[0-9a-f]{7,40}$/;
+
+// SEC-1 — allowlist del nombre de un marker de agente en `trabajando/`:
+// `<issue>.<skill>` con issue entero y skill en kebab/alfanumérico.
+const MARKER_RE = /^(\d+)\.([a-z0-9-]+)$/;
+
+// SEC-1 — estados de carpeta del pipeline (enum cerrado, NO viene del claim).
+const ESTADO_ENUM = new Set(['pendiente', 'trabajando', 'listo', 'procesado']);
+
+// -----------------------------------------------------------------------------
+// Resolución de paths del pipeline (#3923). `PIPELINE_DIR` es `.pipeline/`
+// (lib/.., igual que waves.js). Override por entorno para tests aislados.
+// `HEARTBEAT_DIR` es `.claude/hooks/` (peer de `.pipeline/`), donde viven los
+// markers `agent-<issue>.heartbeat` con el `pid` del proceso del agente.
+// -----------------------------------------------------------------------------
+function pipelineRoot() {
+    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
+    return path.join(__dirname, '..');
+}
+function heartbeatRoot() {
+    if (process.env.CANONICAL_HEARTBEAT_DIR_OVERRIDE) return process.env.CANONICAL_HEARTBEAT_DIR_OVERRIDE;
+    return path.join(pipelineRoot(), '..', '.claude', 'hooks');
+}
+
+// -----------------------------------------------------------------------------
+// loadPipelineConfig — lee `config.yaml` (lazy-require de js-yaml con fallback,
+// mismo patrón que waves.js:515). Cacheado por path resuelto: tests con distinto
+// `PIPELINE_DIR_OVERRIDE` obtienen su propia entrada. FAIL-OPEN: cualquier error
+// (yaml ausente, archivo ilegible) → `{}` (los enums quedan vacíos → argsBuilder
+// lanza → not_verifiable).
+// -----------------------------------------------------------------------------
+const _cfgCache = new Map(); // cfgPath -> cfg
+function loadPipelineConfig() {
+    const cfgPath = path.join(pipelineRoot(), 'config.yaml');
+    if (_cfgCache.has(cfgPath)) return _cfgCache.get(cfgPath);
+    let cfg = {};
+    try {
+        // eslint-disable-next-line global-require
+        const yaml = require('js-yaml'); // safe-by-default (yaml.load, sin !!js/function)
+        cfg = yaml.load(require('node:fs').readFileSync(cfgPath, 'utf8')) || {};
+    } catch {
+        cfg = {}; // config ausente / yaml no disponible → enums vacíos.
+    }
+    _cfgCache.set(cfgPath, cfg);
+    return cfg;
+}
+function _resetConfigCache() { _cfgCache.clear(); } // solo para tests
+
+// Enums cerrados derivados de config.yaml (`pipelines.*`).
+function pipelineEnum() {
+    const cfg = loadPipelineConfig();
+    return new Set(Object.keys(cfg.pipelines || {}));
+}
+function faseEnumFor(pipeline) {
+    const cfg = loadPipelineConfig();
+    const p = (cfg.pipelines || {})[pipeline];
+    return new Set((p && Array.isArray(p.fases)) ? p.fases : []);
+}
+function skillEnumFor(pipeline, fase) {
+    const cfg = loadPipelineConfig();
+    const p = (cfg.pipelines || {})[pipeline];
+    const spf = (p && p.skills_por_fase) || {};
+    return new Set(Array.isArray(spf[fase]) ? spf[fase] : []);
+}
 
 // -----------------------------------------------------------------------------
 // normalizeIssueNumber — reuso de la implementación canónica del verificador
@@ -97,8 +171,56 @@ function parseBranchPresence(stdout) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Helpers de parse nuevos (#3923). Todos SEC-5: try/catch → not_verifiable,
+// NUNCA throw. El loader YAML es `js-yaml` ≥4 `load` (safe-by-default).
+// -----------------------------------------------------------------------------
+
+// parseWorkFilePhase — extrae `fase` del YAML del work-file. Valor categórico
+// (string). YAML malformado/truncado/gigante → not_verifiable (anti-DoS).
+function parseWorkFilePhase(stdout) {
+    try {
+        // eslint-disable-next-line global-require
+        const doc = require('js-yaml').load(String(stdout == null ? '' : stdout)) || {};
+        if (typeof doc !== 'object' || Array.isArray(doc)) return { value: null, status: 'not_verifiable' };
+        return { value: String(doc.fase || ''), status: 'ok' };
+    } catch {
+        return { value: null, status: 'not_verifiable' };
+    }
+}
+
+// parseQaLabels — true si el PR tiene al menos un label `qa:*`. El filtro vive
+// SOLO acá (en parse), NUNCA como `--jq` derivado del claim (SEC-1, anti-RCE).
+function parseQaLabels(stdout) {
+    return parseJsonField(stdout, (j) =>
+        (Array.isArray(j.labels) ? j.labels : [])
+            .some(l => String((l && l.name) || '').startsWith('qa:')));
+}
+
+// parseActiveAgents — normaliza el conteo (number) producido por el hook scan().
+function parseActiveAgents(stdout) {
+    try {
+        const n = Number(stdout);
+        if (!Number.isFinite(n)) return { value: null, status: 'not_verifiable' };
+        return { value: n, status: 'ok' };
+    } catch {
+        return { value: null, status: 'not_verifiable' };
+    }
+}
+
+// parseActiveWave — normaliza el identificador categórico (string) de la ola
+// activa. '' representa "no hay ola activa".
+function parseActiveWave(stdout) {
+    try {
+        return { value: stdout == null ? '' : String(stdout), status: 'ok' };
+    } catch {
+        return { value: null, status: 'not_verifiable' };
+    }
+}
+
 // =============================================================================
-// CANONICAL_FACTS — los 6 claims. Cada entrada: { source, argsBuilder, parse }.
+// CANONICAL_FACTS — 10 claims (#3923). Cada entrada: { source, argsBuilder,
+// parse, [read], [scan] }.
 // =============================================================================
 const CANONICAL_FACTS = {
     // -------------------------------------------------------------------------
@@ -211,6 +333,112 @@ const CANONICAL_FACTS = {
                 String(j.conclusion || '').toLowerCase() === 'success');
         },
     },
+
+    // =========================================================================
+    // #3923 EP2-H3 — 4 claims nuevos (diccionario: 6 → 10).
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // estado_fase_issue — ¿en qué fase del pipeline está el work-file del issue?
+    // source 'pipeline-state': lee+parsea el YAML en
+    // `.pipeline/<pipeline>/<fase>/<estado>/<issue>.<skill>` vía hook read().
+    // CATEGÓRICO: el `value` es el nombre de fase (string); `expected` debe
+    // viajar como string. SEC: el path se DERIVA de enums cerrados validados
+    // (config.yaml) + `normalizeIssueNumber`, nunca de segmentos crudos del
+    // claim; se verifica contención dentro de `.pipeline/` (anti path-traversal).
+    // -------------------------------------------------------------------------
+    estado_fase_issue: {
+        source: 'pipeline-state',
+        argsBuilder({ issue, pipeline, fase, estado, skill } = {}) {
+            const n = normalizeIssueNumber(issue);
+            if (n == null) throw new Error('issue_invalido');
+            if (!pipelineEnum().has(pipeline)) throw new Error('pipeline_invalido');
+            if (!faseEnumFor(pipeline).has(fase)) throw new Error('fase_invalida');
+            if (!ESTADO_ENUM.has(estado)) throw new Error('estado_invalido');
+            if (!skillEnumFor(pipeline, fase).has(skill)) throw new Error('skill_invalido');
+            // path DERIVADO de enums validados, NUNCA segmentos crudos (SEC-1).
+            const base = path.resolve(pipelineRoot());
+            const p = path.resolve(base, pipeline, fase, estado, n + '.' + skill);
+            if (p !== base && !p.startsWith(base + path.sep)) throw new Error('path_traversal');
+            return [p];
+        },
+        read(args, impls) {
+            return ((impls && impls.fsImpl) || require('node:fs')).readFileSync(args[0], 'utf8');
+        },
+        parse(stdout) { return parseWorkFilePhase(stdout); },
+    },
+
+    // -------------------------------------------------------------------------
+    // agentes_activos — ¿cuántos agentes están efectivamente vivos?
+    // source 'heartbeat' (agregado): readdir ACOTADO no-recursivo de cada
+    // `<pipeline>/<fase>/trabajando/` (markers `<issue>.<skill>`), cruzado con el
+    // heartbeat `agent-<issue>.heartbeat` (PID) + processCheck (existencia, sin
+    // kill/señales). Devuelve el conteo de issues con proceso vivo (number).
+    // Coherente con "fuente de verdad = filesystem/OS, no agent-registry".
+    // -------------------------------------------------------------------------
+    agentes_activos: {
+        source: 'heartbeat',
+        argsBuilder() { return []; }, // sin params: conteo global
+        scan(args, impls) {
+            const _fs = (impls && impls.fsImpl) || require('node:fs');
+            const proc = (impls && typeof impls.processCheck === 'function')
+                ? impls.processCheck
+                : require('./sherlock-independent-verifier')._defaultProcessCheck;
+            const root = path.resolve(pipelineRoot());
+            const hbRoot = heartbeatRoot();
+            const cfg = loadPipelineConfig();
+            const live = new Set();
+            for (const [pname, pdef] of Object.entries(cfg.pipelines || {})) {
+                const fases = (pdef && Array.isArray(pdef.fases)) ? pdef.fases : [];
+                for (const fase of fases) {
+                    const dir = path.join(root, pname, fase, 'trabajando');
+                    let entries = [];
+                    try { entries = _fs.readdirSync(dir); } catch { continue; } // dir ausente → 0
+                    for (const name of entries) {
+                        const m = MARKER_RE.exec(String(name));
+                        if (!m) continue; // nombres no `<issue>.<skill>` se ignoran (SEC)
+                        const issue = m[1];
+                        try {
+                            const hb = JSON.parse(_fs.readFileSync(
+                                path.join(hbRoot, `agent-${issue}.heartbeat`), 'utf8'));
+                            const pid = Number(hb && hb.pid);
+                            if (Number.isInteger(pid) && pid > 0 && proc(pid)) live.add(issue);
+                        } catch { /* sin heartbeat / pid muerto → no cuenta */ }
+                    }
+                }
+            }
+            return live.size;
+        },
+        parse(stdout) { return parseActiveAgents(stdout); },
+    },
+
+    // -------------------------------------------------------------------------
+    // labels_qa_pr — ¿el PR tiene algún label `qa:*`?
+    // REUSA el patrón de pr_mergeado (param `pr` → entero estricto). El comando
+    // es LITERAL `['pr','view',<n>,'--json','labels']`; el filtro `qa:*` vive
+    // EXCLUSIVAMENTE en parse(). PROHIBIDO `--jq` derivado del claim (anti-RCE).
+    // -------------------------------------------------------------------------
+    labels_qa_pr: {
+        source: 'github-api',
+        argsBuilder({ pr } = {}) {
+            const n = normalizeIssueNumber(pr);
+            if (n == null) throw new Error('pr_invalido');
+            return ['pr', 'view', String(n), '--json', 'labels']; // literal, sin --jq
+        },
+        parse(stdout) { return parseQaLabels(stdout); },
+    },
+
+    // -------------------------------------------------------------------------
+    // ola_activa — ¿cuál es la ola activa del pipeline?
+    // source 'waves': lectura local de `.pipeline/waves.json` vía
+    // `lib/waves.getActiveWave()` (degradación con gracia ya incorporada).
+    // CATEGÓRICO: `value` = nombre de la ola (o '' si no hay); `expected` string.
+    // -------------------------------------------------------------------------
+    ola_activa: {
+        source: 'waves',
+        argsBuilder() { return []; }, // sin params: lectura local
+        parse(stdout) { return parseActiveWave(stdout); },
+    },
 };
 
 // -----------------------------------------------------------------------------
@@ -221,6 +449,19 @@ const CANONICAL_FACTS = {
 // -----------------------------------------------------------------------------
 function compareToExpected(value, expected) {
     return value === expected ? 'consistent' : 'inconsistent';
+}
+
+// -----------------------------------------------------------------------------
+// statusFor — variante segura para claims CATEGÓRICOS/numéricos (#3923). Un
+// claim cuyo `value` NO es booleano y que se resuelve SIN un `expected` explícito
+// (el caller no provee contra qué comparar, ej. la wiring genérica del verifier)
+// NO puede producir una contradicción: no hay aserción del Commander que
+// refutar. En ese caso → 'not_verifiable' (NUNCA contradicción especulativa,
+// SEC-5). Para valores booleanos o con `expected` explícito, compara normal.
+// -----------------------------------------------------------------------------
+function statusFor(value, expected, hasExplicitExpected) {
+    if (!hasExplicitExpected && typeof value !== 'boolean') return 'not_verifiable';
+    return compareToExpected(value, expected);
 }
 
 // =============================================================================
@@ -243,7 +484,8 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
         return { value: null, status: 'not_verifiable', source: null };
     }
     const source = fact.source;
-    const expected = (params && 'expected' in params) ? params.expected : true;
+    const hasExplicitExpected = !!(params && 'expected' in params);
+    const expected = hasExplicitExpected ? params.expected : true;
 
     // SEC-1 — el builder valida adentro y LANZA si algún param no pasa la
     // allowlist. Un throw acá NO es una contradicción: es no_verificable.
@@ -264,6 +506,15 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
         const proc = typeof impls.processCheck === 'function'
             ? impls.processCheck
             : iv._defaultProcessCheck;
+        // Hook scan() OPCIONAL (#3923): agregado readdir+processCheck (agentes_activos).
+        if (typeof fact.scan === 'function') {
+            try {
+                const value = fact.scan(args, { ...impls, processCheck: proc });
+                return { value, status: statusFor(value, expected, hasExplicitExpected), source };
+            } catch {
+                return { value: null, status: 'not_verifiable', source };
+            }
+        }
         try {
             const pid = Number(args[0]);
             const alive = !!proc(pid);
@@ -273,9 +524,46 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
         }
     }
 
-    // ---- source 'filesystem': existencia vía fsImpl -------------------------
-    if (source === 'filesystem') {
+    // ---- source 'waves': ola activa vía lib/waves.getActiveWave (#3923) -----
+    if (source === 'waves') {
+        try {
+            const getActive = (typeof impls.getActiveWave === 'function')
+                ? impls.getActiveWave
+                : require('./waves').getActiveWave;
+            const w = getActive();
+            // identificador categórico de la ola: nombre, con fallback a número.
+            const raw = w
+                ? (w.name != null ? w.name : (w.number != null ? w.number : ''))
+                : '';
+            const parsed = fact.parse(raw);
+            if (!parsed || parsed.status !== 'ok') {
+                return { value: parsed ? parsed.value : null, status: 'not_verifiable', source };
+            }
+            return { value: parsed.value, status: statusFor(parsed.value, expected, hasExplicitExpected), source };
+        } catch {
+            return { value: null, status: 'not_verifiable', source };
+        }
+    }
+
+    // ---- source 'filesystem' | 'pipeline-state' ----------------------------
+    // Hook read() OPCIONAL (#3923): lee contenido y delega a parse() (fail-open).
+    // Si la entrada NO define read(), se conserva el comportamiento `existsSync`
+    // histórico (no-regresión para los claims `filesystem` existentes).
+    if (source === 'filesystem' || source === 'pipeline-state') {
         const _fs = impls.fsImpl || require('node:fs');
+        if (typeof fact.read === 'function') {
+            let content;
+            try {
+                content = fact.read(args, impls);
+            } catch {
+                return { value: null, status: 'not_verifiable', source }; // archivo ausente, etc.
+            }
+            const parsed = fact.parse(content);
+            if (!parsed || parsed.status !== 'ok') {
+                return { value: parsed ? parsed.value : null, status: 'not_verifiable', source };
+            }
+            return { value: parsed.value, status: statusFor(parsed.value, expected, hasExplicitExpected), source };
+        }
         try {
             const exists = _fs.existsSync(args[0]);
             return { value: exists, status: compareToExpected(exists, expected), source };
@@ -315,9 +603,21 @@ module.exports = {
     resolveClaim,
     // exports para tests / reuso
     _SHA_RE: SHA_RE,
+    _MARKER_RE: MARKER_RE,
+    _ESTADO_ENUM: ESTADO_ENUM,
     _normalizeIssueNumber: normalizeIssueNumber,
     _compareToExpected: compareToExpected,
+    _statusFor: statusFor,
     _parseJsonField: parseJsonField,
     _parseBranchPresence: parseBranchPresence,
+    _parseWorkFilePhase: parseWorkFilePhase,
+    _parseQaLabels: parseQaLabels,
+    _parseActiveAgents: parseActiveAgents,
+    _parseActiveWave: parseActiveWave,
+    _pipelineEnum: pipelineEnum,
+    _faseEnumFor: faseEnumFor,
+    _skillEnumFor: skillEnumFor,
+    _loadPipelineConfig: loadPipelineConfig,
+    _resetConfigCache,
     DEFAULT_CLAIM_TIMEOUT_MS,
 };
