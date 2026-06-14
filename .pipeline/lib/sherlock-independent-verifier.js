@@ -53,10 +53,26 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { makeCachedImpl } = require('./evidence-cache');
 
 // Presupuestos de performance (ver "Notas técnicas / Performance" del #3846).
-const DEFAULT_PER_SOURCE_BUDGET_MS = 200;
-const DEFAULT_TOTAL_BUDGET_MS = 500;
+// #3924 (EP2-H4) — subidos de 200/500ms a 800/2500ms: en Windows con git/gh
+// "fríos" el presupuesto viejo agotaba demasiado rápido → muchos
+// `not_verifiable` (que nunca contradicen, así que Sherlock verificaba menos de
+// lo que aparentaba). La latencia la domina el LLM, así que pasar a 2-3 s totales
+// no degrada UX percibida (el shell-out corre en paralelo al razonamiento fiscal).
+// Coherente en lockstep con `canonical-facts.DEFAULT_CLAIM_TIMEOUT_MS`.
+// Override por entorno para tuning sin redeploy (REQ: config leíble).
+const DEFAULT_PER_SOURCE_BUDGET_MS = envInt('SHERLOCK_PER_SOURCE_BUDGET_MS', 800);
+const DEFAULT_TOTAL_BUDGET_MS = envInt('SHERLOCK_TOTAL_BUDGET_MS', 2500);
+
+// envInt — lee un entero positivo de una env var; si no es válida usa el default.
+function envInt(name, def) {
+    const raw = process.env[name];
+    if (raw == null || raw === '') return def;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
+}
 
 // CA-SEC-10 — cap de payload por finding y total. Outputs de git/gh pueden ser
 // grandes; recortamos para no inflar el prompt fiscal ni dar superficie a un
@@ -136,6 +152,17 @@ function defaultGhApi({ args, cwd, timeoutMs }) {
         }
     });
 }
+
+// -----------------------------------------------------------------------------
+// #3924 (EP2-H4) — singletons cacheados de las impls por defecto. La caché vive
+// a nivel de MÓDULO (no por llamada) para dedupear shell-outs entre
+// verificaciones cercanas (misma ráfaga). TTL corto + LRU acotado (ver
+// evidence-cache.js). Solo se usan cuando el caller NO inyecta impl propia: la
+// inyección de tests (`gitImpl`/`ghApi`) bypassea la caché. `canonical-facts.js`
+// reusa estos mismos singletons para que ambos consumidores compartan caché.
+// -----------------------------------------------------------------------------
+const cachedGitImpl = makeCachedImpl(defaultGitImpl, { bin: 'git' });
+const cachedGhApi = makeCachedImpl(defaultGhApi, { bin: 'gh' });
 
 // -----------------------------------------------------------------------------
 // defaultProcessCheck — chequea si un PID está vivo. `process.kill(pid, 0)` no
@@ -222,8 +249,11 @@ async function collectIndependentEvidence(opts = {}) {
     } = opts;
 
     const _fs = fsImpl || fs;
-    const _git = typeof gitImpl === 'function' ? gitImpl : defaultGitImpl;
-    const _gh = typeof ghApi === 'function' ? ghApi : defaultGhApi;
+    // #3924 — sin inyección de test usamos la impl CACHEADA (dedup de ráfaga);
+    // con inyección (`gitImpl`/`ghApi`) bypasseamos la caché para no romper la
+    // suite ni mezclar fixtures de tests con estado real.
+    const _git = typeof gitImpl === 'function' ? gitImpl : cachedGitImpl;
+    const _gh = typeof ghApi === 'function' ? ghApi : cachedGhApi;
     const _proc = typeof processCheck === 'function' ? processCheck : defaultProcessCheck;
     const _log = typeof log === 'function' ? log : () => {};
     const _now = typeof now === 'function' ? now : Date.now;
@@ -644,6 +674,10 @@ module.exports = {
     // #3895 — reusados por canonical-facts.js como impls por defecto de resolveClaim.
     _defaultGitImpl: defaultGitImpl,
     _defaultGhApi: defaultGhApi,
+    // #3924 — impls cacheadas compartidas: canonical-facts.resolveClaim las usa
+    // como default para compartir la misma caché TTL entre ambos consumidores.
+    _cachedGitImpl: cachedGitImpl,
+    _cachedGhApi: cachedGhApi,
     _capDetail: capDetail,
     MAX_FINDINGS,
     MAX_FINDING_DETAIL_CHARS,
