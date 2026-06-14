@@ -111,6 +111,7 @@ const commanderDocCreate = require('./lib/commander/doc-create');
 // confianza. El eco es la única defensa real contra errores de STT.
 const transcriptEcho = require('./lib/commander/transcript-echo');
 const sttConfidence = require('./lib/commander/stt-confidence');
+const commanderRequestLog = require('./lib/commander/request-log'); // #3949 EP7-H2
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
@@ -10113,6 +10114,16 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   if (textoLibre.length > 0) {
     const esAudio = textoLibre.some(m => m._esAudio);
 
+    // #3949 EP7-H2 — Log por petición atendida del Commander. UN id por turno
+    // consolidado (no por mensaje individual): `<chat_id>-<epochms>` (SEC-4,
+    // filename-safe). Toda escritura pasa por el stream sanitizado de
+    // `openRequestLog` (SEC-1) → hereda la redacción de secretos. El writer se
+    // cierra en el `finally` de este bloque para no dejar el fd colgado aun si
+    // el turno tira excepción antes del envío (CA-6).
+    const commanderReqId = commanderRequestLog.buildRequestId(chatId, Date.now());
+    const requestLog = commanderRequestLog.openRequestLog(LOG_DIR, commanderReqId);
+    try {
+
     // --- EP1-H4 (#3919, CA-1) — Caso STT mixto: al menos un audio falló pero hay
     // texto/otro audio OK, así que NO entramos al fallback all-failed (L9762) y el
     // mensaje sigue a Claude. Sin este aviso, el usuario solo ve un críptico
@@ -10147,6 +10158,15 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     const transcriptsEco = textoLibre
       .filter(m => m._esAudio && m._audio && m._audio.ok && m._audio.transcript)
       .map(m => m._audio.transcript);
+
+    // #3949 EP7-H2 — Etapa 1: transcripción (con eco STT). SEC-2: el eco y el
+    // texto consolidado pasan por el writable sanitizado (redacción de PII /
+    // credenciales dictadas por voz) antes de tocar disco.
+    requestLog.stage('transcripción', { audios: transcriptsEco.length, mensajes: textoLibre.length });
+    for (let i = 0; i < transcriptsEco.length; i++) {
+      requestLog.line(`🎤 eco[${i + 1}]: ${transcriptsEco[i]}`);
+    }
+    requestLog.line(`texto: ${mensajeConsolidado}`);
 
     // --- #3918 (CA-2) — Replay de confirmación por baja confianza. Si en un
     // turno previo (< 5 min) quedó una acción pendiente y ESTE mensaje es una
@@ -10456,6 +10476,18 @@ ${commanderConversation}`;
         userMessage: commanderConversation,
       });
       log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
+
+      // #3949 EP7-H2 — Etapa 2: dispatch/provider. SEC-3: SOLO strings
+      // (intent_class + provider + modelo + resultado). NUNCA el objeto de
+      // config de providers (API keys). El free-text del Commander se resuelve
+      // siempre vía el path Anthropic (ejecutarClaude → claude CLI).
+      requestLog.stage('dispatch', {
+        intent_class: 'llm',
+        provider: 'anthropic',
+        model: 'claude-cli',
+        issue_creation: !!wantsIssueCreation,
+        respuesta_chars: (respuesta || '').length,
+      });
 
       if (wantsIssueCreation) {
         try {
@@ -10854,6 +10886,19 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // MP-01/MP-02: el bloque alcanzó un verdict conclusivo. A partir de acá
         // el disclaimer (o su ausencia) refleja la decisión REAL de Sherlock.
         sherlockResolved = true;
+
+        // #3949 EP7-H2 — Etapa 3: Sherlock (veredicto + provider + duración).
+        // `requestLog` está en scope del bloque del turno (cierre IIFE async).
+        try {
+          requestLog.stage('Sherlock', {
+            veredicto: verdict.verdict,
+            provider: verdict.sherlockProvider || '',
+            same_provider: verdict.sameProvider === true,
+            duration_ms: verdict.durationMs || 0,
+            inconsistencias: Array.isArray(verdict.inconsistencies) ? verdict.inconsistencies.length : 0,
+            turn_id: turnId,
+          });
+        } catch { /* best-effort */ }
       })();
 
       try {
@@ -10990,6 +11035,16 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         sendTelegram(respuesta);
         log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
         appendCommanderHistory(historyFile, { direction: 'out', text: respuesta.slice(0, 1000) });
+
+        // #3949 EP7-H2 — Etapa 4: envío. SEC-2: el texto de respuesta pasa por
+        // el writable sanitizado. `enviado` indica si salió también por voz.
+        requestLog.stage('envío', {
+          canal: esAudio ? 'voz+texto' : 'texto',
+          voz_ok: !!enviado,
+          chars: respuesta.length,
+          disclaimer: sherlockDisclaimerType || 'ninguno',
+        });
+        requestLog.line(`respuesta: ${respuesta}`);
       }
     } catch (e) {
       log('commander', `Error Claude: ${e.message}`);
@@ -11039,6 +11094,12 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
 
     const logFile = path.join(LOG_DIR, 'commander.log');
     fs.appendFileSync(logFile, `[${new Date().toISOString()}] TEXT (${textoLibre.length} msgs consolidados)\n---\n`);
+    } finally {
+      // #3949 CA-6 — cierre garantizado del writer (fd) aun ante early-return o
+      // excepción dentro del bloque. `close()` es async (flushea el sanitize
+      // stream antes de cerrar el archivo).
+      try { await requestLog.close(); } catch { /* best-effort */ }
+    }
   }
 
   // Persistir sesión
