@@ -2736,11 +2736,41 @@ function generateHTML(state) {
     return { skill, issues, maxDur };
   }).sort((a, b) => b.maxDur - a.maxDur);
 
+  // #3948 (EP-7) — Card observacional del Commander en la tira "Ejecutando ahora"
+  // de la vista Equipo. Presencia leída del canal separado (commander-presence.json)
+  // con TTL; sin botón de cancelar (CA-3/CA-4). Lectura defensiva: si el módulo o
+  // el archivo no están, la tira se renderiza igual (sin la card). Todos los
+  // campos van escapados (SEC-2); el archivo no contiene PII (CA-6).
+  let commanderPresenceCard = '';
+  try {
+    const _presence = require('./lib/commander-presence');
+    const _pres = _presence.readPresence();
+    if (_pres) {
+      const _p = AGENT_PERSONA.commander || { icon: '🎖', name: 'Commander', color: 'var(--in-info)' };
+      const _faseIcons = { transcribiendo: '🎙', pensando: '🧠', verificando: '🔍', enviando: '📤' };
+      const _faseLabel = ((_faseIcons[_pres.fase] || '') + ' ' + _pres.fase).trim();
+      commanderPresenceCard =
+        '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
+          '<span class="eq-card-avatar" style="background:' + escapeHtml(_p.color) + '">' + escapeHtml(_p.icon) + '</span>' +
+          '<div class="eq-card-body">' +
+            '<div class="eq-card-name"><span class="eq-card-ring"></span>' + escapeHtml(_p.name) + '</div>' +
+            '<div class="eq-card-work">' +
+              '<span class="eq-work-item eq-work-item-observe">' +
+                '<span class="eq-work-fase">' + escapeHtml(_faseLabel) + '</span>' +
+                '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_pres.durationMs)) + '</span>' +
+              '</span>' +
+            '</div>' +
+          '</div>' +
+          '<span class="eq-card-observe-pill" aria-label="presencia observacional, no cancelable">👁 observa</span>' +
+        '</div>';
+    }
+  } catch { /* presencia opcional — la tira se renderiza sin la card */ }
+
   // Option B: Active Cards XL — cada agente activo es una card horizontal con work items (issue + fase + progreso)
   let agentTeamCards = '';
   let activeStripHTML = '';
-  if (sortedAgents.length > 0) {
-    const cards = sortedAgents.map(({ skill, issues }) => {
+  if (sortedAgents.length > 0 || commanderPresenceCard) {
+    const cards = commanderPresenceCard + sortedAgents.map(({ skill, issues }) => {
       const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, color: 'var(--dim)' };
       const count = issues.length;
       const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
@@ -4664,6 +4694,13 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .eq-work-bar-fill{height:100%;background:var(--teal,#2dd4bf);border-radius:2px}
 .eq-card-kill{color:var(--dim);cursor:pointer;font-weight:700;font-size:1.2em;padding:4px 8px;border-radius:6px}
 .eq-card-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
+/* #3948 — card observacional del Commander: borde punteado info + sin kill +
+   pill "observa" (señales redundantes, no sólo color). */
+.eq-card-observational{background:var(--in-info-soft,rgba(88,166,255,0.12));border:1px solid var(--in-info,#58a6ff);border-left:3px dashed var(--in-info,#58a6ff);opacity:0.94}
+.eq-card-observational .eq-card-name{color:var(--in-info,#58a6ff)}
+.eq-card-observational .eq-card-ring{background:var(--in-info,#58a6ff);box-shadow:0 0 0 0 rgba(88,166,255,0.6)}
+.eq-work-item-observe{background:var(--in-info-soft,rgba(88,166,255,0.12))}
+.eq-card-observe-pill{display:inline-flex;align-items:center;gap:4px;font-size:0.72em;color:var(--in-info,#58a6ff);border:1px solid var(--in-info,#58a6ff);border-radius:6px;padding:2px 8px;cursor:default}
 
 /* Agent History */
 #agent-history .matrix-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd)}

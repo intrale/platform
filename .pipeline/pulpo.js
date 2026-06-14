@@ -175,6 +175,11 @@ const { launchAgent } = require('./lib/agent-launcher');
 // La pista determinística (status/listado/snapshot/tail/etc) responde SIEMPRE
 // sin invocar a Claude, incluso con cuota agotada o multi-provider caído.
 const commanderDet = require('./lib/commander-deterministic');
+// #3948 (EP-7) — Presencia observacional del Commander en el dashboard. Canal
+// separado (`commander-presence.json`), single-writer = este brazo. Import
+// defensivo: si falla, las transiciones de fase son no-op y el flujo sigue.
+let commanderPresence = null;
+try { commanderPresence = require('./lib/commander-presence'); } catch { /* opcional */ }
 // #3198 — consumer runtime de skill.fallbacks[]. Cuando el provider primario
 // queda gateado por cuota, el dispatcher itera el array y devuelve la primera
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
@@ -9771,6 +9776,11 @@ async function brazoCommander(config) {
     await _brazoCommanderInner(config, archivos, commanderPendiente, commanderTrabajando, commanderListo, key);
   } finally {
     activeProcesses.delete(key);
+    // #3948 (CA-1) — la presencia observacional desaparece al terminar la
+    // atención (éxito o error). Limpieza idempotente en el finally del brazo:
+    // garantiza el clear sin importar por cuál de los múltiples `return` internos
+    // salió `_brazoCommanderInner`. Best-effort: nunca rompe el cierre del brazo.
+    try { if (commanderPresence) commanderPresence.clearPresence(); } catch { /* idempotente */ }
   }
 }
 
@@ -9819,6 +9829,25 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
 
   if (mensajes.length === 0) return;
   log('commander', `Total mensajes consolidados: ${mensajes.length}`);
+
+  // #3948 (EP-7, CA-1/CA-5/CA-6) — Publicar presencia observacional del
+  // Commander. `petitionId` opaco (hex random, SEC-1) — nunca derivado del
+  // contenido del mensaje. Fase inicial: `transcribiendo` si hay audio que
+  // procesar (el loop de preprocess transcribe), si no `pensando`. El archivo
+  // NO persiste texto/chat_id/from/tokens (lo garantiza el helper). Best-effort:
+  // un fallo de presencia jamás bloquea la atención de la petición.
+  try {
+    if (commanderPresence) {
+      const hayAudio = mensajes.some(m => m && (m.voice || m.voice_path));
+      const petitionId = require('crypto').randomBytes(6).toString('hex');
+      commanderPresence.writePresence({
+        petitionId,
+        fase: hayAudio ? 'transcribiendo' : 'pensando',
+      });
+    }
+  } catch (e) {
+    log('commander', `[presencia] writePresence falló (no bloqueante): ${e.message}`);
+  }
 
   const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
   const botToken = getTelegramToken();
@@ -10419,6 +10448,8 @@ ${commanderConversation}`;
       // lo aprovechamos para audit log + clasificación cuando
       // `wantsIssueCreation` (no inflamos audit para texto libre genérico).
       const claudeTrace = wantsIssueCreation ? {} : undefined;
+      // #3948 (CA-5) — transición a `pensando` al entrar al dispatch LLM.
+      try { if (commanderPresence) commanderPresence.updatePhase('pensando'); } catch { /* no bloqueante */ }
       skillInvocationStartedAt = Date.now();
       let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado, claudeTrace, {
         systemPrompt: commanderPersona,
@@ -10692,6 +10723,9 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
       })();
 
       const sherlockBlock = (async () => {
+        // #3948 (CA-5) — transición a `verificando` al invocar Sherlock (sólo
+        // camino LLM; el determinístico nunca llega acá).
+        try { if (commanderPresence) commanderPresence.updatePhase('verificando'); } catch { /* no bloqueante */ }
         // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
         // — sólo contadores que el Commander pudo haber observado para que
         // Sherlock cruce el claim "hay N issues pendientes" vs realidad.
@@ -10892,6 +10926,8 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       session.context = `Conversación libre. Último mensaje: "${mensajeConsolidado.slice(0, 100)}". Respuesta: "${(respuesta || '').slice(0, 100)}"`;
 
       // --- ENVIAR RESPUESTA ---
+      // #3948 (CA-5) — transición a `enviando` antes de despachar la respuesta.
+      try { if (commanderPresence) commanderPresence.updatePhase('enviando'); } catch { /* no bloqueante */ }
       if (respuesta) {
         let enviado = false;
 
