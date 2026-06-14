@@ -312,3 +312,169 @@ test('opts ausente usa process.cwd() — no throw aunque no haya nada', () => {
     const res = helper.collectAttachmentsForSkill('ux', 99999999, 'criterios');
     assert.ok(Array.isArray(res));
 });
+
+// =============================================================================
+// EP3-H2 (#3928) — Perfiles nuevos: qa, tester, security, build, architect,
+// backend-dev, android-dev, web-dev, pipeline-dev.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// CA-1 — Recolección por perfil documental (8 skills) + reconfirmar qa.
+// Cada skill con un .md issue-scoped en `.pipeline/assets/docs/<issue>/`
+// devuelve exactamente 1 adjunto `type: 'document'`.
+// -----------------------------------------------------------------------------
+
+const DOC_PROFILES = [
+    { skill: 'tester', descriptor: 'cobertura' },
+    { skill: 'security', descriptor: 'seguridad' },
+    { skill: 'build', descriptor: 'build' },
+    { skill: 'architect', descriptor: 'receta' },
+    { skill: 'backend-dev', descriptor: 'dev' },
+    { skill: 'android-dev', descriptor: 'dev' },
+    { skill: 'web-dev', descriptor: 'dev' },
+    { skill: 'pipeline-dev', descriptor: 'dev' },
+];
+
+for (const { skill, descriptor } of DOC_PROFILES) {
+    test(`CA-1 — ${skill} recolecta 1 documento en docs/<issue>/`, () => {
+        const tmp = mkTmpRoot();
+        try {
+            writeFile(tmp.root, `.pipeline/assets/docs/3928/resumen-${skill}.md`, '# resumen');
+            const res = helper.collectAttachmentsForSkill(skill, 3928, 'dev', { pipelineRoot: tmp.root });
+            assert.equal(res.length, 1, `${skill}: esperaba 1 adjunto`);
+            assert.equal(res[0].type, 'document');
+            assert.equal(res[0].descriptor, descriptor);
+            assert.ok(res[0].path.startsWith('.pipeline/assets/docs/3928/'),
+                `${skill}: path debe ser issue-scoped, vino ${res[0].path}`);
+        } finally {
+            tmp.cleanup();
+        }
+    });
+
+    test(`CA-1 — ${skill} también acepta .pdf`, () => {
+        const tmp = mkTmpRoot();
+        try {
+            writeFile(tmp.root, `.pipeline/assets/docs/3928/informe-${skill}.pdf`, '%PDF');
+            const res = helper.collectAttachmentsForSkill(skill, 3928, 'dev', { pipelineRoot: tmp.root });
+            assert.equal(res.length, 1);
+            assert.equal(res[0].type, 'document');
+        } finally {
+            tmp.cleanup();
+        }
+    });
+}
+
+// -----------------------------------------------------------------------------
+// CA-2 — qa: entregable mixto video + document.
+// -----------------------------------------------------------------------------
+
+test('CA-2 — qa recolecta video en qa/evidence/<issue>/ y documento en docs/<issue>/', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, 'qa/evidence/3928/run-final.mp4', 'VIDEO');
+        writeFile(tmp.root, '.pipeline/assets/docs/3928/qa-reporte.pdf', '%PDF');
+        const res = helper.collectAttachmentsForSkill('qa', 3928, 'verificacion', { pipelineRoot: tmp.root });
+        assert.equal(res.length, 2);
+        const byType = Object.fromEntries(res.map((a) => [a.type, a]));
+        assert.ok(byType.video, 'esperaba un adjunto video');
+        assert.ok(byType.document, 'esperaba un adjunto document');
+        assert.ok(byType.video.path.startsWith('qa/evidence/3928/'));
+        assert.ok(byType.document.path.startsWith('.pipeline/assets/docs/3928/'));
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('CA-2 — qa con solo video devuelve solo el video', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, 'qa/evidence/3928/run.webm', 'VIDEO');
+        const res = helper.collectAttachmentsForSkill('qa', 3928, 'verificacion', { pipelineRoot: tmp.root });
+        assert.equal(res.length, 1);
+        assert.equal(res[0].type, 'video');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// -----------------------------------------------------------------------------
+// CA-6 (SEC-2) — Issue-scoping estricto: docs de issue A y B en disco,
+// collect('tester', A) devuelve SOLO los de A (anti cross-issue disclosure).
+// -----------------------------------------------------------------------------
+
+test('CA-6 (SEC-2) — tester con docs de 3928 y 3929 devuelve solo los de 3928', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, '.pipeline/assets/docs/3928/cobertura.md', 'A');
+        writeFile(tmp.root, '.pipeline/assets/docs/3929/cobertura.md', 'B');
+        const res = helper.collectAttachmentsForSkill('tester', 3928, 'verificacion', { pipelineRoot: tmp.root });
+        assert.equal(res.length, 1);
+        assert.ok(res[0].path.includes('3928'), `cross-contamination: ${res[0].path}`);
+        assert.ok(!res[0].path.includes('3929'), `cross-contamination: ${res[0].path}`);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// -----------------------------------------------------------------------------
+// CA-7 (SEC-1) — Logs de build prohibidos en crudo: un .log en disco para
+// `build` NO se devuelve (formats de build solo .md/.pdf).
+// -----------------------------------------------------------------------------
+
+test('CA-7 (SEC-1) — build NO adjunta .log crudo (riesgo de fuga de secretos)', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, '.pipeline/assets/docs/3928/build-gradle.log', 'AWS_SECRET=xxx');
+        writeFile(tmp.root, '.pipeline/assets/docs/3928/build-resumen.md', '# build ok');
+        const res = helper.collectAttachmentsForSkill('build', 3928, 'build', { pipelineRoot: tmp.root });
+        assert.equal(res.length, 1, 'esperaba solo el .md, nunca el .log');
+        assert.ok(res[0].path.endsWith('build-resumen.md'));
+        assert.ok(!res.some((a) => a.path.endsWith('.log')), 'el .log NO debe adjuntarse');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// -----------------------------------------------------------------------------
+// CA-5 — Coherencia de las 3 whitelists. Todo skill en SKILL_SOURCES (excepto
+// legacy ux/cua) debe estar en deliverable_notifications.skills y en
+// attachments_per_skill de config.yaml.
+// -----------------------------------------------------------------------------
+
+test('CA-5 — coherencia: SKILL_SOURCES ⊆ skills ∩ attachments_per_skill (config.yaml)', () => {
+    const yaml = require('js-yaml');
+    const cfgPath = path.join(__dirname, '..', '..', 'config.yaml');
+    const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
+    const dn = cfg.deliverable_notifications;
+    const whitelistSkills = new Set(dn.skills);
+    const apsSkills = new Set(Object.keys(dn.attachments_per_skill));
+
+    const catalog = helper.getSkillSourcesCatalog();
+    // `cua` es legacy (entregable interno del CUA, no notificable a Telegram por
+    // las whitelists de deliverable_notifications). El resto debe estar sincronizado.
+    const LEGACY = new Set(['cua']);
+
+    for (const skill of Object.keys(catalog)) {
+        if (LEGACY.has(skill)) continue;
+        assert.ok(whitelistSkills.has(skill),
+            `${skill} está en SKILL_SOURCES pero falta en deliverable_notifications.skills`);
+        assert.ok(apsSkills.has(skill),
+            `${skill} está en SKILL_SOURCES pero falta en attachments_per_skill`);
+    }
+});
+
+test('CA-5 — coherencia inversa: todo skill notificable tiene source en SKILL_SOURCES', () => {
+    const yaml = require('js-yaml');
+    const cfgPath = path.join(__dirname, '..', '..', 'config.yaml');
+    const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
+    const dn = cfg.deliverable_notifications;
+    const catalog = helper.getSkillSourcesCatalog();
+    const catalogSkills = new Set(Object.keys(catalog));
+
+    // Cada skill de la whitelist de notificación debe poder recolectar (tener
+    // entrada en SKILL_SOURCES); sino sería "notificable pero sin adjuntos".
+    for (const skill of dn.skills) {
+        assert.ok(catalogSkills.has(skill),
+            `${skill} está en deliverable_notifications.skills pero falta en SKILL_SOURCES`);
+    }
+});

@@ -151,6 +151,106 @@ const SKILL_SOURCES = Object.freeze({
             descriptorHint: 'cua',
         },
     ],
+    // -------------------------------------------------------------------------
+    // EP3-H2 (#3928) — 9 perfiles nuevos. Todos issue-scoped vía `dirTemplate`
+    // con `{issue}` (SEC-2: prohibido dir plano + `nameMustInclude`, porque
+    // `matchesSource()` matchea por substring → `2551.log` matchearía issue 25).
+    // Todas las fuentes documentales apuntan a `.pipeline/assets/docs/{issue}/`
+    // (= `attachment_roots.document`), así pasan la validación `outside_root`.
+    // SEC-1: el perfil `build` adjunta SOLO `.md`/`.pdf` curado, NUNCA `.log`
+    // crudo (arrastra env vars / AWS keys / application.conf).
+    // Mientras los productores (#3930/#3931) no escriban los archivos, el helper
+    // degrada a `[]` sin romper nada.
+    // -------------------------------------------------------------------------
+    qa: [
+        {
+            dirTemplate: 'qa/evidence/{issue}',
+            nameMustInclude: [],
+            formats: ['.mp4', '.webm'],
+            type: 'video',
+            descriptorHint: 'qa-video',
+        },
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.pdf', '.md'],
+            type: 'document',
+            descriptorHint: 'qa-reporte',
+        },
+    ],
+    tester: [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.pdf', '.md'],
+            type: 'document',
+            descriptorHint: 'cobertura',
+        },
+    ],
+    security: [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.pdf', '.md'],
+            type: 'document',
+            descriptorHint: 'seguridad',
+        },
+    ],
+    // SEC-1: `build` adjunta solo resumen curado `.md`/`.pdf`; `.log` queda fuera.
+    build: [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.pdf', '.md'],
+            type: 'document',
+            descriptorHint: 'build',
+        },
+    ],
+    architect: [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.pdf', '.md'],
+            type: 'document',
+            descriptorHint: 'receta',
+        },
+    ],
+    'backend-dev': [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.md', '.pdf'],
+            type: 'document',
+            descriptorHint: 'dev',
+        },
+    ],
+    'android-dev': [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.md', '.pdf'],
+            type: 'document',
+            descriptorHint: 'dev',
+        },
+    ],
+    'web-dev': [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.md', '.pdf'],
+            type: 'document',
+            descriptorHint: 'dev',
+        },
+    ],
+    'pipeline-dev': [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.md', '.pdf'],
+            type: 'document',
+            descriptorHint: 'dev',
+        },
+    ],
 });
 
 // Mapeo extensión → tipo de adjunto. Usado cuando la `source.type` es null

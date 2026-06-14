@@ -635,7 +635,10 @@ telegram_burst_window_ms: 60000
 deliverable_notifications:
   enabled: true
   kill_switch: false
-  skills: [guru, po, ux, planner]
+  # EP3-H2 (#3928) — whitelist ampliada a 13 skills. Sincronizada con
+  # `attachments_per_skill` (abajo) y `SKILL_SOURCES`
+  # (.pipeline/lib/skill-deliverable-attachments.js). Los 3 cambios van juntos.
+  skills: [guru, po, ux, planner, qa, tester, security, build, architect, backend-dev, android-dev, web-dev, pipeline-dev]
   truncate_chars: 1500
   attachment_root: ".pipeline/assets/mockups"
   dedup_window_hours: 24
@@ -661,6 +664,16 @@ deliverable_notifications:
     planner: { types: [document],                   formats: [.pdf, .md] }
     ux:      { types: [image, video, animation],    formats: [.png, .jpg, .jpeg, .mp4, .webm, .gif] }
     qa:      { types: [video, document],            formats: [.mp4, .webm, .pdf] }
+    # EP3-H2 (#3928) — perfiles nuevos. SEC-1: `build` SOLO .md/.pdf curado, NO
+    # .log crudo (filtra secretos). SEC-4: devs adjuntan resumen .md, no código.
+    tester:    { types: [document],                 formats: [.pdf, .md] }
+    security:  { types: [document],                 formats: [.pdf, .md] }
+    build:     { types: [document],                 formats: [.pdf, .md] }
+    architect: { types: [document],                 formats: [.pdf, .md] }
+    backend-dev:  { types: [document],              formats: [.md, .pdf] }
+    android-dev:  { types: [document],              formats: [.md, .pdf] }
+    web-dev:      { types: [document],              formats: [.md, .pdf] }
+    pipeline-dev: { types: [document],              formats: [.md, .pdf] }
 
   # CA-SEC-EXT-1: root allowlisteado por tipo. Cualquier path fuera del root
   # configurado se rechaza con `outside_root` SIN tocar disco.
