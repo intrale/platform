@@ -39,7 +39,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { sanitizeTelegramPayload } = require('./sanitize-payload');
+const {
+    sanitizeTelegramPayload,
+    sanitizeDrivePayload,
+    sanitizeDriveFilename,
+    filenameHasSecret,
+} = require('./sanitize-payload');
 const { redactSensitive } = require('./redact');
 const { narrativeSanitizePreview } = require('./narrative-sanitize');
 const {
@@ -135,6 +140,11 @@ const ATTACHMENT_TYPE_LABEL = Object.freeze({
 // CA-UX-EXT-4 — orden de envío con múltiples adjuntos:
 // texto → image → document → video → animation.
 const ATTACHMENT_TYPE_ORDER = Object.freeze(['image', 'document', 'video', 'animation']);
+
+// CA-1 (#3927) — motivos de rechazo de un video que disparan encolado a Drive
+// (en vez de descartar). Un video que excede tamaño/duración de Telegram igual
+// puede entregarse vía Drive con link compartible.
+const DRIVE_QUEUEABLE_REJECT_REASONS = new Set(['size_exceeded', 'duration_exceeded']);
 
 // Mapeo tipo → método Telegram + nombre del field en el dropfile.
 const ATTACHMENT_DROPFILE_FIELD = Object.freeze({
@@ -881,13 +891,60 @@ function buildPreview(args) {
         && accepted.length === 1
         && accepted[0].type === 'image';
 
+    // CA-1 (#3927) — videos que exceden los límites de Telegram NO se descartan:
+    // se encolan a la cola de Drive (`servicios/drive/pendiente/`) en vez de
+    // perderse. Detectamos los records de tipo `video` rechazados por tamaño o
+    // duración y construimos un job sanitizado que `notify` persistirá (el
+    // encolado es un side effect → vive en `notify`, no acá; buildPreview es puro).
+    const driveQueued = rejected.filter(
+        (r) => r.type === 'video' && DRIVE_QUEUEABLE_REJECT_REASONS.has(r.reject_reason),
+    );
+    const driveJobs = driveQueued.map((r) => {
+        const relativeVideoPath = typeof r.relative === 'string' ? r.relative : '';
+        const rawBasename = relativeVideoPath ? path.basename(relativeVideoPath) : '';
+        // RS-1 — si el basename del video contiene un patrón de secreto, derivamos
+        // un nombre seguro (mismo tratamiento que aplica `processJob` al subir).
+        // `file` conserva la ruta real (necesaria para resolver el archivo);
+        // `filename` lleva el nombre seguro para metadata/mensajes downstream.
+        const safeBasename = filenameHasSecret(rawBasename)
+            ? sanitizeDriveFilename(rawBasename)
+            : rawBasename;
+        // RS-1 — el payload pasa por `sanitizeDrivePayload` ANTES de persistir,
+        // igual que hace `processJob` al leer. No se introduce un camino que
+        // evada los sanitizers.
+        const payload = sanitizeDrivePayload({
+            file: relativeVideoPath,
+            issue: parseInt(issue, 10),
+            title: typeof title === 'string' ? title : '',
+            filename: safeBasename,
+            // `description` redundante: permite que `servicio-drive` resuelva el
+            // issue aunque corra una versión previa del consumidor.
+            description: `Video QA del issue #${parseInt(issue, 10)}`,
+            source: 'deliverable-notify',
+            reject_reason: r.reject_reason,
+        });
+        return { payload };
+    });
+
     // CA-UX-EXT-5 — footer no-alarmista cuando hay rechazos. NO menciona los
     // motivos técnicos, solo cantidad y referencia al issue.
+    //
+    // CA-2 / UX-1 (#3927) — un video encolado a Drive NO es un "adjunto omitido":
+    // no se pierde, llega en breve. Su aviso debe ser forward-looking y separado
+    // del footer de adjuntos realmente descartados (formato no soportado, etc.).
+    const trulyOmitted = rejected.filter((r) => !driveQueued.includes(r));
     let footerNote = '';
-    if (rejected.length > 0) {
-        const n = rejected.length;
+    if (driveQueued.length > 0) {
+        const n = driveQueued.length;
         const plural = n === 1 ? '' : 's';
-        footerNote = `\n\n_Nota: ${n} adjunto${plural} omitido${plural} (formato no soportado o tamaño excedido). Ver issue completo._`;
+        const verbo = n === 1 ? 'superó' : 'superaron';
+        const subiendo = n === 1 ? 'subiendo' : 'subiendo';
+        footerNote += `\n\n📹 ${n} video${plural} ${verbo} el límite de Telegram — lo estoy ${subiendo} a Drive, el link llega en breve.`;
+    }
+    if (trulyOmitted.length > 0) {
+        const n = trulyOmitted.length;
+        const plural = n === 1 ? '' : 's';
+        footerNote += `\n\n_Nota: ${n} adjunto${plural} omitido${plural} (formato no soportado o tamaño excedido). Ver issue completo._`;
     }
 
     let payload;
@@ -1020,6 +1077,8 @@ function buildPreview(args) {
         auditRecord,
         attachments: attachmentRecords,
         extraDropfiles,
+        // CA-1 (#3927) — jobs de Drive a encolar (los escribe `notify`).
+        driveJobs,
         // Legacy fields para back-compat con callers actuales:
         attachmentRejected: rejected.length > 0,
         rejectionReason: legacyFirstRejected ? legacyFirstRejected.reject_reason : null,
@@ -1538,6 +1597,35 @@ function notify(args) {
         }
         const firstDropfileName = dropfileNames[0];
 
+        // CA-1 (#3927) — encolar a Drive los videos que excedieron los límites de
+        // Telegram. Es un side effect (igual que escribir el dropfile Telegram):
+        // por eso vive acá y no en `buildPreview`. El payload ya viene sanitizado
+        // (RS-1) desde `buildPreview`. Fire-and-forget: el `servicio-drive` lo
+        // tomará de la cola y posteará el `webViewLink` a Telegram (CA-2 msg-2).
+        const driveJobs = Array.isArray(built.driveJobs) ? built.driveJobs : [];
+        const driveJobNames = [];
+        if (driveJobs.length > 0) {
+            const driveQueueDir = args.driveQueueDir
+                || path.resolve(
+                    pipelineRoot || process.cwd(),
+                    '.pipeline/servicios/drive/pendiente',
+                );
+            for (let i = 0; i < driveJobs.length; i++) {
+                const ts = now + i;
+                const jobName = `drive-${issue}-${ts}-${String(i).padStart(2, '0')}.json`;
+                const jobPath = path.join(driveQueueDir, jobName);
+                try {
+                    writer(jobPath, driveJobs[i].payload);
+                    driveJobNames.push(jobName);
+                } catch (err) {
+                    // No propagamos: una falla al encolar no debe romper el envío
+                    // del texto ya escrito. Queda registro en el audit.
+                    // eslint-disable-next-line no-console
+                    console.warn(`[deliverable-notify] no se pudo encolar a Drive ${jobPath}: ${err.message}`);
+                }
+            }
+        }
+
         // CA-UX-9 (#3539) — si audio está habilitado y el patch del audit
         // se va a generar async, marcamos el record texto con `audio_pending`
         // para que un consumidor downstream sepa que viene un complemento.
@@ -1551,6 +1639,11 @@ function notify(args) {
         };
         if (dropfileNames.length > 1) {
             finalAudit.dropfiles = dropfileNames;
+        }
+        // CA-1 (#3927) — trazabilidad del encolado a Drive en el audit.
+        if (driveJobNames.length > 0) {
+            finalAudit.drive_enqueued = driveJobNames.length;
+            finalAudit.drive_jobs = driveJobNames;
         }
         if (audioEnabled) finalAudit.audio_pending = true;
         appendAudit(auditPath, finalAudit);
@@ -1598,6 +1691,8 @@ function notify(args) {
             action: 'enqueued',
             payload: built.payload,
             audit: finalAudit,
+            // CA-1 (#3927) — nombres de los jobs encolados a Drive (vacío si ninguno).
+            driveJobs: driveJobNames,
             audioTask, // Promise<auditPatch|null> — fire-and-forget si caller no la consume.
         };
     } catch (e) {
@@ -2574,6 +2669,7 @@ module.exports = {
     DEFAULT_TRUNCATE_CHARS,
     DEFAULT_DEDUP_HOURS,
     DEFAULT_ATTACHMENT_ROOT,
+    DRIVE_QUEUEABLE_REJECT_REASONS,
     AUDIT_PREVIEW_MAX,
     TRUNCATE_SUFFIX,
     EMPTY_NOTAS_FALLBACK,
@@ -2605,6 +2701,10 @@ module.exports = {
 
     // Helpers (exportados para tests)
     __forTests__: {
+        // CA-4 (#3927) — entrypoints del camino video→Drive (no son API pública,
+        // solo se exponen para el test de integración del encolado).
+        buildPreview,
+        notify,
         emojiForSkill,
         contentHash,
         truncatePreserveLines,

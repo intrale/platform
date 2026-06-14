@@ -21,8 +21,8 @@
     },
     {
       "file": "servicio-drive.js",
-      "line": 156,
-      "reason": "Filtro estructural por endsWith('.yaml') && includes('qa') sobre verificacion/procesado/. Solo lee markers reales de QA; los artifacts (.reason.json, .guidance.txt, .comment.md) están excluidos porque no terminan en .yaml."
+      "line": 215,
+      "reason": "Filtro estructural por endsWith('.yaml') && includes('qa') sobre verificacion/procesado/. Solo lee markers reales de QA; los artifacts (.reason.json, .guidance.txt, .comment.md) están excluidos porque no terminan en .yaml. (línea recalculada por #3927: +59 líneas de containment RS-2 + notificación de fallo CA-3 + module.exports antes de esta función)"
     },
     {
       "file": "ghostbusters.js",
