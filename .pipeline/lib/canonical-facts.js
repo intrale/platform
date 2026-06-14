@@ -47,8 +47,16 @@
 'use strict';
 
 // Presupuesto por defecto de un canonical individual. Coherente con
-// DEFAULT_PER_SOURCE_BUDGET_MS del verificador independiente (200ms / source).
-const DEFAULT_CLAIM_TIMEOUT_MS = 200;
+// DEFAULT_PER_SOURCE_BUDGET_MS del verificador independiente.
+// #3924 (EP2-H4) — subido en LOCKSTEP con DEFAULT_PER_SOURCE_BUDGET_MS (800ms):
+// subir uno sin el otro dejaría inconsistencia entre el árbitro canónico y el
+// verificador. Override por entorno para tuning sin redeploy.
+const DEFAULT_CLAIM_TIMEOUT_MS = (() => {
+    const raw = process.env.SHERLOCK_CLAIM_TIMEOUT_MS;
+    if (raw == null || raw === '') return 800;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 800;
+})();
 
 // SEC-1 — allowlist de SHA git: hex de 7 a 40 chars, nada más.
 const SHA_RE = /^[0-9a-f]{7,40}$/;
@@ -277,9 +285,12 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
     }
 
     // ---- source 'git' | 'github-api': execFile array (sin shell) ------------
+    // #3924 — sin inyección de test usamos la impl CACHEADA compartida con el
+    // verificador independiente (misma caché TTL → dedup cross-consumidor). Con
+    // inyección (`gitImpl`/`ghApi`) bypasseamos la caché.
     const impl = source === 'git'
-        ? (typeof impls.gitImpl === 'function' ? impls.gitImpl : iv._defaultGitImpl)
-        : (typeof impls.ghApi === 'function' ? impls.ghApi : iv._defaultGhApi);
+        ? (typeof impls.gitImpl === 'function' ? impls.gitImpl : iv._cachedGitImpl)
+        : (typeof impls.ghApi === 'function' ? impls.ghApi : iv._cachedGhApi);
 
     let res;
     try {
