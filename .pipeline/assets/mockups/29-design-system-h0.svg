@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="860" viewBox="0 0 1180 860" font-family="-apple-system, 'Segoe UI', Roboto, Arial, sans-serif">
+  <!-- ============================================================
+       EP8-H0 #3953 — Sistema de diseño (fundamentos) · mockup UX
+       Tokens reales de theme.css (modo oscuro). Muestra: escala de
+       color de severidad, status-badge (icono+TEXTO, CA-4), kpi-card
+       (ok/warn/bad), agent-pill, indicador "actualizado hace Xs",
+       banner stale (CA-2), modal de confirmacion con preview (CA-3)
+       y empty-state celebratorio.
+       ============================================================ -->
+  <defs>
+    <!-- iconos de severidad (mismo glifo que el sprite versionado) -->
+    <symbol id="m-ok" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M7.75 12.25 L10.75 15.25 L16.25 8.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-warn" viewBox="0 0 24 24">
+      <path d="M12 3.75 L21 19.5 A1.4 1.4 0 0 1 19.75 21.5 H4.25 A1.4 1.4 0 0 1 3 19.5 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 9.5 V14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <circle cx="12" cy="17.5" r="1.1" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-bad" viewBox="0 0 24 24">
+      <path d="M8.4 3.5 H15.6 L20.5 8.4 V15.6 L15.6 20.5 H8.4 L3.5 15.6 V8.4 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 7.5 V13" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <circle cx="12" cy="16.5" r="1.1" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <circle cx="12" cy="7.75" r="1.15" fill="currentColor"/>
+      <path d="M12 11 V16.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <!-- fondo --in-bg -->
+  <rect width="1180" height="860" fill="#0d1117"/>
+
+  <!-- titulo -->
+  <text x="40" y="48" fill="#e6edf3" font-size="24" font-weight="700">Sistema de diseño · EP8-H0</text>
+  <text x="40" y="74" fill="#8b949e" font-size="14">Fundamentos compartidos del dashboard V3 — tokens · severidad · frescura · confirmaciones · empty-states</text>
+
+  <!-- ================= status-badge (CA-4) ================= -->
+  <text x="40" y="120" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="0.5">STATUS BADGE — icono + TEXTO (nunca solo color · WCAG AA)</text>
+
+  <!-- ok -->
+  <g transform="translate(40,138)">
+    <rect width="150" height="36" rx="10" fill="rgba(63,185,80,0.18)"/>
+    <g transform="translate(10,7)" color="#3fb950"><use href="#m-ok" width="22" height="22"/></g>
+    <text x="42" y="24" fill="#3fb950" font-size="14" font-weight="600">Saludable</text>
+  </g>
+  <!-- warn -->
+  <g transform="translate(204,138)">
+    <rect width="150" height="36" rx="10" fill="rgba(210,153,34,0.18)"/>
+    <g transform="translate(10,7)" color="#d29922"><use href="#m-warn" width="22" height="22"/></g>
+    <text x="42" y="24" fill="#d29922" font-size="14" font-weight="600">Atención</text>
+  </g>
+  <!-- bad -->
+  <g transform="translate(368,138)">
+    <rect width="150" height="36" rx="10" fill="rgba(248,81,73,0.18)"/>
+    <g transform="translate(10,7)" color="#f85149"><use href="#m-bad" width="22" height="22"/></g>
+    <text x="42" y="24" fill="#f85149" font-size="14" font-weight="600">Bloqueante</text>
+  </g>
+  <!-- info -->
+  <g transform="translate(532,138)">
+    <rect width="150" height="36" rx="10" fill="rgba(88,166,255,0.18)"/>
+    <g transform="translate(10,7)" color="#58a6ff"><use href="#m-info" width="22" height="22"/></g>
+    <text x="42" y="24" fill="#58a6ff" font-size="14" font-weight="600">Informativo</text>
+  </g>
+
+  <!-- ================= kpi-card ================= -->
+  <text x="40" y="222" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="0.5">KPI CARD — variantes ok / warn / bad (id invariante preservado)</text>
+
+  <!-- kpi ok -->
+  <g transform="translate(40,238)">
+    <rect width="200" height="104" rx="14" fill="#161b22" stroke="#30363d"/>
+    <rect width="4" height="104" rx="2" fill="#3fb950"/>
+    <text x="20" y="34" fill="#8b949e" font-size="12" font-weight="600">PRs MERGEADOS · id=kpi-prs</text>
+    <text x="20" y="74" fill="#e6edf3" font-size="34" font-weight="700">128</text>
+    <g transform="translate(150,18)" color="#3fb950"><use href="#m-ok" width="20" height="20"/></g>
+  </g>
+  <!-- kpi warn -->
+  <g transform="translate(258,238)">
+    <rect width="200" height="104" rx="14" fill="#161b22" stroke="#30363d"/>
+    <rect width="4" height="104" rx="2" fill="#d29922"/>
+    <text x="20" y="34" fill="#8b949e" font-size="12" font-weight="600">CICLO MEDIO · id=kpi-cycle</text>
+    <text x="20" y="74" fill="#e6edf3" font-size="34" font-weight="700">6.4<tspan font-size="16" fill="#8b949e">h</tspan></text>
+    <g transform="translate(150,18)" color="#d29922"><use href="#m-warn" width="20" height="20"/></g>
+  </g>
+  <!-- kpi bad -->
+  <g transform="translate(476,238)">
+    <rect width="200" height="104" rx="14" fill="#161b22" stroke="#30363d"/>
+    <rect width="4" height="104" rx="2" fill="#f85149"/>
+    <text x="20" y="34" fill="#8b949e" font-size="12" font-weight="600">REBOTES · id=kpi-bounce</text>
+    <text x="20" y="74" fill="#e6edf3" font-size="34" font-weight="700">3</text>
+    <g transform="translate(150,18)" color="#f85149"><use href="#m-bad" width="20" height="20"/></g>
+  </g>
+
+  <!-- agent-pill + freshness -->
+  <g transform="translate(700,238)">
+    <text x="0" y="-2" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="0.5">AGENT PILL</text>
+    <g transform="translate(0,12)">
+      <rect width="200" height="32" rx="16" fill="#1f2937" stroke="#30363d"/>
+      <circle cx="18" cy="16" r="5" fill="#3fb950"/>
+      <text x="32" y="21" fill="#e6edf3" font-size="13" font-weight="600">android-dev</text>
+      <text x="128" y="21" fill="#8b949e" font-size="12">#3954</text>
+    </g>
+    <g transform="translate(0,54)">
+      <rect width="200" height="32" rx="16" fill="#1f2937" stroke="#30363d"/>
+      <circle cx="18" cy="16" r="5" fill="#d29922"/>
+      <text x="32" y="21" fill="#e6edf3" font-size="13" font-weight="600">backend-dev</text>
+      <text x="128" y="21" fill="#8b949e" font-size="12">esperando</text>
+    </g>
+    <!-- freshness indicator -->
+    <text x="0" y="120" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="0.5">FRESCURA DEL DATO</text>
+    <g transform="translate(0,132)">
+      <g transform="translate(0,2)" color="#3fb950"><use href="#m-ok" width="16" height="16"/></g>
+      <text x="22" y="14" fill="#8b949e" font-size="13">actualizado hace 3s</text>
+    </g>
+  </g>
+
+  <!-- ================= banner stale (CA-2) ================= -->
+  <text x="40" y="392" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="0.5">BANNER STALE — ningún fetch falla en silencio (mensaje genérico, detalle solo a consola · R3)</text>
+  <g transform="translate(40,406)">
+    <rect width="636" height="44" rx="10" fill="rgba(210,153,34,0.18)" stroke="#d29922" stroke-opacity="0.5"/>
+    <g transform="translate(14,11)" color="#d29922"><use href="#m-warn" width="22" height="22"/></g>
+    <text x="48" y="28" fill="#d29922" font-size="14" font-weight="600">Datos desactualizados — reintentando…</text>
+    <text x="372" y="28" fill="#8b949e" font-size="12">se conserva el último dato bueno</text>
+  </g>
+
+  <!-- ================= modal confirmacion (CA-3) ================= -->
+  <text x="40" y="500" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="0.5">MODAL DE CONFIRMACIÓN CON PREVIEW — acción destructiva (escapado por default · CSRF automático)</text>
+  <g transform="translate(40,516)">
+    <rect width="500" height="266" rx="16" fill="#161b22" stroke="#30363d"/>
+    <g transform="translate(24,24)" color="#f85149"><use href="#m-bad" width="28" height="28"/></g>
+    <text x="68" y="44" fill="#e6edf3" font-size="18" font-weight="700">Matar agente en curso</text>
+    <text x="24" y="84" fill="#8b949e" font-size="13">Vas a interrumpir el trabajo del siguiente agente:</text>
+    <!-- preview -->
+    <g transform="translate(24,98)">
+      <rect width="452" height="92" rx="10" fill="#0d1117" stroke="#30363d"/>
+      <text x="16" y="26" fill="#8b949e" font-size="12">Skill</text>
+      <text x="120" y="26" fill="#e6edf3" font-size="13" font-weight="600">android-dev</text>
+      <text x="16" y="48" fill="#8b949e" font-size="12">Issue</text>
+      <text x="120" y="48" fill="#e6edf3" font-size="13" font-weight="600">#3954 — KPIs panel</text>
+      <text x="16" y="70" fill="#8b949e" font-size="12">Worktree</text>
+      <text x="120" y="70" fill="#8b949e" font-size="12" font-family="monospace">agent/3954-kpis (se elimina)</text>
+    </g>
+    <!-- botones -->
+    <g transform="translate(24,210)">
+      <rect width="120" height="40" rx="10" fill="#1f2937" stroke="#30363d"/>
+      <text x="60" y="26" fill="#e6edf3" font-size="14" text-anchor="middle">Cancelar</text>
+    </g>
+    <g transform="translate(332,210)">
+      <rect width="144" height="40" rx="10" fill="#f85149"/>
+      <text x="72" y="26" fill="#0d1117" font-size="14" font-weight="700" text-anchor="middle">Sí, matar</text>
+    </g>
+  </g>
+
+  <!-- ================= empty-state celebratorio ================= -->
+  <text x="700" y="500" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="0.5">EMPTY-STATE CELEBRATORIO</text>
+  <g transform="translate(700,516)">
+    <rect width="440" height="266" rx="16" fill="#161b22" stroke="#30363d"/>
+    <g transform="translate(196,46)" color="#3fb950"><use href="#m-ok" width="48" height="48"/></g>
+    <text x="220" y="138" fill="#e6edf3" font-size="18" font-weight="700" text-anchor="middle">¡Todo al día!</text>
+    <text x="220" y="166" fill="#8b949e" font-size="13" text-anchor="middle">No hay issues bloqueados ahora mismo.</text>
+    <text x="220" y="186" fill="#8b949e" font-size="13" text-anchor="middle">El pipeline está fluyendo. 🎉</text>
+    <g transform="translate(160,210)">
+      <rect width="120" height="36" rx="10" fill="#1f2937" stroke="#30363d"/>
+      <text x="60" y="23" fill="#58a6ff" font-size="13" font-weight="600" text-anchor="middle">Ver historial</text>
+    </g>
+  </g>
+
+  <!-- footer tokens -->
+  <text x="40" y="826" fill="#6e7681" font-size="11" font-family="monospace">tokens: --in-bg #0d1117 · --in-ok #3fb950 (7.45:1) · --in-warn #d29922 (7.50:1) · --in-bad #f85149 (5.65:1) · --in-info #58a6ff (7.49:1) — todos ≥ WCAG AA</text>
+</svg>
