@@ -250,7 +250,13 @@ const ALLOWED_KEYS = new Set([
     // sin PII ni texto del audit.
     'same_provider_count', 'same_provider_total', 'same_provider_ratio',
     'same_provider_target', 'same_provider_alert',
+    // #3923 EP2-H3 — tasa not_verifiable por fuente: objeto de contadores con
+    // claves de ENUM cerrado (sin claims/comandos/stdout). Validado aparte abajo.
+    'not_verifiable_by_source',
 ]);
+
+// #3923 — claves permitidas dentro de not_verifiable_by_source (enum cerrado).
+const NV_SOURCE_KEYS = new Set(['git', 'github-api', 'heartbeat', 'filesystem', 'pipeline-state', 'waves']);
 
 test('SEC-6: el payload contiene SOLO campos numéricos/booleanos/null de agregado', () => {
     const dir = mkPipelineDir();
@@ -263,6 +269,17 @@ test('SEC-6: el payload contiene SOLO campos numéricos/booleanos/null de agrega
 
     for (const [key, value] of Object.entries(out)) {
         assert.ok(ALLOWED_KEYS.has(key), `SEC-6: campo no permitido en el payload: "${key}"`);
+        // #3923 — único objeto anidado permitido: not_verifiable_by_source, cuyas
+        // claves son del enum cerrado y cuyos valores son SOLO numbers.
+        if (key === 'not_verifiable_by_source') {
+            assert.ok(value && typeof value === 'object' && !Array.isArray(value),
+                'SEC-6: not_verifiable_by_source debe ser objeto plano');
+            for (const [src, count] of Object.entries(value)) {
+                assert.ok(NV_SOURCE_KEYS.has(src), `SEC-6: fuente fuera del enum cerrado: "${src}"`);
+                assert.equal(typeof count, 'number', `SEC-6: contador "${src}" no es number`);
+            }
+            continue;
+        }
         const t = typeof value;
         assert.ok(
             value === null || t === 'number' || t === 'boolean',
@@ -271,6 +288,54 @@ test('SEC-6: el payload contiene SOLO campos numéricos/booleanos/null de agrega
     }
     // Sin arrays de entries ni objetos anidados (prohibido `entries[]`).
     assert.ok(!Array.isArray(out.entries), 'SEC-6: prohibido entries[]');
+});
+
+// -----------------------------------------------------------------------------
+// #3923 EP2-H3 / CA-10 — tasa not_verifiable POR FUENTE (insumo EP8-H8).
+// -----------------------------------------------------------------------------
+function recordNvSource(source) {
+    return { ...record({ notVerifiable: true }), source };
+}
+
+test('CA-10: not_verifiable_by_source acumula contadores por fuente del enum cerrado', () => {
+    const dir = mkPipelineDir();
+    writeAudit(dir, 'sesion-nv-src', [
+        recordNvSource('git'),
+        recordNvSource('git'),
+        recordNvSource('pipeline-state'),
+        recordNvSource('waves'),
+        recordNvSource('heartbeat'),
+        // fuente fuera del enum → NO se acumula (no rompe el shape).
+        recordNvSource('fuente-trucha'),
+        // record sin source → cuenta en not_verifiable total pero no por fuente.
+        record({ notVerifiable: true }),
+        record({ correcta: true }),
+    ]);
+    const out = sliceFor(dir);
+    assert.equal(out.not_verifiable, 7, 'total not_verifiable incluye los sin source y el fuera de enum');
+    assert.deepEqual(out.not_verifiable_by_source, {
+        git: 2, 'github-api': 0, heartbeat: 1, filesystem: 0, 'pipeline-state': 1, waves: 1,
+    });
+});
+
+test('CA-10: not_verifiable_by_source emite el enum completo con ceros cuando no hay not_verifiable', () => {
+    const dir = mkPipelineDir();
+    writeAudit(dir, 'sesion-nv-zero', [record({ correcta: true }), record({ correcta: false })]);
+    const out = sliceFor(dir);
+    assert.deepEqual(out.not_verifiable_by_source, {
+        git: 0, 'github-api': 0, heartbeat: 0, filesystem: 0, 'pipeline-state': 0, waves: 0,
+    });
+});
+
+test('CA-10: degrade (audit ausente) emite el mismo shape con ceros', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sherlock-precision-nvdeg-'));
+    // Forzamos degrade: dir sin subcarpeta audit/ legible no rompe; usamos un
+    // PIPELINE cuyo readdir lanza no es trivial, así que validamos el shape del
+    // estado vacío (mismo enum con ceros) que devuelve el camino normal sin audit.
+    const out = sliceFor(dir);
+    assert.deepEqual(out.not_verifiable_by_source, {
+        git: 0, 'github-api': 0, heartbeat: 0, filesystem: 0, 'pipeline-state': 0, waves: 0,
+    });
 });
 
 test('SEC-6: ningún texto del audit (claim/comando/stdout/session/token) fuga al payload', () => {

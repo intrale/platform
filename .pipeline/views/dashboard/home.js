@@ -367,6 +367,41 @@ function homeStyles() {
     margin-top: 4px;
 }
 
+/* #3948 (EP-7) — Card observacional del Commander. Tres señales redundantes
+   (borde punteado + superficie atenuada + pill "observa"), nunca sólo color
+   (WCAG AA). 100% tokens de theme.css (--in-info / --in-info-soft). */
+.active-card.observational {
+    border-left: 3px dashed var(--in-info);
+    background: var(--in-info-soft);
+    opacity: 0.94;
+}
+.active-card-observe {
+    grid-column: 3;
+    grid-row: 2;
+    justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--in-info-soft);
+    border: 1px solid var(--in-info);
+    color: var(--in-info);
+    border-radius: 6px;
+    padding: 2px 9px;
+    font-size: 11px;
+    cursor: default;
+}
+/* Barra indeterminada (pulse): la presencia no tiene ETA, pintar un % fijo daría
+   falsa señal de avance. */
+.active-card-progress.indeterminate .in-bar { overflow: hidden; }
+.active-card-progress.indeterminate .in-bar > span {
+    width: 32%;
+    animation: in-presence-pulse 1.4s ease-in-out infinite;
+}
+@keyframes in-presence-pulse {
+    0%   { transform: translateX(-110%); }
+    100% { transform: translateX(330%); }
+}
+
 .active-empty {
     text-align: center;
     padding: 40px 16px;
@@ -2101,16 +2136,37 @@ async function tickActive(){
     list.style.display = 'flex';
     if(empty) empty.style.display = 'none';
 
+    // #3948 — iconos de fase del Commander (presencia observacional). El dato
+    // persistido es el enum en texto (CA-5); el icono es decoración de UI.
+    const PRESENCE_PHASE_ICONS = { transcribiendo: '🎙', pensando: '🧠', verificando: '🔍', enviando: '📤' };
+
     const seen = new Set();
     for(const a of arr){
-        const key = a.issue + '-' + a.skill + '-' + a.fase;
+        // CA-3/CA-4 — la presencia observacional no consume slot ni es cancelable.
+        const isObs = a.observational === true || a.cancelable === false;
+        // Key estable: para presencia usamos el petitionId (persiste la card a
+        // través de las transiciones de fase, sin recrearla en cada cambio).
+        const key = isObs ? ('obs-' + (a.petitionId || 'commander')) : (a.issue + '-' + a.skill + '-' + a.fase);
         seen.add(key);
         let card = list.querySelector('[data-key="'+key+'"]');
         if(!card){
             card = document.createElement('div');
-            card.className = 'active-card entering';
+            card.className = 'active-card entering' + (isObs ? ' observational' : '');
             card.dataset.key = key;
-            card.innerHTML = \`
+            // CA-3/CA-4 — sin botón de cancelar para observacionales; en su lugar
+            // la pill "observa" explica por qué (mejor que omitir a secas). Barra
+            // indeterminada (sin ETA). SEC-2 — todos los campos por textContent.
+            card.innerHTML = isObs ? \`
+                <div class="active-card-skill"></div>
+                <div class="active-card-meta">
+                    <span class="active-card-issue"></span>
+                    <span class="active-card-fase"></span>
+                </div>
+                <div class="active-card-time"></div>
+                <span class="active-card-observe" aria-label="presencia observacional, no cancelable" title="Presencia observacional — no ocupa slot ni se puede cancelar">👁 observa</span>
+                <div class="active-card-title"></div>
+                <div class="active-card-progress indeterminate"><div class="in-bar"><span></span></div></div>
+            \` : \`
                 <div class="active-card-skill"></div>
                 <div class="active-card-meta">
                     <span class="active-card-issue"></span>
@@ -2121,7 +2177,8 @@ async function tickActive(){
                 <div class="active-card-title"></div>
                 <div class="active-card-progress"><div class="in-bar"><span></span></div></div>
             \`;
-            card.querySelector('.active-card-kill').addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase));
+            const killBtn = card.querySelector('.active-card-kill');
+            if(killBtn) killBtn.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase));
             list.appendChild(card);
             requestAnimationFrame(() => card.classList.remove('entering'));
         }
@@ -2129,21 +2186,27 @@ async function tickActive(){
         skillBadge.style.background = SKILL_COLORS[a.skill] || '#8b949e';
         skillBadge.textContent = SKILL_ICONS[a.skill] || '⚙';
         const issueEl = card.querySelector('.active-card-issue');
-        const issueText = '#'+a.issue+' · '+a.skill;
-        if(issueEl.textContent !== issueText){
+        // CA-1/SEC-1 — la presencia se identifica como "Commander" (sin #NNNN),
+        // y NO expone link a log (hasLog:false, CA-10). textContent → sin XSS.
+        const issueText = isObs ? 'Commander' : ('#'+a.issue+' · '+a.skill);
+        if(isObs){
+            issueEl.textContent = issueText;
+        } else if(issueEl.textContent !== issueText){
             if(a.hasLog){
                 issueEl.innerHTML = '<a class="in-link" href="/logs/view/'+a.logFile+'?live=1" target="_blank" rel="noopener">'+issueText+' ↗</a>';
             } else {
                 issueEl.textContent = issueText;
             }
         }
-        setText(card.querySelector('.active-card-fase')._id || '', a.fase);
-        card.querySelector('.active-card-fase').textContent = a.fase;
+        const faseEl = card.querySelector('.active-card-fase');
+        faseEl.textContent = isObs ? ((PRESENCE_PHASE_ICONS[a.fase] || '') + ' ' + a.fase).trim() : a.fase;
         card.querySelector('.active-card-title').textContent = a.title || '';
         card.querySelector('.active-card-time').textContent = fmtDur(a.durationMs);
-        const bar = card.querySelector('.in-bar > span');
-        const pct = a.etaMs && a.etaMs > 0 ? Math.min(100, Math.round((a.durationMs / a.etaMs) * 100)) : 4;
-        bar.style.width = pct + '%';
+        if(!isObs){
+            const bar = card.querySelector('.in-bar > span');
+            const pct = a.etaMs && a.etaMs > 0 ? Math.min(100, Math.round((a.durationMs / a.etaMs) * 100)) : 4;
+            bar.style.width = pct + '%';
+        }
     }
     for(const card of [...list.children]){
         if(!seen.has(card.dataset.key)){

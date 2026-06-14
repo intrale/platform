@@ -1084,6 +1084,10 @@ function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, 
                     resultado,
                     commander_vs_sherlock: c.status,
                     resolucion,
+                    // #3923 EP2-H3 — `source` (enum cerrado) del diccionario, propagado
+                    // desde resolveClaim (`c.source`). El writer lo persiste solo si pasa
+                    // AUDIT_SOURCE_ENUM. Insumo de `not_verifiable_by_source` (EP8-H8).
+                    source: c.source,
                     // CA-3/SEC-3 (#3921) — same_provider del intento que produjo el
                     // veredicto. Booleano explícito (incl. false) para que el % del
                     // dashboard cuente la verificación en el denominador.
@@ -1406,7 +1410,18 @@ async function verify(opts = {}) {
     // tocar el schema del LLM (`validateFiscalResponse` intacto).
     // -------------------------------------------------------------------------
     const _canonical = canonicalFactsModule;
-    const ISSUE_DERIVED_CLAIMS = ['entregable_en_main', 'rama_contiene_commits', 'issue_cerrado'];
+    // #3923 EP2-H3 — claims derivables SOLO del issue (sin PR/pid/run-id). Se
+    // suman `estado_fase_issue`, `agentes_activos`, `ola_activa` (de 3 → 6).
+    // `labels_qa_pr` queda FUERA: requiere `pr`, se cablea aparte cuando el PR es
+    // conocido. `agentes_activos`/`ola_activa` ignoran params (conteo/lectura
+    // global). `estado_fase_issue` requiere pipeline/fase/estado/skill que NO se
+    // derivan del issue solo → degrada a `not_verifiable` con fail-open (SEC-5)
+    // hasta que un caller le pase esos params; alimenta la tasa por-fuente
+    // `pipeline-state` (insumo EP8-H8).
+    const ISSUE_DERIVED_CLAIMS = [
+        'entregable_en_main', 'rama_contiene_commits', 'issue_cerrado',
+        'estado_fase_issue', 'agentes_activos', 'ola_activa',
+    ];
     const canonicalResults = [];
     if (_normalizedIssues.length > 0) {
         for (const num of _normalizedIssues) {

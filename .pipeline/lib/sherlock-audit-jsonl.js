@@ -43,6 +43,14 @@ const SESSION_RE = /^[A-Za-z0-9_-]{1,64}$/;
 // Subdirectorio canónico del audit. El path final SIEMPRE cae acá adentro.
 const AUDIT_SUBDIR = 'audit';
 
+// #3923 EP2-H3 — ENUM CERRADO de fuentes canónicas. `source` se persiste SOLO si
+// pertenece a este set (no string libre del claim → anti log-injection A09,
+// compatible con el hash-chain). Debe mantenerse en LOCKSTEP con el enum `source`
+// de canonical-facts.js y con not_verifiable_by_source de dashboard-slices.js.
+const AUDIT_SOURCE_ENUM = new Set([
+    'git', 'github-api', 'heartbeat', 'filesystem', 'pipeline-state', 'waves',
+]);
+
 const REDACTION_MARKER = '[REDACTED]';
 
 // SEC-2 — gap real verificado contra HEAD:
@@ -166,6 +174,16 @@ function appendSherlockAudit({ session, record, pipelineDir, fsImpl } = {}) {
         entry.same_provider = !!record.same_provider;
     }
 
+    // #3923 EP2-H3 — `source` (enum cerrado AUDIT_SOURCE_ENUM). Patrón idéntico
+    // al de `same_provider`: solo se persiste cuando el caller lo provee y
+    // pertenece al enum (records viejos sin `source` no quedan contaminados). Es
+    // un enum acotado sin secrets → NO se redacta. Insumo de la tasa
+    // not_verifiable por-fuente del slice de precisión (EP8-H8).
+    if (record.source !== undefined && record.source !== null
+        && AUDIT_SOURCE_ENUM.has(String(record.source))) {
+        entry.source = String(record.source);
+    }
+
     // appendChained agrega created_at + hash_prev/hash_self y escribe
     // exactamente UNA línea (`JSON.stringify(entry)+'\n'`) con O_APPEND + lock.
     // Resuelve SEC-3 por construcción.
@@ -178,5 +196,6 @@ module.exports = {
     resolveAuditFile,
     SESSION_RE,
     AUDIT_SUBDIR,
+    AUDIT_SOURCE_ENUM,
     GITHUB_PAT_FINE_GRAINED_RE,
 };
