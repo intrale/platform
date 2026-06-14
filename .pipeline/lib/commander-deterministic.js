@@ -121,10 +121,10 @@ const NLP_PATTERNS = [
     // El patrón captura "estado/avance/cómo/cómo viene/cómo va" + "ola" para los pedidos naturales.
     { regex: /\b(wave|cómo (viene|va|anda) la ola|c[oó]mo (viene|va|anda) la ola|avance de (la )?ola|estado de (la )?ola)\b/i, command: 'wave' },
     { regex: /\b(snapshot|snapshot de (la )?ola|ola en curso)\b/i, command: 'snapshot' },
-    { regex: /\b(listado|listar issues|qué issues|que issues|mostrame los issues|mostr[áa] los issues)\b/i, command: 'listado' },
+    { regex: /\b(listado|listar issues|qué issues|que issues|mostrame los issues|mostr[áa] los issues)\b/i, command: 'listado', argsFromResidual: true },
     { regex: /\b(allowlist|pausa parcial actual|qué hay en la allowlist|que hay en la allowlist)\b/i, command: 'allowlist' },
     { regex: /^tail\s+([\w.-]+)/i, command: 'tail', argsFromCapture: 1 },
-    { regex: /\b(tail (de )?logs?|últimas líneas del log|ultimas lineas del log)\b/i, command: 'tail' },
+    { regex: /\b(tail (de )?logs?|últimas líneas del log|ultimas lineas del log)\b/i, command: 'tail', argsFromResidual: true },
     { regex: /\b(levant[áa]r? (el )?dashboard|prend[éa] (el )?dashboard|arranc[áa] (el )?dashboard)\b/i, command: 'dashboard-up' },
     { regex: /\b(baj[áa] (el )?dashboard|apag[áa] (el )?dashboard|matá (el )?dashboard|mata (el )?dashboard)\b/i, command: 'dashboard-down' },
     { regex: /\b(screenshot|captur[áa] (el )?dashboard|sacale una foto al dashboard|mostrame el dashboard)\b/i, command: 'screenshot' },
@@ -143,21 +143,36 @@ const NLP_PATTERNS = [
     { regex: /\b(limpi[áa]|limpiar daemons|matar gradle|matar daemons|kill gradle)\b/i, command: 'limpiar' },
     { regex: /\b(bloqueados|qu[eé] est[áa] bloqueado|que necesita humano|necesitan intervenci[óo]n)\b/i, command: 'bloqueados' },
     { regex: /\b(ghostbusters|matar fantasmas|matar zombis)\b/i, command: 'ghostbusters' },
-    { regex: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, command: 'intake', llm: true },
-    { regex: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, command: 'proponer', llm: true },
+    { regex: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, command: 'intake', llm: true, argsFromResidual: true },
+    { regex: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, command: 'proponer', llm: true, argsFromResidual: true },
     // Issue #3415 — NLP para `/rechazar` (texto natural). El residual del
     // replace queda como args ("3381 ux el mockup..."). Capturamos verbos
     // típicos: rechazá/rechazar, rebobiná/rebobinar, reject. El parser del
     // handler tolera espacios y comas en el residual.
-    { regex: /^(?:rech[áa]z[áa]?|rech[áa]ce|rebobin[áa]?|reject)\s+/i, command: 'rechazar' },
+    { regex: /^(?:rech[áa]z[áa]?|rech[áa]ce|rebobin[áa]?|reject)\s+/i, command: 'rechazar', argsFromResidual: true },
     // Issue #3897 — NLP para `/verificar` (texto natural corto). El residual
     // del replace queda como args ("pr 3890", "issue #3897"). Solo verbos al
     // inicio del mensaje para no colisionar con conversación libre.
-    { regex: /^(?:verific[áa](?:r|me)?|verify)\s+/i, command: 'verificar' },
+    { regex: /^(?:verific[áa](?:r|me)?|verify)\s+/i, command: 'verificar', argsFromResidual: true },
 ];
 
 const MAX_SHORT_LENGTH = 80;     // Texto > 80 chars es conversación libre (CA-18)
 const RAW_TRUNC_LEN = 120;       // Para echo en plantillas de error
+
+// El preprocesador (multimedia.js) añade anotaciones entre paréntesis/corchetes
+// al final del texto transcripto: "(mensaje de voz transcripto · whisper local)",
+// "(audio sin transcribir: ...)", "(audio no disponible)", "(imagen no disponible)",
+// "[Imagen: ...]". Esas anotaciones NO son parte del comando del usuario y deben
+// removerse ANTES de clasificar para que (a) el conteo de longitud sea el del
+// mensaje real (no inflado por el sufijo) y (b) el residual NLP no arrastre
+// "... whisper local)" como args (bug del comando /wave por voz).
+const ANNOTATION_TRAIL = /\s*[\(\[][^)\]]*(?:transcript|audio|imagen)[^)\]]*[\)\]]\s*$/i;
+function stripPreprocessAnnotations(text) {
+    let out = String(text || '');
+    let prev;
+    do { prev = out; out = out.replace(ANNOTATION_TRAIL, '').replace(/\s+$/, ''); } while (out !== prev);
+    return out;
+}
 
 /**
  * Clasifica un mensaje entrante. Devuelve siempre un objeto.
@@ -167,7 +182,8 @@ const RAW_TRUNC_LEN = 120;       // Para echo en plantillas de error
  */
 function classify(text) {
     const raw = typeof text === 'string' ? text : '';
-    const trimmed = raw.trim();
+    // Quitar anotaciones del preprocesador (voz/imagen) antes de clasificar.
+    const trimmed = stripPreprocessAnnotations(raw).trim();
     const rawTruncated = trimmed.slice(0, RAW_TRUNC_LEN);
 
     if (!trimmed) {
@@ -197,11 +213,19 @@ function classify(text) {
     for (const p of NLP_PATTERNS) {
         const m = trimmed.match(p.regex);
         if (m) {
-            // Preferir captura explícita (`tail commander.log` → args=commander.log)
-            // sobre el residual del replace (que puede dejar ruido como "de la").
-            const args = (p.argsFromCapture && m[p.argsFromCapture])
-                ? m[p.argsFromCapture].trim()
-                : trimmed.replace(p.regex, '').trim();
+            // Preferir captura explícita (`tail commander.log` → args=commander.log).
+            // El residual del replace SOLO se usa para patrones que opt-in con
+            // `argsFromResidual` (rechazar/verificar/intake/proponer/listado/tail):
+            // ahí el texto que sigue al verbo ES el argumento. Para el resto
+            // (wave/status/snapshot/…) el residual es ruido del lenguaje natural
+            // ("pasame el estado de la ola actual" → "pasame el actual") y se
+            // descarta → args='' → el comando corre en su forma base (CA-8).
+            let args = '';
+            if (p.argsFromCapture && m[p.argsFromCapture]) {
+                args = m[p.argsFromCapture].trim();
+            } else if (p.argsFromResidual) {
+                args = trimmed.replace(p.regex, '').trim();
+            }
             return {
                 class: p.llm ? 'llm' : 'deterministic',
                 command: p.command,

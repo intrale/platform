@@ -132,6 +132,29 @@ test('classify NLP: "tail commander.log" extrae args correctamente', () => {
     assert.equal(r.args, 'commander.log');
 });
 
+// Regresión: NLP de status/wave NO debe arrastrar el residual del lenguaje
+// natural como args. "pasame el estado de la ola actual" matchea el patrón de
+// `wave` en el medio de la frase; el residual ("pasame el actual") es ruido y
+// el validador estricto de wave lo rechazaba como args inválidos.
+test('classify NLP: pedido natural de wave descarta el residual → args vacíos', () => {
+    const r = commanderDet.classify('pasame el estado de la ola actual');
+    assert.equal(r.class, 'deterministic');
+    assert.equal(r.command, 'wave');
+    assert.equal(r.args, '', 'el residual natural no debe colarse como args');
+    assert.equal(commanderDet.validateArgs('wave', r.args).ok, true);
+});
+
+// Regresión (bug de /wave por voz): el preprocesador añade el sufijo
+// "(mensaje de voz transcripto · whisper local)". Debe removerse antes de
+// clasificar — si no, infla la longitud y/o ensucia el residual del NLP.
+test('classify NLP: anotación de voz transcripta se ignora (wave por audio)', () => {
+    const r = commanderDet.classify('pasame el estado de la ola actual (mensaje de voz transcripto · whisper local)');
+    assert.equal(r.class, 'deterministic');
+    assert.equal(r.command, 'wave');
+    assert.equal(r.args, '');
+    assert.equal(commanderDet.validateArgs('wave', r.args).ok, true);
+});
+
 // -----------------------------------------------------------------------------
 // CLASSIFY — texto libre / desconocido
 // -----------------------------------------------------------------------------
