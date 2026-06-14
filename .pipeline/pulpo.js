@@ -26,6 +26,10 @@ const precheck = require('./connectivity-precheck');
 // rebote persistidos en YAML. Protege contra leak de secretos en logs y
 // comentarios automáticos que quedan públicos en el issue.
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
+// #3941 (EP5-H4): validación de schema de config.yaml + clasificación de
+// excepciones (infra transitoria vs corrupción de estado).
+const { validateConfig, formatErrors } = require('./lib/config-schema');
+const { classify: classifyError } = require('./lib/error-classifier');
 const connectivityState = require('./connectivity-state'); // #2335
 const retryingState = require('./retrying-state');         // #2337 CA7/CA8
 const uxMetrics = require('./ux-metrics');                 // #2337 CA10
@@ -241,15 +245,27 @@ require('./lib/hydrate-provider-env').hydrateProviderEnv({
 // #2337 CA10: cleanup perezoso + startup de metricas UX (REQ-SEC-5)
 try { uxMetrics.cleanup({ force: true }); } catch { /* best-effort */ }
 
-// Crash handlers — loguear y seguir vivo
+// Crash handlers — loguear y seguir vivo.
+// #3941 (EP5-H4, CA3): política EXPLÍCITA. Clasificamos el error para dar
+// trazabilidad (transient / corruption / unknown), pero el default es
+// FAIL-SAFE: continuar + loguear. NO pausamos acá ante transitorios ni ante la
+// duda — la pausa global (`.paused`) se reserva exclusivamente a la corrupción
+// de config.yaml en `loadConfig` (SEC-3). Una corrupción puntual de work-file
+// ya se cuarentenó aguas arriba (`quarantineCorruptWorkFile`); si igual escapó
+// hasta acá, la logueamos clasificada y seguimos vivos (NO halt total).
+function classifyForCrashLog(err) {
+  try { return classifyError(err); } catch { return 'unknown'; }
+}
 process.on('uncaughtException', (err) => {
+  const klass = classifyForCrashLog(err);
   // #2334: sanitizar antes de persistir stack del crash.
-  const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH uncaughtException: ${err.stack || err.message}\n`);
+  const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH uncaughtException [class=${klass}]: ${err.stack || err.message}\n`);
   try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
   console.error(msg);
 });
 process.on('unhandledRejection', (reason) => {
-  const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH unhandledRejection: ${reason}\n`);
+  const klass = classifyForCrashLog(reason);
+  const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH unhandledRejection [class=${klass}]: ${reason && reason.stack ? reason.stack : reason}\n`);
   try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
   console.error(msg);
 });
@@ -643,7 +659,7 @@ function mapPrecheckFailureToReason(precheckResult) {
  */
 function marcarBloqueoInfra(workFilePath, issue, skill, fase, precheckResult) {
   try {
-    const data = readYaml(workFilePath);
+    const data = readYamlSafe(workFilePath);
     const motivo = precheck.buildInfraReboteMotivo(precheckResult) || '[infra] bloqueo sin detalle';
     const updated = {
       ...data,
@@ -727,7 +743,7 @@ function reencolarInfraBloqueados(config) {
       try { archivos = listWorkFiles(pendienteDir); } catch { continue; }
       for (const a of archivos) {
         let data;
-        try { data = readYaml(a.path); } catch { continue; }
+        try { data = readYamlSafe(a.path); } catch { continue; }
         if (data && data.rebote_tipo === 'infra') {
           const issue = issueFromFile(a.name);
           const cleaned = { ...data };
@@ -955,8 +971,82 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
   return rootScript;
 }
 
+// #3941 (EP5-H4): última config válida conocida. Permite que el loop siga vivo
+// (rule "el pipeline no puede morir") cuando una edición en caliente de
+// config.yaml lo corrompe: pausamos dispatch vía `.paused` pero devolvemos la
+// última buena para no crashear el ciclo. En el PRIMER boot (sin última buena)
+// la corrupción SÍ es fatal → se relanza el error (fail-fast genuino).
+let lastGoodConfig = null;
+
+// Throttle de la alerta de corrupción de config (evita spam en hot-reload, que
+// llama loadConfig() cada ~30s). Sólo metadata de tiempo, no estado crítico.
+let lastConfigCorruptionAlertMs = 0;
+const CONFIG_CORRUPTION_ALERT_THROTTLE_MS = 5 * 60 * 1000;
+
+/**
+ * Reacción fail-fast ante corrupción de `config.yaml` (estado compartido del
+ * que dependen >30 módulos). ÚNICA ruta que justifica `.paused` GLOBAL (SEC-3).
+ * Escribe `.paused` (idempotente) + alerta Telegram REDACTADA (SEC-2: sólo
+ * path + tipo esperado, jamás el valor crudo). NO hace process.exit — deja el
+ * loop vivo y pausado para que un humano corrija y reanude.
+ *
+ * @param {string} reason - etiqueta corta ('config.yaml parse-error' | 'config.yaml schema')
+ * @param {string} redactedDetail - detalle YA redactado (sin valores crudos)
+ */
+function haltOnConfigCorruption(reason, redactedDetail) {
+  // PAUSE_FILE se declara más abajo en el módulo; al ejecutarse esta función
+  // (sólo en runtime, nunca en carga) ya está inicializado.
+  try {
+    if (!fs.existsSync(PAUSE_FILE)) {
+      fs.writeFileSync(PAUSE_FILE, new Date().toISOString());
+    }
+    paused = true;
+  } catch (e) {
+    // Si no podemos ni escribir el flag, al menos logueamos.
+  }
+  const safeMsg = `[${new Date().toISOString()}] [pulpo] CORRUPCIÓN config.yaml (${reason}) → .paused global. Detalle: ${redactedDetail || '(sin detalle)'}`;
+  try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), safeMsg + '\n'); } catch {}
+  console.error(safeMsg);
+  // Alerta Telegram throttleada y redactada.
+  const now = Date.now();
+  if (now - lastConfigCorruptionAlertMs > CONFIG_CORRUPTION_ALERT_THROTTLE_MS) {
+    lastConfigCorruptionAlertMs = now;
+    try {
+      sendTelegram(
+        `🛑 *Pipeline PAUSADO* — corrupción de \`config.yaml\` (${reason}).\n` +
+        `Detalle (redactado): ${redactedDetail || '(sin detalle)'}\n` +
+        `Corregí el archivo y borrá \`.pipeline/.paused\` para reanudar.`
+      );
+    } catch { /* best-effort */ }
+  }
+}
+
 function loadConfig() {
-  return yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  let raw;
+  try {
+    raw = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')); // js-yaml v4 safe-by-default (SEC-1)
+  } catch (e) {
+    // Parse-error de config.yaml = corrupción de estado compartido.
+    // Redactamos: NO incluir el snippet del error (puede volcar líneas del
+    // archivo → SEC-2). Sólo el tipo + posición (línea/col son metadata segura).
+    const pos = (e && e.mark && typeof e.mark.line === 'number')
+      ? ` (línea ${e.mark.line + 1}, col ${(e.mark.column || 0) + 1})`
+      : '';
+    const redacted = `YAML inválido${pos}`;
+    haltOnConfigCorruption('config.yaml parse-error', redacted);
+    // Fail-fast = suspender dispatch (`.paused`), NO matar el proceso. Devolvemos
+    // la última config buena (o {} en el primer boot) para que el loop siga vivo
+    // y pausado: un hot-fix de config.yaml se recarga y reanuda sin restart.
+    return lastGoodConfig || {};
+  }
+  const { valid, errors } = validateConfig(raw);
+  if (!valid) {
+    const redacted = formatErrors(errors);
+    haltOnConfigCorruption('config.yaml schema', redacted);
+    return lastGoodConfig || {};
+  }
+  lastGoodConfig = raw;
+  return raw;
 }
 
 // MP-01/MP-02 (#3803): decisión PURA del disclaimer por soft-timeout del
@@ -969,10 +1059,107 @@ function shouldEmitSoftTimeoutDisclaimer(softTimedOut, resolved) {
   return Boolean(softTimedOut) && !resolved;
 }
 
+// #3941 (EP5-H4): corrupción de un work-file de issue (existe pero no parsea).
+// Se clasifica como 'corruption' pero su reacción es CUARENTENA DE ESE ISSUE
+// (SEC-3), NUNCA `.paused` global. El name estable lo reconoce el clasificador.
+class WorkFileCorruptionError extends Error {
+  constructor(filepath, cause) {
+    super(`work-file corrupto (no parsea): ${path.basename(filepath)}`);
+    this.name = 'WorkFileCorruptionError';
+    this.filepath = filepath;
+    this.cause = cause;
+  }
+}
+
+/**
+ * #3941: lee y parsea un work-file YAML distinguiendo dos casos que el
+ * `catch {}` anterior tragaba por igual:
+ *   - NO se pudo LEER el archivo (inexistente ENOENT, o error FS transitorio)
+ *     → `{}` (comportamiento histórico válido; el archivo simplemente no está).
+ *   - el archivo SE LEYÓ pero su contenido NO parsea → corrupción del work-file.
+ *     NO devolvemos `{}` silencioso (misclasificaría el issue con data vacía):
+ *     lanzamos `WorkFileCorruptionError` para que el caller decida cuarentena.
+ *
+ * Los callers best-effort deben usar `readYamlSafe` (loguea + `{}`); sólo los
+ * sitios autoritativos (lanzamiento) propagan/cuarentenan.
+ */
 function readYaml(filepath) {
+  let rawText;
   try {
-    return yaml.load(fs.readFileSync(filepath, 'utf8')) || {};
-  } catch { return {}; }
+    rawText = fs.readFileSync(filepath, 'utf8');
+  } catch (e) {
+    // No se pudo leer (ENOENT u otro error FS transitorio) → {} como antes.
+    return {};
+  }
+  try {
+    return yaml.load(rawText) || {};
+  } catch (e) {
+    // El archivo EXISTE y se leyó, pero el contenido no parsea → corrupción.
+    throw new WorkFileCorruptionError(filepath, e);
+  }
+}
+
+/**
+ * #3941: lectura best-effort de work-file. Envuelve `readYaml` y, ante
+ * corrupción del work-file, NO la traga en silencio: la LOGUEA (clasificada) y
+ * devuelve `{}` para no romper barridos/agregaciones. NUNCA escribe `.paused`
+ * (SEC-3 — la pausa global se reserva a config.yaml). Re-lanza errores que no
+ * sean corrupción de work-file.
+ *
+ * @param {string} filepath
+ * @param {string} [ctx] - etiqueta de contexto para el log (ej. 'barrido')
+ */
+function readYamlSafe(filepath, ctx) {
+  try {
+    return readYaml(filepath);
+  } catch (e) {
+    if (e && e.name === 'WorkFileCorruptionError') {
+      log('corruption', `[${classifyError(e)}] work-file corrupto: ${path.basename(filepath)}${ctx ? ` (${ctx})` : ''} — ignorado en lectura best-effort (sin .paused global, SEC-3)`);
+      return {};
+    }
+    throw e;
+  }
+}
+
+/**
+ * #3941 (SEC-3): cuarentena de UN issue cuyo work-file está corrupto (no
+ * parsea). Reacción GRANULAR — NUNCA `.paused` global (eso se reserva a
+ * config.yaml). Mueve el work-file a `bloqueado-humano/` de su fase, aplica
+ * label `needs-human` (vía cola del servicio-github) y alerta redactada. Si
+ * algo falla, es best-effort: NO debe tumbar el loop.
+ *
+ * @param {object} q
+ * @param {string} q.filepath - path del work-file corrupto
+ * @param {string|number} q.issue
+ * @param {string} q.skill
+ * @param {string} q.fase
+ * @param {string} q.pipeline
+ */
+function quarantineCorruptWorkFile(q) {
+  const { filepath, issue, skill, fase, pipeline } = q || {};
+  log('corruption', `🧬 CUARENTENA #${issue} (${skill}/${fase}) — work-file corrupto: ${path.basename(filepath)}. Mover a bloqueado-humano/ + needs-human. SIN .paused global (SEC-3).`);
+  // Mover a bloqueado-humano/ de la fase (no se reprocesa hasta intervención).
+  try {
+    const destDir = path.join(fasePath(pipeline, fase), 'bloqueado-humano');
+    moveFile(filepath, destDir);
+  } catch (e) {
+    log('corruption', `No pude mover work-file corrupto a bloqueado-humano: ${e.message}`);
+  }
+  // Encolar label needs-human (el servicio-github auto-crea el label).
+  try {
+    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+    fs.mkdirSync(ghQueueDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ghQueueDir, `${issue}-needs-human-corrupt-${Date.now()}.json`),
+      JSON.stringify({ action: 'label', issue: parseInt(issue, 10), label: 'needs-human' }),
+    );
+  } catch (e) {
+    log('corruption', `No pude encolar label needs-human por work-file corrupto #${issue}: ${e.message}`);
+  }
+  // Alerta redactada (sin volcar contenido del archivo — SEC-2).
+  try {
+    sendTelegram(`🧬 #${issue} en cuarentena — work-file de \`${skill}/${fase}\` corrupto (no parsea). Aplicado \`needs-human\`. El pipeline sigue operativo (sin pausa global).`);
+  } catch { /* best-effort */ }
 }
 
 function writeYaml(filepath, data) {
@@ -1092,7 +1279,7 @@ function contarCrossPhaseRebotes(issue, config) {
         try {
           for (const f of fs.readdirSync(dir)) {
             if (!f.startsWith(String(issue) + '.')) continue;
-            const data = readYaml(path.join(dir, f));
+            const data = readYamlSafe(path.join(dir, f));
             if (data?.rebote_tipo === 'crossphase' && (data.rebote_numero_crossphase || 0) > maxCount) {
               maxCount = data.rebote_numero_crossphase;
             }
@@ -2747,7 +2934,7 @@ function brazoBarrido(config) {
           // artefactos vivos en pendiente/trabajando (anti-race).
           const listoInputs = archivos.map(a => ({
             skill: skillFromFile(a.name),
-            yaml: readYaml(a.path),
+            yaml: readYamlSafe(a.path),
           }));
           const procesadoFasePath = path.join(fasePath(pipelineName, fase), 'procesado');
           const pendienteFasePath = path.join(fasePath(pipelineName, fase), 'pendiente');
@@ -2759,7 +2946,7 @@ function brazoBarrido(config) {
             .filter(a => a.name.startsWith(issuePrefix))
             .map(a => ({
               skill: skillFromFile(a.name),
-              yaml: readYaml(a.path), // readYaml ya es defensivo (try/catch → {})
+              yaml: readYamlSafe(a.path), // best-effort: corrupción → {} + log (sin halt, SEC-3)
             }));
           const pendienteSkills = listWorkFiles(pendienteFasePath)
             .filter(a => a.name.startsWith(issuePrefix))
@@ -2781,7 +2968,7 @@ function brazoBarrido(config) {
 
         // Leer resultados
         const resultados = archivos.map(a => ({
-          ...readYaml(a.path),
+          ...readYamlSafe(a.path),
           file: a
         }));
 
@@ -2842,7 +3029,7 @@ function brazoBarrido(config) {
                 const src = path.join(dir, f);
                 const dst = path.join(procesadoFaseActual, f);
                 try {
-                  const prev = readYaml(src) || {};
+                  const prev = readYamlSafe(src) || {};
                   writeYaml(dst, { ...prev, cancelado_por: 'fast-fail-rebote', cancelado_ts: new Date().toISOString() });
                   fs.unlinkSync(src);
                 } catch {}
@@ -2949,7 +3136,7 @@ function brazoBarrido(config) {
                     const src = path.join(dir, fname);
                     const dst = path.join(fasePath(p, f), 'procesado', fname);
                     try {
-                      const prev = readYaml(src) || {};
+                      const prev = readYamlSafe(src) || {};
                       writeYaml(dst, { ...prev, cancelado_por: 'cross-phase-rebote', cancelado_ts: new Date().toISOString() });
                       fs.unlinkSync(src);
                     } catch {}
@@ -3265,7 +3452,7 @@ function brazoBarrido(config) {
             try {
               for (const f of fs.readdirSync(dir)) {
                 if (f.startsWith(issue + '.')) {
-                  const data = readYaml(path.join(dir, f));
+                  const data = readYamlSafe(path.join(dir, f));
                   const tipoPrevio = data.rebote_tipo || 'codigo';
                   if (tipoPrevio === 'infra') {
                     if (data.rebote_numero_infra && data.rebote_numero_infra > reboteInfraCount) {
@@ -3425,7 +3612,7 @@ function brazoBarrido(config) {
                   for (const f of fs.readdirSync(dir)) {
                     if (isMarkerArtifactPulpo(f)) continue;
                     if (f.startsWith(issue + '.')) {
-                      const data = readYaml(path.join(dir, f));
+                      const data = readYamlSafe(path.join(dir, f));
                       if (data && data.rebote_tipo === 'routing' && data.rebote_routing_numero > routingBounces) {
                         routingBounces = data.rebote_routing_numero;
                       }
@@ -3610,7 +3797,7 @@ function brazoBarrido(config) {
               let baseYaml = { issue: parseInt(issue), pipeline: pipelineName };
               try {
                 if (archivos.length > 0) {
-                  baseYaml = readYaml(archivos[0].path);
+                  baseYaml = readYamlSafe(archivos[0].path);
                 }
               } catch {}
               const cleanYaml = staleness.cleanYamlForRebuild(baseYaml);
@@ -4359,13 +4546,13 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
     // Calcular rebote_numero: máximo entre archivos actuales y builds previos del issue
     let reboteCount = 0;
     for (const f of archivosVerificacion) {
-      const data = readYaml(f.path);
+      const data = readYamlSafe(f.path);
       if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
     }
     for (const estado of ['pendiente', 'trabajando', 'listo', 'procesado']) {
       const prevBuild = path.join(fasePath(pipelineName, 'build'), estado, buildFileName);
       if (fs.existsSync(prevBuild)) {
-        const data = readYaml(prevBuild);
+        const data = readYamlSafe(prevBuild);
         if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
       }
     }
@@ -4383,7 +4570,7 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
     const motivoRechazo = `APK faltante: ${preflightResult?.reason || 'preflight QA no encontró APK del build'}`;
     for (const f of archivosVerificacion) {
       try {
-        const data = readYaml(f.path);
+        const data = readYamlSafe(f.path);
         writeYaml(f.path, {
           ...data,
           resultado: 'rechazado',
@@ -4837,7 +5024,7 @@ function brazoLanzamiento(config) {
             // gate igual lee `modo: structural` desde acá.
             if (skill === 'qa') {
               try {
-                const data = readYaml(trabajandoPath) || {};
+                const data = readYamlSafe(trabajandoPath) || {};
                 data.modo = preflightResult.qaMode;
                 writeYaml(trabajandoPath, data);
               } catch (e) {
@@ -5742,7 +5929,19 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   const base = fs.readFileSync(basePrompt, 'utf8');
   const rol = fs.readFileSync(rolPrompt, 'utf8');
-  const workData = readYaml(trabajandoPath);
+  // #3941: sitio autoritativo. Si el work-file existe pero no parsea, NO
+  // lanzamos con data vacía (misclasificaría el issue): cuarentena de ESE issue
+  // (SEC-3, sin .paused global) y abortamos el lanzamiento.
+  let workData;
+  try {
+    workData = readYaml(trabajandoPath);
+  } catch (e) {
+    if (e && e.name === 'WorkFileCorruptionError') {
+      quarantineCorruptWorkFile({ filepath: trabajandoPath, issue, skill, fase, pipeline });
+      return;
+    }
+    throw e;
+  }
 
   // Escribir system prompt (rol) a archivo y user prompt corto como argumento
   const systemFile = path.join(LOG_DIR, `agent-${issue}-${skill}-system.txt`);
@@ -6051,7 +6250,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       // Rebote a pendiente/ con rebote_tipo:'infra' para que el sweep
       // `reencolarInfraBloqueados` lo procese sin consumir budget del CB.
       try {
-        const data = readYaml(trabajandoPath) || {};
+        const data = readYamlSafe(trabajandoPath) || {};
         const updated = {
           ...data,
           rebote_tipo: 'infra',
@@ -6393,7 +6592,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         }
       }, 15000);
       try {
-        const data = readYaml(trabajandoPath);
+        const data = readYamlSafe(trabajandoPath);
         data.resultado = 'rechazado';
         data.motivo = `Timeout de watchdog: excedió ${timeoutMin} minutos sin terminar`;
         data.rechazado_por = 'watchdog-timeout';
@@ -6642,7 +6841,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     if (code !== 0 && elapsedSec < 15) {
       let hasVerdict = false;
       try {
-        const quickYaml = readYaml(trabajandoPath) || {};
+        const quickYaml = readYamlSafe(trabajandoPath) || {};
         hasVerdict = quickYaml.resultado === 'aprobado' || quickYaml.resultado === 'rechazado';
       } catch {}
 
@@ -6728,7 +6927,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         return;
       }
 
-      const data = readYaml(workingPath);
+      const data = readYamlSafe(workingPath);
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
@@ -6957,7 +7156,7 @@ function brazoHuerfanos(config) {
           // Demasiados reintentos → marcar como rechazado y mover a listo
           log('huerfanos', `${archivo.name} excedió ${MAX_ORPHAN_RETRIES} reintentos → rechazado`);
           try {
-            const data = readYaml(archivo.path);
+            const data = readYamlSafe(archivo.path);
             data.resultado = 'rechazado';
             data.motivo = `Huérfano tras ${MAX_ORPHAN_RETRIES} reintentos — proceso muere repetidamente`;
             writeYaml(archivo.path, data);
@@ -10984,7 +11183,7 @@ function findLastRejection(pipelineName, issueNum, config) {
                 if (isMarkerArtifactPulpo(f)) continue;
                 const filepath = path.join(dir, f);
                 let data;
-                try { data = readYaml(filepath); } catch { continue; }
+                try { data = readYamlSafe(filepath); } catch { continue; }
                 if (!data || data.resultado !== 'rechazado') continue;
                 let at = 0;
                 try { at = fs.statSync(filepath).mtimeMs; } catch {}
@@ -12641,6 +12840,15 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     },
     _getLastUnblockTime: () => lastUnblockTime,
     _setLastUnblockTime: (ts) => { lastUnblockTime = Number(ts) || 0; },
+    // #3941 (EP5-H4) — superficie de testeo de corrupción de work-files.
+    // `readYaml`/`readYamlSafe` leen un path provisto (sin tocar `.paused` ni
+    // Telegram) → seguros de ejercer en tests de ENOENT-vs-corrupto y de
+    // granularidad SEC-3. `PAUSE_FILE` expuesto para aseverar que la lectura de
+    // work-file corrupto NO escribe la pausa global.
+    readYaml,
+    readYamlSafe,
+    WorkFileCorruptionError,
+    PAUSE_FILE,
   };
   return; // No arrancar singleton ni mainLoop
 }
