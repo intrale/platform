@@ -31,6 +31,29 @@ const caption = filteredArgs[1] || filteredArgs[0] || 'Reporte Intrale';
 // Reutilizar sanitizador centralizado (#1637/#1639)
 const { sanitize: sanitizeUtf8 } = require(path.join(__dirname, '..', '.claude', 'hooks', 'telegram-sanitizer'));
 
+// CA-7 (#3929) — política de seguridad para sub-recursos durante el render.
+// Pura y testeable sin lanzar el browser: permite SOLO la navegación al
+// documento principal (`mainUrl`); aborta cualquier otro `file://` (LFI) y
+// todo acceso de red `http(s)`/`ftp`/`ws` (SSRF). `data:`/`about:` se permiten
+// por ser inocuos (imágenes embebidas, blank).
+function isRequestAllowed({ url, isNavigation, mainUrl }) {
+  if (typeof url !== 'string') return false;
+  // El documento principal: única navegación file:// permitida.
+  if (isNavigation && url === mainUrl) return true;
+  const lower = url.toLowerCase();
+  if (lower.startsWith('file:')) return false;          // LFI: archivos locales adicionales
+  if (
+    lower.startsWith('http:') ||
+    lower.startsWith('https:') ||
+    lower.startsWith('ftp:') ||
+    lower.startsWith('ws:') ||
+    lower.startsWith('wss:')
+  ) {
+    return false;                                        // SSRF / exfiltración de red
+  }
+  return true;                                           // data:, about:blank, etc.
+}
+
 async function readStdin() {
   return new Promise((resolve) => {
     let data = '';
@@ -125,11 +148,32 @@ async function generatePdf(htmlPath) {
     return path.join(DOCS_QA_DIR, path.basename(targetHtml, '.html') + '.pdf');
   }
 
-  // Fallback: puppeteer directo
+  // Fallback: puppeteer directo.
+  //
+  // CA-7 (#3929) — endurecimiento del render HTML→PDF. El HTML puede contener
+  // contenido generado por LLM o input del issue, así que el sandbox bloquea
+  // SSRF/LFI/XSS:
+  //   - JavaScript deshabilitado (los reportes son estáticos; no se necesita JS).
+  //   - Interceptación de requests: sólo se permite la navegación al documento
+  //     principal; se aborta todo `file://` adicional (LFI) y toda la red
+  //     `http(s)/ftp` (SSRF).
+  //   - NO se pasa `--no-sandbox` (sólo aceptable en contenedor aislado).
   const puppeteer = require(path.join(DOCS_QA_DIR, 'node_modules', 'puppeteer'));
   const browser = await puppeteer.launch({ headless: 'new' });
   const page = await browser.newPage();
-  await page.goto('file:///' + htmlPath.replace(/\\/g, '/'), { waitUntil: 'networkidle0', timeout: 60000 });
+  await page.setJavaScriptEnabled(false);
+  const mainUrl = 'file:///' + htmlPath.replace(/\\/g, '/');
+  await page.setRequestInterception(true);
+  page.on('request', (req) => {
+    const allowed = isRequestAllowed({
+      url: req.url(),
+      isNavigation: typeof req.isNavigationRequest === 'function' ? req.isNavigationRequest() : false,
+      mainUrl,
+    });
+    if (allowed) req.continue();
+    else req.abort();
+  });
+  await page.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 60000 });
   await page.pdf({
     path: pdfPath,
     format: 'A4',
@@ -256,4 +300,10 @@ async function main() {
   if (!sent) process.exit(1);
 }
 
-main().catch(e => { console.error('Error:', e.message); process.exit(1); });
+// Sólo ejecutar el flujo CLI cuando se invoca directamente. Cuando se requiere
+// como módulo (tests), se exponen las funciones puras sin efectos secundarios.
+if (require.main === module) {
+  main().catch(e => { console.error('Error:', e.message); process.exit(1); });
+}
+
+module.exports = { isRequestAllowed, markdownToHtml };

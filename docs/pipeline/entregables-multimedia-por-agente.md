@@ -310,6 +310,95 @@ Estas reglas son **vinculantes** para el mapeo y para cualquier implementación 
 
 ---
 
+## 5.bis Doctrina de cierre de fase: el artefacto físico es obligatorio (EP3-H3 / #3929)
+
+> **Por qué existe esta sección.** La infraestructura de recolección (#3927) y
+> notificación (#3928) ya está construida: el recolector
+> `skill-deliverable-attachments.js` busca archivos en los roots issue-scoped y
+> el notificador los adjunta. El gap que cierra #3929 es **doctrinal**: ningún
+> `SKILL.md` exigía escribir el archivo físico, por eso las carpetas quedaban
+> vacías y el recolector degradaba a `[]`. Desde ahora, **generar el artefacto
+> es un criterio de cierre de fase** para todo skill con perfil.
+
+### Convención de paths issue-scoped
+
+Cada productor escribe **sólo** en el root issue-scoped de su perfil
+(`{issue}` como segmento de directorio, nunca en la ruta plana compartida —
+ver R5). La fuente de verdad es `SKILL_SOURCES` en
+`.pipeline/lib/skill-deliverable-attachments.js`; **no hardcodear el path**.
+
+| Perfil (`SKILL_SOURCES`) | Root issue-scoped | Formato del artefacto |
+|---|---|---|
+| `ux` | `.pipeline/assets/mockups/{issue}/` | SVG/PNG (mockups) |
+| `po` | `.pipeline/assets/docs/{issue}/` | Markdown o PDF (criterios) |
+| `planner` | `.pipeline/assets/docs/{issue}/` | Markdown o PDF + diagrama SVG (plan) |
+| `guru` | `.pipeline/assets/docs/{issue}/` | Markdown o PDF (análisis técnico) |
+| `tester` | `.pipeline/assets/docs/{issue}/` | Reporte HTML→PDF o MD (cobertura) |
+| `qa` | video en `qa/evidence/{issue}/` + reporte en `.pipeline/assets/docs/{issue}/` | MP4 + reporte HTML→PDF/MD |
+| `security` | `.pipeline/assets/docs/{issue}/` | Markdown o PDF (OWASP) |
+| `build` (skill `builder`) | `.pipeline/assets/docs/{issue}/` | Markdown o PDF (resumen curado, **nunca log crudo** — ver R-SEC1) |
+| `architect` | `.pipeline/assets/docs/{issue}/` | Markdown o PDF (receta) |
+| `backend-dev` / `android-dev` / `web-dev` / `pipeline-dev` | `.pipeline/assets/docs/{issue}/` | Markdown o PDF (resumen del cambio) |
+
+> **Decisión CA-2 (Mermaid).** `report-to-pdf-telegram.js` hace markdown→HTML
+> pero **no** renderiza Mermaid hoy. La doctrina se acota a **SVG sanitizado +
+> Markdown**. Mermaid queda como **mejora futura en issue propio** (evita sumar
+> una dependencia de Chromium adicional que choca con el endurecimiento del
+> sandbox de R-SEC2). No prometer "Mermaid" sin pipeline de render real.
+
+### Procedimiento de cierre con `writeDeliverable`
+
+El helper compartido `.pipeline/lib/write-deliverable.js` centraliza
+path + redacción + sanitización para que **ningún productor reimplemente** (y
+reintroduzca vulnerabilidades de) los requisitos de seguridad de abajo:
+
+```js
+const path = require('path');
+const { writeDeliverable } = require(path.resolve('.pipeline/lib/write-deliverable'));
+// skill = clave del perfil en SKILL_SOURCES (ej. 'guru', 'build', 'pipeline-dev')
+const { path, bytes } = writeDeliverable('guru', issue, { md /* o svg */ });
+```
+
+- Resuelve el dir issue-scoped leyendo `SKILL_SOURCES` (sin hardcode).
+- Aplica redacción de secrets y sanitización SVG **antes** de escribir.
+- Escribe `<skill>-<issue>.<md|svg>` (o un `filename` plano explícito).
+- Devuelve `{ path, bytes }`.
+
+### Enforcement warn-only (CA-4)
+
+La cobertura ≥80% de la primera ola se **mide** reutilizando la telemetría que
+ya emite `deliverable-notify.js`; **no hay gate bloqueante en `pulpo.js`**. Un
+agente que no genere el archivo no traba el pipeline, pero cuenta en contra de
+la cobertura de la ola.
+
+### Requisitos de seguridad del cierre de fase (CA-5..CA-9, OWASP-aligned)
+
+Estos cinco requisitos están **incorporados al helper** `writeDeliverable`; los
+`SKILL.md` los referencian, no los duplican.
+
+- **R-SEC1 · Path traversal en `{issue}` (A03/A01).** Validar `^\d+$` antes de
+  construir el path; rechazar `/`, `..`, separadores o no numérico. (CA-5)
+- **R-SEC2 · Sandbox del render HTML→PDF (A10/A05).** En `report-to-pdf-telegram.js`:
+  JS deshabilitado, esquema `file://` adicional bloqueado, red bloqueada vía
+  `setRequestInterception`, sin `--no-sandbox` fuera de contenedor aislado.
+  Mitiga SSRF/LFI sobre HTML generado por LLM. (CA-7)
+- **R-SEC3 · Sanitización SVG/Mermaid (A03/A05).** Strip de `<script>`, handlers
+  `on*`, URIs `javascript:`, `<!DOCTYPE>`/DTD y `<!ENTITY>` (XXE) antes de
+  persistir. (CA-8)
+- **R-SEC4 · Redacción de secrets pre-persistencia (A02).** Reusar `redact.js`
+  (AWS keys/JWT/API keys/emails/URLs) **antes** de escribir cualquier artefacto.
+  Complementa R4 (que sólo cubre filename/caption). (CA-6)
+- **R-SEC5 · Anti-DoS de disco (A04).** Cap de tamaño por artefacto (default
+  5 MiB en el helper) + política de retención/limpieza de videos/PDFs por issue
+  para no saturar el FS (fuente de verdad del pipeline). (CA-9)
+
+> **Consistencia visual (guidelines UX, no bloqueante).** Encabezado legible
+> (título + skill emisor con su emoji de §1 + número de issue + fecha),
+> jerarquía tipográfica simple, SVG legible en mobile (Telegram), y veredicto/
+> estado visible arriba en reportes con resultado (tester/qa/security).
+
+---
+
 ## 6. Cómo usar este documento en Fase 2
 
 1. Cada fila con `Brecha ≠ —` en §1 y cada entrada B1–B10 de §4 es candidata a

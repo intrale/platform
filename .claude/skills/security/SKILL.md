@@ -326,3 +326,22 @@ Todos devuelven JSON con `findings[]` (o `dependencies[]`) y exit codes consiste
 | FASE 2 | Al modificar archivos sensibles | Manual o hook futuro `PostToolUse[Edit,Write]` |
 | FASE 3 | Gate pre-delivery obligatorio | `delivery-gate.js` invoca `/security gate` |
 | FASE 4 | Cron semanal o cierre de sprint | `/security report` |
+
+## Entregable de cierre de fase
+
+> Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
+
+Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+
+- **Path:** `.pipeline/assets/docs/{issue}/`
+- **Formato:** Markdown o PDF (análisis OWASP; veredicto arriba)
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+writeDeliverable("security", issue, { md /* o svg para mockups/diagramas */ });
+```
+
+El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
