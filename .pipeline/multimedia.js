@@ -127,6 +127,35 @@ function transcriptionFailureMessage(errorKind, _localErrorKind = null) {
   }
 }
 
+// EP1-H4 (#3919): mensajes de degradación TTS — el espejo de salida de
+// transcriptionFailureMessage. Cuando la síntesis de voz falla y la respuesta
+// sale solo por texto, hoy falla en silencio; este enum CERRADO de mensajes
+// curados es lo que ve el usuario.
+//
+// SEC-1/SEC-2: PROHIBIDO interpolar e.message/raw del motor Edge, paths,
+// nombres de archivos temporales, tokens ni API keys. El mensaje se construye
+// SOLO a partir de esta tabla de literales — sin variables de runtime. El `raw`
+// del motor ya se loguea internamente; al usuario va solo motivo + modo.
+// UX (#3919): emoji 🔇 (silencio = "no pude hablarte"), motivo humano y la
+// frase "Te respondo solo por texto" SIEMPRE presente (corazón de CA-2).
+// SEC-3: sin Markdown — se despacha vía sendTelegramPlain.
+const TTS_DEGRADED_MESSAGES = {
+  unavailable: '🔇 El motor de voz (Edge TTS) no está disponible ahora mismo. Te respondo solo por texto.',
+  no_binary:   '🔇 El motor de voz (Edge TTS) no está disponible ahora mismo. Te respondo solo por texto.',
+  timeout:     '🔇 La síntesis de voz se colgó (timeout). Te respondo solo por texto — probá de nuevo en un rato.',
+  cli_error:   '🔇 No pude generar el audio de la respuesta. Te respondo solo por texto.',
+  spawn_error: '🔇 No pude generar el audio de la respuesta. Te respondo solo por texto.',
+  conversion:  '🔇 No pude convertir el audio de la respuesta a un formato reproducible. Te respondo solo por texto.',
+  unknown:     '🔇 No pude pasar la respuesta a audio. Te respondo solo por texto.',
+};
+
+// errorKind → mensaje canned. `null` de textToSpeechWithMeta no trae kind, así
+// que los callers pasan el mejor esfuerzo (típicamente 'unknown'). Cualquier
+// kind no listado cae a 'unknown' (defensa: nunca interpola input externo).
+function ttsDegradedMessage(errorKind) {
+  return TTS_DEGRADED_MESSAGES[errorKind] || TTS_DEGRADED_MESSAGES.unknown;
+}
+
 // --- Anthropic Vision ---
 
 function describeImage(imageBuffer, mediaType) {
@@ -351,6 +380,69 @@ function loadTtsState() {
 function saveTtsState(state) {
   try { fs.writeFileSync(TTS_STATE_PATH, JSON.stringify(state, null, 2)); }
   catch (e) { log(`TTS state save error: ${e.message}`); }
+}
+
+// --- EP1-H4 (#3919): dedup de avisos de degradación multimedia (CA-3 / SEC-4) ---
+//
+// Mantiene como mucho 1 aviso por ventana para cada (chat_id, tipo) con
+// tipo ∈ {'stt','tts'}. SEC-4: el estado guarda SOLO timestamps (jamás el
+// contenido del mensaje ni la transcripción), purga entradas vencidas para no
+// crecer sin límite frente a chat_id externo (Telegram), tolera archivo
+// corrupto sin romper el canal y escribe de forma atómica (write-tmp + rename)
+// por ser pipeline event-driven con escrituras concurrentes.
+const DEGRADATION_STATE_PATH = path.join(ROOT, '.pipeline', '.degradation-notify-state.json');
+// Ventana de partida: 2 min, alineada con el debounce de quotaNotifier.
+const DEGRADATION_WINDOW_MS = 2 * 60 * 1000;
+
+function degradationKey(chatId, tipo) {
+  return `${chatId}:${tipo}`;
+}
+
+function loadDegradationState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DEGRADATION_STATE_PATH, 'utf8'));
+    if (raw && typeof raw === 'object' && raw.entries && typeof raw.entries === 'object') return raw;
+    return { entries: {} };
+  } catch { return { entries: {} }; }
+}
+
+function saveDegradationState(state) {
+  const safe = (state && typeof state === 'object' && state.entries) ? state : { entries: {} };
+  try {
+    const tmp = `${DEGRADATION_STATE_PATH}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmp, JSON.stringify(safe, null, 2));
+    fs.renameSync(tmp, DEGRADATION_STATE_PATH);
+  } catch (e) { log(`Degradation state save error: ${e.message}`); }
+}
+
+// Pura (sin I/O): decide si corresponde notificar y devuelve el próximo estado.
+// Purga entradas vencidas (cota de crecimiento). windowMs configurable para tests.
+// Aislamiento por (chat_id, tipo): un aviso STT no suprime uno TTS, ni un chat
+// suprime a otro.
+function shouldNotifyDegradation(stateObj, chatId, tipo, nowMs, windowMs = DEGRADATION_WINDOW_MS) {
+  const entries = (stateObj && typeof stateObj === 'object' && stateObj.entries && typeof stateObj.entries === 'object')
+    ? stateObj.entries
+    : {};
+  // Purga: conservar solo timestamps numéricos dentro de la ventana.
+  const pruned = {};
+  for (const [k, ts] of Object.entries(entries)) {
+    if (typeof ts === 'number' && (nowMs - ts) < windowMs) pruned[k] = ts;
+  }
+  const key = degradationKey(chatId, tipo);
+  const last = pruned[key];
+  const notify = !(typeof last === 'number' && (nowMs - last) < windowMs);
+  const nextEntries = { ...pruned };
+  if (notify) nextEntries[key] = nowMs;
+  return { notify, nextState: { entries: nextEntries } };
+}
+
+// Wrapper con I/O: carga estado, decide, persiste (siempre, así la purga acota
+// el crecimiento aun en avisos deduplicados) y retorna si hay que notificar.
+function notifyDegradationOnce(chatId, tipo, nowMs = Date.now(), windowMs = DEGRADATION_WINDOW_MS) {
+  const state = loadDegradationState();
+  const { notify, nextState } = shouldNotifyDegradation(state, chatId, tipo, nowMs, windowMs);
+  saveDegradationState(nextState);
+  return notify;
 }
 
 // EP1-H2 (#3917): con un único motor TTS (Edge) ya no hay transiciones de
@@ -631,6 +723,13 @@ module.exports = {
   preprocessMessage,
   transcribeAudioWithFallback,
   transcriptionFailureMessage,
+  ttsDegradedMessage,
+  TTS_DEGRADED_MESSAGES,
+  shouldNotifyDegradation,
+  notifyDegradationOnce,
+  loadDegradationState,
+  saveDegradationState,
+  DEGRADATION_WINDOW_MS,
   describeImage,
   downloadTelegramFile,
   textToSpeech,
