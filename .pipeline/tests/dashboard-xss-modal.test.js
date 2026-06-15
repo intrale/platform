@@ -229,13 +229,22 @@ test('#2800 — matrixHTML se renderiza ANTES del bloque kpis-row (centerpiece)'
     );
 });
 
-test('#2800 — CA-5.1 media query mobile <768px colapsa lanes a 1 columna', () => {
-    // La regla legacy <900px ya cubre <768px, pero el CA pide trazabilidad
-    // explícita verificable con grep — agregamos rule específica para 768.
+test('#3956 — CA-7 responsive: la línea se mantiene horizontal-scrollable en mobile <768px', () => {
+    // El rediseño EP8-H3 (#3956) reemplaza el grid fijo de 3 lanes (que colapsaba
+    // a 1 columna <768px en #2800) por UNA línea horizontal scrollable: la ola
+    // vive de punta a punta en la misma línea (CA-7). En viewports angostos no se
+    // colapsa a columna — se reduce el ancho mínimo de cada etapa para que entren
+    // más sin romper el flujo horizontal.
     assert.match(
         src,
-        /@media\(max-width:768px\)\{\.it-lanes\{grid-template-columns:1fr\}\}/,
-        'debe existir media query explícita <=768px para .it-lanes (CA-5.1)',
+        /@media\(max-width:768px\)\{\.it-lanes > \.it-lane\{flex-basis:180px;min-width:180px\}\}/,
+        'la media query <=768px reduce el ancho de etapa, no colapsa a columna (CA-7)',
+    );
+    // Y el contenedor de la línea usa flex horizontal scrollable (no grid).
+    assert.match(
+        src,
+        /\.it-lanes\{display:flex;flex-direction:row;[^}]*overflow-x:auto/,
+        'la línea es flex horizontal scrollable (reemplaza el grid de 3 columnas)',
     );
 });
 

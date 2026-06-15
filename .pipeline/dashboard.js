@@ -88,6 +88,23 @@ try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional 
 // (#3638 CA-F-1).
 const { isMarkerArtifact } = require('./lib/marker-artifact');
 
+// EP8-H3 (#3956) — "ola en una sola línea". Lógica pura + requisitos de
+// seguridad (escaping CA-8, links GitHub CA-9, etapas terminales No
+// ingresados/Finalizados CA-5/CA-6). Best-effort require: si falta, el board
+// degrada a las 3 lanes clásicas sin etapas terminales (no rompe el render).
+let laneLineLib = null;
+try { laneLineLib = require('./lib/pipeline-lane-line'); } catch { /* opcional */ }
+
+// EP8-H3 (#3956) — resolución de la ola activa para la etapa "No ingresados".
+let waveResolverLib = null;
+try { waveResolverLib = require('./lib/wave-resolver'); } catch { /* opcional */ }
+
+// EP8-H3 (#3956) — info de PR mergeado para la etapa "Finalizados". El fetch
+// (`gh pr list`) es bloqueante (spawnSync 5s), así que se consume vía un cache
+// con TTL refrescado fire-and-forget (mismo patrón que la ETA de ola).
+let prInfoFetcherLib = null;
+try { prInfoFetcherLib = require('./lib/pr-info-fetcher'); } catch { /* opcional */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -550,6 +567,52 @@ function _scheduleOlaETARefresh(state) {
       try { log(`olaETA refresh error: ${err && err.message ? err.message : err}`); } catch {}
     })
     .finally(() => { _olaETARefreshInflight = false; });
+}
+
+// #3956 — Cache de PR info para la etapa terminal "Finalizados". El fetcher
+// hace `gh pr list` por issue (spawnSync, timeout 5s) → llamarlo en el path de
+// render arriesga rate-limit + bloqueo del event loop. Lo consumimos vía cache
+// con TTL largo (el estado de un PR mergeado no cambia) y un refresh
+// fire-and-forget que acota cuántos issues consulta por tick. Degrada a
+// "sin link" mientras el cache no esté poblado (CA-6). El caching más fino vive
+// en el issue de mejora #4034 (no bloquea este).
+const _prInfoCache = new Map(); // issueStr → { mergedAt, url, state, fetchedAt }
+let _prInfoInflight = false;
+const PRINFO_TTL_MS = 10 * 60 * 1000;   // 10 min: un PR mergeado no se "des-mergea"
+const PRINFO_BATCH_PER_TICK = 3;        // cota de llamadas gh por refresh
+
+function _schedulePrInfoRefresh(doneIssues) {
+  if (!prInfoFetcherLib || typeof prInfoFetcherLib.fetchPrInfoForIssue !== 'function') return;
+  if (_prInfoInflight) return;
+  const now = Date.now();
+  const ids = Array.isArray(doneIssues) ? doneIssues : [];
+  const stale = ids.filter((n) => {
+    const c = _prInfoCache.get(String(n));
+    return !c || (now - c.fetchedAt) > PRINFO_TTL_MS;
+  });
+  if (stale.length === 0) return;
+  _prInfoInflight = true;
+  // fire-and-forget: el fetch corre tras devolver el HTML del tick actual; el
+  // siguiente poll ya lee el cache poblado (igual que la ETA de ola).
+  Promise.resolve()
+    .then(() => {
+      const batch = stale.slice(0, PRINFO_BATCH_PER_TICK);
+      for (const n of batch) {
+        let info = null;
+        try {
+          info = prInfoFetcherLib.fetchPrInfoForIssue(n, { cwd: ROOT });
+        } catch { info = null; }
+        const ok = info && !info.error;
+        _prInfoCache.set(String(n), {
+          mergedAt: ok ? (info.mergedAt || null) : null,
+          url: ok ? (info.url || null) : null,
+          state: ok ? (info.state || null) : null,
+          fetchedAt: Date.now(),
+        });
+      }
+    })
+    .catch((err) => { try { log(`prInfo refresh error: ${err && err.message ? err.message : err}`); } catch {} })
+    .finally(() => { _prInfoInflight = false; });
 }
 
 function getCachedPipelineState() {
@@ -1041,6 +1104,31 @@ function getPipelineState() {
   // #3638 CA-F-12 — Ghost artifacts widget: lee últimas 10 líneas del audit
   // JSONL. Si hubo cleanup en últimas 24h → bandera ⚠ . Sin actividad ≥ 7 días → ✅.
   state.ghostArtifacts = readGhostArtifactSummary();
+
+  // #3956 — Ola activa para la etapa terminal "No ingresados" del board. Best
+  // effort: si el resolver no cargó, `activeWave.issues = []` y la etapa queda
+  // vacía (no rompe el render).
+  state.activeWave = { label: 'Ola actual', issues: [], source: null };
+  if (waveResolverLib && typeof waveResolverLib.resolveActiveWave === 'function') {
+    try {
+      const w = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+      if (w && Array.isArray(w.issues)) state.activeWave = w;
+    } catch { /* degrada a ola vacía */ }
+  }
+
+  // #3956 — PR info de los issues finalizados (etapa "Finalizados"). Lectura
+  // sync desde el cache; el refresh fire-and-forget se programa con la lista de
+  // issues completos (sin fase activa). Construimos un snapshot plano para que
+  // el render no toque el Map directamente.
+  const doneIssueIds = [];
+  for (const [id, data] of Object.entries(state.issueMatrix)) {
+    if (data && !data.estadoActual) doneIssueIds.push(Number(id));
+  }
+  _schedulePrInfoRefresh(doneIssueIds);
+  state.prInfo = {};
+  for (const [id, info] of _prInfoCache.entries()) {
+    state.prInfo[id] = { mergedAt: info.mergedAt, url: info.url, state: info.state };
+  }
 
   return state;
 }
@@ -1971,13 +2059,20 @@ function generateHTML(state) {
     if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
     return 'qa'; // verificacion, linteo, aprobacion, entrega
   }
+  // #3956 — La ola completa vive en UNA sola línea de proceso, de punta a punta:
+  // etapa inicial "No ingresados" → fases del pipeline → etapa final "Finalizados".
+  // Las dos etapas terminales (`nentered`/`done`) son `terminal: true`: no tienen
+  // sub-breakdown ni stats de fase, solo conteo + cards. El acento de cada etapa
+  // usa tokens de design-tokens.css (sin hardcodear) vía `--lane-color`.
   const laneMeta = {
-    def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
-    dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
-    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · linteo · aprob · entrega', subFases: ['verificacion', 'linteo', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', linteo: 'Linteo', aprobacion: 'Aprob', entrega: 'Entrega' } },
+    nentered: { terminal: true, icon: 'stage-not-entered', label: 'No ingresados', color: 'var(--stage-not-entered, #8b949e)', sub: 'esperando ingreso' },
+    def: { label: 'Definición',        color: 'var(--purple, #bc8cff)', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
+    dev: { label: 'Desarrollo + Build', color: 'var(--info, #3fb950)', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
+    qa:  { label: 'QA + Entrega',      color: 'var(--teal, #2dd4bf)', sub: 'verif · linteo · aprob · entrega', subFases: ['verificacion', 'linteo', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', linteo: 'Linteo', aprobacion: 'Aprob', entrega: 'Entrega' } },
+    done: { terminal: true, icon: 'stage-finalized', label: 'Finalizados', color: 'var(--stage-finalized, #3fb950)', sub: 'PR mergeado' },
   };
-  const laneCards = { def: [], dev: [], qa: [], done: [] };
-  const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
+  const laneCards = { nentered: [], def: [], dev: [], qa: [], done: [] };
+  const laneCounts = { nentered: 0, def: 0, dev: 0, qa: 0, done: 0 };
   const laneStats = {
     def: { running: 0, failed: 0, stale: 0, subCounts: {}, issuesEta: [] },
     dev: { running: 0, failed: 0, stale: 0, subCounts: {}, issuesEta: [] },
@@ -2374,6 +2469,46 @@ function generateHTML(state) {
       stateBadges.push(`<span class="lc-state-badge lc-state-stale" title="Sin actividad reciente: ${data.staleMin}m" aria-label="stale ${data.staleMin} minutos">${ic('estado-stale')} ${data.staleMin}m</span>`);
     }
     const stateBadgesHTML = stateBadges.length > 0 ? `<div class="lc-state-row" role="group" aria-label="Estados del issue">${stateBadges.join('')}</div>` : '';
+
+    // #3956 CA-2 — Popover del agente a nivel card. Payload server-side con solo
+    // los campos públicos (CA-10: sin paths/tokens). El cliente lo escapa de nuevo
+    // antes de inyectarlo (showCardPopup → escapePopupValue) — defensa en profundidad.
+    let cardLogFile = '';
+    for (const e of currentFaseEntries) { if (e.hasLog) { cardLogFile = e.logFile; break; } }
+    const cardMotivo = data.motivo_rechazo || (() => {
+      // último motivo de rechazo conocido entre las fases (para issues rebotados)
+      let m = '';
+      for (const entries of Object.values(data.fases || {})) {
+        for (const e of entries) { if (e.resultado && e.resultado !== 'aprobado' && e.motivo) m = e.motivo; }
+      }
+      return m;
+    })();
+    const cardPopupPayload = {
+      issue: String(issueNum),
+      skill: currentSkills.length > 0 ? currentSkills.join(', ') : (complete ? 'entregado' : '—'),
+      fase: currentFase || (complete ? 'finalizado' : 'pendiente'),
+      estado: data.estadoActual || (complete ? 'completado' : 'pendiente'),
+      edad: laneElapsedTxt,
+      motivo: cardMotivo ? String(cardMotivo).slice(0, 200) : '',
+      log: cardLogFile ? ('/logs/view/' + encodeURIComponent(cardLogFile) + (data.estadoActual === 'trabajando' ? '?live=1' : '')) : '',
+    };
+    const cardPopupAttr = esc(JSON.stringify(cardPopupPayload));
+    const cardInfoBtn = `<button class="lc-info-btn" data-card-popup="${cardPopupAttr}" onclick="event.stopPropagation();showCardPopup(event,this)" title="Detalle del agente (issue, skill, fase, estado, edad, rebote, log)" aria-label="Ver detalle del agente del issue ${issueNum}">${ic('info', 'detalle')}</button>`;
+
+    // #3956 CA-6 — Etapa "Finalizados": fecha de cierre + link al PR mergeado.
+    // Degrada a "sin link" si el fetch de PR falló o aún no está cacheado.
+    let finalizadoFooter = '';
+    if (complete) {
+      const meta = laneLineLib && typeof laneLineLib.finalizadoMeta === 'function'
+        ? laneLineLib.finalizadoMeta((state.prInfo || {})[String(issueNum)] || null)
+        : { dateLabel: null, href: null, hasLink: false };
+      const dateTxt = meta.dateLabel ? `<span class="lc-fin-date" title="Fecha de cierre">${esc(meta.dateLabel)}</span>` : '';
+      const prLink = meta.hasLink
+        ? `<a class="lc-fin-pr" href="${esc(meta.href)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="PR mergeado">${ic('stage-finalized')} PR</a>`
+        : `<span class="lc-fin-nolink" title="Link al PR no disponible (se reintenta en el próximo refresh)">sin link</span>`;
+      finalizadoFooter = `<div class="lc-finalizado">${dateTxt}${prLink}</div>`;
+    }
+
     const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-lane="${lane}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite" draggable="${complete ? 'false' : 'true'}" ondragstart="onCardDragStart(event)" ondragover="onCardDragOver(event)" ondragleave="onCardDragLeave(event)" ondrop="onCardDrop(event)" ondragend="onCardDragEnd(event)">
       <div class="lc-card-main">
         <div class="lc-top">
@@ -2383,6 +2518,7 @@ function generateHTML(state) {
             ${lcBlockIcons}${lcRetryingIcon}
           </div>
           <div class="lc-top-right">
+            ${cardInfoBtn}
             <span class="lc-prio-actions">
               <button class="lc-prio-btn lc-prio-top" onclick="event.stopPropagation();issueMoveToTop(${issueNum})" title="Mover al tope de la columna">⏫</button>
               <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issueMoveUp(${issueNum})" title="Subir una posición">▲</button>
@@ -2402,23 +2538,64 @@ function generateHTML(state) {
           </div>
           ${avatarsHTML}
         </div>
+        ${finalizadoFooter}
       </div>
     </div>`;
     laneCards[lane].push({ html: cardHTML, priority });
     laneCounts[lane]++;
   }
+
+  // #3956 CA-5 — Etapa inicial "No ingresados": issues de la ola activa que aún
+  // no entraron al flujo (sin work-file) y siguen abiertos. La lógica + el
+  // escaping/validación de links viven en lib/pipeline-lane-line.js (testeada).
+  if (laneLineLib && typeof laneLineLib.buildNotEnteredCards === 'function') {
+    try {
+      const ne = laneLineLib.buildNotEnteredCards({
+        waveIssues: (state.activeWave && state.activeWave.issues) || [],
+        matrix: state.issueMatrix,
+        blockedBy: state.blockedIssues.blockedBy,
+        titles: state.issueTitles,
+        ghIssueUrl: GH,
+      });
+      ne.cards.forEach((c, i) => {
+        // priority decreciente para conservar el orden ascendente por issue
+        laneCards.nentered.push({ html: c.html, priority: ne.cards.length - i });
+      });
+      laneCounts.nentered = ne.count;
+    } catch (e) { /* degrada a etapa vacía sin romper el board */ }
+  }
+
   // Sort dentro de cada lane por criticidad desc
   for (const k of Object.keys(laneCards)) {
     laneCards[k].sort((a, b) => b.priority - a.priority);
     laneCards[k] = laneCards[k].map(x => x.html).join('');
   }
 
-  // Render 3 lanes (Opción E) con sub-breakdown + cards ricas
-  const laneOrder = ['def', 'dev', 'qa'];
+  // #3956 — La ola completa en UNA línea: No ingresados → Definición → Desarrollo
+  // → QA+Entrega → Finalizados. Las etapas terminales (nentered/done) se renderean
+  // con un encabezado simple (icono + conteo) y sin sub-breakdown/stats de fase.
+  const laneOrder = ['nentered', 'def', 'dev', 'qa', 'done'];
   const lanesHTML = laneOrder.map(k => {
     const m = laneMeta[k];
+    const cards = laneCards[k] || '';
+    const cardsOrEmpty = cards || `<div class="lane-empty">Sin issues</div>`;
+
+    // Etapas terminales: encabezado con icono propio del sprite (sin emoji del
+    // SO) + conteo. Sin sub-breakdown ni badges de stats.
+    if (m.terminal) {
+      const stageIcon = m.icon ? ic(m.icon, m.label) : '';
+      return `<div class="it-lane it-lane-${k} it-lane-terminal" data-lane="${k}" style="--lane-color:${m.color}">
+      <div class="it-lane-head">
+        <span class="it-lane-name"><span class="it-lane-dot"></span>${stageIcon} ${m.label} <span class="it-lane-sub">${m.sub}</span></span>
+        <div class="it-lane-meta">
+          <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+        </div>
+      </div>
+      <div class="it-lane-cards">${cardsOrEmpty}</div>
+    </div>`;
+    }
+
     const stats = laneStats[k];
-    const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
     // Sub-breakdown: chips clickeables por sub-fase (filtra cards del lane)
     const maxSubCount = Math.max(...m.subFases.map(sf => stats.subCounts[sf] || 0), 1);
     const subBreakdown = '<div class="it-sub-breakdown">' +
@@ -2457,17 +2634,13 @@ function generateHTML(state) {
         </div>
       </div>
       ${subBreakdown}
-      <div class="it-lane-cards">${cards}</div>
+      <div class="it-lane-cards">${cards || '<div class="lane-empty">Sin issues</div>'}</div>
     </div>`;
   }).join('');
-  const doneLaneHTML = laneCounts.done > 0 ? `<details class="it-done-section" data-lane="done">
-    <summary class="it-done-head">
-      <span class="it-done-arrow">▸</span>
-      <span>✓ Completados recientes</span>
-      <span class="it-done-count"><b>${laneCounts.done}</b></span>
-    </summary>
-    <div class="it-done-grid">${laneCards.done}</div>
-  </details>` : '';
+  // #3956 CA-7 — la antigua sección aparte "Completados recientes" se fusionó
+  // como etapa terminal `done` dentro de la misma línea. No existe ninguna
+  // bandeja fuera del flujo.
+  const doneLaneHTML = '';
 
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
@@ -2498,12 +2671,30 @@ function generateHTML(state) {
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="completed" onclick="filterIssueTab(this,'completed')">Completados <span class="ic-tab-count">${completedIssues.length}</span></button>
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
+        ${/* #3956 CA-1 — control de zoom semántico (lejos/normal/foco). La clase
+             la aplica el cliente sobre el contenedor .it-lanes; los tokens viven
+             en design-tokens.css §14. */''}
+        <div class="it-zoom" role="group" aria-label="Densidad del tablero (zoom)">
+          <button class="it-zoom-btn" data-zoom="lejos" onclick="setBoardZoom('lejos')" title="Modo kiosk — legible a ~3 m">Lejos</button>
+          <button class="it-zoom-btn it-zoom-active" data-zoom="normal" onclick="setBoardZoom('normal')" title="Densidad normal (default)">Normal</button>
+          <button class="it-zoom-btn" data-zoom="foco" onclick="setBoardZoom('foco')" title="Columna expandida con timeline">Foco</button>
+        </div>
       </div>
       <div class="section-body">
-      <div class="it-lanes">${lanesHTML}</div>
+      ${/* #3956 CA-4 — la línea hace scroll horizontal cuando hay más etapas que
+           ancho visible; el indicador "+N fases" lo calcula el cliente
+           (updateLaneOverflow) midiendo scrollWidth vs clientWidth. */''}
+      <div class="it-lanes-wrap">
+        <div class="it-lanes zoom-normal" id="it-lanes" onscroll="updateLaneOverflow()">${lanesHTML}</div>
+        <button class="it-lanes-overflow" id="it-lanes-overflow" style="display:none" onclick="scrollLanesToEnd()" aria-hidden="true" title="Hay etapas fuera de vista — click para ver el final">${ic('overflow-more')} <span id="it-lanes-overflow-n">+0</span> fases</button>
+      </div>
       ${doneLaneHTML}
       <div id="dot-popup" class="dot-popup" style="display:none">
         <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
+        <div class="dp-body"></div>
+      </div>
+      <div id="card-popup" class="dot-popup card-popup" style="display:none">
+        <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeCardPopup()">×</span></div>
         <div class="dp-body"></div>
       </div>
       </div>
@@ -3090,6 +3281,10 @@ ${loadDesignTokens()}
 .pipe-status-running{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gn));border-color:rgba(63,185,80,0.4)}
 .pipe-status-running:hover{background:rgba(63,185,80,0.22)}
 .pipe-status-paused{background:rgba(240,165,0,0.18);color:#F0A500;border-color:rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
+/* #3956 CA-3 — el estado "fuera de allowlist" (pausa parcial) es una variante
+   del badge único de pausa; mismo ámbar, sin pulso para distinguirlo del halt
+   total. Se mantiene .pipe-status-partial por back-compat de otros call-sites. */
+.pipe-status-allowlist{animation:none;letter-spacing:0.8px}
 .pipe-status-partial{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
 
 /* (#2892 PR-C) — Pill compacta de alerta de consumo anómalo en el header.
@@ -4444,7 +4639,61 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 
 /* ── Issue Tracker Lanes (Opción E): 3 columnas iguales ─────────────────── */
-.it-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+/* #3956 — La ola en UNA línea: layout horizontal scrollable (reemplaza el grid
+   fijo de 3 columnas que no escala a N etapas). El ancho mínimo de cada etapa y
+   las densidades de zoom salen de los tokens --zoom-* de design-tokens.css §14. */
+.it-lanes-wrap{position:relative;margin-top:10px}
+.it-lanes{display:flex;flex-direction:row;gap:10px;overflow-x:auto;overflow-y:visible;scroll-behavior:smooth;padding-bottom:6px;scrollbar-width:thin}
+.it-lanes::-webkit-scrollbar{height:8px}
+.it-lanes::-webkit-scrollbar-thumb{background:var(--bd,#30363d);border-radius:4px}
+.it-lanes > .it-lane{flex:1 0 var(--zoom-lane-min-w,240px);min-width:var(--zoom-lane-min-w,240px);max-width:480px}
+/* Indicador "+N fases" (CA-4): aparece cuando hay overflow horizontal. */
+.it-lanes-overflow{position:absolute;top:0;right:0;height:38px;display:inline-flex;align-items:center;gap:5px;padding:0 12px;border:none;border-radius:0 8px 8px 0;background:var(--overflow-more-bg,rgba(88,166,255,0.14));color:var(--overflow-more,#58a6ff);font-size:0.72em;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;cursor:pointer;box-shadow:-12px 0 18px -6px var(--bg,#0d1117)}
+.it-lanes-overflow:hover{background:var(--overflow-more,#58a6ff);color:var(--bg,#0d1117)}
+.it-lanes-overflow .pl-ic{width:14px;height:14px}
+/* Densidades de zoom — la clase la fija el cliente sobre #it-lanes (CA-1). Los
+   valores --zoom-* los define design-tokens.css §14 (.zoom-lejos/.zoom-foco). */
+.it-lanes.zoom-lejos .it-lane-cards{gap:var(--zoom-card-gap,12px)}
+.it-lanes.zoom-lejos .it-lane-count b{font-size:var(--zoom-count-fs,32px)}
+.it-lanes.zoom-lejos .lc-pill{font-size:var(--zoom-pill-fs,18px);padding:var(--zoom-pill-pad-y,8px) var(--zoom-pill-pad-x,12px)}
+.it-lanes.zoom-lejos .it-lane-name{font-size:var(--zoom-stage-title-fs,26px)}
+.it-lanes.zoom-lejos .lc-card{padding:var(--zoom-card-pad,16px)}
+/* Kiosk: a 3 m no se leen los detalles; se priorizan conteo + semáforos. */
+.it-lanes.zoom-lejos .lc-prio-actions,.it-lanes.zoom-lejos .it-sub-breakdown,.it-lanes.zoom-lejos .lc-info-btn,.it-lanes.zoom-lejos .lc-state-row{display:none}
+.it-lanes.zoom-foco .it-lane{flex-basis:var(--zoom-lane-min-w,360px);min-width:var(--zoom-lane-min-w,360px)}
+.it-lanes.zoom-foco .lc-ps{display:block}
+.it-zoom{display:inline-flex;gap:2px;margin-left:8px;background:var(--sf2,#161b22);border:1px solid var(--bd,#30363d);border-radius:6px;padding:2px}
+.it-zoom-btn{background:transparent;border:none;color:var(--dim,#8b949e);font-size:0.72em;font-weight:600;padding:3px 9px;border-radius:4px;cursor:pointer;text-transform:uppercase;letter-spacing:0.4px}
+.it-zoom-btn:hover{color:var(--tx,#e6edf3)}
+.it-zoom-active{background:var(--ac,#58a6ff);color:var(--bg,#0d1117)!important}
+/* Etapas terminales (No ingresados / Finalizados) */
+.it-lane-terminal{border-style:dashed}
+.lc-nentered{opacity:0.92}
+.lc-foot-nentered{display:block;margin-top:6px}
+.nentered-reason{display:inline-flex;align-items:center;gap:4px;font-size:0.74em;padding:2px 7px;border-radius:10px}
+.nentered-reason-deps{background:var(--danger-bg,rgba(248,81,73,0.12));color:var(--danger,#f85149)}
+.nentered-reason-slot{background:var(--stage-not-entered-bg,rgba(139,148,158,0.12));color:var(--stage-not-entered,#8b949e)}
+.nentered-dep-link{color:inherit;font-weight:700;text-decoration:underline}
+.nentered-num{font-weight:700;color:var(--ac,#58a6ff);text-decoration:none}
+/* Footer "Finalizados": fecha de cierre + link al PR mergeado (CA-6) */
+.lc-finalizado{display:flex;align-items:center;gap:8px;margin-top:6px;padding-top:6px;border-top:1px solid var(--bd,#30363d);font-size:0.74em}
+.lc-fin-date{color:var(--dim,#8b949e);font-variant-numeric:tabular-nums}
+.lc-fin-pr{display:inline-flex;align-items:center;gap:3px;color:var(--success,#3fb950);font-weight:700;text-decoration:none}
+.lc-fin-pr:hover{text-decoration:underline}
+.lc-fin-pr .pl-ic{width:13px;height:13px}
+.lc-fin-nolink{color:var(--text-dim,#6e7681);font-style:italic}
+/* Botón ⓘ del popover de agente a nivel card (CA-2) */
+.lc-info-btn{background:transparent;border:none;color:var(--dim,#8b949e);cursor:pointer;padding:1px;display:inline-flex;align-items:center;border-radius:4px}
+.lc-info-btn:hover{color:var(--ac,#58a6ff);background:rgba(88,166,255,0.12)}
+.lc-info-btn .pl-ic{width:15px;height:15px}
+.card-popup .dp-body{padding:10px 12px;font-size:0.95em;line-height:1.5}
+.cp-row{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+.cp-k{color:var(--dim,#8b949e)}
+.cp-v{font-weight:600;text-align:right}
+.cp-motivo{margin-top:6px;padding:6px 8px;background:rgba(248,81,73,0.08);border-left:2px solid var(--danger,#f85149);border-radius:3px;font-size:0.92em;white-space:pre-wrap;word-break:break-word}
+.cp-actions{display:flex;gap:8px;margin-top:8px}
+.cp-btn{flex:1;text-align:center;padding:5px 8px;border-radius:5px;font-size:0.92em;font-weight:600;text-decoration:none;cursor:pointer;border:1px solid var(--bd,#30363d);background:var(--sf2,#161b22);color:var(--tx,#e6edf3)}
+.cp-btn:hover{border-color:var(--ac,#58a6ff)}
 .it-lane.it-lane-empty-search{opacity:0.35}
 
 /* Search input */
@@ -4716,11 +4965,11 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px;margin-top:10px}
 .it-done-grid .lc-card{opacity:0.75}
 
-@media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
-/* #2800 CA-5.1 — refuerzo explícito del breakpoint mobile en 768px (queda
-   redundante con la regla 900px de arriba, pero hace el contrato verificable
-   con grep para QA). */
-@media(max-width:768px){.it-lanes{grid-template-columns:1fr}}
+/* #3956 — en viewports angostos la línea sigue siendo horizontal-scrollable
+   (la ola vive en UNA sola línea, CA-7); solo reducimos el ancho mínimo de cada
+   etapa para que entren más en pantalla sin romper el flujo. */
+@media(max-width:900px){.it-lanes > .it-lane{flex-basis:200px;min-width:200px}}
+@media(max-width:768px){.it-lanes > .it-lane{flex-basis:180px;min-width:180px}}
 
 /* #2800 — Board Kanban centerpiece (rediseño V3). Damos aire vertical antes
    y después del bloque y un anchor invisible para deep-links
@@ -4951,14 +5200,19 @@ body.standalone .section-collapsed .section-body{display:block !important}
         <span class="hdr-title-sub">Dashboard V3 · localhost:3200${v3Active ? ' · ' + v3Workers.length + ' workers V3' : ''}</span>
       </span>
       <div class="hdr-status-group" role="status" aria-live="polite">
-        <button class="pipe-status ${isPaused ? 'pipe-status-paused' : isPartialPause ? 'pipe-status-partial' : 'pipe-status-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? 'Pausa parcial — click para reanudar completo' : 'Click para pausar el pipeline'}" aria-label="Estado del pipeline: ${isPaused ? 'pausado' : isPartialPause ? 'pausa parcial' : 'corriendo'}">
+        ${/* #3956 CA-3 — Badge ÚNICO de pausa. Reemplaza los 3 estados confusos
+             (running/paused/partial) por un solo badge con 2 estados claros:
+             "Pausado" (pausa total) y "Fuera de allowlist · N" (pausa parcial:
+             solo N issues de la allowlist procesan, el resto queda fuera). El
+             listado de issues permitidos se traslada al title/aria del mismo
+             badge — ya no existe la pill separada (un solo badge). */''}
+        <button class="pipe-status ${isPaused ? 'pipe-status-paused' : isPartialPause ? 'pipe-status-paused pipe-status-allowlist' : 'pipe-status-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? `Fuera de allowlist — solo procesan ${partialPauseState.allowedIssues.length} issue(s): ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}. Click para reanudar completo` : 'Click para pausar el pipeline'}" aria-label="Estado del pipeline: ${isPaused ? 'pausado' : isPartialPause ? `fuera de allowlist, ${partialPauseState.allowedIssues.length} issues permitidos` : 'corriendo'}">
           ${isPaused
             ? ic('estado-partial-pause', 'pausado') + '<span>Pausado</span>'
             : isPartialPause
-              ? ic('estado-partial-pause', 'pausa parcial') + `<span>Parcial · ${partialPauseState.allowedIssues.length}</span>`
+              ? ic('estado-partial-pause', 'fuera de allowlist') + `<span>Fuera de allowlist · ${partialPauseState.allowedIssues.length}</span>`
               : ic('health-ok', 'sano') + '<span>Running</span>'}
         </button>
-        ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:var(--warning-bg,rgba(240,165,0,0.15));color:var(--warning,#f0a500);border-color:rgba(240,165,0,0.4);" aria-label="Issues permitidos: ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}">${ic('estado-partial-pause')} ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
         ${(() => {
           // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%".
           // #3735 — render delegado al módulo costos.js (pill + banner). Si el
@@ -6300,12 +6554,34 @@ function clearIssueSearch() {
 }
 
 // Popup con detalle de la fase al click en un dot
+// #3956 CA-8 — Escape client-side para todo texto de origen no confiable
+// (motivo de rebote, skill, título — escritos por agentes/GitHub) antes de
+// inyectarlo vía innerHTML. Corrige el XSS confirmado en showDotPopup
+// (motivo/skill/log se concatenaban crudos). Gemelo de escapePopupValue() del
+// server (lib/pipeline-lane-line.js) — defensa en profundidad.
+function __popEsc(v){
+  return String(v == null ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// #3956 CA-9 — solo permite hrefs relativos internos (/logs/..., /...) o
+// https://github.com/. Rechaza javascript:/data:/otros esquemas. Devuelve ''
+// (sin link) si no es seguro.
+function __popSafeHref(u){
+  if (typeof u !== 'string' || !u) return '';
+  if (u.charAt(0) === '/' && u.charAt(1) !== '/') return u; // relativo interno
+  try { var p = new URL(u, window.location.origin);
+    if (p.protocol === 'https:' && p.hostname === 'github.com') return p.href;
+    if (p.origin === window.location.origin) return p.pathname + p.search;
+  } catch(_) {}
+  return '';
+}
 function showDotPopup(event, dotEl) {
   let data;
   try { data = JSON.parse(dotEl.dataset.popup); } catch(_) { return; }
   const popup = document.getElementById('dot-popup');
   if (!popup) return;
-  popup.querySelector('.dp-title').innerHTML = '<b>' + data.fase + '</b> · ' + data.pipeline + ' · #' + data.issue;
+  popup.querySelector('.dp-title').innerHTML = '<b>' + __popEsc(data.fase) + '</b> · ' + __popEsc(data.pipeline) + ' · #' + __popEsc(data.issue);
   const body = popup.querySelector('.dp-body');
   if (!data.skills || data.skills.length === 0) {
     body.innerHTML = '<div class="dp-empty">Sin actividad</div>';
@@ -6317,7 +6593,7 @@ function showDotPopup(event, dotEl) {
       else if (s.estado === 'trabajando') { icon = '⚙'; cls = 'run'; }
       else if (s.estado === 'listo' || s.estado === 'procesado') { icon = '✓'; cls = 'ok'; }
       else { icon = '○'; cls = 'pending'; }
-      var retry = s.retry ? '<span class="dp-retry">×'+s.retry+'</span>' : '';
+      var retry = s.retry ? '<span class="dp-retry">×'+__popEsc(s.retry)+'</span>' : '';
       // #2895 — duraciones contextuales:
       //   - skill ejecutado:   "12m"           (s.dur, sin avg)
       //   - skill en curso:    "8m / ~25m"     (s.dur + avg)
@@ -6328,11 +6604,13 @@ function showDotPopup(event, dotEl) {
       else if (s.dur)        durTxt = s.dur;
       else if (s.avgDur)     durTxt = '~' + s.avgDur;
       else if (s.estado === 'pendiente') durTxt = '?';
-      var dur = durTxt ? '<span class="dp-dur">'+durTxt+'</span>' : '';
-      var log = s.log ? '<a href="'+s.log+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
-      var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
-      var motivo = s.motivo ? '<div class="dp-motivo">' + s.motivo + '</div>' : '';
-      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+s.skill+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
+      var dur = durTxt ? '<span class="dp-dur">'+__popEsc(durTxt)+'</span>' : '';
+      var logHref = __popSafeHref(s.log);
+      var pdfHref = __popSafeHref(s.pdf);
+      var log = logHref ? '<a href="'+__popEsc(logHref)+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
+      var pdf = pdfHref ? '<a href="'+__popEsc(pdfHref)+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
+      var motivo = s.motivo ? '<div class="dp-motivo">' + __popEsc(s.motivo) + '</div>' : '';
+      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+__popEsc(s.skill)+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
     }).join('');
   }
   const rect = dotEl.getBoundingClientRect();
@@ -6353,14 +6631,102 @@ function closeDotPopup() {
   const p = document.getElementById('dot-popup');
   if (p) p.style.display = 'none';
 }
+// #3956 CA-2 — Popover del agente a nivel card: issue, skill, fase, estado,
+// edad, motivo del último rebote + botones Ver log / Pausar. Todo el texto pasa
+// por __popEsc (CA-8) y los links por __popSafeHref (CA-9).
+function showCardPopup(event, btnEl) {
+  let d;
+  try { d = JSON.parse(btnEl.dataset.cardPopup); } catch(_) { return; }
+  const popup = document.getElementById('card-popup');
+  if (!popup) return;
+  popup.querySelector('.dp-title').innerHTML = '<b>#' + __popEsc(d.issue) + '</b> · ' + __popEsc(d.skill);
+  const rows = [
+    ['Fase', d.fase], ['Estado', d.estado], ['Edad', d.edad],
+  ].map(function(r){ return '<div class="cp-row"><span class="cp-k">'+__popEsc(r[0])+'</span><span class="cp-v">'+__popEsc(r[1])+'</span></div>'; }).join('');
+  const motivo = d.motivo ? '<div class="cp-motivo" title="Motivo del último rebote">'+__popEsc(d.motivo)+'</div>' : '';
+  const logHref = __popSafeHref(d.log);
+  const logBtn = logHref ? '<a class="cp-btn" href="'+__popEsc(logHref)+'" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">📄 Ver log</a>' : '';
+  const issueNum = parseInt(d.issue, 10);
+  const pauseBtn = (Number.isInteger(issueNum) && d.estado !== 'completado')
+    ? '<button class="cp-btn" onclick="event.stopPropagation();closeCardPopup();needsHumanBlock('+issueNum+')">⏸ Pausar</button>' : '';
+  popup.querySelector('.dp-body').innerHTML = rows + motivo + '<div class="cp-actions">' + logBtn + pauseBtn + '</div>';
+  const rect = btnEl.getBoundingClientRect();
+  popup.style.display = 'block';
+  popup.style.position = 'fixed';
+  popup.style.left = '0px';
+  popup.style.top = '0px';
+  const pr = popup.getBoundingClientRect();
+  let left = rect.left + rect.width/2 - pr.width/2;
+  let top = rect.bottom + 8;
+  if (left < 8) left = 8;
+  if (left + pr.width > window.innerWidth - 8) left = window.innerWidth - pr.width - 8;
+  if (top + pr.height > window.innerHeight - 8) top = rect.top - pr.height - 8;
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+}
+function closeCardPopup() {
+  const p = document.getElementById('card-popup');
+  if (p) p.style.display = 'none';
+}
+// #3956 CA-1 — Zoom semántico: aplica la clase de densidad sobre #it-lanes.
+// Las variables --zoom-* las resuelve design-tokens.css §14.
+function setBoardZoom(level) {
+  const lanes = document.getElementById('it-lanes');
+  if (!lanes) return;
+  lanes.classList.remove('zoom-lejos', 'zoom-normal', 'zoom-foco');
+  lanes.classList.add('zoom-' + level);
+  document.querySelectorAll('.it-zoom-btn').forEach(function(b){
+    b.classList.toggle('it-zoom-active', b.dataset.zoom === level);
+  });
+  try { localStorage.setItem('boardZoom', level); } catch(_) {}
+  updateLaneOverflow();
+}
+// #3956 CA-4 — Indicador "+N fases": cuenta cuántas etapas quedan fuera de vista
+// cuando la línea hace scroll horizontal.
+function updateLaneOverflow() {
+  const lanes = document.getElementById('it-lanes');
+  const ind = document.getElementById('it-lanes-overflow');
+  if (!lanes || !ind) return;
+  const lanesEls = lanes.querySelectorAll('.it-lane');
+  if (!lanesEls.length) { ind.style.display = 'none'; return; }
+  const wrapRight = lanes.getBoundingClientRect().right;
+  let hidden = 0;
+  lanesEls.forEach(function(el){
+    // una etapa cuenta como "fuera de vista" si su borde izquierdo arranca más
+    // allá del borde derecho visible (con un margen de tolerancia).
+    if (el.getBoundingClientRect().left > wrapRight - 24) hidden++;
+  });
+  if (hidden > 0) {
+    ind.style.display = 'inline-flex';
+    const n = document.getElementById('it-lanes-overflow-n');
+    if (n) n.textContent = '+' + hidden;
+  } else {
+    ind.style.display = 'none';
+  }
+}
+function scrollLanesToEnd() {
+  const lanes = document.getElementById('it-lanes');
+  if (lanes) lanes.scrollTo({ left: lanes.scrollWidth, behavior: 'smooth' });
+}
+window.addEventListener('resize', function(){ try { updateLaneOverflow(); } catch(_){} });
+window.addEventListener('load', function(){
+  try {
+    var z = localStorage.getItem('boardZoom');
+    if (z && z !== 'normal') setBoardZoom(z); else updateLaneOverflow();
+  } catch(_) { try { updateLaneOverflow(); } catch(__){} }
+});
 document.addEventListener('click', function(e){
   const p = document.getElementById('dot-popup');
-  if (!p || p.style.display === 'none') return;
-  if (!p.contains(e.target) && !e.target.classList.contains('stepper-dot')) {
+  if (p && p.style.display !== 'none' && !p.contains(e.target) && !e.target.classList.contains('stepper-dot')) {
     p.style.display = 'none';
   }
+  // #3956 — cerrar el popover de card al click afuera (salvo sobre el botón ⓘ)
+  const cp = document.getElementById('card-popup');
+  if (cp && cp.style.display !== 'none' && !cp.contains(e.target) && !e.target.closest('.lc-info-btn')) {
+    cp.style.display = 'none';
+  }
 });
-document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeDotPopup(); });
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { closeDotPopup(); closeCardPopup(); } });
 
 function filterIssueTab(tabEl, filter) {
   document.querySelectorAll('.ic-tab').forEach(t => {
@@ -6369,17 +6735,15 @@ function filterIssueTab(tabEl, filter) {
   });
   tabEl.classList.add('ic-tab-active');
   tabEl.setAttribute('aria-selected', 'true');
-  // Hide/show lanes container and completed section according to tab
-  const lanesEl = document.querySelector('.it-lanes');
-  const doneEl = document.querySelector('.it-done-section');
-  if (lanesEl) lanesEl.classList.toggle('ic-hidden', filter === 'completed');
-  if (doneEl) doneEl.classList.toggle('ic-hidden', filter === 'active');
-  // Also honor legacy ic-card cards (if any remain)
+  // #3956 CA-7 — Ya no hay sección "Completados" aparte: la etapa "Finalizados"
+  // vive dentro de la misma línea. El filtro de tabs solo oculta/muestra cards
+  // por estado; la línea (con todas sus etapas) permanece visible.
   document.querySelectorAll('.ic-card, .lc-card').forEach(card => {
     const status = card.dataset.status;
     if (filter === 'all') card.classList.remove('ic-hidden');
     else card.classList.toggle('ic-hidden', status !== filter);
   });
+  try { updateLaneOverflow(); } catch(_) {}
   saveIssueTrackerState();
 }
 
