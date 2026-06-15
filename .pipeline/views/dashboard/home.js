@@ -14,6 +14,20 @@ const path = require('path');
 //   escapeHtmlAttr → contexto atributo (title="${...}", aria-label="${...}")
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 
+// #3953 (EP8-H0) — Componentes SSR compartidos del dashboard V3. Provee
+// renderKpiCard/renderStatusBadge/renderAgentPill con escape interno y
+// allowlist de íconos de severidad. Los KPI cards de home se emiten desde acá
+// preservando los ids invariantes (kpi-prs/-value, etc.) del DOM morphing.
+const { renderKpiCard } = require('./components');
+
+// #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2: banner stale + CSRF, nunca
+// traga el error en silencio) y framework de modal de confirmación con preview
+// (CA-3) que reemplazan el fetchJson `.catch(()=>null)` inline y los confirm()
+// nativos. Se inyectan una sola vez al inicio del <script> principal (ver más
+// abajo). Mismo patrón que satellites.js / descanso.js / bloqueados.js.
+const { FETCH_CLIENT_JS, renderStaleBanner } = require('./fetch-client.js');
+const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
+
 // #3726 — Modulo compartido de la nav bar V3. Provee NAV_TABS,
 // renderNavTabsSsr (markup SSR) y loadIconSprite (cache compartido del SVG).
 // home.js consume todo desde aca para no duplicar el catalogo de tabs ni
@@ -1394,7 +1408,10 @@ function fmtNum(n){ if(n==null||isNaN(n)) return '—'; if(n>=1e6) return (n/1e6
 function fmtPct(n){ return n==null?'—':n.toFixed(1)+'%'; }
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
 function setClass(id, cls, on){ const el=document.getElementById(id); if(el) el.classList.toggle(cls, !!on); }
-function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(()=>null); }
+// #3953 (CA-2) — fetchJson ya NO se define acá: lo provee FETCH_CLIENT_JS
+// (inyectado al inicio del <script>). El wrapper compartido dispara el banner
+// "datos desactualizados — reintentando…" ante fallo en vez de tragar el error
+// en silencio, y adjunta X-CSRF-Token en métodos no-GET (R2).
 
 // #2976 — escape HTML para defensa anti-XSS al inyectar strings que vinieron
 // del JSON de cuota agotada (error_type, skills) o del response de Anthropic.
@@ -1425,7 +1442,7 @@ function showToast(msg, ok){
 }
 
 async function killAgent(issue, skill, pipeline, fase){
-    if(!confirm('¿Cancelar agente '+skill+' en #'+issue+'?')) return;
+    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:[{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}] }))) return;
     try{
         const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue, skill, pipeline, fase})});
         const j = await r.json();
@@ -1516,11 +1533,11 @@ async function tickHeader(){
             pill.addEventListener('click', async () => {
                 const isActive = pill.classList.contains('in-pill-warn');
                 const action = isActive ? 'off' : 'on'; // endpoint acepta 'on'/'off'
-                const verb = isActive ? 'DESACTIVAR' : 'ACTIVAR';
+                const verb = isActive ? 'Desactivar' : 'Activar';
                 const consequence = isActive
-                    ? '. El pipeline va a poder lanzar dev/build de nuevo.'
-                    : '. Va a bloquear lanzamientos de otros skills para drenar la cola de '+label+'.';
-                if(!confirm('¿'+verb+' la ventana de prioridad '+label+'?'+consequence)) return;
+                    ? 'El pipeline va a poder lanzar dev/build de nuevo.'
+                    : 'Va a bloquear lanzamientos de otros skills para drenar la cola de '+label+'.';
+                if(!(await inConfirm({ title:verb+' ventana de prioridad', message:consequence, confirmLabel:verb, danger: !isActive, preview:[{label:'Ventana', value:label}] }))) return;
                 try{
                     const r = await fetch('/api/priority-window', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({window: winKey, action})});
                     const j = await r.json();
@@ -2442,7 +2459,7 @@ function bindModeToggle(){
                     const j = await r.json();
                     showToast(j.msg || 'Pipeline reanudado', j.ok);
                 } else if(action === 'pause'){
-                    if(!confirm('¿Pausar TODO el pipeline? Se detendrán todos los lanzamientos hasta que reanudes.')) return;
+                    if(!(await inConfirm({ title:'Pausar todo el pipeline', message:'Se detendrán todos los lanzamientos hasta que reanudes.', confirmLabel:'Pausar todo' }))) return;
                     const r = await fetch('/api/pause', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'pause'})});
                     const j = await r.json();
                     showToast(j.msg || 'Pipeline pausado', j.ok);
@@ -2453,13 +2470,12 @@ function bindModeToggle(){
                     const issues = raw.split(/[,\s]+/).map(s => Number(s.replace(/^#/, '').trim())).filter(n => Number.isInteger(n) && n > 0);
                     if(issues.length === 0){ showToast('Ningún número de issue válido en el input', false); return; }
                     const lista = issues.map(n => '#'+n).join(', ');
-                    // \\n para que el template literal de Node escriba "\\n" literal al HTML;
-                    // el cliente al ejecutar el string los interpreta como saltos de línea.
-                    const msg = '¿Activar pausa parcial?\\n\\n' +
-                        'Solo se van a procesar estos ' + issues.length + ' issue' + (issues.length===1?'':'s') + ':\\n' +
-                        lista + '\\n\\n' +
-                        'El resto del pipeline queda pausado hasta que reanudes o cambies la lista.';
-                    if(!confirm(msg)) return;
+                    if(!(await inConfirm({
+                        title:'Activar pausa parcial',
+                        message:'Solo se van a procesar estos ' + issues.length + ' issue' + (issues.length===1?'':'s') + '. El resto del pipeline queda pausado hasta que reanudes o cambies la lista.',
+                        confirmLabel:'Activar pausa parcial',
+                        preview:[{label:'Issues', value:lista}]
+                    }))) return;
                     const r = await fetch('/api/pause-partial', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issues})});
                     const j = await r.json();
                     showToast(j.msg || 'Pausa parcial aplicada', j.ok);
@@ -2472,7 +2488,7 @@ function bindModeToggle(){
 }
 
 async function pauseIssueHome(issue){
-    if(!confirm('¿Pausar #'+issue+'? Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes en /pipeline.')) return;
+    if(!(await inConfirm({ title:'Pausar #'+issue, message:'Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes en /pipeline.', confirmLabel:'Pausar', preview:[{label:'Issue', value:'#'+issue}] }))) return;
     try{
         const r = await fetch('/api/issue/'+issue+'/pause', {method:'POST'});
         const j = await r.json();
@@ -3335,30 +3351,10 @@ function renderInfraHealth(state) {
 function renderKpiGrid(state) {
     return `
     <section class="kpi-grid" aria-label="KPIs">
-      <div class="kpi-card" id="kpi-prs" title="PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.">
-        <span class="kpi-icon">✅</span>
-        <span class="kpi-label">PRs · 7d</span>
-        <span class="kpi-value" id="kpi-prs-value">…</span>
-        <span class="kpi-sub">mergeados</span>
-      </div>
-      <div class="kpi-card" id="kpi-tokens" title="Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Gemini · Cerebras · NVIDIA). Hover para breakdown.">
-        <span class="kpi-icon">⚡</span>
-        <span class="kpi-label">Tokens · 24h</span>
-        <span class="kpi-value" id="kpi-tokens-value">…</span>
-        <span class="kpi-sub">todos los providers</span>
-      </div>
-      <div class="kpi-card" id="kpi-cycle" title="Mediana de duración por agente/fase (cap 7d). NO es cycle time DORA — esa métrica vive separada.">
-        <span class="kpi-icon">⏱</span>
-        <span class="kpi-label">Duración por agente</span>
-        <span class="kpi-value" id="kpi-cycle-value">…</span>
-        <span class="kpi-sub">mediana por marker</span>
-      </div>
-      <div class="kpi-card" id="kpi-bounce" title="% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.">
-        <span class="kpi-icon">↩</span>
-        <span class="kpi-label">% Rebote · 7d</span>
-        <span class="kpi-value" id="kpi-bounce-value">…</span>
-        <span class="kpi-sub">issues con ≥1 rebote</span>
-      </div>
+      ${renderKpiCard({ id: 'kpi-prs', valueId: 'kpi-prs-value', icon: '✅', label: 'PRs · 7d', sub: 'mergeados', title: 'PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.' })}
+      ${renderKpiCard({ id: 'kpi-tokens', valueId: 'kpi-tokens-value', icon: '⚡', label: 'Tokens · 24h', sub: 'todos los providers', title: 'Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Gemini · Cerebras · NVIDIA). Hover para breakdown.' })}
+      ${renderKpiCard({ id: 'kpi-cycle', valueId: 'kpi-cycle-value', icon: '⏱', label: 'Duración por agente', sub: 'mediana por marker', title: 'Mediana de duración por agente/fase (cap 7d). NO es cycle time DORA — esa métrica vive separada.' })}
+      ${renderKpiCard({ id: 'kpi-bounce', valueId: 'kpi-bounce-value', icon: '↩', label: '% Rebote · 7d', sub: 'issues con ≥1 rebote', title: '% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.' })}
       <div class="kpi-card kpi-quota-dual" id="kpi-quota" title="Cuota Plan Max (sin API pública de Anthropic — calibrado contra valores reales de claude.ai).">
         <span class="kpi-icon">📊</span>
         <span class="kpi-label">Cuota Plan Max</span>
@@ -3611,6 +3607,10 @@ function renderHomeHTML(opts) {
      depender de un static asset handler. Oculto con display:none, los
      símbolos siguen siendo referenciables por id. -->
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
+${/* #3953 (CA-2) — banner discreto de dato desactualizado. Oculto por default;
+      el wrapper fetchJson lo muestra ante fallo de polling y lo limpia al
+      recuperar. Si faltara, fetchJson lo recrea en caliente (defensa). */ ''}
+${renderStaleBanner()}
 <div class="kiosk-frame">
   <header class="in-header">
     ${renderBrandBar(state)}
@@ -3679,7 +3679,9 @@ window.__VIEW_BOOT__ = ${JSON.stringify({
     titles: { home: 'Operación' },
 })};
 </script>
-<script>${script}</script>
+<script>${FETCH_CLIENT_JS}
+${CONFIRM_MODAL_JS}
+${script}</script>
 </body>
 </html>`;
 }

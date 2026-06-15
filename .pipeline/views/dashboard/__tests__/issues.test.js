@@ -179,7 +179,7 @@ test('el script cliente define moveIssue/pauseIssue propios (no gatea en window.
 
 // Ejecuta el IIFE del script cliente en un DOM falso y verifica que un click en
 // los botones de acción dispara POST al endpoint correcto (cableado real, no no-op).
-test('click en acciones de card hace POST /api/issue/<id>/<action> (CA-PO1)', () => {
+test('click en acciones de card hace POST /api/issue/<id>/<action> (CA-PO1)', async () => {
     const script = issues.renderIssuesClientScript();
     const calls = [];
 
@@ -210,12 +210,21 @@ test('click en acciones de card hace POST /api/issue/<id>/<action> (CA-PO1)', ()
         // /api/dash/pipeline (tickIssues inicial) → ok:false corta temprano.
         return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     };
+    // #3953 — el script ahora consume los globals fetchJson (FETCH_CLIENT_JS) y
+    // inConfirm (CONFIRM_MODAL_JS), inyectados aparte en la página real. Acá se
+    // proveen fakes equivalentes: fetchJson delega al mock de fetch; inConfirm
+    // confirma sin abrir modal real.
+    const fetchJson = async (url, opts) => {
+        const r = await fetch(url, opts);
+        return r.ok ? r.json() : null;
+    };
+    const inConfirm = () => Promise.resolve(true);
 
     const run = new Function(
-        'document', 'window', 'fetch', 'setInterval', 'setTimeout', 'confirm',
+        'document', 'window', 'fetch', 'fetchJson', 'inConfirm', 'setInterval', 'setTimeout', 'confirm',
         script,
     );
-    run(document, window, fetch, () => 0, () => 0, () => true);
+    run(document, window, fetch, fetchJson, inConfirm, () => 0, () => 0, () => true);
 
     assert.strictEqual(typeof handlers.click, 'function', 'el grid debe tener handler de click');
 
@@ -234,6 +243,10 @@ test('click en acciones de card hace POST /api/issue/<id>/<action> (CA-PO1)', ()
     handlers.click(evFor('move-up', '123'));
     handlers.click(evFor('move-top', '456'));
     handlers.click(evFor('pause', '789'));
+
+    // pause ahora hace `await inConfirm(...)` antes del POST, por lo que el fetch
+    // se difiere a un microtask. Drenar la cola antes de aseverar.
+    await new Promise((resolve) => setImmediate(resolve));
 
     const urls = calls.map((c) => c.url);
     assert.ok(urls.includes('/api/issue/123/move-up'), 'move-up debe pegarle al endpoint');

@@ -26,6 +26,11 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // (& < > " ' `), que es donde el SSR de Descanso interpola opts.tz opcional.
 const { escapeHtmlAttr } = require('../../lib/escape-html.js');
 
+// #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2, banner stale + CSRF) y
+// framework de modal de confirmación con preview (CA-3) que reemplaza confirm().
+const { FETCH_CLIENT_JS } = require('./fetch-client.js');
+const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -49,7 +54,6 @@ function fmtDur(ms){ if(!ms||ms<0) return '—'; const s=Math.round(ms/1000); if
 function fmtNum(n){ if(n==null||isNaN(n)) return '—'; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'k'; return String(n); }
 function fmtPct(n){ return n==null?'—':n.toFixed(1)+'%'; }
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
-function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(()=>null); }
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
 
 const SKILL_ICONS = {
@@ -127,9 +131,9 @@ function showToast(msg, ok){
 }
 
 async function killAgent(issue, skill, pipeline, fase){
-    if(!confirm('¿Cancelar agente '+skill+' en #'+issue+'?')) return;
+    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:[{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}] }))) return;
     try{
-        const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue, skill, pipeline, fase})});
+        const r = await fetch('/api/kill-agent', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({issue, skill, pipeline, fase})});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Agente cancelado':'Falló la cancelación'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -138,11 +142,11 @@ async function killAgent(issue, skill, pipeline, fase){
 
 async function killSkillGroup(skill, agents){
     if(!agents || !agents.length) return;
-    if(!confirm('¿Cancelar todos los agentes '+skill+' ('+agents.length+' activos)?')) return;
+    if(!(await inConfirm({ title:'Cancelar todos los agentes', message:'Se cancelarán todos los agentes activos de este skill.', confirmLabel:'Cancelar todos', preview:[{label:'Skill', value:skill},{label:'Activos', value:String(agents.length)}] }))) return;
     let ok=0, fail=0;
     for(const a of agents){
         try{
-            const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase})});
+            const r = await fetch('/api/kill-agent', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase})});
             const j = await r.json();
             if(j.ok) ok++; else fail++;
         } catch{ fail++; }
@@ -165,7 +169,7 @@ async function nhReactivate(issue){
     try{
         const r = await fetch('/api/needs-human/'+issue+'/reactivate', {
             method: 'POST',
-            headers: {'Content-Type':'application/json'},
+            headers: Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()),
             body: JSON.stringify({ guidance: guidance.trim() }),
         });
         const j = await r.json();
@@ -178,7 +182,7 @@ async function nhDismiss(issue){
     const reason = prompt('Razón para desestimar #'+issue+' (opcional):') || '';
     if(reason === null) return;
     try{
-        const r = await fetch('/api/needs-human/'+issue+'/dismiss', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({reason})});
+        const r = await fetch('/api/needs-human/'+issue+'/dismiss', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({reason})});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Desestimado':'Falló'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -187,7 +191,7 @@ async function nhDismiss(issue){
 
 async function moveIssue(issue, direction){
     try{
-        const r = await fetch('/api/issue/'+issue+'/'+direction, {method:'POST'});
+        const r = await fetch('/api/issue/'+issue+'/'+direction, {method:'POST', headers: nhCsrfHeaders()});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Movido':'Falló'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 400);
@@ -196,9 +200,9 @@ async function moveIssue(issue, direction){
 
 async function pauseIssue(issue, paused){
     const verb = paused ? 'Reanudar' : 'Pausar';
-    if(!confirm('¿'+verb+' #'+issue+'? '+(paused ? '(quita label blocked:dependencies)' : '(agrega label blocked:dependencies)'))) return;
+    if(!(await inConfirm({ title:verb+' issue', message:(paused ? 'Quita el label blocked:dependencies y vuelve a la cola del pipeline.' : 'Agrega el label blocked:dependencies; el pulpo lo saltea hasta reanudar.'), confirmLabel:verb, danger: !paused, preview:[{label:'Issue', value:'#'+issue},{label:'Acción', value:verb}] }))) return;
     try{
-        const r = await fetch('/api/issue/'+issue+'/'+(paused?'resume':'pause'), {method:'POST'});
+        const r = await fetch('/api/issue/'+issue+'/'+(paused?'resume':'pause'), {method:'POST', headers: nhCsrfHeaders()});
         const j = await r.json();
         showToast(j.msg || (j.ok?(paused?'Reanudado':'Pausado'):'Falló'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -769,7 +773,9 @@ function renderDescansoInner() {
     const { body, css, script } = buildParts();
     return `${body}
 <style>${css}</style>
-<script>${COMMON_HELPERS}
+<script>${FETCH_CLIENT_JS}
+${CONFIRM_MODAL_JS}
+${COMMON_HELPERS}
 ${script}</script>`;
 }
 
@@ -828,7 +834,9 @@ ${css}
     <span>Intrale V3</span>
   </footer>
 </div>
-<script>${COMMON_HELPERS}
+<script>${FETCH_CLIENT_JS}
+${CONFIRM_MODAL_JS}
+${COMMON_HELPERS}
 ${script}</script>
 </body>
 </html>`;

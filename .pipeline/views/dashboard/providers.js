@@ -39,6 +39,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
+
+// #3953 (EP8-H0) — Componente compartido de badge de severidad (ícono + texto,
+// allowlist de íconos). Reemplaza el .provider-status-badge solo-texto por el
+// status-badge canónico (CA-1 + CA-4).
+const { renderStatusBadge } = require('./components');
+
+// Estado de credencial → severidad del status-badge compartido.
+const STATUS_SEVERITY = Object.freeze({
+    present: 'ok',
+    placeholder: 'warn',
+    absent: 'info',
+});
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
 // Fuente ÚNICA de masking + fingerprint (#3737, R1). NUNCA recomputar acá.
@@ -89,11 +101,11 @@ const LEGEND_HTML = `
   <span class="in-section-title-icon" aria-hidden="true">📖</span>Leyenda
 </h2>
 <ul class="providers-legend-list">
-  <li><span class="provider-status-badge present" aria-hidden="true">CONFIGURADO</span>
+  <li>${renderStatusBadge({ severity: 'ok', label: 'CONFIGURADO' })}
       credencial presente y válida (no placeholder).</li>
-  <li><span class="provider-status-badge placeholder" aria-hidden="true">PLACEHOLDER</span>
+  <li>${renderStatusBadge({ severity: 'warn', label: 'PLACEHOLDER' })}
       valor de relleno (REVOKED / EXAMPLE / CHANGE_ME) — falta la key real.</li>
-  <li><span class="provider-status-badge absent" aria-hidden="true">AUSENTE</span>
+  <li>${renderStatusBadge({ severity: 'info', label: 'AUSENTE' })}
       sin credencial configurada para este provider.</li>
   <li><span aria-hidden="true">🔑</span> <strong>Preview enmascarado</strong>:
       primeros 6 + últimos 4 caracteres. La key completa NUNCA se muestra ni
@@ -201,9 +213,11 @@ function renderProviderCard(entry) {
         ` style="--row-accent: ${accentVar(provider)};">` +
         `<header class="provider-card-head">` +
         `<span class="provider-card-title">${escapeHtmlText(e.label || provider)}</span>` +
-        `<span class="provider-status-badge ${escapeHtmlAttr(status)}"` +
-        ` title="${escapeHtmlAttr('Estado de la credencial: ' + statusLabel)}"` +
-        ` aria-label="${escapeHtmlAttr('Estado ' + statusLabel)}">${escapeHtmlText(statusLabel)}</span>` +
+        renderStatusBadge({
+            severity: STATUS_SEVERITY[status] || 'info',
+            label: statusLabel,
+            title: 'Estado de la credencial: ' + statusLabel,
+        }) +
         `</header>` +
         maskHtml +
         fpHtml +

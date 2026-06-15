@@ -45,6 +45,11 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // escapeHtmlAttr el contexto atributo (title="", aria-label="").
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 
+// #3953 (EP8-H0) — Wrapper único de fetch JSON (CA-2): no traga el error en
+// silencio, dispara el banner "datos desactualizados — reintentando" y conserva
+// el último dato. Reemplaza la copia local con .catch(()=>null).
+const { FETCH_CLIENT_JS } = require('./fetch-client.js');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -70,7 +75,6 @@ function escapeHtmlSsr(s) {
 // tickHeader consume setText + fetchJson + pipelineModeState.
 const COMMON_HELPERS = `
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
-function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(()=>null); }
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
 
 const SKILL_ICONS = {
@@ -234,7 +238,7 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
  */
 function renderMatrizInner() {
     return `${renderMatrizBody()}
-<script>${COMMON_HELPERS}\n${MATRIZ_SCRIPT}</script>`;
+<script>${FETCH_CLIENT_JS}\n${COMMON_HELPERS}\n${MATRIZ_SCRIPT}</script>`;
 }
 
 /**

@@ -259,3 +259,101 @@ test('#2800 — payload XSS en título de issue queda neutralizado al pasar por 
     assert.ok(escaped.includes('&lt;script&gt;'), '< y > deben estar escapados');
     assert.ok(escaped.includes('&quot;'), 'las comillas dobles deben estar escapadas');
 });
+
+// =============================================================================
+// EP8-H0 (#3953) — Framework de modal de confirmación con preview (CA-3, R1).
+//
+// El nuevo confirm-modal.js reemplaza el confirm() nativo y renderiza datos
+// externos (títulos de issue, motivos, paths de worktree) en el preview. La
+// garantía de seguridad es estructural: TODO dato dinámico se inserta con
+// textContent, NUNCA con innerHTML. Estos tests lo ejercitan en un DOM falso
+// con el payload `<img src=x onerror>` y confirman que no sobrevive como HTML.
+// =============================================================================
+
+const { CONFIRM_MODAL_JS } = require('../views/dashboard/confirm-modal.js');
+
+function makeModalEl(tag, created) {
+    const el = {
+        tagName: tag, id: '', className: '', type: '', textContent: '',
+        _innerHTML: '', attrs: {}, children: [],
+        set innerHTML(v) { this._innerHTML = v; },
+        get innerHTML() { return this._innerHTML; },
+        setAttribute(k, v) { this.attrs[k] = v; },
+        appendChild(c) { this.children.push(c); },
+        addEventListener() {},
+        focus() {},
+    };
+    created.push(el);
+    return el;
+}
+
+function runModal(opts) {
+    const created = [];
+    const body = makeModalEl('body', created);
+    const byId = {};
+    const origAppend = body.appendChild.bind(body);
+    body.appendChild = (el) => { origAppend(el); if (el.id) byId[el.id] = el; };
+    const document = {
+        body,
+        activeElement: { focus() {} },
+        getElementById: (id) => byId[id] || null,
+        createElement: (tag) => makeModalEl(tag, created),
+        createElementNS: (_ns, tag) => makeModalEl(tag, created),
+        addEventListener() {},
+        removeEventListener() {},
+    };
+    const factory = new Function('document', CONFIRM_MODAL_JS + '\nreturn { inConfirm };');
+    const api = factory(document);
+    // El executor de la Promise construye el DOM sincrónicamente.
+    api.inConfirm(opts);
+    return created;
+}
+
+const XSS = '<img src=x onerror="fetch(\'/api/kill-agent\',{method:\'POST\'})">';
+
+test('#3953 inConfirm inserta el title vía textContent (no se interpreta como HTML)', () => {
+    const created = runModal({ title: XSS, message: 'm', preview: [] });
+    const titleNode = created.find((e) => e.id === 'in-modal-title');
+    assert.ok(titleNode, 'debe existir el título del modal');
+    // textContent guarda el payload CRUDO (el browser lo escapa al renderizar).
+    assert.equal(titleNode.textContent, XSS);
+    // Y nunca se usó innerHTML con el payload.
+    assert.ok(!titleNode.innerHTML.includes('<img'), 'el title NO debe setearse vía innerHTML');
+});
+
+test('#3953 inConfirm inserta label/value del preview vía textContent (R1)', () => {
+    const created = runModal({
+        title: 'Limpiar worktree',
+        preview: [{ label: XSS, value: XSS }],
+    });
+    const dds = created.filter((e) => e.tagName === 'dd');
+    const dts = created.filter((e) => e.tagName === 'dt');
+    assert.ok(dds.length >= 1 && dts.length >= 1, 'debe renderizar filas de preview');
+    assert.equal(dds[0].textContent, XSS, 'el value del preview va por textContent');
+    assert.equal(dts[0].textContent, XSS, 'el label del preview va por textContent');
+});
+
+test('#3953 ningún nodo del modal vuelca el payload XSS vía innerHTML', () => {
+    const created = runModal({ title: XSS, message: XSS, preview: [{ label: 'Worktree', value: XSS }] });
+    for (const el of created) {
+        assert.ok(!String(el.innerHTML).includes('<img'), `nodo ${el.tagName} no debe tener <img en innerHTML`);
+        assert.ok(!String(el.innerHTML).includes('onerror='), `nodo ${el.tagName} no debe tener onerror= en innerHTML`);
+    }
+});
+
+test('#3953 el modal NO usa innerHTML en absoluto (construcción 100% por DOM)', () => {
+    const created = runModal({ title: 'x', message: 'y', preview: [{ label: 'a', value: 'b' }] });
+    const withInner = created.filter((e) => e._innerHTML);
+    assert.equal(withInner.length, 0, 'ningún nodo del modal debe usar innerHTML');
+    // El ícono se construye por DOM con href de la allowlist.
+    const uses = created.filter((e) => e.tagName === 'use');
+    assert.ok(uses.length >= 1, 'debe crear el <use> del ícono por DOM');
+    assert.match(uses[0].attrs.href, /^#ic-(bad|warn)$/, 'el href del ícono sale de la allowlist');
+});
+
+test('#3953 CONFIRM_MODAL_JS no usa innerHTML y setea title vía textContent (source-level)', () => {
+    // Defensa estática: el framework no usa innerHTML en ningún lado y el title
+    // se inserta vía textContent.
+    assert.doesNotMatch(CONFIRM_MODAL_JS, /\.innerHTML\s*=/);
+    assert.match(CONFIRM_MODAL_JS, /\.textContent\s*=\s*o\.title/);
+});

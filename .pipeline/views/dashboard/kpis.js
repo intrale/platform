@@ -38,6 +38,19 @@ const path = require('node:path');
 // escapeHtmlAttr para contexto atributo (title="", aria-label="").
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 
+// #3953 (EP8-H0) — Badge de severidad compartido (ícono + texto) para la salud
+// del sistema (CA-1 + CA-4): severidad nunca solo por color.
+const { renderStatusBadge } = require('./components');
+
+// Salud agregada del sistema (string libre) → severidad del status-badge.
+function _healthSeverity(health) {
+    const h = String(health || '').toLowerCase();
+    if (h === 'ok' || h === 'healthy' || h === 'green' || h === 'up') return 'ok';
+    if (h === 'warn' || h === 'warning' || h === 'degraded' || h === 'yellow') return 'warn';
+    if (h === 'bad' || h === 'critical' || h === 'down' || h === 'red' || h === 'error') return 'bad';
+    return 'info';
+}
+
 // #3726 — Nav bar V3 unificada (tab activa = "kpis").
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
@@ -210,7 +223,9 @@ function renderKpiCardsHTML(matrixDerived, sysMini) {
         + `<span class="kpi-label">Sistema`
         + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr(sysTip)}" data-tip="${escapeHtmlAttr(sysTip)}">i</span>`
         + `</span>`
-        + `<span class="kpi-sub">RAM ${escapeHtmlText(fmtNum(sys.mem))}% · ${escapeHtmlText(String(sys.health || '—'))}</span>`
+        + `<span class="kpi-sub">RAM ${escapeHtmlText(fmtNum(sys.mem))}% `
+        + renderStatusBadge({ severity: _healthSeverity(sys.health), label: String(sys.health || '—') })
+        + `</span>`
         + `</div>`;
     html += '</div>';
     return html;
