@@ -4456,6 +4456,38 @@ function isIssueClosed(issueNum) {
   return getIssueInfo(issueNum).state === 'CLOSED';
 }
 
+/**
+ * #4023 CA-1 — Decide si un issue debe re-bloquearse por `blocked:dependencies`,
+ * releyendo labels EN VIVO contra GitHub para no caer en el "re-bloqueo
+ * fantasma" causado por la caché stale (LABELS_CACHE_TTL_MS = 10 min).
+ *
+ * Invalida puntualmente la caché de ESTE issue (no baja el TTL global) y
+ * re-fetchea. Devuelve `true` SOLO si el label sigue presente en vivo.
+ *
+ * Extraído como función inyectable para testeo unitario (los defaults usan la
+ * caché y `getIssueLabels` reales del módulo).
+ *
+ * @param {string|number} issue
+ * @param {object} [deps]
+ * @param {() => void} [deps.invalidateCache]
+ * @param {() => string[]} [deps.readLiveLabels]
+ * @returns {boolean}
+ */
+function _shouldReblockForDependencies(issue, {
+  invalidateCache = () => issueLabelsCache.delete(String(issue)),
+  readLiveLabels = () => getIssueLabels(issue),
+} = {}) {
+  try { invalidateCache(); } catch { /* invalidación best-effort */ }
+  let liveLbls;
+  try { liveLbls = readLiveLabels(); }
+  catch {
+    // Fail-closed: si no se puede releer en vivo, mantener el bloqueo (no
+    // arriesgar lanzar un issue que GitHub todavía podría tener bloqueado).
+    return true;
+  }
+  return Array.isArray(liveLbls) && liveLbls.includes('blocked:dependencies');
+}
+
 /** Calcular score de prioridad para un issue (menor = más prioritario) */
 function calcularPrioridad(issueNum, config) {
   const labels = getIssueLabels(issueNum);
@@ -4792,6 +4824,17 @@ function brazoLanzamiento(config) {
     // `bloqueado-dependencias/` para que el dashboard lo vea segregado y
     // el brazoDesbloqueo pueda devolverlo a pendiente/ al destrabar.
     if (issueLbls.includes('blocked:dependencies')) {
+      // #4023 — Re-bloqueo fantasma: `issueLbls` viene de la caché (TTL 10min,
+      // LABELS_CACHE_TTL_MS). Si el issue se destrabó en GitHub dentro de esa
+      // ventana, la caché todavía muestra el label viejo y re-escribiríamos los
+      // archivos de bloqueo en disco (incidente #3953). Antes de actuar,
+      // invalidar SOLO este issue y releer labels en vivo contra GitHub (fuente
+      // de verdad). Si el label ya no está → NO re-bloquear, seguir flujo normal.
+      if (!_shouldReblockForDependencies(issue)) {
+        log('lanzamiento', `🟢 #${issue} label blocked:dependencies ya removido en GitHub (caché stale) — NO re-bloquear (#4023)`);
+        // No mover a bloqueado-dependencias/, no `continue` por bloqueo: el
+        // issue sigue evaluándose por el resto de gates (needs-human, etc.).
+      } else {
       try {
         const blockedDepDir = path.join(fasePath(pipelineName, fase), 'bloqueado-dependencias');
         fs.mkdirSync(blockedDepDir, { recursive: true });
@@ -4824,6 +4867,7 @@ function brazoLanzamiento(config) {
       }
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
       continue;
+      } // fin else (#4023): label vigente en vivo
     }
 
     // 0b-bis. NEEDS-HUMAN (#2549): si el issue tiene label needs-human, no
@@ -11882,9 +11926,19 @@ async function brazoDesbloqueoImpl(config) {
       30000
     );
     let blockedIssues = JSON.parse(result || '[]');
+    // #4023 — issues que GitHub reporta con el label EN VIVO. El self-heal los
+    // saltea (ya los consultó este brazo / el label está vigente → no son
+    // fantasmas) para no gastar requests extra.
+    const seenLive = new Set(blockedIssues.map(i => String(i.number)));
     if (blockedIssues.length === 0) {
       // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
       try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
+      // #4023 — Aunque GitHub no liste NINGÚN issue con el label, puede haber
+      // markers huérfanos en disco (re-bloqueo fantasma #3953): el issue se
+      // destrabó en GitHub pero quedó trabado en `bloqueado-dependencias/`.
+      // El brazo principal nunca lo ve (sólo enumera issues con el label). Este
+      // barrido lo cierra. Corre acá, dentro del guard `_unblockRunning`.
+      await _selfHealPhantomBlocks({ allowlistSet, seenLive });
       return;
     }
 
@@ -12107,6 +12161,12 @@ async function brazoDesbloqueoImpl(config) {
       }
     }
 
+    // #4023 — Self-heal de re-bloqueo fantasma: reconciliar markers de disco
+    // contra GitHub en vivo. Corre al final, ya bajo el guard `_unblockRunning`
+    // (sin carrera con el release del brazo principal); `seenLive` evita
+    // re-consultar los issues que este brazo ya procesó.
+    await _selfHealPhantomBlocks({ allowlistSet, seenLive });
+
     // Persistir mapeos para el dashboard
     try {
       fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy, blocks }, null, 2));
@@ -12116,6 +12176,158 @@ async function brazoDesbloqueoImpl(config) {
   } catch (e) {
     log('desbloqueo', `Error en brazo de desbloqueo: ${e.message}`);
   }
+}
+
+/**
+ * #4023 — Self-heal del "re-bloqueo fantasma".
+ *
+ * El brazo de lanzamiento puede re-escribir los archivos de bloqueo en disco
+ * leyendo labels de una caché stale (TTL 10min). Si `blocked:dependencies` ya
+ * fue removido en GitHub dentro de esa ventana, el issue queda trabado en disco
+ * PERO el brazo de desbloqueo principal nunca lo ve (enumera sólo issues que
+ * TODAVÍA tienen el label vía `gh issue list --label blocked:dependencies`). Cae
+ * en el hueco entre ambos brazos (incidente #3953).
+ *
+ * Este barrido cierra el hueco: itera los markers de disco
+ * (`listDependencyBlockedMarkers()`) y los reconcilia EN VIVO contra GitHub
+ * (fuente de verdad). Un issue se auto-rescata SOLO si, leído en vivo:
+ *   - ya NO tiene el label `blocked:dependencies`, Y
+ *   - no tiene dependencias abiertas (re-resueltas en vivo con
+ *     `resolveDependencies()`, SIN confiar en el `reason.depends_on: []` del
+ *     marker mínimo — vacío puede significar "deps aún no parseadas").
+ *
+ * Fail-closed: ante cualquier ambigüedad (read en vivo falla, respuesta no
+ * parseable, estado de dep ilegible, issue number no válido) → mantener el
+ * bloqueo. Un falso destrabe lanza trabajo antes de que cierren sus deps.
+ *
+ * Seguridad: el issue se valida como entero positivo (A03) antes de
+ * interpolarlo en cualquier comando `gh` o path; los paths los deriva
+ * `releaseDependencyBlockToPendiente()` anclados a `fasePath(...)` (A01). El log
+ * de auto-rescate sólo registra `{issue numérico, timestamp, motivo fijo}`
+ * (anti log-injection A09 — nunca vuelca título/body crudo).
+ *
+ * Diseñado inyectable para testeo unitario (`node --test`).
+ *
+ * @param {object} [opts]
+ * @param {Set<string>|null} [opts.allowlistSet] — pausa parcial; null = sin filtro.
+ * @param {Set<string>}      [opts.seenLive]     — issues que el brazo principal ya consultó en vivo.
+ * @returns {Promise<{rescued:number, maintained:number}>}
+ */
+async function _selfHealPhantomBlocks({
+  allowlistSet = null,
+  seenLive = new Set(),
+  listMarkers = reboteClassifier.listDependencyBlockedMarkers,
+  releaseFn = reboteClassifier.releaseDependencyBlockToPendiente,
+  ghCall = ghDesbloqueoCall,
+  throttleFn = ghThrottle,
+  resolveDeps = resolveDependencies,
+  logFn = log,
+} = {}) {
+  let markers;
+  try { markers = listMarkers(); }
+  catch (e) {
+    logFn('desbloqueo-selfheal', `[WARN] no se pudieron listar markers (no bloqueante): ${e.message}`);
+    return { rescued: 0, maintained: 0 };
+  }
+  if (!Array.isArray(markers)) return { rescued: 0, maintained: 0 };
+
+  let rescued = 0;
+  let maintained = 0;
+
+  for (const m of markers) {
+    // SEC-2 / A03 — validación numérica estricta del issue ANTES de
+    // interpolarlo en cualquier comando gh o path.
+    if (!m || !Number.isInteger(m.issue) || m.issue <= 0) continue;
+    const issueStr = String(m.issue);
+
+    // Cero requests extra: el brazo principal ya consultó en vivo a estos (y
+    // como aparecieron con el label, no son fantasmas).
+    if (seenLive.has(issueStr)) continue;
+    // Respetar pausa parcial: no rescatar issues fuera del allowlist.
+    if (allowlistSet && !allowlistSet.has(issueStr)) continue;
+
+    // 1) Releer labels + estado EN VIVO (fuente de verdad).
+    let liveLabels = null;
+    let liveState = null;
+    try {
+      throttleFn();
+      const { stdout } = await ghCall(
+        ['issue', 'view', issueStr, '--json', 'labels,state', '--repo', 'intrale/platform'],
+        10000
+      );
+      const parsed = JSON.parse(stdout || '{}');
+      liveLabels = Array.isArray(parsed.labels) ? parsed.labels.map(l => l.name) : null;
+      liveState = typeof parsed.state === 'string' ? parsed.state : null;
+    } catch (e) {
+      logFn('desbloqueo-selfheal', `[INFO] #${issueStr} labels no legibles en vivo — fail-closed, mantengo bloqueo`);
+      maintained++;
+      continue;
+    }
+    if (liveLabels === null) { maintained++; continue; }      // respuesta rara → fail-closed
+    if (liveState === 'CLOSED') continue;                      // issue cerrado: no es un fantasma de bloqueo
+    if (liveLabels.includes('blocked:dependencies')) { maintained++; continue; } // label vigente → mantener
+
+    // 2) Label removido. CA-4: re-resolver deps EN VIVO (NO confiar en
+    //    reason.depends_on del marker). Leer body+comments y resolver.
+    let body = '';
+    let comments = [];
+    try {
+      throttleFn();
+      const { stdout } = await ghCall(
+        ['issue', 'view', issueStr, '--json', 'body,comments', '--repo', 'intrale/platform'],
+        10000
+      );
+      const parsed = JSON.parse(stdout || '{}');
+      body = typeof parsed.body === 'string' ? parsed.body : '';
+      comments = Array.isArray(parsed.comments) ? parsed.comments : [];
+    } catch (e) {
+      logFn('desbloqueo-selfheal', `[INFO] #${issueStr} deps no legibles en vivo — fail-closed, mantengo bloqueo`);
+      maintained++;
+      continue;
+    }
+
+    let resolved;
+    try { resolved = resolveDeps({ body, comments, selfIssue: m.issue }); }
+    catch { resolved = null; }
+    if (resolved == null) { maintained++; continue; }          // ambigüedad → fail-closed
+
+    const declaredDeps = Array.isArray(resolved.deps) ? resolved.deps.map(String) : [];
+
+    // 3) Verificar que ninguna dep declarada siga abierta. Si no se puede leer
+    //    el estado de una dep → asumir abierta (fail-closed, igual que el
+    //    brazo principal).
+    let anyOpen = false;
+    for (const depNum of declaredDeps) {
+      if (!/^\d+$/.test(depNum)) { anyOpen = true; break; }    // A03: dep no numérica → fail-closed
+      try {
+        throttleFn();
+        const { stdout: depState } = await ghCall(
+          ['issue', 'view', depNum, '--json', 'state', '--jq', '.state', '--repo', 'intrale/platform'],
+          10000
+        );
+        if (String(depState).trim() !== 'CLOSED') { anyOpen = true; break; }
+      } catch {
+        anyOpen = true; break;                                  // estado ilegible → fail-closed
+      }
+    }
+    if (anyOpen) { maintained++; continue; }
+
+    // 4) Auto-rescate (CA-2): label removido en GitHub + sin deps abiertas.
+    try {
+      const releaseRes = releaseFn({ issue: m.issue });
+      if (releaseRes && releaseRes.moved > 0) {
+        rescued++;
+        // CA-3 — traza auditable: sólo {issue validado, timestamp, motivo fijo}.
+        logFn('desbloqueo-selfheal',
+          `🩹 #${issueStr} auto-rescatado: label blocked:dependencies removido en GitHub + sin deps abiertas (re-bloqueo fantasma #4023) @ ${new Date().toISOString()} → ${releaseRes.moved} archivo(s) a ${releaseRes.pipeline}/${releaseRes.phase}/pendiente/`);
+      }
+      // moved === 0: el marker ya no estaba (otro ciclo lo movió). Idempotente.
+    } catch (e) {
+      logFn('desbloqueo-selfheal', `[WARN] #${issueStr} release falló (no bloqueante): ${e.message}`);
+    }
+  }
+
+  return { rescued, maintained };
 }
 
 // =============================================================================
@@ -12921,6 +13133,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _sanitizeGhArgs,
     _checkAndResetUnblockWedge,
     _maybeLogReentrySkip,
+    // #4023 — re-bloqueo fantasma: lectura en vivo + self-heal (testing).
+    _shouldReblockForDependencies,
+    _selfHealPhantomBlocks,
     UNBLOCK_WEDGE_TIMEOUT_MS,
     REENTRY_LOG_COOLDOWN_MS,
     _getUnblockState: () => ({
