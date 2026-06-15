@@ -242,8 +242,18 @@ test('client script expone handlers needsHuman* y toggleNeedsHumanPanel', () => 
     assert.match(js, /window\.needsHumanDismiss/);
     assert.match(js, /window\.toggleNeedsHumanPanel/);
     assert.match(js, /\/api\/needs-human\//);
-    // Preparado para CSRF sin hardcodear ausencia (R8 security).
-    assert.match(js, /csrf-token/);
+    // #3953 — los handlers adjuntan CSRF vía nhCsrfHeaders() (helper ahora
+    // centralizado en FETCH_CLIENT_JS, inyectado en el documento completo).
+    assert.match(js, /nhCsrfHeaders\(\)/);
+});
+
+test('#3953 el documento completo inyecta el wrapper fetch y la lectura de csrf-token', () => {
+    const doc = renderBloqueados({ bloqueados: [] }, opts);
+    // El wrapper único de fetch (CA-2) y la lectura de <meta name="csrf-token">
+    // (R2) viven ahora en FETCH_CLIENT_JS, inyectado en el <script> de la página.
+    assert.match(doc, /csrf-token/);
+    assert.match(doc, /function fetchJson\(url, opts\)/);
+    assert.match(doc, /inConfirm/); // framework de modal de confirmación (CA-3)
 });
 
 test('renderBloqueados emite documento SSR completo con shell V3', () => {

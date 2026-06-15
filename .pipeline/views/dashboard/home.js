@@ -14,6 +14,12 @@ const path = require('path');
 //   escapeHtmlAttr → contexto atributo (title="${...}", aria-label="${...}")
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 
+// #3953 (EP8-H0) — Componentes SSR compartidos del dashboard V3. Provee
+// renderKpiCard/renderStatusBadge/renderAgentPill con escape interno y
+// allowlist de íconos de severidad. Los KPI cards de home se emiten desde acá
+// preservando los ids invariantes (kpi-prs/-value, etc.) del DOM morphing.
+const { renderKpiCard } = require('./components');
+
 // #3726 — Modulo compartido de la nav bar V3. Provee NAV_TABS,
 // renderNavTabsSsr (markup SSR) y loadIconSprite (cache compartido del SVG).
 // home.js consume todo desde aca para no duplicar el catalogo de tabs ni
@@ -3335,30 +3341,10 @@ function renderInfraHealth(state) {
 function renderKpiGrid(state) {
     return `
     <section class="kpi-grid" aria-label="KPIs">
-      <div class="kpi-card" id="kpi-prs" title="PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.">
-        <span class="kpi-icon">✅</span>
-        <span class="kpi-label">PRs · 7d</span>
-        <span class="kpi-value" id="kpi-prs-value">…</span>
-        <span class="kpi-sub">mergeados</span>
-      </div>
-      <div class="kpi-card" id="kpi-tokens" title="Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Gemini · Cerebras · NVIDIA). Hover para breakdown.">
-        <span class="kpi-icon">⚡</span>
-        <span class="kpi-label">Tokens · 24h</span>
-        <span class="kpi-value" id="kpi-tokens-value">…</span>
-        <span class="kpi-sub">todos los providers</span>
-      </div>
-      <div class="kpi-card" id="kpi-cycle" title="Mediana de duración por agente/fase (cap 7d). NO es cycle time DORA — esa métrica vive separada.">
-        <span class="kpi-icon">⏱</span>
-        <span class="kpi-label">Duración por agente</span>
-        <span class="kpi-value" id="kpi-cycle-value">…</span>
-        <span class="kpi-sub">mediana por marker</span>
-      </div>
-      <div class="kpi-card" id="kpi-bounce" title="% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.">
-        <span class="kpi-icon">↩</span>
-        <span class="kpi-label">% Rebote · 7d</span>
-        <span class="kpi-value" id="kpi-bounce-value">…</span>
-        <span class="kpi-sub">issues con ≥1 rebote</span>
-      </div>
+      ${renderKpiCard({ id: 'kpi-prs', valueId: 'kpi-prs-value', icon: '✅', label: 'PRs · 7d', sub: 'mergeados', title: 'PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.' })}
+      ${renderKpiCard({ id: 'kpi-tokens', valueId: 'kpi-tokens-value', icon: '⚡', label: 'Tokens · 24h', sub: 'todos los providers', title: 'Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Gemini · Cerebras · NVIDIA). Hover para breakdown.' })}
+      ${renderKpiCard({ id: 'kpi-cycle', valueId: 'kpi-cycle-value', icon: '⏱', label: 'Duración por agente', sub: 'mediana por marker', title: 'Mediana de duración por agente/fase (cap 7d). NO es cycle time DORA — esa métrica vive separada.' })}
+      ${renderKpiCard({ id: 'kpi-bounce', valueId: 'kpi-bounce-value', icon: '↩', label: '% Rebote · 7d', sub: 'issues con ≥1 rebote', title: '% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.' })}
       <div class="kpi-card kpi-quota-dual" id="kpi-quota" title="Cuota Plan Max (sin API pública de Anthropic — calibrado contra valores reales de claude.ai).">
         <span class="kpi-icon">📊</span>
         <span class="kpi-label">Cuota Plan Max</span>

@@ -43,6 +43,12 @@ const path = require('path');
 // compartido del sprite.svg). Misma dependencia que home.js / matriz.js.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2) + framework de modal de
+// confirmación con preview (CA-3) que reemplaza confirm() nativo. nhCsrfHeaders
+// se centraliza en FETCH_CLIENT_JS (R2).
+const { FETCH_CLIENT_JS } = require('./fetch-client.js');
+const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
+
 // #3722 — Escape HTML server-side unificado (CA-B3). escapeHtmlText para
 // contexto nodo-texto, escapeHtmlAttr para contexto atributo. Fallback inline
 // (defense-in-depth) por si el require fallara en un checkout transitorio.
@@ -271,7 +277,7 @@ function toggleNeedsHumanPanel(scrollOnExpand){
   } catch(e){}
 })();
 async function needsHumanReactivate(issueNum){
-  if(!confirm('Reactivar #' + issueNum + '? Volverá a la cola del pipeline sin orientación adicional.')) return;
+  if(!(await inConfirm({ title:'Reactivar issue', message:'Volverá a la cola del pipeline sin orientación adicional.', confirmLabel:'Reactivar', danger:false, preview:[{label:'Issue', value:'#'+issueNum}] }))) return;
   nhDisableButtons(issueNum);
   try {
     var r = await fetch('/api/needs-human/' + issueNum + '/reactivate', { method: 'POST', headers: nhCsrfHeaders() });
@@ -283,7 +289,7 @@ async function needsHumanReactivate(issueNum){
 async function needsHumanDismiss(issueNum){
   var reason = prompt('Motivo para desestimar #' + issueNum + ' (opcional):', '');
   if(reason === null) return;
-  if(!confirm('Cerrar #' + issueNum + ' como desestimado? Se quitará del panel y quedará cerrado en GitHub.')) return;
+  if(!(await inConfirm({ title:'Desestimar issue', message:'Se quitará del panel y quedará cerrado en GitHub.', confirmLabel:'Desestimar', preview:[{label:'Issue', value:'#'+issueNum},{label:'Motivo', value:(reason||'—')}] }))) return;
   nhDisableButtons(issueNum);
   try {
     var r = await fetch('/api/needs-human/' + issueNum + '/dismiss', {
@@ -294,7 +300,7 @@ async function needsHumanDismiss(issueNum){
     var j = await r.json();
     if(j.ok){
       if(j.worktree && j.worktree_warning){
-        var cleanWt = confirm('Issue #' + issueNum + ' desestimado.\\n\\nEl worktree tiene trabajo en disco:\\n  ' + j.worktree + '\\n\\n¿Limpiar el worktree ahora? (Cancelar = conservar)');
+        var cleanWt = await inConfirm({ title:'Limpiar worktree', message:'Issue #' + issueNum + ' desestimado. El worktree tiene trabajo en disco. ¿Limpiarlo ahora?', confirmLabel:'Limpiar worktree', cancelLabel:'Conservar', preview:[{label:'Worktree', value:j.worktree}] });
         if(cleanWt){
           try {
             var rw = await fetch('/api/needs-human/' + issueNum + '/dismiss-worktree', { method: 'POST', headers: nhCsrfHeaders() });
@@ -307,15 +313,8 @@ async function needsHumanDismiss(issueNum){
     } else { alert('Error desestimando: ' + (j.msg || 'desconocido')); location.reload(); }
   } catch(e){ alert('Error desestimando: ' + e.message); location.reload(); }
 }
-// R8 del security comment — preparar inyección CSRF sin hardcodear ausencia.
-// Lee <meta name="csrf-token"> si existe; si no, devuelve {} (compat actual).
-// Cuando #3191/#3612 aterricen, el token viaja sin tocar este módulo.
-function nhCsrfHeaders(){
-  try {
-    var m = document.querySelector('meta[name="csrf-token"]');
-    return (m && m.content) ? { 'X-CSRF-Token': m.content } : {};
-  } catch(e){ return {}; }
-}
+// nhCsrfHeaders() lo provee FETCH_CLIENT_JS (#3953) — centralizado para que
+// todo POST destructivo adjunte X-CSRF-Token de forma uniforme (R2).
 window.toggleNeedsHumanPanel = toggleNeedsHumanPanel;
 window.needsHumanReactivate = needsHumanReactivate;
 window.needsHumanDismiss = needsHumanDismiss;
@@ -326,7 +325,6 @@ window.needsHumanDismiss = needsHumanDismiss;
 // matriz.js::COMMON_HELPERS para que la página standalone sea autosuficiente.
 const COMMON_HELPERS = `
 function setText(id, value){ var el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
-function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }); }
 async function tickHeader(){
   var d = await fetchJson('/api/dash/header');
   if(!d) return;
@@ -394,7 +392,7 @@ function renderBloqueados(state, opts) {
     <span>Intrale V3 · #3729</span>
   </footer>
 </div>
-<script>${COMMON_HELPERS}\n${renderBloqueadosClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${COMMON_HELPERS}\n${renderBloqueadosClientScript()}</script>
 </body>
 </html>`;
 }
