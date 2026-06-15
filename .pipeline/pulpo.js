@@ -38,6 +38,9 @@ try { notifierInfraRecovered = require('./notifier-infra-recovered'); } catch { 
 const { classifyRoutingMismatch } = require('./lib/routing-classifier');
 const cbInfra = require('./circuit-breaker-infra');
 const { redact } = require('./redact');
+// #3934 (CA-3 / SEC-1) — escaneo por VALOR (entropía Shannon ≥4.5) para reforzar
+// la sanitización de los turnos del Commander antes de persistir.
+const { redactSecretValue } = require('./lib/redact');
 // #2404 — Detección de logs stale + reset seguro del circuit breaker.
 // Evita rebotar al developer con contexto obsoleto (log del build de hace >24h)
 // y en su lugar re-encola el issue a `build` con YAML limpio.
@@ -7524,17 +7527,35 @@ function loadSession() {
 }
 
 function saveSession(session) {
-  // Issue #3310 CA-4: sanitizar `session.context` antes de persistir. El
-  // context se arma con respuestas de Claude (lineas 7764, 8092) y puede
-  // citar de vuelta input del usuario. Si el commander hace eco de una key,
-  // queda redacted en disco. Idempotente: re-aplicar sanitize sobre un
-  // placeholder no lo altera (los patrones no matchean `[REDACTED:...]`).
+  // Issue #3310 CA-4: sanitizar `session.context` antes de persistir.
+  // #3934 (CA-2 / SEC-6): el flujo conversacional ya NO escribe `session.context`
+  // (el contexto vive en `commander-history.jsonl` por chat). Conservamos este
+  // guard como defensa-en-profundidad: si algún caller legacy/externo vuelve a
+  // setear `context`, igual se sanitiza antes de tocar disco. Idempotente:
+  // re-aplicar sanitize sobre un placeholder `[REDACTED:...]` no lo altera.
   try {
     if (session && typeof session.context === 'string') {
       session = { ...session, context: sanitizePipelineText(session.context) };
     }
   } catch { /* fail-closed via sanitizePipelineText, no debería tirar */ }
   fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
+}
+
+// #3934 (CA-3 / SEC-1) — Sanitización reforzada del texto de un turno antes de
+// persistirlo. Combina dos capas complementarias:
+//   1. `sanitizePipelineText` — redacción por PATRÓN/CLAVE (AWS keys, JWT,
+//      tokens de Telegram, URLs con credenciales, paths, etc.).
+//   2. Escaneo por VALOR token-a-token con `redactSecretValue` (entropía Shannon
+//      ≥4.5 sobre tokens opacos >40 chars). El texto libre conversacional no
+//      tiene claves JSON que disparen el redactor por nombre: un secreto dictado
+//      o pegado a mano sólo lo atrapa la heurística de entropía. Partimos por
+//      whitespace (grupo capturado) para preservar el espaciado original.
+// Idempotente: los marcadores `[REDACTED:...]` son cortos (<40 chars) y sin
+// espacios, así que re-aplicar no los re-redacta.
+function sanitizeCommanderTurnText(text) {
+  const patterned = sanitizePipelineText(text);
+  if (typeof patterned !== 'string' || patterned.length === 0) return patterned;
+  return patterned.split(/(\s+)/).map((tok) => (tok.trim() ? redactSecretValue(tok) : tok)).join('');
 }
 
 // Issue #3310 CA-1.5: chokepoint único para appendear al
@@ -7548,11 +7569,14 @@ function saveSession(session) {
 // #3418 CA-9 — Acepta campo opcional `intent` (string corto). Los
 // consumidores externos que no lo entienden lo ignoran (campos desconocidos
 // se descartan en lectura). Habilita el `prevContext` para SEC-B.
+//
+// #3934 (CA-4) — Acepta campo opcional `chat_id`: el spread `{ ...entry }` lo
+// preserva tal cual. Es opcional para backward-compat con entradas legacy.
 function appendCommanderHistory(historyFile, entry) {
   try {
     const safe = { ...entry };
-    if (typeof safe.text === 'string') safe.text = sanitizePipelineText(safe.text);
-    if (typeof safe.reason === 'string') safe.reason = sanitizePipelineText(safe.reason);
+    if (typeof safe.text === 'string') safe.text = sanitizeCommanderTurnText(safe.text);
+    if (typeof safe.reason === 'string') safe.reason = sanitizeCommanderTurnText(safe.reason);
     // Default timestamp si el caller no lo trajo (los appends viejos lo
     // declaran inline; mantenemos el comportamiento previo).
     if (!safe.timestamp) safe.timestamp = new Date().toISOString();
@@ -7566,6 +7590,107 @@ function appendCommanderHistory(historyFile, entry) {
         JSON.stringify({ direction: 'error', text: `[HISTORY_APPEND_ERROR:${(e && e.message) || 'unknown'}]`, timestamp: new Date().toISOString() }) + '\n',
       );
     } catch { /* best-effort, no podemos hacer más */ }
+  }
+}
+
+// =============================================================================
+// #3934 (EP4-H1) — Conversación persistida POR CHAT.
+//
+// El historial conversacional (`commander-history.jsonl`) reemplaza al contexto
+// de sesión de 30 min (`commander-session.json#context`): sobrevive reinicios
+// (file-based JSONL) y se aísla estrictamente por `chat_id` (SEC-3).
+//
+// Las entradas se escriben SIEMPRE por el chokepoint `appendCommanderHistory`
+// (CA-3, sanitización fail-closed) llevando el campo `chat_id` del chat activo.
+// Las entradas legacy (anteriores a este cambio) NO tienen `chat_id` → se tratan
+// como NO-ASIGNADAS: nunca se inyectan a un chat concreto (decisión de producto
+// conservadora, no cross-chat).
+// =============================================================================
+
+// Retención del historial conversacional (SEC-7 / CA-8): alineada con la
+// retención de 30 días del handoff (#2993) + un tope de entradas por chat para
+// acotar el blast radius de exposición. Persistir conversación ilimitada agranda
+// la superficie de un secreto que escapó a la sanitización.
+const COMMANDER_HISTORY_RETENTION_DAYS = 30;
+const COMMANDER_HISTORY_MAX_PER_CHAT = 500;
+
+// #3934 — ¿la entrada pertenece al chat activo? Match ESTRICTO por `chat_id`
+// (SEC-3). Las entradas legacy sin `chat_id` se consideran NO-ASIGNADAS y
+// devuelven `false`: no se filtran cross-chat hacia ningún chat concreto.
+function commanderEntryBelongsToChat(entry, activeChatId) {
+  if (!entry || entry.chat_id == null) return false;
+  return String(entry.chat_id) === String(activeChatId);
+}
+
+// #3934 (CA-4 / SEC-3) — Selector PURO del historial conversacional para un
+// chat. Recibe el contenido crudo del JSONL (string) para ser testeable sin
+// tocar disco. Filtra por ventana temporal (`cutoffIso`) y por `chat_id` activo,
+// y se queda con las últimas `limit` entradas. Línea inválida → se descarta.
+function selectCommanderHistoryForChat(rawContent, opts = {}) {
+  const { activeChatId, cutoffIso = null, limit = 50 } = opts;
+  if (!rawContent || typeof rawContent !== 'string') return [];
+  const lines = rawContent.trim().split('\n').filter(l => {
+    try {
+      const e = JSON.parse(l);
+      if (cutoffIso && !(e.timestamp >= cutoffIso)) return false;
+      return commanderEntryBelongsToChat(e, activeChatId);
+    } catch { return false; }
+  });
+  return limit > 0 ? lines.slice(-limit) : lines;
+}
+
+// #3934 — Devuelve las últimas `lookback` líneas crudas del historial. Si se
+// pasa `chatId`, filtra PRIMERO por chat (entradas legacy sin `chat_id` quedan
+// fuera, SEC-3) y luego toma las últimas `lookback`, para que el "tail" sea el
+// del chat activo y no el global. Sin `chatId` → tail global (backward-compat).
+function _tailCommanderLines(historyFile, lookback, chatId) {
+  const raw = fs.readFileSync(historyFile, 'utf8').trim();
+  if (!raw) return [];
+  const all = raw.split('\n');
+  if (chatId == null) return all.slice(-lookback);
+  const filtered = all.filter(l => {
+    try { return commanderEntryBelongsToChat(JSON.parse(l), chatId); } catch { return false; }
+  });
+  return filtered.slice(-lookback);
+}
+
+// #3934 (SEC-7 / CA-8) — Poda el historial conversacional: elimina entradas
+// fuera de la ventana de retención (30 días) y aplica un tope por chat. Las
+// entradas legacy sin `chat_id` se agrupan bajo una clave propia (no comparten
+// cupo con los chats reales). Escritura ATÓMICA (temp + rename) y FAIL-OPEN:
+// ante cualquier error dejamos el archivo intacto (el pipeline no puede morir
+// por una poda). Sólo reescribe si efectivamente hay algo que podar.
+function pruneCommanderHistory(historyFile, opts = {}) {
+  const retentionDays = Number.isFinite(opts.retentionDays) ? opts.retentionDays : COMMANDER_HISTORY_RETENTION_DAYS;
+  const maxPerChat = Number.isFinite(opts.maxPerChat) ? opts.maxPerChat : COMMANDER_HISTORY_MAX_PER_CHAT;
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  try {
+    if (!fs.existsSync(historyFile)) return { pruned: 0, kept: 0 };
+    const raw = fs.readFileSync(historyFile, 'utf8');
+    const lines = raw.split('\n').filter(l => l.trim().length > 0);
+    const cutoffIso = new Date(now - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    const perChat = new Map();
+    const kept = [];
+    // De la entrada más nueva a la más vieja: conservamos las últimas N por chat.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let e;
+      try { e = JSON.parse(lines[i]); } catch { continue; } // línea corrupta → se descarta
+      if (e.timestamp && e.timestamp < cutoffIso) continue; // fuera de retención
+      const key = e.chat_id == null ? '__legacy__' : String(e.chat_id);
+      const count = perChat.get(key) || 0;
+      if (count >= maxPerChat) continue; // tope por chat alcanzado
+      perChat.set(key, count + 1);
+      kept.push(lines[i]);
+    }
+    kept.reverse();
+    const prunedCount = lines.length - kept.length;
+    if (prunedCount <= 0) return { pruned: 0, kept: kept.length };
+    const tmp = historyFile + '.prune.tmp';
+    fs.writeFileSync(tmp, kept.length ? kept.join('\n') + '\n' : '');
+    fs.renameSync(tmp, historyFile);
+    return { pruned: prunedCount, kept: kept.length };
+  } catch (e) {
+    return { pruned: 0, kept: 0, error: (e && e.message) || 'unknown' };
   }
 }
 
@@ -7586,9 +7711,11 @@ function readPrevIssueCreationContext(historyFile, opts = {}) {
   try {
     if (!fs.existsSync(historyFile)) return null;
     // Leemos el final del archivo y nos quedamos con las últimas `lookback`
-    // entradas válidas. Usamos slice negativo para evitar parsear todo el
-    // archivo en cada turno.
-    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n').slice(-lookback);
+    // entradas válidas. #3934 (SEC-3): si nos pasan `chatId`, filtramos primero
+    // por chat (las entradas legacy sin `chat_id` quedan fuera → no cross-chat)
+    // y recién después tomamos las últimas `lookback`, para que el contexto sea
+    // el del chat activo y no el global. Sin `chatId` → comportamiento previo.
+    const lines = _tailCommanderLines(historyFile, lookback, opts.chatId);
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const entry = JSON.parse(lines[i]);
@@ -7618,7 +7745,9 @@ function readPendingConfirmation(historyFile, opts = {}) {
   const lookback = Number.isFinite(opts.lookback) ? opts.lookback : 5;
   try {
     if (!fs.existsSync(historyFile)) return null;
-    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n').slice(-lookback);
+    // #3934 (SEC-3 / CA-6): aislar la confirmación pendiente por chat. Una
+    // confirmación persistida en el chat A nunca debe replayarse en el chat B.
+    const lines = _tailCommanderLines(historyFile, lookback, opts.chatId);
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const entry = JSON.parse(lines[i]);
@@ -9902,6 +10031,11 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   const { preprocessMessage, textToSpeechWithMeta, sendVoiceTelegram, loadTtsState, saveTtsState, getTransitionIntro, transcriptionFailureMessage, ttsDegradedMessage, noteDegradationAndShouldNotify, splitTextForTTSChunks } = require('./multimedia');
   const session = loadSession();
 
+  // #3934 (SEC-7 / CA-8) — Poda de retención del historial conversacional al
+  // inicio del turno. Fail-open: si algo rompe, dejamos el archivo intacto y
+  // seguimos (la poda nunca puede tumbar el commander).
+  try { pruneCommanderHistory(historyFile); } catch (e) { log('commander', `[prune] historial no podado (no bloqueante): ${e.message}`); }
+
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
   for (const m of mensajes) {
     log('commander', `Preprocesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
@@ -9917,7 +10051,8 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // aditivos `transcript_echo`/`stt_confidence`/`stt_source`. Todo derivado
     // pasa por la sanitización de appendCommanderHistory. Consumidores que no
     // los entienden los descartan en lectura (backward-compatible).
-    const inEntry = { direction: 'in', from: m.from, text: m._textoFinal };
+    // #3934 (CA-4): cada turno se persiste con el `chat_id` del chat activo.
+    const inEntry = { direction: 'in', from: m.from, text: m._textoFinal, chat_id: chatId };
     if (m._esAudio && m._audio && m._audio.ok) {
       Object.assign(inEntry, transcriptEcho.buildEchoHistoryFields(m._audio));
     }
@@ -10075,12 +10210,14 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     if (respuesta !== null) {
       session.lastCommand = intent.command || 'unknown';
       session.lastTimestamp = new Date().toISOString();
-      session.context = `Último comando: /${intent.command}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
+      // #3934 (CA-2 / SEC-6) — Ya no se escribe `session.context`: el contexto
+      // conversacional vive únicamente en `commander-history.jsonl` por chat.
       sendTelegram(respuesta);
       appendCommanderHistory(historyFile, {
         direction: 'out',
         text: respuesta.slice(0, 1000),
         routing: { class: intent.class, handler: intent.command || null, status: result ? result.status : 'legacy' },
+        chat_id: chatId,
       });
 
       // #3262 CA-9 — TTS opt-in: si el handler devolvió audioText (ej. `/wave --audio`),
@@ -10121,7 +10258,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     const fallback = (textoLibre[0]._audio && textoLibre[0]._audio.fallbackMessage) || transcriptionFailureMessage(dominant);
     log('commander', `Audio(s) sin transcribir [${errorKinds.join(',')}] — fallback directo a Telegram, sin invocar a Claude`);
     sendTelegram(fallback);
-    appendCommanderHistory(historyFile, { direction: 'out', text: fallback, reason: `audio_fallback:${dominant}` });
+    appendCommanderHistory(historyFile, { direction: 'out', text: fallback, reason: `audio_fallback:${dominant}`, chat_id: chatId });
     for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
     return;
   }
@@ -10145,6 +10282,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
           direction: 'in_quota_blocked',
           text: audit,
           debounced: gate.debounced,
+          chat_id: chatId,
         });
       } catch {}
       // Mover mensajes a listo y abortar el flujo de Claude.
@@ -10219,7 +10357,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // Fail-open: si algo rompe, seguimos sin replay (comportamiento previo).
     let sttConfirmedPending = false;
     try {
-      const pending = readPendingConfirmation(historyFile);
+      const pending = readPendingConfirmation(historyFile, { chatId });
       if (pending && sttConfidence.isConfirmationText(mensajeConsolidado)) {
         log('commander', `CA-2: confirmación recibida para acción pendiente (${pending.action}) — replay`);
         mensajeConsolidado = pending.description;
@@ -10264,7 +10402,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // mensaje del operador, o último intent matched fue hace >5min), los
     // continuativos NO matchean — backward-compat exacto con el comportamiento
     // pre-#3418.
-    const prevContext = readPrevIssueCreationContext(historyFile);
+    const prevContext = readPrevIssueCreationContext(historyFile, { chatId });
     const issueIntent = commanderIssueCreation.detectIssueCreationIntent(mensajeConsolidado, prevContext);
     const wantsIssueCreation = issueIntent.intent !== commanderIssueCreation.INTENT_NONE;
 
@@ -10277,6 +10415,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         intent: issueIntent.intent,
         matched: issueIntent.matched,
         continuation: !!issueIntent.continuation,
+        chat_id: chatId,
       });
     }
 
@@ -10318,9 +10457,10 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
             direction: 'in_pending_confirmation',
             action: 'issue_creation',
             text: mensajeConsolidado,
+            chat_id: chatId,
           });
           appendCommanderHistory(historyFile, {
-            direction: 'out', text: confirmMsg.slice(0, 1000), reason: 'stt_low_confidence_confirm',
+            direction: 'out', text: confirmMsg.slice(0, 1000), reason: 'stt_low_confidence_confirm', chat_id: chatId,
           });
           log('commander', 'CA-2: baja confianza STT en creación de issue — pido confirmación');
           for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
@@ -10364,7 +10504,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
             intent: issueIntent.intent,
           }, { log });
         } catch { /* best-effort */ }
-        appendCommanderHistory(historyFile, { direction: 'out', text: blocked, reason: `issue_creation_blocked:${activeProvider}` });
+        appendCommanderHistory(historyFile, { direction: 'out', text: blocked, reason: `issue_creation_blocked:${activeProvider}`, chat_id: chatId });
         for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
         saveSession(session);
         return;
@@ -10417,7 +10557,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       }
       const reply = commanderDocCreate.formatResultMessage(docResult);
       sendTelegram(reply);
-      appendCommanderHistory(historyFile, { direction: 'out', text: reply, reason: `issue_creation_deterministic:${docResult.status}` });
+      appendCommanderHistory(historyFile, { direction: 'out', text: reply, reason: `issue_creation_deterministic:${docResult.status}`, chat_id: chatId });
       log('commander', `#3819: creación determinística → ${docResult.status}${docResult.issueNumber ? ' #' + docResult.issueNumber : ''}`);
       for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
       saveSession(session);
@@ -10449,22 +10589,26 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
 
     try {
       // Construir prompt
+      // #3934 (CA-1/CA-4/SEC-3) — El contexto conversacional se deriva ÚNICAMENTE
+      // del store persistido (`commander-history.jsonl`), filtrado ESTRICTAMENTE
+      // por el `chat_id` del chat activo. Sobrevive reinicios (file-based) y aísla
+      // chats (un turno del chat A nunca se inyecta al chat B). Las entradas legacy
+      // sin `chat_id` se tratan como no-asignadas (no se inyectan). Reemplaza al
+      // contexto de sesión de 30 min (CA-2/SEC-6), eliminado más abajo.
       let historial = '';
       try {
         const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n')
-          .filter(l => { try { return JSON.parse(l).timestamp >= cutoff24h; } catch { return false; } })
-          .slice(-50);
-        historial = '\nHistorial reciente (24hs):\n' + lines.join('\n');
+        const lines = selectCommanderHistoryForChat(
+          fs.readFileSync(historyFile, 'utf8'),
+          { activeChatId: chatId, cutoffIso: cutoff24h, limit: 50 },
+        );
+        if (lines.length) historial = '\nHistorial reciente (24hs):\n' + lines.join('\n');
       } catch {}
 
-      let sessionCtx = '';
-      if (session.context && session.lastTimestamp) {
-        const ageMin = (Date.now() - new Date(session.lastTimestamp).getTime()) / 60000;
-        if (ageMin < 30) {
-          sessionCtx = `\n\nContexto de sesión: ${session.context}`;
-        }
-      }
+      // #3934 (CA-2 / SEC-6) — Eliminado el contexto de sesión de 30 min
+      // (`session.context` + ventana `ageMin < 30`). Era la doble fuente de verdad
+      // que esta historia cierra: el contexto conversacional pasa a derivarse
+      // únicamente del store persistido por chat (`historial`, arriba).
 
       const from = textoLibre[0].from || 'Leo';
       // #3250 — Bloque de routing a /doc y /planner (CA-1, CA-2, CA-3, CA-4,
@@ -10498,7 +10642,7 @@ REGLAS:
    - NO repite literal el detalle de arriba: lo comprime en una conclusión.
    - Aplica también a respuestas a preguntas, no sólo a acciones.
 ${issueCreationBlock}`;
-      const commanderConversation = `Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
+      const commanderConversation = `Mensaje de ${from}: ${mensajeConsolidado}${historial}`;
       const userPrompt = `${commanderPersona}
 ${commanderConversation}`;
 
@@ -10697,7 +10841,7 @@ ${commanderConversation}`;
           suplementosTexto.push(txt);
           s._textoFinal = txt;
           s._esAudio = !!(s.voice || s.voice_path);
-          appendCommanderHistory(historyFile, { direction: 'in', from: s.from, text: txt });
+          appendCommanderHistory(historyFile, { direction: 'in', from: s.from, text: txt, chat_id: chatId });
         }
 
         sendTelegram('💬 Vi tu mensaje adicional, lo integro a la respuesta...');
@@ -11012,7 +11156,8 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       // Actualizar sesión
       session.lastCommand = 'chat';
       session.lastTimestamp = new Date().toISOString();
-      session.context = `Conversación libre. Último mensaje: "${mensajeConsolidado.slice(0, 100)}". Respuesta: "${(respuesta || '').slice(0, 100)}"`;
+      // #3934 (CA-2 / SEC-6) — `session.context` retirado del flujo conversacional;
+      // el contexto se reconstruye del store persistido por chat.
 
       // --- ENVIAR RESPUESTA ---
       // #3948 (CA-5) — transición a `enviando` antes de despachar la respuesta.
@@ -11078,7 +11223,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
 
         sendTelegram(respuesta);
         log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
-        appendCommanderHistory(historyFile, { direction: 'out', text: respuesta.slice(0, 1000) });
+        appendCommanderHistory(historyFile, { direction: 'out', text: respuesta.slice(0, 1000), chat_id: chatId });
 
         // #3949 EP7-H2 — Etapa 4: envío. SEC-2: el texto de respuesta pasa por
         // el writable sanitizado. `enviado` indica si salió también por voz.
@@ -13161,6 +13306,18 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     readYamlSafe,
     WorkFileCorruptionError,
     PAUSE_FILE,
+    // #3934 (EP4-H1) — conversación persistida por chat: helpers puros/IO
+    // expuestos para los tests de aislamiento, sanitización, rehidratación y
+    // retención.
+    appendCommanderHistory,
+    sanitizeCommanderTurnText,
+    selectCommanderHistoryForChat,
+    commanderEntryBelongsToChat,
+    pruneCommanderHistory,
+    readPendingConfirmation,
+    readPrevIssueCreationContext,
+    COMMANDER_HISTORY_RETENTION_DAYS,
+    COMMANDER_HISTORY_MAX_PER_CHAT,
   };
   return; // No arrancar singleton ni mainLoop
 }
