@@ -69,6 +69,13 @@ function escapeHtmlAttr(input) {
 // #3726 — Nav bar V3 unificada (tab activa = "issues") + sprite compartido.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2: banner stale, nunca traga
+// el error en silencio) y framework de modal de confirmación con preview (CA-3)
+// que reemplazan el `fetch().catch` silencioso del polling y el confirm() nativo
+// de pauseIssue. Mismo patrón que home.js / satellites.js / descanso.js.
+const { FETCH_CLIENT_JS, renderStaleBanner } = require('./fetch-client.js');
+const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 const TOKENS_CSS_PATH = path.join(__dirname, '..', '..', 'assets', 'design-tokens.css');
 
@@ -738,8 +745,12 @@ function renderIssuesClientScript() {
   // Espeja home.js:2411 (pauseIssueHome) + el resume del header.
   async function pauseIssue(issue, isResume) {
     var action = isResume ? 'resume' : 'pause';
-    if (!isResume && typeof confirm === 'function'
-        && !confirm('¿Pausar #' + issue + '? Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes.')) {
+    if (!isResume && !(await inConfirm({
+        title: 'Pausar #' + issue,
+        message: 'Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes.',
+        confirmLabel: 'Pausar',
+        preview: [{ label: 'Issue', value: '#' + issue }]
+      }))) {
       return;
     }
     try {
@@ -797,12 +808,12 @@ function renderIssuesClientScript() {
   }
 
   async function tickIssues() {
-    try {
-      var res = await fetch('/api/dash/pipeline');
-      if (!res.ok) return;
-      issuesSnapshot = await res.json();
-      renderGrid();
-    } catch (e) { /* offline tolerante */ }
+    // #3953 (CA-2) — fetchJson (FETCH_CLIENT_JS) dispara el banner stale ante
+    // fallo en vez de tragar el error en silencio; mantiene el último snapshot.
+    var snap = await fetchJson('/api/dash/pipeline');
+    if (!snap) return;
+    issuesSnapshot = snap;
+    renderGrid();
   }
 
   function init() {
@@ -879,6 +890,9 @@ function renderIssuesHTML(opts) {
 </head>
 <body>
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
+${/* #3953 (CA-2) — banner discreto de dato desactualizado; el wrapper fetchJson
+      lo muestra ante fallo de polling y lo limpia al recuperar. */ ''}
+${renderStaleBanner()}
 <a href="#issues-grid" class="in-skip-link" style="position:absolute;left:-9999px">Saltar al listado de issues</a>
 <div class="iss-frame">
   <header class="in-header">
@@ -900,7 +914,9 @@ function renderIssuesHTML(opts) {
     <span>Intrale V3 · #3730</span>
   </footer>
 </div>
-<script>${renderIssuesClientScript()}</script>
+<script>${FETCH_CLIENT_JS}
+${CONFIRM_MODAL_JS}
+${renderIssuesClientScript()}</script>
 </body>
 </html>`;
 }
