@@ -98,14 +98,23 @@ function formatRemainingMs(remainingMs) {
 /**
  * Header ETA: "ETA ~14:32 (1h 25m)" o "ETA insuficiente data".
  * Combina hora absoluta con tiempo restante para el reader humano.
+ *
+ * #4039 — `etaSource` señaliza la procedencia del número (guideline UX no
+ * bloqueante): `'velocity'` → "· ritmo medido" (proyección por velocidad real
+ * del conjunto); cualquier otro valor (incl. `'fallback'`) → "· estimación
+ * inicial". El texto es portador del significado (no depende de glifo) por
+ * accesibilidad. Si `etaSource` no viene, no se agrega sufijo (compat).
  */
-function formatEta({ etaAbsoluteMs, etaAvailable, etasMissing, now }) {
+function formatEta({ etaAbsoluteMs, etaAvailable, etasMissing, now, etaSource }) {
     if (!etaAvailable || !etaAbsoluteMs) return 'ETA insuficiente data';
     const remaining = etaAbsoluteMs - now;
     const hhmm = fmtAbsoluteHHMM(etaAbsoluteMs);
     const dur = formatRemainingMs(remaining);
     const missingSuffix = etasMissing > 0 ? ` (+${etasMissing} sin estimación)` : '';
-    return `ETA ~${hhmm} (${dur})${missingSuffix}`;
+    let sourceSuffix = '';
+    if (etaSource === 'velocity') sourceSuffix = ' · ritmo medido';
+    else if (etaSource === 'fallback') sourceSuffix = ' · estimación inicial';
+    return `ETA ~${hhmm} (${dur})${missingSuffix}${sourceSuffix}`;
 }
 
 /**
@@ -287,11 +296,18 @@ function renderWaveSnapshot(snapshot, opts) {
         etaAvailable: snapshot.etaAvailable,
         etasMissing: snapshot.etasMissing,
         now,
+        etaSource: snapshot.etaSource,  // #4039 — procedencia del ETA
     });
     // CA-11: bold sobre los valores accionables (label, %, ETA). Para que el
-    // ETA tenga bold pero el sufijo "+N sin estimación" no, separamos en cabeza
-    // (bold) y cola (texto normal) cuando aplica.
-    const etaIdxSuffix = etaText.indexOf(' (+');
+    // ETA tenga bold pero los sufijos discretos ("+N sin estimación",
+    // "· ritmo medido"/"· estimación inicial") NO, separamos en cabeza (bold) y
+    // cola (texto normal) en el primer marcador de sufijo que aparezca.
+    const suffixMarkers = [' (+', ' · '];
+    let etaIdxSuffix = -1;
+    for (const m of suffixMarkers) {
+        const idx = etaText.indexOf(m);
+        if (idx > 0 && (etaIdxSuffix === -1 || idx < etaIdxSuffix)) etaIdxSuffix = idx;
+    }
     const etaHead = etaIdxSuffix > 0 ? etaText.slice(0, etaIdxSuffix) : etaText;
     const etaTail = etaIdxSuffix > 0 ? etaText.slice(etaIdxSuffix) : '';
     const etaBoldFragment = `*${escapeMarkdownV2(etaHead)}*${etaTail ? escapeMarkdownV2(etaTail) : ''}`;

@@ -135,6 +135,7 @@ scripts/planner-plan.json
 .pipeline/commander-history.jsonl
 .pipeline/commander-summary.json
 .pipeline/commander-summary.json.tmp
+.pipeline/wave-progress.jsonl
 .pipeline/commander-presence.json
 .pipeline/.commander-presence.json.*.tmp
 .pipeline/node_modules/
