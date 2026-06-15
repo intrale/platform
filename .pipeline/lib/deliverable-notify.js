@@ -53,6 +53,11 @@ const {
     probeVideoDurationSeconds,
     MIME_TO_KIND,
 } = require('./multimedia-attachment');
+// #4019 — avance de ola en la notificación de entrega. `resolveWaveForIssue`
+// (filesystem-only) y `runGh` (GitHub, una sola llamada sin shell) son los dos
+// side-effects que viven en la capa impura (`notify`), no en `buildPreview`.
+const waveResolver = require('./wave-resolver');
+const gitOps = require('../skills-deterministicos/lib/git-ops');
 
 // -----------------------------------------------------------------------------
 // CA-UX-2 — Emojis canónicos fijos por skill. Cualquier skill no listado cae
@@ -791,11 +796,17 @@ function buildText(input) {
         ? input.preview
         : EMPTY_NOTAS_FALLBACK;
     const link = `🔗 https://github.com/intrale/platform/issues/${input.issue}`;
+    // #4019 — sección de avance de ola: va DESPUÉS del cuerpo y ANTES del link
+    // (G-1). Se omite si viene vacía o no es string (CA-4: notificación intacta).
+    const wave = typeof input.waveProgress === 'string' && input.waveProgress.trim().length > 0
+        ? input.waveProgress.trim()
+        : null;
     const parts = [
         header,
         subtitle,
         '',
         body,
+        ...(wave ? ['', wave] : []),
         '',
         link,
         '',
@@ -815,6 +826,139 @@ function buildCaption(input) {
     const subtitle = shortenTitle(input.title || '');
     const link = `🔗 https://github.com/intrale/platform/issues/${input.issue}`;
     return [header, subtitle, '', link, '', input.envelope].join('\n');
+}
+
+// -----------------------------------------------------------------------------
+// #4019 — Sección de avance de ola en la notificación de entrega.
+// -----------------------------------------------------------------------------
+
+// Cantidad máxima de issues abiertos a listar antes de truncar (G-5, alineado
+// con la convención `slice(0, MAX)` + `(+N)` de wave-renderer.js).
+const WAVE_OPEN_LIST_MAX = 8;
+
+// Límite de `gh issue list`. `gh` devuelve los N issues más recientes del repo
+// (no filtrados por ola), así que un límite chico (p.ej. 30) puede dejar afuera
+// issues de olas que arrancaron hace muchos issues. 500 cubre con holgura la
+// ola activa y las recientes; las olas muy viejas degradan con gracia (los
+// issues no devueltos se cuentan como "no cerrados", nunca como cerrados, para
+// no declarar una ola finalizada por error — CA-2 + CA-5).
+const WAVE_GH_LIST_LIMIT = 500;
+
+/**
+ * Formatea el listado de issues abiertos truncando si es largo (G-5).
+ *   `#1, #2, #3 … (+5)`
+ *
+ * @param {number[]} openNums - números de issue abiertos (ya ordenados).
+ * @returns {string}
+ */
+function formatOpenIssueList(openNums) {
+    const visible = openNums.slice(0, WAVE_OPEN_LIST_MAX);
+    const hidden = openNums.length - visible.length;
+    const base = visible.map((n) => `#${n}`).join(', ');
+    return hidden > 0 ? `${base} … (+${hidden})` : base;
+}
+
+/**
+ * Construye la línea de avance de la ola a la que pertenece el issue entregado
+ * (CA-1/CA-2). Es la **única capa impura** de este flujo: lee `waves.json`
+ * (filesystem) y consulta el estado real de GitHub (`gh issue list`, una sola
+ * llamada sin shell). Por eso vive fuera de `buildPreview`/`buildText`, que
+ * permanecen puros y reciben el string ya calculado vía `waveProgress`.
+ *
+ * Garantías de resiliencia (CA-5): nunca tira. Ante cualquier fallo (issue sin
+ * ola, `waves.json` ilegible, `gh` con error, JSON inválido) devuelve `null` y
+ * la notificación se entrega sin la sección, como hoy (CA-4).
+ *
+ * Seguridad (CA-6): los números de issue se castean a int positivo en
+ * `resolveWaveForIssue` (vía `normalizeIssueNumber`); la única llamada a `gh`
+ * usa `runGh` con array de args y `shell:false` (sin interpolación shell); el
+ * listado solo incluye números de issue (sin títulos atacante-controlables).
+ *
+ * @param {object} args
+ * @param {string|number} args.issue
+ * @param {string} args.pipelineRoot
+ * @param {object} [args.deps] - inyección para tests: { resolveWaveForIssue, runGh, logger }.
+ * @returns {string|null} línea de avance o `null` si no aplica / falla.
+ */
+function buildWaveProgressSection(args) {
+    const { issue, pipelineRoot, deps } = args || {};
+    const resolveWave = (deps && deps.resolveWaveForIssue) || waveResolver.resolveWaveForIssue;
+    const runGh = (deps && deps.runGh) || gitOps.runGh;
+    const logFail = (deps && typeof deps.logFail === 'function')
+        ? deps.logFail
+        : () => {};
+
+    try {
+        // CA-4 — issue sin ola → sin sección, comportamiento de hoy.
+        const wave = resolveWave(issue, { pipelineRoot });
+        if (!wave) return null;
+
+        const waveIssues = Array.isArray(wave.issues) ? wave.issues : [];
+        const total = waveIssues.length;
+        if (total === 0) return null;
+
+        // CA-3/CA-6 — estado fresco de GitHub, una sola llamada, sin shell.
+        const limit = Math.max(total, WAVE_GH_LIST_LIMIT);
+        const res = runGh([
+            'issue', 'list',
+            '--repo', 'intrale/platform',
+            '--state', 'all',
+            '--json', 'number,state',
+            '--limit', String(limit),
+        ]);
+
+        // CA-5 — degradación elegante: cualquier fallo de gh → sin sección.
+        if (!res || res.exit_code !== 0 || typeof res.stdout !== 'string' || !res.stdout.trim()) {
+            logFail('gh issue list falló o vino vacío', res && res.stderr);
+            return null;
+        }
+
+        let states;
+        try {
+            states = JSON.parse(res.stdout);
+        } catch (e) {
+            logFail('JSON inválido de gh issue list', e && e.message);
+            return null;
+        }
+        if (!Array.isArray(states)) return null;
+
+        const waveSet = new Set(waveIssues);
+        const inWave = states.filter(
+            (s) => s && typeof s.number === 'number' && waveSet.has(s.number),
+        );
+        const openNums = inWave
+            .filter((s) => s.state === 'OPEN')
+            .map((s) => s.number)
+            .sort((a, b) => a - b);
+
+        // Issues de la ola que `gh` no devolvió (límite / no existen). Se cuentan
+        // como "no cerrados" para nunca declarar una ola finalizada de más.
+        const unknown = total - inWave.length;
+        const open = openNums.length + unknown;
+        const closed = total - open;
+
+        const waveLabel = wave.number != null ? `Ola ${wave.number}` : 'Ola';
+
+        // CA-2 — último issue: ola finalizada.
+        if (open === 0) {
+            const next = wave.number != null
+                ? `la Ola ${wave.number + 1}`
+                : 'la siguiente ola';
+            return `🎉 ${waveLabel} finalizada — ${total}/${total} cerradas. `
+                + `Sugerencia: habilitá ${next} para arrancar.`;
+        }
+
+        // CA-1 — avance intermedio.
+        const pct = Math.round((closed / total) * 100);
+        const plural = open === 1 ? 'abierta' : 'abiertas';
+        const lista = formatOpenIssueList(openNums);
+        return `🌊 ${waveLabel} — ${closed}/${total} cerradas (${pct}%) · `
+            + `quedan ${open} ${plural}: ${lista}`;
+    } catch (e) {
+        // CA-5 — jamás romper la notificación de entrega por el avance de ola.
+        logFail('excepción inesperada en buildWaveProgressSection', e && e.message);
+        return null;
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -853,6 +997,7 @@ function buildPreview(args) {
         title,
         config,
         pipelineRoot,
+        waveProgress,
     } = args;
 
     const cfg = config || {};
@@ -967,6 +1112,7 @@ function buildPreview(args) {
                 issue, title, fase, skill,
                 preview: textBody,
                 envelope,
+                waveProgress,
             }),
             parse_mode: 'Markdown',
         };
@@ -980,6 +1126,7 @@ function buildPreview(args) {
                 issue, title, fase, skill,
                 preview: textBody,
                 envelope,
+                waveProgress,
             }),
             parse_mode: 'Markdown',
         };
@@ -1529,10 +1676,24 @@ function notify(args) {
             return { ok: false, action: 'skipped', reason: 'skill_not_notifiable' };
         }
 
+        // #4019 — avance de ola SOLO en la entrega (delivery/entrega). Es un
+        // side-effect (lee waves.json + consulta GitHub), por eso se calcula acá
+        // (capa impura) y se pasa ya resuelto como string a `buildPreview`, que
+        // permanece puro. Resiliente: `buildWaveProgressSection` nunca tira y
+        // devuelve `null` ante cualquier fallo (CA-4/CA-5).
+        let waveProgress = null;
+        if (skill === 'delivery' && fase === 'entrega') {
+            waveProgress = buildWaveProgressSection({
+                issue,
+                pipelineRoot,
+                deps: deps && deps.waveDeps,
+            });
+        }
+
         // Construir payload.
         const built = buildPreview({
             issue, skill, fase, pipeline, yaml, title,
-            config: cfg, pipelineRoot,
+            config: cfg, pipelineRoot, waveProgress,
         });
 
         // Dedup CA-FN-7.
@@ -2714,6 +2875,9 @@ module.exports = {
         shortenTitle,
         buildText,
         buildCaption,
+        // #4019 — avance de ola
+        buildWaveProgressSection,
+        formatOpenIssueList,
         // audio TTS
         withTimeout,
         safeRedact,

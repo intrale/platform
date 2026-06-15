@@ -330,3 +330,133 @@ test('CA-6: shape externo { label, issues, openedAt, source, resolved } preserva
         assert.equal(typeof r.resolved, 'boolean');
     } finally { resetCache(); rmrf(dir); }
 });
+
+// =============================================================================
+// #4019 — resolveWaveForIssue (lookup issue→ola multi-lista)
+// =============================================================================
+
+const { resolveWaveForIssue } = require('../wave-resolver');
+
+function writeMultiWaveJson(dir, { active_wave, planned_waves = [], archived_waves = [] }) {
+    const state = {
+        version: '1.0',
+        meta: {
+            created_at: '2026-06-01T00:00:00Z',
+            updated_at: '2026-06-01T00:00:00Z',
+            updated_by: 'test',
+            source: 'manual',
+            note: 'fixture #4019',
+        },
+        active_wave,
+        planned_waves,
+        archived_waves,
+        dependencies: [],
+    };
+    fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify(state, null, 2));
+}
+
+test('resolveWaveForIssue: encuentra el issue en active_wave (#4019)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        writeMultiWaveJson(dir, {
+            active_wave: {
+                number: 4,
+                name: 'Ola 4',
+                issues: [{ number: 3934 }, { number: 4019 }, { number: 4023 }],
+            },
+        });
+        const w = resolveWaveForIssue(4019, { pipelineRoot: dir });
+        assert.ok(w);
+        assert.equal(w.number, 4);
+        assert.equal(w.name, 'Ola 4');
+        assert.deepEqual(w.issues, [3934, 4019, 4023]);
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveWaveForIssue: encuentra el issue en archived_waves (#4019)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        writeMultiWaveJson(dir, {
+            active_wave: { number: 4, name: 'Ola 4', issues: [{ number: 4019 }] },
+            archived_waves: [
+                { number: 3, name: 'Ola 3', issues: [{ number: 3949 }, { number: 3950 }] },
+            ],
+        });
+        const w = resolveWaveForIssue(3949, { pipelineRoot: dir });
+        assert.ok(w);
+        assert.equal(w.number, 3);
+        assert.deepEqual(w.issues, [3949, 3950]);
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveWaveForIssue: encuentra el issue en planned_waves (#4019)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        writeMultiWaveJson(dir, {
+            active_wave: { number: 4, name: 'Ola 4', issues: [{ number: 4019 }] },
+            planned_waves: [
+                { number: 5, name: 'Ola 5', issues: [{ number: 4100 }] },
+            ],
+        });
+        const w = resolveWaveForIssue(4100, { pipelineRoot: dir });
+        assert.ok(w);
+        assert.equal(w.number, 5);
+        assert.deepEqual(w.issues, [4100]);
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveWaveForIssue: devuelve null para issue sin ola (CA-4)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        writeMultiWaveJson(dir, {
+            active_wave: { number: 4, name: 'Ola 4', issues: [{ number: 4019 }] },
+        });
+        assert.equal(resolveWaveForIssue(9999, { pipelineRoot: dir }), null);
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveWaveForIssue: tolera shapes #3501 / " 3501 " / int plano / {number} (CA-6 security)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        // issues con shapes mixtos en disco — normalizeIssueNumber los castea.
+        writeMultiWaveJson(dir, {
+            active_wave: {
+                number: 4,
+                name: 'Ola 4',
+                issues: [3934, { number: 4019 }, '  4023  ', '#4026', 'basura'],
+            },
+        });
+        // input con prefijo y whitespace resuelve igual.
+        const w = resolveWaveForIssue(' #4023 ', { pipelineRoot: dir });
+        assert.ok(w);
+        assert.equal(w.number, 4);
+        // 'basura' se descarta; el resto queda ordenado y deduplicado.
+        assert.deepEqual(w.issues, [3934, 4019, 4023, 4026]);
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveWaveForIssue: input no-entero / inválido devuelve null sin crash (CA-6 security)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        writeMultiWaveJson(dir, {
+            active_wave: { number: 4, name: 'Ola 4', issues: [{ number: 4019 }] },
+        });
+        assert.equal(resolveWaveForIssue('rm -rf', { pipelineRoot: dir }), null);
+        assert.equal(resolveWaveForIssue(null, { pipelineRoot: dir }), null);
+        assert.equal(resolveWaveForIssue(-5, { pipelineRoot: dir }), null);
+        assert.equal(resolveWaveForIssue(0, { pipelineRoot: dir }), null);
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveWaveForIssue: sin pipelineRoot devuelve null (defensa)', () => {
+    assert.equal(resolveWaveForIssue(4019, {}), null);
+    assert.equal(resolveWaveForIssue(4019, undefined), null);
+});
+
+test('resolveWaveForIssue: waves.json ilegible devuelve null (CA-5 degradación)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, 'waves.json'), '{ esto no es json válido');
+        assert.equal(resolveWaveForIssue(4019, { pipelineRoot: dir }), null);
+    } finally { resetCache(); rmrf(dir); }
+});
