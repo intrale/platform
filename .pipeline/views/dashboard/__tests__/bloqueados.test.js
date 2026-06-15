@@ -31,6 +31,11 @@ const {
     renderBloqueados,
     safeIssueNumber,
     severityOf,
+    prettyReason,
+    sortBySeverityAge,
+    classifyCta,
+    safeBotUsername,
+    telegramDeepLink,
 } = bloqueados;
 
 // "Ahora" fijo para tests deterministas del tiempo relativo de eventos.
@@ -262,4 +267,198 @@ test('renderBloqueados emite documento SSR completo con shell V3', () => {
     assert.match(doc, /<title>Intrale · Bloqueados<\/title>/);
     assert.match(doc, /data-slug="bloqueados"/);
     assert.match(doc, /window\.needsHumanReactivate/);
+});
+
+// ---------------------------------------------------------------------------
+// CA-2 — prettyReason (motivo pretty-print, nunca JSON crudo)
+// ---------------------------------------------------------------------------
+
+test('prettyReason deja el texto plano intacto', () => {
+    assert.equal(prettyReason('motivo simple sin json'), 'motivo simple sin json');
+    assert.equal(prettyReason(''), '');
+    assert.equal(prettyReason(null), '');
+});
+
+test('prettyReason traduce formas JSON conocidas a español legible', () => {
+    assert.equal(prettyReason('{"dependency_block":3953}'), 'Bloqueado por dependencia: #3953');
+    assert.equal(prettyReason('{"rebote_categoria":"infra","motivo":"build roto"}'), 'Rebote (infra): build roto');
+    assert.match(prettyReason('{"motivo_rechazo":"falta cobertura","rechazado_en_fase":"verificacion"}'), /Rechazado en verificacion: falta cobertura/);
+});
+
+test('prettyReason cae al texto plano con JSON malformado o no-objeto', () => {
+    assert.equal(prettyReason('{no es json}'), '{no es json}');
+    assert.equal(prettyReason('[1,2,3]'), '[1,2,3]'); // array → no es objeto traducible
+    assert.equal(prettyReason('{"x":'), '{"x":');
+});
+
+test('prettyReason nunca emite < o > sin escapar y resiste prototype-pollution', () => {
+    // El helper devuelve texto plano (el escape ocurre en el render). Verificamos
+    // que el render completo no produzca tags vivos con un reason JSON hostil.
+    const html = renderBloqueadosSsr({
+        bloqueados: [{ issue: 9, age_hours: 1, reason: '{"x":"<script>alert(1)</script>"}' }],
+    }, opts);
+    assert.ok(!hasLiveTags(html));
+    assert.match(html, /x: /); // se tradujo a forma genérica clave: valor
+    // __proto__ no contamina el prototipo al parsear/recorrer.
+    prettyReason('{"__proto__":{"polluted":true}}');
+    assert.equal({}.polluted, undefined);
+    const html2 = renderBloqueadosSsr({
+        bloqueados: [{ issue: 9, age_hours: 1, reason: '{"__proto__":{"polluted":true}}' }],
+    }, opts);
+    assert.ok(!hasLiveTags(html2));
+    assert.equal({}.polluted, undefined);
+});
+
+test('CA-2 el reason JSON crudo nunca aparece literal en el HTML', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [{ issue: 9, age_hours: 1, reason: '{"dependency_block":3953}' }],
+    }, opts);
+    assert.match(html, /Bloqueado por dependencia: #3953/);
+    assert.doesNotMatch(html, /\{&quot;dependency_block/);
+});
+
+// ---------------------------------------------------------------------------
+// CA-1 — sortBySeverityAge + filtros/búsqueda
+// ---------------------------------------------------------------------------
+
+test('sortBySeverityAge ordena danger→warning→info, tie-break edad desc', () => {
+    const input = [
+        { issue: 1, age_hours: 2 },   // info
+        { issue: 2, age_hours: 30 },  // danger
+        { issue: 3, age_hours: 10 },  // warning
+        { issue: 4, age_hours: 50 },  // danger (más viejo)
+    ];
+    const out = sortBySeverityAge(input);
+    assert.deepEqual(out.map(b => b.issue), [4, 2, 3, 1]);
+    // No muta el input original.
+    assert.equal(input[0].issue, 1);
+});
+
+test('CA-1 el render aplica el orden severidad×edad a las filas', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [
+            { issue: 11, age_hours: 1, title: 'fresco' },
+            { issue: 22, age_hours: 40, title: 'critico' },
+        ],
+    }, opts);
+    // La fila danger (#22) aparece antes que la info (#11) en el HTML.
+    assert.ok(html.indexOf('bloqueados-row-22') < html.indexOf('bloqueados-row-11'));
+});
+
+test('CA-1 filterbar SSR presente con controles y datasets en las filas', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [{ issue: 5, age_hours: 5, skill: 'ux', phase: 'validacion' }],
+    }, opts);
+    assert.match(html, /id="bloqueados-filterbar"/);
+    assert.match(html, /id="bloqueados-search"/);
+    assert.match(html, /id="bloqueados-filter-sev"/);
+    assert.match(html, /data-skill="ux"/);
+    assert.match(html, /data-phase="validacion"/);
+});
+
+test('CA-1 handlers de filtro filtran por dataset/textContent sin reconstruir innerHTML', () => {
+    const js = renderBloqueadosClientScript();
+    assert.match(js, /function bloqueadosApplyFilters/);
+    assert.match(js, /getAttribute\('data-severity'\)/);
+    assert.match(js, /textContent/);
+    // No debe asignar innerHTML desde el término de búsqueda (anti DOM injection).
+    assert.doesNotMatch(js, /innerHTML\s*=/);
+    assert.match(js, /window\.bloqueadosApplyFilters/);
+    assert.match(js, /window\.bloqueadosClearFilters/);
+});
+
+// ---------------------------------------------------------------------------
+// CA-3 — deep-link Telegram (cuando aplica)
+// ---------------------------------------------------------------------------
+
+test('safeBotUsername valida el charset de Telegram', () => {
+    assert.equal(safeBotUsername('intrale_bot'), 'intrale_bot');
+    assert.equal(safeBotUsername(' intrale_bot '), 'intrale_bot');
+    assert.equal(safeBotUsername('ab'), null);            // < 5 chars
+    assert.equal(safeBotUsername('con-guion'), null);     // guion no permitido
+    assert.equal(safeBotUsername('a'.repeat(33)), null);  // > 32 chars
+    assert.equal(safeBotUsername(null), null);
+});
+
+test('telegramDeepLink construye URL válida o null', () => {
+    assert.equal(telegramDeepLink(123, 'intrale_bot'), 'https://t.me/intrale_bot?start=unblock_123');
+    assert.equal(telegramDeepLink(123, 'x'), null);       // username inválido
+    assert.equal(telegramDeepLink(0, 'intrale_bot'), null); // issue inválido
+});
+
+test('CA-3 deep-link ausente sin bot_username, presente y bien formado con username válido', () => {
+    const sin = renderBloqueadosSsr({ bloqueados: [{ issue: 7, age_hours: 1 }] }, opts);
+    assert.doesNotMatch(sin, /t\.me/);
+    const con = renderBloqueadosSsr({
+        bloqueados: [{ issue: 7, age_hours: 1 }], telegramBotUsername: 'intrale_bot',
+    }, opts);
+    assert.match(con, /href="https:\/\/t\.me\/intrale_bot\?start=unblock_7"/);
+    assert.match(con, /rel="noopener noreferrer"/);
+});
+
+test('CA-3 username inválido en el state no renderiza deep-link', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [{ issue: 7, age_hours: 1 }], telegramBotUsername: 'bad-handle!',
+    }, opts);
+    assert.doesNotMatch(html, /t\.me/);
+});
+
+test('CA-3 el bot_token NUNCA aparece en el HTML renderizado', () => {
+    // Defensa: aunque alguien pase un token por error en un campo, no se filtra.
+    const html = renderBloqueadosSsr({
+        bloqueados: [{ issue: 7, age_hours: 1 }],
+        telegramBotUsername: 'intrale_bot',
+    }, opts);
+    assert.doesNotMatch(html, /bot_token/);
+    assert.doesNotMatch(html, /\d{8,10}:[A-Za-z0-9_-]{35}/); // shape de token de Telegram
+});
+
+// ---------------------------------------------------------------------------
+// CA-4 — header stats
+// ---------------------------------------------------------------------------
+
+test('CA-4 header stats renderiza valores o "—" sin romper', () => {
+    const conDatos = renderBloqueadosSsr({
+        bloqueados: [{ issue: 1, age_hours: 5 }],
+        bloqueadosStats: { avgSla: '4h 12m', resolvedToday: 3 },
+    }, opts);
+    assert.match(conDatos, /v3-bloqueados-headstats/);
+    assert.match(conDatos, /4h 12m/);
+    assert.match(conDatos, />3</);
+    const sinDatos = renderBloqueadosSsr({ bloqueados: [{ issue: 1, age_hours: 5 }] }, opts);
+    assert.match(sinDatos, /v3-bloqueados-headstats/);
+    assert.match(sinDatos, /—/);
+});
+
+// ---------------------------------------------------------------------------
+// CA-5 — CTA primario explícito
+// ---------------------------------------------------------------------------
+
+test('classifyCta clasifica Aprobar/Reintentar/Responder de forma determinística', () => {
+    assert.equal(classifyCta({ labels: ['tipo:recomendacion'] }).kind, 'approve');
+    assert.equal(classifyCta({ reason: 'esperando aprobación del PO' }).kind, 'approve');
+    assert.equal(classifyCta({ reason: '{"dependency_block":3953}' }).kind, 'retry');
+    assert.equal(classifyCta({ reason: 'circuit breaker: 3 rebotes' }).kind, 'retry');
+    assert.equal(classifyCta({ reason: 'build roto en backend' }).kind, 'retry');
+    // Default seguro: pregunta textual sin clasificación → Responder.
+    assert.equal(classifyCta({ question: '¿qué color usamos para el botón?' }).kind, 'respond');
+    assert.equal(classifyCta({}).kind, 'respond');
+});
+
+test('CA-5 cada fila expone exactamente un CTA primario con su verbo', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [{ issue: 8, age_hours: 5, reason: 'build roto' }],
+    }, opts);
+    assert.match(html, /v3-bloqueados-cta-retry/);
+    assert.match(html, /needsHumanCta\(8, 'retry'\)/);
+    // Un solo CTA primario por fila.
+    assert.equal((html.match(/v3-bloqueados-cta /g) || []).length, 1);
+});
+
+test('CA-5 los CTA state-changing reusan CSRF y modal de confirmación', () => {
+    const js = renderBloqueadosClientScript();
+    assert.match(js, /function needsHumanCta/);
+    assert.match(js, /inConfirm/);
+    assert.match(js, /nhCsrfHeaders\(\)/);
+    assert.match(js, /window\.needsHumanCta/);
 });
