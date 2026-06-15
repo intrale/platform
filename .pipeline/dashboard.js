@@ -1186,25 +1186,12 @@ function formatInfraTs(iso) {
 }
 
 // Determina el semáforo global a partir de los 3 criterios del PO (CA-3).
-function computeInfraHealthLevel(h) {
-  // Stale: sin lastCheck o último healthcheck hace > 5 min (300000 ms)
-  const lastCheck = h && h.dns && h.dns.lastCheck;
-  const dnsAge = lastCheck ? (Date.now() - new Date(lastCheck).getTime()) : Infinity;
-  if (!isFinite(dnsAge) || dnsAge > 300000) return { level: 'stale', label: 'STALE' };
-
-  // Alert (rojo): circuit breaker abierto, DNS FAIL o retries > 20%
-  if (h.circuitBreaker && h.circuitBreaker.state === 'open') return { level: 'alert', label: 'CRITICO' };
-  if (h.dns && h.dns.status === 'FAIL') return { level: 'alert', label: 'CRITICO' };
-  const rate = h.retries && typeof h.retries.ratePercent === 'number' ? h.retries.ratePercent : 0;
-  if (rate > 20) return { level: 'alert', label: 'CRITICO' };
-
-  // Warn (amarillo): retries entre 5% y 20% o latencia DNS > 3s
-  if (rate >= 5) return { level: 'warn', label: 'DEGRADADO' };
-  const lat = h.dns && typeof h.dns.latencyMs === 'number' ? h.dns.latencyMs : 0;
-  if (lat > 3000) return { level: 'warn', label: 'DEGRADADO' };
-
-  return { level: 'ok', label: 'SALUDABLE' };
-}
+// #3954 EP8-H1 CA-2/CA-3 — Semáforo global explicable. La lógica pura se
+// extrajo a `lib/infra-health-level.js` para que la compartan SIN dependencia
+// circular `dashboard.js` y `views/dashboard/home.js` (Banda 1 del kiosk).
+// Extendido de "solo infra" a `pulpo + infra + cuota + anomalía` con `reasons[]`
+// para el tooltip CA-2. La firma sigue siendo retrocompatible (sólo `h`).
+const { computeInfraHealthLevel } = require('./lib/infra-health-level');
 
 // Renderiza la sección "Salud de Infra" como HTML. Devuelve '' si no hay
 // datos (feature flag OFF → CA-11).

@@ -336,6 +336,12 @@ try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catc
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 
+// #3954 EP8-H1 — Store del audit de la bandeja de alertas (ack/snooze). Lectura
+// defensiva: si el módulo no carga, los endpoints POST devuelven 503 y el slice
+// degrada a `{error}` (el dashboard se ve idéntico al pre-feature).
+let alertTrayAudit = null;
+try { alertTrayAudit = require('./alert-tray-audit'); } catch { /* opcional */ }
+
 // #3259 — Health por provider (cache TTL 5min, allowlist live-ping) +
 // dispatch-by-provider (activity log 24h). Lectura defensiva: si el módulo
 // no carga, los endpoints devuelven 503.
@@ -747,6 +753,13 @@ const API_ROUTES = {
     // de 24h y estado del hash-chain. Refresh natural 30s desde el cliente.
     '/api/dash/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
     '/api/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
+    // #3954 EP8-H1 CA-5 — Bandeja de alertas del Home mission-control. Lectura
+    // del audit trail (ack/snooze): últimas N entries, stats 24h, estado del
+    // hash-chain y supresiones vigentes. Refresh natural 30s desde el cliente.
+    // Hereda gate loopback CA-S2 + Sec-Fetch-Site + no-store del partial
+    // (registrado dentro de API_ROUTES). Alias humano para curl/debug.
+    '/api/dash/alert-tray': (state, ctx) => slices.alertTraySlice(state, ctx),
+    '/api/alert-tray': (state, ctx) => slices.alertTraySlice(state, ctx),
     // #3897 CA-4 — métrica de precisión de Sherlock (épico #3894). SEC-6: el
     // slice devuelve SOLO agregados numéricos/booleanos (ratio, contadores,
     // not_verifiable count) — nunca claims/comandos/stdout del audit JSONL.
@@ -827,6 +840,133 @@ const ASYNC_API_ROUTES = {
     },
 };
 
+// #3954 EP8-H1 CA-12 — Headers fijos de las respuestas de los endpoints
+// mutantes (ack/snooze): no-store evita cache de un POST, nosniff evita
+// reinterpretación MIME, no-referrer no filtra a terceros. Mismo criterio que
+// `sendPartialHtml`.
+function sendMutationJson(res, payload, status = 200) {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+        'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+}
+
+// #3954 REQ-SEC-8 — Lectura de body con cap de bytes. ack/snooze son payloads
+// minúsculos; cualquier cosa por encima de 4KB se rechaza (413) y la conexión
+// se corta (`req.destroy()`) para no mantener un socket abierto leyendo basura
+// (defensa DoS).
+const ALERT_BODY_MAX_BYTES = 4096;
+function readBodyCapped(req, cap, onDone) {
+    let size = 0;
+    const chunks = [];
+    let finished = false;
+    const finish = (err, body) => { if (finished) return; finished = true; onDone(err, body); };
+    req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > cap) {
+            finish(new Error('body_too_large'));
+            try { req.destroy(); } catch { /* noop */ }
+            return;
+        }
+        chunks.push(chunk);
+    });
+    req.on('end', () => finish(null, Buffer.concat(chunks).toString('utf8')));
+    req.on('error', (e) => finish(e));
+}
+
+// #3954 EP8-H1 CA-12 — Endpoints mutantes (PRIMEROS POST del dashboard).
+// Replica LITERALMENTE el cinturón de gates de `/dashboard/partial`, en orden:
+//   método incorrecto → 405
+//   no-loopback       → 403 (gatea aun si DASHBOARD_HOST cambia el bind — REQ-SEC-7)
+//   cross-site        → 403 (anti-CSRF — REQ-SEC-1)
+//   Content-Type inválido → 415
+//   body sobre el cap → 413 (REQ-SEC-8)
+//   snooze fuera de allowlist / alertId inválido → 400 (validado server-side)
+// El actor se graba server-side fijo (`operador-local`), NUNCA del body (REQ-SEC-3).
+// Devuelve true si la ruta es una de las mutantes (la maneja, con respuesta
+// sync o async); false si no le corresponde (sigue el resto del router).
+function handleAlertMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    const isAck = pathnameOnly === '/dashboard/alert/ack';
+    const isSnooze = pathnameOnly === '/dashboard/alert/snooze';
+    if (!isAck && !isSnooze) return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'alert_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'alert_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'alert_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'alert_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+    // Módulo de store disponible.
+    if (!alertTrayAudit) {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + acción.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'alert_body_too_large' : 'alert_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // NUNCA leemos `actor` del body (REQ-SEC-3): lo graba el store fijo.
+        const alertId = parsed.alertId != null ? parsed.alertId : parsed.alert_id;
+        const justification = typeof parsed.justification === 'string' ? parsed.justification : undefined;
+        try {
+            let result;
+            if (isSnooze) {
+                const hours = parsed.hours != null ? parsed.hours : parsed.snoozeHours;
+                result = alertTrayAudit.recordSnooze({ alertId, snoozeHours: hours, justification });
+            } else {
+                result = alertTrayAudit.recordAck({ alertId, justification });
+            }
+            if (!result.applied) {
+                // Validación server-side falló (alertId fuera de allowlist o
+                // snooze fuera de 1/4/24h). Body genérico — no reflejamos input.
+                sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+                return;
+            }
+            sendMutationJson(res, { ok: true, applied: true, actor: alertTrayAudit.FIXED_ACTOR }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'alert_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
 function sendJson(res, payload, status = 200) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -851,6 +991,13 @@ function sendHtml(res, html) {
  */
 function handle(req, res, ctx) {
     const url = req.url;
+
+    // #3954 EP8-H1 — Endpoints mutantes (ack/snooze). Se evalúan ANTES del
+    // gate GET-only: son las ÚNICAS rutas de escritura habilitadas. Cada una
+    // pasa su propio cinturón de gates (loopback + same-origin + Content-Type
+    // + cap de body). El resto del dashboard sigue siendo read-only.
+    if (handleAlertMutation(req, res)) return true;
+
     if (req.method !== 'GET') return false;
 
     // #3729 (D9 narrativa UX) — compat retro del popout legacy. El link viejo
@@ -1060,5 +1207,8 @@ module.exports = {
         isSameOriginFetch,
         sendPartialHtml,
         VIEW_SLUG_MAX_LEN,
+        // #3954 — endpoints mutantes ack/snooze
+        handleAlertMutation,
+        ALERT_BODY_MAX_BYTES,
     },
 };
