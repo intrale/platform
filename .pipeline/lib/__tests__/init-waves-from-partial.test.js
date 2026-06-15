@@ -379,6 +379,184 @@ test('#3616: normaliza IDs con prefijo "#"', () => {
     } finally { teardownTmp(dir); }
 });
 
+// ─── #4030 — Nombre/número real de la ola del plan maestro ───────────────────
+
+test('#4030 CA-1: seed con metadata estructurada → nombre/número reales del plan maestro', () => {
+    const dir = setupTmp();
+    try {
+        // waves.json con olas archivadas 1..3 → maxArchivedNumber=3.
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [{ number: 1 }, { number: 2 }, { number: 3 }],
+        }));
+        writePartial(dir, JSON.stringify({
+            allowed_issues: [3934, 3935, 4030],
+            source: 'telegram:commander',
+            wave_number: 4,
+            wave_name: 'Memoria + dashboard operativo núcleo',
+            wave_goal: 'Núcleo operativo de memoria y dashboard.',
+        }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.action, 'seeded');
+        assert.equal(r.waveNumber, 4);
+
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.number, 4);
+        assert.equal(state.active_wave.name, 'Memoria + dashboard operativo núcleo');
+        assert.equal(state.active_wave.goal, 'Núcleo operativo de memoria y dashboard.');
+    } finally { teardownTmp(dir); }
+});
+
+test('#4030 CA-1: fallback al `note` de texto libre cuando no hay campos estructurados', () => {
+    const dir = setupTmp();
+    try {
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [{ number: 3 }],
+        }));
+        writePartial(dir, JSON.stringify({
+            allowed_issues: [4030],
+            source: 'telegram:commander',
+            note: "Ola 4 'Memoria + dashboard operativo núcleo' habilitada por OK de Leo.",
+        }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.waveNumber, 4);
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.number, 4);
+        assert.equal(state.active_wave.name, 'Memoria + dashboard operativo núcleo');
+    } finally { teardownTmp(dir); }
+});
+
+test('#4030 CA-3: sin metadata → fallback genérico Ola seed #N (maxArchived+1)', () => {
+    const dir = setupTmp();
+    try {
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [{ number: 3 }],
+        }));
+        writePartial(dir, JSON.stringify({
+            allowed_issues: [100, 200],
+            source: 'manual',
+        }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.waveNumber, 4);
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.name, 'Ola seed #4');
+    } finally { teardownTmp(dir); }
+});
+
+test('#4030 CA-4: número de ola que colisiona con archived → se ignora, cae al cálculo seguro', () => {
+    const dir = setupTmp();
+    try {
+        // archived ya tiene 4 → maxArchivedNumber=4. wave_number=4 NO es > 4.
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [{ number: 4 }],
+        }));
+        writePartial(dir, JSON.stringify({
+            allowed_issues: [4030],
+            source: 'telegram:commander',
+            wave_number: 4,
+            wave_name: 'Nombre que colisiona',
+        }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.waveNumber, 5, 'cae al cálculo seguro maxArchived+1');
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.name, 'Ola seed #5');
+    } finally { teardownTmp(dir); }
+});
+
+test('#4030 CA-4: colisión contra planned_waves también degrada a fallback', () => {
+    const dir = setupTmp();
+    try {
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            active_wave: null,
+            planned_waves: [{ number: 7 }],
+            archived_waves: [{ number: 3 }],
+        }));
+        writePartial(dir, JSON.stringify({
+            allowed_issues: [4030],
+            source: 'telegram:commander',
+            wave_number: 5, // 5 <= maxArchived(7) → colisión.
+            wave_name: 'No debería usarse',
+        }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.waveNumber, 8);
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.name, 'Ola seed #8');
+    } finally { teardownTmp(dir); }
+});
+
+test('#4030: meta inválida (name no-string / number ≤0 / control-chars) → degrada sin lanzar', () => {
+    const dir = setupTmp();
+    try {
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [{ number: 2 }],
+        }));
+        writePartial(dir, JSON.stringify({
+            allowed_issues: [4030],
+            source: 'telegram:commander',
+            wave_number: 0,            // inválido (≤0)
+            wave_name: { not: 'a string' }, // inválido (no-string)
+        }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.action, 'seeded');
+        assert.equal(r.waveNumber, 3);
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.name, 'Ola seed #3');
+    } finally { teardownTmp(dir); }
+});
+
+test('#4030: sanitizeWaveMeta strip de control-chars + cap de longitud + strip prefijo "Ola N — "', () => {
+    const { sanitizeWaveMeta } = init._internal;
+    // Strip de control-chars y prefijo "Ola N — ".
+    const m1 = sanitizeWaveMeta({ wave_number: 4, wave_name: 'Ola 4 — Memoria núcleo' });
+    assert.equal(m1.number, 4);
+    assert.equal(m1.name, 'Memoria núcleo');
+    // Cap de longitud: name ≤120, goal ≤500.
+    const longName = 'x'.repeat(200);
+    const m2 = sanitizeWaveMeta({ wave_number: 2, wave_name: longName, wave_goal: 'y'.repeat(700) });
+    assert.equal(m2.name.length, 120);
+    assert.equal(m2.goal.length, 500);
+    // Sin número o nombre válido → null.
+    assert.equal(sanitizeWaveMeta({ wave_name: 'sin numero' }), null);
+    assert.equal(sanitizeWaveMeta({ wave_number: 4 }), null);
+    assert.equal(sanitizeWaveMeta(null), null);
+});
+
+test('#4030: parseWaveMetaFromNote tolera comillas simples/dobles/tipográficas y no matchea basura', () => {
+    const { parseWaveMetaFromNote } = init._internal;
+    assert.deepEqual(
+        parseWaveMetaFromNote("Ola 4 'Memoria núcleo' habilitada"),
+        { number: 4, name: 'Memoria núcleo', goal: '' },
+    );
+    assert.deepEqual(
+        parseWaveMetaFromNote('Ola 12 "Otra ola" activa'),
+        { number: 12, name: 'Otra ola', goal: '' },
+    );
+    assert.equal(parseWaveMetaFromNote('sin formato de ola'), null);
+    assert.equal(parseWaveMetaFromNote(''), null);
+    assert.equal(parseWaveMetaFromNote(null), null);
+});
+
 // ─── Smoke: el script CLI no crashea ───────────────────────────────────────
 
 test('#3616: el script existe como CLI ejecutable', () => {

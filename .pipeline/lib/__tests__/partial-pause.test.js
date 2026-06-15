@@ -203,3 +203,66 @@ test('isIssueAllowedInState — partial_pause con allowedIssues no-array es segu
     const state = { mode: 'partial_pause' };
     assert.equal(pp.isIssueAllowedInState(2891, state), false);
 });
+
+// ─── #4030 — Metadata estructurada de la ola (campos aditivos) ──────────────
+
+function readPartialRaw() {
+    const { PARTIAL_FILE } = pp._paths();
+    return JSON.parse(fs.readFileSync(PARTIAL_FILE, 'utf8'));
+}
+
+test('#4030: setPartialPause persiste wave_number/wave_name/wave_goal cuando se proveen por opts', () => {
+    resetFs();
+    pp.setPartialPause([4030], {
+        source: 'telegram:commander',
+        waveNumber: 4,
+        waveName: 'Memoria + dashboard operativo núcleo',
+        waveGoal: 'Núcleo operativo.',
+    });
+    const raw = readPartialRaw();
+    assert.equal(raw.wave_number, 4);
+    assert.equal(raw.wave_name, 'Memoria + dashboard operativo núcleo');
+    assert.equal(raw.wave_goal, 'Núcleo operativo.');
+});
+
+test('#4030: setPartialPause NO escribe los campos de ola cuando no se proveen', () => {
+    resetFs();
+    pp.setPartialPause([4030], { source: 'telegram' });
+    const raw = readPartialRaw();
+    assert.equal('wave_number' in raw, false);
+    assert.equal('wave_name' in raw, false);
+    assert.equal('wave_goal' in raw, false);
+});
+
+test('#4030: setPartialPauseAtomic persiste los campos de ola saneados (cap + strip prefijo)', () => {
+    resetFs();
+    pp.setPartialPauseAtomic([4030], {
+        source: 'wave-promote-atomic',
+        authorizedBy: 'wave-promote',
+        waveNumber: 5,
+        waveName: 'Ola 5 — Título con prefijo',
+        waveGoal: 'g'.repeat(600),
+    });
+    const raw = readPartialRaw();
+    assert.equal(raw.wave_number, 5);
+    assert.equal(raw.wave_name, 'Título con prefijo', 'strip del prefijo "Ola N — "');
+    assert.equal(raw.wave_goal.length, 500, 'cap de goal a 500');
+});
+
+test('#4030: meta de ola inválida (number ≤0 / name no-string) NO se persiste', () => {
+    resetFs();
+    pp.setPartialPause([4030], {
+        source: 'telegram',
+        waveNumber: 0,
+        waveName: 'Nombre',
+    });
+    const raw = readPartialRaw();
+    assert.equal('wave_number' in raw, false);
+    assert.equal('wave_name' in raw, false);
+});
+
+test('#4030: sanitizeWaveMetaForWrite strip de control-chars', () => {
+    const m = pp.sanitizeWaveMetaForWrite({ waveNumber: 4, waveName: 'Mem\x00oria\x1f' });
+    assert.equal(m.wave_name, 'Memoria');
+    assert.equal(m.wave_number, 4);
+});
