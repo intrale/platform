@@ -367,3 +367,45 @@ test('CA-9: AUDIT_SOURCE_ENUM expone exactamente las 6 fuentes cerradas', () => 
         ['filesystem', 'git', 'github-api', 'heartbeat', 'pipeline-state', 'waves'],
     );
 });
+
+// -----------------------------------------------------------------------------
+// #3936 EP4-H3 / CA-5a — `claim_domain` como enum cerrado, persistido desde el
+// diccionario canónico. Patrón idéntico a `source`/`same_provider`. Habilita
+// filtrar la métrica de reducción de correcciones de Sherlock por estado del repo.
+// -----------------------------------------------------------------------------
+test('CA-5a: claim_domain dentro del enum se persiste; chain intacto', () => {
+    const dir = freshPipelineDir();
+    const session = 'domain-enum';
+    const file = auditFile(dir, session);
+    const domains = ['repo_state', 'other'];
+    domains.forEach((claim_domain, i) => {
+        writer.appendSherlockAudit({ session, pipelineDir: dir, record: baseRecord({ claim: `#1/c${i}`, claim_domain }) });
+    });
+    const entries = readAll(file);
+    assert.equal(entries.length, domains.length);
+    entries.forEach((e, i) => assert.equal(e.claim_domain, domains[i], `entry ${i} persiste claim_domain`));
+    assert.equal(verifyChain(file).ok, true, 'hash chain íntegra con claim_domain');
+});
+
+test('CA-5a: claim_domain fuera del enum NO se persiste', () => {
+    const dir = freshPipelineDir();
+    const session = 'domain-bad';
+    writer.appendSherlockAudit({
+        session, pipelineDir: dir,
+        record: baseRecord({ claim_domain: 'inyeccion\nmaliciosa' }),
+    });
+    const [entry] = readAll(auditFile(dir, session));
+    assert.equal('claim_domain' in entry, false, 'claim_domain fuera de enum se descarta');
+});
+
+test('CA-5a: record SIN claim_domain → entry sin la clave (back-compat)', () => {
+    const dir = freshPipelineDir();
+    const session = 'domain-absent';
+    writer.appendSherlockAudit({ session, pipelineDir: dir, record: baseRecord() });
+    const [entry] = readAll(auditFile(dir, session));
+    assert.equal('claim_domain' in entry, false, 'sin claim_domain provisto, no se inventa la clave');
+});
+
+test('CA-5a: CLAIM_DOMAIN_ENUM expone exactamente repo_state y other', () => {
+    assert.deepEqual([...writer.CLAIM_DOMAIN_ENUM].sort(), ['other', 'repo_state']);
+});

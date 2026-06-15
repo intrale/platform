@@ -120,6 +120,9 @@ const commanderRequestLog = require('./lib/commander/request-log'); // #3949 EP7
 // prompt sin perder coherencia. Módulo puro; la recompactación corre en
 // background (post-turno) y nunca bloquea la respuesta (degradación elegante).
 const conversationSummary = require('./lib/commander/conversation-summary');
+// #3936 EP4-H3 — bloque de estado determinístico del repo inyectado al prompt
+// del Commander (anti-alucinación) + fuente única que cruza Sherlock.
+const commanderProjectState = require('./lib/commander/project-state-pack');
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
 const { parseDependencyComment } = require('./lib/dep-comment-parser');
@@ -10788,8 +10791,31 @@ REGLAS:
    - NO repite literal el detalle de arriba: lo comprime en una conclusión.
    - Aplica también a respuestas a preguntas, no sólo a acciones.
 ${issueCreationBlock}`;
+      // #3936 EP4-H3 — Bloque de ESTADO DETERMINÍSTICO del repo (CA-1). Se
+      // recolecta sin LLM (git/gh/waves/fs) con caché TTL corto (CA-3/SEC-E) y
+      // se inserta en la persona ENTRE el ítem 6 ("Contexto del entorno") y el
+      // ítem 7 (cierre). FAIL-OPEN total (SEC-F): si la recolección falla o
+      // devuelve vacío, `augmentCommanderPersona` es no-op y la persona queda
+      // intacta — el turno del Commander NUNCA se rompe por esto.
+      let commanderPersonaAugmented = commanderPersona;
+      try {
+        const statePack = await commanderProjectState.buildProjectStatePack({
+          cwd: ROOT,
+          pipelineDir: PIPELINE,
+          log,
+        });
+        commanderPersonaAugmented = commanderProjectState.augmentCommanderPersona(
+          commanderPersona, { pack: statePack });
+        if (statePack) log('commander', `#3936: estado del repo inyectado en persona (${statePack.length} chars)`);
+      } catch (e) {
+        log('commander', `#3936: project-state-pack falló (fail-open, persona sin estado): ${e && e.message}`);
+      }
+
+      // #3934 (CA-2 / SEC-6) — el contexto de sesión de 30 min (`sessionCtx`)
+      // fue eliminado en main; el contexto conversacional deriva sólo del
+      // historial persistido por chat. Mantenemos esa fuente única acá.
       const commanderConversation = `Mensaje de ${from}: ${mensajeConsolidado}${historial}`;
-      const userPrompt = `${commanderPersona}
+      const userPrompt = `${commanderPersonaAugmented}
 ${commanderConversation}`;
 
       // #3250 — SEC-4: audit log. Pre-LLM marcamos el start time; post-LLM
@@ -10806,7 +10832,7 @@ ${commanderConversation}`;
       try { if (commanderPresence) commanderPresence.updatePhase('pensando'); } catch { /* no bloqueante */ }
       skillInvocationStartedAt = Date.now();
       let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado, claudeTrace, {
-        systemPrompt: commanderPersona,
+        systemPrompt: commanderPersonaAugmented,
         userMessage: commanderConversation,
       });
       log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
@@ -11103,11 +11129,25 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         try {
           trabajandoCount = fs.readdirSync(commanderTrabajando).length;
         } catch {}
-        const systemStateSnapshot =
-          `commander_pendiente_files=${pendingCount}\n` +
-          `commander_trabajando_files=${trabajandoCount}\n` +
-          `timestamp_iso=${new Date().toISOString()}\n` +
-          `pipeline_dir=${PIPELINE}`;
+        // #3936 EP4-H3 (CA-4) — el snapshot que cruza Sherlock deriva del MISMO
+        // pack que vio el Commander (misma recolección cacheada → cero
+        // divergencia). Conserva los contadores legacy por back-compat. SEC-C: la
+        // salida ya viene redactada. FAIL-OPEN: si falla, cae al snapshot mínimo.
+        let systemStateSnapshot;
+        try {
+          systemStateSnapshot = await commanderProjectState.buildSystemStateSnapshot({
+            cwd: ROOT,
+            pipelineDir: PIPELINE,
+            legacy: { pendingCount, trabajandoCount, pipelineDir: PIPELINE },
+          });
+        } catch (e) {
+          log('commander', `#3936: systemState unificado falló (fail-open, snapshot mínimo): ${e && e.message}`);
+          systemStateSnapshot =
+            `commander_pendiente_files=${pendingCount}\n` +
+            `commander_trabajando_files=${trabajandoCount}\n` +
+            `timestamp_iso=${new Date().toISOString()}\n` +
+            `pipeline_dir=${PIPELINE}`;
+        }
 
         // El provider del Commander hoy es siempre `anthropic` (ejecutarClaude
         // hace spawn de claude CLI). Cuando #3258 introduzca cross-provider

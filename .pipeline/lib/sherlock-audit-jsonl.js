@@ -51,6 +51,13 @@ const AUDIT_SOURCE_ENUM = new Set([
     'git', 'github-api', 'heartbeat', 'filesystem', 'pipeline-state', 'waves',
 ]);
 
+// #3936 EP4-H3 (CA-5a) — ENUM CERRADO del dominio del claim. `repo_state` marca
+// los verdicts que refieren al estado del repo (las 5 dimensiones del bloque de
+// estado del Commander); permite filtrar la métrica de reducción de correcciones
+// de Sherlock SIN reparsear texto libre. Lockstep con CLAIM_DOMAINS
+// (canonical-facts.js).
+const CLAIM_DOMAIN_ENUM = new Set(['repo_state', 'other']);
+
 const REDACTION_MARKER = '[REDACTED]';
 
 // SEC-2 — gap real verificado contra HEAD:
@@ -184,6 +191,16 @@ function appendSherlockAudit({ session, record, pipelineDir, fsImpl } = {}) {
         entry.source = String(record.source);
     }
 
+    // #3936 EP4-H3 (CA-5a) — `claim_domain` (enum cerrado CLAIM_DOMAIN_ENUM).
+    // Mismo patrón que `source`/`same_provider`: sólo se persiste cuando el caller
+    // lo provee y pertenece al enum (records viejos sin el campo no se contaminan).
+    // Enum acotado sin secrets → NO se redacta. Insumo de la métrica de reducción
+    // de correcciones de Sherlock por estado del repo (CA-5).
+    if (record.claim_domain !== undefined && record.claim_domain !== null
+        && CLAIM_DOMAIN_ENUM.has(String(record.claim_domain))) {
+        entry.claim_domain = String(record.claim_domain);
+    }
+
     // appendChained agrega created_at + hash_prev/hash_self y escribe
     // exactamente UNA línea (`JSON.stringify(entry)+'\n'`) con O_APPEND + lock.
     // Resuelve SEC-3 por construcción.
@@ -197,5 +214,6 @@ module.exports = {
     SESSION_RE,
     AUDIT_SUBDIR,
     AUDIT_SOURCE_ENUM,
+    CLAIM_DOMAIN_ENUM,
     GITHUB_PAT_FINE_GRAINED_RE,
 };
