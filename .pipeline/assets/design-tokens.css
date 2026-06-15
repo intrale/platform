@@ -466,3 +466,67 @@
     --text-disabled: #8B949E;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * 14. ZOOM SEMANTICO + KIOSK (EP8-H3 · #3956)
+ * Tres densidades de lectura del tablero pipeline. La densidad la fija una
+ * clase en el contenedor del tablero (`.it-lanes` o wrapper): por defecto
+ * `--zoom-normal`, opt-in a `--zoom-lejos` (kiosk, legible a ~3 m) y
+ * `--zoom-foco` (columna expandida con timeline).
+ *
+ * Regla de accesibilidad heredada del sistema: las pills NUNCA bajan de 14px
+ * en `normal`/`foco`; en `lejos` (kiosk) escalan agresivamente para lectura a
+ * distancia. Tamanos derivados de la escala --fs-* existente — sin hardcodear.
+ * -------------------------------------------------------------------------- */
+:root {
+  /* defaults = densidad "normal" (escritorio, operador sentado) */
+  --zoom-card-pad:        var(--space-3);     /* 12px */
+  --zoom-card-gap:        var(--space-2);     /* 8px  */
+  --zoom-pill-fs:         var(--fs-sm);       /* 14px — minimo accesible */
+  --zoom-pill-pad-y:      var(--space-1);     /* 4px  */
+  --zoom-pill-pad-x:      var(--space-2);     /* 8px  */
+  --zoom-stage-title-fs:  var(--fs-md);       /* 16px */
+  --zoom-count-fs:        var(--fs-xl);       /* 22px — conteo por etapa */
+  --zoom-dot:             10px;               /* semaforo de estado */
+  --zoom-lane-min-w:      240px;              /* ancho minimo de etapa */
+  --zoom-timeline:        none;               /* timeline visible solo en foco */
+}
+
+/* "lejos" / KIOSK — legible a ~3 m: conteos y semaforos grandes, detalle oculto */
+.zoom-lejos {
+  --zoom-card-pad:        var(--space-4);     /* 16px */
+  --zoom-card-gap:        var(--space-3);     /* 12px */
+  --zoom-pill-fs:         var(--fs-lg);       /* 18px */
+  --zoom-pill-pad-y:      var(--space-2);     /* 8px  */
+  --zoom-pill-pad-x:      var(--space-3);     /* 12px */
+  --zoom-stage-title-fs:  var(--fs-2xl);      /* 26px */
+  --zoom-count-fs:        var(--fs-3xl);      /* 32px — conteo legible a distancia */
+  --zoom-dot:             18px;               /* semaforo grande */
+  --zoom-lane-min-w:      300px;
+  --zoom-timeline:        none;
+}
+
+/* "foco" — columna expandida con timeline por agente */
+.zoom-foco {
+  --zoom-card-pad:        var(--space-4);     /* 16px */
+  --zoom-card-gap:        var(--space-3);     /* 12px */
+  --zoom-pill-fs:         var(--fs-sm);       /* 14px */
+  --zoom-pill-pad-y:      var(--space-1);
+  --zoom-pill-pad-x:      var(--space-2);
+  --zoom-stage-title-fs:  var(--fs-lg);       /* 18px */
+  --zoom-count-fs:        var(--fs-xl);       /* 22px */
+  --zoom-dot:             12px;
+  --zoom-lane-min-w:      360px;              /* columna ancha para el timeline */
+  --zoom-timeline:        block;              /* timeline visible */
+}
+
+/* Semaforos de estado de etapa — reutilizan la paleta semantica existente.
+ * Cada estado SIEMPRE acompanado de icono/texto (nunca solo color). */
+:root {
+  --stage-not-entered:    var(--text-dim);    /* "No ingresados" — neutro en espera */
+  --stage-not-entered-bg: rgba(139, 148, 158, 0.12);
+  --stage-finalized:      var(--success);     /* "Finalizados" — cierre OK */
+  --stage-finalized-bg:   var(--success-bg);
+  --overflow-more:        var(--info);        /* indicador "+N fases" */
+  --overflow-more-bg:     var(--info-bg);
+}
